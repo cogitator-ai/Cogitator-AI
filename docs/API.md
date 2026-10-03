@@ -73,10 +73,23 @@ interface CogitatorConfig {
     pii?: PiiConfig; // mask personal data before it reaches the provider
   };
   context?: ContextManagerConfig; // long-conversation compression
-  logging?: LoggingConfig;
+  logging?: LoggingConfig; // the process-wide logger, see below
   deploy?: DeployConfig;
 }
 ```
+
+#### Logging configuration
+
+```typescript
+interface LoggingConfig {
+  level?: 'debug' | 'info' | 'warn' | 'error' | 'silent'; // default 'info'
+  format?: 'json' | 'pretty'; // default 'pretty' ('json' for files)
+  destination?: 'console' | 'file'; // default 'console'
+  filePath?: string; // required for 'file'
+}
+```
+
+`new Cogitator({ logging })` replaces the process-wide logger (`getLogger()`), so with several runtimes the last one created with `logging` wins. `'silent'` outputs nothing. `destination: 'file'` appends one JSON line per entry to `filePath` (unless `format` says otherwise); without `filePath`, or where there is no file system, it logs to the console with a warning. `createLoggerFromConfig(config)` from `@cogitator-ai/core` builds the same logger for `setLogger()`.
 
 #### Memory configuration
 
@@ -505,7 +518,7 @@ import {
 ```
 
 Tool factories: `createAnalyzeImageTool`, `createGenerateImageTool`, `createTranscribeAudioTool`,
-`createGenerateSpeechTool`, `createMemoryTools`, `createSchedulerTools`, and `agentAsTool(agent, options)`
+`createGenerateSpeechTool`, `createMemoryTools`, `createSchedulerTools`, and `agentAsTool(cogitator, agent, options)`
 to call one agent from another. See [Built-in Tools](https://cogitator.app/docs/tools/built-in).
 
 ---
@@ -795,7 +808,7 @@ interface SwarmConfig {
   supervisor?: Agent; // hierarchical
   workers?: Agent[]; // hierarchical
   agents?: Agent[]; // round-robin, consensus, auction, debate, negotiation
-  stages?: PipelineStage[]; // pipeline
+  stages?: PipelineStage[]; // pipeline stages (alternative to pipeline.stages)
   moderator?: Agent; // debate
   router?: Agent;
   agentMetadata?: Record<string, SwarmAgentMetadata>; // role, expertise, weight, ... by agent name
@@ -840,7 +853,7 @@ interface SwarmConfig {
   // Agent communication
   messaging?: {
     enabled: boolean;
-    protocol: 'direct' | 'broadcast' | 'pub-sub';
+    protocol?: 'direct' | 'broadcast' | 'pub-sub'; // deprecated, no effect
     maxMessageLength?: number;
     maxMessagesPerTurn?: number;
     maxTotalMessages?: number;
@@ -848,7 +861,7 @@ interface SwarmConfig {
   blackboard?: {
     enabled: boolean;
     sections: Record<string, unknown>;
-    locking?: boolean;
+    locking?: boolean; // deprecated, no effect
     trackHistory?: boolean;
   };
 
@@ -876,8 +889,11 @@ interface SwarmConfig {
   // Run agents on BullMQ workers
   distributed?: DistributedSwarmConfig;
 
+  // Built-in messaging/blackboard tools for every agent (in-process swarms only)
+  agentTools?: { messaging?: boolean; blackboard?: boolean };
+
   observability?: {
-    tracing?: boolean;
+    tracing?: boolean; // log each agent run's trace
     messageLogging?: boolean;
     blackboardLogging?: boolean;
   };
@@ -1230,7 +1246,9 @@ try {
 
 #### ErrorCode
 
-String enum (each value equals its name); `ERROR_STATUS_CODES` maps each to an HTTP status.
+String enum (each value equals its name); `ERROR_STATUS_CODES` maps each to an HTTP status (`RUN_TIMEOUT` 504, `BUDGET_EXCEEDED` 429, `LLM_CONTENT_FILTERED` 400).
+
+`cog.run()` throws a `CogitatorError` when the run hits its `timeout` (`Run timed out after <n>ms` → `RUN_TIMEOUT`), when cost routing finds the budget exceeded (`Budget exceeded: …` → `BUDGET_EXCEEDED`), and when guardrails block the input or output (`Input blocked: …` / `Output blocked: …` → `LLM_CONTENT_FILTERED`, with `details.harmScores`), so server adapters answer with that status and message.
 
 ```typescript
 enum ErrorCode {
@@ -1267,6 +1285,8 @@ enum ErrorCode {
   AGENT_MAX_ITERATIONS,
   RUN_TOKEN_LIMIT_EXCEEDED,
   RUN_NOT_PAUSED,
+  RUN_TIMEOUT,
+  BUDGET_EXCEEDED,
 
   // Workflows
   WORKFLOW_NOT_FOUND,
@@ -1382,6 +1402,7 @@ import type {
 
   // LLM
   LLMProvider,
+  LLMBackendProvider, // LLMProvider or the name of your own backend
   LLMBackend,
   ChatRequest,
   ChatResponse,

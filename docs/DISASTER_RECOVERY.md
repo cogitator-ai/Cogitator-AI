@@ -563,13 +563,13 @@ groups:
           severity: warning
 
       - alert: JobFailures
-        expr: increase(cogitator_queue_failed_total[5m]) > 5
+        expr: increase(cogitator_jobs_failed_total[5m]) > 5
         for: 5m
         labels:
           severity: warning
 ```
 
-`cogitator_queue_failed_total` is the number of failed jobs BullMQ still retains, not a true counter: once `removeOnFail` (default 500) jobs are kept it stops rising and `JobFailures` goes quiet. Raise `removeOnFail`, or count failures yourself in `WorkerPool`'s `onJobFailed` event.
+`cogitator_jobs_failed_total{type}` counts jobs that failed their last attempt (retries are not counted) and appears after the first such failure. Don't alert on `cogitator_queue_failed`: it is a gauge of the failed jobs BullMQ still retains, capped by `removeOnFail` (default 500), and drops as old jobs are trimmed.
 
 ### Health Check Endpoints
 
@@ -584,7 +584,7 @@ The paths are relative to where the routes are mounted: Express (`config.basePat
 
 - Both endpoints answer as soon as the process is up; neither checks Postgres, Redis or the LLM provider. Add your own route if readiness should depend on them.
 - In Express, Fastify, Hono and Koa the `auth` function also runs for `/health` and `/ready`, and a throw becomes `401`. Let probe requests through, or probes fail. Tetsu leaves both open.
-- Projects deployed with `cogitator deploy` should set `deploy.health.path: /cogitator/health` (the default `/health` misses the base path).
+- Projects deployed with `cogitator deploy` probe `/cogitator/health` by default; set `deploy.health.path` only when the adapter is mounted elsewhere.
 
 ---
 

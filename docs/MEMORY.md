@@ -28,7 +28,7 @@ More detail on the website: [Memory](https://cogitator.app/docs/memory), [Adapte
 
 ### MemoryResult
 
-Adapter methods do not throw for expected failures; they return `MemoryResult<T>` (`{ success: true, data }` or `{ success: false, error }`). Check `result.success`, or use `unwrap()` to get the data and throw on failure:
+Adapter methods do not throw for expected failures; they return `MemoryResult<T>` (`{ success: true, data }` or `{ success: false, error }`). Database errors are reported the same way, including in `PostgresAdapter` and the `PostgresGraphAdapter` / `SQLiteGraphAdapter` graph adapters. Check `result.success`, or use `unwrap()` to get the data and throw on failure:
 
 ```typescript
 import { InMemoryAdapter, unwrap } from '@cogitator-ai/memory';
@@ -175,6 +175,8 @@ const adapter = new QdrantAdapter({
 
 await adapter.connect();
 ```
+
+Qdrant only accepts unsigned integers and UUIDs as point ids, so each point is stored under a deterministic UUID derived from the embedding id; the `emb_…` id stays in `payload.embeddingId` and is what `search` returns and `deleteEmbedding` takes.
 
 ### InMemoryEmbeddingAdapter
 
@@ -465,7 +467,9 @@ Without a `keywordAdapter`, keyword search uses a local `BM25Index`.
 
 ## Configuration (via CogitatorConfig)
 
-The runtime builds its adapter from `memory.adapter`, which it supports for `'memory'`, `'redis'` (requires `redis.url`) and `'postgres'` (requires `postgres.connectionString`). Other values log a warning and leave memory off: for SQLite, MongoDB or a Redis cluster, connect the adapter yourself and assign it with `cog.memory = adapter` (such runs load the last 20 entries, since the context builder is only created from the `memory` config).
+The runtime builds its thread store from `memory.adapter` and the section of the same name: `'memory'`, `'redis'` (requires `redis.url`, `redis.host`/`redis.port` or `redis.cluster`), `'postgres'` (requires `postgres.connectionString`), `'sqlite'` (requires `sqlite.path`) or `'mongodb'` (requires `mongodb.uri`). A missing required setting or a failed connection logs a warning and leaves memory off for that run; the next run tries again. An adapter you connect yourself can be assigned with `cog.memory = adapter` (such runs load the last 20 entries, since the context builder is only created from the `memory` config).
+
+`'qdrant'` is not a thread store (it only logs a warning): Qdrant holds embeddings. Keep a thread store as `adapter` and add `memory.qdrant` with `memory.embedding` and `memory.contextBuilder`; the context builder then searches the Qdrant collection for semantic context (`includeSemanticContext: true`). The runtime does not write embeddings to it — add them with your own `QdrantAdapter`. A `qdrant.dimensions` that differs from the embedding model's is logged.
 
 ```typescript
 interface MemoryConfig {
@@ -515,7 +519,7 @@ interface MemoryConfig {
 }
 ```
 
-With `contextBuilder` set, Postgres is used as the fact and embedding adapter automatically. The runtime creates the Postgres `embeddings` table with 768-dimensional vectors, so pick an embedding config that produces 768 dimensions (`dimensions: 768` for OpenAI `text-embedding-3-*` or Google, or Ollama `nomic-embed-text`). Without `contextBuilder`, a run loads the last 20 entries of the thread.
+With `contextBuilder` set, a Postgres store is also used as the fact adapter, and as the embedding adapter unless `memory.qdrant` is set. The runtime creates the Postgres `embeddings` table with the vector size of `memory.embedding` (768 without one). Without `contextBuilder`, a run loads the last 20 entries of the thread.
 
 ---
 
@@ -624,7 +628,7 @@ const cog = new Cogitator({
   memory: {
     adapter: 'postgres',
     postgres: { connectionString: process.env.DATABASE_URL! },
-    embedding: { provider: 'openai', apiKey: process.env.OPENAI_API_KEY!, dimensions: 768 },
+    embedding: { provider: 'openai', apiKey: process.env.OPENAI_API_KEY! },
     contextBuilder: { maxTokens: 8000, strategy: 'hybrid', includeSemanticContext: true },
   },
 });

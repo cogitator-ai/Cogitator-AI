@@ -5,7 +5,7 @@ This guide explains how to run Cogitator's backing services with Docker for loca
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) (20.10+)
-- [Docker Compose](https://docs.docker.com/compose/install/) — `scripts/setup.sh` and the `Makefile` call the `docker-compose` command, so it must be on your `PATH` (Docker Desktop installs it; on Linux install the standalone binary or alias it to `docker compose`)
+- [Docker Compose](https://docs.docker.com/compose/install/) — `scripts/setup.sh` and the `Makefile` use the `docker compose` plugin and fall back to the standalone `docker-compose` binary (override with `make COMPOSE=...`)
 - [Node.js](https://nodejs.org/) (22.12+)
 - [pnpm](https://pnpm.io/) (11+)
 
@@ -136,7 +136,7 @@ Who reads them:
 - `createConfigFromEnv()` from `@cogitator-ai/redis` reads `REDIS_URL`, `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD`, `REDIS_KEY_PREFIX` and `REDIS_CLUSTER_NODES` (see [Redis](https://cogitator.app/docs/deployment/redis#environment-configuration)).
 - `DATABASE_URL` is read by the built-in `sqlQuery` and `vectorSearch` tools; pass it yourself to the memory adapters and workflow stores you create.
 
-The `EMBEDDING_*` and `SANDBOX_*` entries in `env.example` are not read by any package. Configure embeddings and sandboxes in code or in `cogitator.yml` (`memory.embedding`, `sandbox`).
+The `EMBEDDING_*` and `SANDBOX_*` entries in `env.example` are not read by any package. Configure embeddings and sandboxes in code or in `cogitator.yml` (`memory.embedding`, `sandbox`); `sandbox.allowNativeFallback` and `sandbox.pool.reuseContainers` are code-only, since the config schema strips them.
 
 ```typescript
 import { PostgresAdapter } from '@cogitator-ai/memory';
@@ -177,7 +177,7 @@ await memory.connect();
 
 On the first start, `docker/postgres/init.sql` enables the `vector` and `uuid-ossp` extensions. The runtime packages then create the tables they need on first use:
 
-- `PostgresAdapter` creates the schema `cogitator` with `threads`, `entries`, `facts` and `embeddings` — `vector(768)` by default (call `setVectorDimensions()` before `connect()` for other embedding models), an IVFFlat cosine index and a full-text `tsvector` column for hybrid search
+- `PostgresAdapter` creates the schema `cogitator` with `threads`, `entries`, `facts` and `embeddings` — `vector(768)` by default (call `setVectorDimensions()` before `connect()` for other embedding models; a `Cogitator` with `memory.adapter: 'postgres'` sizes it to `memory.embedding`), an IVFFlat cosine index and a full-text `tsvector` column for hybrid search
 - the Postgres workflow stores create `cogitator_workflow_runs`, `cogitator_workflow_checkpoints`, `cogitator_workflow_timers` and `cogitator_workflow_approvals_*`
 
 Semantic search goes through the adapter, not SQL:
@@ -190,15 +190,7 @@ declare const queryVector: number[];
 const results = unwrap(await memory.search({ vector: queryVector, limit: 10, threshold: 0.7 }));
 ```
 
-`init.sql` also creates a set of `cogitator_*` tables (`cogitator_agents`, `cogitator_runs`, `cogitator_memory_entries`, …) and a `search_memory_by_embedding()` function. Nothing in the runtime reads or writes them. Its `cogitator_workflow_runs` table has a different layout from the one `PostgresRunStore` expects, so against this database give the run store another table name:
-
-```typescript
-import { PostgresRunStore } from '@cogitator-ai/workflows';
-import { Pool } from 'pg';
-
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-const runStore = new PostgresRunStore({ client: pool, table: 'workflow_runs' });
-```
+A Postgres volume created by an older `init.sql` still holds its legacy `cogitator_*` tables, and its `cogitator_workflow_runs` has a different layout from the one `PostgresRunStore` creates. Recreate the volume (`make db-reset`, which deletes all data) or run `DROP TABLE cogitator_workflow_runs;` before using the run store's default table.
 
 See [Memory Adapters](https://cogitator.app/docs/memory/adapters#postgres) for the full adapter API.
 
@@ -256,6 +248,10 @@ docker compose logs ollama
 # Try pulling manually
 docker compose exec ollama ollama pull llama3.2:3b
 ```
+
+### Sandboxed tools run on the host
+
+Docker-sandboxed tools need a reachable Docker daemon. Without `sandbox.docker.socketPath` or `host`, `@cogitator-ai/sandbox` looks for it like the `docker` CLI: `DOCKER_HOST`, then the current Docker context, then the Docker Engine, Docker Desktop, OrbStack, Colima, Rancher Desktop and rootless sockets. When none answers, such tools run unsandboxed on the host with a `[sandbox] Docker is unavailable` warning, because `sandbox.allowNativeFallback` defaults to `true`; set it to `false` to fail those calls instead. Check with `docker context ls` and `docker info`, or point `sandbox.docker.socketPath` at your daemon's socket.
 
 ### Out of memory
 

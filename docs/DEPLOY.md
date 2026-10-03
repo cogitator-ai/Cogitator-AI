@@ -91,7 +91,7 @@ deploy:
 | `services.postgres` | `boolean`                           | auto-detected       | Include a PostgreSQL service (Docker target)                            |
 | `env`               | `Record<string, string>`            | none                | Environment variables for the app                                       |
 | `secrets`           | `string[]`                          | auto-detected       | Secrets that must be set at deploy time; passed to the app              |
-| `health.path`       | `string`                            | `/health`           | Health check path for the Dockerfile `HEALTHCHECK` and the Fly.io check |
+| `health.path`       | `string`                            | `/cogitator/health` | Health check path for the Dockerfile `HEALTHCHECK` and the Fly.io check |
 | `health.interval`   | `string`                            | `30s`               | Health check interval                                                   |
 | `health.timeout`    | `string`                            | `5s`                | Health check timeout                                                    |
 | `resources.memory`  | `string`                            | `256mb`             | Fly.io VM memory (`mb` or `gb`)                                         |
@@ -99,7 +99,7 @@ deploy:
 
 Explicit `services` and `secrets` replace auto-detection rather than merging with it.
 
-The server adapters mount their routes under `/cogitator` by default (Express `basePath`, Fastify `prefix`), so the health endpoint is `/cogitator/health`. Set `health.path` accordingly — with the default `/health` the container health check and the Fly.io check hit a route that does not exist.
+The `health.path` default matches the Express and Fastify adapters at their default base path (`basePath` / `prefix` `/cogitator`). Set it only when the adapter is mounted elsewhere; Hono, Koa and Tetsu answer wherever you mount them.
 
 `COGITATOR_DEPLOY_TARGET`, `COGITATOR_DEPLOY_PORT` and `COGITATOR_DEPLOY_REGISTRY` override `deploy.target`, `deploy.port` and `deploy.registry`.
 
@@ -228,7 +228,7 @@ volumes:
   postgres-data:
 ```
 
-`cogitator deploy` builds the image, pushes it when a registry is set, and starts this stack with `docker compose -p <image> -f .cogitator/docker-compose.prod.yml up -d --no-build`, passing secrets from your environment or `.env`. The app gets `REDIS_URL` and `DATABASE_URL` pointing at the bundled services — read them when you create your memory adapter or Redis client. The app is then at `http://localhost:<port>`.
+`cogitator deploy` builds the image, pushes it when a registry is set, and starts this stack with `docker compose -p <image> -f .cogitator/docker-compose.prod.yml up -d --no-build`, passing secrets from your environment or `.env`. The app gets `REDIS_URL` and `DATABASE_URL` pointing at the bundled services — read them when you create your memory adapter or Redis client. Each key is written once: a value in `deploy.env` replaces the bundled URL, and a name in `deploy.secrets` becomes `${NAME:-<bundled URL>}`. The app is then at `http://localhost:<port>`.
 
 `cogitator deploy status` reports whether the `app` service is running; `cogitator deploy destroy` runs `docker compose down` and keeps the volumes. To back up the bundled databases, see [DISASTER_RECOVERY.md](./DISASTER_RECOVERY.md#backup-procedures).
 
@@ -421,7 +421,7 @@ deploy:
     - DATABASE_URL # an external database
 ```
 
-Don't list `REDIS_URL` or `DATABASE_URL` (in `secrets` or `env`) while the matching bundled service is enabled on the Docker target: the Compose file already sets them, and the duplicate key makes Compose reject the file.
+On the Docker target, listing `REDIS_URL` or `DATABASE_URL` while the matching bundled service is enabled overrides the bundled URL instead of duplicating the key: a value in `env` replaces it, and a name in `secrets` is read from your environment with the bundled URL as the fallback.
 
 ---
 
@@ -581,7 +581,7 @@ See [Ollama Cloud](#ollama-cloud) section above.
 
 ### Container is unhealthy / Fly.io check fails
 
-The health check hits `health.path`, which defaults to `/health`. With an adapter mounted under `/cogitator` (the Express and Fastify default) set `health.path: /cogitator/health`. If your adapter has an `auth` function, let requests to the health route through — it runs for `/health` too.
+The health check hits `health.path`, which defaults to `/cogitator/health` (the Express and Fastify default mount). If you mount the adapter elsewhere, set `health.path` to `<mount>/health`. If your adapter has an `auth` function, let requests to the health route through — it runs for `/health` too.
 
 ### Build fails
 
@@ -678,7 +678,12 @@ console.log('TypeScript:', result.hasTypeScript);
 console.log('Package manager:', result.packageManager); // 'pnpm' | 'npm' | 'yarn'
 console.log('Start command:', result.startCommand); // ['node', 'dist/server.js']
 console.log('Warnings:', result.warnings);
+
+const build = analyzer.detectBuild('/path/to/project');
+console.log(build.hasBuildScript, build.hasLockfile);
 ```
+
+`detectBuild()` returns only the build facts (`hasTypeScript`, `packageManager`, `hasLockfile`, `hasBuildScript`, `startCommand`) — exactly what `ArtifactGenerator.generate()` takes as its second argument.
 
 ### Generate Artifacts
 
@@ -702,14 +707,14 @@ for (const file of artifacts.files) {
 }
 ```
 
-`generate()` only returns the files; `Deployer.deploy()` writes them to `.cogitator/`.
+`generate()` only returns the files; the built-in providers write them to `.cogitator/` in their `deploy()`.
 
 ### Custom Providers
 
 Register your own deploy provider. `target` accepts any registered provider name (`DeployTargetName`), not just the built-in `'docker' | 'fly'`:
 
 ```typescript
-import { Deployer } from '@cogitator-ai/deploy';
+import { ArtifactGenerator, Deployer, ProjectAnalyzer } from '@cogitator-ai/deploy';
 import type { DeployProvider } from '@cogitator-ai/deploy';
 
 const myProvider: DeployProvider = {
@@ -717,8 +722,8 @@ const myProvider: DeployProvider = {
   async preflight() {
     return { checks: [], passed: true };
   },
-  async generate() {
-    return { files: [], outputDir: '.cogitator' };
+  async generate(config, projectDir) {
+    return new ArtifactGenerator().generate(config, new ProjectAnalyzer().detectBuild(projectDir));
   },
   async deploy(config) {
     return { success: true, url: `https://${config.image}.example.com` };
@@ -739,7 +744,7 @@ await deployer.deploy({
 });
 ```
 
-`Deployer.deploy()` passes your provider the artifacts from the built-in `ArtifactGenerator` (Dockerfile, `.dockerignore`, and a Compose file); `generate()` is part of the interface for standalone use. The CLI only accepts the built-in `docker` and `fly` targets.
+`Deployer.deploy()` runs preflight, calls your provider's `generate(config, projectDir)` and passes the result to its `deploy()` (`dryRun` stops after `generate()`); writing the files is up to the provider. The example reuses the built-in Dockerfile. The CLI only accepts the built-in `docker` and `fly` targets.
 
 ### Check Status and Destroy
 

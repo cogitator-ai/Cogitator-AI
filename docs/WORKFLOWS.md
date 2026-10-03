@@ -536,7 +536,7 @@ await approvalStore.submitResponse({
 const { state } = await run;
 ```
 
-The node's output is `{ approved, decision, timedOut, escalated }`. `ratingNode`, `chainNode` and `managementChain` (sequential approvers) work the same way, and `approvalNotifier` (`ConsoleNotifier`, `WebhookNotifier`, `slackNotifier`, ...) is told about new requests. The first answer wins: a second `submitResponse` for the same request throws `ApprovalAlreadyAnsweredError` (`submitOrExisting` returns the answer that stands instead). Deleting a pending request releases its waiters with a withdrawn answer (`respondedBy: WITHDRAWN`), which counts as not approved.
+The node's output is `{ approved, decision, timedOut, escalated, withdrawn }`; `escalated` is `true` when the `escalateTo` assignee answered after a timeout. `ratingNode`, `chainNode` and `managementChain` (sequential approvers) work the same way, and `approvalNotifier` (`ConsoleNotifier`, `WebhookNotifier`, `slackNotifier`, ...) is told about new requests. The first answer wins: a second `submitResponse` for the same request throws `ApprovalAlreadyAnsweredError` (`submitOrExisting` returns the answer that stands instead). Deleting a pending request releases its waiters with a withdrawn answer (`respondedBy: WITHDRAWN`), which counts as not approved.
 
 ---
 
@@ -586,7 +586,7 @@ for await (const event of executor.stream(researchWorkflow, { topic: 'WebGPU' })
 }
 ```
 
-Other execute options: `workflowId`, `tracer`, `metricsCollector`, `defaultRetry`, `defaultCircuitBreaker`, `deadLetterQueue`, `idempotencyStore`, `approvalStore`, `approvalNotifier` and `timerStore` (see [Error Handling](#error-handling) and [Observability](#observability)).
+Other execute options: `workflowId`, `tracer`, `metricsCollector`, `defaultRetry`, `defaultCircuitBreaker`, `deadLetterQueue`, `idempotencyStore`, `approvalStore`, `approvalNotifier` and `timerStore` (see [Error Handling](#error-handling) and [Observability](#observability)), plus the run observers `onApprovalRequired(request)` (a human node opened a request), `onTimerScheduled(entry)` (a `persist: true` timer was stored), `onDeadLetter(entry)` (a failed node was written to the DLQ) and `onCompensationStart` / `onCompensationComplete(nodeId)`. `resume()` accepts the same options and `stream()` all but the four node callbacks.
 
 ### WorkflowResult
 
@@ -734,7 +734,63 @@ const node = customNode<ApiState>('call-api', async (ctx) => {
 
 ### Saga / Compensation Pattern
 
-Use `CompensationManager` to register compensations and roll back on failure:
+Give a node `config.compensation` and the executor rolls it back when a later node of the same run fails:
+
+```typescript
+interface OrderState extends WorkflowState {
+  items: string[];
+  amount: number;
+  reservationId?: string;
+  chargeId?: string;
+}
+
+const orderWorkflow = new WorkflowBuilder<OrderState>('order')
+  .initialState({ items: [], amount: 0 })
+  .addNode(
+    'reserve-inventory',
+    async (ctx) => {
+      const reservation = await inventoryService.reserve(ctx.state.items);
+      return { state: { reservationId: reservation.id }, output: reservation };
+    },
+    {
+      config: {
+        compensation: {
+          // originalResult is the node's output
+          compensate: async (_state, originalResult) => {
+            await inventoryService.release((originalResult as { id: string }).id);
+          },
+        },
+      },
+    }
+  )
+  .addNode(
+    'charge-payment',
+    async (ctx) => {
+      const charge = await paymentService.charge(ctx.state.amount);
+      return { state: { chargeId: charge.id }, output: charge };
+    },
+    {
+      after: ['reserve-inventory'],
+      config: {
+        compensation: {
+          compensate: async (state) => paymentService.refund(state.chargeId!),
+          compensateTimeout: 10_000,
+        },
+      },
+    }
+  )
+  .addNode('ship', shipNode, { after: ['charge-payment'] })
+  .build();
+
+const result = await executor.execute(orderWorkflow, input, {
+  onCompensationStart: (node) => console.log(`Rolling back ${node}`),
+  onCompensationComplete: (node) => console.log(`Rolled back ${node}`),
+});
+```
+
+`compensation` takes `compensate(state, originalResult)`, `compensateCondition?(state, error)`, `compensateOrder?` (`'reverse'` by default, `'parallel'`, `'forward'`) and `compensateTimeout?`. When a node fails after its retries, every completed node with a `compensate` (not the failed one) is rolled back in reverse completion order by default; an aborted, paused or cancelled run is not compensated. A failing compensation is logged and does not stop the others, and `result.error` stays the node's error.
+
+For rollbacks outside the executor, use `CompensationManager` directly:
 
 ```typescript
 import { CompensationManager, customNode } from '@cogitator-ai/workflows';
@@ -773,12 +829,15 @@ const result = await executor.execute(orderWorkflow, input, {
   },
 });
 if (result.error) {
-  const report = await compensation.compensate(result.state, failedNode, result.error);
+  const report = await compensation.compensate(result.state, failedNode, result.error, {
+    onStepStart: (node) => console.log(`Compensating ${node}`),
+    onStepComplete: (step) => console.log(step.nodeId, step.success),
+  });
   console.log(report.allSuccessful, report.partialFailures);
 }
 ```
 
-Create one `CompensationManager` per run when runs can overlap.
+The optional fourth argument of `compensate()` is `CompensationHooks` (`onStepStart`, `onStepComplete`), called around each step that runs. Create one `CompensationManager` per run when runs can overlap.
 
 ---
 
@@ -953,11 +1012,18 @@ const runId = await manager.schedule(researchWorkflow, {
   input: { topic: 'WebGPU' },
 });
 
-// or at the next cron occurrence (one run; use a cron trigger for recurring runs)
+// or at the next cron occurrence (one run)
 const runId2 = await manager.schedule(researchWorkflow, {
   cron: '0 9 * * *',
   timezone: 'America/New_York',
 });
+
+// a run on every occurrence while the manager is started
+const jobId = manager.registerCronJob(researchWorkflow, '0 9 * * *', {
+  timezone: 'America/New_York',
+  jobOptions: { input: { topic: 'WebGPU' }, timeout: 10 * 60 * 1000, maxRetries: 2 },
+});
+manager.setCronJobEnabled(jobId, false); // also: unregisterCronJob(jobId), getCronJobs()
 
 // inspect runs
 const run = await manager.getStatus(runId);
@@ -976,7 +1042,7 @@ const unsubscribe = manager.onRunStateChange((r) => console.log(`${r.workflowNam
 manager.stop();
 ```
 
-`replay` needs a run that saved a checkpoint (a `checkpointStore` on the manager). `pause(runId)` aborts a running run and marks it `paused`; `resume(runId)` only sets the status back to `running` and does not restart execution — continue a run with `replay` or `retry` instead.
+`replay` needs a run that saved a checkpoint (a `checkpointStore` on the manager). `pause(runId)` needs that store too: it aborts a running run and the run stays `paused` (`cancel()` likewise stays `cancelled`). `resume(runId, options?)` continues a paused run from its last checkpoint — nodes completed before it do not run again — with the options it was started with unless you pass new ones, and resolves once the run is `running`. Scheduled runs get the checkpoint store, tracer, metrics and their `timeout` (else `defaultTimeout`), and `ScheduleOptions.maxRetries` retries a failed scheduled run automatically (counted in `metadata.retryAttempt`). A run's `workflowId` defaults to its run id. Cron jobs live in memory: register them again after a restart.
 
 ---
 
@@ -1063,7 +1129,7 @@ const workflowMetrics = metricsCollector.getWorkflowMetrics('research-topic');
 console.log(workflowMetrics?.latency.p99);
 ```
 
-`setGlobalTracer` / `setGlobalMetrics` only store an instance for `getGlobalTracer()` / `getGlobalMetrics()`; the executor and manager use the tracer and collector you pass them.
+A run that gets no tracer or collector uses the global ones from `setGlobalTracer` / `setGlobalMetrics` when they are enabled (`tracer.isSampled()`, `metrics.isEnabled()`); the built-in globals are disabled, so nothing is recorded until you set enabled ones.
 
 ---
 
@@ -1118,14 +1184,14 @@ class WorkflowExecutor {
   resume<S extends WorkflowState>(
     workflow: Workflow<S>,
     checkpointId: string,
-    options?: WorkflowExecuteOptions
+    options?: ExecutorExecuteOptions
   ): Promise<WorkflowResult<S>>;
 
   stream<S extends WorkflowState>(
     workflow: Workflow<S>,
     input?: Partial<S>,
     options?: Omit<
-      WorkflowExecuteOptions,
+      ExecutorExecuteOptions,
       'onNodeStart' | 'onNodeComplete' | 'onNodeError' | 'onNodeProgress'
     >
   ): AsyncIterable<StreamingWorkflowEvent>;
@@ -1154,6 +1220,11 @@ interface ExecutorExecuteOptions extends WorkflowExecuteOptions {
   approvalStore?: ApprovalStore;
   approvalNotifier?: ApprovalNotifier;
   timerStore?: TimerStore;
+  onApprovalRequired?: (request: ApprovalRequest) => void;
+  onTimerScheduled?: (entry: TimerEntry) => void;
+  onDeadLetter?: (entry: DeadLetterEntry) => void;
+  onCompensationStart?: (nodeId: string) => void;
+  onCompensationComplete?: (nodeId: string) => void;
 }
 ```
 

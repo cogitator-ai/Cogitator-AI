@@ -59,6 +59,26 @@ const getWeather = tool({
 
 `execute` receives the validated parameters and a `ToolContext` (`agentId`, `runId`, `signal`, and — when known — `threadId`, `userId`, `channelType`, `channelId`). Other `ToolConfig` fields: `category`, `tags`, `sideEffects`, `requiresApproval`, `timeout` (ms) and `sandbox`.
 
+A parameter with `.default()` is optional in the JSON Schema the model sees, and `execute` gets the default when the model leaves it out (`units` above).
+
+### Returning Images
+
+A result object with a base64 image in `image` or `imageBase64` (PNG, JPEG, GIF or WebP, plain or as a `data:image/...;base64,` URL) reaches the model as an image; the rest of the object is sent as JSON with the image field replaced by `"(image attached)"`:
+
+```typescript
+const renderChart = tool({
+  name: 'render_chart',
+  description: 'Render a line chart of the given values as a PNG',
+  parameters: z.object({ values: z.array(z.number()) }),
+  execute: async ({ values }) => {
+    const png = await drawChart(values);
+    return { points: values.length, image: png.toString('base64') };
+  },
+});
+```
+
+Each backend places the image where its API allows: inside the tool result for Anthropic, Bedrock and the OpenAI Responses API, after the function responses of the turn for Google, in the tool message's `images` for Ollama, and in a user message right after the turn's tool messages for Chat Completions (OpenAI-compatible `baseUrl`, Azure). The image-generation tool (`imageBase64`) and the browser screenshot tools (`image`) use this.
+
 ### Tool with Complex Schema
 
 ```typescript
@@ -246,17 +266,17 @@ const agent = new Agent({
 ### All Built-in Tools
 
 ```typescript
-import { builtinTools } from '@cogitator-ai/core';
+import { Agent, builtinTools } from '@cogitator-ai/core';
 
 const agent = new Agent({
   name: 'generalist',
   model: 'openai/gpt-5.5',
   instructions: 'You are a helpful assistant.',
-  tools: [...builtinTools],
+  tools: builtinTools,
 });
 ```
 
-`builtinTools` includes: `calculator`, `datetime`, `uuid`, `randomNumber`, `randomString`, `hash`, `base64Encode`, `base64Decode`, `sleep`, `jsonParse`, `jsonStringify`, `regexMatch`, `regexReplace`, `fileRead`, `fileWrite`, `fileList`, `fileExists`, `fileDelete`, `httpRequest`, `exec`, `webSearch`, `webScrape`, `sqlQuery`, `vectorSearch`, `sendEmail`, `githubApi`.
+`builtinTools` is a `Tool[]` and includes: `calculator`, `datetime`, `uuid`, `randomNumber`, `randomString`, `hash`, `base64Encode`, `base64Decode`, `sleep`, `jsonParse`, `jsonStringify`, `regexMatch`, `regexReplace`, `fileRead`, `fileWrite`, `fileList`, `fileExists`, `fileDelete`, `httpRequest`, `exec`, `webSearch`, `webScrape`, `sqlQuery`, `vectorSearch`, `sendEmail`, `githubApi`.
 
 Tool factories that need configuration are exported separately: `createMemoryTools`, `createSchedulerTools`, `createCapabilitiesTool`, `createDeviceTools`, `createSelfTools`, `createAnalyzeImageTool`, `createGenerateImageTool`, `createTranscribeAudioTool`, `createGenerateSpeechTool`. See [Built-in Tools](https://cogitator.app/docs/tools/built-in).
 

@@ -12,13 +12,18 @@ Cogitator is a library. It has no hosted service, admin UI, user accounts or cre
 
 A tool opts in with its `sandbox` option. The runtime (`packages/core/src/cogitator/tool-executor.ts`) then does **not** call the tool's `execute()` in a sandbox:
 
-- **`sandbox.type: 'docker'`** — the call's `command` argument runs as `sh -c <command>` in the container, with the call's `cwd` and `env` arguments when given. The tool's `execute()` is not called; the result is `{ stdout, stderr, exitCode, timedOut, duration }`. The built-in `exec` tool works this way (image `cogitator/sandbox:base`, 256 MB, `network.mode: 'none'`).
+- **`sandbox.type: 'docker'`** — the call's `command` argument runs as `sh -c <command>` in the container, with the call's `cwd` and `env` arguments when given. The tool's `execute()` is not called; the result is `{ stdout, stderr, exitCode, timedOut, duration, command }`. The built-in `exec` tool works this way (image `cogitator/sandbox:base`, 256 MB, `network.mode: 'none'`).
 - **`sandbox.type: 'wasm'`** — the validated arguments go to the module (`wasmModule`, export `wasmFunction`, default `run`) as JSON input; the module's JSON output is the result.
 - **No `sandbox`, or `type: 'native'`** — `execute()` runs in your Node.js process, with no isolation.
 
 Arguments are validated against the tool's Zod schema before anything runs.
 
-**Fallbacks are not fail-closed.** When `@cogitator-ai/sandbox` cannot be loaded, a sandboxed tool's `execute()` runs natively in your process and the runtime logs `Sandbox unavailable, executing natively`. When the package loads but the requested executor is unavailable (Docker daemon unreachable, Extism missing), `SandboxManager` falls back WASM → Docker → native and logs `[sandbox] <type> unavailable, falling back to <type> execution`. A Docker tool's command then runs on the host. When untrusted commands must never run on the host, check `isDockerAvailable()` / `isWasmAvailable()` on a `SandboxManager` before you register such tools.
+**The Docker fallback is on by default.** `sandbox.allowNativeFallback` (default `true`) lets a Docker-sandboxed tool run on the host, without isolation, when Docker is unavailable:
+
+- When `@cogitator-ai/sandbox` cannot be loaded or fails to start, the tool's `execute()` runs in your process and the runtime logs `Sandbox unavailable: running a Docker-sandboxed tool UNSANDBOXED on the host`.
+- When the package loads but no Docker daemon answers, `SandboxManager` runs the command with the native executor and warns once: `[sandbox] Docker is unavailable: Docker-sandboxed commands now run UNSANDBOXED on the host`.
+
+Set `sandbox: { allowNativeFallback: false }` on the Cogitator (in code: the config schema strips this key) and both cases fail the call instead; the model sees the error. WASM tools never fall back to Docker or the host: when Extism is missing the call fails with `WASM sandbox unavailable: install @extism/extism to run WASM tools`. Only when `@cogitator-ai/sandbox` itself cannot be loaded or started does a WASM tool's own `execute()` run in your process.
 
 ### WASM Sandbox
 
@@ -51,18 +56,18 @@ Keep `wasi: false` for untrusted modules. Modules compiled with `extism-js` embe
 
 The Docker executor (`packages/sandbox/src/executors/docker.ts`, containers created in `packages/sandbox/src/pool/container-pool.ts`) runs each call with `docker exec` in a pooled container started as `sleep infinity`.
 
-| Control              | Implementation                                                                                           |
-| -------------------- | -------------------------------------------------------------------------------------------------------- |
-| Network              | `NetworkMode` from `network.mode`, default `'none'`; `network.allowedHosts` is rejected                  |
-| Capabilities         | `CapDrop: ['ALL']`                                                                                       |
-| Privilege escalation | `SecurityOpt: ['no-new-privileges']`                                                                     |
-| Process limit        | `PidsLimit` from `resources.pidsLimit`, default 100                                                      |
-| Memory and CPU       | `resources.memory` (e.g. `'512MB'`), `resources.cpus`, `resources.cpuShares`; unlimited when not set     |
-| Host mounts          | Only those in `mounts` (`readOnly` per mount); none by default                                           |
-| User                 | `user` option; not set by default, so the image's user (root for `alpine:3.19`, the default image)       |
-| Root filesystem      | Writable (`ReadonlyRootfs: false`); working directory `/workspace`                                       |
-| Timeout              | `timeout` per call (default 30 s); exit code 124, and the container is destroyed instead of being reused |
-| Output size          | `stdout` and `stderr` capped at 50,000 bytes each                                                        |
+| Control              | Implementation                                                                                       |
+| -------------------- | ---------------------------------------------------------------------------------------------------- |
+| Network              | `NetworkMode` from `network.mode`, default `'none'`; `network.allowedHosts` is rejected              |
+| Capabilities         | `CapDrop: ['ALL']`                                                                                   |
+| Privilege escalation | `SecurityOpt: ['no-new-privileges']`                                                                 |
+| Process limit        | `PidsLimit` from `resources.pidsLimit`, default 100                                                  |
+| Memory and CPU       | `resources.memory` (e.g. `'512MB'`), `resources.cpus`, `resources.cpuShares`; unlimited when not set |
+| Host mounts          | Only those in `mounts` (`readOnly` per mount); none by default                                       |
+| User                 | `user` option; not set by default, so the image's user (root for `alpine:3.19`, the default image)   |
+| Root filesystem      | Writable (`ReadonlyRootfs: false`); working directory `/workspace`                                   |
+| Timeout              | `timeout` per call (default 30 s); exit code 124, and the container is destroyed                     |
+| Output size          | `stdout` and `stderr` capped at 50,000 bytes each                                                    |
 
 ```typescript
 import type { SandboxConfig } from '@cogitator-ai/types';
@@ -78,7 +83,9 @@ const config: SandboxConfig = {
 };
 ```
 
-**Container reuse.** Containers are pooled (`sandbox.pool.maxSize`, default 5) and reused by every call with the same image, resources, network mode, DNS, mounts and user, whichever agent, run or user it comes from. Files written to a container stay there until it is destroyed: after a timeout, after `sandbox.pool.idleTimeoutMs` of idleness (default 60 s), or on shutdown. Do not rely on a clean container per call.
+**Fresh container per call.** By default every call runs in a container nothing ran in before: after a call its container is destroyed, and a fresh one with the same image, resources, network mode, DNS, mounts and user is started in its place as a warm spare (up to `sandbox.pool.maxSize` idle containers, default 5, each destroyed after `sandbox.pool.idleTimeoutMs`, default 60 s). Files and processes one call leaves behind are never visible to the next agent, run or user. `sandbox.pool.reuseContainers: true` returns containers to the pool as they are instead — faster, but whatever one call leaves in a container is visible to every later call with the same settings, from any agent, run or user.
+
+**Daemon discovery.** Without `sandbox.docker.socketPath` or `host`, the executor uses `DOCKER_HOST` when set, else the endpoint of the current Docker context, else the first of the Docker Engine, Docker Desktop, OrbStack, Colima, Rancher Desktop and rootless (`$XDG_RUNTIME_DIR`) sockets that exists and answers.
 
 Recommendations:
 
@@ -116,7 +123,7 @@ The native executor spawns commands on the host. A single-element command runs t
 
 **Mitigations**:
 
-1. Run untrusted commands with `sandbox: { type: 'docker' }` or modules with `type: 'wasm'`, and check executor availability first (see [Fallbacks](#how-tools-use-the-sandbox))
+1. Run untrusted commands with `sandbox: { type: 'docker' }` or modules with `type: 'wasm'`, and set `sandbox.allowNativeFallback: false` so they never run on the host (see [How Tools Use the Sandbox](#how-tools-use-the-sandbox))
 2. Set `resources` and `timeout`; keep `network.mode: 'none'`
 3. Mark side-effecting tools with `requiresApproval` so a person confirms each call
 4. Review tool code before deployment; tools without `sandbox` run in your process
@@ -130,7 +137,7 @@ The native executor spawns commands on the host. A single-element command runs t
 1. **Argument validation** (always on): every tool call is checked against the tool's Zod schema; invalid calls fail with `Invalid arguments`
 2. **Least privilege**: give each agent only the tools it needs (`tools` in the agent config)
 3. **Injection detection**: `security.promptInjection` on the Cogitator analyzes each run's input before anything reaches the model; with `action: 'block'` (the default) a detected injection fails the run with `PROMPT_INJECTION_DETECTED`. The local classifier is pattern-based; `classifier: 'llm'` asks a model
-4. **Guardrails**: `guardrails` on the Cogitator turns on Constitutional AI: input, output and tool-call filtering, critique and revision, and a tool guard that refuses dangerous shell commands (`rm -rf /`, `mkfs.`, `dd of=/dev/...`) and system paths (`/etc/shadow`, `~/.ssh/`)
+4. **Guardrails**: `guardrails` on the Cogitator turns on Constitutional AI: input, output and tool-call filtering, critique and revision, and a tool guard that refuses dangerous shell commands (`rm -rf /`, `mkfs.`, `dd of=/dev/...`) and system paths (`/etc/shadow`, `~/.ssh/`). With `strictMode: true`, every call of a tool that declares `sideEffects` goes through the approval flow below; the guard fails closed, so a call that needs approval and got none does not run
 5. **Tool approvals**: `requiresApproval: true` (or a function of the arguments) pauses the run until someone decides with `cogitator.resume()`, or asks `onApproval` inline
 6. **Loop limits** (always on): `maxIterations` per agent (default 10) and a run timeout (`timeout` on the run or agent, else `limits.defaultTimeout`, else 120 s)
 
@@ -273,7 +280,7 @@ Cogitator has not been through an external penetration test or a SOC 2 audit. [S
 
 Monitor for:
 
-- `[sandbox] ... falling back to native execution` and `Sandbox unavailable, executing natively` warnings
+- `[sandbox] Docker is unavailable: ... UNSANDBOXED on the host` and `Sandbox unavailable: running a Docker-sandboxed tool UNSANDBOXED on the host` warnings
 - Unexpected network connections from sandbox hosts
 - File access outside designated paths
 - Process creation outside containers

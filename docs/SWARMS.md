@@ -132,11 +132,11 @@ const supportTeam = new Swarm(cog, {
 await supportTeam.run({ input: 'ticket #1042: I cannot log in' });
 ```
 
-Every agent in the swarm takes part in the rotation, whichever slot (`agents`, `workers`, ...) it was configured in. With `sticky: true` the rotation index does not advance, so every new key is currently assigned to the same agent; see the note in [Known limitations](#known-limitations).
+Every agent in the swarm takes part in the rotation, whichever slot (`agents`, `workers`, ...) it was configured in. With `sticky: true` a known `stickyKey` stays with the agent that handled it first, while a new key takes the next agent of the rotation; without `stickyKey` every run rotates.
 
 ### 3. Consensus
 
-Agents vote over up to `maxRounds` rounds until a decision reaches the threshold. Voters answer with a `VOTE: <decision>` line (votes cast through the `cast_vote` / `change_vote` tools take precedence). A `supervisor`, if configured, does not vote; it only decides on `onNoConsensus: 'supervisor-decides'`.
+Agents vote over up to `maxRounds` rounds until a decision reaches the threshold. Voters get the `cast_vote`, `get_votes`, `change_vote` and `get_consensus_status` tools automatically (local swarms) and can also answer with a `VOTE: <decision>` line; votes cast through the tools take precedence. A `supervisor`, if configured, does not vote; it only decides on `onNoConsensus: 'supervisor-decides'`.
 
 ```typescript
 const reviewBoard = new Swarm(cog, {
@@ -273,7 +273,7 @@ console.log(article.output); // output of the last stage
 console.log(article.pipelineOutputs); // Map: stage name -> output
 ```
 
-Stages are read from `pipeline.stages`; the pipeline strategy throws without at least one stage there.
+Stages come from `pipeline.stages` or the top-level `stages` field (`gates` and `stageInput` always come from `pipeline`). Configuring different stages in both places throws, and so does a pipeline without at least one stage.
 
 ### 6. Debate
 
@@ -361,6 +361,24 @@ console.log(result.negotiationResult?.agreement?.terms);
 
 Other `negotiation` options: `maxOffersPerRound`, `offerTimeout`, `turnTimeout`, `allowCoalitions`, `minCoalitionSize`, `approvalGates`, `quorum`, `weights`, `stagnationThreshold`, `maxRoundsWithoutProgress`. Defaults come from `DEFAULT_NEGOTIATION_CONFIG` in `@cogitator-ai/types` (10 rounds, `onDeadlock: 'escalate'`, coalitions allowed).
 
+Approval gates (`approvalGates`) announce each request with the `negotiation:approval-required` event. A gate with `timeout` resolves by its `timeoutAction` when nobody answers in time; a gate without `timeout` waits for `swarm.respondToApproval(requestId, response)`. A run `timeout` or `swarm.abort()` stops the wait.
+
+```typescript
+import type { NegotiationApprovalRequest } from '@cogitator-ai/types';
+
+negotiationSwarm.on('negotiation:approval-required', (event) => {
+  const { request } = event.data as { request: NegotiationApprovalRequest };
+  negotiationSwarm.respondToApproval(request.id, {
+    requestId: request.id,
+    decision: 'approved',
+    approved: true,
+    continueNegotiation: false,
+    respondedBy: 'legal-team',
+    respondedAt: Date.now(),
+  });
+});
+```
+
 ---
 
 ## Agent Communication
@@ -375,10 +393,9 @@ const collaborativeSwarm = new Swarm(cog, {
   strategy: 'round-robin',
   agents: [agentA, agentB, agentC],
 
-  // Optional; defaults to { enabled: true, protocol: 'direct' }
+  // Optional; defaults to { enabled: true }
   messaging: {
     enabled: true, // false makes send() throw
-    protocol: 'direct',
     maxMessageLength: 2000,
     maxMessagesPerTurn: 5,
     maxTotalMessages: 100,
@@ -439,7 +456,23 @@ board.subscribe('conclusions', (data, agentName) => console.log(agentName, data)
 
 ### Giving Agents Communication Tools
 
-Apart from the delegation tools (hierarchical supervisor) and negotiation tools (negotiating agents), the swarm does not add communication tools to agents. Agents are created before the swarm, so write tools that resolve the swarm lazily at call time:
+The swarm adds the tools its strategy needs: delegation tools for the hierarchical supervisor, voting tools for consensus voters and negotiation tools for negotiating agents. The messaging and blackboard tools are opt-in with `agentTools` (or `SwarmBuilder.agentTools()`); every agent then gets them, bound to the swarm's own message bus and blackboard:
+
+```typescript
+const team = new Swarm(cog, {
+  name: 'research-team',
+  strategy: 'round-robin',
+  agents: [agentA, agentB],
+  agentTools: {
+    messaging: true, // send_message, read_messages, broadcast_message, reply_to_message
+    blackboard: true, // read_blackboard, write_blackboard, append_blackboard, list_blackboard_sections, get_blackboard_history
+  },
+});
+```
+
+Tools an agent already defines with the same name are left untouched. `agentTools` is rejected in distributed swarms (register the tools on the workers instead) and when `messaging.enabled` / `blackboard.enabled` is `false`. In a hierarchical swarm the messaging tools respect `workerCommunication` / `routeThrough`.
+
+For your own tools, resolve the swarm lazily at call time, since agents are created before the swarm:
 
 ```typescript
 import { tool } from '@cogitator-ai/core';
@@ -685,7 +718,7 @@ observable.on('*', (event) => {
 });
 ```
 
-`message:sent` and `blackboard:write` events are emitted regardless of these flags. `observability.tracing` exists in the type but is not used by the coordinator.
+`message:sent` and `blackboard:write` events are emitted regardless of these flags. `observability.tracing: true` logs the trace (spans) of every agent run as `'[Swarm] agent trace'`, tagged with the swarm and agent.
 
 ---
 
@@ -711,7 +744,7 @@ const mySwarm = swarm('content-team')
 const result = await mySwarm.run({ input: 'Write about quantum computing' });
 ```
 
-Builder methods: `strategy`, `supervisor`, `workers`, `agents`, `moderator`, `router`, `agentMetadata` (merged across calls), `hierarchical`, `roundRobin`, `consensus`, `auction`, `pipeline`, `debate`, `negotiation`, `messaging`, `blackboardConfig`, `resources`, `errorHandling`, `observability`, `distributed`, `withAssessor`, `build(cogitator)`. `build()` throws when the strategy is missing; the `Swarm` constructor then validates the strategy-specific requirements (a supervisor for hierarchical, `consensus` / `auction` / `debate` / `negotiation` config for those strategies, at least 2 agents for consensus and negotiation, at least one pipeline stage).
+Builder methods: `strategy`, `supervisor`, `workers`, `agents`, `moderator`, `router`, `agentMetadata` (merged across calls), `hierarchical`, `roundRobin`, `consensus`, `auction`, `pipeline`, `debate`, `negotiation`, `messaging`, `blackboardConfig`, `agentTools`, `resources`, `errorHandling`, `observability`, `distributed`, `withAssessor`, `build(cogitator)`. `build()` throws when the strategy is missing; the `Swarm` constructor then validates the strategy-specific requirements (a supervisor for hierarchical, `consensus` / `auction` / `debate` / `negotiation` config for those strategies, at least 2 agents for consensus and negotiation, at least one pipeline stage, no conflicting `stages` / `pipeline.stages`, and no `agentTools` in distributed swarms or for a disabled message bus / blackboard).
 
 ---
 
@@ -745,7 +778,9 @@ const result = await mySwarm.run({ input: 'Build a REST API' });
 console.log(mySwarm.getLastAssessment()?.totalEstimatedCost);
 ```
 
-Other `AssessorConfig` options: `assessorModel`, `minCapabilityMatch`, `ollamaUrl`, `enabledProviders`, `cacheAssessments`, `cacheTTL`. Assigned models are provider-qualified (e.g. `ollama/llama3.2:3b`). Unlocked agents are replaced by clones running the assigned model; locked agents keep theirs. `dryRun()` throws when no assessor is configured, and `getLastAssessment()` is only set by `run()`.
+`mode: 'rules'` (default) analyzes the task with keyword rules. With `'ai'` the assessor model analyzes the task; `'hybrid'` takes the model's analysis plus every hard requirement (vision, tool calling, long context) the rules detect. Both fall back to the rules with a warning in `warnings` when the model cannot run. `assessorModel` picks that model (default: the Cogitator's `llm.defaultModel`). Inside a Swarm only cloud models whose provider the Cogitator can route (its backend, e.g. API key, is configured) are offered.
+
+Other `AssessorConfig` options: `minCapabilityMatch`, `ollamaUrl`, `enabledProviders`, `cacheAssessments`, `cacheTTL`. Assigned models are provider-qualified (e.g. `ollama/llama3.2:3b`). Unlocked agents are replaced by clones running the assigned model; locked agents keep theirs. `dryRun()` throws when no assessor is configured, and `getLastAssessment()` is only set by `run()`.
 
 ---
 
@@ -768,7 +803,7 @@ const reviewNode = swarmNode<ReviewState>(reviewBoard, {
 });
 ```
 
-With `distributed: { enabled: true, redis, queue, timeout }` agent turns are queued in Redis and executed by `DistributedSwarmWorker` processes from `@cogitator-ai/worker`; the message bus, blackboard and events move to Redis. Call `swarm.close()` when done. See [Distributed swarms](https://cogitator.app/docs/swarms/distributed).
+With `distributed: { enabled: true, redis, queue, timeout }` agent turns are queued in Redis and executed by `DistributedSwarmWorker` processes from `@cogitator-ai/worker`; the message bus, blackboard and events move to Redis. Call `swarm.close()` when done. `retry` re-dispatches jobs that fail on a worker or time out (defaults: `maxRetries: 3`, `backoff: 'exponential'`, `initialDelay: 1000`, `maxDelay: 30000`; without `retry` a failed job is not retried). A timed-out job may still be running on its worker, so its turn can run twice. `cleanupAfter` expires the swarm's Redis state after `close()` (default 3600000 ms, `0` deletes it at once). See [Distributed swarms](https://cogitator.app/docs/swarms/distributed).
 
 ---
 
@@ -795,9 +830,9 @@ class Swarm {
   getAgent(name: string): SwarmAgent | undefined;
   getAgents(): SwarmAgent[];
 
-  get messageBus(): MessageBus;
-  get blackboard(): Blackboard;
-  get events(): SwarmEventEmitter;
+  get messageBus(): ReadTrackingMessageBus; // MessageBus + markAsRead, onMessage
+  get blackboard(): ObservableBlackboard; // Blackboard + onWrite
+  get events(): QueryableSwarmEventEmitter; // + getEventsByType, getEventsByAgent, clearEvents
 
   // Return an unsubscribe function
   on(event: SwarmEventType | '*', handler: SwarmEventHandler): () => void;
@@ -810,6 +845,8 @@ class Swarm {
   abort(): void; // cancels in-flight agent runs; call reset() before running again
   isPaused(): boolean;
   isAborted(): boolean;
+  // Negotiation only: answer a request from the negotiation:approval-required event
+  respondToApproval(requestId: string, response: NegotiationApprovalResponse): void;
   reset(): Promise<void>; // clears agent state, messages, blackboard, usage and the abort flag
 
   close(): Promise<void>; // closes Redis connections in distributed mode
@@ -835,7 +872,7 @@ interface SwarmConfig {
   supervisor?: Agent;
   workers?: Agent[];
   agents?: Agent[];
-  stages?: PipelineStage[]; // registers stage agents only; the pipeline strategy reads pipeline.stages
+  stages?: PipelineStage[]; // pipeline stages (alternative to pipeline.stages)
   moderator?: Agent;
   router?: Agent;
   // Per-agent metadata keyed by agent name: role, expertise, priority, weight, locked, custom
@@ -857,8 +894,11 @@ interface SwarmConfig {
 
   distributed?: DistributedSwarmConfig;
 
+  // Built-in tools for every agent (local swarms only)
+  agentTools?: SwarmAgentToolsConfig; // { messaging?: boolean; blackboard?: boolean }
+
   observability?: {
-    tracing?: boolean; // currently unused
+    tracing?: boolean; // log each agent run's spans
     messageLogging?: boolean;
     blackboardLogging?: boolean;
   };
@@ -968,7 +1008,6 @@ const bounded = new Swarm(cog, {
   agents,
   messaging: {
     enabled: true,
-    protocol: 'direct',
     maxMessageLength: 2000, // longer messages are rejected
     maxMessagesPerTurn: 5, // per agent, reset at the start of each of its turns
     maxTotalMessages: 100, // prevents message loops
@@ -1001,6 +1040,5 @@ const degrading = new Swarm(cog, {
 
 ## Known Limitations
 
-- Round-robin with `sticky: true` never advances the rotation index, so every new sticky key is assigned to the same (first) agent.
-- `SwarmConfig.stages` only registers the stage agents; use `pipeline.stages` for the pipeline strategy.
-- `observability.tracing`, `messaging.protocol`, `blackboard.locking` and the `distributed.workerConcurrency` / `retry` / `cleanupAfter` fields are accepted but not used by the coordinator.
+- `messaging.protocol`, `blackboard.locking` and `distributed.workerConcurrency` are deprecated and have no effect (set worker concurrency with the `concurrency` option of `DistributedSwarmWorker`).
+- `agentTools` is not available in distributed swarms; register the tools on the workers instead.
