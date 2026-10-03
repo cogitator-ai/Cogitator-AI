@@ -9,6 +9,12 @@ export const DEFAULT_SANDBOX_CONFIG: ToolSandboxConfig = {
   isolationLevel: 'strict',
 };
 
+/**
+ * How long a sandbox worker may take to boot. `maxExecutionTime` starts counting only once the
+ * worker is online, so a slow or loaded machine does not eat into the tool's own time budget.
+ */
+const WORKER_STARTUP_TIMEOUT_MS = 10_000;
+
 const WORKER_SOURCE = String.raw`
 const { parentPort, workerData } = require('node:worker_threads');
 const vm = require('node:vm');
@@ -85,10 +91,13 @@ try {
   vm.runInContext(runner, context, { timeout });
   started = true;
 } catch (err) {
+  const timedOut = err && err.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT';
   parentPort.postMessage({
     success: false,
-    thrown: true,
-    error: err && typeof err.message === 'string' ? err.message : String(err),
+    thrown: !timedOut,
+    error: timedOut
+      ? 'Execution timeout: exceeded ' + timeout + 'ms'
+      : err && typeof err.message === 'string' ? err.message : String(err),
     logs: readLogs(context),
   });
 }
@@ -329,9 +338,11 @@ export class ToolSandbox {
         resolve({ result, thrownByTool });
       };
 
-      const timer = setTimeout(() => {
-        settle(failure(`Execution timeout: exceeded ${this.config.maxExecutionTime}ms`, startTime));
-      }, this.config.maxExecutionTime);
+      let timer = setTimeout(() => {
+        settle(
+          failure(`Sandbox worker did not start within ${WORKER_STARTUP_TIMEOUT_MS}ms`, startTime)
+        );
+      }, WORKER_STARTUP_TIMEOUT_MS);
 
       const maxMemoryMb = Math.max(4, Math.ceil(this.config.maxMemory / (1024 * 1024)));
 
@@ -354,6 +365,16 @@ export class ToolSandbox {
         );
         return;
       }
+
+      worker.on('online', () => {
+        if (settled) return;
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          settle(
+            failure(`Execution timeout: exceeded ${this.config.maxExecutionTime}ms`, startTime)
+          );
+        }, this.config.maxExecutionTime);
+      });
 
       worker.on('message', (msg: WorkerMessage) => {
         const logs = msg.logs ?? [];
