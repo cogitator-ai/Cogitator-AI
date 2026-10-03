@@ -10,8 +10,7 @@ Time-travel debugging lets you capture snapshots of agent execution at any point
 ## Setting Up TimeTravel
 
 ```typescript
-import { Cogitator, Agent } from '@cogitator-ai/core';
-import { TimeTravel } from '@cogitator-ai/core';
+import { Cogitator, TimeTravel } from '@cogitator-ai/core';
 
 const cogitator = new Cogitator({/* ... */});
 
@@ -23,9 +22,11 @@ const timeTravel = new TimeTravel(cogitator, {
 });
 ```
 
+Checkpoints and the traces used for comparisons live in process memory (`InMemoryCheckpointStore`, `InMemoryTraceStore`). Pass `checkpointStore` (any `TimeTravelCheckpointStore`) and `traceStore` (any `TraceStore`, the interface `AgentOptimizer` from [Agent Learning](/docs/advanced/learning) uses as well) to keep them elsewhere; `getCheckpointStore()` and `getTraceStore()` return the ones in use. The limits above are the defaults; `checkpoint()`, `checkpointAll()` and `checkpointEvery()` apply them.
+
 ## Creating Checkpoints
 
-Checkpoints capture the full state at a given step: messages, tool results, and pending tool calls.
+Checkpoints are cut from a finished `RunResult`. The run's steps are its model and tool calls, counted from its trace; a checkpoint at step `i` is anchored on the run's `i`-th tool call (counting from 0).
 
 ```typescript
 const result = await cogitator.run(agent, { input: 'Research quantum computing advances' });
@@ -42,10 +43,10 @@ const sparseCheckpoints = await timeTravel.checkpointEvery(result, 2, 'sparse');
 
 Each checkpoint stores:
 
-- The conversation messages up to that step
-- All tool results collected so far
-- Any pending tool calls at that exact moment
-- An optional label for easy retrieval
+- `messages` — the conversation up to and including the result of that tool call
+- `toolResults` — the results of the earlier tool calls, by call id
+- `pendingToolCalls` — the tool call the step is anchored on
+- `label` — for retrieval with `getByLabel()` on the store; `checkpointAll` and `checkpointEvery` label them `<prefix>_step_<i>`
 
 ## Browsing Checkpoints
 
@@ -62,15 +63,16 @@ for (const cp of checkpoints) {
 }
 
 const specific = await timeTravel.getCheckpoint('ckpt_abc123');
+await timeTravel.deleteCheckpoint('ckpt_abc123');
 ```
 
 ## Replaying from a Checkpoint
 
-Replay re-executes the agent from a saved checkpoint. Two modes are available:
+Replay continues from a saved checkpoint. Two modes are available:
 
 ### Deterministic Replay
 
-Returns the exact state at the checkpoint without making any new LLM calls:
+Returns the state at the checkpoint without making any model or tool calls: `output` is the last assistant message in the checkpoint, and `messages` carry the checkpoint's cached tool results:
 
 ```typescript
 const replay = await timeTravel.replayDeterministic(agent, checkpoint.id);
@@ -82,7 +84,7 @@ console.log('Steps executed:', replay.stepsExecuted); // 0 in deterministic mode
 
 ### Live Replay
 
-Resumes execution from the checkpoint, letting the agent continue with fresh LLM calls:
+Runs the agent again from the checkpoint with fresh model calls. The replayed agent is a copy named `<name>_replay` whose instructions carry the conversation up to the checkpoint (its assistant and tool messages); it answers the checkpoint's last user message in a thread of its own (`replay_<runId>`):
 
 ```typescript
 const replay = await timeTravel.replayLive(agent, checkpoint.id);
@@ -96,15 +98,27 @@ if (replay.divergedAt !== undefined) {
 }
 ```
 
-The divergence point tells you exactly where the new execution took a different path from the original.
+`divergedAt` is the first step at which the replay called a different tool, or the same tool with different arguments, than the call the checkpoint is anchored on.
+
+Live replays take options to change what the agent sees:
+
+```typescript
+const replay = await timeTravel.replayLive(agent, checkpoint.id, {
+  modifiedToolResults: { web_search: { results: [] } }, // the tool answers this instead of running
+  skipTools: ['send_email'], // removed from the replayed agent
+  modifiedMessages: editedMessages, // replaces the checkpoint's messages
+});
+```
+
+`replay(agent, checkpointId, { mode })` is the general form of both.
 
 ## Forking Execution
 
-Forking creates an alternate timeline from a checkpoint with modified conditions. This is the core debugging primitive.
+Forking creates an alternate timeline from a checkpoint with modified conditions. This is the core debugging primitive. Each fork saves a copy of the checkpoint (`fork.checkpoint`, id `ckpt_fork_...`, with `metadata.forkedFrom`) and runs a live replay from it (`fork.result`).
 
 ### Fork with Additional Context
 
-Inject new information into the system prompt:
+Append new information to the system prompt:
 
 ```typescript
 const fork = await timeTravel.forkWithContext(
@@ -119,7 +133,7 @@ console.log('Fork output:', fork.result.output);
 
 ### Fork with Mocked Tools
 
-Override tool results to test "what if" scenarios:
+Make tools answer with fixed results instead of running, to test "what if" scenarios:
 
 ```typescript
 const fork = await timeTravel.forkWithMockedTool(
@@ -144,7 +158,7 @@ const multiFork = await timeTravel.forkWithMockedTools(
 
 ### Fork with New Input
 
-Change the user's original question while preserving all context up to the checkpoint:
+Replace the checkpoint's last user message, keeping the context before it:
 
 ```typescript
 const fork = await timeTravel.forkWithNewInput(
@@ -172,12 +186,14 @@ for (const fork of forks) {
 }
 ```
 
+Variants run one after another. A variant with both `additionalContext` and `input` uses only the context; `mockToolResults` combines with either. `fork(agent, checkpointId, options)` runs a single variant.
+
 ## Comparing Runs
 
-The `TraceComparator` produces structured diffs between any two execution traces:
+The `TraceComparator` produces structured diffs between two execution traces. `compare()` reads them from the TimeTravel's trace store, which holds the trace of every run you checkpointed and of every replay and fork; an unknown id throws `Trace not found`:
 
 ```typescript
-const diff = await timeTravel.compare(originalTraceId, replayTraceId);
+const diff = await timeTravel.compare(result.trace.traceId, fork.result.trace.traceId);
 
 console.log(`Common steps: ${diff.commonSteps}`);
 console.log(`Only in original: ${diff.trace1OnlySteps}`);
@@ -195,8 +211,8 @@ console.log(`Duration delta: ${diff.metricsDiff.duration.delta}ms`);
 After a replay, compare directly against the original:
 
 ```typescript
-const diff = await timeTravel.compareWithOriginal(replayResult);
-console.log(timeTravel.formatDiff(diff));
+const replayDiff = await timeTravel.compareWithOriginal(replay);
+console.log(timeTravel.formatDiff(replayDiff));
 ```
 
 The formatted diff output looks like:

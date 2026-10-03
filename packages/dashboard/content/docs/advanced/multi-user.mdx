@@ -46,6 +46,10 @@ try {
 
 Runs without a `threadId` get a fresh random thread, so there is nothing to check.
 
+### Paused runs
+
+A run paused for [approval](/docs/tools/approvals) belongs to its user too. `cog.resume(agent, threadId, { userId, decisions })` with a thread id resumes only for the user who started the run, and fails with `THREAD_ACCESS_DENIED` for anyone else; resuming from a checkpoint object checks the user when you pass `userId`.
+
 ### Shared threads
 
 Some threads are meant to be shared: a group chat several users write to, or a thread id your server derives itself and never takes from a client. Pass `threadAccess: 'shared'` to skip the owner check. `@cogitator-ai/channels` does this for every run, since it derives thread ids from the chat it is in.
@@ -103,7 +107,11 @@ const server = new CogitatorServer({
 });
 ```
 
-See [Server Adapters](/docs/server-adapters) for each framework's `auth` signature.
+See [Server Adapters](/docs/server-adapters) for each framework's `auth` signature. The other entry points work the same way:
+
+- **A2A** — `auth.validate` returns `{ userId }` instead of `true`; tasks, contexts and runs then belong to that user ([A2A](/docs/integrations/a2a#one-caller-per-user)).
+- **MCP** — `serveAgents(cog, agents, { transport: 'http', auth })` runs each tool call for the user `auth` resolves ([Serving Agents](/docs/integrations/mcp#serving-agents)).
+- **Channels** — the gateway passes the sender as `userId` and derives thread ids from the chat, with `threadAccess: 'shared'` ([Gateway](/docs/channels/gateway)).
 
 ## Memory
 
@@ -183,5 +191,5 @@ Keep `id: support.id` when cloning, so the user's memory stays attached to the s
 
 ## Limits
 
-- **A2A.** The A2A server's `auth` only accepts or refuses a credential; it does not tell callers apart. Every authenticated A2A caller is one tenant: give each tenant its own server (or credential-scoped agents) when they must not see each other's tasks.
+- **Callers without a user.** An `auth` that returns no `userId` (or an A2A `validate` that returns `true`) puts every caller in one space: they share the threads and tasks without an owner.
 - **Tool results in memory.** History stays in its thread, so it is isolated with the thread. Anything a tool writes elsewhere (your database, files, the knowledge graph without `metadata.userId`) is isolated only as far as the tool scopes it.

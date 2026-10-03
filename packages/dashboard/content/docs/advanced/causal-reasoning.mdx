@@ -8,18 +8,20 @@ description: Build causal graphs, run d-separation analysis, perform counterfact
 The `CausalReasoner` lets agents understand cause-and-effect relationships. Instead of relying on correlations, agents can build directed acyclic graphs (DAGs) that model causal structure, then use those graphs to predict effects of actions, explain outcomes, and reason about counterfactuals.
 
 ```typescript
-import { CausalReasoner, CausalGraphBuilder } from '@cogitator-ai/core';
+import { CausalReasoner } from '@cogitator-ai/core';
 
 const reasoner = new CausalReasoner({
   llmBackend: backend,
+  model: 'gpt-6.1-sol', // sent to the backend as is (this is the default)
   config: {
-    enableCounterfactual: true,
     enableLLMDiscovery: true,
     enableSafetyChecks: true,
     minEdgeConfidence: 0.6,
   },
 });
 ```
+
+The graph-level tools — the builder, d-separation, adjustment sets, the inference engine and counterfactuals — are pure computations without model calls. The `CausalReasoner` adds LLM-backed prediction, explanation, planning and discovery on top, keeping one causal graph per agent id.
 
 ## Building Causal Graphs
 
@@ -43,12 +45,12 @@ const graph = CausalGraphBuilder.create('user-engagement')
   .build();
 ```
 
-The builder supports typed variable roles -- `treatment`, `outcome`, `confounder`, `mediator`, `instrumental`, `collider`, and `latent` -- along with relation types like `causes`, `enables`, `prevents`, `mediates`, and `confounds`.
+The builder supports typed variable roles — `variable` (observed by default), `treatment`, `outcome`, `confounder`, `mediator`, `instrumental`, `collider` and `latent` — and the relation types `causes`, `enables`, `prevents`, `mediates`, `confounds` and `moderates`. Edges default to strength and confidence 1. `connect(source, target, relationType, options)` adds an edge without moving the cursor, and `withDomain()` describes a variable's values. `build()` rejects self-loops and duplicate edges.
 
 You can also attach structural equations to nodes for quantitative counterfactual analysis:
 
 ```typescript
-const graph = CausalGraphBuilder.create('linear-model')
+const linearGraph = CausalGraphBuilder.create('linear-model')
   .variable('X', 'Treatment')
   .withEquation({ type: 'linear', intercept: 0, coefficients: {} })
   .variable('Y', 'Outcome')
@@ -71,8 +73,10 @@ console.log(result.separated); // true if conditionally independent
 console.log(result.openPaths); // paths that remain unblocked
 console.log(result.blockedPaths); // paths blocked by conditioning set
 
-const minimal = findMinimalSeparatingSet(graph, 'marketing_spend', 'revenue');
+const minimal = findMinimalSeparatingSet(graph, 'marketing_spend', 'revenue'); // string[] | null
 ```
+
+`x` and `y` may also be arrays of variables. `findBackdoorAdjustment`, `findFrontdoorAdjustment` and `findAllAdjustmentSets` return `AdjustmentSet`s (`variables`, `type`, `formula`).
 
 The algorithm handles all three types of triples -- chains, forks, and colliders -- following the standard rules: conditioning on a chain or fork node blocks the path, while conditioning on a collider (or its descendants) opens it.
 
@@ -88,18 +92,28 @@ const engine = new CausalInferenceEngine(graph);
 const identifiable = engine.isIdentifiable('marketing_spend', 'revenue');
 // { identifiable: true, reason: 'Identifiable via backdoor criterion', adjustmentSet: ... }
 
+const observedData = {
+  marketing_spend: [1, 0, 1, 1, 0],
+  seasonality: [1, 1, 0, 0, 1],
+  revenue: [520, 410, 480, 505, 395],
+};
 const ate = engine.estimateATE('marketing_spend', 'revenue', observedData);
+// { effect, standardError, confidenceInterval, adjustmentSet, isIdentifiable, formula }
 
-const independence = engine.checkConditionalIndependence('X', 'Y', ['Z']);
+const independence = engine.checkConditionalIndependence('site_traffic', 'seasonality', [
+  'revenue',
+]);
+// { independent, paths, openPaths }
 
 const instruments = engine.findInstrumentalVariables('marketing_spend', 'revenue');
+const adjustmentSets = engine.getAllAdjustmentSets('marketing_spend', 'revenue');
 ```
 
-The engine automatically searches for valid backdoor and frontdoor adjustment sets and generates the corresponding identification formulas.
+The engine searches for a backdoor adjustment set first, then a frontdoor one, and reports the identification formula. `estimateATE` treats the treatment as binary (rows where it is `1` against the rest) and adjusts for the set's variables in the data; `estimateATT` estimates the effect on the treated. When the effect is not identifiable or the data lacks a column, `effect` is `NaN`. `computeCounterfactual(query)` runs the counterfactual reasoner below on the engine's graph (unless `config.enableCounterfactual` is `false`).
 
 ## Counterfactual Reasoning
 
-Counterfactuals answer "what if?" questions using Pearl's three-step process: abduction (infer noise from observations), action (apply intervention), and prediction (compute outcome in the modified world).
+Counterfactuals answer "what if?" questions using Pearl's three-step process: abduction (infer noise from observations), action (apply intervention), and prediction (compute outcome in the modified world). They need structural equations on the nodes, like `linearGraph` above:
 
 ```typescript
 import { CounterfactualReasoner } from '@cogitator-ai/core';
@@ -109,25 +123,35 @@ const cfReasoner = new CounterfactualReasoner({
   maxIterations: 100,
 });
 
-const result = cfReasoner.evaluate(graph, {
-  factual: { marketing_spend: 100, site_traffic: 5000, revenue: 50000 },
-  intervention: { marketing_spend: 200 },
-  target: 'revenue',
+const result = cfReasoner.evaluate(linearGraph, {
+  factual: { X: 1, Y: 2.5 },
+  intervention: { X: 3 },
+  target: 'Y',
+  question: 'What would Y have been with X = 3?',
 });
 
-console.log(result.factualValue); // 50000
-console.log(result.counterfactualValue); // predicted revenue under intervention
+console.log(result.factualValue); // 2.5
+console.log(result.counterfactualValue); // 3.5
 console.log(result.explanation);
-// "Given the factual observation where revenue=50000,
-//  if we had intervened to set marketing_spend=200,
-//  then revenue would have been 62500."
+// "Given the factual observation where Y=2.5, if we had intervened to set X=3,
+//  then Y would have been 3.5."
+console.log(result.reasoning); // { abduction, action, prediction }
 ```
 
-Structural equations support `linear`, `logistic`, `polynomial`, and `custom` types with configurable noise distributions (`gaussian`, `uniform`, `bernoulli`).
+`evaluateCounterfactual(graph, query, options)` does the same in one call. Structural equations support `linear`, `logistic` and `polynomial` types with configurable noise distributions (`gaussian`, `uniform`, `bernoulli`). A node without an equation keeps its observed value, and a `custom` equation contributes only its noise term — `customFn` is not evaluated.
 
 ## Intervention Analysis
 
-The `CausalReasoner` combines graph-based reasoning with LLM capabilities to predict effects, explain outcomes, and plan interventions.
+The `CausalReasoner` combines graph-based reasoning with LLM capabilities to predict effects, explain outcomes, and plan interventions. Each method works on the graph of the agent id you pass. That graph starts empty unless the reasoner's `graphStore` already holds one for the agent, so seed it with what you know:
+
+```typescript
+import { InMemoryCausalGraphStore } from '@cogitator-ai/core';
+
+const graphStore = new InMemoryCausalGraphStore();
+await graphStore.save({ ...graph.toData(), metadata: { agentId: 'agent-001' } });
+
+const reasoner = new CausalReasoner({ llmBackend: backend, graphStore });
+```
 
 ```typescript
 const effect = await reasoner.predictEffect('increase marketing_spend by 50%', 'agent-001', {
@@ -143,9 +167,17 @@ const plan = await reasoner.planForGoal('revenue', 100000, 'agent-001', undefine
 });
 ```
 
+More capabilities on the same graph:
+
+- `evaluateToolCall(toolCall, agentId)` predicts a tool call's effects and returns `{ isSafe, riskLevel, warnings, recommendations }` (always safe when `enableSafetyChecks` is `false`).
+- `scoreBranch(branch, agentId)` scores a [Tree-of-Thought](/docs/advanced/reasoning) branch by its predicted effects.
+- `analyzeErrorCausally(error, trace, agentId)` explains a failure from an execution trace.
+- `generateHypotheses(agentId, goal?)` proposes causal hypotheses from stored patterns; `validateHypothesis(hypothesis, context)` checks one and adds validated edges to the graph.
+- `getGraph(agentId)`, `saveGraph(agentId)`, `loadGraph(agentId)` and `getStats()` manage and inspect the graphs.
+
 ### Learning from Execution
 
-The reasoner learns causal structure from agent execution traces and refines edge confidences based on intervention outcomes:
+The reasoner extracts causal structure from agent [execution traces](/docs/advanced/learning#capturing-traces) with the LLM (when `enableLLMDiscovery` is on, the default) and refines edge confidences based on intervention outcomes:
 
 ```typescript
 await reasoner.learnFromTrace(executionTrace, 'agent-001');
@@ -160,4 +192,4 @@ await reasoner.learnFromIntervention(
 );
 ```
 
-Edge confidence values are adjusted upward on successful predictions and downward on failures, allowing the causal graph to become more accurate over time.
+For every intervened variable and every observed variable whose value changed, an existing edge between them gains 0.1 confidence on success and loses 0.1 on failure (never below 0.1), allowing the causal graph to become more accurate over time. Interventions are kept in the `interventionLog`.

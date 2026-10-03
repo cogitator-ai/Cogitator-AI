@@ -5,7 +5,48 @@ description: Route tasks to the cheapest capable model, enforce spending budgets
 
 ## Overview
 
-Cost-aware routing analyzes incoming tasks, selects the optimal model based on capability requirements and price, enforces budget limits, and tracks spending in real-time. The system ensures you never overspend while always using a model capable enough for the task at hand.
+Cost-aware routing analyzes incoming tasks, picks a model based on capability requirements and price, enforces budget limits, and tracks spending. Turn it on for a Cogitator with `costRouting`, or use its parts on their own.
+
+## In a Cogitator
+
+```typescript
+import { Cogitator } from '@cogitator-ai/core';
+
+const cog = new Cogitator({
+  llm: {
+    providers: {
+      openai: { apiKey: process.env.OPENAI_API_KEY! },
+      anthropic: { apiKey: process.env.ANTHROPIC_API_KEY! },
+    },
+  },
+  costRouting: {
+    enabled: true,
+    autoSelectModel: true,
+    budget: { maxCostPerRun: 0.5, maxCostPerDay: 50 },
+  },
+});
+
+const result = await cog.run(agent, { input });
+
+cog.getCostSummary(); // totals by model and agent
+cog.getCostRouter()?.getBudgetStatus();
+```
+
+With `enabled: true`, every run's cost is recorded (unless `trackCosts: false`). With `autoSelectModel: true`, each run ignores the agent's model: the router analyzes the input, picks a model from the [model registry](/docs/core/model-registry) and checks the budget against that model's estimated cost; a run over budget fails with `Budget exceeded: <reason>` before any model call. Candidates come from the whole registry, so make sure the providers it may pick are configured — `preferLocal` (on by default) favours Ollama models. Budgets are only checked before runs when `autoSelectModel` is on; without it they still apply to `checkBudget()` calls of your own. The router is created on the first run, so `getCostRouter()` and `getCostSummary()` return `undefined` before it.
+
+`cog.estimateCost()` predicts a run's cost before you start it (see [Cost Estimation](#cost-estimation)):
+
+```typescript
+const estimate = await cog.estimateCost({
+  agent,
+  input: 'Analyze this document and summarize key points',
+  options: { assumeIterations: 3, assumeToolCalls: 5 },
+});
+
+if (estimate.expectedCost > 0.1) {
+  console.log(`Expected $${estimate.expectedCost.toFixed(4)}`);
+}
+```
 
 ## CostAwareRouter
 
@@ -43,7 +84,7 @@ The `TaskAnalyzer` inspects the input text to determine what capabilities the ta
 
 ```typescript
 const requirements = router.analyzeTask(
-  'Analyze this screenshot of our dashboard and write optimized SQL queries for the slow endpoints'
+  'Look at this screenshot of our dashboard, search the logs and debug why the SQL query is slow'
 );
 
 console.log(requirements);
@@ -51,15 +92,15 @@ console.log(requirements);
 //   needsVision: true,
 //   needsToolCalling: true,
 //   needsLongContext: false,
-//   needsReasoning: 'advanced',
+//   needsReasoning: 'basic',
 //   needsSpeed: 'balanced',
 //   costSensitivity: 'medium',
-//   complexity: 'complex',
-//   domains: ['code', 'analysis'],
+//   complexity: 'simple',
+//   domains: ['code'],
 // }
 ```
 
-The analyzer detects vision needs (image/screenshot keywords), tool requirements (search/execute keywords), reasoning level (analyze/synthesize vs explain/list), speed preferences (urgent vs thorough), and domain-specific requirements (code, math, creative, legal, medical, finance).
+The analyzer works on keywords: vision needs (image/screenshot), tool requirements (search/execute), long context (documents, codebases, over 500 words), reasoning level (analyze/synthesize vs explain/list), speed preferences (quick/urgent vs thorough), cost sensitivity (cheap/budget vs best/premium), complexity (length, multiple steps, conditions) and domains (code, math, creative, legal, medical, finance and others).
 
 ## Model Selection
 
@@ -68,26 +109,27 @@ The `ModelSelector` scores every available model against the task requirements a
 ```typescript
 const recommendation = await router.recommendModel('Write a quick summary of this text');
 
-console.log(recommendation.modelId); // 'gpt-6-luna'
-console.log(recommendation.provider); // 'openai'
-console.log(recommendation.score); // 85
-console.log(recommendation.reasons); // ['Cost-effective', 'Fast response time', ...]
-console.log(recommendation.estimatedCost); // 0.0003
-console.log(recommendation.fallbacks); // ['claude-haiku-4-5', 'gemini-3.5-flash-lite']
+recommendation.modelId; // e.g. 'gpt-6-luna'
+recommendation.provider; // e.g. 'openai'
+recommendation.score; // capability score, 100 = neutral
+recommendation.reasons; // ['Fast response time', 'Efficient for simple tasks', ...]
+recommendation.estimatedCost; // USD, estimated from the model's pricing
+recommendation.fallbacks; // the next three model ids
 ```
 
-Scoring factors include:
+Every model in the registry that is not deprecated and supports what the task needs (vision, tool calling, 32k+ context for long tasks) is scored from 100:
 
-- **Capability match** — vision, tool calling, context window support
-- **Cost efficiency** — cheaper models score higher when `costSensitivity` is high
+- **Local models** — +15, since they have no API cost
+- **Cost efficiency** — cheap models gain and expensive ones lose when `costSensitivity` is high
 - **Speed** — fast models (gpt-6-luna, claude-haiku, gemini-flash) score higher for urgent tasks
-- **Reasoning** — advanced models (gpt-6.1-sol, claude-sonnet, o3) score higher for complex reasoning
+- **Reasoning** — advanced models (gpt-6.1-sol, claude-sonnet, o3) score higher for advanced reasoning and complex tasks
 - **Domain fit** — code-specialized models score higher for programming tasks
-- **Local preference** — Ollama models get a scoring boost when `preferLocal` is true
+
+Models below `minCapabilityMatch × 100` (default 30) are dropped. With `preferLocal`, the best local model wins when it scores at least 80% of the best overall. With no candidate left, it recommends `openai/gpt-6-luna`. `recommendModelForRequirements(requirements)` skips the analysis step.
 
 ## Budget Enforcement
 
-The `BudgetEnforcer` checks spending limits before each run:
+`checkBudget()` compares an estimated cost with the limits and the tracked spending:
 
 ```typescript
 const check = router.checkBudget(estimatedCost);
@@ -106,14 +148,16 @@ Three budget levels are enforced independently:
 | Hourly  | `maxCostPerHour` | Rolling 1-hour window limit               |
 | Daily   | `maxCostPerDay`  | Rolling 24-hour window limit              |
 
-When spending reaches the `warningThreshold` (default 80%), the `onBudgetWarning` callback fires. When a limit would be exceeded, the `onBudgetExceeded` callback fires and the run is blocked.
+When tracked spending reaches `warningThreshold` (default 0.8) of the hourly or daily limit, `onBudgetWarning` fires once (until `clearCostHistory()`). When a limit would be exceeded, `onBudgetExceeded` fires and the check returns `allowed: false`.
 
 ```typescript
-const status = router.getBudgetStatus();
+const status = router.getBudgetStatus(); // undefined without a budget
 
-console.log(`Hourly: $${status.hourlyUsed.toFixed(2)} / $${status.hourlyLimit}`);
-console.log(`Daily: $${status.dailyUsed.toFixed(2)} / $${status.dailyLimit}`);
-console.log(`Remaining today: $${status.dailyRemaining?.toFixed(2)}`);
+if (status) {
+  console.log(`Hourly: $${status.hourlyUsed.toFixed(2)} / $${status.hourlyLimit}`);
+  console.log(`Daily: $${status.dailyUsed.toFixed(2)} / $${status.dailyLimit}`);
+  console.log(`Remaining today: $${status.dailyRemaining?.toFixed(2)}`);
+}
 ```
 
 ## Token Estimation
@@ -144,7 +188,7 @@ console.log(`Input: ${inputTokens.expected} tokens (${inputTokens.min}-${inputTo
 console.log(`Output: ${outputTokens.expected} tokens (${outputTokens.min}-${outputTokens.max})`);
 ```
 
-Each estimate returns `min`, `max`, and `expected` values accounting for system prompt size, tool schemas, memory context, and estimated iteration count.
+Each estimate returns `min`, `max`, and `expected` values accounting for system prompt size, tool schemas, memory context, and estimated iteration count. Text is counted at about 4 characters per token. `estimateIterations(complexity, hasTools)` and `estimateToolCalls(complexity, toolCount)` give the defaults the cost estimator uses.
 
 ## Cost Estimation
 
@@ -158,6 +202,7 @@ const costEstimator = new CostEstimator();
 const estimate = await costEstimator.estimate({
   agent,
   input: 'Design a microservices architecture for an e-commerce platform',
+  options: { assumeIterations: 3, memoryTokenEstimate: 1500 },
 });
 
 console.log(`Expected: $${estimate.expectedCost}`);
@@ -167,7 +212,7 @@ console.log(`Warnings:`, estimate.warnings);
 console.log(`Breakdown:`, estimate.breakdown);
 ```
 
-Local models (Ollama) are automatically detected and reported as zero-cost. When model pricing data is unavailable, the estimator uses conservative defaults and flags a warning.
+The estimate prices the agent's `model` (pass `model` for another one; `cog.estimateCost()` passes the model the run would use). Local models (Ollama) are reported as zero-cost. When model pricing data is unavailable, the estimator uses conservative defaults and flags a warning. `options` override the assumed iterations and tool calls and the memory size (`includeMemory`, `memoryTokenEstimate`).
 
 ## Cost Tracking
 
@@ -194,4 +239,4 @@ console.log(`By agent:`, summary.byAgent);
 console.log(`Runs: ${summary.runCount}`);
 ```
 
-The tracker maintains sliding windows for hourly and daily costs, automatically pruning old records. Use `clearCostHistory()` to reset all tracking data.
+The tracker maintains sliding windows for hourly and daily costs, automatically pruning old records. Use `clearCostHistory()` to reset all tracking data, and `updateConfig()` to change limits at runtime. `CostTracker`, `BudgetEnforcer`, `TaskAnalyzer` and `ModelSelector` are exported for use on their own; `CostTracker.getSummary(filter)` and `getRecords(filter)` filter by agent, run or time (`since`).

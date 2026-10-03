@@ -1,33 +1,39 @@
 ---
 title: Agent Learning & Optimization
-description: Automatically improve agent performance over time with DSPy-style compilation, A/B testing, prompt monitoring, and metric-driven optimization.
+description: Improve agents over time with execution traces, DSPy-style compilation of instructions and demos, A/B tests, degradation monitoring and automated optimization.
 ---
 
 ## Overview
 
-The learning system captures execution traces, evaluates agent performance against metrics, and optimizes instructions and examples through an iterative compilation process. It brings ideas from DSPy — bootstrapped demonstrations, instruction optimization, and automated evaluation — into the Cogitator runtime.
+The learning system captures execution traces, scores them, and optimizes instructions and few-shot examples through an iterative compilation process. It brings ideas from DSPy — bootstrapped demonstrations, instruction optimization, and automated evaluation — into the Cogitator runtime.
+
+For deploying, rolling back and A/B testing instructions on live traffic, use [Prompt Versions](/docs/advanced/prompt-versions) (`cog.prompts`): it is built on the same A/B testing and version classes described below and wires them into every run.
 
 ## AgentOptimizer
 
-The `AgentOptimizer` is the central class that coordinates trace capture, demo selection, and instruction optimization:
+The `AgentOptimizer` coordinates trace capture, demo selection and instruction optimization:
 
 ```typescript
-import { AgentOptimizer } from '@cogitator-ai/core';
+import { AgentOptimizer, Cogitator } from '@cogitator-ai/core';
+
+const cogitator = new Cogitator({
+  llm: { providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } } },
+});
+
+const { backend, model } = cogitator.route('openai/gpt-6.1-sol');
 
 const optimizer = new AgentOptimizer({
   llm: backend,
-  model: 'openai/gpt-6.1-sol',
+  model, // 'gpt-6.1-sol': sent to the backend as is
   cogitator, // runs the trainset of compile(); optional
   config: {
-    enabled: true,
-    captureTraces: true,
-    autoOptimize: false,
     maxDemosPerAgent: 5,
     minScoreForDemo: 0.8,
-    defaultMetrics: ['success', 'tool_accuracy', 'efficiency'],
   },
 });
 ```
+
+The optimizer's own model calls (instruction analysis, candidate generation and evaluation) go to `llm` with `model`. Traces live in an `InMemoryTraceStore` unless you pass `traceStore` (any `TraceStore`); `insightStore` adds [reflection](/docs/advanced/reflection) insights to instruction candidates.
 
 ## Capturing Traces
 
@@ -46,59 +52,80 @@ console.log(`Tool accuracy: ${trace.metrics.toolAccuracy}`);
 console.log(`Efficiency: ${trace.metrics.efficiency}`);
 ```
 
-The trace records every LLM call, tool execution, and reflection — along with token usage, latency, and cost. Metrics like `toolAccuracy` (ratio of successful tool calls) and `efficiency` (token economy) are computed automatically.
+The trace records the run's model calls and tool executions with token usage, latency and cost. Its `score` is a weighted average of `success` (0.4, no errors), `tool_accuracy` (0.3, the share of tool calls without errors) and `efficiency` (0.3, tokens and duration). `expected` and `labels` are stored with the trace; for a run with tool calls, a string `expected` also moves `tool_accuracy` up or down by 0.2 depending on whether the output contains it.
 
 ## Compiling (DSPy-Style Optimization)
 
-The `compile()` method runs multi-round optimization that improves both instructions and in-context examples:
+`compile()` runs multi-round optimization of an agent's instructions and in-context examples:
 
 ```typescript
-const result = await optimizer.compile(agent, trainset, {
+const compiled = await optimizer.compile(agent, trainset, {
   maxRounds: 3,
   maxBootstrappedDemos: 5,
   optimizeInstructions: true,
 });
 
-console.log(`Score: ${result.scoreBefore} → ${result.scoreAfter}`);
-console.log(`Improvement: ${(result.improvement * 100).toFixed(1)}%`);
-console.log(`Demos added: ${result.demosAdded.length}`);
-console.log(`New instructions: ${result.instructionsAfter}`);
+console.log(`Score: ${compiled.scoreBefore} → ${compiled.scoreAfter}`);
+console.log(`Improvement: ${(compiled.improvement * 100).toFixed(1)}%`);
+console.log(`Demos added: ${compiled.demosAdded.length}`);
+console.log(`New instructions: ${compiled.instructionsAfter}`);
 ```
 
-With a `cogitator`, `compile()` first runs the trainset with the original agent: those runs give `scoreBefore` and are stored as traces. Each round, high-scoring traces become bootstrapped demos, the `InstructionOptimizer` analyzes failures in the stored traces and generates improved instruction candidates, and the best candidate is selected through LLM-based evaluation. Finally the trainset runs again with the optimized instructions, which gives `scoreAfter`.
+`trainset` is an array of `{ input, expected? }`. With a `cogitator`, `compile()` first runs the trainset with the original agent: those runs give `scoreBefore` and are stored as traces. Each round, high-scoring traces become bootstrapped demos, and the `InstructionOptimizer` analyzes failing traces and generates improved instruction candidates, keeping the best one by LLM-based evaluation. Finally the trainset runs again with the optimized instructions, which gives `scoreAfter`.
 
-Without a `cogitator`, a trainset cannot run: `compile()` reports that in `errors`, works on the traces already captured, and `scoreAfter` is the instruction optimizer's estimate.
+Without a `cogitator`, a trainset cannot run: `compile()` reports that in `errors`, works on the traces already captured, and `scoreAfter` is the instruction optimizer's estimate. Running a trainset also needs an agent created with `new Agent()`.
+
+`compile()` does not change the agent. Apply the result yourself, for example as a new [prompt version](/docs/advanced/prompt-versions):
+
+```typescript
+if (compiled.improvement > 0 && compiled.instructionsAfter) {
+  await cogitator.prompts.deploy(agent, compiled.instructionsAfter, 'optimization');
+}
+```
 
 ## Bootstrapping Demos
 
-Demos are high-quality execution examples that get injected into the agent's prompt as few-shot examples:
+Demos are high-quality execution examples you can put into the agent's prompt as few-shot examples:
 
 ```typescript
-const demos = await optimizer.bootstrapDemos('research-agent');
+const demos = await optimizer.bootstrapDemos(agent.id);
 
 const relevantDemos = await optimizer.getDemosForPrompt(
-  'research-agent',
+  agent.id,
   'Find papers on transformer architectures',
   3
 );
 
-const formatted = optimizer.formatDemosForPrompt(relevantDemos);
+const fewShot = optimizer.formatDemosForPrompt(relevantDemos);
+const withDemos = agent.clone({ instructions: `${agent.instructions}\n\n${fewShot}` });
 ```
 
-Only traces scoring above `minScoreForDemo` (default 0.8) are promoted to demos. The `DemoSelector` picks the most relevant demos for each new input based on content similarity.
+Only traces scoring at least `minScoreForDemo` (default 0.8) become demos, up to `maxDemosPerAgent` (default 5) per agent. `getDemosForPrompt` ranks them by word overlap with the input, their score and how often they were used, and keeps the selection diverse. Demos are not added to runs automatically.
+
+## Learning Stats
+
+```typescript
+const stats = await optimizer.getStats(agent.id);
+
+console.log(`Traces: ${stats.traces.totalTraces}`);
+console.log(`Demos: ${stats.demos.totalDemos}`);
+console.log(`Optimization runs: ${stats.optimization.runsOptimized}`);
+console.log(`Avg improvement: ${(stats.optimization.averageImprovement * 100).toFixed(1)}%`);
+```
+
+`getTraceStore()`, `getMetricEvaluator()`, `getDemoSelector()` and `getInstructionOptimizer()` give access to the parts.
 
 ## A/B Testing
 
-Test instruction changes in production with statistical rigor using the `ABTestingFramework`:
+`ABTestingFramework` compares two sets of instructions with Welch's t-test. `cog.prompts.startABTest()` runs it on live traffic for you; use the framework directly when you route traffic yourself:
 
 ```typescript
-import { ABTestingFramework } from '@cogitator-ai/core';
+import { ABTestingFramework, InMemoryABTestStore } from '@cogitator-ai/core';
 
 const abTesting = new ABTestingFramework({
-  store: abTestStore,
+  store: new InMemoryABTestStore(),
   defaultConfidenceLevel: 0.95,
   defaultMinSampleSize: 50,
-  autoDeployWinner: false,
 });
 
 const test = await abTesting.createTest({
@@ -107,19 +134,20 @@ const test = await abTesting.createTest({
   controlInstructions: 'You are a helpful support agent...',
   treatmentInstructions: 'You are a support agent. Be concise, use bullet points...',
   treatmentAllocation: 0.5,
-  metricToOptimize: 'score',
 });
 
 await abTesting.startTest(test.id);
 ```
 
-For each incoming request, the framework selects a variant and tracks results:
+For each request, pick a variant, run with its instructions and record the outcome:
 
 ```typescript
 const variant = abTesting.selectVariant(test);
 const instructions = abTesting.getInstructionsForVariant(test, variant);
 
-await abTesting.recordResult(test.id, variant, score, latency, cost);
+const started = Date.now();
+const run = await cogitator.run(agent.clone({ instructions }), { input });
+await abTesting.recordResult(test.id, variant, score, Date.now() - started, run.usage.cost);
 
 const outcome = await abTesting.checkAndCompleteIfReady(test.id);
 if (outcome?.isSignificant) {
@@ -128,19 +156,44 @@ if (outcome?.isSignificant) {
 }
 ```
 
-The framework uses Welch's t-test for statistical significance with configurable confidence levels.
+`selectVariant` is random per call. A test completes once the two variants together have twice `minSampleSize` results and the difference is significant at `confidenceLevel`, or once `maxDuration` (default 7 days) has passed. `analyzeResults(test)` gives the current outcome without completing; `pauseTest`, `resumeTest`, `completeTest` and `cancelTest` manage the lifecycle.
+
+## Instruction Versions
+
+`RollbackManager` keeps the deployed instructions of each agent as versions with run metrics:
+
+```typescript
+import { RollbackManager, InMemoryInstructionVersionStore } from '@cogitator-ai/core';
+
+const rollbackManager = new RollbackManager({
+  store: new InMemoryInstructionVersionStore(),
+  maxVersionsToKeep: 20,
+});
+
+await rollbackManager.deployVersion(
+  'support-agent',
+  'You are a helpful support agent...',
+  'manual'
+);
+await rollbackManager.recordMetrics('support-agent', 0.9, 1200, 0.002, true);
+
+const history = await rollbackManager.getVersionHistory('support-agent');
+await rollbackManager.rollbackToPrevious('support-agent');
+```
+
+`cog.prompts` uses the same class; reach for it directly in custom pipelines.
 
 ## Prompt Monitoring
 
-Track prompt performance in real-time and detect degradation with the `PromptMonitor`:
+`PromptMonitor` compares recent executions of an agent with a baseline and raises alerts on degradation:
 
 ```typescript
 import { PromptMonitor } from '@cogitator-ai/core';
 
 const monitor = new PromptMonitor({
   windowSize: 60 * 60 * 1000, // 1 hour window
-  scoreDropThreshold: 0.15, // 15% score drop triggers alert
-  latencySpikeThreshold: 2.0, // 2x latency increase
+  scoreDropThreshold: 0.15, // 15% score drop
+  latencySpikeThreshold: 2.0, // 2x latency
   errorRateThreshold: 0.1, // 10% error rate
   enableAutoRollback: true,
   onAlert: (alert) => {
@@ -150,7 +203,10 @@ const monitor = new PromptMonitor({
   },
 });
 
-monitor.setBaseline('support-agent', baselineMetrics);
+monitor.setBaseline(
+  'support-agent',
+  monitor.computeBaselineFromHistory('support-agent', pastTraces)
+);
 
 const alerts = monitor.recordExecution(trace);
 for (const alert of alerts) {
@@ -160,11 +216,11 @@ for (const alert of alerts) {
 }
 ```
 
-The monitor tracks four alert types: `score_drop`, `latency_spike`, `error_rate_increase`, and `cost_spike`. When `enableAutoRollback` is set, critical alerts trigger automatic rollback to the previous instruction version.
+The monitor raises four alert types: `score_drop`, `latency_spike`, `error_rate_increase` and `cost_spike`, as `warning` or — beyond twice the threshold — `critical`. The monitor does not change anything itself: with `enableAutoRollback`, critical alerts carry `autoAction: 'rollback'`, which the `AutoOptimizer` acts on. `getCurrentMetrics`, `getAlerts`, `getActiveAlerts` and `resolveAlert` inspect its state.
 
 ## AutoOptimizer
 
-The `AutoOptimizer` ties everything together into a fully automated improvement loop:
+The `AutoOptimizer` ties the pieces into an automated loop:
 
 ```typescript
 import { AutoOptimizer } from '@cogitator-ai/core';
@@ -173,7 +229,7 @@ const autoOptimizer = new AutoOptimizer({
   enabled: true,
   triggerAfterRuns: 100,
   minRunsForOptimization: 20,
-  requireABTest: true,
+  requireABTest: false,
   maxOptimizationsPerDay: 3,
   agentOptimizer: optimizer,
   abTesting,
@@ -182,20 +238,53 @@ const autoOptimizer = new AutoOptimizer({
   onOptimizationComplete: (run) => {
     console.log(`Optimization ${run.id}: ${run.status}`);
   },
+  onRollback: (agentId, reason) => console.log(`Rolled back ${agentId}: ${reason}`),
 });
 
+const trace = await optimizer.captureTrace(result, input);
 await autoOptimizer.recordExecution(trace);
 ```
 
-After every N runs, the `AutoOptimizer` triggers compilation, creates an A/B test for the new instructions, monitors performance, and either deploys the winner or rolls back — all without manual intervention.
+`enabled` defaults to `false`. Each recorded trace goes to the monitor (a critical alert with `autoAction: 'rollback'` rolls the agent back to its previous version) and to the current version's metrics in the `RollbackManager`. Every `triggerAfterRuns` traces, at most `maxOptimizationsPerDay` times a day, it compiles the agent's current version (from the `RollbackManager`, so deploy one first) against the traces in the optimizer's store. Improved instructions are deployed as a new version, or with `requireABTest` (the default) put into an A/B test against the current ones. That test counts a trace for the treatment only while the treatment is the deployed version, so serving the treatment to part of the traffic is up to you; `triggerOptimization(agentId)` and `forceRollback(agentId, reason)` run the steps by hand.
 
-## Learning Stats
+## Storage
+
+Everything above keeps its data in process memory by default. `PostgresTraceStore` persists all of it in one schema (default `cogitator`):
 
 ```typescript
-const stats = await optimizer.getStats('support-agent');
+import { PostgresTraceStore } from '@cogitator-ai/core';
 
-console.log(`Traces: ${stats.traces.total}`);
-console.log(`Demos: ${stats.demos.total}`);
-console.log(`Optimization runs: ${stats.optimization.runsOptimized}`);
-console.log(`Avg improvement: ${(stats.optimization.averageImprovement * 100).toFixed(1)}%`);
+const store = new PostgresTraceStore({ connectionString: process.env.DATABASE_URL! });
+await store.connect();
+
+const abTesting = new ABTestingFramework({ store: store.abTests() });
+const rollbackManager = new RollbackManager({ store: store.instructionVersions() });
+
+await store.storeTrace(trace);
+const recent = await store.queryTraces({ agentId: 'support-agent', limit: 50 });
 ```
+
+It stores traces (`storeTrace`, `queryTraces`, `getAllTraces`), captured prompts (`capture`, `getByRun`, `query`), A/B tests and instruction versions. Its trace methods have their own names, so it is not a `TraceStore` for `AgentOptimizer`; `abTests()` and `instructionVersions()` adapt it for A/B tests and versions, including the [`prompts`](/docs/advanced/prompt-versions#stores) config.
+
+## Prompt Logging
+
+`wrapWithPromptLogger` wraps a backend so that every request and response is captured into a prompt store (anything with `capture()`, such as `PostgresTraceStore`), for debugging and auditing:
+
+```typescript
+import { OpenAIBackend, wrapWithPromptLogger } from '@cogitator-ai/core';
+
+const logged = wrapWithPromptLogger(
+  new OpenAIBackend({ apiKey: process.env.OPENAI_API_KEY! }),
+  store,
+  {
+    captureContent: true,
+    captureTools: true,
+  }
+);
+
+logged.setContext({ runId: 'run_1', agentId: 'support-agent', threadId: 'thread_1' });
+await logged.chat({ model: 'gpt-6-luna', messages: [{ role: 'user', content: 'Hello' }] });
+logged.clearContext();
+```
+
+Calls are captured only while a context is set; without one the wrapper passes requests through.

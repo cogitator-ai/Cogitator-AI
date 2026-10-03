@@ -13,14 +13,16 @@ const v2 = await cog.prompts.deploy(
   'You write release notes. Lead with what changed for the user.'
 );
 
-await cog.run(writer, { input }); // runs with v2
+const result = await cog.run(writer, { input }); // runs with v2
 result.prompt; // { key: 'writer', versionId: v2.id, version: 2 }
 
+await cog.prompts.current(writer); // v2
 await cog.prompts.rollbackTo(writer); // back to the previous version (recorded as a new one)
+await cog.prompts.rollbackTo(writer, v2.id); // or to a specific one
 await cog.prompts.history(writer); // newest first, with metrics
 ```
 
-Versions are kept per agent `id` when you set one, else per `name`, so they outlive the process when the stores are durable. `deploy`, `history` and the rest take the agent or that key.
+Versions are kept per agent `id` when you set one, else per `name`, so they outlive the process when the stores are durable. `deploy`, `history` and the rest take the agent or that key. Before the first deploy, runs use the agent's own `instructions`. A run resumed after a [pause](/docs/tools/approvals) keeps the instructions it started with.
 
 ## A/B Tests
 
@@ -38,11 +40,13 @@ const result = await cog.run(writer, { input, threadId });
 result.prompt?.abTest; // { id, variant: 'control' | 'treatment' }
 ```
 
-Every run's score is recorded for its variant. Once both variants have `minSampleSize` runs and the difference is significant (Welch's t-test at `confidenceLevel`), or `maxDuration` passed, the test completes; with `autoDeployWinner` a winning treatment becomes the next version. `completeABTest(id)` ends a test early.
+The control is the current version, or the agent's own instructions before any deploy. The variant is derived from the test and the `threadId`, so pass the conversation's `threadId`: a run without one gets a new thread, and with it an independent draw. `activeABTest(writer)` returns the running test.
+
+Every run's score is recorded for its variant (not for the current version, whose metrics count only runs outside a test). Once the two variants together have twice `minSampleSize` runs (default 50 each) and the difference is significant (Welch's t-test at `confidenceLevel`, default 0.95), or `maxDuration` (default 7 days) has passed, the test completes; with `autoDeployWinner` a winning treatment becomes the next version. `completeABTest(id)` ends a test early and returns its outcome.
 
 ## Scoring Runs
 
-By default a completed run scores 1 and a failed one 0, which compares success rates. Score what matters to you instead — an [eval metric](/docs/evals), a user's thumbs-up stored by run id, the length of the answer:
+By default a completed run scores 1 and a failed one 0, which compares success rates (a failed run's score is always 0). Score what matters to you instead — an [eval metric](/docs/evals), a user's thumbs-up stored by run id, the length of the answer:
 
 ```typescript
 const cog = new Cogitator({

@@ -1,24 +1,23 @@
 ---
 title: Tree-of-Thought Reasoning
-description: Explore multiple reasoning paths simultaneously using the ThoughtTreeExecutor, evaluate branches with configurable strategies, and select the best reasoning chain.
+description: Explore several approaches to a problem with the ThoughtTreeExecutor, score branches, prune weak ones and return the best reasoning path.
 ---
 
 ## Overview
 
-Tree-of-Thought (ToT) reasoning allows agents to explore multiple approaches to a problem in parallel, evaluate each branch, backtrack from dead ends, and synthesize the best result. Instead of committing to a single chain-of-thought, the agent builds a tree of possibilities and navigates it intelligently.
+Tree-of-Thought (ToT) reasoning lets an agent explore several approaches to a problem, score each one, drop the weak ones and keep the best result. Instead of committing to a single chain of thought, the `ThoughtTreeExecutor` builds a tree of candidate approaches and runs the promising ones as ordinary agent runs.
+
+This page is about that executor. A model's own built-in thinking (OpenAI reasoning effort, Claude extended thinking, Gemini thinking budgets) is set with the `reasoning` option of an agent or a run — see [Reasoning](/docs/core/llm-backends#reasoning) under LLM backends. The two combine: the runs inside a tree use the agent's `reasoning` setting like any other run.
 
 ## Basic Usage
 
 ```typescript
-import { Cogitator, Agent } from '@cogitator-ai/core';
-import { ThoughtTreeExecutor } from '@cogitator-ai/core';
+import { Agent, Cogitator, ThoughtTreeExecutor } from '@cogitator-ai/core';
 
 const cogitator = new Cogitator({
   llm: {
     defaultProvider: 'openai',
-    providers: {
-      openai: { type: 'openai', apiKey: process.env.OPENAI_API_KEY!, model: 'gpt-6.1-sol' },
-    },
+    providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } },
   },
 });
 
@@ -34,7 +33,7 @@ const executor = new ThoughtTreeExecutor(cogitator, {
 const agent = new Agent({
   name: 'problem-solver',
   instructions: 'You solve complex problems by exploring multiple approaches.',
-  model: 'openai/gpt-6.1-sol',
+  model: 'gpt-6.1-sol',
 });
 
 const result = await executor.explore(agent, 'Design a caching strategy for a real-time dashboard');
@@ -45,36 +44,53 @@ console.log('Best path depth:', result.bestPath.length);
 console.log('Nodes explored:', result.stats.exploredNodes);
 ```
 
+The executor makes its own model calls — branch generation, branch evaluation and the final synthesis — with the backend of the agent's model, and sends the agent's model string to it as is. Give the agent a bare model name served by `llm.defaultProvider`, as above: a `provider/model` id would reach the provider with its prefix.
+
 ## How It Works
 
-The executor builds a tree where each node represents a reasoning step:
+1. **Root** — the goal becomes the root node.
+2. **Branch generation** — the `BranchGenerator` asks the model for `branchFactor` candidate approaches for the node, each a `thought` with a proposed action: a tool call, a sub-goal or a direct response.
+3. **Branch evaluation** — the `BranchEvaluator` scores every candidate on confidence, progress and novelty, combined into a `composite` score.
+4. **Pruning** — candidates with a composite score below `confidenceThreshold` are dropped, and at most `beamWidth` of the rest are kept.
+5. **Expansion** — each kept candidate becomes a child node. A direct response is taken as is; a tool call or sub-goal runs the agent with `cogitator.run()` (without memory) on a prompt built from the goal and the approach.
+6. **Termination** — exploration stops as soon as a child's branch confidence reaches `terminationConfidence`, or when the frontier is empty, `maxTotalNodes` nodes exist, the `timeout` passes or the abort signal fires. Nodes at `maxDepth` are not expanded further.
+7. **Result** — the node with the highest cumulative score (the sum of composite scores along its path) wins. Its answer is the output; without one, the path is synthesized into a final answer with one more model call.
 
-1. **Root creation** — the goal becomes the root node
-2. **Branch generation** — the `BranchGenerator` produces `branchFactor` candidate approaches per node
-3. **Branch evaluation** — the `BranchEvaluator` scores each branch on confidence, progress, and novelty
-4. **Pruning** — branches below `confidenceThreshold` are discarded
-5. **Expansion** — surviving branches become child nodes and are executed via `cogitator.run()`
-6. **Termination** — when a branch reaches `terminationConfidence` or the tree hits `maxTotalNodes`
-7. **Synthesis** — the best path is synthesized into a final output
+Expanded nodes go back into the frontier, which is ordered by cumulative score.
 
 ## Configuration
 
 ```typescript
 const executor = new ThoughtTreeExecutor(cogitator, {
-  maxDepth: 5, // how deep the tree can grow
-  branchFactor: 3, // candidates generated per node
-  beamWidth: 2, // how many branches survive per level
-  confidenceThreshold: 0.3, // minimum score to keep a branch
-  terminationConfidence: 0.9, // score that triggers early stop
-  maxTotalNodes: 100, // hard cap on tree size
+  maxDepth: 5, // how deep the tree can grow (default 5)
+  branchFactor: 3, // candidates generated per node (default 3)
+  beamWidth: 2, // candidates kept per node (default 2)
+  confidenceThreshold: 0.3, // minimum composite score to keep a candidate (default 0.3)
+  terminationConfidence: 0.8, // branch confidence that stops the search (default 0.8)
+  maxTotalNodes: 50, // hard cap on expanded nodes (default 50)
+  timeout: 60_000, // ms, optional
 });
 ```
 
-Higher `branchFactor` explores more possibilities but costs more tokens. Lower `beamWidth` focuses the search but risks missing good paths.
+Higher `branchFactor` explores more possibilities but costs more tokens. Lower `beamWidth` focuses the search but risks missing good paths. `DEFAULT_TOT_CONFIG` holds the defaults.
+
+## Callbacks
+
+```typescript
+const executor = new ThoughtTreeExecutor(cogitator, {
+  onBranchGenerated: (node, branches) =>
+    console.log(`${branches.length} ideas at depth ${node.depth}`),
+  onBranchEvaluated: (branch, score) => console.log(branch.thought, score.composite),
+  onNodeExplored: (node) => console.log(node.status, node.result?.response),
+  onBacktrack: (from, to) => console.log(`Dead end at depth ${from.depth}`, to?.depth ?? 'none'),
+});
+```
+
+`onBacktrack` fires when every candidate of a node scores below the threshold, or when running a node fails; the node is marked `failed`.
 
 ## Branch Generation
 
-The `BranchGenerator` asks the LLM to propose diverse approaches for a given node:
+The `BranchGenerator` can be used on its own. It takes a backend and the model name to send to it:
 
 ```typescript
 import { BranchGenerator } from '@cogitator-ai/core';
@@ -82,7 +98,7 @@ import { BranchGenerator } from '@cogitator-ai/core';
 const generator = new BranchGenerator(llmBackend, 'gpt-6.1-sol');
 
 const branches = await generator.generate(
-  currentNode,
+  currentNode, // null for the root
   'Optimize database query performance',
   3,
   agentContext,
@@ -90,7 +106,7 @@ const branches = await generator.generate(
 );
 ```
 
-Each branch includes a `thought` (the reasoning), a `proposedAction` (tool call, sub-goal, or direct response), and a snapshot of the conversation state. Previously explored thoughts are passed in to encourage novelty.
+Each branch has a `thought`, a `proposedAction` and the parent node's messages. Previously explored thoughts are passed in to encourage novelty. When the model's answer cannot be parsed, generic fallback branches are returned.
 
 ## Branch Evaluation
 
@@ -106,38 +122,22 @@ import { BranchEvaluator } from '@cogitator-ai/core';
 const evaluator = new BranchEvaluator({
   llm: llmBackend,
   model: 'gpt-6.1-sol',
-  reflectionEngine, // optional, enables reflection-based evaluation
+  reflectionEngine, // optional
   confidenceWeight: 0.5,
   progressWeight: 0.3,
   noveltyWeight: 0.2,
 });
 
-const scores = await evaluator.evaluateBatch(branches, goal, context);
+const scores = await evaluator.evaluateBatch(branches, goal, agentContext);
 ```
 
-When a `ReflectionEngine` is provided, tool-call branches are evaluated using past insights, giving the tree historical awareness.
-
-## Backtracking
-
-When all branches from a node score below the threshold, the executor backtracks to the nearest ancestor with unexplored children:
-
-```typescript
-const executor = new ThoughtTreeExecutor(cogitator, {
-  onBacktrack: (failedNode, nextTarget) => {
-    if (nextTarget) {
-      console.log(`Backtracking from depth ${failedNode.depth} to ${nextTarget.depth}`);
-    } else {
-      console.log('No viable backtrack target found');
-    }
-  },
-});
-```
+The weights above are the defaults for the composite score. When a `ReflectionEngine` is given, tool-call branches are evaluated with the agent's past insights. Inside `explore()`, the Cogitator's reflection engine is used when [reflection](/docs/advanced/reflection) is enabled and has been initialized by an earlier run.
 
 ## Progress Monitoring
 
-Track exploration in real-time with callbacks and progress events:
-
 ```typescript
+const controller = new AbortController();
+
 const result = await executor.explore(agent, goal, {
   timeout: 30_000,
   abortSignal: controller.signal,
@@ -149,6 +149,8 @@ const result = await executor.explore(agent, goal, {
 });
 ```
 
+`onProgress` is called after each node's candidates have been expanded. On timeout or abort, the best node found so far is returned.
+
 ## Result Structure
 
 ```typescript
@@ -158,6 +160,8 @@ interface ToTResult {
   tree: ThoughtTree;
   bestPath: ThoughtNode[];
   stats: ToTStats;
+  runId: string;
+  agentId: string;
   usage: {
     inputTokens: number;
     outputTokens: number;
@@ -168,7 +172,7 @@ interface ToTResult {
 }
 ```
 
-The `bestPath` array contains every node from root to the highest-scoring leaf, letting you trace exactly how the agent reached its conclusion. The full `tree` is available for visualization or debugging.
+`bestPath` holds every node from the root to the winning node, so you can trace how the agent reached its conclusion; the full `tree` (with `nodes` as a `Map`) is there for visualization or debugging. `success` is true when the winning node completed. `usage` counts the tokens of the agent runs inside the tree, not those of generation and evaluation calls, and `cost` is not computed (always 0).
 
 ## When to Use ToT
 
@@ -178,4 +182,4 @@ Tree-of-Thought reasoning is most effective for:
 - Tasks where the first attempt often fails (complex debugging, multi-step reasoning)
 - Situations where exploring alternatives has high value (research, strategy)
 
-For straightforward tasks, standard single-pass execution is faster and cheaper. Use ToT when the cost of exploring is worth the improvement in output quality.
+For straightforward tasks, a single run — possibly with the model's own `reasoning` turned up — is faster and cheaper. Use ToT when the cost of exploring is worth the improvement in output quality.

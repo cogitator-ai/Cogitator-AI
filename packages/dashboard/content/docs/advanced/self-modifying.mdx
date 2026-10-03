@@ -146,19 +146,23 @@ The meta-reasoning layer monitors the agent's reasoning process and makes strate
 ### Configuration
 
 ```typescript
-config: {
-  metaReasoning: {
-    enabled: true,
-    defaultMode: 'analytical',
-    allowedModes: ['analytical', 'creative', 'systematic'],
-    maxMetaAssessments: 5,
-    maxAdaptations: 3,
-    triggers: ['on_failure', 'on_low_confidence', 'periodic'],
-    triggerAfterIterations: 3,
-    triggerOnConfidenceDrop: 0.3,
-    enableRollback: true,
+const selfModifying = new SelfModifyingAgent({
+  agent,
+  llm,
+  config: {
+    metaReasoning: {
+      enabled: true,
+      defaultMode: 'analytical',
+      allowedModes: ['analytical', 'creative', 'systematic'],
+      maxMetaAssessments: 5,
+      maxAdaptations: 3,
+      triggers: ['on_failure', 'on_low_confidence', 'periodic'],
+      triggerAfterIterations: 3,
+      triggerOnConfidenceDrop: 0.3,
+      enableRollback: true,
+    },
   },
-}
+});
 ```
 
 Inside `SelfModifyingAgent`, meta-reasoning only intervenes when a step is incomplete (empty or truncated answer). Only triggers listed in `triggers` fire, and the next attempt uses the adapted mode temperature, parameters or injected context. LLM assessments are validated; recommendations without a valid confidence are ignored.

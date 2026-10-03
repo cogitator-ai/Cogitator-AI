@@ -16,6 +16,7 @@ const guardrails = new ConstitutionalAI({
   llm: backend,
   constitution: DEFAULT_CONSTITUTION,
   config: {
+    model: 'gpt-6-luna',
     enabled: true,
     filterInput: true,
     filterOutput: true,
@@ -29,6 +30,8 @@ const guardrails = new ConstitutionalAI({
 });
 ```
 
+`llm` is the backend every check runs on, and `config.model` the model name sent to it as is (default `gpt-6-luna`). Fields of `config` you leave out take `DEFAULT_GUARDRAIL_CONFIG`; without a `constitution` the default one applies.
+
 ## The Default Constitution
 
 Cogitator ships with a comprehensive default constitution containing 16 principles across four categories:
@@ -40,7 +43,7 @@ Cogitator ships with a comprehensive default constitution containing 16 principl
 | **Legal**   | No illegal activity assistance, medical disclaimer, legal disclaimer, financial disclaimer                        |
 | **Privacy** | Protect personal information                                                                                      |
 
-Each principle has a severity level (`low`, `medium`, `high`) and specifies which layers it applies to (`input`, `output`, `tool`).
+Each principle has a severity (`low`, `medium`, `high`) and the layers it applies to (`input`, `output`, `tool`; a principle without `appliesTo` applies to all three). In the default constitution most principles apply to outputs only: `child-safety` also covers inputs, and `dangerous-tools` covers tool calls. `DEFAULT_PRINCIPLES` holds the list, and `filterPrinciplesByLayer`, `getPrinciplesByCategory` and `getPrinciplesBySeverity` select from a constitution.
 
 ## Input Filtering
 
@@ -60,7 +63,7 @@ if (!result.allowed) {
 }
 ```
 
-The input filter runs a fast pattern-based scan first, then falls back to LLM-based evaluation against the active principles. Configurable severity thresholds control how aggressive the filtering is:
+The input filter first runs a fast pattern scan (bomb-making, "how to kill", "how to hack into", suicide methods, child sexual abuse material) that blocks without a model call. Otherwise an LLM rates the input against the principles that apply to inputs; with none, the input passes. Each rating has a harm category and a severity, and it blocks when its severity reaches the category's threshold — so `'low'` is the strictest setting, and a category without a threshold blocks only at `'high'`:
 
 ```typescript
 const guardrails = new ConstitutionalAI({
@@ -93,7 +96,7 @@ if (!outputResult.allowed && outputResult.suggestedRevision) {
 }
 ```
 
-When `enableCritiqueRevision` is true and the output fails filtering, the system automatically attempts to rewrite it through the critique-revise loop before returning a blocked result.
+Outputs get a pattern scan for destructive commands (`rm -rf /`, `format c:`, `sudo rm -rf`) and an LLM rating against the output principles. When `enableCritiqueRevision` is true and the output fails, the critique-revise loop rewrites it; the result stays `allowed: false` and carries the rewrite in `suggestedRevision`.
 
 ## Critique-Revise Loop
 
@@ -112,7 +115,7 @@ for (const critique of revision.critiqueHistory) {
 }
 ```
 
-Each iteration selects relevant principles, critiques the response against them, and generates a revised version. The loop terminates when either the response passes critique, confidence drops below `revisionConfidenceThreshold`, or `maxRevisionIterations` is reached. High-severity principles are checked first.
+The first iteration critiques the response against the high-severity output principles; later ones pick principles whose harm categories match keywords in the current text (or a random handful). A critique that finds harm leads to a revision for the violated principles. The loop stops when a critique finds no harm, when the highest harm confidence is below `revisionConfidenceThreshold`, when no known principle was violated, or after `maxRevisionIterations`.
 
 ## Tool Guards
 
@@ -134,7 +137,9 @@ if (!guardResult.approved) {
 }
 ```
 
-The `ToolGuard` checks for dangerous commands (`rm -rf /`, `format c:`), sensitive file paths (`/etc/shadow`, `~/.ssh/`), and respects each tool's `requiresApproval` and `sideEffects` declarations. In `strictMode`, all tools with side effects require explicit approval. `requiresApproval` itself is enforced by the runtime whether or not guardrails are on: `onToolApproval` decides when the run has no `onApproval`, and without either the run pauses ([Approvals](/docs/tools/approvals)).
+The `ToolGuard` refuses dangerous commands (`rm -rf /`, `mkfs.`, `dd of=/dev/...`, `chmod -R 777 /`, `format c:`) in the `command`/`cmd` argument of a tool named `exec` or declaring the `process` side effect, and sensitive paths (`/etc/shadow`, `/etc/sudoers`, `/boot/`, `/proc/`, `~/.ssh/`, `/root/`) in the `path`/`file` argument of a tool whose name contains `file` or that declares `filesystem`. `riskLevel` follows the declared `sideEffects`. In `strictMode`, every call of a tool with side effects is passed to `config.onToolApproval` (and runs when there is none).
+
+`requiresApproval` itself is enforced by the runtime whether or not guardrails are on: the run's `onApproval` decides, else `guardrails.onToolApproval`, and without either the run pauses ([Approvals](/docs/tools/approvals)). A call approved that way is not asked about again by the guard.
 
 ### Tool Results
 
@@ -142,7 +147,22 @@ With `filterToolResults: true`, what a tool returns is checked with the input fi
 
 ### Guardrails in a Cogitator
 
-`new Cogitator({ guardrails: { ... } })` turns guardrails on unless `enabled: false`; fields you leave out take `DEFAULT_GUARDRAIL_CONFIG`, so `guardrails: { filterInput: false }` keeps output and tool filtering. When the output filter blocks an answer and the critique-revise loop produces a safe one, the run answers with the revision; without a revision it fails with `Output blocked`. Every block is logged and reported to `onViolation`, also when a revision replaces the answer.
+`new Cogitator({ guardrails: { ... } })` turns guardrails on unless `enabled: false`; fields you leave out take `DEFAULT_GUARDRAIL_CONFIG`, so `guardrails: { filterInput: false }` keeps output and tool filtering. The checks run on `guardrails.model` (a `provider/model` id), or on the running agent's model when it is not set.
+
+A blocked input fails the run with `Input blocked: <reason>` before the first model call. When the output filter blocks an answer and the critique-revise loop produces a safe one, the run answers with the revision; without a revision it fails with `Output blocked: <reason>`. A blocked tool call or tool result reaches the model as the tool's error. Every block is logged and reported to `onViolation`, also when a revision replaces the answer.
+
+```typescript
+const cog = new Cogitator({
+  guardrails: { constitution: DEFAULT_CONSTITUTION, filterToolResults: true },
+});
+
+await cog.run(agent, { input });
+
+cog.getGuardrails()?.getViolationLog();
+cog.setConstitution(customConstitution); // see Custom Constitutions below
+```
+
+The `ConstitutionalAI` instance is created on the first run, so `getGuardrails()` returns `undefined` and `setConstitution()` does nothing before it: pass the constitution you start with as `guardrails.constitution`.
 
 ## Custom Constitutions
 
@@ -203,4 +223,4 @@ for (const entry of violations) {
 guardrails.clearViolationLog();
 ```
 
-You can also set a callback for real-time violation handling via `config.onViolation`.
+Entries are kept while `logViolations` is on (the default). `config.onViolation(result, layer)` is called for every violation either way, for real-time handling.

@@ -9,10 +9,43 @@ The Reflection Engine lets agents analyze their own actions, learn from mistakes
 
 The reflection cycle follows four phases: **generate** a response, **evaluate** its quality, **reflect** on what worked or failed, and **improve** through accumulated insights.
 
-## Setting Up Reflection
+## Reflection in a Cogitator
 
 ```typescript
-import { Cogitator, Agent } from '@cogitator-ai/core';
+import { Cogitator } from '@cogitator-ai/core';
+
+const cog = new Cogitator({
+  reflection: {
+    enabled: true,
+    reflectAfterToolCall: true,
+    reflectAfterError: true,
+    reflectAtEnd: true,
+    reflectionModel: 'openai/gpt-6-luna', // defaults to the running agent's model
+    minConfidenceToStore: 0.3,
+    maxInsightsPerAgent: 100,
+  },
+});
+
+const result = await cog.run(agent, { input: 'Find the best TypeScript learning resources' });
+
+result.reflections; // the reflections made during this run
+await cog.getInsights(agent.id); // everything learned so far
+await cog.getReflectionSummary(agent.id);
+```
+
+With `reflection.enabled`, every run starts by appending the agent's most relevant insights to its system prompt ("Past learnings that may help"). Then, depending on the flags:
+
+| Flag                   | When                     | Effect                                                                                      |
+| ---------------------- | ------------------------ | ------------------------------------------------------------------------------------------- |
+| `reflectAfterToolCall` | After every tool call    | A reflection on the call; when its confidence is low, its suggestion joins the conversation |
+| `reflectAfterError`    | After a failed tool call | An error reflection instead of the general one; its suggestion joins the conversation       |
+| `reflectAtEnd`         | After the final answer   | A reflection on the whole run                                                               |
+
+Each reflection is one extra model call, and failed reflections are logged without failing the run. Insights live in an in-memory store for the lifetime of the Cogitator; use a standalone engine (below) for a store of your own.
+
+## Setting Up a Standalone Engine
+
+```typescript
 import { ReflectionEngine, InMemoryInsightStore } from '@cogitator-ai/core';
 
 const insightStore = new InMemoryInsightStore();
@@ -30,7 +63,7 @@ const reflectionEngine = new ReflectionEngine({
 });
 ```
 
-The `ReflectionEngine` requires an LLM backend for generating reflections, an `InsightStore` for persistence, and a config that controls quality thresholds. A standalone engine sends `reflectionModel` to the backend as-is, so pass the provider's own model id. When reflection is enabled through `new Cogitator({ reflection: { enabled: true } })`, `reflectionModel` may be a `provider/model` id (for example `openai/gpt-6-luna`) and defaults to the running agent's model.
+The `ReflectionEngine` requires an LLM backend for generating reflections, an `InsightStore` for persistence, and a config that controls quality thresholds. A standalone engine sends `reflectionModel` to the backend as is, so pass the provider's own model id; it is required. Insights with a confidence below `minConfidenceToStore` (default 0.3) are not stored, `storeInsights: false` stores none, and the store is pruned to `maxInsightsPerAgent` (default 100) per agent.
 
 ## Reflecting on Tool Calls
 
@@ -81,7 +114,7 @@ const errorResult = await reflectionEngine.reflectOnError(
 
 Error reflections always set `shouldAdjustStrategy: true` and provide a suggested alternative approach.
 
-In a Cogitator, set `reflection: { enabled: true, reflectAfterError: true }` and every failed tool call gets this error reflection instead of the general one (`reflectAfterToolCall`); its suggested action is added to the conversation before the next model call.
+In a Cogitator with `reflectAfterError: true`, every failed tool call gets this error reflection instead of the general one; its suggested action is added to the conversation before the next model call.
 
 ## End-of-Run Reflection
 
@@ -112,7 +145,9 @@ for (const insight of insights) {
 }
 ```
 
-Insights are ranked by relevance using word overlap, confidence scores, recency, and type priority (mistakes and warnings rank higher to prevent repeated errors).
+Insights are ranked by relevance using word overlap with the context's `goal`, confidence scores, recency, and type priority (mistakes and warnings rank higher to prevent repeated errors). Every insight returned is marked as used.
+
+`getRunReflections(runId)` returns the reflections the engine made during a run (it remembers the last 100 runs).
 
 ## Reflection Summary
 
@@ -150,8 +185,8 @@ const stats = store.getStats();
 console.log(`${stats.totalInsights} insights across ${stats.agentCount} agents`);
 ```
 
-For production use, implement the `InsightStore` interface backed by a database to persist insights across restarts.
+For production use, implement the `InsightStore` interface backed by a database to persist insights across restarts, and pass it to a standalone `ReflectionEngine`.
 
 ## Integration with Other Systems
 
-The Reflection Engine integrates with [Tree-of-Thought Reasoning](/docs/advanced/reasoning) — the `BranchEvaluator` uses reflections to score reasoning branches based on past experience. It also feeds into the [Agent Learning](/docs/advanced/learning) system, where reflection insights contribute to instruction optimization.
+The Reflection Engine integrates with [Tree-of-Thought Reasoning](/docs/advanced/reasoning) — the `BranchEvaluator` uses past insights to score tool-call branches. It also feeds into the [Agent Learning](/docs/advanced/learning) system: an `AgentOptimizer` given an `insightStore` includes those insights when it generates instruction candidates.

@@ -93,6 +93,8 @@ ns.getLogicSolutions('price(mouse, P), tier(P, Tier)?');
 - Control constructs: `\+`, `not/1`, `call/N`, `findall/3`, `forall/2`, `between/3`.
 - Queries may end with `.` or `?`; `_`-prefixed variables are not reported.
 - Set `config.logic.traceExecution = true` to get a proof tree (`formatProofTree`, `proofTreeToMermaid`).
+- `getLogicSolutions` returns the solutions as text; `queryLogic(query, { maxSolutions })` returns them as data and `proveLogic(query)` as a boolean. `assertFact('parent', 'tom', 'bob')` adds a single fact.
+- Resolution is bounded by `config.logic` (defaults: `maxDepth` 50, `maxSolutions` 10, `timeout` 5000 ms): `createNeuroSymbolic({ config: { logic: { maxSolutions: 100 } } })`.
 
 ## Constraint Solving
 

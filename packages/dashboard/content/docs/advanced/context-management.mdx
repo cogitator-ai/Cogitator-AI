@@ -22,7 +22,7 @@ const cog = new Cogitator({
 });
 ```
 
-Context management is built into the runtime -- when enabled, it runs transparently before each LLM call.
+Context management is built into the runtime: whenever `context` is set (and `enabled` is not `false`), the run checks the conversation before each model call and compresses it when needed. Compression changes only what is sent; memory keeps the full history. After compression, tool results whose call was dropped (and calls without their results) are removed too, so the provider never sees a broken tool exchange.
 
 ## Configuration
 
@@ -32,16 +32,18 @@ interface ContextManagerConfig {
   strategy?: 'truncate' | 'sliding-window' | 'summarize' | 'hybrid';
   compressionThreshold?: number; // 0-1, triggers at this % of max tokens (default: 0.8)
   outputReserve?: number; // fraction of context reserved for output (default: 0.15)
-  summaryModel?: string; // model for summarization (defaults to agent's model)
+  summaryModel?: string; // provider/model id for LLM summaries (see below)
   windowSize?: number; // messages to keep in sliding window (default: 10)
 }
 ```
 
-The `compressionThreshold` controls when compression kicks in. At `0.8`, compression triggers when token usage exceeds 80% of the available context (after reserving space for output tokens).
+The `compressionThreshold` controls when compression kicks in. At `0.8`, compression triggers when token usage exceeds 80% of the available context (the model's context window minus `outputReserve`). Compression then brings the conversation back under the available context.
+
+Which strategies call a model depends on `summaryModel`: with it, sliding-window, summarize and hybrid compression summarize older messages with that model. Without it, only `strategy: 'summarize'` calls a model (the running agent's); sliding-window and hybrid fall back to an extractive summary without an LLM call.
 
 ## Token Counting
 
-Cogitator uses a fast heuristic token counter (4 characters per token + message overhead) for real-time decisions, and knows the context window sizes for all major models:
+Cogitator uses a fast heuristic token counter (4 characters per token plus 4 per message) for real-time decisions. Context windows come from the [model registry](/docs/core/model-registry), with built-in fallbacks for well-known model families; an unknown model counts as 8,192 tokens:
 
 ```typescript
 import { ContextManager } from '@cogitator-ai/core';
@@ -52,8 +54,8 @@ const manager = new ContextManager({
   compressionThreshold: 0.8,
 });
 
-const limit = manager.getModelContextLimit('openai/gpt-6.1-sol'); // 1050000
-const limit2 = manager.getModelContextLimit('anthropic/claude-sonnet-5-5'); // 1000000
+manager.getModelContextLimit('anthropic/claude-sonnet-5-5'); // 1000000
+manager.getModelContextLimit('ollama/my-finetune'); // 8192
 ```
 
 ## Checking Context State
@@ -100,7 +102,7 @@ const cog = new Cogitator({
 });
 ```
 
-When an LLM backend is available, older messages outside the window are summarized into a single system message. Without an LLM, a basic extractive summary is generated from the most recent user and assistant messages.
+Messages outside the last `windowSize` are summarized into a single system message (`[Previous conversation summary]`): by `summaryModel` when it is set, else as a basic extractive summary of the last few user and assistant messages. If even the window does not leave room for a summary, the older messages are dropped.
 
 ### Summarize
 
@@ -117,22 +119,22 @@ const cog = new Cogitator({
 });
 ```
 
-The summarizer keeps the most recent 20% of messages (minimum 2) as-is and compresses everything else. The summary prompt instructs the LLM to preserve user preferences, key decisions, and critical context. Falls back to extractive summarization if the LLM call fails.
+The summarizer keeps the most recent 20% of messages as is (at least 2, at most `windowSize`) and replaces everything older with one summary message. It uses `summaryModel`, or the running agent's model when that is not set. The summary prompt instructs the LLM to preserve user preferences, key decisions, and critical context. Falls back to an extractive summary if the LLM call fails.
 
 ### Hybrid (Default)
 
 Automatically selects the best strategy based on how far over the limit the conversation is:
 
-| Utilization      | Strategy       | Reasoning                                    |
-| ---------------- | -------------- | -------------------------------------------- |
-| Up to 1.5x       | Sliding Window | Mild overflow, window is sufficient          |
-| 1.5x+ (with LLM) | Summarize      | Heavy overflow, need intelligent compression |
-| 1.5x-2x (no LLM) | Sliding Window | Best effort without LLM                      |
-| 2x+              | Truncate       | Extreme overflow, aggressive trimming needed |
+| Size vs. available context    | Strategy       | Reasoning                                    |
+| ----------------------------- | -------------- | -------------------------------------------- |
+| Up to 1.5x                    | Sliding Window | Mild overflow, window is sufficient          |
+| Over 1.5x, `summaryModel` set | Summarize      | Heavy overflow, need intelligent compression |
+| 1.5x–2x, no `summaryModel`    | Sliding Window | Best effort without LLM                      |
+| Over 2x, no `summaryModel`    | Truncate       | Extreme overflow, aggressive trimming needed |
 
 ```typescript
 const cog = new Cogitator({
-  context: { strategy: 'hybrid' },
+  context: { strategy: 'hybrid', summaryModel: 'openai/gpt-6-luna' },
   // ...
 });
 ```
@@ -162,8 +164,13 @@ You can use `ContextManager` outside of the Cogitator runtime for custom pipelin
 import { ContextManager } from '@cogitator-ai/core';
 
 const manager = new ContextManager(
-  { enabled: true, strategy: 'sliding-window', windowSize: 10 },
-  { getBackend: (model) => myBackendRegistry.get(model) }
+  {
+    enabled: true,
+    strategy: 'sliding-window',
+    windowSize: 10,
+    summaryModel: 'openai/gpt-6-luna',
+  },
+  { route: (model) => cog.route(model) }
 );
 
 if (manager.shouldCompress(messages, 'openai/gpt-6.1-sol')) {
@@ -172,4 +179,4 @@ if (manager.shouldCompress(messages, 'openai/gpt-6.1-sol')) {
 }
 ```
 
-The second constructor argument provides a `getBackend` function so the manager can access an LLM for summarization strategies.
+The second constructor argument tells the manager how to reach a model for summaries: `route` returns the backend and the model name for a `provider/model` id (`cog.route()` does exactly that), and `getBackend` is the older form that returns only the backend. Without either, summaries are extractive. The strategy classes (`TruncateStrategy`, `SlidingWindowStrategy`, `SummarizeStrategy`, `HybridStrategy`) are exported too, for custom pipelines that call `compress()` on a strategy directly.
