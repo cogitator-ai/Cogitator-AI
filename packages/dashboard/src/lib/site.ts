@@ -39,5 +39,3 @@ export const GITHUB_ORG_URL = 'https://github.com/cogitator-ai';
 export const NPM_ORG_URL = 'https://www.npmjs.com/org/cogitator-ai';
 
 export const LICENSE_URL = `${GITHUB_URL}/blob/main/LICENSE`;
-
-export const SECURITY_POLICY_URL = `${GITHUB_URL}/blob/main/docs/SECURITY.md`;

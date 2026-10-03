@@ -111,7 +111,9 @@ function modifiedTimes(target: string): Date[] {
  */
 export function lastModified(...targets: string[]): Date | undefined {
   const dates = commitDates();
-  const absolute = targets.map((target) => path.resolve(PACKAGE_ROOT, target));
+  const absolute = targets.map((target) =>
+    path.resolve(/* turbopackIgnore: true */ PACKAGE_ROOT, target)
+  );
 
   const committed = newest(
     absolute.flatMap((target) => {
