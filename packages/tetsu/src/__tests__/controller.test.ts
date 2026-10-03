@@ -686,6 +686,39 @@ describe('agent stream', () => {
     expect(signal.aborted).toBe(true);
   });
 
+  test('aborts the run when the client goes away after a garbage collection', async () => {
+    const started = deferred<AbortSignal>();
+    const { cogitator } = fakeCogitator(
+      (_agent, options) =>
+        new Promise((_resolve, reject) => {
+          const signal = options.signal;
+          if (!signal) return;
+          options.onToken?.('first');
+          started.resolve(signal);
+          signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        })
+    );
+    const request = serveCogitator({ cogitator, agents: { chat: chatAgent() } });
+    const client = new AbortController();
+
+    const res = await request('/cogitator/agents/chat/stream', {
+      ...json({ input: 'hi' }),
+      signal: client.signal,
+    });
+    const reader = res.body?.getReader();
+    await reader?.read();
+    const signal = await started.promise;
+    Bun.gc(true);
+    await Bun.sleep(10);
+    Bun.gc(true);
+
+    client.abort();
+    await reader?.cancel().catch(() => undefined);
+
+    for (let i = 0; i < 50 && !signal.aborted; i++) await Bun.sleep(10);
+    expect(signal.aborted).toBe(true);
+  });
+
   test('ends an open stream when the server drains', async () => {
     const draining = new AbortController();
     const { cogitator } = fakeCogitator(
