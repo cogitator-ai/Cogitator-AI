@@ -96,7 +96,7 @@ interface Position {
 
 /**
  * Strategy switcher for the swarms section: a replay of each strategy's message pattern next to
- * its config. It walks through all seven while in view and stops advancing once a tab is picked.
+ * its config. It walks through all seven while in view; picking a tab continues from there.
  */
 export function SwarmShowcase({ snippets }: { snippets: Record<StrategyId, ReactNode> }) {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -104,7 +104,6 @@ export function SwarmShowcase({ snippets }: { snippets: Record<StrategyId, React
   const inView = useInView(rootRef, { margin: '-120px' });
   const reduced = useReducedMotion() ?? false;
   const [position, setPosition] = useState<Position>({ index: 0, beat: 0 });
-  const [auto, setAuto] = useState(true);
 
   const scene = SCENES[position.index];
   const lastBeat = scene.beats.length - 1;
@@ -117,8 +116,7 @@ export function SwarmShowcase({ snippets }: { snippets: Record<StrategyId, React
       () => {
         setPosition(({ index, beat: current }) => {
           if (current < lastBeat) return { index, beat: current + 1 };
-          if (auto) return { index: (index + 1) % SCENES.length, beat: 0 };
-          return { index, beat: 0 };
+          return { index: (index + 1) % SCENES.length, beat: 0 };
         });
       },
       paced(
@@ -127,7 +125,7 @@ export function SwarmShowcase({ snippets }: { snippets: Record<StrategyId, React
       )
     );
     return () => clearTimeout(timer);
-  }, [playing, auto, scene, lastBeat, position.beat]);
+  }, [playing, scene, lastBeat, position.beat]);
 
   useEffect(() => {
     const container = tabsRef.current;
@@ -138,7 +136,6 @@ export function SwarmShowcase({ snippets }: { snippets: Record<StrategyId, React
   }, [scene.id, reduced]);
 
   const select = (index: number) => {
-    setAuto(false);
     setPosition({ index, beat: 0 });
   };
 
@@ -182,7 +179,7 @@ export function SwarmShowcase({ snippets }: { snippets: Record<StrategyId, React
               )}
             >
               {item.id}
-              {selected && auto && !reduced && (
+              {selected && !reduced && (
                 <motion.span
                   key={item.id}
                   aria-hidden

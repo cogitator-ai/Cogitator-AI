@@ -50,12 +50,11 @@ function tabId(feature: ExplorerFeature): string {
 
 /**
  * The "everything in the box" explorer: a list of features on the left, the active one's
- * live demo and snippet on the right. Auto-advances while on screen, pauses on hover or
- * focus, and stops for good once the visitor picks a feature.
+ * live demo and snippet on the right. Auto-advances while on screen and pauses on hover or
+ * keyboard focus; picking a feature restarts the timer from there.
  */
 export function Explorer({ features }: { features: ExplorerFeature[] }) {
   const [active, setActive] = useState(0);
-  const [locked, setLocked] = useState(false);
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
 
@@ -75,7 +74,7 @@ export function Explorer({ features }: { features: ExplorerFeature[] }) {
   const progress = useMotionValue(0);
 
   const count = features.length;
-  const running = inView && !hovered && !focused && !locked && !reduced && count > 1;
+  const running = inView && !hovered && !focused && !reduced && count > 1;
 
   useEffect(() => {
     if (!running) return;
@@ -103,7 +102,6 @@ export function Explorer({ features }: { features: ExplorerFeature[] }) {
   const select = useCallback(
     (index: number, moveFocus: boolean) => {
       progress.set(0);
-      setLocked(true);
       setActive(index);
       if (moveFocus) tabRefs.current[index]?.focus();
     },
@@ -148,7 +146,7 @@ export function Explorer({ features }: { features: ExplorerFeature[] }) {
         ref={rootRef}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
-        onFocus={() => setFocused(true)}
+        onFocus={(event) => setFocused(event.target.matches(':focus-visible'))}
         onBlur={onBlur}
         className="mt-12 sm:mt-16 lg:grid lg:grid-cols-[248px_minmax(0,1fr)] lg:gap-10"
       >
@@ -206,7 +204,7 @@ export function Explorer({ features }: { features: ExplorerFeature[] }) {
                   >
                     {item.pkg}
                   </span>
-                  {selected && !locked && !reduced && (
+                  {selected && !reduced && (
                     <span
                       aria-hidden
                       className="absolute inset-x-3.5 bottom-0 h-px overflow-hidden bg-white/[0.06] lg:inset-x-4 lg:bottom-1"

@@ -1,5 +1,5 @@
 /** Landing demos run at this multiple of their authored timings, so a visitor can follow them. */
-export const PACE = 1.9;
+export const PACE = 1.6;
 
 /** How long a demo rests on its final state before it starts over or the showcase moves on. */
 export const FINAL_HOLD_MS = 6500;
