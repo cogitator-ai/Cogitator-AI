@@ -1,6 +1,7 @@
 'use client';
 
-import { AnimatePresence, MotionConfig, motion, useInView, useReducedMotion } from 'framer-motion';
+import { AnimatePresence, m, MotionConfig, useReducedMotion } from 'framer-motion';
+import { useOnScreen } from '../../../playback';
 import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { cx } from '../../../ui';
 import { cycleTiming, useDemoCycle } from '../cycle';
@@ -21,7 +22,7 @@ export interface DemoTimeline {
  */
 export function useDemoTimeline(durations: readonly number[]): DemoTimeline {
   const ref = useRef<HTMLDivElement>(null);
-  const inView = useInView(ref, { margin: '-40px' });
+  const inView = useOnScreen(ref, { margin: '-40px' });
   const reduced = useReducedMotion() ?? false;
   const last = durations.length - 1;
   const [step, setStep] = useState(0);
@@ -60,7 +61,7 @@ export function Reveal({
   return (
     <AnimatePresence initial={false}>
       {show && (
-        <motion.div
+        <m.div
           className={className}
           initial={{ opacity: 0, y: 5 }}
           animate={{ opacity: 1, y: 0 }}
@@ -68,7 +69,7 @@ export function Reveal({
           transition={{ duration: 0.35, ease: EASE }}
         >
           {children}
-        </motion.div>
+        </m.div>
       )}
     </AnimatePresence>
   );

@@ -1,6 +1,6 @@
 'use client';
 
-import { motion } from 'framer-motion';
+import { m } from 'framer-motion';
 import { Server } from 'lucide-react';
 import { cx, Vox } from '../../../ui';
 import { DemoBar, EASE, Streamed, useDemoTimeline } from './shared';
@@ -38,7 +38,7 @@ function Arrow({ direction, active }: { direction: Direction; active: boolean })
   const toRight = direction === 'request';
   return (
     <div className="relative h-px w-full">
-      <motion.span
+      <m.span
         className={cx(
           'absolute inset-y-0 h-px transition-colors duration-500',
           toRight ? 'left-0' : 'right-0',
@@ -48,7 +48,7 @@ function Arrow({ direction, active }: { direction: Direction; active: boolean })
         animate={{ width: '100%' }}
         transition={{ duration: 0.45, ease: EASE }}
       />
-      <motion.span
+      <m.span
         aria-hidden
         className={cx(
           'absolute -top-[3px] size-0 border-y-[3.5px] border-y-transparent transition-colors duration-500',
@@ -128,7 +128,7 @@ export function A2aDemo() {
           {EXCHANGES.map((exchange, index) => (
             <li key={`${exchange.method}-${index}`} className="h-[22px]">
               {index <= step && (
-                <motion.div
+                <m.div
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   transition={{ duration: 0.25 }}
@@ -151,7 +151,7 @@ export function A2aDemo() {
                     </span>
                   </div>
                   <Arrow direction={exchange.direction} active={index === step} />
-                </motion.div>
+                </m.div>
               )}
             </li>
           ))}

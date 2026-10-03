@@ -1,6 +1,6 @@
 'use client';
 
-import { motion } from 'framer-motion';
+import { m } from 'framer-motion';
 import { Badge, Vox } from '../../../ui';
 import { DemoFrame, EASE, useDemoTimeline } from './shared';
 
@@ -150,7 +150,7 @@ export function ThoughtTreeDemo() {
           <Badge tone="accent">0.91 ≥ 0.85 · stop</Badge>
         ) : (
           <Badge tone="info">
-            <span className="size-1.5 animate-pulse rounded-full bg-l-info" /> depth{' '}
+            <span className="size-1.5 motion-safe:animate-pulse rounded-full bg-l-info" /> depth{' '}
             {step >= 4 ? 2 : step >= 1 ? 1 : 0}
           </Badge>
         )
@@ -180,7 +180,7 @@ export function ThoughtTreeDemo() {
           const best = node.best && step >= BEST_STEP;
           const pruned = node.pruned && step >= PRUNE_STEP;
           return (
-            <motion.path
+            <m.path
               key={`edge-${node.id}`}
               d={edgePath(parent, node)}
               fill="none"
@@ -201,7 +201,7 @@ export function ThoughtTreeDemo() {
           const tone = nodeTone(node, step);
           const scoreKnown = node.score !== undefined && step >= node.scored;
           return (
-            <motion.g
+            <m.g
               key={node.id}
               initial={false}
               animate={{ opacity: visible ? (node.pruned && step >= PRUNE_STEP ? 0.55 : 1) : 0 }}
@@ -245,7 +245,7 @@ export function ThoughtTreeDemo() {
                     : '…'}
                 </text>
               )}
-            </motion.g>
+            </m.g>
           );
         })}
       </svg>

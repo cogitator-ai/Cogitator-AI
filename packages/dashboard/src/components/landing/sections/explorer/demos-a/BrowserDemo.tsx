@@ -1,6 +1,6 @@
 'use client';
 
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence, m } from 'framer-motion';
 import { Lock, MousePointer2, RotateCw, Search } from 'lucide-react';
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { cx, Vox } from '../../../ui';
@@ -68,14 +68,14 @@ function HomePage({ step, register }: { step: number; register: Register }) {
             )}
           </span>
         </div>
-        <motion.div
+        <m.div
           ref={register('submit')}
           animate={pressed ? { scale: [1, 1, 0.92, 1] } : { scale: 1 }}
           transition={{ duration: 1, times: [0, 0.6, 0.75, 1] }}
           className="flex h-8 shrink-0 items-center rounded-md bg-l-phosphor/85 px-3.5 text-[11.5px] font-medium text-l-bg"
         >
           Search
-        </motion.div>
+        </m.div>
       </div>
     </div>
   );
@@ -125,7 +125,7 @@ function ProductPage({ extracting, register }: { extracting: boolean; register: 
           Add to cart
         </div>
         {extracting && (
-          <motion.span
+          <m.span
             aria-hidden
             className="absolute inset-x-0 h-px bg-l-accent/70 shadow-[0_0_8px_rgb(127_212_181/0.6)]"
             initial={{ top: '0%' }}
@@ -213,7 +213,7 @@ export function BrowserDemo() {
 
       <div ref={viewport} className="relative min-h-0 flex-1 overflow-hidden bg-l-bg/40">
         <AnimatePresence mode="wait" initial={false}>
-          <motion.div
+          <m.div
             key={page}
             className="absolute inset-0"
             initial={{ opacity: 0 }}
@@ -224,11 +224,11 @@ export function BrowserDemo() {
             {page === 'home' && <HomePage step={step} register={register} />}
             {page === 'results' && <ResultsPage step={step} register={register} />}
             {page === 'product' && <ProductPage extracting={step === 4} register={register} />}
-          </motion.div>
+          </m.div>
         </AnimatePresence>
 
         {point && (
-          <motion.div
+          <m.div
             aria-hidden
             className="pointer-events-none absolute left-0 top-0 z-10"
             initial={false}
@@ -236,7 +236,7 @@ export function BrowserDemo() {
             transition={{ duration: 0.8, ease: EASE }}
           >
             {clicking && (
-              <motion.span
+              <m.span
                 key={step}
                 className="absolute -left-2 -top-2 size-4 rounded-full border border-l-accent/80"
                 initial={{ scale: 0.3, opacity: 0 }}
@@ -245,13 +245,13 @@ export function BrowserDemo() {
               />
             )}
             <MousePointer2 className="size-4 fill-l-text text-l-bg" />
-          </motion.div>
+          </m.div>
         )}
       </div>
 
       <div className="flex h-11 shrink-0 items-center gap-3 border-t border-l-line px-4 font-mono text-[10.5px]">
         {step < CALLS.length ? (
-          <motion.span
+          <m.span
             key={step}
             initial={{ opacity: 0, y: 4 }}
             animate={{ opacity: 1, y: 0 }}
@@ -260,7 +260,7 @@ export function BrowserDemo() {
           >
             <span className="text-l-violet">{CALLS[step].split(' ')[0]}</span>
             {CALLS[step].slice(CALLS[step].indexOf(' '))}
-          </motion.span>
+          </m.span>
         ) : (
           <>
             <span className="min-w-0 truncate text-[12px] text-l-text">

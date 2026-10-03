@@ -1,6 +1,6 @@
 'use client';
 
-import { motion } from 'framer-motion';
+import { LazyMotion, domMax, m } from 'framer-motion';
 import { ArrowRight, Wrench } from 'lucide-react';
 import { Badge, Vox, cx } from '../../../ui';
 import { DemoFrame, Reveal, Typed, useDemoTimeline } from './shared';
@@ -10,26 +10,28 @@ const AGENTS = ['triage', 'billing', 'tech_support'] as const;
 
 function AgentRail({ active }: { active: (typeof AGENTS)[number] }) {
   return (
-    <div className="relative isolate flex items-center gap-1.5">
-      {AGENTS.map((agent) => (
-        <span
-          key={agent}
-          className={cx(
-            'relative rounded-md border px-2 py-0.5 font-mono text-[10.5px] leading-4 transition-colors duration-500',
-            agent === active ? 'border-l-accent/30 text-l-text' : 'border-l-line text-l-faint'
-          )}
-        >
-          {agent === active && (
-            <motion.span
-              layoutId="handoff-active"
-              className="absolute inset-0 -z-10 rounded-md bg-l-accent/[0.07]"
-              transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-            />
-          )}
-          {agent}
-        </span>
-      ))}
-    </div>
+    <LazyMotion features={domMax}>
+      <div className="relative isolate flex items-center gap-1.5">
+        {AGENTS.map((agent) => (
+          <span
+            key={agent}
+            className={cx(
+              'relative rounded-md border px-2 py-0.5 font-mono text-[10.5px] leading-4 transition-colors duration-500',
+              agent === active ? 'border-l-accent/30 text-l-text' : 'border-l-line text-l-faint'
+            )}
+          >
+            {agent === active && (
+              <m.span
+                layoutId="handoff-active"
+                className="absolute inset-0 -z-10 rounded-md bg-l-accent/[0.07]"
+                transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+              />
+            )}
+            {agent}
+          </span>
+        ))}
+      </div>
+    </LazyMotion>
   );
 }
 
@@ -49,7 +51,7 @@ export function HandoffDemo() {
             <Badge tone="accent">completed</Badge>
           ) : (
             <Badge tone="info">
-              <span className="size-1.5 animate-pulse rounded-full bg-l-info" /> running
+              <span className="size-1.5 motion-safe:animate-pulse rounded-full bg-l-info" /> running
             </Badge>
           )}
         </span>

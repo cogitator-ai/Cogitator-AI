@@ -1,6 +1,6 @@
 'use client';
 
-import { motion } from 'framer-motion';
+import { m } from 'framer-motion';
 import { cx, Vox } from '../../../ui';
 import { DemoBar, Reveal, useDemoTimeline } from './shared';
 
@@ -58,7 +58,7 @@ function Cases({ target, done }: { target: keyof typeof FAILS; done: number }) {
           const ran = index < done;
           const failed = FAILS[target].has(index);
           return (
-            <motion.span
+            <m.span
               key={index}
               initial={false}
               animate={{ scale: ran ? 1 : 0.7 }}

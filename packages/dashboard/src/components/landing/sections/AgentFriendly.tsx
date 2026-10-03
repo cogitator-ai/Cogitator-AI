@@ -8,9 +8,9 @@ import {
 } from '@/lib/llms';
 import { source } from '@/lib/source';
 import { LLMS_FULL_TXT_URL, LLMS_TXT_URL, SITE_URL } from '@/lib/site';
+import { AgentTerminalIsland } from '../islands';
 import { Section, SectionHeader } from '../ui';
 import { AgentActions } from './agent-friendly/AgentActions';
-import { AgentTerminal } from './agent-friendly/AgentTerminal';
 import type { TerminalLine } from './agent-friendly/types';
 
 type DocsSection = ReturnType<typeof getDocsSections>[number];
@@ -162,7 +162,7 @@ export async function AgentFriendlySection() {
       />
 
       <div className="mt-12 grid gap-8 sm:mt-14 lg:grid-cols-[1.45fr_1fr] lg:gap-12">
-        <AgentTerminal lines={script} />
+        <AgentTerminalIsland lines={script} />
 
         <div className="flex flex-col">
           <ul className="divide-y divide-l-line border-y border-l-line">

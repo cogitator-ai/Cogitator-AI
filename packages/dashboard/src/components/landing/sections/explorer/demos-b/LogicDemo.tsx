@@ -1,6 +1,6 @@
 'use client';
 
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence, m } from 'framer-motion';
 import { Check, X } from 'lucide-react';
 import { Badge, Vox, cx } from '../../../ui';
 import { DemoFrame, EASE, Reveal, Typed, useDemoTimeline } from './shared';
@@ -91,7 +91,7 @@ export function LogicDemo() {
           )
         ) : (
           <Badge tone="info">
-            <span className="size-1.5 animate-pulse rounded-full bg-l-info" /> resolving
+            <span className="size-1.5 motion-safe:animate-pulse rounded-full bg-l-info" /> resolving
           </Badge>
         )
       }
@@ -103,7 +103,7 @@ export function LogicDemo() {
       </pre>
 
       <AnimatePresence mode="wait" initial={false}>
-        <motion.div
+        <m.div
           key={index}
           className="mt-3"
           initial={{ opacity: 0, y: 6 }}
@@ -135,7 +135,7 @@ export function LogicDemo() {
             </span>
             {query.proved ? <Vox>proof complete</Vox> : <Vox tone="warn">no refund for bob</Vox>}
           </Reveal>
-        </motion.div>
+        </m.div>
       </AnimatePresence>
     </DemoFrame>
   );

@@ -3,9 +3,9 @@ import { ArrowUpRight, Braces } from 'lucide-react';
 import type { SimpleIcon } from 'simple-icons';
 import { CopyCommand } from '../CopyCommand';
 import { highlightCode } from '../highlight';
+import { RuntimeSwitcherIsland } from '../islands';
 import { Section, SectionHeader } from '../ui';
 import { RUNTIME_TABS } from './anywhere/data';
-import { RuntimeSwitcher } from './anywhere/RuntimeSwitcher';
 import type { RuntimeTab } from './anywhere/types';
 
 const TEMPLATES = ['basic', 'memory', 'swarm', 'workflow', 'api-server', 'nextjs'];
@@ -46,7 +46,7 @@ export async function RunsAnywhereSection() {
       />
 
       <div className="mt-12 sm:mt-14">
-        <RuntimeSwitcher tabs={tabs} />
+        <RuntimeSwitcherIsland tabs={tabs} />
       </div>
 
       <div className="mt-10 grid gap-6 border-t border-l-line pt-8 md:grid-cols-[auto_1fr] md:items-center md:gap-10">

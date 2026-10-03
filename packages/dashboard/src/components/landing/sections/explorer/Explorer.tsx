@@ -1,13 +1,6 @@
 'use client';
 
-import {
-  AnimatePresence,
-  animate,
-  motion,
-  useInView,
-  useMotionValue,
-  useReducedMotion,
-} from 'framer-motion';
+import { animate, AnimatePresence, m, useMotionValue, useReducedMotion } from 'framer-motion';
 import { ArrowRight } from 'lucide-react';
 import Link from 'next/link';
 import {
@@ -20,9 +13,11 @@ import {
   type FocusEvent,
   type KeyboardEvent,
 } from 'react';
+import { useOnScreen } from '../../playback';
 import { CodeBody, Section, SectionHeader, Window, cx } from '../../ui';
 import type { ExplorerFeature } from './types';
 import { DemoCycleContext, type DemoCycle } from './cycle';
+import { LiveDemo, preloadDemo } from './demos';
 
 const EASE = [0.16, 1, 0.3, 1] as const;
 const DESKTOP_QUERY = '(min-width: 1024px)';
@@ -63,7 +58,7 @@ export function Explorer({ features }: { features: ExplorerFeature[] }) {
   const listRef = useRef<HTMLDivElement>(null);
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
-  const inView = useInView(rootRef, { amount: 0.25 });
+  const inView = useOnScreen(rootRef, { amount: 0.25 });
   const prefersReduced = useReducedMotion() ?? false;
   const hydrated = useSyncExternalStore(
     subscribeNothing,
@@ -106,6 +101,11 @@ export function Explorer({ features }: { features: ExplorerFeature[] }) {
     }),
     [count, progress]
   );
+
+  const nextId = count > 1 ? features[(active + 1) % count]?.id : undefined;
+  useEffect(() => {
+    if (running && nextId) void preloadDemo(nextId);
+  }, [running, nextId]);
 
   useEffect(() => {
     const scroller = listRef.current;
@@ -227,7 +227,7 @@ export function Explorer({ features }: { features: ExplorerFeature[] }) {
                       aria-hidden
                       className="absolute inset-x-3.5 bottom-0 h-px overflow-hidden bg-white/[0.06] lg:inset-x-4 lg:bottom-1"
                     >
-                      <motion.span
+                      <m.span
                         className="block h-full origin-left bg-l-accent/70"
                         style={{ scaleX: progress }}
                       />
@@ -246,7 +246,7 @@ export function Explorer({ features }: { features: ExplorerFeature[] }) {
           className="mt-8 min-w-0 lg:mt-0"
         >
           <AnimatePresence mode="wait" initial={false}>
-            <motion.div
+            <m.div
               key={feature.id}
               initial={{ opacity: 0, y: 8, filter: 'blur(4px)' }}
               animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
@@ -278,13 +278,15 @@ export function Explorer({ features }: { features: ExplorerFeature[] }) {
                 className="mt-6"
                 bodyClassName="relative h-[300px] overflow-hidden bg-l-bg/40"
               >
-                <DemoCycleContext.Provider value={cycle}>{feature.demo}</DemoCycleContext.Provider>
+                <DemoCycleContext.Provider value={cycle}>
+                  <LiveDemo id={feature.id} />
+                </DemoCycleContext.Provider>
               </Window>
 
               <Window title={`${feature.id}.ts`} className="mt-4">
                 <CodeBody className="lg:min-h-[300px]">{feature.code}</CodeBody>
               </Window>
-            </motion.div>
+            </m.div>
           </AnimatePresence>
         </div>
       </div>

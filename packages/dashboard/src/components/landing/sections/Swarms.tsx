@@ -1,8 +1,8 @@
 import type { ReactNode } from 'react';
 import { highlightCode } from '../highlight';
+import { SwarmShowcaseIsland } from '../islands';
 import { Section, SectionHeader } from '../ui';
 import { SCENES, type StrategyId } from './swarms/scenes';
-import { SwarmShowcase } from './swarms/SwarmShowcase';
 import { SWARM_SNIPPETS } from './swarms/snippets';
 
 export async function SwarmsSection() {
@@ -23,7 +23,7 @@ export async function SwarmsSection() {
         }
         description="A supervisor over workers, a jury that votes, an auction for the task, stages behind a quality gate, two agents arguing it out — and every agent on the model that suits its role."
       />
-      <SwarmShowcase snippets={snippets} />
+      <SwarmShowcaseIsland snippets={snippets} />
     </Section>
   );
 }

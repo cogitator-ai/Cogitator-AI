@@ -1,6 +1,6 @@
 'use client';
 
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence, m } from 'framer-motion';
 import { FileText } from 'lucide-react';
 import { cx } from '../../../ui';
 import { DemoBar, EASE, Pill, Streamed, useDemoTimeline } from './shared';
@@ -69,7 +69,7 @@ export function RagDemo() {
                 {Array.from({ length: file.chunks }, (_, chunk) => {
                   const hit = isRetrieved(fileIndex, chunk, step);
                   return (
-                    <motion.span
+                    <m.span
                       key={chunk}
                       className={cx(
                         'h-3 w-[14px] rounded-[2px] border transition-colors duration-500',
@@ -100,7 +100,7 @@ export function RagDemo() {
         <div className="relative min-w-0">
           <AnimatePresence mode="wait" initial={false}>
             {step < 3 ? (
-              <motion.div
+              <m.div
                 key="ingest"
                 className="space-y-2 font-mono text-[11.5px]"
                 exit={{ opacity: 0, transition: { duration: 0.15 } }}
@@ -113,9 +113,9 @@ export function RagDemo() {
                   <p className="text-l-faint">recursive · 512 / 50 overlap → 41 chunks</p>
                 )}
                 {step >= 2 && <p className="text-l-info">embedBatch → 41 vectors stored</p>}
-              </motion.div>
+              </m.div>
             ) : step < 5 ? (
-              <motion.div
+              <m.div
                 key="retrieve"
                 initial={{ opacity: 0, y: 6 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -129,7 +129,7 @@ export function RagDemo() {
                   {rows.map((hit, index) => {
                     const dropped = step >= 4 && index >= TOP_N;
                     return (
-                      <motion.li
+                      <m.li
                         key={hit.id}
                         layout
                         transition={{ duration: 0.5, ease: EASE }}
@@ -142,16 +142,16 @@ export function RagDemo() {
                         <span className={step >= 4 ? 'text-l-accent' : 'text-l-info'}>
                           {(step >= 4 ? hit.rerank : hit.similarity).toFixed(2)}
                         </span>
-                      </motion.li>
+                      </m.li>
                     );
                   })}
                 </ul>
                 <p className="mt-2 font-mono text-[10.5px] text-l-faint">
                   {step >= 4 ? 'CohereReranker · topN 3' : 'similarity · topK 12'}
                 </p>
-              </motion.div>
+              </m.div>
             ) : (
-              <motion.div
+              <m.div
                 key="answer"
                 initial={{ opacity: 0, y: 6 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -173,7 +173,7 @@ export function RagDemo() {
                     </span>
                   ))}
                 </div>
-              </motion.div>
+              </m.div>
             )}
           </AnimatePresence>
         </div>

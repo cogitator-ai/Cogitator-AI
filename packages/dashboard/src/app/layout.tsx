@@ -39,7 +39,7 @@ const geistMono = Geist_Mono({
 
 const imperial = Cinzel({
   variable: '--font-cinzel',
-  weight: ['500', '600', '700'],
+  weight: '600',
   subsets: ['latin'],
 });
 
@@ -233,7 +233,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="en" data-scroll-behavior="smooth" suppressHydrationWarning>
       <head>
         <script
           type="application/ld+json"

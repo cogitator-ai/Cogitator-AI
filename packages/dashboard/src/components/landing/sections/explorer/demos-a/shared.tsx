@@ -1,6 +1,7 @@
 'use client';
 
-import { AnimatePresence, motion, useInView, useReducedMotion } from 'framer-motion';
+import { AnimatePresence, m, useReducedMotion } from 'framer-motion';
+import { useOnScreen } from '../../../playback';
 import {
   useEffect,
   useRef,
@@ -40,7 +41,7 @@ export interface DemoTimeline {
  */
 export function useDemoTimeline(durations: readonly number[]): DemoTimeline {
   const ref = useRef<HTMLDivElement>(null);
-  const inView = useInView(ref, { margin: '-40px' });
+  const inView = useOnScreen(ref, { margin: '-40px' });
   const hydrated = useHydrated();
   const prefersReduced = useReducedMotion() ?? false;
   const reduced = hydrated && prefersReduced;
@@ -77,7 +78,7 @@ export function Reveal({
   return (
     <AnimatePresence initial={false}>
       {show && (
-        <motion.div
+        <m.div
           className={className}
           initial={{ opacity: 0, y: 6, filter: 'blur(3px)' }}
           animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
@@ -85,7 +86,7 @@ export function Reveal({
           transition={{ duration: 0.35, ease: EASE }}
         >
           {children}
-        </motion.div>
+        </m.div>
       )}
     </AnimatePresence>
   );

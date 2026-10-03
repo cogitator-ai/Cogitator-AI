@@ -1,6 +1,7 @@
 'use client';
 
-import { AnimatePresence, motion, useInView, useReducedMotion } from 'framer-motion';
+import { AnimatePresence, LazyMotion, domMax, m, useReducedMotion } from 'framer-motion';
+import { useOnScreen } from '../../playback';
 import { Check, Pause, RotateCcw, Unplug } from 'lucide-react';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Badge, Vox, Window, cx } from '../../ui';
@@ -202,7 +203,7 @@ const toneText: Record<Tone, string> = {
 const statusBadge: Record<RunStatus, ReactNode> = {
   running: (
     <Badge tone="info">
-      <span className="size-1.5 animate-pulse rounded-full bg-l-info" /> running
+      <span className="size-1.5 motion-safe:animate-pulse rounded-full bg-l-info" /> running
     </Badge>
   ),
   interrupted: (
@@ -345,7 +346,7 @@ function Edge({
       />
       {state === 'flow' && (
         <g key={runKey}>
-          <motion.path
+          <m.path
             d={d}
             fill="none"
             strokeWidth={1}
@@ -354,7 +355,7 @@ function Edge({
             animate={{ pathLength: 1 }}
             transition={{ duration: 0.75, ease: 'linear' }}
           />
-          <motion.circle
+          <m.circle
             r={3}
             className="fill-l-accent"
             initial={{ cx: points[0].x, cy: points[0].y, opacity: 0 }}
@@ -402,7 +403,7 @@ function StatusMark({ state, x, y }: { state: NodeState; x: number; y: number })
   }
   if (state === 'running' || state === 'waiting') {
     return (
-      <motion.circle
+      <m.circle
         cx={x}
         cy={y}
         r={3}
@@ -476,7 +477,7 @@ function ApprovalChip({ state }: { state: NodeState }) {
   return (
     <AnimatePresence initial={false}>
       {visible && (
-        <motion.g
+        <m.g
           initial={{ opacity: 0, x: -4 }}
           animate={{ opacity: 1, x: 0 }}
           exit={{ opacity: 0, transition: { duration: 0.15 } }}
@@ -511,7 +512,7 @@ function ApprovalChip({ state }: { state: NodeState }) {
           >
             {approved ? 'Approved' : 'Approve?'}
           </text>
-        </motion.g>
+        </m.g>
       )}
     </AnimatePresence>
   );
@@ -520,7 +521,7 @@ function ApprovalChip({ state }: { state: NodeState }) {
 /** Replay of a checkpointed publish-post run that survives a worker restart. */
 export function WorkflowRun() {
   const ref = useRef<HTMLDivElement>(null);
-  const inView = useInView(ref, { margin: '-80px' });
+  const inView = useOnScreen(ref, { margin: '-80px' });
   const reduced = useReducedMotion() ?? false;
   const step = useRunTimeline(inView, reduced);
   const current = STEPS[step];
@@ -530,112 +531,115 @@ export function WorkflowRun() {
   const log = LOG.filter((entry) => entry.at <= step).slice(-LOG_ROWS);
 
   return (
-    <Window
-      title={`run · ${RUN_ID}`}
-      crt
-      className="flex min-w-0 flex-col"
-      bodyClassName="flex flex-1 flex-col"
-    >
-      <div ref={ref} className="relative flex flex-1 flex-col">
-        <div className="absolute right-3 top-3 z-20">{statusBadge[current.status]}</div>
-        <motion.div
-          aria-hidden
-          className="pointer-events-none absolute inset-0 z-10 bg-l-danger"
-          initial={false}
-          animate={{ opacity: offline ? [0, 0.14, 0.04] : 0 }}
-          transition={{ duration: offline ? 0.9 : 0.4, ease: EASE }}
-        />
+    <LazyMotion features={domMax}>
+      <Window
+        title={`run · ${RUN_ID}`}
+        crt
+        className="flex min-w-0 flex-col"
+        bodyClassName="flex flex-1 flex-col"
+      >
+        <div ref={ref} className="relative flex flex-1 flex-col">
+          <div className="absolute right-3 top-3 z-20">{statusBadge[current.status]}</div>
+          <m.div
+            aria-hidden
+            className="pointer-events-none absolute inset-0 z-10 bg-l-danger"
+            initial={false}
+            animate={{ opacity: offline ? [0, 0.14, 0.04] : 0 }}
+            transition={{ duration: offline ? 0.9 : 0.4, ease: EASE }}
+          />
 
-        <motion.div
-          className="flex flex-1 items-center px-4 pb-2 pt-5 sm:px-6"
-          animate={{ opacity: offline ? 0.45 : 1 }}
-          transition={{ duration: 0.4, ease: EASE }}
-        >
-          <svg
-            viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
-            className="mx-auto block w-full max-w-[400px]"
-            role="img"
-            aria-label="Workflow graph: research, then draft and fact-check in parallel, then a human review, then publish."
+          <m.div
+            className="flex flex-1 items-center px-4 pb-2 pt-5 sm:px-6"
+            animate={{ opacity: offline ? 0.45 : 1 }}
+            transition={{ duration: 0.4, ease: EASE }}
           >
-            {EDGES.map((edge) => {
-              const flowing = current.flow.includes(edge.id);
-              const finished = FINISHED.includes(stateOf(edge.from)) && stateOf(edge.to) !== 'idle';
-              return (
-                <Edge
-                  key={edge.id}
-                  points={edge.points}
-                  state={flowing ? 'flow' : finished ? 'done' : 'idle'}
-                  runKey={`${step}-${edge.id}`}
-                />
-              );
-            })}
-            {NODE_ORDER.map((id) => (
-              <GraphNode key={id} id={id} state={stateOf(id)} />
-            ))}
-            <ApprovalChip state={stateOf('review')} />
-          </svg>
-        </motion.div>
+            <svg
+              viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
+              className="mx-auto block w-full max-w-[400px]"
+              role="img"
+              aria-label="Workflow graph: research, then draft and fact-check in parallel, then a human review, then publish."
+            >
+              {EDGES.map((edge) => {
+                const flowing = current.flow.includes(edge.id);
+                const finished =
+                  FINISHED.includes(stateOf(edge.from)) && stateOf(edge.to) !== 'idle';
+                return (
+                  <Edge
+                    key={edge.id}
+                    points={edge.points}
+                    state={flowing ? 'flow' : finished ? 'done' : 'idle'}
+                    runKey={`${step}-${edge.id}`}
+                  />
+                );
+              })}
+              {NODE_ORDER.map((id) => (
+                <GraphNode key={id} id={id} state={stateOf(id)} />
+              ))}
+              <ApprovalChip state={stateOf('review')} />
+            </svg>
+          </m.div>
 
-        <div className="relative z-20 flex h-6 items-center justify-center px-4">
-          <AnimatePresence mode="wait" initial={false}>
-            {step === CRASH_STEP && (
-              <motion.div
-                key="lost"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: [0, 1, 0.4, 1] }}
-                exit={{ opacity: 0, transition: { duration: 0.15 } }}
-                transition={{ duration: 0.6 }}
-              >
-                <Vox tone="warn">worker lost</Vox>
-              </motion.div>
-            )}
-            {step === CRASH_STEP + 1 && (
-              <motion.div
-                key="restored"
-                initial={{ opacity: 0, y: 4 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, transition: { duration: 0.15 } }}
-                transition={{ duration: 0.4, ease: EASE }}
-              >
-                <Vox tone="accent">checkpoint restored</Vox>
-              </motion.div>
-            )}
-          </AnimatePresence>
+          <div className="relative z-20 flex h-6 items-center justify-center px-4">
+            <AnimatePresence mode="wait" initial={false}>
+              {step === CRASH_STEP && (
+                <m.div
+                  key="lost"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: [0, 1, 0.4, 1] }}
+                  exit={{ opacity: 0, transition: { duration: 0.15 } }}
+                  transition={{ duration: 0.6 }}
+                >
+                  <Vox tone="warn">worker lost</Vox>
+                </m.div>
+              )}
+              {step === CRASH_STEP + 1 && (
+                <m.div
+                  key="restored"
+                  initial={{ opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, transition: { duration: 0.15 } }}
+                  transition={{ duration: 0.4, ease: EASE }}
+                >
+                  <Vox tone="accent">checkpoint restored</Vox>
+                </m.div>
+              )}
+            </AnimatePresence>
+          </div>
+
+          <ol
+            className="mx-4 mb-4 flex h-[92px] flex-col justify-end overflow-hidden [&>*]:shrink-0 rounded-lg border border-l-line bg-l-bg/50 px-3 py-2 font-mono text-[10.5px] leading-[19px] sm:mx-6"
+            aria-label="Run events"
+          >
+            <AnimatePresence initial={false} mode="popLayout">
+              {log.map((entry, index) => (
+                <m.li
+                  key={entry.at}
+                  layout={!reduced}
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: index === log.length - 1 ? 1 : 0.6, y: 0 }}
+                  exit={{ opacity: 0, transition: { duration: 0.15 } }}
+                  transition={{ duration: 0.35, ease: EASE }}
+                  className="flex min-w-0 gap-3"
+                >
+                  <span className="shrink-0 text-l-faint">{entry.time}</span>
+                  <span className={cx('truncate', toneText[entry.tone])}>{entry.text}</span>
+                  {index === log.length - 1 && current.status !== 'completed' && (
+                    <span aria-hidden className="crt-cursor shrink-0" />
+                  )}
+                </m.li>
+              ))}
+            </AnimatePresence>
+          </ol>
+
+          <div className="mt-auto flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-l-brass/15 px-4 py-2.5 font-mono text-[10.5px] text-l-faint sm:px-6">
+            <span className="text-l-brass/80">PostgresCheckpointStore</span>
+            <span className="text-l-brass/60">
+              {current.checkpoints} checkpoint{current.checkpoints === 1 ? '' : 's'}
+            </span>
+            <span className="ml-auto">per-node</span>
+          </div>
         </div>
-
-        <ol
-          className="mx-4 mb-4 flex h-[92px] flex-col justify-end overflow-hidden [&>*]:shrink-0 rounded-lg border border-l-line bg-l-bg/50 px-3 py-2 font-mono text-[10.5px] leading-[19px] sm:mx-6"
-          aria-label="Run events"
-        >
-          <AnimatePresence initial={false} mode="popLayout">
-            {log.map((entry, index) => (
-              <motion.li
-                key={entry.at}
-                layout={!reduced}
-                initial={{ opacity: 0, y: 6 }}
-                animate={{ opacity: index === log.length - 1 ? 1 : 0.6, y: 0 }}
-                exit={{ opacity: 0, transition: { duration: 0.15 } }}
-                transition={{ duration: 0.35, ease: EASE }}
-                className="flex min-w-0 gap-3"
-              >
-                <span className="shrink-0 text-l-faint">{entry.time}</span>
-                <span className={cx('truncate', toneText[entry.tone])}>{entry.text}</span>
-                {index === log.length - 1 && current.status !== 'completed' && (
-                  <span aria-hidden className="crt-cursor shrink-0" />
-                )}
-              </motion.li>
-            ))}
-          </AnimatePresence>
-        </ol>
-
-        <div className="mt-auto flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-l-brass/15 px-4 py-2.5 font-mono text-[10.5px] text-l-faint sm:px-6">
-          <span className="text-l-brass/80">PostgresCheckpointStore</span>
-          <span className="text-l-brass/60">
-            {current.checkpoints} checkpoint{current.checkpoints === 1 ? '' : 's'}
-          </span>
-          <span className="ml-auto">per-node</span>
-        </div>
-      </div>
-    </Window>
+      </Window>
+    </LazyMotion>
   );
 }

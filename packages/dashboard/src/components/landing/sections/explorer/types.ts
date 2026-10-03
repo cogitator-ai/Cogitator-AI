@@ -1,8 +1,29 @@
 import type { ReactNode } from 'react';
 
+/** Every capability in the explorer; each id has a live demo in `demos.tsx`. */
+export type FeatureId =
+  | 'memory'
+  | 'rag'
+  | 'mcp'
+  | 'a2a'
+  | 'channels'
+  | 'voice'
+  | 'browser'
+  | 'evals'
+  | 'sandbox'
+  | 'safety'
+  | 'observability'
+  | 'handoffs'
+  | 'reasoning'
+  | 'time-travel'
+  | 'prompt-versions'
+  | 'neuro-symbolic'
+  | 'ship';
+
 /** One capability in the feature explorer. */
 export interface ExplorerFeature {
-  id: string;
+  /** Also picks the live demo, which loads only when its feature is shown. */
+  id: FeatureId;
   /** npm package (or packages) that ship it, e.g. '@cogitator-ai/rag'. */
   pkg: string;
   title: string;
@@ -12,6 +33,4 @@ export interface ExplorerFeature {
   href: string;
   /** Server-highlighted snippet (highlightCode). */
   code: ReactNode;
-  /** A client component element with no props that animates on mount and loops. */
-  demo: ReactNode;
 }

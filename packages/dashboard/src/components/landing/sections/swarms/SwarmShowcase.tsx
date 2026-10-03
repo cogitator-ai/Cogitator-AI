@@ -1,6 +1,7 @@
 'use client';
 
-import { AnimatePresence, motion, useInView, useReducedMotion } from 'framer-motion';
+import { AnimatePresence, LazyMotion, domMax, m, useReducedMotion } from 'framer-motion';
+import { useOnScreen } from '../../playback';
 import { ArrowUpRight } from 'lucide-react';
 import Link from 'next/link';
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
@@ -68,7 +69,7 @@ const nodeFrame: Record<NodeState, string> = {
 
 const nodeDot: Record<NodeState, string> = {
   idle: 'bg-white/15',
-  running: 'bg-l-info animate-pulse',
+  running: 'bg-l-info motion-safe:animate-pulse',
   done: 'bg-l-accent/50',
   won: 'bg-l-accent',
   out: 'bg-l-danger/70',
@@ -101,7 +102,7 @@ interface Position {
 export function SwarmShowcase({ snippets }: { snippets: Record<StrategyId, ReactNode> }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const tabsRef = useRef<HTMLDivElement>(null);
-  const inView = useInView(rootRef, { margin: '-120px' });
+  const inView = useOnScreen(rootRef, { margin: '-120px' });
   const reduced = useReducedMotion() ?? false;
   const [position, setPosition] = useState<Position>({ index: 0, beat: 0 });
 
@@ -150,110 +151,112 @@ export function SwarmShowcase({ snippets }: { snippets: Record<StrategyId, React
   };
 
   return (
-    <div ref={rootRef} className="mt-12 sm:mt-14">
-      <div
-        ref={tabsRef}
-        role="tablist"
-        aria-label="Swarm strategies"
-        className="plate-tabs flex gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-      >
-        {SCENES.map((item, index) => {
-          const selected = index === position.index;
-          return (
-            <button
-              key={item.id}
-              type="button"
-              role="tab"
-              id={`swarm-tab-${item.id}`}
-              data-strategy={item.id}
-              aria-selected={selected}
-              aria-controls="swarm-panel"
-              tabIndex={selected ? 0 : -1}
-              onClick={() => select(index)}
-              onKeyDown={onTabKeyDown}
-              className={cx(
-                'plate-tab relative flex-none overflow-hidden whitespace-nowrap sm:flex-1 rounded-lg px-3 py-2 text-[13px] outline-none focus-visible:ring-1 focus-visible:ring-l-accent/60'
-              )}
-            >
-              {item.id}
-              {selected && !reduced && (
-                <motion.span
-                  key={item.id}
-                  aria-hidden
-                  className="absolute inset-x-2 bottom-0 h-px origin-left bg-l-accent/70"
-                  initial={{ scaleX: 0 }}
-                  animate={{ scaleX: (position.beat + 1) / item.beats.length }}
-                  transition={{
-                    duration:
-                      paced(
-                        item.beats.map((b) => b.ms),
-                        position.beat
-                      ) / 1000,
-                    ease: 'linear',
-                  }}
-                />
-              )}
-            </button>
-          );
-        })}
-      </div>
-
-      <div id="swarm-panel" role="tabpanel" aria-labelledby={`swarm-tab-${scene.id}`}>
-        <Window
-          title={scene.file}
-          className="mt-3"
-          aside={
-            <Link
-              href={`/docs/swarms/strategies#${scene.id}`}
-              className="inline-flex items-center gap-1 font-mono text-[11px] text-l-faint transition-colors hover:text-l-text"
-            >
-              docs
-              <ArrowUpRight className="size-3" />
-            </Link>
-          }
-          bodyClassName="grid lg:h-[468px] lg:grid-cols-[1.08fr_1fr]"
+    <LazyMotion features={domMax}>
+      <div ref={rootRef} className="mt-12 sm:mt-14">
+        <div
+          ref={tabsRef}
+          role="tablist"
+          aria-label="Swarm strategies"
+          className="plate-tabs flex gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         >
-          <div className="crt flex min-w-0 flex-col border-b border-l-line bg-l-bg/40 lg:border-b-0 lg:border-r">
-            <AnimatePresence mode="wait" initial={false}>
-              <motion.p
-                key={scene.id}
-                initial={{ opacity: 0, y: 4 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, transition: { duration: 0.12 } }}
-                transition={{ duration: 0.35, ease: EASE }}
-                className="min-h-[4.25rem] border-b border-l-line px-4 py-3 text-[13px] leading-relaxed text-l-muted text-pretty sm:px-5"
+          {SCENES.map((item, index) => {
+            const selected = index === position.index;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                role="tab"
+                id={`swarm-tab-${item.id}`}
+                data-strategy={item.id}
+                aria-selected={selected}
+                aria-controls="swarm-panel"
+                tabIndex={selected ? 0 : -1}
+                onClick={() => select(index)}
+                onKeyDown={onTabKeyDown}
+                className={cx(
+                  'plate-tab relative flex-none overflow-hidden whitespace-nowrap sm:flex-1 rounded-lg px-3 py-2 text-[13px] outline-none focus-visible:ring-1 focus-visible:ring-l-accent/60'
+                )}
               >
-                {scene.description}
-              </motion.p>
-            </AnimatePresence>
+                {item.id}
+                {selected && !reduced && (
+                  <m.span
+                    key={item.id}
+                    aria-hidden
+                    className="absolute inset-x-2 bottom-0 h-px origin-left bg-l-accent/70"
+                    initial={{ scaleX: 0 }}
+                    animate={{ scaleX: (position.beat + 1) / item.beats.length }}
+                    transition={{
+                      duration:
+                        paced(
+                          item.beats.map((b) => b.ms),
+                          position.beat
+                        ) / 1000,
+                      ease: 'linear',
+                    }}
+                  />
+                )}
+              </button>
+            );
+          })}
+        </div>
 
-            <Stage key={scene.id} scene={scene} beat={beat} animate={!reduced} />
-
-            <EventLog scene={scene} beat={beat} />
-          </div>
-
-          <div className="relative h-[468px] min-w-0 lg:h-auto">
-            <AnimatePresence mode="wait" initial={false}>
-              <motion.div
-                key={scene.id}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.2 }}
-                className="absolute inset-0 overflow-auto"
+        <div id="swarm-panel" role="tabpanel" aria-labelledby={`swarm-tab-${scene.id}`}>
+          <Window
+            title={scene.file}
+            className="mt-3"
+            aside={
+              <Link
+                href={`/docs/swarms/strategies#${scene.id}`}
+                className="inline-flex items-center gap-1 font-mono text-[11px] text-l-faint transition-colors hover:text-l-text"
               >
-                <CodeBody className="!overflow-visible">{snippets[scene.id]}</CodeBody>
-              </motion.div>
-            </AnimatePresence>
-          </div>
-        </Window>
+                docs
+                <ArrowUpRight className="size-3" />
+              </Link>
+            }
+            bodyClassName="grid lg:h-[468px] lg:grid-cols-[1.08fr_1fr]"
+          >
+            <div className="crt flex min-w-0 flex-col border-b border-l-line bg-l-bg/40 lg:border-b-0 lg:border-r">
+              <AnimatePresence mode="wait" initial={false}>
+                <m.p
+                  key={scene.id}
+                  initial={{ opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, transition: { duration: 0.12 } }}
+                  transition={{ duration: 0.35, ease: EASE }}
+                  className="min-h-[4.25rem] border-b border-l-line px-4 py-3 text-[13px] leading-relaxed text-l-muted text-pretty sm:px-5"
+                >
+                  {scene.description}
+                </m.p>
+              </AnimatePresence>
+
+              <Stage key={scene.id} scene={scene} beat={beat} animate={!reduced} />
+
+              <EventLog scene={scene} beat={beat} />
+            </div>
+
+            <div className="relative h-[468px] min-w-0 lg:h-auto">
+              <AnimatePresence mode="wait" initial={false}>
+                <m.div
+                  key={scene.id}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.2 }}
+                  className="absolute inset-0 overflow-auto"
+                >
+                  <CodeBody className="!overflow-visible">{snippets[scene.id]}</CodeBody>
+                </m.div>
+              </AnimatePresence>
+            </div>
+          </Window>
+        </div>
+
+        <p className="mx-auto mt-5 max-w-3xl text-center text-sm leading-relaxed text-l-muted">
+          Replays of what each strategy runs · the event names are the ones swarm.on() receives ·
+          examples/swarms
+        </p>
       </div>
-
-      <p className="mx-auto mt-5 max-w-3xl text-center text-sm leading-relaxed text-l-muted">
-        Replays of what each strategy runs · the event names are the ones swarm.on() receives ·
-        examples/swarms
-      </p>
-    </div>
+    </LazyMotion>
   );
 }
 
@@ -276,7 +279,7 @@ function Stage({ scene, beat, animate }: { scene: StrategyScene; beat: number; a
       <div className="absolute inset-0 bg-[radial-gradient(rgb(255_255_255/0.05)_1px,transparent_1px)] bg-[size:18px_18px] [mask-image:radial-gradient(70%_70%_at_50%_50%,black,transparent)]" />
       <AnimatePresence mode="wait">
         {state.vox && (
-          <motion.div
+          <m.div
             key={state.vox.text}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -285,7 +288,7 @@ function Stage({ scene, beat, animate }: { scene: StrategyScene; beat: number; a
             className="absolute left-4 top-3 z-30 sm:left-5"
           >
             <Vox tone={state.vox.tone}>{state.vox.text}</Vox>
-          </motion.div>
+          </m.div>
         )}
       </AnimatePresence>
       <svg className="absolute inset-0 size-full" viewBox="0 0 100 100" preserveAspectRatio="none">
@@ -354,7 +357,7 @@ function PulseDot({
   const tone = pulse.tone ?? 'info';
   const delay = pulse.delay ?? 0;
   return (
-    <motion.div
+    <m.div
       className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-1/2"
       initial={{ left: `${from.x}%`, top: `${from.y}%`, opacity: 0 }}
       animate={{ left: `${to.x}%`, top: `${to.y}%`, opacity: [0, 1, 1, 0] }}
@@ -375,7 +378,7 @@ function PulseDot({
           {pulse.label}
         </span>
       )}
-    </motion.div>
+    </m.div>
   );
 }
 
@@ -423,7 +426,7 @@ function NodeCard({ node, state, mark }: { node: TopologyNode; state: NodeState;
 
       <AnimatePresence>
         {mark && (
-          <motion.span
+          <m.span
             key={mark.text}
             initial={{ opacity: 0, scale: 0.92 }}
             animate={{ opacity: 1, scale: 1 }}
@@ -436,7 +439,7 @@ function NodeCard({ node, state, mark }: { node: TopologyNode; state: NodeState;
             )}
           >
             {mark.text}
-          </motion.span>
+          </m.span>
         )}
       </AnimatePresence>
     </div>
@@ -455,7 +458,7 @@ function EventLog({ scene, beat }: { scene: StrategyScene; beat: number }) {
           const index = start + offset;
           const newest = index === log.length - 1;
           return (
-            <motion.div
+            <m.div
               key={`${scene.id}-${index}`}
               layout="position"
               initial={{ opacity: 0, y: 6 }}
@@ -475,7 +478,7 @@ function EventLog({ scene, beat }: { scene: StrategyScene; beat: number }) {
               </span>
               {line.detail && <span className="truncate text-l-faint">{line.detail}</span>}
               {newest && <span aria-hidden className="crt-cursor shrink-0 self-center h-[0.9em]" />}
-            </motion.div>
+            </m.div>
           );
         })}
       </AnimatePresence>

@@ -1,6 +1,6 @@
 'use client';
 
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence, m } from 'framer-motion';
 import { CheckCheck, Globe, Hash } from 'lucide-react';
 import type { ComponentType, ReactNode } from 'react';
 import { siDiscord, siTelegram, siWhatsapp, type SimpleIcon } from 'simple-icons';
@@ -190,7 +190,7 @@ export function ChannelsDemo() {
       </div>
 
       <AnimatePresence mode="wait" initial={false}>
-        <motion.div
+        <m.div
           key={skin.id}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -199,7 +199,7 @@ export function ChannelsDemo() {
           className="flex min-h-0 flex-1 flex-col justify-end gap-2.5 overflow-hidden [&>*]:shrink-0 px-4 py-3"
         >
           {MESSAGES.slice(0, shown).map((message, index) => (
-            <motion.div
+            <m.div
               key={index}
               initial={step === index ? { opacity: 0, y: 8 } : false}
               animate={{ opacity: 1, y: 0 }}
@@ -210,9 +210,9 @@ export function ChannelsDemo() {
               ) : (
                 <Row message={message} skin={skin} />
               )}
-            </motion.div>
+            </m.div>
           ))}
-        </motion.div>
+        </m.div>
       </AnimatePresence>
     </div>
   );

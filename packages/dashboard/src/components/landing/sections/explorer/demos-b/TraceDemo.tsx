@@ -1,6 +1,6 @@
 'use client';
 
-import { motion } from 'framer-motion';
+import { m } from 'framer-motion';
 import { ArrowRight, Route } from 'lucide-react';
 import { Badge, Vox, cx } from '../../../ui';
 import { Chip, DemoFrame, EASE, Reveal, useDemoTimeline } from './shared';
@@ -66,7 +66,7 @@ function Waterfall({ step }: { step: number }) {
               </div>
             </div>
             <div className="relative h-4 rounded-sm bg-white/[0.025]">
-              <motion.div
+              <m.div
                 className={cx('absolute inset-y-0.5 rounded-sm', BAR_TONE[span.kind])}
                 style={{ left: `${left}%` }}
                 initial={false}
@@ -95,7 +95,7 @@ export function TraceDemo() {
           <Badge tone="accent">completed</Badge>
         ) : step >= 2 ? (
           <Badge tone="info">
-            <span className="size-1.5 animate-pulse rounded-full bg-l-info" /> running
+            <span className="size-1.5 motion-safe:animate-pulse rounded-full bg-l-info" /> running
           </Badge>
         ) : (
           <Badge tone="brass">routing</Badge>

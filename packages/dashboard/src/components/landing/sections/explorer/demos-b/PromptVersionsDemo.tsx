@@ -1,6 +1,6 @@
 'use client';
 
-import { motion } from 'framer-motion';
+import { m } from 'framer-motion';
 import { RotateCcw } from 'lucide-react';
 import { Badge, Vox, cx } from '../../../ui';
 import { DemoFrame, EASE, Reveal, useDemoTimeline } from './shared';
@@ -85,7 +85,7 @@ function VariantBar({
         {name} <span className="text-l-faint">{share}</span>
       </span>
       <div className="relative h-1.5 rounded-full bg-white/[0.06]">
-        <motion.div
+        <m.div
           className={cx(
             'absolute inset-y-0 left-0 rounded-full',
             winner ? 'bg-l-accent/70' : 'bg-l-info/50'
@@ -122,7 +122,8 @@ export function PromptVersionsDemo() {
           <Badge tone="accent">v3 live</Badge>
         ) : step >= AB_STEP ? (
           <Badge tone="info">
-            <span className="size-1.5 animate-pulse rounded-full bg-l-info" /> A/B running
+            <span className="size-1.5 motion-safe:animate-pulse rounded-full bg-l-info" /> A/B
+            running
           </Badge>
         ) : (
           <Badge tone="neutral">v2 live</Badge>

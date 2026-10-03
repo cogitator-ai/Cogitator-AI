@@ -1,8 +1,8 @@
 import Link from 'next/link';
 import { ArrowRight } from 'lucide-react';
 import { highlightCode } from '../highlight';
+import { WorkflowRunIsland } from '../islands';
 import { CodeBody, Section, SectionHeader, Window, cx } from '../ui';
-import { WorkflowRun } from './workflows/WorkflowRun';
 
 const PIPELINE_CODE = `
 const checkpoints = new PostgresCheckpointStore({ client: pool });
@@ -79,7 +79,7 @@ export async function WorkflowsSection() {
         <Window title="publish-post.ts" className="min-w-0">
           <CodeBody>{code}</CodeBody>
         </Window>
-        <WorkflowRun />
+        <WorkflowRunIsland />
       </div>
 
       <p className="mt-5 text-sm leading-relaxed text-l-muted">

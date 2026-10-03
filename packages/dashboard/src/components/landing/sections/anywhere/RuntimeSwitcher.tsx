@@ -1,6 +1,6 @@
 'use client';
 
-import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
+import { AnimatePresence, m, useReducedMotion } from 'framer-motion';
 import { ArrowUpRight } from 'lucide-react';
 import Link from 'next/link';
 import { useId, useRef, useState, type KeyboardEvent } from 'react';
@@ -152,7 +152,7 @@ export function RuntimeSwitcher({ tabs }: { tabs: RuntimeTab[] }) {
         >
           <div className="min-w-0 border-b border-l-line lg:min-h-[470px] lg:border-b-0 lg:border-r">
             <AnimatePresence mode="wait" initial={false}>
-              <motion.div
+              <m.div
                 key={`${tab.id}:${file?.name}`}
                 initial={reduced ? false : { opacity: 0, y: 4 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -160,7 +160,7 @@ export function RuntimeSwitcher({ tabs }: { tabs: RuntimeTab[] }) {
                 transition={{ duration: 0.3, ease: EASE }}
               >
                 <CodeBody>{file?.code}</CodeBody>
-              </motion.div>
+              </m.div>
             </AnimatePresence>
           </div>
           <StreamReplay key={tab.id} script={tab.stream} runtime={tab.runtime} />

@@ -1,6 +1,7 @@
 'use client';
 
-import { AnimatePresence, motion, useInView, useReducedMotion } from 'framer-motion';
+import { AnimatePresence, m, useReducedMotion } from 'framer-motion';
+import { useOnScreen } from './playback';
 import { Check, Pause, Play, RotateCcw, ShieldCheck, Wrench } from 'lucide-react';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Badge, Vox, cx } from './ui';
@@ -75,14 +76,14 @@ function Row({ show, children }: { show: boolean; children: ReactNode }) {
   return (
     <AnimatePresence initial={false}>
       {show && (
-        <motion.div
+        <m.div
           initial={{ opacity: 0, y: 6, filter: 'blur(4px)' }}
           animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
           exit={{ opacity: 0, transition: { duration: 0.15 } }}
           transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
         >
           {children}
-        </motion.div>
+        </m.div>
       )}
     </AnimatePresence>
   );
@@ -91,7 +92,7 @@ function Row({ show, children }: { show: boolean; children: ReactNode }) {
 const statusBadge: Record<Status, ReactNode> = {
   running: (
     <Badge tone="info">
-      <span className="size-1.5 animate-pulse rounded-full bg-l-info" /> running
+      <span className="size-1.5 motion-safe:animate-pulse rounded-full bg-l-info" /> running
     </Badge>
   ),
   paused: (
@@ -109,7 +110,7 @@ const statusBadge: Record<Status, ReactNode> = {
 /** A replay of examples/core/14-approvals.ts: a large refund pauses for a human and resumes. */
 export function HeroRun() {
   const ref = useRef<HTMLDivElement>(null);
-  const inView = useInView(ref, { margin: '-80px' });
+  const inView = useOnScreen(ref, { margin: '-80px' });
   const reduced = useReducedMotion() ?? false;
   const { step, jump } = useRunTimeline(inView, reduced);
   const status = statusAt(step);
@@ -199,7 +200,7 @@ export function HeroRun() {
                     </button>
                   </>
                 ) : (
-                  <motion.span
+                  <m.span
                     animate={step === 5 ? { scale: [1, 0.94, 1] } : { scale: 1 }}
                     transition={{ duration: 0.35 }}
                     className={cx(
@@ -212,7 +213,7 @@ export function HeroRun() {
                     )}
                   >
                     {step < 5 ? 'awaiting' : declined ? 'Declined' : 'Approved'}
-                  </motion.span>
+                  </m.span>
                 )}
               </div>
             </div>

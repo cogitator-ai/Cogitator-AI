@@ -1,6 +1,6 @@
 'use client';
 
-import { motion } from 'framer-motion';
+import { m } from 'framer-motion';
 import { ChevronRight } from 'lucide-react';
 import { Fragment } from 'react';
 import { cx, Vox } from '../../../ui';
@@ -43,7 +43,7 @@ function Waveform({ speaker }: { speaker: 'user' | 'agent' | null }) {
   return (
     <div className="flex h-12 items-center gap-[3px]" aria-hidden>
       {BARS.map((bar, index) => (
-        <motion.span
+        <m.span
           key={index}
           className={cx(
             'h-full w-full max-w-[5px] flex-1 origin-center rounded-full transition-colors duration-500',
@@ -138,14 +138,14 @@ export function VoiceDemo() {
       <div className="flex items-center gap-2 overflow-hidden border-t border-l-line px-4 py-2.5 font-mono text-[10.5px]">
         <span className="shrink-0 text-l-brass/70">events</span>
         {EVENTS[step].map((event) => (
-          <motion.span
+          <m.span
             key={`${step}-${event}`}
             initial={{ opacity: 0, x: -4 }}
             animate={{ opacity: 1, x: 0 }}
             className="shrink-0 rounded border border-l-line px-1.5 text-l-muted"
           >
             {event}
-          </motion.span>
+          </m.span>
         ))}
       </div>
     </div>

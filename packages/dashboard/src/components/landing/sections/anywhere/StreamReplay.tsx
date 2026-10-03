@@ -1,6 +1,7 @@
 'use client';
 
-import { motion, useInView, useReducedMotion } from 'framer-motion';
+import { m, useReducedMotion } from 'framer-motion';
+import { useOnScreen } from '../../playback';
 import { useEffect, useRef, useState } from 'react';
 import { Vox, cx } from '../../ui';
 import type { StreamLine, StreamScript, StreamTone } from './types';
@@ -42,7 +43,7 @@ function useReplay(events: StreamLine[], active: boolean, reduced: boolean): num
 /** Replays a request and the events its response streams back, one event at a time. */
 export function StreamReplay({ script, runtime }: { script: StreamScript; runtime: string }) {
   const ref = useRef<HTMLDivElement>(null);
-  const inView = useInView(ref, { margin: '-80px' });
+  const inView = useOnScreen(ref, { margin: '-80px' });
   const reduced = useReducedMotion() ?? false;
   const shown = useReplay(script.events, inView, reduced);
   const visible = script.events.slice(0, shown);
@@ -77,7 +78,7 @@ export function StreamReplay({ script, runtime }: { script: StreamScript; runtim
         aria-label="Streamed events"
       >
         {visible.map((event, index) => (
-          <motion.li
+          <m.li
             key={`${index}-${event.label}`}
             initial={reduced ? false : { opacity: 0, x: -4 }}
             animate={{ opacity: 1, x: 0 }}
@@ -86,7 +87,7 @@ export function StreamReplay({ script, runtime }: { script: StreamScript; runtim
           >
             <span className={cx('truncate', LABEL_TONE[event.tone])}>{event.label}</span>
             {event.value && <span className="truncate text-l-muted">{event.value}</span>}
-          </motion.li>
+          </m.li>
         ))}
       </ol>
 

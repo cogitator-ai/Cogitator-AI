@@ -2,6 +2,7 @@ import { ConsoleGreeting } from '@/components/landing/ConsoleGreeting';
 import { Footer, FinalCta } from '@/components/landing/Footer';
 import { Hero } from '@/components/landing/Hero';
 import { LogoMarquee } from '@/components/landing/LogoMarquee';
+import { MotionProvider } from '@/components/landing/MotionProvider';
 import { Nav } from '@/components/landing/Nav';
 import { AgentFriendlySection } from '@/components/landing/sections/AgentFriendly';
 import { FeatureExplorerSection } from '@/components/landing/sections/FeatureExplorer';
@@ -11,26 +12,28 @@ import { WorkflowsSection } from '@/components/landing/sections/Workflows';
 
 export default function LandingPage() {
   return (
-    <div className="dark landing-noise relative min-h-screen overflow-x-clip bg-l-bg text-l-text [color-scheme:dark]">
-      <ConsoleGreeting />
-      <Nav />
-      <main>
-        <Hero />
-        <LogoMarquee />
-        <div className="brass-rule" aria-hidden />
-        <WorkflowsSection />
-        <div className="brass-rule" aria-hidden />
-        <SwarmsSection />
-        <div className="brass-rule" aria-hidden />
-        <FeatureExplorerSection />
-        <div className="brass-rule" aria-hidden />
-        <RunsAnywhereSection />
-        <div className="brass-rule" aria-hidden />
-        <AgentFriendlySection />
-        <div className="brass-rule" aria-hidden />
-        <FinalCta />
-      </main>
-      <Footer />
-    </div>
+    <MotionProvider>
+      <div className="dark landing-noise relative min-h-screen overflow-x-clip bg-l-bg text-l-text [color-scheme:dark]">
+        <ConsoleGreeting />
+        <Nav />
+        <main>
+          <Hero />
+          <LogoMarquee />
+          <div className="brass-rule" aria-hidden />
+          <WorkflowsSection />
+          <div className="brass-rule" aria-hidden />
+          <SwarmsSection />
+          <div className="brass-rule" aria-hidden />
+          <FeatureExplorerSection />
+          <div className="brass-rule" aria-hidden />
+          <RunsAnywhereSection />
+          <div className="brass-rule" aria-hidden />
+          <AgentFriendlySection />
+          <div className="brass-rule" aria-hidden />
+          <FinalCta />
+        </main>
+        <Footer />
+      </div>
+    </MotionProvider>
   );
 }

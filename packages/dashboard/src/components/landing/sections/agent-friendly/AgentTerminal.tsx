@@ -1,6 +1,7 @@
 'use client';
 
-import { useInView, useReducedMotion } from 'framer-motion';
+import { useReducedMotion } from 'framer-motion';
+import { useOnScreen } from '../../playback';
 import { useEffect, useRef, useState } from 'react';
 import { Vox, Window, cx } from '../../ui';
 import type { TerminalLine } from './types';
@@ -40,7 +41,9 @@ function useTerminal(lines: TerminalLine[], active: boolean, reduced: boolean): 
 
   useEffect(() => {
     if (reduced) {
-      setProgress({ count: total, typed: 0 });
+      setProgress((current) =>
+        current.count === total && current.typed === 0 ? current : { count: total, typed: 0 }
+      );
       return;
     }
     if (!active) return;
@@ -140,7 +143,7 @@ function Line({ line, text, cursor }: { line: TerminalLine; text: string; cursor
 /** A coding agent reading llms.txt and then one docs page as Markdown, replayed in a loop. */
 export function AgentTerminal({ lines }: { lines: TerminalLine[] }) {
   const ref = useRef<HTMLDivElement>(null);
-  const inView = useInView(ref, { margin: '-80px' });
+  const inView = useOnScreen(ref, { margin: '-80px' });
   const reduced = useReducedMotion() ?? false;
   const { count, typed } = useTerminal(lines, inView, reduced);
   const current = lines[count];

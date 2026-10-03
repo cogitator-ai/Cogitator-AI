@@ -1,13 +1,4 @@
 import { highlightCode } from '../../highlight';
-import { HandoffDemo } from './demos-b/HandoffDemo';
-import { LogicDemo } from './demos-b/LogicDemo';
-import { PromptVersionsDemo } from './demos-b/PromptVersionsDemo';
-import { SafetyDemo } from './demos-b/SafetyDemo';
-import { SandboxDemo } from './demos-b/SandboxDemo';
-import { ShipDemo } from './demos-b/ShipDemo';
-import { ThoughtTreeDemo } from './demos-b/ThoughtTreeDemo';
-import { TimeTravelDemo } from './demos-b/TimeTravelDemo';
-import { TraceDemo } from './demos-b/TraceDemo';
 import type { ExplorerFeature } from './types';
 
 const SANDBOX_CODE = `
@@ -182,7 +173,6 @@ export async function featuresB(): Promise<ExplorerFeature[]> {
         'Model-written code runs in a fresh Docker container with no network and capped memory, CPU and time, or as a WASM module with no Docker at all.',
       href: '/docs/deployment/sandbox',
       code: sandbox,
-      demo: <SandboxDemo />,
     },
     {
       id: 'safety',
@@ -192,7 +182,6 @@ export async function featuresB(): Promise<ExplorerFeature[]> {
         'Personal data is masked before the provider sees it, injection attempts fail the run, and guardrails block or rewrite unsafe inputs, outputs and tool calls.',
       href: '/docs/advanced/security',
       code: safety,
-      demo: <SafetyDemo />,
     },
     {
       id: 'observability',
@@ -202,7 +191,6 @@ export async function featuresB(): Promise<ExplorerFeature[]> {
         'Every run is a trace of LLM and tool spans with tokens and cost, exported to OpenTelemetry or Langfuse; cost routing sends easy tasks to cheaper models.',
       href: '/docs/deployment/observability',
       code: trace,
-      demo: <TraceDemo />,
     },
     {
       id: 'handoffs',
@@ -212,7 +200,6 @@ export async function featuresB(): Promise<ExplorerFeature[]> {
         'A triage agent passes the whole conversation to a specialist, which carries on with its own instructions, tools and model.',
       href: '/docs/core/agents#handoffs',
       code: handoff,
-      demo: <HandoffDemo />,
     },
     {
       id: 'reasoning',
@@ -222,7 +209,6 @@ export async function featuresB(): Promise<ExplorerFeature[]> {
         'Explore several approaches at once, score each branch, prune the weak ones and return the best path instead of the first idea.',
       href: '/docs/advanced/reasoning',
       code: reasoning,
-      demo: <ThoughtTreeDemo />,
     },
     {
       id: 'time-travel',
@@ -232,7 +218,6 @@ export async function featuresB(): Promise<ExplorerFeature[]> {
         'Checkpoint a finished run at any tool call, fork it with a different tool result or input, and diff the two timelines.',
       href: '/docs/advanced/time-travel',
       code: timeTravel,
-      demo: <TimeTravelDemo />,
     },
     {
       id: 'prompt-versions',
@@ -242,7 +227,6 @@ export async function featuresB(): Promise<ExplorerFeature[]> {
         'Deploy new instructions without a redeploy, split live traffic between versions, promote the winner and roll back in one call.',
       href: '/docs/advanced/prompt-versions',
       code: prompts,
-      demo: <PromptVersionsDemo />,
     },
     {
       id: 'neuro-symbolic',
@@ -252,7 +236,6 @@ export async function featuresB(): Promise<ExplorerFeature[]> {
         'Give agents a Prolog engine, constraint solving and plan validation, so rules are proved rather than guessed.',
       href: '/docs/advanced/neuro-symbolic',
       code: logic,
-      demo: <LogicDemo />,
     },
     {
       id: 'ship',
@@ -262,7 +245,6 @@ export async function featuresB(): Promise<ExplorerFeature[]> {
         'Scaffold a project, then deploy to Docker or Fly.io with a generated Dockerfile, preflight checks and secrets passed through.',
       href: '/docs/deployment/deploy-package',
       code: ship,
-      demo: <ShipDemo />,
     },
   ];
 }

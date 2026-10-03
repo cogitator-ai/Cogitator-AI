@@ -1,12 +1,4 @@
 import { highlightCode } from '../../highlight';
-import { A2aDemo } from './demos-a/A2aDemo';
-import { BrowserDemo } from './demos-a/BrowserDemo';
-import { ChannelsDemo } from './demos-a/ChannelsDemo';
-import { EvalsDemo } from './demos-a/EvalsDemo';
-import { McpDemo } from './demos-a/McpDemo';
-import { MemoryDemo } from './demos-a/MemoryDemo';
-import { RagDemo } from './demos-a/RagDemo';
-import { VoiceDemo } from './demos-a/VoiceDemo';
 import type { ExplorerFeature } from './types';
 
 const MEMORY_CODE = `
@@ -169,7 +161,6 @@ export async function featuresA(): Promise<ExplorerFeature[]> {
         'Every run gets a context built to a token budget: recent history, long-term facts and semantic hits, on Postgres, Redis, SQLite, MongoDB or Qdrant.',
       href: '/docs/memory',
       code: memory,
-      demo: <MemoryDemo />,
     },
     {
       id: 'rag',
@@ -179,7 +170,6 @@ export async function featuresA(): Promise<ExplorerFeature[]> {
         'Load, chunk, embed, retrieve and rerank your documents, then hand the agent a search tool that returns sources it can cite.',
       href: '/docs/rag',
       code: rag,
-      demo: <RagDemo />,
     },
     {
       id: 'mcp',
@@ -189,7 +179,6 @@ export async function featuresA(): Promise<ExplorerFeature[]> {
         'Give agents the tools of any MCP server, and serve your agents to Claude Desktop, Cursor or Claude Code with one call.',
       href: '/docs/integrations/mcp',
       code: mcp,
-      demo: <McpDemo />,
     },
     {
       id: 'a2a',
@@ -199,7 +188,6 @@ export async function featuresA(): Promise<ExplorerFeature[]> {
         'Expose agents over the A2A protocol with generated agent cards, and call remote agents from any framework with streaming results.',
       href: '/docs/integrations/a2a',
       code: a2a,
-      demo: <A2aDemo />,
     },
     {
       id: 'channels',
@@ -209,7 +197,6 @@ export async function featuresA(): Promise<ExplorerFeature[]> {
         'One assistant on Telegram, Discord, Slack, WhatsApp and web chat, with sessions, streaming replies and tool approvals right in the chat.',
       href: '/docs/channels/gateway',
       code: channels,
-      demo: <ChannelsDemo />,
     },
     {
       id: 'voice',
@@ -219,7 +206,6 @@ export async function featuresA(): Promise<ExplorerFeature[]> {
         'Speech in, speech out: an STT, agent and TTS pipeline with voice activity detection, or native realtime speech with OpenAI and Gemini.',
       href: '/docs/voice',
       code: voice,
-      demo: <VoiceDemo />,
     },
     {
       id: 'browser',
@@ -229,7 +215,6 @@ export async function featuresA(): Promise<ExplorerFeature[]> {
         'Playwright-backed tools to navigate, click, fill forms and extract data, with stealth mode and accessibility-tree vision.',
       href: '/docs/browser',
       code: browser,
-      demo: <BrowserDemo />,
     },
     {
       id: 'evals',
@@ -239,7 +224,6 @@ export async function featuresA(): Promise<ExplorerFeature[]> {
         'Run agents over datasets with deterministic and LLM-judge metrics, and A/B two versions with a significance test before you ship.',
       href: '/docs/evals',
       code: evals,
-      demo: <EvalsDemo />,
     },
   ];
 }

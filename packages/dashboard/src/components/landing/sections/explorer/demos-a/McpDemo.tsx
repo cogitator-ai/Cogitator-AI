@@ -1,6 +1,6 @@
 'use client';
 
-import { motion } from 'framer-motion';
+import { m } from 'framer-motion';
 import { ArrowRight, Check, Wrench } from 'lucide-react';
 import { siClaude, siGithub, type SimpleIcon } from 'simple-icons';
 import type { ReactNode } from 'react';
@@ -71,7 +71,7 @@ export function McpDemo() {
             </Badge>
           ) : step >= 4 ? (
             <Badge tone="info">
-              <span className="size-1.5 animate-pulse rounded-full bg-l-info" /> running
+              <span className="size-1.5 motion-safe:animate-pulse rounded-full bg-l-info" /> running
             </Badge>
           ) : (
             <span className="font-mono text-[10.5px] text-l-faint">idle</span>
@@ -91,7 +91,7 @@ export function McpDemo() {
           </p>
           {GITHUB_TOOLS.map((tool, index) => (
             <Reveal key={tool} show={step >= 1}>
-              <motion.div
+              <m.div
                 initial={false}
                 animate={{ x: calling === tool ? 4 : 0 }}
                 transition={{ duration: 0.3, ease: EASE, delay: step === 1 ? index * 0.06 : 0 }}
@@ -107,7 +107,7 @@ export function McpDemo() {
                 <Wrench className="size-3 shrink-0" />
                 <span className="truncate">{tool}</span>
                 {called(tool) && <Check className="ml-auto size-3 shrink-0 text-l-accent/80" />}
-              </motion.div>
+              </m.div>
             </Reveal>
           ))}
         </Panel>

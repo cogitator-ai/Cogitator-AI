@@ -1,6 +1,6 @@
 'use client';
 
-import { motion } from 'framer-motion';
+import { m } from 'framer-motion';
 import { Check, X } from 'lucide-react';
 import { cx, Vox } from '../../../ui';
 import { DemoBar, EASE, Reveal, useDemoTimeline } from './shared';
@@ -63,7 +63,7 @@ export function MemoryDemo() {
         <div>
           <div className="flex h-2.5 w-full gap-px overflow-hidden rounded-full bg-white/[0.04]">
             {SOURCES.map((source, index) => (
-              <motion.span
+              <m.span
                 key={source.label}
                 className={cx(
                   'h-full shrink-0 rounded-[1px]',

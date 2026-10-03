@@ -1,6 +1,6 @@
 'use client';
 
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence, m } from 'framer-motion';
 import { Box, Cpu } from 'lucide-react';
 import { Badge, Vox } from '../../../ui';
 import { Chip, DemoFrame, EASE, Reveal, SceneTabs, useDemoTimeline } from './shared';
@@ -111,14 +111,14 @@ export function SandboxDemo() {
         <Badge tone="neutral">exit 1</Badge>
       ) : (
         <Badge tone="info">
-          <span className="size-1.5 animate-pulse rounded-full bg-l-info" /> running
+          <span className="size-1.5 motion-safe:animate-pulse rounded-full bg-l-info" /> running
         </Badge>
       )
     ) : step >= 7 ? (
       <Badge tone="accent">ok</Badge>
     ) : (
       <Badge tone="info">
-        <span className="size-1.5 animate-pulse rounded-full bg-l-info" /> running
+        <span className="size-1.5 motion-safe:animate-pulse rounded-full bg-l-info" /> running
       </Badge>
     );
 
@@ -139,7 +139,7 @@ export function SandboxDemo() {
       }
     >
       <AnimatePresence mode="wait" initial={false}>
-        <motion.div
+        <m.div
           key={scene}
           initial={{ opacity: 0, x: 8 }}
           animate={{ opacity: 1, x: 0 }}
@@ -147,7 +147,7 @@ export function SandboxDemo() {
           transition={{ duration: 0.3, ease: EASE }}
         >
           {scene === 0 ? <DockerScene step={step} /> : <WasmScene step={step} />}
-        </motion.div>
+        </m.div>
       </AnimatePresence>
     </DemoFrame>
   );

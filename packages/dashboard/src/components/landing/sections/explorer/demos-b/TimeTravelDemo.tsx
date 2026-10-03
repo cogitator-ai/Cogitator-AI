@@ -1,6 +1,6 @@
 'use client';
 
-import { motion } from 'framer-motion';
+import { m } from 'framer-motion';
 import { Diamond, GitBranch } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { Badge, Vox, cx } from '../../../ui';
@@ -70,7 +70,7 @@ export function TimeTravelDemo() {
           <Badge tone="warn">diverged at step 3</Badge>
         ) : step >= CHECKPOINT_STEP + 1 ? (
           <Badge tone="info">
-            <span className="size-1.5 animate-pulse rounded-full bg-l-info" /> replaying
+            <span className="size-1.5 motion-safe:animate-pulse rounded-full bg-l-info" /> replaying
           </Badge>
         ) : (
           <Badge tone="neutral">original run</Badge>
@@ -105,13 +105,13 @@ export function TimeTravelDemo() {
             <div key={row} className="contents">
               <div className="flex items-center justify-center font-mono text-[10px] text-l-faint">
                 {isCheckpoint && step >= CHECKPOINT_STEP ? (
-                  <motion.span
+                  <m.span
                     initial={{ scale: 0.4, opacity: 0 }}
                     animate={{ scale: 1, opacity: 1 }}
                     transition={{ duration: 0.4, ease: EASE }}
                   >
                     <Diamond className="size-3 fill-l-brass/30 text-l-brass" />
-                  </motion.span>
+                  </m.span>
                 ) : (
                   row
                 )}

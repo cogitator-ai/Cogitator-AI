@@ -1,6 +1,6 @@
 'use client';
 
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence, m } from 'framer-motion';
 import { ArrowDown, ShieldAlert, ShieldCheck, Wrench } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { Badge, Vox, cx } from '../../../ui';
@@ -118,7 +118,7 @@ function InjectionScene({ step }: { step: number }) {
             <span className="text-l-danger">0.90</span>
           </div>
           <div className="relative mt-2 h-1.5 rounded-full bg-white/[0.06]">
-            <motion.div
+            <m.div
               className="absolute inset-y-0 left-0 rounded-full bg-l-danger/70"
               initial={{ width: 0 }}
               animate={{ width: '90%' }}
@@ -217,7 +217,7 @@ export function SafetyDemo() {
       }
     >
       <AnimatePresence mode="wait" initial={false}>
-        <motion.div
+        <m.div
           key={scene}
           initial={{ opacity: 0, x: 8 }}
           animate={{ opacity: 1, x: 0 }}
@@ -227,7 +227,7 @@ export function SafetyDemo() {
           {scene === 0 && <PiiScene step={step} />}
           {scene === 1 && <InjectionScene step={step} />}
           {scene === 2 && <GuardrailScene step={step} />}
-        </motion.div>
+        </m.div>
       </AnimatePresence>
     </DemoFrame>
   );
