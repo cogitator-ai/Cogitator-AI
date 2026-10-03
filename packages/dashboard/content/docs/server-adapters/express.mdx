@@ -83,18 +83,22 @@ interface CogitatorServerConfig {
     rateLimit?: RateLimitConfig;
     cors?: CorsConfig;
     swagger?: SwaggerConfig;
-    websocket?: WebSocketConfig;
+    websocket?: WebSocketConfig; // { path?, pingInterval? (ms, default 30000), maxPayloadSize? (bytes, default 1 MiB) }
   };
 }
 ```
+
+`init()` mounts the router once (calling it again does nothing); `server.isInitialized` tells whether it ran.
 
 ## Request Handling
 
 - Agent and swarm bodies are validated: `input` must be a non-empty string, `context` an object, `threadId` a string, swarm `timeout` a positive number. Invalid or malformed JSON bodies return `400 INVALID_INPUT`.
 - Workflow `options` are limited to `maxConcurrency`, `maxIterations` (positive integers) and `checkpoint` (boolean); other options are dropped and wrongly typed ones return `400`.
 - Thread messages need a `role` of `user`, `assistant` or `system` and a non-empty string `content`.
-- A workflow that fails returns `500 WORKFLOW_FAILED`, and its stream ends with an `error` event instead of `workflow_completed`.
-- `CogitatorError`s keep their code and mapped status (for example `LLM_RATE_LIMITED` → 429); other errors return a generic `500 INTERNAL` and are logged.
+- A workflow that fails returns `500 WORKFLOW_FAILED`, and its stream ends with an `error` event instead of `workflow_completed`. Without `@cogitator-ai/workflows` or `@cogitator-ai/swarms` installed, those routes return `501 UNIMPLEMENTED`.
+- Unknown agents, workflows, swarms and routes return `404 NOT_FOUND`. `GET /swarms/:name/blackboard` returns the swarm's configured `blackboard.sections`, or `400` when its blackboard is not enabled.
+- The thread routes use `cogitator.getMemory()` and return `503 UNAVAILABLE` when the runtime has no memory. Another user's thread returns `403 THREAD_ACCESS_DENIED`.
+- `CogitatorError`s keep their message, code and mapped status (for example `LLM_RATE_LIMITED` → 429). Any other error is logged and answered as `500` with `{ "message": "Internal server error", "code": "INTERNAL" }`.
 - `GET /agents` exposes each agent's `config.description`, never its `instructions`.
 
 ## Authentication
@@ -118,7 +122,9 @@ const server = new CogitatorServer({
 });
 ```
 
-When `auth` returns `undefined`, the request proceeds as unauthenticated; throw to reject it with `401`. The `AuthContext` is attached to `req.cogitator.auth`, its `userId` is passed to agent runs, and the same function guards WebSocket upgrade requests.
+When `auth` returns `undefined`, the request proceeds as unauthenticated; throw to reject it with `401 UNAUTHORIZED`. The `AuthContext` is attached to `req.cogitator.auth` (next to `requestId` and `startTime`), and its `userId` is passed to agent and swarm runs and scopes the thread routes.
+
+The same function guards WebSocket upgrades. There it receives the raw upgrade request (`http.IncomingMessage`), not an Express request, so read only `headers` and `url` in code that serves both.
 
 ## Rate Limiting
 
@@ -129,6 +135,7 @@ config: {
     max: 100,
     message: 'Too many requests',
     keyGenerator: (req) => req.ip ?? 'unknown',
+    skip: (req) => req.path === '/health',
     trustProxy: false, // true: key by the nearest X-Forwarded-For hop (the address your proxy saw)
   },
 }
@@ -191,17 +198,21 @@ await server.attachWebSocket(httpServer); // ws://host/cogitator/ws
 httpServer.listen(3000);
 ```
 
-Run an agent (only agent runs are supported over WebSocket):
+`attachWebSocket()` returns the `WebSocketServer`; it throws when `enableWebSocket` is off, when `init()` has not run, or when `ws` is not installed. The path is `<basePath>/ws`; `websocket.path` replaces it with a full path. The server pings every `pingInterval` ms and drops clients that stop answering.
+
+Run an agent (only agent runs are supported; `workflow` and `swarm` runs answer with an error):
 
 ```json
 {
   "type": "run",
   "id": "req_1",
-  "payload": { "type": "agent", "name": "assistant", "input": "Hello" }
+  "payload": { "type": "agent", "name": "assistant", "input": "Hello", "threadId": "t1" }
 }
 ```
 
-Events arrive as `{ "type": "event", "id": "req_1", "payload": { "type": "token" | "tool-call" | "tool-result" | "complete" | "cancelled", ... } }`. Send `{ "type": "stop" }` to abort the running agent. Subscribe to `agent:<name>` (`{ "type": "subscribe", "channel": "agent:assistant" }`) to observe runs started by other clients.
+Events arrive as `{ "type": "event", "id": "req_1", "payload": { "type": "token" | "reasoning" | "tool-call" | "tool-result" | "complete" | "cancelled", ... } }`, and failures as `{ "type": "error", "id": "req_1", "error": "..." }`. Resume a run paused for approval with `{ "type": "resume", "id": "req_2", "payload": { "name": "assistant", "threadId": "t1", "decisions": { "call_1": { "approved": true } } } }`. Send `{ "type": "stop" }` to abort the running agent and `{ "type": "ping" }` to get a `pong`. A new `run` or `resume` aborts the one still running on that connection.
+
+`{ "type": "subscribe", "channel": "agent:assistant" }` (answered with `subscribed`) delivers the events of runs of that agent started from other connections of the same user (the `userId` your `auth` returned), with `channel` set on each frame; `unsubscribe` stops them. Runs of other users never reach the subscriber. Without `auth` every connection counts as the same anonymous user and sees every run of that agent. A connection holds up to 64 subscriptions of at most 256 characters.
 
 ## Exported Utilities
 
@@ -224,5 +235,6 @@ import {
   setupSSEHeaders,
   generateOpenAPISpec,
   serveSwaggerUI,
+  setupWebSocket,
 } from '@cogitator-ai/express';
 ```

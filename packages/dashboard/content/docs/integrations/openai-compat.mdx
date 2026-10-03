@@ -97,6 +97,12 @@ await server.stop();
 
 `start()` waits for plugin registration, so it can be called right after construction. With `port: 0` the OS picks a port and `getUrl()` / `getBaseUrl()` report the bound one. `/health` stays public when `apiKeys` are set.
 
+### Authentication and Errors
+
+With `apiKeys`, every request except `GET /health` needs `Authorization: Bearer <key>`; a missing or unknown key answers `401` with code `invalid_api_key`. Keys only gate access: every key sees the same assistants, threads, runs and files, and runs carry no `userId`, so give each tenant its own server (or storage) when their data must stay apart.
+
+Errors use OpenAI's shape, `{ "error": { "message", "type", "param", "code" } }`, with `invalid_request` (400), `invalid_api_key` (401), `permission_denied` (403), `not_found` (404), `rate_limit_exceeded` (429) and otherwise `internal_error`. A run that fails ends with `status: 'failed'` and `last_error: { code: 'server_error', message }`.
+
 ## Supported Endpoints
 
 The server implements these OpenAI API routes:
@@ -188,7 +194,9 @@ const run = await adapter.createRun(thread.id, {
 
 for await (const { event, data } of adapter.streamRunEvents(run.id)) {
   if (event === 'thread.message.delta' && typeof data !== 'string' && 'delta' in data) {
-    process.stdout.write(data.delta.content?.[0]?.text?.value ?? '');
+    for (const part of data.delta.content ?? []) {
+      if (part.type === 'text') process.stdout.write(part.text?.value ?? '');
+    }
   }
 }
 ```

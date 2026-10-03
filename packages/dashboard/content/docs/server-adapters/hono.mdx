@@ -66,7 +66,9 @@ interface CogitatorAppOptions {
 - Bodies are validated before anything reaches the runtime: `input` must be a non-empty string, `context` an object, `threadId` a non-empty string, swarm `timeout` a positive number. Invalid bodies return `400 INVALID_INPUT`; bodies above `bodyLimit` return `413 PAYLOAD_TOO_LARGE`.
 - Workflow `options` are limited to `maxConcurrency`, `maxIterations` (positive integers) and `checkpoint` (boolean); other options are dropped and wrongly typed ones return `400 INVALID_INPUT`. The body itself is optional.
 - Thread messages accept the roles `user`, `assistant` and `system`; `metadata` is stored with the entry.
-- `CogitatorError`s keep their HTTP status and code (for example `429 LLM_RATE_LIMITED`), `HTTPException`s keep their response, and other errors are logged and returned as `500 Internal server error`. A workflow that ends with an error is reported as a failure.
+- Unknown agents, workflows and swarms return `404 NOT_FOUND`; workflow and swarm routes return `501 UNIMPLEMENTED` when `@cogitator-ai/workflows` or `@cogitator-ai/swarms` is not installed. `GET /swarms/:name/blackboard` returns the configured `blackboard.sections`, or `400` when the blackboard is disabled.
+- The thread routes use `cogitator.getMemory()` and return `503 UNAVAILABLE` without memory; another user's thread returns `403 THREAD_ACCESS_DENIED`.
+- `CogitatorError`s keep their message, HTTP status and code (for example `429 LLM_RATE_LIMITED`), `HTTPException`s keep their response, and other errors are logged and returned as `500` with the message `Internal server error`. A workflow that ends with an error is answered like the error itself.
 - Disconnecting clients abort the running agent, workflow or swarm.
 - `GET /agents` exposes each agent's `description`, never its `instructions`; `GET /tools` returns parameters as JSON Schema.
 
@@ -122,7 +124,7 @@ const app = cogitatorApp({
 });
 ```
 
-The auth middleware applies to all routes via `app.use('*', ...)`.
+The auth middleware applies to all routes via `app.use('*', ...)`, including `/health`, `/ready` and the WebSocket upgrade. Throwing answers `401 UNAUTHORIZED`; returning `undefined` lets the request through anonymously. The result is available as `c.get('cogitatorAuth')`, and its `userId` reaches agent and swarm runs and scopes the thread routes.
 
 ## Mounting Under a Prefix
 
@@ -150,7 +152,7 @@ All Cogitator endpoints are now available under `/cogitator/agents/...`, `/cogit
 
 ## Swagger & OpenAPI
 
-When `enableSwagger` is `true`, the app registers `/openapi.json` and `/docs` routes. The spec is generated dynamically from the registered agents, workflows, and swarms using the shared `@cogitator-ai/server-shared` generator.
+When `enableSwagger` is `true`, the app registers `/openapi.json` and `/docs` routes. The spec is generated from the registered agents, workflows, and swarms by the shared `@cogitator-ai/server-shared` generator on the first request and then cached. Its `servers` default to `/`, so set them to your mount path when you mount the app under a prefix.
 
 ```typescript
 const app = cogitatorApp({
@@ -215,24 +217,35 @@ injectWebSocket(serve({ fetch: root.fetch, port: 3000 }));
 
 Use `upgradeWebSocket` from `hono/bun`, `hono/deno` or `hono/cloudflare-workers` on those runtimes. Without it the endpoint answers `501 UNIMPLEMENTED`.
 
-Clients send `run` (`{ type: 'agent' | 'workflow' | 'swarm', name, input, context?, threadId? }`), `stop` and `ping`; the server answers with `event` (`token`, `tool-call`, `tool-result`, `complete`, `cancelled`), `error` and `pong`. Messages above `maxPayloadSize` close the socket with code `1009`, and closing the socket aborts its active run.
+Clients send:
+
+- `run` with `payload: { type: 'agent' | 'workflow' | 'swarm', name, input, context?, threadId? }` — a workflow gets `{ input }` as its input state;
+- `resume` with `payload: { name, threadId, decisions?, defaultDecision? }` to continue an agent run paused for approval;
+- `stop` to abort the active run, and `ping`.
+
+The server answers with `event` frames (`token`, `reasoning`, `tool-call`, `tool-result` for agents, then `complete` with the result or `cancelled`), `error` frames (`{ type: 'error', id, error }`) and `pong`. Each connection runs one thing at a time: a second `run` or `resume` answers `A run is already in progress`. There are no `subscribe` channels. Messages above `maxPayloadSize` (default 1 MiB) close the socket with code `1009`, and closing the socket aborts its active run.
 
 ## Context Variables
 
-Inside custom Hono routes, the Cogitator context is available via Hono's `c.get()`:
+Routes behind the context middleware read the Cogitator context with `c.get()`. Add them to the app `cogitatorApp` returns, or put `createContextMiddleware` in front of your own app:
 
 ```typescript
 import { Hono } from 'hono';
-import type { HonoEnv } from '@cogitator-ai/hono';
+import { createContextMiddleware, type HonoEnv } from '@cogitator-ai/hono';
 
 const app = new Hono<HonoEnv>();
+app.use('*', createContextMiddleware({ cogitator, agents: { summarizer } }));
 
 app.get('/custom', async (c) => {
-  const ctx = c.get('cogitator');
+  const { runtime, agents } = c.get('cogitator');
   const auth = c.get('cogitatorAuth');
   const requestId = c.get('cogitatorRequestId');
 
-  return c.json({ runtime: 'ready', requestId });
+  const result = await runtime.run(agents.summarizer, {
+    input: 'Summarize: Hono runs on every runtime.',
+    userId: auth?.userId,
+  });
+  return c.json({ requestId, output: result.output });
 });
 ```
 

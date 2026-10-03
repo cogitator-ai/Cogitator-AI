@@ -27,7 +27,7 @@ import { MCPClient } from '@cogitator-ai/mcp';
 const client = await MCPClient.connect({
   transport: 'stdio',
   command: 'npx',
-  args: ['-y', '@anthropic/mcp-server-filesystem', '/home/user/documents'],
+  args: ['-y', '@modelcontextprotocol/server-filesystem', '/home/user/documents'],
   timeout: 10000,
 });
 
@@ -51,7 +51,7 @@ import { MCPClient } from '@cogitator-ai/mcp';
 const fsClient = await MCPClient.connect({
   transport: 'stdio',
   command: 'npx',
-  args: ['-y', '@anthropic/mcp-server-filesystem', '/workspace'],
+  args: ['-y', '@modelcontextprotocol/server-filesystem', '/workspace'],
 });
 
 const dbClient = await MCPClient.connect({
@@ -88,35 +88,41 @@ import { connectMCPServer } from '@cogitator-ai/mcp';
 const { tools, cleanup } = await connectMCPServer({
   transport: 'stdio',
   command: 'npx',
-  args: ['-y', '@anthropic/mcp-server-github'],
-  env: { GITHUB_TOKEN: process.env.GITHUB_TOKEN! },
+  args: ['-y', '@modelcontextprotocol/server-github'],
+  env: { GITHUB_PERSONAL_ACCESS_TOKEN: process.env.GITHUB_TOKEN! },
 });
 
 const agent = new Agent({
   name: 'github-bot',
   model: 'openai/gpt-6.1-sol',
+  instructions: 'Answer questions about GitHub repositories.',
   tools,
 });
 
 await cleanup();
 ```
 
+It also returns the connected `client`. For stdio servers, `env` is merged over the current process environment.
+
 ### MCPClientConfig
 
-| Option          | Type                         | Description                                       |
-| --------------- | ---------------------------- | ------------------------------------------------- |
-| `transport`     | `'stdio' \| 'http' \| 'sse'` | Transport protocol                                |
-| `command`       | `string`                     | Command for stdio transport                       |
-| `args`          | `string[]`                   | Command arguments for stdio                       |
-| `env`           | `Record<string, string>`     | Environment variables for stdio                   |
-| `cwd`           | `string`                     | Working directory for the stdio process           |
-| `url`           | `string`                     | Server URL for HTTP/SSE transport                 |
-| `headers`       | `Record<string, string>`     | Extra HTTP headers (e.g. `Authorization`)         |
-| `timeout`       | `number`                     | Connection timeout in ms                          |
-| `clientName`    | `string`                     | Client identification name                        |
-| `clientVersion` | `string`                     | Client version string                             |
-| `retry`         | `MCPRetryConfig`             | Retry settings for failed operations              |
-| `autoReconnect` | `boolean`                    | Auto-reconnect on connection loss (default: true) |
+| Option                                                 | Type                         | Description                                          |
+| ------------------------------------------------------ | ---------------------------- | ---------------------------------------------------- |
+| `transport`                                            | `'stdio' \| 'http' \| 'sse'` | Transport protocol (`'sse'` is an alias of `'http'`) |
+| `command`                                              | `string`                     | Command for stdio transport                          |
+| `args`                                                 | `string[]`                   | Command arguments for stdio                          |
+| `env`                                                  | `Record<string, string>`     | Environment variables for stdio                      |
+| `cwd`                                                  | `string`                     | Working directory for the stdio process              |
+| `url`                                                  | `string`                     | Server URL for HTTP/SSE transport                    |
+| `headers`                                              | `Record<string, string>`     | Extra HTTP headers (e.g. `Authorization`)            |
+| `timeout`                                              | `number`                     | Connection timeout in ms (default: none)             |
+| `clientName`                                           | `string`                     | Client identification name                           |
+| `clientVersion`                                        | `string`                     | Client version string                                |
+| `retry`                                                | `MCPRetryConfig`             | Retry settings for failed operations                 |
+| `autoReconnect`                                        | `boolean`                    | Auto-reconnect on connection loss (default: true)    |
+| `onReconnecting`, `onReconnected`, `onReconnectFailed` | callbacks                    | Reconnection lifecycle hooks                         |
+
+The `http` transport speaks MCP Streamable HTTP; servers that only offer the legacy HTTP+SSE transport are not supported. Besides `getTools()`, the client has `listToolDefinitions()` (raw MCP definitions), `isConnected()`, `reconnect()` and `close()`.
 
 ### Retry and Reconnection
 
@@ -175,6 +181,8 @@ const messages = await client.getPrompt('code-review', {
 });
 ```
 
+`readResource` returns the first content block; `readResourceContents` returns all of them.
+
 ## MCPServer
 
 ### Exposing Cogitator Tools
@@ -203,6 +211,8 @@ server.registerTools([calculator]);
 await server.start();
 ```
 
+`serveMCPTools(tools, config)` does the same in one call and returns the started server. Tools, resources and prompts can be added one by one (`registerTool`, `registerResource`, `registerPrompt`) or in batches (`registerTools`, `registerResources`, `registerPrompts`), removed with the matching `unregister*` methods and listed with `getRegisteredTools()` / `getRegisteredResources()` / `getRegisteredPrompts()`.
+
 ### HTTP Transport
 
 For remote access, use the HTTP transport:
@@ -221,13 +231,13 @@ server.registerTools([calculator, webSearch, fileReader]);
 await server.start();
 ```
 
-Clients connect to `http://localhost:3000/mcp`. Use `port: 0` to bind a random free port and read it back with `server.getPort()`. `maxBodySize` (default 10 MB), `corsOrigin` (default `'*'`) and `auth` (see below) tune the HTTP endpoint; `start()` rejects if the port cannot be bound and `stop()` closes open connections.
+Clients connect to `http://localhost:3000/mcp` (`port` defaults to `3000`, `host` to `localhost`; other paths answer `404`). Use `port: 0` to bind a random free port and read it back with `server.getPort()`. `maxBodySize` (default 10 MB), `corsOrigin` (default `'*'`) and `auth` (see below) tune the HTTP endpoint; `start()` rejects if the port cannot be bound and `stop()` closes open connections.
 
 Tool arguments are validated against the tool's full Zod schema before `execute` runs; invalid arguments and thrown errors come back to the client as `isError` tool results, while errors thrown by resource `read` and prompt `get` handlers are returned as JSON-RPC errors. With `logging: true`, diagnostics go to stderr so the stdio transport's stdout stays reserved for JSON-RPC.
 
 ### Authentication and Per-User Tools
 
-Over HTTP the server is open to anyone who can reach it. Pass `auth` to establish the caller of every request, usually from its bearer token. Requests it returns `undefined` for (or throws on) are answered `401`. The caller's `userId` reaches tools as `context.userId`, and resource `read` and prompt `get` handlers receive the caller as their second argument:
+Over HTTP the server is open to anyone who can reach it. Pass `auth` to establish the caller of every request, usually from its bearer token; it receives the raw `http.IncomingMessage` and returns an `MCPCaller` (`{ userId?, scopes?, metadata? }`). Requests it returns `undefined` for (or throws on) are answered `401` with `WWW-Authenticate: Bearer`. The caller's `userId` reaches tools as `context.userId`, and resource `read` and prompt `get` handlers receive the caller as their second argument:
 
 ```typescript
 import { MCPServer, type MCPAuthFunction } from '@cogitator-ai/mcp';
@@ -278,7 +288,11 @@ server.registerResource({
     text: JSON.stringify(await loadAppSettings()),
   }),
 });
+```
 
+A URI with `{placeholders}` is registered as a resource template; the matched values arrive in `params`. `read` may return one content or an array, and `uri` defaults to the URI that was read:
+
+```typescript
 server.registerResource({
   uri: 'db://users/{userId}',
   name: 'User Profile',
@@ -334,15 +348,40 @@ In the client's MCP config:
 { "mcpServers": { "cogitator": { "command": "npx", "args": ["tsx", "my-agents.ts"] } } }
 ```
 
-Each tool is named after its agent (`toolNames` renames them) and described by the agent's `description`. With `auth`, runs carry the caller's `userId`, so threads and memory stay per user ([Multiple Users](/docs/advanced/multi-user)).
+The tool answers `{ status: 'completed', output, threadId }`. Each tool is named after its agent, with characters other than letters, digits, `_` and `-` replaced (`toolNames: { [agent.name]: 'tool_name' }` renames them), and described by the agent's `description` — or by the first sentence of its instructions when it has none. `serveAgents` takes every `MCPServer` option (defaults: name `cogitator-agents`, `transport: 'stdio'`, `sessions: true`) and returns the started server. With `auth`, runs carry the caller's `userId`, so threads and memory stay per user ([Multiple Users](/docs/advanced/multi-user)), and the client's cancellation aborts the run.
 
-**Approvals.** When an agent's tool needs [approval](/docs/tools/approvals), the server asks the person at the client through MCP elicitation and the run goes on with their answer. Clients without elicitation get a paused answer (`status: 'paused'`, `pendingApprovals`) and a `<agent>_resume` tool to continue with the user's decision. Elicitation needs a connection the client can reply on: stdio, or HTTP with `sessions: true` — which `serveAgents` turns on.
+**Approvals.** When an agent's tool needs [approval](/docs/tools/approvals), the server asks the person at the client through MCP elicitation and the run goes on with their answer. Clients without elicitation get a paused answer (`{ status: 'paused', threadId, pendingApprovals, next }`) and continue with the `<tool>_resume` tool — registered only for agents that have approval tools — passing `{ threadId, approved, reason? }` once the user decided. Elicitation needs a connection the client can reply on: stdio, or HTTP with `sessions: true` — which `serveAgents` turns on.
 
-`agentTools(cog, agents)` returns the same tools to register on an `MCPServer` you configure yourself.
+`agentTools(cog, agents, toolNames?)` returns the same tools to register on an `MCPServer` you configure yourself. Both accept anything with Cogitator's `run` and `resume` (`AgentHost`).
 
 ### Sessions
 
-`MCPServer` over HTTP serves each request on its own by default. `sessions: true` keeps a session per client (`mcp-session-id`), which requests from the server to the client — such as elicitation — need. A session belongs to the caller that started it: a request with another caller's credentials gets `403`. Tools reach the elicitation channel through their context: `(context as MCPToolContext).elicit?.({ message, schema })`.
+`MCPServer` over HTTP serves each request on its own by default. `sessions: true` keeps a session per client (`mcp-session-id`), which requests from the server to the client — such as elicitation — need. A session belongs to the caller that started it: a request with another caller's credentials gets `403`. Elicitation works over stdio or HTTP with `sessions: true`; elsewhere `elicit` is not available.
+
+Your own tools reach the elicitation channel through their context. `elicit` resolves to `{ action: 'accept', content }`, `{ action: 'decline' | 'cancel' }`, or `undefined` when the client cannot answer:
+
+```typescript
+import type { MCPToolContext } from '@cogitator-ai/mcp';
+
+const deleteOrder = tool({
+  name: 'delete_order',
+  description: 'Delete an order after the user confirms',
+  parameters: z.object({ orderId: z.string() }),
+  execute: async ({ orderId }, context) => {
+    const reply = await (context as MCPToolContext).elicit?.({
+      message: `Delete order ${orderId}?`,
+      schema: {
+        type: 'object',
+        properties: { confirm: { type: 'boolean', title: 'Confirm' } },
+        required: ['confirm'],
+      },
+    });
+    if (reply?.action !== 'accept' || reply.content.confirm !== true) return { deleted: false };
+    await orders.delete(orderId);
+    return { deleted: true };
+  },
+});
+```
 
 ## Tool Adapter
 

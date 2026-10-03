@@ -53,6 +53,8 @@ This exposes:
 - `GET /.well-known/agent.json` -- Agent Card discovery
 - `POST /a2a` -- JSON-RPC endpoint for messaging, streaming, and task management
 
+`cardUrl` is the `url` the cards advertise. Without it the cards advertise `basePath` (default `/a2a`); `basePath` changes only that URL — the adapters always serve the two routes above.
+
 ### Agent Cards
 
 Agent Cards are auto-generated from your Agent configuration. Each tool becomes a skill in the card:
@@ -69,21 +71,28 @@ const card = a2aServer.getAgentCard('researcher');
   "version": "0.3",
   "capabilities": {
     "streaming": true,
-    "pushNotifications": false
+    "pushNotifications": false,
+    "extendedAgentCard": false
   },
   "skills": [
     {
       "id": "web_search",
       "name": "web_search",
-      "description": "Search the web for information"
+      "description": "Search the web for information",
+      "inputModes": ["text/plain", "application/json"],
+      "outputModes": ["text/plain", "application/json"]
     }
-  ]
+  ],
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["text/plain", "application/json"]
 }
 ```
 
+`capabilities.pushNotifications` is `true` when you pass a `pushNotificationStore`, and `extendedAgentCard` when you pass an `extendedCardGenerator`. With `auth`, the card also lists `securitySchemes` and `security`. `getAgentCards()` returns every card, signed when `cardSigning` is set.
+
 ### Multiple Agents
 
-Register multiple agents on a single server:
+Register multiple agents on a single server (at least one is required):
 
 ```typescript
 const a2aServer = new A2AServer({
@@ -95,6 +104,8 @@ const a2aServer = new A2AServer({
   cogitator,
 });
 ```
+
+`/.well-known/agent.json` then returns an array of cards. `message/send`, `message/stream` and `agent/extendedCard` pick the agent from an `agentName` param and fall back to the first registered agent. `A2AClient` does not send `agentName`, so it always talks to the first agent; to reach another one, send the JSON-RPC request yourself with `params: { message, agentName: 'writer' }`.
 
 ## A2AClient
 
@@ -171,7 +182,7 @@ await client.cancelTask('task_abc123');
 
 ## asTool() Bridge
 
-The killer feature -- wrap any remote A2A agent as a local Cogitator tool:
+Wrap any remote A2A agent as a local Cogitator tool:
 
 ```typescript
 const client = new A2AClient('https://research-agent.example.com');
@@ -194,7 +205,9 @@ const result = await cogitator.run(orchestrator, {
 });
 ```
 
-The orchestrator agent calls the remote researcher via A2A protocol transparently -- it looks like a regular tool call. The tool result is `{ output, success, error?, taskId?, state? }`; when the remote agent asks a question (`state: 'input-required'`), `output` holds the question and `taskId` lets you continue the task.
+The orchestrator agent calls the remote researcher via A2A protocol transparently -- it looks like a regular tool call with a single `task` string parameter. `asToolFromCard` names and describes the tool from the card unless you override them; `client.asTool({ name?, description?, timeout? })` does the same without a card (default name `a2a_remote_agent`). The tool is marked with the `external` side effect and forwards the run's abort signal.
+
+The tool result is `{ output, success, error?, taskId?, state? }`; when the remote agent asks a question (`state: 'input-required'`), `output` holds the question and `taskId` lets you continue the task.
 
 ## Multi-Turn Conversations
 
@@ -289,9 +302,9 @@ For production deployments, use `RedisTaskStore` instead of the default in-memor
 
 ```typescript
 import { A2AServer, RedisTaskStore } from '@cogitator-ai/a2a';
-import Redis from 'ioredis';
+import { createRedisClient } from '@cogitator-ai/redis';
 
-const redis = new Redis('redis://localhost:6379');
+const redis = await createRedisClient({ url: 'redis://localhost:6379' });
 
 const a2aServer = new A2AServer({
   agents: { researcher },
@@ -304,7 +317,7 @@ const a2aServer = new A2AServer({
 });
 ```
 
-`RedisTaskStore` accepts any Redis client that implements the `RedisClientLike` interface (`get`, `set`, `del`, `keys`, and optionally `setex`). This works with `ioredis`, `redis`, and most Redis client libraries.
+`RedisTaskStore` accepts any Redis client that implements the `RedisClientLike` interface: `get`, `set`, `del`, `keys`, and optionally `setex` (TTL), `scan` (listing without blocking `KEYS`), `mget` (batched reads) and `eval` (atomic task updates). The client from `@cogitator-ai/redis` (`createRedisClient`, standalone or cluster) fits it directly; other clients such as `ioredis` or `redis` may need a thin wrapper whose methods match these signatures.
 
 Configuration options:
 
@@ -409,7 +422,7 @@ The `agent/extendedCard` method provides an authenticated endpoint that returns 
 ### Server Configuration
 
 ```typescript
-const a2aServer = new A2AServer({
+const a2aServer: A2AServer = new A2AServer({
   agents: { researcher },
   cogitator,
   extendedCardGenerator: (agentName) => ({
@@ -472,21 +485,31 @@ fastify.register(a2aFastify(a2aServer));
 
 ### Koa
 
+The Koa middleware reads `ctx.request.body`, so put a JSON body parser in front of it:
+
 ```typescript
+import bodyParser from 'koa-bodyparser';
 import { a2aKoa } from '@cogitator-ai/a2a/koa';
+
+app.use(bodyParser());
 app.use(a2aKoa(a2aServer));
 ```
 
 ### Next.js
 
+`a2aNext` returns route handlers: `GET` answers with the Agent Card and `POST` with JSON-RPC. Export them from the two routes clients expect:
+
 ```typescript
+// app/.well-known/agent.json/route.ts → GET
+// app/a2a/route.ts → POST
 import { a2aNext } from '@cogitator-ai/a2a/next';
+
 export const { GET, POST } = a2aNext(a2aServer);
 ```
 
 ## Task Store
 
-Tasks are stored in memory by default. For production, implement the `TaskStore` interface:
+Tasks are stored in memory by default. `InMemoryTaskStore` keeps up to `maxSize` tasks (default 10,000) and evicts the oldest finished task first:
 
 ```typescript
 import { A2AServer, InMemoryTaskStore } from '@cogitator-ai/a2a';
@@ -494,9 +517,11 @@ import { A2AServer, InMemoryTaskStore } from '@cogitator-ai/a2a';
 const a2aServer = new A2AServer({
   agents: { researcher },
   cogitator,
-  taskStore: new InMemoryTaskStore(),
+  taskStore: new InMemoryTaskStore({ maxSize: 50_000 }),
 });
 ```
+
+For production, use [`RedisTaskStore`](#redistaskstore) or implement the `TaskStore` interface (`create`, `get`, `update`, `list`, `delete`). Your `list` must honour `filter.visibleTo`: when it is set, return only tasks owned by that user and tasks without an owner (`null` means a caller without a user), or `tasks/list` leaks other users' tasks.
 
 ## Authentication
 
@@ -513,7 +538,7 @@ const a2aServer = new A2AServer({
 });
 ```
 
-Every adapter extracts the credential (`Authorization: Bearer ...`, or the `x-api-key` header / `headerName` for `type: 'apiKey'`) and the public Agent Card advertises the scheme in `securitySchemes`.
+`validate` receives the credential and returns `true`, `false` or a caller. Every adapter extracts the credential (`Authorization: Bearer ...`, or the `x-api-key` header / `headerName` for `type: 'apiKey'`) with `a2aServer.getAuthToken()`; a missing or rejected credential answers a JSON-RPC `unauthorized` error. The Agent Card itself stays public and advertises the scheme in `securitySchemes`.
 
 ### One caller per user
 
@@ -529,7 +554,7 @@ auth: {
 },
 ```
 
-Each task then belongs to the user who created it: another user's `tasks/get`, `tasks/cancel`, push-notification calls and attempts to continue the task get `Task not found`, `tasks/list` returns only their own tasks, and a `contextId` holding someone else's tasks is refused. Runs carry the `userId`, so the agent's threads and memory are scoped to the user as well ([multi-user](/docs/advanced/multi-user)). Returning `true` keeps the earlier behaviour: every caller shares one space.
+Each task then belongs to the user who created it: another user's `tasks/get`, `tasks/cancel`, push-notification calls and attempts to continue the task get `Task not found`, `tasks/list` returns only their own tasks (plus tasks without an owner), and a `contextId` holding someone else's tasks is refused. Runs carry the `userId`, so the agent's threads and memory are scoped to the user as well ([multi-user](/docs/advanced/multi-user)). The owner is kept in the task's metadata on the server and never sent to clients. Returning `true` admits the caller without a user: such callers share the tasks that have no owner.
 
 Clients include credentials via headers:
 

@@ -3,7 +3,7 @@ title: Server Adapters
 description: Expose your Cogitator agents, workflows, and swarms as REST APIs with built-in streaming, WebSocket, and OpenAPI support.
 ---
 
-Cogitator ships five server adapters that turn your agent runtime into a production-ready HTTP API. Every adapter provides the same set of endpoints, streaming protocol, and OpenAPI generation — pick the one that matches your stack.
+Cogitator ships five server adapters that turn your agent runtime into an HTTP API. They share the same routes, request bodies and SSE streaming protocol; they differ in how they are mounted, how OpenAPI is generated and what their WebSocket endpoint can do. Pick the one that matches your stack.
 
 ## Available Adapters
 
@@ -17,42 +17,68 @@ Cogitator ships five server adapters that turn your agent runtime into a product
 
 ## Common Endpoints
 
-All adapters register the same route structure under a configurable base path (default: `/cogitator`):
+Every adapter registers these routes. Express (`config.basePath`) and Fastify (`prefix`) mount them under `/cogitator` by default; Hono, Koa and Tetsu serve them where you mount the app, router or controller.
 
-| Method   | Path                       | Description                                                |
-| -------- | -------------------------- | ---------------------------------------------------------- |
-| `GET`    | `/health`                  | Health check                                               |
-| `GET`    | `/ready`                   | Readiness probe                                            |
-| `GET`    | `/agents`                  | List registered agents                                     |
-| `POST`   | `/agents/:name/run`        | Run an agent (JSON response)                               |
-| `POST`   | `/agents/:name/stream`     | Run an agent (SSE stream)                                  |
-| `POST`   | `/agents/:name/resume`     | Resume a run paused for [approvals](/docs/tools/approvals) |
-| `GET`    | `/threads/:id`             | Get thread messages                                        |
-| `POST`   | `/threads/:id/messages`    | Add a message to a thread                                  |
-| `DELETE` | `/threads/:id`             | Delete a thread                                            |
-| `GET`    | `/tools`                   | List all registered tools                                  |
-| `GET`    | `/workflows`               | List workflows                                             |
-| `POST`   | `/workflows/:name/run`     | Execute a workflow                                         |
-| `POST`   | `/workflows/:name/stream`  | Stream workflow execution                                  |
-| `GET`    | `/swarms`                  | List swarms                                                |
-| `POST`   | `/swarms/:name/run`        | Execute a swarm                                            |
-| `POST`   | `/swarms/:name/stream`     | Stream swarm execution                                     |
-| `GET`    | `/swarms/:name/blackboard` | Get swarm blackboard state                                 |
-| `GET`    | `/openapi.json`            | OpenAPI 3.0 spec                                           |
-| `GET`    | `/docs`                    | Swagger UI                                                 |
+| Method   | Path                       | Description                                                                |
+| -------- | -------------------------- | -------------------------------------------------------------------------- |
+| `GET`    | `/health`                  | Health check: `{ status, uptime, timestamp }`                              |
+| `GET`    | `/ready`                   | Readiness probe: `{ status: 'ok' }`                                        |
+| `GET`    | `/agents`                  | List agents: name, `description`, tool names (never `instructions`)        |
+| `POST`   | `/agents/:name/run`        | Run an agent (JSON response)                                               |
+| `POST`   | `/agents/:name/stream`     | Run an agent (SSE stream)                                                  |
+| `POST`   | `/agents/:name/resume`     | Resume a run paused for [approvals](/docs/tools/approvals)                 |
+| `GET`    | `/threads/:id`             | Get thread messages                                                        |
+| `POST`   | `/threads/:id/messages`    | Add a message to a thread                                                  |
+| `DELETE` | `/threads/:id`             | Delete a thread                                                            |
+| `GET`    | `/tools`                   | List the tools of all agents (parameters as JSON Schema)                   |
+| `GET`    | `/workflows`               | List workflows                                                             |
+| `POST`   | `/workflows/:name/run`     | Execute a workflow                                                         |
+| `POST`   | `/workflows/:name/stream`  | Stream workflow execution                                                  |
+| `GET`    | `/swarms`                  | List swarms                                                                |
+| `POST`   | `/swarms/:name/run`        | Execute a swarm                                                            |
+| `POST`   | `/swarms/:name/stream`     | Stream swarm execution                                                     |
+| `GET`    | `/swarms/:name/blackboard` | The swarm's configured blackboard sections (only when it is enabled)       |
+| `GET`    | `/openapi.json`, `/docs`   | OpenAPI spec and Swagger UI — see [OpenAPI](/docs/server-adapters/openapi) |
 
-With Tetsu the base path is the `group()` you mount the controller in, and `/openapi.json` and `/docs` come from `docs()` of `@tetsujs/openapi`.
+Tetsu also serves `POST /agents/:name/resume/stream`. Fastify serves its spec at `/docs/json` instead of `/openapi.json`, and Tetsu's document comes from `docs()` of `@tetsujs/openapi`.
+
+Request bodies:
+
+- Agent run and stream: `{ input, context?, threadId? }` — `input` is a non-empty string.
+- Resume: `{ threadId, decisions?, defaultDecision? }`, where a decision is `{ approved: boolean, reason?: string }` keyed by tool call id.
+- Workflow: `{ input?, options? }` with `options` limited to `maxConcurrency`, `maxIterations` and `checkpoint`.
+- Swarm: `{ input, context?, threadId?, timeout? }`.
+- Thread message: `{ role: 'user' | 'assistant' | 'system', content, metadata? }`.
+
+`POST /agents/:name/run` answers `{ output, threadId, usage, toolCalls, reasoning?, status, pendingApprovals? }`; a run paused for approval has `status: 'paused'`, and its checkpoint stays on the server.
+
+## Threads and Users
+
+The thread routes use the runtime's memory (`cogitator.getMemory()`); without a memory adapter they answer `503`. A thread belongs to the user who created it — through a run with a `threadId` or `POST /threads/:id/messages` — and another user's thread answers `403 THREAD_ACCESS_DENIED`. The user is the `userId` your `auth` function returns, so set one whenever several people share a server ([Multiple Users](/docs/advanced/multi-user)).
+
+## Errors
+
+Errors are JSON: `{ "error": { "message": "...", "code": "..." } }` on Express, Fastify, Hono and Koa, and Tetsu's envelope `{ status, message, error }` on Tetsu.
+
+- A `CogitatorError` keeps its message, its code and the status mapped to that code — for example `429 LLM_RATE_LIMITED` or `403 THREAD_ACCESS_DENIED`.
+- Any other error is logged on the server and answered as `500` with the message `Internal server error`, so internals never reach the client.
+- Unknown agents, workflows and swarms answer `404`; invalid bodies answer `400 INVALID_INPUT` (`422 VALIDATION_FAILED` on Tetsu).
+- Workflow and swarm routes need `@cogitator-ai/workflows` and `@cogitator-ai/swarms`; without them they answer `501`.
+
+In a stream, the same errors end the stream with an `error` event instead of `finish`.
 
 ## Streaming Protocol
 
-Every adapter implements the same SSE streaming protocol. The response is `text/event-stream` with one JSON event per `data:` line, ending with `data: [DONE]`:
+Every adapter implements the same SSE protocol from `@cogitator-ai/server-shared`. The response is `text/event-stream` with one JSON event per `data:` line, ending with `data: [DONE]`:
 
 ```
 data: {"type":"start","messageId":"msg_abc123"}
 
 data: {"type":"text-start","id":"txt_def456"}
 
-data: {"type":"text-delta","id":"txt_def456","delta":"Hello"}
+data: {"type":"text-delta","id":"txt_def456","delta":"Let me check."}
+
+data: {"type":"text-end","id":"txt_def456"}
 
 data: {"type":"tool-call-start","id":"call_ghi789","toolName":"get_weather"}
 
@@ -62,25 +88,63 @@ data: {"type":"tool-call-end","id":"call_ghi789"}
 
 data: {"type":"tool-result","id":"res_jkl012","toolCallId":"call_ghi789","result":"Sunny"}
 
-data: {"type":"text-end","id":"txt_def456"}
+data: {"type":"text-start","id":"txt_mno345"}
+
+data: {"type":"text-delta","id":"txt_mno345","delta":"It is sunny in Paris."}
+
+data: {"type":"text-end","id":"txt_mno345"}
 
 data: {"type":"finish","messageId":"msg_abc123","usage":{"inputTokens":50,"outputTokens":120,"totalTokens":170}}
 
 data: [DONE]
 ```
 
-Agents with `reasoning: { summary: true }` stream their reasoning as its own part — `reasoning-start`, `reasoning-delta`, `reasoning-end` — before the text it leads to. A run that pauses for approval sends `{"type":"approval-required","threadId":"...","approvals":[...]}` before `finish`; resume it with `POST /agents/:name/resume` and `{ threadId, decisions? , defaultDecision? }`.
+| Event                                                   | Fields                                               |
+| ------------------------------------------------------- | ---------------------------------------------------- |
+| `start`                                                 | `messageId`                                          |
+| `text-start` / `text-delta` / `text-end`                | `id`, `delta`                                        |
+| `reasoning-start` / `reasoning-delta` / `reasoning-end` | `id`, `delta`                                        |
+| `tool-call-start` / `tool-call-delta` / `tool-call-end` | `id` (the tool call id), `toolName`, `argsTextDelta` |
+| `tool-result`                                           | `id`, `toolCallId`, `result`                         |
+| `approval-required`                                     | `threadId`, `approvals`                              |
+| `error`                                                 | `message`, `code?`                                   |
+| `finish`                                                | `messageId`, `usage?`                                |
+| `workflow` / `swarm`                                    | `event`, `data`                                      |
 
-A failed run ends with `{"type":"error","message":"...","code":"..."}` instead of `finish`. Workflow and swarm streams send `{"type":"workflow" | "swarm","event":"...","data":{...}}` events.
+Text and reasoning blocks are closed before a tool call starts. Agents with `reasoning: { summary: true }` stream their reasoning as its own part before the text it leads to. A run that pauses for approval sends `approval-required` with the pending calls (`toolCallId`, `toolName`, `arguments`, `description`, `sideEffects?`) right before `finish`; resume it with `POST /agents/:name/resume`.
 
-## Shared Features
+Workflow streams send `workflow` events named `node_started`, `node_completed`, `node_error`, `node_progress` and `workflow_completed`; swarm streams send `swarm` events named `agent_start`, `agent_complete`, `agent_error`, `message`, the swarm's own events, and `swarm_completed`. Disconnecting the client aborts the run.
 
-All adapters support:
+The event types (`StreamEvent`, `TextDeltaEvent`, …), their factories (`createTextDeltaEvent`, `createFinishEvent`, …) and the `encodeSSE` / `encodeDone` helpers are exported from `@cogitator-ai/server-shared`, and the adapters re-export the event types.
 
-- **Authentication** — custom auth function receives the request and returns an `AuthContext`; its `userId` scopes runs, swarms and `/threads/:id` to that user ([Multiple Users](/docs/advanced/multi-user))
-- **Swagger / OpenAPI** — auto-generated spec with Swagger UI at `/docs`
-- **WebSocket** — real-time bidirectional communication (subscribe, run, stop)
-- **SSE Streaming** — Server-Sent Events for agent, workflow, and swarm execution
+## WebSocket
+
+All adapters offer a WebSocket endpoint, but not the same one:
+
+| Adapter | How to enable                                               | Default path      | Client messages                                             | Runs over WebSocket       |
+| ------- | ----------------------------------------------------------- | ----------------- | ----------------------------------------------------------- | ------------------------- |
+| Express | `enableWebSocket: true`, then `attachWebSocket(httpServer)` | `<basePath>/ws`   | `run`, `resume`, `stop`, `ping`, `subscribe`, `unsubscribe` | agents                    |
+| Fastify | `enableWebSocket: true` with `@fastify/websocket` installed | `<prefix>/ws`     | `run`, `resume`, `stop`, `ping`, `subscribe`, `unsubscribe` | agents                    |
+| Hono    | `enableWebSocket: true` and `websocket.upgradeWebSocket`    | `/ws` under mount | `run`, `resume`, `stop`, `ping`                             | agents, workflows, swarms |
+| Koa     | `setupWebSocket(httpServer, ctx, options)`                  | `/ws`             | `run`, `resume`, `stop`, `ping`                             | agents, workflows, swarms |
+| Tetsu   | `websocket: true`                                           | `/ws` under group | `run`, `resume`, `stop`, `ping`                             | agents, workflows, swarms |
+
+The shared part of the protocol:
+
+```json
+{ "type": "run", "id": "r1", "payload": { "type": "agent", "name": "assistant", "input": "Hello" } }
+{ "type": "resume", "id": "r2", "payload": { "name": "assistant", "threadId": "thread_1", "decisions": { "call_1": { "approved": true } } } }
+{ "type": "stop" }
+{ "type": "ping", "id": "p1" }
+```
+
+The server answers with `{ "type": "event", "id": "r1", "payload": { ... } }` frames whose payload `type` is `token` (`delta`), `reasoning` (`delta`), `tool-call`, `tool-result`, and finally `complete` (with the `result`) or `cancelled`; with `{ "type": "error", "id", "error" }` for failures (Tetsu adds a `code`); and with `pong`. Runs get the connection's `userId`, and closing the socket aborts its run.
+
+One run at a time per connection: Fastify, Hono, Koa and Tetsu refuse a second `run` with `A run is already in progress`, while Express aborts the running one and starts the new one. `subscribe` / `unsubscribe` exist only on Express and Fastify — see their pages.
+
+## Authentication
+
+Each adapter takes an `auth` function that receives the framework's request object and returns an `AuthContext` (`{ userId?, roles?, permissions?, metadata? }`). Throwing rejects the request with `401 UNAUTHORIZED`. Returning `undefined` lets the request through anonymously on Express, Fastify, Hono and Koa; on Tetsu it answers `401`. The `userId` reaches every agent and swarm run (tools see it as `context.userId`) and scopes the thread routes. Rate limiting is built into Express and Fastify; CORS into Express.
 
 ## Choosing an Adapter
 

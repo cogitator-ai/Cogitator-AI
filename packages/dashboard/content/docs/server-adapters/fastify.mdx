@@ -61,7 +61,7 @@ await fastify.register(cogitatorPlugin, {
 await fastify.listen({ port: 3000 });
 ```
 
-After startup, all Cogitator endpoints are available under `/cogitator` and Swagger UI is at `/cogitator/docs`.
+After startup, all Cogitator endpoints are available under `/cogitator` and Swagger UI is at `/cogitator/docs`. The plugin is wrapped with `fastify-plugin`, so `fastify.cogitator` is visible to the rest of your app, while the hooks it adds (auth, rate limit, error handler) apply only to the Cogitator routes.
 
 ## Plugin Options
 
@@ -77,9 +77,11 @@ interface CogitatorPluginOptions {
   enableSwagger?: boolean;
   enableWebSocket?: boolean;
   swagger?: SwaggerConfig;
-  websocket?: WebSocketConfig;
+  websocket?: WebSocketConfig; // { path? }, default '/ws'
 }
 ```
+
+`enableSwagger` and `enableWebSocket` default to off.
 
 ## Authentication
 
@@ -99,7 +101,7 @@ await fastify.register(cogitatorPlugin, {
 });
 ```
 
-Returning `undefined` lets the request through unauthenticated; throwing rejects it with `401`. The auth context is available on `request.cogitatorAuth`, its `userId` is passed to agent runs, and — because it is an `onRequest` hook — it also guards the WebSocket upgrade.
+Returning `undefined` lets the request through unauthenticated; throwing rejects it with `401 UNAUTHORIZED`. The auth context is available on `request.cogitatorAuth` (with `request.cogitatorRequestId` and `request.cogitatorStartTime`), its `userId` is passed to agent and swarm runs and scopes the thread routes, and — because it is an `onRequest` hook — it also guards the WebSocket upgrade.
 
 ## Rate Limiting
 
@@ -116,11 +118,11 @@ await fastify.register(cogitatorPlugin, {
 });
 ```
 
-If `@fastify/rate-limit` is not installed, the plugin logs a warning and continues without throttling. Limited requests receive `429` with code `RATE_LIMIT_EXCEEDED`.
+`keyGenerator` and `errorResponseBuilder` are passed through to `@fastify/rate-limit`. If it is not installed, the plugin logs a warning and continues without throttling. Limited requests receive `429` with code `RATE_LIMIT_EXCEEDED`.
 
 ## Swagger & OpenAPI
 
-When `enableSwagger` is `true`, the plugin registers `@fastify/swagger` and `@fastify/swagger-ui`. The generated spec includes all registered agents, workflows, and swarms with their respective endpoints.
+When `enableSwagger` is `true`, the plugin registers `@fastify/swagger` and `@fastify/swagger-ui` (a missing package logs a warning and skips them). The spec is built by `@fastify/swagger` from the Fastify route schemas, so it describes the generic routes (`/agents/{name}/run`, …) with their validated bodies rather than one path per agent. Swagger UI is at `<prefix>/docs` and the JSON spec at `<prefix>/docs/json`; there is no `/openapi.json` route.
 
 ```typescript
 await fastify.register(cogitatorPlugin, {
@@ -137,7 +139,7 @@ await fastify.register(cogitatorPlugin, {
 });
 ```
 
-Fastify's native Swagger integration means routes automatically include JSON Schema validation in the docs. The plugin registers six tags: `agents`, `threads`, `tools`, `workflows`, `swarms`, and `health`.
+The `swagger` options fill the document's `info` and `servers`; `servers` defaults to `[{ url: '/' }]`. The document declares six tags: `agents`, `threads`, `tools`, `workflows`, `swarms`, and `health`.
 
 ## WebSocket
 
@@ -154,7 +156,9 @@ await fastify.register(cogitatorPlugin, {
 });
 ```
 
-Run an agent with `{ "type": "run", "id": "r1", "payload": { "type": "agent", "name": "math", "input": "6 * 7?" } }`. Events arrive as `{ "type": "event", "id": "r1", "payload": { "type": "token" | "tool-call" | "tool-result" | "complete" | "cancelled" } }`; send `{ "type": "stop" }` to abort the run. Subscribing to `agent:<name>` delivers events of runs started by other clients. One run per connection at a time; only agent runs are supported over WebSocket.
+Run an agent with `{ "type": "run", "id": "r1", "payload": { "type": "agent", "name": "math", "input": "6 * 7?" } }` (add `threadId` to continue a thread). Events arrive as `{ "type": "event", "id": "r1", "payload": { "type": "token" | "reasoning" | "tool-call" | "tool-result" | "complete" | "cancelled", ... } }`, failures as `{ "type": "error", "id": "r1", "error": "..." }`. Resume a run paused for approval with `{ "type": "resume", "id": "r2", "payload": { "name": "math", "threadId": "...", "decisions": { "<toolCallId>": { "approved": true } } } }`, send `{ "type": "stop" }` to abort the run and `{ "type": "ping" }` to get a `pong`.
+
+One run per connection at a time — a second `run` or `resume` answers `A run is already in progress` — and only agent runs are supported. `{ "type": "subscribe", "channel": "agent:math" }` delivers the events of runs of that agent started from the same user's other connections (with `channel` set on each frame) until `unsubscribe`; up to 64 channels per connection. A subscriber never receives another user's runs; without `auth` all connections share one anonymous user and see every run. Closing the socket aborts its run.
 
 ## Streaming
 
@@ -191,7 +195,7 @@ fastify.get('/custom', async (request, reply) => {
 
 ## Errors
 
-Schema validation failures and malformed JSON return `400 INVALID_INPUT`, a failed workflow returns `500 WORKFLOW_FAILED`, and `CogitatorError`s keep their code and mapped status (for example `LLM_RATE_LIMITED` → 429). Unexpected errors return a generic `500 INTERNAL` and are logged.
+Schema validation failures and malformed JSON return `400 INVALID_INPUT` (with the validation `details`), unknown agents, workflows and swarms `404 NOT_FOUND`, and a failed workflow `500 WORKFLOW_FAILED`. The thread routes return `503 UNAVAILABLE` when the runtime has no memory and `403 THREAD_ACCESS_DENIED` for another user's thread; workflow and swarm routes return `501 UNIMPLEMENTED` without their packages. `CogitatorError`s keep their message, code and mapped status (for example `LLM_RATE_LIMITED` → 429). Any other error is logged through `request.log` and answered as `500` with the message `Internal server error` (code `INTERNAL`, or `INTERNAL_ERROR` when it reaches the plugin's error handler).
 
 ## Exported Schemas
 
@@ -201,10 +205,11 @@ The package exports JSON Schema objects for request/response validation:
 import {
   AgentRunRequestSchema,
   AgentRunResponseSchema,
+  AgentResumeRequestSchema,
   AddMessageRequestSchema,
   WorkflowRunRequestSchema,
   SwarmRunRequestSchema,
 } from '@cogitator-ai/fastify';
 ```
 
-`AgentRunRequestSchema` and `SwarmRunRequestSchema` require a non-blank `input` (the swarm `timeout` must be greater than 0), `AddMessageRequestSchema` requires a non-empty `content` and a `user`/`assistant`/`system` role, and `WorkflowRunRequestSchema.options` only allows `maxConcurrency`/`maxIterations` (integers ≥ 1) and `checkpoint` (`additionalProperties: false`). These can be used in custom Fastify route schemas for native validation.
+`AgentRunRequestSchema` and `SwarmRunRequestSchema` require a non-blank `input`, `AgentResumeRequestSchema` a `threadId` with optional `decisions` / `defaultDecision` (the swarm `timeout` must be greater than 0), `AddMessageRequestSchema` requires a non-empty `content` and a `user`/`assistant`/`system` role, and `WorkflowRunRequestSchema.options` only allows `maxConcurrency`/`maxIterations` (integers ≥ 1) and `checkpoint` (`additionalProperties: false`). These can be used in custom Fastify route schemas for native validation.
