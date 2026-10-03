@@ -297,6 +297,29 @@ sandbox: {
 
 ---
 
+## Tool Sets
+
+A function that builds several related tools can return them with `toolset()`: the result is an ordinary array an agent takes, and each element keeps its own parameter and result types.
+
+```typescript
+import { tool, toolset } from '@cogitator-ai/core';
+
+export function createOrderTools(api: OrdersApi) {
+  return toolset(
+    tool({ name: 'find_order', parameters: z.object({ id: z.string() }), execute: ({ id }) => api.find(id) }),
+    tool({ name: 'cancel_order', parameters: z.object({ id: z.string(), reason: z.string() }), execute: (p) => api.cancel(p) })
+  );
+}
+
+const tools = createOrderTools(api);
+const agent = new Agent({ name: 'support', instructions: '...', tools });
+
+const [findOrder] = tools;
+await findOrder.execute({ id: 'A-1' }, context); // typed as find_order's parameters
+```
+
+The built-in factories (`createMemoryTools`, `createSchedulerTools` and the browser tool sets) return their tools this way.
+
 ## Schema Serialization
 
 Every tool created with `tool()` has a `toJSON()` method that converts it to the JSON Schema format used by LLM providers:

@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import { tool } from '@cogitator-ai/core';
+import { tool, toolset } from '@cogitator-ai/core';
 import type { HarEntry } from '@cogitator-ai/types';
 import type { BrowserContext, Request, Response, Route } from 'playwright';
 import type { BrowserSession } from '../session';
@@ -588,12 +588,12 @@ export function createGetApiCallsTool(session: BrowserSession) {
 }
 
 export function createNetworkTools(session: BrowserSession) {
-  return [
+  return toolset(
     createInterceptRequestTool(session),
     createWaitForResponseTool(session),
     createBlockResourcesTool(session),
     createCaptureHarTool(session),
     createGetApiCallsTool(session),
-    createRemoveInterceptorTool(session),
-  ];
+    createRemoveInterceptorTool(session)
+  );
 }

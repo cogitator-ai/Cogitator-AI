@@ -1,4 +1,4 @@
-import { tool } from '@cogitator-ai/core';
+import { tool, toolset } from '@cogitator-ai/core';
 import type { BrowserSession } from '../session';
 import { humanLikeClick, humanLikeHover, humanLikeScroll } from '../stealth/human-like';
 import { humanTypingDelay, usesHumanLikeMouse, usesHumanLikeTyping } from '../utils/human-mode';
@@ -285,7 +285,7 @@ export function createUploadFileTool(session: BrowserSession) {
 }
 
 export function createInteractionTools(session: BrowserSession) {
-  return [
+  return toolset(
     createClickTool(session),
     createTypeTool(session),
     createSelectOptionTool(session),
@@ -294,6 +294,6 @@ export function createInteractionTools(session: BrowserSession) {
     createPressKeyTool(session),
     createDragAndDropTool(session),
     createFillFormTool(session),
-    createUploadFileTool(session),
-  ];
+    createUploadFileTool(session)
+  );
 }

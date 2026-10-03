@@ -114,3 +114,13 @@ export function toolToSchema<TParams, TResult>(t: Tool<TParams, TResult>): ToolS
     },
   };
 }
+
+/**
+ * Tools as a tuple: still an array of `Tool`s an agent accepts, but each
+ * keeps its own parameter and result types, so
+ * `const [search, read] = createMyTools()` calls `search.execute` with
+ * search's parameters.
+ */
+export function toolset<T extends Tool[]>(...tools: T): T {
+  return tools;
+}

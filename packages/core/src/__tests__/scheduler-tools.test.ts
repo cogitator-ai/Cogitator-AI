@@ -1,17 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { Tool, TimerStore } from '@cogitator-ai/types';
+import type { TimerStore } from '@cogitator-ai/types';
 import { createSchedulerTools } from '../tools/scheduler-tools';
 import { createToolContext } from './helpers/tool-context';
 
-type SchedulerTool = ReturnType<typeof createSchedulerTools>[number];
-type ScheduleTool = Extract<SchedulerTool, Tool<{ description: string }, unknown>>;
-type ListTool = Extract<SchedulerTool, Tool<Record<string, never>, unknown>>;
-type CancelTool = Extract<SchedulerTool, Tool<{ id: string }, unknown>>;
-
-function getTool<T extends SchedulerTool>(tools: SchedulerTool[], name: string): T {
-  const found = tools.find((t): t is T => t.name === name);
-  if (!found) throw new Error(`Tool ${name} not found`);
-  return found;
+/** The scheduler tools by name; createSchedulerTools returns them as a typed tuple. */
+function byName(tools: ReturnType<typeof createSchedulerTools>) {
+  const [schedule, list, cancel] = tools;
+  return { schedule, list, cancel };
 }
 
 describe('scheduler tools', () => {
@@ -42,7 +37,7 @@ describe('scheduler tools', () => {
 
   it('schedule_task creates one-shot task with delay', async () => {
     const tools = createSchedulerTools({ store: mockStore });
-    const scheduleTool = getTool<ScheduleTool>(tools, 'schedule_task');
+    const scheduleTool = byName(tools).schedule;
     const before = Date.now();
 
     const result = await scheduleTool.execute(
@@ -64,7 +59,7 @@ describe('scheduler tools', () => {
 
   it('schedule_task creates recurring cron task', async () => {
     const tools = createSchedulerTools({ store: mockStore });
-    const scheduleTool = getTool<ScheduleTool>(tools, 'schedule_task');
+    const scheduleTool = byName(tools).schedule;
 
     const result = await scheduleTool.execute(
       { description: 'Send daily news', cron: '0 12 * * *', channel: 'telegram' },
@@ -81,7 +76,7 @@ describe('scheduler tools', () => {
 
   it('schedule_task creates task with ISO datetime', async () => {
     const tools = createSchedulerTools({ store: mockStore });
-    const scheduleTool = getTool<ScheduleTool>(tools, 'schedule_task');
+    const scheduleTool = byName(tools).schedule;
     const target = '2030-01-15T10:00:00Z';
 
     await scheduleTool.execute(
@@ -100,7 +95,7 @@ describe('scheduler tools', () => {
       defaultChannel: 'slack',
       defaultUserId: 'user_42',
     });
-    const scheduleTool = getTool<ScheduleTool>(tools, 'schedule_task');
+    const scheduleTool = byName(tools).schedule;
 
     await scheduleTool.execute({ description: 'Test', delay: '5m' }, createToolContext());
 
@@ -111,7 +106,7 @@ describe('scheduler tools', () => {
 
   it('schedule_task throws if no timing mode is provided', async () => {
     const tools = createSchedulerTools({ store: mockStore });
-    const scheduleTool = getTool<ScheduleTool>(tools, 'schedule_task');
+    const scheduleTool = byName(tools).schedule;
 
     await expect(
       scheduleTool.execute({ description: 'Bad task' }, createToolContext())
@@ -120,7 +115,7 @@ describe('scheduler tools', () => {
 
   it('schedule_task throws if multiple timing modes are provided', async () => {
     const tools = createSchedulerTools({ store: mockStore });
-    const scheduleTool = getTool<ScheduleTool>(tools, 'schedule_task');
+    const scheduleTool = byName(tools).schedule;
 
     await expect(
       scheduleTool.execute(
@@ -132,7 +127,7 @@ describe('scheduler tools', () => {
 
   it('schedule_task throws on invalid cron expression', async () => {
     const tools = createSchedulerTools({ store: mockStore });
-    const scheduleTool = getTool<ScheduleTool>(tools, 'schedule_task');
+    const scheduleTool = byName(tools).schedule;
 
     await expect(
       scheduleTool.execute({ description: 'Bad cron', cron: 'not-a-cron' }, createToolContext())
@@ -141,7 +136,7 @@ describe('scheduler tools', () => {
 
   it('schedule_task throws on invalid ISO datetime', async () => {
     const tools = createSchedulerTools({ store: mockStore });
-    const scheduleTool = getTool<ScheduleTool>(tools, 'schedule_task');
+    const scheduleTool = byName(tools).schedule;
 
     await expect(
       scheduleTool.execute({ description: 'Bad date', at: 'not-a-date' }, createToolContext())
@@ -164,7 +159,7 @@ describe('scheduler tools', () => {
     ]);
 
     const tools = createSchedulerTools({ store: mockStore });
-    const listTool = getTool<ListTool>(tools, 'list_tasks');
+    const listTool = byName(tools).list;
     const result = await listTool.execute({}, createToolContext());
 
     expect(result.tasks).toHaveLength(2);
@@ -175,14 +170,14 @@ describe('scheduler tools', () => {
 
   it('list_tasks returns empty array when no pending tasks', async () => {
     const tools = createSchedulerTools({ store: mockStore });
-    const listTool = getTool<ListTool>(tools, 'list_tasks');
+    const listTool = byName(tools).list;
     const result = await listTool.execute({}, createToolContext());
     expect(result.tasks).toEqual([]);
   });
 
   it('schedule_task uses context.channelType and context.userId as fallbacks', async () => {
     const tools = createSchedulerTools({ store: mockStore });
-    const scheduleTool = getTool<ScheduleTool>(tools, 'schedule_task');
+    const scheduleTool = byName(tools).schedule;
 
     await scheduleTool.execute(
       { description: 'Context test', delay: '1m' },
@@ -204,7 +199,7 @@ describe('scheduler tools', () => {
 
   it('schedule_task prefers explicit params over context', async () => {
     const tools = createSchedulerTools({ store: mockStore });
-    const scheduleTool = getTool<ScheduleTool>(tools, 'schedule_task');
+    const scheduleTool = byName(tools).schedule;
 
     await scheduleTool.execute(
       { description: 'Override test', delay: '1m', channel: 'discord', userId: 'explicit_user' },
@@ -230,7 +225,7 @@ describe('scheduler tools', () => {
       defaultChannel: 'slack',
       defaultUserId: 'default',
     });
-    const scheduleTool = getTool<ScheduleTool>(tools, 'schedule_task');
+    const scheduleTool = byName(tools).schedule;
 
     await scheduleTool.execute(
       { description: 'ChannelId test', delay: '5m' },
@@ -249,7 +244,7 @@ describe('scheduler tools', () => {
 
   it('schedule_task stores bestEffort in metadata', async () => {
     const tools = createSchedulerTools({ store: mockStore });
-    const scheduleTool = getTool<ScheduleTool>(tools, 'schedule_task');
+    const scheduleTool = byName(tools).schedule;
 
     await scheduleTool.execute(
       { description: 'Fire and forget', delay: '5m', bestEffort: true },
@@ -262,7 +257,7 @@ describe('scheduler tools', () => {
 
   it('schedule_task omits bestEffort from metadata when false', async () => {
     const tools = createSchedulerTools({ store: mockStore });
-    const scheduleTool = getTool<ScheduleTool>(tools, 'schedule_task');
+    const scheduleTool = byName(tools).schedule;
 
     await scheduleTool.execute(
       { description: 'Normal task', delay: '5m', bestEffort: false },
@@ -275,7 +270,7 @@ describe('scheduler tools', () => {
 
   it('cancel_task cancels by ID', async () => {
     const tools = createSchedulerTools({ store: mockStore });
-    const cancelTool = getTool<CancelTool>(tools, 'cancel_task');
+    const cancelTool = byName(tools).cancel;
 
     const result = await cancelTool.execute({ id: 'task_1' }, createToolContext());
 

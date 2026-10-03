@@ -1,4 +1,4 @@
-import { tool } from '@cogitator-ai/core';
+import { tool, toolset } from '@cogitator-ai/core';
 import type { BrowserSession } from '../session';
 import {
   getTextSchema,
@@ -233,13 +233,13 @@ export function createExtractStructuredTool(session: BrowserSession) {
 }
 
 export function createExtractionTools(session: BrowserSession) {
-  return [
+  return toolset(
     createGetTextTool(session),
     createGetHtmlTool(session),
     createGetAttributeTool(session),
     createGetLinksTool(session),
     createQuerySelectorAllTool(session),
     createExtractTableTool(session),
-    createExtractStructuredTool(session),
-  ];
+    createExtractStructuredTool(session)
+  );
 }

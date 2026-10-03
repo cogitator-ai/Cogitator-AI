@@ -1,4 +1,4 @@
-import { tool } from '@cogitator-ai/core';
+import { tool, toolset } from '@cogitator-ai/core';
 import type { BrowserSession } from '../session';
 import {
   screenshotSchema,
@@ -198,10 +198,10 @@ export function createClickByDescriptionTool(session: BrowserSession) {
 }
 
 export function createVisionTools(session: BrowserSession) {
-  return [
+  return toolset(
     createScreenshotTool(session),
     createScreenshotElementTool(session),
     createFindByDescriptionTool(session),
-    createClickByDescriptionTool(session),
-  ];
+    createClickByDescriptionTool(session)
+  );
 }

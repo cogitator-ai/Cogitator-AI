@@ -1,4 +1,4 @@
-import { tool } from '@cogitator-ai/core';
+import { tool, toolset } from '@cogitator-ai/core';
 import type { BrowserSession } from '../session';
 import {
   navigateSchema,
@@ -154,13 +154,13 @@ export function createWaitForSelectorTool(session: BrowserSession) {
 }
 
 export function createNavigationTools(session: BrowserSession) {
-  return [
+  return toolset(
     createNavigateTool(session),
     createGoBackTool(session),
     createGoForwardTool(session),
     createReloadTool(session),
     createWaitForNavigationTool(session),
     createGetCurrentUrlTool(session),
-    createWaitForSelectorTool(session),
-  ];
+    createWaitForSelectorTool(session)
+  );
 }

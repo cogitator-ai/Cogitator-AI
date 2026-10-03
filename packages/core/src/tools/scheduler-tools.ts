@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { tool } from '../tool';
+import { tool, toolset } from '../tool';
 import { parseDuration } from '../cache/cache-key';
 import type { TimerStore, TimerEntry } from '@cogitator-ai/types';
 
@@ -119,5 +119,5 @@ export function createSchedulerTools(config: SchedulerToolsConfig) {
     },
   });
 
-  return [scheduleTask, listTasks, cancelTask];
+  return toolset(scheduleTask, listTasks, cancelTask);
 }

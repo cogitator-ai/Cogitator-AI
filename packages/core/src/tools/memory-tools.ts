@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { tool } from '../tool';
+import { tool, toolset } from '../tool';
 import type {
   GraphAdapter,
   GraphNode,
@@ -160,5 +160,5 @@ export function createMemoryTools(config: MemoryToolsConfig) {
     },
   });
 
-  return [remember, recall, forget];
+  return toolset(remember, recall, forget);
 }
