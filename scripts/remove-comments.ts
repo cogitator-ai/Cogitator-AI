@@ -254,7 +254,6 @@ function targetFiles(): string[] {
     .filter((file) => PACKAGE_SOURCE.test(file) && ['.ts', '.tsx'].includes(extname(file)));
 }
 
-
 function main() {
   console.log(`Removing single-line comments...${DRY_RUN ? ' (dry run)' : ''}`);
 

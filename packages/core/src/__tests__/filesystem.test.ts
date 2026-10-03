@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileRead, fileWrite, fileList, fileExists, fileDelete } from '../tools/filesystem';
 
@@ -9,10 +9,10 @@ const mockContext = {
   signal: new AbortController().signal,
 };
 
-const TEST_DIR = join(process.cwd(), '.test-temp-fs');
+let TEST_DIR = '';
 
 beforeAll(async () => {
-  await mkdir(TEST_DIR, { recursive: true });
+  TEST_DIR = await mkdtemp(join(process.cwd(), '.test-temp-fs-'));
   await writeFile(join(TEST_DIR, 'test.txt'), 'Hello, World!');
   await mkdir(join(TEST_DIR, 'subdir'), { recursive: true });
   await writeFile(join(TEST_DIR, 'subdir', 'nested.txt'), 'Nested file');
