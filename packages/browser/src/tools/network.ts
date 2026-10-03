@@ -219,8 +219,9 @@ class NetworkState {
     return this._har !== null;
   }
 
-  clearApiCalls(): void {
-    this._apiCalls = [];
+  removeApiCalls(calls: readonly ApiCallRecord[]): void {
+    const removed = new Set(calls);
+    this._apiCalls = this._apiCalls.filter((call) => !removed.has(call));
   }
 
   async addRoute(
@@ -581,7 +582,7 @@ export function createGetApiCallsTool(session: BrowserSession) {
         calls = calls.filter((c) => c.method === method);
       }
       const result = { calls: [...calls] };
-      if (params.clear) state.clearApiCalls();
+      if (params.clear) state.removeApiCalls(result.calls);
       return result;
     },
   });

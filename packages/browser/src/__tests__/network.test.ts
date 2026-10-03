@@ -729,6 +729,32 @@ describe('network tools', () => {
       expect((await t.execute({}, dummyContext)).calls).toHaveLength(0);
     });
 
+    it('clears only the calls the filters returned', async () => {
+      const t = createGetApiCallsTool(session);
+      for (const [url, method] of [
+        ['https://api.test/users', 'GET'],
+        ['https://api.test/users', 'POST'],
+        ['https://api.test/posts', 'GET'],
+      ]) {
+        mock.state.context.emit('requestfinished', mockRequest({ url, method }));
+      }
+      await flush();
+
+      const cleared = await t.execute(
+        { urlPattern: '/users', method: 'GET', clear: true },
+        dummyContext
+      );
+      expect(cleared.calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+        'GET https://api.test/users',
+      ]);
+
+      const rest = await t.execute({}, dummyContext);
+      expect(rest.calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+        'POST https://api.test/users',
+        'GET https://api.test/posts',
+      ]);
+    });
+
     it('keeps only the most recent 1000 calls', async () => {
       const t = createGetApiCallsTool(session);
       for (let i = 0; i < 1005; i++) {

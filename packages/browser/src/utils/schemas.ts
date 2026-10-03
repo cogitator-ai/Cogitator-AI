@@ -248,6 +248,9 @@ export const getApiCallsSchema = z.object({
     .optional()
     .describe('Filter API calls by URL substring or regular expression literal'),
   method: z.string().optional().describe('Filter by HTTP method'),
-  clear: z.boolean().optional().describe('Clear the recorded API calls after returning them'),
+  clear: z
+    .boolean()
+    .optional()
+    .describe('Remove the returned API calls from the record; calls the filters exclude are kept'),
 });
 export type GetApiCallsInput = z.infer<typeof getApiCallsSchema>;
