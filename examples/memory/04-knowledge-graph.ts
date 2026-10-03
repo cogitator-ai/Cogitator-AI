@@ -1,6 +1,6 @@
 import { requireEnv, header, section } from '../_shared/setup.js';
 import { createLLMBackend } from '@cogitator-ai/core';
-import { LLMEntityExtractor, GraphInferenceEngine } from '@cogitator-ai/memory';
+import { LLMEntityExtractor, GraphInferenceEngine, unwrap } from '@cogitator-ai/memory';
 import type {
   ExtractedEntity,
   ExtractedRelation,
@@ -364,10 +364,11 @@ class InMemoryGraphAdapter implements GraphAdapter {
 async function main() {
   header('04 — Knowledge Graph: Entity Extraction & Graph Traversal');
 
-  requireEnv('GOOGLE_API_KEY');
+  const apiKey = requireEnv('GOOGLE_API_KEY');
+  const agentId = 'kg-agent';
 
   const llmBackend = createLLMBackend('google', {
-    providers: { google: { apiKey: process.env.GOOGLE_API_KEY } },
+    providers: { google: { apiKey } },
   });
 
   const model = 'gemini-3.5-flash-lite';
@@ -392,6 +393,7 @@ async function main() {
   for (let i = 0; i < paragraphs.length; i++) {
     console.log(`Processing paragraph ${i + 1}/${paragraphs.length}...`);
     const result = await extractor.extract(paragraphs[i], {
+      agentId,
       existingEntities: allEntities.map((e) => e.name),
     });
 
@@ -419,22 +421,23 @@ async function main() {
   section('2. Build knowledge graph');
 
   const graph = new InMemoryGraphAdapter();
-  const agentId = 'kg-agent';
 
   const nodeMap = new Map<string, GraphNode>();
 
   for (const entity of uniqueEntities.values()) {
-    const result = await graph.addNode({
-      agentId,
-      type: entity.type,
-      name: entity.name,
-      aliases: entity.aliases ?? [],
-      description: entity.description,
-      properties: {},
-      confidence: entity.confidence,
-      source: 'extracted',
-    });
-    nodeMap.set(entity.name.toLowerCase(), result.data!);
+    const node = unwrap(
+      await graph.addNode({
+        agentId,
+        type: entity.type,
+        name: entity.name,
+        aliases: entity.aliases ?? [],
+        description: entity.description,
+        properties: {},
+        confidence: entity.confidence,
+        source: 'extracted',
+      })
+    );
+    nodeMap.set(entity.name.toLowerCase(), node);
   }
 
   let edgesCreated = 0;
@@ -458,25 +461,25 @@ async function main() {
     edgesCreated++;
   }
 
-  const stats = await graph.getGraphStats(agentId);
+  const stats = unwrap(await graph.getGraphStats(agentId));
   console.log('Graph stats:');
-  console.log(`  Nodes: ${stats.data!.nodeCount}`);
-  console.log(`  Edges: ${stats.data!.edgeCount}`);
-  console.log(`  Node types:`, stats.data!.nodesByType);
-  console.log(`  Edge types:`, stats.data!.edgesByType);
-  console.log(`  Avg edges/node: ${stats.data!.averageEdgesPerNode.toFixed(1)}`);
+  console.log(`  Nodes: ${stats.nodeCount}`);
+  console.log(`  Edges: ${stats.edgeCount}`);
+  console.log(`  Node types:`, stats.nodesByType);
+  console.log(`  Edge types:`, stats.edgesByType);
+  console.log(`  Avg edges/node: ${stats.averageEdgesPerNode.toFixed(1)}`);
 
   section('3. Query the graph');
 
-  const people = await graph.queryNodes({ agentId, types: ['person'] });
+  const people = unwrap(await graph.queryNodes({ agentId, types: ['person'] }));
   console.log('People in the graph:');
-  for (const person of people.data!) {
+  for (const person of people) {
     console.log(`  ${person.name} — ${person.description ?? 'no description'}`);
   }
 
-  const orgs = await graph.queryNodes({ agentId, types: ['organization'] });
+  const orgs = unwrap(await graph.queryNodes({ agentId, types: ['organization'] }));
   console.log('\nOrganizations:');
-  for (const org of orgs.data!) {
+  for (const org of orgs) {
     console.log(`  ${org.name} — ${org.description ?? 'no description'}`);
   }
 
@@ -490,24 +493,26 @@ async function main() {
   if (marieNode) {
     console.log(`Traversing from: ${marieNode.name}\n`);
 
-    const neighbors = await graph.getNeighbors(marieNode.id);
+    const neighbors = unwrap(await graph.getNeighbors(marieNode.id));
     console.log('Direct connections:');
-    for (const { node, edge } of neighbors.data!) {
+    for (const { node, edge } of neighbors) {
       const direction = edge.sourceNodeId === marieNode.id ? '→' : '←';
       console.log(`  ${direction} ${edge.type} ${direction} ${node.name} (${node.type})`);
     }
 
-    const traversal = await graph.traverse({
-      agentId,
-      startNodeId: marieNode.id,
-      maxDepth: 2,
-      direction: 'both',
-    });
+    const traversal = unwrap(
+      await graph.traverse({
+        agentId,
+        startNodeId: marieNode.id,
+        maxDepth: 2,
+        direction: 'both',
+      })
+    );
 
     console.log(`\nMulti-hop traversal (depth=2):`);
-    console.log(`  Visited ${traversal.data!.visitedNodes.length} nodes`);
-    console.log(`  Visited ${traversal.data!.visitedEdges.length} edges`);
-    console.log(`  Reachable: ${traversal.data!.visitedNodes.map((n) => n.name).join(', ')}`);
+    console.log(`  Visited ${traversal.visitedNodes.length} nodes`);
+    console.log(`  Visited ${traversal.visitedEdges.length} edges`);
+    console.log(`  Reachable: ${traversal.visitedNodes.map((n) => n.name).join(', ')}`);
   }
 
   section('5. Inference engine');
@@ -531,13 +536,11 @@ async function main() {
       );
     }
 
-    const materialized = await inferenceEngine.materialize(inferred);
-    console.log(`\nMaterialized ${materialized.data!.length} edges into graph`);
+    const materialized = unwrap(await inferenceEngine.materialize(inferred));
+    console.log(`\nMaterialized ${materialized.length} edges into graph`);
 
-    const updatedStats = await graph.getGraphStats(agentId);
-    console.log(
-      `Updated graph: ${updatedStats.data!.nodeCount} nodes, ${updatedStats.data!.edgeCount} edges`
-    );
+    const updatedStats = unwrap(await graph.getGraphStats(agentId));
+    console.log(`Updated graph: ${updatedStats.nodeCount} nodes, ${updatedStats.edgeCount} edges`);
   } else {
     console.log('\nNo new relationships inferred (graph may be too sparse or rules do not match).');
   }

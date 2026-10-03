@@ -4,6 +4,7 @@ import {
   BM25Index,
   InMemoryEmbeddingAdapter,
   GoogleEmbeddingService,
+  unwrap,
 } from '@cogitator-ai/memory';
 
 const notes = [
@@ -158,31 +159,35 @@ async function main() {
 
   const query = 'distributed systems consistency';
 
-  const keywordHeavy = await hybridSearch.search({
-    query,
-    strategy: 'hybrid',
-    weights: { bm25: 0.8, vector: 0.2 },
-    limit: 3,
-    threshold: 0.3,
-  });
+  const keywordHeavy = unwrap(
+    await hybridSearch.search({
+      query,
+      strategy: 'hybrid',
+      weights: { bm25: 0.8, vector: 0.2 },
+      limit: 3,
+      threshold: 0.3,
+    })
+  );
 
-  const vectorHeavy = await hybridSearch.search({
-    query,
-    strategy: 'hybrid',
-    weights: { bm25: 0.2, vector: 0.8 },
-    limit: 3,
-    threshold: 0.3,
-  });
+  const vectorHeavy = unwrap(
+    await hybridSearch.search({
+      query,
+      strategy: 'hybrid',
+      weights: { bm25: 0.2, vector: 0.8 },
+      limit: 3,
+      threshold: 0.3,
+    })
+  );
 
   console.log(`Query: "${query}"\n`);
 
   console.log('Keyword-heavy (bm25=0.8, vector=0.2):');
-  for (const r of keywordHeavy.data!) {
+  for (const r of keywordHeavy) {
     console.log(`  [${r.score.toFixed(3)}] ${r.content.slice(0, 70)}...`);
   }
 
   console.log('\nVector-heavy (bm25=0.2, vector=0.8):');
-  for (const r of vectorHeavy.data!) {
+  for (const r of vectorHeavy) {
     console.log(`  [${r.score.toFixed(3)}] ${r.content.slice(0, 70)}...`);
   }
 

@@ -8,9 +8,11 @@ export function createCogitator(overrides: Partial<CogitatorConfig> = {}) {
     llm: {
       defaultProvider: 'google',
       providers: {
-        google: { apiKey: process.env.GOOGLE_API_KEY },
-        openai: { apiKey: process.env.OPENAI_API_KEY },
-        anthropic: { apiKey: process.env.ANTHROPIC_API_KEY },
+        ...(process.env.GOOGLE_API_KEY && { google: { apiKey: process.env.GOOGLE_API_KEY } }),
+        ...(process.env.OPENAI_API_KEY && { openai: { apiKey: process.env.OPENAI_API_KEY } }),
+        ...(process.env.ANTHROPIC_API_KEY && {
+          anthropic: { apiKey: process.env.ANTHROPIC_API_KEY },
+        }),
         ollama: {
           baseUrl: process.env.OLLAMA_URL || 'http://localhost:11434',
         },

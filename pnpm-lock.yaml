@@ -150,6 +150,9 @@ importers:
       '@cogitator-ai/tetsu':
         specifier: workspace:*
         version: link:../packages/tetsu
+      '@cogitator-ai/types':
+        specifier: workspace:*
+        version: link:../packages/types
       '@cogitator-ai/voice':
         specifier: workspace:*
         version: link:../packages/voice
@@ -217,6 +220,12 @@ importers:
         specifier: ^4.6.5
         version: 4.6.5
     devDependencies:
+      '@types/express':
+        specifier: ^5.0.6
+        version: 5.0.6
+      '@types/koa':
+        specifier: ^3.0.3
+        version: 3.0.3
       '@types/ws':
         specifier: ^8.18.2
         version: 8.18.2

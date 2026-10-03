@@ -1,6 +1,6 @@
 import { createCogitator, DEFAULT_MODEL, header, section, requireEnv } from '../_shared/setup.js';
 import { Agent } from '@cogitator-ai/core';
-import { PostgresAdapter } from '@cogitator-ai/memory';
+import { PostgresAdapter, unwrap } from '@cogitator-ai/memory';
 
 async function main() {
   header('02 — PostgreSQL Memory: Long-Term Persistence');
@@ -25,11 +25,11 @@ async function main() {
 
   const threadId = 'pg-demo-thread';
 
-  const existing = await pg.getThread(threadId);
-  if (existing.data) {
+  const existing = unwrap(await pg.getThread(threadId));
+  if (existing) {
     console.log('Found existing thread from previous run');
-    const entries = await pg.getEntries({ threadId });
-    console.log(`Thread has ${entries.data!.length} persisted entries`);
+    const entries = unwrap(await pg.getEntries({ threadId }));
+    console.log(`Thread has ${entries.length} persisted entries`);
   } else {
     await pg.createThread('pg-demo-agent', { topic: 'postgres persistence' }, threadId);
     console.log('Created new thread');
@@ -48,8 +48,8 @@ async function main() {
     metadata: { source: 'example' },
   });
 
-  const entries = await pg.getEntries({ threadId });
-  console.log(`Thread now has ${entries.data!.length} entries`);
+  const entries = unwrap(await pg.getEntries({ threadId }));
+  console.log(`Thread now has ${entries.length} entries`);
 
   section('2. Facts — long-term knowledge');
 
@@ -58,7 +58,7 @@ async function main() {
     content: 'User prefers concise answers under 50 words',
     category: 'preference',
     confidence: 0.95,
-    source: 'explicit',
+    source: 'user',
     metadata: { origin: 'example' },
   });
 
@@ -71,28 +71,28 @@ async function main() {
     metadata: { origin: 'example' },
   });
 
-  const facts = await pg.getFacts('pg-demo-agent');
-  console.log(`Stored ${facts.data!.length} facts:`);
-  for (const fact of facts.data!) {
+  const facts = unwrap(await pg.getFacts('pg-demo-agent'));
+  console.log(`Stored ${facts.length} facts:`);
+  for (const fact of facts) {
     console.log(`  [${fact.category}] ${fact.content} (confidence: ${fact.confidence})`);
   }
 
   section('3. Fact search');
 
-  const searchResult = await pg.searchFacts('pg-demo-agent', 'fintech');
-  console.log(`Search for "fintech" found ${searchResult.data!.length} facts:`);
-  for (const fact of searchResult.data!) {
+  const searchResult = unwrap(await pg.searchFacts('pg-demo-agent', 'fintech'));
+  console.log(`Search for "fintech" found ${searchResult.length} facts:`);
+  for (const fact of searchResult) {
     console.log(`  ${fact.content}`);
   }
 
   section('4. Querying with time filters');
 
   const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
-  const recentEntries = await pg.getEntries({ threadId, after: fiveMinutesAgo });
-  console.log(`Entries in last 5 minutes: ${recentEntries.data!.length}`);
+  const recentEntries = unwrap(await pg.getEntries({ threadId, after: fiveMinutesAgo }));
+  console.log(`Entries in last 5 minutes: ${recentEntries.length}`);
 
-  const lastEntry = await pg.getEntries({ threadId, limit: 1 });
-  console.log('Most recent entry:', lastEntry.data![0]?.message.content);
+  const lastEntry = unwrap(await pg.getEntries({ threadId, limit: 1 }));
+  console.log('Most recent entry:', lastEntry[0]?.message.content);
 
   section('5. Cogitator with PostgreSQL memory');
 

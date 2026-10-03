@@ -1,7 +1,7 @@
 import { createCogitator, DEFAULT_MODEL, header, section } from '../_shared/setup.js';
 import { Agent } from '@cogitator-ai/core';
 import { Swarm } from '@cogitator-ai/swarms';
-import type { SwarmConfig, NegotiationResult } from '@cogitator-ai/swarms';
+import type { SwarmConfig, NegotiationOffer, NegotiationResult } from '@cogitator-ai/swarms';
 
 async function main() {
   header('04 — Negotiation Swarm');
@@ -17,7 +17,7 @@ Start by proposing $30,000/year for the full package.
 Be willing to compromise on non-essential features to stay under budget.
 Use structured terms: price, license_seats, support_tier, contract_length.`,
     temperature: 0.7,
-    maxIterations: 1,
+    maxIterations: 5,
   });
 
   const seller = new Agent({
@@ -29,7 +29,7 @@ You can offer discounts for longer contracts or fewer seats.
 Start by proposing $65,000/year for the premium package.
 Use structured terms: price, license_seats, support_tier, contract_length.`,
     temperature: 0.7,
-    maxIterations: 1,
+    maxIterations: 5,
   });
 
   const config: SwarmConfig = {
@@ -58,9 +58,10 @@ Use structured terms: price, license_seats, support_tier, contract_length.`,
     console.log(`  >> Round ${round}/${maxRounds}`);
   });
 
-  negotiationSwarm.on('negotiation:offer', (event) => {
-    const { from, to } = event.data as { from: string; to: string };
-    console.log(`  >> ${from} makes an offer to ${to}`);
+  negotiationSwarm.on('negotiation:offer-made', (event) => {
+    const { offer } = event.data as { offer: NegotiationOffer };
+    const to = Array.isArray(offer.to) ? offer.to.join(', ') : offer.to;
+    console.log(`  >> ${offer.from} makes an offer to ${to}`);
   });
 
   negotiationSwarm.on('negotiation:convergence-update', (event) => {

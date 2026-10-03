@@ -1,6 +1,6 @@
 import { createCogitator, DEFAULT_MODEL, header, section, requireEnv } from '../_shared/setup.js';
 import { Agent } from '@cogitator-ai/core';
-import { RedisAdapter } from '@cogitator-ai/memory';
+import { RedisAdapter, unwrap } from '@cogitator-ai/memory';
 
 async function main() {
   header('01 — Redis Memory: Persistent Conversations');
@@ -25,12 +25,12 @@ async function main() {
 
   const threadId = 'persistent-chat-thread';
 
-  const existing = await redis.getThread(threadId);
-  if (existing.data) {
+  const existing = unwrap(await redis.getThread(threadId));
+  if (existing) {
     console.log('Found existing thread from previous run!');
-    const entries = await redis.getEntries({ threadId });
-    console.log(`Thread has ${entries.data!.length} entries from before`);
-    for (const entry of entries.data!) {
+    const entries = unwrap(await redis.getEntries({ threadId }));
+    console.log(`Thread has ${entries.length} entries from before`);
+    for (const entry of entries) {
       const text =
         typeof entry.message.content === 'string' ? entry.message.content : '[multipart]';
       console.log(`  [${entry.message.role}] ${text.slice(0, 80)}`);
@@ -51,14 +51,14 @@ async function main() {
     tokenCount: 3,
   });
 
-  const allEntries = await redis.getEntries({ threadId });
-  console.log(`Thread now has ${allEntries.data!.length} total entries`);
+  const allEntries = unwrap(await redis.getEntries({ threadId }));
+  console.log(`Thread now has ${allEntries.length} total entries`);
 
   section('2. Querying with limits');
 
-  const lastTwo = await redis.getEntries({ threadId, limit: 2 });
+  const lastTwo = unwrap(await redis.getEntries({ threadId, limit: 2 }));
   console.log('Last 2 entries:');
-  for (const entry of lastTwo.data!) {
+  for (const entry of lastTwo) {
     const text = typeof entry.message.content === 'string' ? entry.message.content : '[multipart]';
     console.log(`  [${entry.message.role}] ${text}`);
   }
@@ -67,10 +67,10 @@ async function main() {
 
   await redis.updateThread(threadId, {
     lastAccess: new Date().toISOString(),
-    runCount: ((existing.data?.metadata?.runCount as number) ?? 0) + 1,
+    runCount: ((existing?.metadata?.runCount as number) ?? 0) + 1,
   });
-  const updated = await redis.getThread(threadId);
-  console.log('Thread metadata:', updated.data!.metadata);
+  const updated = unwrap(await redis.getThread(threadId));
+  console.log('Thread metadata:', updated?.metadata);
 
   await redis.disconnect();
 
@@ -109,8 +109,8 @@ async function main() {
   section('5. Verify persistence');
 
   const adapter = cog.memory!;
-  const stored = await adapter.getEntries({ threadId: cogThreadId });
-  console.log(`Stored ${stored.data!.length} entries in thread "${cogThreadId}"`);
+  const stored = unwrap(await adapter.getEntries({ threadId: cogThreadId }));
+  console.log(`Stored ${stored.length} entries in thread "${cogThreadId}"`);
   console.log('(Run this example again to see Redis persistence in action)');
 
   await cog.close();

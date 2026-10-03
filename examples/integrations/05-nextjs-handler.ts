@@ -5,11 +5,14 @@ import { Cogitator, Agent, tool } from '@cogitator-ai/core';
 import { createChatHandler, createAgentHandler } from '@cogitator-ai/next';
 import { z } from 'zod';
 
+const apiKey = process.env.GOOGLE_API_KEY;
+if (!apiKey) throw new Error('Set GOOGLE_API_KEY');
+
 const cogitator = new Cogitator({
   llm: {
     defaultProvider: 'google',
     providers: {
-      google: { apiKey: process.env.GOOGLE_API_KEY },
+      google: { apiKey },
     },
   },
   memory: { adapter: 'memory' },

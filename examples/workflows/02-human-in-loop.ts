@@ -12,7 +12,7 @@ import {
   choiceNode,
   inputNode,
 } from '@cogitator-ai/workflows';
-import type { HumanNodeConfig } from '@cogitator-ai/workflows';
+import type { NamedHumanNodeConfig } from '@cogitator-ai/workflows';
 
 interface PublishingState {
   [key: string]: unknown;
@@ -98,7 +98,7 @@ Format with a title, intro paragraph, and 2-3 key points.`,
   });
 
   const simulateHumanApproval = (
-    config: HumanNodeConfig<PublishingState>,
+    config: NamedHumanNodeConfig<PublishingState>,
     respondWith: unknown,
     delay = 100
   ) =>

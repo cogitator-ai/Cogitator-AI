@@ -1,6 +1,6 @@
 import { createCogitator, DEFAULT_MODEL, header, section } from '../_shared/setup.js';
 import { Agent } from '@cogitator-ai/core';
-import { InMemoryAdapter } from '@cogitator-ai/memory';
+import { InMemoryAdapter, unwrap } from '@cogitator-ai/memory';
 
 async function main() {
   header('01 — Basic Memory: Threads & Multi-Turn Conversations');
@@ -10,30 +10,30 @@ async function main() {
   const memory = new InMemoryAdapter();
   await memory.connect();
 
-  const thread = await memory.createThread('agent-01', { topic: 'greetings' });
-  console.log('Created thread:', thread.data!.id);
+  const thread = unwrap(await memory.createThread('agent-01', { topic: 'greetings' }));
+  console.log('Created thread:', thread.id);
 
   await memory.addEntry({
-    threadId: thread.data!.id,
+    threadId: thread.id,
     message: { role: 'user', content: 'Hello, my name is Alice.' },
     tokenCount: 8,
   });
 
   await memory.addEntry({
-    threadId: thread.data!.id,
+    threadId: thread.id,
     message: { role: 'assistant', content: 'Nice to meet you, Alice!' },
     tokenCount: 7,
   });
 
   await memory.addEntry({
-    threadId: thread.data!.id,
+    threadId: thread.id,
     message: { role: 'user', content: 'I work as a data scientist at Acme Corp.' },
     tokenCount: 11,
   });
 
-  const entries = await memory.getEntries({ threadId: thread.data!.id });
-  console.log(`Thread has ${entries.data!.length} entries:`);
-  for (const entry of entries.data!) {
+  const entries = unwrap(await memory.getEntries({ threadId: thread.id }));
+  console.log(`Thread has ${entries.length} entries:`);
+  for (const entry of entries) {
     console.log(`  [${entry.message.role}] ${entry.message.content}`);
   }
 
@@ -41,22 +41,22 @@ async function main() {
 
   section('2. Thread management');
 
-  const thread2 = await memory.createThread('agent-01', { topic: 'coding' });
+  const thread2 = unwrap(await memory.createThread('agent-01', { topic: 'coding' }));
   await memory.addEntry({
-    threadId: thread2.data!.id,
+    threadId: thread2.id,
     message: { role: 'user', content: 'How do I sort an array in TypeScript?' },
     tokenCount: 10,
   });
 
   console.log('Stats after 2 threads:', memory.stats);
 
-  await memory.updateThread(thread.data!.id, { topic: 'greetings', resolved: true });
-  const updated = await memory.getThread(thread.data!.id);
-  console.log('Updated thread metadata:', updated.data!.metadata);
+  await memory.updateThread(thread.id, { topic: 'greetings', resolved: true });
+  const updated = unwrap(await memory.getThread(thread.id));
+  console.log('Updated thread metadata:', updated?.metadata);
 
-  await memory.clearThread(thread2.data!.id);
-  const cleared = await memory.getEntries({ threadId: thread2.data!.id });
-  console.log('Thread 2 entries after clear:', cleared.data!.length);
+  await memory.clearThread(thread2.id);
+  const cleared = unwrap(await memory.getEntries({ threadId: thread2.id }));
+  console.log('Thread 2 entries after clear:', cleared.length);
 
   await memory.disconnect();
 
@@ -94,9 +94,9 @@ async function main() {
   section('4. Verify memory contents');
 
   const adapter = cog.memory!;
-  const stored = await adapter.getEntries({ threadId });
-  console.log(`Stored ${stored.data!.length} entries in thread "${threadId}":`);
-  for (const entry of stored.data!) {
+  const stored = unwrap(await adapter.getEntries({ threadId }));
+  console.log(`Stored ${stored.length} entries in thread "${threadId}":`);
+  for (const entry of stored) {
     const text =
       typeof entry.message.content === 'string' ? entry.message.content : '[multipart content]';
     console.log(`  [${entry.message.role}] ${text.slice(0, 80)}${text.length > 80 ? '...' : ''}`);

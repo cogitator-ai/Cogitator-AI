@@ -49,10 +49,16 @@
     "openai": "^7.25.0",
     "grammy": "^1.46.0",
     "zod": "^4.6.5",
-    "ws": "^8.22.0"
+    "ws": "^8.22.0",
+    "@cogitator-ai/types": "workspace:*"
   },
   "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/koa": "^3.0.3",
     "@types/ws": "^8.18.2",
     "tsx": "^4.23.15"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
   }
 }
