@@ -175,6 +175,26 @@ describe('StreamWriter', () => {
   });
 });
 
+describe('StreamWriter reasoning', () => {
+  it('writes reasoning parts and skips empty deltas', async () => {
+    const { writer, readAll } = createTestStream();
+    const sw = new StreamWriter(writer);
+    const done = readAll();
+
+    await sw.reasoningStart('r1');
+    await sw.reasoningDelta('r1', 'Think');
+    await sw.reasoningDelta('r1', '');
+    await sw.reasoningEnd('r1');
+    await sw.close();
+
+    expect(parseSSEChunks(await done)).toEqual([
+      { type: 'reasoning-start', id: 'r1' },
+      { type: 'reasoning-delta', id: 'r1', delta: 'Think' },
+      { type: 'reasoning-end', id: 'r1' },
+    ]);
+  });
+});
+
 describe('StreamWriter failure handling', () => {
   it('marks itself closed when the underlying write fails', async () => {
     const { readable, writable } = new TransformStream<Uint8Array>();

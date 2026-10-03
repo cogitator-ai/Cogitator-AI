@@ -7,7 +7,7 @@ import type {
   LanguageModelV4CallOptions,
 } from '@ai-sdk/provider';
 import type { Agent, Cogitator } from '@cogitator-ai/core';
-import type { RunResult, ToolCall, ToolResult } from '@cogitator-ai/types';
+import type { ReasoningEffort, RunResult, ToolCall, ToolResult } from '@cogitator-ai/types';
 import {
   AgentRunner,
   runMetadata,
@@ -47,7 +47,6 @@ interface ModernCallOptions {
   stopSequences?: string[];
   responseFormat?: AgentCallResponseFormat;
   tools?: ReadonlyArray<{ name: string }>;
-  reasoning?: string;
   abortSignal?: AbortSignal;
 }
 
@@ -116,6 +115,10 @@ abstract class AgentLanguageModel<
     return MODERN_UNSUPPORTED_SETTINGS.filter((setting) => options[setting] !== undefined);
   }
 
+  protected reasoningEffort(_options: TCallOptions): ReasoningEffort | undefined {
+    return undefined;
+  }
+
   async doGenerate(
     options: TCallOptions
   ): Promise<CogitatorGenerateResult<TWarning, TUsage, TFinishReason>> {
@@ -140,6 +143,7 @@ abstract class AgentLanguageModel<
       { stream: false }
     );
 
+    if (result.reasoning) content.push({ type: 'reasoning', text: result.reasoning });
     if (result.output) content.push({ type: 'text', text: result.output });
 
     return {
@@ -170,17 +174,26 @@ abstract class AgentLanguageModel<
 
     const stream = new ReadableStream<CogitatorStreamPart<TWarning, TUsage, TFinishReason>>({
       start: (controller) => {
-        let textId: string | undefined;
-        let textBlocks = 0;
+        let openPart: { kind: 'text' | 'reasoning'; id: string } | undefined;
+        let blocks = 0;
         const toolResults = new Map<string, ToolResult>();
 
         const emit = (part: CogitatorStreamPart<TWarning, TUsage, TFinishReason>) => {
           if (!closed) controller.enqueue(part);
         };
-        const closeText = () => {
-          if (textId === undefined) return;
-          emit({ type: 'text-end', id: textId });
-          textId = undefined;
+        const closePart = () => {
+          if (openPart === undefined) return;
+          const { kind, id } = openPart;
+          openPart = undefined;
+          emit(kind === 'text' ? { type: 'text-end', id } : { type: 'reasoning-end', id });
+        };
+        const openPartOf = (kind: 'text' | 'reasoning'): string => {
+          if (openPart?.kind === kind) return openPart.id;
+          closePart();
+          const id = `${kind}-${blocks++}`;
+          openPart = { kind, id };
+          emit(kind === 'text' ? { type: 'text-start', id } : { type: 'reasoning-start', id });
+          return id;
         };
 
         emit({ type: 'stream-start', warnings });
@@ -198,15 +211,15 @@ abstract class AgentLanguageModel<
                 }),
               onTextDelta: (delta) => {
                 if (!delta) return;
-                if (textId === undefined) {
-                  textId = `text-${textBlocks++}`;
-                  emit({ type: 'text-start', id: textId });
-                }
-                emit({ type: 'text-delta', id: textId, delta });
+                emit({ type: 'text-delta', id: openPartOf('text'), delta });
+              },
+              onReasoningDelta: (delta) => {
+                if (!delta) return;
+                emit({ type: 'reasoning-delta', id: openPartOf('reasoning'), delta });
               },
               onToolCall: (call) => {
                 if (!this.exposesToolCall(call.name, options)) return;
-                closeText();
+                closePart();
                 const part = toolCallContent(call);
                 emit({
                   type: 'tool-input-start',
@@ -222,7 +235,7 @@ abstract class AgentLanguageModel<
               onToolResult: (toolResult) => {
                 toolResults.set(toolResult.callId, toolResult);
                 if (!this.exposesToolCall(toolResult.name, options)) return;
-                closeText();
+                closePart();
                 emit(toolResultContent(toolResult));
               },
             },
@@ -230,7 +243,7 @@ abstract class AgentLanguageModel<
           )
           .then(
             (result) => {
-              closeText();
+              closePart();
               emit({
                 type: 'finish',
                 usage: this.toUsage(result),
@@ -239,7 +252,7 @@ abstract class AgentLanguageModel<
               });
             },
             (error: unknown) => {
-              closeText();
+              closePart();
               emit({ type: 'error', error });
             }
           )
@@ -268,20 +281,30 @@ abstract class AgentLanguageModel<
       responseFormat: options.responseFormat,
       toolNames: (options.tools ?? []).map((tool) => tool.name),
       unsupportedSettings: this.unsupportedSettings(options),
+      reasoningEffort: this.reasoningEffort(options),
       abortSignal: options.abortSignal,
     });
   }
 }
 
 function v3Usage(result: RunResult): CogitatorUsageV3 {
+  const { inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens } =
+    result.usage;
+  const cached = cachedInputTokens !== undefined || cacheWriteTokens !== undefined;
   return {
     inputTokens: {
-      total: result.usage.inputTokens,
-      noCache: undefined,
-      cacheRead: undefined,
-      cacheWrite: undefined,
+      total: inputTokens,
+      noCache: cached
+        ? inputTokens - (cachedInputTokens ?? 0) - (cacheWriteTokens ?? 0)
+        : undefined,
+      cacheRead: cachedInputTokens,
+      cacheWrite: cacheWriteTokens,
     },
-    outputTokens: { total: result.usage.outputTokens, text: undefined, reasoning: undefined },
+    outputTokens: {
+      total: outputTokens,
+      text: reasoningTokens !== undefined ? outputTokens - reasoningTokens : undefined,
+      reasoning: reasoningTokens,
+    },
   };
 }
 
@@ -336,6 +359,12 @@ export class AgentLanguageModelV2
       inputTokens: result.usage.inputTokens,
       outputTokens: result.usage.outputTokens,
       totalTokens: result.usage.totalTokens,
+      ...(result.usage.reasoningTokens !== undefined && {
+        reasoningTokens: result.usage.reasoningTokens,
+      }),
+      ...(result.usage.cachedInputTokens !== undefined && {
+        cachedInputTokens: result.usage.cachedInputTokens,
+      }),
     };
   }
 
@@ -379,12 +408,8 @@ export class AgentLanguageModelV4
 {
   readonly specificationVersion = 'v4';
 
-  protected unsupportedSettings(options: LanguageModelV4CallOptions): string[] {
-    const settings = super.unsupportedSettings(options);
-    if (options.reasoning !== undefined && options.reasoning !== 'provider-default') {
-      settings.push('reasoning');
-    }
-    return settings;
+  protected reasoningEffort(options: LanguageModelV4CallOptions): ReasoningEffort | undefined {
+    return options.reasoning === 'provider-default' ? undefined : options.reasoning;
   }
 
   protected toWarning(warning: CallWarning): CogitatorWarningV3 {

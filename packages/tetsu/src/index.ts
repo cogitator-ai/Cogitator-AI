@@ -12,6 +12,7 @@ export type { DescribedError } from './errors.js';
 
 export {
   RunBody,
+  ResumeBody,
   SwarmRunBody,
   WorkflowRunBody,
   AddMessageBody,
@@ -36,6 +37,7 @@ export type {
   ShutdownSignal,
   WebSocketOptions,
   AgentRunRequest,
+  AgentResumeRequest,
   SwarmRunRequest,
   WorkflowRunRequest,
   AddMessageRequest,

@@ -1,5 +1,11 @@
 import type { Agent, Cogitator } from '@cogitator-ai/core';
-import type { AgentConfig, RunResult, ToolCall, ToolResult } from '@cogitator-ai/types';
+import type {
+  AgentConfig,
+  ReasoningEffort,
+  RunResult,
+  ToolCall,
+  ToolResult,
+} from '@cogitator-ai/types';
 import { toJSONValue, type JSONObject, type JSONValue } from './json.js';
 import type { CogitatorProviderOptions } from './types.js';
 
@@ -25,6 +31,8 @@ export interface AgentCall {
   responseFormat?: AgentCallResponseFormat;
   toolNames: readonly string[];
   unsupportedSettings: readonly string[];
+  /** Overrides the effort of the agent's `reasoning`, keeping its other settings */
+  reasoningEffort?: ReasoningEffort;
   abortSignal?: AbortSignal;
 }
 
@@ -45,6 +53,7 @@ export interface PreparedAgentCall {
 export interface AgentRunListener {
   onRunStart?(runId: string): void;
   onTextDelta?(delta: string): void;
+  onReasoningDelta?(delta: string): void;
   onToolCall?(call: ToolCall): void;
   onToolResult?(result: ToolResult): void;
 }
@@ -86,6 +95,9 @@ export class AgentRunner {
     if (call.stopSequences && call.stopSequences.length > 0) {
       overrides.stopSequences = call.stopSequences;
     }
+    if (call.reasoningEffort !== undefined) {
+      overrides.reasoning = { ...this.agent.config.reasoning, effort: call.reasoningEffort };
+    }
 
     let finalInput = input;
     if (call.responseFormat?.type === 'json') {
@@ -114,6 +126,7 @@ export class AgentRunner {
       signal: options.signal ?? prepared.abortSignal,
       onRunStart: listener.onRunStart && ((data) => listener.onRunStart?.(data.runId)),
       onToken: options.stream ? listener.onTextDelta : undefined,
+      onReasoning: options.stream ? listener.onReasoningDelta : undefined,
       onToolCall: listener.onToolCall,
       onToolResult: listener.onToolResult,
     });

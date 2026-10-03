@@ -1,18 +1,24 @@
 import { httpError } from '@tetsujs/core';
 import type { Agent } from '@cogitator-ai/core';
+import type { PendingApproval } from '@cogitator-ai/server-shared';
 import type {
+  ResumeOptions,
   RunOptions,
   RunResult,
   StrategyResult,
   SwarmConfig,
   SwarmResourceUsage,
   SwarmRunOptions,
+  ToolApprovalDecision,
+  ToolApprovalRequest,
   Workflow,
   WorkflowExecuteOptions,
   WorkflowResult,
   WorkflowState,
 } from '@cogitator-ai/types';
+import type { z } from 'zod';
 import { importOptional } from './errors.js';
+import type { ResumeBody } from './schemas.js';
 import type {
   AgentListResponseBody,
   AgentRunResponseBody,
@@ -118,12 +124,58 @@ export function toAgentRunResponse(result: RunResult): AgentRunResponseBody {
       inputTokens: result.usage.inputTokens,
       outputTokens: result.usage.outputTokens,
       totalTokens: result.usage.totalTokens,
+      ...(result.usage.reasoningTokens !== undefined && {
+        reasoningTokens: result.usage.reasoningTokens,
+      }),
+      ...(result.usage.cachedInputTokens !== undefined && {
+        cachedInputTokens: result.usage.cachedInputTokens,
+      }),
+      ...(result.usage.cacheWriteTokens !== undefined && {
+        cacheWriteTokens: result.usage.cacheWriteTokens,
+      }),
     },
     toolCalls: result.toolCalls.map((call) => ({
       id: call.id,
       name: call.name,
       arguments: call.arguments,
     })),
+    ...(result.reasoning !== undefined && { reasoning: result.reasoning }),
+    ...(result.status !== undefined && { status: result.status }),
+    ...(result.pendingApprovals !== undefined && {
+      pendingApprovals: toPendingApprovals(result.pendingApprovals),
+    }),
+  };
+}
+
+/** The tool calls a paused run waits on, as clients see them. */
+export function toPendingApprovals(requests: readonly ToolApprovalRequest[]): PendingApproval[] {
+  return requests.map((request) => ({
+    toolCallId: request.toolCallId,
+    toolName: request.toolName,
+    arguments: request.arguments,
+    description: request.description,
+    ...(request.sideEffects !== undefined && { sideEffects: [...request.sideEffects] }),
+  }));
+}
+
+function toDecision(decision: { approved: boolean; reason?: string }): ToolApprovalDecision {
+  if (decision.approved) return { approved: true };
+  return decision.reason === undefined
+    ? { approved: false }
+    : { approved: false, reason: decision.reason };
+}
+
+/** The decisions of a resume request, as `cogitator.resume()` takes them. */
+export function toResumeDecisions(
+  body: Pick<z.output<typeof ResumeBody>, 'decisions' | 'defaultDecision'>
+): Pick<ResumeOptions, 'decisions' | 'defaultDecision'> {
+  return {
+    ...(body.decisions && {
+      decisions: Object.fromEntries(
+        Object.entries(body.decisions).map(([id, decision]) => [id, toDecision(decision)])
+      ),
+    }),
+    ...(body.defaultDecision && { defaultDecision: toDecision(body.defaultDecision) }),
   };
 }
 
@@ -186,6 +238,23 @@ export function runAgent(
   auth: AuthContext | undefined
 ): Promise<RunResult> {
   return deps.cogitator.run(agent, {
+    ...options,
+    ...(auth?.userId !== undefined && { userId: auth.userId }),
+  });
+}
+
+/**
+ * Continues the run paused in `threadId` as the caller. The runtime refuses a
+ * caller who is not the user the run belongs to with `THREAD_ACCESS_DENIED`.
+ */
+export function resumeAgent(
+  deps: CogitatorDeps,
+  agent: Agent,
+  threadId: string,
+  options: ResumeOptions,
+  auth: AuthContext | undefined
+): Promise<RunResult> {
+  return deps.cogitator.resume(agent, threadId, {
     ...options,
     ...(auth?.userId !== undefined && { userId: auth.userId }),
   });

@@ -1,5 +1,6 @@
 import type { FastifyRequest } from 'fastify';
 import type { Cogitator, Agent } from '@cogitator-ai/core';
+import type { PendingApproval } from '@cogitator-ai/server-shared';
 import type {
   Message,
   ToolCall,
@@ -14,6 +15,7 @@ import type {
   StreamingWorkflowEvent,
   SwarmEvent,
   SwarmMessage,
+  ToolApprovalDecision,
 } from '@cogitator-ai/types';
 
 export type {
@@ -30,6 +32,8 @@ export type {
   StreamingWorkflowEvent,
   SwarmEvent,
   SwarmMessage,
+  ToolApprovalDecision,
+  PendingApproval,
 };
 
 export interface AuthContext {
@@ -129,6 +133,15 @@ export interface AgentRunResponse {
     totalTokens: number;
   };
   toolCalls: ToolCall[];
+  reasoning?: string;
+  status?: 'completed' | 'paused';
+  pendingApprovals?: PendingApproval[];
+}
+
+export interface AgentResumeRequest {
+  threadId: string;
+  decisions?: Record<string, ToolApprovalDecision>;
+  defaultDecision?: ToolApprovalDecision;
 }
 
 export interface ThreadResponse {
@@ -241,7 +254,7 @@ export interface ErrorResponse {
 }
 
 export interface WebSocketMessage {
-  type: 'subscribe' | 'unsubscribe' | 'run' | 'stop' | 'ping';
+  type: 'subscribe' | 'unsubscribe' | 'run' | 'resume' | 'stop' | 'ping';
   id?: string;
   channel?: string;
   payload?: unknown;
@@ -293,6 +306,26 @@ export const AgentRunRequestSchema = {
   required: ['input'],
 } as const;
 
+const ToolApprovalDecisionSchema = {
+  type: 'object',
+  properties: {
+    approved: { type: 'boolean' },
+    reason: { type: 'string' },
+  },
+  required: ['approved'],
+  additionalProperties: false,
+} as const;
+
+export const AgentResumeRequestSchema = {
+  type: 'object',
+  properties: {
+    threadId: NON_BLANK_STRING,
+    decisions: { type: 'object', additionalProperties: ToolApprovalDecisionSchema },
+    defaultDecision: ToolApprovalDecisionSchema,
+  },
+  required: ['threadId'],
+} as const;
+
 export const AgentRunResponseSchema = {
   type: 'object',
   properties: {
@@ -307,6 +340,22 @@ export const AgentRunResponseSchema = {
       },
     },
     toolCalls: { type: 'array' },
+    reasoning: { type: 'string' },
+    status: { type: 'string', enum: ['completed', 'paused'] },
+    pendingApprovals: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          toolCallId: { type: 'string' },
+          toolName: { type: 'string' },
+          arguments: { type: 'object', additionalProperties: true },
+          description: { type: 'string' },
+          sideEffects: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['toolCallId', 'toolName', 'arguments', 'description'],
+      },
+    },
   },
 } as const;
 

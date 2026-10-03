@@ -3,13 +3,11 @@ import { sse } from '@tetsujs/sse';
 import type { ServerSentEvent } from '@tetsujs/sse';
 import { countMessageTokens } from '@cogitator-ai/memory';
 import {
+  createApprovalRequiredEvent,
   createErrorEvent,
   createFinishEvent,
   createStartEvent,
   createSwarmEvent,
-  createTextDeltaEvent,
-  createTextEndEvent,
-  createTextStartEvent,
   createToolCallDeltaEvent,
   createToolCallEndEvent,
   createToolCallStartEvent,
@@ -17,8 +15,8 @@ import {
   createWorkflowEvent,
   generateId,
 } from '@cogitator-ai/server-shared';
+import type { StreamEvent } from '@cogitator-ai/server-shared';
 import { assertThreadAccess, ensureThreadAccess } from '@cogitator-ai/core';
-import type { Agent } from '@cogitator-ai/core';
 import type {
   Message,
   RunResult,
@@ -42,9 +40,12 @@ import {
   listSwarms,
   listTools,
   listWorkflows,
+  resumeAgent,
   runAgent,
   serializeSwarmUsage,
   toAgentRunResponse,
+  toPendingApprovals,
+  toResumeDecisions,
   toSwarmRunResponse,
   toWorkflowRunResponse,
 } from './operations.js';
@@ -60,6 +61,7 @@ import {
   HealthResponse,
   NameParams,
   ReadyResponse,
+  ResumeBody,
   RUN_FAILURES,
   RunBody,
   SwarmListResponse,
@@ -73,7 +75,8 @@ import {
   WorkflowRunResponse,
 } from './schemas.js';
 import { cogitatorSocket } from './socket.js';
-import { DONE_EVENT, eventsOf, resolveSignal, sseEvent } from './streaming.js';
+import { DONE_EVENT, eventsOf, MessageParts, resolveSignal, sseEvent } from './streaming.js';
+import type { AgentStreamCallbacks } from './streaming.js';
 import type { AuthContext, CogitatorDeps } from './types.js';
 
 const AgentNotFound = errorEnvelope('AGENT_NOT_FOUND', 'No agent is registered under this name');
@@ -97,6 +100,15 @@ const ThreadForbidden = failureEnvelope(
   'The memory thread belongs to another user, or `authorizeThread` refused it',
   ['THREAD_FORBIDDEN']
 );
+const ResumeForbidden = failureEnvelope(
+  403,
+  'The paused run belongs to another user, or `authorizeThread` refused the thread',
+  ['THREAD_FORBIDDEN']
+);
+const ResumeConflict = failureEnvelope(
+  409,
+  'The thread has no paused run (`RUN_NOT_PAUSED`), or the agent is already running'
+);
 const ThreadUnreadable = errorsEnvelope(
   ['MEMORY_READ_FAILED'],
   'The memory adapter could not read the thread, so its owner is unknown'
@@ -117,9 +129,11 @@ const BlackboardDisabled = errorEnvelope(
 const STREAM_DESCRIPTION =
   'Server-sent events in the Cogitator stream protocol, one JSON event per `data:` line, ending with `data: [DONE]`.';
 
-type RunRequest = z.output<typeof RunBody>;
 type SwarmRunRequest = z.output<typeof SwarmRunBody>;
 type WorkflowRunRequest = z.output<typeof WorkflowRunBody>;
+
+/** Starts or resumes an agent run with the callbacks of a stream. */
+type StreamedRun = (callbacks: AgentStreamCallbacks) => Promise<RunResult>;
 
 /**
  * The Cogitator HTTP API as a Tetsu controller.
@@ -232,9 +246,90 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
         const auth = ctx.cogitatorAuth;
         const body = ctx.body;
         await checkThreadAccess(deps, auth, body.threadId);
-        return sse(ctx, (signal) => agentEvents(deps, agent, body, auth, signal), {
-          until: until(),
-        });
+        return sse(
+          ctx,
+          (signal) =>
+            agentEvents(
+              (callbacks) => runAgent(deps, agent, { ...body, ...callbacks }, auth),
+              signal
+            ),
+          { until: until() }
+        );
+      },
+    }),
+
+    resumeAgent: route({
+      method: 'POST',
+      path: '/agents/:name/resume',
+      schema: {
+        params: NameParams,
+        body: ResumeBody,
+        response: {
+          ...RUN_FAILURES,
+          200: AgentRunResponse,
+          403: ResumeForbidden,
+          404: RunNotFound,
+          409: ResumeConflict,
+        },
+      },
+      hooks: { beforeParse: [caller], onError: [errors] },
+      docs: {
+        summary: 'Resume a run paused for tool approvals and wait for its answer',
+        description:
+          'Approved calls run, declined ones answer the model with the reason, and calls without a decision pause the run again.',
+        tags: ['agents'],
+      },
+      handler: async (ctx) => {
+        const agent = findAgent(deps, ctx.params.name);
+        const { threadId } = ctx.body;
+        await checkThreadAccess(deps, ctx.cogitatorAuth, threadId);
+        const signal = ctx.req.signal;
+        try {
+          const result = await resumeAgent(
+            deps,
+            agent,
+            threadId,
+            { ...toResumeDecisions(ctx.body), signal },
+            ctx.cogitatorAuth
+          );
+          return toAgentRunResponse(result);
+        } catch (error) {
+          if (signal.aborted) throw clientClosedRequest();
+          throw error;
+        }
+      },
+    }),
+
+    streamResumeAgent: route({
+      method: 'POST',
+      path: '/agents/:name/resume/stream',
+      schema: {
+        params: NameParams,
+        body: ResumeBody,
+        response: { 403: ThreadForbidden, 404: AgentNotFound },
+      },
+      hooks: { beforeParse: [caller], onError: [errors] },
+      docs: {
+        summary: 'Resume a run paused for tool approvals and stream the rest of it',
+        description: STREAM_DESCRIPTION,
+        tags: ['agents'],
+      },
+      handler: async (ctx) => {
+        const agent = findAgent(deps, ctx.params.name);
+        const auth = ctx.cogitatorAuth;
+        const { threadId } = ctx.body;
+        const decisions = toResumeDecisions(ctx.body);
+        await checkThreadAccess(deps, auth, threadId);
+        return sse(
+          ctx,
+          (signal) =>
+            agentEvents(
+              (callbacks) =>
+                resumeAgent(deps, agent, threadId, { ...decisions, ...callbacks }, auth),
+              signal
+            ),
+          { until: until() }
+        );
       },
     }),
 
@@ -512,56 +607,55 @@ function* failure(error: unknown): Generator<ServerSentEvent, void, undefined> {
 }
 
 async function* agentEvents(
-  deps: CogitatorDeps,
-  agent: Agent,
-  body: RunRequest,
-  auth: AuthContext | undefined,
+  start: StreamedRun,
   signal: AbortSignal
 ): AsyncGenerator<ServerSentEvent, void, undefined> {
   const messageId = generateId('msg');
-  const textId = generateId('txt');
+  const parts = new MessageParts();
   let result: RunResult | undefined;
 
   yield sseEvent(createStartEvent(messageId));
-  yield sseEvent(createTextStartEvent(textId));
 
   try {
     yield* eventsOf<ServerSentEvent>(signal, async (emit) => {
-      result = await runAgent(
-        deps,
-        agent,
-        {
-          ...body,
-          stream: true,
-          signal,
-          onToken: (token) => {
-            if (token) emit(sseEvent(createTextDeltaEvent(textId, token)));
-          },
-          onToolCall: (call) => {
-            emit(sseEvent(createToolCallStartEvent(call.id, call.name)));
-            emit(sseEvent(createToolCallDeltaEvent(call.id, JSON.stringify(call.arguments))));
-            emit(sseEvent(createToolCallEndEvent(call.id)));
-          },
-          onToolResult: (toolResult) => {
-            emit(
-              sseEvent(
-                createToolResultEvent(generateId('res'), toolResult.callId, toolResult.result)
-              )
-            );
-          },
+      const emitAll = (events: StreamEvent[]) => {
+        for (const event of events) emit(sseEvent(event));
+      };
+      result = await start({
+        stream: true,
+        signal,
+        onToken: (token) => emitAll(parts.delta('text', token)),
+        onReasoning: (delta) => emitAll(parts.delta('reasoning', delta)),
+        onToolCall: (call) => {
+          emitAll(parts.end('reasoning'));
+          emit(sseEvent(createToolCallStartEvent(call.id, call.name)));
+          emit(sseEvent(createToolCallDeltaEvent(call.id, JSON.stringify(call.arguments))));
+          emit(sseEvent(createToolCallEndEvent(call.id)));
         },
-        auth
-      );
+        onToolResult: (toolResult) => {
+          emit(
+            sseEvent(createToolResultEvent(generateId('res'), toolResult.callId, toolResult.result))
+          );
+        },
+      });
     });
   } catch (error) {
     if (signal.aborted) return;
-    yield sseEvent(createTextEndEvent(textId));
+    yield* parts.end().map(sseEvent);
     yield* failure(error);
     return;
   }
 
   if (signal.aborted || !result) return;
-  yield sseEvent(createTextEndEvent(textId));
+  yield* parts.end().map(sseEvent);
+  if (result.status === 'paused') {
+    yield sseEvent(
+      createApprovalRequiredEvent(
+        result.threadId,
+        toPendingApprovals(result.pendingApprovals ?? [])
+      )
+    );
+  }
   yield sseEvent(
     createFinishEvent(messageId, {
       inputTokens: result.usage.inputTokens,

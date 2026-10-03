@@ -100,6 +100,55 @@ describe('useCogitatorChat', () => {
     expect(hook.result.current.isLoading).toBe(false);
   });
 
+  it('accumulates reasoning deltas on the assistant message', async () => {
+    installFetch((call) => {
+      call.stream.push({ type: 'start', messageId: 'a1' });
+      call.stream.push({ type: 'reasoning-start', id: 'r1' });
+      call.stream.push({ type: 'reasoning-delta', id: 'r1', delta: 'Let me ' });
+      call.stream.push({ type: 'reasoning-delta', id: 'r1', delta: 'think' });
+      call.stream.push({ type: 'reasoning-end', id: 'r1' });
+      call.stream.push({ type: 'text-start', id: 't1' });
+      call.stream.push({ type: 'text-delta', id: 't1', delta: 'Answer' });
+      call.stream.push({ type: 'text-end', id: 't1' });
+      call.stream.push({ type: 'finish', messageId: 'a1' });
+      call.stream.push('[DONE]');
+      call.stream.close();
+      return undefined;
+    });
+    const onReasoning = vi.fn();
+    const onFinish = vi.fn();
+    const hook = setup({ onReasoning, onFinish });
+
+    await hook.result.current.send('Hi');
+    await hook.flush();
+
+    expect(onReasoning.mock.calls.map(([delta]) => delta)).toEqual(['Let me ', 'think']);
+    expect(onFinish).toHaveBeenCalledWith(
+      expect.objectContaining({ content: 'Answer', reasoning: 'Let me think' })
+    );
+    expect(hook.result.current.messages.at(-1)).toMatchObject({
+      role: 'assistant',
+      content: 'Answer',
+      reasoning: 'Let me think',
+    });
+  });
+
+  it('shows the reasoning of a message that is still streaming', async () => {
+    const { calls } = installFetch();
+    const hook = setup();
+
+    const pending = hook.result.current.send('Hi');
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    calls[0].stream.push({ type: 'start', messageId: 'a1' });
+    calls[0].stream.push({ type: 'reasoning-delta', id: 'r1', delta: 'Pondering' });
+    await vi.waitFor(() =>
+      expect(hook.result.current.messages.at(-1)).toMatchObject({ reasoning: 'Pondering' })
+    );
+
+    hook.result.current.stop();
+    await pending;
+  });
+
   it('adopts the thread id announced by the server and sends it on the next turn', async () => {
     const { calls } = installFetch((call) => {
       completeStream(call.stream, `a${calls.length}`, 'ok', 'thread_srv');

@@ -1,6 +1,7 @@
 import type { IncomingMessage } from 'http';
 import type { Context } from 'koa';
 import type { Cogitator, Agent } from '@cogitator-ai/core';
+import type { PendingApproval } from '@cogitator-ai/server-shared';
 import type {
   Message,
   ToolCall,
@@ -15,6 +16,7 @@ import type {
   StreamingWorkflowEvent,
   SwarmEvent,
   SwarmMessage,
+  ToolApprovalDecision,
 } from '@cogitator-ai/types';
 
 export type {
@@ -31,6 +33,8 @@ export type {
   StreamingWorkflowEvent,
   SwarmEvent,
   SwarmMessage,
+  ToolApprovalDecision,
+  PendingApproval,
 };
 
 export interface AuthContext {
@@ -107,6 +111,15 @@ export interface AgentRunResponse {
     totalTokens: number;
   };
   toolCalls: ToolCall[];
+  reasoning?: string;
+  status?: 'completed' | 'paused';
+  pendingApprovals?: PendingApproval[];
+}
+
+export interface AgentResumeRequest {
+  threadId: string;
+  decisions?: Record<string, ToolApprovalDecision>;
+  defaultDecision?: ToolApprovalDecision;
 }
 
 export interface ThreadResponse {
@@ -219,7 +232,7 @@ export interface ErrorResponse {
 }
 
 export interface WebSocketMessage {
-  type: 'run' | 'stop' | 'ping';
+  type: 'run' | 'resume' | 'stop' | 'ping';
   id?: string;
   payload?: unknown;
 }
@@ -230,6 +243,10 @@ export interface WebSocketRunPayload {
   input: string;
   context?: Record<string, unknown>;
   threadId?: string;
+}
+
+export interface WebSocketResumePayload extends AgentResumeRequest {
+  name: string;
 }
 
 export interface WebSocketResponse {

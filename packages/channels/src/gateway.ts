@@ -7,12 +7,17 @@ import type {
   CompactionConfig,
   MiddlewareContext,
   GatewayMiddleware,
+  HookRegistry,
   StreamConfig,
   ImageInput,
-  HookRegistry,
   Message,
+  RunOptions,
+  RunResult,
   SessionManager as ISessionManager,
+  ToolApprovalDecision,
+  ToolApprovalRequest,
 } from '@cogitator-ai/types';
+import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import type { Agent, Cogitator } from '@cogitator-ai/core';
 import { parseModel } from '@cogitator-ai/core';
 import { SessionManager, CompactionService } from '@cogitator-ai/memory';
@@ -24,6 +29,19 @@ import { StatusReactionTracker } from './status-reactions';
 import { InboundDebouncer } from './inbound-debounce';
 import { formatEnvelope } from './envelope';
 import { MessageQueue } from './message-queue';
+import {
+  DEFAULT_APPROVE_WORDS,
+  DEFAULT_DENY_WORDS,
+  DEFAULT_NOT_ALLOWED_MESSAGE,
+  formatApprovalPrompt,
+  parseApprovalReply,
+} from './approvals';
+import type {
+  ApprovalReplyWords,
+  ApprovalRequestedEvent,
+  ApprovalResolvedEvent,
+  GatewayApprovalsConfig,
+} from './approvals';
 
 export interface GatewayFullConfig extends GatewayConfig {
   cogitator: Cogitator;
@@ -33,6 +51,13 @@ export interface GatewayFullConfig extends GatewayConfig {
    * Defaults to the agent's own `timeout` setting.
    */
   runTimeout?: number;
+  hooks?: HookRegistry;
+  /**
+   * How runs paused for tool approval are put to the chat and answered.
+   * A paused run sends a prompt listing the waiting calls; the user who
+   * started the run replies with an approve or deny word to continue it.
+   */
+  approvals?: GatewayApprovalsConfig;
 }
 
 export interface GatewaySessionInfo {
@@ -48,6 +73,13 @@ export interface GatewaySessionInfo {
 type GatewaySessionManager = ISessionManager & {
   incrementMessageCount?(sessionId: string): Promise<void>;
 };
+
+interface PausedThread {
+  userId: string;
+  approvals: readonly ToolApprovalRequest[];
+}
+
+type RunInvocation = (extra: Pick<RunOptions, 'stream' | 'onToken'>) => Promise<RunResult>;
 
 const DEFAULT_SUMMARY_PROMPT =
   'Summarize the following conversation between a user and an assistant. ' +
@@ -68,6 +100,13 @@ function isScheduled(msg: ChannelMessage): boolean {
   return typeof raw === 'object' && raw !== null && 'scheduled' in raw && raw.scheduled === true;
 }
 
+function isResumeRejection(error: unknown): boolean {
+  return (
+    CogitatorError.isCogitatorError(error) &&
+    (error.code === ErrorCode.RUN_NOT_PAUSED || error.code === ErrorCode.THREAD_ACCESS_DENIED)
+  );
+}
+
 function dayKey(timestamp: number): string {
   const date = new Date(timestamp);
   return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
@@ -82,6 +121,8 @@ export class Gateway {
   private readonly debouncer: InboundDebouncer | null;
   private readonly messageQueue: MessageQueue | null;
   private readonly hooks: HookRegistry | null;
+  private readonly approvalWords: ApprovalReplyWords;
+  private readonly pausedThreads = new Map<string, PausedThread>();
   private readonly lastMessageTime = new Map<string, number>();
   private readonly threads = new Map<string, Omit<GatewaySessionInfo, 'threadId' | 'active'>>();
   private readonly inFlight = new Map<string, number>();
@@ -96,6 +137,10 @@ export class Gateway {
     this.middlewares = config.middleware ?? [];
     this.streamConfig = config.stream ?? { flushInterval: 500, minChunkSize: 20 };
     this.hooks = config.hooks ?? null;
+    this.approvalWords = {
+      approveWords: config.approvals?.approveWords ?? DEFAULT_APPROVE_WORDS,
+      denyWords: config.approvals?.denyWords ?? DEFAULT_DENY_WORDS,
+    };
 
     this.sessionManager =
       config.sessionManager ?? (config.memory ? new SessionManager(config.memory) : null);
@@ -271,13 +316,12 @@ export class Gateway {
   }
 
   private async handleAccepted(
-    originalMsg: ChannelMessage,
+    msg: ChannelMessage,
     channel: Channel,
     threadId: string,
     user: ChannelUser,
     signal?: AbortSignal
   ): Promise<void> {
-    let msg = originalMsg;
     await this.hooks?.emit('message:received', { msg, threadId, user });
 
     this.rollMessageCounter();
@@ -290,12 +334,6 @@ export class Gateway {
       messageCount: (known?.messageCount ?? 0) + 1,
       lastActiveAt: Date.now(),
     });
-
-    if (this.config.envelope?.enabled) {
-      const prevTime = this.lastMessageTime.get(threadId);
-      msg = { ...msg, text: formatEnvelope(msg, this.config.envelope, prevTime) };
-      this.lastMessageTime.set(threadId, Date.now());
-    }
 
     const agent = await this.resolveAgent(user);
 
@@ -312,14 +350,13 @@ export class Gateway {
       await this.sessionManager.incrementMessageCount?.(session.id);
     }
 
-    if (this.config.memory && this.config.session?.compaction) {
+    const decision = this.readApprovalReply(msg, threadId, known !== undefined);
+
+    if (!decision && this.config.memory && this.config.session?.compaction) {
       try {
         await this.compactIfNeeded(threadId, agent);
       } catch (error) {
-        this.config.onError?.(
-          error instanceof Error ? error : new Error(String(error)),
-          originalMsg
-        );
+        this.config.onError?.(error instanceof Error ? error : new Error(String(error)), msg);
       }
     }
 
@@ -337,10 +374,11 @@ export class Gateway {
       await channel.sendTyping(msg.channelId).catch(() => {});
       tracker?.setPhase('thinking');
 
-      if (this.config.stream) {
-        await this.runStreaming(agent, msg, channel, threadId, tracker, signal);
-      } else {
-        await this.runDirect(agent, msg, channel, threadId, tracker, signal);
+      const resumed =
+        decision !== null &&
+        (await this.resumeWithReply(agent, msg, channel, threadId, decision, tracker, signal));
+      if (!resumed) {
+        await this.runMessage(agent, msg, channel, threadId, tracker, signal);
       }
 
       tracker?.setPhase('done');
@@ -350,6 +388,147 @@ export class Gateway {
     } finally {
       clearInterval(typingInterval);
       tracker?.dispose();
+    }
+  }
+
+  /**
+   * An approve/deny reply is worth a resume when this thread paused in this
+   * process, or when the gateway has not seen the thread since it started:
+   * the pause then lives only in the runtime's checkpoint store.
+   */
+  private readApprovalReply(
+    msg: ChannelMessage,
+    threadId: string,
+    seenBefore: boolean
+  ): ToolApprovalDecision | null {
+    if (isScheduled(msg) || msg.attachments?.length) return null;
+    if (seenBefore && !this.pausedThreads.has(threadId)) return null;
+    return parseApprovalReply(msg.text, this.approvalWords);
+  }
+
+  private async runMessage(
+    agent: Agent,
+    originalMsg: ChannelMessage,
+    channel: Channel,
+    threadId: string,
+    tracker: StatusReactionTracker | undefined,
+    signal: AbortSignal | undefined
+  ): Promise<void> {
+    await this.supersedePause(originalMsg, threadId);
+
+    let msg = originalMsg;
+    if (this.config.envelope?.enabled) {
+      const prevTime = this.lastMessageTime.get(threadId);
+      msg = { ...msg, text: formatEnvelope(msg, this.config.envelope, prevTime) };
+      this.lastMessageTime.set(threadId, Date.now());
+    }
+
+    const { input, images } = await this.extractMedia(msg, agent);
+    const options: RunOptions = {
+      ...this.buildRunOptions(msg, tracker, signal),
+      input,
+      threadId,
+      threadAccess: 'shared',
+      ...(images ? { images } : {}),
+    };
+
+    await this.deliver(agent, msg, channel, threadId, signal, (extra) =>
+      this.config.cogitator.run(agent, { ...options, ...extra })
+    );
+  }
+
+  private async resumeWithReply(
+    agent: Agent,
+    msg: ChannelMessage,
+    channel: Channel,
+    threadId: string,
+    decision: ToolApprovalDecision,
+    tracker: StatusReactionTracker | undefined,
+    signal: AbortSignal | undefined
+  ): Promise<boolean> {
+    const approvals = this.pausedThreads.get(threadId)?.approvals;
+    const options = { ...this.buildRunOptions(msg, tracker, signal), defaultDecision: decision };
+
+    try {
+      await this.deliver(agent, msg, channel, threadId, signal, async (extra) => {
+        const result = await this.config.cogitator.resume(agent, threadId, {
+          ...options,
+          ...extra,
+        });
+        this.pausedThreads.delete(threadId);
+        const event: ApprovalResolvedEvent = {
+          msg,
+          threadId,
+          userId: msg.userId,
+          decision,
+          ...(approvals ? { approvals } : {}),
+          superseded: false,
+        };
+        await this.hooks?.emit('approval:resolved', event);
+        return result;
+      });
+      return true;
+    } catch (error) {
+      if (!CogitatorError.isCogitatorError(error)) throw error;
+      if (error.code === ErrorCode.RUN_NOT_PAUSED) {
+        this.pausedThreads.delete(threadId);
+        return false;
+      }
+      if (error.code === ErrorCode.THREAD_ACCESS_DENIED) {
+        const text = this.config.approvals?.notAllowedMessage ?? DEFAULT_NOT_ALLOWED_MESSAGE;
+        await this.sendReply(channel, msg, threadId, adaptMarkdown(text, msg.channelType), msg.id);
+        return true;
+      }
+      throw error;
+    }
+  }
+
+  private async supersedePause(msg: ChannelMessage, threadId: string): Promise<void> {
+    const paused = this.pausedThreads.get(threadId);
+    if (!paused) return;
+    this.pausedThreads.delete(threadId);
+    const event: ApprovalResolvedEvent = {
+      msg,
+      threadId,
+      userId: paused.userId,
+      decision: { approved: false, reason: 'The user moved on without answering' },
+      approvals: paused.approvals,
+      superseded: true,
+    };
+    await this.hooks?.emit('approval:resolved', event);
+  }
+
+  private async requestApprovals(
+    result: RunResult,
+    msg: ChannelMessage,
+    channel: Channel,
+    threadId: string,
+    replyTo: string | undefined
+  ): Promise<void> {
+    const approvals = result.status === 'paused' ? (result.pendingApprovals ?? []) : [];
+    if (approvals.length === 0) return;
+
+    this.pausedThreads.set(threadId, { userId: msg.userId, approvals });
+    const event: ApprovalRequestedEvent = { msg, threadId, userId: msg.userId, approvals };
+    await this.hooks?.emit('approval:requested', event);
+
+    const format = this.config.approvals?.format ?? formatApprovalPrompt;
+    const prompt = adaptMarkdown(format(approvals, this.approvalWords), msg.channelType);
+    if (prompt) await this.sendReply(channel, msg, threadId, prompt, replyTo);
+  }
+
+  private async deliver(
+    agent: Agent,
+    msg: ChannelMessage,
+    channel: Channel,
+    threadId: string,
+    signal: AbortSignal | undefined,
+    invoke: RunInvocation
+  ): Promise<void> {
+    if (this.config.stream) {
+      await this.runStreaming(agent, msg, channel, threadId, signal, invoke);
+    } else {
+      await this.runDirect(agent, msg, channel, threadId, signal, invoke);
     }
   }
 
@@ -384,21 +563,14 @@ export class Gateway {
 
   private buildRunOptions(
     msg: ChannelMessage,
-    threadId: string,
-    input: string,
-    images: ImageInput[] | undefined,
     tracker: StatusReactionTracker | undefined,
     signal: AbortSignal | undefined
   ) {
     return {
-      input,
-      threadId,
-      threadAccess: 'shared' as const,
       useMemory: !!this.config.memory,
       userId: msg.userId,
       channelType: msg.channelType,
       channelId: msg.channelId,
-      ...(images ? { images } : {}),
       ...(signal ? { signal } : {}),
       ...(this.config.runTimeout !== undefined ? { timeout: this.config.runTimeout } : {}),
       ...(tracker
@@ -428,27 +600,49 @@ export class Gateway {
     return sentId;
   }
 
+  private async sendReply(
+    channel: Channel,
+    msg: ChannelMessage,
+    threadId: string,
+    text: string,
+    replyTo: string | undefined
+  ): Promise<void> {
+    await this.hooks?.emit('message:sending', {
+      msg,
+      threadId,
+      text,
+      channelId: msg.channelId,
+    });
+
+    const sentId = await this.sendChunked(channel, msg, text, replyTo);
+
+    await this.hooks?.emit('message:sent', {
+      msg,
+      threadId,
+      text,
+      messageId: sentId,
+    });
+  }
+
   private async runDirect(
     agent: Agent,
     msg: ChannelMessage,
     channel: Channel,
     threadId: string,
-    tracker: StatusReactionTracker | undefined,
-    signal: AbortSignal | undefined
+    signal: AbortSignal | undefined,
+    invoke: RunInvocation
   ): Promise<void> {
-    const { input, images } = await this.extractMedia(msg, agent);
     const replyTo = isScheduled(msg) ? undefined : msg.id;
 
     await this.hooks?.emit('agent:before_run', { msg, threadId, agent: agent.name });
 
-    let result;
+    let result: RunResult;
     try {
-      result = await this.config.cogitator.run(
-        agent,
-        this.buildRunOptions(msg, threadId, input, images, tracker, signal)
-      );
+      result = await invoke({});
     } catch (error) {
-      await this.hooks?.emit('agent:error', { msg, threadId, error });
+      if (!isResumeRejection(error)) {
+        await this.hooks?.emit('agent:error', { msg, threadId, error });
+      }
       throw error;
     }
 
@@ -456,23 +650,9 @@ export class Gateway {
     if (signal?.aborted) return;
 
     const output = adaptMarkdown(result.output, msg.channelType);
-    if (!output) return;
+    if (output) await this.sendReply(channel, msg, threadId, output, replyTo);
 
-    await this.hooks?.emit('message:sending', {
-      msg,
-      threadId,
-      text: output,
-      channelId: msg.channelId,
-    });
-
-    const sentId = await this.sendChunked(channel, msg, output, replyTo);
-
-    await this.hooks?.emit('message:sent', {
-      msg,
-      threadId,
-      text: output,
-      messageId: sentId,
-    });
+    await this.requestApprovals(result, msg, channel, threadId, output ? undefined : replyTo);
   }
 
   private async runStreaming(
@@ -480,10 +660,9 @@ export class Gateway {
     msg: ChannelMessage,
     channel: Channel,
     threadId: string,
-    tracker: StatusReactionTracker | undefined,
-    signal: AbortSignal | undefined
+    signal: AbortSignal | undefined,
+    invoke: RunInvocation
   ): Promise<void> {
-    const { input, images } = await this.extractMedia(msg, agent);
     const replyTo = isScheduled(msg) ? undefined : msg.id;
     const streamCfg = {
       ...this.streamConfig,
@@ -503,10 +682,9 @@ export class Gateway {
     await this.hooks?.emit('stream:started', { msg, threadId });
 
     let tokenCount = 0;
-    let result;
+    let result: RunResult;
     try {
-      result = await this.config.cogitator.run(agent, {
-        ...this.buildRunOptions(msg, threadId, input, images, tracker, signal),
+      result = await invoke({
         stream: true,
         onToken: (token: string) => {
           tokenCount++;
@@ -515,7 +693,9 @@ export class Gateway {
       });
     } catch (error) {
       await stream.abort();
-      await this.hooks?.emit('agent:error', { msg, threadId, error });
+      if (!isResumeRejection(error)) {
+        await this.hooks?.emit('agent:error', { msg, threadId, error });
+      }
       throw error;
     }
 
@@ -524,12 +704,16 @@ export class Gateway {
       return;
     }
 
-    if (tokenCount > 0) {
+    let replied = tokenCount > 0;
+    if (replied) {
       await stream.finish();
     } else {
       await stream.abort();
       const output = adaptMarkdown(result.output, msg.channelType);
-      if (output) await this.sendChunked(channel, msg, output, replyTo);
+      if (output) {
+        await this.sendChunked(channel, msg, output, replyTo);
+        replied = true;
+      }
     }
 
     await this.hooks?.emit('agent:after_run', { msg, threadId, output: result.output });
@@ -538,6 +722,8 @@ export class Gateway {
       threadId,
       messageIds: stream.getMessageIds(),
     });
+
+    await this.requestApprovals(result, msg, channel, threadId, replied ? undefined : replyTo);
   }
 
   private getThreadId(msg: ChannelMessage): string {

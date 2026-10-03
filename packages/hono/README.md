@@ -71,6 +71,7 @@ Creates a Hono sub-application with all Cogitator endpoints.
 | `GET`  | `/agents`              | List all agents           |
 | `POST` | `/agents/:name/run`    | Run agent (JSON response) |
 | `POST` | `/agents/:name/stream` | Run agent (SSE stream)    |
+| `POST` | `/agents/:name/resume` | Resume a paused run       |
 
 ### Threads (Memory)
 
@@ -129,6 +130,28 @@ When `auth` returns a `userId`, everything a caller does with threads is scoped 
 - Another user's thread answers `403` with code `THREAD_ACCESS_DENIED`, and its messages are neither returned nor changed.
 - Threads created earlier without an owner (no `userId`) stay open only to callers without a `userId`, such as servers with no `auth` configured.
 
+### Approvals
+
+A tool with `requiresApproval` (`true`, or a function of the arguments) pauses the run before that turn executes:
+
+1. `POST /agents/:name/run` answers with `status: 'paused'` and `pendingApprovals` (`{ toolCallId, toolName, arguments, description, sideEffects? }`); finished runs carry `status: 'completed'`. The run's checkpoint stays on the server and is never sent to the client.
+2. `POST /agents/:name/stream` emits `{ type: 'approval-required', threadId, approvals }` right before `finish`.
+3. The client shows the pending calls and sends the answers to `POST /agents/:name/resume`:
+
+```typescript
+await fetch('/agents/support/resume', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    threadId,
+    decisions: { [toolCallId]: { approved: true } },
+    defaultDecision: { approved: false, reason: 'Not approved' },
+  }),
+});
+```
+
+The body is `{ threadId, decisions?, defaultDecision? }`, where a decision is `{ approved: boolean, reason?: string }`; malformed bodies get `400 INVALID_INPUT`. The response has the same shape as `/run` and may pause again for calls left without a decision. The run resumes as the authenticated `userId`: a thread with no paused run answers `409 RUN_NOT_PAUSED`, and another user's paused run `403 THREAD_ACCESS_DENIED`. Over WebSocket, send `resume` with `{ name, threadId, decisions?, defaultDecision? }`; a paused run's `complete` event carries `status` and `pendingApprovals`.
+
 ## Multi-Runtime
 
 ```typescript
@@ -146,11 +169,15 @@ export default app;
 Deno.serve(app.fetch);
 ```
 
+On Cloudflare Workers use a `compatibility_date` of 2026-08-04 or later (or the `nodejs_compat` flag); with database memory create the `Cogitator` per request, since Workers do not share connections between requests. Deno needs only `--allow-net` and `--allow-env`. Complete projects: [`09-deno-server.ts`](../../examples/integrations/09-deno-server.ts), [`10-cloudflare-worker`](../../examples/integrations/10-cloudflare-worker).
+
 ## SSE Streaming
 
 The adapter uses Hono's built-in `streamSSE` for Server-Sent Events — no raw response manipulation needed. Works across all runtimes.
 
 Agent streams emit `tool-call-start`, `tool-call-delta` (the JSON arguments) and `tool-call-end` with the provider's tool call id, so `tool-result.toolCallId` always matches the call it belongs to.
+
+When the agent sets `reasoning: { summary: true }` and the provider returns a reasoning summary, agent streams also emit it as its own `reasoning-start`/`reasoning-delta`/`reasoning-end` part, closed before text or a tool call starts, so reasoning and text parts never interleave.
 
 ## WebSocket
 
@@ -184,14 +211,15 @@ On Bun use `upgradeWebSocket` from `hono/bun`, on Deno from `hono/deno`, on Clou
 | Client sends | Payload                                                                        |
 | ------------ | ------------------------------------------------------------------------------ |
 | `run`        | `{ type: 'agent' \| 'workflow' \| 'swarm', name, input, context?, threadId? }` |
+| `resume`     | `{ name, threadId, decisions?, defaultDecision? }` (resume a paused agent run) |
 | `stop`       | Cancels the current run                                                        |
 | `ping`       | Answered with `pong` (echoes `id`)                                             |
 
-| Server sends | Description                                                                               |
-| ------------ | ----------------------------------------------------------------------------------------- |
-| `event`      | `token`, `tool-call`, `tool-result`, `complete` (with the serialized result), `cancelled` |
-| `error`      | Invalid message, unknown resource, run already in progress, or a masked run failure       |
-| `pong`       | Heartbeat reply                                                                           |
+| Server sends | Description                                                                                            |
+| ------------ | ------------------------------------------------------------------------------------------------------ |
+| `event`      | `token`, `reasoning`, `tool-call`, `tool-result`, `complete` (with the serialized result), `cancelled` |
+| `error`      | Invalid message, unknown resource, run already in progress, or a masked run failure                    |
+| `pong`       | Heartbeat reply                                                                                        |
 
 Messages larger than `maxPayloadSize` are rejected and the socket is closed with code `1009`. Closing the socket aborts the active run. `handleWebSocketMessage` and `createClientState` are exported for custom WebSocket integrations.
 

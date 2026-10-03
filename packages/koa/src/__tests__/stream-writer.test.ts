@@ -40,6 +40,20 @@ describe('KoaStreamWriter', () => {
     expect(parseSSE(chunks[0])).toEqual({ type: 'text-start', id: 'txt-1' });
   });
 
+  it('writes the reasoning part sequence and skips empty reasoning deltas', () => {
+    const { ctx, chunks } = mockCtx();
+    const writer = new KoaStreamWriter(ctx);
+    writer.reasoningStart('rsn-1');
+    writer.reasoningDelta('rsn-1', '');
+    writer.reasoningDelta('rsn-1', 'thinking');
+    writer.reasoningEnd('rsn-1');
+    expect(chunks.map(parseSSE)).toEqual([
+      { type: 'reasoning-start', id: 'rsn-1' },
+      { type: 'reasoning-delta', id: 'rsn-1', delta: 'thinking' },
+      { type: 'reasoning-end', id: 'rsn-1' },
+    ]);
+  });
+
   it('textDelta() skips empty strings', () => {
     const { ctx, chunks } = mockCtx();
     const writer = new KoaStreamWriter(ctx);

@@ -104,6 +104,29 @@ describe('WebSocket', () => {
     expect(client.messages.every((m) => m.id === 'r1')).toBe(true);
   });
 
+  it('streams reasoning deltas as reasoning events', async () => {
+    const { url } = await start(async (options) => {
+      options.onReasoning?.('thinking');
+      options.onToken?.('Hi');
+      return { output: 'Hi', reasoning: 'thinking' };
+    });
+    const client = await connect(url);
+    client.send(runMessage('r1'));
+
+    await vi.waitFor(() =>
+      expect(client.messages.map((m) => (m.payload as { type: string }).type)).toEqual([
+        'reasoning',
+        'token',
+        'complete',
+      ])
+    );
+    expect(client.messages[0]).toMatchObject({
+      type: 'event',
+      id: 'r1',
+      payload: { type: 'reasoning', delta: 'thinking' },
+    });
+  });
+
   it('stop aborts the running agent', async () => {
     let signal: AbortSignal | undefined;
     const { url } = await start(

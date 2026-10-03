@@ -63,30 +63,39 @@ A Tetsu controller named `Cogitator`: `operationId`s in the OpenAPI document are
 
 ## Endpoints
 
-| Method   | Path                       | Description                             |
-| -------- | -------------------------- | --------------------------------------- |
-| `GET`    | `/health`, `/ready`        | Liveness and readiness, without `auth`  |
-| `GET`    | `/agents`                  | Agents with their description and tools |
-| `POST`   | `/agents/:name/run`        | Run an agent and wait for the answer    |
-| `POST`   | `/agents/:name/stream`     | Run an agent over SSE                   |
-| `GET`    | `/tools`                   | Tools of every agent, as JSON Schema    |
-| `GET`    | `/threads/:id`             | Messages of a memory thread             |
-| `POST`   | `/threads/:id/messages`    | Append a message                        |
-| `DELETE` | `/threads/:id`             | Delete a thread                         |
-| `GET`    | `/workflows`               | Workflows with their nodes              |
-| `POST`   | `/workflows/:name/run`     | Run a workflow                          |
-| `POST`   | `/workflows/:name/stream`  | Run a workflow over SSE                 |
-| `GET`    | `/swarms`                  | Swarms with their agents                |
-| `POST`   | `/swarms/:name/run`        | Run a swarm                             |
-| `POST`   | `/swarms/:name/stream`     | Run a swarm over SSE                    |
-| `GET`    | `/swarms/:name/blackboard` | Configured blackboard sections          |
-| `GET`    | `/ws`                      | WebSocket, when `websocket` is set      |
+| Method   | Path                          | Description                             |
+| -------- | ----------------------------- | --------------------------------------- |
+| `GET`    | `/health`, `/ready`           | Liveness and readiness, without `auth`  |
+| `GET`    | `/agents`                     | Agents with their description and tools |
+| `POST`   | `/agents/:name/run`           | Run an agent and wait for the answer    |
+| `POST`   | `/agents/:name/stream`        | Run an agent over SSE                   |
+| `POST`   | `/agents/:name/resume`        | Resume a run paused for approvals       |
+| `POST`   | `/agents/:name/resume/stream` | Resume a paused run over SSE            |
+| `GET`    | `/tools`                      | Tools of every agent, as JSON Schema    |
+| `GET`    | `/threads/:id`                | Messages of a memory thread             |
+| `POST`   | `/threads/:id/messages`       | Append a message                        |
+| `DELETE` | `/threads/:id`                | Delete a thread                         |
+| `GET`    | `/workflows`                  | Workflows with their nodes              |
+| `POST`   | `/workflows/:name/run`        | Run a workflow                          |
+| `POST`   | `/workflows/:name/stream`     | Run a workflow over SSE                 |
+| `GET`    | `/swarms`                     | Swarms with their agents                |
+| `POST`   | `/swarms/:name/run`           | Run a swarm                             |
+| `POST`   | `/swarms/:name/stream`        | Run a swarm over SSE                    |
+| `GET`    | `/swarms/:name/blackboard`    | Configured blackboard sections          |
+| `GET`    | `/ws`                         | WebSocket, when `websocket` is set      |
 
 Request bodies:
 
 ```typescript
 // POST /agents/:name/run, /agents/:name/stream
 { input: string; context?: Record<string, unknown>; threadId?: string }
+
+// POST /agents/:name/resume, /agents/:name/resume/stream
+{
+  threadId: string;
+  decisions?: Record<string, { approved: boolean; reason?: string }>; // by tool call id
+  defaultDecision?: { approved: boolean; reason?: string };
+}
 
 // POST /swarms/:name/run, /swarms/:name/stream
 { input: string; context?: Record<string, unknown>; threadId?: string; timeout?: number }
@@ -113,6 +122,7 @@ Every error is answered in Tetsu's envelope:
 | 403     | `THREAD_FORBIDDEN`                                         | `authorizeThread` refused the thread                                 |
 | 404     | `AGENT_NOT_FOUND`, `WORKFLOW_NOT_FOUND`, `SWARM_NOT_FOUND` | No such name                                                         |
 | 409     | `BLACKBOARD_DISABLED`                                      | The swarm has no blackboard                                          |
+| 409     | `RUN_NOT_PAUSED`                                           | A resume named a thread without a paused run                         |
 | 422     | `VALIDATION_FAILED`                                        | The body or the path failed its schema; `issues` lists every problem |
 | 501     | `PACKAGE_NOT_INSTALLED`                                    | `@cogitator-ai/workflows` or `@cogitator-ai/swarms` is missing       |
 | 503     | `MEMORY_NOT_CONFIGURED`                                    | A thread endpoint was called on a runtime without memory             |
@@ -201,6 +211,39 @@ cogitatorController({
 
 Use it for rules ownership does not express, such as thread ids your server hands out.
 
+## Approvals
+
+A tool with `requiresApproval` pauses the run before it executes. `POST /agents/:name/run` then answers with `status: 'paused'` and the calls waiting for a decision; the run's checkpoint stays on the server, stored by the runtime per thread:
+
+```json
+{
+  "output": "Let me refund that.",
+  "threadId": "thread_…",
+  "status": "paused",
+  "pendingApprovals": [
+    {
+      "toolCallId": "call_1",
+      "toolName": "refund",
+      "arguments": { "order": "A-1", "amount": 500 },
+      "description": "Refund an order",
+      "sideEffects": ["payment"]
+    }
+  ],
+  "usage": { "inputTokens": 10, "outputTokens": 5, "totalTokens": 15 },
+  "toolCalls": []
+}
+```
+
+A stream that pauses sends `{"type":"approval-required","threadId":"…","approvals":[…]}` right before `finish`. Continue with the decisions:
+
+```bash
+curl -X POST localhost:3000/cogitator/agents/support/resume \
+  -H 'content-type: application/json' \
+  -d '{ "threadId": "thread_…", "decisions": { "call_1": { "approved": true } } }'
+```
+
+Approved calls run, declined ones answer the model with the `reason`, and calls without a decision (and no `defaultDecision`) pause the run again. `/agents/:name/resume/stream` streams the rest of the run like `/stream`. Only the user the run belongs to can resume it (`403 THREAD_ACCESS_DENIED` otherwise; `authorizeThread` is checked too), and a thread without a paused run answers `409 RUN_NOT_PAUSED`. Over the WebSocket, send `{ type: 'resume', id?, payload: { name, threadId, decisions?, defaultDecision? } }`.
+
 ## Streaming
 
 `/stream` endpoints answer with `text/event-stream` through `@tetsujs/sse`: keep-alive comments every 15 seconds, backpressure, and the run is aborted when the client goes away. Events follow the Cogitator stream protocol shared with the other adapters, one JSON object per `data:` line, ending with `data: [DONE]`:
@@ -218,6 +261,8 @@ data: {"type":"finish","messageId":"msg_…","usage":{"inputTokens":12,"outputTo
 data: [DONE]
 ```
 
+An agent with `reasoning: { summary: true }` also streams its reasoning summary as `reasoning-start`, `reasoning-delta` and `reasoning-end` events. A text or reasoning part opens with its first delta and is closed before a part of the other kind, a tool call or `finish`, so parts never overlap. `POST /agents/:name/run` returns the summary as `reasoning`, and `usage` gains `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the provider reports them.
+
 A run that fails ends with `{"type":"error","message":"…","code":"…"}` instead of `finish`. An unexpected failure is also reported to the application's `reportError` with `source: "stream"`. Workflow streams send `workflow` events (`node_started`, `node_completed`, `node_error`, `node_progress`, `workflow_completed`), swarm streams send `swarm` events (`agent_start`, `agent_complete`, `agent_error`, `message`, `swarm_completed`).
 
 Validation, `401`, `403` and `404` are answered as JSON before the stream opens.
@@ -230,11 +275,12 @@ cogitatorController({ cogitator, agents, auth, websocket: true });
 
 The handshake runs `auth` like any route. Each socket runs one agent, workflow or swarm at a time.
 
-| Client sends                                                                                                  | Server answers                                                                                       |
-| ------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `{ type: 'run', id?, payload: { type: 'agent' \| 'workflow' \| 'swarm', name, input, context?, threadId? } }` | `event` frames: `token`, `tool-call`, `tool-result`, then `complete` with the result, or `cancelled` |
-| `{ type: 'stop' }`                                                                                            | cancels the current run                                                                              |
-| `{ type: 'ping', id? }`                                                                                       | `{ type: 'pong', id }`                                                                               |
+| Client sends                                                                                                  | Server answers                                                                                                    |
+| ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `{ type: 'run', id?, payload: { type: 'agent' \| 'workflow' \| 'swarm', name, input, context?, threadId? } }` | `event` frames: `token`, `reasoning`, `tool-call`, `tool-result`, then `complete` with the result, or `cancelled` |
+| `{ type: 'resume', id?, payload: { name, threadId, decisions?, defaultDecision? } }`                          | the same frames for an agent run paused for [approvals](#approvals)                                               |
+| `{ type: 'stop' }`                                                                                            | cancels the current run                                                                                           |
+| `{ type: 'ping', id? }`                                                                                       | `{ type: 'pong', id }`                                                                                            |
 
 Errors arrive as `{ type: 'error', id, error, code }` and leave the socket open; an invalid frame gets `code: 'INVALID_MESSAGE'`. Closing the socket cancels its run. Bun's server-level options such as `maxPayloadLength` are set where the app is served:
 

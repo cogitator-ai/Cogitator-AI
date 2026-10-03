@@ -159,11 +159,12 @@ Response format:
     "totalTokens": 650
   },
   "toolCalls": [...],
-  "trace": { "traceId": "trace-xyz", "spans": [...] }
+  "trace": { "traceId": "trace-xyz", "spans": [...] },
+  "status": "completed"
 }
 ```
 
-A failed run answers `{ "error": message, "code": code }` with the status of its `CogitatorError` (for example `429 LLM_RATE_LIMITED`), and `500` for anything else.
+A run waiting for [approvals](#approvals) answers `"status": "paused"` with its `pendingApprovals`. A failed run answers `{ "error": message, "code": code }` with the status of its `CogitatorError` (for example `429 LLM_RATE_LIMITED`), and `500` for anything else.
 
 ### Multiple users
 
@@ -180,6 +181,69 @@ export const POST = createChatHandler(cogitator, agent, {
 ```
 
 A `threadId` that belongs to another user is refused before the model is called: `createAgentHandler` answers `403` with `code: "THREAD_ACCESS_DENIED"`, and `createChatHandler` ends the stream with an `error` event carrying that code. Without a `userId`, a caller can use only threads that have no owner.
+
+### Approvals
+
+A tool with `requiresApproval` pauses the run before it executes. The runtime keeps the run's checkpoint on the server, per thread; clients only see what waits for a decision:
+
+- `createAgentHandler` answers with `"status": "paused"` and `pendingApprovals` (`toolCallId`, `toolName`, `arguments`, `description`, `sideEffects`).
+- `createChatHandler` sends `{"type":"approval-required","threadId":"…","approvals":[…]}` right before `finish`.
+
+`createResumeHandler` continues the run. It takes `{ threadId, decisions?, defaultDecision? }`, where a decision is `{ approved: true }` or `{ approved: false, reason? }` by tool call id. Approved calls run, declined ones answer the model with the reason, and calls left undecided pause the run again. Return the caller's `userId` from `beforeRun` as for the other handlers: only the user the run belongs to may resume it.
+
+```typescript
+// app/api/chat/resume/route.ts
+import { createResumeHandler } from '@cogitator-ai/next';
+
+export const POST = createResumeHandler(cogitator, agent, {
+  stream: true,
+  beforeRun: async (req) => ({ userId: (await getSession(req)).id }),
+});
+```
+
+By default it answers like `createAgentHandler`; with `stream: true` it streams the rest of the run like `createChatHandler`, which is what `useCogitatorChat` wants. Another user's run answers `403 THREAD_ACCESS_DENIED`, a thread without a paused run `409 RUN_NOT_PAUSED` (an `error` event when streaming).
+
+On the client, `useCogitatorChat({ api, resumeApi })` exposes `pendingApprovals` and continues the run into a new assistant message:
+
+```tsx
+'use client';
+
+import { useCogitatorChat } from '@cogitator-ai/next/client';
+
+export function Chat() {
+  const { messages, pendingApprovals, approve, deny, isLoading } = useCogitatorChat({
+    api: '/api/chat',
+    resumeApi: '/api/chat/resume',
+  });
+
+  return (
+    <div>
+      {messages.map((m) => (
+        <p key={m.id}>{m.content}</p>
+      ))}
+      {pendingApprovals.length > 0 && (
+        <div>
+          {pendingApprovals.map((call) => (
+            <p key={call.toolCallId}>
+              {call.toolName}: {JSON.stringify(call.arguments)}
+            </p>
+          ))}
+          <button disabled={isLoading} onClick={() => approve()}>
+            Approve
+          </button>
+          <button disabled={isLoading} onClick={() => deny('Not approved')}>
+            Deny
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+For one decision per call, use `resume({ decisions: { [toolCallId]: { approved: true } }, defaultDecision: { approved: false } })`.
+
+`approve()` and `deny(reason?)` answer every pending call. The approvals clear once the resume is accepted, when the server has nothing paused anymore (`409`), or when the user sends a new message instead, which declines the waiting calls on the server. A JSON `resumeApi` works too: its answer is appended as one assistant message. `useCogitatorAgent({ api, resumeApi })` exposes `pendingApprovals` of the last result and `resume(decisions)`.
 
 ## Client Hooks
 
@@ -207,6 +271,12 @@ const {
   appendMessage, // (message: ChatMessage) => void
   clearMessages, // () => void
   setMessages, // (messages: ChatMessage[]) => void
+
+  // Approvals (see "Approvals")
+  pendingApprovals, // PendingApproval[]
+  resume, // (decisions: ResumeDecisions) => Promise<void>
+  approve, // () => Promise<void>
+  deny, // (reason?: string) => Promise<void>
 } = useCogitatorChat({
   api: '/api/chat',
   threadId: 'optional-thread-id',
@@ -218,6 +288,11 @@ const {
   onFinish: (message) => console.log('Done:', message),
   onToolCall: (toolCall) => console.log('Tool called:', toolCall.name),
   onToolResult: (result) => console.log('Tool result:', result),
+  onReasoning: (delta) => console.log('Thinking:', delta),
+  onApprovalRequired: (approvals) => console.log('Waiting for approval:', approvals),
+
+  // Endpoint of a createResumeHandler, for resume/approve/deny
+  resumeApi: '/api/chat/resume',
 
   // Retry configuration
   retry: {
@@ -270,11 +345,15 @@ Hook for non-streaming batch requests (research, analysis, etc).
 const {
   run, // (input: AgentInput) => Promise<void>
   result, // AgentResponse | null
+  reasoning, // string | undefined — result?.reasoning
+  pendingApprovals, // PendingApproval[] — result?.pendingApprovals
+  resume, // (decisions: ResumeDecisions) => Promise<void>
   isLoading, // boolean
   error, // Error | null
   reset, // () => void
 } = useCogitatorAgent({
   api: '/api/research',
+  resumeApi: '/api/research/resume',
   headers: { Authorization: 'Bearer token' },
 
   onError: (error) => console.error(error),
@@ -327,7 +406,11 @@ data: {"type":"finish","messageId":"msg-1","usage":{...},"threadId":"thread-abc"
 data: [DONE]
 ```
 
-If the run fails, the open text block is closed and an `{"type":"error","message":"..."}` event is sent instead of `finish`.
+An agent with `reasoning: { summary: true }` also streams its reasoning summary as `reasoning-start`, `reasoning-delta` and `reasoning-end` events. A text or reasoning block opens with its first delta and is closed before a block of the other kind, a tool call or `finish`, so blocks never overlap. `useCogitatorChat` collects the deltas into `message.reasoning` (and calls `onReasoning` with each one), and `createAgentHandler` returns the summary as `reasoning` next to `usage.reasoningTokens`, `usage.cachedInputTokens` and `usage.cacheWriteTokens` when the provider reports them.
+
+A run that pauses for [approvals](#approvals) sends `{"type":"approval-required","threadId":"…","approvals":[…]}` after the open block is closed and before `finish`.
+
+If the run fails, the open text or reasoning block is closed and an `{"type":"error","message":"..."}` event is sent instead of `finish`.
 
 The server-side building blocks are exported for custom handlers:
 
@@ -364,6 +447,22 @@ interface AgentResponse {
   };
   toolCalls: ToolCall[];
   trace?: { traceId: string; spans: unknown[] };
+  reasoning?: string;
+  status?: 'completed' | 'paused';
+  pendingApprovals?: PendingApproval[];
+}
+
+interface PendingApproval {
+  toolCallId: string;
+  toolName: string;
+  arguments: Record<string, unknown>;
+  description: string;
+  sideEffects?: string[];
+}
+
+interface ResumeDecisions {
+  decisions?: Record<string, { approved: true } | { approved: false; reason?: string }>;
+  defaultDecision?: { approved: true } | { approved: false; reason?: string };
 }
 
 interface RetryConfig {

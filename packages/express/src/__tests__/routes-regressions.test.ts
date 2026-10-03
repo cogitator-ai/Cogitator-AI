@@ -136,6 +136,87 @@ describe('agent streaming', () => {
     expect(result?.toolCallId).toBe('call_1');
   });
 
+  it('streams reasoning as its own part closed before text starts', async () => {
+    const { base } = await start(async (options) => {
+      options.onReasoning?.('a');
+      options.onReasoning?.('b');
+      options.onToken?.('x');
+      return runResult('x');
+    });
+
+    const events = parseEvents(
+      await (await post(`${base}/agents/bot/stream`, { input: 'q' })).text()
+    );
+
+    expect(events.map((e) => e.type)).toEqual([
+      'start',
+      'reasoning-start',
+      'reasoning-delta',
+      'reasoning-delta',
+      'reasoning-end',
+      'text-start',
+      'text-delta',
+      'text-end',
+      'finish',
+    ]);
+    expect(events.filter((e) => e.type === 'reasoning-delta').map((e) => e.delta)).toEqual([
+      'a',
+      'b',
+    ]);
+    expect(events.find((e) => e.type === 'text-delta')?.delta).toBe('x');
+    const reasoningIds = new Set(
+      events.filter((e) => e.type.startsWith('reasoning-')).map((e) => e.id)
+    );
+    expect(reasoningIds.size).toBe(1);
+    expect([...reasoningIds][0]).toMatch(/^rsn_/);
+  });
+
+  it('closes text before reasoning and reasoning before a tool call', async () => {
+    const { base } = await start(async (options) => {
+      options.onToken?.('x');
+      options.onReasoning?.('thinking');
+      options.onToolCall?.({ id: 'call_1', name: 'search', arguments: { q: 'x' } });
+      return runResult('x');
+    });
+
+    const events = parseEvents(
+      await (await post(`${base}/agents/bot/stream`, { input: 'q' })).text()
+    );
+
+    expect(events.map((e) => e.type)).toEqual([
+      'start',
+      'text-start',
+      'text-delta',
+      'text-end',
+      'reasoning-start',
+      'reasoning-delta',
+      'reasoning-end',
+      'tool-call-start',
+      'tool-call-delta',
+      'tool-call-end',
+      'finish',
+    ]);
+  });
+
+  it('closes an open reasoning part before the error event', async () => {
+    const { base } = await start(async (options) => {
+      options.onReasoning?.('partial');
+      throw new Error('provider down');
+    });
+
+    const events = parseEvents(
+      await (await post(`${base}/agents/bot/stream`, { input: 'q' })).text()
+    );
+
+    expect(events.map((e) => e.type)).toEqual([
+      'start',
+      'reasoning-start',
+      'reasoning-delta',
+      'reasoning-end',
+      'error',
+    ]);
+  });
+
   it('sends the final output when the backend did not stream tokens', async () => {
     const { base } = await start(async () => runResult('complete answer'));
     const events = parseEvents(

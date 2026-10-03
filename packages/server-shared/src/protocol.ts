@@ -9,10 +9,14 @@ export type StreamEvent =
   | TextStartEvent
   | TextDeltaEvent
   | TextEndEvent
+  | ReasoningStartEvent
+  | ReasoningDeltaEvent
+  | ReasoningEndEvent
   | ToolCallStartEvent
   | ToolCallDeltaEvent
   | ToolCallEndEvent
   | ToolResultEvent
+  | ApprovalRequiredEvent
   | ErrorEvent
   | FinishEvent
   | WorkflowEvent
@@ -39,6 +43,23 @@ export interface TextEndEvent {
   id: string;
 }
 
+/** A run of the model's reasoning summary, streamed like text (`reasoning.summary` on the agent) */
+export interface ReasoningStartEvent {
+  type: 'reasoning-start';
+  id: string;
+}
+
+export interface ReasoningDeltaEvent {
+  type: 'reasoning-delta';
+  id: string;
+  delta: string;
+}
+
+export interface ReasoningEndEvent {
+  type: 'reasoning-end';
+  id: string;
+}
+
 export interface ToolCallStartEvent {
   type: 'tool-call-start';
   id: string;
@@ -61,6 +82,22 @@ export interface ToolResultEvent {
   id: string;
   toolCallId: string;
   result: unknown;
+}
+
+/** A tool call waiting for approval; the shape of core's `ToolApprovalRequest` */
+export interface PendingApproval {
+  toolCallId: string;
+  toolName: string;
+  arguments: Record<string, unknown>;
+  description: string;
+  sideEffects?: string[];
+}
+
+/** The run paused: these tool calls wait for a decision before it can go on */
+export interface ApprovalRequiredEvent {
+  type: 'approval-required';
+  threadId: string;
+  approvals: PendingApproval[];
 }
 
 export interface ErrorEvent {
@@ -103,6 +140,18 @@ export function createTextEndEvent(id: string): TextEndEvent {
   return { type: 'text-end', id };
 }
 
+export function createReasoningStartEvent(id: string): ReasoningStartEvent {
+  return { type: 'reasoning-start', id };
+}
+
+export function createReasoningDeltaEvent(id: string, delta: string): ReasoningDeltaEvent {
+  return { type: 'reasoning-delta', id, delta };
+}
+
+export function createReasoningEndEvent(id: string): ReasoningEndEvent {
+  return { type: 'reasoning-end', id };
+}
+
 export function createToolCallStartEvent(id: string, toolName: string): ToolCallStartEvent {
   return { type: 'tool-call-start', id, toolName };
 }
@@ -121,6 +170,13 @@ export function createToolResultEvent(
   result: unknown
 ): ToolResultEvent {
   return { type: 'tool-result', id, toolCallId, result };
+}
+
+export function createApprovalRequiredEvent(
+  threadId: string,
+  approvals: readonly PendingApproval[]
+): ApprovalRequiredEvent {
+  return { type: 'approval-required', threadId, approvals: [...approvals] };
 }
 
 export function createErrorEvent(message: string, code?: string): ErrorEvent {

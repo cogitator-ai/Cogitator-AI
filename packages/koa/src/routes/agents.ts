@@ -1,12 +1,13 @@
 import Router from '@koa/router';
-import type { CogitatorState, AgentListResponse, AgentRunResponse } from '../types.js';
+import type { CogitatorState, AgentListResponse } from '../types.js';
 import { KoaStreamWriter, setupSSEHeaders } from '../streaming/index.js';
 import { generateId } from '@cogitator-ai/server-shared';
 import type { ToolCall, ToolResult } from '@cogitator-ai/types';
 import { getOwn } from '../utils/lookup.js';
 import { resolveError } from '../utils/errors.js';
 import { getRequestBody, onClientDisconnect } from '../utils/request.js';
-import { parseAgentRunRequest } from '../utils/validation.js';
+import { toAgentRunResponse } from '../utils/results.js';
+import { parseAgentResumeRequest, parseAgentRunRequest } from '../utils/validation.js';
 
 export function createAgentRoutes(): Router<CogitatorState> {
   const router = new Router<CogitatorState>();
@@ -51,21 +52,49 @@ export function createAgentRoutes(): Router<CogitatorState> {
         signal: abortController.signal,
       });
 
-      const response: AgentRunResponse = {
-        output: result.output,
-        threadId: result.threadId,
-        usage: {
-          inputTokens: result.usage.inputTokens,
-          outputTokens: result.usage.outputTokens,
-          totalTokens: result.usage.totalTokens,
-        },
-        toolCalls: [...result.toolCalls],
-      };
-
-      ctx.body = response;
+      ctx.body = toAgentRunResponse(result);
     } catch (error) {
       if (abortController.signal.aborted) return;
       const { status, body } = resolveError(error, 'Agent run error');
+      ctx.status = status;
+      ctx.body = body;
+    }
+  });
+
+  router.post('/agents/:name/resume', async (ctx) => {
+    const { agents, runtime } = ctx.state.cogitator;
+    const { name } = ctx.params;
+    const agent = getOwn(agents, name);
+
+    if (!agent) {
+      ctx.status = 404;
+      ctx.body = { error: { message: `Agent '${name}' not found`, code: 'NOT_FOUND' } };
+      return;
+    }
+
+    const parsed = parseAgentResumeRequest(getRequestBody(ctx));
+    if (!parsed.ok) {
+      ctx.status = 400;
+      ctx.body = { error: { message: parsed.message, code: 'INVALID_INPUT' } };
+      return;
+    }
+    const { threadId, decisions, defaultDecision } = parsed.value;
+
+    const abortController = new AbortController();
+    onClientDisconnect(ctx, () => abortController.abort());
+
+    try {
+      const result = await runtime.resume(agent, threadId, {
+        userId: ctx.state.auth?.userId,
+        decisions,
+        defaultDecision,
+        signal: abortController.signal,
+      });
+
+      ctx.body = toAgentRunResponse(result);
+    } catch (error) {
+      if (abortController.signal.aborted) return;
+      const { status, body } = resolveError(error, 'Agent resume error');
       ctx.status = status;
       ctx.body = body;
     }
@@ -92,7 +121,6 @@ export function createAgentRoutes(): Router<CogitatorState> {
     setupSSEHeaders(ctx);
     const writer = new KoaStreamWriter(ctx);
     const messageId = generateId('msg');
-    const textId = generateId('txt');
     const abortController = new AbortController();
 
     onClientDisconnect(ctx, () => {
@@ -100,8 +128,48 @@ export function createAgentRoutes(): Router<CogitatorState> {
       abortController.abort();
     });
 
+    let textId: string | null = null;
+    let reasoningId: string | null = null;
+    let streamedText = false;
+
+    const endText = () => {
+      if (textId === null) return;
+      writer.textEnd(textId);
+      textId = null;
+    };
+
+    const endReasoning = () => {
+      if (reasoningId === null) return;
+      writer.reasoningEnd(reasoningId);
+      reasoningId = null;
+    };
+
+    const endParts = () => {
+      endReasoning();
+      endText();
+    };
+
+    const writeText = (delta: string) => {
+      if (!delta) return;
+      if (textId === null) {
+        endReasoning();
+        textId = generateId('txt');
+        writer.textStart(textId);
+      }
+      writer.textDelta(textId, delta);
+    };
+
+    const writeReasoning = (delta: string) => {
+      if (!delta) return;
+      if (reasoningId === null) {
+        endText();
+        reasoningId = generateId('rsn');
+        writer.reasoningStart(reasoningId);
+      }
+      writer.reasoningDelta(reasoningId, delta);
+    };
+
     writer.start(messageId);
-    writer.textStart(textId);
 
     try {
       const result = await runtime.run(agent, {
@@ -110,9 +178,12 @@ export function createAgentRoutes(): Router<CogitatorState> {
         stream: true,
         signal: abortController.signal,
         onToken: (token: string) => {
-          writer.textDelta(textId, token);
+          if (token) streamedText = true;
+          writeText(token);
         },
+        onReasoning: writeReasoning,
         onToolCall: (toolCall: ToolCall) => {
+          endParts();
           writer.toolCallStart(toolCall.id, toolCall.name);
           writer.toolCallDelta(toolCall.id, JSON.stringify(toolCall.arguments));
           writer.toolCallEnd(toolCall.id);
@@ -122,7 +193,11 @@ export function createAgentRoutes(): Router<CogitatorState> {
         },
       });
 
-      writer.textEnd(textId);
+      if (!streamedText) writeText(result.output);
+      endParts();
+      if (result.status === 'paused' && result.pendingApprovals) {
+        writer.approvalRequired(result.threadId, result.pendingApprovals);
+      }
       writer.finish(messageId, {
         inputTokens: result.usage.inputTokens,
         outputTokens: result.usage.outputTokens,
@@ -130,7 +205,7 @@ export function createAgentRoutes(): Router<CogitatorState> {
       });
     } catch (error) {
       if (!abortController.signal.aborted) {
-        writer.textEnd(textId);
+        endParts();
         const { body } = resolveError(error, 'Agent stream error');
         writer.error(body.error.message, body.error.code);
       }

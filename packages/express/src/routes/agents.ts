@@ -1,18 +1,15 @@
 import { Router } from 'express';
 import type { Response } from 'express';
-import type {
-  RouteContext,
-  CogitatorRequest,
-  AgentListResponse,
-  AgentRunResponse,
-} from '../types.js';
+import type { RouteContext, CogitatorRequest, AgentListResponse } from '../types.js';
 import { ExpressStreamWriter, setupSSEHeaders, generateId } from '../streaming/index.js';
 import {
   handleRouteError,
   onClientDisconnect,
+  parseResumeBody,
   parseRunBody,
   resolveError,
   sendError,
+  toAgentRunResponse,
 } from './utils.js';
 
 export function createAgentRoutes(ctx: RouteContext): Router {
@@ -62,21 +59,47 @@ export function createAgentRoutes(ctx: RouteContext): Router {
           signal: abortController.signal,
         });
 
-        const response: AgentRunResponse = {
-          output: result.output,
-          threadId: result.threadId,
-          usage: {
-            inputTokens: result.usage.inputTokens,
-            outputTokens: result.usage.outputTokens,
-            totalTokens: result.usage.totalTokens,
-          },
-          toolCalls: [...result.toolCalls],
-        };
-
-        res.json(response);
+        res.json(toAgentRunResponse(result));
       } catch (error) {
         if (abortController.signal.aborted) return;
         handleRouteError(res, error, 'Agent run error');
+      }
+    }
+  );
+
+  router.post(
+    '/agents/:name/resume',
+    async (req: CogitatorRequest<{ name: string }>, res: Response) => {
+      const { name } = req.params;
+      const agent = findAgent(name);
+
+      if (!agent) {
+        sendError(res, 404, `Agent '${name}' not found`, 'NOT_FOUND');
+        return;
+      }
+
+      const parsed = parseResumeBody(req.body);
+      if (!parsed.ok) {
+        sendError(res, 400, parsed.message, 'INVALID_INPUT');
+        return;
+      }
+      const { threadId, decisions, defaultDecision } = parsed.value;
+
+      const abortController = new AbortController();
+      onClientDisconnect(res, () => abortController.abort());
+
+      try {
+        const result = await ctx.cogitator.resume(agent, threadId, {
+          userId: req.cogitator?.auth?.userId,
+          decisions,
+          defaultDecision,
+          signal: abortController.signal,
+        });
+
+        res.json(toAgentRunResponse(result));
+      } catch (error) {
+        if (abortController.signal.aborted) return;
+        handleRouteError(res, error, 'Agent resume error');
       }
     }
   );
@@ -110,21 +133,44 @@ export function createAgentRoutes(ctx: RouteContext): Router {
       });
 
       let textId: string | null = null;
+      let reasoningId: string | null = null;
       let streamedText = false;
+
+      const endText = () => {
+        if (textId === null) return;
+        writer.textEnd(textId);
+        textId = null;
+      };
+
+      const endReasoning = () => {
+        if (reasoningId === null) return;
+        writer.reasoningEnd(reasoningId);
+        reasoningId = null;
+      };
+
+      const endParts = () => {
+        endReasoning();
+        endText();
+      };
 
       const writeText = (delta: string) => {
         if (!delta) return;
         if (textId === null) {
+          endReasoning();
           textId = generateId('txt');
           writer.textStart(textId);
         }
         writer.textDelta(textId, delta);
       };
 
-      const endText = () => {
-        if (textId === null) return;
-        writer.textEnd(textId);
-        textId = null;
+      const writeReasoning = (delta: string) => {
+        if (!delta) return;
+        if (reasoningId === null) {
+          endText();
+          reasoningId = generateId('rsn');
+          writer.reasoningStart(reasoningId);
+        }
+        writer.reasoningDelta(reasoningId, delta);
       };
 
       try {
@@ -141,8 +187,9 @@ export function createAgentRoutes(ctx: RouteContext): Router {
             if (token) streamedText = true;
             writeText(token);
           },
+          onReasoning: writeReasoning,
           onToolCall: (toolCall) => {
-            endText();
+            endParts();
             writer.toolCallStart(toolCall.id, toolCall.name);
             writer.toolCallDelta(toolCall.id, JSON.stringify(toolCall.arguments));
             writer.toolCallEnd(toolCall.id);
@@ -153,7 +200,10 @@ export function createAgentRoutes(ctx: RouteContext): Router {
         });
 
         if (!streamedText) writeText(result.output);
-        endText();
+        endParts();
+        if (result.status === 'paused' && result.pendingApprovals) {
+          writer.approvalRequired(result.threadId, result.pendingApprovals);
+        }
         writer.finish(messageId, {
           inputTokens: result.usage.inputTokens,
           outputTokens: result.usage.outputTokens,
@@ -162,7 +212,7 @@ export function createAgentRoutes(ctx: RouteContext): Router {
       } catch (error) {
         if (!abortController.signal.aborted) {
           const resolved = resolveError(error, 'Agent stream error');
-          endText();
+          endParts();
           writer.error(resolved.message, resolved.code);
         }
       } finally {

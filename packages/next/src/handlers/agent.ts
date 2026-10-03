@@ -1,5 +1,5 @@
 import type { Cogitator, Agent } from '@cogitator-ai/core';
-import type { AgentHandlerOptions, AgentInput, AgentResponse } from '../types.js';
+import type { AgentHandlerOptions, AgentInput } from '../types.js';
 import {
   exceedsDeclaredSize,
   hookErrorResponse,
@@ -9,6 +9,7 @@ import {
   readJsonBody,
   runErrorResponse,
 } from './http.js';
+import { toAgentResponse } from './result.js';
 
 type ParseResult = { ok: true; input: AgentInput } | { ok: false; error: string };
 
@@ -87,22 +88,7 @@ export function createAgentHandler(
         await options.afterRun(result);
       }
 
-      const response: AgentResponse = {
-        output: result.output,
-        threadId: result.threadId,
-        usage: {
-          inputTokens: result.usage.inputTokens,
-          outputTokens: result.usage.outputTokens,
-          totalTokens: result.usage.totalTokens,
-        },
-        toolCalls: [...result.toolCalls],
-        trace: {
-          traceId: result.trace.traceId,
-          spans: [...result.trace.spans],
-        },
-      };
-
-      return jsonResponse(response);
+      return jsonResponse(toAgentResponse(result));
     } catch (err) {
       return runErrorResponse(err);
     }

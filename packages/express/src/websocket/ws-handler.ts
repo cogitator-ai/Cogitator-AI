@@ -1,6 +1,9 @@
 import type { Server as HttpServer, IncomingMessage } from 'http';
 import type { Request } from 'express';
+import type { Agent } from '@cogitator-ai/core';
+import type { RunOptions, RunResult } from '@cogitator-ai/types';
 import type {
+  AgentResumeRequest,
   AuthContext,
   WebSocketMessage,
   WebSocketResponse,
@@ -8,6 +11,7 @@ import type {
   WebSocketConfig,
 } from '../types.js';
 import { generateId } from '../streaming/helpers.js';
+import { parseResumeBody, withoutCheckpoint } from '../routes/utils.js';
 
 type WebSocketType = import('ws').WebSocket;
 type WebSocketServerType = import('ws').WebSocketServer;
@@ -19,6 +23,7 @@ const MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'subscribe',
   'unsubscribe',
   'run',
+  'resume',
   'stop',
   'ping',
 ]);
@@ -37,6 +42,15 @@ interface RunPayload {
   context?: Record<string, unknown>;
   threadId?: string;
 }
+
+interface ResumePayload extends AgentResumeRequest {
+  name: string;
+}
+
+type AgentRunControls = Pick<
+  RunOptions,
+  'userId' | 'signal' | 'stream' | 'onToken' | 'onReasoning' | 'onToolCall' | 'onToolResult'
+>;
 
 class ChannelHub {
   private readonly channels = new Map<string, Set<WebSocketType>>();
@@ -99,6 +113,14 @@ function parseRunPayload(payload: unknown): RunPayload | null {
   if (context !== undefined && !isPlainObject(context)) return null;
   if (threadId !== undefined && typeof threadId !== 'string') return null;
   return { type, name, input, context, threadId };
+}
+
+function parseResumePayload(payload: unknown): ResumePayload | null {
+  if (!isPlainObject(payload)) return null;
+  const { name } = payload;
+  if (typeof name !== 'string' || !name) return null;
+  const parsed = parseResumeBody(payload);
+  return parsed.ok ? { name, ...parsed.value } : null;
 }
 
 function isModuleNotFound(error: unknown): boolean {
@@ -250,6 +272,10 @@ async function handleMessage(
       await handleRun(ws, message, ctx, state, hub);
       break;
 
+    case 'resume':
+      await handleResume(ws, message, ctx, state, hub);
+      break;
+
     case 'stop':
       state.abortController?.abort();
       state.abortController = undefined;
@@ -280,12 +306,54 @@ async function handleRun(
     return;
   }
 
-  const agent = Object.hasOwn(ctx.agents, payload.name) ? ctx.agents[payload.name] : undefined;
+  await streamAgentRun(ws, message, ctx, state, hub, payload.name, (agent, options) =>
+    ctx.cogitator.run(agent, {
+      ...options,
+      input: payload.input,
+      context: payload.context,
+      threadId: payload.threadId,
+    })
+  );
+}
+
+async function handleResume(
+  ws: WebSocketType,
+  message: WebSocketMessage,
+  ctx: RouteContext,
+  state: ClientState,
+  hub: ChannelHub
+): Promise<void> {
+  const payload = parseResumePayload(message.payload);
+
+  if (!payload) {
+    sendResponse(ws, { type: 'error', id: message.id, error: 'Invalid resume payload' });
+    return;
+  }
+
+  await streamAgentRun(ws, message, ctx, state, hub, payload.name, (agent, options) =>
+    ctx.cogitator.resume(agent, payload.threadId, {
+      ...options,
+      decisions: payload.decisions,
+      defaultDecision: payload.defaultDecision,
+    })
+  );
+}
+
+async function streamAgentRun(
+  ws: WebSocketType,
+  message: WebSocketMessage,
+  ctx: RouteContext,
+  state: ClientState,
+  hub: ChannelHub,
+  name: string,
+  execute: (agent: Agent, options: AgentRunControls) => Promise<RunResult>
+): Promise<void> {
+  const agent = Object.hasOwn(ctx.agents, name) ? ctx.agents[name] : undefined;
   if (!agent) {
     sendResponse(ws, {
       type: 'error',
       id: message.id,
-      error: `Agent '${payload.name}' not found`,
+      error: `Agent '${name}' not found`,
     });
     return;
   }
@@ -294,7 +362,7 @@ async function handleRun(
   const controller = new AbortController();
   state.abortController = controller;
 
-  const channel = `agent:${payload.name}`;
+  const channel = `agent:${name}`;
   const emit = (eventPayload: Record<string, unknown>) => {
     const response: WebSocketResponse = { type: 'event', id: message.id, payload: eventPayload };
     sendResponse(ws, response);
@@ -302,15 +370,15 @@ async function handleRun(
   };
 
   try {
-    const result = await ctx.cogitator.run(agent, {
-      input: payload.input,
-      context: payload.context,
-      threadId: payload.threadId,
+    const result = await execute(agent, {
       userId: state.auth?.userId,
       signal: controller.signal,
       stream: true,
       onToken: (token) => {
         emit({ type: 'token', delta: token });
+      },
+      onReasoning: (delta) => {
+        emit({ type: 'reasoning', delta });
       },
       onToolCall: (toolCall) => {
         emit({ type: 'tool-call', ...toolCall });
@@ -320,7 +388,7 @@ async function handleRun(
       },
     });
 
-    emit({ type: 'complete', result });
+    emit({ type: 'complete', result: withoutCheckpoint(result) });
   } catch (error) {
     if (controller.signal.aborted) {
       emit({ type: 'cancelled' });

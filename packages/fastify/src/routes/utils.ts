@@ -1,5 +1,6 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { CogitatorError, ERROR_STATUS_CODES } from '@cogitator-ai/types';
+import { CogitatorError, ERROR_STATUS_CODES, type RunResult } from '@cogitator-ai/types';
+import type { AgentRunResponse } from '../types.js';
 
 export function sendError(
   reply: FastifyReply,
@@ -55,4 +56,26 @@ export function onClientDisconnect(reply: FastifyReply, handler: () => void): vo
   reply.raw.on('close', () => {
     if (!reply.raw.writableEnded) handler();
   });
+}
+
+/** The client-facing shape of a run; never carries the paused run's checkpoint */
+export function toAgentRunResponse(result: RunResult): AgentRunResponse {
+  return {
+    output: result.output,
+    threadId: result.threadId,
+    usage: {
+      inputTokens: result.usage.inputTokens,
+      outputTokens: result.usage.outputTokens,
+      totalTokens: result.usage.totalTokens,
+    },
+    toolCalls: [...result.toolCalls],
+    ...(result.reasoning && { reasoning: result.reasoning }),
+    status: result.status ?? 'completed',
+    ...(result.pendingApprovals && { pendingApprovals: [...result.pendingApprovals] }),
+  };
+}
+
+export function withoutCheckpoint(result: RunResult): Omit<RunResult, 'checkpoint'> {
+  const { checkpoint: _checkpoint, ...rest } = result;
+  return rest;
 }

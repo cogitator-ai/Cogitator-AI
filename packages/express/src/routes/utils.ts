@@ -1,5 +1,11 @@
 import type { Response } from 'express';
-import { CogitatorError, ERROR_STATUS_CODES } from '@cogitator-ai/types';
+import {
+  CogitatorError,
+  ERROR_STATUS_CODES,
+  type RunResult,
+  type ToolApprovalDecision,
+} from '@cogitator-ai/types';
+import type { AgentResumeRequest, AgentRunResponse } from '../types.js';
 
 export function sendError(res: Response, status: number, message: string, code: string): void {
   res.status(status).json({ error: { message, code } });
@@ -83,6 +89,79 @@ export function parseRunBody(body: unknown, allowTimeout = false): ParseResult<R
       timeout: allowTimeout && typeof body.timeout === 'number' ? body.timeout : undefined,
     },
   };
+}
+
+const DECISION_SHAPE = '{ approved: boolean, reason?: string }';
+
+function parseDecision(value: unknown): ToolApprovalDecision | null {
+  if (!isPlainObject(value) || typeof value.approved !== 'boolean') return null;
+  if (value.reason !== undefined && typeof value.reason !== 'string') return null;
+  if (value.approved) return { approved: true };
+  return value.reason === undefined
+    ? { approved: false }
+    : { approved: false, reason: value.reason };
+}
+
+export function parseResumeBody(body: unknown): ParseResult<AgentResumeRequest> {
+  if (!isPlainObject(body) || typeof body.threadId !== 'string' || body.threadId.trim() === '') {
+    return { ok: false, message: 'Missing required field: threadId' };
+  }
+
+  let decisions: Record<string, ToolApprovalDecision> | undefined;
+  if (body.decisions !== undefined) {
+    if (!isPlainObject(body.decisions)) {
+      return { ok: false, message: 'Field decisions must be an object' };
+    }
+    const entries: Array<[string, ToolApprovalDecision]> = [];
+    for (const [toolCallId, value] of Object.entries(body.decisions)) {
+      const decision = parseDecision(value);
+      if (!decision) {
+        return { ok: false, message: `Each entry of decisions must be ${DECISION_SHAPE}` };
+      }
+      entries.push([toolCallId, decision]);
+    }
+    decisions = Object.fromEntries(entries);
+  }
+
+  let defaultDecision: ToolApprovalDecision | undefined;
+  if (body.defaultDecision !== undefined) {
+    const decision = parseDecision(body.defaultDecision);
+    if (!decision) {
+      return { ok: false, message: `Field defaultDecision must be ${DECISION_SHAPE}` };
+    }
+    defaultDecision = decision;
+  }
+
+  return {
+    ok: true,
+    value: {
+      threadId: body.threadId,
+      ...(decisions && { decisions }),
+      ...(defaultDecision && { defaultDecision }),
+    },
+  };
+}
+
+/** The client-facing shape of a run; never carries the paused run's checkpoint */
+export function toAgentRunResponse(result: RunResult): AgentRunResponse {
+  return {
+    output: result.output,
+    threadId: result.threadId,
+    usage: {
+      inputTokens: result.usage.inputTokens,
+      outputTokens: result.usage.outputTokens,
+      totalTokens: result.usage.totalTokens,
+    },
+    toolCalls: [...result.toolCalls],
+    ...(result.reasoning && { reasoning: result.reasoning }),
+    status: result.status ?? 'completed',
+    ...(result.pendingApprovals && { pendingApprovals: [...result.pendingApprovals] }),
+  };
+}
+
+export function withoutCheckpoint(result: RunResult): Omit<RunResult, 'checkpoint'> {
+  const { checkpoint: _checkpoint, ...rest } = result;
+  return rest;
 }
 
 export interface WorkflowBody {

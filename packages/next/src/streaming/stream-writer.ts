@@ -4,12 +4,17 @@ import {
   createTextStartEvent,
   createTextDeltaEvent,
   createTextEndEvent,
+  createReasoningStartEvent,
+  createReasoningDeltaEvent,
+  createReasoningEndEvent,
   createToolCallStartEvent,
   createToolCallDeltaEvent,
   createToolCallEndEvent,
   createToolResultEvent,
+  createApprovalRequiredEvent,
   createErrorEvent,
   createFinishEvent,
+  type PendingApproval,
   type Usage,
 } from './protocol.js';
 
@@ -52,6 +57,19 @@ export class StreamWriter {
     await this.write(createTextEndEvent(id));
   }
 
+  async reasoningStart(id: string): Promise<void> {
+    await this.write(createReasoningStartEvent(id));
+  }
+
+  async reasoningDelta(id: string, delta: string): Promise<void> {
+    if (!delta) return;
+    await this.write(createReasoningDeltaEvent(id, delta));
+  }
+
+  async reasoningEnd(id: string): Promise<void> {
+    await this.write(createReasoningEndEvent(id));
+  }
+
   async toolCallStart(id: string, toolName: string): Promise<void> {
     await this.write(createToolCallStartEvent(id, toolName));
   }
@@ -66,6 +84,10 @@ export class StreamWriter {
 
   async toolResult(id: string, toolCallId: string, result: unknown): Promise<void> {
     await this.write(createToolResultEvent(id, toolCallId, result));
+  }
+
+  async approvalRequired(threadId: string, approvals: readonly PendingApproval[]): Promise<void> {
+    await this.write(createApprovalRequiredEvent(threadId, approvals));
   }
 
   async error(message: string, code?: string): Promise<void> {

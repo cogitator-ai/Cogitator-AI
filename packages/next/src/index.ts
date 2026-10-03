@@ -1,5 +1,6 @@
 export { createChatHandler } from './handlers/chat.js';
 export { createAgentHandler } from './handlers/agent.js';
+export { createResumeHandler } from './handlers/resume.js';
 
 export type {
   ChatMessage,
@@ -8,6 +9,11 @@ export type {
   ChatHandlerOptions,
   AgentHandlerOptions,
   AgentResponse,
+  ResumeDecisions,
+  ResumeInput,
+  ResumeHandlerOptions,
+  PendingApproval,
+  ToolApprovalDecision,
   ToolCall,
   ToolResult,
   RunResult,

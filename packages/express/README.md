@@ -55,6 +55,7 @@ app.listen(3000, () => console.log('Server running on http://localhost:3000'));
 GET    /api/agents                    - List all agents
 POST   /api/agents/:name/run          - Run agent (JSON response)
 POST   /api/agents/:name/stream       - Run agent (SSE stream)
+POST   /api/agents/:name/resume       - Resume a run paused for tool approvals
 ```
 
 Run/stream body: `{ input: string; context?: object; threadId?: string }` — `input` must be a non-empty string (400 otherwise). The agent list exposes `config.description`, never the agent instructions. The authenticated `userId` (from `auth`) is passed to the run, and the run is aborted when the client disconnects.
@@ -158,6 +159,28 @@ When `auth` returns a `userId`, everything a caller does with threads is scoped 
 - Another user's thread answers `403` with code `THREAD_ACCESS_DENIED`, and its messages are neither returned nor changed.
 - Threads created earlier without an owner (no `userId`) stay open only to callers without a `userId`, such as servers with no `auth` configured.
 
+### Approvals
+
+A tool with `requiresApproval` (`true`, or a function of the arguments) pauses the run before that turn executes:
+
+1. `POST /api/agents/:name/run` answers with `status: 'paused'` and `pendingApprovals` (`{ toolCallId, toolName, arguments, description, sideEffects? }`); finished runs carry `status: 'completed'`. The run's checkpoint stays on the server and is never sent to the client.
+2. `POST /api/agents/:name/stream` emits `{ type: 'approval-required', threadId, approvals }` right before `finish`.
+3. The client shows the pending calls and sends the answers to `POST /api/agents/:name/resume`:
+
+```typescript
+await fetch('/api/agents/support/resume', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    threadId,
+    decisions: { [toolCallId]: { approved: true } },
+    defaultDecision: { approved: false, reason: 'Not approved' },
+  }),
+});
+```
+
+The body is `{ threadId, decisions?, defaultDecision? }`, where a decision is `{ approved: boolean, reason?: string }`; malformed bodies get `400 INVALID_INPUT`. The response has the same shape as `/run` and may pause again for calls left without a decision. The run resumes as the authenticated `userId`: a thread with no paused run answers `409 RUN_NOT_PAUSED`, and another user's paused run `403 THREAD_ACCESS_DENIED`. Over WebSocket, send `{ type: 'resume', id, payload: { name, threadId, decisions?, defaultDecision? } }`; a paused run's `complete` event carries `status` and `pendingApprovals`.
+
 ## SSE Streaming
 
 The `/agents/:name/stream` endpoint returns Server-Sent Events:
@@ -188,6 +211,8 @@ while (true) {
 }
 ```
 
+When the agent sets `reasoning: { summary: true }` and the provider returns a reasoning summary, it streams as its own part: `reasoning-start`, `reasoning-delta` (`{ id, delta }`), `reasoning-end`. A reasoning part is always closed before text or a tool call starts, so reasoning and text parts never interleave.
+
 ## WebSocket Support
 
 Enable real-time bidirectional communication (requires the optional `ws` package):
@@ -214,13 +239,14 @@ httpServer.listen(3000);
 
 Protocol:
 
-| Message                                                                             | Direction     | Description                                                                                                                    |
-| ----------------------------------------------------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `{ type: 'run', id, payload: { type: 'agent', name, input, context?, threadId? } }` | Client→Server | Run an agent; events arrive as `{ type: 'event', id, payload }` (`token`, `tool-call`, `tool-result`, `complete`, `cancelled`) |
-| `{ type: 'stop' }`                                                                  | Client→Server | Abort the client's running agent (emits `cancelled`)                                                                           |
-| `{ type: 'subscribe', channel: 'agent:<name>' }`                                    | Client→Server | Receive events of runs of that agent started by other clients                                                                  |
-| `{ type: 'unsubscribe', channel }`                                                  | Client→Server | Stop receiving channel events                                                                                                  |
-| `{ type: 'ping' }`                                                                  | Client→Server | Answered with `{ type: 'pong' }`                                                                                               |
+| Message                                                                             | Direction     | Description                                                                                                                                 |
+| ----------------------------------------------------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `{ type: 'run', id, payload: { type: 'agent', name, input, context?, threadId? } }` | Client→Server | Run an agent; events arrive as `{ type: 'event', id, payload }` (`token`, `reasoning`, `tool-call`, `tool-result`, `complete`, `cancelled`) |
+| `{ type: 'resume', id, payload: { name, threadId, decisions?, defaultDecision? } }` | Client→Server | Resume a run paused for tool approvals; events arrive like those of `run`                                                                   |
+| `{ type: 'stop' }`                                                                  | Client→Server | Abort the client's running agent (emits `cancelled`)                                                                                        |
+| `{ type: 'subscribe', channel: 'agent:<name>' }`                                    | Client→Server | Receive events of runs of that agent started by other clients                                                                               |
+| `{ type: 'unsubscribe', channel }`                                                  | Client→Server | Stop receiving channel events                                                                                                               |
+| `{ type: 'ping' }`                                                                  | Client→Server | Answered with `{ type: 'pong' }`                                                                                                            |
 
 Only agent runs are supported over WebSocket; use the HTTP endpoints for workflows and swarms. A new `run` from the same connection aborts the previous one.
 
@@ -355,6 +381,9 @@ class ExpressStreamWriter {
   textStart(id: string): void;
   textDelta(id: string, delta: string): void;
   textEnd(id: string): void;
+  reasoningStart(id: string): void;
+  reasoningDelta(id: string, delta: string): void;
+  reasoningEnd(id: string): void;
   toolCallStart(id: string, toolName: string): void;
   toolCallDelta(id: string, argsTextDelta: string): void;
   toolCallEnd(id: string): void;

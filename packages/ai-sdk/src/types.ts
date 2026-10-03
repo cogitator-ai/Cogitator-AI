@@ -47,6 +47,12 @@ export interface CogitatorTextContent {
   text: string;
 }
 
+/** The agent's reasoning summary (`reasoning.summary` on the agent). */
+export interface CogitatorReasoningContent {
+  type: 'reasoning';
+  text: string;
+}
+
 /** A tool call the agent executed itself, reported as provider-executed. */
 export interface CogitatorToolCallContent {
   type: 'tool-call';
@@ -68,7 +74,10 @@ export interface CogitatorToolResultContent {
 }
 
 export type CogitatorContent =
-  CogitatorTextContent | CogitatorToolCallContent | CogitatorToolResultContent;
+  | CogitatorTextContent
+  | CogitatorReasoningContent
+  | CogitatorToolCallContent
+  | CogitatorToolResultContent;
 
 export type CogitatorStreamPart<TWarning, TUsage, TFinishReason> =
   | { type: 'stream-start'; warnings: TWarning[] }
@@ -76,6 +85,9 @@ export type CogitatorStreamPart<TWarning, TUsage, TFinishReason> =
   | { type: 'text-start'; id: string }
   | { type: 'text-delta'; id: string; delta: string }
   | { type: 'text-end'; id: string }
+  | { type: 'reasoning-start'; id: string }
+  | { type: 'reasoning-delta'; id: string; delta: string }
+  | { type: 'reasoning-end'; id: string }
   | {
       type: 'tool-input-start';
       id: string;
@@ -106,16 +118,18 @@ export interface CogitatorUsageV2 {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  reasoningTokens?: number;
+  cachedInputTokens?: number;
 }
 
 export interface CogitatorUsageV3 {
   inputTokens: {
     total: number;
-    noCache: undefined;
-    cacheRead: undefined;
-    cacheWrite: undefined;
+    noCache: number | undefined;
+    cacheRead: number | undefined;
+    cacheWrite: number | undefined;
   };
-  outputTokens: { total: number; text: undefined; reasoning: undefined };
+  outputTokens: { total: number; text: number | undefined; reasoning: number | undefined };
 }
 
 export interface CogitatorFinishReasonV3 {

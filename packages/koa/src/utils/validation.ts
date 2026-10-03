@@ -1,5 +1,7 @@
+import type { ToolApprovalDecision } from '@cogitator-ai/types';
 import type {
   AddMessageRequest,
+  AgentResumeRequest,
   AgentRunRequest,
   SwarmRunRequest,
   WorkflowRunRequest,
@@ -51,6 +53,47 @@ function parseRunFields(
 
 export function parseAgentRunRequest(body: unknown): ParseResult<AgentRunRequest> {
   return parseRunFields(body);
+}
+
+const DECISION_SHAPE = '{ approved: boolean, reason?: string }';
+
+function parseDecision(value: unknown): ToolApprovalDecision | null {
+  if (!isRecord(value) || typeof value.approved !== 'boolean') return null;
+  if (value.reason !== undefined && typeof value.reason !== 'string') return null;
+  if (value.approved) return { approved: true };
+  return value.reason === undefined
+    ? { approved: false }
+    : { approved: false, reason: value.reason };
+}
+
+export function parseAgentResumeRequest(body: unknown): ParseResult<AgentResumeRequest> {
+  if (!isRecord(body) || body.threadId === undefined || body.threadId === null) {
+    return fail('Missing required field: threadId');
+  }
+  if (typeof body.threadId !== 'string' || !body.threadId.trim()) {
+    return fail('Field "threadId" must be a non-empty string');
+  }
+
+  const request: AgentResumeRequest = { threadId: body.threadId };
+
+  if (body.decisions !== undefined) {
+    if (!isRecord(body.decisions)) return fail('Field "decisions" must be an object');
+    const entries: Array<[string, ToolApprovalDecision]> = [];
+    for (const [toolCallId, value] of Object.entries(body.decisions)) {
+      const decision = parseDecision(value);
+      if (!decision) return fail(`Each entry of "decisions" must be ${DECISION_SHAPE}`);
+      entries.push([toolCallId, decision]);
+    }
+    request.decisions = Object.fromEntries(entries);
+  }
+
+  if (body.defaultDecision !== undefined) {
+    const decision = parseDecision(body.defaultDecision);
+    if (!decision) return fail(`Field "defaultDecision" must be ${DECISION_SHAPE}`);
+    request.defaultDecision = decision;
+  }
+
+  return { ok: true, value: request };
 }
 
 export function parseSwarmRunRequest(body: unknown): ParseResult<SwarmRunRequest> {

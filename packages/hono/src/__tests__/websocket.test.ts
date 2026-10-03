@@ -221,6 +221,42 @@ describe('handleWebSocketMessage', () => {
     );
   });
 
+  it('sends reasoning deltas as reasoning events', async () => {
+    const run = vi.fn().mockImplementation((_agent: unknown, opts: Record<string, unknown>) => {
+      const onReasoning = opts.onReasoning as (delta: string) => void;
+      const onToken = opts.onToken as (token: string) => void;
+      onReasoning('thinking');
+      onToken('Hi');
+      return Promise.resolve({ output: 'Hi' });
+    });
+
+    ctx = mockContext({
+      runtime: { run } as unknown as CogitatorContext['runtime'],
+      agents: { bot: { name: 'bot' } as never },
+    });
+
+    const { socket, getResponses } = mockSocket();
+
+    await handleWebSocketMessage(
+      socket,
+      JSON.stringify({
+        type: 'run',
+        id: 'r5',
+        payload: { type: 'agent', name: 'bot', input: 'think' },
+      }),
+      ctx,
+      createClientState()
+    );
+
+    const responses = getResponses();
+    expect(responses[0]).toEqual({
+      type: 'event',
+      id: 'r5',
+      payload: { type: 'reasoning', delta: 'thinking' },
+    });
+    expect(responses[1].payload).toEqual({ type: 'token', delta: 'Hi' });
+  });
+
   it('sends tool-call and tool-result events', async () => {
     const run = vi.fn().mockImplementation((_agent: unknown, opts: Record<string, unknown>) => {
       const onToolCall = opts.onToolCall as (tc: unknown) => void;

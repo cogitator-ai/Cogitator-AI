@@ -97,6 +97,30 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
       },
     };
 
+    spec.paths[`/agents/${name}/resume`] = {
+      post: {
+        tags: ['agents'],
+        summary: `Resume a paused run of ${name} with approval decisions`,
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': { schema: { $ref: '#/components/schemas/AgentResumeRequest' } },
+          },
+        },
+        responses: {
+          200: {
+            description: 'Agent execution result, or paused again',
+            content: {
+              'application/json': { schema: { $ref: '#/components/schemas/AgentRunResponse' } },
+            },
+          },
+          403: threadForbidden,
+          404: { description: 'Agent not found' },
+          409: { description: 'The thread has no paused run (RUN_NOT_PAUSED)' },
+        },
+      },
+    };
+
     spec.paths[`/agents/${name}/stream`] = {
       post: {
         tags: ['agents'],
@@ -349,6 +373,34 @@ function generateSchemas(): Record<string, unknown> {
         threadId: { type: 'string' },
       },
     },
+    PendingApproval: {
+      type: 'object',
+      required: ['toolCallId', 'toolName', 'arguments', 'description'],
+      properties: {
+        toolCallId: { type: 'string' },
+        toolName: { type: 'string' },
+        arguments: { type: 'object' },
+        description: { type: 'string' },
+        sideEffects: { type: 'array', items: { type: 'string' } },
+      },
+    },
+    ToolApprovalDecision: {
+      type: 'object',
+      required: ['approved'],
+      properties: { approved: { type: 'boolean' }, reason: { type: 'string' } },
+    },
+    AgentResumeRequest: {
+      type: 'object',
+      required: ['threadId'],
+      properties: {
+        threadId: { type: 'string' },
+        decisions: {
+          type: 'object',
+          additionalProperties: { $ref: '#/components/schemas/ToolApprovalDecision' },
+        },
+        defaultDecision: { $ref: '#/components/schemas/ToolApprovalDecision' },
+      },
+    },
     AgentRunResponse: {
       type: 'object',
       properties: {
@@ -363,6 +415,12 @@ function generateSchemas(): Record<string, unknown> {
           },
         },
         toolCalls: { type: 'array' },
+        reasoning: { type: 'string' },
+        status: { type: 'string', enum: ['completed', 'paused'] },
+        pendingApprovals: {
+          type: 'array',
+          items: { $ref: '#/components/schemas/PendingApproval' },
+        },
       },
     },
     ThreadResponse: {

@@ -141,6 +141,20 @@ describe('HonoStreamWriter', () => {
     expect(parseEvent(events, 0)).toEqual({ type: 'text-end', id: 'txt-1' });
   });
 
+  it('writes the reasoning part sequence and skips empty reasoning deltas', async () => {
+    const { stream, events } = mockStream();
+    const writer = new HonoStreamWriter(stream);
+    await writer.reasoningStart('rsn-1');
+    await writer.reasoningDelta('rsn-1', '');
+    await writer.reasoningDelta('rsn-1', 'thinking');
+    await writer.reasoningEnd('rsn-1');
+    expect(events.map((e) => JSON.parse(e.data))).toEqual([
+      { type: 'reasoning-start', id: 'rsn-1' },
+      { type: 'reasoning-delta', id: 'rsn-1', delta: 'thinking' },
+      { type: 'reasoning-end', id: 'rsn-1' },
+    ]);
+  });
+
   it('toolCallStart() writes tool-call-start event', async () => {
     const { stream, events } = mockStream();
     const writer = new HonoStreamWriter(stream);

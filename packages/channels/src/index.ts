@@ -1,6 +1,20 @@
 export { Gateway } from './gateway';
 export type { GatewayFullConfig, GatewaySessionInfo } from './gateway';
 
+export {
+  parseApprovalReply,
+  formatApprovalPrompt,
+  DEFAULT_APPROVE_WORDS,
+  DEFAULT_DENY_WORDS,
+  DEFAULT_NOT_ALLOWED_MESSAGE,
+} from './approvals';
+export type {
+  GatewayApprovalsConfig,
+  ApprovalReplyWords,
+  ApprovalRequestedEvent,
+  ApprovalResolvedEvent,
+} from './approvals';
+
 export { StreamBuffer } from './stream-buffer';
 
 export { HeartbeatScheduler } from './heartbeat';

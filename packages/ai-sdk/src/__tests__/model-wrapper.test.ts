@@ -292,6 +292,49 @@ describe('AISDKBackend', () => {
       });
     });
 
+    it('maps v1 reasoning in results and streams', async () => {
+      const { model } = v1Model({
+        doGenerate: vi.fn(async () => ({
+          text: 'answer',
+          reasoning: [
+            { type: 'text' as const, text: 'step one, ' },
+            { type: 'redacted' as const, data: 'xxx' },
+            { type: 'text' as const, text: 'step two' },
+          ],
+          finishReason: 'stop' as const,
+          usage: { promptTokens: 1, completionTokens: 2 },
+          rawCall: { rawPrompt: '', rawSettings: {} },
+        })),
+        doStream: vi.fn(async () => ({
+          stream: streamOf<LanguageModelV1StreamPart>([
+            { type: 'reasoning', textDelta: 'hmm' },
+            { type: 'reasoning-signature', signature: 'sig' },
+            { type: 'text-delta', textDelta: 'ok' },
+            {
+              type: 'finish',
+              finishReason: 'stop',
+              usage: { promptTokens: 1, completionTokens: 2 },
+            },
+          ]),
+          rawCall: { rawPrompt: '', rawSettings: {} },
+        })),
+      });
+      const backend = new AISDKBackend(model);
+
+      expect((await backend.chat(req())).reasoning).toBe('step one, step two');
+      const chunks = await collectAsync(backend.chatStream(req()));
+      expect(chunks.map((chunk) => chunk.delta)).toEqual([
+        { reasoning: 'hmm' },
+        { content: 'ok' },
+        {},
+      ]);
+    });
+
+    it('leaves reasoning out of a v1 result without any', async () => {
+      const response = await new AISDKBackend(v1Model().model).chat(req());
+      expect(response).not.toHaveProperty('reasoning');
+    });
+
     it('rejects tool arguments that are not a JSON object', async () => {
       const { model } = v1Model({
         doGenerate: async () => ({
@@ -393,6 +436,7 @@ describe('AISDKBackend', () => {
       expect(response).toEqual({
         id: 'resp_v2',
         content: 'Hello world',
+        reasoning: 'thinking',
         toolCalls: [{ id: 'tc1', name: 'search', arguments: {} }],
         finishReason: 'tool_calls',
         usage: {
@@ -403,6 +447,62 @@ describe('AISDKBackend', () => {
           reasoningTokens: 1,
         },
       });
+    });
+
+    it('joins several reasoning parts like the native backends', async () => {
+      const { model } = v2Model([
+        { type: 'reasoning', text: 'first' },
+        { type: 'reasoning', text: '' },
+        { type: 'reasoning', text: 'second' },
+        { type: 'text', text: 'answer' },
+      ]);
+
+      const response = await new AISDKBackend(model).chat(req());
+
+      expect(response.reasoning).toBe('first\n\nsecond');
+      expect(response.content).toBe('answer');
+    });
+
+    it('streams reasoning deltas as reasoning chunks', async () => {
+      const model: LanguageModelV2 = {
+        ...v2Model().model,
+        doStream: vi.fn(async () => ({
+          stream: streamOf<LanguageModelV2StreamPart>([
+            { type: 'stream-start', warnings: [] },
+            { type: 'reasoning-start', id: 'r1' },
+            { type: 'reasoning-delta', id: 'r1', delta: 'Let me ' },
+            { type: 'reasoning-delta', id: 'r1', delta: '' },
+            { type: 'reasoning-delta', id: 'r1', delta: 'think' },
+            { type: 'reasoning-end', id: 'r1' },
+            { type: 'text-start', id: 't1' },
+            { type: 'text-delta', id: 't1', delta: 'Done' },
+            { type: 'text-end', id: 't1' },
+            {
+              type: 'finish',
+              finishReason: 'stop',
+              usage: { inputTokens: 3, outputTokens: 7, totalTokens: 10, reasoningTokens: 4 },
+            },
+          ]),
+        })),
+      };
+
+      const chunks = await collectAsync(new AISDKBackend(model).chatStream(req()));
+
+      expect(chunks.map((chunk) => chunk.delta)).toEqual([
+        { reasoning: 'Let me ' },
+        { reasoning: 'think' },
+        { content: 'Done' },
+        {},
+      ]);
+      expect(chunks.at(-1)?.usage).toMatchObject({ reasoningTokens: 4 });
+    });
+
+    it('leaves the reasoning settings of a v2 call to the provider model', async () => {
+      const { model, doGenerate } = v2Model();
+
+      await new AISDKBackend(model).chat(req({ reasoning: { effort: 'high', summary: true } }));
+
+      expect(doGenerate.mock.calls[0][0]).not.toHaveProperty('reasoning');
     });
 
     it('streams text and client tool calls', async () => {
@@ -499,6 +599,49 @@ describe('AISDKBackend', () => {
           },
           { type: 'file', data: { type: 'data', data: 'aGVsbG8=' }, mediaType: 'image/png' },
         ],
+      });
+    });
+
+    it('passes the reasoning effort as the v4 reasoning option', async () => {
+      const { model, doGenerate, doStream } = v4Model();
+      const backend = new AISDKBackend(model);
+
+      await backend.chat(req({ reasoning: { effort: 'low', budgetTokens: 2000, summary: true } }));
+      await backend.chat(req({ reasoning: { effort: 'max' } }));
+      await backend.chat(req({ reasoning: { summary: true } }));
+      await collectAsync(backend.chatStream(req({ reasoning: { effort: 'none' } }))).catch(
+        () => undefined
+      );
+
+      expect(doGenerate.mock.calls.map(([options]) => options.reasoning)).toEqual([
+        'low',
+        'xhigh',
+        undefined,
+      ]);
+      expect(doGenerate.mock.calls[2][0]).not.toHaveProperty('reasoning');
+      expect(doStream.mock.calls[0][0].reasoning).toBe('none');
+    });
+
+    it('maps cache writes from v4 usage', async () => {
+      const model: LanguageModelV4 = {
+        ...v4Model().model,
+        doGenerate: vi.fn(async () => ({
+          content: [{ type: 'text' as const, text: 'cached' }],
+          finishReason: { unified: 'stop' as const, raw: 'end_turn' },
+          usage: {
+            inputTokens: { total: 100, noCache: 10, cacheRead: 60, cacheWrite: 30 },
+            outputTokens: { total: 5, text: 5, reasoning: undefined },
+          },
+          warnings: [],
+        })),
+      };
+
+      const response = await new AISDKBackend(model).chat(req());
+
+      expect(response.usage).toMatchObject({
+        inputTokens: 100,
+        cachedInputTokens: 60,
+        cacheWriteTokens: 30,
       });
     });
 

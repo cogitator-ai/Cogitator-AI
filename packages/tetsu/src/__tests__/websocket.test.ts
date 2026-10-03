@@ -4,7 +4,16 @@ import type { FailureReport } from '@tetsujs/core';
 import { serve } from '@tetsujs/core/testing';
 import { cogitatorController } from '../index.js';
 import type { CogitatorDeps, WebSocketServerMessage } from '../index.js';
-import { chatAgent, fakeCogitator, lastRunOptions, runResult } from './helpers.js';
+import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
+import {
+  chatAgent,
+  fakeCogitator,
+  lastResumeCall,
+  lastRunOptions,
+  pausedResult,
+  refundApproval,
+  runResult,
+} from './helpers.js';
 
 const sockets: WebSocket[] = [];
 
@@ -113,6 +122,32 @@ describe('websocket', () => {
     expect(received.every((message) => message.id === 'r-1')).toBe(true);
     expect(received.at(-1)?.payload).toMatchObject({ result: { output: 'Hi there' } });
     expect(lastRunOptions(run).threadId).toBe('t-9');
+  });
+
+  test('sends reasoning deltas of an agent run', async () => {
+    const { cogitator } = fakeCogitator(async (_agent, options) => {
+      options.onReasoning?.('Plan');
+      options.onToken?.('Hi');
+      return runResult({ output: 'Hi', reasoning: 'Plan' });
+    });
+    const request = serveSockets({ cogitator, agents: { chat: chatAgent() } });
+    const connection = await connect(request.url);
+
+    connection.send({
+      type: 'run',
+      id: 'r-1',
+      payload: { type: 'agent', name: 'chat', input: 'hello' },
+    });
+    const received = await connection.until('complete');
+
+    expect(received.map((message) => message.payload)).toEqual([
+      { type: 'reasoning', delta: 'Plan' },
+      { type: 'token', delta: 'Hi' },
+      expect.objectContaining({
+        type: 'complete',
+        result: expect.objectContaining({ output: 'Hi', reasoning: 'Plan' }),
+      }),
+    ]);
   });
 
   test('stops a run on request', async () => {
@@ -247,6 +282,90 @@ describe('websocket', () => {
     connection.send({ type: 'run', payload: { type: 'agent', name: 'chat', input: 'hi' } });
     await connection.until('complete');
     expect(lastRunOptions(run).userId).toBe('ada');
+  });
+
+  test('completes a paused run with its approvals and without the checkpoint', async () => {
+    const { cogitator } = fakeCogitator(() => Promise.resolve(pausedResult()));
+    const request = serveSockets({ cogitator, agents: { chat: chatAgent() } });
+    const connection = await connect(request.url);
+
+    connection.send({
+      type: 'run',
+      id: 'r-1',
+      payload: { type: 'agent', name: 'chat', input: 'Refund A-1' },
+    });
+    const [complete] = await connection.until('complete');
+
+    expect(complete?.payload).toEqual({
+      type: 'complete',
+      result: expect.objectContaining({ status: 'paused', pendingApprovals: [refundApproval] }),
+    });
+    expect(JSON.stringify(complete)).not.toContain('checkpoint');
+  });
+
+  test('resumes a paused run as the caller and streams the rest of it', async () => {
+    const { cogitator, resume } = fakeCogitator(undefined, undefined, async (_agent, _id, opts) => {
+      opts.onToken?.('Refunded');
+      return runResult({ output: 'Refunded', status: 'completed' });
+    });
+    const request = serveSockets({
+      cogitator,
+      agents: { chat: chatAgent() },
+      auth: () => ({ userId: 'ada' }),
+    });
+    const connection = await connect(request.url);
+
+    connection.send({
+      type: 'resume',
+      id: 'r-2',
+      payload: {
+        name: 'chat',
+        threadId: 't-1',
+        decisions: { 'call-1': { approved: false, reason: 'Too much' } },
+      },
+    });
+    const received = await connection.until('complete');
+
+    expect(received.map((message) => message.payload)).toEqual([
+      { type: 'token', delta: 'Refunded' },
+      {
+        type: 'complete',
+        result: expect.objectContaining({ output: 'Refunded', status: 'completed' }),
+      },
+    ]);
+    expect(received.every((message) => message.id === 'r-2')).toBe(true);
+    const { threadId, options } = lastResumeCall(resume);
+    expect(threadId).toBe('t-1');
+    expect(options.userId).toBe('ada');
+    expect(options.decisions).toEqual({ 'call-1': { approved: false, reason: 'Too much' } });
+  });
+
+  test('reports a thread without a paused run as an error frame', async () => {
+    const { cogitator } = fakeCogitator(undefined, undefined, async () => {
+      throw new CogitatorError({ message: 'No paused run', code: ErrorCode.RUN_NOT_PAUSED });
+    });
+    const request = serveSockets({ cogitator, agents: { chat: chatAgent() } });
+    const connection = await connect(request.url);
+
+    connection.send({ type: 'resume', id: 'r-3', payload: { name: 'chat', threadId: 't-1' } });
+
+    expect(await connection.next()).toEqual({
+      type: 'error',
+      id: 'r-3',
+      error: 'No paused run',
+      code: 'RUN_NOT_PAUSED',
+    });
+  });
+
+  test('refuses a resume frame without a thread', async () => {
+    const { cogitator, resume } = fakeCogitator();
+    const request = serveSockets({ cogitator, agents: { chat: chatAgent() } });
+    const connection = await connect(request.url);
+
+    connection.send({ type: 'resume', payload: { name: 'chat' } });
+
+    expect(await connection.next()).toMatchObject({ type: 'error', code: 'INVALID_MESSAGE' });
+    expect(resume).not.toHaveBeenCalled();
   });
 
   test('is not served unless enabled', async () => {

@@ -71,6 +71,7 @@ WebSocket support is attached to the HTTP server with [`setupWebSocket`](#websoc
 | `GET`  | `/agents`              | List all agents           |
 | `POST` | `/agents/:name/run`    | Run agent (JSON response) |
 | `POST` | `/agents/:name/stream` | Run agent (SSE stream)    |
+| `POST` | `/agents/:name/resume` | Resume a paused run       |
 
 ### Threads (Memory)
 
@@ -129,6 +130,28 @@ When `auth` returns a `userId`, everything a caller does with threads is scoped 
 - Another user's thread answers `403` with code `THREAD_ACCESS_DENIED`, and its messages are neither returned nor changed.
 - Threads created earlier without an owner (no `userId`) stay open only to callers without a `userId`, such as servers with no `auth` configured.
 
+### Approvals
+
+A tool with `requiresApproval` (`true`, or a function of the arguments) pauses the run before that turn executes:
+
+1. `POST /agents/:name/run` answers with `status: 'paused'` and `pendingApprovals` (`{ toolCallId, toolName, arguments, description, sideEffects? }`); finished runs carry `status: 'completed'`. The run's checkpoint stays on the server and is never sent to the client.
+2. `POST /agents/:name/stream` emits `{ type: 'approval-required', threadId, approvals }` right before `finish`.
+3. The client shows the pending calls and sends the answers to `POST /agents/:name/resume`:
+
+```typescript
+await fetch('/agents/support/resume', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    threadId,
+    decisions: { [toolCallId]: { approved: true } },
+    defaultDecision: { approved: false, reason: 'Not approved' },
+  }),
+});
+```
+
+The body is `{ threadId, decisions?, defaultDecision? }`, where a decision is `{ approved: boolean, reason?: string }`; malformed bodies get `400 INVALID_INPUT`. The response has the same shape as `/run` and may pause again for calls left without a decision. The run resumes as the authenticated `userId`: a thread with no paused run answers `409 RUN_NOT_PAUSED`, and another user's paused run `403 THREAD_ACCESS_DENIED`. Over WebSocket, send `resume` with `{ name, threadId, decisions?, defaultDecision? }`; a paused run's `complete` event carries `status` and `pendingApprovals`.
+
 ## Route Prefix
 
 ```typescript
@@ -185,18 +208,21 @@ The router's `auth` option does not cover WebSocket connections, so pass `auth` 
 | Client sends | Payload                                                                        |
 | ------------ | ------------------------------------------------------------------------------ |
 | `run`        | `{ type: 'agent' \| 'workflow' \| 'swarm', name, input, context?, threadId? }` |
+| `resume`     | `{ name, threadId, decisions?, defaultDecision? }` (resume a paused agent run) |
 | `stop`       | Cancels the current run                                                        |
 | `ping`       | Answered with `pong` (echoes `id`)                                             |
 
-| Server sends | Description                                                                               |
-| ------------ | ----------------------------------------------------------------------------------------- |
-| `event`      | `token`, `tool-call`, `tool-result`, `complete` (with the serialized result), `cancelled` |
-| `error`      | Invalid message, unknown resource, run already in progress, or a masked run failure       |
-| `pong`       | Heartbeat reply                                                                           |
+| Server sends | Description                                                                                            |
+| ------------ | ------------------------------------------------------------------------------------------------------ |
+| `event`      | `token`, `reasoning`, `tool-call`, `tool-result`, `complete` (with the serialized result), `cancelled` |
+| `error`      | Invalid message, unknown resource, run already in progress, or a masked run failure                    |
+| `pong`       | Heartbeat reply                                                                                        |
 
 ## SSE Streaming
 
 The adapter includes `KoaStreamWriter` for Server-Sent Events with structured event types (text deltas, tool calls, workflow/swarm events). Agent streams emit `tool-call-start`, `tool-call-delta` (the JSON arguments) and `tool-call-end` with the provider's tool call id, so `tool-result.toolCallId` always matches the call it belongs to.
+
+When the agent sets `reasoning: { summary: true }` and the provider returns a reasoning summary, agent streams also emit it as its own `reasoning-start`/`reasoning-delta`/`reasoning-end` part, closed before text or a tool call starts, so reasoning and text parts never interleave.
 
 ## Event Factories
 

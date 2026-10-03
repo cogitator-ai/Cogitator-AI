@@ -264,6 +264,104 @@ describe('streams', () => {
     expect(events.find((e) => e.type === 'tool-result')?.toolCallId).toBe('call_1');
   });
 
+  it('streams reasoning as its own part closed before text starts', async () => {
+    const run = vi.fn(async (_agent: unknown, opts: Record<string, (arg: unknown) => void>) => {
+      opts.onReasoning('a');
+      opts.onReasoning('b');
+      opts.onToken('x');
+      return runResult();
+    });
+    const events = parseSSE(
+      await (
+        await buildApp({}, { run }).request('/agents/bot/stream', post({ input: 'hi' }))
+      ).text()
+    );
+
+    expect(events.map((e) => e.type)).toEqual([
+      'start',
+      'reasoning-start',
+      'reasoning-delta',
+      'reasoning-delta',
+      'reasoning-end',
+      'text-start',
+      'text-delta',
+      'text-end',
+      'finish',
+    ]);
+    expect(events.filter((e) => e.type === 'reasoning-delta').map((e) => e.delta)).toEqual([
+      'a',
+      'b',
+    ]);
+    expect(events.find((e) => e.type === 'text-delta')?.delta).toBe('x');
+    const reasoningIds = new Set(
+      events.filter((e) => String(e.type).startsWith('reasoning-')).map((e) => e.id)
+    );
+    expect(reasoningIds.size).toBe(1);
+    expect([...reasoningIds][0]).toMatch(/^rsn_/);
+  });
+
+  it('closes text before reasoning and reasoning before a tool call', async () => {
+    const run = vi.fn(async (_agent: unknown, opts: Record<string, (arg: unknown) => void>) => {
+      opts.onToken('x');
+      opts.onReasoning('thinking');
+      opts.onToolCall({ id: 'call_1', name: 'search', arguments: { q: 'x' } });
+      return runResult();
+    });
+    const events = parseSSE(
+      await (
+        await buildApp({}, { run }).request('/agents/bot/stream', post({ input: 'hi' }))
+      ).text()
+    );
+
+    expect(events.map((e) => e.type)).toEqual([
+      'start',
+      'text-start',
+      'text-delta',
+      'text-end',
+      'reasoning-start',
+      'reasoning-delta',
+      'reasoning-end',
+      'tool-call-start',
+      'tool-call-delta',
+      'tool-call-end',
+      'finish',
+    ]);
+  });
+
+  it('closes an open reasoning part before the error event', async () => {
+    const run = vi.fn(async (_agent: unknown, opts: Record<string, (arg: unknown) => void>) => {
+      opts.onReasoning('partial');
+      throw new Error('provider down');
+    });
+    const events = parseSSE(
+      await (
+        await buildApp({}, { run }).request('/agents/bot/stream', post({ input: 'hi' }))
+      ).text()
+    );
+
+    expect(events.map((e) => e.type)).toEqual([
+      'start',
+      'reasoning-start',
+      'reasoning-delta',
+      'reasoning-end',
+      'error',
+    ]);
+  });
+
+  it('sends the final output as text when no tokens were streamed', async () => {
+    const res = await buildApp().request('/agents/bot/stream', post({ input: 'hi' }));
+    const events = parseSSE(await res.text());
+
+    expect(events.map((e) => e.type)).toEqual([
+      'start',
+      'text-start',
+      'text-delta',
+      'text-end',
+      'finish',
+    ]);
+    expect(events.find((e) => e.type === 'text-delta')?.delta).toBe('done');
+  });
+
   it('serializes swarm agent usage maps in swarm_completed', async () => {
     const res = await buildApp().request('/swarms/team/stream', post({ input: 'go' }));
     expect(await res.text()).toContain('"agentUsage":{"a1"');

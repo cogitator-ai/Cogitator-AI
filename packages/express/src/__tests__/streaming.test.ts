@@ -55,6 +55,22 @@ describe('ExpressStreamWriter', () => {
     expect(res.write).toHaveBeenCalledTimes(1);
   });
 
+  it('writes the reasoning part sequence and skips empty reasoning deltas', () => {
+    const res = mockRes();
+    const writer = new ExpressStreamWriter(res);
+
+    writer.reasoningStart('rsn-1');
+    writer.reasoningDelta('rsn-1', '');
+    writer.reasoningDelta('rsn-1', 'thinking');
+    writer.reasoningEnd('rsn-1');
+
+    expect(res._written.map((chunk) => JSON.parse(chunk.slice(6)))).toEqual([
+      { type: 'reasoning-start', id: 'rsn-1' },
+      { type: 'reasoning-delta', id: 'rsn-1', delta: 'thinking' },
+      { type: 'reasoning-end', id: 'rsn-1' },
+    ]);
+  });
+
   it('close() is idempotent', () => {
     const res = mockRes();
     const writer = new ExpressStreamWriter(res);

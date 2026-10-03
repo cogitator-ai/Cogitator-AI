@@ -13,7 +13,9 @@ describe('createInitialState', () => {
       threadId: undefined,
       currentMessageId: null,
       currentContent: '',
+      currentReasoning: '',
       currentToolCalls: [],
+      pendingApprovals: [],
     });
   });
 
@@ -92,6 +94,27 @@ describe('chatReducer', () => {
     expect(s2.currentContent).toBe('Hello world');
   });
 
+  it('APPEND_REASONING keeps the reasoning on the finished message', () => {
+    let state = chatReducer(initial, { type: 'START_ASSISTANT_MESSAGE', payload: 'msg_1' });
+    state = chatReducer(state, { type: 'APPEND_REASONING', payload: 'Think' });
+    state = chatReducer(state, { type: 'APPEND_REASONING', payload: 'ing' });
+    expect(state.currentReasoning).toBe('Thinking');
+
+    state = chatReducer(state, { type: 'APPEND_CONTENT', payload: 'Answer' });
+    state = chatReducer(state, { type: 'FINISH_ASSISTANT_MESSAGE' });
+
+    expect(state.messages[0]).toMatchObject({ content: 'Answer', reasoning: 'Thinking' });
+    expect(state.currentReasoning).toBe('');
+  });
+
+  it('leaves reasoning off a message that had none', () => {
+    let state = chatReducer(initial, { type: 'START_ASSISTANT_MESSAGE', payload: 'msg_1' });
+    state = chatReducer(state, { type: 'APPEND_CONTENT', payload: 'Answer' });
+    state = chatReducer(state, { type: 'FINISH_ASSISTANT_MESSAGE' });
+
+    expect(state.messages[0]).not.toHaveProperty('reasoning');
+  });
+
   it('ADD_TOOL_CALL', () => {
     const tc = { id: 'tc_1', name: 'search', arguments: { q: 'test' } };
     const state = chatReducer(initial, { type: 'ADD_TOOL_CALL', payload: tc });
@@ -149,6 +172,21 @@ describe('chatReducer', () => {
     };
     const state = chatReducer(withMsgs, { type: 'CLEAR_MESSAGES' });
     expect(state.messages).toEqual([]);
+  });
+
+  it('SET_PENDING_APPROVALS sets and clears the approvals', () => {
+    const approval = {
+      toolCallId: 'call_1',
+      toolName: 'refund',
+      arguments: { order: 'A-1' },
+      description: 'Refund an order',
+    };
+    const paused = chatReducer(initial, { type: 'SET_PENDING_APPROVALS', payload: [approval] });
+    expect(paused.pendingApprovals).toEqual([approval]);
+
+    const cleared = chatReducer(paused, { type: 'SET_PENDING_APPROVALS', payload: [] });
+    expect(cleared.pendingApprovals).toEqual([]);
+    expect(chatReducer(cleared, { type: 'SET_PENDING_APPROVALS', payload: [] })).toBe(cleared);
   });
 
   it('returns same state on unknown action', () => {

@@ -10,17 +10,23 @@ import {
   findAgent,
   findSwarm,
   findWorkflow,
+  resumeAgent,
   runAgent,
   toAgentRunResponse,
+  toResumeDecisions,
   toSwarmRunResponse,
   toWorkflowRunResponse,
 } from './operations.js';
 import { SocketMessage } from './schemas.js';
 import { resolveSignal } from './streaming.js';
+import type { AgentStreamCallbacks } from './streaming.js';
 import type { AuthContext, CogitatorDeps, WebSocketServerMessage } from './types.js';
 
 type ClientMessage = z.output<typeof SocketMessage>;
+type RunMessage = Extract<ClientMessage, { type: 'run' | 'resume' }>;
 type RunPayload = Extract<ClientMessage, { type: 'run' }>['payload'];
+type ResumePayload = Extract<ClientMessage, { type: 'resume' }>['payload'];
+type Emit = (event: Record<string, unknown>) => void;
 
 interface SocketLike {
   readonly readyState: number;
@@ -51,7 +57,7 @@ export function cogitatorSocket(
     docs: {
       summary: 'Run agents, workflows and swarms over a WebSocket',
       description:
-        'Send `{ type: "run", id, payload: { type, name, input } }`, `{ type: "stop" }` or `{ type: "ping" }`.',
+        'Send `{ type: "run", id, payload: { type, name, input } }`, `{ type: "resume", id, payload: { name, threadId, decisions } }` to continue an agent run paused for approvals, `{ type: "stop" }` or `{ type: "ping" }`.',
     },
     until: () => resolveSignal(deps.until),
     message: (socket, message) => {
@@ -62,7 +68,8 @@ export function cogitatorSocket(
         case 'stop':
           running.get(socket)?.abort();
           return;
-        case 'run': {
+        case 'run':
+        case 'resume': {
           if (running.has(socket)) {
             send(socket, {
               type: 'error',
@@ -74,7 +81,7 @@ export function cogitatorSocket(
           }
           const controller = new AbortController();
           running.set(socket, controller);
-          return handleRun(deps, socket, message.id, message.payload, socket.data.cogitatorAuth, {
+          return handleRun(deps, socket, message, socket.data.cogitatorAuth, {
             signal: controller.signal,
           }).finally(() => {
             if (running.get(socket) === controller) running.delete(socket);
@@ -99,16 +106,18 @@ export function cogitatorSocket(
 async function handleRun(
   deps: CogitatorDeps,
   socket: SocketLike,
-  id: string | undefined,
-  payload: RunPayload,
+  message: RunMessage,
   auth: AuthContext | undefined,
   { signal }: { signal: AbortSignal }
 ): Promise<void> {
-  const emit = (event: Record<string, unknown>) =>
-    send(socket, { type: 'event', id, payload: event });
+  const id = message.id;
+  const emit: Emit = (event) => send(socket, { type: 'event', id, payload: event });
 
   try {
-    const result = await execute(deps, payload, auth, signal, emit);
+    const result =
+      message.type === 'resume'
+        ? await resume(deps, message.payload, auth, signal, emit)
+        : await execute(deps, message.payload, auth, signal, emit);
     emit(signal.aborted ? { type: 'cancelled' } : { type: 'complete', result });
   } catch (error) {
     if (signal.aborted) {
@@ -121,12 +130,43 @@ async function handleRun(
   }
 }
 
+function agentCallbacks(signal: AbortSignal, emit: Emit): AgentStreamCallbacks {
+  return {
+    stream: true,
+    signal,
+    onToken: (delta) => emit({ type: 'token', delta }),
+    onReasoning: (delta) => emit({ type: 'reasoning', delta }),
+    onToolCall: (call) =>
+      emit({ type: 'tool-call', id: call.id, name: call.name, arguments: call.arguments }),
+    onToolResult: (toolResult) => emit({ type: 'tool-result', ...toolResult }),
+  };
+}
+
+async function resume(
+  deps: CogitatorDeps,
+  payload: ResumePayload,
+  auth: AuthContext | undefined,
+  signal: AbortSignal,
+  emit: Emit
+): Promise<unknown> {
+  const agent = findAgent(deps, payload.name);
+  await checkThreadAccess(deps, auth, payload.threadId);
+  const result = await resumeAgent(
+    deps,
+    agent,
+    payload.threadId,
+    { ...toResumeDecisions(payload), ...agentCallbacks(signal, emit) },
+    auth
+  );
+  return toAgentRunResponse(result);
+}
+
 async function execute(
   deps: CogitatorDeps,
   payload: RunPayload,
   auth: AuthContext | undefined,
   signal: AbortSignal,
-  emit: (event: Record<string, unknown>) => void
+  emit: Emit
 ): Promise<unknown> {
   switch (payload.type) {
     case 'agent': {
@@ -139,12 +179,7 @@ async function execute(
           input: payload.input,
           context: payload.context,
           threadId: payload.threadId,
-          stream: true,
-          signal,
-          onToken: (delta) => emit({ type: 'token', delta }),
-          onToolCall: (call) =>
-            emit({ type: 'tool-call', id: call.id, name: call.name, arguments: call.arguments }),
-          onToolResult: (toolResult) => emit({ type: 'tool-result', ...toolResult }),
+          ...agentCallbacks(signal, emit),
         },
         auth
       );

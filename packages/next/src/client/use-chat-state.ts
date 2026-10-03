@@ -1,4 +1,4 @@
-import type { ChatMessage, ToolCall } from '../types.js';
+import type { ChatMessage, PendingApproval, ToolCall } from '../types.js';
 
 export interface ChatState {
   messages: ChatMessage[];
@@ -8,7 +8,9 @@ export interface ChatState {
   threadId: string | undefined;
   currentMessageId: string | null;
   currentContent: string;
+  currentReasoning: string;
   currentToolCalls: ToolCall[];
+  pendingApprovals: PendingApproval[];
 }
 
 export type ChatAction =
@@ -21,8 +23,10 @@ export type ChatAction =
   | { type: 'APPEND_MESSAGE'; payload: ChatMessage }
   | { type: 'START_ASSISTANT_MESSAGE'; payload: string }
   | { type: 'APPEND_CONTENT'; payload: string }
+  | { type: 'APPEND_REASONING'; payload: string }
   | { type: 'ADD_TOOL_CALL'; payload: ToolCall }
   | { type: 'FINISH_ASSISTANT_MESSAGE' }
+  | { type: 'SET_PENDING_APPROVALS'; payload: PendingApproval[] }
   | { type: 'SET_MESSAGES'; payload: ChatMessage[] }
   | { type: 'CLEAR_MESSAGES' };
 
@@ -54,11 +58,15 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ...state,
         currentMessageId: action.payload,
         currentContent: '',
+        currentReasoning: '',
         currentToolCalls: [],
       };
 
     case 'APPEND_CONTENT':
       return { ...state, currentContent: state.currentContent + action.payload };
+
+    case 'APPEND_REASONING':
+      return { ...state, currentReasoning: state.currentReasoning + action.payload };
 
     case 'ADD_TOOL_CALL':
       return { ...state, currentToolCalls: [...state.currentToolCalls, action.payload] };
@@ -70,6 +78,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         id: state.currentMessageId,
         role: 'assistant',
         content: state.currentContent,
+        ...(state.currentReasoning && { reasoning: state.currentReasoning }),
         toolCalls: state.currentToolCalls.length > 0 ? state.currentToolCalls : undefined,
         createdAt: new Date(),
       };
@@ -79,9 +88,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         messages: [...state.messages, assistantMessage],
         currentMessageId: null,
         currentContent: '',
+        currentReasoning: '',
         currentToolCalls: [],
       };
     }
+
+    case 'SET_PENDING_APPROVALS':
+      if (action.payload.length === 0 && state.pendingApprovals.length === 0) return state;
+      return { ...state, pendingApprovals: action.payload };
 
     case 'SET_MESSAGES':
       return { ...state, messages: action.payload };
@@ -103,6 +117,8 @@ export function createInitialState(initialMessages?: ChatMessage[], threadId?: s
     threadId,
     currentMessageId: null,
     currentContent: '',
+    currentReasoning: '',
     currentToolCalls: [],
+    pendingApprovals: [],
   };
 }

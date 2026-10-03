@@ -181,6 +181,7 @@ Routes incoming messages to your agent. Handles:
 - Platform-specific markdown conversion
 - Status reactions, debouncing, envelope formatting, queue modes
 - Run timeouts (`runTimeout`, defaults to the agent's `timeout`)
+- Tool approvals over chat (see [Approvals](#approvals))
 
 ```typescript
 const gateway = new Gateway({
@@ -201,6 +202,41 @@ gateway.getSessions(); // [{ threadId, userName, messageCount, lastActiveAt, act
 await gateway.compactThread('telegram:42'); // force compaction of one conversation
 await gateway.injectMessage(msg); // feed a synthetic message (used by the scheduler)
 ```
+
+## Approvals
+
+Tools marked `requiresApproval` (for example `create_tool` from `capabilities.selfTools`) pause the run before they execute. The Gateway turns that pause into a chat conversation:
+
+1. The paused run's text (if any) is sent, followed by a prompt listing each waiting call — tool name, description and compact JSON arguments (cut at 300 characters).
+2. The user replies `approve` / `yes` to run the calls, or `deny` / `no` to refuse, optionally followed by a reason (`no, too risky`) that the agent sees. Replies are case-insensitive and may end with punctuation; `да` / `одобряю` and `нет` / `отклоняю` work out of the box.
+3. The Gateway calls `cogitator.resume(agent, threadId, { userId, defaultDecision })` and delivers the result like any reply, streaming included. If the run pauses again, a new prompt is sent.
+
+Any other message on a paused thread runs as usual, and the runtime answers the waiting calls as declined. An approve-only word with more text after it (`yes, but rename it`) counts as a new message, so nothing runs by accident.
+
+Only the user who started the run can answer it: the runtime checks the run's `userId` on resume. In a shared thread (a `threadKey` per group chat), someone else replying `approve` gets `notAllowedMessage` and the pause stays put.
+
+Pauses survive restarts when the runtime persists them (in the thread's memory once the Cogitator has a memory adapter, or in `runCheckpoints`): the first approve/deny reply on a thread the Gateway has not seen since it started tries `resume`, and runs as a normal message if nothing is paused. On threads it has already seen, the Gateway resumes only pauses it sent a prompt for, so one Gateway process should serve a given thread.
+
+```typescript
+const gateway = new Gateway({
+  // ...
+  approvals: {
+    approveWords: ['approve', 'yes', 'да'],
+    denyWords: ['deny', 'no', 'нет'],
+    format: (approvals, { approveWords, denyWords }) =>
+      `Разрешить ${approvals.map((a) => a.toolName).join(', ')}? ` +
+      `Ответьте «${approveWords[0]}» или «${denyWords[0]}».`,
+    notAllowedMessage: 'Подтвердить может только автор запроса.',
+  },
+});
+
+hooks.on('approval:requested', ({ threadId, approvals }) => audit.log(threadId, approvals));
+hooks.on('approval:resolved', ({ threadId, decision, superseded }) =>
+  audit.log(threadId, decision, superseded)
+);
+```
+
+`parseApprovalReply(text, words)` and `formatApprovalPrompt(approvals, words)` are exported for custom channels and UIs.
 
 ## Status Reactions
 
@@ -340,7 +376,7 @@ hooks.on('agent:error', (e) => console.error('Agent failed:', e));
 const gateway = new Gateway({ /* ... */ hooks });
 ```
 
-Available hooks: `message:received`, `message:sending`, `message:sent`, `agent:before_run`, `agent:after_run`, `agent:error`, `session:created`, `session:compacted`, `stream:started`, `stream:finished`.
+Available hooks: `message:received`, `message:sending`, `message:sent`, `agent:before_run`, `agent:after_run`, `agent:error`, `session:created`, `session:compacted`, `stream:started`, `stream:finished`, `approval:requested`, `approval:resolved`.
 
 Errors in one handler don't affect others.
 

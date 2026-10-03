@@ -5,14 +5,19 @@ import {
   createTextStartEvent,
   createTextDeltaEvent,
   createTextEndEvent,
+  createReasoningStartEvent,
+  createReasoningDeltaEvent,
+  createReasoningEndEvent,
   createToolCallStartEvent,
   createToolCallDeltaEvent,
   createToolCallEndEvent,
   createToolResultEvent,
+  createApprovalRequiredEvent,
   createErrorEvent,
   createFinishEvent,
   createWorkflowEvent,
   createSwarmEvent,
+  type PendingApproval,
   type Usage,
 } from './protocol.js';
 
@@ -55,6 +60,19 @@ export class ExpressStreamWriter {
     this.write(createTextEndEvent(id));
   }
 
+  reasoningStart(id: string): void {
+    this.write(createReasoningStartEvent(id));
+  }
+
+  reasoningDelta(id: string, delta: string): void {
+    if (!delta) return;
+    this.write(createReasoningDeltaEvent(id, delta));
+  }
+
+  reasoningEnd(id: string): void {
+    this.write(createReasoningEndEvent(id));
+  }
+
   toolCallStart(id: string, toolName: string): void {
     this.write(createToolCallStartEvent(id, toolName));
   }
@@ -69,6 +87,10 @@ export class ExpressStreamWriter {
 
   toolResult(id: string, toolCallId: string, result: unknown): void {
     this.write(createToolResultEvent(id, toolCallId, result));
+  }
+
+  approvalRequired(threadId: string, approvals: readonly PendingApproval[]): void {
+    this.write(createApprovalRequiredEvent(threadId, approvals));
   }
 
   workflowEvent(event: string, data: unknown): void {

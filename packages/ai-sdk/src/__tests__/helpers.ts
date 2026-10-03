@@ -11,6 +11,9 @@ export interface FakeToolStep {
 
 export interface FakeRunScript {
   tokens?: string[];
+  /** Reasoning deltas streamed before the tokens; joined into `RunResult.reasoning` */
+  reasoning?: string[];
+  usage?: Pick<RunResult['usage'], 'reasoningTokens' | 'cachedInputTokens' | 'cacheWriteTokens'>;
   output?: string;
   toolSteps?: FakeToolStep[];
   error?: Error;
@@ -46,6 +49,7 @@ export function createFakeCogitator(script: FakeRunScript = {}): FakeCogitator {
 
     const tokens = script.tokens ?? ['Hello', ' world'];
     if (options.stream) {
+      for (const delta of script.reasoning ?? []) options.onReasoning?.(delta);
       for (const token of tokens) options.onToken?.(token);
     }
 
@@ -65,8 +69,10 @@ export function createFakeCogitator(script: FakeRunScript = {}): FakeCogitator {
         totalTokens: inputTokens + outputTokens,
         cost: 0.001,
         duration: 42,
+        ...script.usage,
       },
       trace: { traceId: 'trace_1', spans: [] },
+      ...(script.reasoning && { reasoning: script.reasoning.join('') }),
     };
   });
 

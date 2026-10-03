@@ -102,6 +102,41 @@ describe('agents', () => {
     expect(options.userId).toBeUndefined();
   });
 
+  test('returns the reasoning summary and the detailed usage of a run', async () => {
+    const { cogitator } = fakeCogitator(() =>
+      Promise.resolve(
+        runResult({
+          reasoning: 'Checked the forecast',
+          usage: {
+            inputTokens: 10,
+            outputTokens: 20,
+            totalTokens: 30,
+            reasoningTokens: 12,
+            cachedInputTokens: 8,
+            cacheWriteTokens: 2,
+            cost: 0,
+            duration: 5,
+          },
+        })
+      )
+    );
+    const serve = serveCogitator({ cogitator, agents: { chat: chatAgent() } });
+
+    const res = await serve('/cogitator/agents/chat/run', json({ input: 'hi' }));
+
+    expect(await res.json()).toMatchObject({
+      reasoning: 'Checked the forecast',
+      usage: {
+        inputTokens: 10,
+        outputTokens: 20,
+        totalTokens: 30,
+        reasoningTokens: 12,
+        cachedInputTokens: 8,
+        cacheWriteTokens: 2,
+      },
+    });
+  });
+
   test('answers 404 for an unknown agent and for inherited object keys', async () => {
     for (const name of ['ghost', 'toString', '__proto__']) {
       const res = await request(`/cogitator/agents/${name}/run`, json({ input: 'hi' }));
@@ -505,6 +540,76 @@ describe('agent stream', () => {
       type: 'finish',
       usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
     });
+  });
+
+  test('streams reasoning as its own part, closed before text and tool calls', async () => {
+    const { cogitator } = fakeCogitator(async (_agent, options) => {
+      options.onReasoning?.('Think');
+      options.onReasoning?.('ing');
+      options.onToken?.('Let me check');
+      options.onReasoning?.('Need weather');
+      options.onToolCall?.({ id: 'call-1', name: 'get_weather', arguments: { city: 'Paris' } });
+      options.onToolResult?.({ callId: 'call-1', name: 'get_weather', result: 'Sunny' });
+      options.onReasoning?.('Done');
+      options.onToken?.('Sunny');
+      return runResult({ reasoning: 'Thinking' });
+    });
+    const request = serveCogitator({ cogitator, agents: { chat: chatAgent() } });
+
+    const { events, done } = await readStream(
+      await request('/cogitator/agents/chat/stream', json({ input: 'hi' }))
+    );
+
+    expect(done).toBe(true);
+    expect(events.map((event) => event.type)).toEqual([
+      'start',
+      'reasoning-start',
+      'reasoning-delta',
+      'reasoning-delta',
+      'reasoning-end',
+      'text-start',
+      'text-delta',
+      'text-end',
+      'reasoning-start',
+      'reasoning-delta',
+      'reasoning-end',
+      'tool-call-start',
+      'tool-call-delta',
+      'tool-call-end',
+      'tool-result',
+      'reasoning-start',
+      'reasoning-delta',
+      'reasoning-end',
+      'text-start',
+      'text-delta',
+      'text-end',
+      'finish',
+    ]);
+    const firstReasoningId = events[1]?.id;
+    expect(events.slice(1, 5).every((event) => event.id === firstReasoningId)).toBe(true);
+    expect(events[2]).toEqual({ type: 'reasoning-delta', id: firstReasoningId, delta: 'Think' });
+    expect(new Set([events[1]?.id, events[8]?.id, events[15]?.id]).size).toBe(3);
+    expect(events[5]?.id).not.toBe(events[18]?.id);
+  });
+
+  test('closes an open reasoning part before an error', async () => {
+    const { cogitator } = fakeCogitator(async (_agent, options) => {
+      options.onReasoning?.('Hmm');
+      throw new CogitatorError({ message: 'Model is down', code: ErrorCode.LLM_UNAVAILABLE });
+    });
+    const request = serveCogitator({ cogitator, agents: { chat: chatAgent() } });
+
+    const { events } = await readStream(
+      await request('/cogitator/agents/chat/stream', json({ input: 'hi' }))
+    );
+
+    expect(events.map((event) => event.type)).toEqual([
+      'start',
+      'reasoning-start',
+      'reasoning-delta',
+      'reasoning-end',
+      'error',
+    ]);
   });
 
   test('ends with an error event when the run fails', async () => {

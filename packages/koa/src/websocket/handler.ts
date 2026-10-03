@@ -6,13 +6,14 @@ import type {
   WebSocketAuthFunction,
   WebSocketConfig,
   WebSocketResponse,
+  WebSocketResumePayload,
   WebSocketRunPayload,
 } from '../types.js';
-import type { ToolCall, ToolResult } from '@cogitator-ai/types';
+import type { RunOptions, ToolCall, ToolResult } from '@cogitator-ai/types';
 import { getOwn } from '../utils/lookup.js';
 import { isModuleNotFoundError, resolveError } from '../utils/errors.js';
-import { toSwarmRunResponse, toWorkflowRunResponse } from '../utils/results.js';
-import { isRecord } from '../utils/validation.js';
+import { toSwarmRunResponse, toWorkflowRunResponse, withoutCheckpoint } from '../utils/results.js';
+import { isRecord, parseAgentResumeRequest } from '../utils/validation.js';
 
 type WebSocketType = import('ws').WebSocket;
 type WebSocketServerType = import('ws').WebSocketServer;
@@ -28,13 +29,16 @@ type AuthorizeOutcome = { ok: true; auth: AuthContext | undefined } | { ok: fals
 type ParsedMessage =
   | { type: 'ping'; id?: string }
   | { type: 'stop'; id?: string }
-  | { type: 'run'; id?: string; payload: unknown };
+  | { type: 'run'; id?: string; payload: unknown }
+  | { type: 'resume'; id?: string; payload: unknown };
 
 const WS_OPEN = 1;
 const DEFAULT_PATH = '/ws';
 const DEFAULT_PING_INTERVAL = 30_000;
 const DEFAULT_MAX_PAYLOAD = 1024 * 1024;
 const RUN_TYPES: readonly WebSocketRunPayload['type'][] = ['agent', 'workflow', 'swarm'];
+
+type EmitEvent = (event: Record<string, unknown>) => void;
 
 function isRunType(value: unknown): value is WebSocketRunPayload['type'] {
   return RUN_TYPES.some((runType) => runType === value);
@@ -197,6 +201,9 @@ async function handleRawMessage(
     case 'run':
       await handleRun(ws, message.value.id, message.value.payload, ctx, state);
       return;
+    case 'resume':
+      await handleResume(ws, message.value.id, message.value.payload, ctx, state);
+      return;
   }
 }
 
@@ -221,7 +228,8 @@ function parseMessage(
     case 'stop':
       return { ok: true, value: { type: raw.type, id } };
     case 'run':
-      return { ok: true, value: { type: 'run', id, payload: raw.payload } };
+    case 'resume':
+      return { ok: true, value: { type: raw.type, id, payload: raw.payload } };
     default:
       return { ok: false, error: `Unsupported message type: ${String(raw.type)}` };
   }
@@ -258,6 +266,15 @@ function parseRunPayload(payload: unknown): WebSocketRunPayload | string {
   };
 }
 
+function parseResumePayload(payload: unknown): WebSocketResumePayload | string {
+  if (!isRecord(payload)) return 'Invalid resume payload';
+  const { name } = payload;
+  if (typeof name !== 'string' || !name) return 'Invalid resume payload: "name" is required';
+  const parsed = parseAgentResumeRequest(payload);
+  if (!parsed.ok) return `Invalid resume payload: ${parsed.message}`;
+  return { name, ...parsed.value };
+}
+
 async function handleRun(
   ws: WebSocketType,
   id: string | undefined,
@@ -271,6 +288,36 @@ async function handleRun(
     return;
   }
 
+  await runOverSocket(ws, id, state, 'WebSocket run error', (signal, emit) =>
+    executeRun(payload, ctx, state.auth?.userId, signal, emit)
+  );
+}
+
+async function handleResume(
+  ws: WebSocketType,
+  id: string | undefined,
+  rawPayload: unknown,
+  ctx: RouteContext,
+  state: ClientState
+): Promise<void> {
+  const payload = parseResumePayload(rawPayload);
+  if (typeof payload === 'string') {
+    sendResponse(ws, { type: 'error', id, error: payload });
+    return;
+  }
+
+  await runOverSocket(ws, id, state, 'WebSocket resume error', (signal, emit) =>
+    executeResume(payload, ctx, state.auth?.userId, signal, emit)
+  );
+}
+
+async function runOverSocket(
+  ws: WebSocketType,
+  id: string | undefined,
+  state: ClientState,
+  label: string,
+  execute: (signal: AbortSignal, emit: EmitEvent) => Promise<unknown>
+): Promise<void> {
   if (state.abortController) {
     sendResponse(ws, { type: 'error', id, error: 'A run is already in progress' });
     return;
@@ -278,12 +325,12 @@ async function handleRun(
 
   const abortController = new AbortController();
   state.abortController = abortController;
-  const emit = (event: Record<string, unknown>) => {
+  const emit: EmitEvent = (event) => {
     sendResponse(ws, { type: 'event', id, payload: event });
   };
 
   try {
-    const result = await executeRun(payload, ctx, state.auth?.userId, abortController.signal, emit);
+    const result = await execute(abortController.signal, emit);
     if (abortController.signal.aborted) {
       emit({ type: 'cancelled' });
     } else {
@@ -295,7 +342,7 @@ async function handleRun(
     } else if (error instanceof ClientFacingError) {
       sendResponse(ws, { type: 'error', id, error: error.message });
     } else {
-      const { body } = resolveError(error, 'WebSocket run error');
+      const { body } = resolveError(error, label);
       sendResponse(ws, { type: 'error', id, error: body.error.message });
     }
   } finally {
@@ -305,29 +352,60 @@ async function handleRun(
   }
 }
 
+function agentStreamCallbacks(
+  emit: EmitEvent
+): Pick<RunOptions, 'onToken' | 'onReasoning' | 'onToolCall' | 'onToolResult'> {
+  return {
+    onToken: (token: string) => emit({ type: 'token', delta: token }),
+    onReasoning: (delta: string) => emit({ type: 'reasoning', delta }),
+    onToolCall: (toolCall: ToolCall) => emit({ type: 'tool-call', ...toolCall }),
+    onToolResult: (toolResult: ToolResult) => emit({ type: 'tool-result', ...toolResult }),
+  };
+}
+
+async function executeResume(
+  payload: WebSocketResumePayload,
+  ctx: RouteContext,
+  userId: string | undefined,
+  signal: AbortSignal,
+  emit: EmitEvent
+): Promise<unknown> {
+  const agent = getOwn(ctx.agents, payload.name);
+  if (!agent) throw new ClientFacingError(`Agent '${payload.name}' not found`);
+
+  const result = await ctx.runtime.resume(agent, payload.threadId, {
+    userId,
+    decisions: payload.decisions,
+    defaultDecision: payload.defaultDecision,
+    stream: true,
+    signal,
+    ...agentStreamCallbacks(emit),
+  });
+  return withoutCheckpoint(result);
+}
+
 async function executeRun(
   payload: WebSocketRunPayload,
   ctx: RouteContext,
   userId: string | undefined,
   signal: AbortSignal,
-  emit: (event: Record<string, unknown>) => void
+  emit: EmitEvent
 ): Promise<unknown> {
   switch (payload.type) {
     case 'agent': {
       const agent = getOwn(ctx.agents, payload.name);
       if (!agent) throw new ClientFacingError(`Agent '${payload.name}' not found`);
 
-      return ctx.runtime.run(agent, {
+      const result = await ctx.runtime.run(agent, {
         input: payload.input,
         context: payload.context,
         threadId: payload.threadId,
         userId,
         stream: true,
         signal,
-        onToken: (token: string) => emit({ type: 'token', delta: token }),
-        onToolCall: (toolCall: ToolCall) => emit({ type: 'tool-call', ...toolCall }),
-        onToolResult: (toolResult: ToolResult) => emit({ type: 'tool-result', ...toolResult }),
+        ...agentStreamCallbacks(emit),
       });
+      return withoutCheckpoint(result);
     }
 
     case 'workflow': {

@@ -1,6 +1,5 @@
 import type { Cogitator, Agent } from '@cogitator-ai/core';
 import type { ChatHandlerOptions, ChatInput, ChatMessage } from '../types.js';
-import { StreamWriter } from '../streaming/stream-writer.js';
 import { generateId } from '../streaming/encoder.js';
 import {
   exceedsDeclaredSize,
@@ -8,15 +7,8 @@ import {
   isPlainObject,
   jsonError,
   readJsonBody,
-  runErrorCode,
 } from './http.js';
-
-const SSE_HEADERS = {
-  'Content-Type': 'text/event-stream',
-  'Cache-Control': 'no-cache',
-  Connection: 'keep-alive',
-  'X-Accel-Buffering': 'no',
-} as const;
+import { streamAgentRun } from './stream-run.js';
 
 const CHAT_ROLES: ReadonlySet<string> = new Set(['user', 'assistant', 'system']);
 
@@ -117,121 +109,18 @@ export function createChatHandler(
       }
     }
 
-    const { readable, writable } = new TransformStream<Uint8Array>();
-    const sw = new StreamWriter(writable.getWriter());
-    const messageId = generateId('msg');
-
-    const abortController = new AbortController();
-    const abortRun = () => {
-      if (!abortController.signal.aborted) abortController.abort();
-    };
-    /**
-     * Read from `req` on every use: a Request's signal follows its source only
-     * while the Request is reachable, so the stream must keep `req` alive.
-     */
-    const parentSignals = () =>
-      [req.signal, runContext.signal].filter(
-        (signal): signal is AbortSignal => signal instanceof AbortSignal
-      );
-    for (const signal of parentSignals()) {
-      if (signal.aborted) abortRun();
-      else signal.addEventListener('abort', abortRun, { once: true });
-    }
-
-    let queue: Promise<void> = Promise.resolve();
-    const emit = (write: () => Promise<void>): Promise<void> => {
-      queue = queue.then(write).catch(abortRun);
-      return queue;
-    };
-
-    let textId: string | null = null;
-    let streamedText = false;
-
-    const writeText = async (delta: string) => {
-      if (textId === null) {
-        textId = generateId('txt');
-        await sw.textStart(textId);
-      }
-      await sw.textDelta(textId, delta);
-    };
-
-    const endText = async () => {
-      if (textId === null) return;
-      const id = textId;
-      textId = null;
-      await sw.textEnd(id);
-    };
-
-    const runStream = async () => {
-      try {
-        await emit(() => sw.start(messageId));
-
-        const result = await cogitator.run(agent, {
+    return streamAgentRun({
+      req,
+      runContext,
+      start: (callbacks) =>
+        cogitator.run(agent, {
           input: userMessage,
           threadId: input.threadId,
           context: input.metadata,
           ...runContext,
-          stream: true,
-          signal: abortController.signal,
-          onToken: (token: string) => {
-            if (!token) return;
-            streamedText = true;
-            void emit(() => writeText(token));
-          },
-          onToolCall: (tc) => {
-            void emit(async () => {
-              await endText();
-              await sw.toolCallStart(tc.id, tc.name);
-              await sw.toolCallDelta(tc.id, JSON.stringify(tc.arguments));
-              await sw.toolCallEnd(tc.id);
-            });
-          },
-          onToolResult: (tr) => {
-            void emit(() => sw.toolResult(generateId('tr'), tr.callId, tr.result));
-          },
-        });
-
-        await queue;
-
-        if (!streamedText && result.output) {
-          await emit(() => writeText(result.output));
-        }
-        await emit(endText);
-
-        if (options?.afterRun) {
-          await options.afterRun(result);
-        }
-
-        await emit(() =>
-          sw.finish(
-            messageId,
-            {
-              inputTokens: result.usage.inputTokens,
-              outputTokens: result.usage.outputTokens,
-              totalTokens: result.usage.totalTokens,
-            },
-            result.threadId
-          )
-        );
-      } catch (err) {
-        await queue;
-        if (!sw.isClosed) {
-          const message = err instanceof Error ? err.message : 'Unknown error';
-          await emit(async () => {
-            await endText();
-            await sw.error(message, runErrorCode(err));
-          });
-        }
-      } finally {
-        for (const signal of parentSignals()) {
-          signal.removeEventListener('abort', abortRun);
-        }
-        await sw.close();
-      }
-    };
-
-    void runStream().catch(() => {});
-
-    return new Response(readable, { headers: SSE_HEADERS });
+          ...callbacks,
+        }),
+      afterRun: options?.afterRun,
+    });
   };
 }

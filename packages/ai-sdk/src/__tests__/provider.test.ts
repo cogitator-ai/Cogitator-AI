@@ -5,7 +5,7 @@ import type {
   LanguageModelV3CallOptions,
   LanguageModelV4CallOptions,
 } from '@ai-sdk/provider';
-import { tool, type Agent, type Cogitator } from '@cogitator-ai/core';
+import { Agent, tool, type Cogitator } from '@cogitator-ai/core';
 import type { RunOptions, RunResult } from '@cogitator-ai/types';
 import { z } from 'zod';
 import { createCogitatorProvider, cogitatorModel } from '../provider';
@@ -389,9 +389,15 @@ describe('LanguageModelV3 and LanguageModelV4', () => {
     expect(result.warnings).toEqual([{ type: 'unsupported', feature: 'topK', details: undefined }]);
   });
 
-  it('v4 warns about an explicit reasoning effort and streams', async () => {
-    const { cogitator } = createFakeCogitator({ tokens: ['a', 'b'] });
-    const model = cogitatorModel(cogitator, createAgent('test'), { specificationVersion: 'v4' });
+  it('v4 runs the agent with the requested reasoning effort and streams', async () => {
+    const { cogitator, run } = createFakeCogitator({ tokens: ['a', 'b'] });
+    const agent = new Agent({
+      name: 'thinker',
+      model: 'test/model',
+      instructions: 'Think.',
+      reasoning: { effort: 'low', summary: true },
+    });
+    const model = cogitatorModel(cogitator, agent, { specificationVersion: 'v4' });
     const options: LanguageModelV4CallOptions = {
       prompt: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
       reasoning: 'high',
@@ -401,14 +407,136 @@ describe('LanguageModelV3 and LanguageModelV4', () => {
     const parts = await collect(stream);
 
     expect(model.specificationVersion).toBe('v4');
-    expect(parts[0]).toEqual({
-      type: 'stream-start',
-      warnings: [{ type: 'unsupported', feature: 'reasoning', details: undefined }],
-    });
+    expect(parts[0]).toEqual({ type: 'stream-start', warnings: [] });
+    expect(run.mock.calls[0][0].config.reasoning).toEqual({ effort: 'high', summary: true });
+    expect(agent.config.reasoning).toEqual({ effort: 'low', summary: true });
     expect(parts.at(-1)).toMatchObject({
       type: 'finish',
       finishReason: { unified: 'stop', raw: 'stop' },
     });
+  });
+
+  it('v4 keeps the agent reasoning for the provider default', async () => {
+    const { cogitator, run } = createFakeCogitator();
+    const agent = createAgent('test');
+    const model = cogitatorModel(cogitator, agent, { specificationVersion: 'v4' });
+
+    await model.doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+      reasoning: 'provider-default',
+    });
+
+    expect(run.mock.calls[0][0]).toBe(agent);
+  });
+
+  it('v3 streams reasoning parts, closed before text and finish', async () => {
+    const { cogitator } = createFakeCogitator({
+      reasoning: ['Let me ', 'think'],
+      tokens: ['Hi'],
+      usage: { reasoningTokens: 4, cachedInputTokens: 6, cacheWriteTokens: 1 },
+    });
+    const model = cogitatorModel(cogitator, createAgent('test'), { specificationVersion: 'v3' });
+
+    const { stream } = await model.doStream({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+    });
+    const parts = await collect(stream);
+
+    expect(parts.map((part) => part.type)).toEqual([
+      'stream-start',
+      'response-metadata',
+      'reasoning-start',
+      'reasoning-delta',
+      'reasoning-delta',
+      'reasoning-end',
+      'text-start',
+      'text-delta',
+      'text-end',
+      'finish',
+    ]);
+    expect(parts.filter((part) => part.type === 'reasoning-delta')).toEqual([
+      { type: 'reasoning-delta', id: 'reasoning-0', delta: 'Let me ' },
+      { type: 'reasoning-delta', id: 'reasoning-0', delta: 'think' },
+    ]);
+    expect(parts.find((part) => part.type === 'text-start')).toEqual({
+      type: 'text-start',
+      id: 'text-1',
+    });
+    expect(parts.at(-1)).toMatchObject({
+      usage: {
+        inputTokens: { total: 10, noCache: 3, cacheRead: 6, cacheWrite: 1 },
+        outputTokens: { total: 20, text: 16, reasoning: 4 },
+      },
+    });
+  });
+
+  it('v3 closes reasoning before agent tool calls and reopens it after', async () => {
+    const { cogitator: base } = createFakeCogitator();
+    const cogitator = {
+      ...base,
+      resolveModel: modelOf,
+      run: async (agent: Agent, options: RunOptions) => {
+        options.onRunStart?.({
+          runId: 'run_1',
+          agentId: agent.id,
+          input: options.input,
+          threadId: 'thread_1',
+        });
+        options.onReasoning?.('plan');
+        options.onToolCall?.(searchStep.call);
+        options.onToolResult?.({ callId: 'call_1', name: 'search', result: searchStep.result });
+        options.onReasoning?.('review');
+        options.onToken?.('Found cats');
+        return base.run(agent, { input: options.input });
+      },
+    } as unknown as Cogitator;
+    const model = cogitatorModel(cogitator, createAgent('test', [searchTool]), {
+      specificationVersion: 'v3',
+    });
+
+    const { stream } = await model.doStream({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+    });
+    const parts = await collect(stream);
+
+    expect(parts.map((part) => part.type)).toEqual([
+      'stream-start',
+      'response-metadata',
+      'reasoning-start',
+      'reasoning-delta',
+      'reasoning-end',
+      'tool-input-start',
+      'tool-input-delta',
+      'tool-input-end',
+      'tool-call',
+      'tool-result',
+      'reasoning-start',
+      'reasoning-delta',
+      'reasoning-end',
+      'text-start',
+      'text-delta',
+      'text-end',
+      'finish',
+    ]);
+    const starts = parts.filter((part) => part.type === 'reasoning-start');
+    expect(starts).toEqual([
+      { type: 'reasoning-start', id: 'reasoning-0' },
+      { type: 'reasoning-start', id: 'reasoning-1' },
+    ]);
+  });
+
+  it('v3 returns the reasoning summary before the text', async () => {
+    const { cogitator } = createFakeCogitator({ output: 'Answer', reasoning: ['Thought it over'] });
+    const model = cogitatorModel(cogitator, createAgent('test'), { specificationVersion: 'v3' });
+
+    const result = await model.doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+    });
+
+    expect(result.content).toEqual([
+      { type: 'reasoning', text: 'Thought it over' },
+      { type: 'text', text: 'Answer' },
+    ]);
   });
 });
 
@@ -470,6 +598,20 @@ describe('LanguageModelV1 (ai@4)', () => {
       { toolCallType: 'function', toolCallId: 'run_1', toolName: 'json', args: '{"name":"Ada"}' },
     ]);
     expect(run.mock.calls[0][1].input).toContain('JSON schema');
+  });
+
+  it('returns and streams the reasoning summary', async () => {
+    const { cogitator } = createFakeCogitator({ reasoning: ['Think', 'ing'], tokens: ['ok'] });
+    const model = cogitatorModel(cogitator, createAgent('test'), { specificationVersion: 'v1' });
+
+    expect((await model.doGenerate(v1Call())).reasoning).toBe('Thinking');
+    const { stream } = await model.doStream(v1Call());
+    const parts = await collect(stream);
+    expect(parts.filter((part) => part.type !== 'response-metadata').slice(0, 3)).toEqual([
+      { type: 'reasoning', textDelta: 'Think' },
+      { type: 'reasoning', textDelta: 'ing' },
+      { type: 'text-delta', textDelta: 'ok' },
+    ]);
   });
 
   it('doStream emits text deltas and a finish part', async () => {

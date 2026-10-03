@@ -90,6 +90,7 @@ With **ai@4** the same call returns a `LanguageModelV1`; `{ specificationVersion
   - Every model also lists them in `providerMetadata.cogitator.toolCalls`, together with `runId`, `threadId`, `agentId`, `model`, `cost` and `duration`.
 - User and assistant text of the prompt is forwarded as the agent input (multi-turn prompts become a `User:` / `Assistant:` transcript). System messages, files and images are not forwarded — the agent's `instructions` are its system prompt — and the AI SDK reports a warning.
 - `temperature`, `topP`, `maxOutputTokens` (`maxTokens` on ai@4) and `stopSequences` override the agent settings for the call; `abortSignal` cancels the run, as does cancelling the stream.
+- The `reasoning` call option of `v4` models (ai@7) overrides the effort of the agent's `reasoning` for the call. An agent with `reasoning: { summary: true }` returns its summary as `reasoning` content (`reasoning-start` / `reasoning-delta` / `reasoning-end` stream parts, `reasoning` text on ai@4), and usage carries its reasoning and cached input tokens.
 - JSON response formats (`generateObject`, `Output.object`, ai@4 `object-json` / `object-tool` modes) switch the agent to JSON mode and append the schema to the input.
 - AI SDK `tools` the agent does not own cannot be called by the agent; the model reports a warning for each of them.
 
@@ -129,7 +130,7 @@ for await (const chunk of backend.chatStream({ model: 'gemini-3.5-flash-lite', m
 }
 ```
 
-The backend converts Cogitator messages (text, images, assistant tool calls and tool results), tools, `toolChoice`, `responseFormat`, sampling settings and the abort signal to the model's specification, and maps text, tool calls, finish reasons and usage (including cached and reasoning tokens) back. Gemini thought signatures on tool calls are preserved across turns.
+The backend converts Cogitator messages (text, images, assistant tool calls and tool results), tools, `toolChoice`, `responseFormat`, sampling settings and the abort signal to the model's specification, and maps text, reasoning, tool calls, finish reasons and usage (including cached, cache-write and reasoning tokens) back: reasoning content and stream parts become `ChatResponse.reasoning` / `delta.reasoning`. `ChatRequest.reasoning.effort` is sent as the `reasoning` call option of `v4` models (`max` as `xhigh`); older specifications have no provider-neutral reasoning setting, so configure effort, budgets and summaries on the AI SDK provider model (its `providerOptions` or settings). Gemini thought signatures on tool calls are preserved across turns.
 
 To run Cogitator agents on an AI SDK model, register the backend under a name in `llm.backends` and point agents at it with `name/model`:
 

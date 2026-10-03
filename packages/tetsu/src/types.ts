@@ -9,6 +9,7 @@ import type {
   AgentRunResponse,
   BlackboardResponse,
   HealthResponse,
+  ResumeBody,
   RunBody,
   SocketMessage,
   SwarmListResponse,
@@ -90,6 +91,7 @@ export interface CogitatorDeps {
 }
 
 export type AgentRunRequest = z.input<typeof RunBody>;
+export type AgentResumeRequest = z.input<typeof ResumeBody>;
 export type SwarmRunRequest = z.input<typeof SwarmRunBody>;
 export type WorkflowRunRequest = z.input<typeof WorkflowRunBody>;
 export type AddMessageRequest = z.input<typeof AddMessageBody>;

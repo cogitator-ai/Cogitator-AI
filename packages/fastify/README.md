@@ -52,6 +52,7 @@ console.log('Server running on http://localhost:3000');
 GET    /api/agents                    - List all agents
 POST   /api/agents/:name/run          - Run agent (JSON response)
 POST   /api/agents/:name/stream       - Run agent (SSE stream)
+POST   /api/agents/:name/resume       - Resume a run paused for tool approvals
 ```
 
 Bodies are validated with JSON Schema (`input` must be a non-blank string); validation failures return `400 INVALID_INPUT`. The agent list exposes `config.description`, never the instructions. The authenticated `userId` is passed to the run, and runs are aborted when the client disconnects.
@@ -144,6 +145,28 @@ When `auth` returns a `userId`, everything a caller does with threads is scoped 
 - Another user's thread answers `403` with code `THREAD_ACCESS_DENIED`, and its messages are neither returned nor changed.
 - Threads created earlier without an owner (no `userId`) stay open only to callers without a `userId`, such as servers with no `auth` configured.
 
+### Approvals
+
+A tool with `requiresApproval` (`true`, or a function of the arguments) pauses the run before that turn executes:
+
+1. `POST /api/agents/:name/run` answers with `status: 'paused'` and `pendingApprovals` (`{ toolCallId, toolName, arguments, description, sideEffects? }`); finished runs carry `status: 'completed'`. The run's checkpoint stays on the server and is never sent to the client.
+2. `POST /api/agents/:name/stream` emits `{ type: 'approval-required', threadId, approvals }` right before `finish`.
+3. The client shows the pending calls and sends the answers to `POST /api/agents/:name/resume`:
+
+```typescript
+await fetch('/api/agents/support/resume', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    threadId,
+    decisions: { [toolCallId]: { approved: true } },
+    defaultDecision: { approved: false, reason: 'Not approved' },
+  }),
+});
+```
+
+The body is `{ threadId, decisions?, defaultDecision? }`, where a decision is `{ approved: boolean, reason?: string }`; malformed bodies get `400 INVALID_INPUT`. The response has the same shape as `/run` and may pause again for calls left without a decision. The run resumes as the authenticated `userId`: a thread with no paused run answers `409 RUN_NOT_PAUSED`, and another user's paused run `403 THREAD_ACCESS_DENIED`. Over WebSocket, send `{ type: 'resume', id, payload: { name, threadId, decisions?, defaultDecision? } }`; a paused run's `complete` event carries `status` and `pendingApprovals`.
+
 ## SSE Streaming
 
 The `/agents/:name/stream` endpoint returns Server-Sent Events:
@@ -181,6 +204,9 @@ while (true) {
 | `text-start`      | Text generation started                  |
 | `text-delta`      | Text chunk received                      |
 | `text-end`        | Text generation finished                 |
+| `reasoning-start` | Reasoning summary started                |
+| `reasoning-delta` | Reasoning summary chunk received         |
+| `reasoning-end`   | Reasoning summary finished               |
 | `tool-call-start` | Tool call started (`id` = model call id) |
 | `tool-call-delta` | Tool call arguments (JSON text)          |
 | `tool-call-end`   | Tool call finished                       |
@@ -190,7 +216,7 @@ while (true) {
 | `error`           | Error occurred                           |
 | `finish`          | Stream finished, includes usage stats    |
 
-Text is emitted in `text-start`/`text-delta`/`text-end` blocks that are closed around tool calls; the stream ends with `data: [DONE]` after `finish`. Headers set by your hooks (CORS, rate-limit) are kept on SSE responses.
+Text is emitted in `text-start`/`text-delta`/`text-end` blocks that are closed around tool calls; when the agent sets `reasoning: { summary: true }` and the provider returns a reasoning summary, it streams as separate `reasoning-start`/`reasoning-delta`/`reasoning-end` blocks that are closed before text or a tool call starts; the stream ends with `data: [DONE]` after `finish`. Headers set by your hooks (CORS, rate-limit) are kept on SSE responses.
 
 ## WebSocket Support
 
@@ -246,8 +272,9 @@ ws.send(JSON.stringify({ type: 'ping' }));
 | `subscribed`  | Server→Client | Subscription confirmed                                                                                          |
 | `unsubscribe` | Client→Server | Unsubscribe from channel                                                                                        |
 | `run`         | Client→Server | Run an agent (`payload: { type: 'agent', name, input, context?, threadId? }`); one run per connection at a time |
+| `resume`      | Client→Server | Resume a run paused for tool approvals (`payload: { name, threadId, decisions?, defaultDecision? }`)            |
 | `stop`        | Client→Server | Abort the running agent                                                                                         |
-| `event`       | Server→Client | Run event: `token`, `tool-call`, `tool-result`, `complete`, `cancelled`                                         |
+| `event`       | Server→Client | Run event: `token`, `reasoning`, `tool-call`, `tool-result`, `complete`, `cancelled`                            |
 | `error`       | Server→Client | Error message                                                                                                   |
 
 Only agent runs are supported over WebSocket; use the HTTP endpoints for workflows and swarms.
@@ -337,6 +364,9 @@ class FastifyStreamWriter {
   textStart(id: string): void;
   textDelta(id: string, delta: string): void;
   textEnd(id: string): void;
+  reasoningStart(id: string): void;
+  reasoningDelta(id: string, delta: string): void;
+  reasoningEnd(id: string): void;
   toolCallStart(id: string, toolName: string): void;
   toolCallDelta(id: string, argsTextDelta: string): void;
   toolCallEnd(id: string): void;

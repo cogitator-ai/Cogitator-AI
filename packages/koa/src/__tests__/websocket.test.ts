@@ -273,6 +273,46 @@ describe('setupWebSocket', () => {
     });
   });
 
+  it('sends reasoning deltas as reasoning events', async () => {
+    const run = vi.fn().mockImplementation((_agent: unknown, opts: Record<string, unknown>) => {
+      const onReasoning = opts.onReasoning as (delta: string) => void;
+      const onToken = opts.onToken as (token: string) => void;
+      onReasoning('thinking');
+      onToken('Hi');
+      return Promise.resolve({ output: 'Hi' });
+    });
+
+    const ctx = mockRouteContext({
+      runtime: { run } as unknown as RouteContext['runtime'],
+      agents: { bot: { name: 'bot' } as never },
+    });
+
+    const { port } = await createTestServer(ctx);
+    const ws = createClient(port);
+    await waitForOpen(ws);
+
+    const collecting = collectMessages(ws, 3);
+    ws.send(
+      JSON.stringify({
+        type: 'run',
+        id: 'r5',
+        payload: { type: 'agent', name: 'bot', input: 'think' },
+      })
+    );
+
+    const responses = await collecting;
+    expect(responses[0]).toEqual({
+      type: 'event',
+      id: 'r5',
+      payload: { type: 'reasoning', delta: 'thinking' },
+    });
+    expect(responses[1]).toEqual({
+      type: 'event',
+      id: 'r5',
+      payload: { type: 'token', delta: 'Hi' },
+    });
+  });
+
   it('sends tool-call and tool-result events', async () => {
     const run = vi.fn().mockImplementation((_agent: unknown, opts: Record<string, unknown>) => {
       const onToolCall = opts.onToolCall as (tc: unknown) => void;

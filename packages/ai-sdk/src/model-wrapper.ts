@@ -4,6 +4,7 @@ import type {
   LanguageModelV2Usage,
   LanguageModelV3StreamPart,
   LanguageModelV3Usage,
+  LanguageModelV4CallOptions,
   LanguageModelV4StreamPart,
 } from '@ai-sdk/provider';
 import type {
@@ -16,6 +17,7 @@ import type {
   LLMProvider,
   LLMResponseFormat,
   Message,
+  ReasoningConfig,
   ToolCall,
   ToolChoice,
 } from '@cogitator-ai/types';
@@ -25,6 +27,7 @@ import { isRecord, type JSONObject, type JSONValue } from './json.js';
 import type { AISDKLanguageModel } from './types.js';
 import type {
   LanguageModelV1FunctionToolCall,
+  LanguageModelV1GenerateResult,
   LanguageModelV1ImagePart,
   LanguageModelV1Prompt,
   LanguageModelV1StreamPart,
@@ -83,6 +86,7 @@ interface ModernContentPart {
 interface ParsedTurn {
   id?: string;
   content: string;
+  reasoning?: string;
   toolCalls: ToolCall[];
   finishReason: string;
   usage: ChatUsage;
@@ -167,8 +171,34 @@ function usageFromV3(usage: LanguageModelV3Usage | undefined): ChatUsage {
     outputTokens,
     totalTokens: inputTokens + outputTokens,
     cachedInputTokens: usage?.inputTokens.cacheRead,
+    cacheWriteTokens: usage?.inputTokens.cacheWrite,
     reasoningTokens: usage?.outputTokens.reasoning,
   };
+}
+
+function reasoningFromV1(
+  reasoning: LanguageModelV1GenerateResult['reasoning']
+): string | undefined {
+  if (reasoning === undefined) return undefined;
+  const text =
+    typeof reasoning === 'string'
+      ? reasoning
+      : reasoning
+          .filter((part) => part.type === 'text')
+          .map((part) => part.text)
+          .join('');
+  return text || undefined;
+}
+
+/**
+ * The provider-neutral `reasoning` call option of the v4 specification. `max` has no v4
+ * level, so it asks for the highest one; `budgetTokens` and `summary` are provider settings.
+ */
+function v4ReasoningOf(
+  reasoning: ReasoningConfig | undefined
+): LanguageModelV4CallOptions['reasoning'] {
+  const effort = reasoning?.effort;
+  return effort === 'max' ? 'xhigh' : effort;
 }
 
 function thoughtSignatureOf(metadata: unknown): { key: string; signature: string } | undefined {
@@ -237,6 +267,7 @@ export class AISDKBackend implements LLMBackend {
     return {
       id: turn.id ?? `aisdk-${Date.now()}`,
       content: turn.content,
+      ...(turn.reasoning && { reasoning: turn.reasoning }),
       toolCalls: turn.toolCalls.length > 0 ? turn.toolCalls : undefined,
       finishReason: finishReasonOf(turn.finishReason, turn.toolCalls.length > 0),
       usage: turn.usage,
@@ -251,6 +282,9 @@ export class AISDKBackend implements LLMBackend {
       switch (event.type) {
         case 'text':
           yield { id: chunkId, delta: { content: event.delta } };
+          break;
+        case 'reasoning':
+          yield { id: chunkId, delta: { reasoning: event.delta } };
           break;
         case 'tool-call':
           hasToolCalls = true;
@@ -296,7 +330,7 @@ export class AISDKBackend implements LLMBackend {
         break;
       }
       case 'v4': {
-        const { stream } = await model.doStream(this.modernOptions(request, toV4FileData));
+        const { stream } = await model.doStream(this.v4Options(request));
         for await (const part of readStream(stream)) {
           const event = this.fromModernStreamPart(part);
           if (event) yield event;
@@ -310,6 +344,8 @@ export class AISDKBackend implements LLMBackend {
     switch (part.type) {
       case 'text-delta':
         return part.textDelta ? { type: 'text', delta: part.textDelta } : undefined;
+      case 'reasoning':
+        return part.textDelta ? { type: 'reasoning', delta: part.textDelta } : undefined;
       case 'tool-call':
         return { type: 'tool-call', toolCall: this.fromV1ToolCall(part) };
       case 'finish':
@@ -327,6 +363,8 @@ export class AISDKBackend implements LLMBackend {
     switch (part.type) {
       case 'text-delta':
         return part.delta ? { type: 'text', delta: part.delta } : undefined;
+      case 'reasoning-delta':
+        return part.delta ? { type: 'reasoning', delta: part.delta } : undefined;
       case 'tool-call': {
         if (part.providerExecuted) return undefined;
         const toolCall = this.fromModernToolCall(part);
@@ -359,6 +397,7 @@ export class AISDKBackend implements LLMBackend {
         return {
           id: result.response?.id,
           content: result.text ?? '',
+          reasoning: reasoningFromV1(result.reasoning),
           toolCalls: (result.toolCalls ?? []).map((call) => this.fromV1ToolCall(call)),
           finishReason: result.finishReason,
           usage: usageFromV1(result.usage),
@@ -378,7 +417,7 @@ export class AISDKBackend implements LLMBackend {
         const result =
           model.specificationVersion === 'v3'
             ? await model.doGenerate(this.modernOptions(request, toV2FileData))
-            : await model.doGenerate(this.modernOptions(request, toV4FileData));
+            : await model.doGenerate(this.v4Options(request));
         return this.modernTurn(
           result.content,
           result.finishReason.unified,
@@ -396,16 +435,26 @@ export class AISDKBackend implements LLMBackend {
     id: string | undefined
   ): ParsedTurn {
     let text = '';
+    const reasoning: string[] = [];
     const toolCalls: ToolCall[] = [];
     for (const part of content) {
       if (part.type === 'text' && part.text) {
         text += part.text;
+      } else if (part.type === 'reasoning' && part.text) {
+        reasoning.push(part.text);
       } else if (part.type === 'tool-call' && !part.providerExecuted) {
         const toolCall = this.fromModernToolCall(part);
         if (toolCall) toolCalls.push(toolCall);
       }
     }
-    return { id, content: text, toolCalls, finishReason, usage };
+    return {
+      id,
+      content: text,
+      ...(reasoning.length > 0 && { reasoning: reasoning.join('\n\n') }),
+      toolCalls,
+      finishReason,
+      usage,
+    };
   }
 
   private fromV1ToolCall(call: LanguageModelV1FunctionToolCall): ToolCall {
@@ -500,6 +549,14 @@ export class AISDKBackend implements LLMBackend {
     };
   }
 
+  private v4Options(request: ChatRequest) {
+    const reasoning = v4ReasoningOf(request.reasoning);
+    return {
+      ...this.modernOptions(request, toV4FileData),
+      ...(reasoning !== undefined && { reasoning }),
+    };
+  }
+
   private toModernPrompt<TData>(
     messages: Message[],
     toFileData: (source: ImageSource) => TData
@@ -578,6 +635,7 @@ export class AISDKBackend implements LLMBackend {
 
 type StreamEvent =
   | { type: 'text'; delta: string }
+  | { type: 'reasoning'; delta: string }
   | { type: 'tool-call'; toolCall: ToolCall }
   | { type: 'finish'; finishReason: string; usage: ChatUsage };
 

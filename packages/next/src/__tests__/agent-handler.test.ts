@@ -41,6 +41,42 @@ describe('createAgentHandler', () => {
     expect(data.usage).toEqual({ inputTokens: 10, outputTokens: 20, totalTokens: 30 });
   });
 
+  it('returns the reasoning summary and the detailed usage', async () => {
+    const cog = mockCogitator({
+      reasoning: 'Thought about it',
+      usage: {
+        inputTokens: 10,
+        outputTokens: 20,
+        totalTokens: 30,
+        reasoningTokens: 12,
+        cachedInputTokens: 8,
+        cacheWriteTokens: 2,
+        cost: 0,
+        duration: 5,
+      },
+    });
+    const res = await createAgentHandler(cog, mockAgent())(jsonRequest({ input: 'hi' }));
+    const data = await res.json();
+
+    expect(data.reasoning).toBe('Thought about it');
+    expect(data.usage).toEqual({
+      inputTokens: 10,
+      outputTokens: 20,
+      totalTokens: 30,
+      reasoningTokens: 12,
+      cachedInputTokens: 8,
+      cacheWriteTokens: 2,
+    });
+  });
+
+  it('leaves reasoning out when the run has none', async () => {
+    const res = await createAgentHandler(
+      mockCogitator(),
+      mockAgent()
+    )(jsonRequest({ input: 'hi' }));
+    expect(await res.json()).not.toHaveProperty('reasoning');
+  });
+
   it('returns 400 for invalid JSON', async () => {
     const handler = createAgentHandler(mockCogitator(), mockAgent());
     const req = new Request('http://localhost/api/agent', {

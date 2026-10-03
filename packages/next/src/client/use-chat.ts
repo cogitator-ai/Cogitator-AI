@@ -2,9 +2,12 @@
 
 import { useCallback, useEffect, useReducer, useRef } from 'react';
 import type {
+  AgentResponse,
   UseChatOptions,
   UseChatReturn,
   ChatMessage,
+  PendingApproval,
+  ResumeDecisions,
   ToolCall,
   ToolResultEvent,
 } from '../types.js';
@@ -17,7 +20,7 @@ import {
   type ChatState,
 } from './use-chat-state.js';
 import { withRetry } from './retry.js';
-import { toHttpError } from './http-error.js';
+import { HttpError, toHttpError } from './http-error.js';
 
 let idCounter = 0;
 function generateClientId(): string {
@@ -38,19 +41,37 @@ function parseToolArguments(raw: string): Record<string, unknown> {
   return {};
 }
 
+function isEventStream(response: Response): boolean {
+  return response.headers.get('Content-Type')?.includes('text/event-stream') ?? false;
+}
+
+type ResponseHandler = (response: Response, controller: AbortController) => Promise<void>;
+
 function pendingAssistantMessage(state: ChatState): ChatMessage | null {
   if (!state.currentMessageId) return null;
   return {
     id: state.currentMessageId,
     role: 'assistant',
     content: state.currentContent,
+    ...(state.currentReasoning && { reasoning: state.currentReasoning }),
     toolCalls: state.currentToolCalls.length > 0 ? state.currentToolCalls : undefined,
   };
 }
 
 export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
-  const { api, initialMessages, headers, onError, onFinish, onToolCall, onToolResult, retry } =
-    options;
+  const {
+    api,
+    initialMessages,
+    headers,
+    onError,
+    onFinish,
+    onToolCall,
+    onToolResult,
+    onReasoning,
+    onApprovalRequired,
+    resumeApi,
+    retry,
+  } = options;
 
   const [state, dispatch] = useReducer(
     chatReducer,
@@ -81,6 +102,17 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
     apply({ type: 'STOP_LOADING' });
   }, [apply]);
 
+  const requireApproval = useCallback(
+    (approvals: PendingApproval[], threadId: string) => {
+      if (threadId && threadId !== stateRef.current.threadId) {
+        apply({ type: 'SET_THREAD_ID', payload: threadId });
+      }
+      apply({ type: 'SET_PENDING_APPROVALS', payload: approvals });
+      onApprovalRequired?.(approvals);
+    },
+    [apply, onApprovalRequired]
+  );
+
   const handleStreamEvent = useCallback(
     (event: StreamEvent, toolCalls: Map<string, { name: string; args: string }>): boolean => {
       switch (event.type) {
@@ -90,6 +122,11 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
 
         case 'text-delta':
           apply({ type: 'APPEND_CONTENT', payload: event.delta });
+          return false;
+
+        case 'reasoning-delta':
+          apply({ type: 'APPEND_REASONING', payload: event.delta });
+          onReasoning?.(event.delta);
           return false;
 
         case 'tool-call-start':
@@ -126,6 +163,10 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
           return false;
         }
 
+        case 'approval-required':
+          requireApproval(event.approvals, event.threadId);
+          return false;
+
         case 'finish':
           if (event.threadId && event.threadId !== stateRef.current.threadId) {
             apply({ type: 'SET_THREAD_ID', payload: event.threadId });
@@ -143,7 +184,7 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
           return false;
       }
     },
-    [apply, onError, onToolCall, onToolResult]
+    [apply, onError, onReasoning, onToolCall, onToolResult, requireApproval]
   );
 
   const processStream = useCallback(
@@ -179,11 +220,38 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
     [apply, handleStreamEvent, onFinish]
   );
 
-  const sendWithMessages = useCallback(
+  const processResult = useCallback(
+    async (response: Response, controller: AbortController) => {
+      const result = (await response.json()) as AgentResponse;
+      if (activeRequestRef.current !== controller) return;
+      activeRequestRef.current = null;
+
+      const message: ChatMessage = {
+        id: generateClientId(),
+        role: 'assistant',
+        content: result.output,
+        ...(result.reasoning && { reasoning: result.reasoning }),
+        toolCalls: result.toolCalls.length > 0 ? result.toolCalls : undefined,
+        createdAt: new Date(),
+      };
+      apply({ type: 'APPEND_MESSAGE', payload: message });
+      if (result.status === 'paused') {
+        requireApproval(result.pendingApprovals ?? [], result.threadId);
+      } else if (result.threadId && result.threadId !== stateRef.current.threadId) {
+        apply({ type: 'SET_THREAD_ID', payload: result.threadId });
+      }
+      apply({ type: 'STOP_LOADING' });
+      onFinish?.(message);
+    },
+    [apply, onFinish, requireApproval]
+  );
+
+  const request = useCallback(
     async (
-      messages: ChatMessage[],
-      threadId: string | undefined,
-      metadata?: Record<string, unknown>
+      url: string,
+      body: unknown,
+      handle: ResponseHandler,
+      onFailure?: (error: Error) => void
     ) => {
       const controller = new AbortController();
       activeRequestRef.current = controller;
@@ -191,22 +259,13 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
       apply({ type: 'START_LOADING' });
 
       const doFetch = async () => {
-        const response = await fetch(api, {
+        const response = await fetch(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             ...headers,
           },
-          body: JSON.stringify({
-            messages: messages.map((m) => ({
-              id: m.id,
-              role: m.role,
-              content: m.content,
-              metadata: m.metadata,
-            })),
-            threadId,
-            metadata,
-          }),
+          body: JSON.stringify(body),
           signal: controller.signal,
         });
 
@@ -219,7 +278,7 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
 
       try {
         const response = await withRetry(doFetch, retry, controller.signal);
-        await processStream(response, controller);
+        await handle(response, controller);
       } catch (err) {
         if (activeRequestRef.current !== controller) return;
         activeRequestRef.current = null;
@@ -232,11 +291,37 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
         }
 
         const error = err instanceof Error ? err : new Error('Unknown error');
+        onFailure?.(error);
         apply({ type: 'SET_ERROR', payload: error });
         onError?.(error);
       }
     },
-    [api, apply, headers, onError, processStream, retry]
+    [apply, headers, onError, retry]
+  );
+
+  const sendWithMessages = useCallback(
+    async (
+      messages: ChatMessage[],
+      threadId: string | undefined,
+      metadata?: Record<string, unknown>
+    ) => {
+      apply({ type: 'SET_PENDING_APPROVALS', payload: [] });
+      await request(
+        api,
+        {
+          messages: messages.map((m) => ({
+            id: m.id,
+            role: m.role,
+            content: m.content,
+            metadata: m.metadata,
+          })),
+          threadId,
+          metadata,
+        },
+        processStream
+      );
+    },
+    [api, apply, processStream, request]
   );
 
   const send = useCallback(
@@ -287,6 +372,56 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
     await sendWithMessages(messages, current.threadId, lastUserMessage.metadata);
   }, [apply, interrupt, sendWithMessages]);
 
+  const fail = useCallback(
+    (message: string) => {
+      const error = new Error(message);
+      apply({ type: 'SET_ERROR', payload: error });
+      onError?.(error);
+    },
+    [apply, onError]
+  );
+
+  const resume = useCallback(
+    async (decisions: ResumeDecisions) => {
+      const { threadId } = stateRef.current;
+      if (!resumeApi) {
+        fail('useCogitatorChat needs resumeApi to resume a paused run');
+        return;
+      }
+      if (!threadId) {
+        fail('There is no thread with a paused run to resume');
+        return;
+      }
+
+      interrupt();
+
+      await request(
+        resumeApi,
+        { threadId, ...decisions },
+        async (response, controller) => {
+          apply({ type: 'SET_PENDING_APPROVALS', payload: [] });
+          await (isEventStream(response) ? processStream : processResult)(response, controller);
+        },
+        (error) => {
+          if (error instanceof HttpError && error.status === 409) {
+            apply({ type: 'SET_PENDING_APPROVALS', payload: [] });
+          }
+        }
+      );
+    },
+    [apply, fail, interrupt, processResult, processStream, request, resumeApi]
+  );
+
+  const approve = useCallback(() => resume({ defaultDecision: { approved: true } }), [resume]);
+
+  const deny = useCallback(
+    (reason?: string) =>
+      resume({
+        defaultDecision: reason === undefined ? { approved: false } : { approved: false, reason },
+      }),
+    [resume]
+  );
+
   const setInput = useCallback(
     (value: string) => {
       apply({ type: 'SET_INPUT', payload: value });
@@ -336,5 +471,9 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
     appendMessage,
     clearMessages,
     setMessages,
+    pendingApprovals: state.pendingApprovals,
+    resume,
+    approve,
+    deny,
   };
 }

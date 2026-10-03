@@ -1,7 +1,15 @@
 import type { FastifyInstance, FastifyPluginAsync, FastifyRequest } from 'fastify';
 import type { WebSocket } from 'ws';
-import type { AuthContext, WebSocketMessage, WebSocketResponse } from '../types.js';
+import type { Agent } from '@cogitator-ai/core';
+import type { RunOptions, RunResult, ToolApprovalDecision } from '@cogitator-ai/types';
+import type {
+  AgentResumeRequest,
+  AuthContext,
+  WebSocketMessage,
+  WebSocketResponse,
+} from '../types.js';
 import { generateId } from '../streaming/helpers.js';
+import { withoutCheckpoint } from '../routes/utils.js';
 
 const WS_OPEN = 1;
 const MAX_SUBSCRIPTIONS = 64;
@@ -10,6 +18,7 @@ const MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'subscribe',
   'unsubscribe',
   'run',
+  'resume',
   'stop',
   'ping',
 ]);
@@ -28,6 +37,15 @@ interface RunPayload {
   context?: Record<string, unknown>;
   threadId?: string;
 }
+
+interface ResumePayload extends AgentResumeRequest {
+  name: string;
+}
+
+type AgentRunControls = Pick<
+  RunOptions,
+  'userId' | 'signal' | 'stream' | 'onToken' | 'onReasoning' | 'onToolCall' | 'onToolResult'
+>;
 
 interface WebSocketRoutesOptions {
   path?: string;
@@ -94,6 +112,40 @@ function parseRunPayload(payload: unknown): RunPayload | null {
   if (context !== undefined && !isPlainObject(context)) return null;
   if (threadId !== undefined && typeof threadId !== 'string') return null;
   return { type, name, input, context, threadId };
+}
+
+function parseDecision(value: unknown): ToolApprovalDecision | null {
+  if (!isPlainObject(value) || typeof value.approved !== 'boolean') return null;
+  if (value.reason !== undefined && typeof value.reason !== 'string') return null;
+  if (value.approved) return { approved: true };
+  return value.reason === undefined
+    ? { approved: false }
+    : { approved: false, reason: value.reason };
+}
+
+function parseResumePayload(payload: unknown): ResumePayload | null {
+  if (!isPlainObject(payload)) return null;
+  const { name, threadId, decisions, defaultDecision } = payload;
+  if (typeof name !== 'string' || !name) return null;
+  if (typeof threadId !== 'string' || !threadId.trim()) return null;
+
+  const resume: ResumePayload = { name, threadId };
+  if (decisions !== undefined) {
+    if (!isPlainObject(decisions)) return null;
+    const entries: Array<[string, ToolApprovalDecision]> = [];
+    for (const [toolCallId, value] of Object.entries(decisions)) {
+      const decision = parseDecision(value);
+      if (!decision) return null;
+      entries.push([toolCallId, decision]);
+    }
+    resume.decisions = Object.fromEntries(entries);
+  }
+  if (defaultDecision !== undefined) {
+    const decision = parseDecision(defaultDecision);
+    if (!decision) return null;
+    resume.defaultDecision = decision;
+  }
+  return resume;
 }
 
 export const websocketRoutes: FastifyPluginAsync<WebSocketRoutesOptions> = async (
@@ -175,6 +227,10 @@ async function handleMessage(
       await handleRun(socket, message, fastify, state, hub);
       break;
 
+    case 'resume':
+      await handleResume(socket, message, fastify, state, hub);
+      break;
+
     case 'stop':
       state.abortController?.abort();
       break;
@@ -208,14 +264,60 @@ async function handleRun(
     return;
   }
 
-  const agent = Object.hasOwn(fastify.cogitator.agents, payload.name)
-    ? fastify.cogitator.agents[payload.name]
+  await streamAgentRun(socket, message, fastify, state, hub, payload.name, (agent, options) =>
+    fastify.cogitator.runtime.run(agent, {
+      ...options,
+      input: payload.input,
+      context: payload.context,
+      threadId: payload.threadId,
+    })
+  );
+}
+
+async function handleResume(
+  socket: WebSocket,
+  message: WebSocketMessage,
+  fastify: FastifyInstance,
+  state: ClientState,
+  hub: ChannelHub
+): Promise<void> {
+  const payload = parseResumePayload(message.payload);
+  if (!payload) {
+    sendResponse(socket, { type: 'error', id: message.id, error: 'Invalid resume payload' });
+    return;
+  }
+
+  if (state.abortController) {
+    sendResponse(socket, { type: 'error', id: message.id, error: 'A run is already in progress' });
+    return;
+  }
+
+  await streamAgentRun(socket, message, fastify, state, hub, payload.name, (agent, options) =>
+    fastify.cogitator.runtime.resume(agent, payload.threadId, {
+      ...options,
+      decisions: payload.decisions,
+      defaultDecision: payload.defaultDecision,
+    })
+  );
+}
+
+async function streamAgentRun(
+  socket: WebSocket,
+  message: WebSocketMessage,
+  fastify: FastifyInstance,
+  state: ClientState,
+  hub: ChannelHub,
+  name: string,
+  execute: (agent: Agent, options: AgentRunControls) => Promise<RunResult>
+): Promise<void> {
+  const agent = Object.hasOwn(fastify.cogitator.agents, name)
+    ? fastify.cogitator.agents[name]
     : undefined;
   if (!agent) {
     sendResponse(socket, {
       type: 'error',
       id: message.id,
-      error: `Agent '${payload.name}' not found`,
+      error: `Agent '${name}' not found`,
     });
     return;
   }
@@ -223,7 +325,7 @@ async function handleRun(
   const controller = new AbortController();
   state.abortController = controller;
 
-  const channel = `agent:${payload.name}`;
+  const channel = `agent:${name}`;
   const emit = (eventPayload: Record<string, unknown>) => {
     const response: WebSocketResponse = { type: 'event', id: message.id, payload: eventPayload };
     sendResponse(socket, response);
@@ -231,15 +333,15 @@ async function handleRun(
   };
 
   try {
-    const result = await fastify.cogitator.runtime.run(agent, {
-      input: payload.input,
-      context: payload.context,
-      threadId: payload.threadId,
+    const result = await execute(agent, {
       userId: state.auth?.userId,
       signal: controller.signal,
       stream: true,
       onToken: (token) => {
         emit({ type: 'token', delta: token });
+      },
+      onReasoning: (delta) => {
+        emit({ type: 'reasoning', delta });
       },
       onToolCall: (toolCall) => {
         emit({ type: 'tool-call', ...toolCall });
@@ -249,7 +351,7 @@ async function handleRun(
       },
     });
 
-    emit({ type: 'complete', result });
+    emit({ type: 'complete', result: withoutCheckpoint(result) });
   } catch (error) {
     if (controller.signal.aborted) {
       emit({ type: 'cancelled' });

@@ -130,7 +130,9 @@ export type HookName =
   | 'session:created'
   | 'session:compacted'
   | 'stream:started'
-  | 'stream:finished';
+  | 'stream:finished'
+  | 'approval:requested'
+  | 'approval:resolved';
 
 export type HookHandler<T = unknown> = (event: T) => void | Promise<void>;
 

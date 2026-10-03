@@ -1,16 +1,39 @@
 import type {
+  RunResult,
   StrategyResult,
   SwarmResourceUsage,
   WorkflowResult,
   WorkflowState,
 } from '@cogitator-ai/types';
-import type { SwarmRunResponse, WorkflowRunResponse } from '../types.js';
+import type { AgentRunResponse, SwarmRunResponse, WorkflowRunResponse } from '../types.js';
 
 export interface SerializedSwarmUsage {
   totalTokens: number;
   totalCost: number;
   elapsedTime: number;
   agentUsage: Record<string, { tokens: number; cost: number; runs: number; duration: number }>;
+}
+
+/** The client-facing shape of a run; never carries the paused run's checkpoint */
+export function toAgentRunResponse(result: RunResult): AgentRunResponse {
+  return {
+    output: result.output,
+    threadId: result.threadId,
+    usage: {
+      inputTokens: result.usage.inputTokens,
+      outputTokens: result.usage.outputTokens,
+      totalTokens: result.usage.totalTokens,
+    },
+    toolCalls: [...result.toolCalls],
+    ...(result.reasoning && { reasoning: result.reasoning }),
+    status: result.status ?? 'completed',
+    ...(result.pendingApprovals && { pendingApprovals: [...result.pendingApprovals] }),
+  };
+}
+
+export function withoutCheckpoint(result: RunResult): Omit<RunResult, 'checkpoint'> {
+  const { checkpoint: _checkpoint, ...rest } = result;
+  return rest;
 }
 
 export function toWorkflowRunResponse(result: WorkflowResult<WorkflowState>): WorkflowRunResponse {

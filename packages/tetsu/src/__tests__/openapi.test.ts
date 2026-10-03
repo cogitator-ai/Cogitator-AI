@@ -5,7 +5,7 @@ import { openapi, secured } from '@tetsujs/openapi';
 import { assertDescribed } from '@tetsujs/openapi/testing';
 import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import { callerHook, cogitatorController } from '../index.js';
-import { chatAgent, fakeCogitator, fakeMemory, json } from './helpers.js';
+import { chatAgent, fakeCogitator, fakeMemory, json, pausedResult, runResult } from './helpers.js';
 
 const info = { title: 'Cogitator', version: '1.0.0' };
 
@@ -57,6 +57,8 @@ describe('OpenAPI document', () => {
     expect(warnings).toEqual([]);
     expect(Object.keys(document.paths ?? {}).sort()).toEqual([
       '/api/agents',
+      '/api/agents/{name}/resume',
+      '/api/agents/{name}/resume/stream',
       '/api/agents/{name}/run',
       '/api/agents/{name}/stream',
       '/api/health',
@@ -145,6 +147,105 @@ describe('OpenAPI document', () => {
       await assertDescribed(document, 'GET /api/agents', await request('/api/agents'));
     } finally {
       fail = false;
+    }
+  });
+});
+
+describe('OpenAPI document of a successful run', () => {
+  test('describes the reasoning summary and the detailed usage', async () => {
+    const { cogitator } = fakeCogitator(() =>
+      Promise.resolve(
+        runResult({
+          reasoning: 'Thought it through',
+          usage: {
+            inputTokens: 10,
+            outputTokens: 20,
+            totalTokens: 30,
+            reasoningTokens: 12,
+            cachedInputTokens: 8,
+            cacheWriteTokens: 2,
+            cost: 0,
+            duration: 5,
+          },
+        })
+      )
+    );
+    const app = createApp({
+      routes: group('/api', {
+        children: [cogitatorController({ cogitator, agents: { chat: chatAgent() } })],
+      }),
+    });
+    const { document } = openapi(app, { info });
+    const res = await serve(app)('/api/agents/chat/run', json({ input: 'hi' }));
+
+    expect(res.status).toBe(200);
+    await assertDescribed(document, 'POST /api/agents/chat/run', res);
+  });
+});
+
+describe('OpenAPI document of approvals', () => {
+  const { cogitator } = fakeCogitator(
+    () => Promise.resolve(pausedResult()),
+    undefined,
+    async (_agent, threadId) => {
+      if (threadId === 'none') {
+        throw new CogitatorError({ message: 'No paused run', code: ErrorCode.RUN_NOT_PAUSED });
+      }
+      if (threadId === 'graces') {
+        throw new CogitatorError({
+          message: 'The paused run belongs to another user',
+          code: ErrorCode.THREAD_ACCESS_DENIED,
+        });
+      }
+      return pausedResult();
+    }
+  );
+  const app = createApp({
+    routes: group('/api', {
+      children: [
+        cogitatorController({
+          cogitator,
+          agents: { chat: chatAgent() },
+          authorizeThread: (_auth, threadId) => threadId !== 'private',
+        }),
+      ],
+    }),
+  });
+  const { document, warnings } = openapi(app, { info });
+  const request = serve(app);
+
+  test('describes the resume routes without warnings', () => {
+    expect(warnings).toEqual([]);
+    expect(document.paths?.['/api/agents/{name}/resume']?.post?.operationId).toBe(
+      'cogitatorResumeAgent'
+    );
+  });
+
+  test('answers a paused run and every refusal of a resume as the document says', async () => {
+    const cases: Array<[string, string, RequestInit, number]> = [
+      ['POST /api/agents/chat/run', '/api/agents/chat/run', json({ input: 'Refund' }), 200],
+      ['POST /api/agents/chat/resume', '/api/agents/chat/resume', json({ threadId: 't-1' }), 200],
+      ['POST /api/agents/chat/resume', '/api/agents/chat/resume', json({ threadId: 'none' }), 409],
+      [
+        'POST /api/agents/chat/resume',
+        '/api/agents/chat/resume',
+        json({ threadId: 'graces' }),
+        403,
+      ],
+      [
+        'POST /api/agents/chat/resume',
+        '/api/agents/chat/resume',
+        json({ threadId: 'private' }),
+        403,
+      ],
+      ['POST /api/agents/chat/resume', '/api/agents/chat/resume', json({ threadId: '' }), 422],
+      ['POST /api/agents/ghost/resume', '/api/agents/ghost/resume', json({ threadId: 't' }), 404],
+    ];
+
+    for (const [operation, path, init, status] of cases) {
+      const res = await request(path, init);
+      expect(res.status).toBe(status);
+      await assertDescribed(document, operation, res);
     }
   });
 });

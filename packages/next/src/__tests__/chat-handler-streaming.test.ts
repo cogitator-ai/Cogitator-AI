@@ -93,6 +93,93 @@ describe('createChatHandler streaming', () => {
     expect(deltas).toEqual(['Hel', 'lo']);
   });
 
+  it('streams reasoning as its own part, closed before text, tool calls and finish', async () => {
+    const { cogitator, run } = cogitatorWith((options) => {
+      options.onReasoning?.('Think');
+      options.onReasoning?.('ing');
+      options.onToken?.('Checking');
+      options.onReasoning?.('Need a tool');
+      options.onToolCall?.({ id: 'tc_1', name: 'a', arguments: {} });
+      options.onToolResult?.({ callId: 'tc_1', name: 'a', result: 1 });
+      options.onReasoning?.('Done');
+      return runResult({ output: 'Checking', reasoning: 'ThinkingNeed a toolDone' });
+    });
+
+    const res = await createChatHandler(cogitator, agent)(chatRequest(userBody));
+    const events = parseEvents(await res.text());
+
+    expect(typeof run.mock.calls[0][1].onReasoning).toBe('function');
+    expect(events.map((e) => e.type)).toEqual([
+      'start',
+      'reasoning-start',
+      'reasoning-delta',
+      'reasoning-delta',
+      'reasoning-end',
+      'text-start',
+      'text-delta',
+      'text-end',
+      'reasoning-start',
+      'reasoning-delta',
+      'reasoning-end',
+      'tool-call-start',
+      'tool-call-delta',
+      'tool-call-end',
+      'tool-result',
+      'reasoning-start',
+      'reasoning-delta',
+      'reasoning-end',
+      'finish',
+    ]);
+    const reasoning = events.filter((e) => e.type.startsWith('reasoning-'));
+    expect(reasoning.filter((e) => e.type === 'reasoning-delta').map((e) => e.delta)).toEqual([
+      'Think',
+      'ing',
+      'Need a tool',
+      'Done',
+    ]);
+    const starts = reasoning.filter((e) => e.type === 'reasoning-start').map((e) => e.id);
+    const ends = reasoning.filter((e) => e.type === 'reasoning-end').map((e) => e.id);
+    expect(ends).toEqual(starts);
+    expect(new Set(starts).size).toBe(3);
+  });
+
+  it('emits the final reasoning before the final output when nothing was streamed', async () => {
+    const { cogitator } = cogitatorWith(() =>
+      runResult({ output: 'Answer', reasoning: 'Summary' })
+    );
+    const res = await createChatHandler(cogitator, agent)(chatRequest(userBody));
+    const events = parseEvents(await res.text());
+
+    expect(events.map((e) => e.type)).toEqual([
+      'start',
+      'reasoning-start',
+      'reasoning-delta',
+      'reasoning-end',
+      'text-start',
+      'text-delta',
+      'text-end',
+      'finish',
+    ]);
+    expect(events[2]).toMatchObject({ delta: 'Summary' });
+  });
+
+  it('closes an open reasoning part before an error', async () => {
+    const { cogitator } = cogitatorWith((options) => {
+      options.onReasoning?.('Hmm');
+      throw new Error('LLM crashed');
+    });
+    const res = await createChatHandler(cogitator, agent)(chatRequest(userBody));
+    const events = parseEvents(await res.text());
+
+    expect(events.map((e) => e.type)).toEqual([
+      'start',
+      'reasoning-start',
+      'reasoning-delta',
+      'reasoning-end',
+      'error',
+    ]);
+  });
+
   it('keeps text blocks balanced and ordered with synchronous multi-tool callbacks', async () => {
     const calls: ToolCall[] = [
       { id: 'tc_1', name: 'a', arguments: { x: 1 } },

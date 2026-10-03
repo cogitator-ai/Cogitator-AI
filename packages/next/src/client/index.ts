@@ -15,4 +15,7 @@ export type {
   UseAgentReturn,
   RetryConfig,
   ToolResultEvent,
+  PendingApproval,
+  ResumeDecisions,
+  ToolApprovalDecision,
 } from '../types.js';

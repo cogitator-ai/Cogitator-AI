@@ -4,14 +4,19 @@ import {
   createTextStartEvent,
   createTextDeltaEvent,
   createTextEndEvent,
+  createReasoningStartEvent,
+  createReasoningDeltaEvent,
+  createReasoningEndEvent,
   createToolCallStartEvent,
   createToolCallDeltaEvent,
   createToolCallEndEvent,
   createToolResultEvent,
+  createApprovalRequiredEvent,
   createErrorEvent,
   createFinishEvent,
   createWorkflowEvent,
   createSwarmEvent,
+  type PendingApproval,
   type Usage,
 } from '@cogitator-ai/server-shared';
 
@@ -47,6 +52,19 @@ export class HonoStreamWriter {
     await this.write(createTextEndEvent(id));
   }
 
+  async reasoningStart(id: string): Promise<void> {
+    await this.write(createReasoningStartEvent(id));
+  }
+
+  async reasoningDelta(id: string, delta: string): Promise<void> {
+    if (!delta) return;
+    await this.write(createReasoningDeltaEvent(id, delta));
+  }
+
+  async reasoningEnd(id: string): Promise<void> {
+    await this.write(createReasoningEndEvent(id));
+  }
+
   async toolCallStart(id: string, toolName: string): Promise<void> {
     await this.write(createToolCallStartEvent(id, toolName));
   }
@@ -62,6 +80,10 @@ export class HonoStreamWriter {
 
   async toolResult(id: string, toolCallId: string, result: unknown): Promise<void> {
     await this.write(createToolResultEvent(id, toolCallId, result));
+  }
+
+  async approvalRequired(threadId: string, approvals: readonly PendingApproval[]): Promise<void> {
+    await this.write(createApprovalRequiredEvent(threadId, approvals));
   }
 
   async workflowEvent(event: string, data: unknown): Promise<void> {

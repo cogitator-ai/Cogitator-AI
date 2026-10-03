@@ -143,6 +143,7 @@ export class AgentLanguageModelV1 implements LanguageModelV1 {
 
     return {
       text: objectTool ? undefined : result.output,
+      reasoning: result.reasoning,
       toolCalls: objectTool
         ? [
             {
@@ -215,6 +216,9 @@ export class AgentLanguageModelV1 implements LanguageModelV1 {
                       }
                     : { type: 'text-delta', textDelta: delta }
                 );
+              },
+              onReasoningDelta: (delta) => {
+                if (delta) emit({ type: 'reasoning', textDelta: delta });
               },
               onToolResult: (toolResult) => results.set(toolResult.callId, toolResult),
             },

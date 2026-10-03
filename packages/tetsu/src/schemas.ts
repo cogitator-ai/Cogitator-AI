@@ -12,6 +12,22 @@ export const RunBody = z.object({
   threadId: z.string().min(1).optional().describe('Conversation thread kept in memory'),
 });
 
+const ApprovalDecisionSchema = z.object({
+  approved: z.boolean(),
+  reason: z.string().optional().describe('Why the call was declined, shown to the model'),
+});
+
+export const ResumeBody = z.object({
+  threadId: z.string().min(1).describe('Thread of the paused run'),
+  decisions: z
+    .record(z.string(), ApprovalDecisionSchema)
+    .optional()
+    .describe('Decisions by tool call id; calls left out pause the run again'),
+  defaultDecision: ApprovalDecisionSchema.optional().describe(
+    'Decision for every paused call that `decisions` leaves out'
+  ),
+});
+
 export const SwarmRunBody = RunBody.extend({
   timeout: z.number().positive().optional().describe('Run timeout in milliseconds'),
 });
@@ -59,10 +75,33 @@ export const MessageSchema = z.object({
   toolCalls: z.array(ToolCallSchema).optional(),
 });
 
+export const PendingApprovalSchema = z.object({
+  toolCallId: z.string(),
+  toolName: z.string(),
+  arguments: JsonObject,
+  description: z.string(),
+  sideEffects: z.array(z.string()).optional(),
+});
+
 export const UsageSchema = z.object({
   inputTokens: z.number(),
   outputTokens: z.number(),
   totalTokens: z.number(),
+});
+
+const RunUsageSchema = UsageSchema.extend({
+  reasoningTokens: z
+    .number()
+    .optional()
+    .describe('Hidden reasoning tokens, already counted in outputTokens'),
+  cachedInputTokens: z
+    .number()
+    .optional()
+    .describe('Input tokens read from the provider prompt cache'),
+  cacheWriteTokens: z
+    .number()
+    .optional()
+    .describe('Input tokens written to the provider prompt cache'),
 });
 
 export const HealthResponse = z.object({
@@ -87,8 +126,20 @@ export const AgentRunResponse = z.object({
   output: z.string(),
   structured: z.unknown().optional(),
   threadId: z.string(),
-  usage: UsageSchema,
+  usage: RunUsageSchema,
   toolCalls: z.array(ToolCallSchema),
+  reasoning: z
+    .string()
+    .optional()
+    .describe("The model's reasoning summary, when the agent asks for one"),
+  status: z
+    .enum(['completed', 'paused'])
+    .optional()
+    .describe('`paused` when tool calls wait for approval; resume the run to go on'),
+  pendingApprovals: z
+    .array(PendingApprovalSchema)
+    .optional()
+    .describe('The tool calls a paused run waits on'),
 });
 
 export const ThreadResponse = z.object({
@@ -172,6 +223,11 @@ export const SocketMessage = z.discriminatedUnion('type', [
       context: JsonObject.optional(),
       threadId: z.string().min(1).optional(),
     }),
+  }),
+  z.object({
+    type: z.literal('resume'),
+    id: z.string().optional(),
+    payload: ResumeBody.extend({ name: z.string().min(1) }),
   }),
 ]);
 

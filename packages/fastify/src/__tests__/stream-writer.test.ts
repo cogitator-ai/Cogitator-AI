@@ -133,6 +133,21 @@ describe('FastifyStreamWriter', () => {
     expect(getOutput()).toContain('error');
   });
 
+  it('writes the reasoning part sequence and skips empty reasoning deltas', () => {
+    const { reply, getOutput } = mockReply();
+    const writer = new FastifyStreamWriter(reply);
+    writer.start('msg-1');
+    writer.reasoningStart('rsn-1');
+    writer.reasoningDelta('rsn-1', '');
+    writer.reasoningDelta('rsn-1', 'thinking');
+    writer.reasoningEnd('rsn-1');
+    const output = getOutput();
+    expect(output).toContain('{"type":"reasoning-start","id":"rsn-1"}');
+    expect(output).toContain('{"type":"reasoning-delta","id":"rsn-1","delta":"thinking"}');
+    expect(output).toContain('{"type":"reasoning-end","id":"rsn-1"}');
+    expect(output.match(/reasoning-delta/g)).toHaveLength(1);
+  });
+
   it('full protocol sequence produces valid SSE output', () => {
     const { reply, getOutput } = mockReply();
     const writer = new FastifyStreamWriter(reply);

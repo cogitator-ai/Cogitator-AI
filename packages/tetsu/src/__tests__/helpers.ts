@@ -4,6 +4,7 @@ import type { Cogitator } from '@cogitator-ai/core';
 import type {
   MemoryAdapter,
   MemoryResult,
+  ResumeOptions,
   RunOptions,
   RunResult,
   Thread,
@@ -25,6 +26,11 @@ export function runResult(overrides: Partial<RunResult> = {}): RunResult {
 }
 
 export type RunImpl = (agent: Agent, options: RunOptions) => Promise<RunResult>;
+export type ResumeImpl = (
+  agent: Agent,
+  threadId: string,
+  options: ResumeOptions
+) => Promise<RunResult>;
 
 export interface MemoryEntry {
   message: { role: 'user' | 'assistant' | 'system'; content: string };
@@ -63,11 +69,62 @@ export function lastRunOptions(run: { mock: { calls: Array<[Agent, RunOptions]> 
 
 export function fakeCogitator(
   run: RunImpl = () => Promise.resolve(runResult()),
-  memory?: MemoryAdapter | ReturnType<typeof fakeMemory>
+  memory?: MemoryAdapter | ReturnType<typeof fakeMemory>,
+  resume: ResumeImpl = () => Promise.resolve(runResult())
 ) {
   const runMock = mock(run);
-  const cogitator = { run: runMock, memory } as unknown as Cogitator;
-  return { cogitator, run: runMock };
+  const resumeMock = mock(resume);
+  const cogitator = { run: runMock, resume: resumeMock, memory } as unknown as Cogitator;
+  return { cogitator, run: runMock, resume: resumeMock };
+}
+
+export const refundApproval = {
+  toolCallId: 'call-1',
+  toolName: 'refund',
+  arguments: { order: 'A-1', amount: 500 },
+  description: 'Refund an order',
+  sideEffects: ['payment'],
+};
+
+/** A run that stopped before `refund` because it needs approval. */
+export function pausedResult(overrides: Partial<RunResult> = {}): RunResult {
+  return runResult({
+    output: 'Let me do that.',
+    status: 'paused',
+    pendingApprovals: [refundApproval],
+    checkpoint: {
+      version: 1,
+      runId: 'run-1',
+      agentId: 'agent-1',
+      threadId: 'thread-1',
+      userId: 'ada',
+      model: 'mock/m',
+      input: 'Refund A-1',
+      messages: [{ role: 'system', content: 'secret instructions' }],
+      toolCalls: [],
+      turn: { toolCalls: [], decisions: {} },
+      iterations: 1,
+      lastToolCallSignature: '',
+      usage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        cachedInputTokens: 0,
+        cacheWriteTokens: 0,
+        reasoningTokens: 0,
+      },
+      reasoning: [],
+      startedAt: 0,
+    },
+    ...overrides,
+  });
+}
+
+export function lastResumeCall(resume: {
+  mock: { calls: Array<[Agent, string, ResumeOptions]> };
+}): { threadId: string; options: ResumeOptions } {
+  const call = resume.mock.calls.at(-1);
+  if (!call) throw new Error('The runtime never resumed a run');
+  return { threadId: call[1], options: call[2] };
 }
 
 export const weather = tool({

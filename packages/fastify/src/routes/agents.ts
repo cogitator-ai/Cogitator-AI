@@ -1,8 +1,14 @@
 import type { FastifyPluginAsync } from 'fastify';
-import type { AgentListResponse, AgentRunRequest, AgentRunResponse } from '../types.js';
-import { AgentRunRequestSchema } from '../types.js';
+import type { AgentListResponse, AgentResumeRequest, AgentRunRequest } from '../types.js';
+import { AgentResumeRequestSchema, AgentRunRequestSchema } from '../types.js';
 import { FastifyStreamWriter, generateId } from '../streaming/index.js';
-import { onClientDisconnect, resolveError, sendError, sendRouteError } from './utils.js';
+import {
+  onClientDisconnect,
+  resolveError,
+  sendError,
+  sendRouteError,
+  toAgentRunResponse,
+} from './utils.js';
 
 interface AgentParams {
   name: string;
@@ -52,20 +58,38 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
           signal: abortController.signal,
         });
 
-        const response: AgentRunResponse = {
-          output: result.output,
-          threadId: result.threadId,
-          usage: {
-            inputTokens: result.usage.inputTokens,
-            outputTokens: result.usage.outputTokens,
-            totalTokens: result.usage.totalTokens,
-          },
-          toolCalls: [...result.toolCalls],
-        };
-
-        return response;
+        return toAgentRunResponse(result);
       } catch (error) {
         return sendRouteError(request, reply, error, 'agent run error');
+      }
+    }
+  );
+
+  fastify.post<{ Params: AgentParams; Body: AgentResumeRequest }>(
+    '/agents/:name/resume',
+    { schema: { params: paramsSchema, body: AgentResumeRequestSchema } },
+    async (request, reply) => {
+      const { name } = request.params;
+      const agent = findAgent(name);
+
+      if (!agent) {
+        return sendError(reply, 404, `Agent '${name}' not found`, 'NOT_FOUND');
+      }
+
+      const abortController = new AbortController();
+      onClientDisconnect(reply, () => abortController.abort());
+
+      try {
+        const result = await fastify.cogitator.runtime.resume(agent, request.body.threadId, {
+          userId: request.cogitatorAuth?.userId,
+          decisions: request.body.decisions,
+          defaultDecision: request.body.defaultDecision,
+          signal: abortController.signal,
+        });
+
+        return toAgentRunResponse(result);
+      } catch (error) {
+        return sendRouteError(request, reply, error, 'agent resume error');
       }
     }
   );
@@ -91,21 +115,44 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
       });
 
       let textId: string | null = null;
+      let reasoningId: string | null = null;
       let streamedText = false;
+
+      const endText = () => {
+        if (textId === null) return;
+        writer.textEnd(textId);
+        textId = null;
+      };
+
+      const endReasoning = () => {
+        if (reasoningId === null) return;
+        writer.reasoningEnd(reasoningId);
+        reasoningId = null;
+      };
+
+      const endParts = () => {
+        endReasoning();
+        endText();
+      };
 
       const writeText = (delta: string) => {
         if (!delta) return;
         if (textId === null) {
+          endReasoning();
           textId = generateId('txt');
           writer.textStart(textId);
         }
         writer.textDelta(textId, delta);
       };
 
-      const endText = () => {
-        if (textId === null) return;
-        writer.textEnd(textId);
-        textId = null;
+      const writeReasoning = (delta: string) => {
+        if (!delta) return;
+        if (reasoningId === null) {
+          endText();
+          reasoningId = generateId('rsn');
+          writer.reasoningStart(reasoningId);
+        }
+        writer.reasoningDelta(reasoningId, delta);
       };
 
       try {
@@ -122,8 +169,9 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
             if (token) streamedText = true;
             writeText(token);
           },
+          onReasoning: writeReasoning,
           onToolCall: (toolCall) => {
-            endText();
+            endParts();
             writer.toolCallStart(toolCall.id, toolCall.name);
             writer.toolCallDelta(toolCall.id, JSON.stringify(toolCall.arguments));
             writer.toolCallEnd(toolCall.id);
@@ -134,7 +182,10 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
         });
 
         if (!streamedText) writeText(result.output);
-        endText();
+        endParts();
+        if (result.status === 'paused' && result.pendingApprovals) {
+          writer.approvalRequired(result.threadId, result.pendingApprovals);
+        }
         writer.finish(messageId, {
           inputTokens: result.usage.inputTokens,
           outputTokens: result.usage.outputTokens,
@@ -143,7 +194,7 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
       } catch (error) {
         if (!abortController.signal.aborted) {
           const resolved = resolveError(request, error, 'agent stream error');
-          endText();
+          endParts();
           writer.error(resolved.message, resolved.code);
         }
       } finally {
