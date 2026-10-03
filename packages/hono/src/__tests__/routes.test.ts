@@ -255,7 +255,7 @@ describe('agentRoutes', () => {
     const res = await app.request('/agents/bot/run', json({ input: 'hi' }));
     expect(res.status).toBe(500);
     const body = await res.json();
-    expect(body.error.code).toBe('INTERNAL');
+    expect(body.error.code).toBe('INTERNAL_ERROR');
     expect(body.error.message).toBe('Internal server error');
   });
 

@@ -39,7 +39,7 @@ export function createThreadRoutes(ctx: RouteContext): Router {
       await assertThreadAccess(memory, id, userId);
       const result = await memory.getEntries({ threadId: id });
       if (!result.success) {
-        sendError(res, 500, result.error, 'INTERNAL');
+        handleRouteError(res, new Error(result.error), 'Thread get error');
         return;
       }
 
@@ -97,7 +97,7 @@ export function createThreadRoutes(ctx: RouteContext): Router {
         });
 
         if (!result.success) {
-          sendError(res, 500, result.error, 'INTERNAL');
+          handleRouteError(res, new Error(result.error), 'Thread add message error');
           return;
         }
 
@@ -122,7 +122,7 @@ export function createThreadRoutes(ctx: RouteContext): Router {
       await assertThreadAccess(memory, id, userId);
       const result = await memory.clearThread(id);
       if (!result.success) {
-        sendError(res, 500, result.error, 'INTERNAL');
+        handleRouteError(res, new Error(result.error), 'Thread delete error');
         return;
       }
       res.status(204).end();

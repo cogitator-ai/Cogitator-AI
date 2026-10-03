@@ -222,7 +222,7 @@ describe('error mapping', () => {
     const res = await buildApp().request('/workflows/pipeline/run', post({}));
     expect(res.status).toBe(500);
     expect(await res.json()).toEqual({
-      error: { message: 'Internal server error', code: 'INTERNAL' },
+      error: { message: 'Internal server error', code: 'INTERNAL_ERROR' },
     });
   });
 
@@ -250,7 +250,7 @@ describe('error mapping', () => {
     expect(events.at(-1)).toEqual({
       type: 'error',
       message: 'Internal server error',
-      code: 'INTERNAL',
+      code: 'INTERNAL_ERROR',
     });
   });
 });

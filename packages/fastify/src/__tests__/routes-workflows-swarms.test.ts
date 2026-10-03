@@ -178,7 +178,7 @@ describe('swarmRoutes', () => {
 });
 
 describe('thread error propagation', () => {
-  it('addEntry returns Unknown error when result.error is undefined', async () => {
+  it('answers a generic 500 when addEntry fails without an error', async () => {
     const memory = {
       getThread: vi.fn().mockResolvedValue({ success: true, data: null }),
       createThread: vi.fn().mockResolvedValue({ success: true, data: {} }),
@@ -210,11 +210,11 @@ describe('thread error propagation', () => {
       payload: { role: 'user', content: 'hi' },
     });
     expect(res.statusCode).toBe(500);
-    expect(res.json<{ error: { message: string } }>().error.message).toBe('Unknown error');
+    expect(res.json<{ error: { message: string } }>().error.message).toBe('Internal server error');
     await fastify.close();
   });
 
-  it('clearThread returns Unknown error when result.error is undefined', async () => {
+  it('answers a generic 500 when clearThread fails without an error', async () => {
     const memory = {
       getThread: vi.fn().mockResolvedValue({ success: true, data: null }),
       getEntries: vi.fn(),
@@ -241,7 +241,7 @@ describe('thread error propagation', () => {
 
     const res = await fastify.inject({ method: 'DELETE', url: '/threads/t1' });
     expect(res.statusCode).toBe(500);
-    expect(res.json<{ error: { message: string } }>().error.message).toBe('Unknown error');
+    expect(res.json<{ error: { message: string } }>().error.message).toBe('Internal server error');
     await fastify.close();
   });
 });

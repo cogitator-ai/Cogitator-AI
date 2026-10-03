@@ -35,7 +35,7 @@ export const threadRoutes: FastifyPluginAsync = async (fastify) => {
         await assertThreadAccess(memory, id, userId);
         const result = await memory.getEntries({ threadId: id });
         if (!result.success) {
-          return sendError(reply, 500, result.error ?? 'Unknown error', 'INTERNAL');
+          return sendRouteError(request, reply, new Error(result.error), 'thread get error');
         }
 
         const entries = result.data;
@@ -89,7 +89,12 @@ export const threadRoutes: FastifyPluginAsync = async (fastify) => {
         });
 
         if (!result.success) {
-          return sendError(reply, 500, result.error ?? 'Unknown error', 'INTERNAL');
+          return sendRouteError(
+            request,
+            reply,
+            new Error(result.error),
+            'thread add message error'
+          );
         }
 
         return reply.status(201).send({ success: true });
@@ -123,7 +128,7 @@ export const threadRoutes: FastifyPluginAsync = async (fastify) => {
         await assertThreadAccess(memory, id, userId);
         const result = await memory.clearThread(id);
         if (!result.success) {
-          return sendError(reply, 500, result.error ?? 'Unknown error', 'INTERNAL');
+          return sendRouteError(request, reply, new Error(result.error), 'thread delete error');
         }
         return reply.status(204).send();
       } catch (error) {

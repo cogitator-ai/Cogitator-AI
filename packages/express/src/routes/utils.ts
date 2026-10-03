@@ -2,6 +2,7 @@ import type { Response } from 'express';
 import {
   CogitatorError,
   ERROR_STATUS_CODES,
+  ErrorCode,
   type RunResult,
   type ToolApprovalDecision,
 } from '@cogitator-ai/types';
@@ -39,7 +40,7 @@ export function resolveError(error: unknown, label: string): ResolvedError {
     };
   }
   console.error(`[CogitatorServer] ${label}:`, error);
-  return { status: 500, message: 'Internal server error', code: 'INTERNAL' };
+  return { status: 500, message: 'Internal server error', code: ErrorCode.INTERNAL_ERROR };
 }
 
 export function handleRouteError(res: Response, error: unknown, label: string): void {

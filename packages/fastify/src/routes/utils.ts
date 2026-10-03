@@ -1,5 +1,5 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { CogitatorError, ERROR_STATUS_CODES, type RunResult } from '@cogitator-ai/types';
+import { CogitatorError, ERROR_STATUS_CODES, ErrorCode, type RunResult } from '@cogitator-ai/types';
 import type { AgentRunResponse } from '../types.js';
 
 export function sendError(
@@ -44,7 +44,7 @@ export function resolveError(
     };
   }
   source.log.error({ err: error }, label);
-  return { status: 500, message: 'Internal server error', code: 'INTERNAL' };
+  return { status: 500, message: 'Internal server error', code: ErrorCode.INTERNAL_ERROR };
 }
 
 export function sendRouteError(

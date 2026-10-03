@@ -252,39 +252,34 @@ describe('threadRoutes', () => {
     await server.close();
   });
 
-  it('GET /threads/:id propagates memory error message', async () => {
+  it('hides memory failures of the thread routes from the client', async () => {
+    const failure = { success: false, error: 'connect ECONNREFUSED 10.0.0.5:5432' };
     const memory = {
-      getThread: vi.fn().mockResolvedValue({ success: true, data: null }),
-      getEntries: vi.fn().mockResolvedValue({ success: false, error: 'storage error' }),
+      ...mockMemory(),
+      getEntries: vi.fn().mockResolvedValue(failure),
+      addEntry: vi.fn().mockResolvedValue(failure),
+      clearThread: vi.fn().mockResolvedValue(failure),
     };
     const server = await buildServer({
-      runtime: {
-        run: vi.fn(),
-        memory,
-        getMemory: async () => memory,
-      } as never,
+      runtime: { run: vi.fn(), memory, getMemory: async () => memory } as never,
     });
-    const res = await server.inject({ method: 'GET', url: '/threads/t1' });
-    expect(res.statusCode).toBe(500);
-    expect(res.json<{ error: { message: string } }>().error.message).toBe('storage error');
-    await server.close();
-  });
 
-  it('GET /threads/:id returns Unknown error when error is missing', async () => {
-    const memory = {
-      getThread: vi.fn().mockResolvedValue({ success: true, data: null }),
-      getEntries: vi.fn().mockResolvedValue({ success: false }),
-    };
-    const server = await buildServer({
-      runtime: {
-        run: vi.fn(),
-        memory,
-        getMemory: async () => memory,
-      } as never,
-    });
-    const res = await server.inject({ method: 'GET', url: '/threads/t1' });
-    expect(res.statusCode).toBe(500);
-    expect(res.json<{ error: { message: string } }>().error.message).toBe('Unknown error');
+    const responses = [
+      await server.inject({ method: 'GET', url: '/threads/t1' }),
+      await server.inject({
+        method: 'POST',
+        url: '/threads/t1/messages',
+        payload: { role: 'user', content: 'hi' },
+      }),
+      await server.inject({ method: 'DELETE', url: '/threads/t1' }),
+    ];
+
+    for (const res of responses) {
+      expect(res.statusCode).toBe(500);
+      expect(res.json()).toEqual({
+        error: { message: 'Internal server error', code: 'INTERNAL_ERROR' },
+      });
+    }
     await server.close();
   });
 

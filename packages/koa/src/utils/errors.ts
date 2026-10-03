@@ -1,4 +1,4 @@
-import { CogitatorError, ERROR_STATUS_CODES } from '@cogitator-ai/types';
+import { CogitatorError, ERROR_STATUS_CODES, ErrorCode } from '@cogitator-ai/types';
 import type { ErrorResponse } from '../types.js';
 
 export interface ResolvedError {
@@ -23,6 +23,6 @@ export function resolveError(error: unknown, label: string): ResolvedError {
   console.error(`[CogitatorKoa] ${label}:`, error);
   return {
     status: 500,
-    body: { error: { message: 'Internal server error', code: 'INTERNAL' } },
+    body: { error: { message: 'Internal server error', code: ErrorCode.INTERNAL_ERROR } },
   };
 }

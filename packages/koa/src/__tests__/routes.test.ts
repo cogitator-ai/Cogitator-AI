@@ -256,7 +256,7 @@ describe('agentRoutes', () => {
       .send({ input: 'hi' })
       .set('Content-Type', 'application/json');
     expect(res.status).toBe(500);
-    expect(res.body.error.code).toBe('INTERNAL');
+    expect(res.body.error.code).toBe('INTERNAL_ERROR');
     expect(res.body.error.message).toBe('Internal server error');
   });
 

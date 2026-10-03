@@ -465,6 +465,34 @@ describe('thread routes', () => {
       metadata: { source: 'import' },
     });
   });
+
+  it('logs memory failures and answers the client with a generic 500', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const failure = { success: false, error: 'connect ECONNREFUSED 10.0.0.5:5432' };
+    const memory = {
+      ...memoryStub(),
+      getEntries: vi.fn(async () => failure),
+      addEntry: vi.fn(async () => failure),
+      clearThread: vi.fn(async () => failure),
+    };
+    const { base } = await start(async () => runResult(), {}, memory);
+
+    const responses = [
+      await fetch(`${base}/threads/t1`),
+      await post(`${base}/threads/t1/messages`, { role: 'user', content: 'hi' }),
+      await fetch(`${base}/threads/t1`, { method: 'DELETE' }),
+    ];
+
+    for (const res of responses) {
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({
+        error: { message: 'Internal server error', code: 'INTERNAL_ERROR' },
+      });
+    }
+    expect(consoleError).toHaveBeenCalledTimes(3);
+    expect(String(consoleError.mock.calls[0][1])).toContain('ECONNREFUSED 10.0.0.5:5432');
+    consoleError.mockRestore();
+  });
 });
 
 describe('swagger', () => {

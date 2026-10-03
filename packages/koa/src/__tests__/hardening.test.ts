@@ -271,7 +271,7 @@ describe('error mapping', () => {
     workflowExecute.mockResolvedValue(workflowResult({ error: new Error('node blew up') }));
     const res = await postJson(buildApp(), '/workflows/pipeline/run', {});
     expect(res.status).toBe(500);
-    expect(res.body.error).toEqual({ message: 'Internal server error', code: 'INTERNAL' });
+    expect(res.body.error).toEqual({ message: 'Internal server error', code: 'INTERNAL_ERROR' });
   });
 
   it('streams an error instead of workflow_completed when the workflow fails', async () => {
