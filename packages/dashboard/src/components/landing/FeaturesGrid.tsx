@@ -8,7 +8,7 @@ const features = [
   {
     title: 'Multi-Model Runtime',
     description:
-      'Run Ollama, vLLM, OpenAI, Anthropic, or Google models with identical code. Switch providers without changing a line.',
+      'Run Ollama, vLLM, OpenAI, Anthropic, or Google models with identical code. Rate limits and outages are retried for you, honouring Retry-After.',
     icon: <Layers className="w-6 h-6" />,
     glowColor: '#00ff88',
     className: 'md:col-span-2',
@@ -30,7 +30,7 @@ const features = [
   {
     title: 'Production Memory',
     description:
-      'Redis for speed, Postgres for persistence, pgvector for semantic search. Your agents remember everything.',
+      'Redis for speed, Postgres for persistence, pgvector for semantic search. One agent serves many users, each with private threads and memory.',
     icon: <Brain className="w-6 h-6" />,
     glowColor: '#00ff88',
     className: 'md:col-span-2',
@@ -44,7 +44,7 @@ const features = [
   {
     title: 'MCP Protocol',
     description:
-      'First-class support for Model Context Protocol. Connect any MCP server as a tool.',
+      'Connect any MCP server as a tool, or serve your own with per-user auth so agents act with each user’s credentials.',
     icon: <Plug className="w-6 h-6" />,
     glowColor: '#00aaff',
   },
