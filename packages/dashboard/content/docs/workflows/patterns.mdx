@@ -14,70 +14,94 @@ Process collections of items in parallel (map phase), then combine results (redu
 ### Basic MapReduce
 
 ```typescript
-import { executeMapReduce, mapReduceNode, collect } from '@cogitator-ai/workflows';
+import { readFile } from 'node:fs/promises';
+import {
+  WorkflowBuilder,
+  collect,
+  executeMapReduce,
+  mapReduceNode,
+  mapReduceWorkflowNode,
+} from '@cogitator-ai/workflows';
 
-interface DocState {
+type DocState = {
   documents: string[];
   summaries?: string[];
-}
+};
+
+const summarizeDocs = mapReduceNode<DocState, string, string[]>('summarize-docs', {
+  map: {
+    items: (state) => state.documents,
+    mapper: async (item) => {
+      const content = await readFile(item as string, 'utf8');
+      return `Summary of ${item}: ${content.slice(0, 100)}...`;
+    },
+    concurrency: 5,
+    continueOnError: true,
+  },
+  reduce: collect<string>(),
+});
 
 const result = await executeMapReduce<DocState, string, string[]>(
   { documents: ['doc1.txt', 'doc2.txt', 'doc3.txt'] },
-  {
-    name: 'summarize-docs',
-    map: {
-      items: (state) => state.documents,
-      mapper: async (item) => {
-        const content = await readFile(item as string);
-        return `Summary of ${item}: ${content.slice(0, 100)}...`;
-      },
-      concurrency: 5,
-      continueOnError: true,
-    },
-    reduce: {
-      ...collect<string>(),
-    },
-  }
+  summarizeDocs
 );
 
 console.log(`Processed: ${result.stats.successful}/${result.stats.total}`);
 console.log('Summaries:', result.reduced);
 ```
 
-Inside a workflow, wrap the configuration with `mapReduceWorkflowNode`:
+Inside a workflow, wrap the configuration with `mapReduceWorkflowNode`; the node's output is the reduced value:
 
 ```typescript
-builder.addNode(
-  'summarize-docs',
-  mapReduceWorkflowNode(mapReduceNode<DocState, string, string[]>('summarize-docs', config), {
-    stateMapper: (result) => ({ summaries: result.reduced }),
-  })
-);
+const workflow = new WorkflowBuilder<DocState>('docs')
+  .initialState({ documents: [] })
+  .addNode(
+    'summarize-docs',
+    mapReduceWorkflowNode(summarizeDocs, {
+      stateMapper: (result) => ({ summaries: result.reduced }),
+    })
+  )
+  .build();
 ```
+
+`mapNode` with `mapWorkflowNode` runs only the map phase (the output is the array of `MapItemResult`s), and `executeMap` / `executeReduce` run the phases directly.
 
 ### Map Options
 
 ```typescript
-const mapConfig = {
-  items: (state: S) => state.urls,
-  mapper: async (item: unknown, index: number, state: S) => {
-    return await fetch(item as string).then((r) => r.text());
-  },
+import { mapNode } from '@cogitator-ai/workflows';
+
+type CrawlState = { urls: string[] };
+
+const fetchPages = mapNode<CrawlState, string>('fetch-pages', {
+  items: (state) => state.urls,
+  mapper: async (item) => fetch(item as string).then((r) => r.text()),
   concurrency: 10,
   continueOnError: true,
-  timeout: 30000,
-  retry: {
-    maxAttempts: 3,
-    delay: 1000,
-    backoff: 'exponential' as const,
-  },
-  filter: (item: unknown) => (item as string).startsWith('https'),
-  transform: (item: unknown) => (item as string).trim(),
+  timeout: 30_000,
+  retry: { maxAttempts: 3, delay: 1000, backoff: 'exponential' },
+  filter: (item) => (item as string).startsWith('https'),
+  transform: (item) => (item as string).trim(),
   onProgress: (progress) => {
     console.log(`${progress.completed}/${progress.total} (${progress.failed} failed)`);
   },
-};
+});
 ```
+
+- `concurrency` defaults to unlimited; `timeout` and `retry` apply per item (`maxAttempts` counts the first try).
+- Without `continueOnError`, the first failed item fails the whole map with its error (the error carries `partialResults`). With it, failed items appear in the results with `success: false` and `error`.
+- `filter` runs before mapping and drops items; `transform` changes an item right before its `mapper` call.
+- Every item produces a `MapItemResult` (`index`, `item`, `result`, `success`, `error`, `duration`), in input order.
+
+### Reduce Options
+
+| Option        | Description                                                                   |
+| ------------- | ----------------------------------------------------------------------------- |
+| `initial`     | Starting accumulator, or a function of the state                              |
+| `reducer`     | `(accumulator, item: MapItemResult, state) => accumulator`                    |
+| `successOnly` | Reduce only successful items (default `true`)                                 |
+| `finalize`    | Last transformation of the accumulator                                        |
+| `streaming`   | Reduce items as they complete (in input order) instead of after the whole map |
 
 ### Built-in Reducers
 
@@ -108,19 +132,21 @@ const lastResult = last<string>();
 
 const grouped = groupBy<{ category: string }, string>((result) => result.category);
 
-const split = partition<number>((result) => result > 0.5);
+const split = partition<number>((result) => result > 0.5); // { pass, fail }
 
-const flattened = flatMap<string[]>();
+const flattened = flatMap<string>(); // each item returns string[]
 
-const statistics = stats();
+const statistics = stats(); // { count, sum, avg, min, max }
 ```
 
 ### Convenience Helpers
 
+`parallelMap`, `sequentialMap` and `batchedMap` run a map with unlimited, single or `batchSize` concurrency and return the `MapItemResult` array:
+
 ```typescript
 import { parallelMap, sequentialMap, batchedMap } from '@cogitator-ai/workflows';
 
-const results = await parallelMap(
+const pages = await parallelMap(
   state,
   (s) => s.urls,
   async (url) => fetch(url as string).then((r) => r.text())
@@ -128,15 +154,16 @@ const results = await parallelMap(
 
 const ordered = await sequentialMap(
   state,
-  (s) => s.items,
-  async (item) => processItem(item)
+  (s) => s.urls,
+  async (url) => processItem(url)
 );
 
 const batched = await batchedMap(
   state,
-  (s) => s.items,
-  async (item) => processItem(item),
-  5
+  (s) => s.urls,
+  async (url) => processItem(url),
+  5,
+  { continueOnError: true }
 );
 ```
 
@@ -147,17 +174,17 @@ Execute entire workflows as nodes within a parent workflow. Supports state mappi
 ### Basic Sub-Workflow
 
 ```typescript
-import { executeSubworkflow, subworkflowNode } from '@cogitator-ai/workflows';
+import { subworkflowNode, subworkflowWorkflowNode } from '@cogitator-ai/workflows';
 
-interface ParentState {
+type ParentState = {
   query: string;
   detailedAnalysis?: string;
-}
+};
 
-interface ChildState {
+type ChildState = {
   input: string;
   output?: string;
-}
+};
 
 const subConfig = subworkflowNode<ParentState, ChildState>('deep-analysis', {
   workflow: analysisWorkflow,
@@ -175,16 +202,20 @@ const subConfig = subworkflowNode<ParentState, ChildState>('deep-analysis', {
 builder.addNode('deep-analysis', subworkflowWorkflowNode(subConfig));
 ```
 
-A child run that fails (`result.error`) counts as a failed attempt, so `retry`/`onError` apply; a timed-out child run is cancelled. Nested depth is tracked automatically through the node context.
+The state `outputMapper` returns replaces the parent state, so spread `parentState` into it. A child run that fails (`result.error`) counts as a failed attempt, so `retryConfig` / `onError` apply; a timed-out child run is cancelled, and aborting the parent run cancels the child. Nested depth is tracked automatically through the node context — a child deeper than `maxDepth` (default `10`) throws `MaxDepthExceededError`.
+
+`executeSubworkflow(parentState, config, context)` runs a config outside a workflow; it returns a `SubworkflowResult` (`success`, `parentState`, `childResult`, `error`, `skipped`, `duration`, `depth`). `onStart`, `onComplete` and `onChildError` hooks observe the child, and `subworkflowWorkflowNode(config, { checkpointStore })` shares a checkpoint store with child runs (`shareCheckpoints: false` opts out).
 
 ### Error Strategies
 
-| Strategy      | Behavior                                         |
-| ------------- | ------------------------------------------------ |
-| `'propagate'` | Re-throw the child error to the parent (default) |
-| `'catch'`     | Return a failed result without throwing          |
-| `'retry'`     | Retry with backoff according to `retryConfig`    |
-| `'ignore'`    | Return success even on failure                   |
+| Strategy      | Behavior                                                                                |
+| ------------- | --------------------------------------------------------------------------------------- |
+| `'propagate'` | Re-throw the child error to the parent (default)                                        |
+| `'catch'`     | `executeSubworkflow` returns `{ success: false, error }` without throwing               |
+| `'retry'`     | Retry according to `retryConfig` (default 3 attempts, 1 s apart, linear), then re-throw |
+| `'ignore'`    | Return success with the parent state unchanged                                          |
+
+Inside a workflow, `subworkflowWorkflowNode` fails the node whenever the result has `success: false`, so `'catch'` still stops the parent run there; use `'ignore'` to carry on past a failed child.
 
 ### Simple Sub-Workflow
 
@@ -200,49 +231,58 @@ const sub = simpleSubworkflow('validation', validationWorkflow, {
 
 ### Nested Sub-Workflow
 
-Extract a sub-key of parent state for the child:
+Run the child on one key of the parent state; its final state is written back under that key:
 
 ```typescript
 import { nestedSubworkflow } from '@cogitator-ai/workflows';
 
-interface AppState {
-  user: UserState;
+type OrderState = { items: string[]; total?: number };
+
+type AppState = {
+  userId: string;
   orders: OrderState;
-}
+};
 
 const sub = nestedSubworkflow<AppState, 'orders'>('process-orders', orderWorkflow, 'orders');
 ```
 
 ### Conditional Sub-Workflow
 
+The child runs only when `condition` holds; otherwise the node is skipped (output `{ skipped: true }`) and the parent state is unchanged:
+
 ```typescript
 import { conditionalSubworkflow } from '@cogitator-ai/workflows';
 
-const sub = conditionalSubworkflow<ParentState, ChildState>('optional-step', {
+type ReportState = { rawData: string; needsDeepAnalysis: boolean; extra?: unknown };
+type ExtraState = { data: string; result?: string };
+
+const sub = conditionalSubworkflow<ReportState, ExtraState>('optional-step', {
   workflow: optionalWorkflow,
   condition: (state) => state.needsDeepAnalysis,
   inputMapper: (state) => ({ data: state.rawData }),
-  outputMapper: (result, state) => ({ ...state, extra: result.state }),
+  outputMapper: (result, state) => ({ ...state, extra: result.state.result }),
 });
 ```
 
 ## Parallel Sub-Workflows
 
-Execute multiple sub-workflows concurrently with aggregation.
+Execute multiple sub-workflows concurrently with aggregation. The second type parameter is the children's state, so inputs and results stay typed. Add the configs to a builder with `parallelSubworkflowsNode` (its output is the run's `stats`: `total`, `successful`, `failed`, `skipped`), or run them with `executeParallelSubworkflows(state, config, context)`.
 
 ### Fan-Out / Fan-In
 
 Distribute the same workflow across multiple inputs:
 
 ```typescript
-import { fanOutFanIn } from '@cogitator-ai/workflows';
+import { fanOutFanIn, parallelSubworkflowsNode } from '@cogitator-ai/workflows';
 
-interface BatchState {
+type BatchState = {
   items: string[];
-  results: Map<string, string>;
-}
+  results: Record<string, string>;
+};
 
-const config = fanOutFanIn<BatchState, { input: string; output?: string }>('process-batch', {
+type ItemState = { input: string; output?: string };
+
+const config = fanOutFanIn<BatchState, ItemState>('process-batch', {
   workflow: itemWorkflow,
   getInputs: (state) =>
     state.items.map((item, i) => ({
@@ -250,18 +290,20 @@ const config = fanOutFanIn<BatchState, { input: string; output?: string }>('proc
       input: { input: item },
     })),
   aggregator: (results, state) => {
-    const allResults = new Map<string, string>();
+    const collected: Record<string, string> = {};
     for (const [id, result] of results) {
-      allResults.set(id, result.state.output ?? '');
+      collected[id] = result.state.output ?? '';
     }
-    return { ...state, results: allResults };
+    return { ...state, results: collected };
   },
   concurrency: 4,
   continueOnError: true,
 });
 
-builder.addNode('process-batch', parallelSubworkflowsNode(config));
+builder.addNode('process-batch', parallelSubworkflowsNode(config as never));
 ```
+
+`parallelSubworkflowsNode` is currently declared for configs whose children use the plain `WorkflowState`, so a config typed with a child state needs the `as never` above to type-check; the node runs it unchanged.
 
 ### Scatter-Gather
 
@@ -270,53 +312,96 @@ Send work to different specialized workflows and gather all results:
 ```typescript
 import { scatterGather } from '@cogitator-ai/workflows';
 
-const config = scatterGather<AnalysisState, { input: string; output?: string }>('multi-analysis', {
+type AnalysisState = {
+  text: string;
+  sentiment?: string;
+  entities?: string;
+  topics?: string;
+};
+
+const config = scatterGather<AnalysisState, ItemState>('multi-analysis', {
   workflows: new Map([
     ['sentiment', sentimentWorkflow],
     ['entities', entityWorkflow],
     ['topics', topicWorkflow],
   ]),
-  inputMapper: (state, workflowId) => ({ input: state.text }),
-  outputMapper: (results, state) => {
-    const sentiment = results.get('sentiment')?.state.output;
-    const entities = results.get('entities')?.state.output;
-    const topics = results.get('topics')?.state.output;
-    return { ...state, sentiment, entities, topics };
-  },
+  inputMapper: (state) => ({ input: state.text }),
+  outputMapper: (results, state) => ({
+    ...state,
+    sentiment: results.get('sentiment')?.state.output,
+    entities: results.get('entities')?.state.output,
+    topics: results.get('topics')?.state.output,
+  }),
   timeout: 30000,
 });
 ```
 
-### Race
+`scatterGather` continues past failed children by default (`continueOnError: true`); the aggregators only see children that completed.
 
-Execute multiple sub-workflows and take the first successful result:
+### Custom Parallel Sets
+
+`parallelSubworkflows` takes the definitions directly — a list or a function of the state — each with its own `SubworkflowConfig`:
 
 ```typescript
-import { raceSubworkflows } from '@cogitator-ai/workflows';
+import { parallelSubworkflows, subworkflowNode } from '@cogitator-ai/workflows';
 
-const result = await raceSubworkflows(
-  parentState,
-  [fastModelConfig, slowModelConfig, fallbackConfig],
-  context
-);
-
-if (result) {
-  console.log('Winner:', result.parentState);
-}
+const config = parallelSubworkflows<AnalysisState, ItemState>('checks', {
+  subworkflows: (state) =>
+    ['spelling', 'tone'].map((id) => ({
+      id,
+      config: subworkflowNode<AnalysisState, ItemState>(`check-${id}`, {
+        workflow: id === 'spelling' ? spellingWorkflow : toneWorkflow,
+        inputMapper: () => ({ input: state.text }),
+        outputMapper: (_child, parentState) => parentState,
+      }),
+    })),
+  concurrency: 2,
+  onError: 'catch',
+  continueOnError: true,
+  aggregator: (results, state) => ({
+    ...state,
+    topics: [...results.keys()].join(', '),
+  }),
+  onProgress: (p) => console.log(`${p.completed}/${p.total}`),
+});
 ```
 
-### Fallback
+Without `continueOnError`, the first failing child stops the set and fails the node. With it, the aggregator runs when at least one child succeeded.
 
-Try sub-workflows in order until one succeeds:
+### Race and Fallback
+
+`raceSubworkflows` runs several configs at once and returns the first successful result (cancelling the others), or `null` if none succeeds. `fallbackSubworkflows` tries them in order until one succeeds. Both take a `SubworkflowContext`, which a custom node builds from its runtime context:
 
 ```typescript
-import { fallbackSubworkflows } from '@cogitator-ai/workflows';
+import {
+  customNode,
+  fallbackSubworkflows,
+  raceSubworkflows,
+  type ExtendedNodeContext,
+  type SubworkflowContext,
+} from '@cogitator-ai/workflows';
 
-const result = await fallbackSubworkflows(
-  parentState,
-  [primaryConfig, secondaryConfig, lastResortConfig],
-  context
-);
+const answer = customNode<ParentState>('answer', async (ctx) => {
+  const ext = ctx as ExtendedNodeContext<ParentState>;
+  const context: SubworkflowContext = {
+    cogitator: ext.cogitator,
+    parentWorkflowId: ctx.workflowId,
+    parentRunId: ctx.workflowId,
+    parentNodeId: ctx.nodeId,
+    depth: ext.depth ?? 0,
+    signal: ext.signal,
+  };
+
+  const fastest = await raceSubworkflows(ctx.state, [fastModelConfig, slowModelConfig], context);
+  if (fastest) return { state: fastest.parentState };
+
+  const fallback = await fallbackSubworkflows(
+    ctx.state,
+    [primaryConfig, lastResortConfig],
+    context
+  );
+  return { state: fallback.parentState };
+});
 ```
 
 ## Conditional Branching
@@ -342,15 +427,23 @@ const workflow = new WorkflowBuilder<ReviewState>('review')
   .build();
 ```
 
-Multi-target routing returns multiple branches:
+Multi-target routing returns several branches; every possible target lists the conditional in its `after`:
 
 ```typescript
-builder.addConditional('fork', (state) => {
-  const targets: string[] = ['log'];
-  if (state.needsNotification) targets.push('notify');
-  if (state.needsArchive) targets.push('archive');
-  return targets;
-});
+builder
+  .addConditional(
+    'fork',
+    (state) => {
+      const targets: string[] = ['log'];
+      if (state.needsNotification) targets.push('notify');
+      if (state.needsArchive) targets.push('archive');
+      return targets;
+    },
+    { after: ['analyze'] }
+  )
+  .addNode('log', logNode, { after: ['fork'] })
+  .addNode('notify', notifyNode, { after: ['fork'] })
+  .addNode('archive', archiveNode, { after: ['fork'] });
 ```
 
 ## Loops
@@ -358,11 +451,11 @@ builder.addConditional('fork', (state) => {
 Use `WorkflowBuilder.addLoop` for iterative refinement:
 
 ```typescript
-interface DraftState {
+type DraftState = {
   draft: string;
   score: number;
   iteration: number;
-}
+};
 
 const workflow = new WorkflowBuilder<DraftState>('iterative-writer')
   .initialState({ draft: '', score: 0, iteration: 0 })
@@ -379,19 +472,23 @@ const workflow = new WorkflowBuilder<DraftState>('iterative-writer')
   .addNode(
     'evaluate',
     agentNode(critic, {
-      inputMapper: (state) => `Score 1-10:\n${state.draft}`,
-      stateMapper: (r) => ({
-        score: parseInt(r.output) || 0,
-        iteration: 0,
-      }),
+      inputMapper: (state) => `Score 1-10, reply with the number only:\n${state.draft}`,
+      stateMapper: (r) => ({ score: parseInt(r.output, 10) || 0 }),
     }),
     { after: ['write'] }
+  )
+  .addNode(
+    'count',
+    functionNode('count', async (state) => state.iteration + 1, {
+      stateMapper: (n) => ({ iteration: n as number }),
+    }),
+    { after: ['evaluate'] }
   )
   .addLoop('quality-gate', {
     condition: (state) => state.score < 8 && state.iteration < 5,
     back: 'write',
     exit: 'publish',
-    after: ['evaluate'],
+    after: ['count'],
   })
   .addNode(
     'publish',
@@ -402,7 +499,7 @@ const workflow = new WorkflowBuilder<DraftState>('iterative-writer')
   .build();
 ```
 
-The loop checks the condition after `evaluate` completes. If `true`, execution jumps back to `write`. If `false`, it proceeds to `publish`. The `maxIterations` option on `WorkflowExecutor` provides a safety net against infinite loops.
+The loop checks the condition after `count` completes. If `true`, execution jumps back to `write`. If `false`, it proceeds to `publish`. The `maxIterations` option on `WorkflowExecutor` (default `100` steps) provides a safety net against infinite loops.
 
 ## Parallel Execution
 

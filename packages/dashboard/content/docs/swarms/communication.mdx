@@ -13,7 +13,7 @@ Agents in a swarm communicate through three complementary primitives:
 | **MessageBus**   | Direct agent-to-agent or broadcast messaging             | Point-to-point or broadcast   |
 | **EventEmitter** | Coordination signals emitted by the swarm and strategies | Observer pattern              |
 
-Every `Swarm` instance exposes all three via `swarm.blackboard`, `swarm.messageBus`, and `swarm.events`. The `SwarmCoordinator` initializes them automatically based on your configuration.
+Every `Swarm` instance exposes all three via `swarm.blackboard`, `swarm.messageBus`, and `swarm.events`. The `SwarmCoordinator` creates them from your configuration — in-memory by default, Redis-backed in [distributed mode](/docs/swarms/distributed). Strategies use the blackboard for their own state (sections such as `consensus`, `auction`, `pipeline`, `debate`), so you can watch a run from outside.
 
 ## Blackboard
 
@@ -47,7 +47,7 @@ const bb = team.blackboard;
 
 bb.write('sources', ['https://example.com/paper.pdf'], 'searcher');
 
-const sources = bb.read<string[]>('sources');
+const sources = bb.read<string[]>('sources'); // throws if the section does not exist
 
 bb.append('facts', { claim: 'X is true', source: 'paper.pdf' }, 'analyzer');
 
@@ -57,6 +57,8 @@ bb.getSections();
 
 const section = bb.getSection<string[]>('sources');
 // { name, data, lastModified, modifiedBy, version }
+
+bb.delete('conclusions');
 ```
 
 ### History Tracking
@@ -121,17 +123,18 @@ await bus.send({
 await bus.broadcast('agent-a', 'I found something important', 'announcements');
 ```
 
+`send` resolves to the stored message (with `id` and `timestamp`) and throws when messaging is disabled or a limit below is hit.
+
 ### Querying Messages
 
 ```typescript
-const myMessages = bus.getMessages('agent-b');
+const myMessages = bus.getMessages('agent-b', 20); // last 20 sent by, to or broadcast for agent-b
 const unread = bus.getUnreadMessages('agent-b');
-bus.markAsRead('agent-b', unread.map((m) => m.id));
 const thread = bus.getConversation('agent-a', 'agent-b');
 const all = bus.getAllMessages();
 ```
 
-Read tracking is per agent. Inside a swarm, unread messages are injected into the recipient's next turn exactly once (emitting `message:received`), and the `read_messages` tool marks the messages it returns as read.
+Read tracking is per agent. Inside a swarm, unread messages are injected into the recipient's next turn exactly once (emitting `message:received`), and the `read_messages` tool marks the messages it returns as read. The concrete buses (`InMemoryMessageBus`, `RedisMessageBus`) also have `markAsRead(agentName, ids)`.
 
 ### Subscribing to Incoming Messages
 
@@ -171,85 +174,75 @@ team.on('*', (event) => {
 
 // one-time listener
 team.once('consensus:reached', (event) => {
-  alert(`Decision: ${event.data.decision}`);
+  const { decision } = event.data as { decision: string };
+  console.log(`Decision: ${decision}`);
 });
 ```
 
 ### Built-in Event Types
 
-Events emitted by the core coordinator:
+Events emitted by the swarm and its coordinator (`event.data` holds the payload):
 
-| Event            | Data                                    |
-| ---------------- | --------------------------------------- |
-| `swarm:start`    | `{ swarmId, strategy, input }`          |
-| `swarm:complete` | `{ swarmId, outputLength, agentCount }` |
-| `swarm:error`    | `{ swarmId, error }`                    |
-| `swarm:paused`   | `{ swarmId }`                           |
-| `swarm:resumed`  | `{ swarmId }`                           |
-| `swarm:aborted`  | `{ swarmId }`                           |
-| `agent:start`    | `{ agentName, input }`                  |
-| `agent:complete` | `{ agentName, result }`                 |
-| `agent:error`    | `{ agentName, error }`                  |
-| `message:sent`   | `{ id, from, to, type, channel, content }` |
-| `message:received` | `{ agentName, count, messageIds }`    |
+| Event              | Data                                       |
+| ------------------ | ------------------------------------------ |
+| `swarm:start`      | `{ swarmId, strategy, input }`             |
+| `swarm:complete`   | `{ swarmId, outputLength, agentCount }`    |
+| `swarm:error`      | `{ swarmId, error }`                       |
+| `swarm:paused`     | `{ swarmId }`                              |
+| `swarm:resumed`    | `{ swarmId }`                              |
+| `swarm:aborted`    | `{ swarmId }`                              |
+| `swarm:reset`      | `{ swarmId }`                              |
+| `agent:start`      | `{ agentName, input }`                     |
+| `agent:complete`   | `{ agentName, result }`                    |
+| `agent:error`      | `{ agentName, error }`                     |
+| `message:sent`     | `{ id, from, to, type, channel, content }` |
+| `message:received` | `{ agentName, count, messageIds }`         |
 | `blackboard:write` | `{ section, version, writtenBy, deleted }` |
 
 Strategy-specific events:
 
-| Event                                                                                                                         | Strategy    |
-| ----------------------------------------------------------------------------------------------------------------------------- | ----------- |
-| `consensus:round`, `consensus:reached`                                                                                        | Consensus   |
-| `auction:start`, `auction:bid`, `auction:winner`, `auction:complete`                                                          | Auction     |
-| `pipeline:stage`, `pipeline:stage:complete`, `pipeline:gate:pass`, `pipeline:gate:fail`                                       | Pipeline    |
-| `debate:round`, `debate:turn`                                                                                                 | Debate      |
-| `negotiation:start`, `negotiation:round`, `negotiation:phase-change`, `negotiation:agreement-reached`, `negotiation:deadlock` | Negotiation |
+| Event                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Strategy    |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------- |
+| `round-robin:assigned`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Round-robin |
+| `consensus:round`, `consensus:turn`, `consensus:vote`, `consensus:reached`                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Consensus   |
+| `auction:start`, `auction:bid`, `auction:winner`, `auction:complete`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Auction     |
+| `pipeline:stage`, `pipeline:stage:complete`, `pipeline:gate:pass`, `pipeline:gate:fail`                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Pipeline    |
+| `debate:round`, `debate:turn`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Debate      |
+| `negotiation:start`, `negotiation:round`, `negotiation:turn`, `negotiation:phase-change`, `negotiation:offer-made`, `negotiation:offer-accepted`, `negotiation:offer-rejected`, `negotiation:offer-countered`, `negotiation:convergence-update`, `negotiation:stagnation-detected`, `negotiation:mediation-suggested`, `negotiation:approval-required`, `negotiation:approval-received`, `negotiation:agreement-reached`, `negotiation:deadlock`, `negotiation:escalation`, `negotiation:arbitration`, `negotiation:terminated` (and coalition events) | Negotiation |
+| `assessor:complete`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Assessor    |
 
 ### Querying Event History
 
 The event emitter keeps a rolling buffer of recent events (default 1000):
 
 ```typescript
-const events = team.events;
-
-const allEvents = events.getEvents();
-const agentEvents = events.getEventsByAgent('frontend-dev');
-const roundEvents = events.getEventsByType('consensus:round');
-
-events.clearEvents();
+const allEvents = team.events.getEvents();
+const agentEvents = allEvents.filter((e) => e.agentName === 'frontend-dev');
+const roundEvents = allEvents.filter((e) => e.type === 'consensus:round');
 ```
 
-## Using Tools for Communication
+The concrete emitters (`SwarmEventEmitterImpl`, `RedisSwarmEventEmitter`) also offer `getEventsByType`, `getEventsByAgent` and `clearEvents`. `SwarmRunOptions.onEvent` receives every event of one run.
 
-Strategies automatically inject swarm context into agent runs, but you can also create explicit communication tools:
+## Swarm Tools
+
+Strategies attach the tools they depend on: the hierarchical supervisor gets the delegation tools and negotiating agents get the negotiation tools (in-process swarms only). Messaging, blackboard and voting tools are not attached automatically. The factories build them for a given blackboard, bus and event emitter:
+
+| Factory                  | Tools                                                                                                                                                                     |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `createMessagingTools`   | `send_message` (optional `waitForReply`), `read_messages` (marks returned messages read), `broadcast_message`, `reply_to_message`                                         |
+| `createBlackboardTools`  | `read_blackboard`, `write_blackboard` (`merge` extends arrays / merges objects), `append_blackboard`, `list_blackboard_sections`, `get_blackboard_history`                |
+| `createDelegationTools`  | `delegate_task`, `check_progress`, `request_revision`, `list_workers`                                                                                                     |
+| `createVotingTools`      | `cast_vote`, `get_votes`, `change_vote`, `get_consensus_status`                                                                                                           |
+| `createNegotiationTools` | `make_offer`, `counter_offer`, `accept_offer`, `reject_offer`, `get_negotiation_status`, `get_current_offers`, `propose_coalition`, `join_coalition`, `declare_interests` |
 
 ```typescript
-import { tool } from '@cogitator-ai/core';
-import { z } from 'zod';
+import { createBlackboardTools, createVotingTools } from '@cogitator-ai/swarms';
 
-const readBoard = tool({
-  name: 'read_blackboard',
-  description: 'Read a section from the shared blackboard',
-  parameters: z.object({ section: z.string() }),
-  execute: async ({ section }, { swarm }) => {
-    return swarm.blackboard.read(section);
-  },
-});
-
-const writeBoard = tool({
-  name: 'write_blackboard',
-  description: 'Write data to a blackboard section',
-  parameters: z.object({
-    section: z.string(),
-    data: z.unknown(),
-  }),
-  execute: async ({ section, data }, { swarm }) => {
-    swarm.blackboard.write(section, data, 'agent');
-    return { success: true };
-  },
-});
+const { readBlackboard, writeBlackboard } = createBlackboardTools(team.blackboard, 'analyst');
+const voting = createVotingTools(team.blackboard, team.events, 'analyst', 2);
 ```
 
-The `@cogitator-ai/swarms` package exports ready-made tool factories via `createBlackboardTools()`, `createMessagingTools()`, `createDelegationTools()`, `createVotingTools()`, and `createNegotiationTools()`.
+Each factory returns an object of tools bound to one agent name. Because the blackboard, bus and events belong to a built swarm while an `Agent`'s tools are fixed when it is constructed, these factories are mainly for custom strategies and coordinators: `createSwarmTools(context)` returns every tool and `createStrategyTools(strategy, context)` the set a strategy needs, from a `SwarmToolContext` (`coordinator`, `blackboard`, `messageBus`, `events`, `agentName`, optional `agentWeight` and `swarmId`). Messaging tools created that way enforce the hierarchical communication policy (`createHierarchyMessageAuthorizer`).
 
 ## Redis-Backed Variants
 

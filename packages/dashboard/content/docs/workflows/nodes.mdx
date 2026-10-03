@@ -22,13 +22,16 @@ interface NodeContext<S> {
   workflowId: string;
   step: number;
   input?: unknown;
-  reportProgress: (progress: number) => void;
+  reportProgress?: (progress: number) => void;
 }
 ```
 
 - **`state`** -- Current workflow state snapshot
 - **`input`** -- Output from upstream dependency nodes (single value if one dep, array if multiple)
-- **`reportProgress`** -- Report 0-100 progress for streaming events
+- **`step`** -- The executor iteration the node runs in
+- **`reportProgress`** -- Report 0-100 progress (clamped) for `onNodeProgress` and `node_progress` stream events; the executor always sets it, the type marks it optional
+
+At run time the executor passes an `ExtendedNodeContext<S>` (exported from `@cogitator-ai/workflows`) that adds `cogitator`, `signal` (the run's `AbortSignal`, or a per-attempt signal when the node has a `timeout`), `depth` (subworkflow nesting) and the run-level `approvalStore`, `approvalNotifier` and `timerStore`. Cast to it in a custom node when you need them.
 
 ## Node Result
 
@@ -56,32 +59,38 @@ Runs a Cogitator `Agent` as a workflow node. The executor injects a `cogitator` 
 import { Agent } from '@cogitator-ai/core';
 import { agentNode } from '@cogitator-ai/workflows';
 
+type ResearchState = { topic: string; findings?: string };
+
 const researcher = new Agent({
   name: 'researcher',
+  model: 'openai/gpt-5.5',
   instructions: 'You are a research assistant.',
+  temperature: 0.3,
 });
 
-const node = agentNode(researcher, {
+const node = agentNode<ResearchState>(researcher, {
   inputMapper: (state) => `Research the topic: ${state.topic}`,
   stateMapper: (result) => ({ findings: result.output }),
-  runOptions: { temperature: 0.3 },
+  runOptions: { timeout: 60_000 },
 });
 ```
 
 ### AgentNodeOptions
 
-| Option        | Type                                | Description                                                              |
-| ------------- | ----------------------------------- | ------------------------------------------------------------------------ |
-| `inputMapper` | `(state, input?) => string`         | Convert state to agent input string. Defaults to `JSON.stringify(state)` |
-| `stateMapper` | `(result: RunResult) => Partial<S>` | Map agent output to state updates                                        |
-| `runOptions`  | `Partial<RunOptions>`               | Override temperature, maxTokens, etc.                                    |
+| Option        | Type                                | Description                                                                                                                                                    |
+| ------------- | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `inputMapper` | `(state, input?) => string`         | Build the agent input. Without it: `ctx.input` if it is a string, otherwise `JSON.stringify(ctx.input)`, or `JSON.stringify(state)` when the node has no input |
+| `stateMapper` | `(result: RunResult) => Partial<S>` | Map agent output to state updates                                                                                                                              |
+| `runOptions`  | `Partial<RunOptions>`               | Extra run options (`timeout`, `threadId`, `context`, `onToken`, ...). Sampling settings such as `temperature` belong on the `Agent`                            |
 
 ### Behavior
 
 1. `inputMapper` converts the current state into a prompt string
-2. The agent runs via `cogitator.run(agent, { input, ...runOptions })`
+2. The agent runs via `cogitator.run(agent, { input, signal, ...runOptions })` — the run's abort signal (or the node's timeout) cancels the LLM call
 3. `stateMapper` extracts state updates from the `RunResult`
 4. The agent's raw output is passed downstream via `output`
+
+A failed run is rethrown as an error naming the agent, workflow and node, with the original error as `cause`.
 
 ```typescript
 builder.addNode(
@@ -122,15 +131,16 @@ const node = toolNode(fetchUrl, {
 
 ### ToolNodeOptions
 
-| Option        | Type                       | Required | Description                      |
-| ------------- | -------------------------- | -------- | -------------------------------- |
-| `argsMapper`  | `(state, input?) => TArgs` | Yes      | Map state to tool arguments      |
-| `stateMapper` | `(result) => Partial<S>`   | No       | Map tool result to state updates |
+| Option        | Type                       | Required | Description                                             |
+| ------------- | -------------------------- | -------- | ------------------------------------------------------- |
+| `argsMapper`  | `(state, input?) => TArgs` | Yes      | Map state to tool arguments                             |
+| `stateMapper` | `(result) => Partial<S>`   | No       | Map tool result to state updates                        |
+| `signal`      | `AbortSignal`              | No       | Signal passed to the tool; defaults to the run's signal |
 
 ### Behavior
 
 1. `argsMapper` builds typed arguments from state
-2. The tool's `execute` function runs with those arguments
+2. The tool's `execute` function runs with those arguments and a `ToolContext` whose `agentId` is `workflow:<workflowId>:<nodeId>` and `runId` is the workflow id
 3. `stateMapper` extracts state updates from the result
 4. The raw tool result is passed downstream
 
@@ -143,9 +153,11 @@ Runs an arbitrary async function. The simplest node type for data transformation
 ```typescript
 import { functionNode } from '@cogitator-ai/workflows';
 
-const node = functionNode(
+type TextState = { rawData?: string; cleanData?: string };
+
+const node = functionNode<TextState>(
   'normalize',
-  async (state, input) => {
+  async (state) => {
     const data = state.rawData ?? '';
     return data.trim().toLowerCase().replace(/\s+/g, ' ');
   },
@@ -172,7 +184,9 @@ The function receives the full state and optional input from upstream nodes. Ret
 Validation:
 
 ```typescript
-const validate = functionNode('validate', async (state) => {
+type SignupState = { email?: string };
+
+const validate = functionNode<SignupState>('validate', async (state) => {
   if (!state.email?.includes('@')) {
     throw new Error('Invalid email');
   }
@@ -183,7 +197,10 @@ const validate = functionNode('validate', async (state) => {
 Data transformation:
 
 ```typescript
-const transform = functionNode(
+type Item = { name: string; score: number };
+type ItemState = { items: Item[]; filteredItems?: Item[] };
+
+const transform = functionNode<ItemState>(
   'transform',
   async (state) => {
     return state.items.filter((item) => item.score > 0.5);
@@ -203,14 +220,14 @@ Full control over the node context and result. Use when you need access to `work
 ```typescript
 import { customNode } from '@cogitator-ai/workflows';
 
-const node = customNode('complex-step', async (ctx) => {
-  ctx.reportProgress(0);
+const node = customNode<StepState>('complex-step', async (ctx) => {
+  ctx.reportProgress?.(0);
 
   const data = await fetchExternalAPI(ctx.state.apiEndpoint);
-  ctx.reportProgress(50);
+  ctx.reportProgress?.(50);
 
   const processed = await processData(data);
-  ctx.reportProgress(100);
+  ctx.reportProgress?.(100);
 
   return {
     state: { processedData: processed, lastStep: ctx.nodeId },
@@ -229,16 +246,29 @@ function customNode<S>(
 ): WorkflowNode<S>;
 ```
 
-The `next` field in the result lets you override the DAG routing dynamically at runtime.
+The `next` field in the result lets you override the DAG routing dynamically at runtime: the executor runs the named nodes next instead of following the node's edges.
+
+To reach the runtime extras (Cogitator, abort signal, stores), cast the context:
+
+```typescript
+import { customNode, type ExtendedNodeContext } from '@cogitator-ai/workflows';
+
+const summarize = customNode<StepState>('summarize', async (ctx) => {
+  const { cogitator, signal } = ctx as ExtendedNodeContext<StepState>;
+  const result = await cogitator.run(summarizer, { input: ctx.state.apiEndpoint, signal });
+  return { output: result.output };
+});
+```
 
 ---
 
 ## Human-in-the-Loop Nodes
 
-`approvalNode`, `choiceNode`, `inputNode`, `ratingNode`, `chainNode` and `managementChain` build approval configurations; `humanWorkflowNode` turns them into workflow nodes that pause until a response arrives in the `ApprovalStore`.
+`approvalNode`, `choiceNode`, `inputNode`, `ratingNode`, `chainNode`, `managementChain` and `humanNode` build approval configurations (`NamedHumanNodeConfig`, a `HumanNodeConfig` with its `name` set); `humanWorkflowNode` turns them into workflow nodes that pause until a response arrives in the `ApprovalStore`. The store comes from the node options or from the `approvalStore` execute option; a human node with neither throws.
 
 ```typescript
 import {
+  WorkflowBuilder,
   approvalNode,
   choiceNode,
   humanWorkflowNode,
@@ -246,9 +276,12 @@ import {
   ConsoleNotifier,
 } from '@cogitator-ai/workflows';
 
+type ExpenseState = { amount: number; approved?: boolean };
+
 const approvalStore = new InMemoryApprovalStore();
 
-builder
+const builder = new WorkflowBuilder<ExpenseState>('expense')
+  .initialState({ amount: 0 })
   .addNode(
     'manager-approval',
     humanWorkflowNode(
@@ -280,26 +313,55 @@ builder
     ),
     { after: ['manager-approval'] }
   );
-
-// Respond from an API handler or UI:
-await approvalStore.submitResponse({ requestId, decision: true, respondedBy: 'manager', respondedAt: Date.now() });
 ```
 
-The node output is `{ approved, decision, timedOut, escalated, withdrawn }`; use `stateMapper` to copy the decision into state for a following conditional.
+Answer from an API handler or UI — another process works too when both use the same durable store:
 
-The first answer to a request wins: a second `submitResponse` — another approver, or a timeout firing just after someone answered — throws `ApprovalAlreadyAnsweredError` carrying the answer that stands, and the node keeps that answer. Deleting a request nobody answered yet (or letting it expire) withdraws it: the waiting node finishes with `withdrawn: true` and `approved: false` instead of waiting forever. A timeout, a withdrawal or an expired escalation never counts as approval, whatever the approval type.
+```typescript
+import { ApprovalAlreadyAnsweredError } from '@cogitator-ai/workflows';
+
+const [request] = await approvalStore.getPendingForAssignee('manager@company.com');
+
+try {
+  await approvalStore.submitResponse({
+    requestId: request.id,
+    decision: true,
+    respondedBy: 'manager@company.com',
+    respondedAt: Date.now(),
+    comment: 'Within budget',
+  });
+} catch (error) {
+  if (error instanceof ApprovalAlreadyAnsweredError) {
+    console.log('Already answered:', error.existing?.decision);
+  } else {
+    throw error;
+  }
+}
+```
+
+`getPendingRequests(workflowId?)` lists open requests of a run; each request carries `workflowId`, `nodeId`, `type`, `title`, `description`, `choices`, `assignee`, `deadline` and `priority`.
+
+The node output is `{ approved, decision, timedOut, escalated }`. `stateMapper` receives the full `HumanNodeResult` — `approved`, `decision`, `response`, `timedOut`, `escalated` and `withdrawn` — so copy what a following conditional needs into state there.
+
+What counts as approved depends on the type: `approve-reject` needs `true` or `'approve'`, `multi-choice` any non-null choice, `free-form` a non-empty string and `numeric-rating` a number.
+
+- **First answer wins.** A second `submitResponse` for the same request — another approver, or a timeout firing just after someone answered — throws `ApprovalAlreadyAnsweredError` carrying the answer that stands (`existing`), and the node keeps that answer. `submitOrExisting(store, response)` submits unless an answer exists and returns whichever answer stands.
+- **Withdrawn requests.** Deleting a request nobody answered yet (`deleteRequest`, or the in-memory store's expiry) withdraws it: the waiting node finishes with `withdrawn: true` and `approved: false` instead of waiting forever. The withdrawn answer has `respondedBy: WITHDRAWN`.
+- **Timeouts.** With `timeout`, `timeoutAction` decides: `'approve'` auto-approves, `'reject'` auto-rejects, `'fail'` (default) answers with an error decision, and `'escalate'` opens a new request for `escalateTo` that waits at least 30 minutes before failing. `isUnanswered(response)` tells a timeout, withdrawal or expired escalation apart from a person's decision; those never count as approval.
+- **Chains.** `chainNode` and `managementChain` ask each approver in turn; a `required` step that rejects (or times out) stops the chain with `approved: false`, and `timeoutAction: 'skip'` on a step moves on to the next approver.
+- **Delegation.** Wrap a store with `withDelegation(store)`: a response with `delegatedTo` answers the request with `'delegated'` and opens a copy assigned to the delegate.
 
 ## Timer, Map-Reduce and Subworkflow Adapters
 
 Timer, map-reduce and subworkflow helpers return configurations. Wrap them with the matching adapter to add them to a builder:
 
-| Configuration helpers                                                              | Adapter                     |
-| ---------------------------------------------------------------------------------- | --------------------------- |
-| `delayNode`, `dynamicDelayNode`, `cronWaitNode`, `untilNode`                       | `timerWorkflowNode`         |
-| `mapNode`                                                                          | `mapWorkflowNode`           |
-| `mapReduceNode`                                                                    | `mapReduceWorkflowNode`     |
-| `subworkflowNode`, `simpleSubworkflow`, `nestedSubworkflow`, `conditionalSubworkflow` | `subworkflowWorkflowNode`   |
-| `parallelSubworkflows`, `fanOutFanIn`, `scatterGather`                             | `parallelSubworkflowsNode`  |
+| Configuration helpers                                                                 | Adapter                    |
+| ------------------------------------------------------------------------------------- | -------------------------- |
+| `delayNode`, `dynamicDelayNode`, `cronWaitNode`, `untilNode`                          | `timerWorkflowNode`        |
+| `mapNode`                                                                             | `mapWorkflowNode`          |
+| `mapReduceNode`                                                                       | `mapReduceWorkflowNode`    |
+| `subworkflowNode`, `simpleSubworkflow`, `nestedSubworkflow`, `conditionalSubworkflow` | `subworkflowWorkflowNode`  |
+| `parallelSubworkflows`, `fanOutFanIn`, `scatterGather`                                | `parallelSubworkflowsNode` |
 
 ```typescript
 builder
@@ -307,7 +369,9 @@ builder
   .addNode('analyze', subworkflowWorkflowNode(subConfig), { after: ['cool-down'] });
 ```
 
-Timers are cancelled when the run is aborted; subworkflow failures propagate to the parent (or follow `onError`), and timed-out child runs are cancelled.
+Timers are cancelled when the run is aborted; subworkflow failures propagate to the parent (or follow `onError`), and timed-out child runs are cancelled. A timer config with `persist: true` records its timer in the `timerStore` (node option or execute option) so it shows up in a `TimerManager`; the wait itself still happens in the running process.
+
+To run a swarm as a step, use `swarmNode`, `conditionalSwarmNode` or `parallelSwarmsNode` from `@cogitator-ai/swarms` (see [Swarms](/docs/swarms#swarms-inside-workflows)).
 
 ---
 
@@ -316,6 +380,8 @@ Timers are cancelled when the run is aborted; subworkflow failures propagate to 
 All node factories and adapters return `WorkflowNode<S>` objects. Pass them directly to `WorkflowBuilder.addNode` (a node's `config` — `timeout`, `retries`, `retryDelay` — is merged with the `config` passed to `addNode`):
 
 ```typescript
+type MyState = { url: string; content?: string; analysis?: string };
+
 const workflow = new WorkflowBuilder<MyState>('pipeline')
   .initialState({ url: '' })
   .addNode(

@@ -10,10 +10,10 @@ description: Fluent API for constructing DAG-based workflows with nodes, edges, 
 ```typescript
 import { WorkflowBuilder } from '@cogitator-ai/workflows';
 
-interface MyState {
+type MyState = {
   input: string;
   result?: string;
-}
+};
 
 const workflow = new WorkflowBuilder<MyState>('my-workflow')
   .initialState({ input: '' })
@@ -28,7 +28,18 @@ const workflow = new WorkflowBuilder<MyState>('my-workflow')
 const builder = new WorkflowBuilder<S>(name: string);
 ```
 
-The generic type `S` defines the workflow state shape. It must extend `WorkflowState` (which is `Record<string, unknown>`).
+The generic type `S` defines the workflow state shape. It must satisfy `WorkflowState` (which is `Record<string, unknown>`): declare it as a type alias, or as an interface that extends `WorkflowState`:
+
+```typescript
+import type { WorkflowState } from '@cogitator-ai/types';
+
+interface OrderState extends WorkflowState {
+  orderId: string;
+  total?: number;
+}
+```
+
+A plain `interface` without `extends WorkflowState` has no index signature and fails the constraint.
 
 ## `.initialState(state)`
 
@@ -43,7 +54,7 @@ const builder = new WorkflowBuilder<{ count: number; items: string[] }>('counter
 
 ## `.addNode(name, node, options?)`
 
-Add a processing node to the workflow. `node` is either a `NodeFn<S>` -- an async function that receives a `NodeContext<S>` and returns a `NodeResult<S>` -- or a `WorkflowNode<S>` created by a factory (`agentNode`, `toolNode`, `functionNode`, `customNode`, ...). A factory node's `config` is merged with `options.config`.
+Add a processing node to the workflow. Every node, conditional, loop and parallel construct needs a unique name; adding a duplicate throws. `node` is either a `NodeFn<S>` -- an async function that receives a `NodeContext<S>` and returns a `NodeResult<S>` -- or a `WorkflowNode<S>` created by a factory (`agentNode`, `toolNode`, `functionNode`, `customNode`, ...). A factory node's `config` is merged with `options.config`.
 
 ```typescript
 builder.addNode('process', async (ctx) => {
@@ -60,12 +71,12 @@ builder.addNode('process', async (ctx) => {
 The optional `options` parameter accepts:
 
 - **`after`** -- Array of node names this node depends on. The node won't execute until all dependencies complete.
-- **`config`** -- Optional `NodeConfig` for metadata.
+- **`config`** -- Optional `NodeConfig`: `timeout` (ms per attempt), `retries` (extra attempts) and `retryDelay` (ms between attempts). See [Execution](/docs/workflows/execution#per-node-timeouts-and-retries).
 
 ```typescript
 builder.addNode('analyze', analyzeNodeFn, {
   after: ['fetch', 'validate'],
-  config: { timeout: 30000 },
+  config: { timeout: 30_000, retries: 2, retryDelay: 1_000 },
 });
 ```
 
@@ -76,11 +87,11 @@ In practice, you'll use node factories (`agentNode`, `toolNode`, `functionNode`)
 Add a conditional routing node. The condition function receives the current state and returns the name(s) of the target node(s) to execute next.
 
 ```typescript
-interface ReviewState {
+type ReviewState = {
   code: string;
   quality: 'good' | 'bad';
   fixedCode?: string;
-}
+};
 
 const workflow = new WorkflowBuilder<ReviewState>('code-review')
   .initialState({ code: '', quality: 'good' })
@@ -97,18 +108,18 @@ const workflow = new WorkflowBuilder<ReviewState>('code-review')
   .build();
 ```
 
-The condition function can return a single node name or an array for multi-target routing.
+The condition function can return a single node name or an array for multi-target routing. The possible targets are the nodes that list the conditional in their `after`; a returned name that is not one of them is ignored.
 
 ## `.addLoop(name, options)`
 
-Add a loop construct that re-executes a portion of the graph while a condition holds.
+Add a loop construct that re-executes a portion of the graph while a condition holds. The condition is typed with the builder's state, so `state.score` below is a `number`.
 
 ```typescript
-interface RefinementState {
+type RefinementState = {
   draft: string;
   score: number;
   iteration: number;
-}
+};
 
 const workflow = new WorkflowBuilder<RefinementState>('refine')
   .initialState({ draft: '', score: 0, iteration: 0 })
@@ -132,6 +143,8 @@ const workflow = new WorkflowBuilder<RefinementState>('refine')
 | `back`      | `string`                | Node to jump back to when looping      |
 | `exit`      | `string`                | Node to proceed to when done           |
 | `after`     | `string[]`              | Dependencies (optional)                |
+
+Only the loop's `back` and `exit` nodes may list the loop in their `after`; any other node that does makes `.build()` throw. Each pass through the loop counts against the executor's `maxIterations` (default `100`), and the `iteration` counter in the example has to be increased by one of the nodes (see [Loops](/docs/workflows/patterns#loops)).
 
 ## `.addParallel(name, targets, options?)`
 
@@ -169,6 +182,7 @@ builder
 
 Validates the workflow graph and returns a `Workflow<S>` object. Build-time validation checks:
 
+- The workflow has at least one node
 - Exactly one root exists when no `.entryPoint()` is set (no root or several independent roots throw)
 - Entry point exists in the node set
 - All edges reference existing nodes
@@ -194,16 +208,24 @@ const workflow = builder.build();
 import { WorkflowBuilder, agentNode, functionNode } from '@cogitator-ai/workflows';
 import { Agent } from '@cogitator-ai/core';
 
-interface PipelineState {
+type PipelineState = {
   url: string;
   rawData?: string;
   cleanData?: string;
   analysis?: string;
   isValid: boolean;
-}
+};
 
-const fetcher = new Agent({ name: 'fetcher', instructions: 'Fetch and return data from URLs.' });
-const analyst = new Agent({ name: 'analyst', instructions: 'Analyze structured data.' });
+const fetcher = new Agent({
+  name: 'fetcher',
+  model: 'openai/gpt-5.5',
+  instructions: 'Fetch and return data from URLs.',
+});
+const analyst = new Agent({
+  name: 'analyst',
+  model: 'openai/gpt-5.5',
+  instructions: 'Analyze structured data.',
+});
 
 const workflow = new WorkflowBuilder<PipelineState>('data-pipeline')
   .initialState({ url: '', isValid: false })
@@ -216,16 +238,9 @@ const workflow = new WorkflowBuilder<PipelineState>('data-pipeline')
   )
   .addNode(
     'clean',
-    functionNode(
-      'clean',
-      async (state) => {
-        const cleaned = state.rawData?.trim().toLowerCase();
-        return cleaned;
-      },
-      {
-        stateMapper: (output) => ({ cleanData: output as string, isValid: true }),
-      }
-    ),
+    functionNode('clean', async (state) => state.rawData?.trim().toLowerCase(), {
+      stateMapper: (output) => ({ cleanData: output as string, isValid: Boolean(output) }),
+    }),
     { after: ['fetch'] }
   )
   .addConditional('check', (state) => (state.isValid ? 'analyze' : 'error'), {

@@ -11,9 +11,7 @@ The recommended way to create swarms is the `swarm()` factory function. It retur
 import { Cogitator, Agent } from '@cogitator-ai/core';
 import { swarm } from '@cogitator-ai/swarms';
 
-const cogitator = new Cogitator({
-  /* ... */
-});
+const cogitator = new Cogitator({/* ... */});
 
 const team = swarm('my-team')
   .strategy('hierarchical')
@@ -24,7 +22,7 @@ const team = swarm('my-team')
   .build(cogitator);
 ```
 
-The `build(cogitator)` call validates the configuration and returns a ready-to-run `Swarm` instance.
+The `build(cogitator)` call validates the configuration and returns a ready-to-run `Swarm` instance. Every agent needs a `model` unless the Cogitator sets `llm.defaultModel`.
 
 ## Builder Methods
 
@@ -58,13 +56,11 @@ swarm('deal').strategy('negotiation').agents([buyerAgent, sellerAgent]);
 
 // pipeline: configured via strategy-specific options
 swarm('pipeline').strategy('pipeline').pipeline({
-  stages: [
-    /* ... */
-  ],
+  stages: [/* ... */],
 });
 ```
 
-Swarm metadata (role, expertise, weight, model lock) is attached by agent name. Slot defaults apply automatically (`supervisor`, `worker`, `moderator`, `router`); agent names must be unique:
+Swarm metadata (role, expertise, weight, model lock, `priority`, `custom`) is attached by agent name. Slot defaults apply automatically (`supervisor`, `worker`, `moderator`, `router`; pipeline stages get their stage name in `custom`), explicit `agentMetadata` overrides them, and agent names must be unique across all slots:
 
 ```typescript
 swarm('debate-team')
@@ -92,8 +88,8 @@ swarm('pool')
   .strategy('round-robin')
   .roundRobin({
     sticky: true,
-    stickyKey: (input) => extractSessionId(input),
-    rotation: 'sequential',
+    stickyKey: (input) => extractSessionId(String(input)),
+    rotation: 'random',
   });
 
 swarm('board').strategy('consensus').consensus({
@@ -119,7 +115,7 @@ swarm('pipe')
     ],
     gates: {
       review: {
-        condition: (out) => out.includes('APPROVED'),
+        condition: (out) => String(out).includes('APPROVED'),
         onFail: 'retry-previous',
         maxRetries: 2,
       },
@@ -131,15 +127,12 @@ swarm('debate').strategy('debate').debate({
   format: 'structured',
 });
 
-swarm('deal')
-  .strategy('negotiation')
-  .agents([buyerAgent, sellerAgent])
-  .negotiation({
-    maxRounds: 10,
-    turnOrder: 'round-robin',
-    onDeadlock: 'arbitrate',
-    stagnationThreshold: 0.05,
-  });
+swarm('deal').strategy('negotiation').agents([buyerAgent, sellerAgent]).negotiation({
+  maxRounds: 10,
+  turnOrder: 'round-robin',
+  onDeadlock: 'arbitrate',
+  stagnationThreshold: 0.05,
+});
 ```
 
 ### Communication
@@ -164,6 +157,8 @@ swarm('team')
   .observability({ messageLogging: true, blackboardLogging: true });
 ```
 
+Both default to enabled, in-memory instances (`protocol: 'direct'`, history tracked). `messageLogging` and `blackboardLogging` log every message and blackboard write through the Cogitator logger; `message:sent` and `blackboard:write` events are emitted either way. Agents do not get messaging or blackboard tools automatically — see [Swarm Tools](/docs/swarms/communication#swarm-tools).
+
 ### Resources and Error Handling
 
 ```typescript
@@ -185,7 +180,9 @@ swarm('team')
   });
 ```
 
-Budgets restart at the beginning of every run. `retry` makes `maxRetries` additional attempts with the configured backoff; `failover` follows the mapping until an agent succeeds (cycles are detected); `partialResults` lets parallel phases return the agents that succeeded.
+Budgets restart at the beginning of every run and are checked before each agent turn: once `tokenBudget`, `costLimit` or `timeout` (ms since the run started) is used up, the next turn fails with `Swarm resource budget exceeded` (a turn already running finishes). `maxConcurrency` (default 4) limits parallel phases such as auction bidding, and `perAgent` caps each agent's `maxTokens`, `maxIterations` and per-turn `timeout`.
+
+`retry` makes `maxRetries` additional attempts with the configured backoff; `failover` follows the mapping until an agent succeeds (cycles are detected); `skip` turns a failed turn into an empty result; `abort` (and no `errorHandling`) rethrows. `partialResults` (or `skip`) lets parallel phases return the agents that succeeded. The circuit breaker counts failures across the whole swarm and rejects turns while open.
 
 ### Distributed Mode
 
@@ -233,7 +230,7 @@ const team = new Swarm(cogitator, {
 });
 ```
 
-The constructor validates configuration immediately and throws if required fields are missing (e.g. no supervisor for hierarchical, no stages for pipeline).
+The constructor validates configuration immediately and throws on an unknown strategy, a hierarchical swarm without `supervisor`, a pipeline without stages, a missing `consensus` / `auction` / `debate` / `negotiation` block, or a consensus or negotiation swarm with fewer than two `agents`. The remaining agent requirements (two debaters, two voters besides the supervisor, ...) are checked when the strategy runs.
 
 ## Running a Swarm
 
@@ -254,20 +251,21 @@ console.log(result.agentResults);
 
 The `SwarmRunOptions`:
 
-| Field             | Type                                     | Description                                                                        |
-| ----------------- | ---------------------------------------- | ---------------------------------------------------------------------------------- |
-| `input`           | `string`                                 | The task to execute                                                                |
-| `context`         | `Record<string, unknown>`                | Additional context passed to all agents                                            |
-| `saveHistory`     | `boolean`                                | Whether to persist conversation history (default `true`)                           |
-| `threadId`        | `string`                                 | Base thread id; each agent uses `${threadId}:${agentName}`                         |
-| `timeout`         | `number`                                 | Rejects with `SwarmTimeoutError` and cancels in-flight LLM calls when exceeded     |
-| `onAgentStart`    | `(agent) => void`                        | Called when an agent turn starts                                                   |
-| `onAgentComplete` | `(agent, result) => void`                | Called when an agent turn completes                                                |
-| `onAgentError`    | `(agent, error) => void`                 | Called when an agent turn fails                                                    |
-| `onMessage`       | `(message) => void`                      | Called for every message sent on the swarm's message bus                           |
-| `onEvent`         | `(event) => void`                        | Called for every swarm event during this run                                       |
+| Field             | Type                      | Description                                                                                 |
+| ----------------- | ------------------------- | ------------------------------------------------------------------------------------------- |
+| `input`           | `string`                  | The task to execute                                                                         |
+| `context`         | `Record<string, unknown>` | Additional context passed to all agents                                                     |
+| `saveHistory`     | `boolean`                 | Whether to persist conversation history (default `true`)                                    |
+| `threadId`        | `string`                  | Base thread id; each agent uses `${threadId}:${agentName}`                                  |
+| `userId`          | `string`                  | The user the swarm acts for; every agent run carries it, so the threads belong to that user |
+| `timeout`         | `number`                  | Rejects with `SwarmTimeoutError` and cancels in-flight LLM calls when exceeded              |
+| `onAgentStart`    | `(agent) => void`         | Called when an agent turn starts                                                            |
+| `onAgentComplete` | `(agent, result) => void` | Called when an agent turn completes                                                         |
+| `onAgentError`    | `(agent, error) => void`  | Called when an agent turn fails                                                             |
+| `onMessage`       | `(message) => void`       | Called for every message sent on the swarm's message bus                                    |
+| `onEvent`         | `(event) => void`         | Called for every swarm event during this run                                                |
 
-A `Swarm` instance runs one task at a time — concurrent `run()` calls on the same instance are rejected.
+A `Swarm` instance runs one task at a time — concurrent `run()` calls on the same instance are rejected. A run that exceeds `timeout` rejects with `SwarmTimeoutError` (exported).
 
 ## Swarm Instance API
 
@@ -295,10 +293,10 @@ team.once('swarm:complete', (event) => {
 });
 
 // control
-team.pause();
+team.pause(); // the next agent turn waits until resume()
 team.resume();
 team.abort(); // also cancels in-flight LLM calls
-await team.reset();
+await team.reset(); // clears state, messages and the blackboard; needed after abort()
 
 // distributed cleanup
 await team.close();

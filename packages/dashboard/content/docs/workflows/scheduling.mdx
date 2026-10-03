@@ -1,11 +1,64 @@
 ---
 title: Scheduling & Triggers
-description: Cron-based scheduling, webhook triggers, and event-driven workflow activation with rate limiting and authentication.
+description: Scheduled runs with WorkflowManager, cron, webhook and event triggers, and durable timers.
 ---
 
 ## Overview
 
-The trigger system lets you activate workflows automatically based on schedules, HTTP requests, or internal events. The `TriggerManager` coordinates all trigger types through a unified API.
+Three pieces cover "run this later":
+
+- **`WorkflowManager`** runs workflows now or at a given time, keeps a record of every run in a `RunStore`, and cancels, retries and replays runs.
+- **The trigger system** activates workflows from cron schedules, HTTP requests or internal events. The `TriggerManager` coordinates all trigger types; you decide in `onTriggerFire` how a fired trigger starts a run.
+- **`TimerManager`** fires persisted timers from a `TimerStore` — in one process, or claimed across several workers with the Redis and Postgres stores.
+
+## WorkflowManager
+
+```typescript
+import { createWorkflowManager, PostgresRunStore } from '@cogitator-ai/workflows';
+
+const workflowManager = createWorkflowManager({
+  cogitator,
+  runStore: new PostgresRunStore({ client: pool }), // defaults to InMemoryRunStore
+  maxConcurrency: 4, // scheduled runs at a time
+  defaultTimeout: 10 * 60_000, // runs started with execute() fail after 10 minutes
+  onRunStateChange: (run) => console.log(run.id, run.status),
+});
+
+workflowManager.start(); // required for scheduled runs
+
+const result = await workflowManager.execute(
+  reportWorkflow,
+  { day: '2026-10-01' },
+  { tags: ['daily'] }
+);
+
+const runId = await workflowManager.schedule(reportWorkflow, {
+  at: Date.now() + 60_000,
+  input: { day: '2026-10-02' },
+  priority: 10,
+  tags: ['daily'],
+});
+```
+
+Every run is a `WorkflowRun` record with `status` (`pending`, `scheduled`, `running`, `paused`, `completed`, `failed`, `cancelled`, ...), `state`, `input`, `error`, timestamps, `tags`, `priority` and the `currentNodes`, `completedNodes` and `failedNodes` — recorded both for runs started with `execute()` and for runs the manager starts from its schedule.
+
+```typescript
+const run = await workflowManager.getStatus(runId);
+const failed = await workflowManager.listRuns({ status: 'failed', tags: ['daily'], limit: 20 });
+const stats = await workflowManager.getStats('daily-report'); // byStatus, avgDuration, successRate
+
+await workflowManager.cancel(runId, 'No longer needed');
+const retryId = await workflowManager.retry(failedRunId); // new run with the same input, tagged 'retry'
+await workflowManager.cleanup(Date.now() - 30 * 24 * 60 * 60 * 1000);
+```
+
+- `schedule()` with `cron` (and `timezone`) queues **one** run at the next occurrence. For a recurring schedule, fire `schedule()` or `execute()` from a [cron trigger](#cron-triggers).
+- Scheduled runs wait in an in-process priority queue (highest `priority` first) that the manager checks every second; the `RunStore` keeps their records. Call `stop()` / `dispose()` on shutdown.
+- `retry()` and scheduled runs need the workflow registered in this manager — `execute()` and `schedule()` register it, or call `registerWorkflow(workflow)` after a restart.
+- `pause()` aborts a running run and marks it `paused`; `resume()` only marks it `running` again and does not restart it. To continue work, `replay(workflow, runId, fromNode)` a checkpointed run (see [Execution](/docs/workflows/execution#checkpointing)).
+- `execute()` accepts the executor options (`defaultRetry`, `approvalStore`, `timerStore`, ...) plus `priority`, `tags`, `metadata`, `tracing` and `metrics`. Runs the manager starts from its schedule run with the workflow's defaults — no checkpoint, tracer or `defaultTimeout` — and the `timeout` / `maxRetries` fields of `ScheduleOptions` are only stored in the run's `metadata`.
+
+## Trigger Manager
 
 ```typescript
 import {
@@ -18,20 +71,23 @@ import {
 
 ## Trigger Manager
 
-The `DefaultTriggerManager` is the central coordinator for all trigger types.
+The `DefaultTriggerManager` is the central coordinator for all trigger types. `onTriggerFire` receives the trigger and a `TriggerContext` (`triggerType`, `timestamp`, `payload`, `headers`, `metadata`) and returns a run id:
 
 ```typescript
 import { createTriggerManager } from '@cogitator-ai/workflows';
 
 const manager = createTriggerManager({
-  onTriggerFire: async (trigger, context) => {
-    const result = await executor.execute(workflow, context.payload);
-    return result.workflowId;
-  },
+  onTriggerFire: async (trigger, context) =>
+    workflowManager.schedule(reportWorkflow, {
+      input: context.payload as Partial<ReportState>,
+      triggerId: trigger.id,
+    }),
 });
 
 manager.start();
 ```
+
+`register`, `fire` and `handleWebhook` throw until `start()` is called. Triggers live in a `TriggerStore` (`InMemoryTriggerStore` by default; pass `store` to keep them elsewhere) and events go through a `TriggerEventEmitter` (`eventEmitter` option). `registerWorkflow(workflow, [{ type, config }, ...])` registers several triggers for one workflow at once.
 
 ### Registering Triggers
 
@@ -103,7 +159,7 @@ const unsubscribe = manager.onTrigger((trigger, context) => {
 
 ## Cron Triggers
 
-Schedule workflows with cron expressions. Supports standard 5-field cron syntax, timezones, catch-up for missed runs, and concurrency limits.
+Schedule workflows with cron expressions. Supports standard 5-field cron syntax (and a leading seconds field), presets such as `@daily`, `@hourly`, `@weekdays` or `@every_15_minutes` (`CRON_PRESETS`), timezones and concurrency limits. Registering an invalid expression throws.
 
 ### Basic Cron
 
@@ -135,15 +191,15 @@ const config = cronTrigger('0 9 * * *', {
 });
 ```
 
-| Option           | Type                 | Description                                |
-| ---------------- | -------------------- | ------------------------------------------ |
-| `timezone`       | `string`             | IANA timezone (e.g., `'America/New_York'`) |
-| `enabled`        | `boolean`            | Whether the trigger is active              |
-| `runImmediately` | `boolean`            | Fire once immediately on registration      |
-| `maxConcurrent`  | `number`             | Max simultaneous runs from this trigger    |
-| `catchUp`        | `boolean`            | Run missed executions after downtime       |
-| `input`          | `object \| function` | Static or dynamic input for the workflow   |
-| `condition`      | `(ctx) => boolean`   | Additional gate before firing              |
+| Option           | Type                 | Description                                                                                                             |
+| ---------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `timezone`       | `string`             | IANA timezone (e.g., `'America/New_York'`)                                                                              |
+| `enabled`        | `boolean`            | Whether the trigger is active (`cronTrigger` sets `true`)                                                               |
+| `runImmediately` | `boolean`            | Fire once immediately on registration                                                                                   |
+| `maxConcurrent`  | `number`             | Skip an occurrence while this many `onTriggerFire` calls are still running                                              |
+| `catchUp`        | `boolean`            | Allows `CronTriggerExecutor.catchUp(triggerId, since)` to replay missed occurrences; nothing replays them automatically |
+| `input`          | `object \| function` | Static or per-fire input, delivered as `context.payload`                                                                |
+| `condition`      | `(ctx) => boolean`   | Additional gate before firing                                                                                           |
 
 ### Cron Utilities
 
@@ -165,14 +221,18 @@ const next = getNextCronOccurrence('0 9 * * *', {
   timezone: 'America/New_York',
 });
 
-const nextFive = getNextCronOccurrences('*/15 * * * *', { count: 5 });
+const nextFive = getNextCronOccurrences('*/15 * * * *', 5);
 
 const description = describeCronExpression('0 9 * * 1-5');
+
+const parsed = parseCronExpression(CRON_PRESETS['@weekdays']);
 ```
+
+`validateCronExpression` returns `{ valid, error?, normalized? }`; `getPreviousCronOccurrence`, `cronMatchesDate`, `msUntilNextCronOccurrence`, `createCronIterator`, `getSupportedTimezones` and `isValidTimezone` round out the set.
 
 ### Direct CronTriggerExecutor
 
-For lower-level control without the full TriggerManager:
+For lower-level control without the full TriggerManager (the manager uses one internally):
 
 ```typescript
 import { createCronTrigger } from '@cogitator-ai/workflows';
@@ -188,10 +248,21 @@ const triggerId = cronExecutor.register('nightly-cleanup', {
   expression: '0 2 * * *',
   timezone: 'UTC',
   enabled: true,
+  catchUp: true,
 });
 
 const state = cronExecutor.getState(triggerId);
 console.log(`Next run: ${new Date(state!.nextRun!).toISOString()}`);
+
+const manual = await cronExecutor.fire(triggerId); // { triggered, runId?, skipped?, reason?, nextRun? }
+```
+
+### Missed Runs
+
+To replay occurrences missed while the process was down, keep the time of the last run yourself and call `catchUp` on a trigger registered with `catchUp: true`; it fires every occurrence between `since` and now (at most 100) with its historical timestamp:
+
+```typescript
+const results = await cronExecutor.catchUp(triggerId, lastRunAt);
 ```
 
 ## Webhook Triggers
@@ -208,7 +279,7 @@ const config = webhookTrigger('/api/deploy', 'POST');
 
 ### Authentication
 
-Four auth methods are supported:
+Four auth methods are supported (plus `type: 'none'`); every comparison is constant-time:
 
 ```typescript
 const bearerAuth = webhookTrigger('/api/trigger', 'POST', {
@@ -233,6 +304,12 @@ const basicAuth = webhookTrigger('/api/trigger', 'POST', {
 });
 ```
 
+- `bearer` expects `Authorization: Bearer <secret>`, `basic` compares the decoded `Authorization: Basic` credentials with `secret`.
+- `hmac` reads the signature from `headerName` (default `x-signature`), accepts a `sha256=` / `sha512=` prefix, and signs `rawBody` when you pass it — pass the raw request body, since a re-serialized JSON body rarely matches the sender's bytes.
+- `api-key` compares the `headerName` header (default `x-api-key`).
+
+A failed check answers `401`.
+
 ### Rate Limiting
 
 ```typescript
@@ -245,7 +322,7 @@ const config = webhookTrigger('/api/trigger', 'POST', {
 });
 ```
 
-Rate limiting is per-client (based on IP address). When exceeded, the webhook returns HTTP 429 with `Retry-After` headers.
+Rate limiting is a token bucket per client, keyed by the request's `ip` (requests without one share a bucket). When exceeded, the webhook returns HTTP 429 with `Retry-After`, `X-RateLimit-Remaining` and `X-RateLimit-Reset` headers. `TokenBucket`, `RateLimiter` and `SlidingWindowRateLimiter` are exported for your own endpoints.
 
 ### Payload Handling
 
@@ -264,6 +341,8 @@ const config = webhookTrigger('/api/process', 'POST', {
 });
 ```
 
+A duplicate within the window answers `200` with `{ deduplicated: true }`, a payload that fails `validatePayload` answers `400`, and an accepted request answers `202` with `{ accepted: true, runId, triggerId }`.
+
 ### Handling Requests
 
 Route incoming HTTP requests to the webhook executor via the TriggerManager:
@@ -274,6 +353,7 @@ const result = await manager.handleWebhook({
   path: '/github/webhook',
   headers: request.headers,
   body: request.body,
+  rawBody: request.rawBody,
   ip: request.ip,
 });
 
@@ -284,9 +364,11 @@ if (result?.triggered) {
 }
 ```
 
+`handleWebhook` returns `null` when no enabled webhook trigger matches the method and path.
+
 ## Event Triggers
 
-React to internal application events. Useful for chaining workflows or integrating with your domain events.
+React to internal application events. Useful for chaining workflows or integrating with your domain events. `source` matches the `source` field of the event payload, `filter` drops events, and `transform` shapes the payload passed to `onTriggerFire`.
 
 ```typescript
 import { eventTrigger } from '@cogitator-ai/workflows';
@@ -311,6 +393,43 @@ manager.emitEvent('order.created', {
   amount: 250,
 });
 ```
+
+## Durable Timers
+
+Timer nodes (`delayNode`, `cronWaitNode`, ... with `timerWorkflowNode`, see [Node Types](/docs/workflows/nodes#timer-map-reduce-and-subworkflow-adapters)) wait inside the running workflow. A `TimerManager` is for timers that must fire even if the process that scheduled them is gone: it polls a `TimerStore` for overdue timers and hands each one to a handler.
+
+```typescript
+import { createTimerManager, PostgresTimerStore, Duration } from '@cogitator-ai/workflows';
+
+const timers = createTimerManager(new PostgresTimerStore({ client: pool, claimTtl: 60_000 }), {
+  pollInterval: 1000,
+  maxRetries: 5, // consecutive handler errors before the timer is dead-lettered
+  onDeadLetter: (entry, error) => console.error(entry.id, error.message),
+  onClaimLost: (entry) => console.warn('another worker may run', entry.id),
+});
+
+timers.registerHandler('invoice-reminders', async (entry) => {
+  await workflowManager.execute(reminderWorkflow, entry.metadata as Partial<ReminderState>);
+});
+
+await timers.start();
+
+await timers.schedule({
+  workflowId: 'invoice-reminders',
+  runId: 'inv_42',
+  nodeId: 'reminder',
+  type: 'fixed',
+  firesAt: Date.now() + Duration.days(3),
+  metadata: { invoiceId: 'inv_42' },
+});
+```
+
+- Handlers are looked up by the timer's `workflowId`; `setDefaultHandler` catches the rest. A manager without a matching handler releases the timer so a manager that has one runs it right away.
+- With `InMemoryTimerStore` / `FileTimerStore` one manager owns the store. With `RedisTimerStore` / `PostgresTimerStore` several managers can poll one store: `getOverdue()` claims the timers it returns for `claimTtl` ms (default 60 s), the manager renews the claim every `claimTtl / 3` while the handler runs, and a timer whose worker died becomes available again when its claim runs out.
+- A failed handler is retried on later polls until `maxRetries` consecutive errors (default `5`; `0` retries forever), then the timer is marked fired and `onDeadLetter` is called.
+- `cancel`, `cancelRun`, `cancelWorkflow`, `getPendingTimers`, `getStats` and `processNow()` manage timers; fired timers older than `cleanupMaxAge` (7 days) are cleaned up hourly.
+- `createRecurringScheduler(timers).scheduleRecurring(id, { workflowId, runId, nodeId, interval })` schedules an interval timer; call `scheduleNext(id, runId)` from its handler to queue the next one.
+- `Duration.minutes(5)`, `parseDuration('2h')` and `formatDuration(ms)` convert durations.
 
 ## Lifecycle
 

@@ -11,9 +11,7 @@ A swarm is a group of agents working together under a coordination strategy. Ins
 import { Cogitator, Agent } from '@cogitator-ai/core';
 import { swarm } from '@cogitator-ai/swarms';
 
-const cogitator = new Cogitator({
-  /* ... */
-});
+const cogitator = new Cogitator({/* ... */});
 
 const devTeam = swarm('dev-team')
   .strategy('hierarchical')
@@ -42,7 +40,7 @@ const result = await devTeam.run({ input: 'Build a user authentication system' }
 console.log(result.output);
 ```
 
-The supervisor automatically receives the delegation tools (`delegate_task`, `check_progress`, `request_revision`, `list_workers`), so it can hand subtasks to the workers.
+The supervisor automatically receives the delegation tools (`delegate_task`, `check_progress`, `request_revision`, `list_workers`), so it can hand subtasks to the workers. `run()` resolves to a `StrategyResult`: `output`, `structured`, `agentResults` (a `Map` of `RunResult`s) and strategy-specific fields such as `votes`, `bids`, `pipelineOutputs`, `debateTranscript` or `negotiationResult`.
 
 ## Core Concepts
 
@@ -56,7 +54,7 @@ Every swarm has three fundamental pieces:
 
 ## Available Strategies
 
-Cogitator ships with 7 built-in coordination strategies, each of which can also run in distributed mode:
+Cogitator ships with 7 built-in coordination strategies:
 
 | Strategy       | Use Case                                                           |
 | -------------- | ------------------------------------------------------------------ |
@@ -68,7 +66,7 @@ Cogitator ships with 7 built-in coordination strategies, each of which can also 
 | `debate`       | Agents argue opposing positions, moderator synthesizes             |
 | `negotiation`  | Multi-party negotiation with offers, counteroffers, and agreements |
 
-Any strategy can run in **distributed mode** (`.distributed({ enabled: true, ... })`) with Redis-backed state and worker nodes — see [Distributed Swarms](/docs/swarms/distributed).
+Swarms can run in **distributed mode** (`.distributed({ enabled: true, ... })`) with Redis-backed state and worker nodes. Pipeline, round-robin, consensus, debate and auction work there unchanged; hierarchical delegation and the negotiation tools exist only in-process — see [Distributed Swarms](/docs/swarms/distributed).
 
 ## Swarms vs Workflows
 
@@ -126,9 +124,7 @@ Every swarm emits structured events you can subscribe to:
 const team = swarm('team')
   .strategy('pipeline')
   .pipeline({
-    stages: [
-      /* ... */
-    ],
+    stages: [/* ... */],
   })
   .build(cogitator);
 
@@ -141,15 +137,49 @@ team.on('agent:complete', (event) => {
 });
 
 team.on('swarm:complete', (event) => {
-  console.log(`Swarm done, ${event.data.agentCount} agents ran`);
+  const { agentCount } = event.data as { agentCount: number };
+  console.log(`Swarm done, ${agentCount} agents ran`);
 });
 ```
 
-Use the wildcard `'*'` to capture all events for logging or observability.
+Use the wildcard `'*'` to capture all events for logging or observability. `event.data` is `unknown`; the payload of each event is listed in [Agent Communication](/docs/swarms/communication#built-in-event-types).
+
+## Swarms Inside Workflows
+
+`swarmNode` runs a swarm as a [workflow](/docs/workflows) node. It takes a built `Swarm` or a `SwarmConfig` (a config gets a fresh swarm per run that is closed afterwards) and uses the Cogitator of the workflow executor:
+
+```typescript
+import { WorkflowBuilder } from '@cogitator-ai/workflows';
+import { swarmNode, conditionalSwarmNode, parallelSwarmsNode } from '@cogitator-ai/swarms';
+
+type ReviewState = { code: string; verdict?: string; risk?: string; notes?: unknown };
+
+const workflow = new WorkflowBuilder<ReviewState>('review')
+  .initialState({ code: '' })
+  .addNode(
+    'board',
+    swarmNode<ReviewState>(reviewBoard, {
+      inputMapper: (state) => `Review this change:\n${state.code}`,
+      stateMapper: (result) => ({ verdict: String(result.output) }),
+    })
+  )
+  .addNode(
+    'risk',
+    conditionalSwarmNode<ReviewState>(
+      debateTeam,
+      (state) => state.verdict?.includes('MERGE') ?? false,
+      { stateMapper: (result) => ({ risk: String(result.output) }) }
+    ),
+    { after: ['board'] }
+  )
+  .build();
+```
+
+The swarm sees the node's step and the workflow state as `workflowContext` in its run context. `parallelSwarmsNode([{ swarm, key, options }, ...], merge)` runs several swarms at once and fails only when all of them fail; its output maps each `key` to its `StrategyResult`.
 
 ## Next Steps
 
-- [Coordination Strategies](/docs/swarms/strategies) — detailed guide to all 8 strategies
+- [Coordination Strategies](/docs/swarms/strategies) — detailed guide to all 7 strategies
 - [Swarm Builder](/docs/swarms/builder) — fluent API for configuring swarms
 - [Agent Communication](/docs/swarms/communication) — blackboard, message bus, events
 - [Swarm Assessment](/docs/swarms/assessment) — auto-assign optimal models

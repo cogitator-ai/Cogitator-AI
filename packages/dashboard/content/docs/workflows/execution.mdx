@@ -13,10 +13,8 @@ import { WorkflowExecutor } from '@cogitator-ai/workflows';
 
 const cogitator = new Cogitator({
   llm: {
-    defaultProvider: 'openai',
-    providers: {
-      openai: { type: 'openai', apiKey: process.env.OPENAI_API_KEY!, model: 'gpt-6.1-sol' },
-    },
+    defaultModel: 'openai/gpt-5.5',
+    providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } },
   },
 });
 
@@ -30,11 +28,6 @@ The executor requires a `Cogitator` instance because `agentNode` nodes need it t
 Run a workflow to completion.
 
 ```typescript
-interface TaskState {
-  prompt: string;
-  result?: string;
-}
-
 const result = await executor.execute(workflow, { prompt: 'Explain quantum computing' });
 
 console.log(result.state.result);
@@ -63,6 +56,9 @@ interface WorkflowExecuteOptions {
   maxIterations?: number;
   checkpoint?: boolean;
   checkpointStrategy?: 'per-iteration' | 'per-node';
+  workflowId?: string;
+  skipNodes?: Set<string>;
+  nodeResults?: Record<string, unknown>;
   onNodeStart?: (nodeName: string) => void;
   onNodeComplete?: (nodeName: string, output: unknown, duration: number) => void;
   onNodeError?: (nodeName: string, error: Error) => void;
@@ -70,12 +66,15 @@ interface WorkflowExecuteOptions {
 }
 ```
 
-| Option               | Default           | Description                      |
-| -------------------- | ----------------- | -------------------------------- |
-| `maxConcurrency`     | `4`               | Max parallel node executions     |
-| `maxIterations`      | `100`             | Safety limit for loop iterations |
-| `checkpoint`         | `false`           | Enable checkpoint saving         |
-| `checkpointStrategy` | `'per-iteration'` | When to save checkpoints         |
+| Option               | Default           | Description                                                                    |
+| -------------------- | ----------------- | ------------------------------------------------------------------------------ |
+| `maxConcurrency`     | `4`               | Max parallel node executions                                                   |
+| `maxIterations`      | `100`             | Safety limit for loop iterations                                               |
+| `checkpoint`         | `false`           | Enable checkpoint saving                                                       |
+| `checkpointStrategy` | `'per-iteration'` | When to save checkpoints                                                       |
+| `workflowId`         | generated `wf_…`  | Id of the run (nodes see it as `ctx.workflowId`)                               |
+| `skipNodes`          | —                 | Nodes that already ran: they are passed over, not run again (used by `resume`) |
+| `nodeResults`        | —                 | Outputs of the `skipNodes`, so the nodes after them get their inputs           |
 
 `WorkflowExecutor.execute` additionally accepts (`ExecutorExecuteOptions`):
 
@@ -89,6 +88,9 @@ interface WorkflowExecuteOptions {
 | `deadLetterQueue`                                   | Receives an entry for every node that finally failed                                                   |
 | `idempotencyStore`                                  | Reuses results of nodes that already completed for the same `workflowId` and step                      |
 | `approvalStore` / `approvalNotifier` / `timerStore` | Run-level defaults for human and timer nodes                                                           |
+| `depth`                                             | Subworkflow nesting depth, exposed to nodes as `ctx.depth`                                             |
+
+`resume()` takes the plain `WorkflowExecuteOptions`, and `stream()` takes them without the four callbacks (it turns them into events).
 
 ### Lifecycle Hooks
 
@@ -215,7 +217,7 @@ const redisStore = new RedisCheckpointStore({ client: redis, keyPrefix: 'myapp:c
 const pgStore = new PostgresCheckpointStore({ client: pool }); // creates cogitator_workflow_checkpoints on first use
 ```
 
-A checkpoint saved by one process resumes in any other that reads the same store. A `WorkflowManager` with a `checkpointStore` checkpoints every run, so `replay(workflow, runId, node)` can run that node and everything after it again, while the nodes before it keep their results.
+A checkpoint saved by one process resumes in any other that reads the same store. A `WorkflowManager` with a `checkpointStore` checkpoints the runs it starts with `execute()`, so `replay(workflow, runId, node)` can run that node and everything after it again, while the nodes before it keep their results. Runs the manager starts from its schedule are not checkpointed, so they cannot be replayed.
 
 ### Runs, approvals and timers in Redis or Postgres
 
@@ -290,7 +292,7 @@ interface WorkflowCheckpoint {
 
 ## Error Handling
 
-If a node throws, the executor catches the error and stores it in `result.error`. Remaining nodes in the current batch are skipped.
+If a node throws, the executor catches the error, calls `onNodeError` and stores the node's original error in `result.error` — `execute()` itself does not throw. Nodes of the same batch that are already running finish, the ones not yet started are skipped, and `result.state` is the state after the last completed step.
 
 ```typescript
 const result = await executor.execute(workflow, input);
@@ -313,7 +315,20 @@ builder.addNode('call-api', callApiFn, {
 });
 ```
 
-`timeout` applies to each attempt (a timed-out attempt fails with `NodeTimeoutError`), `retries` adds extra attempts and `retryDelay` waits between them.
+`timeout` applies to each attempt (a timed-out attempt fails with `NodeTimeoutError` and aborts the attempt's `ctx.signal`, so agent and tool nodes stop their in-flight calls), `retries` adds extra attempts and `retryDelay` waits between them. Nodes without their own `retries` use the `defaultRetry` execute option, which also honours its `isRetryable`:
+
+```typescript
+import { InMemoryDLQ, InMemoryIdempotencyStore } from '@cogitator-ai/workflows';
+
+const result = await executor.execute(workflow, input, {
+  defaultRetry: { maxRetries: 3, backoff: 'exponential', initialDelay: 500 },
+  defaultCircuitBreaker: { threshold: 5, resetTimeout: 30_000 },
+  deadLetterQueue: new InMemoryDLQ(),
+  idempotencyStore: new InMemoryIdempotencyStore(),
+});
+```
+
+A node that still fails after its retries is written to the `deadLetterQueue`. The circuit breaker is kept per node name and shared by every run of the same executor that passes the same config object; while it is open the node fails at once with `CircuitBreakerOpenError`. With an `idempotencyStore`, a node that already completed for the same `workflowId` and step returns its stored result instead of running again.
 
 For more sophisticated error handling (retry policies, circuit breakers, compensation), see [Sagas & Compensation](/docs/workflows/sagas).
 
@@ -333,6 +348,43 @@ await executor.execute(workflow, input, { maxConcurrency: 16 });
 ```
 
 The internal `WorkflowScheduler` uses the DAG topology to determine which nodes can safely run in parallel at each iteration.
+
+## Cancellation
+
+Pass an `AbortSignal` to stop a run:
+
+```typescript
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 30_000);
+
+const result = await executor.execute(workflow, input, { signal: controller.signal });
+
+if (controller.signal.aborted) {
+  console.log('Cancelled:', result.error?.message);
+}
+```
+
+The executor checks the signal between steps and passes it to nodes as `ctx.signal`: agent nodes cancel their LLM request, tool nodes hand it to the tool, timer nodes stop waiting, and subworkflows cancel their child runs.
+
+## Tracing and Metrics
+
+```typescript
+import { createTracer, createMetricsCollector } from '@cogitator-ai/workflows';
+
+const tracer = createTracer({
+  serviceName: 'billing-workflows',
+  exporter: 'otlp', // 'console' (default) | 'otlp' | 'jaeger' | 'zipkin' | 'noop'
+  exporterEndpoint: 'http://localhost:4318/v1/traces',
+});
+const metrics = createMetricsCollector({ prefix: 'billing' });
+
+await executor.execute(workflow, input, { tracer, metricsCollector: metrics });
+
+console.log(metrics.toPrometheusFormat());
+await tracer.shutdown();
+```
+
+The tracer records one workflow span and a child span per node execution (with `node.retries`); the collector counts runs and node executions with their latencies and retries. `exporter: 'noop'` keeps the tracer in place while sending spans nowhere, and `enabled: false` does the same. A `WorkflowManager` takes a `tracer` and `metrics` collector for all its runs, and `execute(..., { tracing, metrics: { enabled: false } })` overrides them per run.
 
 ## Iteration Safety
 

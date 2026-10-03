@@ -41,7 +41,10 @@ const team = swarm('distributed-team')
   .strategy('pipeline')
   .pipeline({
     stages: [
-      { name: 'draft', agent: new Agent({ name: 'writer', model, instructions: 'Draft the text.' }) },
+      {
+        name: 'draft',
+        agent: new Agent({ name: 'writer', model, instructions: 'Draft the text.' }),
+      },
       { name: 'review', agent: new Agent({ name: 'editor', model, instructions: 'Review it.' }) },
     ],
   })
@@ -78,6 +81,8 @@ Always call `team.close()` when done to clean up Redis connections.
 | `queue`           | `'swarm-agent-jobs'` | Job queue name (`{keyPrefix}:jobs:{queue}`)    |
 | `timeout`         | `300000`             | Timeout in ms for waiting on agent job results |
 
+`DistributedSwarmConfig` also declares `workerConcurrency`, `retry` and `cleanupAfter`, but the coordinator does not use them: set concurrency on the worker (`DistributedSwarmWorker`'s `concurrency`), and retries through the swarm's `errorHandling`.
+
 ## How It Works
 
 When distributed mode is enabled, the `Swarm` creates a `DistributedSwarmCoordinator` instead of the local `SwarmCoordinator`. The distributed coordinator:
@@ -88,7 +93,7 @@ When distributed mode is enabled, the `Swarm` creates a `DistributedSwarmCoordin
 4. **Applies the same policies as local swarms** — retry, failover, skip, budgets, circuit breaking and events behave exactly like in-process execution.
 5. **Synchronizes state** — blackboard writes and messages are persisted in Redis, so all nodes see the same state.
 
-Strategy tools that call back into the coordinator (hierarchical delegation, negotiation tools) only exist in-process, so prefer strategies such as pipeline, round-robin, consensus, debate and auction for distributed swarms. Agent tools are executed on the worker from its own tool registry.
+Strategy tools that call back into the coordinator (hierarchical delegation, negotiation tools) only exist in-process: a distributed hierarchical supervisor cannot delegate and distributed negotiators cannot make offers. Prefer pipeline, round-robin, consensus, debate and auction for distributed swarms. Agent tools are executed on the worker from its own tool registry.
 
 ## Redis Key Structure
 

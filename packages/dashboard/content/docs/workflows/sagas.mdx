@@ -17,6 +17,21 @@ import {
 } from '@cogitator-ai/workflows';
 ```
 
+## In the Executor
+
+The executor applies retries, circuit breaking, dead-lettering and idempotency to every node when you pass them as execute options — no wrapping needed:
+
+```typescript
+const result = await executor.execute(workflow, input, {
+  defaultRetry: { maxRetries: 3, backoff: 'exponential', initialDelay: 1000 },
+  defaultCircuitBreaker: { threshold: 5, resetTimeout: 30_000 },
+  deadLetterQueue: dlq,
+  idempotencyStore: store,
+});
+```
+
+A node's own `config.retries` / `retryDelay` take precedence over `defaultRetry`. Compensation is not run by the executor: use a `CompensationManager` around the run (record completed steps, call `compensate()` when `result.error` is set). The primitives below also work on their own, outside workflows.
+
 ## Retry with Backoff
 
 `executeWithRetry` wraps any async function with configurable retry logic, supporting constant, linear, and exponential backoff with jitter.
@@ -75,7 +90,7 @@ Jitter adds +/- randomness to prevent thundering herd. A jitter of `0.1` means +
 
 ### Retryable Error Detection
 
-By default, network errors, timeouts, and 5xx/429 status codes are retried. Override with `isRetryable`:
+By default only transient errors are retried: network error codes (`ECONNRESET`, `ETIMEDOUT`, ...), a `statusCode` of 429/500/502/503/504, or a message mentioning a timeout, network or connection failure, a rate limit or one of those status codes. Any other error fails at once. Override with `isRetryable`:
 
 ```typescript
 const result = await executeWithRetry(fn, {
@@ -88,7 +103,7 @@ const result = await executeWithRetry(fn, {
 
 ### withRetry Wrapper
 
-Create a retryable version of any async function:
+Create a retryable version of any async function (it throws the last error when every attempt fails). `Retryable(options)` does the same as a method decorator, and `estimateRetryDuration(config)` returns the worst-case total delay of a policy.
 
 ```typescript
 import { withRetry } from '@cogitator-ai/workflows';
@@ -131,19 +146,23 @@ CLOSED ──(failures >= threshold)──→ OPEN ──(timeout elapsed)──
 - **Open** -- All requests fail immediately with `CircuitBreakerOpenError`. After `resetTimeout` ms, transitions to half-open.
 - **Half-open** -- Limited test requests allowed (`halfOpenMax`). If `successThreshold` consecutive successes, closes. Any failure reopens.
 
+State is kept per id (the first argument of `execute`), so one breaker can guard several services. The defaults are `threshold: 5`, `resetTimeout: 30000`, `successThreshold: 2`, `halfOpenMax: 3`; `enabled: false` lets every call through.
+
 ### Usage
 
 ```typescript
-try {
-  const result = await breaker.execute('external-api', async () => {
-    return await callExternalAPI();
-  });
-} catch (error) {
-  if (error instanceof CircuitBreakerOpenError) {
-    console.log(`Circuit open for ${error.nodeId}, using fallback`);
-    return fallbackValue;
+import { CircuitBreakerOpenError } from '@cogitator-ai/workflows';
+
+async function fetchPrices(): Promise<Prices> {
+  try {
+    return await breaker.execute('external-api', () => callExternalAPI());
+  } catch (error) {
+    if (error instanceof CircuitBreakerOpenError) {
+      console.log(`Circuit ${error.state} for ${error.nodeId}, using fallback`);
+      return fallbackPrices;
+    }
+    throw error;
   }
-  throw error;
 }
 ```
 
@@ -175,11 +194,11 @@ When a multi-step workflow fails, compensation rolls back already-completed step
 ```typescript
 import { CompensationManager, createCompensationManager } from '@cogitator-ai/workflows';
 
-interface OrderState {
+type OrderState = {
   orderId: string;
   reservationId?: string;
   chargeId?: string;
-}
+};
 
 const manager = createCompensationManager<OrderState>();
 
@@ -201,7 +220,7 @@ manager.registerCompensation(
 
 ### Recording Completions
 
-As nodes complete, mark them so the manager knows which steps to compensate:
+As nodes complete, mark them so the manager knows which steps to compensate. The value you pass is handed to the compensation function as its second argument (`originalResult`):
 
 ```typescript
 manager.markCompleted('reserve-inventory', { reservationId: 'res_123' });
@@ -227,7 +246,7 @@ if (report.partialFailures.length > 0) {
 }
 ```
 
-Compensation executes in reverse order by default. Each step can be configured with `order: 'reverse' | 'forward' | 'parallel'`.
+Only steps that were marked completed (and are not the failed step) are compensated. Compensation executes in reverse completion order by default; each step can set `order: 'parallel'` (consecutive parallel steps run together) or `'forward'` (run last, in completion order). A step that throws is retried `retries` times with a short backoff, and `timeout` fails a step that takes too long; failed steps are listed in `partialFailures` instead of stopping the rest. `getSummary()` and `reset()` help when you reuse a manager across runs, and `registerFromConfig(nodeId, { compensate, compensateCondition, compensateOrder, compensateTimeout })` registers from a `CompensationConfig`.
 
 ### CompensationBuilder
 
@@ -254,7 +273,7 @@ const manager = compensationBuilder<OrderState>()
 
 ## Dead Letter Queue
 
-Failed operations that exhaust all retries go to a DLQ for manual inspection and replay.
+Failed operations that exhaust all retries go to a DLQ for manual inspection and replay. With the `deadLetterQueue` execute option the executor adds an entry (state, input, error, attempts) for every node that finally fails.
 
 ```typescript
 import { InMemoryDLQ, FileDLQ, createDLQEntry } from '@cogitator-ai/workflows';
@@ -288,6 +307,8 @@ for (const entry of entries) {
 }
 ```
 
+`get(id)`, `remove(id)`, `count(filters)` and `clear()` manage entries. `retry(id)` only records another attempt on the entry (`attempts`, `lastAttempt`) — re-running the node is up to you. Entries expire after `defaultTTL` (7 days by default), and the in-memory queue keeps at most `maxSize` entries (10 000).
+
 ### File-based DLQ
 
 For persistence across restarts:
@@ -301,25 +322,18 @@ const dlq = new FileDLQ('/var/data/dlq', { defaultTTL: 30 * 24 * 60 * 60 * 1000 
 Ensure operations are safe to retry by preventing duplicate execution:
 
 ```typescript
-import {
-  InMemoryIdempotencyStore,
-  generateIdempotencyKey,
-  idempotent,
-} from '@cogitator-ai/workflows';
+import { InMemoryIdempotencyStore, generateCustomKey, idempotent } from '@cogitator-ai/workflows';
 
-const store = new InMemoryIdempotencyStore();
+const store = new InMemoryIdempotencyStore({ ttl: 24 * 60 * 60 * 1000 });
 
-const processPayment = idempotent(
-  async (orderId: string, amount: number) => {
-    return await paymentGateway.charge(orderId, amount);
-  },
-  store,
-  (orderId, amount) => generateCustomKey('payment', orderId, String(amount))
-);
+async function processPayment(orderId: string, amount: number) {
+  const key = generateCustomKey('payment', orderId, amount);
+  return idempotent(store, key, () => paymentGateway.charge(orderId, amount));
+}
 
 // safe to call multiple times
 await processPayment('order_123', 99.99);
 await processPayment('order_123', 99.99);
 ```
 
-The second call returns the cached result without executing the function again.
+`idempotent(store, key, fn)` runs `fn` once per key: a later call returns the stored result, or rethrows the stored error if the first call failed, and concurrent calls with the same key share one execution. `generateIdempotencyKey(workflowId, nodeId, input?)` and `generateCustomKey(...parts)` build stable hashed keys (object keys are sorted first). `Idempotent(store, keyFn)` is the method-decorator form; `FileIdempotencyStore(directory)` keeps records on disk. Records expire after `ttl` (24 hours by default).
