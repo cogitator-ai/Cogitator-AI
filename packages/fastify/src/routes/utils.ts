@@ -26,8 +26,13 @@ export interface ResolvedError {
   code: string;
 }
 
+/**
+ * What a client may see of an error: a `CogitatorError` as it is, anything
+ * else as `500 Internal server error`, logged through `source.log` (a request
+ * or the server).
+ */
 export function resolveError(
-  request: FastifyRequest,
+  source: Pick<FastifyRequest, 'log'>,
   error: unknown,
   label: string
 ): ResolvedError {
@@ -38,7 +43,7 @@ export function resolveError(
       code: error.code,
     };
   }
-  request.log.error({ err: error }, label);
+  source.log.error({ err: error }, label);
   return { status: 500, message: 'Internal server error', code: 'INTERNAL' };
 }
 

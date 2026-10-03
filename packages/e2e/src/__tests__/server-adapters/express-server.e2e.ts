@@ -11,6 +11,10 @@ import {
   type ServerFactory,
 } from '../../helpers/server-test-utils';
 import { createTestCogitator, createTestAgent, isOllamaRunning } from '../../helpers/setup';
+import {
+  createFailingWorkflow,
+  createOfflineCogitator,
+} from '../../helpers/server-adapter-fixtures';
 
 let httpServer: Server;
 
@@ -131,5 +135,52 @@ describe('Express adapter: streaming and WebSocket', () => {
       body: '{"input": ',
     });
     expect(res.status).toBe(400);
+  });
+});
+
+describe('Express adapter: errors', () => {
+  let cogitator: Cogitator;
+  let server: Server;
+  let base: string;
+
+  beforeAll(async () => {
+    cogitator = createOfflineCogitator();
+    const app = express();
+    const cogitatorServer = new CogitatorServer({
+      app,
+      cogitator,
+      agents: {},
+      workflows: { failing: createFailingWorkflow() },
+      config: { basePath: '/cogitator', enableSwagger: false },
+    });
+    await cogitatorServer.init();
+    server = await new Promise<Server>((resolve) => {
+      const listening = app.listen(0, () => resolve(listening));
+    });
+    base = `http://localhost:${(server.address() as AddressInfo).port}/cogitator`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server?.close(() => resolve()));
+    await cogitator?.close();
+  });
+
+  it('reports a failing workflow without leaking internals', async () => {
+    const run = await fetch(`${base}/workflows/failing/run`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    const stream = await fetch(`${base}/workflows/failing/stream`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    const events = await stream.text();
+
+    expect(run.status).toBe(500);
+    expect(await run.text()).not.toContain('hunter2');
+    expect(events).toContain('node_error');
+    expect(events).not.toContain('hunter2');
   });
 });

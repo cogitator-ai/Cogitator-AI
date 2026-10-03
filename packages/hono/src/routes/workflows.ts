@@ -112,7 +112,10 @@ export function createWorkflowRoutes(): Hono<HonoEnv> {
             void writer.workflowEvent('node_completed', { nodeName: node, output, duration });
           },
           onNodeError: (node: string, error: Error) => {
-            void writer.workflowEvent('node_error', { nodeName: node, error: error.message });
+            void writer.workflowEvent('node_error', {
+              nodeName: node,
+              error: resolveError(error, `Workflow node ${node} error`).body.error.message,
+            });
           },
           onNodeProgress: (node: string, progress: number) => {
             void writer.workflowEvent('node_progress', { nodeName: node, progress });

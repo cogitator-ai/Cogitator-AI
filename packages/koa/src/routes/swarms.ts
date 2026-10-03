@@ -133,7 +133,10 @@ export function createSwarmRoutes(): Router<CogitatorState> {
           });
         },
         onAgentError: (agentName: string, error: Error) => {
-          writer.swarmEvent('agent_error', { agentName, error: error.message });
+          writer.swarmEvent('agent_error', {
+            agentName,
+            error: resolveError(error, `Swarm agent ${agentName} error`).body.error.message,
+          });
         },
         onMessage: (message: SwarmMessage) => {
           writer.swarmEvent('message', message);

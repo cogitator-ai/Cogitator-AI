@@ -175,7 +175,10 @@ export function createSwarmRoutes(ctx: RouteContext): Router {
             });
           },
           onAgentError: (agentName: string, error: Error) => {
-            writer.swarmEvent('agent_error', { agentName, error: error.message });
+            writer.swarmEvent('agent_error', {
+              agentName,
+              error: resolveError(error, `Swarm agent ${agentName}`).message,
+            });
           },
           onMessage: (message: SwarmMessage) => {
             writer.swarmEvent('message', message);

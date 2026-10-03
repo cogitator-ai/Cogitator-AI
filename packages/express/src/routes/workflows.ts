@@ -68,7 +68,12 @@ export function createWorkflowRoutes(ctx: RouteContext): Router {
         if (abortController.signal.aborted) return;
 
         if (result.error) {
-          sendError(res, 500, `Workflow failed: ${result.error.message}`, 'WORKFLOW_FAILED');
+          sendError(
+            res,
+            500,
+            `Workflow failed: ${resolveError(result.error, 'Workflow run').message}`,
+            'WORKFLOW_FAILED'
+          );
           return;
         }
 
@@ -135,7 +140,10 @@ export function createWorkflowRoutes(ctx: RouteContext): Router {
             writer.workflowEvent('node_completed', { nodeName: node, output, duration });
           },
           onNodeError: (node: string, error: Error) => {
-            writer.workflowEvent('node_error', { nodeName: node, error: error.message });
+            writer.workflowEvent('node_error', {
+              nodeName: node,
+              error: resolveError(error, `Workflow node ${node}`).message,
+            });
           },
           onNodeProgress: (node: string, progress: number) => {
             writer.workflowEvent('node_progress', { nodeName: node, progress });
@@ -143,7 +151,10 @@ export function createWorkflowRoutes(ctx: RouteContext): Router {
         });
 
         if (result.error) {
-          writer.error(`Workflow failed: ${result.error.message}`, 'WORKFLOW_FAILED');
+          writer.error(
+            `Workflow failed: ${resolveError(result.error, 'Workflow run').message}`,
+            'WORKFLOW_FAILED'
+          );
           return;
         }
 

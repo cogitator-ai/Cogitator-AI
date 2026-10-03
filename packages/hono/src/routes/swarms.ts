@@ -124,7 +124,10 @@ export function createSwarmRoutes(): Hono<HonoEnv> {
             });
           },
           onAgentError: (agentName: string, error: Error) => {
-            void writer.swarmEvent('agent_error', { agentName, error: error.message });
+            void writer.swarmEvent('agent_error', {
+              agentName,
+              error: resolveError(error, `Swarm agent ${agentName} error`).body.error.message,
+            });
           },
           onMessage: (message: SwarmMessage) => {
             void writer.swarmEvent('message', message);

@@ -255,7 +255,7 @@ describe('createChatHandler streaming', () => {
     const events = parseEvents(raw);
 
     expect(events.map((e) => e.type)).not.toContain('finish');
-    expect(events.at(-1)).toMatchObject({ type: 'error', message: 'persist failed' });
+    expect(events.at(-1)).toMatchObject({ type: 'error', message: 'Internal server error' });
     expect(raw).not.toContain('[DONE]');
   });
 

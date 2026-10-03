@@ -121,7 +121,10 @@ export function createWorkflowRoutes(): Router<CogitatorState> {
           writer.workflowEvent('node_completed', { nodeName: node, output, duration });
         },
         onNodeError: (node: string, error: Error) => {
-          writer.workflowEvent('node_error', { nodeName: node, error: error.message });
+          writer.workflowEvent('node_error', {
+            nodeName: node,
+            error: resolveError(error, `Workflow node ${node} error`).body.error.message,
+          });
         },
         onNodeProgress: (node: string, progress: number) => {
           writer.workflowEvent('node_progress', { nodeName: node, progress });

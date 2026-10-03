@@ -75,7 +75,7 @@ export const workflowRoutes: FastifyPluginAsync = async (fastify) => {
           return sendError(
             reply,
             500,
-            `Workflow failed: ${result.error.message}`,
+            `Workflow failed: ${resolveError(request, result.error, 'workflow run error').message}`,
             'WORKFLOW_FAILED'
           );
         }
@@ -134,7 +134,10 @@ export const workflowRoutes: FastifyPluginAsync = async (fastify) => {
             writer.workflowEvent('node_completed', { nodeName: node, output, duration });
           },
           onNodeError: (node: string, error: Error) => {
-            writer.workflowEvent('node_error', { nodeName: node, error: error.message });
+            writer.workflowEvent('node_error', {
+              nodeName: node,
+              error: resolveError(request, error, `workflow node ${node} error`).message,
+            });
           },
           onNodeProgress: (node: string, progress: number) => {
             writer.workflowEvent('node_progress', { nodeName: node, progress });
@@ -142,7 +145,10 @@ export const workflowRoutes: FastifyPluginAsync = async (fastify) => {
         });
 
         if (result.error) {
-          writer.error(`Workflow failed: ${result.error.message}`, 'WORKFLOW_FAILED');
+          writer.error(
+            `Workflow failed: ${resolveError(request, result.error, 'workflow stream error').message}`,
+            'WORKFLOW_FAILED'
+          );
         } else {
           writer.workflowEvent('workflow_completed', {
             workflowId: result.workflowId,

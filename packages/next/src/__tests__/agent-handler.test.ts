@@ -151,17 +151,19 @@ describe('createAgentHandler', () => {
     expect(afterRun).toHaveBeenCalledOnce();
   });
 
-  it('returns 500 on runtime error', async () => {
+  it('returns 500 on runtime error without the text of the error', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
     const cog = {
-      run: vi.fn().mockRejectedValue(new Error('LLM failed')),
+      run: vi.fn().mockRejectedValue(new Error('db password is hunter2')),
     } as unknown as Cogitator;
 
     const handler = createAgentHandler(cog, mockAgent());
     const res = await handler(jsonRequest({ input: 'hi' }));
 
     expect(res.status).toBe(500);
-    const data = await res.json();
-    expect(data.error).toBe('LLM failed');
+    expect(await res.json()).toEqual({ error: 'Internal server error', code: 'INTERNAL_ERROR' });
+    expect(logged).toHaveBeenCalled();
+    logged.mockRestore();
   });
 
   it('rejects non-string input with 400 without running the agent', async () => {

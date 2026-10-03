@@ -10,6 +10,10 @@ import {
   type ServerFactory,
 } from '../../helpers/server-test-utils';
 import { createTestCogitator, createTestAgent, isOllamaRunning } from '../../helpers/setup';
+import {
+  createFailingWorkflow,
+  createOfflineCogitator,
+} from '../../helpers/server-adapter-fixtures';
 
 let fastify: FastifyInstance;
 
@@ -122,5 +126,49 @@ describe('Fastify adapter: streaming, validation and WebSocket', () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error.code).toBe('INVALID_INPUT');
+  });
+});
+
+describe('Fastify adapter: errors', () => {
+  let cogitator: Cogitator;
+  let app: FastifyInstance;
+  let base: string;
+
+  beforeAll(async () => {
+    cogitator = createOfflineCogitator();
+    app = Fastify({ logger: false });
+    await app.register(cogitatorPlugin, {
+      cogitator,
+      agents: {},
+      workflows: { failing: createFailingWorkflow() },
+      prefix: '/cogitator',
+      enableSwagger: false,
+    });
+    await app.listen({ port: 0 });
+    base = `http://localhost:${(app.server.address() as AddressInfo).port}/cogitator`;
+  });
+
+  afterAll(async () => {
+    await app?.close();
+    await cogitator?.close();
+  });
+
+  it('reports a failing workflow without leaking internals', async () => {
+    const run = await fetch(`${base}/workflows/failing/run`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    const stream = await fetch(`${base}/workflows/failing/stream`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    const events = await stream.text();
+
+    expect(run.status).toBe(500);
+    expect(await run.text()).not.toContain('hunter2');
+    expect(events).toContain('node_error');
+    expect(events).not.toContain('hunter2');
   });
 });

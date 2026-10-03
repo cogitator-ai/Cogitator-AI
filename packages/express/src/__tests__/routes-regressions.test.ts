@@ -333,16 +333,31 @@ describe('workflow routes', () => {
     .addNode('inc', async (ctx) => ({ state: { value: ctx.state.value + 1 } }))
     .build();
 
-  const workflows = { failing, ok } as unknown as CogitatorServerConfig['workflows'];
+  const refused = new WorkflowBuilder('refused')
+    .addNode('check', async () => {
+      throw new CogitatorError({ message: 'quota reached', code: ErrorCode.VALIDATION_ERROR });
+    })
+    .build();
 
-  it('returns 500 when the workflow fails instead of reporting success', async () => {
+  const workflows = { failing, ok, refused } as unknown as CogitatorServerConfig['workflows'];
+
+  it('returns 500 when the workflow fails, without the text of internal errors', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { base } = await start(async () => runResult(), { workflows });
     const res = await post(`${base}/workflows/failing/run`, {});
     expect(res.status).toBe(500);
     expect((await res.json()).error).toEqual({
-      message: 'Workflow failed: node exploded',
+      message: 'Workflow failed: Internal server error',
       code: 'WORKFLOW_FAILED',
     });
+    expect(error).toHaveBeenCalled();
+    error.mockRestore();
+  });
+
+  it('keeps the message of a CogitatorError a workflow fails with', async () => {
+    const { base } = await start(async () => runResult(), { workflows });
+    const res = await post(`${base}/workflows/refused/run`, {});
+    expect((await res.json()).error.message).toBe('Workflow failed: quota reached');
   });
 
   it('streams an error event instead of workflow_completed when the workflow fails', async () => {

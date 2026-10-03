@@ -143,9 +143,10 @@ describe('createChatHandler', () => {
     await vi.waitFor(() => expect(afterRun).toHaveBeenCalledOnce());
   });
 
-  it('handles runtime error in stream', async () => {
+  it('handles runtime error in stream without the text of the error', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
     const cog = {
-      run: vi.fn().mockRejectedValue(new Error('LLM crashed')),
+      run: vi.fn().mockRejectedValue(new Error('db password is hunter2')),
     } as unknown as Cogitator;
 
     const handler = createChatHandler(cog, mockAgent());
@@ -156,7 +157,12 @@ describe('createChatHandler', () => {
     const errorEvents = events.filter((e) => (e as { type: string }).type === 'error');
 
     expect(errorEvents).toHaveLength(1);
-    expect((errorEvents[0] as { message: string }).message).toBe('LLM crashed');
+    expect(errorEvents[0]).toMatchObject({
+      message: 'Internal server error',
+      code: 'INTERNAL_ERROR',
+    });
+    expect(raw).not.toContain('hunter2');
+    vi.mocked(console.error).mockRestore();
   });
 
   it('extracts last user message as input', async () => {

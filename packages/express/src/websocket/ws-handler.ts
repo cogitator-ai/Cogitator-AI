@@ -11,7 +11,7 @@ import type {
   WebSocketConfig,
 } from '../types.js';
 import { generateId } from '../streaming/helpers.js';
-import { parseResumeBody, withoutCheckpoint } from '../routes/utils.js';
+import { parseResumeBody, resolveError, withoutCheckpoint } from '../routes/utils.js';
 
 type WebSocketType = import('ws').WebSocket;
 type WebSocketServerType = import('ws').WebSocketServer;
@@ -396,7 +396,7 @@ async function streamAgentRun(
       sendResponse(ws, {
         type: 'error',
         id: message.id,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: resolveError(error, 'WebSocket run').message,
       });
     }
   } finally {

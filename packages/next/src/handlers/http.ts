@@ -1,4 +1,4 @@
-import { CogitatorError, ERROR_STATUS_CODES } from '@cogitator-ai/types';
+import { CogitatorError, ERROR_STATUS_CODES, ErrorCode } from '@cogitator-ai/types';
 
 export const MAX_BODY_SIZE = 1024 * 1024;
 
@@ -89,18 +89,28 @@ function cogitatorErrorStatus(error: CogitatorError): number {
   return isErrorStatus(status) ? status : 500;
 }
 
-/**
- * Answers a failed run: a `CogitatorError` with its status and `code` (for
- * example `403 THREAD_ACCESS_DENIED`), anything else with `500`.
- */
-export function runErrorResponse(err: unknown): Response {
-  if (CogitatorError.isCogitatorError(err)) {
-    return jsonResponse({ error: err.message, code: err.code }, cogitatorErrorStatus(err));
-  }
-  return jsonError(err instanceof Error ? err.message : 'Internal server error', 500);
+export interface RunErrorDescription {
+  message: string;
+  code: string;
+  status: number;
 }
 
-/** The code a stream `error` event carries for a failed run, when the runtime named one. */
-export function runErrorCode(err: unknown): string | undefined {
-  return CogitatorError.isCogitatorError(err) ? err.code : undefined;
+/**
+ * What a client may see of a failed run: a `CogitatorError` with its message,
+ * `code` and status (for example `403 THREAD_ACCESS_DENIED`); any other error
+ * is logged and reported only as `500 Internal server error`, since its text
+ * can carry internals such as connection strings.
+ */
+export function describeRunError(err: unknown): RunErrorDescription {
+  if (CogitatorError.isCogitatorError(err)) {
+    return { message: err.message, code: err.code, status: cogitatorErrorStatus(err) };
+  }
+  console.error('[cogitator] Run failed:', err);
+  return { message: 'Internal server error', code: ErrorCode.INTERNAL_ERROR, status: 500 };
+}
+
+/** Answers a failed run as {@link describeRunError} describes it. */
+export function runErrorResponse(err: unknown): Response {
+  const { message, code, status } = describeRunError(err);
+  return jsonResponse({ error: message, code }, status);
 }

@@ -1,7 +1,7 @@
 import type { RunOptions, RunResult } from '@cogitator-ai/types';
 import { StreamWriter } from '../streaming/stream-writer.js';
 import { generateId } from '../streaming/encoder.js';
-import { runErrorCode } from './http.js';
+import { describeRunError } from './http.js';
 import { toPendingApprovals } from './result.js';
 
 const SSE_HEADERS = {
@@ -151,10 +151,10 @@ export function streamAgentRun({ req, runContext, start, afterRun }: StreamRunOp
     } catch (err) {
       await queue;
       if (!sw.isClosed) {
-        const message = err instanceof Error ? err.message : 'Unknown error';
+        const { message, code } = describeRunError(err);
         await emit(async () => {
           await endPart();
-          await sw.error(message, runErrorCode(err));
+          await sw.error(message, code);
         });
       }
     } finally {

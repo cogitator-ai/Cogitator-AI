@@ -162,7 +162,10 @@ export const swarmRoutes: FastifyPluginAsync = async (fastify) => {
             });
           },
           onAgentError: (agentName: string, error: Error) => {
-            writer.swarmEvent('agent_error', { agentName, error: error.message });
+            writer.swarmEvent('agent_error', {
+              agentName,
+              error: resolveError(request, error, `swarm agent ${agentName} error`).message,
+            });
           },
           onMessage: (message: SwarmMessage) => {
             writer.swarmEvent('message', message);

@@ -9,7 +9,7 @@ import type {
   WebSocketResponse,
 } from '../types.js';
 import { generateId } from '../streaming/helpers.js';
-import { withoutCheckpoint } from '../routes/utils.js';
+import { resolveError, withoutCheckpoint } from '../routes/utils.js';
 
 const WS_OPEN = 1;
 const MAX_SUBSCRIPTIONS = 64;
@@ -359,7 +359,7 @@ async function streamAgentRun(
       sendResponse(socket, {
         type: 'error',
         id: message.id,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: resolveError(fastify, error, 'websocket run error').message,
       });
     }
   } finally {

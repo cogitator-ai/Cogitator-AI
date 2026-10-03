@@ -690,7 +690,8 @@ async function* workflowEvents(
           onNodeStart: (nodeName) => event('node_started', { nodeName, timestamp: Date.now() }),
           onNodeComplete: (nodeName, output, duration) =>
             event('node_completed', { nodeName, output, duration }),
-          onNodeError: (nodeName, error) => event('node_error', { nodeName, error: error.message }),
+          onNodeError: (nodeName, error) =>
+            event('node_error', { nodeName, error: describeError(error).message }),
           onNodeProgress: (nodeName, progress) => event('node_progress', { nodeName, progress }),
         },
         signal
@@ -741,7 +742,7 @@ async function* swarmEvents(
               timestamp: Date.now(),
             }),
           onAgentError: (agentName, error) =>
-            event('agent_error', { agentName, error: error.message }),
+            event('agent_error', { agentName, error: describeError(error).message }),
           onMessage: (message) => event('message', message),
           onEvent: (swarmEvent) => event(swarmEvent.type, swarmEvent.data),
         },

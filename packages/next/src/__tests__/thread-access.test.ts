@@ -113,7 +113,7 @@ describe('agent handler with several users', () => {
     const res = await handler(request('/api/agent', 'ada', { input: 'hi' }));
 
     expect(res.status).toBe(500);
-    expect(await res.json()).toEqual({ error: 'boom' });
+    expect(await res.json()).toEqual({ error: 'Internal server error', code: 'INTERNAL_ERROR' });
   });
 });
 
