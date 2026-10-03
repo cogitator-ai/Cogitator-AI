@@ -15,6 +15,7 @@ import {
   InMemoryInterventionLog,
   CausalExtractor,
 } from '../causal';
+import { compileExpression } from '../causal/inference/expression';
 import type {
   CausalNode,
   CausalEdge,
@@ -959,6 +960,73 @@ describe('regression: counterfactual polynomial evaluation', () => {
     });
 
     expect(result.counterfactualValue).toBe(5 * 3);
+  });
+});
+
+describe('regression: counterfactual custom equations', () => {
+  const graph = (customFn: string) =>
+    CausalGraphBuilder.create('custom-test')
+      .variable('X', 'Input', 'treatment')
+      .variable('Z', 'Context', 'confounder')
+      .variable('Y', 'Output', 'outcome')
+      .from('X')
+      .causes('Y')
+      .from('Z')
+      .causes('Y')
+      .from('Y')
+      .withEquation({ type: 'custom', customFn })
+      .build() as CausalGraphImpl;
+
+  it('evaluates customFn over the parent values with the abducted noise', () => {
+    const result = evaluateCounterfactual(graph('X ^ 2 + 2 * max(Z, 0) - log(1)'), {
+      target: 'Y',
+      intervention: { X: 3 },
+      factual: { X: 1, Z: 1, Y: 4 },
+      question: 'What would Y be if X was 3?',
+    });
+
+    expect(result.reasoning.abduction.Y).toBe(1);
+    expect(result.counterfactualValue).toBe(9 + 2 + 1);
+  });
+
+  it('keeps the observed value of a node without an equation', () => {
+    const result = evaluateCounterfactual(graph('X + Z'), {
+      target: 'Y',
+      intervention: { X: 5 },
+      factual: { X: 1, Z: 10, Y: 11 },
+      question: 'What would Y be if X was 5?',
+    });
+
+    expect(result.reasoning.action.Z).toBe(10);
+    expect(result.counterfactualValue).toBe(15);
+  });
+
+  it('follows arithmetic precedence', () => {
+    const cases: Array<[string, number]> = [
+      ['1 + 2 * 3', 7],
+      ['(1 + 2) * 3', 9],
+      ['-2 ^ 2', -4],
+      ['2 ^ 3 ^ 2', 512],
+      ['10 / 4 - 1', 1.5],
+      ['sigmoid(0) + min(3, a, 2) + pow(a, 2)', 0.5 + 1 + 1],
+      ['1.5e1 + .5 + missing', 15.5],
+    ];
+    for (const [source, value] of cases) {
+      expect(compileExpression(source)({ a: 1 })).toBe(value);
+    }
+  });
+
+  it('rejects a customFn that is not an arithmetic expression', () => {
+    for (const customFn of ['process.exit(1)', 'X +', 'X; Z', 'fetch(X)']) {
+      expect(() =>
+        evaluateCounterfactual(graph(customFn), {
+          target: 'Y',
+          intervention: { X: 1 },
+          factual: { X: 0, Z: 0, Y: 0 },
+          question: 'q',
+        })
+      ).toThrow('Invalid expression');
+    }
   });
 });
 

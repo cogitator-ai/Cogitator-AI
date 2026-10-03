@@ -5,6 +5,7 @@ import type {
   CounterfactualResult,
   StructuralEquation,
 } from '@cogitator-ai/types';
+import { compileExpression, type CompiledExpression } from './expression';
 
 export interface CounterfactualReasonerOptions {
   defaultNoiseMean?: number;
@@ -15,6 +16,7 @@ export interface CounterfactualReasonerOptions {
 
 export class CounterfactualReasoner {
   private options: Required<CounterfactualReasonerOptions>;
+  private expressions = new Map<string, CompiledExpression>();
 
   constructor(options: CounterfactualReasonerOptions = {}) {
     this.options = {
@@ -28,7 +30,7 @@ export class CounterfactualReasoner {
   evaluate(graph: CausalGraph, query: CounterfactualQuery): CounterfactualResult {
     const abductionResult = this.abduction(graph, query.factual);
 
-    const actionResult = this.action(graph, query.intervention, abductionResult);
+    const actionResult = this.action(graph, query.intervention, abductionResult, query.factual);
 
     const predictionResult = this.prediction(graph, query.target, actionResult);
 
@@ -74,14 +76,21 @@ export class CounterfactualReasoner {
   }
 
   private action(
-    _graph: CausalGraph,
+    graph: CausalGraph,
     intervention: Record<string, number | string | boolean>,
-    noiseTerms: Record<string, number>
+    noiseTerms: Record<string, number>,
+    factual: Record<string, number | string | boolean>
   ): Record<string, number | string | boolean> {
     const result: Record<string, number | string | boolean> = {};
 
     for (const [key, value] of Object.entries(noiseTerms)) {
       result[key] = value;
+    }
+
+    for (const [variable, value] of Object.entries(factual)) {
+      if (!graph.getNode(variable)?.equation) {
+        result[variable] = value;
+      }
     }
 
     for (const [variable, value] of Object.entries(intervention)) {
@@ -199,7 +208,12 @@ export class CounterfactualReasoner {
       }
 
       case 'custom': {
-        return noise;
+        if (!equation.customFn) return noise;
+        const variables: Record<string, number> = {};
+        for (const [variable, value] of Object.entries(parentValues)) {
+          variables[variable] = this.toNumber(value);
+        }
+        return this.compile(equation.customFn)(variables) + noise;
       }
 
       default:
@@ -255,6 +269,15 @@ export class CounterfactualReasoner {
     const u2 = Math.random();
     const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
     return mean + std * z;
+  }
+
+  private compile(source: string): CompiledExpression {
+    let compiled = this.expressions.get(source);
+    if (!compiled) {
+      compiled = compileExpression(source);
+      this.expressions.set(source, compiled);
+    }
+    return compiled;
   }
 
   private toNumber(value: number | string | boolean): number {

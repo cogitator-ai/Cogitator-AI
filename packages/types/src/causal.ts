@@ -26,6 +26,12 @@ export interface StructuralEquation {
   type: EquationType;
   coefficients?: Record<string, number>;
   intercept?: number;
+  /**
+   * The `custom` equation: an arithmetic expression over the parent node ids,
+   * such as `2 * price - log(demand) + max(stock, 1)`, with `+ - * / ^`,
+   * parentheses and `abs exp log sqrt pow min max tanh sigmoid`. Like the
+   * `linear` and `polynomial` types, noise is added to its value.
+   */
   customFn?: string;
   noiseDistribution?: 'gaussian' | 'uniform' | 'bernoulli';
   noiseParams?: Record<string, number>;
