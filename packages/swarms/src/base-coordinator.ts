@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { nanoid } from 'nanoid';
 import { getLogger } from '@cogitator-ai/core';
 import type {
@@ -88,6 +89,7 @@ export abstract class BaseSwarmCoordinator<
   private injectedTools = new Map<string, Tool[]>();
   private abortController = new AbortController();
   private runScope: SwarmRunScope = {};
+  private readonly boundRunScope = new AsyncLocalStorage<SwarmRunScope>();
   private paused = false;
 
   protected constructor(
@@ -167,6 +169,20 @@ export abstract class BaseSwarmCoordinator<
 
   endRun(): void {
     this.runScope = {};
+  }
+
+  /**
+   * Execute `work` (a strategy run) bound to `scope`: every agent run it starts, however
+   * late, takes this scope instead of whichever run is current. So once the scope's signal
+   * aborts (timeout, failure), work still in flight cannot start agents or retries, not
+   * even after the run has ended or a new one has begun.
+   */
+  runInScope<T>(scope: SwarmRunScope, work: () => Promise<T>): Promise<T> {
+    return this.boundRunScope.run(scope, work);
+  }
+
+  private get activeScope(): SwarmRunScope {
+    return this.boundRunScope.getStore() ?? this.runScope;
   }
 
   pause(): void {
@@ -312,11 +328,11 @@ export abstract class BaseSwarmCoordinator<
   }
 
   protected isCancelled(): boolean {
-    return this.abortController.signal.aborted || this.runScope.signal?.aborted === true;
+    return this.abortController.signal.aborted || this.activeScope.signal?.aborted === true;
   }
 
   private currentSignal(): AbortSignal {
-    const runSignal = this.runScope.signal;
+    const runSignal = this.activeScope.signal;
     return runSignal
       ? AbortSignal.any([this.abortController.signal, runSignal])
       : this.abortController.signal;
@@ -335,6 +351,7 @@ export abstract class BaseSwarmCoordinator<
     this.events.emit('agent:start', { agentName, input }, agentName);
 
     try {
+      const scope = this.activeScope;
       const incomingMessages = this.collectIncomingMessages(agentName);
       const negotiationContext = this.buildNegotiationContext(agentName);
 
@@ -344,8 +361,8 @@ export abstract class BaseSwarmCoordinator<
         input,
         signal: this.currentSignal(),
         saveHistory: this.saveHistory,
-        threadId: this.runScope.threadId ? `${this.runScope.threadId}:${agentName}` : undefined,
-        userId: this.runScope.userId,
+        threadId: scope.threadId ? `${scope.threadId}:${agentName}` : undefined,
+        userId: scope.userId,
         timeout: minDefined(this.config.resources?.perAgent?.timeout, options.timeout),
         context: {
           ...context,

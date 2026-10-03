@@ -48,6 +48,7 @@ interface ManagedCoordinator extends SwarmCoordinatorInterface {
   getSwarmId(): string;
   beginRun(scope: SwarmRunScope): void;
   endRun(): void;
+  runInScope<T>(scope: SwarmRunScope, work: () => Promise<T>): Promise<T>;
   pause(): void;
   resume(): void;
   abort(): void;
@@ -179,11 +180,12 @@ export class Swarm {
         }, timeoutMs);
       }
 
-      this.coordinator.beginRun({
+      const scope: SwarmRunScope = {
         threadId: options.threadId,
         userId: options.userId,
         signal: runController.signal,
-      });
+      };
+      this.coordinator.beginRun(scope);
       detachCallbacks = this.attachRunCallbacks(options);
 
       this.coordinator.events.emit('swarm:start', {
@@ -192,7 +194,10 @@ export class Swarm {
         input: options.input.slice(0, 100),
       });
 
-      const result = await raceWithAbort(this.strategy.execute(options), runController.signal);
+      const result = await raceWithAbort(
+        this.coordinator.runInScope(scope, () => this.strategy.execute(options)),
+        runController.signal
+      );
 
       this.coordinator.events.emit('swarm:complete', {
         swarmId: this.id,
@@ -205,6 +210,7 @@ export class Swarm {
       const aborted = runController.signal.aborted ? abortReason(runController.signal) : undefined;
       if (aborted) this.abortPendingApprovals(aborted);
       const failure = aborted ?? error;
+      if (!aborted) runController.abort(failure);
 
       this.coordinator.events.emit('swarm:error', {
         swarmId: this.id,
