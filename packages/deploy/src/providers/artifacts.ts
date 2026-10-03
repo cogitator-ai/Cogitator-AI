@@ -1,7 +1,16 @@
-import type { GeneratedArtifacts, PreflightCheck } from '@cogitator-ai/types';
+import type { DeployConfig, GeneratedArtifacts, PreflightCheck } from '@cogitator-ai/types';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { DOCKERIGNORE } from '../generator.js';
+import { ProjectAnalyzer } from '../analyzer.js';
+import { ArtifactGenerator, DOCKERIGNORE } from '../generator.js';
+
+/** Generate the deployment artifacts for the project in `projectDir`, built and started the way its package.json and lockfile say. */
+export function generateProjectArtifacts(
+  config: DeployConfig,
+  projectDir: string
+): GeneratedArtifacts {
+  return new ArtifactGenerator().generate(config, new ProjectAnalyzer().detectBuild(projectDir));
+}
 
 /**
  * Write generated artifacts into the project's artifacts directory. A root

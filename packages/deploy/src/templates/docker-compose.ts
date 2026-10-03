@@ -18,20 +18,21 @@ export function generateDockerCompose(config: DeployConfig): string {
   const port = config.port ?? 3000;
   const lines: string[] = ['services:'];
 
-  const environment: string[] = [
-    `      NODE_ENV: ${yamlString('production')}`,
-    `      PORT: ${yamlString(String(port))}`,
-  ];
-  if (config.services?.redis) environment.push(`      REDIS_URL: ${yamlString(COMPOSE_REDIS_URL)}`);
-  if (config.services?.postgres) {
-    environment.push(`      DATABASE_URL: ${yamlString(COMPOSE_DATABASE_URL)}`);
-  }
+  const serviceUrls = new Map<string, string>();
+  if (config.services?.redis) serviceUrls.set('REDIS_URL', COMPOSE_REDIS_URL);
+  if (config.services?.postgres) serviceUrls.set('DATABASE_URL', COMPOSE_DATABASE_URL);
+
+  const environment = new Map<string, string>([
+    ['NODE_ENV', yamlString('production')],
+    ['PORT', yamlString(String(port))],
+  ]);
+  for (const [key, url] of serviceUrls) environment.set(key, yamlString(url));
   for (const [key, value] of Object.entries(config.env ?? {})) {
-    environment.push(`      ${key}: ${yamlString(value.replace(/\$/g, '$$$$'))}`);
+    environment.set(key, yamlString(value.replace(/\$/g, '$$$$')));
   }
   for (const secret of config.secrets ?? []) {
     if (!(secret in (config.env ?? {}))) {
-      environment.push(`      ${secret}: \${${secret}:-}`);
+      environment.set(secret, `\${${secret}:-${serviceUrls.get(secret) ?? ''}}`);
     }
   }
 
@@ -49,7 +50,7 @@ export function generateDockerCompose(config: DeployConfig): string {
   lines.push('    ports:');
   lines.push(`      - "${port}:${port}"`);
   lines.push('    environment:');
-  lines.push(...environment);
+  for (const [key, value] of environment) lines.push(`      ${key}: ${value}`);
   lines.push('    restart: unless-stopped');
   if (dependsOn.length > 0) {
     lines.push('    depends_on:');

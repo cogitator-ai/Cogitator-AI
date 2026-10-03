@@ -47,6 +47,11 @@ describe('generateDockerfile', () => {
     expect(df).toContain('--interval=10s --timeout=2s');
     expect(df).toContain('http://localhost:8080/ready');
   });
+
+  it('checks the health route the server adapters serve by default', () => {
+    const df = generateDockerfile({ config: { port: 3000 }, hasTypeScript: false });
+    expect(df).toContain('http://localhost:3000/cogitator/health');
+  });
 });
 
 describe('generateDockerCompose', () => {
@@ -72,6 +77,21 @@ describe('generateDockerCompose', () => {
     expect(compose).toContain('condition: service_healthy');
     expect(compose).toContain('postgres-data:');
   });
+
+  it('writes each environment key once, letting env and secrets override service URLs', () => {
+    const compose = generateDockerCompose({
+      services: { redis: true, postgres: true },
+      env: { REDIS_URL: 'redis://cache.internal:6379', PORT: '3000' },
+      secrets: ['DATABASE_URL', 'REDIS_URL'],
+    });
+    const appEnvironment = compose.split('    environment:\n')[1].split('    restart:')[0];
+    const keys = [...appEnvironment.matchAll(/^ {6}([A-Z_]+):/gm)].map((m) => m[1]);
+    expect(keys).toEqual(['NODE_ENV', 'PORT', 'REDIS_URL', 'DATABASE_URL']);
+    expect(compose).toContain('REDIS_URL: "redis://cache.internal:6379"');
+    expect(compose).toContain(
+      'DATABASE_URL: ${DATABASE_URL:-postgresql://cogitator:cogitator@postgres:5432/cogitator}'
+    );
+  });
 });
 
 describe('imageTag', () => {
@@ -93,6 +113,10 @@ describe('generateFlyToml', () => {
     expect(toml).toContain('LOG_LEVEL = "debug"');
     expect(toml).toContain('min_machines_running = 2');
     expect(toml).toContain('path = "/healthz"');
+  });
+
+  it('checks the health route the server adapters serve by default', () => {
+    expect(generateFlyToml({})).toContain('path = "/cogitator/health"');
   });
 
   it('parses memory sizes', () => {

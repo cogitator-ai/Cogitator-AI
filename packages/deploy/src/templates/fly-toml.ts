@@ -1,4 +1,5 @@
 import type { DeployConfig } from '@cogitator-ai/types';
+import { healthPath } from './health.js';
 
 export function parseMemoryMb(memory: string): number {
   const gb = /^(\d+(?:\.\d+)?)\s*gb?$/i.exec(memory.trim());
@@ -18,7 +19,6 @@ export function generateFlyToml(config: DeployConfig): string {
   const app = config.image ?? 'cogitator-app';
   const memoryMb = parseMemoryMb(config.resources?.memory ?? '256mb');
   const instances = Math.max(config.instances ?? 1, 0);
-  const healthPath = config.health?.path ?? '/health';
 
   const envEntries = Object.entries({ NODE_ENV: 'production', PORT: String(port), ...config.env });
   const envSection = envEntries.map(([key, value]) => `  ${key} = ${tomlString(value)}`).join('\n');
@@ -44,7 +44,7 @@ ${envSection}
     type = "http"
     interval = ${tomlString(config.health?.interval ?? '30s')}
     timeout = ${tomlString(config.health?.timeout ?? '5s')}
-    path = ${tomlString(healthPath.startsWith('/') ? healthPath : `/${healthPath}`)}
+    path = ${tomlString(healthPath(config))}
 
 [[vm]]
   memory = "${memoryMb}mb"

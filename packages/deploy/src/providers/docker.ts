@@ -11,8 +11,9 @@ import { run, isCommandAvailable } from '../utils/exec.js';
 import { resolveDeployEnv, sanitizeName } from '../utils/env.js';
 import { isRegistryAuthenticated } from '../utils/registry-auth.js';
 import { imageTag } from '../templates/docker-compose.js';
-import { ARTIFACTS_DIR, ArtifactGenerator } from '../generator.js';
-import { secretChecks, writeArtifacts } from './artifacts.js';
+import { ARTIFACTS_DIR } from '../generator.js';
+import { generateProjectArtifacts, secretChecks, writeArtifacts } from './artifacts.js';
+import { healthPath } from '../templates/health.js';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -89,9 +90,7 @@ export class DockerProvider implements DeployProvider {
   }
 
   async generate(config: DeployConfig, projectDir: string): Promise<GeneratedArtifacts> {
-    return new ArtifactGenerator().generate(config, {
-      hasTypeScript: existsSync(join(projectDir, 'tsconfig.json')),
-    });
+    return generateProjectArtifacts(config, projectDir);
   }
 
   async deploy(
@@ -128,14 +127,13 @@ export class DockerProvider implements DeployProvider {
     }
 
     const port = config.port ?? 3000;
-    const healthPath = config.health?.path ?? '/health';
     const url = `http://localhost:${port}`;
     return {
       success: true,
       url,
       endpoints: {
         api: url,
-        health: `${url}${healthPath.startsWith('/') ? healthPath : `/${healthPath}`}`,
+        health: `${url}${healthPath(config)}`,
       },
     };
   }

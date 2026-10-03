@@ -42,16 +42,20 @@ interface PackageJson {
   devDependencies?: Record<string, string>;
 }
 
-export interface AnalyzerResult {
-  server?: DeployServer;
-  services: DeployServicesConfig;
-  secrets: string[];
-  warnings: string[];
+/** How a project builds and starts: what the generated Dockerfile needs. */
+export interface ProjectBuild {
   hasTypeScript: boolean;
   packageManager: PackageManager;
   hasLockfile: boolean;
   hasBuildScript: boolean;
   startCommand: string[];
+}
+
+export interface AnalyzerResult extends ProjectBuild {
+  server?: DeployServer;
+  services: DeployServicesConfig;
+  secrets: string[];
+  warnings: string[];
   deployConfig: DeployConfig;
 }
 
@@ -180,16 +184,29 @@ export class ProjectAnalyzer {
     }
   }
 
+  /** How the project in `projectDir` builds and starts. */
+  detectBuild(projectDir: string): ProjectBuild {
+    return this.buildOf(projectDir, readPackageJson(projectDir, []));
+  }
+
+  private buildOf(projectDir: string, pkg: PackageJson): ProjectBuild {
+    const hasTypeScript = existsSync(join(projectDir, 'tsconfig.json'));
+    return {
+      hasTypeScript,
+      ...this.detectPackageManager(projectDir),
+      hasBuildScript: typeof pkg.scripts?.build === 'string',
+      startCommand: this.detectStartCommand(pkg, hasTypeScript),
+    };
+  }
+
   analyze(projectDir: string, configOverrides?: Partial<DeployConfig>): AnalyzerResult {
     const warnings: string[] = [];
     const pkg = readPackageJson(projectDir, warnings);
 
     const server = configOverrides?.server ?? this.detectServer(pkg);
-    const hasTypeScript = existsSync(join(projectDir, 'tsconfig.json'));
     const target = configOverrides?.target ?? 'docker';
-    const { packageManager, hasLockfile } = this.detectPackageManager(projectDir);
-    const startCommand = this.detectStartCommand(pkg, hasTypeScript);
-    const hasBuildScript = typeof pkg.scripts?.build === 'string';
+    const build = this.buildOf(projectDir, pkg);
+    const { hasTypeScript, hasBuildScript, startCommand } = build;
 
     if (!pkg.scripts?.start && !pkg.main) {
       warnings.push(
@@ -224,11 +241,7 @@ export class ProjectAnalyzer {
       services,
       secrets,
       warnings,
-      hasTypeScript,
-      packageManager,
-      hasLockfile,
-      hasBuildScript,
-      startCommand,
+      ...build,
       deployConfig: {
         ...configOverrides,
         server,

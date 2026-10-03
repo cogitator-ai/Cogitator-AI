@@ -9,9 +9,8 @@ import type {
 import type { DeployProvider } from './base.js';
 import { run, isCommandAvailable, type ExecResult, type RunOptions } from '../utils/exec.js';
 import { resolveDeployEnv } from '../utils/env.js';
-import { ArtifactGenerator } from '../generator.js';
-import { secretChecks, writeArtifacts } from './artifacts.js';
-import { existsSync } from 'node:fs';
+import { generateProjectArtifacts, secretChecks, writeArtifacts } from './artifacts.js';
+import { healthPath } from '../templates/health.js';
 import { join } from 'node:path';
 
 const PREFLIGHT_TIMEOUT_MS = 15_000;
@@ -96,9 +95,7 @@ export class FlyProvider implements DeployProvider {
   }
 
   async generate(config: DeployConfig, projectDir: string): Promise<GeneratedArtifacts> {
-    return new ArtifactGenerator().generate(config, {
-      hasTypeScript: existsSync(join(projectDir, 'tsconfig.json')),
-    });
+    return generateProjectArtifacts(config, projectDir);
   }
 
   async deploy(
@@ -167,14 +164,13 @@ export class FlyProvider implements DeployProvider {
     }
 
     const url = `https://${app}.fly.dev`;
-    const healthPath = config.health?.path ?? '/health';
     return {
       success: true,
       url,
       endpoints: {
         api: url,
         a2a: `${url}/.well-known/agent.json`,
-        health: `${url}${healthPath.startsWith('/') ? healthPath : `/${healthPath}`}`,
+        health: `${url}${healthPath(config)}`,
       },
     };
   }

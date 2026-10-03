@@ -1,5 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import type { DeployConfig, GeneratedArtifacts } from '@cogitator-ai/types';
 import { Deployer } from '../deployer';
+import { DockerProvider } from '../providers/docker';
 
 describe('Deployer', () => {
   it('resolves docker provider', () => {
@@ -44,5 +49,52 @@ describe('custom providers', () => {
     expect(plan.provider).toBe(provider);
     expect(plan.config.target).toBeUndefined();
     expect((await deployer.status('custom', {}, process.cwd())).running).toBe(true);
+  });
+});
+
+describe('Deployer.deploy', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'deploy-deployer-'));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("deploys the artifacts the target's provider generates", async () => {
+    const artifacts: GeneratedArtifacts = {
+      files: [{ path: 'Procfile', content: 'web: node server.js' }],
+      outputDir: '.cogitator',
+    };
+    const generate = vi.fn(async (_config: DeployConfig, _projectDir: string) => artifacts);
+    const deploy = vi.fn(async () => ({ success: true, url: 'custom://deployed' }));
+    const deployer = new Deployer();
+    deployer.registerProvider({
+      name: 'custom',
+      preflight: async () => ({ checks: [], passed: true }),
+      generate,
+      deploy,
+      status: async () => ({ running: true }),
+      destroy: async () => {},
+    });
+
+    const result = await deployer.deploy({ projectDir: dir, target: 'custom' });
+
+    expect(result).toEqual({ success: true, url: 'custom://deployed' });
+    expect(generate).toHaveBeenCalledWith(expect.objectContaining({ port: 3000 }), dir);
+    expect(deploy).toHaveBeenCalledWith(expect.objectContaining({ port: 3000 }), artifacts, dir);
+  });
+
+  it('builds the Dockerfile from the detected package manager and start command', async () => {
+    writeFileSync(
+      join(dir, 'package.json'),
+      JSON.stringify({ scripts: { start: 'node dist/main.js', build: 'tsc' } })
+    );
+    writeFileSync(join(dir, 'package-lock.json'), '{}');
+    writeFileSync(join(dir, 'tsconfig.json'), '{}');
+
+    const artifacts = await new DockerProvider().generate({ port: 3000 }, dir);
+    const dockerfile = artifacts.files.find((f) => f.path === 'Dockerfile')?.content;
+
+    expect(dockerfile).toContain('RUN npm ci');
+    expect(dockerfile).toContain('CMD ["node","dist/main.js"]');
   });
 });

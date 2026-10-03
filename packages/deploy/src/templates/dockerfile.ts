@@ -1,4 +1,5 @@
 import type { DeployConfig } from '@cogitator-ai/types';
+import { healthPath } from './health.js';
 
 export type DockerfilePackageManager = 'pnpm' | 'npm' | 'yarn';
 
@@ -47,11 +48,9 @@ function installSteps(pm: DockerfilePackageManager, hasLockfile: boolean): Insta
 }
 
 function healthcheck(config: DeployConfig, port: number): string {
-  const path = config.health?.path ?? '/health';
   const interval = config.health?.interval ?? '30s';
   const timeout = config.health?.timeout ?? '5s';
-  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
-  return `HEALTHCHECK --interval=${interval} --timeout=${timeout} CMD wget -q --spider http://localhost:${port}${normalizedPath} || exit 1`;
+  return `HEALTHCHECK --interval=${interval} --timeout=${timeout} CMD wget -q --spider http://localhost:${port}${healthPath(config)} || exit 1`;
 }
 
 export function generateDockerfile(options: DockerfileOptions): string {

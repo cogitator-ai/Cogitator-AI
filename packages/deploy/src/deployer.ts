@@ -9,7 +9,6 @@ import type { DeployProvider } from './providers/base.js';
 import { DockerProvider } from './providers/docker.js';
 import { FlyProvider } from './providers/fly.js';
 import { ProjectAnalyzer, type AnalyzerResult } from './analyzer.js';
-import { ArtifactGenerator } from './generator.js';
 
 /** A built-in target, or the name of a provider registered via `registerProvider`. */
 export type DeployTargetName = DeployTarget | (string & {});
@@ -39,7 +38,6 @@ export interface DeployPlan {
 export class Deployer {
   private providers = new Map<string, DeployProvider>();
   private analyzer = new ProjectAnalyzer();
-  private generator = new ArtifactGenerator();
 
   constructor() {
     this.registerProvider(new DockerProvider());
@@ -93,7 +91,7 @@ export class Deployer {
   }
 
   async deploy(options: DeployOptions): Promise<DeployResult> {
-    const { config, preflight, provider, analysis } = await this.plan(options);
+    const { config, preflight, provider } = await this.plan(options);
 
     if (!preflight.passed) {
       const failures = preflight.checks.filter((c) => !c.passed);
@@ -103,13 +101,7 @@ export class Deployer {
       };
     }
 
-    const artifacts = this.generator.generate(config, {
-      hasTypeScript: analysis.hasTypeScript,
-      packageManager: analysis.packageManager,
-      hasLockfile: analysis.hasLockfile,
-      hasBuildScript: analysis.hasBuildScript,
-      startCommand: analysis.startCommand,
-    });
+    const artifacts = await provider.generate(config, options.projectDir);
 
     if (options.dryRun) {
       return { success: true, url: '(dry run)' };
