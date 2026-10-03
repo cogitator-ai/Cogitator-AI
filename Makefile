@@ -3,6 +3,11 @@
 
 .PHONY: help setup up down logs ps build dev test clean reset pull-models
 
+# Docker Compose v2 plugin when available, the standalone v1 binary otherwise
+ifndef COMPOSE
+COMPOSE := $(shell docker compose version >/dev/null 2>&1 && echo "docker compose" || echo docker-compose)
+endif
+
 # Default target
 help:
 	@echo "🧠 Cogitator - AI Agent Runtime"
@@ -44,12 +49,12 @@ setup:
 	@./scripts/setup.sh
 
 up:
-	docker-compose up -d postgres redis ollama
+	$(COMPOSE) up -d postgres redis ollama
 	@echo ""
 	@echo "Services started. Run 'make ps' to check status."
 
 down:
-	docker-compose down
+	$(COMPOSE) down
 	@echo "Services stopped."
 
 dev: up
@@ -68,46 +73,46 @@ test:
 
 pull-models:
 	@echo "Pulling embedding model..."
-	docker-compose exec ollama ollama pull nomic-embed-text-v2-moe || \
-		docker-compose exec ollama ollama pull nomic-embed-text
+	$(COMPOSE) exec ollama ollama pull nomic-embed-text-v2-moe || \
+		$(COMPOSE) exec ollama ollama pull nomic-embed-text
 	@echo ""
 	@echo "Pulling default LLM..."
-	docker-compose exec ollama ollama pull llama3.2:3b
+	$(COMPOSE) exec ollama ollama pull llama3.2:3b
 	@echo ""
 	@echo "Done! Available models:"
-	@docker-compose exec ollama ollama list
+	@$(COMPOSE) exec ollama ollama list
 
 models:
-	docker-compose exec ollama ollama list
+	$(COMPOSE) exec ollama ollama list
 
 # ============================================================================
 # Services
 # ============================================================================
 
 ps:
-	docker-compose ps
+	$(COMPOSE) ps
 
 logs:
-	docker-compose logs -f
+	$(COMPOSE) logs -f
 
 logs-ollama:
-	docker-compose logs -f ollama
+	$(COMPOSE) logs -f ollama
 
 logs-pg:
-	docker-compose logs -f postgres
+	$(COMPOSE) logs -f postgres
 
 # ============================================================================
 # Database
 # ============================================================================
 
 db-shell:
-	docker-compose exec postgres psql -U cogitator -d cogitator
+	$(COMPOSE) exec postgres psql -U cogitator -d cogitator
 
 db-reset:
 	@echo "⚠️  WARNING: This will delete all data!"
 	@read -p "Are you sure? [y/N] " confirm && [ "$$confirm" = "y" ]
-	docker-compose down -v
-	docker-compose up -d postgres
+	$(COMPOSE) down -v
+	$(COMPOSE) up -d postgres
 	@echo "Waiting for PostgreSQL..."
 	@sleep 5
 	@echo "Database reset complete."
@@ -124,7 +129,7 @@ clean:
 reset: clean
 	@echo "⚠️  WARNING: This will remove all containers, volumes, and node_modules!"
 	@read -p "Are you sure? [y/N] " confirm && [ "$$confirm" = "y" ]
-	docker-compose down -v --remove-orphans
+	$(COMPOSE) down -v --remove-orphans
 	rm -rf node_modules
 	rm -rf packages/*/node_modules
 	@echo "Full reset complete. Run 'make setup' to start fresh."
