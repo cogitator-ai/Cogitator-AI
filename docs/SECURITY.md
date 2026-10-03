@@ -260,7 +260,7 @@ A pod like this cannot reach a Docker daemon; run Docker-sandboxed tools against
 If you discover a security vulnerability:
 
 1. **Do NOT** open a public issue
-2. Email security@cogitator.dev with:
+2. Report it privately through [GitHub private vulnerability reporting](https://github.com/cogitator-ai/Cogitator-AI/security/advisories/new) with:
    - Description of the vulnerability
    - Steps to reproduce
    - Potential impact

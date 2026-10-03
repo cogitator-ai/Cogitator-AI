@@ -1,7 +1,7 @@
 # Security contact for the Cogitator project (RFC 9116).
 # Please report vulnerabilities privately through GitHub, not in public issues.
-Contact: https://github.com/cogitator-ai/Cogitator-AI/security
-Policy: https://github.com/cogitator-ai/Cogitator-AI/blob/main/docs/SECURITY.md
+Contact: https://github.com/cogitator-ai/Cogitator-AI/security/advisories/new
+Policy: https://github.com/cogitator-ai/Cogitator-AI/blob/main/.github/SECURITY.md
 Preferred-Languages: en
 Canonical: https://cogitator.app/.well-known/security.txt
 Expires: 2027-10-04T00:00:00.000Z

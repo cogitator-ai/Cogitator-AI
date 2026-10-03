@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/cogitator-ai/Cogitator-AI/security/advisories/new
+    about: Please report vulnerabilities privately here, never in a public issue
   - name: Documentation
     url: https://github.com/cogitator-ai/Cogitator-AI/tree/main/docs
     about: Check the documentation before opening an issue

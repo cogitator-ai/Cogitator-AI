@@ -738,7 +738,7 @@ Incident response is an operational process of the deploying organization. A sug
 ### Reporting Vulnerabilities in Cogitator
 
 1. **Do NOT** open a public issue
-2. Email: security@cogitator.dev
+2. Report it privately through [GitHub private vulnerability reporting](https://github.com/cogitator-ai/Cogitator-AI/security/advisories/new)
 3. Include:
    - Description of vulnerability
    - Steps to reproduce

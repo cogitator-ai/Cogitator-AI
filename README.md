@@ -412,6 +412,16 @@ Not published to npm: [`packages/dashboard`](./packages/dashboard) (the [cogitat
 
 ---
 
+## Security
+
+Found a vulnerability? **Please don't open a public issue** — report it privately so it can be fixed before it is disclosed.
+
+<a href="https://github.com/cogitator-ai/Cogitator-AI/security/advisories/new"><img alt="Report a vulnerability" src="https://img.shields.io/badge/Report_a_vulnerability-privately-c9a45c?style=for-the-badge&logo=github&logoColor=white&labelColor=07080a"></a>
+
+See [SECURITY.md](./.github/SECURITY.md) for what to include and how reports are handled.
+
+---
+
 ## License
 
 MIT - see [LICENSE](./LICENSE).
