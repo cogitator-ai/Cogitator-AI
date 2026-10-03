@@ -12,6 +12,8 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-6-blue.svg)](https://www.typescriptlang.org/)
 [![Node](https://img.shields.io/badge/Node-22.12+-green.svg)](https://nodejs.org/)
 [![npm](https://img.shields.io/npm/v/@cogitator-ai/core.svg)](https://www.npmjs.com/package/@cogitator-ai/core)
+[![npm downloads](https://img.shields.io/npm/dm/@cogitator-ai/core.svg)](https://www.npmjs.com/package/@cogitator-ai/core)
+[![CI](https://github.com/cogitator-ai/Cogitator-AI/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/cogitator-ai/Cogitator-AI/actions/workflows/ci.yml)
 
 [Quick Start](#quick-start) · [Examples](./examples) · [Docs](https://cogitator.app/docs) · [Cookbook](https://cogitator.app/cookbook) · [Discussions](https://github.com/cogitator-ai/Cogitator-AI/discussions)
 

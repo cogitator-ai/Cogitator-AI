@@ -240,10 +240,12 @@ export interface OgCard {
   tags?: string[];
   /** Lamp colour on the title plate; amber or red for warnings and errors. */
   lamp?: Exclude<Lamp, 'off'>;
+  /** Image size; the layout stretches to fill it. Defaults to the Open Graph 1200×630. */
+  size?: { width: number; height: number };
 }
 
 /**
- * A 1200×630 social card in the Cogitator style: an iron bezel with brass corners and rivets,
+ * A social card in the Cogitator style (1200×630 unless `size` says otherwise): an iron bezel with brass corners and rivets,
  * a title plate with lamps and vents, and a phosphor screen carrying the page's title.
  */
 export async function renderOgCard({
@@ -254,6 +256,7 @@ export async function renderOgCard({
   prompt,
   tags = [],
   lamp = 'green',
+  size = OG_IMAGE_SIZE,
 }: OgCard): Promise<ImageResponse> {
   const fonts = await loadFonts();
   const host = new URL(SITE_URL).host;
@@ -477,15 +480,19 @@ export async function renderOgCard({
       </div>
     </div>,
     {
-      ...OG_IMAGE_SIZE,
+      ...size,
       fonts: fonts.map(({ name, data, weight, style }) => ({ name, data, weight, style })),
     }
   );
 }
 
-/** Social card of the landing page, shared by the root `opengraph-image` and `twitter-image`. */
-export function renderLandingOgImage(): Promise<ImageResponse> {
+/**
+ * Social card of the landing page, shared by the root `opengraph-image` and `twitter-image`.
+ * Pass another `size` for other surfaces, e.g. 1280×640 for the GitHub social preview.
+ */
+export function renderLandingOgImage(size = OG_IMAGE_SIZE): Promise<ImageResponse> {
   return renderOgCard({
+    size,
     plaque: `core v${corePackage.version}`,
     status: 'Self-hosted TypeScript runtime',
     title: SITE_TAGLINE,
