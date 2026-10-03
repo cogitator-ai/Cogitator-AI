@@ -1,87 +1,42 @@
-import { MetadataRoute } from 'next';
+import type { MetadataRoute } from 'next';
+import { source } from '@/lib/source';
+import { COOKBOOK_URL, LLMS_FULL_TXT_URL, LLMS_TXT_URL, SITE_URL } from '@/lib/site';
 
 export default function sitemap(): MetadataRoute.Sitemap {
-  const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://cogitator.app';
   const lastModified = new Date();
+
+  const docs: MetadataRoute.Sitemap = source.getPages().map((page) => ({
+    url: `${SITE_URL}${page.url}`,
+    lastModified,
+    changeFrequency: 'weekly',
+    priority: page.slugs.length === 0 ? 0.9 : 0.8,
+  }));
 
   return [
     {
-      url: baseUrl,
+      url: SITE_URL,
       lastModified,
       changeFrequency: 'weekly',
       priority: 1,
     },
     {
-      url: `${baseUrl}/docs`,
+      url: `${SITE_URL}${COOKBOOK_URL}`,
       lastModified,
       changeFrequency: 'weekly',
       priority: 0.9,
     },
+    ...docs,
     {
-      url: `${baseUrl}/cookbook`,
+      url: `${SITE_URL}${LLMS_TXT_URL}`,
       lastModified,
       changeFrequency: 'weekly',
-      priority: 0.9,
+      priority: 0.5,
     },
     {
-      url: `${baseUrl}/docs#getting-started`,
+      url: `${SITE_URL}${LLMS_FULL_TXT_URL}`,
       lastModified,
-      changeFrequency: 'monthly',
-      priority: 0.8,
-    },
-    {
-      url: `${baseUrl}/docs#agents`,
-      lastModified,
-      changeFrequency: 'monthly',
-      priority: 0.8,
-    },
-    {
-      url: `${baseUrl}/docs#workflows`,
-      lastModified,
-      changeFrequency: 'monthly',
-      priority: 0.8,
-    },
-    {
-      url: `${baseUrl}/docs#swarms`,
-      lastModified,
-      changeFrequency: 'monthly',
-      priority: 0.8,
-    },
-    {
-      url: `${baseUrl}/docs#models`,
-      lastModified,
-      changeFrequency: 'monthly',
-      priority: 0.8,
-    },
-    {
-      url: `${baseUrl}/docs#memory`,
-      lastModified,
-      changeFrequency: 'monthly',
-      priority: 0.7,
-    },
-    {
-      url: `${baseUrl}/docs#sandbox`,
-      lastModified,
-      changeFrequency: 'monthly',
-      priority: 0.7,
-    },
-    {
-      url: `${baseUrl}/docs#mcp`,
-      lastModified,
-      changeFrequency: 'monthly',
-      priority: 0.7,
-    },
-    {
-      url: `${baseUrl}/docs#api`,
-      lastModified,
-      changeFrequency: 'monthly',
-      priority: 0.7,
-    },
-    {
-      url: `${baseUrl}/docs#observability`,
-      lastModified,
-      changeFrequency: 'monthly',
-      priority: 0.7,
+      changeFrequency: 'weekly',
+      priority: 0.5,
     },
   ];
 }

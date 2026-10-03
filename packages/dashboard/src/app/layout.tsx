@@ -1,6 +1,17 @@
 import type { Metadata, Viewport } from 'next';
 import { Geist, Geist_Mono } from 'next/font/google';
 import { RootProvider } from 'fumadocs-ui/provider/next';
+import corePackage from '../../../core/package.json';
+import { CHANNELS, LLM_PROVIDERS, MEMORY_BACKENDS, SWARM_STRATEGIES } from '@/lib/stats';
+import {
+  COMMUNITY,
+  GITHUB_URL,
+  LLMS_TXT_URL,
+  SITE_DESCRIPTION,
+  SITE_NAME,
+  SITE_TAGLINE,
+  SITE_URL,
+} from '@/lib/site';
 import './globals.css';
 
 const geistSans = Geist({
@@ -13,16 +24,16 @@ const geistMono = Geist_Mono({
   subsets: ['latin'],
 });
 
-const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://cogitator.app';
+const siteUrl = SITE_URL;
+const siteTitle = `${SITE_NAME} - ${SITE_TAGLINE}`;
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
   title: {
-    default: 'Cogitator - Kubernetes for AI Agents',
-    template: '%s | Cogitator',
+    default: siteTitle,
+    template: `%s | ${SITE_NAME}`,
   },
-  description:
-    'Self-hosted, production-grade AI agent orchestration platform. Multi-model support (Ollama, OpenAI, Anthropic, Google), workflows, swarms, memory/RAG, sandboxed code execution, and MCP protocol.',
+  description: SITE_DESCRIPTION,
   keywords: [
     'AI agents',
     'LLM orchestration',
@@ -68,29 +79,21 @@ export const metadata: Metadata = {
     type: 'website',
     locale: 'en_US',
     url: siteUrl,
-    siteName: 'Cogitator',
-    title: 'Cogitator - Kubernetes for AI Agents',
-    description:
-      'Self-hosted, production-grade AI agent orchestration. Multi-model, workflows, swarms, memory/RAG, sandboxed execution.',
-    images: [
-      {
-        url: '/og-image.png',
-        width: 1200,
-        height: 630,
-        alt: 'Cogitator - Kubernetes for AI Agents',
-      },
-    ],
+    siteName: SITE_NAME,
+    title: siteTitle,
+    description: SITE_DESCRIPTION,
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'Cogitator - Kubernetes for AI Agents',
-    description:
-      'Self-hosted, production-grade AI agent orchestration. Multi-model, workflows, swarms, memory/RAG.',
-    images: ['/og-image.png'],
+    title: siteTitle,
+    description: SITE_DESCRIPTION,
     creator: '@cogitator_dev',
   },
   alternates: {
-    canonical: siteUrl,
+    canonical: './',
+    types: {
+      'text/markdown': LLMS_TXT_URL,
+    },
   },
   category: 'technology',
 };
@@ -115,14 +118,6 @@ const jsonLd = {
       name: 'Cogitator',
       description: 'Self-hosted, production-grade AI agent orchestration platform',
       publisher: { '@id': `${siteUrl}/#organization` },
-      potentialAction: {
-        '@type': 'SearchAction',
-        target: {
-          '@type': 'EntryPoint',
-          urlTemplate: `${siteUrl}/docs?q={search_term_string}`,
-        },
-        'query-input': 'required name=search_term_string',
-      },
     },
     {
       '@type': 'Organization',
@@ -133,7 +128,7 @@ const jsonLd = {
         '@type': 'ImageObject',
         url: `${siteUrl}/favicon.svg`,
       },
-      sameAs: ['https://github.com/cogitator-ai/Cogitator-AI', 'https://discord.gg/SkmRsYvA'],
+      sameAs: [GITHUB_URL, COMMUNITY.url],
     },
     {
       '@type': 'SoftwareApplication',
@@ -149,18 +144,22 @@ const jsonLd = {
         priceCurrency: 'USD',
       },
       author: { '@id': `${siteUrl}/#organization` },
-      downloadUrl: 'https://github.com/cogitator-ai/Cogitator-AI',
-      softwareVersion: '0.0.1',
+      downloadUrl: GITHUB_URL,
+      softwareVersion: corePackage.version,
       programmingLanguage: 'TypeScript',
       runtimePlatform: 'Node.js',
       featureList: [
-        'Multi-model support (Ollama, OpenAI, Anthropic, Google)',
-        'DAG-based workflow orchestration',
-        'Multi-agent swarm coordination',
-        'Vector memory and RAG',
+        `${LLM_PROVIDERS.length} built-in LLM providers (${LLM_PROVIDERS.join(', ')})`,
+        'Tools with human approval, pause and resume',
+        'Agent handoffs and model reasoning',
+        `Memory backends: ${MEMORY_BACKENDS.join(', ')}`,
+        'RAG pipeline and evaluation framework',
+        'DAG workflows with durable run stores',
+        `Multi-agent swarms with ${SWARM_STRATEGIES.length} strategies`,
         'Sandboxed code execution (Docker/WASM)',
-        'Model Context Protocol (MCP)',
-        'OpenTelemetry observability',
+        'Model Context Protocol (MCP) and Agent-to-Agent (A2A) protocol',
+        `Messaging channels: ${CHANNELS.join(', ')}`,
+        'OpenTelemetry and Langfuse observability',
         'TypeScript-native SDK',
       ],
     },

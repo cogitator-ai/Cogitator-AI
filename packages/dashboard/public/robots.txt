@@ -1,8 +1,0 @@
-# Cogitator - AI Agent Orchestration Platform
-User-agent: *
-Allow: /
-
-# Sitemaps
-Sitemap: https://cogitator.app/sitemap.xml
-
-Disallow: /api/

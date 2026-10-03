@@ -1,13 +1,14 @@
 'use client';
 
-import { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Cpu, Construction, Rocket } from 'lucide-react';
+import Link from 'next/link';
+import { motion } from 'framer-motion';
+import { ArrowRight, BookOpen, Bot, Cpu, Rocket } from 'lucide-react';
 import { GithubIcon } from '@/components/icons/GithubIcon';
+import { DOCS_HOME, GET_STARTED_URL, GITHUB_URL, LLMS_TXT_URL, SITE_URL } from '@/lib/site';
 import { TerminalDemo } from './TerminalDemo';
 
 export function Hero() {
-  const [showWipTooltip, setShowWipTooltip] = useState(false);
+  const llmsTxtLabel = `${new URL(SITE_URL).host}${LLMS_TXT_URL}`;
 
   return (
     <section className="relative min-h-screen flex flex-col items-center justify-center px-6 py-20">
@@ -52,49 +53,31 @@ export function Hero() {
           Self-hosted. <span className="text-[#fafafa]">Production-grade.</span> TypeScript-native.
         </p>
 
-        <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-          <div className="relative">
-            <motion.button
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-              onClick={() => setShowWipTooltip(true)}
-              onMouseEnter={() => setShowWipTooltip(true)}
-              onMouseLeave={() => setShowWipTooltip(false)}
-              className="group relative px-8 py-4 bg-[#333333] text-[#666666] rounded-xl font-semibold text-lg overflow-hidden cursor-not-allowed"
+        <div className="flex flex-col sm:flex-row sm:flex-wrap items-center justify-center gap-4">
+          <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+            <Link
+              href={GET_STARTED_URL}
+              className="group relative flex items-center gap-2 px-8 py-4 bg-[#00ff88] text-[#0a0a0a] rounded-xl font-semibold text-lg overflow-hidden transition-shadow hover:shadow-[0_0_30px_rgba(0,255,136,0.3)]"
             >
               <span className="relative z-10 flex items-center gap-2">
-                <Construction className="w-5 h-5" />
-                Dashboard Coming Soon
+                Get Started
+                <ArrowRight className="w-5 h-5 transition-transform group-hover:translate-x-0.5" />
               </span>
-            </motion.button>
+            </Link>
+          </motion.div>
 
-            <AnimatePresence>
-              {showWipTooltip && (
-                <motion.div
-                  initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                  transition={{ duration: 0.15 }}
-                  className="absolute left-1/2 -translate-x-1/2 top-full mt-3 w-72 p-4 bg-[#1a1a1a] border border-[#333333] rounded-xl shadow-xl z-50"
-                >
-                  <div className="absolute -top-2 left-1/2 -translate-x-1/2 w-4 h-4 bg-[#1a1a1a] border-l border-t border-[#333333] rotate-45" />
-                  <div className="relative z-10">
-                    <div className="flex items-center gap-2 text-[#00ff88] mb-2">
-                      <Construction className="w-4 h-4" />
-                      <span className="font-semibold text-sm">Work in Progress</span>
-                    </div>
-                    <p className="text-sm text-[#a1a1a1]">
-                      The dashboard is under active development. Star us on GitHub to get notified
-                      when it&apos;s ready!
-                    </p>
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
+          <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+            <Link
+              href={DOCS_HOME}
+              className="group flex items-center gap-2 px-8 py-4 bg-transparent border border-[#333333] text-[#fafafa] rounded-xl font-semibold text-lg hover:border-[#00ff88]/50 hover:bg-[#00ff88]/5 transition-all"
+            >
+              <BookOpen className="w-5 h-5" />
+              Docs
+            </Link>
+          </motion.div>
 
           <motion.a
-            href="https://github.com/cogitator-ai/Cogitator-AI"
+            href={GITHUB_URL}
             target="_blank"
             rel="noopener noreferrer"
             whileHover={{ scale: 1.02 }}
@@ -117,6 +100,20 @@ export function Hero() {
             Product Hunt
           </motion.a>
         </div>
+
+        <motion.a
+          href={LLMS_TXT_URL}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.4, duration: 0.6 }}
+          className="group mt-8 inline-flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-sm text-[#a1a1a1] hover:text-[#fafafa] transition-colors"
+        >
+          <Bot className="w-4 h-4 text-[#00aaff]" />
+          <span>Agent-friendly docs — point your coding agent at</span>
+          <code className="font-mono text-[#00ff88] group-hover:underline underline-offset-4">
+            {llmsTxtLabel}
+          </code>
+        </motion.a>
       </motion.div>
 
       <TerminalDemo />

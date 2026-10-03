@@ -1,73 +1,86 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 
-const terminalLines = [
-  { type: 'command', text: '$ cogitator run researcher --input "Latest WebGPU news"' },
-  { type: 'output', text: '' },
-  { type: 'agent', text: '[Agent] researcher → Initializing...' },
-  { type: 'agent', text: '[Agent] researcher → Analyzing query...' },
-  { type: 'tool', text: '[Tool]  web_search → Searching 3 sources...' },
-  { type: 'tool', text: '[Tool]  web_search → Found 12 results' },
-  { type: 'agent', text: '[Agent] researcher → Synthesizing findings...' },
-  { type: 'output', text: '' },
-  { type: 'model', text: '[Model] qwen3:8b • 2,847 tokens • $0.004' },
-  { type: 'output', text: '' },
-  { type: 'result', text: '✓ WebGPU achieved full support in Chrome 121...' },
-  { type: 'result', text: '✓ Firefox Nightly now supports compute shaders...' },
-  { type: 'result', text: '✓ Safari 17.4 adds WebGPU for macOS Sonoma...' },
-  { type: 'output', text: '' },
-  { type: 'success', text: '[Done] Completed in 3.2s' },
+type LineType = 'command' | 'step' | 'note' | 'output' | 'dim' | 'blank';
+
+interface TerminalLine {
+  type: LineType;
+  text: string;
+}
+
+const terminalLines: TerminalLine[] = [
+  {
+    type: 'command',
+    text: '$ npx create-cogitator-app my-agents -t basic -p ollama --pm pnpm --no-docker --git',
+  },
+  { type: 'step', text: "┌  Let's build something with AI agents" },
+  { type: 'step', text: '◇  Generated project files' },
+  { type: 'step', text: '◇  Installed dependencies' },
+  { type: 'step', text: '◇  Initialized git repository' },
+  { type: 'note', text: '└  Done! Next steps:' },
+  { type: 'dim', text: '     cd my-agents' },
+  { type: 'dim', text: '     pnpm dev' },
+  { type: 'blank', text: '' },
+  { type: 'command', text: '$ cd my-agents && pnpm start' },
+  {
+    type: 'output',
+    text: 'Cogitator is a self-hosted AI agent runtime for TypeScript. An agent pairs a model with instructions and tools, and the runtime loops through tool calls until it can answer.',
+  },
+  { type: 'blank', text: '' },
+  {
+    type: 'command',
+    text: '$ npx @cogitator-ai/cli run -m ollama/qwen3:8b "One use case for a DAG workflow?"',
+  },
+  { type: 'dim', text: 'Using config: /home/dev/my-agents/cogitator.yml' },
+  {
+    type: 'output',
+    text: 'Document intake: extract, classify and summarize in parallel, then wait for a human to approve before publishing.',
+  },
 ];
 
-const getLineColor = (type: string) => {
-  switch (type) {
-    case 'command':
-      return 'text-[#fafafa]';
-    case 'agent':
-      return 'text-[#00ff88]';
-    case 'tool':
-      return 'text-[#00aaff]';
-    case 'model':
-      return 'text-[#a1a1a1]';
-    case 'result':
-      return 'text-[#00ff88]';
-    case 'success':
-      return 'text-[#00ff88] font-semibold';
-    default:
-      return 'text-[#a1a1a1]';
-  }
+const lineColors: Record<LineType, string> = {
+  command: 'text-[#fafafa]',
+  step: 'text-[#00aaff]',
+  note: 'text-[#00ff88]',
+  output: 'text-[#d4d4d4]',
+  dim: 'text-[#666666]',
+  blank: 'text-[#a1a1a1]',
 };
 
 export function TerminalDemo() {
   const [visibleLines, setVisibleLines] = useState<number>(0);
   const [currentText, setCurrentText] = useState<string>('');
-  const [isTyping, setIsTyping] = useState(true);
+  const screenRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const screen = screenRef.current;
+    if (screen) screen.scrollTop = screen.scrollHeight;
+  }, [visibleLines, currentText]);
 
   useEffect(() => {
     if (visibleLines >= terminalLines.length) {
-      setTimeout(() => {
+      const timeout = setTimeout(() => {
         setVisibleLines(0);
         setCurrentText('');
-        setIsTyping(true);
       }, 4000);
-      return;
+      return () => clearTimeout(timeout);
     }
 
     const currentLine = terminalLines[visibleLines];
     if (!currentLine) return;
 
     if (currentLine.text === '') {
-      setTimeout(() => {
+      const timeout = setTimeout(() => {
         setVisibleLines((v) => v + 1);
         setCurrentText('');
       }, 100);
-      return;
+      return () => clearTimeout(timeout);
     }
 
     if (currentText.length < currentLine.text.length) {
-      const speed = currentLine.type === 'command' ? 30 : 15;
+      const speed = currentLine.type === 'command' ? 30 : 8;
       const timeout = setTimeout(
         () => {
           setCurrentText(currentLine.text.slice(0, currentText.length + 1));
@@ -90,7 +103,7 @@ export function TerminalDemo() {
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.8, delay: 0.5 }}
-      className="relative w-full max-w-2xl mx-auto"
+      className="relative w-full max-w-3xl mx-auto"
     >
       <div className="absolute -inset-[1px] bg-gradient-to-r from-[#00ff88]/50 via-[#00aaff]/50 to-[#00ff88]/50 rounded-xl blur-sm opacity-50" />
       <div className="absolute -inset-[1px] bg-gradient-to-r from-[#00ff88]/30 via-[#00aaff]/30 to-[#00ff88]/30 rounded-xl" />
@@ -100,10 +113,13 @@ export function TerminalDemo() {
           <div className="w-3 h-3 rounded-full bg-[#ff4444]" />
           <div className="w-3 h-3 rounded-full bg-[#ffaa00]" />
           <div className="w-3 h-3 rounded-full bg-[#00ff88]" />
-          <span className="ml-2 text-xs text-[#666666] font-mono">cogitator — bash</span>
+          <span className="ml-2 text-xs text-[#666666] font-mono">~/projects — zsh</span>
         </div>
 
-        <div className="p-4 font-mono text-sm leading-relaxed h-[320px] overflow-hidden">
+        <div
+          ref={screenRef}
+          className="p-4 font-mono text-xs sm:text-sm leading-relaxed h-[360px] sm:h-[420px] overflow-hidden"
+        >
           <div
             className="absolute inset-0 pointer-events-none opacity-[0.03]"
             style={{
@@ -113,13 +129,15 @@ export function TerminalDemo() {
           />
 
           {terminalLines.slice(0, visibleLines).map((line, i) => (
-            <div key={i} className={`${getLineColor(line.type)} whitespace-pre`}>
+            <div key={i} className={`${lineColors[line.type]} whitespace-pre-wrap break-words`}>
               {line.text}
             </div>
           ))}
 
           {visibleLines < terminalLines.length && terminalLines[visibleLines] && (
-            <div className={`${getLineColor(terminalLines[visibleLines].type)} whitespace-pre`}>
+            <div
+              className={`${lineColors[terminalLines[visibleLines].type]} whitespace-pre-wrap break-words`}
+            >
               {currentText}
               <motion.span
                 animate={{ opacity: [1, 0] }}

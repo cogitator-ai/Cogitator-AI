@@ -1,12 +1,13 @@
 'use client';
 
 import { Suspense } from 'react';
-import { BackgroundGrid, Hero, FeaturesGrid, Footer } from '@/components/landing';
+import { BackgroundGrid, Hero, Stats, FeaturesGrid, Footer } from '@/components/landing';
 
 function LandingContent() {
   return (
     <div className="relative z-10">
       <Hero />
+      <Stats />
       <FeaturesGrid />
       <Footer />
     </div>

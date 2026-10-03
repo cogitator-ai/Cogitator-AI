@@ -1,12 +1,15 @@
 'use client';
 
+import Link from 'next/link';
 import { motion } from 'framer-motion';
+import { ArrowUpRight } from 'lucide-react';
 import { ReactNode } from 'react';
 
 interface FeatureCardProps {
   title: string;
   description: string;
   icon: ReactNode;
+  href: string;
   className?: string;
   delay?: number;
   glowColor?: string;
@@ -16,6 +19,7 @@ export function FeatureCard({
   title,
   description,
   icon,
+  href,
   className = '',
   delay = 0,
   glowColor = '#00ff88',
@@ -33,7 +37,10 @@ export function FeatureCard({
         style={{ background: `radial-gradient(circle at center, ${glowColor}30, transparent 70%)` }}
       />
 
-      <div className="relative h-full bg-[#111111] rounded-2xl border border-[#262626] p-6 overflow-hidden group-hover:border-[#333333] transition-colors duration-300">
+      <Link
+        href={href}
+        className="relative block h-full bg-[#111111] rounded-2xl border border-[#262626] p-6 overflow-hidden group-hover:border-[#333333] transition-colors duration-300 focus-visible:outline-none focus-visible:border-[#00ff88]/60"
+      >
         <div
           className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500"
           style={{
@@ -42,6 +49,8 @@ export function FeatureCard({
         />
 
         <div className="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-[1px] bg-gradient-to-r from-transparent via-[#00ff88]/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+
+        <ArrowUpRight className="absolute top-6 right-6 w-4 h-4 text-[#666666] opacity-0 group-hover:opacity-100 group-hover:text-[#00ff88] transition-all duration-300" />
 
         <div className="relative z-10">
           <div
@@ -57,7 +66,7 @@ export function FeatureCard({
           <h3 className="text-lg font-semibold text-[#fafafa] mb-2">{title}</h3>
           <p className="text-sm text-[#a1a1a1] leading-relaxed">{description}</p>
         </div>
-      </div>
+      </Link>
     </motion.div>
   );
 }

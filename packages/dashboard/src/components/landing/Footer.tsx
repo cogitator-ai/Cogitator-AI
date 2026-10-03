@@ -1,14 +1,16 @@
 'use client';
 
 import { motion } from 'framer-motion';
-import { BookOpen, MessageCircle, Cpu, ChefHat } from 'lucide-react';
+import { BookOpen, Bot, MessagesSquare, Cpu, ChefHat } from 'lucide-react';
 import { GithubIcon } from '@/components/icons/GithubIcon';
+import { COMMUNITY, COOKBOOK_URL, DOCS_HOME, GITHUB_URL, LLMS_TXT_URL } from '@/lib/site';
 
 const links = [
-  { name: 'GitHub', href: 'https://github.com/cogitator-ai/Cogitator-AI', icon: GithubIcon },
-  { name: 'Docs', href: '/docs', icon: BookOpen },
-  { name: 'Cookbook', href: '/cookbook', icon: ChefHat },
-  { name: 'Discord', href: 'https://discord.gg/SkmRsYvA', icon: MessageCircle },
+  { name: 'GitHub', href: GITHUB_URL, icon: GithubIcon },
+  { name: 'Docs', href: DOCS_HOME, icon: BookOpen },
+  { name: 'Cookbook', href: COOKBOOK_URL, icon: ChefHat },
+  { name: COMMUNITY.name, href: COMMUNITY.url, icon: MessagesSquare },
+  { name: 'llms.txt', href: LLMS_TXT_URL, icon: Bot },
 ];
 
 export function Footer() {
@@ -31,7 +33,7 @@ export function Footer() {
             </div>
           </div>
 
-          <div className="flex items-center gap-6">
+          <div className="flex flex-wrap items-center justify-center gap-6">
             {links.map((link) => (
               <a
                 key={link.name}
