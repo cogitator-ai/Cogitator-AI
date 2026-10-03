@@ -25,21 +25,17 @@ export class InMemoryRunStore implements RunStore {
   private runs = new Map<string, WorkflowRun>();
 
   async save(run: WorkflowRun): Promise<void> {
-    this.runs.set(run.id, { ...run });
+    this.runs.set(run.id, copyRun(run));
   }
 
   async get(id: string): Promise<WorkflowRun | null> {
-    return this.runs.get(id) ?? null;
+    const run = this.runs.get(id);
+    return run ? copyRun(run) : null;
   }
 
-  async list(filters?: WorkflowRunFilters): Promise<WorkflowRun[]> {
-    let runs = Array.from(this.runs.values());
-
-    if (filters) {
-      runs = this.applyFilters(runs, filters);
-    }
-
-    return runs;
+  /** Runs matching `filters`, newest started first unless `orderBy` says otherwise. */
+  async list(filters: WorkflowRunFilters = {}): Promise<WorkflowRun[]> {
+    return this.applyFilters(Array.from(this.runs.values()), filters).map(copyRun);
   }
 
   async count(filters?: WorkflowRunFilters): Promise<number> {
@@ -58,7 +54,7 @@ export class InMemoryRunStore implements RunStore {
   async update(id: string, updates: Partial<WorkflowRun>): Promise<void> {
     const run = this.runs.get(id);
     if (run) {
-      this.runs.set(id, { ...run, ...updates });
+      this.runs.set(id, copyRun({ ...run, ...updates, id }));
     }
   }
 
@@ -206,8 +202,22 @@ export class InMemoryRunStore implements RunStore {
    * Get all runs (for debugging)
    */
   getAll(): WorkflowRun[] {
-    return Array.from(this.runs.values());
+    return Array.from(this.runs.values()).map(copyRun);
   }
+}
+
+/**
+ * A run the caller can change without changing the stored one: the run and
+ * its node and tag lists are copied; state, input and output stay shared.
+ */
+function copyRun(run: WorkflowRun): WorkflowRun {
+  return {
+    ...run,
+    tags: [...run.tags],
+    currentNodes: [...run.currentNodes],
+    completedNodes: [...run.completedNodes],
+    failedNodes: [...run.failedNodes],
+  };
 }
 
 /**

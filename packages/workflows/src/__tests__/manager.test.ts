@@ -46,6 +46,43 @@ describe('Workflow Manager', () => {
       expect(retrieved).toEqual(run);
     });
 
+    function runFixture(id: string, startedAt?: number): WorkflowRun {
+      return {
+        id,
+        workflowName: 'test-workflow',
+        status: 'pending',
+        state: {},
+        currentNodes: [],
+        completedNodes: [],
+        failedNodes: [],
+        priority: 0,
+        tags: [],
+        ...(startedAt !== undefined && { startedAt }),
+      };
+    }
+
+    it('hands out copies, so changing a returned run leaves the stored one alone', async () => {
+      await store.save(runFixture('run-1'));
+
+      const first = await store.get('run-1');
+      first?.completedNodes.push('sneaky');
+      const [listed] = await store.list();
+      listed.tags.push('sneaky');
+
+      const stored = await store.get('run-1');
+      expect(stored?.completedNodes).toEqual([]);
+      expect(stored?.tags).toEqual([]);
+    });
+
+    it('lists newest first with or without filters', async () => {
+      await store.save(runFixture('old', 1000));
+      await store.save(runFixture('new', 3000));
+      await store.save(runFixture('mid', 2000));
+
+      expect((await store.list()).map((r) => r.id)).toEqual(['new', 'mid', 'old']);
+      expect((await store.list({})).map((r) => r.id)).toEqual(['new', 'mid', 'old']);
+    });
+
     it('updates runs', async () => {
       const run: WorkflowRun = {
         id: 'run-2',

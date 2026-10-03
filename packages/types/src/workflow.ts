@@ -724,8 +724,11 @@ export interface WorkflowRunFilters {
 export interface WorkflowRunStats {
   total: number;
   byStatus: Record<WorkflowRunStatus, number>;
+  /** Mean of completedAt - startedAt over runs that have both, ms */
   avgDuration: number;
+  /** completed / (completed + failed + timeout); cancelled runs count as neither */
   successRate: number;
+  /** (failed + timeout) / (completed + failed + timeout) */
   failureRate: number;
 }
 
