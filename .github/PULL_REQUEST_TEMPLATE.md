@@ -19,7 +19,8 @@ Brief description of what this PR does.
 
 Describe how you tested your changes:
 
-- [ ] Unit tests pass (`pnpm test`)
+- [ ] Unit tests pass (`pnpm --filter @cogitator-ai/<package> test`)
+- [ ] Types check (`pnpm typecheck`)
 - [ ] Lint passes (`pnpm lint`)
 - [ ] Build succeeds (`pnpm build`)
 
@@ -29,7 +30,8 @@ Describe how you tested your changes:
 - [ ] I have performed a self-review of my code
 - [ ] I have added tests that prove my fix/feature works
 - [ ] New and existing unit tests pass locally
-- [ ] Any dependent changes have been merged
+- [ ] I added a changeset (`pnpm changeset`) for every published package I changed
+- [ ] I updated the package README, the docs in `packages/dashboard/content/docs/` and the examples where behaviour or API changed
 
 ## Related Issues
 
