@@ -5,28 +5,34 @@ description: Choose and configure memory adapters for agent persistence — InMe
 
 ## Adapter Factory
 
-The simplest way to create an adapter is via the factory function. It accepts a config object and returns the correct adapter instance with lazy-loaded dependencies.
+The simplest way to create a conversation adapter is the factory function. It accepts a config object and returns the matching adapter, loading its driver lazily:
 
 ```typescript
-import { createMemoryAdapter } from '@cogitator-ai/memory';
+import { createMemoryAdapter, unwrap } from '@cogitator-ai/memory';
 
-const memory = await createMemoryAdapter({ provider: 'memory' });
-await memory.connect();
+const memory = await createMemoryAdapter({ provider: 'sqlite', path: './memory.db' });
+unwrap(await memory.connect());
 ```
 
-All adapters share the same `MemoryAdapter` interface: threads, entries, connect/disconnect. Some adapters extend this with `FactAdapter`, `EmbeddingAdapter`, or `KeywordSearchAdapter` for additional capabilities.
+`createMemoryAdapter` handles `memory`, `redis`, `postgres`, `sqlite` and `mongodb` and returns the common `MemoryAdapter` interface. For Qdrant use `createEmbeddingAdapter({ provider: 'qdrant', dimensions })`. Construct the class directly (e.g. `new PostgresAdapter(...)`) when you need its extra capabilities — facts, vector or keyword search.
+
+All conversation adapters share the same `MemoryAdapter` interface: `createThread`, `getThread`, `updateThread`, `deleteThread`, `addEntry`, `getEntries`, `getEntry`, `deleteEntry`, `clearThread`, `connect` and `disconnect`. Some adapters add `FactAdapter`, `EmbeddingAdapter` or `KeywordSearchAdapter`.
+
+Every method — `connect()` included — returns a `MemoryResult` instead of throwing, so a failed connection goes unnoticed unless you check it. Wrap calls in `unwrap()` (throws on failure) or check `result.success`; see [Results and `unwrap()`](/docs/memory#results-and-unwrap).
+
+Calling `createThread` with an existing thread id is an upsert in every adapter: stored entries and the stored `createdAt` are kept, only the agent id and metadata change. `updateThread` merges the given metadata into the existing one.
 
 ## InMemory
 
-Zero-dependency in-process storage. Data is lost when the process exits.
+Zero-dependency in-process storage. Data is lost when the process exits — and when you call `disconnect()`.
 
 ```typescript
-import { InMemoryAdapter } from '@cogitator-ai/memory';
+import { InMemoryAdapter, unwrap } from '@cogitator-ai/memory';
 
 const memory = new InMemoryAdapter({ provider: 'memory', maxEntries: 5000 });
 await memory.connect();
 
-const { data: thread } = await memory.createThread('agent-1');
+const thread = unwrap(await memory.createThread('agent-1'));
 await memory.addEntry({
   threadId: thread.id,
   message: { role: 'user', content: 'Hello' },
@@ -36,11 +42,9 @@ await memory.addEntry({
 console.log(memory.stats); // { threads: 1, entries: 1 }
 ```
 
-| Option       | Type   | Default | Description                           |
-| ------------ | ------ | ------- | ------------------------------------- |
-| `maxEntries` | number | 10000   | Max entries before oldest are evicted |
-
-Calling `createThread` with an existing thread id is an upsert in every adapter: stored entries and `createdAt` are kept, only the metadata changes.
+| Option       | Type   | Default | Description                                        |
+| ------------ | ------ | ------- | -------------------------------------------------- |
+| `maxEntries` | number | 10000   | Max entries across all threads; oldest are evicted |
 
 **When to use:** Unit tests, prototyping, ephemeral agents that don't need persistence.
 
@@ -49,7 +53,7 @@ Calling `createThread` with an existing thread id is an upsert in every adapter:
 Short-term memory with automatic TTL expiration. Uses sorted sets for ordered retrieval. Supports both standalone Redis and Redis Cluster.
 
 ```typescript
-import { RedisAdapter } from '@cogitator-ai/memory';
+import { RedisAdapter, unwrap } from '@cogitator-ai/memory';
 
 const memory = new RedisAdapter({
   provider: 'redis',
@@ -57,7 +61,7 @@ const memory = new RedisAdapter({
   keyPrefix: 'myapp:',
   ttl: 3600,
 });
-await memory.connect();
+unwrap(await memory.connect());
 ```
 
 For Redis Cluster:
@@ -76,26 +80,28 @@ const memory = new RedisAdapter({
 });
 ```
 
-| Option      | Type   | Default                                    | Description                    |
-| ----------- | ------ | ------------------------------------------ | ------------------------------ |
-| `url`       | string | —                                          | Redis URL for standalone mode  |
-| `host`      | string | —                                          | Host (alternative to url)      |
-| `port`      | number | —                                          | Port (alternative to url)      |
-| `cluster`   | object | —                                          | Cluster nodes and read scaling |
-| `keyPrefix` | string | `cogitator:` or `{cogitator}:` for cluster | Key prefix for all Redis keys  |
-| `ttl`       | number | 86400                                      | TTL in seconds (24h default)   |
-| `password`  | string | —                                          | Redis authentication password  |
+| Option      | Type   | Default                                    | Description                                       |
+| ----------- | ------ | ------------------------------------------ | ------------------------------------------------- |
+| `url`       | string | —                                          | Redis URL for standalone mode                     |
+| `host`      | string | —                                          | Host (alternative to url)                         |
+| `port`      | number | —                                          | Port (alternative to url)                         |
+| `cluster`   | object | —                                          | `nodes` and `scaleReads` (`master`/`slave`/`all`) |
+| `keyPrefix` | string | `cogitator:` or `{cogitator}:` for cluster | Key prefix for all Redis keys                     |
+| `ttl`       | number | 86400                                      | TTL in seconds (24h default)                      |
+| `password`  | string | —                                          | Redis authentication password                     |
 
 Each write refreshes the TTL of the thread and its entry index, so active conversations do not expire mid-way; expired entries are pruned from the index on read. In cluster mode a custom `keyPrefix` without a hash tag is wrapped automatically (`'myapp:'` → `'{myapp}:'`) so all keys of the adapter map to one slot.
+
+**Requires:** `pnpm add ioredis`
 
 **When to use:** Ephemeral conversations that should auto-expire, high-throughput scenarios, or when you already run Redis.
 
 ## Postgres
 
-Full-featured adapter with support for threads, entries, facts, vector embeddings (pgvector), and full-text keyword search.
+Full-featured adapter with threads, entries, facts, vector embeddings (pgvector), and full-text keyword search.
 
 ```typescript
-import { PostgresAdapter } from '@cogitator-ai/memory';
+import { PostgresAdapter, unwrap } from '@cogitator-ai/memory';
 
 const memory = new PostgresAdapter({
   provider: 'postgres',
@@ -103,61 +109,81 @@ const memory = new PostgresAdapter({
   schema: 'cogitator',
   poolSize: 10,
 });
-await memory.connect();
+memory.setVectorDimensions(1536); // before connect(); default 768
+unwrap(await memory.connect());
 ```
 
-The adapter auto-creates all required tables, indexes, and the pgvector extension on `connect()`.
+On `connect()` the adapter creates the schema, the `threads`, `entries`, `facts` and `embeddings` tables, the pgvector extension, an `ivfflat` cosine index and a generated English `tsvector` column for keyword search. If the extension or an index cannot be created, it logs a warning and carries on.
+
+The `embeddings.vector` column is created with the dimension set at that moment, so call `setVectorDimensions(n)` **before** `connect()` — it throws once connected. An existing table keeps its original dimension.
+
+| Option             | Type   | Default     | Description                                        |
+| ------------------ | ------ | ----------- | -------------------------------------------------- |
+| `connectionString` | string | —           | Postgres connection URL                            |
+| `schema`           | string | `cogitator` | Schema name (letters, digits and underscores only) |
+| `poolSize`         | number | 10          | Connection pool size                               |
 
 ### Facts (FactAdapter)
 
 ```typescript
-await memory.addFact({
-  agentId: 'agent-1',
-  content: 'User timezone is UTC+3',
-  category: 'preference',
-  confidence: 1.0,
-  source: 'user',
-});
+const fact = unwrap(
+  await memory.addFact({
+    agentId: 'agent-1',
+    content: 'User timezone is UTC+3',
+    category: 'preference',
+    confidence: 1.0,
+    source: 'user',
+    metadata: { userId: 'alice' },
+  })
+);
 
-const { data: facts } = await memory.getFacts('agent-1', 'preference');
+const preferences = unwrap(await memory.getFacts('agent-1', 'preference'));
+const matches = unwrap(await memory.searchFacts('agent-1', 'timezone'));
+
+await memory.updateFact(fact.id, { confidence: 0.8, expiresAt: new Date('2027-01-01') });
+await memory.deleteFact(fact.id);
 ```
+
+`getFacts` and `searchFacts` (case-insensitive substring match) skip expired facts and sort by confidence.
 
 ### Vector Search (EmbeddingAdapter)
 
 ```typescript
-memory.setVectorDimensions(1536);
-
 await memory.addEmbedding({
   sourceId: 'doc-1',
   sourceType: 'document',
   vector: embedding,
   content: 'Cogitator supports multiple LLM backends.',
+  metadata: { agentId: 'agent-1' },
 });
 
-const { data: results } = await memory.search({
-  vector: queryVector,
-  limit: 5,
-  threshold: 0.7,
-  filter: { sourceType: 'document' },
-});
+const results = unwrap(
+  await memory.search({
+    vector: queryVector,
+    limit: 5,
+    threshold: 0.7,
+    filter: { sourceType: 'document', agentId: 'agent-1' },
+  })
+);
 ```
+
+`search()` needs a `vector` — embed the query with an [embedding service](/docs/memory/embeddings) first. `limit` defaults to 10 and `threshold` (cosine similarity) to 0.7. `filter.agentId` and `filter.threadId` match `metadata.agentId` / `metadata.threadId`; `filter.userId` matches `metadata.userId` and also lets through embeddings without a user. Remove embeddings with `deleteEmbedding(id)` or `deleteBySource(sourceId)`.
 
 ### Keyword Search (KeywordSearchAdapter)
 
-Uses PostgreSQL full-text search with `tsvector` columns:
+Uses PostgreSQL full-text search over the generated `tsvector` column, ranked by `ts_rank`:
 
 ```typescript
-const { data: results } = await memory.keywordSearch({
-  query: 'LLM backends',
-  limit: 10,
-});
+const hits = unwrap(
+  await memory.keywordSearch({
+    query: 'LLM backends',
+    limit: 10,
+    filter: { sourceType: 'document' },
+  })
+);
 ```
 
-| Option             | Type   | Default     | Description             |
-| ------------------ | ------ | ----------- | ----------------------- |
-| `connectionString` | string | —           | Postgres connection URL |
-| `schema`           | string | `cogitator` | Database schema name    |
-| `poolSize`         | number | 10          | Connection pool size    |
+**Requires:** `pnpm add pg` and the [pgvector](https://github.com/pgvector/pgvector) extension for embeddings.
 
 **When to use:** Production deployments. This is the most capable adapter.
 
@@ -166,14 +192,14 @@ const { data: results } = await memory.keywordSearch({
 Local file-based persistence using `better-sqlite3`. Supports WAL mode for better concurrent read performance.
 
 ```typescript
-import { SQLiteAdapter } from '@cogitator-ai/memory';
+import { SQLiteAdapter, unwrap } from '@cogitator-ai/memory';
 
 const memory = new SQLiteAdapter({
   provider: 'sqlite',
   path: './data/memory.db',
   walMode: true,
 });
-await memory.connect();
+unwrap(await memory.connect());
 ```
 
 Use `:memory:` for an in-memory SQLite database (useful for testing with SQL semantics):
@@ -187,16 +213,18 @@ const memory = new SQLiteAdapter({ provider: 'sqlite', path: ':memory:' });
 | `path`    | string  | —       | Path to `.db` file, or `:memory:`                 |
 | `walMode` | boolean | true    | Enable WAL journal mode (disabled for `:memory:`) |
 
+`connect()` returns a failure (rather than throwing) when `better-sqlite3` is not installed. For a knowledge graph in the same kind of file, see [`SQLiteGraphAdapter`](/docs/memory/knowledge-graphs#graph-adapters).
+
 **Requires:** `pnpm add better-sqlite3`
 
-**When to use:** Desktop apps, CLI tools, single-process servers, edge deployments.
+**When to use:** Desktop apps, CLI tools, single-process servers.
 
 ## MongoDB
 
-Document-oriented memory storage. Threads and entries map naturally to MongoDB collections.
+Document-oriented memory storage. Threads and entries are stored in the `<prefix>threads` and `<prefix>entries` collections, indexed on `agentId` and `(threadId, createdAt)`.
 
 ```typescript
-import { MongoDBAdapter } from '@cogitator-ai/memory';
+import { MongoDBAdapter, unwrap } from '@cogitator-ai/memory';
 
 const memory = new MongoDBAdapter({
   provider: 'mongodb',
@@ -204,7 +232,7 @@ const memory = new MongoDBAdapter({
   database: 'cogitator',
   collectionPrefix: 'memory_',
 });
-await memory.connect();
+unwrap(await memory.connect());
 ```
 
 | Option             | Type   | Default     | Description            |
@@ -219,10 +247,10 @@ await memory.connect();
 
 ## Qdrant
 
-Dedicated vector database adapter implementing `EmbeddingAdapter`. Use this alongside another adapter for thread/entry storage when you need high-performance vector search at scale.
+Dedicated vector database adapter implementing `EmbeddingAdapter` only (no threads or entries). Use it alongside a conversation adapter when you need vector search at scale.
 
 ```typescript
-import { QdrantAdapter } from '@cogitator-ai/memory';
+import { QdrantAdapter, unwrap } from '@cogitator-ai/memory';
 
 const qdrant = new QdrantAdapter({
   provider: 'qdrant',
@@ -230,7 +258,7 @@ const qdrant = new QdrantAdapter({
   collection: 'cogitator',
   dimensions: 1536,
 });
-await qdrant.connect();
+unwrap(await qdrant.connect());
 
 await qdrant.addEmbedding({
   sourceId: 'doc-42',
@@ -239,12 +267,14 @@ await qdrant.addEmbedding({
   content: 'Agent memory architecture overview.',
 });
 
-const { data: results } = await qdrant.search({
-  vector: queryVector,
-  limit: 10,
-  threshold: 0.75,
-  filter: { sourceType: 'document' },
-});
+const results = unwrap(
+  await qdrant.search({
+    vector: queryVector,
+    limit: 10,
+    threshold: 0.75,
+    filter: { sourceType: 'document' },
+  })
+);
 ```
 
 | Option       | Type   | Default                 | Description                          |
@@ -254,7 +284,9 @@ const { data: results } = await qdrant.search({
 | `collection` | string | `cogitator`             | Collection name                      |
 | `dimensions` | number | —                       | Vector dimensions (must match model) |
 
-Embedding metadata is stored in the point payload, so `filter.threadId` / `filter.agentId` match the `metadata.threadId` / `metadata.agentId` payload keys.
+`connect()` creates the collection with cosine distance if it does not exist. Search results carry the payload but not the stored vector (`vector` is `[]`), and no `threshold` is applied unless you pass one. Embedding metadata is stored in the point payload, so `filter.threadId` / `filter.agentId` match the `metadata.threadId` / `metadata.agentId` payload keys, and `filter.userId` matches `metadata.userId` or points without a user.
+
+> **Known issue:** `addEmbedding` uses ids of the form `emb_…` as Qdrant point ids, but Qdrant only accepts unsigned integers and UUIDs as point ids, so inserts are rejected by a real Qdrant server. Until this is fixed, use `PostgresAdapter` (pgvector) for vector storage.
 
 **Requires:** `pnpm add @qdrant/js-client-rest`
 
@@ -265,7 +297,7 @@ Embedding metadata is stored in the point payload, so `filter.threadId` / `filte
 An in-memory adapter that implements both `EmbeddingAdapter` and `KeywordSearchAdapter` using cosine similarity and a built-in BM25 index. Useful for testing hybrid search without external services.
 
 ```typescript
-import { InMemoryEmbeddingAdapter } from '@cogitator-ai/memory';
+import { InMemoryEmbeddingAdapter, unwrap } from '@cogitator-ai/memory';
 
 const embeddings = new InMemoryEmbeddingAdapter();
 
@@ -276,25 +308,37 @@ await embeddings.addEmbedding({
   content: 'Sample document content',
 });
 
-const { data: vectorResults } = await embeddings.search({
-  vector: [0.1, 0.2, 0.3],
-  limit: 5,
-});
+const vectorResults = unwrap(
+  await embeddings.search({
+    vector: [0.1, 0.2, 0.3],
+    limit: 5,
+  })
+);
 
-const { data: keywordResults } = await embeddings.keywordSearch({
-  query: 'sample document',
-  limit: 5,
-});
+const keywordResults = unwrap(
+  await embeddings.keywordSearch({
+    query: 'sample document',
+    limit: 5,
+  })
+);
+
+console.log(embeddings.size); // 1
+embeddings.clear();
 ```
+
+It needs no `connect()`. Vector search uses a default `threshold` of 0.7, and both searches support the same `filter` as Postgres (`sourceType`, `agentId`, `threadId`, `userId`).
 
 ## Comparison
 
-| Feature           | InMemory | Redis | Postgres | SQLite | MongoDB | Qdrant |
-| ----------------- | -------- | ----- | -------- | ------ | ------- | ------ |
-| Threads/Entries   | Yes      | Yes   | Yes      | Yes    | Yes     | No     |
-| Facts             | No       | No    | Yes      | No     | No      | No     |
-| Vector Search     | No       | No    | pgvector | No     | No      | Yes    |
-| Keyword Search    | No       | No    | tsvector | No     | No      | No     |
-| TTL Expiration    | No       | Yes   | No       | No     | No      | No     |
-| Clustering        | No       | Yes   | Yes      | No     | Yes     | Yes    |
-| Zero Dependencies | Yes      | No    | No       | No     | No      | No     |
+| Feature            | InMemory | Redis   | Postgres | SQLite         | MongoDB | Qdrant                 |
+| ------------------ | -------- | ------- | -------- | -------------- | ------- | ---------------------- |
+| Threads/Entries    | Yes      | Yes     | Yes      | Yes            | Yes     | No                     |
+| Facts              | No       | No      | Yes      | No             | No      | No                     |
+| Vector Search      | No¹      | No      | pgvector | No             | No      | Yes                    |
+| Keyword Search     | No¹      | No      | tsvector | No             | No      | No                     |
+| Knowledge Graph    | No       | No      | Yes²     | Yes²           | No      | No                     |
+| TTL Expiration     | No       | Yes     | No       | No             | No      | No                     |
+| `memory.adapter`³  | Yes      | Yes     | Yes      | No             | No      | No                     |
+| Extra Dependencies | None     | ioredis | pg       | better-sqlite3 | mongodb | @qdrant/js-client-rest |
+
+¹ Use `InMemoryEmbeddingAdapter`. ² Via `PostgresGraphAdapter` / `SQLiteGraphAdapter` — see [Knowledge Graphs](/docs/memory/knowledge-graphs). ³ Can be selected in the `Cogitator` `memory` config; the others can be assigned with `cog.memory = adapter` — see [Using Memory with Cogitator](/docs/memory#using-memory-with-cogitator).

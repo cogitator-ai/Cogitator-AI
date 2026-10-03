@@ -15,14 +15,16 @@ result.report('json', { path: './reports/eval.json' });
 result.report(['console', 'json', 'csv'], { path: './reports/eval' });
 ```
 
-You can also use the standalone `report()` function:
+You can also use the standalone `report()` function, with a suite result or any object of the same shape (`results`, `aggregated`, `assertions`, `stats`):
 
 ```typescript
 import { report } from '@cogitator-ai/evals';
 
-report(resultData, 'console');
-report(resultData, ['json', 'csv'], { path: './eval-report' });
+report(result, 'console');
+report(result, ['json', 'csv'], { path: './eval-report' });
 ```
+
+File reporters create missing directories. `result.report()` writes each case as `{ case: { input, expected }, output, duration, scores }`; passing the suite result to the standalone `report()` writes the full case results (including `error`, `usage` and `context`).
 
 ## Console Reporter
 
@@ -146,7 +148,7 @@ Pass an array of reporter types to output in multiple formats at once:
 result.report(['console', 'json', 'csv'], { path: './reports/eval' });
 ```
 
-The `path` option is shared across file-based reporters. JSON appends `.json` and CSV appends `.csv` to the base path automatically if needed.
+The `path` option is a base path shared across file-based reporters: a trailing `.json` or `.csv` is dropped and each reporter adds its own extension, so `./reports/eval` (or `./reports/eval.json`) gives `./reports/eval.json` and `./reports/eval.csv`. The `ci` reporter always runs last, after the other reporters have written their output, because it may exit the process.
 
 ## CI Integration Example
 

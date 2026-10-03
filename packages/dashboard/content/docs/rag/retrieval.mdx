@@ -13,7 +13,16 @@ interface Retriever {
 }
 ```
 
-Each result contains the chunk content, a relevance score, `source` (the document path or URL) and metadata linking back to the source document (document metadata, `documentId`, offsets).
+Each `RetrievalResult` contains `chunkId`, `documentId`, the chunk `content`, a relevance `score`, `source` (the document path or URL) and `metadata` linking back to the source document (document metadata, `documentId`, offsets). Retrievers throw when the underlying search fails.
+
+The examples below assume an embedding service and a store, e.g.:
+
+```typescript
+import { InMemoryEmbeddingAdapter, OpenAIEmbeddingService } from '@cogitator-ai/memory';
+
+const embeddings = new OpenAIEmbeddingService({ apiKey: process.env.OPENAI_API_KEY! });
+const store = new InMemoryEmbeddingAdapter();
+```
 
 ## Similarity Retriever
 
@@ -37,7 +46,7 @@ const results = await retriever.retrieve('How do agents handle errors?');
 | `embeddingAdapter` | EmbeddingAdapter | —       | Vector store to search              |
 | `embeddingService` | EmbeddingService | —       | Embedding service for query vectors |
 | `defaultTopK`      | number           | 10      | Default number of results           |
-| `defaultThreshold` | number           | 0.5     | Minimum similarity score            |
+| `defaultThreshold` | number           | 0.0     | Minimum similarity score            |
 
 **When to use:** Default choice. Works well when your queries are specific and you don't need diversity in results.
 
@@ -55,8 +64,10 @@ const retriever = new MMRRetriever({
   defaultTopK: 10,
 });
 
-const results = await retriever.retrieve('What tools are available?');
+const results = await retriever.retrieve('What tools are available?', { mmrLambda: 0.5 });
 ```
+
+Each result's `score` is its MMR score; the original similarity is kept in `metadata.originalScore`. Pass `mmrLambda` per query to override `defaultLambda`.
 
 Some vector stores (for example Qdrant) do not return stored vectors from a search; in that case the candidates are re-embedded with the embedding service so diversity can still be computed.
 
@@ -78,17 +89,18 @@ The `lambda` parameter controls the relevance/diversity tradeoff:
 
 ## Hybrid Retriever
 
-Combines vector similarity search with BM25 keyword search using Reciprocal Rank Fusion. Requires a store that implements `HybridSearch` (e.g., `PostgresAdapter` from `@cogitator-ai/memory`).
+Combines vector similarity search with keyword search using Reciprocal Rank Fusion, via a [`HybridSearch`](/docs/memory/hybrid-search) instance from `@cogitator-ai/memory`.
 
 ```typescript
 import { HybridRetriever } from '@cogitator-ai/rag';
-import { HybridSearch, PostgresAdapter } from '@cogitator-ai/memory';
+import { HybridSearch, PostgresAdapter, unwrap } from '@cogitator-ai/memory';
 
 const db = new PostgresAdapter({
   provider: 'postgres',
   connectionString: process.env.DATABASE_URL!,
 });
-await db.connect();
+db.setVectorDimensions(embeddings.dimensions);
+unwrap(await db.connect());
 
 const hybridSearch = new HybridSearch({
   embeddingAdapter: db,
@@ -105,16 +117,16 @@ const retriever = new HybridRetriever({
 const results = await retriever.retrieve('error handling in tool execution');
 ```
 
-When used inside a `RAGPipeline` (via `withHybridSearch()` or `withRetriever()`), every ingested chunk is also added to the HybridSearch in-process BM25 index, and keyword-only hits are mapped back to their chunk id, document id and metadata. Custom retrievers can receive the same notifications by implementing `ChunkIndexer.indexChunk()`.
+When used inside a `RAGPipeline` (via `withHybridSearch()` or `withRetriever()`), every ingested chunk is also added to the HybridSearch in-process BM25 index (keyed by embedding id), and keyword-only hits are mapped back to their chunk id, document id and metadata. That index lives in memory and only holds chunks ingested in the current process — for a persistent store, pass a `keywordAdapter` (Postgres full-text search or `InMemoryEmbeddingAdapter`) so keyword search covers everything stored. Custom retrievers can receive the same notifications by implementing `ChunkIndexer.indexChunk()`.
 
 Each result includes `vectorScore` and `keywordScore` in its metadata, so you can inspect how each signal contributed.
 
-| Option             | Type         | Default | Description                                |
-| ------------------ | ------------ | ------- | ------------------------------------------ |
-| `hybridSearch`     | HybridSearch | —       | `HybridSearch` from `@cogitator-ai/memory` |
-| `defaultWeights`   | object       | —       | `{ bm25: number, vector: number }` weights |
-| `defaultTopK`      | number       | 10      | Default number of results                  |
-| `defaultThreshold` | number       | 0.0     | Minimum score                              |
+| Option             | Type         | Default                                       | Description                                   |
+| ------------------ | ------------ | --------------------------------------------- | --------------------------------------------- |
+| `hybridSearch`     | HybridSearch | —                                             | `HybridSearch` from `@cogitator-ai/memory`    |
+| `defaultWeights`   | object       | HybridSearch's (`{ bm25: 0.4, vector: 0.6 }`) | `{ bm25: number, vector: number }` weights    |
+| `defaultTopK`      | number       | 10                                            | Default number of results                     |
+| `defaultThreshold` | number       | 0.0                                           | Minimum vector similarity for the vector half |
 
 **When to use:** When queries contain specific terms (error codes, function names, product IDs) that benefit from exact keyword matching alongside semantic understanding.
 
@@ -123,7 +135,13 @@ Each result includes `vectorScore` and `keywordScore` in its metadata, so you ca
 Expands a single query into multiple variants, retrieves results for each in parallel, and merges them by taking the highest score per chunk. You provide the query expansion function — typically an LLM call. The original query is always searched; generated variants are trimmed, de-duplicated (case-insensitive) and capped by `defaultMaxQueries` or the per-query `multiQueryCount`. If expansion throws, the original query is used alone; if every retrieval fails, the first error is thrown.
 
 ```typescript
+import { Cogitator } from '@cogitator-ai/core';
 import { MultiQueryRetriever, SimilarityRetriever } from '@cogitator-ai/rag';
+
+const cog = new Cogitator({
+  llm: { providers: { google: { apiKey: process.env.GOOGLE_API_KEY! } } },
+});
+const llm = cog.getLLMBackend('google/gemini-3.5-flash-lite');
 
 const baseRetriever = new SimilarityRetriever({
   embeddingAdapter: store,
@@ -132,12 +150,20 @@ const baseRetriever = new SimilarityRetriever({
 
 const retriever = new MultiQueryRetriever({
   baseRetriever,
+  defaultMaxQueries: 3,
   expandQuery: async (query) => {
-    const response = await llm.generate(
-      `Generate 3 alternative search queries for: "${query}"\n` +
-        'Return one query per line, no numbering.'
-    );
-    return response.split('\n').filter(Boolean);
+    const response = await llm.chat({
+      model: 'gemini-3.5-flash-lite',
+      messages: [
+        {
+          role: 'user',
+          content:
+            `Generate 3 alternative search queries for: "${query}"\n` +
+            'Return one query per line, no numbering.',
+        },
+      ],
+    });
+    return response.content.split('\n').filter(Boolean);
   },
 });
 
@@ -151,11 +177,13 @@ const results = await retriever.retrieve('How do I configure memory?');
 | `defaultTopK`       | number                                 | 10      | Results returned after merging         |
 | `defaultMaxQueries` | number                                 | all     | Max generated variants used            |
 
+Per-query options are passed to the base retriever for every variant, so `topK` applies both per variant and to the merged list.
+
 **When to use:** When user queries are ambiguous or under-specified. The LLM generates variations that cover different angles of the question.
 
 ## createRetriever Factory
 
-Create a retriever from a config object:
+Create a retriever from a config object. Here `topK`, `threshold`, `lambda`, `weights` and `maxQueries` set the retriever's defaults:
 
 ```typescript
 import { createRetriever } from '@cogitator-ai/rag';

@@ -13,10 +13,11 @@ LLM outputs are non-deterministic. A prompt change that improves one response mi
 pnpm add @cogitator-ai/evals
 ```
 
-Optional peer dependency for CSV dataset loading:
+Optional dependencies: `papaparse` for CSV datasets, and `@cogitator-ai/core` for agent targets and LLM-as-judge metrics:
 
 ```bash
 pnpm add papaparse
+pnpm add @cogitator-ai/core
 ```
 
 ## Quick Start
@@ -66,44 +67,60 @@ result.report('console');
 The core class that orchestrates evaluation runs.
 
 ```typescript
+import { EvalSuite, exactMatch, latency, threshold } from '@cogitator-ai/evals';
+
 const suite = new EvalSuite({
-  dataset,                // required — Dataset instance
-  target: { fn },         // required — what to evaluate
-  metrics: [...],         // optional — per-case scoring functions
-  statisticalMetrics: [], // optional — aggregate metrics (latency, cost)
-  judge: { model: '...', cogitator }, // required if using LLM metrics
-  assertions: [...],      // optional — pass/fail checks
-  concurrency: 5,         // optional — parallel case execution
-  timeout: 30000,         // optional — per-case timeout in ms
-  retries: 0,             // optional — retry failed cases
-  onProgress: (p) => {},  // optional — progress callback
+  dataset,
+  target: { fn: async (input) => answer(input) },
+  metrics: [exactMatch()],
+  statisticalMetrics: [latency()],
+  assertions: [threshold('exactMatch', 0.8)],
+  concurrency: 5,
+  timeout: 30000,
+  retries: 1,
+  onProgress: ({ completed, total }) => console.log(`${completed}/${total}`),
 });
 ```
 
-Errors and timeouts are retried up to `retries` times. If every attempt fails, the case result has an empty `output` and an `error` message (for example `Timed out after 30000ms`), so a failed run is never mistaken for an empty answer.
+| Option               | Default | Description                                                                 |
+| -------------------- | ------- | --------------------------------------------------------------------------- |
+| `dataset`            | —       | [`Dataset`](/docs/evals/datasets) of cases                                  |
+| `target`             | —       | What to evaluate — see [Target](#target)                                    |
+| `metrics`            | `[]`    | Per-case [metrics](/docs/evals/metrics)                                     |
+| `statisticalMetrics` | `[]`    | Metrics over the whole run (`latency()`, `cost()`, `tokenUsage()`)          |
+| `judge`              | —       | `{ model, temperature, maxTokens?, cogitator? }` — required for LLM metrics |
+| `assertions`         | `[]`    | [Pass/fail checks](/docs/evals/assertions)                                  |
+| `concurrency`        | `5`     | Cases run in parallel                                                       |
+| `timeout`            | `30000` | Per-attempt timeout in ms (minimum 1000)                                    |
+| `retries`            | `0`     | Extra attempts for a failed or timed-out case (max 10)                      |
+| `onProgress`         | —       | Called with `{ completed, total, currentCase }` after each case             |
+
+Errors and timeouts are retried up to `retries` times. If every attempt fails, the case result has an empty `output` and an `error` message (for example `Timed out after 30000ms`), so a failed run is never mistaken for an empty answer. Metrics still score that empty output.
 
 ### Target
 
 The target defines what you're evaluating. Use `fn` for a simple function, or `agent` + `cogitator` for a full Cogitator agent:
 
 ```typescript
-// function target
-const target = {
-  fn: async (input: string) => {
-    const response = await openai.chat.completions.create({
-      model: 'gpt-6.1-sol',
-      messages: [{ role: 'user', content: input }],
-    });
-    return response.choices[0].message.content!;
-  },
+import { Agent, Cogitator } from '@cogitator-ai/core';
+import type { EvalTarget } from '@cogitator-ai/evals';
+
+const fnTarget: EvalTarget = {
+  fn: async (input: string) => myApp.answer(input),
 };
 
-// agent target
-const target = {
-  agent: myAgent,
-  cogitator: runtime,
+const cogitator = new Cogitator();
+const agentTarget: EvalTarget = {
+  agent: new Agent({
+    name: 'support',
+    model: 'openai/gpt-5.5',
+    instructions: 'Answer support questions briefly.',
+  }),
+  cogitator,
 };
 ```
+
+A target has either `fn` or both `agent` and `cogitator`; anything else throws when the suite is created. An agent target runs `cogitator.run(agent, { input, context })` with the case's `context`, and records the run's `usage` (tokens, cost) and `toolCalls` on the case result — that is what the `cost()` and `tokenUsage()` metrics read. A `fn` target only records the duration.
 
 ### Results
 
@@ -112,15 +129,17 @@ const target = {
 ```typescript
 const result = await suite.run();
 
-result.results; // per-case outputs and scores
+result.results; // per-case { case, output, duration, error?, usage?, toolCalls?, scores }
 result.aggregated; // { exactMatch: { mean, median, p95, ... }, ... }
 result.assertions; // [{ name, passed, message }, ...]
-result.stats; // { total, duration, cost }
+result.stats; // { total, duration (ms), cost (sum of case usage.cost) }
 
 result.report('console');
 result.report(['json', 'csv'], { path: './eval-report' });
 result.saveBaseline('./baseline.json');
 ```
+
+Results keep the dataset order regardless of concurrency. See [Reporters](/docs/evals/reporters) and [baselines](/docs/evals/assertions#noregression).
 
 ## EvalBuilder
 
@@ -144,10 +163,34 @@ const suite = new EvalBuilder()
   .withAssertions([threshold('exactMatch', 0.9)])
   .withConcurrency(10)
   .withTimeout(15000)
+  .withRetries(1)
+  .onProgress(({ completed, total }) => console.log(`${completed}/${total}`))
   .build();
 
 const result = await suite.run();
 ```
+
+Use `.withJudge({ model, temperature, cogitator })` when the metrics include LLM-as-judge metrics; `build()` throws without it, or without a dataset or target.
+
+## Agent Tool
+
+`evalTools(suite)` returns a `run_eval` tool so an agent can run a suite and read the summary:
+
+```typescript
+import { Agent, tool } from '@cogitator-ai/core';
+import { evalTools } from '@cogitator-ai/evals';
+
+const [runEval] = evalTools(suite);
+
+const qaAgent = new Agent({
+  name: 'qa',
+  model: 'openai/gpt-5.5',
+  instructions: 'Run the eval suite and report regressions.',
+  tools: [tool(runEval)],
+});
+```
+
+The tool takes an optional `maxCases` and returns `{ success, total, duration, cost, metrics, assertionsPassed }`, where `metrics` holds the mean of each metric. `maxCases` only trims the summary — the whole suite still runs — and `assertionsPassed` is always `true` when it is set. Errors come back as `{ success: false, error }`. `createRunEvalTool(suite)` builds the same tool.
 
 ## Next Steps
 

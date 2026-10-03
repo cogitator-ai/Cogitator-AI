@@ -17,19 +17,20 @@ interface AssertionResult {
 }
 ```
 
-Assertions receive aggregated metric data — mean, median, p95, min, max, stdDev for each metric — plus overall suite stats (total cases, duration, cost).
+Assertions receive aggregated metric data — mean, median, min, max, stdDev and p50/p95/p99 for each metric, per-case and statistical alike — plus overall suite stats (total cases, duration, cost). Their results are in `result.assertions`; a failed assertion does not make `suite.run()` throw.
 
 ## threshold
 
-The most common assertion. Checks that a metric's mean score meets a minimum value. For latency and cost metrics (detected by name prefix), the check is inverted — the actual value must be at or below the threshold.
+The most common assertion. Checks that a metric's mean score meets a minimum value. For latency and cost metrics (detected by name prefix), the check is inverted — the actual value must be at or below the threshold. A metric missing from the results fails the assertion.
 
 ```typescript
-import { threshold } from '@cogitator-ai/evals';
+import { EvalSuite, contains, cost, exactMatch, latency, threshold } from '@cogitator-ai/evals';
 
 const suite = new EvalSuite({
   dataset,
-  target: { fn },
+  target: { agent, cogitator },
   metrics: [exactMatch(), contains()],
+  statisticalMetrics: [latency(), cost()],
   assertions: [
     threshold('exactMatch', 0.9), // mean exactMatch >= 0.9
     threshold('contains', 0.95), // mean contains >= 0.95
@@ -52,7 +53,15 @@ You can access nested aggregation fields with dot notation:
 
 ### Direction Detection
 
-Metrics whose names start with `latency` or `cost` (or end with `Duration` or `Latency`) are treated as "lower is better" — the assertion passes when the actual value is at or below the threshold. All other metrics are "higher is better".
+Metrics whose names start with `latency` or `cost` (or end with `Duration` or `Latency`) are treated as "lower is better" — the assertion passes when the actual value is at or below the threshold. All other metrics are "higher is better" — including `tokenUsage`, so `threshold('tokenUsage', 2000)` passes when the mean is **at least** 2000. To cap token usage, use a [custom assertion](#custom-assertions):
+
+```typescript
+const tokenBudget = assertion({
+  name: 'tokenBudget',
+  check: (aggregated) => (aggregated.tokenUsage?.mean ?? 0) <= 2000,
+  message: 'Mean token usage above 2000',
+});
+```
 
 ## noRegression
 
@@ -67,7 +76,7 @@ const result = await suite.run();
 result.saveBaseline('./baseline.json');
 ```
 
-This writes a JSON file mapping metric names to their mean scores:
+This writes a JSON file mapping every aggregated metric (statistical ones included) to its mean:
 
 ```json
 {
@@ -98,7 +107,9 @@ const suite = new EvalSuite({
 | ----------- | ------ | ------- | -------------------------------------------- |
 | `tolerance` | number | 0.05    | Allowed regression as a fraction (0.05 = 5%) |
 
-For "higher is better" metrics, the assertion fails if `actual < baseline * (1 - tolerance)`. For "lower is better" metrics (latency, cost), it fails if `actual > baseline * (1 + tolerance)`.
+For "higher is better" metrics, the assertion fails if `actual < baseline * (1 - tolerance)`. For "lower is better" metrics (latency, cost), it fails if `actual > baseline * (1 + tolerance)`. Only means are compared, and baseline metrics missing from the current run are skipped. The assertion reports the first regression it finds, and also fails when the baseline file cannot be read or none of its metrics are in the current results.
+
+Because `tokenUsage` counts as "higher is better", a baseline that contains it flags a **drop** in token usage as a regression; remove `tokenUsage` from the baseline file if you track it with `statisticalMetrics`.
 
 ### Baseline Workflow
 
@@ -145,11 +156,11 @@ The `check` function receives:
 - `aggregated` — `Record<string, AggregatedMetric>` with per-metric stats
 - `stats` — `{ total: number, duration: number, cost: number }` for the full run
 
-Return `true` for pass, `false` for fail. The optional `message` is shown on failure.
+Return `true` for pass, `false` for fail. The optional `message` is shown on failure; a `check` that throws fails with the error message.
 
 ## Combining Assertions
 
-Pass multiple assertions — all must pass for the suite to be considered successful:
+Pass multiple assertions; each produces its own result:
 
 ```typescript
 assertions: [
@@ -160,4 +171,4 @@ assertions: [
 ];
 ```
 
-The `report('ci')` reporter exits with code 1 if any assertion fails, making it straightforward to integrate with CI pipelines.
+The `report('ci')` reporter exits with code 1 if any assertion fails, making it straightforward to integrate with CI pipelines. Outside CI, check `result.assertions.every((a) => a.passed)`.

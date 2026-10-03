@@ -7,6 +7,8 @@ description: Split documents into embeddable chunks using fixed-size, recursive,
 
 Embedding models have token limits and perform best on focused text segments. Chunking splits large documents into smaller pieces that can be individually embedded and retrieved. The chunking strategy you choose directly affects retrieval quality.
 
+Every chunker returns `DocumentChunk` objects: `id`, `documentId`, `content`, `startOffset` / `endOffset` (character offsets into the document) and `order`. Sizes are measured in characters, not tokens.
+
 ## Fixed-Size Chunking
 
 Splits text into chunks of exactly `chunkSize` characters with a configurable overlap. Fast and predictable, but splits can land in the middle of sentences or paragraphs.
@@ -26,6 +28,8 @@ const chunks = chunker.chunk(documentText, 'doc-1');
 | -------------- | ------ | ------------------------------------------------ |
 | `chunkSize`    | number | Maximum characters per chunk                     |
 | `chunkOverlap` | number | Characters to overlap between consecutive chunks |
+
+`FixedSizeChunker` and `RecursiveChunker` throw when `chunkSize` is not positive, `chunkOverlap` is negative, or `chunkOverlap >= chunkSize`.
 
 **When to use:** Uniform-length data (logs, code), or when you need predictable chunk sizes and don't care about semantic boundaries.
 
@@ -86,6 +90,8 @@ const chunks = await chunker.chunk(documentText, 'doc-1');
 | `minChunkSize`        | number           | 100     | Minimum chunk size in characters (small chunks get merged) |
 | `maxChunkSize`        | number           | 2000    | Maximum chunk size in characters                           |
 
+`minChunkSize` defaults to `min(100, maxChunkSize)`. Groups longer than `maxChunkSize` are split at sentence boundaries, and single sentences longer than that are cut into `maxChunkSize` pieces. Semantic chunks never overlap. Every sentence is embedded once (`embedBatch`), so ingestion costs roughly twice the embedding calls of the other strategies.
+
 **When to use:** Documents where topic boundaries don't align with formatting (transcripts, long-form prose, research papers). Produces the highest quality chunks but is slower due to embedding calls.
 
 ## createChunker Factory
@@ -102,7 +108,7 @@ const chunker = createChunker({
 });
 ```
 
-For semantic chunking, pass the embedding service as the second argument:
+For semantic chunking, pass the embedding service as the second argument; `chunkSize` becomes `maxChunkSize`, and the other semantic options keep their defaults (construct `SemanticChunker` directly to change them):
 
 ```typescript
 const chunker = createChunker(
@@ -124,25 +130,28 @@ const chunker = createChunker(
 Implement `Chunker` for synchronous chunking or `AsyncChunker` for async:
 
 ```typescript
-import { nanoid } from 'nanoid';
-import type { Chunker, DocumentChunk } from '@cogitator-ai/types';
+import { randomUUID } from 'node:crypto';
+import type { Chunker, DocumentChunk } from '@cogitator-ai/rag';
 
 class ParagraphChunker implements Chunker {
   chunk(text: string, documentId: string): DocumentChunk[] {
-    return text
-      .split('\n\n')
-      .filter((p) => p.trim().length > 0)
-      .map((content, i) => ({
-        id: nanoid(),
+    const chunks: DocumentChunk[] = [];
+    for (const match of text.matchAll(/\S(?:[\s\S]*?\S)?(?=\s*\n\s*\n|\s*$)/g)) {
+      chunks.push({
+        id: randomUUID(),
         documentId,
-        content: content.trim(),
-        startOffset: text.indexOf(content),
-        endOffset: text.indexOf(content) + content.length,
-        order: i,
-      }));
+        content: match[0],
+        startOffset: match.index,
+        endOffset: match.index + match[0].length,
+        order: chunks.length,
+      });
+    }
+    return chunks;
   }
 }
 ```
+
+Keep `content === text.slice(startOffset, endOffset)` so offsets stay meaningful in the stored metadata. The pipeline drops whitespace-only chunks.
 
 Pass it to the builder:
 

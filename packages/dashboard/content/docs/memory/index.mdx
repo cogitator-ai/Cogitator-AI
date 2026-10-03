@@ -10,7 +10,7 @@ LLMs are stateless. Every request starts from scratch unless you explicitly pass
 Cogitator's memory system gives agents:
 
 - **Conversation persistence** across sessions via threads and entries
-- **Semantic search** over past messages using vector embeddings
+- **Semantic search** over stored documents and messages using vector embeddings
 - **Fact storage** for long-term knowledge (user preferences, learned info)
 - **Knowledge graphs** for structured entity and relationship tracking
 - **Token-aware context building** that fits the most relevant history into the model's context window
@@ -18,42 +18,66 @@ Cogitator's memory system gives agents:
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                   ContextBuilder                     │
-│  Assembles messages, facts, and semantic context     │
-│  within a token budget                               │
-├──────────┬──────────────┬───────────────┬────────────┤
-│ MemoryAdapter  │ FactAdapter  │ EmbeddingAdapter │ GraphAdapter │
-│ (threads +     │ (long-term   │ (vector search)  │ (entities +  │
-│  entries)      │  facts)      │                  │  relations)  │
-├──────────┴──────────────┴───────────────┴────────────┤
-│          InMemory │ Redis │ Postgres │ SQLite        │
-│          MongoDB  │ Qdrant                           │
-└─────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────┐
+│                         ContextBuilder                          │
+│   Assembles messages, facts, semantic and graph context         │
+│   within a token budget                                         │
+├───────────────┬──────────────┬──────────────────┬──────────────┤
+│ MemoryAdapter │ FactAdapter  │ EmbeddingAdapter │ GraphAdapter │
+│ (threads +    │ (long-term   │ (vector search)  │ (entities +  │
+│  entries)     │  facts)      │                  │  relations)  │
+├───────────────┴──────────────┴──────────────────┴──────────────┤
+│  InMemory │ Redis │ Postgres │ SQLite │ MongoDB │ Qdrant        │
+└────────────────────────────────────────────────────────────────┘
 ```
 
-Every adapter implements the same `MemoryAdapter` interface. You can swap backends without changing application code.
+Every conversation adapter implements the same `MemoryAdapter` interface, so you can swap backends without changing application code. Facts, embeddings and graphs are separate interfaces that only some backends implement — see [Choosing an Adapter](#choosing-an-adapter).
+
+## Results and `unwrap()`
+
+Adapter methods never throw for expected failures; they return a `MemoryResult`:
+
+```typescript
+type MemoryResult<T> = { success: true; data: T } | { success: false; error: string };
+```
+
+Check `result.success`, or use `unwrap()` to get the data and throw an `Error` with the adapter's message on failure:
+
+```typescript
+import { InMemoryAdapter, unwrap } from '@cogitator-ai/memory';
+
+const memory = new InMemoryAdapter();
+await memory.connect();
+
+const thread = unwrap(await memory.createThread('agent-1'));
+
+const result = await memory.getThread(thread.id);
+if (result.success && result.data) {
+  console.log(result.data.metadata);
+}
+```
 
 ## Core Concepts
 
 ### Threads
 
-A **Thread** represents a conversation session. Each thread belongs to an agent and holds an ordered list of memory entries.
+A **Thread** represents a conversation session. Each thread belongs to an agent and holds an ordered list of memory entries. Pass a third argument to choose the thread id yourself:
 
 ```typescript
-import { InMemoryAdapter } from '@cogitator-ai/memory';
+import { InMemoryAdapter, unwrap } from '@cogitator-ai/memory';
 
 const memory = new InMemoryAdapter();
 await memory.connect();
 
-const { data: thread } = await memory.createThread('agent-1', {
-  topic: 'onboarding',
-});
+const thread = unwrap(await memory.createThread('agent-1', { topic: 'onboarding' }));
+const named = unwrap(await memory.createThread('agent-1', {}, 'support-ticket-42'));
 ```
+
+`metadata.userId` names the user a thread belongs to. When an agent run creates a thread, the runtime sets it from the run's `userId` — see [Multiple Users](/docs/advanced/multi-user).
 
 ### Memory Entries
 
-A **MemoryEntry** stores a single message along with token count and optional tool call data.
+A **MemoryEntry** stores a single message along with its token count and optional tool call data.
 
 ```typescript
 await memory.addEntry({
@@ -68,17 +92,24 @@ await memory.addEntry({
   tokenCount: 8,
 });
 
-const { data: entries } = await memory.getEntries({
-  threadId: thread.id,
-  limit: 50,
-});
+const entries = unwrap(
+  await memory.getEntries({
+    threadId: thread.id,
+    limit: 50,
+    includeToolCalls: true,
+  })
+);
 ```
+
+`getEntries()` returns entries oldest first; `limit` keeps the most recent ones, and `before` / `after` (dates) narrow the range. Tool calls and results are stripped unless `includeToolCalls` is `true`.
 
 ### Facts
 
-**Facts** are long-term memories that persist across threads. They represent user preferences, learned information, or system-level knowledge. Only `PostgresAdapter` implements `FactAdapter`.
+**Facts** are long-term memories that persist across threads: user preferences, learned information, or system-level knowledge. Only `PostgresAdapter` implements `FactAdapter`.
 
 ```typescript
+import { PostgresAdapter } from '@cogitator-ai/memory';
+
 const postgres = new PostgresAdapter({
   provider: 'postgres',
   connectionString: process.env.DATABASE_URL!,
@@ -91,26 +122,34 @@ await postgres.addFact({
   category: 'preference',
   confidence: 0.95,
   source: 'user',
+  metadata: { userId: 'alice' },
 });
 ```
+
+A fact with `metadata.userId` only goes into that user's context; a fact without one is shared by everyone the agent serves. Facts with an `expiresAt` in the past are no longer returned.
 
 ## Context Building
 
 The `ContextBuilder` assembles the final message list sent to the LLM. It respects token limits by selecting the most relevant entries from memory.
 
 ```typescript
-import { ContextBuilder } from '@cogitator-ai/memory';
+import { ContextBuilder, createEmbeddingService } from '@cogitator-ai/memory';
+
+const embeddings = createEmbeddingService({
+  provider: 'openai',
+  apiKey: process.env.OPENAI_API_KEY!,
+});
 
 const builder = new ContextBuilder(
   {
     maxTokens: 8192,
-    strategy: 'recent',
+    strategy: 'hybrid',
     includeSystemPrompt: true,
     includeFacts: true,
     includeSemanticContext: true,
   },
   {
-    memoryAdapter: memory,
+    memoryAdapter: postgres,
     factAdapter: postgres,
     embeddingAdapter: postgres,
     embeddingService: embeddings,
@@ -120,37 +159,155 @@ const builder = new ContextBuilder(
 const context = await builder.build({
   threadId: thread.id,
   agentId: 'agent-1',
+  userId: 'alice',
   systemPrompt: 'You are a helpful assistant.',
   currentInput: 'What were we discussing yesterday?',
 });
+
+console.log(context.messages, context.tokenCount, context.truncated);
 ```
 
-Three context strategies are available:
+| Option                   | Default                      | Description                                                                                                                                                                                                |
+| ------------------------ | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `maxTokens`              | —                            | Total token budget                                                                                                                                                                                         |
+| `reserveTokens`          | 10% of `maxTokens` (min 100) | Tokens kept free for the model's reply                                                                                                                                                                     |
+| `strategy`               | —                            | `recent`, `relevant` or `hybrid`                                                                                                                                                                           |
+| `includeSystemPrompt`    | `true`                       | Put `systemPrompt` first                                                                                                                                                                                   |
+| `includeFacts`           | `false`                      | Add a `Known facts:` block (needs `factAdapter`, up to 10% of the budget)                                                                                                                                  |
+| `includeSemanticContext` | `false`                      | Add a `Relevant context:` block from the top 5 embeddings scoring ≥ 0.7 (needs `embeddingAdapter` + `embeddingService` and a `currentInput`, up to 10% of the budget)                                      |
+| `includeGraphContext`    | `false`                      | Add knowledge graph context (needs `graphContextBuilder` and a `currentInput`, up to 15% of the budget) — see [Knowledge Graphs](/docs/memory/knowledge-graphs#using-graph-context-in-the-context-builder) |
+| `graphContextOptions`    | `{}`                         | `maxNodes`, `maxEdges`, `maxDepth`, `includeInferred`, `entityTypes`                                                                                                                                       |
 
-| Strategy   | Behavior                                                         |
-| ---------- | ---------------------------------------------------------------- |
-| `recent`   | Fills context with the most recent entries that fit              |
-| `relevant` | Selects entries by semantic similarity to current input          |
-| `hybrid`   | Reserves 30% for semantically relevant older entries, 70% recent |
+Facts, semantic and graph context are merged into the system message. The remaining budget is filled with conversation entries by the strategy:
 
-`relevant` and `hybrid` need an `embeddingService` and a `currentInput`; without them they fall back to `recent`. Selected messages are always returned in chronological order.
+| Strategy   | Behavior                                                                                                                       |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `recent`   | Fills context with the most recent entries that fit                                                                            |
+| `relevant` | Selects entries by semantic similarity to the current input                                                                    |
+| `hybrid`   | Spends up to 30% of the budget on older entries (outside the last 10) scoring above 0.6 similarity, the rest on recent entries |
 
-Semantic context (`includeSemanticContext`) is scoped per agent: embeddings whose `metadata.agentId` belongs to another agent are never injected, while embeddings without an `agentId` (shared documents) are visible to every agent.
+`relevant` and `hybrid` need an `embeddingService` and a `currentInput`; without them (or, for `hybrid`, with 10 entries or fewer) they fall back to `recent`. Selected messages are always returned in chronological order.
+
+Semantic context is scoped per agent: embeddings whose `metadata.agentId` belongs to another agent are never injected, while embeddings without an `agentId` (shared documents) are visible to every agent.
 
 Pass `userId` to `build()` to scope it per user as well: facts, embeddings and knowledge graph nodes whose `metadata.userId` belongs to another user are left out, while those without one are shared. Agent runs do this with the run's `userId` — see [Multiple Users](/docs/advanced/multi-user).
 
+## Using Memory with Cogitator
+
+Configure memory on the runtime and every run with a `threadId` loads and saves its history automatically:
+
+```typescript
+import { Cogitator, Agent } from '@cogitator-ai/core';
+
+const cog = new Cogitator({
+  memory: {
+    adapter: 'postgres',
+    postgres: { connectionString: process.env.DATABASE_URL! },
+    embedding: { provider: 'openai', apiKey: process.env.OPENAI_API_KEY!, dimensions: 768 },
+    contextBuilder: {
+      maxTokens: 8000,
+      strategy: 'hybrid',
+      includeFacts: true,
+      includeSemanticContext: true,
+    },
+  },
+});
+
+const agent = new Agent({
+  name: 'assistant',
+  model: 'openai/gpt-5.5',
+  instructions: 'You are a helpful assistant.',
+});
+
+await cog.run(agent, { input: 'Hi, I am Alice', threadId: 'thread-alice' });
+await cog.run(agent, { input: 'What is my name?', threadId: 'thread-alice' });
+```
+
+- `memory.adapter` accepts `'memory'`, `'redis'` (requires `redis.url`) and `'postgres'` (requires `postgres.connectionString`). For SQLite, MongoDB or a Redis cluster, connect the adapter yourself and assign it with `cog.memory = adapter`; such runs load the last 20 entries, since the context builder is only created from the `memory` config.
+- With `contextBuilder` set, each run builds its context as described above (`maxTokens` defaults to 4000, `strategy` to `'recent'`). Postgres is used as the fact and embedding adapter automatically. The runtime creates the Postgres `embeddings` table with 768-dimensional vectors, so pick an embedding config that produces 768 dimensions (`dimensions: 768` with OpenAI `text-embedding-3-*` or Google, or Ollama `nomic-embed-text`); the dimension cannot be changed through the `memory` config. Without `contextBuilder`, a run loads the last 20 entries of the thread.
+- Per run, `useMemory: false` disables memory, `loadHistory: false` / `saveHistory: false` skip loading or saving, and `onMemoryError` is called when a load or save fails.
+- `await cog.getMemory()` connects and returns the adapter before any run — see [Cogitator](/docs/core/cogitator).
+
 ## Choosing an Adapter
 
-| Adapter  | Persistence | Speed   | Embeddings | Facts | Best For                           |
-| -------- | ----------- | ------- | ---------- | ----- | ---------------------------------- |
-| InMemory | None        | Fastest | No         | No    | Testing, short-lived agents        |
-| Redis    | TTL-based   | Fast    | No         | No    | Short-term memory with auto-expiry |
-| Postgres | Permanent   | Good    | pgvector   | Yes   | Production with full features      |
-| SQLite   | Permanent   | Fast    | No         | No    | Single-process, local apps         |
-| MongoDB  | Permanent   | Good    | No         | No    | Document-oriented workloads        |
-| Qdrant   | Permanent   | Fast    | Native     | No    | Dedicated vector search            |
+| Adapter  | Persistence | Embeddings | Facts | Graph                  | Best For                           |
+| -------- | ----------- | ---------- | ----- | ---------------------- | ---------------------------------- |
+| InMemory | None        | Separate¹  | No    | No                     | Testing, short-lived agents        |
+| Redis    | TTL-based   | No         | No    | No                     | Short-term memory with auto-expiry |
+| Postgres | Permanent   | pgvector   | Yes   | `PostgresGraphAdapter` | Production with full features      |
+| SQLite   | Permanent   | No         | No    | `SQLiteGraphAdapter`   | Single-process, local apps         |
+| MongoDB  | Permanent   | No         | No    | No                     | Document-oriented workloads        |
+| Qdrant   | Permanent   | Native     | No    | No                     | Dedicated vector search            |
 
-For most production deployments, **Postgres** is the recommended adapter since it supports threads, facts, embeddings, and keyword search in a single backend.
+¹ `InMemoryEmbeddingAdapter` provides in-process vector and keyword search.
+
+For most production deployments, **Postgres** is the recommended adapter since it supports threads, facts, embeddings, keyword search and (with `PostgresGraphAdapter`) knowledge graphs in a single database. See [Memory Adapters](/docs/memory/adapters) for configuration.
+
+## Sessions, Compaction and Core Facts
+
+Three helpers build on top of any `MemoryAdapter`. The [channels gateway](/docs/channels/smart-memory) wires them up for you; you can also use them directly.
+
+**`SessionManager`** maps a user on a channel to a long-lived thread (`session_<channelType>_<userId>`) and tracks its status, message count and per-session config overrides:
+
+```typescript
+import { SessionManager, CompactionService, InMemoryAdapter } from '@cogitator-ai/memory';
+
+const memory = new InMemoryAdapter();
+await memory.connect();
+
+const compaction = new CompactionService({
+  adapter: memory,
+  summarize: async (messages) => `Summary of ${messages.length} messages`,
+});
+
+const sessions = new SessionManager(memory, { compaction });
+
+const session = await sessions.getOrCreate({
+  userId: 'alice',
+  channelType: 'telegram',
+  channelId: 'chat-1',
+  agentId: 'assistant',
+});
+
+await sessions.update(session.id, { config: { temperature: 0.2 } });
+const active = await sessions.list({ status: 'active', limit: 20 });
+await sessions.archive(session.id);
+```
+
+**`CompactionService`** shrinks a thread once its stored tokens reach `threshold`, keeping the `keepRecent` latest entries:
+
+```typescript
+const result = await compaction.compact(session.id, {
+  strategy: 'summary',
+  threshold: 8000,
+  keepRecent: 10,
+});
+// { sessionId, originalMessages, compactedMessages, summaryTokens }
+```
+
+| Strategy         | Behavior                                                                                           |
+| ---------------- | -------------------------------------------------------------------------------------------------- |
+| `summary`        | Replaces older entries with one `[Conversation summary]` system entry produced by your `summarize` |
+| `sliding-window` | Deletes older entries                                                                              |
+| `hybrid`         | `sliding-window` when 5 or fewer entries would be removed, otherwise `summary`                     |
+
+`summarize` is your function — call any LLM in it. `sessions.compact()` throws unless the manager was created with `{ compaction }`.
+
+**`CoreFactsStore`** is a small SQLite key–value store (requires `better-sqlite3`) for always-on facts about the user, with a history of every value:
+
+```typescript
+import { CoreFactsStore } from '@cogitator-ai/memory';
+
+const coreFacts = new CoreFactsStore({ path: './memory.db' });
+await coreFacts.initialize();
+
+await coreFacts.set('name', 'Alice');
+await coreFacts.set('timezone', 'Europe/Berlin');
+
+const prompt = await coreFacts.formatForPrompt(); // "name: Alice\ntimezone: Europe/Berlin"
+const history = await coreFacts.getHistory('timezone'); // [{ value, setAt }]
+await coreFacts.close();
+```
 
 ## Installation
 
@@ -161,10 +318,11 @@ pnpm add @cogitator-ai/memory
 Optional peer dependencies based on your adapter choice:
 
 ```bash
-pnpm add pg                      # Postgres
-pnpm add better-sqlite3           # SQLite
+pnpm add ioredis                  # Redis
+pnpm add pg                       # Postgres (+ pgvector extension for embeddings)
+pnpm add better-sqlite3           # SQLite, SQLiteGraphAdapter, CoreFactsStore
 pnpm add mongodb                  # MongoDB
 pnpm add @qdrant/js-client-rest   # Qdrant
 ```
 
-Redis uses the `@cogitator-ai/redis` package which is included automatically.
+Redis connections go through `@cogitator-ai/redis`, which is installed with the memory package and uses `ioredis` under the hood.

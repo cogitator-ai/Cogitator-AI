@@ -36,7 +36,7 @@ const dataset = Dataset.from([
 console.log(dataset.length); // 3
 ```
 
-The `expected` field is optional — some metrics (like LLM-as-judge) don't need it.
+The `expected` field is optional — some metrics (like LLM-as-judge) don't need it. `context` is passed to agent targets as the run's `context` and to [custom metrics](/docs/evals/metrics#custom-metrics); `metadata` is for your own filtering.
 
 ## JSONL Loading
 
@@ -85,7 +85,7 @@ What is 2+2?,4,math,arithmetic
 Capital of France?,Paris,geography,europe
 ```
 
-The CSV must have an `input` column. The `expected` column is optional. Columns prefixed with `metadata.` are extracted into the metadata object, and columns prefixed with `context.` go into the context object.
+The CSV must have an `input` column (otherwise loading throws). The `expected` column is optional; empty cells leave `expected` unset. Columns prefixed with `metadata.` are extracted into the metadata object, and columns prefixed with `context.` go into the context object — all values are strings. Other columns are ignored.
 
 Standalone loader:
 
@@ -114,7 +114,7 @@ const sample = dataset.sample(10);
 console.log(sample.length); // 10 (or less if dataset is smaller)
 ```
 
-If `n` exceeds the dataset size, all cases are returned (shuffled).
+If `n` exceeds the dataset size, all cases are returned (shuffled); `n <= 0` gives an empty dataset.
 
 ## Shuffling
 

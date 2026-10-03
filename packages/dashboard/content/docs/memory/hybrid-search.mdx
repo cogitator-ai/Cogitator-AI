@@ -20,17 +20,23 @@ Query ──┬── Vector Search (cosine similarity) ──┐
 The `HybridSearch` class orchestrates vector and keyword search, then fuses results using Reciprocal Rank Fusion (RRF).
 
 ```typescript
-import { HybridSearch, PostgresAdapter, OpenAIEmbeddingService } from '@cogitator-ai/memory';
+import {
+  HybridSearch,
+  PostgresAdapter,
+  OpenAIEmbeddingService,
+  unwrap,
+} from '@cogitator-ai/memory';
+
+const embeddings = new OpenAIEmbeddingService({
+  apiKey: process.env.OPENAI_API_KEY!,
+});
 
 const db = new PostgresAdapter({
   provider: 'postgres',
   connectionString: process.env.DATABASE_URL!,
 });
-await db.connect();
-
-const embeddings = new OpenAIEmbeddingService({
-  apiKey: process.env.OPENAI_API_KEY!,
-});
+db.setVectorDimensions(embeddings.dimensions);
+unwrap(await db.connect());
 
 const search = new HybridSearch({
   embeddingAdapter: db,
@@ -39,11 +45,14 @@ const search = new HybridSearch({
   defaultWeights: { bm25: 0.4, vector: 0.6 },
 });
 
-const { data: results } = await search.search({
-  query: 'How do agents use tools?',
-  strategy: 'hybrid',
-  limit: 10,
-});
+const results = unwrap(
+  await search.search({
+    query: 'How do agents use tools?',
+    strategy: 'hybrid',
+    limit: 10,
+    filter: { sourceType: 'document' },
+  })
+);
 
 for (const result of results) {
   console.log(`[${result.score.toFixed(3)}] ${result.content}`);
@@ -52,6 +61,8 @@ for (const result of results) {
   );
 }
 ```
+
+`search()` returns a `MemoryResult<SearchResult[]>`. Each result has `id`, `sourceId`, `sourceType`, `content`, `score`, `metadata` and, depending on which searches found it, `vectorScore` / `keywordScore`.
 
 ### Search Strategies
 
@@ -90,14 +101,35 @@ const hybridResults = await search.search({
 | `keywordAdapter`   | `KeywordSearchAdapter` | —                            | Backend for keyword search (optional) |
 | `defaultWeights`   | `HybridSearchWeights`  | `{ bm25: 0.4, vector: 0.6 }` | Default fusion weights                |
 
-When no `keywordAdapter` is provided, `HybridSearch` falls back to a built-in local BM25 index. You can populate it manually:
+| Search option | Description                                                                                        |
+| ------------- | -------------------------------------------------------------------------------------------------- |
+| `query`       | Text to search for; embedded with `embeddingService` for vector search                             |
+| `strategy`    | `'vector'`, `'keyword'` or `'hybrid'`                                                              |
+| `limit`       | Max results (default 10)                                                                           |
+| `weights`     | Overrides `defaultWeights` for this query                                                          |
+| `threshold`   | Minimum vector similarity, passed to the embedding adapter (Postgres and in-memory default to 0.7) |
+| `filter`      | `sourceType`, `agentId`, `threadId`, `userId` — passed to both adapters                            |
+
+When no `keywordAdapter` is provided, `HybridSearch` falls back to a built-in local BM25 index that you populate yourself:
 
 ```typescript
-search.indexDocument('doc-1', 'Agent memory architecture overview');
-search.indexDocument('doc-2', 'Tool execution and sandboxing');
+const added = unwrap(
+  await db.addEmbedding({
+    sourceId: 'doc-1',
+    sourceType: 'document',
+    vector: await embeddings.embed('Agent memory architecture overview'),
+    content: 'Agent memory architecture overview',
+  })
+);
 
-console.log(search.indexSize); // 2
+search.indexDocument(added.id, added.content);
+console.log(search.indexSize); // 1
+
+search.removeDocument(added.id);
+search.clearIndex();
 ```
+
+Fusion matches results by `id`, so index each document under the id of its stored embedding — otherwise a document found by both searches is counted as two results. The local index ignores `filter` (a warning is logged) and reports every hit as `sourceType: 'document'` with `sourceId` equal to its id. `PostgresAdapter` and `InMemoryEmbeddingAdapter` implement `KeywordSearchAdapter`, so passing one as `keywordAdapter` avoids all of this.
 
 ## BM25 Index
 
@@ -120,10 +152,13 @@ for (const r of results) {
 
 ### BM25 Parameters
 
-| Parameter | Type   | Default | Description                                                                 |
-| --------- | ------ | ------- | --------------------------------------------------------------------------- |
-| `k1`      | number | 1.5     | Term frequency saturation. Higher = more weight to repeated terms           |
-| `b`       | number | 0.75    | Document length normalization. 0 = no normalization, 1 = full normalization |
+| Parameter   | Type              | Default | Description                                                                 |
+| ----------- | ----------------- | ------- | --------------------------------------------------------------------------- |
+| `k1`        | number            | 1.5     | Term frequency saturation. Higher = more weight to repeated terms           |
+| `b`         | number            | 0.75    | Document length normalization. 0 = no normalization, 1 = full normalization |
+| `tokenizer` | `TokenizerConfig` | —       | [Tokenizer](#tokenizer) options used for documents and queries              |
+
+`search(query, limit = 10)` returns `{ id, content, score }[]`, best first. Terms are matched exactly after tokenization (no stemming), so `agent` does not match `agents`.
 
 ### Document Management
 
@@ -173,20 +208,21 @@ The formula for each result:
 RRF_score = weight * (1 / (k + rank + 1))
 ```
 
-Where `k` is a constant (default: 60) that dampens the contribution of lower-ranked results.
+Where `rank` is the 0-based position in each list and `k` is a constant (default: 60) that dampens the contribution of lower-ranked results. A result's fused score is the sum over the lists it appears in.
 
 ```typescript
-import { reciprocalRankFusion, fuseSearchResults } from '@cogitator-ai/memory';
+import { reciprocalRankFusion, fuseSearchResults, type SearchResult } from '@cogitator-ai/memory';
 
-const vectorResults = [
-  { id: 'a', score: 0.95 /* ... */ },
-  { id: 'b', score: 0.82 /* ... */ },
-];
+const doc = (id: string, score: number): SearchResult => ({
+  id,
+  sourceId: id,
+  sourceType: 'document',
+  content: `Document ${id}`,
+  score,
+});
 
-const keywordResults = [
-  { id: 'b', score: 4.2 /* ... */ },
-  { id: 'c', score: 3.1 /* ... */ },
-];
+const vectorResults = [doc('a', 0.95), doc('b', 0.82)];
+const keywordResults = [doc('b', 4.2), doc('c', 3.1)];
 
 const fused = fuseSearchResults(vectorResults, keywordResults, { bm25: 0.4, vector: 0.6 });
 // 'b' ranks high in both lists, so it gets the top combined score
@@ -205,24 +241,18 @@ for (const result of fused) {
 
 ### Low-Level RRF
 
-For custom fusion scenarios, use `reciprocalRankFusion` directly:
+For custom fusion scenarios, use `reciprocalRankFusion` directly. It takes any number of ranked lists (position in the array is the rank; only `id` is read), one weight per list (default 1), and returns a map of fused scores. Duplicate ids within one list count once:
 
 ```typescript
 const scores = reciprocalRankFusion(
   [
-    [
-      { id: 'a', rank: 0, score: 0.9 },
-      { id: 'b', rank: 1, score: 0.8 },
-    ],
-    [
-      { id: 'b', rank: 0, score: 4.2 },
-      { id: 'c', rank: 1, score: 3.1 },
-    ],
+    [{ id: 'a' }, { id: 'b' }],
+    [{ id: 'b' }, { id: 'c' }],
   ],
   [0.6, 0.4],
   { k: 60 }
 );
-// Map { 'a' => 0.00984, 'b' => 0.01613, 'c' => 0.00645 }
+// Map { 'a' => 0.00984, 'b' => 0.01623, 'c' => 0.00645 }
 ```
 
 ## Tuning Weights

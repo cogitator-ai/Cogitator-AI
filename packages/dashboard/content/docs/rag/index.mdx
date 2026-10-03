@@ -28,7 +28,7 @@ pnpm add pdf-parse      # PDFLoader
 ## Quick Start
 
 ```typescript
-import { RAGPipelineBuilder, TextLoader, RecursiveChunker } from '@cogitator-ai/rag';
+import { RAGPipelineBuilder, MarkdownLoader } from '@cogitator-ai/rag';
 import { InMemoryEmbeddingAdapter, OpenAIEmbeddingService } from '@cogitator-ai/memory';
 
 const embeddings = new OpenAIEmbeddingService({
@@ -38,8 +38,7 @@ const embeddings = new OpenAIEmbeddingService({
 const store = new InMemoryEmbeddingAdapter();
 
 const pipeline = new RAGPipelineBuilder()
-  .withLoader(new TextLoader())
-  .withChunker(new RecursiveChunker({ chunkSize: 512, chunkOverlap: 50 }))
+  .withLoader(new MarkdownLoader({ stripFrontmatter: true }))
   .withEmbeddingService(embeddings)
   .withEmbeddingAdapter(store)
   .withConfig({
@@ -71,6 +70,8 @@ for (const result of results) {
 
 **Query flow:** Retriever embeds the query and searches the store for similar chunks → Reranker (optional) re-scores results using an LLM or Cohere for higher precision.
 
+For persistent storage use `PostgresAdapter` (pgvector) as the embedding adapter — call `setVectorDimensions(embeddings.dimensions)` before `connect()`; see [Memory Adapters](/docs/memory/adapters#postgres).
+
 ## RAGPipelineBuilder
 
 The builder is the primary way to construct a pipeline. All components are pluggable.
@@ -82,14 +83,16 @@ const pipeline = new RAGPipelineBuilder()
   .withEmbeddingService(svc) // required
   .withEmbeddingAdapter(store) // required
   .withRetriever(retriever) // optional — defaults to the config's retrieval.strategy
-  .withHybridSearch(search) // needed for retrieval.strategy 'hybrid'
+  .withHybridSearch(search, weights) // needed for retrieval.strategy 'hybrid'
   .withQueryExpander(expand) // needed for retrieval.strategy 'multi-query'
   .withReranker(reranker) // optional
-  .withConfig(config) // required
+  .withConfig(config) // required (chunking config is required even with a custom chunker)
   .build();
 ```
 
-If you don't provide a chunker, one is created automatically from your config's `chunking.strategy`. If you don't provide a retriever, one is created from `retrieval.strategy`: `similarity` → `SimilarityRetriever`, `mmr` → `MMRRetriever` (using `mmrLambda`), `hybrid` → `HybridRetriever` (requires `withHybridSearch()`), `multi-query` → `MultiQueryRetriever` over a similarity (or hybrid) base, capped at `multiQueryCount` variants (requires `withQueryExpander()`). A missing requirement fails at `build()` with a clear error.
+If you don't provide a chunker, one is created automatically from your config's `chunking.strategy`. If you don't provide a retriever, one is created from `retrieval.strategy`: `similarity` → `SimilarityRetriever`, `mmr` → `MMRRetriever` (using `mmrLambda`), `hybrid` → `HybridRetriever` (requires `withHybridSearch()`), `multi-query` → `MultiQueryRetriever` over a similarity (or hybrid) base, capped at `multiQueryCount` variants (requires `withQueryExpander()`). A missing requirement (or an invalid config) fails at `build()` with a clear error. The retriever is fixed at build time, so `retrieval.strategy` cannot be switched per query.
+
+You can also construct `new RAGPipeline(config, { loader, chunker, embeddingService, embeddingAdapter, retriever, reranker })` directly when you already have every component; the config is validated the same way.
 
 ## RAGPipeline
 
@@ -97,7 +100,7 @@ The built pipeline exposes two main methods:
 
 ### `ingest(source)`
 
-Loads documents from `source`, chunks them, embeds all chunks, and stores the embeddings (at most 16 concurrent writes). Each stored chunk keeps the loader's document metadata (frontmatter, page numbers, CSV columns, page title/URL…) plus `documentId`, `source`, `sourceType`, `order`, `startOffset` and `endOffset`. Whitespace-only chunks are skipped.
+Loads documents from `source`, chunks them, embeds each document's chunks with one `embedBatch()` call, and stores the embeddings (at most 16 concurrent writes). A failed write throws with the adapter's error. Each stored chunk keeps the loader's document metadata (frontmatter, page numbers, CSV columns, page title/URL…) plus `documentId`, `source`, `sourceType`, `order`, `startOffset` and `endOffset`. Whitespace-only chunks are skipped.
 
 ```typescript
 const { documents, chunks } = await pipeline.ingest('./data/knowledge-base/');
@@ -106,7 +109,7 @@ console.log(`Ingested ${documents} documents (${chunks} chunks)`);
 
 ### `query(text, options?)`
 
-Retrieves relevant chunks for the given query. Options override the configured retrieval defaults (options left `undefined` keep the configured values). `result.source` is the document path or URL. If a reranker is configured and `reranking.enabled` is true in the config, results are reranked before returning.
+Retrieves relevant chunks for the given query. Options (`topK`, `threshold`, `mmrLambda`, `multiQueryCount`) override the configured retrieval defaults; options left `undefined` keep the configured values. Each `RetrievalResult` has `chunkId`, `documentId`, `content`, `score`, `source` (the document path or URL) and `metadata`. If a reranker is configured and `reranking.enabled` is true in the config, results are reranked (keeping `reranking.topN`) before returning.
 
 ```typescript
 const results = await pipeline.query('What is the agent lifecycle?', {
@@ -126,10 +129,12 @@ const stats = pipeline.getStats();
 
 ## Configuration
 
-Pipeline config is validated with Zod at build time:
+Pipeline config is validated with Zod at build time (`RAGPipelineConfigSchema`, exported along with `ChunkingConfigSchema`, `RetrievalConfigSchema` and `RerankingConfigSchema`):
 
 ```typescript
-const config = {
+import type { RAGPipelineConfigInput } from '@cogitator-ai/rag';
+
+const config: RAGPipelineConfigInput = {
   chunking: {
     strategy: 'recursive', // 'fixed' | 'recursive' | 'semantic'
     chunkSize: 512,
@@ -149,6 +154,15 @@ const config = {
   },
 };
 ```
+
+| Field                   | Default   | Notes                                                                     |
+| ----------------------- | --------- | ------------------------------------------------------------------------- |
+| `chunking.chunkOverlap` | `0`       | Must be less than `chunkSize`                                             |
+| `chunking.chunkSize`    | —         | For `semantic`, used as the maximum chunk size; overlap is ignored        |
+| `retrieval`             | see below | Optional; `{ strategy: 'similarity', topK: 10, threshold: 0 }` by default |
+| `retrieval.threshold`   | `0`       | Between 0 and 1                                                           |
+| `reranking.enabled`     | `false`   | The reranker only runs when `true`                                        |
+| `reranking.topN`        | all       | How many results the reranker keeps                                       |
 
 ## Agent Tools
 
@@ -171,7 +185,7 @@ const agent = new Agent({
 });
 ```
 
-`rag_search` falls back to the pipeline's configured `topK`/`threshold` when the model omits `limit`/`threshold`. `rag_ingest` reads whatever source the model passes, so restrict it with `allowedRoots` (paths are canonicalized — `..` traversal and symlink escapes are rejected) and `allowUrls: false` when it is exposed to untrusted input.
+`rag_search` takes `{ query, limit?, threshold? }` and falls back to the pipeline's configured `topK`/`threshold` when the model omits `limit`/`threshold`; it returns `{ success, query, results, count }`. `rag_ingest` takes `{ source }` and returns `{ success, source, documents, chunks }`. Both return `{ success: false, error }` instead of throwing. `createSearchTool(pipeline)` and `createIngestTool(pipeline, options)` build them individually. `rag_ingest` reads whatever source the model passes, so restrict it with `allowedRoots` (paths are canonicalized — `..` traversal and symlink escapes are rejected) and `allowUrls: false` when it is exposed to untrusted input.
 
 ## Next Steps
 

@@ -25,6 +25,8 @@ interface EmbeddingService {
 }
 ```
 
+`embed('')` throws, and `embedBatch([])` returns `[]` without a request. Every provider retries timeouts, network errors and HTTP 408/429/5xx responses up to 3 times with exponential backoff (honouring `Retry-After`), with a 30-second timeout per attempt; other errors throw with the provider's response text.
+
 ## Factory Function
 
 Use `createEmbeddingService` to instantiate a provider from a config object:
@@ -42,9 +44,11 @@ const vector = await embeddings.embed('What is Cogitator?');
 console.log(vector.length); // 1536
 ```
 
+The same config object is what `memory.embedding` takes in the `Cogitator` config.
+
 ## OpenAI
 
-Uses the OpenAI embeddings API. Supports `text-embedding-3-small` (1536 dimensions) and `text-embedding-3-large` (3072 dimensions).
+Uses the OpenAI embeddings API (or any OpenAI-compatible endpoint via `baseUrl`).
 
 ```typescript
 import { OpenAIEmbeddingService } from '@cogitator-ai/memory';
@@ -59,7 +63,7 @@ console.log(embeddings.dimensions); // 1536
 console.log(embeddings.model); // 'text-embedding-3-small'
 ```
 
-Batch embedding sends all texts in a single API call:
+Batch embedding sends all texts in a single API call and returns vectors in input order:
 
 ```typescript
 const vectors = await embeddings.embedBatch([
@@ -70,11 +74,22 @@ const vectors = await embeddings.embedBatch([
 // vectors.length === 3, each vector.length === 1536
 ```
 
-| Option    | Type   | Default                     | Description                |
-| --------- | ------ | --------------------------- | -------------------------- |
-| `apiKey`  | string | —                           | OpenAI API key             |
-| `model`   | string | `text-embedding-3-small`    | Embedding model name       |
-| `baseUrl` | string | `https://api.openai.com/v1` | API base URL (for proxies) |
+Request shorter vectors from `text-embedding-3-*` models with `dimensions`:
+
+```typescript
+const compact = new OpenAIEmbeddingService({
+  apiKey: process.env.OPENAI_API_KEY!,
+  model: 'text-embedding-3-large',
+  dimensions: 768,
+});
+```
+
+| Option       | Type   | Default                     | Description                                                       |
+| ------------ | ------ | --------------------------- | ----------------------------------------------------------------- |
+| `apiKey`     | string | —                           | OpenAI API key                                                    |
+| `model`      | string | `text-embedding-3-small`    | Embedding model name                                              |
+| `baseUrl`    | string | `https://api.openai.com/v1` | API base URL (for proxies and compatible APIs)                    |
+| `dimensions` | number | model default               | Output size; sent to the API only for `text-embedding-3-*` models |
 
 **Dimensions by model:**
 
@@ -82,6 +97,9 @@ const vectors = await embeddings.embedBatch([
 | ------------------------ | ---------- |
 | `text-embedding-3-small` | 1536       |
 | `text-embedding-3-large` | 3072       |
+| `text-embedding-ada-002` | 1536       |
+
+Unknown models report 1536 unless you pass `dimensions`.
 
 ## Ollama
 
@@ -105,12 +123,13 @@ Pull a model first:
 ollama pull nomic-embed-text
 ```
 
-| Option    | Type   | Default                  | Description            |
-| --------- | ------ | ------------------------ | ---------------------- |
-| `model`   | string | `nomic-embed-text`       | Ollama embedding model |
-| `baseUrl` | string | `http://localhost:11434` | Ollama server URL      |
+| Option       | Type   | Default                  | Description                                      |
+| ------------ | ------ | ------------------------ | ------------------------------------------------ |
+| `model`      | string | `nomic-embed-text`       | Ollama embedding model                           |
+| `baseUrl`    | string | `http://localhost:11434` | Ollama server URL                                |
+| `dimensions` | number | from the table below     | Reported vector size for models not in the table |
 
-**Supported models and dimensions:**
+**Known models and dimensions:**
 
 | Model                     | Dimensions |
 | ------------------------- | ---------- |
@@ -120,7 +139,7 @@ ollama pull nomic-embed-text
 | `all-minilm`              | 384        |
 | `snowflake-arctic-embed`  | 1024       |
 
-For models not in this list, the service defaults to 768 dimensions. You can use any Ollama-compatible embedding model.
+You can use any Ollama embedding model. For models not in this list the service reports 768 dimensions unless you set `dimensions` — Ollama itself always returns the model's native size, so set it to match the model.
 
 ## Google
 
@@ -138,17 +157,18 @@ const vector = await embeddings.embed('Google embedding example');
 console.log(embeddings.dimensions); // 3072
 ```
 
-Batch embedding uses Google's `batchEmbedContents` endpoint:
+Batch embedding uses Google's `batchEmbedContents` endpoint, split into requests of up to 100 texts that run in parallel:
 
 ```typescript
 const vectors = await embeddings.embedBatch(['First passage', 'Second passage']);
 ```
 
-| Option       | Type   | Default                | Description                                           |
-| ------------ | ------ | ---------------------- | ----------------------------------------------------- |
-| `apiKey`     | string | —                      | Google AI API key                                     |
-| `model`      | string | `gemini-embedding-001` | Embedding model name                                  |
-| `dimensions` | number | `3072`                 | Output size; when set, sent as `outputDimensionality` |
+| Option       | Type   | Default                                            | Description                                           |
+| ------------ | ------ | -------------------------------------------------- | ----------------------------------------------------- |
+| `apiKey`     | string | —                                                  | Google AI API key                                     |
+| `model`      | string | `gemini-embedding-001`                             | Embedding model name                                  |
+| `dimensions` | number | `3072`                                             | Output size; when set, sent as `outputDimensionality` |
+| `baseUrl`    | string | `https://generativelanguage.googleapis.com/v1beta` | API base URL                                          |
 
 **Dimensions:** `gemini-embedding-001` produces 3072-dimensional vectors by default. Pass `dimensions` (for example `768` or `1536`) to request smaller vectors, and make sure your vector column size matches.
 
@@ -157,17 +177,18 @@ const vectors = await embeddings.embedBatch(['First passage', 'Second passage'])
 Embeddings are stored via `EmbeddingAdapter` (implemented by `PostgresAdapter`, `QdrantAdapter`, and `InMemoryEmbeddingAdapter`).
 
 ```typescript
-import { PostgresAdapter, OpenAIEmbeddingService } from '@cogitator-ai/memory';
+import { PostgresAdapter, OpenAIEmbeddingService, unwrap } from '@cogitator-ai/memory';
+
+const embeddings = new OpenAIEmbeddingService({
+  apiKey: process.env.OPENAI_API_KEY!,
+});
 
 const db = new PostgresAdapter({
   provider: 'postgres',
   connectionString: process.env.DATABASE_URL!,
 });
-await db.connect();
-
-const embeddings = new OpenAIEmbeddingService({
-  apiKey: process.env.OPENAI_API_KEY!,
-});
+db.setVectorDimensions(embeddings.dimensions);
+unwrap(await db.connect());
 
 const text = 'Cogitator agents can use tools to interact with external systems.';
 const vector = await embeddings.embed(text);
@@ -180,11 +201,13 @@ await db.addEmbedding({
 });
 
 const queryVector = await embeddings.embed('How do agents use tools?');
-const { data: results } = await db.search({
-  vector: queryVector,
-  limit: 5,
-  threshold: 0.7,
-});
+const results = unwrap(
+  await db.search({
+    vector: queryVector,
+    limit: 5,
+    threshold: 0.7,
+  })
+);
 
 for (const result of results) {
   console.log(`${result.content} (score: ${result.score.toFixed(3)})`);
@@ -195,25 +218,21 @@ for (const result of results) {
 
 The vector dimensions of your embedding model **must** match the adapter configuration:
 
-- `PostgresAdapter` defaults to 768. Call `setVectorDimensions(n)` before `connect()` if using a different model.
+- `PostgresAdapter` defaults to 768. Call `setVectorDimensions(n)` before `connect()` if using a different model — the column is created with that size, and the call throws once connected. An `embeddings` table that already exists keeps its size.
 - `QdrantAdapter` requires `dimensions` in the constructor. The collection is auto-created with the specified size.
-- `InMemoryEmbeddingAdapter` handles any dimension since it uses in-process cosine similarity.
+- `InMemoryEmbeddingAdapter` handles any dimension since it uses in-process cosine similarity (vectors of different lengths score 0).
+- `PostgresGraphAdapter` takes `vectorDimensions` (default 768) for node embeddings.
 
-```typescript
-const db = new PostgresAdapter({
-  provider: 'postgres',
-  connectionString: process.env.DATABASE_URL!,
-});
-db.setVectorDimensions(1536);
-await db.connect();
-```
+When memory is configured through `Cogitator` (`memory.adapter: 'postgres'`), the table is created with 768 dimensions, so choose an embedding config that yields 768-dimensional vectors (for example `dimensions: 768` or Ollama `nomic-embed-text`).
+
+pgvector's `ivfflat` index supports up to 2000 dimensions; with larger vectors (e.g. 3072) the adapter logs a warning and searches without the index.
 
 ## Provider Comparison
 
-| Provider | Dimensions  | Latency | Cost                | Privacy          |
-| -------- | ----------- | ------- | ------------------- | ---------------- |
-| OpenAI   | 1536 / 3072 | ~100ms  | Pay per token       | Data sent to API |
-| Ollama   | 384–1024    | ~50ms   | Free                | Fully local      |
-| Google   | 768         | ~100ms  | Free tier available | Data sent to API |
+| Provider | Dimensions                 | Cost                | Privacy          |
+| -------- | -------------------------- | ------------------- | ---------------- |
+| OpenAI   | 1536 / 3072 (configurable) | Pay per token       | Data sent to API |
+| Ollama   | Model-dependent (384–1024) | Free                | Fully local      |
+| Google   | 3072 (configurable)        | Free tier available | Data sent to API |
 
-Choose **Ollama** for local-first deployments with zero data egress. Choose **OpenAI** for highest quality embeddings at scale. Choose **Google** for a good balance with generous free tier.
+Choose **Ollama** for local-first deployments with zero data egress, **OpenAI** for widely used hosted embeddings, and **Google** for a generous free tier.

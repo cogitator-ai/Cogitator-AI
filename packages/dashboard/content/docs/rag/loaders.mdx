@@ -14,7 +14,9 @@ interface DocumentLoader {
 }
 ```
 
-The `source` parameter is a file path for file-based loaders, or a URL for `WebLoader`. Directory paths are supported by `TextLoader` and `MarkdownLoader` — they'll load all matching files in the directory.
+The `source` parameter is a file path for file-based loaders, or a URL for `WebLoader`. Directory paths are supported by `TextLoader` and `MarkdownLoader` — they load the matching files directly inside the directory (not subdirectories), in name order. Each document gets a random `id`, `source` (absolute path or URL), `sourceType` and optional `metadata`, which the pipeline copies onto every chunk.
+
+A pipeline uses a single loader; see [Mixing Sources](#mixing-sources) to ingest several file types.
 
 ## TextLoader
 
@@ -64,7 +66,7 @@ const loader = new JSONLoader({
 const docs = await loader.load('./data/articles.json');
 ```
 
-If no content field is found, the entire object is serialized as the document content.
+If no content field is found, the entire object is serialized as the document content; non-string field values are serialized as JSON, and array items that are not objects become their string value. `source` must be a single file.
 
 | Option           | Type     | Default | Description                            |
 | ---------------- | -------- | ------- | -------------------------------------- |
@@ -93,7 +95,7 @@ const loader = new CSVLoader({
 const docs = await loader.load('./data/products.csv');
 ```
 
-If no `contentColumn` is specified, the first column is used.
+The first row is the header. If no `contentColumn` is specified, the first column is used; a `contentColumn` missing from the header throws. Every document gets `metadata.row` (1-based data row number) plus the `metadataColumns` values.
 
 | Option            | Type     | Default      | Description                       |
 | ----------------- | -------- | ------------ | --------------------------------- |
@@ -119,7 +121,7 @@ console.log(docs[0].metadata);
 // { title: 'About Us' }
 ```
 
-The `<title>` tag is automatically extracted as metadata if present. Scripts, styles, `noscript`, `template`, `svg` and `iframe` content is removed, block elements (paragraphs, headings, list items, table rows…) become line breaks, `<br>` becomes a newline and whitespace is normalized — so `<p>One</p><p>Two</p>` yields `One\n\nTwo` rather than `OneTwo`.
+The `<title>` tag is automatically extracted as metadata if present. When the selector matches several elements, their texts are joined with blank lines. Scripts, styles, `noscript`, `template`, `svg`, `iframe`, `object` and `<head>` content is removed, block elements (paragraphs, headings, list items, table rows…) become line breaks, `<br>` becomes a newline and whitespace is normalized — so `<p>One</p><p>Two</p>` yields `One\n\nTwo` rather than `OneTwo`.
 
 | Option     | Type   | Default | Description                         |
 | ---------- | ------ | ------- | ----------------------------------- |
@@ -155,7 +157,7 @@ When the PDF declares a title, it is added as `metadata.title`. In per-page mode
 
 ## WebLoader
 
-Fetches a URL and extracts text content. HTML is processed by `HTMLLoader` (requires `cheerio`); `text/*` and JSON responses are kept as raw text; other content types are rejected. Redirects are followed (max 5), responses are decompressed (gzip/deflate/br), decoded with the declared charset and capped at `maxResponseBytes`. Documents get `metadata.url` (final URL after redirects) and `metadata.contentType`.
+Fetches a URL and extracts text content. HTML is processed by `HTMLLoader` (requires `cheerio`); `text/*` and JSON responses are kept as raw text; other content types are rejected. Redirects are followed (max 5), responses are decompressed (gzip/deflate/br), decoded with the declared charset and capped at `maxResponseBytes`. Documents get `sourceType: 'web'`, `metadata.url` (final URL after redirects), `metadata.contentType` and, for HTML, `metadata.title`. Custom `headers` are merged over the defaults (`user-agent: cogitator-rag-webloader` and an HTML-first `accept`).
 
 ```bash
 pnpm add cheerio
@@ -189,45 +191,73 @@ By default `WebLoader` refuses loopback, private (RFC 1918), link-local, CGNAT, 
 Implement the `DocumentLoader` interface to load from any source:
 
 ```typescript
-import { nanoid } from 'nanoid';
-import type { DocumentLoader, RAGDocument } from '@cogitator-ai/types';
+import { randomUUID } from 'node:crypto';
+import type { DocumentLoader, RAGDocument } from '@cogitator-ai/rag';
 
 class NotionLoader implements DocumentLoader {
   readonly supportedTypes = ['notion'];
-  private apiKey: string;
 
-  constructor(apiKey: string) {
-    this.apiKey = apiKey;
-  }
+  constructor(private readonly fetchPage: (pageId: string) => Promise<string>) {}
 
-  async load(source: string): Promise<RAGDocument[]> {
-    const pageId = source;
-    const content = await this.fetchNotionPage(pageId);
+  async load(pageId: string): Promise<RAGDocument[]> {
+    const content = await this.fetchPage(pageId);
 
     return [
       {
-        id: nanoid(),
+        id: randomUUID(),
         content,
         source: `notion://${pageId}`,
         sourceType: 'text',
+        metadata: { pageId },
       },
     ];
   }
-
-  private async fetchNotionPage(pageId: string): Promise<string> {
-    // your Notion API logic here
-    return '';
-  }
 }
 ```
+
+`sourceType` must be one of `'pdf' | 'html' | 'csv' | 'json' | 'markdown' | 'text' | 'web'`.
 
 Pass your custom loader to the pipeline builder:
 
 ```typescript
 const pipeline = new RAGPipelineBuilder()
-  .withLoader(new NotionLoader(process.env.NOTION_API_KEY!))
+  .withLoader(new NotionLoader(fetchNotionPage))
   // ...
   .build();
 
 await pipeline.ingest('page-id-here');
+```
+
+## Mixing Sources
+
+To ingest several file types through one pipeline, wrap the built-in loaders in a loader that picks one by extension:
+
+```typescript
+import { extname } from 'node:path';
+import {
+  MarkdownLoader,
+  PDFLoader,
+  TextLoader,
+  WebLoader,
+  type DocumentLoader,
+  type RAGDocument,
+} from '@cogitator-ai/rag';
+
+const byExtension: Record<string, DocumentLoader> = {
+  '.md': new MarkdownLoader({ stripFrontmatter: true }),
+  '.mdx': new MarkdownLoader({ stripFrontmatter: true }),
+  '.pdf': new PDFLoader({ splitPages: true }),
+  '.txt': new TextLoader(),
+};
+const web = new WebLoader();
+
+const mixedLoader: DocumentLoader = {
+  supportedTypes: ['md', 'mdx', 'pdf', 'txt', 'http', 'https'],
+  async load(source: string): Promise<RAGDocument[]> {
+    if (/^https?:\/\//.test(source)) return web.load(source);
+    const loader = byExtension[extname(source).toLowerCase()];
+    if (!loader) throw new Error(`No loader for ${source}`);
+    return loader.load(source);
+  },
+};
 ```

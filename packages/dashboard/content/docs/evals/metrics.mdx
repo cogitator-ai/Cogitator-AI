@@ -5,7 +5,7 @@ description: Score agent responses with deterministic checks, LLM-as-judge evalu
 
 ## Overview
 
-Metrics score individual eval case results. Each metric receives the case input, expected output, actual output, and timing data — and returns a score between 0 and 1. Scores are automatically aggregated across the dataset into mean, median, p95, min, max, and standard deviation.
+Metrics score individual eval case results. Each metric receives the case result — the case (`input`, `expected`, `context`, `metadata`), the `output`, `duration`, and for agent targets `usage` and `toolCalls` — and returns a score between 0 and 1. Scores are automatically aggregated across the dataset into mean, median, min, max, standard deviation and p50/p95/p99.
 
 ```typescript
 interface MetricScore {
@@ -22,7 +22,7 @@ Fast, zero-cost metrics that compare output against expected values using string
 
 ### exactMatch
 
-Binary check — does the output exactly match the expected value? Trims whitespace from both sides.
+Binary check — does the output exactly match the expected value? Trims whitespace from both sides. Cases without `expected` score 0 (as do `contains` cases).
 
 ```typescript
 import { exactMatch } from '@cogitator-ai/evals';
@@ -82,14 +82,19 @@ const schema = z.object({
 jsonSchema(schema);
 ```
 
-Returns score 1 if the output parses as JSON and passes validation, 0 otherwise. The `details` field contains the parse or validation error on failure.
+Returns score 1 if the whole output parses as JSON and passes validation, 0 otherwise — output wrapped in Markdown code fences does not parse. The `details` field contains the parse or validation error on failure.
 
 ## LLM-as-Judge Metrics
 
-Use an LLM to evaluate subjective qualities like faithfulness, relevance, and coherence. These metrics require a `judge` config in the EvalSuite. The judge runs as a Cogitator agent on `judge.model`: pass the runtime as `judge.cogitator`, or use an agent target, whose `cogitator` is used when `judge.cogitator` is not set. A suite with LLM metrics and nothing to run the judge fails when it is built.
+Use an LLM to evaluate subjective qualities like faithfulness, relevance, and coherence. These metrics require a `judge` config in the EvalSuite (and `@cogitator-ai/core` installed). The judge runs as a Cogitator agent on `judge.model` (a `provider/model` id): pass the runtime as `judge.cogitator`, or use an agent target, whose `cogitator` is used when `judge.cogitator` is not set. A suite with LLM metrics and nothing to run the judge fails when it is built.
 
 ```typescript
+import { Cogitator } from '@cogitator-ai/core';
 import { EvalSuite, faithfulness, relevance, coherence, helpfulness } from '@cogitator-ai/evals';
+
+const cogitator = new Cogitator({
+  llm: { providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } } },
+});
 
 const suite = new EvalSuite({
   dataset,
@@ -103,7 +108,14 @@ const suite = new EvalSuite({
 });
 ```
 
-Each judge metric prompts the LLM to score the response on a 0–1 scale and return JSON with `score` and `reasoning`; the judge agent asks for that shape with a JSON schema. The score is clamped to [0, 1], and an answer without a score counts as 0 with the reason in `details`.
+| Judge option  | Description                                                             |
+| ------------- | ----------------------------------------------------------------------- |
+| `model`       | Judge model, e.g. `'openai/gpt-6.1-sol'`                                |
+| `temperature` | Judge temperature — pass it explicitly (`0` for repeatable scores)      |
+| `maxTokens`   | Optional cap on the judge's reply                                       |
+| `cogitator`   | Runtime that runs the judge; defaults to the agent target's `cogitator` |
+
+Each judge metric sends one prompt per case containing the rubric, the case `input`, the `expected` value (or `N/A`) and the response, and asks for JSON with `score` and `reasoning`; the judge agent (one iteration, no memory) requests that shape with a JSON schema. The score is clamped to [0, 1] and `reasoning` becomes the score's `details`. An answer without a parsable score, or a judge error, counts as 0 with the reason in `details` — it never fails the run.
 
 ### Built-in Judge Metrics
 
@@ -138,16 +150,20 @@ The framework appends scoring instructions to your prompt automatically.
 
 ### Manual Judge Binding
 
-For advanced use cases, you can bind the judge context manually instead of passing it through EvalSuite:
+For advanced use cases — a judge that is not a Cogitator agent, for example — bind the judge context manually instead of passing `judge` to EvalSuite. The bound metric is an ordinary metric, so the suite needs no `judge` config:
 
 ```typescript
 import { faithfulness, bindJudgeContext } from '@cogitator-ai/evals';
 
 const bound = bindJudgeContext(faithfulness(), {
   cogitator: { run: async ({ input }) => ({ output: await callLLM(input) }) },
-  judgeConfig: { model: 'gpt-6.1-sol', temperature: 0 },
+  judgeConfig: { model: 'my-judge', temperature: 0 },
 });
+
+const suite = new EvalSuite({ dataset, target: { fn }, metrics: [bound] });
 ```
+
+Your `run` receives the full judge prompt as `input` and should return the model's text; `judgeConfig` is only carried along, so pick the model inside `run`. Without binding, a judge metric used outside a suite scores 0 (`unbound judge metric`).
 
 ## Statistical Metrics
 
@@ -177,7 +193,7 @@ Reports execution time distribution across all cases, in milliseconds.
 
 ### cost
 
-Reports cost distribution. Requires the target to return `usage` data with a `cost` field.
+Reports cost distribution in USD. Only cases with `usage` count — that is, agent targets (a `fn` target records no usage).
 
 ```typescript
 // result.aggregated.cost.metadata:
@@ -186,7 +202,7 @@ Reports cost distribution. Requires the target to return `usage` data with a `co
 
 ### tokenUsage
 
-Reports token consumption per case (input plus output). Requires `usage` data with `inputTokens` and `outputTokens`.
+Reports token consumption per case (input plus output). Like `cost`, it only counts cases with `usage`. Note that `threshold('tokenUsage', n)` treats it as higher-is-better — see [Direction Detection](/docs/evals/assertions#direction-detection).
 
 ```typescript
 // result.aggregated.tokenUsage.metadata:
@@ -220,7 +236,21 @@ const responseLength = metric({
 });
 ```
 
-The `evaluate` function receives `{ input, output, expected, context }` and must return `{ score, details? }`. The score is automatically clamped to [0, 1]. Both sync and async evaluate functions are supported.
+The `evaluate` function receives `{ input, output, expected, context }` and must return `{ score, details? }`. The score is automatically clamped to [0, 1]. Both sync and async evaluate functions are supported; if `evaluate` throws, the case scores 0 with the error in `details`.
+
+For access to the whole case result — `duration`, `usage`, `toolCalls`, `error` — write a `MetricFn` directly. It must carry a `metricName`:
+
+```typescript
+import type { EvalCaseResult, MetricFn, MetricScore } from '@cogitator-ai/evals';
+
+const usedSearch: MetricFn = Object.assign(
+  async (result: EvalCaseResult): Promise<MetricScore> => ({
+    name: 'usedSearch',
+    score: result.toolCalls?.some((call) => call.name === 'search') ? 1 : 0,
+  }),
+  { metricName: 'usedSearch' }
+);
+```
 
 ## Combining Metrics
 
