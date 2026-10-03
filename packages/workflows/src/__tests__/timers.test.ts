@@ -129,8 +129,8 @@ describe('Timer System', () => {
         runId: 'run-1',
         nodeId: 'delay-node',
         firesAt: now + 60000,
-        type: 'delay',
-        payload: { delay: 60000 },
+        type: 'fixed',
+        metadata: { delay: 60000 },
       });
 
       const retrieved = await store.get(timerId);
@@ -149,8 +149,8 @@ describe('Timer System', () => {
         runId: 'run-1',
         nodeId: 'delay-node',
         firesAt: now + 60000,
-        type: 'delay',
-        payload: {},
+        type: 'fixed',
+        metadata: {},
       });
 
       await store.cancel(timerId);
@@ -166,8 +166,8 @@ describe('Timer System', () => {
         runId: 'run-1',
         nodeId: 'delay-node',
         firesAt: now - 1000,
-        type: 'delay',
-        payload: {},
+        type: 'fixed',
+        metadata: {},
       });
 
       await store.markFired(timerId);
@@ -184,8 +184,8 @@ describe('Timer System', () => {
         runId: 'run-1',
         nodeId: 'node1',
         firesAt: now + 60000,
-        type: 'delay',
-        payload: {},
+        type: 'fixed',
+        metadata: {},
       });
 
       await store.schedule({
@@ -193,8 +193,8 @@ describe('Timer System', () => {
         runId: 'run-1',
         nodeId: 'node2',
         firesAt: now + 120000,
-        type: 'delay',
-        payload: {},
+        type: 'fixed',
+        metadata: {},
       });
 
       const pending = await store.getPending();
@@ -209,8 +209,8 @@ describe('Timer System', () => {
         runId: 'run-1',
         nodeId: 'past-node',
         firesAt: now - 1000,
-        type: 'delay',
-        payload: {},
+        type: 'fixed',
+        metadata: {},
       });
 
       await store.schedule({
@@ -218,8 +218,8 @@ describe('Timer System', () => {
         runId: 'run-1',
         nodeId: 'future-node',
         firesAt: now + 60000,
-        type: 'delay',
-        payload: {},
+        type: 'fixed',
+        metadata: {},
       });
 
       const overdue = await store.getOverdue();
@@ -235,8 +235,8 @@ describe('Timer System', () => {
         runId: 'run-1',
         nodeId: 'node',
         firesAt: now + 1000,
-        type: 'delay',
-        payload: {},
+        type: 'fixed',
+        metadata: {},
       });
 
       await store.schedule({
@@ -244,8 +244,8 @@ describe('Timer System', () => {
         runId: 'run-2',
         nodeId: 'node',
         firesAt: now + 1000,
-        type: 'delay',
-        payload: {},
+        type: 'fixed',
+        metadata: {},
       });
 
       const wf1Timers = await store.getByWorkflow('wf-1');
@@ -261,8 +261,8 @@ describe('Timer System', () => {
         runId: 'run-1',
         nodeId: 'node1',
         firesAt: now + 1000,
-        type: 'delay',
-        payload: {},
+        type: 'fixed',
+        metadata: {},
       });
 
       await store.schedule({
@@ -270,8 +270,8 @@ describe('Timer System', () => {
         runId: 'run-1',
         nodeId: 'node2',
         firesAt: now + 2000,
-        type: 'delay',
-        payload: {},
+        type: 'fixed',
+        metadata: {},
       });
 
       await store.schedule({
@@ -279,8 +279,8 @@ describe('Timer System', () => {
         runId: 'run-2',
         nodeId: 'node1',
         firesAt: now + 1000,
-        type: 'delay',
-        payload: {},
+        type: 'fixed',
+        metadata: {},
       });
 
       const run1Timers = await store.getByRun('run-1');
@@ -295,8 +295,8 @@ describe('Timer System', () => {
         runId: 'run-1',
         nodeId: 'node1',
         firesAt: now + 1000,
-        type: 'delay',
-        payload: {},
+        type: 'fixed',
+        metadata: {},
       });
 
       await store.schedule({
@@ -304,8 +304,8 @@ describe('Timer System', () => {
         runId: 'run-1',
         nodeId: 'node2',
         firesAt: now + 5000,
-        type: 'delay',
-        payload: {},
+        type: 'fixed',
+        metadata: {},
       });
 
       const soonTimers = await store.query({ firesBefore: now + 2000 });
@@ -321,8 +321,8 @@ describe('Timer System', () => {
         runId: 'run-1',
         nodeId: 'node1',
         firesAt: now + 1000,
-        type: 'delay',
-        payload: {},
+        type: 'fixed',
+        metadata: {},
       });
 
       await store.schedule({
@@ -330,8 +330,8 @@ describe('Timer System', () => {
         runId: 'run-1',
         nodeId: 'node2',
         firesAt: now + 2000,
-        type: 'delay',
-        payload: {},
+        type: 'fixed',
+        metadata: {},
       });
 
       const count = await store.count();
@@ -349,8 +349,8 @@ describe('Timer System', () => {
         runId: 'run-2',
         nodeId: 'new-node',
         firesAt: now,
-        type: 'delay',
-        payload: {},
+        type: 'fixed',
+        metadata: {},
       });
       await store.markFired(recentId);
 
@@ -372,8 +372,8 @@ describe('Timer System', () => {
         runId: 'run-1',
         nodeId: 'callback-node',
         firesAt: now - 1000,
-        type: 'delay',
-        payload: {},
+        type: 'fixed',
+        metadata: {},
       });
 
       await store.markFired(timerId);

@@ -129,8 +129,9 @@ export class WorkflowTracer {
     });
   }
 
+  /** Whether this tracer records anything: on, with a sample rate above 0. */
   isSampled(): boolean {
-    return this.config.enabled;
+    return this.config.enabled && this.sampleRate > 0;
   }
 
   private getSpanStack(): WorkflowSpan[] {

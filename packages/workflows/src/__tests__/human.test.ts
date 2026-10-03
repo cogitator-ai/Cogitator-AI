@@ -13,9 +13,14 @@ import {
   chainNode,
   managementChain,
 } from '../human/index';
-import type { ApprovalRequest, ApprovalResponse, HumanNodeConfig } from '@cogitator-ai/types';
+import type {
+  ApprovalRequest,
+  ApprovalResponse,
+  HumanNodeConfig,
+  WorkflowState,
+} from '@cogitator-ai/types';
 
-interface TestState {
+interface TestState extends WorkflowState {
   value: number;
   approved?: boolean;
 }
@@ -205,7 +210,7 @@ describe('Human-in-the-Loop', () => {
       const callback = vi.fn();
       store.onResponse('req-1', callback);
 
-      await new Promise((resolve) => queueMicrotask(resolve));
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
 
       expect(callback).toHaveBeenCalled();
     });
@@ -311,8 +316,18 @@ describe('Human-in-the-Loop', () => {
     });
 
     it('CompositeNotifier calls all notifiers', async () => {
-      const notifier1 = { notify: vi.fn(), notifyTimeout: vi.fn(), notifyEscalation: vi.fn() };
-      const notifier2 = { notify: vi.fn(), notifyTimeout: vi.fn(), notifyEscalation: vi.fn() };
+      const notifier1 = {
+        notify: vi.fn(),
+        notifyTimeout: vi.fn(),
+        notifyEscalation: vi.fn(),
+        notifyDelegation: vi.fn(),
+      };
+      const notifier2 = {
+        notify: vi.fn(),
+        notifyTimeout: vi.fn(),
+        notifyEscalation: vi.fn(),
+        notifyDelegation: vi.fn(),
+      };
 
       const composite = new CompositeNotifier([notifier1, notifier2]);
 
@@ -349,9 +364,9 @@ describe('Human-in-the-Loop', () => {
       const config = choiceNode<TestState>('select-option', {
         title: 'Select Action',
         choices: [
-          { id: 'approve', label: 'Approve' },
-          { id: 'reject', label: 'Reject' },
-          { id: 'defer', label: 'Defer' },
+          { id: 'approve', label: 'Approve', value: 'approve' },
+          { id: 'reject', label: 'Reject', value: 'reject' },
+          { id: 'defer', label: 'Defer', value: 'defer' },
         ],
       });
 
@@ -568,8 +583,8 @@ describe('Human-in-the-Loop', () => {
           type: 'multi-choice',
           title: 'Select',
           choices: [
-            { id: 'a', label: 'A' },
-            { id: 'b', label: 'B' },
+            { id: 'a', label: 'A', value: 'a' },
+            { id: 'b', label: 'B', value: 'b' },
           ],
         },
       };

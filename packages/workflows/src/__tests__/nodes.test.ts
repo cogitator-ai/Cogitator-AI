@@ -12,10 +12,10 @@ import {
   FileCheckpointStore,
   createCheckpointId,
 } from '../index';
-import type { WorkflowCheckpoint, Tool, NodeContext } from '@cogitator-ai/types';
+import type { WorkflowCheckpoint, Tool, NodeContext, WorkflowState } from '@cogitator-ai/types';
 import type { Cogitator, Agent } from '@cogitator-ai/core';
 
-interface TestState {
+interface TestState extends WorkflowState {
   count: number;
   label?: string;
 }
@@ -107,7 +107,7 @@ describe('agentNode', () => {
     name: 'test-agent',
     instructions: 'do stuff',
     tools: [],
-  } as Agent;
+  } as unknown as Agent;
 
   it('throws when cogitator is not injected', async () => {
     const node = agentNode(mockAgent);
@@ -194,14 +194,14 @@ describe('agentNode', () => {
     } as unknown as Cogitator;
 
     const node = agentNode(mockAgent, {
-      runOptions: { maxSteps: 3 },
+      runOptions: { timeout: 3000 },
     });
     const ctx = { ...makeCtx({ input: 'go' }), cogitator: mockCogitator };
 
     await node.fn(ctx);
     expect(mockCogitator.run).toHaveBeenCalledWith(mockAgent, {
       input: 'go',
-      maxSteps: 3,
+      timeout: 3000,
     });
   });
 });
@@ -212,6 +212,11 @@ describe('toolNode', () => {
     description: 'multiply by 2',
     parameters: z.object({ x: z.number() }),
     execute: vi.fn(async ({ x }) => x * 2),
+    toJSON: () => ({
+      name: 'multiply',
+      description: 'multiply by 2',
+      parameters: { type: 'object', properties: { x: { type: 'number' } }, required: ['x'] },
+    }),
   };
 
   it('executes tool with mapped args and returns result', async () => {
@@ -244,6 +249,11 @@ describe('toolNode', () => {
         expect(toolCtx.runId).toBe('wf-42');
         expect(toolCtx.agentId).toBe('workflow:wf-42:test-node');
         return x;
+      }),
+      toJSON: () => ({
+        name: 'spy',
+        description: 'spy tool',
+        parameters: { type: 'object', properties: { x: { type: 'number' } }, required: ['x'] },
       }),
     };
 

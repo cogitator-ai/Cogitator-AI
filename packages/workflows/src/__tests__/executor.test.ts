@@ -3,8 +3,9 @@ import { WorkflowExecutor } from '../executor';
 import { WorkflowBuilder } from '../builder';
 import { InMemoryCheckpointStore } from '../checkpoint';
 import type { Cogitator } from '@cogitator-ai/core';
+import type { WorkflowState } from '@cogitator-ai/types';
 
-interface TestState {
+interface TestState extends WorkflowState {
   value: number;
   steps: string[];
 }
@@ -94,7 +95,7 @@ describe('WorkflowExecutor', () => {
           state: { value: ctx.state.value + 1 },
         }))
         .addLoop('check', {
-          condition: (state: TestState) => state.value < 3,
+          condition: (state) => state.value < 3,
           back: 'increment',
           exit: 'done',
           after: ['increment'],

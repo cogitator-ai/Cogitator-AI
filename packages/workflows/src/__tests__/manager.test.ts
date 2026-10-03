@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
 import {
   type InMemoryRunStore,
   createInMemoryRunStore,
@@ -10,9 +10,9 @@ import {
 } from '../manager/index';
 import { WorkflowBuilder } from '../builder';
 import type { Cogitator } from '@cogitator-ai/core';
-import type { WorkflowRun } from '@cogitator-ai/types';
+import type { WorkflowRun, WorkflowState } from '@cogitator-ai/types';
 
-interface TestState {
+interface TestState extends WorkflowState {
   value: number;
   steps: string[];
 }
@@ -317,11 +317,11 @@ describe('Workflow Manager', () => {
   describe('JobScheduler', () => {
     let scheduler: JobScheduler;
     let store: InMemoryRunStore;
-    let onRunReady: ReturnType<typeof vi.fn>;
+    let onRunReady: Mock<(runId: string) => void>;
 
     beforeEach(() => {
       store = createInMemoryRunStore();
-      onRunReady = vi.fn();
+      onRunReady = vi.fn<(runId: string) => void>();
       scheduler = createJobScheduler({
         runStore: store,
         maxConcurrency: 2,

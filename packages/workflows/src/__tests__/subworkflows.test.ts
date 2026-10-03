@@ -14,13 +14,14 @@ import {
 } from '../index';
 import type { SubworkflowContext, SubworkflowConfig } from '../index';
 import type { Cogitator } from '@cogitator-ai/core';
+import type { Workflow, WorkflowResult, WorkflowState } from '@cogitator-ai/types';
 
-interface TestState {
+interface TestState extends WorkflowState {
   value: number;
   items?: string[];
 }
 
-interface ChildState {
+interface ChildState extends WorkflowState {
   result: number;
 }
 
@@ -51,6 +52,22 @@ function buildPassthroughWorkflow() {
     .initialState({ value: 0 })
     .addNode('step', async (ctx) => ({
       state: { value: ctx.state.value + 1 },
+    }))
+    .build();
+}
+
+function stateValue(state: WorkflowState): number {
+  if (typeof state.value !== 'number') {
+    throw new Error('Child state has no numeric value');
+  }
+  return state.value;
+}
+
+function buildParallelChildWorkflow(): Workflow<WorkflowState> {
+  return new WorkflowBuilder<WorkflowState>('passthrough')
+    .initialState({ value: 0 })
+    .addNode('step', async (ctx) => ({
+      state: { value: stateValue(ctx.state) + 1 },
     }))
     .build();
 }
@@ -429,7 +446,7 @@ describe('Subworkflows', () => {
   });
 
   describe('nestedSubworkflow', () => {
-    interface ParentState {
+    interface ParentState extends WorkflowState {
       nested: ChildState;
       label: string;
     }
@@ -485,8 +502,8 @@ describe('Subworkflows', () => {
 
   describe('executeParallelSubworkflows', () => {
     it('runs multiple subworkflows concurrently', async () => {
-      const wfA = buildPassthroughWorkflow();
-      const wfB = buildPassthroughWorkflow();
+      const wfA = buildParallelChildWorkflow();
+      const wfB = buildParallelChildWorkflow();
 
       const result = await executeParallelSubworkflows(
         { value: 0 },
@@ -533,7 +550,7 @@ describe('Subworkflows', () => {
     });
 
     it('handles dynamic subworkflow definitions', async () => {
-      const wf = buildPassthroughWorkflow();
+      const wf = buildParallelChildWorkflow();
 
       const result = await executeParallelSubworkflows(
         { value: 3 },
@@ -546,7 +563,7 @@ describe('Subworkflows', () => {
                 name: `sub-${i}`,
                 workflow: wf,
                 inputMapper: () => ({ value: i }),
-                outputMapper: (_r: { state: TestState }, s: TestState) => s,
+                outputMapper: (_r: WorkflowResult<WorkflowState>, s: TestState) => s,
               },
             })),
           aggregator: (_results, state) => state,
@@ -559,7 +576,7 @@ describe('Subworkflows', () => {
     });
 
     it('continues on error when configured', async () => {
-      const goodWf = buildPassthroughWorkflow();
+      const goodWf = buildParallelChildWorkflow();
 
       const result = await executeParallelSubworkflows(
         { value: 0 },
@@ -605,7 +622,7 @@ describe('Subworkflows', () => {
     });
 
     it('reports progress events', async () => {
-      const wf = buildPassthroughWorkflow();
+      const wf = buildParallelChildWorkflow();
       const progressEvents: { completed: number; total: number }[] = [];
 
       await executeParallelSubworkflows(
@@ -634,7 +651,7 @@ describe('Subworkflows', () => {
     });
 
     it('increments depth for child subworkflows', async () => {
-      const wf = buildPassthroughWorkflow();
+      const wf = buildParallelChildWorkflow();
       const depths: number[] = [];
 
       await executeParallelSubworkflows(
@@ -666,7 +683,7 @@ describe('Subworkflows', () => {
     });
 
     it('calls onSubworkflowStart and onSubworkflowComplete', async () => {
-      const wf = buildPassthroughWorkflow();
+      const wf = buildParallelChildWorkflow();
       const started: string[] = [];
       const completed: string[] = [];
 

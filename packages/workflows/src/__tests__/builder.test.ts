@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { WorkflowBuilder } from '../builder';
+import type { WorkflowState } from '@cogitator-ai/types';
 
-interface TestState {
+interface TestState extends WorkflowState {
   value: number;
   result?: string;
 }
@@ -89,7 +90,7 @@ describe('WorkflowBuilder', () => {
           state: { value: ctx.state.value + 1 },
         }))
         .addLoop('check', {
-          condition: (state: TestState) => state.value < 5,
+          condition: (state) => state.value < 5,
           back: 'process',
           exit: 'done',
           after: ['process'],

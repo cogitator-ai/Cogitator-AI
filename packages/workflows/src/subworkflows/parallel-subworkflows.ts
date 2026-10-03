@@ -12,19 +12,24 @@ export interface ParallelSubworkflowDef<PS extends WorkflowState, CS extends Wor
   config: SubworkflowConfig<PS, CS>;
 }
 
-export interface ParallelSubworkflowsConfig<S extends WorkflowState> {
+/**
+ * Child workflows run side by side. `CS` is the state of the children when
+ * they share one, so mappers and results stay typed.
+ */
+export interface ParallelSubworkflowsConfig<
+  S extends WorkflowState,
+  CS extends WorkflowState = WorkflowState,
+> {
   name: string;
-  subworkflows:
-    | ParallelSubworkflowDef<S, WorkflowState>[]
-    | ((state: S) => ParallelSubworkflowDef<S, WorkflowState>[]);
+  subworkflows: ParallelSubworkflowDef<S, CS>[] | ((state: S) => ParallelSubworkflowDef<S, CS>[]);
   concurrency?: number;
   continueOnError?: boolean;
   onError?: SubworkflowErrorStrategy;
-  aggregator: (results: Map<string, SubworkflowResult<S, WorkflowState>>, parentState: S) => S;
+  aggregator: (results: Map<string, SubworkflowResult<S, CS>>, parentState: S) => S;
   maxDepth?: number;
   shareCheckpoints?: boolean;
-  onSubworkflowStart?: (id: string, config: SubworkflowConfig<S, WorkflowState>) => void;
-  onSubworkflowComplete?: (id: string, result: SubworkflowResult<S, WorkflowState>) => void;
+  onSubworkflowStart?: (id: string, config: SubworkflowConfig<S, CS>) => void;
+  onSubworkflowComplete?: (id: string, result: SubworkflowResult<S, CS>) => void;
   onProgress?: (progress: ParallelProgress) => void;
 }
 
@@ -37,10 +42,13 @@ export interface ParallelProgress {
   running: number;
 }
 
-export interface ParallelSubworkflowsResult<S extends WorkflowState> {
+export interface ParallelSubworkflowsResult<
+  S extends WorkflowState,
+  CS extends WorkflowState = WorkflowState,
+> {
   success: boolean;
   parentState: S;
-  results: Map<string, SubworkflowResult<S, WorkflowState>>;
+  results: Map<string, SubworkflowResult<S, CS>>;
   errors: Map<string, Error>;
   duration: number;
   stats: {
@@ -108,11 +116,14 @@ async function executeWithConcurrency<T>(
   return results;
 }
 
-export async function executeParallelSubworkflows<S extends WorkflowState>(
+export async function executeParallelSubworkflows<
+  S extends WorkflowState,
+  CS extends WorkflowState = WorkflowState,
+>(
   parentState: S,
-  config: ParallelSubworkflowsConfig<S>,
+  config: ParallelSubworkflowsConfig<S, CS>,
   context: SubworkflowContext
-): Promise<ParallelSubworkflowsResult<S>> {
+): Promise<ParallelSubworkflowsResult<S, CS>> {
   const startTime = Date.now();
 
   const definitions =
@@ -145,7 +156,7 @@ export async function executeParallelSubworkflows<S extends WorkflowState>(
 
   const executionItems = definitions.map((def) => ({
     id: def.id,
-    execute: async (): Promise<SubworkflowResult<S, WorkflowState>> => {
+    execute: async (): Promise<SubworkflowResult<S, CS>> => {
       const subConfig = {
         ...def.config,
         onError: def.config.onError ?? config.onError,
@@ -184,7 +195,7 @@ export async function executeParallelSubworkflows<S extends WorkflowState>(
     }
   );
 
-  const results = new Map<string, SubworkflowResult<S, WorkflowState>>();
+  const results = new Map<string, SubworkflowResult<S, CS>>();
   const errors = new Map<string, Error>();
   let skipped = 0;
 
@@ -218,10 +229,13 @@ export async function executeParallelSubworkflows<S extends WorkflowState>(
   };
 }
 
-export function parallelSubworkflows<S extends WorkflowState>(
+export function parallelSubworkflows<
+  S extends WorkflowState,
+  CS extends WorkflowState = WorkflowState,
+>(
   name: string,
-  config: Omit<ParallelSubworkflowsConfig<S>, 'name'>
-): ParallelSubworkflowsConfig<S> {
+  config: Omit<ParallelSubworkflowsConfig<S, CS>, 'name'>
+): ParallelSubworkflowsConfig<S, CS> {
   return { name, ...config };
 }
 
@@ -234,7 +248,7 @@ export function fanOutFanIn<S extends WorkflowState, CS extends WorkflowState>(
     concurrency?: number;
     continueOnError?: boolean;
   }
-): ParallelSubworkflowsConfig<S> {
+): ParallelSubworkflowsConfig<S, CS> {
   return {
     name,
     concurrency: config.concurrency,
@@ -244,20 +258,12 @@ export function fanOutFanIn<S extends WorkflowState, CS extends WorkflowState>(
         id,
         config: {
           name: `${name}:${id}`,
-          workflow: config.workflow as unknown as Workflow<WorkflowState>,
-          inputMapper: () => input as Partial<WorkflowState>,
-          outputMapper: (_result: WorkflowResult<WorkflowState>, parentState: S) => parentState,
+          workflow: config.workflow,
+          inputMapper: () => input,
+          outputMapper: (_result: WorkflowResult<CS>, parentState: S) => parentState,
         },
       })),
-    aggregator: (results, state) => {
-      const workflowResults = new Map<string, WorkflowResult<CS>>();
-      for (const [id, result] of results) {
-        if (result.childResult) {
-          workflowResults.set(id, result.childResult as WorkflowResult<CS>);
-        }
-      }
-      return config.aggregator(workflowResults, state);
-    },
+    aggregator: (results, state) => config.aggregator(childResults(results), state),
   };
 }
 
@@ -271,37 +277,38 @@ export function scatterGather<S extends WorkflowState, CS extends WorkflowState>
     timeout?: number;
     continueOnError?: boolean;
   }
-): ParallelSubworkflowsConfig<S> {
-  const subworkflows: ParallelSubworkflowDef<S, WorkflowState>[] = [];
-
-  for (const [id, workflow] of config.workflows) {
-    subworkflows.push({
+): ParallelSubworkflowsConfig<S, CS> {
+  const subworkflows = [...config.workflows].map(
+    ([id, workflow]): ParallelSubworkflowDef<S, CS> => ({
       id,
       config: {
         name: `${name}:${id}`,
-        workflow: workflow as unknown as Workflow<WorkflowState>,
-        inputMapper: (state: S) => config.inputMapper(state, id) as Partial<WorkflowState>,
-        outputMapper: (_result: WorkflowResult<WorkflowState>, parentState: S) => parentState,
+        workflow,
+        inputMapper: (state: S) => config.inputMapper(state, id),
+        outputMapper: (_result: WorkflowResult<CS>, parentState: S) => parentState,
         timeout: config.timeout,
       },
-    });
-  }
+    })
+  );
 
   return {
     name,
     subworkflows,
     concurrency: config.concurrency,
     continueOnError: config.continueOnError ?? true,
-    aggregator: (results, state) => {
-      const workflowResults = new Map<string, WorkflowResult<CS>>();
-      for (const [id, result] of results) {
-        if (result.childResult) {
-          workflowResults.set(id, result.childResult as WorkflowResult<CS>);
-        }
-      }
-      return config.outputMapper(workflowResults, state);
-    },
+    aggregator: (results, state) => config.outputMapper(childResults(results), state),
   };
+}
+
+/** The child workflow results of the subworkflows that ran. */
+function childResults<S extends WorkflowState, CS extends WorkflowState>(
+  results: Map<string, SubworkflowResult<S, CS>>
+): Map<string, WorkflowResult<CS>> {
+  const children = new Map<string, WorkflowResult<CS>>();
+  for (const [id, result] of results) {
+    if (result.childResult) children.set(id, result.childResult);
+  }
+  return children;
 }
 
 export async function raceSubworkflows<PS extends WorkflowState, CS extends WorkflowState>(

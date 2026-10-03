@@ -27,12 +27,18 @@ import {
   errorSpanAttributes,
   retrySpanAttributes,
 } from '../observability/span-attributes';
+import type { SpanExporterInstance } from '../index';
+import type { TracingConfig } from '@cogitator-ai/types';
+
+function createNoopTracer(config: Omit<Partial<TracingConfig>, 'exporter'> = {}): WorkflowTracer {
+  return new WorkflowTracer({ ...config, exporter: 'noop' });
+}
 
 describe('WorkflowTracer', () => {
   let tracer: WorkflowTracer;
 
   beforeEach(() => {
-    tracer = new WorkflowTracer({ enabled: true, exporter: 'noop' });
+    tracer = createNoopTracer({ enabled: true });
   });
 
   describe('createSpan / startSpan', () => {
@@ -279,13 +285,13 @@ describe('WorkflowTracer', () => {
     });
 
     it('samples at rate 1.0 by default', () => {
-      const t = new WorkflowTracer({ enabled: true, exporter: 'noop' });
+      const t = createNoopTracer({ enabled: true });
       expect(t.isSampled()).toBe(true);
     });
 
     it('samples at rate 0 always rejects', () => {
-      const t = new WorkflowTracer({ enabled: true, sampleRate: 0, exporter: 'noop' });
-      expect(t.isSampled()).toBe(true);
+      const t = createNoopTracer({ enabled: true, sampleRate: 0 });
+      expect(t.isSampled()).toBe(false);
     });
   });
 
@@ -297,7 +303,7 @@ describe('WorkflowTracer', () => {
     });
 
     it('flush is noop when not sampled', async () => {
-      const t = new WorkflowTracer({ enabled: true, sampleRate: 0, exporter: 'noop' });
+      const t = createNoopTracer({ enabled: true, sampleRate: 0 });
       const scope = t.startSpan('s');
       scope.end();
       await t.flush();
@@ -534,7 +540,7 @@ describe('Span Exporters', () => {
 
   describe('NoopSpanExporter', () => {
     it('export and shutdown do nothing', async () => {
-      const exporter = new NoopSpanExporter();
+      const exporter: SpanExporterInstance = new NoopSpanExporter();
       await exporter.export([
         {
           traceId: 'a'.repeat(32),
@@ -809,7 +815,7 @@ describe('Global tracer', () => {
   });
 
   it('setGlobalTracer / getGlobalTracer round-trips', () => {
-    const custom = new WorkflowTracer({ enabled: true, exporter: 'noop' });
+    const custom = createNoopTracer({ enabled: true });
     setGlobalTracer(custom);
     expect(getGlobalTracer()).toBe(custom);
   });

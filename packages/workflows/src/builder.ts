@@ -120,11 +120,11 @@ export class WorkflowBuilder<S extends WorkflowState = WorkflowState> {
   /**
    * Add a loop construct
    */
-  addLoop(name: string, options: AddLoopOptions): this {
+  addLoop(name: string, options: AddLoopOptions<S>): this {
     this.registerName(name);
     this.loops.push({
       name,
-      condition: options.condition as (state: S) => boolean,
+      condition: options.condition,
       back: options.back,
       exit: options.exit,
       after: options.after ?? [],

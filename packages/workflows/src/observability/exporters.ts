@@ -403,7 +403,7 @@ export function createSpanExporter(config: ExporterConfig): SpanExporterInstance
         headers: config.headers,
       });
 
-    default:
+    case 'noop':
       return new NoopSpanExporter();
   }
 }

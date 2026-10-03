@@ -26,10 +26,6 @@ interface TestState {
   multiplier?: number;
 }
 
-interface _ObjectState {
-  items: { value: number }[];
-}
-
 interface TypedItemState {
   items: { type: string; value: number }[];
 }

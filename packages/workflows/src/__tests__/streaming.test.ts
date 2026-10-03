@@ -2,9 +2,9 @@ import { describe, it, expect, vi } from 'vitest';
 import { WorkflowExecutor } from '../executor';
 import { WorkflowBuilder } from '../builder';
 import type { Cogitator } from '@cogitator-ai/core';
-import type { StreamingWorkflowEvent } from '@cogitator-ai/types';
+import type { StreamingWorkflowEvent, WorkflowState } from '@cogitator-ai/types';
 
-interface TestState {
+interface TestState extends WorkflowState {
   value: number;
   steps: string[];
 }

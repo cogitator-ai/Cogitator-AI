@@ -161,8 +161,9 @@ export interface AddConditionalOptions {
   after?: string[];
 }
 
-export interface AddLoopOptions {
-  condition: (state: unknown) => boolean;
+export interface AddLoopOptions<S = unknown> {
+  /** Loop back while this holds for the workflow state */
+  condition: (state: S) => boolean;
   back: string;
   exit: string;
   after?: string[];
@@ -545,7 +546,8 @@ export interface TriggerManager {
   onTrigger(callback: (trigger: WorkflowTrigger, context: TriggerContext) => void): () => void;
 }
 
-export type SpanExporter = 'console' | 'otlp' | 'jaeger' | 'zipkin';
+/** Where workflow spans go; `noop` records them nowhere. */
+export type SpanExporter = 'console' | 'otlp' | 'jaeger' | 'zipkin' | 'noop';
 
 export interface TracingConfig {
   enabled: boolean;
