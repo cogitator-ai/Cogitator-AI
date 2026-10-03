@@ -145,8 +145,11 @@ interface ToolCallOutcome {
 
 const DEFAULT_TOOL_TIMEOUT_MS = 30_000;
 
-function resolveModelName(model: string | undefined, provider: string): string {
-  if (!model) return 'default';
+function resolveModelName(agent: Agent, provider: string): string {
+  const model = agent.model;
+  if (!model) {
+    throw new Error(`SelfModifyingAgent needs agent "${agent.name}" to set a model`);
+  }
   const prefix = `${provider}/`;
   return model.startsWith(prefix) ? model.slice(prefix.length) : model;
 }
@@ -177,7 +180,7 @@ export class SelfModifyingAgent {
   constructor(options: SelfModifyingAgentOptions) {
     this.agent = options.agent;
     this.llm = options.llm;
-    this.modelName = resolveModelName(options.agent.model, options.llm.provider);
+    this.modelName = resolveModelName(options.agent, options.llm.provider);
     this.config = this.mergeConfig(options.config);
 
     const toolGenConfig = this.config.toolGeneration;

@@ -236,7 +236,7 @@ describe('GapAnalyzer', () => {
       }),
     });
 
-    const analyzer = new GapAnalyzer({ llm: mockLLM, config: mockToolConfig });
+    const analyzer = new GapAnalyzer({ llm: mockLLM, config: mockToolConfig, model: 'test-model' });
 
     const result = await analyzer.analyze('Parse and analyze the sales.csv file', [
       {
@@ -283,7 +283,11 @@ describe('ToolGenerator', () => {
       }),
     });
 
-    const generator = new ToolGenerator({ llm: mockLLM, config: mockToolConfig });
+    const generator = new ToolGenerator({
+      llm: mockLLM,
+      config: mockToolConfig,
+      model: 'test-model',
+    });
 
     const result = await generator.generate(
       {

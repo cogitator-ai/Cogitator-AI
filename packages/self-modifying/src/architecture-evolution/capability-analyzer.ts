@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Tool, LLMBackend, TaskProfile } from '@cogitator-ai/types';
 import { buildTaskProfilePrompt, parseTaskProfileResponse } from './prompts';
-import { llmChat } from '../utils/llm-helper';
+import { llmChat, requireModelForLLM } from '../utils/llm-helper';
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -151,7 +151,9 @@ export class CapabilityAnalyzer {
   constructor(options: CapabilityAnalyzerOptions = {}) {
     this.llm = options.llm;
     this.enableLLMAnalysis = options.enableLLMAnalysis ?? false;
-    this.model = options.model ?? 'default';
+    this.model = this.enableLLMAnalysis
+      ? requireModelForLLM(options.llm, options.model, 'CapabilityAnalyzer')
+      : (options.model ?? '');
   }
 
   async analyzeTask(

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { extractJson, llmChat } from '../utils';
+import { requireModelForLLM } from '../utils/llm-helper';
 
 describe('extractJson', () => {
   it('extracts simple JSON object', () => {
@@ -89,7 +90,7 @@ describe('llmChat', () => {
       }),
     };
 
-    const result = await llmChat(llm as never, [{ role: 'user', content: 'hi' }]);
+    const result = await llmChat(llm as never, [{ role: 'user', content: 'hi' }], { model: 'm' });
     expect(result).toBe('response from complete');
   });
 
@@ -107,15 +108,11 @@ describe('llmChat', () => {
     expect(result).toBe('response from chat with model gpt-4');
   });
 
-  it('uses default model when none specified', async () => {
-    const llm = {
-      chat: async (opts: { model: string }) => ({
-        content: opts.model,
-        usage: { inputTokens: 10, outputTokens: 20 },
-      }),
-    };
-
-    const result = await llmChat(llm as never, [{ role: 'user', content: 'hi' }]);
-    expect(result).toBe('default');
+  it('requires a model from components that have an LLM', () => {
+    expect(() => requireModelForLLM({} as never, undefined, 'ToolValidator')).toThrow(
+      'ToolValidator needs a model'
+    );
+    expect(requireModelForLLM({} as never, 'llama3.2', 'ToolValidator')).toBe('llama3.2');
+    expect(requireModelForLLM(undefined, undefined, 'ToolValidator')).toBe('');
   });
 });

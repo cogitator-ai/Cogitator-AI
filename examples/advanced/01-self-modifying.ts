@@ -48,8 +48,11 @@ When you lack a tool for a task, explain what capability is missing.`,
 
   section('1. Gap analysis — what tools are we missing?');
 
+  const modelName = DEFAULT_MODEL.replace(/^google\//, '');
+
   const gapAnalyzer = new GapAnalyzer({
     llm,
+    model: modelName,
     config: {
       enabled: true,
       autoGenerate: true,
@@ -94,6 +97,7 @@ When you lack a tool for a task, explain what capability is missing.`,
   const toolStore = new InMemoryGeneratedToolStore();
   const toolGenerator = new ToolGenerator({
     llm,
+    model: modelName,
     config: {
       enabled: true,
       autoGenerate: true,

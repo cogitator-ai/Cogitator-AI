@@ -6,7 +6,7 @@ import type {
 } from '@cogitator-ai/types';
 import { ToolSandbox, type SandboxTestCase } from './tool-sandbox';
 import { buildToolValidationPrompt, parseValidationResponse } from './prompts';
-import { llmChat } from '../utils/llm-helper';
+import { llmChat, requireModelForLLM } from '../utils/llm-helper';
 
 export interface ToolValidatorOptions {
   llm?: LLMBackend;
@@ -157,7 +157,7 @@ export class ToolValidator {
   constructor(options: ToolValidatorOptions) {
     this.llm = options.llm;
     this.config = options.config;
-    this.model = options.model ?? 'default';
+    this.model = requireModelForLLM(options.llm, options.model, 'ToolValidator');
     this.sandbox = new ToolSandbox(options.config.sandboxConfig);
   }
 

@@ -39,7 +39,7 @@ console.log('Tools generated:', result.toolsGenerated.length);
 console.log('Adaptations made:', result.adaptationsMade.length);
 ```
 
-A provider prefix that matches the backend (`ollama/` for `OllamaBackend`) is stripped from the agent model before every call. All nested config sections are partial — omitted fields fall back to defaults.
+A provider prefix that matches the backend (`ollama/` for `OllamaBackend`) is stripped from the agent model before every call. The agent must set a model. Components used on their own (`GapAnalyzer`, `ToolGenerator`, `ParameterOptimizer`, and `ToolValidator` / `CapabilityAnalyzer` when they call an LLM) take the model name the backend expects as `model`. All nested config sections are partial — omitted fields fall back to defaults.
 
 ### Agent Options
 
@@ -113,8 +113,8 @@ const selfModifying = new SelfModifyingAgent({
 ```typescript
 import { GapAnalyzer, ToolGenerator } from '@cogitator-ai/self-modifying';
 
-const gapAnalyzer = new GapAnalyzer({ llm, config: toolGenConfig });
-const toolGenerator = new ToolGenerator({ llm, config: toolGenConfig });
+const gapAnalyzer = new GapAnalyzer({ llm, config: toolGenConfig, model: 'llama3.2' });
+const toolGenerator = new ToolGenerator({ llm, config: toolGenConfig, model: 'llama3.2' });
 
 // Analyze what's missing
 const analysis = await gapAnalyzer.analyze(
@@ -384,6 +384,7 @@ import { CapabilityAnalyzer } from '@cogitator-ai/self-modifying';
 const analyzer = new CapabilityAnalyzer({
   llm,
   enableLLMAnalysis: true,
+  model: 'llama3.2',
 });
 
 const profile = await analyzer.analyzeTask('Build a REST API with authentication');

@@ -313,6 +313,7 @@ describe('ParameterOptimizer', () => {
   it('optimizes architecture for task', async () => {
     const optimizer = new ParameterOptimizer({
       llm: mockLLM,
+      model: 'test-model',
       config: {
         enabled: true,
         strategy: { type: 'ucb', explorationConstant: 2 },
@@ -339,6 +340,7 @@ describe('ParameterOptimizer', () => {
   it('records and learns from outcomes', async () => {
     const optimizer = new ParameterOptimizer({
       llm: mockLLM,
+      model: 'test-model',
       config: {
         enabled: true,
         strategy: { type: 'epsilon_greedy', epsilon: 0.1 },
@@ -392,6 +394,7 @@ describe('ParameterOptimizer', () => {
   it('resets state', async () => {
     const optimizer = new ParameterOptimizer({
       llm: mockLLM,
+      model: 'test-model',
       config: {
         enabled: true,
         strategy: { type: 'ucb' },

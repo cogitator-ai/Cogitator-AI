@@ -21,7 +21,8 @@ import {
 export interface ToolGeneratorOptions {
   llm: LLMBackend;
   config: ToolSelfGenerationConfig;
-  model?: string;
+  /** Model the LLM calls use, without the provider prefix of the backend */
+  model: string;
 }
 
 export interface GenerateOptions {
@@ -46,11 +47,11 @@ export class ToolGenerator {
   constructor(options: ToolGeneratorOptions) {
     this.llm = options.llm;
     this.config = options.config;
-    this.model = options.model ?? 'default';
+    this.model = options.model;
     this.validator = new ToolValidator({
       llm: options.llm,
       config: options.config,
-      model: options.model,
+      model: this.model,
     });
     this.sandbox = new ToolSandbox(options.config.sandboxConfig);
   }

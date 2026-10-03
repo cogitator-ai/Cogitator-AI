@@ -92,8 +92,8 @@ const selfModifying = new SelfModifyingAgent({
 ```typescript
 import { GapAnalyzer, ToolGenerator } from '@cogitator-ai/self-modifying';
 
-const gapAnalyzer = new GapAnalyzer({ llm, config: toolGenConfig });
-const toolGenerator = new ToolGenerator({ llm, config: toolGenConfig });
+const gapAnalyzer = new GapAnalyzer({ llm, config: toolGenConfig, model: 'gpt-6.1-sol' });
+const toolGenerator = new ToolGenerator({ llm, config: toolGenConfig, model: 'gpt-6.1-sol' });
 
 const analysis = await gapAnalyzer.analyze(
   'Calculate compound interest over 10 years',
@@ -243,7 +243,7 @@ await optimizer.recordOutcome(result.candidate!.id, result.taskProfile, {
 ```typescript
 import { CapabilityAnalyzer } from '@cogitator-ai/self-modifying';
 
-const analyzer = new CapabilityAnalyzer({ llm, enableLLMAnalysis: true });
+const analyzer = new CapabilityAnalyzer({ llm, enableLLMAnalysis: true, model: 'gpt-6.1-sol' });
 
 const profile = await analyzer.analyzeTask('Build a REST API with authentication');
 

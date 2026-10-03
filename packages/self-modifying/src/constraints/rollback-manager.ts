@@ -127,9 +127,10 @@ export class RollbackManager {
   private toAgentConfig(record: Record<string, unknown>): AgentConfig {
     const config: AgentConfig = {
       name: typeof record.name === 'string' ? record.name : 'agent',
-      model: typeof record.model === 'string' ? record.model : 'default',
       instructions: typeof record.instructions === 'string' ? record.instructions : '',
     };
+
+    if (typeof record.model === 'string' && record.model.length > 0) config.model = record.model;
 
     if (typeof record.id === 'string') config.id = record.id;
     if (typeof record.description === 'string') config.description = record.description;

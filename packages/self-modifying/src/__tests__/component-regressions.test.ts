@@ -580,7 +580,11 @@ describe('ModificationValidator regressions', () => {
 
 describe('executable tool parameter validation', () => {
   it('rejects arguments that do not match the generated schema', async () => {
-    const generator = new ToolGenerator({ llm: chatBackend(() => ''), config: toolConfig });
+    const generator = new ToolGenerator({
+      llm: chatBackend(() => ''),
+      config: toolConfig,
+      model: 'm',
+    });
     const executable = generator.createExecutableTool(
       makeGenerated({
         name: 'double',

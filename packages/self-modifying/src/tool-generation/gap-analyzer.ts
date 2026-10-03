@@ -12,7 +12,8 @@ import { llmChat } from '../utils/llm-helper';
 export interface GapAnalyzerOptions {
   llm: LLMBackend;
   config: ToolSelfGenerationConfig;
-  model?: string;
+  /** Model the LLM calls use, without the provider prefix of the backend */
+  model: string;
 }
 
 export class GapAnalyzer {
@@ -24,7 +25,7 @@ export class GapAnalyzer {
   constructor(options: GapAnalyzerOptions) {
     this.llm = options.llm;
     this.config = options.config;
-    this.model = options.model ?? 'default';
+    this.model = options.model;
   }
 
   async analyze(

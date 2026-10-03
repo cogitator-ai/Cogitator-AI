@@ -23,7 +23,8 @@ export interface ParameterOptimizerOptions {
   llm: LLMBackend;
   config: ArchitectureEvolutionConfig;
   baseConfig: ArchitectureConfig;
-  model?: string;
+  /** Model the LLM calls use, without the provider prefix of the backend */
+  model: string;
   availableModels?: string[];
 }
 
@@ -63,14 +64,14 @@ export class ParameterOptimizer {
   constructor(options: ParameterOptimizerOptions) {
     this.llm = options.llm;
     this.config = options.config;
-    this.model = options.model ?? 'default';
+    this.model = options.model;
     this.baseConfig = options.baseConfig;
     this.availableModels = options.availableModels ?? [];
 
     this.capabilityAnalyzer = new CapabilityAnalyzer({
       llm: options.llm,
       enableLLMAnalysis: true,
-      model: options.model,
+      model: this.model,
     });
 
     this.evolutionStrategy = new EvolutionStrategy({
