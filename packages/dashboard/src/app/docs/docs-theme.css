@@ -1,0 +1,301 @@
+/*
+ * Cogitator theme for the docs (Fumadocs): an iron console in the dark theme and a dataslate
+ * parchment in the light one. Everything is scoped to pages that render the docs layout, so the
+ * landing and the cookbook keep their own palette even after a client-side navigation away from
+ * the docs leaves this stylesheet in the document. Contrast of every text colour here is at least
+ * 4.5:1 against the surface it sits on.
+ */
+
+html:has(#nd-docs-layout) {
+  --color-fd-background: #f3eee3;
+  --color-fd-foreground: #1f1a12;
+  --color-fd-muted: #e9e1cf;
+  --color-fd-muted-foreground: #5c5244;
+  --color-fd-popover: #f8f4ec;
+  --color-fd-popover-foreground: #1f1a12;
+  --color-fd-card: #ece5d6;
+  --color-fd-card-foreground: #1f1a12;
+  --color-fd-border: rgb(122 87 22 / 0.22);
+  --color-fd-primary: #17654f;
+  --color-fd-primary-foreground: #f8f4ec;
+  --color-fd-secondary: #e9e1cf;
+  --color-fd-secondary-foreground: #1f1a12;
+  --color-fd-accent: rgb(122 87 22 / 0.1);
+  --color-fd-accent-foreground: #3b2c12;
+  --color-fd-ring: #17654f;
+  --color-fd-overlay: rgb(43 32 13 / 0.25);
+
+  --cg-brass: #7a5716;
+  --cg-brass-label: #6b4c12;
+  --cg-brass-line: rgb(122 87 22 / 0.3);
+  --cg-brass-strong: rgb(122 87 22 / 0.5);
+  --cg-phosphor: #17654f;
+  --cg-phosphor-line: rgb(23 101 79 / 0.45);
+  --cg-heading: #2b200d;
+  --cg-subheading: #3b2c12;
+  --cg-code-inline: #4a3510;
+  --cg-code-comment: #5f6873;
+  --cg-glow: radial-gradient(70rem 26rem at 50% -8rem, rgb(201 164 92 / 0.14), transparent 70%);
+  --cg-sidebar-bg: linear-gradient(180deg, #efe8da 0%, #e9e1cf 100%);
+  --cg-plate-bg: linear-gradient(180deg, #ece2cc 0%, #e4d8bf 100%);
+  --cg-plate-shadow: inset 0 0 0 1px rgb(122 87 22 / 0.4), inset 0 1px 0 rgb(255 255 255 / 0.6);
+  --cg-code-bg: #fbf9f4;
+  --cg-code-bar: rgb(122 87 22 / 0.06);
+  --cg-code-shadow: inset 0 1px 0 rgb(255 255 255 / 0.7), 0 10px 24px -18px rgb(60 40 10 / 0.45);
+  --cg-selection: rgb(122 87 22 / 0.22);
+  --cg-scroll-track: #e9e1cf;
+  --cg-scroll-thumb: #c4b494;
+}
+
+html.dark:has(#nd-docs-layout) {
+  --color-fd-background: #07080a;
+  --color-fd-foreground: #e6e2d8;
+  --color-fd-muted: #15161a;
+  --color-fd-muted-foreground: #a39f94;
+  --color-fd-popover: #0e0f12;
+  --color-fd-popover-foreground: #e6e2d8;
+  --color-fd-card: #0e0f12;
+  --color-fd-card-foreground: #e6e2d8;
+  --color-fd-border: rgb(201 164 92 / 0.16);
+  --color-fd-primary: #7fd4b5;
+  --color-fd-primary-foreground: #07080a;
+  --color-fd-secondary: #15161a;
+  --color-fd-secondary-foreground: #e6e2d8;
+  --color-fd-accent: rgb(201 164 92 / 0.1);
+  --color-fd-accent-foreground: #e8d9b5;
+  --color-fd-ring: #7fd4b5;
+  --color-fd-overlay: rgb(0 0 0 / 0.55);
+
+  --cg-brass: #c9a45c;
+  --cg-brass-label: #d6bf8f;
+  --cg-brass-line: rgb(201 164 92 / 0.28);
+  --cg-brass-strong: rgb(201 164 92 / 0.5);
+  --cg-phosphor: #a8d9c7;
+  --cg-phosphor-line: rgb(127 212 181 / 0.45);
+  --cg-heading: #ecdfbf;
+  --cg-subheading: #e8d9b5;
+  --cg-code-inline: #ead9b0;
+  --cg-code-comment: #7d8590;
+  --cg-glow: radial-gradient(70rem 26rem at 50% -8rem, rgb(255 179 71 / 0.06), transparent 70%);
+  --cg-sidebar-bg:
+    linear-gradient(180deg, rgb(255 255 255 / 0.03), transparent 24%),
+    repeating-linear-gradient(90deg, rgb(255 255 255 / 0.01) 0 2px, transparent 2px 5px),
+    linear-gradient(180deg, #111215 0%, #0b0c0e 100%);
+  --cg-plate-bg: linear-gradient(180deg, #221f18 0%, #15130f 100%);
+  --cg-plate-shadow:
+    inset 0 0 0 1px rgb(201 164 92 / 0.42), inset 0 1px 0 rgb(226 197 140 / 0.12),
+    0 0 14px -6px rgb(201 164 92 / 0.35);
+  --cg-code-bg:
+    linear-gradient(180deg, rgb(255 255 255 / 0.035), transparent 40px),
+    radial-gradient(120% 100% at 50% 0%, #0c1413 0%, #090c0c 55%, #07090a 100%);
+  --cg-code-bar: rgb(201 164 92 / 0.05);
+  --cg-code-shadow:
+    inset 0 1px 0 rgb(226 197 140 / 0.08), inset 0 0 40px rgb(0 0 0 / 0.55), 0 0 0 1px #000,
+    0 18px 40px -28px #000;
+  --cg-selection: rgb(127 212 181 / 0.26);
+  --cg-scroll-track: #0b0c0e;
+  --cg-scroll-thumb: #2c2a24;
+}
+
+html.dark #nd-sidebar {
+  --color-fd-muted: #17181c;
+  --color-fd-secondary: #17181c;
+  --color-fd-muted-foreground: #a39f94;
+}
+
+html:has(#nd-docs-layout) ::selection {
+  background: var(--cg-selection);
+  color: inherit;
+}
+
+html:has(#nd-docs-layout) ::-webkit-scrollbar-track {
+  background: var(--cg-scroll-track);
+}
+
+html:has(#nd-docs-layout) ::-webkit-scrollbar-thumb {
+  background: var(--cg-scroll-thumb);
+}
+
+#nd-docs-layout {
+  background-image: var(--cg-glow);
+  background-repeat: no-repeat;
+}
+
+/* Wordmark in the sidebar and the mobile header. */
+.docs-wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+.docs-wordmark-text {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--color-fd-foreground);
+}
+
+html:not(.dark) .docs-wordmark svg path:nth-of-type(1) {
+  fill: #1d7a59;
+}
+
+html:not(.dark) .docs-wordmark svg path:nth-of-type(2) {
+  stroke: #f3eee3;
+}
+
+html:not(.dark) .docs-wordmark svg path:nth-of-type(3) {
+  fill: #8a6424;
+}
+
+/* Sidebar: an iron (or parchment) panel behind a brass hairline. */
+#nd-sidebar {
+  background: var(--cg-sidebar-bg);
+  border-inline-end-color: var(--cg-brass-line);
+}
+
+#nd-subnav {
+  border-bottom-color: var(--cg-brass-line);
+}
+
+[id^='nd-sidebar'] [data-radix-scroll-area-viewport] p {
+  font-family: var(--font-screen);
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--cg-brass);
+}
+
+[id^='nd-sidebar'] a[data-active='true'] {
+  color: var(--cg-phosphor);
+  background: var(--cg-plate-bg);
+  box-shadow: var(--cg-plate-shadow);
+}
+
+[id^='nd-sidebar'] a[data-active='true']::before {
+  background-color: var(--cg-brass);
+}
+
+/* Table of contents. */
+#toc-title {
+  font-family: var(--font-screen);
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--cg-brass);
+}
+
+#nd-toc a[data-active='true'] {
+  color: var(--cg-phosphor);
+}
+
+/* Page header: breadcrumb read-out, display title, plaque-style actions. */
+#nd-page > div:first-child {
+  font-family: var(--font-screen);
+  font-size: 12.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-fd-muted-foreground);
+}
+
+#nd-page > div:first-child .text-fd-primary {
+  color: var(--cg-brass);
+}
+
+#nd-page > h1,
+#nd-page .prose h1 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+  color: var(--cg-heading);
+}
+
+#nd-page > div.border-b {
+  border-bottom-color: var(--cg-brass-line);
+}
+
+#nd-page > div.border-b > button {
+  font-family: var(--font-screen);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--cg-brass-label);
+  border-color: var(--cg-brass-line);
+}
+
+#nd-page > div.border-b > button:hover,
+#nd-page > div.border-b > button[data-state='open'] {
+  border-color: var(--cg-brass-strong);
+}
+
+/* Prose. */
+#nd-page .prose {
+  --tw-prose-bullets: var(--cg-brass);
+  --tw-prose-counters: var(--cg-brass);
+  --tw-prose-quote-borders: var(--cg-brass-line);
+  --tw-prose-hr: var(--cg-brass-line);
+}
+
+#nd-page .prose h2 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--cg-subheading);
+  padding-bottom: 0.35em;
+  background-image: linear-gradient(90deg, var(--cg-brass-line), transparent 85%);
+  background-size: 100% 1px;
+  background-position: left bottom;
+  background-repeat: no-repeat;
+}
+
+#nd-page .prose h2 code,
+#nd-page .prose h1 code {
+  letter-spacing: 0;
+}
+
+#nd-page .prose a:not([data-card]) {
+  color: var(--cg-phosphor);
+  text-decoration-color: var(--cg-phosphor-line);
+}
+
+#nd-page .prose a:not([data-card]):hover {
+  opacity: 1;
+  text-decoration-color: currentColor;
+}
+
+#nd-page .prose :not(pre) > code {
+  color: var(--cg-code-inline);
+}
+
+#nd-page .prose a:not([data-card]) code {
+  color: inherit;
+}
+
+#nd-page .prose thead th {
+  font-family: var(--font-screen);
+  font-weight: 400;
+  font-size: 0.9em;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--cg-brass);
+}
+
+/* Code blocks: dark glass (or clean paper) behind a brass edge. */
+#nd-page figure.shiki {
+  background: var(--cg-code-bg);
+  border-color: var(--cg-brass-line);
+  box-shadow: var(--cg-code-shadow);
+}
+
+#nd-page figure.shiki > div.border-b {
+  font-family: var(--font-screen);
+  letter-spacing: 0.06em;
+  color: var(--cg-brass);
+  border-bottom-color: var(--cg-brass-line);
+  background: var(--cg-code-bar);
+}
+
+html.dark #nd-page .shiki code span[style*='--shiki-dark:#6A737D' i],
+html:not(.dark) #nd-page .shiki code span[style*='--shiki-light:#6E7781' i] {
+  color: var(--cg-code-comment);
+}
