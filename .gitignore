@@ -73,3 +73,4 @@ packages/dashboard/next-env.d.ts
 
 # Local agent instructions
 /AGENTS.md
+pnpm-publish-summary.json

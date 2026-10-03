@@ -2,9 +2,11 @@
 
 /**
  * Creates a git tag and a GitHub Release for every published package version that does not have
- * one yet. A version counts as published once npm serves it, so the script is safe to re-run and
- * also backfills versions released before it existed. Release notes are that version's section of
- * the package CHANGELOG.md; `@cogitator-ai/core` is the release GitHub shows as "Latest".
+ * one yet. Versions the publish step just pushed are read from `pnpm-publish-summary.json`
+ * (`pnpm publish --report-summary`), since npm takes a while to serve a new version; any other
+ * version counts as published once npm serves it, so the script is safe to re-run and backfills
+ * versions an earlier run missed. Release notes are that version's section of the package
+ * CHANGELOG.md; `@cogitator-ai/core` is the release GitHub shows as "Latest".
  *
  * Usage: `npx tsx scripts/github-releases.ts [--dry-run]` (needs `gh` authenticated via GH_TOKEN).
  */
@@ -17,6 +19,7 @@ const DRY_RUN = process.argv.includes('--dry-run');
 const LATEST_PACKAGE = '@cogitator-ai/core';
 const PACKAGES_DIR = join(process.cwd(), 'packages');
 const NPM_REGISTRY = 'https://registry.npmjs.org/';
+const PUBLISH_SUMMARY = join(process.cwd(), 'pnpm-publish-summary.json');
 
 interface PublishedPackage {
   name: string;
@@ -74,6 +77,17 @@ function isOnNpm({ name, version }: PublishedPackage): boolean {
   }
 }
 
+/** `name@version` of every package the last `pnpm publish --report-summary` published. */
+function justPublished(): Set<string> {
+  if (!existsSync(PUBLISH_SUMMARY)) return new Set();
+  const summary = JSON.parse(readFileSync(PUBLISH_SUMMARY, 'utf8')) as {
+    publishedPackages?: { name: string; version: string }[];
+  };
+  return new Set(
+    (summary.publishedPackages ?? []).map(({ name, version }) => `${name}@${version}`)
+  );
+}
+
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -98,6 +112,7 @@ function main(): void {
   const target = run('git', ['rev-parse', 'HEAD']);
   const tags = remoteTags();
   const pending = publicPackages().filter((pkg) => !tags.has(`${pkg.name}@${pkg.version}`));
+  const published = justPublished();
 
   if (pending.length === 0) {
     console.log('Every published version already has a release.');
@@ -107,7 +122,7 @@ function main(): void {
   let created = 0;
   for (const pkg of pending) {
     const tag = `${pkg.name}@${pkg.version}`;
-    if (!isOnNpm(pkg)) {
+    if (!published.has(tag) && !isOnNpm(pkg)) {
       console.log(`skip ${tag}: not on npm yet`);
       continue;
     }
