@@ -11,6 +11,7 @@
     "context-management",
     "neuro-symbolic",
     "self-modifying",
-    "security"
+    "security",
+    "multi-user"
   ]
 }

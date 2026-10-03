@@ -69,9 +69,7 @@ const agent = new Agent({
   tools: [...fsTools, ...dbTools],
 });
 
-const cog = new Cogitator({
-  /* ... */
-});
+const cog = new Cogitator({/* ... */});
 const result = await cog.run(agent, {
   input: 'List all .ts files in /workspace/src and count them',
 });
@@ -223,9 +221,47 @@ server.registerTools([calculator, webSearch, fileReader]);
 await server.start();
 ```
 
-Clients connect to `http://localhost:3000/mcp`. Use `port: 0` to bind a random free port and read it back with `server.getPort()`. `maxBodySize` (default 10 MB) and `corsOrigin` (default `'*'`) tune the HTTP endpoint; `start()` rejects if the port cannot be bound and `stop()` closes open connections.
+Clients connect to `http://localhost:3000/mcp`. Use `port: 0` to bind a random free port and read it back with `server.getPort()`. `maxBodySize` (default 10 MB), `corsOrigin` (default `'*'`) and `auth` (see below) tune the HTTP endpoint; `start()` rejects if the port cannot be bound and `stop()` closes open connections.
 
 Tool arguments are validated against the tool's full Zod schema before `execute` runs; invalid arguments and thrown errors come back to the client as `isError` tool results, while errors thrown by resource `read` and prompt `get` handlers are returned as JSON-RPC errors. With `logging: true`, diagnostics go to stderr so the stdio transport's stdout stays reserved for JSON-RPC.
+
+### Authentication and Per-User Tools
+
+Over HTTP the server is open to anyone who can reach it. Pass `auth` to establish the caller of every request, usually from its bearer token. Requests it returns `undefined` for (or throws on) are answered `401`. The caller's `userId` reaches tools as `context.userId`, and resource `read` and prompt `get` handlers receive the caller as their second argument:
+
+```typescript
+import { MCPServer, type MCPAuthFunction } from '@cogitator-ai/mcp';
+
+const auth: MCPAuthFunction = async (request) => {
+  const token = request.headers.authorization?.replace(/^Bearer /, '');
+  const session = token ? await sessions.find(token) : undefined;
+  return session ? { userId: session.userId, scopes: session.scopes } : undefined;
+};
+
+const listMyOrders = tool({
+  name: 'list_my_orders',
+  description: "List the calling customer's orders",
+  parameters: z.object({}),
+  execute: async (_args, context) => orders.forUser(context.userId!),
+});
+
+const server = new MCPServer({ name: 'shop', version: '1.0.0', transport: 'http', auth });
+server.registerTool(listMyOrders);
+```
+
+An agent then acts for one user by connecting with that user's token:
+
+```typescript
+const client = await MCPClient.connect({
+  transport: 'http',
+  url: 'https://shop.example.com/mcp',
+  headers: { Authorization: `Bearer ${userToken}` },
+});
+const agentForUser = support.clone({ id: support.id, tools: await client.getTools() });
+await cog.run(agentForUser, { input, userId, threadId });
+```
+
+The full flow, including thread isolation between users, is in [`examples/mcp/03-per-user-mcp.ts`](https://github.com/cogitator-ai/Cogitator-AI/blob/main/examples/mcp/03-per-user-mcp.ts).
 
 ### Registering Resources
 

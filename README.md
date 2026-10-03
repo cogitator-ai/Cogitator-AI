@@ -164,19 +164,20 @@ See [`@cogitator-ai/channels` README](./packages/channels/README.md) for the ful
 
 ## What Can You Build?
 
-| Use Case                     | What happens                                                                    | Try it                                                                                       |
-| ---------------------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| **Chatbot with memory**      | Agent remembers your name, preferences, past conversations                      | [`examples/memory/01-basic-memory.ts`](./examples/memory/01-basic-memory.ts)                 |
-| **Research assistant**       | Agent uses tools, reasons step by step, returns structured answers              | [`examples/core/01-basic-agent.ts`](./examples/core/01-basic-agent.ts)                       |
-| **Content pipeline**         | Researcher → Writer → Editor, each agent builds on the previous                 | [`examples/swarms/02-pipeline-swarm.ts`](./examples/swarms/02-pipeline-swarm.ts)             |
-| **Dev team simulation**      | Manager delegates frontend/backend to specialists, synthesizes results          | [`examples/swarms/03-hierarchical-swarm.ts`](./examples/swarms/03-hierarchical-swarm.ts)     |
-| **REST API server**          | Mount agents as HTTP endpoints with Swagger, SSE streaming, WebSocket           | [`examples/integrations/01-express-server.ts`](./examples/integrations/01-express-server.ts) |
-| **Data processing workflow** | Analyze documents in parallel, aggregate with map-reduce                        | [`examples/workflows/03-map-reduce.ts`](./examples/workflows/03-map-reduce.ts)               |
-| **Knowledge graph**          | Extract entities from text, build a graph, traverse relationships               | [`examples/memory/04-knowledge-graph.ts`](./examples/memory/04-knowledge-graph.ts)           |
-| **RAG Q&A system**           | Load docs, chunk, embed, retrieve relevant context, answer questions            | [`examples/rag/01-basic-retrieval.ts`](./examples/rag/01-basic-retrieval.ts)                 |
-| **Agent evaluation**         | Measure accuracy, compare models, run A/B tests with LLM judges                 | [`examples/evals/01-basic-eval.ts`](./examples/evals/01-basic-eval.ts)                       |
-| **Personal AI assistant**    | Your own AI running 24/7 on Telegram, Discord, Slack — manage via chat commands | [`cogitator.yml` config](#-personal-ai-assistant)                                            |
-| **Cross-framework agents**   | Expose your agent via Google's A2A protocol, consume external agents            | [`examples/a2a/01-a2a-server.ts`](./examples/a2a/01-a2a-server.ts)                           |
+| Use Case                     | What happens                                                                                   | Try it                                                                                       |
+| ---------------------------- | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| **Chatbot with memory**      | Agent remembers your name, preferences, past conversations                                     | [`examples/memory/01-basic-memory.ts`](./examples/memory/01-basic-memory.ts)                 |
+| **Research assistant**       | Agent uses tools, reasons step by step, returns structured answers                             | [`examples/core/01-basic-agent.ts`](./examples/core/01-basic-agent.ts)                       |
+| **Content pipeline**         | Researcher → Writer → Editor, each agent builds on the previous                                | [`examples/swarms/02-pipeline-swarm.ts`](./examples/swarms/02-pipeline-swarm.ts)             |
+| **Dev team simulation**      | Manager delegates frontend/backend to specialists, synthesizes results                         | [`examples/swarms/03-hierarchical-swarm.ts`](./examples/swarms/03-hierarchical-swarm.ts)     |
+| **REST API server**          | Mount agents as HTTP endpoints with Swagger, SSE streaming, WebSocket                          | [`examples/integrations/01-express-server.ts`](./examples/integrations/01-express-server.ts) |
+| **Multi-user support agent** | One agent serves many users through your own MCP server, each with their own token and threads | [`examples/mcp/03-per-user-mcp.ts`](./examples/mcp/03-per-user-mcp.ts)                       |
+| **Data processing workflow** | Analyze documents in parallel, aggregate with map-reduce                                       | [`examples/workflows/03-map-reduce.ts`](./examples/workflows/03-map-reduce.ts)               |
+| **Knowledge graph**          | Extract entities from text, build a graph, traverse relationships                              | [`examples/memory/04-knowledge-graph.ts`](./examples/memory/04-knowledge-graph.ts)           |
+| **RAG Q&A system**           | Load docs, chunk, embed, retrieve relevant context, answer questions                           | [`examples/rag/01-basic-retrieval.ts`](./examples/rag/01-basic-retrieval.ts)                 |
+| **Agent evaluation**         | Measure accuracy, compare models, run A/B tests with LLM judges                                | [`examples/evals/01-basic-eval.ts`](./examples/evals/01-basic-eval.ts)                       |
+| **Personal AI assistant**    | Your own AI running 24/7 on Telegram, Discord, Slack — manage via chat commands                | [`cogitator.yml` config](#-personal-ai-assistant)                                            |
+| **Cross-framework agents**   | Expose your agent via Google's A2A protocol, consume external agents                           | [`examples/a2a/01-a2a-server.ts`](./examples/a2a/01-a2a-server.ts)                           |
 
 ---
 
@@ -192,7 +193,7 @@ Install only what you need. Everything is a separate npm package.
 | [`@cogitator-ai/swarms`](https://www.npmjs.com/package/@cogitator-ai/swarms)                 | 7 swarm strategies — hierarchy, round-robin, consensus, pipeline, debate, auction, negotiation  | [4 swarm examples](./examples/swarms/)                               |
 | [`@cogitator-ai/workflows`](https://www.npmjs.com/package/@cogitator-ai/workflows)           | DAG workflows with branching, human approval gates, map-reduce                                  | [3 workflow examples](./examples/workflows/)                         |
 | [`@cogitator-ai/a2a`](https://www.npmjs.com/package/@cogitator-ai/a2a)                       | Google's Agent-to-Agent protocol - expose agents as services, consume external ones             | [2 a2a examples](./examples/a2a/)                                    |
-| [`@cogitator-ai/mcp`](https://www.npmjs.com/package/@cogitator-ai/mcp)                       | Connect to any MCP server and use its tools                                                     | [2 mcp examples](./examples/mcp/)                                    |
+| [`@cogitator-ai/mcp`](https://www.npmjs.com/package/@cogitator-ai/mcp)                       | Connect to any MCP server and use its tools                                                     | [3 mcp examples](./examples/mcp/)                                    |
 | [`@cogitator-ai/sandbox`](https://www.npmjs.com/package/@cogitator-ai/sandbox)               | Run untrusted code in Docker or WASM with resource limits and a native fallback                 | [sandbox example](./examples/infrastructure/05-sandbox-execution.ts) |
 | [`@cogitator-ai/wasm-tools`](https://www.npmjs.com/package/@cogitator-ai/wasm-tools)         | 14 pre-built tools running in WASM sandbox (calc, json, hash, csv, markdown...)                 | [wasm example](./examples/advanced/03-wasm-tools.ts)                 |
 | [`@cogitator-ai/self-modifying`](https://www.npmjs.com/package/@cogitator-ai/self-modifying) | Agents that generate new tools at runtime and evolve their own architecture                     | [self-modifying example](./examples/advanced/01-self-modifying.ts)   |
@@ -331,7 +332,7 @@ npx tsx examples/core/01-basic-agent.ts
 | [`swarms/`](./examples/swarms/)                             | 4     | Debate, pipeline, hierarchical coordination, negotiation                                                                                                       |
 | [`workflows/`](./examples/workflows/)                       | 3     | DAG workflows, human-in-the-loop, map-reduce                                                                                                                   |
 | [`a2a/`](./examples/a2a/)                                   | 2     | A2A server and client                                                                                                                                          |
-| [`mcp/`](./examples/mcp/)                                   | 2     | MCP client and server integration                                                                                                                              |
+| [`mcp/`](./examples/mcp/)                                   | 3     | MCP client and server integration, per-user tokens                                                                                                             |
 | [`rag/`](./examples/rag/)                                   | 3     | Basic retrieval, chunking strategies, agent with RAG                                                                                                           |
 | [`evals/`](./examples/evals/)                               | 3     | Basic evaluation, LLM judge, A/B comparison                                                                                                                    |
 | [`voice/`](./examples/voice/)                               | 4     | Voice pipeline, realtime sessions, voice agents                                                                                                                |

@@ -74,7 +74,7 @@ A failed run ends with `{"type":"error","message":"...","code":"..."}` instead o
 
 All adapters support:
 
-- **Authentication** — custom auth function receives the request and returns an `AuthContext`
+- **Authentication** — custom auth function receives the request and returns an `AuthContext`; its `userId` scopes runs, swarms and `/threads/:id` to that user ([Multiple Users](/docs/advanced/multi-user))
 - **Swagger / OpenAPI** — auto-generated spec with Swagger UI at `/docs`
 - **WebSocket** — real-time bidirectional communication (subscribe, run, stop)
 - **SSE Streaming** — Server-Sent Events for agent, workflow, and swarm execution

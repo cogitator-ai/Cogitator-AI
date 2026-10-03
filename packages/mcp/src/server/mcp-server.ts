@@ -6,11 +6,12 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type { Server as HttpServer } from 'node:http';
+import type { IncomingMessage, Server as HttpServer } from 'node:http';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { Tool, ToolContext } from '@cogitator-ai/types';
 import type {
+  MCPCaller,
   MCPServerConfig,
   MCPResourceConfig,
   MCPResourceContent,
@@ -231,20 +232,20 @@ export class MCPServer {
    * unregister* calls made before start() are fully honoured and concurrent
    * HTTP requests never share a single server/transport binding.
    */
-  private buildServer(): McpServer {
+  private buildServer(caller?: MCPCaller): McpServer {
     const server = new McpServer({
       name: this.config.name,
       version: this.config.version,
     });
 
     for (const tool of this.tools.values()) {
-      this.registerMCPTool(server, tool);
+      this.registerMCPTool(server, tool, caller);
     }
     for (const resource of this.resources.values()) {
-      this.registerMCPResource(server, resource);
+      this.registerMCPResource(server, resource, caller);
     }
     for (const prompt of this.prompts.values()) {
-      this.registerMCPPrompt(server, prompt);
+      this.registerMCPPrompt(server, prompt, caller);
     }
 
     return server;
@@ -253,7 +254,7 @@ export class MCPServer {
   /**
    * Register a tool with the MCP server
    */
-  private registerMCPTool(server: McpServer, tool: Tool): void {
+  private registerMCPTool(server: McpServer, tool: Tool, caller?: MCPCaller): void {
     server.registerTool(
       tool.name,
       {
@@ -261,7 +262,7 @@ export class MCPServer {
         inputSchema: this.buildInputSchema(tool),
       },
       async (args: unknown, extra: { signal: AbortSignal }): Promise<MCPCallToolResult> => {
-        return this.executeTool(tool, args, extra.signal);
+        return this.executeTool(tool, args, extra.signal, caller);
       }
     );
   }
@@ -285,12 +286,14 @@ export class MCPServer {
   private async executeTool(
     tool: Tool,
     args: unknown,
-    signal: AbortSignal
+    signal: AbortSignal,
+    caller?: MCPCaller
   ): Promise<MCPCallToolResult> {
     const context: ToolContext = {
       agentId: 'mcp-server',
       runId: `mcp_${randomUUID()}`,
       signal,
+      ...(caller?.userId !== undefined && { userId: caller.userId }),
     };
 
     try {
@@ -324,7 +327,11 @@ export class MCPServer {
   /**
    * Register a resource with the MCP server
    */
-  private registerMCPResource(server: McpServer, config: MCPResourceConfig): void {
+  private registerMCPResource(
+    server: McpServer,
+    config: MCPResourceConfig,
+    caller?: MCPCaller
+  ): void {
     const isTemplate = config.uri.includes('{');
 
     const formatContents = (result: MCPResourceContent | MCPResourceContent[], uriHref: string) => {
@@ -345,7 +352,7 @@ export class MCPServer {
 
     const readResource = async (params: Record<string, string>) => {
       try {
-        return await config.read(params);
+        return await config.read(params, caller);
       } catch (error) {
         this.log('error', `Resource ${config.name} error: ${errorMessageOf(error)}`);
         throw error;
@@ -386,11 +393,11 @@ export class MCPServer {
   /**
    * Register a prompt with the MCP server
    */
-  private registerMCPPrompt(server: McpServer, config: MCPPromptConfig): void {
+  private registerMCPPrompt(server: McpServer, config: MCPPromptConfig, caller?: MCPCaller): void {
     const render = async (args: Record<string, string>) => {
       let result: Awaited<ReturnType<MCPPromptConfig['get']>>;
       try {
-        result = await config.get(args);
+        result = await config.get(args, caller);
       } catch (error) {
         this.log('error', `Prompt ${config.name} error: ${errorMessageOf(error)}`);
         throw error;
@@ -471,6 +478,20 @@ export class MCPServer {
   }
 
   /**
+   * The caller of an HTTP request per `config.auth`: `undefined` when the
+   * server has no `auth`, `null` when the request is refused.
+   */
+  private async authenticate(req: IncomingMessage): Promise<MCPCaller | undefined | null> {
+    if (!this.config.auth) return undefined;
+    try {
+      return (await this.config.auth(req)) ?? null;
+    } catch (error) {
+      this.log('error', `Auth error: ${errorMessageOf(error)}`);
+      return null;
+    }
+  }
+
+  /**
    * Start HTTP server for MCP
    */
   private async startHttpServer(): Promise<void> {
@@ -486,7 +507,7 @@ export class MCPServer {
     this.httpServer = createServer(async (req, res) => {
       res.setHeader('Access-Control-Allow-Origin', corsOrigin);
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Mcp-Session-Id');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id');
       res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
 
       if (req.method === 'OPTIONS') {
@@ -502,7 +523,20 @@ export class MCPServer {
         return;
       }
 
-      const server = this.buildServer();
+      const caller = await this.authenticate(req);
+      if (caller === null) {
+        res.writeHead(401, { 'Content-Type': 'application/json', 'WWW-Authenticate': 'Bearer' });
+        res.end(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            error: { code: -32001, message: 'Unauthorized' },
+            id: null,
+          })
+        );
+        return;
+      }
+
+      const server = this.buildServer(caller);
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
       });

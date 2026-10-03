@@ -137,6 +137,8 @@ Three context strategies are available:
 
 Semantic context (`includeSemanticContext`) is scoped per agent: embeddings whose `metadata.agentId` belongs to another agent are never injected, while embeddings without an `agentId` (shared documents) are visible to every agent.
 
+Pass `userId` to `build()` to scope it per user as well: facts, embeddings and knowledge graph nodes whose `metadata.userId` belongs to another user are left out, while those without one are shared. Agent runs do this with the run's `userId` — see [Multiple Users](/docs/advanced/multi-user).
+
 ## Choosing an Adapter
 
 | Adapter  | Persistence | Speed   | Embeddings | Facts | Best For                           |

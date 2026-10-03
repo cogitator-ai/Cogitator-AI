@@ -2,6 +2,8 @@
  * MCP Integration Types
  */
 
+import type { IncomingMessage } from 'node:http';
+
 export type MCPTransportType = 'stdio' | 'http' | 'sse';
 
 export interface MCPRetryConfig {
@@ -110,7 +112,11 @@ export interface MCPResourceConfig {
   name: string;
   description?: string;
   mimeType?: string;
-  read: (params: Record<string, string>) => Promise<MCPResourceContent | MCPResourceContent[]>;
+  /** `caller` is who `auth` established for the request, on the HTTP transport */
+  read: (
+    params: Record<string, string>,
+    caller?: MCPCaller
+  ) => Promise<MCPResourceContent | MCPResourceContent[]>;
 }
 
 export interface MCPPromptArgumentConfig {
@@ -129,8 +135,30 @@ export interface MCPPromptConfig {
   title?: string;
   description?: string;
   arguments?: MCPPromptArgumentConfig[];
-  get: (args: Record<string, string>) => Promise<MCPPromptResult> | MCPPromptResult;
+  /** `caller` is who `auth` established for the request, on the HTTP transport */
+  get: (
+    args: Record<string, string>,
+    caller?: MCPCaller
+  ) => Promise<MCPPromptResult> | MCPPromptResult;
 }
+
+/**
+ * Who is calling an MCP server over HTTP, as its `auth` function established it.
+ * `userId` reaches tools as `context.userId`.
+ */
+export interface MCPCaller {
+  userId?: string;
+  scopes?: string[];
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Establishes the caller of an HTTP request, typically from its
+ * `Authorization` header. Return `undefined` (or throw) to answer 401.
+ */
+export type MCPAuthFunction = (
+  request: IncomingMessage
+) => MCPCaller | undefined | Promise<MCPCaller | undefined>;
 
 export interface MCPServerConfig {
   /** Server name */
@@ -153,6 +181,13 @@ export interface MCPServerConfig {
 
   /** For HTTP transport: value of the Access-Control-Allow-Origin header (default: '*') */
   corsOrigin?: string;
+
+  /**
+   * For HTTP transport: establishes the caller of every request; requests it
+   * returns `undefined` for are answered 401. Without it the server is open
+   * to anyone who can reach it.
+   */
+  auth?: MCPAuthFunction;
 
   /** Enable logging */
   logging?: boolean;

@@ -19,14 +19,16 @@ No need to run it manually — the example spawns it automatically via stdio tra
 
 ## Examples
 
-| #   | File               | Description                                                                 |
-| --- | ------------------ | --------------------------------------------------------------------------- |
-| 01  | `01-mcp-client.ts` | Connect to MCP server, discover tools, use with an agent                    |
-| 02  | `02-mcp-server.ts` | Expose Cogitator tools over HTTP, call them from an MCP client and an agent |
+| #   | File                 | Description                                                                             |
+| --- | -------------------- | --------------------------------------------------------------------------------------- |
+| 01  | `01-mcp-client.ts`   | Connect to MCP server, discover tools, use with an agent                                |
+| 02  | `02-mcp-server.ts`   | Expose Cogitator tools over HTTP, call them from an MCP client and an agent             |
+| 03  | `03-per-user-mcp.ts` | An agent on your own MCP server: bearer tokens, tools acting per user, thread isolation |
 
 ## Running
 
 ```bash
 npx tsx examples/mcp/01-mcp-client.ts
 npx tsx examples/mcp/02-mcp-server.ts
+npx tsx examples/mcp/03-per-user-mcp.ts
 ```

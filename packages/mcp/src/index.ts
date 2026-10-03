@@ -29,6 +29,8 @@ export type {
   MCPCallToolOptions,
   MCPRetryConfig,
   MCPServerConfig,
+  MCPCaller,
+  MCPAuthFunction,
   MCPTransportType,
   MCPResource,
   MCPResourceContent,

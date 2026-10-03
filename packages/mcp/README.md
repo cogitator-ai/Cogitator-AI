@@ -318,6 +318,7 @@ interface MCPServerConfig {
   host?: string; // Default: 'localhost'
   maxBodySize?: number; // Default: 10 MB, larger bodies get 413
   corsOrigin?: string; // Default: '*'
+  auth?: MCPAuthFunction; // Establishes the caller; undefined → 401
 
   logging?: boolean; // Diagnostic logging to stderr (stdout stays clean for stdio JSON-RPC)
 }
@@ -516,6 +517,34 @@ server.registerTools(myTools);
 await server.start();
 // Server listening on http://0.0.0.0:3001/mcp
 ```
+
+### Authentication and Per-User Tools
+
+Over HTTP the server is open to anyone who can reach it. `auth` establishes the caller of every request; requests it returns `undefined` for (or throws on) get `401`. The caller's `userId` reaches tools as `context.userId`, and resource `read` / prompt `get` handlers get the caller as their second argument:
+
+```typescript
+const server = new MCPServer({
+  name: 'shop',
+  version: '1.0.0',
+  transport: 'http',
+  auth: (request) => {
+    const token = request.headers.authorization?.replace(/^Bearer /, '');
+    const userId = token ? tokens.get(token) : undefined;
+    return userId ? { userId } : undefined;
+  },
+});
+
+server.registerTool(
+  tool({
+    name: 'list_my_orders',
+    description: "List the calling customer's orders",
+    parameters: z.object({}),
+    execute: async (_args, context) => orders.forUser(context.userId!),
+  })
+);
+```
+
+An agent acts for one user by connecting with that user's token (`headers: { Authorization: \`Bearer ${token}\` }`) and running with their `userId` — see [`examples/mcp/03-per-user-mcp.ts`](../../examples/mcp/03-per-user-mcp.ts).
 
 ### Stdio Server (for Claude Desktop)
 

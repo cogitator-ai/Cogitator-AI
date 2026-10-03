@@ -1,0 +1,184 @@
+---
+title: Multiple Users
+description: Serve many users with one agent — each with their own threads, memory and tool credentials, and no way to read each other's conversations.
+---
+
+## Overview
+
+A production agent usually serves many people at once: a support bot for every customer, an assistant for every employee. Cogitator keeps them apart with one value — the `userId` of each run:
+
+- **Threads** belong to the user who started them. A client cannot read or continue another user's conversation by sending its `threadId`.
+- **Memory** (facts, semantic memory, knowledge graph nodes) can be private to a user or shared by everyone the agent serves.
+- **Tools** receive the user as `context.userId`, so they act with that user's data and credentials — including tools from your own MCP server, called with the user's token.
+
+```typescript
+await cog.run(supportAgent, {
+  input: 'Where is my order?',
+  userId: session.userId,
+  threadId: request.body.threadId, // from the client: checked against its owner
+});
+```
+
+## Threads
+
+The run that creates a thread records its `userId` as the owner (`thread.metadata.userId`). When a run passes a `threadId`, the runtime checks it before loading any history:
+
+| Thread                      | Run `userId`  | Result                                               |
+| --------------------------- | ------------- | ---------------------------------------------------- |
+| does not exist              | any           | created, owned by the run's user                     |
+| owned by `alice`            | `alice`       | continues                                            |
+| owned by `alice`            | `bob` or none | fails with `THREAD_ACCESS_DENIED` (HTTP 403)         |
+| no owner                    | none          | continues                                            |
+| no owner                    | `alice`       | fails with `THREAD_ACCESS_DENIED`                    |
+| cannot be read (store down) | any           | fails with `MEMORY_READ_FAILED`, nothing overwritten |
+
+```typescript
+import { CogitatorError, ErrorCode } from '@cogitator-ai/core';
+
+try {
+  await cog.run(agent, { input, userId: 'bob', threadId: 'thread-of-alice' });
+} catch (error) {
+  if (error instanceof CogitatorError && error.code === ErrorCode.THREAD_ACCESS_DENIED) {
+    // 403 — not this user's conversation
+  }
+}
+```
+
+Runs without a `threadId` get a fresh random thread, so there is nothing to check.
+
+### Shared threads
+
+Some threads are meant to be shared: a group chat several users write to, or a thread id your server derives itself and never takes from a client. Pass `threadAccess: 'shared'` to skip the owner check. `@cogitator-ai/channels` does this for every run, since it derives thread ids from the chat it is in.
+
+```typescript
+await cog.run(agent, {
+  input: message.text,
+  userId: message.authorId,
+  threadId: `team-chat:${message.channelId}`,
+  threadAccess: 'shared',
+});
+```
+
+### Threads created before
+
+Threads created before ownership existed, or by runs without a `userId`, have no owner and are open only to callers without one. To hand such a thread to a user, set its owner:
+
+```typescript
+await memory.updateThread(threadId, { ...thread.metadata, userId: 'alice' });
+```
+
+### Your own endpoints
+
+Code that reads threads directly — a "load conversation" endpoint, an export job — checks access with the same rule:
+
+```typescript
+import { assertThreadAccess, ensureThreadAccess } from '@cogitator-ai/core';
+
+const thread = await assertThreadAccess(cog.memory!, threadId, session.userId); // null if missing
+const entries = await cog.memory!.getEntries({ threadId });
+
+await ensureThreadAccess(cog.memory!, threadId, { agentId: agent.id, userId: session.userId }); // creates it for the user when missing
+```
+
+## Server Adapters
+
+Every server adapter takes the user from its `auth` function: agent runs and streams (REST and WebSocket), swarm runs, and the `/threads/:id` routes are all scoped to it. Another user's thread answers `403 THREAD_ACCESS_DENIED`.
+
+```typescript
+import { CogitatorServer } from '@cogitator-ai/express';
+
+const server = new CogitatorServer({
+  app,
+  cogitator,
+  agents: { support },
+  config: {
+    auth: async (req) => {
+      const session = await sessions.verify(req.headers.authorization);
+      return session ? { userId: session.userId } : undefined;
+    },
+  },
+});
+```
+
+See [Server Adapters](/docs/server-adapters) for each framework's `auth` signature.
+
+## Memory
+
+Facts, embeddings and knowledge graph nodes are scoped by `metadata.userId`. Memory with an owner goes only into that user's context; memory without one is shared by everyone the agent serves:
+
+```typescript
+await postgres.addFact({
+  agentId: support.id,
+  content: 'Prefers to be contacted by email',
+  category: 'preference',
+  confidence: 0.9,
+  source: 'user',
+  metadata: { userId: 'alice' }, // only in Alice's context
+});
+
+await postgres.addFact({
+  agentId: support.id,
+  content: 'Support hours are 9:00–17:00 CET',
+  category: 'policy',
+  confidence: 1,
+  source: 'system', // no userId: everyone's context
+});
+```
+
+The runtime builds each run's context for its `userId`. The filter runs inside the vector search (`filter: { userId }`) on the in-memory, Postgres and Qdrant adapters, so other users' memories never crowd out the user's own. Configure what goes into the context with `memory.contextBuilder`:
+
+```typescript
+const cog = new Cogitator({
+  memory: {
+    adapter: 'postgres',
+    postgres: { connectionString: process.env.DATABASE_URL! },
+    embedding: {
+      provider: 'openai',
+      apiKey: process.env.OPENAI_API_KEY!,
+      model: 'text-embedding-3-small',
+    },
+    contextBuilder: {
+      maxTokens: 8000,
+      strategy: 'hybrid',
+      includeFacts: true,
+      includeSemanticContext: true,
+    },
+  },
+});
+```
+
+## Tools and Credentials
+
+A tool learns who it acts for from `context.userId`:
+
+```typescript
+const myInvoices = tool({
+  name: 'my_invoices',
+  description: "List the user's invoices",
+  parameters: z.object({}),
+  execute: async (_args, context) => billing.invoicesOf(context.userId!),
+});
+```
+
+When the tools live on your own MCP server, give each user their own client, connected with their own token. The server's `auth` resolves the token to the user, and its tools see that user as `context.userId`:
+
+```typescript
+async function supportFor(userToken: string): Promise<Agent> {
+  const client = await MCPClient.connect({
+    transport: 'http',
+    url: 'https://api.example.com/mcp',
+    headers: { Authorization: `Bearer ${userToken}` },
+  });
+  return support.clone({ id: support.id, tools: await client.getTools() });
+}
+
+const agent = await supportFor(session.mcpToken);
+await cog.run(agent, { input, userId: session.userId, threadId });
+```
+
+Keep `id: support.id` when cloning, so the user's memory stays attached to the same agent. [MCP Integration](/docs/integrations/mcp#authentication-and-per-user-tools) covers the server side, and [`examples/mcp/03-per-user-mcp.ts`](https://github.com/cogitator-ai/Cogitator-AI/blob/main/examples/mcp/03-per-user-mcp.ts) runs the whole flow.
+
+## Limits
+
+- **A2A.** The A2A server's `auth` only accepts or refuses a credential; it does not tell callers apart. Every authenticated A2A caller is one tenant: give each tenant its own server (or credential-scoped agents) when they must not see each other's tasks.
+- **Tool results in memory.** History stays in its thread, so it is isolated with the thread. Anything a tool writes elsewhere (your database, files, the knowledge graph without `metadata.userId`) is isolated only as far as the tool scopes it.
