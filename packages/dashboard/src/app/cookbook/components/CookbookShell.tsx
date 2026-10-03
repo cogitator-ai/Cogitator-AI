@@ -1,16 +1,24 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState, useLayoutEffect } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import Link from 'next/link';
+import { usePathname, useRouter, useSelectedLayoutSegments } from 'next/navigation';
 import { AnimatePresence, MotionConfig, motion } from 'framer-motion';
 import { ArrowUpRight, Menu, X } from 'lucide-react';
 import { GithubIcon } from '@/components/icons/GithubIcon';
 import { LogoMark, Wordmark } from '@/components/landing/Logo';
-import { COMMUNITY, DOCS_HOME, GITHUB_EXAMPLES_URL, GITHUB_URL } from '@/lib/site';
+import { COMMUNITY, COOKBOOK_URL, DOCS_HOME, GITHUB_EXAMPLES_URL, GITHUB_URL } from '@/lib/site';
 import { recipeCount, sections, type Recipe } from '../recipes';
-import { HashLink } from './primitives';
-import { RecipeNav, SearchSlot } from './RecipeNav';
-import { CookbookContent, OVERVIEW_ID } from './views';
+import { legacyHashPath } from '../routes';
+import { RecipeNav, SearchSlot, type ActiveRoute } from './RecipeNav';
 
 const DRAWER_ID = 'cookbook-drawer';
 const DESKTOP_QUERY = '(min-width: 768px)';
@@ -24,47 +32,72 @@ function matches(recipe: Recipe, query: string): boolean {
 function readHash(): string {
   const raw = window.location.hash.slice(1);
   try {
-    return decodeURIComponent(raw) || OVERVIEW_ID;
+    return decodeURIComponent(raw);
   } catch {
-    return raw || OVERVIEW_ID;
+    return raw;
   }
 }
 
 /**
- * The cookbook: a hash-routed reader with the recipe list on an iron rail (a drawer on phones),
- * search with Cmd/Ctrl+K, and overview, section and recipe views.
+ * Chrome around every cookbook route: the header, the recipe list on an iron rail (a drawer on
+ * phones) with search on Cmd/Ctrl+K, and the footer. The active section and recipe come from the
+ * route; links from the old hash-routed cookbook (`/cookbook#approvals`) are sent to their pages.
  */
-export function CookbookShell() {
-  const [activeId, setActiveId] = useState(OVERVIEW_ID);
+export function CookbookShell({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
+  const router = useRouter();
+  const [sectionId, recipeId] = useSelectedLayoutSegments();
+  const active: ActiveRoute = { sectionId, recipeId };
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [focusDrawerSearch, setFocusDrawerSearch] = useState(false);
   const [query, setQuery] = useState('');
   const [shortcut, setShortcut] = useState('⌘K');
+  const [renderedPath, setRenderedPath] = useState(pathname);
   const [navigated, setNavigated] = useState(false);
   const desktopSearchRef = useRef<HTMLInputElement>(null);
+  const historyNavigation = useRef(false);
+
+  if (renderedPath !== pathname) {
+    setRenderedPath(pathname);
+    setNavigated(true);
+    setDrawerOpen(false);
+    setFocusDrawerSearch(false);
+  }
 
   useEffect(() => {
-    const sync = () => setActiveId(readHash());
-    sync();
-    window.addEventListener('hashchange', sync);
-    window.addEventListener('popstate', sync);
-    return () => {
-      window.removeEventListener('hashchange', sync);
-      window.removeEventListener('popstate', sync);
+    if (pathname !== COOKBOOK_URL) return;
+    const redirect = () => {
+      const target = legacyHashPath(readHash());
+      if (target) router.replace(target);
     };
+    redirect();
+    window.addEventListener('hashchange', redirect);
+    return () => window.removeEventListener('hashchange', redirect);
+  }, [pathname, router]);
+
+  useEffect(() => {
+    const onPopState = () => {
+      historyNavigation.current = true;
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
   }, []);
 
   useEffect(() => {
     if (!/Mac|iPhone|iPad/.test(navigator.userAgent)) setShortcut('Ctrl K');
   }, []);
 
-  const previousId = useRef(activeId);
+  const scrolledPath = useRef(pathname);
 
   useLayoutEffect(() => {
-    if (previousId.current === activeId) return;
-    previousId.current = activeId;
+    if (scrolledPath.current === pathname) return;
+    scrolledPath.current = pathname;
+    if (historyNavigation.current) {
+      historyNavigation.current = false;
+      return;
+    }
     window.scrollTo({ top: 0, behavior: 'instant' });
-  }, [activeId]);
+  }, [pathname]);
 
   const closeDrawer = useCallback(() => {
     setDrawerOpen(false);
@@ -106,16 +139,6 @@ export function CookbookShell() {
     };
   }, [drawerOpen, closeDrawer]);
 
-  const open = useCallback(
-    (id: string) => {
-      setActiveId(id);
-      setNavigated(true);
-      closeDrawer();
-      if (readHash() !== id) window.history.pushState(null, '', `#${id}`);
-    },
-    [closeDrawer]
-  );
-
   const filteredSections = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (!needle) return sections;
@@ -148,13 +171,13 @@ export function CookbookShell() {
               <span aria-hidden className="text-l-brass/35">
                 /
               </span>
-              <HashLink
-                to={OVERVIEW_ID}
-                onOpen={open}
+              <Link
+                href={COOKBOOK_URL}
+                aria-current={pathname === COOKBOOK_URL ? 'page' : undefined}
                 className="vox-label truncate rounded-sm !text-[12.5px] transition-colors hover:!text-[#e2c58c] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-l-brass/70"
               >
                 Cookbook
-              </HashLink>
+              </Link>
               <span className="readout hidden px-2 py-0.5 text-[11.5px] uppercase tracking-[0.1em] lg:inline">
                 {recipeCount} recipes
               </span>
@@ -222,12 +245,7 @@ export function CookbookShell() {
                 <div className="px-4 pb-3 pt-4">
                   <SearchSlot value={query} onChange={setQuery} autoFocus={focusDrawerSearch} />
                 </div>
-                <RecipeNav
-                  sections={filteredSections}
-                  activeId={activeId}
-                  query={query}
-                  onOpen={open}
-                />
+                <RecipeNav sections={filteredSections} active={active} query={query} />
               </motion.div>
             </motion.div>
           )}
@@ -242,7 +260,7 @@ export function CookbookShell() {
               shortcut={shortcut}
             />
           </div>
-          <RecipeNav sections={filteredSections} activeId={activeId} query={query} onOpen={open} />
+          <RecipeNav sections={filteredSections} active={active} query={query} />
         </aside>
 
         <main className="relative min-h-screen pt-16 md:pl-72">
@@ -252,12 +270,12 @@ export function CookbookShell() {
           />
           <div className="relative mx-auto max-w-4xl px-4 pb-16 pt-10 sm:px-8 sm:pt-14">
             <motion.div
-              key={activeId}
+              key={pathname}
               initial={navigated ? { opacity: 0, y: 8 } : false}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.2 }}
             >
-              <CookbookContent activeId={activeId} onOpen={open} />
+              {children}
             </motion.div>
 
             <div className="brass-rule mt-20" aria-hidden />

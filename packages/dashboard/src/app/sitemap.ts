@@ -2,6 +2,9 @@ import type { MetadataRoute } from 'next';
 import { source } from '@/lib/source';
 import { docsLastModified } from '@/lib/docs-seo';
 import { lastModified } from '@/lib/seo';
+import { sections } from '@/app/cookbook/recipes';
+import { recipePath, sectionPath } from '@/app/cookbook/routes';
+import { cookbookLastModified, sectionLastModified } from '@/app/cookbook/seo';
 import { COOKBOOK_URL, DOCS_HOME, LLMS_FULL_TXT_URL, LLMS_TXT_URL, SITE_URL } from '@/lib/site';
 
 type Entry = MetadataRoute.Sitemap[number];
@@ -41,6 +44,16 @@ export default function sitemap(): MetadataRoute.Sitemap {
       )
     );
 
+  const cookbook = sections.flatMap((section) => {
+    const modified = sectionLastModified(section);
+    return [
+      entry(sectionPath(section), modified, 'monthly', 0.7),
+      ...section.recipes.map((recipe) =>
+        entry(recipePath(section, recipe), modified, 'monthly', 0.6)
+      ),
+    ];
+  });
+
   return [
     entry(
       '/',
@@ -48,7 +61,8 @@ export default function sitemap(): MetadataRoute.Sitemap {
       'weekly',
       1
     ),
-    entry(COOKBOOK_URL, lastModified('src/app/cookbook'), 'weekly', 0.9),
+    entry(COOKBOOK_URL, cookbookLastModified(), 'weekly', 0.9),
+    ...cookbook,
     ...docs,
     entry(LLMS_TXT_URL, docsModified, 'weekly', 0.4),
     entry(LLMS_FULL_TXT_URL, docsModified, 'weekly', 0.4),

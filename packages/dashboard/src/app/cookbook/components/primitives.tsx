@@ -1,11 +1,7 @@
-'use client';
-
-import type { ComponentPropsWithoutRef, MouseEvent, ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { Info, Lightbulb, TriangleAlert } from 'lucide-react';
 import { cx } from '@/components/landing/ui';
 import type { Difficulty, RecipeNote } from '../recipes';
-
-export type OpenTarget = (id: string) => void;
 
 /** Plain text where spans in backticks render as inline code. */
 export function InlineText({ text }: { text: string }) {
@@ -26,35 +22,6 @@ export function InlineText({ text }: { text: string }) {
       )}
     </>
   );
-}
-
-/**
- * A real link to a cookbook hash route. Plain clicks route in place; modified clicks (new tab,
- * new window) keep the browser's default behaviour.
- */
-export function HashLink({
-  to,
-  onOpen,
-  onClick,
-  ...props
-}: { to: string; onOpen: OpenTarget } & Omit<ComponentPropsWithoutRef<'a'>, 'href'>) {
-  const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
-    onClick?.(event);
-    if (
-      event.defaultPrevented ||
-      event.button !== 0 ||
-      event.metaKey ||
-      event.ctrlKey ||
-      event.shiftKey ||
-      event.altKey
-    ) {
-      return;
-    }
-    event.preventDefault();
-    onOpen(to);
-  };
-
-  return <a href={`#${to}`} onClick={handleClick} {...props} />;
 }
 
 const levels: Record<Difficulty, number> = { easy: 1, medium: 2, advanced: 3 };

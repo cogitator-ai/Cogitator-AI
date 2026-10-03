@@ -1,29 +1,23 @@
-'use client';
-
 import type { ReactNode } from 'react';
 import Link from 'next/link';
 import { ArrowLeft, ArrowRight, ArrowUpRight, BookOpen, Clock, FileCode } from 'lucide-react';
 import { GithubIcon } from '@/components/icons/GithubIcon';
 import { Badge, Eyebrow, cx } from '@/components/landing/ui';
-import { GITHUB_URL } from '@/lib/site';
-import { findRecipe, recipeCount, sections, type Recipe, type Section } from '../recipes';
+import { COOKBOOK_URL, GITHUB_URL } from '@/lib/site';
+import { recipeCount, sections, type Recipe, type Section } from '../recipes';
+import { recipeNeighbours, recipePath, sectionPath } from '../routes';
 import { CodeWindow } from './CodeWindow';
 import { sectionGlyph } from './glyphs';
 import {
   Callout,
   DifficultyGauge,
-  HashLink,
   InlineText,
   MinorHeading,
   PointList,
   SubHeading,
-  type OpenTarget,
 } from './primitives';
 
-export const OVERVIEW_ID = 'overview';
-
 const EXAMPLES_BLOB_URL = `${GITHUB_URL}/blob/main/examples`;
-const allRecipes = sections.flatMap((section) => section.recipes);
 
 const STANDALONE_SETUP = `mkdir cogitator-recipes && cd cogitator-recipes
 npm init -y && npm pkg set type=module
@@ -60,7 +54,7 @@ function Paragraph({ children }: { children: ReactNode }) {
   return <p className="text-[15px] leading-relaxed text-l-muted">{children}</p>;
 }
 
-function Breadcrumbs({ trail, onOpen }: { trail: Section | undefined; onOpen: OpenTarget }) {
+function Breadcrumbs({ trail }: { trail?: Section }) {
   const crumb =
     'rounded-sm transition-colors hover:text-[#e2c58c] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-l-brass/70';
   return (
@@ -68,27 +62,27 @@ function Breadcrumbs({ trail, onOpen }: { trail: Section | undefined; onOpen: Op
       aria-label="Breadcrumb"
       className="vox-label flex flex-wrap items-center gap-x-2 !text-[12px]"
     >
-      <HashLink to={OVERVIEW_ID} onOpen={onOpen} className={cx(crumb, 'text-l-brass/80')}>
+      <Link href={COOKBOOK_URL} className={cx(crumb, 'text-l-brass/80')}>
         Cookbook
-      </HashLink>
+      </Link>
       {trail && (
         <>
           <span aria-hidden className="text-l-brass/40">
             /
           </span>
-          <HashLink to={trail.id} onOpen={onOpen} className={cx(crumb, 'text-l-brass/80')}>
+          <Link href={sectionPath(trail)} className={cx(crumb, 'text-l-brass/80')}>
             {trail.title}
-          </HashLink>
+          </Link>
         </>
       )}
     </nav>
   );
 }
 
-function SectionCard({ section, onOpen }: { section: Section; onOpen: OpenTarget }) {
+function SectionCard({ section }: { section: Section }) {
   const Glyph = sectionGlyph(section.id);
   return (
-    <HashLink to={section.id} onOpen={onOpen} className={cardClass}>
+    <Link href={sectionPath(section)} className={cardClass}>
       <span className="flex items-center gap-3">
         <span className="flex size-9 shrink-0 items-center justify-center rounded-md border border-l-brass/30 bg-[linear-gradient(180deg,#1d1912,#0c0b09)] text-l-brass shadow-[inset_0_1px_0_rgb(226_197_140/0.15)]">
           <Glyph width={18} height={18} className="block size-[18px] shrink-0" aria-hidden />
@@ -101,13 +95,13 @@ function SectionCard({ section, onOpen }: { section: Section; onOpen: OpenTarget
         </span>
       </span>
       <span className="mt-3 text-sm leading-relaxed text-l-muted">{section.description}</span>
-    </HashLink>
+    </Link>
   );
 }
 
-function RecipeCard({ recipe, onOpen }: { recipe: Recipe; onOpen: OpenTarget }) {
+function RecipeCard({ section, recipe }: { section: Section; recipe: Recipe }) {
   return (
-    <HashLink to={recipe.id} onOpen={onOpen} className={cardClass}>
+    <Link href={recipePath(section, recipe)} className={cardClass}>
       <span className="imperial text-[15.5px] font-semibold leading-snug text-l-text">
         {recipe.title}
       </span>
@@ -125,11 +119,12 @@ function RecipeCard({ recipe, onOpen }: { recipe: Recipe; onOpen: OpenTarget }) 
         aria-hidden
         className="absolute right-4 top-4 size-4 text-l-brass/0 transition-[color,transform] duration-200 group-hover:translate-x-0.5 group-hover:text-l-brass/80 sm:right-5 sm:top-5"
       />
-    </HashLink>
+    </Link>
   );
 }
 
-function Overview({ onOpen }: { onOpen: OpenTarget }) {
+/** The cookbook's landing view: how to run recipes, then every section. */
+export function CookbookOverview() {
   return (
     <>
       <Eyebrow>recipe archive</Eyebrow>
@@ -175,18 +170,19 @@ function Overview({ onOpen }: { onOpen: OpenTarget }) {
       <p className="vox-label !text-[12px]">+++ sections +++</p>
       <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
         {sections.map((section) => (
-          <SectionCard key={section.id} section={section} onOpen={onOpen} />
+          <SectionCard key={section.id} section={section} />
         ))}
       </div>
     </>
   );
 }
 
-function SectionView({ section, onOpen }: { section: Section; onOpen: OpenTarget }) {
+/** One section: its description and a card per recipe. */
+export function SectionView({ section }: { section: Section }) {
   const Glyph = sectionGlyph(section.id);
   return (
     <>
-      <Breadcrumbs trail={undefined} onOpen={onOpen} />
+      <Breadcrumbs />
       <PageTitle>
         <span className="flex items-center gap-3.5">
           <Glyph className="size-7 shrink-0 text-l-brass sm:size-8" aria-hidden />
@@ -199,7 +195,7 @@ function SectionView({ section, onOpen }: { section: Section; onOpen: OpenTarget
       </p>
       <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
         {section.recipes.map((recipe) => (
-          <RecipeCard key={recipe.id} recipe={recipe} onOpen={onOpen} />
+          <RecipeCard key={recipe.id} section={section} recipe={recipe} />
         ))}
       </div>
     </>
@@ -207,19 +203,18 @@ function SectionView({ section, onOpen }: { section: Section; onOpen: OpenTarget
 }
 
 function NeighbourLink({
+  section,
   recipe,
   direction,
-  onOpen,
 }: {
+  section: Section;
   recipe: Recipe;
   direction: 'previous' | 'next';
-  onOpen: OpenTarget;
 }) {
   const isNext = direction === 'next';
   return (
-    <HashLink
-      to={recipe.id}
-      onOpen={onOpen}
+    <Link
+      href={recipePath(section, recipe)}
       className={cx(cardClass, '!p-4', isNext && 'sm:col-start-2 sm:items-end sm:text-right')}
     >
       <span className="vox-label inline-flex items-center gap-1.5 !text-[11.5px]">
@@ -228,27 +223,18 @@ function NeighbourLink({
         {isNext && <ArrowRight className="size-3.5" aria-hidden />}
       </span>
       <span className="mt-1.5 text-[15px] font-medium text-l-text">{recipe.title}</span>
-    </HashLink>
+    </Link>
   );
 }
 
-function RecipeView({
-  recipe,
-  section,
-  onOpen,
-}: {
-  recipe: Recipe;
-  section: Section;
-  onOpen: OpenTarget;
-}) {
-  const index = allRecipes.findIndex((candidate) => candidate.id === recipe.id);
-  const previous = index > 0 ? allRecipes[index - 1] : undefined;
-  const next = allRecipes[index + 1];
+/** A full recipe: what it shows, the code, how to run it and where to read more. */
+export function RecipeView({ recipe, section }: { recipe: Recipe; section: Section }) {
+  const { previous, next } = recipeNeighbours(recipe.id);
   const install = recipe.setup ? `${recipe.install}\n${recipe.setup}` : recipe.install;
 
   return (
     <article>
-      <Breadcrumbs trail={section} onOpen={onOpen} />
+      <Breadcrumbs trail={section} />
       <PageTitle>{recipe.title}</PageTitle>
       <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-2.5">
         <DifficultyGauge level={recipe.difficulty} />
@@ -356,21 +342,10 @@ function RecipeView({
 
       {(previous || next) && (
         <nav aria-label="More recipes" className="mt-14 grid grid-cols-1 gap-3 sm:grid-cols-2">
-          {previous && <NeighbourLink recipe={previous} direction="previous" onOpen={onOpen} />}
-          {next && <NeighbourLink recipe={next} direction="next" onOpen={onOpen} />}
+          {previous && <NeighbourLink {...previous} direction="previous" />}
+          {next && <NeighbourLink {...next} direction="next" />}
         </nav>
       )}
     </article>
   );
-}
-
-/** The view for a hash route: a section, a recipe, or the overview for anything else. */
-export function CookbookContent({ activeId, onOpen }: { activeId: string; onOpen: OpenTarget }) {
-  const section = sections.find((candidate) => candidate.id === activeId);
-  if (section) return <SectionView section={section} onOpen={onOpen} />;
-
-  const found = findRecipe(activeId);
-  if (found) return <RecipeView recipe={found.recipe} section={found.section} onOpen={onOpen} />;
-
-  return <Overview onOpen={onOpen} />;
 }

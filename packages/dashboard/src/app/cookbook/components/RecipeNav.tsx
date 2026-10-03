@@ -1,11 +1,12 @@
 'use client';
 
 import { useEffect, useRef, type Ref } from 'react';
+import Link from 'next/link';
 import { Search, X } from 'lucide-react';
 import { cx } from '@/components/landing/ui';
 import type { Section } from '../recipes';
 import { sectionGlyph } from './glyphs';
-import { HashLink, type OpenTarget } from './primitives';
+import { recipePath, sectionPath } from '../routes';
 
 const litPlate =
   'border-l-brass/45 bg-[linear-gradient(180deg,#23201a,#15130f)] text-[#a8d9c7] [text-shadow:0_0_6px_rgb(127_212_181/0.3)] shadow-[inset_0_1px_0_rgb(226_197_140/0.12),0_0_12px_-4px_rgb(201_164_92/0.35)]';
@@ -65,17 +66,21 @@ export function SearchSlot({
   );
 }
 
+/** The section and recipe the current route shows, from `/cookbook/[section]/[recipe]`. */
+export interface ActiveRoute {
+  sectionId?: string;
+  recipeId?: string;
+}
+
 /** Sections and their recipes as iron plates; the open one is lit brass. */
 export function RecipeNav({
   sections,
-  activeId,
+  active,
   query,
-  onOpen,
 }: {
   sections: Section[];
-  activeId: string;
+  active: ActiveRoute;
   query: string;
-  onOpen: OpenTarget;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -88,20 +93,19 @@ export function RecipeNav({
     if (box.top < listBox.top || box.bottom > listBox.bottom) {
       list.scrollTop += box.top - listBox.top - listBox.height / 3;
     }
-  }, [activeId]);
+  }, [active.sectionId, active.recipeId]);
 
   return (
     <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-8 pt-2">
       <nav aria-label="Recipes" className="space-y-1">
         {sections.map((section) => {
           const Glyph = sectionGlyph(section.id);
-          const sectionOpen = activeId === section.id;
-          const lit = sectionOpen || section.recipes.some((recipe) => recipe.id === activeId);
+          const lit = active.sectionId === section.id;
+          const sectionOpen = lit && !active.recipeId;
           return (
             <div key={section.id}>
-              <HashLink
-                to={section.id}
-                onOpen={onOpen}
+              <Link
+                href={sectionPath(section)}
                 aria-current={sectionOpen ? 'page' : undefined}
                 className={cx(
                   'flex w-full items-center gap-2.5 rounded-lg border px-3 py-2 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-l-brass/70',
@@ -120,15 +124,14 @@ export function RecipeNav({
                 <span className="shrink-0 font-[family-name:var(--font-screen)] text-[11.5px] tabular-nums text-l-faint [text-shadow:none]">
                   {section.recipes.length}
                 </span>
-              </HashLink>
+              </Link>
               <ul className="mb-2 ml-[1.32rem] mt-1 border-l border-l-brass/15">
                 {section.recipes.map((recipe) => {
-                  const selected = activeId === recipe.id;
+                  const selected = lit && active.recipeId === recipe.id;
                   return (
                     <li key={recipe.id}>
-                      <HashLink
-                        to={recipe.id}
-                        onOpen={onOpen}
+                      <Link
+                        href={recipePath(section, recipe)}
                         aria-current={selected ? 'page' : undefined}
                         className={cx(
                           'group relative flex items-baseline gap-2 rounded-r-md py-1.5 pl-3.5 pr-2 text-[13px] leading-snug transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-l-brass/70',
@@ -148,7 +151,7 @@ export function RecipeNav({
                         <span className="shrink-0 font-mono text-[10.5px] text-l-faint/80">
                           {recipe.time}
                         </span>
-                      </HashLink>
+                      </Link>
                     </li>
                   );
                 })}
