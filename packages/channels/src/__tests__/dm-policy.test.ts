@@ -1,7 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { DmPolicyMiddleware } from '../middleware/dm-policy';
 import type { ChannelMessage, MiddlewareContext, Channel } from '@cogitator-ai/types';
-import { existsSync, readFileSync, unlinkSync, mkdirSync } from 'node:fs';
+import {
+  existsSync,
+  readFileSync,
+  unlinkSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -380,6 +388,41 @@ describe('DmPolicyMiddleware', () => {
       const next = vi.fn();
       await mw2.handle(makeMsg({ userId: 'newuser' }), makeCtx(), next);
       expect(next).toHaveBeenCalled();
+    });
+
+    it('expands ~ in storePath to the home directory', async () => {
+      const home = mkdtempSync(join(tmpdir(), 'cogitator-home-'));
+      const savedHome = process.env.HOME;
+      const savedProfile = process.env.USERPROFILE;
+      process.env.HOME = home;
+      process.env.USERPROFILE = home;
+      const storeFile = join(home, 'store', 'dm-allowlist.json');
+      try {
+        const mw = new DmPolicyMiddleware({
+          mode: 'pairing',
+          ownerIds: { telegram: 'owner1' },
+          storePath: '~/store/dm-allowlist.json',
+        });
+        const userCtx = makeCtx();
+        await mw.handle(makeMsg({ userId: 'newuser' }), userCtx, vi.fn());
+        const code = extractPairCode(userCtx.channel.sendText.mock.calls[0][1] as string) ?? '';
+        await mw.handle(makeMsg({ userId: 'owner1', text: `/pair ${code}` }), makeCtx(), vi.fn());
+
+        expect(JSON.parse(readFileSync(storeFile, 'utf-8')).users).toEqual(['telegram:newuser']);
+
+        writeFileSync(storeFile, JSON.stringify({ version: 1, users: ['telegram:stranger'] }));
+        const reloaded = new DmPolicyMiddleware({
+          mode: 'allowlist',
+          storePath: '~/store/dm-allowlist.json',
+        });
+        expect(reloaded.isApproved('telegram', 'stranger')).toBe(true);
+      } finally {
+        if (savedHome === undefined) delete process.env.HOME;
+        else process.env.HOME = savedHome;
+        if (savedProfile === undefined) delete process.env.USERPROFILE;
+        else process.env.USERPROFILE = savedProfile;
+        rmSync(home, { recursive: true, force: true });
+      }
     });
   });
 

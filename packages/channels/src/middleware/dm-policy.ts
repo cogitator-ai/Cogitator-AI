@@ -10,12 +10,14 @@ import {
   prunePending,
   type PendingPairing,
 } from './pairing-codes';
+import { expandHome } from '../paths';
 
 export type DmPolicyMode = 'open' | 'allowlist' | 'pairing' | 'disabled';
 
 export interface DmPolicyConfig {
   mode: DmPolicyMode;
   allowlist?: string[];
+  /** Where approved users are persisted. A leading `~` expands to the home directory. */
   storePath?: string;
   pairingCodeLength?: number;
   pairingExpiresMs?: number;
@@ -51,7 +53,7 @@ export class DmPolicyMiddleware implements GatewayMiddleware {
 
   constructor(config: DmPolicyConfig) {
     this.mode = config.mode;
-    this.storePath = config.storePath ?? DEFAULT_STORE_PATH;
+    this.storePath = config.storePath ? expandHome(config.storePath) : DEFAULT_STORE_PATH;
     this.codeLength = config.pairingCodeLength ?? DEFAULT_PAIRING_CODE_LENGTH;
     this.expiresMs = config.pairingExpiresMs ?? DEFAULT_PAIRING_EXPIRES_MS;
     this.groupPolicy = config.groupPolicy ?? 'open';
