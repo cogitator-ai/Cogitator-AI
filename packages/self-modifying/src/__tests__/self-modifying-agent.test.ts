@@ -1,5 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
-import { SelfModifyingAgent } from '../self-modifying-agent';
+import { describe, it, expect, expectTypeOf, vi } from 'vitest';
+import { SelfModifyingAgent, type SelfModifyingAgentConfig } from '../self-modifying-agent';
+import type { ModeProfileOverrides } from '../meta-reasoning';
 import type {
   Agent,
   LLMBackend,
@@ -532,6 +533,55 @@ describe('SelfModifyingAgent meta-reasoning', () => {
     expect(calls.map((c) => c.temperature)).toEqual([0.5, 0.9]);
     expect(result.adaptationsMade).toHaveLength(1);
     expect(modes).toEqual(['analytical->analytical', 'analytical->creative']);
+  });
+});
+
+describe('SelfModifyingAgent partial mode profiles', () => {
+  it('accepts profiles for some modes and some fields', () => {
+    expectTypeOf<{
+      analytical: { depth: number };
+      creative: { temperature: number };
+    }>().toMatchTypeOf<ModeProfileOverrides>();
+    expectTypeOf<{
+      modeProfiles: { creative: { temperature: number } };
+    }>().toMatchTypeOf<NonNullable<SelfModifyingAgentConfig['metaReasoning']>>();
+    expectTypeOf<{ creative: { temperature: string } }>().not.toMatchTypeOf<ModeProfileOverrides>();
+  });
+
+  it('merges each given field over the default profile of its mode', async () => {
+    const llm = routedLLM({
+      meta: JSON.stringify({
+        onTrack: false,
+        confidence: 0.3,
+        recommendation: {
+          action: 'switch_mode',
+          newMode: 'creative',
+          confidence: 0.9,
+          reasoning: 'try a different approach',
+        },
+      }),
+      agent: vi.fn().mockReturnValueOnce(chatResponse('')).mockReturnValueOnce(chatResponse('42')),
+    });
+    const selfMod = new SelfModifyingAgent({
+      agent: createMockAgent(),
+      llm,
+      config: {
+        toolGeneration: { enabled: false },
+        architectureEvolution: { enabled: false },
+        metaReasoning: {
+          metaAssessmentCooldown: 0,
+          adaptationCooldown: 0,
+          modeProfiles: { analytical: { depth: 5 }, creative: { temperature: 0.95 } },
+        },
+      },
+    });
+    const modes: string[] = [];
+    selfMod.on('strategy_changed', (e) => modes.push(`${e.data.previousMode}->${e.data.newMode}`));
+
+    await selfMod.run('answer');
+
+    expect(modes).toEqual(['analytical->analytical', 'analytical->creative']);
+    expect(agentCalls(llm).map((c) => c.temperature)).toEqual([0.5, 0.95]);
   });
 });
 

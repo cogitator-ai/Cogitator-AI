@@ -5,6 +5,12 @@ export {
 } from './meta-reasoner';
 
 export {
+  mergeModeProfiles,
+  type MetaReasoningOverrides,
+  type ModeProfileOverrides,
+} from './config';
+
+export {
   ObservationCollector,
   type ActionRecord,
   type ObservationContext,

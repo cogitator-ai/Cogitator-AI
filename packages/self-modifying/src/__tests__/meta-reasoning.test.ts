@@ -4,6 +4,7 @@ import {
   ObservationCollector,
   StrategySelector,
   DEFAULT_MODE_PROFILES,
+  mergeModeProfiles,
   buildMetaAssessmentPrompt,
   parseMetaAssessmentResponse,
 } from '../meta-reasoning';
@@ -446,5 +447,27 @@ describe('Meta-reasoning prompts', () => {
   it('handles malformed response', () => {
     const parsed = parseMetaAssessmentResponse('Not a JSON response');
     expect(parsed).toBeNull();
+  });
+});
+
+describe('mergeModeProfiles', () => {
+  it('overrides the given fields of the given modes only', () => {
+    const merged = mergeModeProfiles(DEFAULT_MODE_PROFILES, { creative: { temperature: 0.95 } });
+
+    expect(merged.creative).toEqual({ ...DEFAULT_MODE_PROFILES.creative, temperature: 0.95 });
+    expect(merged.analytical).toEqual(DEFAULT_MODE_PROFILES.analytical);
+  });
+
+  it('gives MetaReasoner complete profiles from partial ones', () => {
+    const reasoner = new MetaReasoner({
+      llm: mockLLM,
+      model: 'test-model',
+      config: { modeProfiles: { reflective: { depth: 7 } } },
+    });
+
+    expect(reasoner.getModeConfig('reflective')).toEqual({
+      ...DEFAULT_MODE_PROFILES.reflective,
+      depth: 7,
+    });
   });
 });

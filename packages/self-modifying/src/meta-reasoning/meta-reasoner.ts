@@ -18,6 +18,7 @@ import {
   type ObservationContext,
 } from './observation-collector';
 import { StrategySelector } from './strategy-selector';
+import { mergeModeProfiles, type MetaReasoningOverrides } from './config';
 import {
   buildMetaAssessmentPrompt,
   parseMetaAssessmentResponse,
@@ -40,7 +41,7 @@ function canonicalTrigger(trigger: MetaTrigger): MetaTrigger {
 export interface MetaReasonerOptions {
   llm: LLMBackend;
   model: string;
-  config?: Partial<MetaReasoningConfig>;
+  config?: MetaReasoningOverrides;
 }
 
 export class MetaReasoner {
@@ -65,10 +66,10 @@ export class MetaReasoner {
     this.config = {
       ...DEFAULT_META_REASONING_CONFIG,
       ...options.config,
-      modeProfiles: {
-        ...DEFAULT_META_REASONING_CONFIG.modeProfiles,
-        ...options.config?.modeProfiles,
-      },
+      modeProfiles: mergeModeProfiles(
+        DEFAULT_META_REASONING_CONFIG.modeProfiles,
+        options.config?.modeProfiles
+      ),
     };
 
     this.collector = new ObservationCollector();

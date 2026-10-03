@@ -10,7 +10,6 @@ import type {
   SelfModifyingConfig,
   ToolSelfGenerationConfig,
   ToolSandboxConfig,
-  MetaReasoningConfig,
   ArchitectureEvolutionConfig,
   ModificationConstraintsConfig,
   ModificationConstraints,
@@ -36,7 +35,7 @@ import { DEFAULT_META_REASONING_CONFIG } from '@cogitator-ai/types';
 
 import { SelfModifyingEventEmitter } from './events';
 import { GapAnalyzer, ToolGenerator, InMemoryGeneratedToolStore } from './tool-generation';
-import { MetaReasoner } from './meta-reasoning';
+import { MetaReasoner, mergeModeProfiles, type MetaReasoningOverrides } from './meta-reasoning';
 import { ParameterOptimizer, type OptimizationResult } from './architecture-evolution';
 import {
   ModificationValidator,
@@ -51,7 +50,7 @@ export interface SelfModifyingAgentConfig {
   toolGeneration?: Partial<Omit<ToolSelfGenerationConfig, 'sandboxConfig'>> & {
     sandboxConfig?: Partial<ToolSandboxConfig>;
   };
-  metaReasoning?: Partial<MetaReasoningConfig>;
+  metaReasoning?: MetaReasoningOverrides;
   architectureEvolution?: Partial<ArchitectureEvolutionConfig>;
   constraints?: Partial<ModificationConstraintsConfig>;
 }
@@ -513,10 +512,10 @@ export class SelfModifyingAgent {
       metaReasoning: {
         ...defaults.metaReasoning,
         ...partial.metaReasoning,
-        modeProfiles: {
-          ...defaults.metaReasoning.modeProfiles,
-          ...partial.metaReasoning?.modeProfiles,
-        },
+        modeProfiles: mergeModeProfiles(
+          defaults.metaReasoning.modeProfiles,
+          partial.metaReasoning?.modeProfiles
+        ),
       },
       architectureEvolution: {
         ...defaults.architectureEvolution,
