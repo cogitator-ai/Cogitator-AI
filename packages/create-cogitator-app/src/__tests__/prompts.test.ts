@@ -1,5 +1,20 @@
-import { describe, it, expect } from 'vitest';
-import { parseArgs } from '../prompts.js';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import path from 'node:path';
+import * as clack from '@clack/prompts';
+import { collectOptions, defaultAnswers, parseArgs } from '../prompts.js';
+
+vi.mock('@clack/prompts', () => {
+  const unexpectedPrompt = () => {
+    throw new Error('prompted although --yes was given');
+  };
+  return {
+    text: vi.fn(unexpectedPrompt),
+    select: vi.fn(unexpectedPrompt),
+    confirm: vi.fn(unexpectedPrompt),
+    cancel: vi.fn(),
+    isCancel: (value: unknown) => typeof value === 'symbol',
+  };
+});
 
 describe('parseArgs', () => {
   it('parses project name from positional arg', () => {
@@ -128,5 +143,62 @@ describe('parseArgs', () => {
   it('returns empty object for no args', () => {
     const result = parseArgs([]);
     expect(result).toEqual({});
+  });
+});
+
+describe('collectOptions with --yes', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('answers every prompt with its default', async () => {
+    vi.stubEnv('npm_config_user_agent', 'npm/10.0.0 node/v22.0.0');
+
+    const options = await collectOptions(parseArgs(['-y']));
+
+    expect(options).toEqual({
+      name: defaultAnswers.name,
+      path: path.resolve(process.cwd(), defaultAnswers.name),
+      template: 'basic',
+      provider: 'ollama',
+      packageManager: 'pnpm',
+      docker: true,
+      git: true,
+    });
+    expect(clack.text).not.toHaveBeenCalled();
+    expect(clack.select).not.toHaveBeenCalled();
+    expect(clack.confirm).not.toHaveBeenCalled();
+  });
+
+  it('keeps the answers given as arguments', async () => {
+    const options = await collectOptions(
+      parseArgs([
+        './apps/bot',
+        '--yes',
+        '-t',
+        'swarm',
+        '-p',
+        'google',
+        '--pm',
+        'bun',
+        '--no-docker',
+        '--no-git',
+      ])
+    );
+
+    expect(options).toMatchObject({
+      name: 'bot',
+      template: 'swarm',
+      provider: 'google',
+      packageManager: 'bun',
+      docker: false,
+      git: false,
+    });
+  });
+
+  it('uses the package manager it was launched with', async () => {
+    vi.stubEnv('npm_config_user_agent', 'yarn/4.0.0 npm/? node/v22.0.0');
+
+    expect((await collectOptions({ yes: true })).packageManager).toBe('yarn');
   });
 });

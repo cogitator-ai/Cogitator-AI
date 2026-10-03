@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { LLMProvider, PackageManager, ProjectOptions, Template } from './types.js';
 import { templateChoices } from './templates/index.js';
 import { detectPackageManager } from './utils/package-manager.js';
+import { defaultModels } from './utils/providers.js';
 
 interface ParsedArgs {
   name?: string;
@@ -57,103 +58,123 @@ export function parseArgs(args: string[]): ParsedArgs {
   return parsed;
 }
 
-export async function collectOptions(args: ParsedArgs): Promise<ProjectOptions> {
-  const rawName =
-    args.name ||
-    ((await p.text({
-      message: 'Where should we create your project?',
-      placeholder: './my-agents',
-      defaultValue: 'my-agents',
-      validate: (value) => {
-        if (value && !value.trim()) return 'Project name is required';
-        return undefined;
-      },
-    })) as string);
+/** What `--yes` answers, and what each prompt suggests. */
+export const defaultAnswers = {
+  name: 'my-agents',
+  template: 'basic',
+  provider: 'ollama',
+  docker: true,
+  git: true,
+} as const satisfies Partial<ProjectOptions>;
 
-  if (p.isCancel(rawName)) {
+function unlessCancelled<T>(answer: T | typeof p.CANCEL_SYMBOL): T {
+  if (p.isCancel(answer)) {
     p.cancel('Operation cancelled.');
     process.exit(0);
   }
+  return answer;
+}
+
+/**
+ * Turn the parsed arguments into project options, asking for whatever they leave
+ * out; with `--yes` nothing is asked and the defaults fill the gaps.
+ */
+export async function collectOptions(args: ParsedArgs): Promise<ProjectOptions> {
+  const interactive = !args.yes;
+
+  const rawName =
+    args.name ||
+    (interactive
+      ? unlessCancelled(
+          await p.text({
+            message: 'Where should we create your project?',
+            placeholder: `./${defaultAnswers.name}`,
+            defaultValue: defaultAnswers.name,
+            validate: (value) => {
+              if (value && !value.trim()) return 'Project name is required';
+              return undefined;
+            },
+          })
+        )
+      : defaultAnswers.name);
 
   const name = rawName.trim();
   const projectName = path.basename(path.normalize(name).replace(/^\.\//, '').replace(/^\.\\/, ''));
   const projectPath = path.resolve(process.cwd(), name);
 
   const template =
-    args.template ||
-    ((await p.select({
-      message: 'Which template would you like?',
-      options: templateChoices,
-    })) as Template);
-
-  if (p.isCancel(template)) {
-    p.cancel('Operation cancelled.');
-    process.exit(0);
-  }
+    args.template ??
+    (interactive
+      ? unlessCancelled(
+          await p.select<Template>({
+            message: 'Which template would you like?',
+            options: templateChoices,
+            initialValue: defaultAnswers.template,
+          })
+        )
+      : defaultAnswers.template);
 
   const provider =
-    args.provider ||
-    ((await p.select({
-      message: 'Which LLM provider?',
-      options: [
-        {
-          value: 'ollama' as const,
-          label: 'Ollama',
-          hint: 'local, free — requires Ollama installed',
-        },
-        { value: 'openai' as const, label: 'OpenAI', hint: 'GPT-4o' },
-        { value: 'anthropic' as const, label: 'Anthropic', hint: 'Claude Sonnet' },
-        { value: 'google' as const, label: 'Google Gemini', hint: 'Gemini 2.5 Flash' },
-      ],
-    })) as LLMProvider);
-
-  if (p.isCancel(provider)) {
-    p.cancel('Operation cancelled.');
-    process.exit(0);
-  }
+    args.provider ??
+    (interactive
+      ? unlessCancelled(
+          await p.select<LLMProvider>({
+            message: 'Which LLM provider?',
+            options: [
+              {
+                value: 'ollama',
+                label: 'Ollama',
+                hint: `${defaultModels.ollama} — local, free, requires Ollama installed`,
+              },
+              { value: 'openai', label: 'OpenAI', hint: defaultModels.openai },
+              { value: 'anthropic', label: 'Anthropic', hint: defaultModels.anthropic },
+              { value: 'google', label: 'Google Gemini', hint: defaultModels.google },
+            ],
+            initialValue: defaultAnswers.provider,
+          })
+        )
+      : defaultAnswers.provider);
 
   const packageManager =
-    args.packageManager ||
-    ((await p.select({
-      message: 'Package manager?',
-      options: [
-        { value: 'pnpm' as const, label: 'pnpm' },
-        { value: 'npm' as const, label: 'npm' },
-        { value: 'yarn' as const, label: 'yarn' },
-        { value: 'bun' as const, label: 'bun' },
-      ],
-      initialValue: detectPackageManager(),
-    })) as PackageManager);
-
-  if (p.isCancel(packageManager)) {
-    p.cancel('Operation cancelled.');
-    process.exit(0);
-  }
+    args.packageManager ??
+    (interactive
+      ? unlessCancelled(
+          await p.select<PackageManager>({
+            message: 'Package manager?',
+            options: [
+              { value: 'pnpm', label: 'pnpm' },
+              { value: 'npm', label: 'npm' },
+              { value: 'yarn', label: 'yarn' },
+              { value: 'bun', label: 'bun' },
+            ],
+            initialValue: detectPackageManager(),
+          })
+        )
+      : detectPackageManager());
 
   const docker =
     args.docker ??
-    ((await p.confirm({
-      message:
-        'Include Docker Compose? (Redis + Postgres' + (provider === 'ollama' ? ' + Ollama)' : ')'),
-      initialValue: true,
-    })) as boolean);
-
-  if (p.isCancel(docker)) {
-    p.cancel('Operation cancelled.');
-    process.exit(0);
-  }
+    (interactive
+      ? unlessCancelled(
+          await p.confirm({
+            message:
+              'Include Docker Compose? (Redis + Postgres' +
+              (provider === 'ollama' ? ' + Ollama)' : ')'),
+            initialValue: defaultAnswers.docker,
+          })
+        )
+      : defaultAnswers.docker);
 
   const git =
     args.git ??
-    ((await p.confirm({
-      message: 'Initialize git repository?',
-      initialValue: true,
-    })) as boolean);
-
-  if (p.isCancel(git)) {
-    p.cancel('Operation cancelled.');
-    process.exit(0);
-  }
+    (interactive
+      ? unlessCancelled(
+          await p.confirm({
+            message: 'Initialize git repository?',
+            initialValue: defaultAnswers.git,
+          })
+        )
+      : defaultAnswers.git);
 
   return {
     name: projectName,

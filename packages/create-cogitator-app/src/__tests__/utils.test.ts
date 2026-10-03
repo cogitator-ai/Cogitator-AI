@@ -187,30 +187,50 @@ describe('generateCogitatorYml', () => {
     expect(file.path).toBe('cogitator.yml');
   });
 
-  it('includes provider name', () => {
-    const file = generateCogitatorYml('openai');
-    expect(file.content).toContain('provider: openai');
+  it('nests the provider and model under llm, where @cogitator-ai/config reads them', () => {
+    expect(generateCogitatorYml('openai').content).toBe(
+      ['llm:', '  defaultProvider: openai', '  defaultModel: gpt-6.1-sol', ''].join('\n')
+    );
   });
 
-  it('includes model name', () => {
-    const file = generateCogitatorYml('openai');
-    expect(file.content).toContain('model: gpt-6.1-sol');
+  it('points ollama at OLLAMA_BASE_URL, falling back to the local server', () => {
+    expect(generateCogitatorYml('ollama').content).toBe(
+      [
+        'llm:',
+        '  defaultProvider: ollama',
+        '  defaultModel: qwen3:8b',
+        '  providers:',
+        '    ollama:',
+        '      baseUrl: ${OLLAMA_BASE_URL:-http://localhost:11434}',
+        '',
+      ].join('\n')
+    );
   });
 
-  it('includes ollama baseUrl for ollama provider', () => {
-    const file = generateCogitatorYml('ollama');
-    expect(file.content).toContain('baseUrl: http://localhost:11434');
+  it('configures the redis memory the memory template connects to', () => {
+    expect(generateCogitatorYml('google', 'memory').content).toBe(
+      [
+        'llm:',
+        '  defaultProvider: google',
+        '  defaultModel: gemini-3.8-flash',
+        '',
+        'memory:',
+        '  adapter: redis',
+        '  redis:',
+        '    url: ${REDIS_URL:-redis://localhost:6379}',
+        '',
+      ].join('\n')
+    );
   });
 
-  it('does not include ollama section for other providers', () => {
-    const file = generateCogitatorYml('openai');
-    expect(file.content).not.toContain('baseUrl:');
-  });
-
-  it('uses gemini-3.8-flash for google provider', () => {
-    const file = generateCogitatorYml('google');
-    expect(file.content).toContain('model: gemini-3.8-flash');
-    expect(file.content).not.toContain('gemini-2.');
+  it('writes no top-level keys outside the config schema', () => {
+    for (const provider of ['ollama', 'openai', 'anthropic', 'google'] as const) {
+      const topLevel = generateCogitatorYml(provider, 'memory')
+        .content.split('\n')
+        .filter((line) => /^\S/.test(line))
+        .map((line) => line.replace(/:.*$/, ''));
+      expect(topLevel).toEqual(['llm', 'memory']);
+    }
   });
 });
 
@@ -253,6 +273,13 @@ describe('generateReadme', () => {
   it('includes template name in description', () => {
     const file = generateReadme({ ...baseOpts, template: 'swarm' });
     expect(file.content).toContain('Multi-Agent Swarm');
+  });
+
+  it('links to the documentation site and the repository', () => {
+    const file = generateReadme(baseOpts);
+    expect(file.content).toContain('(https://cogitator.app/docs)');
+    expect(file.content).toContain('(https://github.com/cogitator-ai/Cogitator-AI)');
+    expect(file.content).not.toContain('cogitator.dev');
   });
 });
 

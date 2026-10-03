@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { getTemplate, templateChoices } from '../templates/index.js';
 import { defaultModels } from '../utils/providers.js';
 import { generatePnpmWorkspace } from '../templates/base/pnpm-workspace.js';
@@ -151,6 +152,12 @@ describe('workflow template', () => {
     expect(indexTs.content).not.toContain('ctx.results');
   });
 
+  it('declares its state as a type alias, which satisfies the Record-shaped WorkflowState constraint', () => {
+    const indexTs = template.files(opts).find((f) => f.path === 'src/index.ts')!;
+    expect(indexTs.content).toContain('type WorkflowState = {');
+    expect(indexTs.content).not.toContain('interface WorkflowState');
+  });
+
   it('uses .fn when passing to addNode', () => {
     const files = template.files(opts);
     const indexTs = files.find((f) => f.path === 'src/index.ts')!;
@@ -181,6 +188,12 @@ describe('swarm template', () => {
     const indexTs = files.find((f) => f.path === 'src/index.ts')!;
     expect(indexTs.content).not.toContain('coordination:');
     expect(indexTs.content).not.toContain('maxParallelTasks');
+  });
+
+  it('logs the strategy from the swarm, not from the run result', () => {
+    const indexTs = template.files(opts).find((f) => f.path === 'src/index.ts')!;
+    expect(indexTs.content).toContain('team.strategyType');
+    expect(indexTs.content).not.toContain('result.strategy');
   });
 
   it('uses correct hierarchical config fields', () => {
@@ -218,6 +231,20 @@ describe('template provider interpolation', () => {
       const files = template.files(opts);
       const indexTs = files.find((f) => f.path === 'src/index.ts')!;
       expect(indexTs.content).toContain(defaultModels[provider]);
+    });
+  }
+});
+
+describe('template dependencies', () => {
+  const coreZod = (
+    JSON.parse(readFileSync(new URL('../../../core/package.json', import.meta.url), 'utf-8')) as {
+      dependencies: Record<string, string>;
+    }
+  ).dependencies.zod;
+
+  for (const { value } of templateChoices) {
+    it(`${value} template depends on the zod range @cogitator-ai/core uses`, () => {
+      expect(getTemplate(value).dependencies().zod).toBe(coreZod);
     });
   }
 });

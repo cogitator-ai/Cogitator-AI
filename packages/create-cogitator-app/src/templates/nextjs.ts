@@ -1,5 +1,6 @@
 import type { ProjectOptions, TemplateGenerator } from '../types.js';
 import { defaultModels, providerConfig } from '../utils/providers.js';
+import { ZOD_VERSION } from './versions.js';
 
 export const nextjsTemplate: TemplateGenerator = {
   files(options: ProjectOptions) {
@@ -232,7 +233,7 @@ export const nextjsTemplate: TemplateGenerator = {
       next: '^15.0.0',
       react: '^19.0.0',
       'react-dom': '^19.0.0',
-      zod: '^3.23.0',
+      zod: ZOD_VERSION,
     };
   },
 

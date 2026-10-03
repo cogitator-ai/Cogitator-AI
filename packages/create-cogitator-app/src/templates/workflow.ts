@@ -1,5 +1,6 @@
 import type { ProjectOptions, TemplateGenerator } from '../types.js';
 import { defaultModels, providerConfig } from '../utils/providers.js';
+import { ZOD_VERSION } from './versions.js';
 
 export const workflowTemplate: TemplateGenerator = {
   files(options: ProjectOptions) {
@@ -45,7 +46,7 @@ export const workflowTemplate: TemplateGenerator = {
       providerConfig(options.provider),
       `})`,
       ``,
-      `interface WorkflowState {`,
+      `type WorkflowState = {`,
       `  input: string`,
       `  analysis?: string`,
       `  processed?: string`,
@@ -108,7 +109,7 @@ export const workflowTemplate: TemplateGenerator = {
     return {
       '@cogitator-ai/core': 'latest',
       '@cogitator-ai/workflows': 'latest',
-      zod: '^3.23.0',
+      zod: ZOD_VERSION,
     };
   },
 

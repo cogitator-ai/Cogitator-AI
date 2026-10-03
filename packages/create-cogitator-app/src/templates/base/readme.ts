@@ -1,5 +1,6 @@
 import type { ProjectOptions, TemplateFile } from '../../types.js';
 import { devCommand } from '../../utils/package-manager.js';
+import { DOCS_URL, REPO_URL } from '../../utils/links.js';
 
 const templateNames: Record<string, string> = {
   basic: 'Basic Agent',
@@ -17,7 +18,7 @@ export function generateReadme(options: ProjectOptions): TemplateFile {
   const content = [
     `# ${options.name}`,
     '',
-    `> Created with [create-cogitator-app](https://github.com/cogitator-ai/cogitator) — ${templateName} template`,
+    `> Created with [create-cogitator-app](${REPO_URL}) — ${templateName} template`,
     '',
     '## Getting Started',
     '',
@@ -34,8 +35,8 @@ export function generateReadme(options: ProjectOptions): TemplateFile {
       : []),
     '## Learn More',
     '',
-    '- [Cogitator Documentation](https://cogitator.dev/docs)',
-    '- [GitHub Repository](https://github.com/cogitator-ai/cogitator)',
+    `- [Cogitator Documentation](${DOCS_URL})`,
+    `- [GitHub Repository](${REPO_URL})`,
     '',
   ];
 

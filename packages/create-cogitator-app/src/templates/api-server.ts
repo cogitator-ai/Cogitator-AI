@@ -1,5 +1,6 @@
 import type { ProjectOptions, TemplateGenerator } from '../types.js';
 import { defaultModels, providerConfig } from '../utils/providers.js';
+import { ZOD_VERSION } from './versions.js';
 
 export const apiServerTemplate: TemplateGenerator = {
   files(options: ProjectOptions) {
@@ -89,7 +90,7 @@ export const apiServerTemplate: TemplateGenerator = {
       '@cogitator-ai/core': 'latest',
       '@cogitator-ai/express': 'latest',
       express: '^4.21.0',
-      zod: '^3.23.0',
+      zod: ZOD_VERSION,
     };
   },
 

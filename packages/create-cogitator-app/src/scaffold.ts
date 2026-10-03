@@ -44,7 +44,7 @@ function collectFiles(options: ProjectOptions): TemplateFile[] {
   files.push(...template.files(options));
   files.push(generateGitignore());
   files.push(generateEnvExample(options.provider, options.template));
-  files.push(generateCogitatorYml(options.provider));
+  files.push(generateCogitatorYml(options.provider, options.template));
   files.push(generateReadme(options));
 
   if (options.template !== 'nextjs') {
