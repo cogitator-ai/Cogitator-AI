@@ -8,6 +8,8 @@ Distributed job queue for Cogitator agent execution. Built on BullMQ for reliabl
 pnpm add @cogitator-ai/worker @cogitator-ai/core ioredis
 ```
 
+BullMQ and `@cogitator-ai/swarms` come as dependencies; `ioredis` is a peer dependency. Website docs: [Worker Queues](https://cogitator.app/docs/deployment/worker-queues), [Distributed Swarms](https://cogitator.app/docs/swarms/distributed).
+
 ## Features
 
 - **BullMQ-Based** - Reliable job processing with Redis
@@ -61,7 +63,7 @@ const pool = new WorkerPool({
   concurrency: 5,
   workerCount: 2,
   cogitator: new Cogitator({
-    llm: { providers: { openai: { apiKey: process.env.OPENAI_API_KEY } } },
+    llm: { providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } } },
   }),
   tools: [searchTool], // implementations for tools referenced by serialized agents
 });
@@ -146,10 +148,11 @@ const agentConfig: SerializedAgent = {
 };
 
 const job = await queue.addAgentJob(agentConfig, 'Research quantum computing', {
-  threadId: 'thread-123',
+  threadId: 'thread-123', // default: a new id per job
+  userId: 'user-456', // the run's userId: owns the thread, reaches tools as context.userId
   priority: 1, // Lower = higher priority
   delay: 5000, // Delay 5 seconds
-  metadata: { userId: 'user-456' },
+  metadata: { source: 'api' },
 });
 ```
 

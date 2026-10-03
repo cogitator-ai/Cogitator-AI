@@ -4,11 +4,11 @@ WASM-based tools for Cogitator agents. Secure, sandboxed tool execution using We
 
 ## Features
 
-- 🚀 **100-500x faster cold start** than Docker containers
-- 🔒 **Memory-safe execution** in isolated Extism sandbox
-- 📦 **~20x lower memory footprint** compared to containers
-- 🛠️ **Custom tool framework** - create your own WASM tools
-- 🔄 **Hot-reload support** - update WASM modules without restart
+- **14 pre-built tools** - calculator, JSON, hash, Base64, slug, validation, diff, regex, CSV, Markdown, XML, datetime, compression, Ed25519 signing
+- **Isolated execution** - every call runs in an Extism sandbox in a worker thread, without filesystem or network access
+- **Fast startup** - no container to start; compiled modules are cached per file
+- **Custom tool framework** - `defineWasmTool()` for your own WASM modules
+- **Hot-reload support** - `WasmToolManager` reloads modules when their files change
 
 ## Installation
 
@@ -17,6 +17,8 @@ pnpm add @cogitator-ai/wasm-tools
 ```
 
 `@extism/extism` (>= 2.0.0-rc13, the current `latest` on npm) is installed as a dependency; the pre-built plugins are compiled with `extism-js` and need its host functions and WASI.
+
+Website docs: [WASM Tools](https://cogitator.app/docs/tools/wasm-tools), [Sandbox](https://cogitator.app/docs/deployment/sandbox).
 
 ## How Tools Execute
 
@@ -60,7 +62,8 @@ import { Cogitator, Agent } from '@cogitator-ai/core';
 
 const agent = new Agent({
   name: 'utility-assistant',
-  model: 'gpt-6.1-sol',
+  model: 'openai/gpt-6.1-sol',
+  instructions: 'Use your tools for calculations and data transformations.',
   tools: [
     createCalcTool(),
     createJsonTool(),
@@ -79,7 +82,9 @@ const agent = new Agent({
   ],
 });
 
-const cog = new Cogitator({ llm: { defaultProvider: 'openai' } });
+const cog = new Cogitator({
+  llm: { providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } } },
+});
 const result = await cog.run(agent, {
   input: 'Calculate the SHA-256 hash of "hello world"',
 });
@@ -91,6 +96,7 @@ Create custom tools that run in the WASM sandbox:
 
 ```typescript
 import { defineWasmTool } from '@cogitator-ai/wasm-tools';
+import { Agent } from '@cogitator-ai/core';
 import { z } from 'zod';
 
 const hashTool = defineWasmTool({
@@ -109,6 +115,8 @@ const hashTool = defineWasmTool({
 
 const agent = new Agent({
   name: 'hasher',
+  model: 'openai/gpt-6.1-sol',
+  instructions: 'Hash text on request.',
   tools: [hashTool],
 });
 ```
@@ -137,12 +145,16 @@ const calcTool = await manager.load('./plugins/calc.wasm');
 // Get all tools for agent
 const agent = new Agent({
   name: 'wasm-agent',
+  model: 'openai/gpt-6.1-sol',
+  instructions: 'Use the loaded tools.',
   tools: manager.getTools(),
 });
 
 // Tools automatically use the latest plugin version after reload
-const cogitator = new Cogitator({ llm: { defaultProvider: 'openai' } });
-await cogitator.run(agent, 'Calculate 2 + 2');
+const cogitator = new Cogitator({
+  llm: { providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } } },
+});
+await cogitator.run(agent, { input: 'Calculate 2 + 2' });
 
 // Cleanup when done
 await manager.close();
@@ -360,7 +372,7 @@ const signing = createSigningTool({ timeout: 10000 });
 // Verify: { operation: "verify", algorithm: "ed25519", message: "hello", publicKey: "...", signature: "..." }
 ```
 
-WASM has no secure random source, so `signingToolSchema` generates a 32-byte seed on the host with `node:crypto` when `generateKeypair` is called without `seed`; the seed is the private key. Keys and signatures use `encoding: 'hex'` (default) or `'base64'`. Signatures are RFC 8032 Ed25519 and interoperate with `node:crypto`; non-canonical or off-curve public keys fail verification. Empty messages are allowed.
+WASM has no secure random source, so the tool generates a 32-byte seed on the host with `node:crypto` when `generateKeypair` is called without `seed`; the seed is the private key. Keys and signatures use `encoding: 'hex'` (default) or `'base64'`. Signatures are RFC 8032 Ed25519 and interoperate with `node:crypto`; non-canonical or off-curve public keys fail verification. Empty messages are allowed.
 
 ### getWasmPath(name)
 
@@ -391,7 +403,7 @@ interface WasmToolCallbacks {
   onError?: (name: string, path: string, error: Error) => void;
 }
 
-class WasmToolManager {
+declare class WasmToolManager {
   constructor(options?: WasmToolManagerOptions);
 
   // Watch a glob pattern for WASM files
@@ -419,7 +431,7 @@ Manager tools call the module's exported `run` function with the JSON-encoded pa
 
 ### Legacy Exports
 
-For direct sandbox usage:
+For direct sandbox usage (pre-built modules are also reachable as `@cogitator-ai/wasm-tools/wasm/<name>.wasm`):
 
 | Export             | Description                               |
 | ------------------ | ----------------------------------------- |

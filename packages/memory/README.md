@@ -15,6 +15,8 @@ pnpm add mongodb  # For MongoDB adapter
 pnpm add @qdrant/js-client-rest  # For Qdrant embedding adapter
 ```
 
+With `@cogitator-ai/core` you usually configure memory on the runtime (`new Cogitator({ memory: { adapter: 'postgres', postgres: { ... } } })`) and read it with `await cog.getMemory()`; the adapters below are for direct use. Website docs: [Memory](https://cogitator.app/docs/memory), [Adapters](https://cogitator.app/docs/memory/adapters), [Embeddings](https://cogitator.app/docs/memory/embeddings), [Hybrid Search](https://cogitator.app/docs/memory/hybrid-search), [Knowledge Graphs](https://cogitator.app/docs/memory/knowledge-graphs).
+
 ## Features
 
 - **Multiple Adapters** - In-memory, Redis (standalone + cluster), PostgreSQL with pgvector, SQLite, MongoDB, Qdrant
@@ -24,10 +26,10 @@ pnpm add @qdrant/js-client-rest  # For Qdrant embedding adapter
 - **Context Builder** - Token-aware context with `recent`, `relevant` (embedding-ranked) and `hybrid` strategies
 - **Scoped Semantic Memory** - Embeddings tagged with `metadata.agentId` / `metadata.threadId` never leak to other agents
 - **Sessions & Compaction** - `SessionManager` for channel sessions, `CompactionService` for summarizing long histories
-- **Embedding Services** - OpenAI and Ollama embedding integration
+- **Embedding Services** - OpenAI, Ollama and Google embedding integration
 - **Semantic Search** - Vector similarity search with pgvector
 - **Hybrid Search** - BM25 + Vector with Reciprocal Rank Fusion
-- **Facts Storage** - Store and retrieve agent knowledge
+- **Facts Storage** - Store and retrieve agent knowledge (`FactAdapter` on PostgreSQL, `CoreFactsStore` on SQLite)
 - **Knowledge Graph** - Entity-relationship memory with multi-hop traversal
 - **Zod Schemas** - Type-safe configuration validation
 
@@ -46,11 +48,13 @@ const thread = unwrap(await memory.createThread('agent-1', { topic: 'greeting' }
 await memory.addEntry({
   threadId: thread.id,
   message: { role: 'user', content: 'Hello!' },
+  tokenCount: 2,
 });
 
 await memory.addEntry({
   threadId: thread.id,
   message: { role: 'assistant', content: 'Hi there!' },
+  tokenCount: 3,
 });
 
 const builder = new ContextBuilder(
@@ -67,7 +71,16 @@ const context = await builder.build({
 console.log(context.messages);
 ```
 
-Adapter calls return a `MemoryResult` — `{ success: true, data }` or `{ success: false, error }` — instead of throwing. `unwrap(result)` returns the data or throws an `Error` with the adapter's message; check `result.success` yourself where a failure is expected.
+Adapter calls return a `MemoryResult` — `{ success: true, data }` or `{ success: false, error }` — instead of throwing. `unwrap(result)` returns the data or throws an `Error` with the adapter's message; check `result.success` yourself where a failure is expected:
+
+```typescript
+const result = await memory.getThread('thread_123');
+if (!result.success) {
+  console.error('Memory unavailable:', result.error);
+} else if (result.data) {
+  console.log(result.data.metadata);
+}
+```
 
 ---
 
@@ -131,9 +144,11 @@ import { SQLiteAdapter } from '@cogitator-ai/memory';
 
 const memory = new SQLiteAdapter({
   provider: 'sqlite',
-  path: './cogitator.db',
+  path: './cogitator.db', // ':memory:' for an in-memory database
   walMode: true,
 });
+
+await memory.connect();
 ```
 
 ### MongoDB Adapter
@@ -146,6 +161,8 @@ const memory = new MongoDBAdapter({
   uri: 'mongodb://localhost:27017',
   database: 'cogitator',
 });
+
+await memory.connect();
 ```
 
 ### Qdrant Adapter (Embedding)
@@ -159,7 +176,11 @@ const embeddings = new QdrantAdapter({
   collection: 'cogitator',
   dimensions: 1536,
 });
+
+await embeddings.connect();
 ```
+
+`QdrantAdapter` is an `EmbeddingAdapter` (store and search vectors), not a thread store; pair it with one of the adapters above.
 
 ### Factory Function
 
@@ -187,7 +208,11 @@ const qdrant = await createEmbeddingAdapter({
   provider: 'qdrant',
   dimensions: 1536,
 });
+
+await postgres.connect(); // the factories create adapters; connect them before use
 ```
+
+`createMemoryAdapter` loads the adapter's driver lazily, so only the drivers you use need to be installed.
 
 ---
 
@@ -220,13 +245,14 @@ interface MemoryAdapter {
 `createThread(agentId, metadata, threadId)` with an existing `threadId` is an upsert: entries and `createdAt` are kept and only the metadata is updated, so it is safe to call on every run.
 
 ```typescript
-const result = await memory.createThread('agent-1', {
-  topic: 'support',
-  user: 'user-123',
-});
-const thread = result.data!;
+const thread = unwrap(
+  await memory.createThread('agent-1', {
+    topic: 'support',
+    user: 'user-123',
+  })
+);
 
-const threadResult = await memory.getThread(thread.id);
+const found = unwrap(await memory.getThread(thread.id)); // Thread | null
 
 await memory.updateThread(thread.id, {
   resolved: true,
@@ -238,21 +264,26 @@ await memory.deleteThread(thread.id);
 ### Entry Operations
 
 ```typescript
-const entry = await memory.addEntry({
-  threadId: thread.id,
-  message: { role: 'user', content: 'Hello' },
-  tokenCount: 10,
-});
+const entry = unwrap(
+  await memory.addEntry({
+    threadId: thread.id,
+    message: { role: 'user', content: 'Hello' },
+    tokenCount: 10,
+  })
+);
 
-const entries = await memory.getEntries({
-  threadId: thread.id,
-  limit: 50,
-  includeToolCalls: true,
-});
+const entries = unwrap(
+  await memory.getEntries({
+    threadId: thread.id,
+    limit: 50, // the most recent 50, oldest first
+    includeToolCalls: true,
+    // before / after: Date bounds
+  })
+);
 
-const single = await memory.getEntry(entry.data!.id);
+const single = unwrap(await memory.getEntry(entry.id));
 
-await memory.deleteEntry(entry.data!.id);
+await memory.deleteEntry(entry.id);
 
 await memory.clearThread(thread.id);
 ```
@@ -273,6 +304,8 @@ interface ContextBuilderConfig {
   includeSystemPrompt?: boolean;
   includeFacts?: boolean;
   includeSemanticContext?: boolean;
+  includeGraphContext?: boolean;
+  graphContextOptions?: GraphContextOptions;
 }
 ```
 
@@ -346,6 +379,7 @@ interface BuiltContext {
   messages: Message[];
   facts: Fact[];
   semanticResults: (Embedding & { score: number })[];
+  graphContext?: GraphContext; // with includeGraphContext and a graph adapter
   tokenCount: number;
   truncated: boolean;
   metadata: {
@@ -390,6 +424,26 @@ await sessions.compact(session.id, { strategy: 'summary', threshold: 8000, keepR
 
 ---
 
+## Core Facts
+
+`CoreFactsStore` keeps a small set of key/value facts about the user in SQLite (with history), formatted for a system prompt:
+
+```typescript
+import { CoreFactsStore } from '@cogitator-ai/memory';
+
+const facts = new CoreFactsStore({ path: './facts.db' }); // or { db } to share a better-sqlite3 database
+await facts.initialize();
+
+await facts.set('name', 'Alice');
+await facts.get('name'); // 'Alice'
+await facts.getAll(); // { name: 'Alice' }
+await facts.getHistory('name'); // [{ value, setAt }]
+const prompt = await facts.formatForPrompt();
+await facts.close();
+```
+
+---
+
 ## Token Counting
 
 Simple token estimation without tiktoken dependency.
@@ -425,10 +479,12 @@ import { OpenAIEmbeddingService, createEmbeddingService } from '@cogitator-ai/me
 
 const embeddings = new OpenAIEmbeddingService({
   apiKey: process.env.OPENAI_API_KEY!,
-  model: 'text-embedding-3-small',
+  model: 'text-embedding-3-small', // default
+  dimensions: 512, // optional, text-embedding-3-* only
 });
 
-const embeddings = createEmbeddingService({
+// or through the factory
+const viaFactory = createEmbeddingService({
   provider: 'openai',
   apiKey: process.env.OPENAI_API_KEY!,
 });
@@ -448,7 +504,7 @@ const embeddings = new OllamaEmbeddingService({
   baseUrl: 'http://localhost:11434',
 });
 
-const embeddings = createEmbeddingService({
+const viaFactory = createEmbeddingService({
   provider: 'ollama',
   model: 'nomic-embed-text',
 });
@@ -467,7 +523,7 @@ const embeddings = new GoogleEmbeddingService({
   dimensions: 768,
 });
 
-const embeddings = createEmbeddingService({
+const viaFactory = createEmbeddingService({
   provider: 'google',
   apiKey: process.env.GOOGLE_API_KEY!,
 });
@@ -530,15 +586,15 @@ const hybridResults = await search.search({
 });
 
 // Results include both scores
-hybridResults.data.forEach((result) => {
+for (const result of unwrap(hybridResults)) {
   console.log(`${result.content} — score: ${result.score}`);
   console.log(`  vector: ${result.vectorScore}, keyword: ${result.keywordScore}`);
-});
+}
 ```
 
 ### Document Indexing
 
-For keyword search, documents must be indexed:
+With a `keywordAdapter`, keyword search runs on that adapter's own index (embeddings added to `InMemoryEmbeddingAdapter` or `PostgresAdapter` are searchable right away). Without one, `HybridSearch` keeps a local BM25 index that you fill yourself (it ignores `filter`):
 
 ```typescript
 // Add documents to BM25 index
@@ -653,12 +709,12 @@ import type {
 ### Conversation History
 
 ```typescript
-import { InMemoryAdapter } from '@cogitator-ai/memory';
+import { InMemoryAdapter, countMessageTokens, unwrap } from '@cogitator-ai/memory';
 
 const memory = new InMemoryAdapter();
 await memory.connect();
 
-const thread = await memory.createThread('chatbot');
+const thread = unwrap(await memory.createThread('chatbot'));
 
 const messages = [
   { role: 'user' as const, content: 'What is AI?' },
@@ -668,15 +724,18 @@ const messages = [
 
 for (const msg of messages) {
   await memory.addEntry({
-    threadId: thread.data!.id,
+    threadId: thread.id,
     message: msg,
+    tokenCount: countMessageTokens(msg),
   });
 }
 
-const history = await memory.getEntries({
-  threadId: thread.data!.id,
-  limit: 10,
-});
+const history = unwrap(
+  await memory.getEntries({
+    threadId: thread.id,
+    limit: 10,
+  })
+);
 ```
 
 ### Token-Limited Context
@@ -708,7 +767,7 @@ console.log(
 ### Semantic Memory with PostgreSQL
 
 ```typescript
-import { PostgresAdapter, OpenAIEmbeddingService } from '@cogitator-ai/memory';
+import { PostgresAdapter, OpenAIEmbeddingService, unwrap } from '@cogitator-ai/memory';
 
 const memory = new PostgresAdapter({
   provider: 'postgres',
@@ -722,7 +781,22 @@ const embeddings = new OpenAIEmbeddingService({
 await memory.connect();
 
 const content = 'Machine learning is a subset of AI...';
-const vector = await embeddings.embed(content);
+await memory.addEmbedding({
+  sourceId: 'doc-1',
+  sourceType: 'document',
+  content,
+  vector: await embeddings.embed(content),
+  metadata: { agentId: 'agent-1' },
+});
+
+const matches = unwrap(
+  await memory.search({
+    vector: await embeddings.embed('What is ML?'),
+    limit: 5,
+    threshold: 0.7,
+    filter: { agentId: 'agent-1' },
+  })
+);
 ```
 
 ---
@@ -733,32 +807,39 @@ Entity-relationship memory with multi-hop traversal and semantic reasoning.
 
 ### PostgresGraphAdapter
 
+Graph adapters return `MemoryResult`s like the memory adapters. `PostgresGraphAdapter` takes an existing `pg` pool and creates its tables on first use; `SQLiteGraphAdapter` takes `{ path, walMode? }`.
+
 ```typescript
-import { PostgresGraphAdapter } from '@cogitator-ai/memory';
+import { PostgresGraphAdapter, unwrap } from '@cogitator-ai/memory';
+import pg from 'pg';
 
-const graph = new PostgresGraphAdapter({
-  connectionString: process.env.DATABASE_URL!,
-});
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+const graph = new PostgresGraphAdapter({ pool, vectorDimensions: 1536 }); // default 768
 
-await graph.connect();
+const person = unwrap(
+  await graph.addNode({
+    agentId: 'agent-1',
+    type: 'person',
+    name: 'Alice',
+    aliases: [],
+    description: 'Software engineer',
+    properties: { role: 'developer' },
+    confidence: 1.0,
+    source: 'user',
+  })
+);
 
-const person = await graph.addNode({
-  agentId: 'agent-1',
-  type: 'person',
-  name: 'Alice',
-  description: 'Software engineer',
-  properties: { role: 'developer' },
-  confidence: 1.0,
-  source: 'user',
-});
-
-const company = await graph.addNode({
-  agentId: 'agent-1',
-  type: 'organization',
-  name: 'TechCorp',
-  confidence: 1.0,
-  source: 'extracted',
-});
+const company = unwrap(
+  await graph.addNode({
+    agentId: 'agent-1',
+    type: 'organization',
+    name: 'TechCorp',
+    aliases: [],
+    properties: {},
+    confidence: 1.0,
+    source: 'extracted',
+  })
+);
 
 await graph.addEdge({
   agentId: 'agent-1',
@@ -766,6 +847,8 @@ await graph.addEdge({
   targetNodeId: company.id,
   type: 'works_at',
   weight: 1.0,
+  bidirectional: false,
+  properties: {},
   confidence: 0.95,
   source: 'extracted',
 });
@@ -774,12 +857,15 @@ await graph.addEdge({
 ### Multi-hop Traversal
 
 ```typescript
-const result = await graph.traverse({
-  startNodeId: person.id,
-  maxDepth: 3,
-  direction: 'outgoing',
-  edgeTypes: ['works_at', 'knows', 'located_in'],
-});
+const result = unwrap(
+  await graph.traverse({
+    agentId: 'agent-1',
+    startNodeId: person.id,
+    maxDepth: 3,
+    direction: 'outgoing', // 'outgoing' | 'incoming' | 'both'
+    edgeTypes: ['works_at', 'knows', 'located_in'],
+  })
+);
 
 console.log('Visited nodes:', result.visitedNodes);
 console.log('Paths found:', result.paths);
@@ -788,7 +874,7 @@ console.log('Paths found:', result.paths);
 ### Shortest Path
 
 ```typescript
-const path = await graph.findShortestPath(startNodeId, endNodeId);
+const path = unwrap(await graph.findShortestPath('agent-1', person.id, company.id, 5));
 if (path) {
   console.log('Path:', path.nodes.map((n) => n.name).join(' -> '));
   console.log('Total weight:', path.totalWeight);
@@ -798,26 +884,36 @@ if (path) {
 ### Semantic Node Search
 
 ```typescript
-const similar = await graph.searchNodesSemantic({
-  agentId: 'agent-1',
-  query: 'machine learning engineer',
-  limit: 10,
-  threshold: 0.7,
-});
+const similar = unwrap(
+  await graph.searchNodesSemantic({
+    agentId: 'agent-1',
+    vector: await embeddingService.embed('machine learning engineer'), // a vector is required
+    limit: 10,
+    threshold: 0.7,
+  })
+); // nodes with a `score`
 ```
 
 ### LLM Entity Extraction
 
 ```typescript
-import { LLMEntityExtractor } from '@cogitator-ai/memory';
+import { LLMEntityExtractor, type LLMBackendMinimal } from '@cogitator-ai/memory';
+
+// The extractor calls chat({ messages, responseFormat }) without a model, so bind one
+const backend = cog.getLLMBackend('openai/gpt-5.5');
+const llmBackend: LLMBackendMinimal = {
+  chat: (request) => backend.chat({ ...request, model: 'gpt-5.5' }),
+};
 
 const extractor = new LLMEntityExtractor(llmBackend, {
   minConfidence: 0.7,
   maxEntitiesPerText: 20,
+  maxRelationsPerText: 30,
 });
 
 const result = await extractor.extract(
-  'Alice works at TechCorp in San Francisco. She knows Bob from the AI conference.'
+  'Alice works at TechCorp in San Francisco. She knows Bob from the AI conference.',
+  { agentId: 'agent-1' }
 );
 
 console.log('Entities:', result.entities);
@@ -829,14 +925,14 @@ console.log('Relations:', result.relations);
 ```typescript
 import { GraphInferenceEngine } from '@cogitator-ai/memory';
 
-const engine = new GraphInferenceEngine(graph, {
-  minConfidence: 0.5,
-  maxInferredEdges: 100,
-});
+const engine = new GraphInferenceEngine(graph); // built-in rules; pass false to start without them
 
-const inferred = await engine.infer('agent-1');
-console.log('Inferred edges:', inferred.edges);
-console.log('Rules applied:', inferred.rulesApplied);
+const inferred = await engine.infer('agent-1', { minConfidence: 0.5, maxInferences: 100 });
+for (const edge of inferred) {
+  console.log(edge.type, edge.sourceNodeId, '->', edge.targetNodeId, 'via rule', edge.ruleId);
+}
+
+await engine.materialize(inferred); // store them as edges
 ```
 
 ### Graph Context Builder
@@ -850,13 +946,14 @@ const contextBuilder = new GraphContextBuilder(graph, embeddingService, {
   includeInferred: true,
 });
 
-const context = await contextBuilder.buildContext({
-  agentId: 'agent-1',
-  query: 'Tell me about Alice and her work',
+const context = await contextBuilder.buildContext('agent-1', 'Tell me about Alice and her work', {
+  maxDepth: 2,
+  userId: 'user-1', // leave out other users' nodes (metadata.userId)
 });
 
 console.log('Relevant nodes:', context.nodes);
 console.log('Relationships:', context.edges);
+console.log(context.formattedContext); // ready for a system prompt
 ```
 
 ---

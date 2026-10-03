@@ -11,6 +11,10 @@ Shared TypeScript types for the Cogitator AI agent runtime.
 pnpm add @cogitator-ai/types
 ```
 
+Types only, plus a few runtime values (`CogitatorError`, `ErrorCode`, `DEFAULT_*` configs). `zod` is a dependency because tool parameters and structured output schemas are Zod types. Most applications get these types re-exported from `@cogitator-ai/core`; install this package directly to implement adapters or stores without the runtime.
+
+Reference on the website: [Types API](https://cogitator.app/docs/api-reference/types).
+
 ## Quick Start
 
 ```typescript
@@ -27,20 +31,21 @@ import type {
 
 ## Type Categories
 
-| Category                                          | Description                             |
-| ------------------------------------------------- | --------------------------------------- |
-| [Message](#message-types)                         | Chat messages, tool calls, tool results |
-| [Tool](#tool-types)                               | Tool definitions with Zod schemas       |
-| [Agent](#agent-types)                             | Agent configuration and interface       |
-| [LLM](#llm-types)                                 | LLM backend and provider types          |
-| [Runtime](#runtime-types)                         | Cogitator config, run options, results  |
-| [Errors](#error-types)                            | Structured error handling               |
-| [Reflection](#reflection-types)                   | Self-analyzing agent types              |
-| [Reasoning](#reasoning-types)                     | Tree-of-Thought reasoning               |
-| [Learning](#learning-types)                       | DSPy-style optimization                 |
-| [Time Travel](#time-travel-types)                 | Execution debugging                     |
-| [Knowledge Graph](#knowledge-graph-types)         | Entity-relationship memory              |
-| [Prompt Optimization](#prompt-optimization-types) | A/B testing, monitoring, rollback       |
+| Category                                          | Description                              |
+| ------------------------------------------------- | ---------------------------------------- |
+| [Message](#message-types)                         | Chat messages, tool calls, tool results  |
+| [Tool](#tool-types)                               | Tool definitions with Zod schemas        |
+| [Agent](#agent-types)                             | Agent configuration and interface        |
+| [LLM](#llm-types)                                 | LLM backend and provider types           |
+| [Runtime](#runtime-types)                         | Cogitator config, run options, results   |
+| [Errors](#error-types)                            | Structured error handling                |
+| [Reflection](#reflection-types)                   | Self-analyzing agent types               |
+| [Reasoning](#reasoning-types)                     | Tree-of-Thought reasoning                |
+| [Learning](#learning-types)                       | DSPy-style optimization                  |
+| [Time Travel](#time-travel-types)                 | Execution debugging                      |
+| [Knowledge Graph](#knowledge-graph-types)         | Entity-relationship memory               |
+| [Prompt Optimization](#prompt-optimization-types) | A/B testing, monitoring, rollback        |
+| [Other Modules](#other-modules)                   | Workflows, swarms, security, RAG, voice… |
 
 ---
 
@@ -92,6 +97,7 @@ const toolResult: ToolResultMessage = {
 | ------------------- | ------------------------------------------------------------------ |
 | `MessageRole`       | `'system' \| 'user' \| 'assistant' \| 'tool'`                      |
 | `Message`           | Base message with role, content, optional name/toolCallId          |
+| `MessageContent`    | `string` or `ContentPart[]` (text, `image_url`, `image_base64`)    |
 | `ToolCallMessage`   | Assistant message containing tool calls                            |
 | `ToolResultMessage` | Tool execution result                                              |
 | `ToolCall`          | Tool invocation with id, name, arguments, thoughtSignature, replay |
@@ -104,7 +110,7 @@ const toolResult: ToolResultMessage = {
 Types for defining agent tools with Zod schemas.
 
 ```typescript
-import type { Tool, ToolConfig, ToolContext, ToolSchema } from '@cogitator-ai/types';
+import type { ToolConfig } from '@cogitator-ai/types';
 import { z } from 'zod';
 
 // Tool configuration
@@ -117,7 +123,7 @@ const calculatorConfig: ToolConfig<{ expression: string }, number> = {
   }),
   execute: async (params, context) => {
     console.log(`Run ${context.runId} executing calculator`);
-    return eval(params.expression);
+    return Number(params.expression);
   },
   timeout: 5000,
   sideEffects: [],
@@ -127,7 +133,11 @@ const calculatorConfig: ToolConfig<{ expression: string }, number> = {
 interface ToolContext {
   agentId: string;
   runId: string;
-  signal: AbortSignal;
+  signal: AbortSignal; // aborted on run cancel or tool timeout
+  threadId?: string;
+  userId?: string;
+  channelType?: string;
+  channelId?: string;
 }
 ```
 
@@ -137,22 +147,27 @@ interface ToolContext {
 | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
 | `ToolConfig<TParams, TResult>` | Tool definition with execute function                                                                                         |
 | `Tool<TParams, TResult>`       | Full tool with toJSON() method                                                                                                |
-| `ToolContext`                  | Execution context with agentId, runId, signal                                                                                 |
+| `ToolContext`                  | Execution context with agentId, runId, signal, threadId, userId, channel                                                      |
+| `SideEffectType`               | `'filesystem' \| 'network' \| 'database' \| 'process' \| 'external'`                                                          |
+| `ApprovalCheck`                | `(params) => boolean` form of `requiresApproval`                                                                              |
 | `ToolSchema`                   | JSON Schema representation for LLM                                                                                            |
 | `ToolCategory`                 | `'math' \| 'text' \| 'file' \| 'network' \| 'system' \| 'utility' \| 'web' \| 'database' \| 'communication' \| 'development'` |
 
 ### Tool Options
 
 ```typescript
-const advancedTool: ToolConfig = {
+import type { ToolConfig } from '@cogitator-ai/types';
+import { z } from 'zod';
+
+const advancedTool: ToolConfig<{ path: string; content: string }, void> = {
   name: 'file_write',
   description: 'Write content to a file',
   parameters: z.object({
     path: z.string(),
     content: z.string(),
   }),
-  execute: async (params) => {
-    /* ... */
+  execute: async ({ path, content }) => {
+    console.log(`Writing ${content.length} chars to ${path}`);
   },
 
   // Optional configuration
@@ -172,7 +187,11 @@ const advancedTool: ToolConfig = {
 Types for agent configuration.
 
 ```typescript
-import type { Agent, AgentConfig, ResponseFormat } from '@cogitator-ai/types';
+import type { Agent, AgentConfig, ResponseFormat, Tool } from '@cogitator-ai/types';
+import { z } from 'zod';
+
+declare const calculatorTool: Tool;
+declare const billingAgent: Agent;
 
 const config: AgentConfig = {
   name: 'research-agent',
@@ -191,6 +210,15 @@ const config: AgentConfig = {
 
   // Response format
   responseFormat: { type: 'json' },
+
+  // Reasoning effort for reasoning models, in one vocabulary for every provider
+  reasoning: { effort: 'medium', summary: true },
+
+  // Agents this one can hand the conversation to (transfer_to_<name> tools)
+  handoffs: [
+    billingAgent,
+    { agent: billingAgent, toolName: 'to_billing', description: 'Invoices' },
+  ],
 };
 
 // Response format options
@@ -201,6 +229,8 @@ const schemaFormat: ResponseFormat = {
   schema: z.object({ answer: z.string() }),
 };
 ```
+
+`AgentConfig` also takes `id`, `provider` (an explicit backend name) and `skills` (`Skill` bundles of tools and instructions). `AgentSnapshot` / `SerializedAgentConfig` describe the JSON form of `agent.serialize()`.
 
 ---
 
@@ -218,6 +248,8 @@ import type {
   ChatStreamChunk,
   ChatUsage,
   OpenAIProviderConfig,
+  ReasoningConfig,
+  PromptCacheConfig,
 } from '@cogitator-ai/types';
 
 // Supported providers
@@ -272,7 +304,16 @@ const openaiConfig: OpenAIProviderConfig = {
   apiKey: process.env.OPENAI_API_KEY!,
   api: 'chat-completions', // force a wire API: 'responses' | 'chat-completions'
 };
+
+// Reasoning effort, mapped per provider (Anthropic effort / thinking, OpenAI reasoning.effort, Gemini thinking, Ollama think)
+const reasoning: ReasoningConfig = { effort: 'high', budgetTokens: 8000, summary: true };
+// effort: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+
+// Prompt caching for agent runs (CogitatorConfig.llm.promptCache)
+const promptCache: PromptCacheConfig = { ttl: '1h' }; // '5m' (default) | '1h'
 ```
+
+`LLMRetryConfig` (`maxRetries`, `baseDelay`, `maxDelay`, `maxRetryAfter`, `onRetry`) types `CogitatorConfig.llm.retry`; `ModelRoute` is what `cog.route()` resolves a model string to.
 
 `ToolCall.replay` (`ToolCallReplayState`) carries opaque provider output that must be sent back with the call on the next turn, such as OpenAI Responses reasoning items. It is JSON-serializable, so it survives memory persistence; backends that did not produce it ignore it.
 
@@ -304,15 +345,23 @@ const config: CogitatorConfig = {
   memory: { adapter: 'redis', redis: { host: 'localhost' } },
   sandbox: { defaults: { type: 'docker', image: 'node:20-alpine' } },
   reflection: { enabled: true, reflectAfterError: true },
+  security: {
+    promptInjection: { action: 'block' },
+    pii: { mode: 'mask', custom: [{ type: 'customer_id', pattern: /CUS-\d{6}/ }] },
+  },
+  prompts: { autoDeployWinner: true }, // versioned instructions and A/B tests
 };
 
 // Run options with callbacks
 const runOptions: RunOptions = {
   input: 'Calculate 2 + 2',
-  context: { userId: '123' },
+  context: { plan: 'pro' },
   threadId: 'thread_abc',
+  userId: 'user_123', // owns the thread; reaches tools as context.userId
+  threadAccess: 'owner', // or 'shared'
   timeout: 30000,
   stream: true,
+  reasoning: { effort: 'low' },
 
   // Callbacks
   onToken: (token) => process.stdout.write(token),
@@ -322,17 +371,37 @@ const runOptions: RunOptions = {
   onRunComplete: (result) => console.log('Done:', result.output),
   onRunError: (error) => console.error('Error:', error),
   onSpan: (span) => console.log('Span:', span.name),
+  onReasoning: (delta) => process.stdout.write(delta),
+  onHandoff: (handoff) => console.log(`${handoff.from} -> ${handoff.to}`),
+  onApproval: (request) => (request.toolName === 'refund' ? 'pause' : { approved: true }),
 
   // Memory options
   useMemory: true,
   loadHistory: true,
   saveHistory: true,
+  parallelToolCalls: false,
 };
 ```
+
+### Approvals, Handoffs and Pauses
+
+| Type                   | Description                                                                                             |
+| ---------------------- | ------------------------------------------------------------------------------------------------------- |
+| `ToolApprovalRequest`  | A tool call waiting for a decision: `toolCallId`, `toolName`, `arguments`, `description`, `sideEffects` |
+| `ToolApprovalDecision` | `{ approved: true }` or `{ approved: false; reason? }`                                                  |
+| `RunCheckpoint`        | JSON snapshot of a paused run, passed to `cogitator.resume()`                                           |
+| `RunCheckpointStore`   | `save` / `load(threadId)` / `delete` for paused runs (`CogitatorConfig.runCheckpoints`)                 |
+| `ResumeOptions`        | Run options for `resume()` plus `userId`, `decisions` and `defaultDecision`                             |
+| `HandoffEvent`         | `{ from, to, reason? }` for each handoff                                                                |
+| `PromptsConfig`        | `versions` / `abTests` stores, `score`, `autoDeployWinner`                                              |
+| `RunPrompt`            | The instruction version or A/B variant a run used                                                       |
+| `PiiConfig`            | `mode` (`mask` \| `redact` \| `block`), `detect`, `custom`, `onDetect`                                  |
 
 ### RunResult
 
 ```typescript
+import type { RunResult } from '@cogitator-ai/types';
+
 const result: RunResult = {
   output: 'The answer is 4',
   structured: { answer: 4 }, // if responseFormat was json_schema
@@ -347,15 +416,16 @@ const result: RunResult = {
     duration: 1500,
   },
   toolCalls: [{ id: 'call_1', name: 'calculator', arguments: { expression: '2+2' } }],
-  messages: [/* conversation history */],
+  messages: [],
   trace: {
     traceId: 'trace_abc',
-    spans: [/* execution spans */],
+    spans: [],
   },
-  reflections: [/* if reflection enabled */],
-  reflectionSummary: {/* summary stats */},
+  status: 'completed', // 'paused' when tool calls wait for approval
 };
 ```
+
+Optional fields: `structured`, `modelUsed`, `usage.reasoningTokens` / `cachedInputTokens` / `cacheWriteTokens`, `reasoning`, `prompt`, `handoffs`, `finalAgent`, `status`, `pendingApprovals`, `checkpoint`, `reflections`, `reflectionSummary`. All fields are `readonly`.
 
 ---
 
@@ -393,9 +463,11 @@ const wrapped = CogitatorError.wrap(new Error('timeout'), ErrorCode.LLM_TIMEOUT)
 
 // Check if retryable
 if (isRetryableError(error)) {
-  const delay = getRetryDelay(error, 1000);
-  await sleep(delay);
+  const delay = getRetryDelay(error, 1000); // retryAfter, or the default
+  await new Promise((resolve) => setTimeout(resolve, delay));
 }
+
+console.log(ERROR_STATUS_CODES[ErrorCode.LLM_RATE_LIMITED]); // 429
 ```
 
 ### Error Codes
@@ -405,10 +477,11 @@ if (isRetryableError(error)) {
 | LLM      | `LLM_UNAVAILABLE`, `LLM_RATE_LIMITED`, `LLM_TIMEOUT`, `LLM_INVALID_RESPONSE`, `LLM_CONTEXT_LENGTH_EXCEEDED`, `LLM_CONTENT_FILTERED` |
 | Sandbox  | `SANDBOX_UNAVAILABLE`, `SANDBOX_TIMEOUT`, `SANDBOX_OOM`, `SANDBOX_EXECUTION_FAILED`, `SANDBOX_INVALID_MODULE`                       |
 | Tool     | `TOOL_NOT_FOUND`, `TOOL_INVALID_ARGS`, `TOOL_EXECUTION_FAILED`, `TOOL_TIMEOUT`                                                      |
-| Memory   | `MEMORY_UNAVAILABLE`, `MEMORY_WRITE_FAILED`, `MEMORY_READ_FAILED`                                                                   |
-| Agent    | `AGENT_NOT_FOUND`, `AGENT_ALREADY_RUNNING`, `AGENT_MAX_ITERATIONS`                                                                  |
+| Memory   | `MEMORY_UNAVAILABLE`, `MEMORY_WRITE_FAILED`, `MEMORY_READ_FAILED`, `THREAD_ACCESS_DENIED`                                           |
+| Agent    | `AGENT_NOT_FOUND`, `AGENT_ALREADY_RUNNING`, `AGENT_MAX_ITERATIONS`, `RUN_TOKEN_LIMIT_EXCEEDED`, `RUN_NOT_PAUSED`                    |
 | Workflow | `WORKFLOW_NOT_FOUND`, `WORKFLOW_STEP_FAILED`, `WORKFLOW_CYCLE_DETECTED`                                                             |
 | Swarm    | `SWARM_NO_WORKERS`, `SWARM_CONSENSUS_FAILED`                                                                                        |
+| Security | `PROMPT_INJECTION_DETECTED`, `PII_DETECTED`                                                                                         |
 | General  | `VALIDATION_ERROR`, `CONFIGURATION_ERROR`, `INTERNAL_ERROR`, `NOT_IMPLEMENTED`, `CIRCUIT_OPEN`                                      |
 
 ---
@@ -618,7 +691,7 @@ const checkpoint: ExecutionCheckpoint = {
   runId: 'run_789',
   agentId: 'agent_abc',
   stepIndex: 5,
-  messages: [/* conversation at this point */],
+  messages: [],
   toolResults: { call_1: 42, call_2: 'result' },
   pendingToolCalls: [],
   label: 'before-critical-decision',
@@ -649,18 +722,17 @@ const diff: TraceDiff = {
   stepDiffs: [
     { index: 0, status: 'identical' },
     { index: 1, status: 'similar', differences: ['different tool args'] },
-    {
-      index: 2,
-      status: 'different',
-      step1: {/* ... */},
-      step2: {/* ... */},
-    },
+    { index: 2, status: 'different' }, // step1 / step2 hold the ExecutionSteps
   ],
+  commonSteps: 2,
   divergencePoint: 2,
+  trace1OnlySteps: 1,
+  trace2OnlySteps: 0,
   metricsDiff: {
     success: { trace1: true, trace2: false },
     score: { trace1: 0.9, trace2: 0.6, delta: -0.3 },
-    /* ... */
+    tokens: { trace1: 1200, trace2: 1500, delta: 300 },
+    duration: { trace1: 2100, trace2: 2600, delta: 500 },
   },
 };
 ```
@@ -669,7 +741,7 @@ const diff: TraceDiff = {
 
 ## Memory Types
 
-See [@cogitator-ai/memory](../memory) for detailed memory adapter types.
+See [@cogitator-ai/memory](https://www.npmjs.com/package/@cogitator-ai/memory) for detailed memory adapter types.
 
 ---
 
@@ -687,25 +759,13 @@ import type {
   TraversalOptions,
   TraversalResult,
   GraphPath,
-  EntityExtractionResult,
+  ExtractionResult,
   InferredEdge,
 } from '@cogitator-ai/types';
 
-// Entity types
-type EntityType = 'person' | 'organization' | 'location' | 'concept' | 'event' | 'object';
-
-// Relationship types
-type RelationType =
-  | 'knows'
-  | 'works_at'
-  | 'located_in'
-  | 'part_of'
-  | 'related_to'
-  | 'created_by'
-  | 'owns'
-  | 'member_of'
-  | 'causes'
-  | 'depends_on';
+// EntityType: 'person' | 'organization' | 'location' | 'concept' | 'event' | 'object' | 'custom'
+// RelationType: 'knows' | 'works_at' | 'located_in' | 'part_of' | 'related_to' | 'created_by'
+//   | 'belongs_to' | 'associated_with' | 'causes' | 'precedes' | 'custom'
 
 // Graph node
 const node: GraphNode = {
@@ -716,10 +776,13 @@ const node: GraphNode = {
   aliases: ['alice_dev'],
   description: 'Software engineer',
   properties: { role: 'developer', team: 'platform' },
-  embedding: [0.1, 0.2, ...],
+  embedding: [0.1, 0.2, 0.3],
   confidence: 1.0,
-  source: 'extracted',
+  source: 'extracted', // 'extracted' | 'user' | 'inferred'
   createdAt: new Date(),
+  updatedAt: new Date(),
+  lastAccessedAt: new Date(),
+  accessCount: 0,
 };
 
 // Graph edge
@@ -736,26 +799,28 @@ const edge: GraphEdge = {
   source: 'extracted',
   properties: { since: '2020' },
   createdAt: new Date(),
+  updatedAt: new Date(),
 };
 
 // Traversal options
 const traversalOptions: TraversalOptions = {
+  agentId: 'agent-1',
   startNodeId: 'node_123',
   maxDepth: 3,
-  direction: 'outgoing',
+  direction: 'outgoing', // 'outgoing' | 'incoming' | 'both'
   edgeTypes: ['works_at', 'knows'],
-  nodeTypes: ['person', 'organization'],
+  minEdgeWeight: 0.5,
   minConfidence: 0.7,
-  maxNodes: 100,
+  limit: 100,
 };
 
 // Traversal result
+const path: GraphPath = { nodes: [node], edges: [edge], totalWeight: 1.0, length: 1 };
 const result: TraversalResult = {
-  visitedNodes: [node1, node2, ...],
-  traversedEdges: [edge1, edge2, ...],
-  paths: [[node1, edge1, node2], ...],
-  totalNodesVisited: 15,
-  maxDepthReached: 3,
+  paths: [path],
+  visitedNodes: [node],
+  visitedEdges: [edge],
+  depth: 1,
 };
 ```
 
@@ -785,17 +850,26 @@ const prompt: CapturedPrompt = {
   id: 'prompt_123',
   runId: 'run_456',
   agentId: 'agent-1',
+  threadId: 'thread_789',
   model: 'gpt-6.1-sol',
+  provider: 'openai',
+  timestamp: new Date(),
   systemPrompt: 'You are a helpful assistant.',
   messages: [{ role: 'user', content: 'Hello' }],
-  tools: [{ name: 'calculator', description: '...' }],
+  tools: [
+    {
+      name: 'calculator',
+      description: 'Evaluate math',
+      parameters: { type: 'object', properties: {} },
+    },
+  ],
   promptTokens: 150,
   response: {
     content: 'Hi there!',
     completionTokens: 10,
+    finishReason: 'stop',
     latencyMs: 450,
   },
-  createdAt: new Date(),
 };
 
 // A/B test
@@ -812,8 +886,22 @@ const abTest: ABTest = {
   maxDuration: 7 * 24 * 60 * 60 * 1000,
   confidenceLevel: 0.95,
   metricToOptimize: 'score',
-  controlResults: { sampleSize: 50, avgScore: 0.82, ... },
-  treatmentResults: { sampleSize: 48, avgScore: 0.87, ... },
+  controlResults: {
+    sampleSize: 50,
+    successRate: 0.9,
+    avgScore: 0.82,
+    avgLatency: 900,
+    totalCost: 0.4,
+    scores: [],
+  },
+  treatmentResults: {
+    sampleSize: 48,
+    successRate: 0.94,
+    avgScore: 0.87,
+    avgLatency: 850,
+    totalCost: 0.38,
+    scores: [],
+  },
   createdAt: new Date(),
   startedAt: new Date(),
 };
@@ -837,7 +925,7 @@ const version: InstructionVersion = {
   source: 'optimization',
   sourceId: 'opt-run-456',
   deployedAt: new Date(),
-  metrics: { runCount: 100, avgScore: 0.88, successRate: 0.95 },
+  metrics: { runCount: 100, avgScore: 0.88, successRate: 0.95, avgLatency: 1200, totalCost: 1.4 },
 };
 
 // Degradation alert
@@ -858,17 +946,23 @@ const alert: DegradationAlert = {
 
 ---
 
-## Sandbox Types
+## Other Modules
 
-See [@cogitator-ai/sandbox](../sandbox) for detailed sandbox execution types.
+Every module below is exported from the package root; the owning package documents how the types are used.
 
-## Workflow Types
-
-See [@cogitator-ai/workflows](../workflows) for detailed workflow types.
-
-## Swarm Types
-
-See [@cogitator-ai/swarms](../swarms) for detailed swarm coordination types.
+| Module                               | Main types                                                                                                                                              | Used by                                                                                    |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| Memory                               | `MemoryAdapter`, `MemoryResult`, `Thread`, `MemoryEntry`, `Fact`, `Embedding`, `EmbeddingService`, `ContextBuilderConfig`, `MemoryConfig`               | [@cogitator-ai/memory](https://www.npmjs.com/package/@cogitator-ai/memory)                 |
+| Sandbox                              | `SandboxConfig`, `SandboxManagerConfig`, `SandboxWasmConfig` (`memoryPages` caps the module's own memory), `SandboxExecutionRequest`                    | [@cogitator-ai/sandbox](https://www.npmjs.com/package/@cogitator-ai/sandbox)               |
+| Workflow                             | `WorkflowState`, `Workflow`, `CheckpointStore`, `RunStore`, `ApprovalStore`, `TimerStore` (optional `claimTtl`, `renew`, `release`), `WorkflowRunStats` | [@cogitator-ai/workflows](https://www.npmjs.com/package/@cogitator-ai/workflows)           |
+| Swarm, negotiation                   | `SwarmConfig`, `SwarmStrategy`, `SwarmResult`, negotiation types                                                                                        | [@cogitator-ai/swarms](https://www.npmjs.com/package/@cogitator-ai/swarms)                 |
+| Constitutional, security             | `GuardrailConfig`, `Constitution`, `PromptInjectionConfig`, `PiiConfig`, `PiiType`                                                                      | `@cogitator-ai/core`                                                                       |
+| Cost routing, context, tool cache    | `CostRoutingConfig`, `BudgetConfig`, `ContextManagerConfig`, `ToolCacheConfig`, `RedisClientLike`                                                       | `@cogitator-ai/core`                                                                       |
+| Causal                               | `CausalGraph`, `InterventionQuery`, `CounterfactualQuery`, `CausalReasoningConfig`                                                                      | `@cogitator-ai/core`                                                                       |
+| Neuro-symbolic                       | `NeuroSymbolicConfig`, `ResolvedNeuroSymbolicConfig` (every section present, returned by `getConfig()`)                                                 | [@cogitator-ai/neuro-symbolic](https://www.npmjs.com/package/@cogitator-ai/neuro-symbolic) |
+| Self-modifying                       | `SelfModifyingConfig`, generated tool and architecture types                                                                                            | [@cogitator-ai/self-modifying](https://www.npmjs.com/package/@cogitator-ai/self-modifying) |
+| RAG, voice, browser, channel, deploy | `RAGPipelineConfig`, voice/STT/TTS types, browser session types, channel and session types, `DeployConfig`                                              | the package of the same name                                                               |
+| Skills, logging                      | `Skill`, `SkillConfig`, `LoggingConfig`                                                                                                                 | `@cogitator-ai/core`                                                                       |
 
 ---
 

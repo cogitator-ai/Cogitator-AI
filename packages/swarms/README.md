@@ -8,6 +8,8 @@ Multi-agent swarm coordination for Cogitator. Orchestrate teams of AI agents wit
 pnpm add @cogitator-ai/swarms @cogitator-ai/core
 ```
 
+Website docs: [Swarms](https://cogitator.app/docs/swarms), [Strategies](https://cogitator.app/docs/swarms/strategies), [Builder](https://cogitator.app/docs/swarms/builder), [Communication](https://cogitator.app/docs/swarms/communication), [Assessment](https://cogitator.app/docs/swarms/assessment), [Distributed](https://cogitator.app/docs/swarms/distributed).
+
 ## Quick Start
 
 ```typescript

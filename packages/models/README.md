@@ -8,10 +8,12 @@ Dynamic model registry with pricing information for Cogitator. Fetches up-to-dat
 pnpm add @cogitator-ai/models
 ```
 
+`@cogitator-ai/core` uses this registry to price runs (`result.usage.cost`) and to pick models for cost-aware routing. See [Model Registry](https://cogitator.app/docs/core/model-registry) on the website.
+
 ## Features
 
 - **Dynamic Data** - Fetches latest model info from LiteLLM
-- **Pricing Information** - Input/output costs per million tokens
+- **Pricing Information** - Input, output and prompt-cache costs per million tokens; `calculateCost()` prices token usage
 - **Capability Tracking** - Vision, tools, streaming, JSON mode support
 - **Multi-Provider** - OpenAI, Anthropic, Google, Ollama, Azure, AWS, and more
 - **Caching** - Memory or file-based cache with configurable TTL
@@ -40,6 +42,8 @@ const toolModels = listModels({
   provider: 'openai',
 });
 ```
+
+Lookups are case-insensitive, accept a `provider/` prefix (`getModel('openai/gpt-6.1-sol')`) and resolve aliases. Calling them before `initializeModels()` works too: the registry then loads the built-in models only.
 
 ---
 
@@ -83,14 +87,16 @@ interface CacheOptions {
 }
 ```
 
-| Option              | Default    | Description                          |
-| ------------------- | ---------- | ------------------------------------ |
-| `cache.ttl`         | 24 hours   | Cache time-to-live in milliseconds   |
-| `cache.storage`     | `'memory'` | Storage backend                      |
-| `cache.filePath`    | -          | File path for file-based cache       |
-| `autoRefresh`       | `false`    | Enable automatic background refresh  |
-| `refreshInterval`   | 24 hours   | Refresh interval in milliseconds     |
-| `fallbackToBuiltin` | `true`     | Use built-in models on fetch failure |
+| Option              | Default                          | Description                          |
+| ------------------- | -------------------------------- | ------------------------------------ |
+| `cache.ttl`         | 24 hours                         | Cache time-to-live in milliseconds   |
+| `cache.storage`     | `'memory'`                       | Storage backend                      |
+| `cache.filePath`    | `~/.cogitator/models-cache.json` | File path for file-based cache       |
+| `autoRefresh`       | `false`                          | Enable automatic background refresh  |
+| `refreshInterval`   | 24 hours                         | Refresh interval in milliseconds     |
+| `fallbackToBuiltin` | `true`                           | Use built-in models on fetch failure |
+
+`initialize()` uses a fresh cache when there is one (and refreshes from LiteLLM in the background), otherwise fetches LiteLLM data; fetched models are merged with the built-in ones. When the fetch fails it falls back to a stale cache, then to the built-in models (or throws with `fallbackToBuiltin: false`).
 
 ### Registry Methods
 
@@ -99,7 +105,8 @@ await registry.initialize();
 
 const model = registry.getModel('gpt-6.1-sol');
 
-const price = registry.getPrice('claude-sonnet-5-5');
+const price = registry.getPrice('claude-sonnet-5-5'); // { input, output } per million tokens
+const pricing = registry.getPricing('claude-sonnet-5-5'); // full ModelPricing incl. cache prices
 
 const models = registry.listModels({
   provider: 'anthropic',
@@ -122,13 +129,15 @@ registry.shutdown();
 
 ## Global Functions
 
-For convenience, the package provides global functions that use a default registry:
+For convenience, the package provides global functions that use a default registry (file cache at `~/.cogitator/models-cache.json`, 24 h TTL, built-in fallback):
 
 ```typescript
 import {
   initializeModels,
   getModel,
   getPrice,
+  getPricing,
+  calculateCost,
   listModels,
   getModelRegistry,
   shutdownModels,
@@ -138,7 +147,16 @@ await initializeModels();
 
 const model = getModel('gpt-6.1-sol');
 const price = getPrice('gpt-6.1-sol');
+const pricing = getPricing('gpt-6.1-sol');
 const allModels = listModels();
+
+// USD for a call; cached and cache-write tokens are parts of inputTokens
+const cost = calculateCost('claude-sonnet-5-5', {
+  inputTokens: 12_000,
+  outputTokens: 800,
+  cachedInputTokens: 10_000,
+  cacheWriteTokens: 0,
+}); // null when the model's price is unknown
 
 const registry = getModelRegistry();
 const count = registry.getModelCount();
@@ -166,9 +184,10 @@ interface ModelInfo {
 }
 
 interface ModelPricing {
-  input: number;
-  output: number;
-  inputCached?: number;
+  input: number; // USD per million input tokens
+  output: number; // USD per million output tokens
+  inputCached?: number; // cache reads
+  inputCacheWrite?: number; // cache writes
   outputCached?: number;
 }
 
@@ -221,7 +240,7 @@ interface ModelFilter {
 }
 ```
 
-`supportsTools` and `supportsVision` accept both `true` and `false`.
+`supportsTools` and `supportsVision` accept both `true` and `false` (a model without the capability flag counts as `false`). `maxPricePerMillion` compares the average of the input and output price.
 
 ### Filter Examples
 
@@ -370,7 +389,7 @@ const registry = new ModelRegistry({
 ### ModelCache Class
 
 ```typescript
-import { ModelCache } from '@cogitator-ai/models';
+import { BUILTIN_MODELS, ModelCache } from '@cogitator-ai/models';
 
 const cache = new ModelCache({
   ttl: 3600000,
@@ -378,11 +397,13 @@ const cache = new ModelCache({
   filePath: './models-cache.json',
 });
 
-const models = await cache.get();
+const models = await cache.get(); // null when missing or older than ttl
 
-await cache.set(models);
+await cache.set(BUILTIN_MODELS);
 
-const staleData = await cache.getStale();
+const staleData = await cache.getStale(); // ignores the TTL
+
+await cache.clear();
 ```
 
 ---
@@ -408,12 +429,16 @@ interface LiteLLMModelEntry {
   max_output_tokens?: number;
   input_cost_per_token?: number;
   output_cost_per_token?: number;
+  cache_read_input_token_cost?: number;
+  cache_creation_input_token_cost?: number;
   litellm_provider?: string;
+  mode?: string;
   supports_function_calling?: boolean;
   supports_vision?: boolean;
   supports_response_schema?: boolean;
   supports_tool_choice?: boolean;
   deprecation_date?: string;
+  // ...and a few more LiteLLM fields
 }
 ```
 
@@ -424,19 +449,9 @@ interface LiteLLMModelEntry {
 ### Cost Calculator
 
 ```typescript
-import { getPrice } from '@cogitator-ai/models';
+import { calculateCost } from '@cogitator-ai/models';
 
-function calculateCost(modelId: string, inputTokens: number, outputTokens: number): number | null {
-  const price = getPrice(modelId);
-  if (!price) return null;
-
-  const inputCost = (inputTokens / 1_000_000) * price.input;
-  const outputCost = (outputTokens / 1_000_000) * price.output;
-
-  return inputCost + outputCost;
-}
-
-const cost = calculateCost('gpt-6.1-sol', 10000, 2000);
+const cost = calculateCost('gpt-6.1-sol', { inputTokens: 10_000, outputTokens: 2_000 });
 console.log(`Cost: $${cost?.toFixed(4)}`);
 ```
 
@@ -514,6 +529,7 @@ import type {
   RegistryOptions,
   LiteLLMModelEntry,
   LiteLLMModelData,
+  TokenUsageForCost,
 } from '@cogitator-ai/models';
 
 import {

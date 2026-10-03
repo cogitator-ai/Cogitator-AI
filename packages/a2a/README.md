@@ -5,8 +5,10 @@ Native implementation of [Google's A2A Protocol v0.3](https://a2a-protocol.org) 
 ## Installation
 
 ```bash
-pnpm add @cogitator-ai/a2a
+pnpm add @cogitator-ai/a2a @cogitator-ai/core
 ```
+
+`@cogitator-ai/core` is needed for `A2AServer` (it runs your agents) and for `asTool()`. Install the framework you mount the server on (`express`, `hono`, `fastify`, `koa` or `next`); they are optional peer dependencies.
 
 ## Features
 
@@ -16,6 +18,7 @@ pnpm add @cogitator-ai/a2a
 - **Agent Card** - Auto-generate A2A Agent Cards from agent metadata
 - **Task Management** - Full task lifecycle (working, input-required, completed, failed, canceled)
 - **Authentication** - Bearer / API-key auth enforced by every framework adapter and advertised on the Agent Card
+- **Per-user tasks** - `auth.validate` can return `{ userId }` to keep each caller's tasks, contexts and memory apart
 - **Multi-Turn Conversations** - Stateful conversations with contextId and continueTask
 - **SSE Streaming** - Real-time streaming with token-level events
 - **Push Notifications** - Webhook-based task event notifications
@@ -23,7 +26,7 @@ pnpm add @cogitator-ai/a2a
 - **Extended Agent Card** - Authenticated endpoint with extra details
 - **RedisTaskStore** - Production-grade task persistence
 - **Framework Adapters** - Express, Hono, Fastify, Koa, Next.js
-- **Zero Dependencies** - Own implementation from spec, no external A2A deps
+- **No A2A SDK dependency** - Own implementation of the spec (runtime deps: `@cogitator-ai/types`, `zod`)
 
 ---
 
@@ -126,7 +129,34 @@ const client = new A2AClient('https://remote-agent.example.com', {
 
 Custom integrations can call `a2aServer.getAuthToken((name) => headers.get(name))` and pass the result to `handleJsonRpc(body, token)` / `handleJsonRpcStream(body, token, signal)`.
 
-`validate` may return the caller instead of `true` — `{ userId }` — to keep users apart: each task belongs to the user who created it, other users get `Task not found` for it and do not see it in `tasks/list`, a `contextId` holding another user's tasks is refused, and runs carry the `userId` so threads and memory are per user too.
+A missing credential or a `validate` that returns `false` answers JSON-RPC error `-32000 Unauthorized` (a `failed` status event on a stream).
+
+### One caller per user
+
+When several users or tenants share the server, have `validate` return who the caller is (`{ userId }`) instead of `true`:
+
+```typescript
+const a2aServer = new A2AServer({
+  agents: { researcher },
+  cogitator,
+  auth: {
+    type: 'bearer',
+    validate: async (token) => {
+      const session = await sessions.find(token);
+      return session ? { userId: session.userId } : false;
+    },
+  },
+});
+```
+
+Each task then belongs to the user who created it:
+
+- `tasks/get`, `tasks/cancel`, the `tasks/pushNotification/*` methods and a message that continues the task (`taskId`) answer another user's task with `-32001 Task not found`.
+- `tasks/list` returns only the caller's own tasks and tasks without an owner; the server sets `TaskFilter.visibleTo` itself, whatever the client sends.
+- A new message with a `contextId` that holds another user's tasks is refused with `-32602 Invalid params`.
+- Runs carry the `userId`, so the agent's threads and memory are scoped to the user too.
+
+Returning `true` admits the caller without a user: every such caller shares one space, as before, and sees only tasks without an owner. The owner is kept in the task's metadata and never sent to clients. A custom `TaskStore` must honour `filter.visibleTo` in `list()` (`InMemoryTaskStore` and `RedisTaskStore` do).
 
 ## Send Configuration
 
@@ -231,9 +261,12 @@ For production deployments, use `RedisTaskStore` instead of the default in-memor
 
 ```typescript
 import { A2AServer, RedisTaskStore } from '@cogitator-ai/a2a';
+import type { RedisClientLike } from '@cogitator-ai/a2a';
 import Redis from 'ioredis';
 
-const redis = new Redis('redis://localhost:6379');
+// ioredis's overloaded `scan()` typing does not match `RedisClientLike['scan']`,
+// so type the client without it; the store still uses SCAN at runtime.
+const redis: Omit<RedisClientLike, 'scan'> = new Redis('redis://localhost:6379');
 
 const a2aServer = new A2AServer({
   agents: { researcher },
@@ -291,7 +324,7 @@ const a2aServer = new A2AServer({
 });
 ```
 
-When configured, the server automatically sends POST requests with `A2AStreamEvent` payloads to registered webhook URLs on task status and artifact updates. The Agent Card will advertise `pushNotifications: true`. Configs can only be created for existing tasks (unknown ids return `TaskNotFound`); use `configuration.pushNotificationConfig` with `blocking: false` to subscribe before execution starts.
+When configured, the server automatically sends POST requests with `A2AStreamEvent` payloads to registered webhook URLs on task status and artifact updates. The Agent Card will advertise `pushNotifications: true`. Every push-notification method (`create`, `get`, `list`, `delete`) requires an existing task the caller may see (otherwise `TaskNotFound`); use `configuration.pushNotificationConfig` with `blocking: false` to subscribe before execution starts.
 
 Webhook delivery is SSRF-hardened unless `allowPrivateUrls: true`: loopback, private, link-local, CGNAT, multicast and IPv4-mapped IPv6 targets are rejected, the check is applied to the address the socket actually connects to (no DNS-rebinding window), and redirects are not followed. `isPrivateAddress()` is exported for reuse.
 
@@ -397,6 +430,10 @@ All adapters stream only for `message/stream` (an `Accept: text/event-stream` he
 | `tasks/pushNotification/list`   | List push notification configs for a task |
 | `tasks/pushNotification/delete` | Remove a push notification config         |
 | `agent/extendedCard`            | Fetch extended Agent Card (authenticated) |
+
+## Documentation
+
+Full guide: [cogitator.app/docs/integrations/a2a](https://cogitator.app/docs/integrations/a2a)
 
 ## Part of Cogitator
 

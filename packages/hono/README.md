@@ -15,8 +15,14 @@ import { Hono } from 'hono';
 import { Cogitator, Agent } from '@cogitator-ai/core';
 import { cogitatorApp } from '@cogitator-ai/hono';
 
-const cogitator = new Cogitator({/* ... */});
-const chatAgent = new Agent({ name: 'chat', instructions: 'You are a helpful assistant.' });
+const cogitator = new Cogitator({
+  llm: { providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } } },
+});
+const chatAgent = new Agent({
+  name: 'chat',
+  model: 'openai/gpt-5.5',
+  instructions: 'You are a helpful assistant.',
+});
 
 const app = new Hono();
 
@@ -38,26 +44,27 @@ Creates a Hono sub-application with all Cogitator endpoints.
 
 **Options:**
 
-| Option            | Type                          | Description                                     |
-| ----------------- | ----------------------------- | ----------------------------------------------- |
-| `cogitator`       | `Cogitator`                   | **Required.** Cogitator runtime instance        |
-| `agents`          | `Record<string, Agent>`       | Named agents to expose                          |
-| `workflows`       | `Record<string, Workflow>`    | Named workflows                                 |
-| `swarms`          | `Record<string, SwarmConfig>` | Named swarms                                    |
-| `auth`            | `(c: Context) => AuthContext` | Authentication function (receives Hono Context) |
-| `enableSwagger`   | `boolean`                     | Enable Swagger/OpenAPI docs                     |
-| `swagger`         | `SwaggerConfig`               | Swagger configuration                           |
-| `enableWebSocket` | `boolean`                     | Enable the WebSocket endpoint                   |
-| `websocket`       | `WebSocketConfig`             | WebSocket configuration (see below)             |
-| `bodyLimit`       | `number`                      | Max request body size in bytes (default 1 MiB)  |
+| Option            | Type                          | Description                                                                                                      |
+| ----------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `cogitator`       | `Cogitator`                   | **Required.** Cogitator runtime instance                                                                         |
+| `agents`          | `Record<string, Agent>`       | Named agents to expose                                                                                           |
+| `workflows`       | `Record<string, Workflow>`    | Named workflows                                                                                                  |
+| `swarms`          | `Record<string, SwarmConfig>` | Named swarms                                                                                                     |
+| `auth`            | `AuthFunction`                | `(c) => AuthContext \| undefined` (sync or async), receives the Hono Context; throw to answer `401 UNAUTHORIZED` |
+| `enableSwagger`   | `boolean`                     | Serve `/openapi.json` and Swagger UI at `/docs`                                                                  |
+| `swagger`         | `SwaggerConfig`               | Swagger configuration                                                                                            |
+| `enableWebSocket` | `boolean`                     | Enable the WebSocket endpoint                                                                                    |
+| `websocket`       | `WebSocketConfig`             | `{ path?, maxPayloadSize?, upgradeWebSocket? }` (see below)                                                      |
+| `bodyLimit`       | `number`                      | Max request body size in bytes (default 1 MiB)                                                                   |
 
 ## Request Handling
 
 - Request bodies are validated before anything reaches the runtime: `input` must be a non-empty string, `context` an object, `threadId` a non-empty string, swarm `timeout` a positive number. Invalid bodies return `400 INVALID_INPUT` with the offending field in the message.
 - Workflow runs accept an optional body. `options` is limited to `maxConcurrency`, `maxIterations` (positive integers) and `checkpoint` (boolean); any other option is dropped, and a wrongly typed one returns `400 INVALID_INPUT`.
 - Thread messages accept `role` of `user`, `assistant` or `system`; `metadata` is stored with the entry and a token estimate is recorded.
+- Thread routes use `cogitator.getMemory()`, which connects the configured memory adapter on first use, so threads can be read on a fresh server before any agent has run. Only a `Cogitator` without `memory` configured answers `503 UNAVAILABLE`.
 - Bodies above `bodyLimit` return `413 PAYLOAD_TOO_LARGE`.
-- `CogitatorError`s are returned with their HTTP status and code (for example `429 LLM_RATE_LIMITED`). Any other error is logged and returned as `500 Internal server error` without internal details. A workflow that finishes with an error is reported as an error, never as a successful result.
+- `CogitatorError`s are returned with their HTTP status and code (for example `429 LLM_RATE_LIMITED`). Any other error is logged and returned as `500 Internal server error` (code `INTERNAL`, or `INTERNAL_ERROR` from the app-level error handler) without internal details; the same masking applies to SSE `error` events, `node_error`/`agent_error` stream events and WebSocket errors. A workflow that finishes with an error is answered like a thrown error (its `CogitatorError` status, otherwise `500`), never as a successful result. Missing optional packages (`@cogitator-ai/workflows`, `@cogitator-ai/swarms`) answer `501 UNIMPLEMENTED`.
 - When the client disconnects, the running agent, workflow or swarm is aborted, for both JSON and SSE endpoints.
 - `GET /agents` returns each agent's `description` and never exposes its `instructions`.
 - `GET /tools` returns tool parameters as JSON Schema.
@@ -105,6 +112,13 @@ Creates a Hono sub-application with all Cogitator endpoints.
 | `GET`  | `/tools`  | List all tools  |
 | `GET`  | `/health` | Health check    |
 | `GET`  | `/ready`  | Readiness check |
+
+### Docs (`enableSwagger: true`)
+
+| Method | Path            | Description  |
+| ------ | --------------- | ------------ |
+| `GET`  | `/openapi.json` | OpenAPI spec |
+| `GET`  | `/docs`         | Swagger UI   |
 
 ## Authentication
 
@@ -169,7 +183,7 @@ export default app;
 Deno.serve(app.fetch);
 ```
 
-On Cloudflare Workers use a `compatibility_date` of 2026-08-04 or later (or the `nodejs_compat` flag); with database memory create the `Cogitator` per request, since Workers do not share connections between requests. Deno needs only `--allow-net` and `--allow-env`. Complete projects: [`09-deno-server.ts`](../../examples/integrations/09-deno-server.ts), [`10-cloudflare-worker`](../../examples/integrations/10-cloudflare-worker).
+On Cloudflare Workers use a `compatibility_date` of 2026-08-04 or later (or the `nodejs_compat` flag); with database memory create the `Cogitator` per request, since Workers do not share connections between requests. Deno needs only `--allow-net` and `--allow-env`. Complete projects: [`09-deno-server.ts`](https://github.com/cogitator-ai/Cogitator-AI/blob/main/examples/integrations/09-deno-server.ts), [`10-cloudflare-worker`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/examples/integrations/10-cloudflare-worker). See also [cogitator.app/docs/deployment/edge](https://cogitator.app/docs/deployment/edge).
 
 ## SSE Streaming
 
@@ -178,6 +192,28 @@ The adapter uses Hono's built-in `streamSSE` for Server-Sent Events — no raw r
 Agent streams emit `tool-call-start`, `tool-call-delta` (the JSON arguments) and `tool-call-end` with the provider's tool call id, so `tool-result.toolCallId` always matches the call it belongs to.
 
 When the agent sets `reasoning: { summary: true }` and the provider returns a reasoning summary, agent streams also emit it as its own `reasoning-start`/`reasoning-delta`/`reasoning-end` part, closed before text or a tool call starts, so reasoning and text parts never interleave.
+
+Workflow streams send `{ type: 'workflow', event, data }` (`node_started`, `node_completed`, `node_error`, `node_progress`, `workflow_completed`); swarm streams send `{ type: 'swarm', event, data }` (`agent_start`, `agent_complete`, `agent_error`, `message`, the swarm's own events, `swarm_completed`). Every stream ends with `finish` and `data: [DONE]`, or with an `error` event.
+
+For custom routes, `HonoStreamWriter` wraps the stream of Hono's `streamSSE`; its methods (`start`, `textDelta`, `toolCallStart`, `approvalRequired`, `workflowEvent`, `finish`, …) return promises:
+
+```typescript
+import { streamSSE } from 'hono/streaming';
+import { HonoStreamWriter, generateId } from '@cogitator-ai/hono';
+
+app.post('/custom/stream', (c) =>
+  streamSSE(c, async (stream) => {
+    const writer = new HonoStreamWriter(stream);
+    const messageId = generateId('msg');
+    const textId = generateId('txt');
+    await writer.start(messageId);
+    await writer.textStart(textId);
+    await writer.textDelta(textId, 'Hello!');
+    await writer.textEnd(textId);
+    await writer.finish(messageId);
+  })
+);
+```
 
 ## WebSocket
 
@@ -241,6 +277,10 @@ import {
   errorHandler,
 } from '@cogitator-ai/hono';
 ```
+
+## Documentation
+
+Full guide: [cogitator.app/docs/server-adapters/hono](https://cogitator.app/docs/server-adapters/hono). Tool approvals: [cogitator.app/docs/tools/approvals](https://cogitator.app/docs/tools/approvals).
 
 ## License
 

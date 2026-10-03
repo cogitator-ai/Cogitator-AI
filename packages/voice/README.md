@@ -7,14 +7,16 @@ Two modes: **Pipeline** (STT -> Agent -> TTS) for any LLM, and **Realtime** (nat
 ## Installation
 
 ```bash
-pnpm add @cogitator-ai/voice
+pnpm add @cogitator-ai/voice openai
 
-# Required for OpenAI STT/TTS
-pnpm add openai
-
-# Optional dependencies
-pnpm add onnxruntime-node  # Silero VAD (neural network-based)
+# Optional
+pnpm add @cogitator-ai/core        # run Cogitator agents via createCogitatorRunner()
+pnpm add onnxruntime-node          # Silero VAD (neural network-based)
 ```
+
+`openai` is listed as an optional peer, but the package entry imports the OpenAI STT/TTS providers, so install it even if you only use Deepgram or ElevenLabs. Deepgram and the WebSocket transport use the bundled `ws`; ElevenLabs uses `fetch`.
+
+Full documentation: [cogitator.app/docs/voice](https://cogitator.app/docs/voice).
 
 ## Features
 
@@ -62,11 +64,13 @@ await voiceAgent.listen(8080);
 
 Connect from any WebSocket client at `ws://localhost:8080/voice` — send binary PCM16 frames, receive binary audio + JSON events (see [WebSocket Protocol](#websocket-protocol)).
 
-`createCogitatorRunner()` adapts a `Cogitator` runtime + `Agent` to the `VoiceAgentRunner` interface (`run(input, { sessionId, signal })`). Each voice session gets its own memory thread (`voice:<sessionId>`), and interrupted turns abort the underlying run. Any object with a compatible `run()` works as well.
+`createCogitatorRunner()` adapts a `Cogitator` runtime + `Agent` to the `VoiceAgentRunner` interface (`run(input, { sessionId, signal })`). Each voice session gets its own memory thread (`voice:<sessionId>`, override with `createCogitatorRunner(cogitator, agent, { threadId: ({ sessionId }) => ... })`), and interrupted turns abort the underlying run. Any object with a compatible `run()` works as well.
 
 ---
 
 ## STT Providers
+
+Docs: [STT providers](https://cogitator.app/docs/voice/stt-providers).
 
 | Provider      | Default Model    | Streaming           | Word Timestamps  | Notes                                                                    |
 | ------------- | ---------------- | ------------------- | ---------------- | ------------------------------------------------------------------------ |
@@ -126,6 +130,8 @@ const { text } = await stream.close();
 
 ## TTS Providers
 
+Docs: [TTS providers](https://cogitator.app/docs/voice/tts-providers).
+
 | Provider        | Default Model       | Streaming | Voices                                                                                 | Notes                                                                                   |
 | --------------- | ------------------- | --------- | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | `OpenAITTS`     | `gpt-4o-mini-tts`   | Yes       | alloy, ash, ballad, coral, echo, fable, onyx, nova, sage, shimmer, verse, marin, cedar | Also supports `tts-1`, `tts-1-hd`. Supports `instructions` for voice style control      |
@@ -177,6 +183,8 @@ for await (const chunk of tts.streamSynthesize('Streaming...')) {
 
 ## VAD Providers
 
+Docs: [VAD](https://cogitator.app/docs/voice/vad).
+
 | Provider    | Accuracy | Dependencies       | Speed      | Notes                                             |
 | ----------- | -------- | ------------------ | ---------- | ------------------------------------------------- |
 | `EnergyVAD` | Basic    | None               | Fast       | RMS energy threshold, good for quiet environments |
@@ -214,7 +222,7 @@ switch (event.type) {
 
 ### Silero VAD
 
-Neural network-based VAD using the Silero ONNX model. Both the v4 (`h`/`c`) and v5 (`state`) model signatures are supported. Chunks of any size are buffered into 32ms frames (512 samples @ 16kHz, 256 @ 8kHz):
+Neural network-based VAD using the Silero ONNX model (download `silero_vad.onnx` yourself and pass its path). Both the v4 (`h`/`c`) and v5 (`state`) model signatures are supported. `sampleRate` must be `16000` or `8000`; chunks of any size are buffered into 32ms frames (512 samples @ 16kHz, 256 @ 8kHz). Call `init()` before `process()`:
 
 ```typescript
 import { SileroVAD } from '@cogitator-ai/voice';
@@ -235,7 +243,7 @@ const event = await vad.process(float32Samples);
 
 ## Pipeline Mode
 
-The pipeline processes audio through a three-stage loop: STT -> Agent -> TTS. Works with any Cogitator agent regardless of the underlying LLM.
+The pipeline processes audio through a three-stage loop: STT -> Agent -> TTS. Works with any Cogitator agent regardless of the underlying LLM. Docs: [Pipeline](https://cogitator.app/docs/voice/pipeline).
 
 ### One-shot processing
 
@@ -268,7 +276,7 @@ const pipeline = new VoicePipeline({
   agent: myAgent,
 });
 
-const session = pipeline.createSession();
+const session = pipeline.createSession(); // or createSession({ sessionId }) — passed to the agent's run context
 
 session.on('speech_start', () => {
   console.log('User started speaking');
@@ -306,7 +314,7 @@ Without a VAD, audio is buffered until `endAudio()`. `interrupt()` cancels the i
 
 ## Realtime Mode
 
-Native speech-to-speech without the STT/TTS pipeline. The LLM directly processes and generates audio. Lower latency, more natural conversation flow.
+Native speech-to-speech without the STT/TTS pipeline. The LLM directly processes and generates audio. Lower latency, more natural conversation flow. Docs: [Realtime](https://cogitator.app/docs/voice/realtime).
 
 | Provider | Default model           | Input audio      | Output audio     | Notes                                                                                   |
 | -------- | ----------------------- | ---------------- | ---------------- | --------------------------------------------------------------------------------------- |
@@ -413,7 +421,7 @@ transport.attachToServer(httpServer);
 await transport.close();
 ```
 
-When attached to an existing server, upgrade requests for other paths are left untouched for other handlers; a standalone `listen()` server rejects them with `404`.
+When attached to an existing server, upgrade requests for other paths are left untouched for other handlers; a standalone `listen()` server rejects them with `404`. Upgrades beyond `maxConnections` are rejected with `503`. `verifyClient` returning `true` accepts, `false` rejects with `401`, `{ code, message }` rejects with that status, and a throw rejects with `500`.
 
 ### WebSocket Protocol
 
@@ -504,7 +512,7 @@ const agent = new Agent({
 });
 ```
 
-`VoiceTool` objects carry Zod parameter schemas, so they can be passed to `tool()` as-is.
+`VoiceTool` objects carry Zod parameter schemas, so they can be passed to `tool()` as-is. `transcribeTool(stt)` and `speakTool(tts)` create the tools one at a time. `transcribe_audio` takes `audioBase64` (+ optional `language`); `speak_text` takes `text`, `voice`, `format` and returns `{ audioBase64, format }`.
 
 ---
 
@@ -521,6 +529,7 @@ import {
   resample,
   calculateRMS,
   detectAudioFormat,
+  audioMimeType,
 } from '@cogitator-ai/voice';
 
 const pcm = float32ToPcm16(float32Samples);
@@ -533,7 +542,8 @@ const resampled = resample(float32Samples, 44100, 16000);
 
 const rms = calculateRMS(float32Samples);
 
-detectAudioFormat(fileBuffer); // 'wav' | 'mp3' | 'ogg' | 'flac' | 'webm' | 'mp4' | null (raw PCM)
+const format = detectAudioFormat(fileBuffer); // 'wav' | 'mp3' | 'ogg' | 'flac' | 'webm' | 'mp4' | null (raw PCM)
+if (format) audioMimeType(format); // e.g. 'audio/wav'
 ```
 
 ---
@@ -601,12 +611,12 @@ detectAudioFormat(fileBuffer); // 'wav' | 'mp3' | 'ogg' | 'flac' | 'webm' | 'mp4
 
 ### `SileroVADConfig`
 
-| Field             | Type     | Default | Description                               |
-| ----------------- | -------- | ------- | ----------------------------------------- |
-| `modelPath`       | `string` | —       | Path to `silero_vad.onnx` model file      |
-| `threshold`       | `number` | `0.5`   | Speech probability threshold (0-1)        |
-| `silenceDuration` | `number` | `500`   | Silence duration (ms) before `speech_end` |
-| `sampleRate`      | `number` | `16000` | Audio sample rate in Hz                   |
+| Field             | Type     | Default | Description                                 |
+| ----------------- | -------- | ------- | ------------------------------------------- |
+| `modelPath`       | `string` | —       | Path to `silero_vad.onnx` model file        |
+| `threshold`       | `number` | `0.5`   | Speech probability threshold (0-1)          |
+| `silenceDuration` | `number` | `500`   | Silence duration (ms) before `speech_end`   |
+| `sampleRate`      | `number` | `16000` | Audio sample rate in Hz (`16000` or `8000`) |
 
 ### `WebSocketTransportConfig`
 
@@ -620,7 +630,7 @@ detectAudioFormat(fileBuffer); // 'wav' | 'mp3' | 'ogg' | 'flac' | 'webm' | 'mp4
 
 ## Examples
 
-See [`examples/voice/`](../../examples/voice/) for runnable examples:
+See [`examples/voice/`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/examples/voice) for runnable examples:
 
 - **01-pipeline.ts** — STT -> Cogitator agent -> TTS with `VoicePipeline` and `createCogitatorRunner`
 - **02-realtime.ts** — Realtime session with tool calling (Gemini Live or OpenAI Realtime)

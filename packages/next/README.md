@@ -164,7 +164,7 @@ Response format:
 }
 ```
 
-A run waiting for [approvals](#approvals) answers `"status": "paused"` with its `pendingApprovals`. A failed run answers `{ "error": message, "code": code }` with the status of its `CogitatorError` (for example `429 LLM_RATE_LIMITED`), and `500` for anything else.
+A run waiting for [approvals](#approvals) answers `"status": "paused"` with its `pendingApprovals`. A run that fails with a `CogitatorError` answers `{ "error": message, "code": code }` with that error's status (for example `429 LLM_RATE_LIMITED`). Any other error is logged on the server and answered as `500 { "error": "Internal server error", "code": "INTERNAL_ERROR" }`, so its text (connection strings, file paths) never reaches the client. The same applies when `afterRun` throws.
 
 ### Multiple users
 
@@ -410,7 +410,7 @@ An agent with `reasoning: { summary: true }` also streams its reasoning summary 
 
 A run that pauses for [approvals](#approvals) sends `{"type":"approval-required","threadId":"…","approvals":[…]}` after the open block is closed and before `finish`.
 
-If the run fails, the open text or reasoning block is closed and an `{"type":"error","message":"..."}` event is sent instead of `finish`.
+If the run fails, the open text or reasoning block is closed and an `{"type":"error","message":"...","code":"..."}` event is sent instead of `finish`. A `CogitatorError` keeps its message and code; any other error is logged on the server and sent as `"message":"Internal server error","code":"INTERNAL_ERROR"`.
 
 The server-side building blocks are exported for custom handlers:
 
@@ -426,6 +426,7 @@ interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
+  reasoning?: string; // reasoning summary of an assistant message
   toolCalls?: ToolCall[];
   metadata?: Record<string, unknown>;
   createdAt?: Date;
@@ -444,6 +445,9 @@ interface AgentResponse {
     inputTokens: number;
     outputTokens: number;
     totalTokens: number;
+    reasoningTokens?: number;
+    cachedInputTokens?: number;
+    cacheWriteTokens?: number;
   };
   toolCalls: ToolCall[];
   trace?: { traceId: string; spans: unknown[] };
@@ -489,7 +493,9 @@ if (error) {
 }
 ```
 
-HTTP failures are thrown as `HttpError` (exported from `@cogitator-ai/next/client`) with a `status` property and a message like `Request failed: 400 - No user message provided`. Stream-level `error` events call `onError` and skip `onFinish`; when the runtime failed with a `CogitatorError`, the event carries its `code`.
+HTTP failures are thrown as `HttpError` (exported from `@cogitator-ai/next/client`) with a `status` property and a message like `Request failed: 400 - No user message provided`. Stream-level `error` events call `onError` with the event's `message` and skip `onFinish`.
+
+On the server, a `beforeRun` that throws answers with its message and the error's `status` property (default `401`); a `parseInput` that throws answers `400`. Run failures follow the rule above: a `CogitatorError` keeps its message and `code`, anything else becomes `Internal server error` with `code: "INTERNAL_ERROR"`.
 
 With retry enabled, transient errors (network failures, 408/429/502/503/504) are automatically retried; the backoff wait is cancelled by `stop()`:
 
@@ -516,6 +522,10 @@ if (isLoading) {
   stop();
 }
 ```
+
+## Documentation
+
+Full guide: [cogitator.app/docs/integrations/nextjs](https://cogitator.app/docs/integrations/nextjs)
 
 ## License
 

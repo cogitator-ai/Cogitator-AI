@@ -123,11 +123,14 @@ Every error is answered in Tetsu's envelope:
 | 404     | `AGENT_NOT_FOUND`, `WORKFLOW_NOT_FOUND`, `SWARM_NOT_FOUND` | No such name                                                         |
 | 409     | `BLACKBOARD_DISABLED`                                      | The swarm has no blackboard                                          |
 | 409     | `RUN_NOT_PAUSED`                                           | A resume named a thread without a paused run                         |
+| 499     | `CLIENT_CLOSED_REQUEST`                                    | The client left before a `/run` or `/resume` answer was ready        |
 | 422     | `VALIDATION_FAILED`                                        | The body or the path failed its schema; `issues` lists every problem |
 | 501     | `PACKAGE_NOT_INSTALLED`                                    | `@cogitator-ai/workflows` or `@cogitator-ai/swarms` is missing       |
-| 503     | `MEMORY_NOT_CONFIGURED`                                    | A thread endpoint was called on a runtime without memory             |
+| 503     | `MEMORY_NOT_CONFIGURED`                                    | A thread endpoint was called on a runtime with no `memory` config    |
 | 4xx/5xx | the `CogitatorError` code                                  | The run failed, e.g. `429 LLM_RATE_LIMITED` with `Retry-After`       |
 | 500     | `INTERNAL_SERVER_ERROR`                                    | Anything else; the detail goes to `reportError`, never to the client |
+
+Only a `CogitatorError` keeps its message and code. Any other error reaches the client only as a generic internal error: `500 INTERNAL_SERVER_ERROR` in JSON, and `Internal server error` in stream `error` events, WebSocket errors and the `error` field of workflow `node_error` and swarm `agent_error` events. Its text, which can carry connection strings or file paths, never leaves the server.
 
 Every route mounts an `onError` hook made by `cogitatorErrors()`. Mount another on the application to answer `CogitatorError`s from your own routes the same way:
 
@@ -159,6 +162,7 @@ To have the OpenAPI document describe the scheme and the `401`, build the hook w
 
 ```typescript
 import { callerHook, cogitatorController } from '@cogitator-ai/tetsu';
+import { controller, createApp, group, route } from '@tetsujs/core';
 import { secured } from '@tetsujs/openapi';
 
 const signedIn = secured(callerHook(authenticate), {
@@ -190,6 +194,7 @@ createApp({
 
 A thread belongs to the user whose run or message created it, recorded as its `userId`. Runs and the thread endpoints only let that user in: another user's `threadId` answers `403 THREAD_ACCESS_DENIED` and leaves the thread untouched. Callers without a `userId` share the threads that have no owner, and cannot open an owned one.
 
+- The thread endpoints use `cogitator.getMemory()`, which connects the configured memory adapter on first use, so they work on a fresh server before any agent has run.
 - `GET` and `DELETE /threads/:id` check the owner first; a thread that does not exist yet reads as empty.
 - `POST /threads/:id/messages` creates a missing thread owned by the caller.
 - A run or stream on another user's thread is refused before the model is called; a stream ends with an `error` event carrying `THREAD_ACCESS_DENIED`.
@@ -263,7 +268,7 @@ data: [DONE]
 
 An agent with `reasoning: { summary: true }` also streams its reasoning summary as `reasoning-start`, `reasoning-delta` and `reasoning-end` events. A text or reasoning part opens with its first delta and is closed before a part of the other kind, a tool call or `finish`, so parts never overlap. `POST /agents/:name/run` returns the summary as `reasoning`, and `usage` gains `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the provider reports them.
 
-A run that fails ends with `{"type":"error","message":"…","code":"…"}` instead of `finish`. An unexpected failure is also reported to the application's `reportError` with `source: "stream"`. Workflow streams send `workflow` events (`node_started`, `node_completed`, `node_error`, `node_progress`, `workflow_completed`), swarm streams send `swarm` events (`agent_start`, `agent_complete`, `agent_error`, `message`, `swarm_completed`).
+A run that fails ends with `{"type":"error","message":"…","code":"…"}` instead of `finish`. A `CogitatorError` keeps its message and code; anything else is sent as `"message":"Internal server error","code":"INTERNAL_SERVER_ERROR"` and reported to the application's `reportError` with `source: "stream"`. Workflow streams send `workflow` events (`node_started`, `node_completed`, `node_error`, `node_progress`, `workflow_completed`), swarm streams send `swarm` events (`agent_start`, `agent_complete`, `agent_error`, `message`, `swarm_completed`).
 
 Validation, `401`, `403` and `404` are answered as JSON before the stream opens.
 
@@ -273,7 +278,7 @@ Validation, `401`, `403` and `404` are answered as JSON before the stream opens.
 cogitatorController({ cogitator, agents, auth, websocket: true });
 ```
 
-The handshake runs `auth` like any route. Each socket runs one agent, workflow or swarm at a time.
+The handshake runs `auth` like any route. Each socket runs one agent, workflow or swarm at a time; a `run` or `resume` sent while one is in progress gets an error with `code: 'RUN_IN_PROGRESS'`.
 
 | Client sends                                                                                                  | Server answers                                                                                                    |
 | ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
@@ -282,7 +287,7 @@ The handshake runs `auth` like any route. Each socket runs one agent, workflow o
 | `{ type: 'stop' }`                                                                                            | cancels the current run                                                                                           |
 | `{ type: 'ping', id? }`                                                                                       | `{ type: 'pong', id }`                                                                                            |
 
-Errors arrive as `{ type: 'error', id, error, code }` and leave the socket open; an invalid frame gets `code: 'INVALID_MESSAGE'`. Closing the socket cancels its run. Bun's server-level options such as `maxPayloadLength` are set where the app is served:
+Errors arrive as `{ type: 'error', id, error, code }` and leave the socket open; an invalid frame gets `code: 'INVALID_MESSAGE'`, and an error that is not a `CogitatorError` is sent as `Internal server error` with `code: 'INTERNAL_SERVER_ERROR'`. Closing the socket cancels its run. Bun's server-level options such as `maxPayloadLength` are set where the app is served:
 
 ```typescript
 Bun.serve({ ...app, websocket: { ...app.websocket, maxPayloadLength: 1024 * 1024 } });
@@ -293,6 +298,8 @@ Bun.serve({ ...app, websocket: { ...app.websocket, maxPayloadLength: 1024 * 1024
 Streams and sockets can stay open for minutes. Pass the `draining` signal of `@tetsujs/lifecycle` so a stopping server ends them and clients reconnect to one that stays:
 
 ```typescript
+import { onShutdownSignals } from '@tetsujs/lifecycle';
+
 let shutdown: ReturnType<typeof onShutdownSignals> | undefined;
 
 const app = createApp({
@@ -306,6 +313,8 @@ shutdown = onShutdownSignals(server);
 
 Request and response schemas are Zod, so `docs()` and `openapi()` from `@tetsujs/openapi` describe every route, the run failures a `CogitatorError` can produce, and the schemes of a `secured()` caller hook. SSE and WebSocket endpoints are documented by their description only, since OpenAPI cannot describe what follows the headers.
 
+The request and response schemas (`RunBody`, `ResumeBody`, `AgentRunResponse`, `SocketMessage`, …) and their TypeScript types (`AgentRunRequest`, `AgentRunResponseBody`, `WebSocketClientMessage`, …) are exported for clients and your own routes, along with the error helpers `cogitatorErrorResponse()`, `cogitatorErrorStatus()` and `describeError()`.
+
 ## Testing
 
 The package is tested with `bun test`: handlers called with `testCtx()`, and the full pipeline through `serve()` from `@tetsujs/core/testing`, including SSE, WebSocket and `assertDescribed()` checks against the OpenAPI document.
@@ -316,11 +325,15 @@ pnpm --filter @cogitator-ai/tetsu test
 
 ## Example
 
-[`examples/integrations/08-tetsu-server.ts`](../../examples/integrations/08-tetsu-server.ts) — an app with its own users, its own MCP server for its domain tools, and an agent that acts for the signed-in user:
+[`examples/integrations/08-tetsu-server.ts`](https://github.com/cogitator-ai/Cogitator-AI/blob/main/examples/integrations/08-tetsu-server.ts) — an app with its own users, its own MCP server for its domain tools, and an agent that acts for the signed-in user:
 
 ```bash
 bun examples/integrations/08-tetsu-server.ts
 ```
+
+## Documentation
+
+Full guide: [cogitator.app/docs/server-adapters/tetsu](https://cogitator.app/docs/server-adapters/tetsu)
 
 ## License
 

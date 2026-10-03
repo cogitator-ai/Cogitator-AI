@@ -25,8 +25,14 @@ const result = await manager.execute(
   { type: 'docker', image: 'python:3.11-alpine' }
 );
 
-console.log(result.data?.stdout); // "Hello!"
+if (result.success) {
+  console.log(result.data.stdout); // "Hello!"
+} else {
+  console.error(result.error);
+}
 ```
+
+`execute()` returns a `SandboxResult`: `{ success: true, data }` or `{ success: false, error }`. A command that exits non-zero is still a success; check `data.exitCode`.
 
 ## Features
 
@@ -166,18 +172,17 @@ await docker.disconnect();
 
 ### Security Features
 
-Docker containers run with these security settings:
+Docker containers are created with this host configuration:
 
-```typescript
-{
-  NetworkMode: 'none',          // No network access
-  CapDrop: ['ALL'],             // Drop all capabilities
-  SecurityOpt: ['no-new-privileges'],  // No privilege escalation
-  PidsLimit: 100,               // Limit process count
-  ReadonlyRootfs: false,        // Writable (can enable true)
-  Labels: { 'ai.cogitator.sandbox': 'true' },
-}
-```
+| Setting       | Value                                         |
+| ------------- | --------------------------------------------- |
+| `NetworkMode` | `network.mode`, default `'none'` (no network) |
+| `CapDrop`     | `['ALL']` (every capability dropped)          |
+| `SecurityOpt` | `['no-new-privileges']`                       |
+| `PidsLimit`   | `resources.pidsLimit`, default `100`          |
+| Root FS       | Writable (not configurable)                   |
+| Working dir   | `/workspace`                                  |
+| Label         | `ai.cogitator.sandbox=true`                   |
 
 - `command` is executed as an argv array (no shell); use `['sh', '-c', '...']` for shell syntax.
 - Output is demultiplexed frame by frame (frames split across network chunks are reassembled) and capped at 50 000 bytes per stream.
@@ -282,7 +287,7 @@ const result = await native.execute(
   { type: 'native' }
 );
 
-console.log(result.data?.stdout);
+if (result.success) console.log(result.data.stdout);
 ```
 
 **Warning:** Native execution has no isolation. Use only when Docker is unavailable.
@@ -339,23 +344,29 @@ Supported formats: `'256B'`, `'256KB'`, `'256MB'`, `'1GB'`, `'1TB'`, Docker-styl
 
 ### CPU
 
+`SandboxConfig` is exported as a type (`import type { SandboxConfig } from '@cogitator-ai/sandbox'`).
+
 ```typescript
-{
+const config: SandboxConfig = {
+  type: 'docker',
+  image: 'alpine',
   resources: {
     cpus: 0.5,
     cpuShares: 512,
   },
-}
+};
 ```
 
 ### Process Limits
 
 ```typescript
-{
+const config: SandboxConfig = {
+  type: 'docker',
+  image: 'alpine',
   resources: {
     pidsLimit: 50,
   },
-}
+};
 ```
 
 ---
@@ -363,11 +374,13 @@ Supported formats: `'256B'`, `'256KB'`, `'256MB'`, `'1GB'`, `'1TB'`, Docker-styl
 ## Network Configuration
 
 ```typescript
-{
+const config: SandboxConfig = {
+  type: 'docker',
+  image: 'alpine',
   network: {
     mode: 'none',
   },
-}
+};
 ```
 
 Network modes:
@@ -383,12 +396,14 @@ Network modes:
 Mount host directories into the container:
 
 ```typescript
-{
+const config: SandboxConfig = {
+  type: 'docker',
+  image: 'alpine',
   mounts: [
     { source: '/host/data', target: '/data', readOnly: true },
     { source: '/host/output', target: '/output', readOnly: false },
   ],
-}
+};
 ```
 
 ---
@@ -467,6 +482,8 @@ const cog = new Cogitator({
 });
 ```
 
+The runtime starts a `SandboxManager` from `new Cogitator({ sandbox })` on the first sandboxed tool call. For a Docker tool it does not call `execute`: the sandbox runs the tool's `command` argument with `sh -c` (with optional `cwd` / `env` arguments) and the output becomes the tool result. A WASM tool gets its arguments as JSON on stdin and its JSON stdout is the result. When no sandbox can start, the tool runs natively with a warning. See [Sandbox](https://cogitator.app/docs/deployment/sandbox) on the website.
+
 ---
 
 ## Examples
@@ -493,8 +510,10 @@ print(json.dumps(data))
   }
 );
 
-const output = JSON.parse(result.data!.stdout);
-console.log(output.sum);
+if (result.success) {
+  const output = JSON.parse(result.data.stdout);
+  console.log(output.sum);
+}
 ```
 
 ### Run Node.js Code
@@ -535,7 +554,7 @@ const result = await manager.execute(
   { type: 'docker', image: 'alpine', timeout: 5000 }
 );
 
-if (result.data?.timedOut) {
+if (result.success && result.data.timedOut) {
   console.log('Command timed out');
 }
 ```
@@ -548,7 +567,7 @@ const result = await manager.execute(
   { type: 'docker', image: 'alpine' }
 );
 
-console.log('Exit code:', result.data?.exitCode);
+if (result.success) console.log('Exit code:', result.data.exitCode);
 ```
 
 ---

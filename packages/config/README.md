@@ -8,11 +8,13 @@ Configuration loading for Cogitator. Supports YAML files, environment variables,
 pnpm add @cogitator-ai/config
 ```
 
+See also [Configuration](https://cogitator.app/docs/getting-started/configuration) on the website.
+
 ## Quick Start
 
 ### YAML Configuration
 
-Create `cogitator.yml` in your project root:
+Create `cogitator.yml` in your project root. Without an explicit `configPath`, `loadConfig()` looks in the current directory for `cogitator.yaml`, `cogitator.yml`, `.cogitator.yaml` and `.cogitator.yml`, in that order:
 
 ```yaml
 llm:
@@ -48,13 +50,26 @@ const config = loadConfig({
 });
 
 // Or define config programmatically with type safety
-const config = defineConfig({
+const programmatic = defineConfig({
   llm: {
     defaultProvider: 'openai',
     providers: {
       openai: { apiKey: process.env.OPENAI_API_KEY! },
     },
   },
+});
+```
+
+Both validate the result and throw `Invalid configuration: …` with every Zod issue when it does not fit the schema. The result is a `CogitatorConfig`, ready for the runtime. Options that hold functions or objects (stores, callbacks such as `security.pii.onDetect`, `prompts`, `runCheckpoints`) cannot come from YAML; add them in code:
+
+```typescript
+import { Cogitator } from '@cogitator-ai/core';
+import { loadConfig } from '@cogitator-ai/config';
+
+const config = loadConfig();
+const cog = new Cogitator({
+  ...config,
+  prompts: { autoDeployWinner: true },
 });
 ```
 
@@ -98,13 +113,20 @@ llm:
       apiKey: xxx
     deepseek:
       apiKey: xxx
+  retry: # or `false`; default: 2 retries with exponential backoff
+    maxRetries: 3
+    baseDelay: 1000
+    maxDelay: 30000
+    maxRetryAfter: 60000
+  promptCache: # or `false`; on by default
+    ttl: 1h # 5m | 1h (Anthropic)
 ```
 
 ### Memory Configuration
 
 ```yaml
 memory:
-  adapter: postgres  # memory | redis | postgres | sqlite | mongodb | qdrant
+  adapter: postgres # memory | redis | postgres | sqlite | mongodb | qdrant
 
   # In-memory (for development)
   inMemory:
@@ -117,8 +139,8 @@ memory:
     host: localhost
     port: 6379
     password: secret
-    keyPrefix: cogitator:
-    ttl: 3600  # seconds
+    keyPrefix: 'cogitator:'
+    ttl: 3600 # seconds
     # Cluster mode:
     cluster:
       nodes:
@@ -126,7 +148,7 @@ memory:
           port: 6379
         - host: redis-2
           port: 6379
-      scaleReads: slave  # master | slave | all
+      scaleReads: slave # master | slave | all
 
   # PostgreSQL with pgvector
   postgres:
@@ -154,15 +176,16 @@ memory:
 
   # Embedding service for semantic search
   embedding:
-    provider: openai  # openai | ollama | google
+    provider: openai # openai | ollama | google (apiKey required for openai and google)
     apiKey: sk-xxx
     model: text-embedding-3-small
+    baseUrl: https://api.openai.com/v1 # openai and ollama only
 
   # Context builder settings
   contextBuilder:
     maxTokens: 4000
     reserveTokens: 500
-    strategy: recent  # recent | relevant | hybrid
+    strategy: recent # recent | relevant | hybrid
     includeSystemPrompt: true
     includeFacts: true
     includeSemanticContext: true
@@ -269,6 +292,70 @@ costRouting:
     warningThreshold: 0.8
 ```
 
+### Security Configuration
+
+```yaml
+security:
+  promptInjection:
+    detectInjection: true
+    detectJailbreak: true
+    detectRoleplay: true
+    detectEncoding: true
+    detectContextManipulation: true
+    classifier: local # local | llm
+    llmModel: openai/gpt-6-luna # for classifier: llm
+    action: block # block | warn | log
+    threshold: 0.7
+    allowlist:
+      - ignore the previous search
+  pii:
+    mode: mask # mask | redact | block
+    detect: [email, phone, credit_card, iban, ssn, ip_address, api_key]
+    custom:
+      - type: customer_id
+        pattern: 'CUS-\d{6}' # a regular expression source, compiled to a RegExp
+```
+
+### Context Configuration
+
+```yaml
+context:
+  enabled: true
+  strategy: hybrid # truncate | sliding-window | summarize | hybrid
+  compressionThreshold: 0.8
+  outputReserve: 0.15
+  summaryModel: openai/gpt-6-luna
+  windowSize: 10
+```
+
+### Deploy Configuration
+
+Read by `@cogitator-ai/deploy` and `cogitator deploy`:
+
+```yaml
+deploy:
+  target: fly # docker | fly
+  server: express # express | fastify | hono | koa
+  port: 3000
+  registry: registry.fly.io
+  image: my-agents
+  region: ams
+  instances: 2
+  services:
+    redis: true
+    postgres: false
+  env:
+    NODE_ENV: production
+  secrets: [OPENAI_API_KEY]
+  health:
+    path: /health
+    interval: 30s
+    timeout: 5s
+  resources:
+    memory: 512mb
+    cpu: 1
+```
+
 ### Limits Configuration
 
 ```yaml
@@ -333,6 +420,7 @@ OLLAMA_URL=http://localhost:11434   # or OLLAMA_HOST (scheme optional, e.g. 127.
 OLLAMA_API_KEY=xxx            # Ollama Cloud / authenticated Ollama
 AZURE_OPENAI_API_KEY=xxx
 AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
+AZURE_OPENAI_DEPLOYMENT=gpt-6.1-sol
 AWS_REGION=us-east-1
 AWS_ACCESS_KEY_ID=xxx
 AWS_SECRET_ACCESS_KEY=xxx
@@ -369,12 +457,13 @@ Substituted values are always strings, so use references for string fields (keys
 
 ## Priority Order
 
-Configuration is merged in this order (later overrides earlier):
+Configuration is deep-merged in this order (later overrides earlier):
 
-1. **Defaults** (lowest priority)
-2. **YAML config file** (`cogitator.yml`)
-3. **Environment variables** (`COGITATOR_*`)
-4. **Programmatic overrides** (highest priority)
+1. **YAML config file** (`cogitator.yml`; lowest priority)
+2. **Environment variables** (`COGITATOR_*` and the standard provider variables)
+3. **Programmatic overrides** (highest priority)
+
+Fields nobody sets stay unset, and the runtime applies its own defaults. The one default the schema fills in is the Ollama `baseUrl` (see above). Unknown top-level keys are dropped by validation.
 
 ---
 
@@ -413,12 +502,15 @@ import type { CogitatorConfigInput, CogitatorConfigOutput } from '@cogitator-ai/
 | `CostRoutingConfigSchema`        | Cost-aware model selection             |
 | `KnowledgeGraphConfigSchema`     | Knowledge graph settings               |
 | `PromptOptimizationConfigSchema` | Prompt optimization                    |
-| `SecurityConfigSchema`           | Security / injection config            |
+| `SecurityConfigSchema`           | Prompt injection and PII masking       |
 | `ContextManagerConfigSchema`     | Context compression                    |
 | `LoggingConfigSchema`            | Logging settings                       |
 | `DeployConfigSchema`             | Deployment settings                    |
 | `DeployTargetSchema`             | Deploy target enum (`docker` \| `fly`) |
 | `DeployServerSchema`             | Server framework enum                  |
+| `LLMRetryConfigSchema`           | `llm.retry` (`false` or retry options) |
+
+`KnowledgeGraphConfigSchema` and `PromptOptimizationConfigSchema` validate those configs on their own; they are not keys of `CogitatorConfigSchema`.
 
 ---
 
@@ -542,7 +634,7 @@ const config = defineConfig({
 
 ### loadYamlConfig(path?)
 
-Load and parse a YAML config file and resolve `${VAR}` references. Returns `null` if no config file is found or the file is empty; throws when the file cannot be parsed (the message includes the path) or its top level is not a mapping.
+Load and parse a YAML config file and resolve `${VAR}` references. Without a path it searches the default file names; a path that does not exist throws `Config file not found`. Returns `null` if no config file is found or the file is empty; throws when the file cannot be parsed (the message includes the path) or its top level is not a mapping. The result is not validated yet (`loadConfig` does that).
 
 ```typescript
 import { loadYamlConfig } from '@cogitator-ai/config';

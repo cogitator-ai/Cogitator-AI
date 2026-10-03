@@ -5,8 +5,10 @@ Self-modifying agents for Cogitator. Agents that evolve at runtime — generatin
 ## Installation
 
 ```bash
-pnpm add @cogitator-ai/self-modifying
+pnpm add @cogitator-ai/self-modifying @cogitator-ai/core
 ```
+
+The package depends only on `@cogitator-ai/types`; agents and LLM backends come from `@cogitator-ai/core`. Website docs: [Self-Modifying Agents](https://cogitator.app/docs/advanced/self-modifying).
 
 ## Quick Start
 
@@ -208,6 +210,8 @@ The meta-reasoning layer monitors the agent's reasoning process and makes strate
 ### Configuration
 
 ```typescript
+import { DEFAULT_MODE_PROFILES, SelfModifyingAgent } from '@cogitator-ai/self-modifying';
+
 const selfModifying = new SelfModifyingAgent({
   agent,
   llm,
@@ -224,9 +228,9 @@ const selfModifying = new SelfModifyingAgent({
         'exploratory',
       ],
       modeProfiles: {
-        analytical: { mode: 'analytical', temperature: 0.3, depth: 3 },
-        creative: { mode: 'creative', temperature: 0.9, depth: 2 },
-        // ... other modes
+        ...DEFAULT_MODE_PROFILES, // the type needs all six modes
+        analytical: { mode: 'analytical', temperature: 0.2, depth: 4 },
+        creative: { mode: 'creative', temperature: 1.0, depth: 2 },
       },
       maxMetaAssessments: 5, // Max assessments per run
       maxAdaptations: 3, // Max mode switches per run
@@ -717,6 +721,7 @@ import type {
 ```typescript
 const analyst = new Agent({
   name: 'data-analyst',
+  model: 'ollama/llama3.2',
   instructions: 'Analyze data and create visualizations.',
   tools: [readFile],
 });
@@ -755,6 +760,7 @@ console.log(
 ```typescript
 const solver = new Agent({
   name: 'problem-solver',
+  model: 'ollama/llama3.2',
   instructions: 'Find creative solutions to complex problems.',
 });
 
@@ -780,8 +786,8 @@ const result = await selfModifying.run(
   'Design a novel approach to reduce carbon emissions in cities'
 );
 
-console.log('Mode changes:', result.adaptationsMade.length);
-console.log('Final mode:', result.finalConfig.toolStrategy);
+console.log('Adaptations:', result.adaptationsMade.length);
+console.log('Final config:', result.finalConfig); // temperature, toolStrategy, reflectionDepth, ...
 ```
 
 ### Safe Code Generator
@@ -789,6 +795,7 @@ console.log('Final mode:', result.finalConfig.toolStrategy);
 ```typescript
 const coder = new Agent({
   name: 'code-generator',
+  model: 'ollama/llama3.2',
   instructions: 'Generate safe, tested code.',
 });
 

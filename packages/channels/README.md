@@ -2,6 +2,8 @@
 
 Connect Cogitator agents to messaging platforms. Gateway routes messages across channels, handles sessions, streaming, media, and middleware.
 
+Full documentation: [cogitator.app/docs/channels/gateway](https://cogitator.app/docs/channels/gateway).
+
 ## Install
 
 ```bash
@@ -11,10 +13,15 @@ pnpm add @cogitator-ai/channels
 pnpm add grammy                    # Telegram
 pnpm add discord.js                # Discord
 pnpm add @slack/bolt               # Slack
-pnpm add @whiskeysockets/baileys   # WhatsApp (+ qrcode-terminal to print the pairing QR)
+pnpm add @whiskeysockets/baileys   # WhatsApp, 6.x or 7.x (+ qrcode-terminal to print the pairing QR)
 pnpm add ws                        # WebChat
-pnpm add pg                        # Postgres memory for RuntimeBuilder (optional)
+
+# RuntimeBuilder (`cogitator up`)
+pnpm add better-sqlite3            # SQLite memory, knowledge graph and core facts (always needed)
+pnpm add pg                        # memory.adapter: postgres
 ```
+
+All adapters are optional peer dependencies, loaded only when the channel starts; a missing one fails `start()` with an install hint. RuntimeBuilder capabilities load `@cogitator-ai/browser`, `@cogitator-ai/rag`, `@cogitator-ai/mcp` and `@cogitator-ai/models` (vision detection) on demand. `LocalWhisper` needs `@huggingface/transformers` and `ogg-opus-decoder`, and installs them with `npm install --no-save` when missing.
 
 ## Quick Start
 
@@ -58,13 +65,14 @@ telegramChannel({
   webhook: {
     url: 'https://example.com/telegram',
     port: 8443,
+    path: '/telegram', // optional, defaults to the pathname of `url`
     secretToken: process.env.TG_WEBHOOK_SECRET, // verified on every update
   },
   allowedUpdates: ['message'],
 });
 ```
 
-Supports: text, photos (→ vision), voice and audio (→ STT), video, documents, replies, streaming via drafts/editText, emoji reactions, sending files from buffers or URLs, 4096 char limit.
+Supports: text, photos (→ vision), voice and audio (→ STT), video, documents, replies, streaming via drafts/editText, emoji reactions, sending files from buffers or URLs, 4096 char limit. Docs: [Telegram](https://cogitator.app/docs/channels/telegram).
 
 ### Discord
 
@@ -79,7 +87,7 @@ discordChannel({
 });
 ```
 
-Supports: DMs, server messages, attachments (images → vision, audio → STT), replies, streaming, reactions, auto-chunking (2000 chars / 17 lines, code-block aware). Long streamed answers span several Discord messages that are edited in place.
+Supports: DMs, server messages, attachments (images → vision, audio → STT), replies, streaming, reactions, auto-chunking (2000 chars / 17 lines, code-block aware). Long streamed answers span several Discord messages that are edited in place. Docs: [Discord](https://cogitator.app/docs/channels/discord).
 
 ### Slack
 
@@ -98,11 +106,11 @@ import { slackChannel } from '@cogitator-ai/channels';
 slackChannel({
   token: process.env.SLACK_BOT_TOKEN!,
   signingSecret: process.env.SLACK_SIGNING_SECRET!,
-  appToken: process.env.SLACK_APP_TOKEN!,
+  appToken: process.env.SLACK_APP_TOKEN!, // Socket Mode; omit to serve HTTP events on `port` (default 3000)
 });
 ```
 
-Supports: DMs, channel messages (via @mention, the mention is stripped from the text), threads (replies go to the thread root), file shares, Socket Mode (no public URL), streaming via chat.update, reactions. Set `mentionOnly: true` to ignore channel messages that do not mention the bot when the app also subscribes to `message.channels`. In `RuntimeBuilder`, Socket Mode is on when `SLACK_APP_TOKEN` is set; otherwise Slack runs in HTTP mode on `SLACK_PORT` (default 3000).
+Supports: DMs, channel messages (via @mention, the mention is stripped from the text), threads (replies go to the thread root), file shares, Socket Mode (no public URL), streaming via chat.update, reactions. Set `mentionOnly: true` to ignore channel messages that do not mention the bot when the app also subscribes to `message.channels`. In `RuntimeBuilder`, Socket Mode is on when `SLACK_APP_TOKEN` is set; otherwise Slack runs in HTTP mode on `SLACK_PORT` (default 3000). Docs: [Slack](https://cogitator.app/docs/channels/slack).
 
 ### WhatsApp
 
@@ -119,7 +127,9 @@ whatsappChannel({
 
 **First run:** the QR code is printed to the terminal (or handed to `qrCallback`) → scan from WhatsApp → Settings → Linked Devices. Session is saved for future restarts.
 
-Supports: 1-on-1 and group chats, images/voice/video/documents with captions, quoted replies, message edits (streaming), typing indicators, auto-reconnect with exponential backoff, WhatsApp-native markdown.
+Supports: 1-on-1 and group chats, images/voice/video/documents with captions, quoted replies, message edits (streaming), typing indicators, auto-reconnect with exponential backoff (stops when WhatsApp logs the device out), WhatsApp-native markdown.
+
+Works with Baileys 6.x and 7.x. `userId` is the sender's phone number (the part before `@`). When WhatsApp addresses a person by LID (Baileys 7), the phone number is taken from `remoteJidAlt` / `participantAlt` whenever WhatsApp shares it, so owner lists and per-user memory keep matching. Docs: [WhatsApp](https://cogitator.app/docs/channels/whatsapp).
 
 ### WebChat
 
@@ -136,11 +146,11 @@ webchatChannel({
 });
 ```
 
-Connect: `ws://localhost:3100/ws?token=YOUR_SECRET` (unauthorized sockets are closed with code 1008). Send `{"text": "Hello!", "id": "optional-client-id"}`.
+Connect: `ws://localhost:3100/ws?token=YOUR_SECRET` (unauthorized sockets get an `{"type":"error","message":"unauthorized"}` frame and are closed with code 1008). Send `{"text": "Hello!", "id": "optional-client-id"}`. Each connection is its own user and chat (`clientId`).
 
-Server frames: `connected` (`clientId`), `message` (`id`, `text`, `replyTo`), `edit` (`id`, `text`), `delete` (`id`), `typing`, `file` (`url` or base64 `data`).
+Server frames: `connected` (`clientId`), `message` (`id`, `text`, `replyTo`), `edit` (`id`, `text`), `delete` (`id`), `typing`, `file` (`filename`, `mimeType`, and `url` or base64 `data`).
 
-Supports: streaming (via edit frames), typing indicators, token auth, no message limit.
+Supports: streaming (via edit frames), typing indicators, token auth, no message limit. Text only on the way in (no attachments). Docs: [WebChat](https://cogitator.app/docs/channels/webchat).
 
 ### Terminal
 
@@ -152,7 +162,7 @@ import { terminalChannel } from '@cogitator-ai/channels';
 terminalChannel({ userName: 'Alice', prompt: '> ', onExit: () => shutdown() });
 ```
 
-Ctrl+C, Ctrl+D, `/quit`, `/exit` and `exit` call `onExit` (default: raise `SIGINT` so the host app shuts down gracefully); `stop()` closes readline without exiting the process.
+Ctrl+C, Ctrl+D, `/quit`, `/exit` and `exit` call `onExit` (default: raise `SIGINT` so the host app shuts down gracefully); `stop()` closes readline without exiting the process. Docs: [Terminal](https://cogitator.app/docs/channels/terminal).
 
 ## Platform Comparison
 
@@ -166,7 +176,7 @@ Ctrl+C, Ctrl+D, `/quit`, `/exit` and `exit` call `onExit` (default: raise `SIGIN
 | Max message length | 4096         | 2000    | 40000     | 65536    | unlimited |
 | Public URL needed  | webhook only | no      | HTTP only | no       | no        |
 
-Outbound calls (`sendText`, `editText`, `sendFile`, `deleteMessage`) throw when the channel is not started, the target chat/client is unavailable or the platform rejects the request — wrap direct calls in `try/catch`. `sendText` returns the platform message id (for Discord, the id of the first chunk; continuation chunks are edited and deleted with it).
+Outbound calls (`sendText`, `editText`, `sendFile`, `deleteMessage`) throw when the channel is not started, the target chat is unavailable or the platform rejects the request — wrap direct calls in `try/catch`. WebChat is the exception: only `sendText` throws for a disconnected client, the other calls are dropped. `sendText` returns the platform message id (for Discord, the id of the first chunk; continuation chunks are edited and deleted with it).
 
 ## Gateway
 
@@ -174,7 +184,7 @@ Routes incoming messages to your agent. Handles:
 
 - Session management (per-user, per-channel) with an optional custom `sessionManager`
 - History compaction with LLM-written summaries
-- Streaming with `StreamBuffer` (message editing, splits at the platform limit without losing text)
+- Streaming with `StreamBuffer` when `stream` is set (message editing, splits at the platform limit without losing text); without `stream` the full answer is sent once the run finishes
 - Typing keep-alive (re-sends typing indicator every 4s)
 - Media processing (images → vision, voice → STT)
 - Middleware pipeline
@@ -201,11 +211,16 @@ gateway.stats; // { uptime, activeSessions, totalSessions, messagesToday, connec
 gateway.getSessions(); // [{ threadId, userName, messageCount, lastActiveAt, active }]
 await gateway.compactThread('telegram:42'); // force compaction of one conversation
 await gateway.injectMessage(msg); // feed a synthetic message (used by the scheduler)
+await gateway.stop();
 ```
+
+`stream` takes `flushInterval` and `minChunkSize` (ms / chars between edits), plus optional `minInitialChars` (wait for this much text before the first message), `maxMessageChars` (defaults to the platform limit) and `deleteOnAbort` (remove the partial answer when the run is interrupted). Telegram streams through message drafts when available and falls back to edits.
+
+Docs: [Gateway](https://cogitator.app/docs/channels/gateway), [Streaming](https://cogitator.app/docs/channels/streaming).
 
 ## Approvals
 
-Tools marked `requiresApproval` (for example `create_tool` from `capabilities.selfTools`) pause the run before they execute. The Gateway turns that pause into a chat conversation:
+Tools marked `requiresApproval` (for example `create_tool` from `capabilities.selfTools`) pause the run before they execute — unless the Cogitator has `guardrails.onToolApproval`, which then decides instead. The Gateway turns that pause into a chat conversation:
 
 1. The paused run's text (if any) is sent, followed by a prompt listing each waiting call — tool name, description and compact JSON arguments (cut at 300 characters).
 2. The user replies `approve` / `yes` to run the calls, or `deny` / `no` to refuse, optionally followed by a reason (`no, too risky`) that the agent sees. Replies are case-insensitive and may end with punctuation; `да` / `одобряю` and `нет` / `отклоняю` work out of the box.
@@ -218,6 +233,8 @@ Only the user who started the run can answer it: the runtime checks the run's `u
 Pauses survive restarts when the runtime persists them (in the thread's memory once the Cogitator has a memory adapter, or in `runCheckpoints`): the first approve/deny reply on a thread the Gateway has not seen since it started tries `resume`, and runs as a normal message if nothing is paused. On threads it has already seen, the Gateway resumes only pauses it sent a prompt for, so one Gateway process should serve a given thread.
 
 ```typescript
+import type { ApprovalRequestedEvent, ApprovalResolvedEvent } from '@cogitator-ai/channels';
+
 const gateway = new Gateway({
   // ...
   approvals: {
@@ -230,11 +247,17 @@ const gateway = new Gateway({
   },
 });
 
-hooks.on('approval:requested', ({ threadId, approvals }) => audit.log(threadId, approvals));
-hooks.on('approval:resolved', ({ threadId, decision, superseded }) =>
-  audit.log(threadId, decision, superseded)
-);
+hooks.on('approval:requested', (event) => {
+  const { threadId, approvals } = event as ApprovalRequestedEvent;
+  audit.log(threadId, approvals);
+});
+hooks.on('approval:resolved', (event) => {
+  const { threadId, decision, superseded } = event as ApprovalResolvedEvent;
+  audit.log(threadId, decision, superseded);
+});
 ```
+
+`ApprovalRequestedEvent` and `ApprovalResolvedEvent` are exported types; `superseded` is `true` when the user sent a new message instead of answering. `DEFAULT_APPROVE_WORDS`, `DEFAULT_DENY_WORDS` and `DEFAULT_NOT_ALLOWED_MESSAGE` hold the defaults.
 
 `parseApprovalReply(text, words)` and `formatApprovalPrompt(approvals, words)` are exported for custom channels and UIs.
 
@@ -323,13 +346,14 @@ Platform-specific markdown conversion applied automatically (code spans and fenc
 ```typescript
 import { rateLimit, ownerCommands, DmPolicyMiddleware, autoExtract } from '@cogitator-ai/channels';
 
-const gateway = new Gateway({
+// `gateway` is referenced lazily by the command handlers
+
+const gateway: Gateway = new Gateway({
   // ...
   middleware: [
     new DmPolicyMiddleware({
       mode: 'pairing',
       ownerIds: { telegram: '123' },
-      storePath: '~/.cogitator/dm-allowlist.json',
       groupPolicy: 'open',
     }),
     ownerCommands({
@@ -353,9 +377,11 @@ const gateway = new Gateway({
 - **pairing** — unknown users get a code, owner approves via `/pair CODE`
 - **disabled** — DMs blocked entirely
 
+`groupPolicy` (`open` | `allowlist` | `disabled`, with `groupAllowlist`) does the same for group chats. Approved users are persisted to `storePath` (default `~/.cogitator/dm-allowlist.json`; pass an absolute path, `~` is not expanded here). `dmPolicy(config)` is the factory form. Docs: [Middleware](https://cogitator.app/docs/channels/middleware).
+
 ### Command Authorization Levels
 
-Commands have 3 access levels: `owner`, `authorized`, `public`. Built-in commands: `/status`, `/sessions`, `/help` (authorized) and `/users`, `/compact`, `/model <name> [@user]`, `/restart` (owner). Each command calls the matching `on*` handler you provide. `/cmd@botname` (Telegram groups) is recognized. Only owners can approve `/pair` codes.
+Commands have 3 access levels: `owner`, `authorized`, `public`. Built-in commands: `/status`, `/sessions`, `/help` (authorized) and `/users`, `/compact`, `/model <name> [@user]`, `/restart` (owner). Each command calls the matching `on*` handler you provide. `/cmd@botname` (Telegram groups) is recognized. Only owners can approve `/pair` codes. Docs: [Owner Commands](https://cogitator.app/docs/channels/owner-commands).
 
 ### Rate Limit
 
@@ -372,22 +398,23 @@ const hooks = createHookRegistry();
 hooks.on('message:received', (e) => console.log('New message:', e));
 hooks.on('agent:after_run', (e) => console.log('Response:', e));
 hooks.on('agent:error', (e) => console.error('Agent failed:', e));
+// handlers receive `unknown`: cast to the payload you expect, e.g. `e as ApprovalRequestedEvent`
 
 const gateway = new Gateway({ /* ... */ hooks });
 ```
 
 Available hooks: `message:received`, `message:sending`, `message:sent`, `agent:before_run`, `agent:after_run`, `agent:error`, `session:created`, `session:compacted`, `stream:started`, `stream:finished`, `approval:requested`, `approval:resolved`.
 
-Errors in one handler don't affect others.
+Errors in one handler don't affect others (they are logged). Unsubscribe with `hooks.off(name, handler)`.
 
 ## Media & STT
 
-Voice messages are transcribed automatically. STT provider is selected by available env vars (highest priority first):
+Attachments are processed when the Gateway has a `mediaProcessor`; without one only the message text reaches the agent. `RuntimeBuilder` always wires one and picks the STT provider from env vars (highest priority first):
 
-1. **Deepgram** — set `DEEPGRAM_API_KEY` (nova-3 model, fast and accurate)
-2. **Groq** — set `GROQ_API_KEY` (free tier available)
-3. **OpenAI** — set `OPENAI_API_KEY` (`gpt-transcribe` model)
-4. **Local Whisper** — downloads ~75MB model on first use, runs offline (no API key needed)
+1. **Deepgram** — `DEEPGRAM_API_KEY` → `DeepgramSttProvider` (`nova-3`)
+2. **Groq** — `GROQ_API_KEY` → `GroqSttProvider` (`whisper-large-v3`)
+3. **OpenAI** — `OPENAI_API_KEY` → `OpenAISttProvider` (`gpt-transcribe`)
+4. **Local Whisper** — no key: `LocalWhisper` (`Xenova/whisper-tiny`, ~75MB, offline). It transcribes only once the model is downloaded; until then the agent gets a `download_stt_model` tool (`createWhisperDownloadTool`) and asks the user before downloading.
 
 Images are passed to the LLM as vision input if the model supports it. Attachments that arrive only as URLs (Discord) are downloaded (default cap 25 MiB). Text-like files (`.md`, `.json`, `text/*`, …) are inlined into the prompt; other files and videos are announced to the model.
 
@@ -401,7 +428,7 @@ const media = new MediaProcessor(new LocalWhisper(), () => true, new GroqSttProv
 const gateway = new Gateway({ /* ... */ mediaProcessor: media });
 ```
 
-Local Whisper decodes OGG/Opus and WAV (8/16/24/32-bit, any channel count); use a cloud provider for other formats.
+Local Whisper decodes OGG/Opus and WAV (8/16/24/32-bit, any channel count); use a cloud provider for other formats. Custom providers implement `SttProvider` (`transcribe(buffer, mimeType)`).
 
 ## Scheduler
 
@@ -425,7 +452,7 @@ const scheduler = new HeartbeatScheduler(store, {
 scheduler.start();
 ```
 
-Schedule types: `cron` (recurring, next fire computed with `cron-parser`, honors `timezone`), `recurring` (interval), `fixed` (one-shot). Consecutive failures are carried across reschedules; after `maxRetries` the job is skipped until `enableJob()`.
+Schedule types: `cron` (recurring, next fire computed with `cron-parser`, honors `timezone`), `recurring` (interval), `fixed` (one-shot). Consecutive failures are carried across reschedules; after `maxRetries` the job is skipped until `enableJob()`. A fired job reaches `onFire` as a message on the `channel` / `channelId` / `userId` stored in its `metadata`, and `staggerMs` adds a random delay before the first poll. Docs: [Scheduler](https://cogitator.app/docs/channels/scheduler).
 
 ```typescript
 await scheduler.listJobs();
@@ -436,24 +463,37 @@ await scheduler.cancelJob(id);
 
 ## RuntimeBuilder (YAML assistants)
 
-`RuntimeBuilder` turns a validated `cogitator.yml` (`AssistantConfigSchema`) into a running assistant — this is what `cogitator up` uses.
+`RuntimeBuilder` turns an assistant config (the shape of `cogitator.yml`) into a running assistant — this is what `cogitator up` uses. It takes the config as written (`AssistantConfigInput`) and applies `AssistantConfigSchema` itself, so a config built in code only sets what it needs (defaults fill `memory.autoExtract`, `memory.knowledgeGraph`, the security policies, …); an invalid config throws when the builder is created.
 
 ```typescript
-import { AssistantConfigSchema, RuntimeBuilder } from '@cogitator-ai/channels';
+import { RuntimeBuilder } from '@cogitator-ai/channels';
 
-const config = AssistantConfigSchema.parse(yamlObject);
-const runtime = await new RuntimeBuilder(config, process.env, {
-  onRestart: () => process.exit(78), // default behaviour
-}).build();
+const runtime = await new RuntimeBuilder(
+  {
+    name: 'Jarvis',
+    personality: 'You are a personal assistant for Alice.',
+    llm: { provider: 'google', model: 'gemini-3.8-flash' },
+    channels: { telegram: { ownerIds: ['123'] } },
+    capabilities: { scheduler: true },
+  },
+  process.env,
+  { onRestart: () => process.exit(78) } // default behaviour (RESTART_EXIT_CODE)
+).build();
 await runtime.gateway.start(); // the scheduler (if enabled) is already running
 // ...
 await runtime.cleanup();
 ```
 
-- **Memory:** `memory.adapter: sqlite` (default, `memory.path`) or `postgres` (`memory.connectionString` or `DATABASE_URL`; requires `pg`). Knowledge graph + core facts + auto-extraction included.
+For a parsed YAML file, validate it first with `new RuntimeBuilder(AssistantConfigSchema.parse(yamlObject), process.env)` (the schema is exported, along with the `AssistantConfigInput` / `AssistantConfigOutput` types).
+
+- **Channels:** the terminal REPL plus `channels.telegram` (`TG_TOKEN` or `TELEGRAM_TOKEN`), `channels.discord` (`DISCORD_TOKEN`) and `channels.slack` (`SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, optional `SLACK_APP_TOKEN` / `SLACK_PORT`). A configured channel without its token is skipped with a warning. WhatsApp and WebChat are not built by RuntimeBuilder — add them with a hand-built `Gateway`.
+
+- **Memory:** `memory.adapter: sqlite` (default, `memory.path`, default `~/.cogitator/memory.db`) or `postgres` (`memory.connectionString`, `DATABASE_URL` or `POSTGRES_URL`; requires `pg`). Core facts always live in the SQLite file. The knowledge graph (`memory.knowledgeGraph`) and auto-extraction (`memory.autoExtract`) are on by default; `memory.compaction.threshold` enables history compaction.
 - **Fresh context:** the gateway builds an agent per message — instructions (current date/time and known user facts) and the `/model` override are resolved each time. `runtime.agent` is the base agent.
 - **Owner commands wired:** `/status`, `/sessions`, `/users`, `/compact`, `/model` (global or per user), `/restart`.
-- **Security:** `fileSystem.paths` is enforced — file tools refuse paths outside the allowed roots (symlinks resolved). Self-config tools (`config_*`, `env_*`) only work for channel owners and the local terminal.
+- **Security:** `fileSystem.paths` is enforced — file tools refuse paths outside the allowed roots (symlinks resolved). Self-config tools (`config_*`, `env_*`) only work for channel owners and the local terminal. `security` sets the DM/group policy, allowlists and command access.
+
+Docs: [Wizard Setup](https://cogitator.app/docs/channels/wizard), [Smart Memory](https://cogitator.app/docs/channels/smart-memory).
 
 ## Environment Variables
 
@@ -462,7 +502,7 @@ await runtime.cleanup();
 GOOGLE_API_KEY=...           # or ANTHROPIC_API_KEY, OPENAI_API_KEY
 
 # Telegram
-TG_TOKEN=7204891735:AAHr...
+TG_TOKEN=7204891735:AAHr...   # or TELEGRAM_TOKEN
 
 # Discord
 DISCORD_TOKEN=MTI...
@@ -470,12 +510,13 @@ DISCORD_TOKEN=MTI...
 # Slack (3 tokens)
 SLACK_BOT_TOKEN=xoxb-...
 SLACK_SIGNING_SECRET=...
-SLACK_APP_TOKEN=xapp-...
+SLACK_APP_TOKEN=xapp-...     # omit for HTTP mode
+SLACK_PORT=3000              # HTTP mode port
 
 # WhatsApp — no token, uses QR pairing
 
 # Postgres memory (memory.adapter: postgres)
-DATABASE_URL=postgres://user:pass@localhost:5432/cogitator
+DATABASE_URL=postgres://user:pass@localhost:5432/cogitator   # or POSTGRES_URL
 
 # WebChat
 WEBCHAT_SECRET=your-secret

@@ -13,6 +13,8 @@ pnpm add papaparse  # CSV loading
 pnpm add pdf-parse  # PDF loading
 ```
 
+`@cogitator-ai/memory` (optional peer) provides the embedding services, vector stores (`InMemoryEmbeddingAdapter`, `PostgresAdapter`, `QdrantAdapter`) and `HybridSearch` used below; any `EmbeddingService` / `EmbeddingAdapter` implementation works. Website docs: [RAG](https://cogitator.app/docs/rag), [Loaders](https://cogitator.app/docs/rag/loaders), [Chunking](https://cogitator.app/docs/rag/chunking), [Retrieval](https://cogitator.app/docs/rag/retrieval), [Reranking](https://cogitator.app/docs/rag/reranking).
+
 ## Features
 
 - **7 Document Loaders** — Text, Markdown, JSON, CSV, HTML, PDF, Web pages
@@ -46,10 +48,10 @@ const pipeline = new RAGPipelineBuilder()
   .build();
 
 // ingest documents from a file or directory
-await pipeline.ingest('./docs');
+const { documents, chunks } = await pipeline.ingest('./docs');
 
-// query the knowledge base
-const results = await pipeline.query('How does authentication work?');
+// query the knowledge base (options override the configured retrieval for this call)
+const results = await pipeline.query('How does authentication work?', { topK: 3 });
 
 for (const r of results) {
   console.log(`[${r.score.toFixed(3)}] ${r.source}: ${r.content.slice(0, 100)}...`);
@@ -90,12 +92,16 @@ const intranet = new WebLoader({
 Responses are decompressed (gzip, deflate, br), decoded using the declared charset, and limited to `maxResponseBytes` (50MB by default). Non-text content types are rejected.
 
 ```typescript
-import { MarkdownLoader, WebLoader, CSVLoader } from '@cogitator-ai/rag';
+import { MarkdownLoader, WebLoader, CSVLoader, PDFLoader, JSONLoader } from '@cogitator-ai/rag';
 
 const md = new MarkdownLoader({ stripFrontmatter: true });
 const web = new WebLoader({ selector: 'article' });
 const csv = new CSVLoader({ contentColumn: 'body', metadataColumns: ['title'] });
+const pdf = new PDFLoader({ splitPages: true }); // one document per page
+const json = new JSONLoader({ contentField: 'text' });
 ```
+
+A pipeline has one loader; use `withChunker()` / `withRetriever()` on the builder to replace the chunker or retriever the config would create.
 
 ---
 
@@ -347,7 +353,7 @@ const agent = new Agent({
 });
 ```
 
-`RAGTool` objects carry Zod parameter schemas and can be passed to `tool()` directly. `rag_search` falls back to the pipeline's configured `topK`/`threshold` when the model omits `limit`/`threshold`.
+`RAGTool` objects carry Zod parameter schemas and can be passed to `tool()` directly; `createSearchTool(pipeline)` and `createIngestTool(pipeline, options)` build them one at a time. `rag_search` falls back to the pipeline's configured `topK`/`threshold` when the model omits `limit`/`threshold`.
 
 **Security:** `rag_ingest` reads whatever source the model passes. When the tool is exposed to an LLM, restrict it with `allowedRoots` (paths are canonicalized, so `..` traversal and symlink escapes are rejected) and `allowUrls: false` if web ingestion is not needed. URL ingestion goes through the SSRF-protected `WebLoader` when the pipeline uses one.
 
@@ -366,7 +372,7 @@ console.log(stats.queriesProcessed);
 
 ## Examples
 
-See [`examples/rag/`](../../examples/rag/) for runnable examples:
+See [`examples/rag/`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/examples/rag) for runnable examples:
 
 - **01-basic-retrieval.ts** — Ingest documents and run semantic queries
 - **02-chunking-strategies.ts** — Compare fixed, recursive, and semantic chunking

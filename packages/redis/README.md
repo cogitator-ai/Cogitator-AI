@@ -8,6 +8,10 @@ Unified Redis client for Cogitator with standalone and cluster support.
 pnpm add @cogitator-ai/redis ioredis
 ```
 
+`ioredis` (5.x or 6.x) is loaded when the first client is created; without it `createRedisClient` throws an install hint.
+
+Used across Cogitator: the memory package's `RedisAdapter` builds on it, and the workflow `RedisCheckpointStore`, `RedisRunStore`, `RedisApprovalStore` and `RedisTimerStore` take a client from `createRedisClient()` (or a plain ioredis instance) as `client`. See [Redis](https://cogitator.app/docs/deployment/redis) on the website.
+
 ## Features
 
 - **Unified Interface** - Same API for standalone and cluster modes
@@ -122,7 +126,7 @@ interface RedisStandaloneConfig {
   keyPrefix?: string; // Prefix for all keys
   tls?: boolean; // Enable TLS
   maxRetriesPerRequest?: number; // Max retries (default: 3)
-  lazyConnect?: boolean; // Don't connect immediately
+  lazyConnect?: boolean; // Don't connect immediately (default: false)
 }
 ```
 
@@ -143,7 +147,7 @@ interface RedisClusterConfig {
   lazyConnect?: boolean;
 
   // Cluster-specific
-  scaleReads?: 'master' | 'slave' | 'all'; // Where to read from
+  scaleReads?: 'master' | 'slave' | 'all'; // Where to read from (default: 'master')
   natMap?: Record<string, { host: string; port: number }>; // NAT mapping
 }
 ```
@@ -255,14 +259,16 @@ await redis.quit();
 
 ## Environment Variables
 
-| Variable              | Description                                                                                 |
-| --------------------- | ------------------------------------------------------------------------------------------- |
-| `REDIS_URL`           | Redis connection URL                                                                        |
-| `REDIS_HOST`          | Redis host (default: localhost)                                                             |
-| `REDIS_PORT`          | Redis port (default: 6379)                                                                  |
-| `REDIS_PASSWORD`      | Redis password                                                                              |
-| `REDIS_CLUSTER_NODES` | JSON array of cluster nodes (a malformed value throws instead of falling back to localhost) |
-| `REDIS_KEY_PREFIX`    | Key prefix                                                                                  |
+| Variable              | Description                                                                      |
+| --------------------- | -------------------------------------------------------------------------------- |
+| `REDIS_URL`           | Redis connection URL                                                             |
+| `REDIS_HOST`          | Redis host when `REDIS_URL` is not set (default: localhost)                      |
+| `REDIS_PORT`          | Redis port when `REDIS_URL` is not set (default: 6379)                           |
+| `REDIS_PASSWORD`      | Redis password                                                                   |
+| `REDIS_CLUSTER_NODES` | JSON array of cluster nodes; switches to cluster mode (a malformed value throws) |
+| `REDIS_KEY_PREFIX`    | Key prefix (default: `cogitator:`, or `{cogitator}:` in cluster mode)            |
+
+`createConfigFromEnv(env?)` reads `process.env` unless you pass another object; `parseClusterNodesEnv(value)` parses the cluster node list on its own.
 
 ### Environment Examples
 
@@ -315,13 +321,13 @@ In cluster mode, use hash tags to ensure related keys route to the same slot:
 ```typescript
 const redis = await createRedisClient({
   mode: 'cluster',
-  nodes: [...],
-  keyPrefix: '{myapp}:',  // Hash tag prefix
+  nodes: [{ host: 'redis-1', port: 6379 }],
+  keyPrefix: '{myapp}:', // Hash tag prefix
 });
 
 // All these keys route to the same slot because of {myapp}
-await redis.set('users:123', '...');     // → {myapp}:users:123
-await redis.set('sessions:456', '...');  // → {myapp}:sessions:456
+await redis.set('users:123', '...'); // → {myapp}:users:123
+await redis.set('sessions:456', '...'); // → {myapp}:sessions:456
 ```
 
 ### Hash Tag Rules
@@ -379,6 +385,18 @@ const redis = await createRedisClient({
 ---
 
 ## Examples
+
+### Durable Workflow Stores
+
+```typescript
+import { createRedisClient } from '@cogitator-ai/redis';
+import { RedisRunStore, RedisCheckpointStore } from '@cogitator-ai/workflows';
+
+const redis = await createRedisClient({ url: process.env.REDIS_URL });
+
+const runStore = new RedisRunStore({ client: redis });
+const checkpointStore = new RedisCheckpointStore({ client: redis });
+```
 
 ### Connection Pooling Pattern
 

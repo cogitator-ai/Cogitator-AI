@@ -16,7 +16,10 @@ Browser automation tools for Cogitator AI agents. Playwright-based with 33 tools
 
 ```bash
 pnpm add @cogitator-ai/browser playwright
+npx playwright install chromium   # or firefox / webkit
 ```
+
+`playwright` is a dependency of the package; the browser binaries are installed separately with `playwright install`. Website docs: [Browser](https://cogitator.app/docs/browser), [Session](https://cogitator.app/docs/browser/session), [Tools](https://cogitator.app/docs/browser/tools), [Stealth](https://cogitator.app/docs/browser/stealth), [Vision](https://cogitator.app/docs/browser/vision), [Network](https://cogitator.app/docs/browser/network).
 
 ## Quick Start
 
@@ -29,12 +32,14 @@ await session.start();
 
 const agent = new Agent({
   name: 'web-researcher',
-  model: 'gpt-6.1-sol',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'You browse the web and extract information.',
   tools: browserTools(session),
 });
 
-const cog = new Cogitator({ llm: { defaultProvider: 'openai' } });
+const cog = new Cogitator({
+  llm: { providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } } },
+});
 const result = await cog.run(agent, {
   input: 'Go to https://news.ycombinator.com and get the top 5 story titles',
 });
@@ -194,7 +199,11 @@ Interceptors are registered on the browser context, so they also apply to tabs o
 ### Constructor
 
 ```typescript
-const session = new BrowserSession(config?: BrowserSessionConfig);
+import { BrowserSession } from '@cogitator-ai/browser';
+import type { BrowserSessionConfig } from '@cogitator-ai/types';
+
+const config: BrowserSessionConfig = { headless: true }; // every field is optional
+const session = new BrowserSession(config);
 ```
 
 ### BrowserSessionConfig
@@ -291,6 +300,15 @@ const tools = [
 ```
 
 Available modules: `navigation`, `interaction`, `extraction`, `vision`, `network`.
+
+The module factories (`createNavigationTools`, `createInteractionTools`, `createExtractionTools`, `createVisionTools`, `createNetworkTools`) return typed tuples, so a destructured tool keeps its own parameter types:
+
+```typescript
+const [navigate] = createNavigationTools(session);
+await navigate.execute({ url: 'https://example.com' }, ctx); // params typed as NavigateInput
+```
+
+Tools from `browserTools()` call `session.ensureStarted()` before each call, so the browser launches (or relaunches) on demand; tools from the individual factories expect a started session.
 
 ## Utility Helpers
 

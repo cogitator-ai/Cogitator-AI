@@ -22,7 +22,7 @@ const app = express();
 const cogitator = new Cogitator({
   llm: {
     defaultModel: 'openai/gpt-6-luna',
-    providers: { openai: { apiKey: process.env.OPENAI_API_KEY } },
+    providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } },
   },
 });
 
@@ -68,7 +68,7 @@ POST   /api/threads/:id/messages      - Add message to thread
 DELETE /api/threads/:id               - Delete thread
 ```
 
-Requires `memory` on the `Cogitator` instance (503 otherwise). New messages need `role` (`user` | `assistant` | `system`) and a non-empty string `content`; optional `metadata` is stored on the memory entry.
+The routes use `cogitator.getMemory()`, which connects the configured memory adapter on first use, so threads can be read on a fresh server before any agent has run. Only a `Cogitator` without `memory` configured answers `503 UNAVAILABLE`. New messages need `role` (`user` | `assistant` | `system`) and a non-empty string `content`; optional `metadata` is stored on the memory entry.
 
 ### Workflows
 
@@ -80,6 +80,8 @@ POST   /api/workflows/:name/stream    - Stream workflow events
 
 Body: `{ input?: object; options?: { maxConcurrency?: number; maxIterations?: number; checkpoint?: boolean } }`. `maxConcurrency`/`maxIterations` must be positive integers and `checkpoint` a boolean (400 otherwise); other options are dropped. A failed workflow returns `500` with code `WORKFLOW_FAILED` (the stream ends with an `error` event instead of `workflow_completed`). Disconnecting aborts the workflow.
 
+The stream sends `{ type: 'workflow', event, data }` events: `node_started`, `node_completed`, `node_error`, `node_progress` and finally `workflow_completed`.
+
 ### Swarms
 
 ```
@@ -89,13 +91,14 @@ POST   /api/swarms/:name/stream       - Stream swarm events
 GET    /api/swarms/:name/blackboard   - Get configured blackboard sections
 ```
 
-Run/stream body: `{ input: string; context?: object; threadId?: string; timeout?: number }` (`timeout` must be positive). Disconnecting aborts the swarm. Each run creates a fresh swarm, so the blackboard endpoint returns the configured initial sections.
+Run/stream body: `{ input: string; context?: object; threadId?: string; timeout?: number }` (`timeout` must be positive). Disconnecting aborts the swarm. The stream sends `{ type: 'swarm', event, data }` events (`agent_start`, `agent_complete`, `agent_error`, `message`, the swarm's own events, and finally `swarm_completed` with the output and usage). Each run creates a fresh swarm, so the blackboard endpoint returns the configured initial sections.
 
 ### Tools & Docs
 
 ```
 GET    /api/tools                     - List all tools
-GET    /api/health                    - Health check
+GET    /api/health                    - Health check ({ status, uptime, timestamp })
+GET    /api/ready                     - Readiness check
 GET    /api/docs                      - Swagger UI
 GET    /api/openapi.json              - OpenAPI spec
 ```
@@ -193,7 +196,7 @@ const response = await fetch('/api/agents/chat/stream', {
   body: JSON.stringify({ input: 'Hello!' }),
 });
 
-const reader = response.body.getReader();
+const reader = response.body!.getReader();
 const decoder = new TextDecoder();
 
 while (true) {
@@ -202,7 +205,7 @@ while (true) {
 
   const lines = decoder.decode(value).split('\n');
   for (const line of lines) {
-    if (line.startsWith('data: ')) {
+    if (line.startsWith('data: ') && line !== 'data: [DONE]') {
       const event = JSON.parse(line.slice(6));
       console.log(event);
       // { type: 'text-delta', id: '...', delta: 'Hello' }
@@ -210,6 +213,8 @@ while (true) {
   }
 }
 ```
+
+Events: `start`, `text-start`/`text-delta`/`text-end`, `tool-call-start`/`tool-call-delta`/`tool-call-end` (with the model's tool call id), `tool-result` (`toolCallId` matches the call), `approval-required`, `error` (`{ message, code }`), and `finish` with usage, followed by `data: [DONE]`.
 
 When the agent sets `reasoning: { summary: true }` and the provider returns a reasoning summary, it streams as its own part: `reasoning-start`, `reasoning-delta` (`{ id, delta }`), `reasoning-end`. A reasoning part is always closed before text or a tool call starts, so reasoning and text parts never interleave.
 
@@ -244,11 +249,13 @@ Protocol:
 | `{ type: 'run', id, payload: { type: 'agent', name, input, context?, threadId? } }` | Client→Server | Run an agent; events arrive as `{ type: 'event', id, payload }` (`token`, `reasoning`, `tool-call`, `tool-result`, `complete`, `cancelled`) |
 | `{ type: 'resume', id, payload: { name, threadId, decisions?, defaultDecision? } }` | Client→Server | Resume a run paused for tool approvals; events arrive like those of `run`                                                                   |
 | `{ type: 'stop' }`                                                                  | Client→Server | Abort the client's running agent (emits `cancelled`)                                                                                        |
-| `{ type: 'subscribe', channel: 'agent:<name>' }`                                    | Client→Server | Receive events of runs of that agent started by other clients                                                                               |
+| `{ type: 'subscribe', channel: 'agent:<name>' }`                                    | Client→Server | Receive events of runs of that agent started by the same user elsewhere                                                                     |
 | `{ type: 'unsubscribe', channel }`                                                  | Client→Server | Stop receiving channel events                                                                                                               |
 | `{ type: 'ping' }`                                                                  | Client→Server | Answered with `{ type: 'pong' }`                                                                                                            |
+| `{ type: 'subscribed' \| 'unsubscribed', id, channel }`                             | Server→Client | Subscription confirmed (at most 64 channels per connection)                                                                                 |
+| `{ type: 'error', id?, error }`                                                     | Server→Client | Invalid message or payload, unknown agent, or a failed run                                                                                  |
 
-Only agent runs are supported over WebSocket; use the HTTP endpoints for workflows and swarms. A new `run` from the same connection aborts the previous one.
+Only agent runs are supported over WebSocket; use the HTTP endpoints for workflows and swarms. A new `run` from the same connection aborts the previous one. A failed run reports a `CogitatorError`'s message; any other error is logged and sent as `Internal server error`. The server pings every `pingInterval` ms and terminates clients that miss a pong.
 
 Client usage:
 
@@ -388,6 +395,7 @@ class ExpressStreamWriter {
   toolCallDelta(id: string, argsTextDelta: string): void;
   toolCallEnd(id: string): void;
   toolResult(id: string, toolCallId: string, result: unknown): void;
+  approvalRequired(threadId: string, approvals: readonly PendingApproval[]): void;
   workflowEvent(event: string, data: unknown): void;
   swarmEvent(event: string, data: unknown): void;
   error(message: string, code?: string): void;
@@ -416,15 +424,21 @@ Error codes map to HTTP status codes:
 
 - `INVALID_INPUT` → 400 (validation errors and malformed JSON bodies)
 - `UNAUTHORIZED` → 401
+- `THREAD_ACCESS_DENIED` → 403 (another user's thread)
 - `NOT_FOUND` → 404
+- `RUN_NOT_PAUSED` → 409 (resume of a thread without a paused run)
 - `PAYLOAD_TOO_LARGE` → 413
 - `RATE_LIMIT_EXCEEDED` → 429
 - `WORKFLOW_FAILED` → 500
-- `INTERNAL` → 500 (details are logged, not returned)
+- `INTERNAL` / `INTERNAL_ERROR` → 500
 - `UNIMPLEMENTED` → 501 (optional workflows/swarms package missing)
-- `UNAVAILABLE` → 503 (memory not configured)
+- `UNAVAILABLE` → 503 (no memory configured)
 
-`CogitatorError`s thrown by runs keep their own code and use its mapped status (for example `LLM_RATE_LIMITED` → 429).
+A `CogitatorError` keeps its message and code and uses the code's mapped status (for example `LLM_RATE_LIMITED` → 429). Any other error is logged on the server and answered as `500 Internal server error`, so connection strings, file paths and other internals never reach the client. The same masking applies to SSE `error` events, the `node_error`/`agent_error` stream events, `Workflow failed: …` messages and WebSocket run errors. One exception: when a memory call in the `/threads` routes reports a failure, its error text is returned as-is with `500 INTERNAL`.
+
+## Documentation
+
+Full guide: [cogitator.app/docs/server-adapters/express](https://cogitator.app/docs/server-adapters/express). Tool approvals: [cogitator.app/docs/tools/approvals](https://cogitator.app/docs/tools/approvals).
 
 ## License
 

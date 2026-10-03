@@ -2,6 +2,8 @@
 
 Vercel AI SDK adapter for Cogitator — bidirectional compatibility between Cogitator agents and the AI SDK, for **AI SDK 4, 5, 6 and 7**.
 
+Full guide: [cogitator.app/docs/integrations/ai-sdk](https://cogitator.app/docs/integrations/ai-sdk)
+
 ## Installation
 
 ```bash
@@ -255,6 +257,11 @@ function convertToolsToAISDK(cogTools: Tool[]): Record<string, AISDKTool>;
 - Agent tool calls are no longer reported as client tool calls with `finishReason: 'tool-calls'` (which made the AI SDK execute them again or fail with `NoSuchToolError`); see [How the agent maps to a model](#how-the-agent-maps-to-a-model).
 - `toAISDKTool()` now emits `inputSchema` (ai@5+) next to `parameters` (ai@4).
 - `fromAISDK()` accepts `LanguageModelV1` – `LanguageModelV4` and forwards tool calls and tool results as structured prompt parts instead of flattened text.
+
+## Documentation
+
+- [AI SDK integration guide](https://cogitator.app/docs/integrations/ai-sdk)
+- [LLM backends](https://cogitator.app/docs/core/llm-backends)
 
 ## License
 

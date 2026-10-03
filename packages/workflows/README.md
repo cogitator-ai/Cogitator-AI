@@ -9,7 +9,13 @@ DAG-based workflow engine for Cogitator agents. Build multi-step workflows with 
 
 ```bash
 pnpm add @cogitator-ai/workflows @cogitator-ai/core
+
+# Optional, for the durable stores
+pnpm add pg                                 # PostgreSQL stores
+pnpm add @cogitator-ai/redis ioredis        # Redis stores
 ```
+
+Website docs: [Workflows](https://cogitator.app/docs/workflows), [Builder](https://cogitator.app/docs/workflows/builder), [Nodes](https://cogitator.app/docs/workflows/nodes), [Execution](https://cogitator.app/docs/workflows/execution), [Patterns](https://cogitator.app/docs/workflows/patterns), [Sagas](https://cogitator.app/docs/workflows/sagas), [Scheduling](https://cogitator.app/docs/workflows/scheduling).
 
 ## Features
 
@@ -18,6 +24,7 @@ pnpm add @cogitator-ai/workflows @cogitator-ai/core
 - **Node policies** — per-node `timeout`, `retries` and `retryDelay`
 - **Real-time Streaming** — async generator of execution events
 - **Checkpoints** — save and resume workflow state
+- **Durable Stores** — checkpoints, runs, approvals and timers in Redis or PostgreSQL, shared by several processes
 - **Pre-built Nodes** — agent, tool, function and custom nodes, plus adapters for timers, human approvals, map-reduce and subworkflows
 - **Saga Patterns** — retries, circuit breakers, compensation, dead-letter queue, idempotency
 - **Triggers** — cron, webhook and event triggers
@@ -77,7 +84,7 @@ const workflow = new WorkflowBuilder<{ count: number }>('counter')
   .build();
 ```
 
-- State types must be assignable to `Record<string, unknown>` — declare them with `type` rather than `interface`.
+- State types must satisfy `WorkflowState` (`Record<string, unknown>`): declare them with `type`, or as `interface MyState extends WorkflowState { ... }` (`import type { WorkflowState } from '@cogitator-ai/types'`). A plain `interface` does not satisfy the constraint.
 - `addNode(name, fnOrNode, { after, config })` accepts a node function or a node created by a factory.
 - The entry point is the single node (or conditional/parallel/loop construct) without `after`. Independent roots are rejected — add a parallel fan-out or call `.entryPoint(name)`.
 - Node functions receive `ctx.state` (a copy), `ctx.input` (outputs of upstream nodes), `ctx.nodeId`, `ctx.workflowId`, `ctx.step`, `ctx.reportProgress()` and — for built-in nodes — `cogitator`, `signal` (run cancellation) and `depth` (subworkflow nesting).
@@ -205,8 +212,7 @@ const workflow = new WorkflowBuilder<{ attempts: number; done: boolean }>('retry
     state: { attempts: ctx.state.attempts + 1, done: await tryIt() },
   }))
   .addLoop('again', {
-    condition: (state) =>
-      !(state as { done: boolean }).done && (state as { attempts: number }).attempts < 3,
+    condition: (state) => !state.done && state.attempts < 3, // typed with the builder's state
     back: 'attempt',
     exit: 'finish',
     after: ['attempt'],
@@ -274,7 +280,22 @@ new RedisApprovalStore({ client: redis, pollInterval: 1000 }); // answers from o
 new PostgresTimerStore({ client: pool, claimTtl: 60_000 }); // each overdue timer is claimed by one TimerManager
 ```
 
-Approvals answered in another process reach the waiting human node within `pollInterval`; overdue timers are claimed for `claimTtl` so several `TimerManager`s can share a store without firing a timer twice. A `TimerManager` renews the claim while a handler runs (so slow handlers keep their timer) and releases timers it has no handler for, so another manager can run them at once.
+Postgres stores create their tables on first use (safe when two processes start at once); Redis stores index runs and requests in sorted sets instead of scanning keys. Approvals answered in another process reach the waiting human node within `pollInterval` (default 1 s); overdue timers are claimed for `claimTtl` (default 60 s) so several `TimerManager`s can share a store without firing a timer twice, and a crashed worker's timers come back once their claim expires.
+
+A `TimerManager` renews a claim right before a handler starts and every `claimTtl / 3` while it runs, so slow handlers keep their timer. If the claim was lost (another worker took it), the handler is skipped or `onClaimLost` reports it; timers without a handler, or beyond a poll's `batchSize`, are released so another manager can take them at once. A failed handler keeps the claim until the lease ends, which spaces out retries:
+
+```typescript
+import { createTimerManager, RedisTimerStore } from '@cogitator-ai/workflows';
+
+const timers = createTimerManager(new RedisTimerStore({ client: redis, claimTtl: 30_000 }), {
+  pollInterval: 1_000,
+  onClaimLost: (entry) => console.warn('another worker took timer', entry.id),
+});
+timers.setDefaultHandler(async (entry) => console.log('fired', entry.id));
+await timers.start();
+```
+
+Custom stores implement `TimerStore`; `claimTtl`, `renew(id)` and `release(id)` are optional there and enable the claim handling above.
 
 ---
 
@@ -470,7 +491,28 @@ await approvalStore.submitResponse({
 });
 ```
 
-Other configs: `choiceNode`, `inputNode`, `ratingNode`, `chainNode`, `managementChain`. Notifiers: `ConsoleNotifier`, `WebhookNotifier`, `slackNotifier`, `CompositeNotifier`, `filteredNotifier`, `priorityRouter`. `FileApprovalStore` persists requests.
+Other configs: `choiceNode`, `inputNode`, `ratingNode`, `chainNode`, `managementChain`; all of them return a config whose `name` is set, so `config.name` is a `string`. Notifiers: `ConsoleNotifier`, `WebhookNotifier`, `slackNotifier`, `CompositeNotifier`, `filteredNotifier`, `priorityRouter`. `FileApprovalStore` persists requests; `RedisApprovalStore` and `PostgresApprovalStore` share them between processes.
+
+A request is answered once, in every store (atomically across processes for Redis and Postgres): the first `submitResponse` wins and a later one throws `ApprovalAlreadyAnsweredError` carrying the answer that stands. A human node whose timeout fires just after someone answered keeps that answer. Deleting (or expiring) a request nobody answered withdraws it: waiters in any process get a withdrawal and the node finishes with `withdrawn: true` instead of waiting forever. A timeout or withdrawal never counts as approval, also for `multi-choice` requests.
+
+```typescript
+import { ApprovalAlreadyAnsweredError } from '@cogitator-ai/workflows';
+
+try {
+  await approvalStore.submitResponse({
+    requestId,
+    decision: false,
+    respondedBy: 'cfo@company.com',
+    respondedAt: Date.now(),
+  });
+} catch (error) {
+  if (error instanceof ApprovalAlreadyAnsweredError) {
+    console.log('Already decided:', error.existing?.decision);
+  }
+}
+
+await approvalStore.deleteRequest(staleRequestId); // a pending request is withdrawn
+```
 
 ---
 
@@ -511,7 +553,9 @@ import { createTriggerManager, cronTrigger, webhookTrigger } from '@cogitator-ai
 
 const triggers = createTriggerManager({
   onTriggerFire: async (trigger, context) => {
-    const run = await manager.schedule(workflows[trigger.workflowName], { input: context.payload });
+    const run = await manager.schedule(workflows[trigger.workflowName], {
+      input: { payload: context.payload },
+    });
     return run;
   },
 });
@@ -552,7 +596,7 @@ import { createTracer, createMetricsCollector } from '@cogitator-ai/workflows';
 const tracer = createTracer({
   enabled: true,
   serviceName: 'billing-workflows',
-  exporter: 'otlp', // 'console' | 'otlp' | 'jaeger' | 'zipkin'
+  exporter: 'otlp', // 'console' | 'otlp' | 'jaeger' | 'zipkin' | 'noop'
   exporterEndpoint: 'http://localhost:4318/v1/traces',
 });
 const metricsCollector = createMetricsCollector({ prefix: 'cogitator_workflow' });
@@ -564,7 +608,7 @@ console.log(metricsCollector.getWorkflowMetrics('report'));
 console.log(metricsCollector.toPrometheusFormat());
 ```
 
-The executor creates one workflow span and a child span per node execution (parallel nodes keep correct parents) and records workflow/node counts, latencies and retries.
+The executor creates one workflow span and a child span per node execution (parallel nodes keep correct parents) and records workflow/node counts, latencies and retries. `sampleRate` (0–1) samples traces; with 0, `tracer.isSampled()` is `false` and nothing is exported.
 
 ---
 
@@ -592,6 +636,8 @@ const runs = await manager.listRuns({ status: 'failed', workflowName: 'report', 
 const stats = await manager.getStats('report');
 await manager.retry(runs[0].id);
 ```
+
+Every run — executed, scheduled or started by a trigger — records `currentNodes`, `completedNodes` and `failedNodes`, all written by the time the run is marked finished. Run stores return copies, so changing a returned run does not change the stored one; `listRuns()` is sorted newest first. `getStats()` counts cancelled runs toward neither the success nor the failure rate. Use `PostgresRunStore` / `RedisRunStore` to share runs between processes: queries, counts and stats run in the database (Postgres) or on sorted-set indexes (Redis).
 
 ---
 

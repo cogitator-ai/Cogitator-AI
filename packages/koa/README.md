@@ -15,8 +15,14 @@ import Koa from 'koa';
 import { Cogitator, Agent } from '@cogitator-ai/core';
 import { cogitatorApp } from '@cogitator-ai/koa';
 
-const cogitator = new Cogitator({/* ... */});
-const chatAgent = new Agent({ name: 'chat', instructions: 'You are a helpful assistant.' });
+const cogitator = new Cogitator({
+  llm: { providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } } },
+});
+const chatAgent = new Agent({
+  name: 'chat',
+  model: 'openai/gpt-5.5',
+  instructions: 'You are a helpful assistant.',
+});
 
 const app = new Koa();
 
@@ -39,16 +45,16 @@ Creates a Koa Router with all Cogitator endpoints.
 
 **Options:**
 
-| Option          | Type                            | Description                                    |
-| --------------- | ------------------------------- | ---------------------------------------------- |
-| `cogitator`     | `Cogitator`                     | **Required.** Cogitator runtime instance       |
-| `agents`        | `Record<string, Agent>`         | Named agents to expose                         |
-| `workflows`     | `Record<string, Workflow>`      | Named workflows                                |
-| `swarms`        | `Record<string, SwarmConfig>`   | Named swarms                                   |
-| `auth`          | `(ctx: Context) => AuthContext` | Authentication function (receives Koa Context) |
-| `enableSwagger` | `boolean`                       | Enable Swagger/OpenAPI docs                    |
-| `swagger`       | `SwaggerConfig`                 | Swagger configuration                          |
-| `bodyLimit`     | `number`                        | Max JSON body size in bytes (default 1 MiB)    |
+| Option          | Type                          | Description                                                                                                       |
+| --------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `cogitator`     | `Cogitator`                   | **Required.** Cogitator runtime instance                                                                          |
+| `agents`        | `Record<string, Agent>`       | Named agents to expose                                                                                            |
+| `workflows`     | `Record<string, Workflow>`    | Named workflows                                                                                                   |
+| `swarms`        | `Record<string, SwarmConfig>` | Named swarms                                                                                                      |
+| `auth`          | `AuthFunction`                | `(ctx) => AuthContext \| undefined` (sync or async), receives the Koa Context; throw to answer `401 UNAUTHORIZED` |
+| `enableSwagger` | `boolean`                     | Serve `/openapi.json` and Swagger UI at `/docs`                                                                   |
+| `swagger`       | `SwaggerConfig`               | Swagger configuration                                                                                             |
+| `bodyLimit`     | `number`                      | Max JSON body size in bytes (default 1 MiB)                                                                       |
 
 WebSocket support is attached to the HTTP server with [`setupWebSocket`](#websocket), not through router options.
 
@@ -57,7 +63,8 @@ WebSocket support is attached to the HTTP server with [`setupWebSocket`](#websoc
 - Request bodies are validated before anything reaches the runtime: `input` must be a non-empty string, `context` an object, `threadId` a non-empty string, swarm `timeout` a positive number. Invalid bodies return `400 INVALID_INPUT` with the offending field in the message.
 - Workflow runs accept an optional body. `options` is limited to `maxConcurrency`, `maxIterations` (positive integers) and `checkpoint` (boolean); any other option is dropped, and a wrongly typed one returns `400 INVALID_INPUT`.
 - Thread messages accept `role` of `user`, `assistant` or `system`; `metadata` is stored with the entry and a token estimate is recorded.
-- `CogitatorError`s are returned with their HTTP status and code (for example `429 LLM_RATE_LIMITED`). Any other error is logged and returned as `500 Internal server error` without internal details. A workflow that finishes with an error is reported as an error, never as a successful result.
+- Thread routes use `cogitator.getMemory()`, which connects the configured memory adapter on first use, so threads can be read on a fresh server before any agent has run. Only a `Cogitator` without `memory` configured answers `503 UNAVAILABLE`.
+- `CogitatorError`s are returned with their HTTP status and code (for example `429 LLM_RATE_LIMITED`). Any other error is logged and returned as `500 Internal server error` (code `INTERNAL`, or `INTERNAL_ERROR` from the router's error handler) without internal details; the same masking applies to SSE `error` events, `node_error`/`agent_error` stream events and WebSocket errors. A workflow that finishes with an error is answered like a thrown error (its `CogitatorError` status, otherwise `500`), never as a successful result. Missing optional packages (`@cogitator-ai/workflows`, `@cogitator-ai/swarms`) answer `501 UNIMPLEMENTED`.
 - When the client disconnects, the running agent, workflow or swarm is aborted, for both JSON and SSE endpoints.
 - `GET /agents` returns each agent's `description` and never exposes its `instructions`.
 - `GET /tools` returns tool parameters as JSON Schema.
@@ -106,6 +113,13 @@ WebSocket support is attached to the HTTP server with [`setupWebSocket`](#websoc
 | `GET`  | `/health` | Health check    |
 | `GET`  | `/ready`  | Readiness check |
 
+### Docs (`enableSwagger: true`)
+
+| Method | Path            | Description  |
+| ------ | --------------- | ------------ |
+| `GET`  | `/openapi.json` | OpenAPI spec |
+| `GET`  | `/docs`         | Swagger UI   |
+
 ## Authentication
 
 ```typescript
@@ -119,6 +133,8 @@ const router = cogitatorApp({
   },
 });
 ```
+
+An error thrown with a `status` of 500 or more is treated as a server failure (`500 Internal server error`) instead of a rejected caller.
 
 ### Multiple users
 
@@ -220,9 +236,31 @@ The router's `auth` option does not cover WebSocket connections, so pass `auth` 
 
 ## SSE Streaming
 
-The adapter includes `KoaStreamWriter` for Server-Sent Events with structured event types (text deltas, tool calls, workflow/swarm events). Agent streams emit `tool-call-start`, `tool-call-delta` (the JSON arguments) and `tool-call-end` with the provider's tool call id, so `tool-result.toolCallId` always matches the call it belongs to.
+The adapter includes `KoaStreamWriter` for Server-Sent Events with structured event types (text deltas, tool calls, approvals, workflow/swarm events). Workflow streams send `{ type: 'workflow', event, data }` (`node_started`, `node_completed`, `node_error`, `node_progress`, `workflow_completed`); swarm streams send `{ type: 'swarm', event, data }` (`agent_start`, `agent_complete`, `agent_error`, `message`, the swarm's own events, `swarm_completed`). Every stream ends with `finish` and `data: [DONE]`, or with an `error` event. Agent streams emit `tool-call-start`, `tool-call-delta` (the JSON arguments) and `tool-call-end` with the provider's tool call id, so `tool-result.toolCallId` always matches the call it belongs to.
 
 When the agent sets `reasoning: { summary: true }` and the provider returns a reasoning summary, agent streams also emit it as its own `reasoning-start`/`reasoning-delta`/`reasoning-end` part, closed before text or a tool call starts, so reasoning and text parts never interleave.
+
+For custom routes, call `setupSSEHeaders(ctx)` (it sets `ctx.respond = false`) and write through a `KoaStreamWriter`:
+
+```typescript
+import Router from '@koa/router';
+import { KoaStreamWriter, setupSSEHeaders, generateId } from '@cogitator-ai/koa';
+
+const custom = new Router();
+
+custom.post('/custom/stream', (ctx) => {
+  setupSSEHeaders(ctx);
+  const writer = new KoaStreamWriter(ctx);
+  const messageId = generateId('msg');
+  const textId = generateId('txt');
+  writer.start(messageId);
+  writer.textStart(textId);
+  writer.textDelta(textId, 'Hello!');
+  writer.textEnd(textId);
+  writer.finish(messageId);
+  writer.close();
+});
+```
 
 ## Event Factories
 
@@ -283,6 +321,10 @@ import type {
   ErrorResponse,
 } from '@cogitator-ai/koa';
 ```
+
+## Documentation
+
+Full guide: [cogitator.app/docs/server-adapters/koa](https://cogitator.app/docs/server-adapters/koa). Tool approvals: [cogitator.app/docs/tools/approvals](https://cogitator.app/docs/tools/approvals).
 
 ## License
 

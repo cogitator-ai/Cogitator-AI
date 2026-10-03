@@ -1,6 +1,8 @@
 # @cogitator-ai/mcp
 
-MCP (Model Context Protocol) integration for Cogitator. Connect to external MCP servers or expose Cogitator tools as an MCP server.
+MCP (Model Context Protocol) integration for Cogitator. Connect to external MCP servers, expose Cogitator tools as an MCP server, or serve whole agents to Claude Desktop, Cursor and any other MCP client.
+
+Full guide: [cogitator.app/docs/integrations/mcp](https://cogitator.app/docs/integrations/mcp)
 
 ## Installation
 
@@ -8,14 +10,22 @@ MCP (Model Context Protocol) integration for Cogitator. Connect to external MCP 
 pnpm add @cogitator-ai/mcp
 ```
 
+The examples below also use `@cogitator-ai/core` (agents, `tool()`) and `zod`:
+
+```bash
+pnpm add @cogitator-ai/core zod
+```
+
 ## Features
 
-- **MCP Client** - Connect to any MCP server (stdio, HTTP, SSE)
-- **MCP Server** - Expose Cogitator tools as MCP endpoints
+- **MCP Client** - Connect to any MCP server over stdio or Streamable HTTP
+- **MCP Server** - Expose Cogitator tools, resources and prompts over stdio or Streamable HTTP
+- **Serve Agents** - Turn Cogitator agents into MCP tools in one call, with tool approvals through MCP elicitation
+- **Auth & Sessions** - Per-request `auth` for HTTP servers, the caller's `userId` reaches tools; optional per-client sessions
+- **Elicitation** - Tools served over MCP can ask the person at the client a question while the call waits
 - **Tool Adapters** - Bidirectional conversion between Cogitator and MCP formats
 - **Schema Converters** - Convert between Zod and JSON Schema
 - **Resources & Prompts** - Access MCP resources and prompt templates
-- **Transport Flexibility** - Support for stdio, HTTP, and SSE transports
 - **Retry & Recovery** - Automatic retry with exponential backoff and reconnection handling
 
 ---
@@ -31,7 +41,7 @@ import { Agent, Cogitator } from '@cogitator-ai/core';
 const client = await MCPClient.connect({
   transport: 'stdio',
   command: 'npx',
-  args: ['-y', '@anthropic/mcp-server-filesystem', '/allowed/path'],
+  args: ['-y', '@modelcontextprotocol/server-filesystem', '/allowed/path'],
 });
 
 const tools = await client.getTools();
@@ -94,7 +104,7 @@ import { MCPClient } from '@cogitator-ai/mcp';
 const client = await MCPClient.connect({
   transport: 'stdio',
   command: 'npx',
-  args: ['-y', '@anthropic/mcp-server-filesystem', '/path'],
+  args: ['-y', '@modelcontextprotocol/server-filesystem', '/path'],
   env: { DEBUG: 'true' },
   timeout: 30000,
   clientName: 'my-app',
@@ -111,19 +121,21 @@ interface MCPClientConfig {
   // For stdio transport
   command?: string;
   args?: string[];
-  env?: Record<string, string>;
+  env?: Record<string, string>; // merged over the parent's environment
+  cwd?: string; // working directory of the spawned command
 
-  // For HTTP/SSE transport
+  // For HTTP transport
   url?: string;
+  headers?: Record<string, string>; // sent with every request, e.g. Authorization
 
   // Connection options
-  timeout?: number;
+  timeout?: number; // connection timeout in ms
   clientName?: string;
   clientVersion?: string;
 
   // Retry configuration
   retry?: MCPRetryConfig;
-  autoReconnect?: boolean;
+  autoReconnect?: boolean; // Default: true
 
   // Reconnection callbacks
   onReconnecting?: (attempt: number) => void;
@@ -140,7 +152,7 @@ The MCP client includes automatic retry and reconnection handling for resilient 
 const client = await MCPClient.connect({
   transport: 'stdio',
   command: 'npx',
-  args: ['-y', '@anthropic/mcp-server-filesystem', '/path'],
+  args: ['-y', '@modelcontextprotocol/server-filesystem', '/path'],
 
   retry: {
     maxRetries: 5,
@@ -171,7 +183,7 @@ interface MCPRetryConfig {
 
 #### Automatic Retry Behavior
 
-All MCP operations (`callTool`, `listResources`, `readResource`, `listPrompts`, `getPrompt`) automatically retry on transient failures:
+All MCP operations (`listToolDefinitions`, `callTool`, `listResources`, `readResource`, `readResourceContents`, `listPrompts`, `getPrompt`) automatically retry on transient failures:
 
 - Connection errors (ECONNREFUSED, ECONNRESET, closed connections)
 - Request timeouts
@@ -179,12 +191,14 @@ All MCP operations (`callTool`, `listResources`, `readResource`, `listPrompts`, 
 
 Deterministic failures are **not** retried: JSON-RPC protocol errors from the server (invalid params, unknown tool, internal handler errors), tool results with `isError: true`, and calls whose `signal` was aborted fail immediately.
 
-When a connection error is detected with `autoReconnect: true`, the client will:
+When a connection error is detected (with `autoReconnect` and `retryOnConnectionLoss` on, the defaults), the client will:
 
 1. Close the existing connection
 2. Create a new transport and client
-3. Reconnect with exponential backoff
+3. Reconnect, up to `maxRetries` attempts with exponential backoff between them
 4. Continue the operation on the new connection
+
+Other transient failures are retried with the same backoff, without reconnecting. After `close()` the client never reconnects.
 
 Concurrent operations that lose the connection at the same time share a single reconnection.
 
@@ -201,8 +215,12 @@ if (!client.isConnected()) {
 | Transport | Use Case                                     |
 | --------- | -------------------------------------------- |
 | `stdio`   | Local MCP servers spawned as child processes |
-| `http`    | Remote MCP servers over HTTP                 |
-| `sse`     | Server-Sent Events for streaming             |
+| `http`    | Remote MCP servers over Streamable HTTP      |
+| `sse`     | Alias of `http` (also Streamable HTTP)       |
+
+The legacy HTTP+SSE transport is not supported; `sse` connects with Streamable HTTP, which streams responses over SSE itself.
+
+`createStdioTransport()` and `createHttpTransport()` build the same SDK transports the client uses, if you drive `@modelcontextprotocol/sdk`'s `Client` directly.
 
 ### Client Methods
 
@@ -241,7 +259,7 @@ await client.close();
 
 ### Tool Results and Errors
 
-`callTool` returns the server's `structuredContent` when present; otherwise the content blocks are unwrapped — text blocks are JSON-parsed when possible, a single block is returned as-is, multiple blocks are returned as an array, and an empty result is `null`.
+`callTool` returns the server's `structuredContent` when present; otherwise the content blocks are unwrapped — text blocks are JSON-parsed when possible (other blocks stay as content objects), a single block's value is returned on its own, multiple blocks are returned as an array, and an empty result is `null`.
 
 When the server reports a tool failure (`isError: true`), `callTool` throws an `MCPToolError` carrying the tool name and the original content blocks. Tools produced by `getTools()` / `wrapMCPTools()` therefore surface MCP tool failures as regular Cogitator tool errors, and they forward the run's abort signal to the server.
 
@@ -263,16 +281,19 @@ For quick one-liner connections:
 
 ```typescript
 import { connectMCPServer } from '@cogitator-ai/mcp';
+import { Agent } from '@cogitator-ai/core';
 
 const { tools, client, cleanup } = await connectMCPServer({
   transport: 'stdio',
   command: 'npx',
-  args: ['-y', '@anthropic/mcp-server-filesystem', '/path'],
+  args: ['-y', '@modelcontextprotocol/server-filesystem', '/path'],
 });
 
 const agent = new Agent({
+  name: 'files',
+  model: 'ollama/llama3.2',
+  instructions: 'You manage files.',
   tools,
-  // ...
 });
 
 // When done
@@ -359,7 +380,7 @@ await server.stop(); // also closes open HTTP connections
 
 ### Registering Resources
 
-Expose data to MCP clients via resources. Supports both static URIs and dynamic URI templates.
+Expose data to MCP clients via resources. Supports both static URIs and dynamic URI templates (`{name}` placeholders, passed to `read` as params). `read` may leave out `uri` — it defaults to the URI that was read — and may return several contents as an array.
 
 ```typescript
 const server = new MCPServer({
@@ -465,15 +486,19 @@ interface MCPResourceConfig {
   uri: string; // Static URI or template like 'memory://thread/{id}'
   name: string;
   description?: string;
-  mimeType?: string;
-  read: (params: Record<string, string>) => Promise<MCPResourceContent | MCPResourceContent[]>;
+  mimeType?: string; // Used for contents that set no mimeType of their own
+  read: (
+    params: Record<string, string>, // Template variables; {} for a static URI
+    caller?: MCPCaller // Who `auth` established, on the HTTP transport
+  ) => Promise<MCPResourceReadContent | MCPResourceReadContent[]>;
 }
 
-interface MCPResourceContent {
+// What `read` returns: `uri` may be left out and defaults to the URI that was read
+interface MCPResourceReadContent {
   uri?: string;
   mimeType?: string;
   text?: string; // Text content
-  blob?: string; // Base64 encoded binary
+  blob?: string; // Base64 encoded binary (wins over `text` when both are set)
 }
 ```
 
@@ -482,10 +507,13 @@ interface MCPResourceContent {
 ```typescript
 interface MCPPromptConfig {
   name: string;
-  title?: string;
+  title?: string; // Defaults to `name`
   description?: string;
   arguments?: MCPPromptArgumentConfig[];
-  get: (args: Record<string, string>) => Promise<MCPPromptResult> | MCPPromptResult;
+  get: (
+    args: Record<string, string>,
+    caller?: MCPCaller // Who `auth` established, on the HTTP transport
+  ) => Promise<MCPPromptResult> | MCPPromptResult;
 }
 
 interface MCPPromptArgumentConfig {
@@ -495,9 +523,27 @@ interface MCPPromptArgumentConfig {
 }
 
 interface MCPPromptResult {
-  messages: MCPPromptMessage[];
+  messages: MCPPromptReplyMessage[];
   description?: string;
 }
+
+// A message `get` returns: string content is sent as a text block
+interface MCPPromptReplyMessage {
+  role: 'user' | 'assistant';
+  content: string | MCPPromptMessage['content'];
+}
+```
+
+String content keeps simple prompts short:
+
+```typescript
+server.registerPrompt({
+  name: 'translate',
+  arguments: [{ name: 'text', required: true }],
+  get: ({ text }) => ({
+    messages: [{ role: 'user', content: `Translate into French:\n\n${text}` }],
+  }),
+});
 ```
 
 ### HTTP Server
@@ -519,11 +565,19 @@ await server.start();
 // Server listening on http://0.0.0.0:3001/mcp
 ```
 
+The MCP endpoint is `/mcp` (other paths answer 404); it takes `POST`, `GET` and `DELETE`, answers CORS preflights, and rejects bodies over `maxBodySize` with 413 and invalid JSON with a JSON-RPC parse error. `transport: 'sse'` serves the same Streamable HTTP endpoint.
+
+By default every request is served on its own (stateless). With `sessions: true` the server keeps a session per client, keyed by the `mcp-session-id` header: a request without one starts a session, an unknown session id gets 404, and a session can only be used by the caller (`userId`) that started it (403 otherwise). Sessions are what let the server send requests back to the client, such as elicitation.
+
 ### Authentication and Per-User Tools
 
 Over HTTP the server is open to anyone who can reach it. `auth` establishes the caller of every request; requests it returns `undefined` for (or throws on) get `401`. The caller's `userId` reaches tools as `context.userId`, and resource `read` / prompt `get` handlers get the caller as their second argument:
 
 ```typescript
+import { MCPServer } from '@cogitator-ai/mcp';
+import { tool } from '@cogitator-ai/core';
+import { z } from 'zod';
+
 const server = new MCPServer({
   name: 'shop',
   version: '1.0.0',
@@ -545,7 +599,37 @@ server.registerTool(
 );
 ```
 
-An agent acts for one user by connecting with that user's token (`headers: { Authorization: \`Bearer ${token}\` }`) and running with their `userId` — see [`examples/mcp/03-per-user-mcp.ts`](../../examples/mcp/03-per-user-mcp.ts).
+An agent acts for one user by connecting with that user's token (`headers: { Authorization: \`Bearer ${token}\` }`) and running with their `userId` — see [`examples/mcp/03-per-user-mcp.ts`](https://github.com/cogitator-ai/Cogitator-AI/blob/main/examples/mcp/03-per-user-mcp.ts).
+
+### Asking the User (Elicitation)
+
+A tool run by an `MCPServer` gets an `MCPToolContext`: the usual tool context plus `elicit`, which asks the person at the client a question (an MCP elicitation form) while the call waits. `elicit` is there on stdio and on HTTP with `sessions: true`; it resolves to `undefined` when the client cannot answer elicitation requests.
+
+```typescript
+import { tool } from '@cogitator-ai/core';
+import type { MCPToolContext } from '@cogitator-ai/mcp';
+import { z } from 'zod';
+
+const deleteBranch = tool({
+  name: 'delete_branch',
+  description: 'Delete a git branch',
+  parameters: z.object({ branch: z.string() }),
+  execute: async ({ branch }, context: MCPToolContext) => {
+    const reply = await context.elicit?.({
+      message: `Delete ${branch}?`,
+      schema: {
+        type: 'object',
+        properties: { confirm: { type: 'boolean', title: 'Delete', default: false } },
+        required: ['confirm'],
+      },
+    });
+    if (reply?.action !== 'accept' || reply.content.confirm !== true) return 'Cancelled';
+    return `Deleted ${branch}`;
+  },
+});
+```
+
+Form fields (`MCPElicitField`) are strings (optionally with `enum`), numbers, integers and booleans. The reply is `{ action: 'accept', content }` or `{ action: 'decline' | 'cancel' }`.
 
 ### Stdio Server (for Claude Desktop)
 
@@ -556,7 +640,7 @@ Create a script that Claude Desktop can execute:
 import { serveMCPTools } from '@cogitator-ai/mcp';
 import { builtinTools } from '@cogitator-ai/core';
 
-await serveMCPTools(builtinTools, {
+await serveMCPTools([...builtinTools], {
   name: 'cogitator-tools',
   version: '1.0.0',
   transport: 'stdio',
@@ -583,13 +667,36 @@ Add to Claude Desktop config:
 Serve Cogitator agents to Claude Desktop, Cursor or any MCP client in one call; each agent becomes a tool that takes a `task` (and a `threadId` to continue a conversation, with memory on):
 
 ```typescript
-import { serveAgents } from '@cogitator-ai/mcp';
+import { Agent, Cogitator } from '@cogitator-ai/core';
+import { serveAgents, type MCPAuthFunction } from '@cogitator-ai/mcp';
 
-await serveAgents(cog, [researcher, writer]); // stdio
-await serveAgents(cog, support, { transport: 'http', port: 3333, auth }); // remote, per user
+const cog = new Cogitator({ memory: { adapter: 'memory' } });
+const researcher = new Agent({
+  name: 'researcher',
+  description: 'Researches a topic and answers with sources.',
+  model: 'google/gemini-3.5-flash-lite',
+  instructions: 'You research topics thoroughly.',
+});
+
+await serveAgents(cog, [researcher]); // stdio, for Claude Desktop
+
+// or remote, per user:
+const auth: MCPAuthFunction = (request) =>
+  request.headers.authorization === `Bearer ${process.env.MCP_TOKEN}`
+    ? { userId: 'owner' }
+    : undefined;
+await serveAgents(cog, researcher, { transport: 'http', port: 3333, auth });
 ```
 
-Tools that need approval are asked from the person at the client through MCP elicitation; clients without it get a paused answer and a `<agent>_resume` tool. `sessions: true` (on in `serveAgents`) keeps an HTTP session per client, which elicitation needs; a session belongs to the caller that started it. See [`examples/mcp/04-agent-as-mcp-server.ts`](../../examples/mcp/04-agent-as-mcp-server.ts).
+`serveAgents(host, agents, config?)` takes anything with Cogitator's `run` and `resume` (`AgentHost`), one agent or a list, and the `MCPServerConfig` options, all optional: it defaults to `name: 'cogitator-agents'`, `version: '1.0.0'`, `transport: 'stdio'` and `sessions: true`. It starts the server and returns the `MCPServer`.
+
+- **Tool names** — the agent's name with characters outside `[a-zA-Z0-9_-]` replaced by `_`; pass `toolNames: { researcher: 'research' }` to choose your own.
+- **Descriptions** — the agent's `description`, or `Ask the <name> agent.` plus the first sentence of its instructions.
+- **Answers** (`AgentToolAnswer`) — `{ status: 'completed', output, threadId }`; pass the `threadId` back to continue the conversation.
+- **Approvals** — when the agent has tools with `requiresApproval`, each call that needs approval is asked from the person at the client through MCP elicitation (an Approve checkbox and an optional reason). A client that cannot answer gets `{ status: 'paused', threadId, pendingApprovals, next }`, and the agent gets a second tool, `<name>_resume`, taking `{ threadId, approved, reason? }` to continue the run with the user's decision.
+- **Callers** — over HTTP with `auth`, the caller's `userId` is passed to the run, and the run's abort signal follows the MCP call's cancellation.
+
+`agentTools(host, agents, toolNames?)` returns the same tools without starting a server, to register them on an `MCPServer` of your own next to other tools. See [`examples/mcp/04-agent-as-mcp-server.ts`](https://github.com/cogitator-ai/Cogitator-AI/blob/main/examples/mcp/04-agent-as-mcp-server.ts).
 
 ## Tool Adapters
 
@@ -623,13 +730,16 @@ const mcpDefinition = cogitatorToMCP(myTool);
 // }
 ```
 
+`toolSchemaToMCP(schema)` does the same for a plain `ToolSchema` (the output of `tool.toJSON()`).
+
 ### MCP → Cogitator
 
 ```typescript
 import { mcpToCogitator, wrapMCPTools } from '@cogitator-ai/mcp';
 
 // Single tool
-const cogitatorTool = mcpToCogitator(mcpToolDefinition, mcpClient, {
+const [definition] = await client.listToolDefinitions();
+const cogitatorTool = mcpToCogitator(definition, client, {
   namePrefix: 'mcp_',
   descriptionTransform: (desc) => `[MCP] ${desc}`,
 });
@@ -639,6 +749,8 @@ const tools = await wrapMCPTools(client, {
   namePrefix: 'fs_',
 });
 ```
+
+The prefix only renames the Cogitator tool; calls still go to the server under the original name, with the run's abort signal.
 
 ### Adapter Options
 
@@ -673,13 +785,16 @@ const jsonSchema = zodToJsonSchema(schema);
 //   type: 'object',
 //   properties: {
 //     name: { type: 'string', minLength: 1, description: 'User name' },
-//     age: { type: 'integer', minimum: 0 },
-//     email: { type: 'string', format: 'email' },
+//     age: { type: 'integer', minimum: 0, maximum: 9007199254740991 },
+//     email: { type: 'string', format: 'email', pattern: '...' },
 //     role: { type: 'string', enum: ['admin', 'user', 'guest'] }
 //   },
-//   required: ['name', 'email', 'role']
+//   required: ['name', 'email', 'role'],
+//   additionalProperties: false
 // }
 ```
+
+The output targets OpenAPI 3.0 (e.g. `nullable: true` instead of `type: [..., 'null']`), describes the parsed output of the schema, and turns types JSON Schema cannot express into `{}`.
 
 ### JSON Schema → Zod
 
@@ -713,14 +828,15 @@ const result = zodSchema.parse({
 | `string` + `minLength/maxLength` | `z.string().min().max()`         |
 | `string` + `pattern`             | `z.string().regex()`             |
 | `string` + `format: email`       | `z.string().email()`             |
-| `string` + `format: uri`         | `z.string().url()`               |
+| `string` + `format: uri` / `url` | `z.string().url()`               |
 | `number`                         | `z.number()`                     |
 | `integer`                        | `z.number().int()`               |
 | `number` + `minimum/maximum`     | `z.number().min().max()`         |
 | `boolean`                        | `z.boolean()`                    |
 | `array`                          | `z.array()`                      |
 | `object`                         | `z.object()`                     |
-| `object` without `properties`    | `z.looseObject({})`              |
+| top-level `object` w/o props     | `z.looseObject({})`              |
+| nested `object` w/o props        | `z.record(z.string(), ...)`      |
 | `additionalProperties: true`     | `z.looseObject()`                |
 | `additionalProperties: {schema}` | `.catchall()` / `z.record()`     |
 | `null`                           | `z.null()`                       |
@@ -729,8 +845,10 @@ const result = zodSchema.parse({
 | `type: ['string', 'null']`       | `z.union()`                      |
 | `nullable: true` (OpenAPI)       | `.nullable()`                    |
 | `oneOf` / `anyOf` / `allOf`      | `z.union()` / `z.intersection()` |
+| `default`                        | `.default()`                     |
+| not in `required`                | `.optional()`                    |
 
-Patterns that are not valid ECMAScript regular expressions are ignored instead of failing the whole conversion.
+Unknown types become `z.unknown()`. Patterns that are not valid ECMAScript regular expressions are ignored instead of failing the whole conversion.
 
 ---
 
@@ -828,11 +946,11 @@ interface MCPPromptArgument {
 interface MCPPromptMessage {
   role: 'user' | 'assistant';
   content: {
-    type: 'text' | 'image' | 'resource';
-    text?: string;
-    data?: string;
+    type: 'text' | 'image' | 'audio' | 'resource' | 'resource_link';
+    text?: string; // text
+    data?: string; // image / audio, base64
     mimeType?: string;
-    resource?: { uri: string; text?: string; blob?: string };
+    resource?: { uri: string; mimeType?: string; text?: string; blob?: string }; // resource / resource_link
   };
 }
 ```
@@ -852,13 +970,13 @@ import { Agent, Cogitator } from '@cogitator-ai/core';
 const fsClient = await MCPClient.connect({
   transport: 'stdio',
   command: 'npx',
-  args: ['-y', '@anthropic/mcp-server-filesystem', '/workspace'],
+  args: ['-y', '@modelcontextprotocol/server-filesystem', '/workspace'],
 });
 
 const gitClient = await MCPClient.connect({
   transport: 'stdio',
-  command: 'npx',
-  args: ['-y', '@anthropic/mcp-server-git'],
+  command: 'uvx',
+  args: ['mcp-server-git', '--repository', '/workspace'],
 });
 
 const fsTools = await wrapMCPTools(fsClient, { namePrefix: 'fs_' });
@@ -886,6 +1004,8 @@ await cog.close();
 Check server capabilities before using features:
 
 ```typescript
+import type { Tool } from '@cogitator-ai/types';
+
 const client = await MCPClient.connect(config);
 const capabilities = client.getCapabilities();
 
@@ -918,12 +1038,13 @@ try {
     timeout: 5000,
   });
 } catch (error) {
-  if (error.message.includes('timeout')) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message === 'Connection timeout') {
     console.error('Connection timed out');
-  } else if (error.message.includes('ENOENT')) {
+  } else if (message.includes('ENOENT')) {
     console.error('Command not found');
   } else {
-    console.error('Connection failed:', error.message);
+    console.error('Connection failed:', message);
   }
 }
 ```
@@ -937,7 +1058,7 @@ import { resultToMCPContent, mcpContentToResult } from '@cogitator-ai/mcp';
 
 const result = { data: [1, 2, 3], status: 'ok' };
 const mcpContent = resultToMCPContent(result);
-// [{ type: 'text', text: '{"data":[1,2,3],"status":"ok"}' }]
+// [{ type: 'text', text: '{\n  "data": [\n    1, ...' }] (pretty-printed JSON)
 
 const parsed = mcpContentToResult(mcpContent);
 // { data: [1, 2, 3], status: 'ok' }
@@ -945,6 +1066,8 @@ const parsed = mcpContentToResult(mcpContent);
 const textResult = resultToMCPContent('Hello world');
 // [{ type: 'text', text: 'Hello world' }]
 ```
+
+A tool result that is already an array of MCP content blocks (text, image, audio, resource) is passed through unchanged, so a served tool can return images or embedded resources; `null`/`undefined` becomes an empty text block.
 
 ---
 
@@ -954,17 +1077,33 @@ const textResult = resultToMCPContent('Hello world');
 import type {
   // Transport
   MCPTransportType,
+  StdioTransportConfig,
+  HttpTransportConfig,
 
   // Client
   MCPClientConfig,
   MCPRetryConfig,
+  MCPCallToolOptions,
 
   // Server
   MCPServerConfig,
+  MCPAuthFunction,
+  MCPCaller,
+  MCPToolContext,
+  MCPElicitRequest,
+  MCPElicitResult,
+  MCPElicitField,
   MCPResourceConfig,
+  MCPResourceReadContent,
   MCPPromptConfig,
   MCPPromptArgumentConfig,
   MCPPromptResult,
+  MCPPromptReplyMessage,
+
+  // Serving agents
+  AgentHost,
+  AgentToolAnswer,
+  ServeAgentsConfig,
 
   // Tools
   MCPToolDefinition,
@@ -982,7 +1121,6 @@ import type {
 
   // Adapters
   ToolAdapterOptions,
-  ConvertedTools,
 } from '@cogitator-ai/mcp';
 ```
 

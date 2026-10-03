@@ -13,7 +13,9 @@
 [![Node](https://img.shields.io/badge/Node-20+-green.svg)](https://nodejs.org/)
 [![npm](https://img.shields.io/npm/v/@cogitator-ai/core.svg)](https://www.npmjs.com/package/@cogitator-ai/core)
 
-[Quick Start](#-quick-start) · [Examples](./examples) · [Docs](https://cogitator.app/docs) · [Discord](https://discord.gg/SkmRsYvA)
+[Quick Start](#quick-start) · [Examples](./examples) · [Docs](https://cogitator.app/docs) · [Cookbook](https://cogitator.app/cookbook) · [Discussions](https://github.com/cogitator-ai/Cogitator-AI/discussions)
+
+Coding agents can read the docs as Markdown: [`cogitator.app/llms.txt`](https://cogitator.app/llms.txt) (index) and [`cogitator.app/llms-full.txt`](https://cogitator.app/llms-full.txt) (everything in one file).
 
 </div>
 
@@ -83,7 +85,7 @@ Set `GOOGLE_API_KEY` in your `.env` ([get one free here](https://aistudio.google
 npx tsx examples/core/01-basic-agent.ts
 ```
 
-> **Works with any LLM**: swap `google/gemini-3.8-flash` for `openai/gpt-6.1-sol`, `anthropic/claude-sonnet-5-5`, `ollama/llama3.3`, or [10+ other providers](https://cogitator.app/docs).
+> **Works with any LLM**: swap `google/gemini-3.8-flash` for `openai/gpt-6.1-sol`, `anthropic/claude-sonnet-5-5`, `ollama/llama3.3`, or any other of the [11 built-in providers](https://cogitator.app/docs/core/llm-backends).
 
 ---
 
@@ -154,7 +156,7 @@ cogitator daemon install        # user service with restart on crash (systemd/la
 - Access control — owner/authorized/public levels, pairing codes for new users
 - Scheduled tasks — "remind me in 2 hours" with cron/interval/one-shot support
 - Memory — persistent conversations with auto-compaction and knowledge graphs
-- Lifecycle hooks — 10 event points for logging, analytics, custom behavior
+- Lifecycle hooks — 12 event points for logging, analytics, custom behavior
 - Skills — extend with tool bundles (`cogitator skill add`)
 - MCP servers — connect any Model Context Protocol tool server
 
@@ -176,7 +178,7 @@ See [`@cogitator-ai/channels` README](./packages/channels/README.md) for the ful
 | **Knowledge graph**          | Extract entities from text, build a graph, traverse relationships                              | [`examples/memory/04-knowledge-graph.ts`](./examples/memory/04-knowledge-graph.ts)           |
 | **RAG Q&A system**           | Load docs, chunk, embed, retrieve relevant context, answer questions                           | [`examples/rag/01-basic-retrieval.ts`](./examples/rag/01-basic-retrieval.ts)                 |
 | **Agent evaluation**         | Measure accuracy, compare models, run A/B tests with LLM judges                                | [`examples/evals/01-basic-eval.ts`](./examples/evals/01-basic-eval.ts)                       |
-| **Personal AI assistant**    | Your own AI running 24/7 on Telegram, Discord, Slack — manage via chat commands                | [`cogitator.yml` config](#-personal-ai-assistant)                                            |
+| **Personal AI assistant**    | Your own AI running 24/7 on Telegram, Discord, Slack — manage via chat commands                | [`cogitator.yml` config](#personal-ai-assistant)                                             |
 | **Cross-framework agents**   | Expose your agent via Google's A2A protocol, consume external agents                           | [`examples/a2a/01-a2a-server.ts`](./examples/a2a/01-a2a-server.ts)                           |
 
 ---
@@ -205,6 +207,7 @@ Install only what you need. Everything is a separate npm package.
 | [`@cogitator-ai/deploy`](https://www.npmjs.com/package/@cogitator-ai/deploy)                 | Deploy your agents to Docker or Fly.io                                                          | [deploy example](./examples/infrastructure/04-deploy-docker.ts)      |
 | [`@cogitator-ai/channels`](https://www.npmjs.com/package/@cogitator-ai/channels)             | Personal AI assistant on Telegram, Discord, Slack, WhatsApp — streaming, commands, media, hooks | [3 channel examples](./examples/channels/)                           |
 | [`@cogitator-ai/cli`](https://www.npmjs.com/package/@cogitator-ai/cli)                       | `cogitator init` / `up` / `daemon` / `skill` / `deploy` from your terminal                      | [CLI workflows](./examples/cli/README.md)                            |
+| [`@cogitator-ai/test-utils`](https://www.npmjs.com/package/@cogitator-ai/test-utils)         | Mock LLM backends, fixtures and helpers for testing your agents                                 | [testing docs](https://cogitator.app/docs/testing/test-utils)        |
 
 **Server adapters** - mount agents as REST APIs with one line:
 
@@ -217,7 +220,7 @@ Install only what you need. Everything is a separate npm package.
 [`ai-sdk`](https://www.npmjs.com/package/@cogitator-ai/ai-sdk) ·
 [`openai-compat`](https://www.npmjs.com/package/@cogitator-ai/openai-compat)
 
-All with Swagger docs, SSE streaming, and WebSocket support. See [integration examples](./examples/integrations/).
+All with Swagger docs, SSE streaming, and WebSocket support, built on the shared streaming protocol in [`server-shared`](https://www.npmjs.com/package/@cogitator-ai/server-shared). See [integration examples](./examples/integrations/).
 
 ---
 
@@ -225,13 +228,13 @@ All with Swagger docs, SSE streaming, and WebSocket support. See [integration ex
 
 ### LLM & Models
 
-| Feature                | What it means                                                                                    |
-| ---------------------- | ------------------------------------------------------------------------------------------------ |
-| **Any provider**       | OpenAI, Anthropic, Google, Ollama, Azure, Bedrock, Mistral, Groq, Together, DeepSeek - same code |
-| **Structured outputs** | JSON mode and JSON Schema validation across all providers                                        |
-| **Vision & audio**     | Send images, transcribe audio, generate speech                                                   |
-| **Cost-aware routing** | Auto-pick cheap models for easy tasks, expensive for hard ones                                   |
-| **Cost prediction**    | Know how much a run will cost before you execute it                                              |
+| Feature                | What it means                                                                                          |
+| ---------------------- | ------------------------------------------------------------------------------------------------------ |
+| **Any provider**       | OpenAI, Anthropic, Google, Ollama, vLLM, Azure, Bedrock, Mistral, Groq, Together, DeepSeek - same code |
+| **Structured outputs** | JSON mode and JSON Schema validation across all providers                                              |
+| **Vision & audio**     | Send images, transcribe audio, generate speech                                                         |
+| **Cost-aware routing** | Auto-pick cheap models for easy tasks, expensive for hard ones                                         |
+| **Cost prediction**    | Know how much a run will cost before you execute it                                                    |
 
 ### Memory & Knowledge
 
@@ -264,7 +267,7 @@ All with Swagger docs, SSE streaming, and WebSocket support. See [integration ex
 | **Media processing**  | Photos → vision, voice → STT (Deepgram, Groq, OpenAI, local Whisper)               |
 | **Streaming**         | Real-time message editing with smart chunking and platform-aware splitting         |
 | **Status reactions**  | Emoji progress indicators (queued → thinking → tool → done) on user messages       |
-| **Lifecycle hooks**   | 10 event points for logging, analytics, and custom behavior                        |
+| **Lifecycle hooks**   | 12 event points for logging, analytics, and custom behavior                        |
 | **Scheduler**         | Cron, interval, and one-shot jobs with error tracking and auto-backoff             |
 | **Daemon mode**       | Run as system service with `cogitator daemon install` (systemd/launchd)            |
 
@@ -315,7 +318,7 @@ All with Swagger docs, SSE streaming, and WebSocket support. See [integration ex
 | **Multi-agent**   | 7 strategies  | Limited        | No                |
 | **A2A Protocol**  | Yes           | No             | No                |
 | **Observability** | OpenTelemetry | Requires setup | Dashboard only    |
-| **Dependencies**  | ~20           | 150+           | N/A               |
+| **Dependencies**  | 7 (core)      | 150+           | N/A               |
 
 ---
 
@@ -346,7 +349,9 @@ npx tsx examples/core/01-basic-agent.ts
 | [`create-cogitator-app/`](./examples/create-cogitator-app/) | 1     | Programmatic project scaffolding                                                                                                                                                    |
 | [`advanced/`](./examples/advanced/)                         | 3     | Self-modifying agents, neuro-symbolic reasoning, WASM tools                                                                                                                         |
 
-Default LLM is **Google Gemini 3.8 Flash** - free tier, no credit card. See [`examples/README.md`](./examples/README.md) for setup.
+The [`cli/`](./examples/cli/README.md) folder adds step-by-step `cogitator` CLI walkthroughs on top of these.
+
+Default LLM is **Google Gemini 3.5 Flash-Lite** (`google/gemini-3.5-flash-lite`) - free tier, no credit card. See [`examples/README.md`](./examples/README.md) for setup.
 
 ---
 
@@ -354,8 +359,8 @@ Default LLM is **Google Gemini 3.8 Flash** - free tier, no credit card. See [`ex
 
 ```bash
 # Fork on GitHub, then:
-git clone https://github.com/YOUR_USERNAME/cogitator.git
-cd cogitator && pnpm install && pnpm dev
+git clone https://github.com/YOUR_USERNAME/Cogitator-AI.git
+cd Cogitator-AI && pnpm install && pnpm dev
 ```
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
@@ -389,7 +394,6 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
 | [@cogitator-ai/evals](https://www.npmjs.com/package/@cogitator-ai/evals)                   | Evaluation framework with metrics, A/B testing, assertions   | [![npm](https://img.shields.io/npm/v/@cogitator-ai/evals.svg)](https://www.npmjs.com/package/@cogitator-ai/evals)                   |
 | [@cogitator-ai/voice](https://www.npmjs.com/package/@cogitator-ai/voice)                   | Voice/Realtime agents (STT, TTS, VAD, realtime sessions)     | [![npm](https://img.shields.io/npm/v/@cogitator-ai/voice.svg)](https://www.npmjs.com/package/@cogitator-ai/voice)                   |
 | [@cogitator-ai/browser](https://www.npmjs.com/package/@cogitator-ai/browser)               | Browser automation (Playwright, stealth, vision, 33 tools)   | [![npm](https://img.shields.io/npm/v/@cogitator-ai/browser.svg)](https://www.npmjs.com/package/@cogitator-ai/browser)               |
-| [@cogitator-ai/dashboard](https://www.npmjs.com/package/@cogitator-ai/dashboard)           | Website: landing page, docs (Fumadocs) and cookbook          | [![npm](https://img.shields.io/npm/v/@cogitator-ai/dashboard.svg)](https://www.npmjs.com/package/@cogitator-ai/dashboard)           |
 | [@cogitator-ai/next](https://www.npmjs.com/package/@cogitator-ai/next)                     | Next.js App Router integration                               | [![npm](https://img.shields.io/npm/v/@cogitator-ai/next.svg)](https://www.npmjs.com/package/@cogitator-ai/next)                     |
 | [@cogitator-ai/ai-sdk](https://www.npmjs.com/package/@cogitator-ai/ai-sdk)                 | Vercel AI SDK adapter (bidirectional)                        | [![npm](https://img.shields.io/npm/v/@cogitator-ai/ai-sdk.svg)](https://www.npmjs.com/package/@cogitator-ai/ai-sdk)                 |
 | [@cogitator-ai/express](https://www.npmjs.com/package/@cogitator-ai/express)               | Express.js REST API server                                   | [![npm](https://img.shields.io/npm/v/@cogitator-ai/express.svg)](https://www.npmjs.com/package/@cogitator-ai/express)               |
@@ -398,6 +402,11 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
 | [@cogitator-ai/koa](https://www.npmjs.com/package/@cogitator-ai/koa)                       | Koa middleware-based server                                  | [![npm](https://img.shields.io/npm/v/@cogitator-ai/koa.svg)](https://www.npmjs.com/package/@cogitator-ai/koa)                       |
 | [@cogitator-ai/tetsu](https://www.npmjs.com/package/@cogitator-ai/tetsu)                   | Tetsu controller on Bun (SSE, WebSocket, OpenAPI)            | [![npm](https://img.shields.io/npm/v/@cogitator-ai/tetsu.svg)](https://www.npmjs.com/package/@cogitator-ai/tetsu)                   |
 | [@cogitator-ai/deploy](https://www.npmjs.com/package/@cogitator-ai/deploy)                 | Deployment engine (Docker, Fly.io)                           | [![npm](https://img.shields.io/npm/v/@cogitator-ai/deploy.svg)](https://www.npmjs.com/package/@cogitator-ai/deploy)                 |
+| [@cogitator-ai/channels](https://www.npmjs.com/package/@cogitator-ai/channels)             | Messaging channels (Telegram, Discord, Slack, WhatsApp, Web) | [![npm](https://img.shields.io/npm/v/@cogitator-ai/channels.svg)](https://www.npmjs.com/package/@cogitator-ai/channels)             |
+| [@cogitator-ai/server-shared](https://www.npmjs.com/package/@cogitator-ai/server-shared)   | Shared streaming protocol and OpenAPI for server adapters    | [![npm](https://img.shields.io/npm/v/@cogitator-ai/server-shared.svg)](https://www.npmjs.com/package/@cogitator-ai/server-shared)   |
+| [@cogitator-ai/test-utils](https://www.npmjs.com/package/@cogitator-ai/test-utils)         | Testing utilities: mock backends, fixtures, helpers          | [![npm](https://img.shields.io/npm/v/@cogitator-ai/test-utils.svg)](https://www.npmjs.com/package/@cogitator-ai/test-utils)         |
+
+Not published to npm: [`packages/dashboard`](./packages/dashboard) (the [cogitator.app](https://cogitator.app) website: landing, docs, cookbook) and [`packages/e2e`](./packages/e2e) (end-to-end test suite).
 
 </details>
 
@@ -413,6 +422,6 @@ MIT - see [LICENSE](./LICENSE).
 
 **Built for engineers who trust their agents to run while they sleep.**
 
-[Star on GitHub](https://github.com/cogitator-ai/Cogitator-AI) · [Docs](https://cogitator.app/docs) · [Discord](https://discord.gg/SkmRsYvA)
+[Star on GitHub](https://github.com/cogitator-ai/Cogitator-AI) · [Docs](https://cogitator.app/docs) · [Discussions](https://github.com/cogitator-ai/Cogitator-AI/discussions)
 
 </div>

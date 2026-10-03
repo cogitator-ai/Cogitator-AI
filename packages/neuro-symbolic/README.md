@@ -16,6 +16,15 @@ pnpm add z3-solver
 
 Without Z3 the package falls back to the built-in solver (exact search for finite domains, local search otherwise).
 
+The Postgres and Neo4j graph adapters need their drivers (optional peer dependencies):
+
+```bash
+pnpm add pg            # createPostgresGraphAdapter
+pnpm add neo4j-driver  # createNeo4jGraphAdapter
+```
+
+Website docs: [Neuro-Symbolic](https://cogitator.app/docs/advanced/neuro-symbolic).
+
 ## Features
 
 - **Logic Programming** - Prolog engine with ISO operator precedence, cut, if-then-else, negation, `findall/3`, `between/3` and proof trees
@@ -422,6 +431,15 @@ await ns.validateAndRepair(plan);
 | `checkInvariants`   | all safety properties hold                                     |
 | `validateAndRepair` | the (repaired) plan is valid **and** all invariants hold on it |
 
+`ns.getConfig()` returns a `ResolvedNeuroSymbolicConfig`: every section (`logic`, `constraints`, `planning`, `knowledgeGraph`) is present with its defaults filled in, so no optional chaining is needed. `ns.updateConfig(partial)` merges changes into the running instance.
+
+```typescript
+const { logic, constraints } = ns.getConfig();
+console.log(logic.maxDepth, constraints.timeout);
+
+ns.updateConfig({ logic: { maxSolutions: 5 } });
+```
+
 ---
 
 ## Agent Tools
@@ -448,7 +466,9 @@ const agent = new Agent({
     'Use query_logic for Prolog queries, solve_constraints for SAT/SMT problems and validate_plan to verify action sequences.',
 });
 
-const cogitator = new Cogitator({ llm: { defaultModel: 'openai/gpt-6.1-sol' } });
+const cogitator = new Cogitator({
+  llm: { providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } } },
+});
 const result = await cogitator.run(agent, { input: 'Who are the grandparents of ann?' });
 ```
 

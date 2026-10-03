@@ -9,7 +9,10 @@ pnpm add @cogitator-ai/evals
 
 # Optional dependencies
 pnpm add papaparse  # CSV dataset loading
+pnpm add @cogitator-ai/core  # agent targets and LLM-as-judge metrics
 ```
+
+Website docs: [Evals](https://cogitator.app/docs/evals), [Datasets](https://cogitator.app/docs/evals/datasets), [Metrics](https://cogitator.app/docs/evals/metrics), [Assertions](https://cogitator.app/docs/evals/assertions), [Comparison](https://cogitator.app/docs/evals/comparison), [Reporters](https://cogitator.app/docs/evals/reporters).
 
 ## Features
 
@@ -59,7 +62,9 @@ result.report('console');
 result.saveBaseline('./baseline.json');
 ```
 
-A case that throws or exceeds `timeout` is retried up to `retries` times (default `0`). If every attempt fails, its result has an empty `output` and an `error` message describing the last failure.
+A target is either `{ fn: (input) => Promise<string> }` or `{ agent, cogitator }`, which runs the agent with `cogitator.run(agent, { input })` and records its usage for the statistical metrics. Defaults: `concurrency` 5, `timeout` 30 000 ms (minimum 1 000), `retries` 0.
+
+A case that throws or exceeds `timeout` is retried up to `retries` times. If every attempt fails, its result has an empty `output` and an `error` message describing the last failure.
 
 ---
 
@@ -140,7 +145,7 @@ const metrics = [
 
 ### LLM-as-Judge
 
-Metrics scored by an LLM judge (0.0 to 1.0). Require a `judge` config on the suite.
+Metrics scored by an LLM judge (0.0 to 1.0). They require a `judge` config on the suite and a Cogitator to run the judge agent: `judge.cogitator`, or the `cogitator` of an agent target. Without one, the suite throws when it is created.
 
 | Metric         | Evaluates                               |
 | -------------- | --------------------------------------- |
@@ -164,7 +169,7 @@ const suite = new EvalSuite({
       prompt: 'Rate how technically accurate the response is for a software engineering audience.',
     }),
   ],
-  judge: { model: 'openai/gpt-6.1-sol', temperature: 0, cogitator },
+  judge: { model: 'openai/gpt-6.1-sol', temperature: 0, cogitator: cog },
 });
 ```
 
@@ -177,7 +182,7 @@ import { latency, cost, tokenUsage } from '@cogitator-ai/evals';
 
 const suite = new EvalSuite({
   dataset,
-  target: { agent, cogitator },
+  target: { agent, cogitator: cog },
   metrics: [exactMatch()],
   statisticalMetrics: [latency(), cost(), tokenUsage()],
 });
@@ -335,7 +340,7 @@ const suite = new EvalBuilder()
   .withTarget({ fn: async (input) => myModel(input) })
   .withMetrics([exactMatch(), contains(), faithfulness()])
   .withStatisticalMetrics([latency()])
-  .withJudge({ model: 'gpt-6.1-sol', temperature: 0 })
+  .withJudge({ model: 'openai/gpt-6.1-sol', temperature: 0, cogitator: cog })
   .withAssertions([threshold('exactMatch', 0.85), noRegression('./baseline.json')])
   .withConcurrency(10)
   .withTimeout(60_000)
@@ -447,10 +452,12 @@ result.report('ci');
 
 ### Agent Tools
 
-| Export              | Description                          |
-| ------------------- | ------------------------------------ |
-| `createRunEvalTool` | Creates a `run_eval` tool for agents |
-| `evalTools`         | Returns all eval tools as an array   |
+| Export              | Description                                                                   |
+| ------------------- | ----------------------------------------------------------------------------- |
+| `createRunEvalTool` | Creates a `run_eval` tool for agents (`maxCases` parameter) for a given suite |
+| `evalTools`         | Returns all eval tools for a suite as an array                                |
+
+Like the RAG tools, eval tools carry a Zod `parameters` schema and can be passed to `tool()` from `@cogitator-ai/core`.
 
 ---
 

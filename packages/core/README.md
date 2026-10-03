@@ -8,6 +8,19 @@ Core runtime for Cogitator AI agents. Build and run LLM-powered agents with tool
 pnpm add @cogitator-ai/core zod
 ```
 
+Optional peer dependencies, installed only for the features that use them:
+
+| Package                           | Needed for                                                      |
+| --------------------------------- | --------------------------------------------------------------- |
+| `@aws-sdk/client-bedrock-runtime` | `BedrockBackend` (`bedrock/...` models)                         |
+| `@cogitator-ai/sandbox`           | Tools with `sandbox: { type: 'docker' \| 'wasm' }`              |
+| `pg`                              | `sqlQuery` / `vectorSearch` on PostgreSQL, `PostgresTraceStore` |
+| `better-sqlite3`                  | `sqlQuery` on SQLite                                            |
+| `nodemailer`                      | `sendEmail` over SMTP                                           |
+| `langfuse`                        | `LangfuseExporter`                                              |
+
+Full documentation: [cogitator.app/docs](https://cogitator.app/docs) — start with [Agents](https://cogitator.app/docs/core/agents) and [Cogitator](https://cogitator.app/docs/core/cogitator).
+
 ## Quick Start
 
 ```typescript
@@ -48,10 +61,13 @@ console.log(result.output);
 
 ## Features
 
-- **Multi-Provider LLM Support** - Ollama, OpenAI, Anthropic, Google, vLLM
-- **Type-Safe Tools** - Zod-validated tool definitions
-- **Streaming Responses** - Real-time token streaming
-- **Memory Integration** - Redis, PostgreSQL, in-memory adapters
+- **Multi-Provider LLM Support** - Ollama, OpenAI, Anthropic, Google, Azure OpenAI, Bedrock, vLLM, Mistral, Groq, Together, DeepSeek
+- **Type-Safe Tools** - Zod-validated tool definitions, `toolset()` for typed tool tuples
+- **Streaming Responses** - Real-time token and reasoning streaming
+- **Structured Output** - `responseFormat` with a Zod schema, validated and repaired once on mismatch
+- **Handoffs & Approvals** - Pass a conversation to another agent; pause runs for human approval and resume them later
+- **Prompt Versions & A/B Tests** - Versioned instructions per agent with `cog.prompts`
+- **Memory Integration** - In-memory, Redis, PostgreSQL, SQLite, MongoDB and Qdrant adapters
 - **26 Built-in Tools** - Web search, SQL, email, GitHub, filesystem, and more
 - **Reflection Engine** - Self-improvement through tool call analysis
 - **Tree-of-Thought** - Advanced reasoning with branch exploration
@@ -113,6 +129,10 @@ const cog = new Cogitator({
 });
 ```
 
+The runtime does not read provider keys from the environment: pass them under `providers` (or build the config with `loadConfig()` from `@cogitator-ai/config`, which reads `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and the rest). Ollama defaults to `http://localhost:11434`. A model string without a known provider prefix runs on `llm.defaultProvider` (Ollama when unset). An agent without `model` uses `llm.defaultModel`. `llm.backends` registers backends of your own by name (`model: 'my-backend/some-model'`), and `llm.retry` (2 retries with exponential backoff by default, `false` to disable) applies to every backend the runtime creates. Azure (`endpoint`, `apiKey`, `apiVersion`, `deployment`), Bedrock (`region`, credentials) and Mistral / Groq / Together / DeepSeek (`apiKey`) are configured the same way under `providers`.
+
+See [LLM Backends](https://cogitator.app/docs/core/llm-backends) for every provider's options.
+
 ### Provider Notes
 
 - **OpenAI** — the official backend uses the Responses API and defaults to `gpt-6.1-sol`. Requests are stateless (`store: false`); reasoning items are round-tripped between tool-call turns via `ToolCall.replay`. Reasoning models (o-series, GPT-5+) get no `temperature` / `top_p`. Requests with stop sequences fall back to Chat Completions (the Responses API has no stop parameter). OpenAI-compatible providers (Azure, Mistral, Groq, Together, DeepSeek, vLLM, custom `baseUrl`) stay on Chat Completions. Force either path with `providers.openai.api: 'responses' | 'chat-completions'`. Usage includes `cachedInputTokens` and `reasoningTokens` when reported.
@@ -124,12 +144,14 @@ const cog = new Cogitator({
 ```typescript
 import { createLLMBackend, parseModel } from '@cogitator-ai/core';
 
-const backend = createLLMBackend('openai', {
-  providers: { openai: { apiKey: process.env.OPENAI_API_KEY } },
+const { provider, model } = parseModel('openai/gpt-6.1-sol'); // { provider: 'openai', model: 'gpt-6.1-sol' }
+
+const backend = createLLMBackend(provider ?? 'ollama', {
+  providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } },
 });
 
 const response = await backend.chat({
-  model: 'gpt-6.1-sol',
+  model,
   messages: [
     { role: 'system', content: 'You are helpful.' },
     { role: 'user', content: 'Hello!' },
@@ -174,25 +196,28 @@ const debugBackend = withDebug(backend, {
 ### LLM Error Handling
 
 ```typescript
-import { LLMError, llmUnavailable, llmTimeout } from '@cogitator-ai/core';
+import { LLMError } from '@cogitator-ai/core';
 
 try {
   await backend.chat(request);
 } catch (error) {
   if (error instanceof LLMError) {
-    console.log('Provider:', error.provider);
-    console.log('Status:', error.statusCode);
-    console.log('Retryable:', error.retryable);
+    console.log('Provider:', error.provider, error.model);
+    console.log('Code:', error.code); // ErrorCode, e.g. LLM_RATE_LIMITED
+    console.log('HTTP status from the provider:', error.details?.statusCode);
+    console.log('Retryable:', error.retryable, 'after', error.retryAfter, 'ms');
   }
 }
 ```
+
+`llmUnavailable`, `llmTimeout`, `llmInvalidResponse`, `llmConfigError` and `wrapSDKError` build these errors in your own backends; `withLLMRetry(backend, options)` / `RetryingBackend` add retries with `Retry-After` support to any backend.
 
 ---
 
 ## Agent Configuration
 
 ```typescript
-import { Agent } from '@cogitator-ai/core';
+import { Agent, calculator, webSearch } from '@cogitator-ai/core';
 
 const agent = new Agent({
   id: 'custom-id',
@@ -207,6 +232,7 @@ const agent = new Agent({
   maxIterations: 15,
   timeout: 120_000,
   stopSequences: ['DONE'],
+  // responseFormat, reasoning, handoffs, skills, description are covered below
 });
 
 // Clone with modifications
@@ -216,6 +242,63 @@ const variant = agent.clone({
   maxTokens: 1024,
 });
 ```
+
+### Skills and Serialization
+
+A skill bundles tools with the instructions for using them; `skills` merges them into the agent:
+
+```typescript
+import { Agent, defineSkill, httpRequest, ToolRegistry } from '@cogitator-ai/core';
+
+const apiSkill = defineSkill({
+  name: 'http-api',
+  version: '1.0.0',
+  description: 'Call JSON APIs',
+  tools: [httpRequest],
+  instructions: 'Prefer GET requests and summarize responses.',
+  env: ['API_TOKEN'], // checked by validateSkill()
+});
+
+const agent = new Agent({
+  name: 'integrator',
+  model: 'openai/gpt-5.5',
+  instructions: 'Answer with data from the API.',
+  skills: [apiSkill],
+});
+
+const snapshot = agent.serialize(); // plain JSON; tools are stored by name
+const registry = new ToolRegistry();
+registry.register(httpRequest);
+const restored = Agent.deserialize(snapshot, { toolRegistry: registry });
+```
+
+See [Agents](https://cogitator.app/docs/core/agents).
+
+### Structured Output
+
+`responseFormat` asks the model for JSON. With a Zod schema the answer is validated and parsed into `result.structured`:
+
+```typescript
+import { Agent, Cogitator } from '@cogitator-ai/core';
+import { z } from 'zod';
+
+const Weather = z.object({ city: z.string(), celsius: z.number() });
+
+const extractor = new Agent({
+  name: 'extractor',
+  model: 'openai/gpt-5.5',
+  instructions: 'Extract the weather report.',
+  responseFormat: { type: 'json_schema', schema: Weather }, // or { type: 'json' } for any JSON
+});
+
+const cog = new Cogitator({
+  llm: { providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } } },
+});
+const result = await cog.run(extractor, { input: 'Paris, 21 degrees' });
+const weather = Weather.parse(result.structured);
+```
+
+When the final answer does not fit the schema, the run asks the model once more with the validation problem (for example `celsius: expected number, received string`) and does not save the rejected answer to the thread; if the retry fails too, `structured` is `undefined`. Streamed runs keep the first answer, since the client has already seen it. JSON wrapped in prose or code fences is still read. See [Structured Outputs](https://cogitator.app/docs/core/structured-outputs).
 
 ### Reasoning and Prompt Caching
 
@@ -266,6 +349,35 @@ const weatherTool = tool({
 });
 ```
 
+`tool()` also takes `category`, `tags`, `sideEffects`, `requiresApproval`, `timeout` and `sandbox`. Tools passed to `new Agent({ tools })` lose their individual parameter types in a plain array; `toolset(...tools)` keeps them as a typed tuple that agents still accept:
+
+```typescript
+import { tool, toolset } from '@cogitator-ai/core';
+import { z } from 'zod';
+
+function createSearchTools() {
+  return toolset(
+    tool({
+      name: 'search',
+      description: 'Search the catalog',
+      parameters: z.object({ query: z.string() }),
+      execute: async ({ query }) => ({ hits: [query] }),
+    }),
+    tool({
+      name: 'fetch_item',
+      description: 'Fetch one item',
+      parameters: z.object({ id: z.number() }),
+      execute: async ({ id }) => ({ id }),
+    })
+  );
+}
+
+const [search, fetchItem] = createSearchTools();
+await search.execute({ query: 'lamp' }, ctx); // typed as { query: string }
+```
+
+See [Tools](https://cogitator.app/docs/core/tools) and [Custom Tools](https://cogitator.app/docs/tools/custom-tools).
+
 ### Handoffs
 
 `handoffs` lets an agent pass the conversation to another one: each target becomes a `transfer_to_<name>` tool, and the rest of the run goes on as the target — its instructions, tools and model — with the whole conversation:
@@ -273,7 +385,7 @@ const weatherTool = tool({
 ```typescript
 const triage = new Agent({
   name: 'triage',
-  model,
+  model: 'openai/gpt-5.5',
   instructions: 'Hand the customer to the right specialist.',
   handoffs: [billing, techSupport],
 });
@@ -282,6 +394,8 @@ const result = await cog.run(triage, { input: 'How much do I owe on INV-204?' })
 result.handoffs; // [{ from: 'triage', to: 'billing', reason }]
 result.finalAgent; // 'billing'
 ```
+
+A handoff can also be `{ agent, toolName, description }` to name the tool or describe when to use it. `onHandoff` on the run options reports each switch as it happens.
 
 ### Approvals
 
@@ -301,6 +415,8 @@ if (result.status === 'paused') {
 
 Nothing of the paused turn runs until every call in it is decided. Paused runs live in the thread's memory (or process memory, or your `runCheckpoints` store), so a resume can come after a restart; a new message on the thread instead declines the waiting calls.
 
+`cog.resume()` takes the thread id or the returned `result.checkpoint`; `defaultDecision` answers every call `decisions` leaves out. To decide while the run waits, pass `onApproval: (request) => ({ approved: true })` (or return `'pause'`) to `cog.run()`. See [Tool Approvals](https://cogitator.app/docs/tools/approvals).
+
 ### PII Masking
 
 `security.pii` replaces emails, phones, card numbers (Luhn-checked), IBANs, SSNs, IP addresses, API keys and your own patterns with placeholders before every LLM request, so the provider never sees them:
@@ -317,7 +433,7 @@ const cog = new Cogitator({
 });
 ```
 
-In `mask` mode the answer, its stream and tool call arguments get the real values back, so `send_email({ to: '[EMAIL_1]' })` reaches the tool as the real address. `PiiMasker`, `PiiVault` and `withPiiMasking` work outside a run too.
+In `mask` mode the answer, its stream and tool call arguments get the real values back, so `send_email({ to: '[EMAIL_1]' })` reaches the tool as the real address. `detect` limits the built-in kinds (`PII_TYPES`: `email`, `phone`, `credit_card`, `iban`, `ssn`, `ip_address`, `api_key`). `PiiMasker`, `PiiVault` and `withPiiMasking` work outside a run too. See [Security](https://cogitator.app/docs/advanced/security).
 
 ### Tool Context
 
@@ -327,7 +443,11 @@ Every tool receives a context object:
 interface ToolContext {
   agentId: string;
   runId: string;
-  signal: AbortSignal;
+  signal: AbortSignal; // aborted on run cancel or tool timeout
+  threadId?: string;
+  userId?: string; // the run's userId
+  channelType?: string;
+  channelId?: string;
 }
 ```
 
@@ -336,6 +456,9 @@ interface ToolContext {
 Execute tools in isolated Docker or WASM environments:
 
 ```typescript
+import { tool } from '@cogitator-ai/core';
+import { z } from 'zod';
+
 const shellTool = tool({
   name: 'run_shell',
   description: 'Execute shell commands safely',
@@ -350,6 +473,8 @@ const shellTool = tool({
   execute: async ({ command }) => command,
 });
 ```
+
+A Docker-sandboxed tool does not call `execute`: the sandbox runs the `command` argument with `sh -c` (plus optional `cwd` / `env` arguments) and returns its output. A WASM tool gets its arguments as JSON on stdin and its JSON stdout is parsed as the result. Sandboxing needs `@cogitator-ai/sandbox` installed (options go in `new Cogitator({ sandbox })`); when the sandbox cannot start, the tool runs natively with a warning.
 
 `timeout` is enforced for every tool: native tools get an aborted `context.signal` and the model receives a `Tool "<name>" timed out after <ms>ms` error; sandboxed tools forward it to the sandbox executor. The sandbox is initialized lazily on the first sandboxed call, and that call already runs inside it.
 
@@ -433,25 +558,38 @@ Not part of `builtinTools`. `createAnalyzeImageTool` takes an `llm` backend; the
 | `createGenerateSpeechTool`  | `generateSpeech`  | `gpt-4o-mini-tts`                                                                                                                                                                   |
 
 ```typescript
-import { builtinTools, calculator, datetime } from '@cogitator-ai/core';
+import { Agent, builtinTools } from '@cogitator-ai/core';
 
 const agent = new Agent({
   name: 'utility-agent',
   instructions: 'Use your tools to help users',
   model: 'openai/gpt-6.1-sol',
-  tools: builtinTools,
+  tools: [...builtinTools], // builtinTools is a readonly tuple
 });
 ```
+
+#### Assistant Tool Factories
+
+Also not in `builtinTools`, these build tools around your own stores. `createMemoryTools` and `createSchedulerTools` return typed tuples (see `toolset()`), so destructured tools keep their parameter types:
+
+| Factory                                                                                                        | Tools                                                                             |
+| -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `createMemoryTools({ graphAdapter, agentId, coreFacts?, embeddingFn? })`                                       | `remember`, `recall`, `forget` on a knowledge graph                               |
+| `createSchedulerTools({ store, defaultChannel?, defaultUserId? })`                                             | `schedule_task`, `list_tasks`, `cancel_task` on a `TimerStore`                    |
+| `createDeviceTools()`, `createCapabilitiesTool(doc)`, `createSelfTools({ toolsDir })` / `loadCustomTools(dir)` | Device info, a capabilities description, and tools an agent writes to a directory |
 
 ### Web Search Tool
 
 Search the web using Tavily, Brave, or Serper APIs:
 
 ```typescript
-import { webSearch } from '@cogitator-ai/core';
+import { Agent, webSearch } from '@cogitator-ai/core';
 
 // Auto-detects from TAVILY_API_KEY, BRAVE_API_KEY, or SERPER_API_KEY
 const agent = new Agent({
+  name: 'assistant',
+  instructions: 'Use your tools to help users',
+  model: 'openai/gpt-5.5',
   tools: [webSearch],
 });
 
@@ -464,13 +602,16 @@ const agent = new Agent({
 Extract content from web pages:
 
 ```typescript
-import { webScrape } from '@cogitator-ai/core';
+import { Agent, webScrape } from '@cogitator-ai/core';
 
 const agent = new Agent({
+  name: 'assistant',
+  instructions: 'Use your tools to help users',
+  model: 'openai/gpt-5.5',
   tools: [webScrape],
 });
 
-// Supports CSS selectors, text/markdown/html output, link/image extraction
+// Supports simple selectors (tag, .class, #id), text/markdown/html output, link/image extraction
 ```
 
 ### SQL Query Tool
@@ -478,9 +619,12 @@ const agent = new Agent({
 Execute SQL queries against PostgreSQL or SQLite:
 
 ```typescript
-import { sqlQuery } from '@cogitator-ai/core';
+import { Agent, sqlQuery } from '@cogitator-ai/core';
 
 const agent = new Agent({
+  name: 'assistant',
+  instructions: 'Use your tools to help users',
+  model: 'openai/gpt-5.5',
   tools: [sqlQuery],
 });
 
@@ -498,9 +642,12 @@ Read-only queries on PostgreSQL run inside `BEGIN TRANSACTION READ ONLY` (always
 Semantic search using embeddings with pgvector:
 
 ```typescript
-import { vectorSearch } from '@cogitator-ai/core';
+import { Agent, vectorSearch } from '@cogitator-ai/core';
 
 const agent = new Agent({
+  name: 'assistant',
+  instructions: 'Use your tools to help users',
+  model: 'openai/gpt-5.5',
   tools: [vectorSearch],
 });
 
@@ -516,9 +663,12 @@ const agent = new Agent({
 Send emails via Resend API or SMTP:
 
 ```typescript
-import { sendEmail } from '@cogitator-ai/core';
+import { Agent, sendEmail } from '@cogitator-ai/core';
 
 const agent = new Agent({
+  name: 'assistant',
+  instructions: 'Use your tools to help users',
+  model: 'openai/gpt-5.5',
   tools: [sendEmail],
 });
 
@@ -534,9 +684,12 @@ const agent = new Agent({
 Interact with GitHub repositories:
 
 ```typescript
-import { githubApi } from '@cogitator-ai/core';
+import { Agent, githubApi } from '@cogitator-ai/core';
 
 const agent = new Agent({
+  name: 'assistant',
+  instructions: 'Use your tools to help users',
+  model: 'openai/gpt-5.5',
   tools: [githubApi],
 });
 
@@ -553,8 +706,15 @@ const agent = new Agent({
 ```typescript
 import { Cogitator, Agent } from '@cogitator-ai/core';
 
-const cog = new Cogitator();
-const agent = new Agent({/* ... */});
+const cog = new Cogitator({
+  llm: { providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } } },
+});
+const agent = new Agent({
+  name: 'analyst',
+  instructions: 'Analyze data.',
+  model: 'openai/gpt-5.5',
+});
+const controller = new AbortController();
 
 const result = await cog.run(agent, {
   input: 'Analyze this data...',
@@ -562,16 +722,24 @@ const result = await cog.run(agent, {
   audio: [{ data: base64Wav, format: 'wav' }],
 
   threadId: 'thread_123',
-  context: { userId: 'user_456', task: 'analysis' },
+  userId: 'user_456', // owns the thread, scopes memory, reaches tools as context.userId
+  threadAccess: 'owner', // default; 'shared' lets any user continue the thread
+  context: { task: 'analysis' }, // extra values for the system prompt
 
   timeout: 60000,
+  signal: controller.signal,
   stream: true,
   onToken: (token) => process.stdout.write(token),
+  onReasoning: (delta) => process.stdout.write(delta),
+  reasoning: { effort: 'low' }, // overrides the agent's reasoning for this run
 
   useMemory: true,
   loadHistory: true,
   saveHistory: true,
+  parallelToolCalls: false, // default: tool calls of one turn run one after another
 
+  onApproval: (request) => ({ approved: request.toolName !== 'delete_account' }),
+  onHandoff: (handoff) => console.log(`${handoff.from} -> ${handoff.to}`),
   onToolCall: (call) => console.log('Tool:', call.name),
   onToolResult: (result) => console.log('Result:', result.result),
   onSpan: (span) => console.log('Span:', span.name),
@@ -589,16 +757,28 @@ const result = await cog.run(agent, {
 ```typescript
 interface RunResult {
   output: string;
+  structured?: unknown; // parsed output when the agent has a responseFormat
   runId: string;
   agentId: string;
   threadId: string;
+  modelUsed?: string; // differs from agent.model when cost routing picked another
   usage: {
     inputTokens: number;
     outputTokens: number;
     totalTokens: number;
     cost: number;
     duration: number;
+    reasoningTokens?: number;
+    cachedInputTokens?: number;
+    cacheWriteTokens?: number;
   };
+  reasoning?: string; // reasoning summary, with reasoning.summary
+  prompt?: RunPrompt; // versioned instructions / A/B variant used
+  handoffs?: HandoffEvent[];
+  finalAgent?: string;
+  status?: 'completed' | 'paused';
+  pendingApprovals?: ToolApprovalRequest[];
+  checkpoint?: RunCheckpoint; // pass to cog.resume()
   toolCalls: ToolCall[];
   messages: Message[];
   trace: { traceId: string; spans: Span[] };
@@ -606,6 +786,8 @@ interface RunResult {
   reflectionSummary?: ReflectionSummary;
 }
 ```
+
+All fields are `readonly`. The run timeout comes from the run, the agent, `limits.defaultTimeout`, or 120 s.
 
 ---
 
@@ -649,6 +831,21 @@ const cog = new Cogitator({
 });
 ```
 
+`adapter` also accepts `'sqlite'`, `'mongodb'` and `'qdrant'` (configured under the key of the same name); `embedding` turns on semantic context. Runs with a `threadId` load history from and save messages to the adapter.
+
+The adapter connects on the first run. To read threads before that (for example in an API route), use `getMemory()`, which connects it on first use; `cog.memory` stays `undefined` until something connected it:
+
+```typescript
+import { unwrap } from '@cogitator-ai/memory';
+
+const memory = await cog.getMemory(); // undefined when memory is not configured
+if (memory) {
+  const entries = unwrap(await memory.getEntries({ threadId: 'thread_123', limit: 20 }));
+}
+```
+
+See [Memory](https://cogitator.app/docs/memory) and [Memory Adapters](https://cogitator.app/docs/memory/adapters).
+
 ---
 
 ## Reflection Engine
@@ -656,7 +853,7 @@ const cog = new Cogitator({
 Enable self-improvement through reflection on tool calls and runs:
 
 ```typescript
-import { Cogitator, ReflectionEngine, InMemoryInsightStore } from '@cogitator-ai/core';
+import { Cogitator } from '@cogitator-ai/core';
 
 const cog = new Cogitator({
   reflection: {
@@ -683,13 +880,16 @@ console.log('Learned insights:', insights);
 ```typescript
 import { ReflectionEngine, InMemoryInsightStore, createLLMBackend } from '@cogitator-ai/core';
 
-const backend = createLLMBackend('openai', { apiKey: '...' });
+const backend = createLLMBackend('openai', {
+  providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } },
+});
 const insightStore = new InMemoryInsightStore();
 
 const engine = new ReflectionEngine({
   llm: backend,
   insightStore,
   config: {
+    enabled: true,
     reflectAfterToolCall: true,
     minConfidenceToStore: 0.7,
   },
@@ -701,6 +901,8 @@ if (result.shouldAdjustStrategy) {
 }
 ```
 
+`reflectOnError`, `reflectOnRun`, `getRelevantInsights` and `getSummary(agentId)` cover the other stages. See [Reflection](https://cogitator.app/docs/advanced/reflection).
+
 ---
 
 ## Tree-of-Thought Reasoning
@@ -708,35 +910,44 @@ if (result.shouldAdjustStrategy) {
 Explore multiple reasoning paths before deciding:
 
 ```typescript
-import { ThoughtTreeExecutor, BranchGenerator, BranchEvaluator } from '@cogitator-ai/core';
+import { ThoughtTreeExecutor } from '@cogitator-ai/core';
 
-const executor = new ThoughtTreeExecutor(cogitator, {
-  maxBranches: 5,
+const executor = new ThoughtTreeExecutor(cog, {
+  branchFactor: 3,
   maxDepth: 3,
   explorationStrategy: 'best-first',
-  pruneThreshold: 0.3,
+  confidenceThreshold: 0.3,
 });
 
-const result = await executor.run(agent, {
-  input: 'Solve this complex problem...',
-  explorationBudget: 10,
+const result = await executor.explore(agent, 'Solve this complex problem...', {
+  timeout: 60_000,
+  onProgress: (stats) => console.log('Explored:', stats.exploredNodes),
 });
 
-console.log('Best path:', result.bestPath);
-console.log('All branches explored:', result.tree.branches.length);
+console.log('Answer:', result.output);
+console.log(
+  'Best path:',
+  result.bestPath.map((node) => node.branch.thought)
+);
+console.log('Nodes in tree:', result.tree.nodes.size);
 console.log('Stats:', result.stats);
 ```
 
 ### ToT Configuration
 
+Every field is optional; defaults are in `DEFAULT_TOT_CONFIG`:
+
 ```typescript
-const executor = new ThoughtTreeExecutor(cogitator, {
-  maxBranches: 5,
-  maxDepth: 3,
-  explorationStrategy: 'breadth-first',
-  pruneThreshold: 0.3,
-  branchTemperature: 0.8,
-  evaluationModel: 'openai/gpt-6-luna',
+const executor = new ThoughtTreeExecutor(cog, {
+  branchFactor: 3, // branches generated per node
+  beamWidth: 2, // branches kept per level with 'beam'
+  maxDepth: 5,
+  explorationStrategy: 'beam', // 'beam' | 'best-first' | 'dfs'
+  confidenceThreshold: 0.3, // prune branches scored below
+  terminationConfidence: 0.8, // stop once a branch reaches this
+  maxTotalNodes: 50,
+  maxIterationsPerBranch: 3,
+  onBranchEvaluated: (branch, score) => console.log(branch.thought, score.composite),
 });
 ```
 
@@ -751,10 +962,10 @@ import { AgentOptimizer, InMemoryTraceStore } from '@cogitator-ai/core';
 
 const traceStore = new InMemoryTraceStore();
 const optimizer = new AgentOptimizer({
-  llm: cogitator.getLLMBackend('openai/gpt-6.1-sol'),
+  llm: cog.getLLMBackend('openai/gpt-6.1-sol'),
   model: 'gpt-6.1-sol',
   traceStore,
-  cogitator,
+  cogitator: cog,
 });
 
 const result = await optimizer.compile(
@@ -779,34 +990,64 @@ import {
   createSuccessMetric,
   createExactMatchMetric,
   createContainsMetric,
-  MetricEvaluator,
 } from '@cogitator-ai/core';
 
-const successMetric = createSuccessMetric();
-
-const exactMatch = createExactMatchMetric();
-
-const containsMetric = createContainsMetric(['error', 'failed'], { negate: true });
+const successMetric = createSuccessMetric(); // 1 when no tool call failed
+const exactMatch = createExactMatchMetric(); // compares the output (or a field path) with `expected`
+const containsMetric = createContainsMetric(['refund', 'order']); // share of keywords found, passes at >= 0.5
 ```
+
+Each is a `MetricFn` (`(trace, expected?) => MetricResult`); `MetricEvaluator` combines built-in and custom metrics, including LLM-judged ones.
 
 ### Demo Selection
 
 ```typescript
-import { DemoSelector } from '@cogitator-ai/core';
+import { DemoSelector, InMemoryTraceStore } from '@cogitator-ai/core';
 
 const selector = new DemoSelector({
-  strategy: 'diverse',
-  maxDemos: 5,
+  traceStore: new InMemoryTraceStore(),
+  maxDemos: 5, // per agent (default 10)
+  minScore: 0.8, // traces scoring lower are not used as demos
+  diversityWeight: 0.3,
 });
 
-const selectedDemos = selector.select(allDemos, currentInput);
+await selector.addDemo(trace);
+const demos = await selector.selectDemos(agent.id, currentInput, 3);
+const fewShot = selector.formatDemosForPrompt(demos);
 ```
+
+See [Learning](https://cogitator.app/docs/advanced/learning).
 
 ---
 
 ## Prompt Auto-Optimization
 
 Capture prompts, run A/B tests, monitor performance, and automatically optimize agent instructions.
+
+### Prompt Versions
+
+`cog.prompts` versions an agent's instructions on top of the ones in code. A deployed version is used by every following run of that agent, and each run's outcome is recorded against the version (or A/B variant) it used:
+
+```typescript
+const v2 = await cog.prompts.deploy(writer, 'You write release notes. Lead with what changed.');
+
+const result = await cog.run(writer, { input, threadId });
+result.prompt; // { key: 'writer', versionId: v2.id, version: 2 }
+
+await cog.prompts.rollbackTo(writer); // previous version, recorded as a new one
+await cog.prompts.history(writer); // newest first, with metrics
+
+await cog.prompts.startABTest(writer, {
+  name: 'shorter notes',
+  treatment: 'You write release notes in at most five bullet points.',
+  treatmentAllocation: 0.3, // share of threads
+  minSampleSize: 50,
+});
+```
+
+Versions are kept per agent `id` when set, else per `name`. They live in process memory unless `new Cogitator({ prompts: { versions, abTests } })` gets durable stores (`PostgresTraceStore` provides both via `instructionVersions()` and `abTests()`); `prompts.score` scores runs (default: 1 for a completed run) and `prompts.autoDeployWinner` deploys a significant A/B winner. See [Prompt Versions](https://cogitator.app/docs/advanced/prompt-versions).
+
+The classes below are the building blocks `cog.prompts` uses, available for your own pipelines.
 
 ### Prompt Logger
 
@@ -819,11 +1060,14 @@ const store = new PostgresTraceStore({
   connectionString: process.env.DATABASE_URL!,
 });
 
+await store.connect();
+
 const wrappedBackend = wrapWithPromptLogger(openaiBackend, store, {
-  captureSystemPrompt: true,
+  captureContent: true,
   captureTools: true,
-  captureResponse: true,
 });
+
+wrappedBackend.setContext({ runId, agentId: agent.id, threadId });
 ```
 
 ### A/B Testing Framework
@@ -880,9 +1124,9 @@ const monitor = new PromptMonitor({
 
 const alerts = monitor.recordExecution(trace);
 
-const metrics = monitor.getCurrentMetrics('agent-1');
-console.log('Avg score:', metrics.avgScore);
-console.log('P95 latency:', metrics.p95Latency);
+const metrics = monitor.getCurrentMetrics('agent-1'); // null before any execution
+console.log('Avg score:', metrics?.avgScore);
+console.log('P95 latency:', metrics?.p95Latency);
 ```
 
 ### Rollback Manager
@@ -1043,8 +1287,8 @@ const engine = new CausalInferenceEngine(graph);
 ```typescript
 const identifiable = engine.isIdentifiable('X', 'Y');
 if (identifiable.identifiable) {
-  console.log('Effect is identifiable via:', identifiable.method);
-  console.log('Adjustment set:', identifiable.adjustmentSet);
+  console.log('Effect is identifiable:', identifiable.reason); // e.g. backdoor criterion
+  console.log('Adjustment set:', identifiable.adjustmentSet?.variables);
 }
 ```
 
@@ -1054,11 +1298,11 @@ if (identifiable.identifiable) {
 const effect = engine.computeInterventionalEffect({
   target: 'Y',
   interventions: { X: 1 },
-  observed: { Z: 0.5 },
+  conditions: { Z: 0.5 },
 });
 
 console.log('Expected effect:', effect.effect);
-console.log('Confidence:', effect.confidence);
+console.log('Formula:', effect.formula, 'identifiable:', effect.isIdentifiable);
 ```
 
 ### Counterfactual Reasoning
@@ -1098,15 +1342,18 @@ import { CausalExtractor, CausalHypothesisGenerator } from '@cogitator-ai/core';
 
 const extractor = new CausalExtractor({ llmBackend: backend });
 
-const relations = await extractor.extractFromToolResult(
-  { name: 'database_query', arguments: { table: 'users' } },
+const { nodes, edges } = await extractor.extractFromToolResult(
+  { id: 'call_1', name: 'database_query', arguments: { table: 'users' } },
   { rows: 100, cached: true },
-  { agentId: 'agent-1' }
+  { taskDescription: 'Count active users' },
+  graph
 );
 
 const generator = new CausalHypothesisGenerator({ llmBackend: backend });
 const hypotheses = await generator.generateFromFailure(trace, { agentId: 'agent-1' });
 ```
+
+`CausalReasoner` ties these together for agents (`predictEffect`, `explainCause`, `planForGoal`, `evaluateToolCall`, `analyzeErrorCausally`). See [Causal Reasoning](https://cogitator.app/docs/advanced/causal-reasoning).
 
 ---
 
@@ -1117,6 +1364,8 @@ const hypotheses = await generator.generateFromFailure(trace, { agentId: 'agent-
 Agent runs retry failed LLM calls on their own: rate limits, 5xx, timeouts and dropped connections, with exponential backoff and the provider's `Retry-After`. Streams are retried only before the first chunk. Tune or turn this off with `llm.retry`:
 
 ```typescript
+import { Cogitator, GoogleBackend, withLLMRetry } from '@cogitator-ai/core';
+
 const cog = new Cogitator({
   llm: {
     retry: { maxRetries: 3, maxRetryAfter: 30_000, onRetry: (e) => console.warn(e) },
@@ -1125,7 +1374,9 @@ const cog = new Cogitator({
 });
 
 // A backend used on its own
-const backend = withLLMRetry(new GoogleBackend({ apiKey }), { maxRetries: 3 });
+const backend = withLLMRetry(new GoogleBackend({ apiKey: process.env.GOOGLE_API_KEY! }), {
+  maxRetries: 3,
+});
 ```
 
 ### Retry with Backoff
@@ -1154,31 +1405,66 @@ const response = await retryableFetch('https://api.example.com');
 import { CircuitBreaker, CircuitBreakerRegistry } from '@cogitator-ai/core';
 
 const breaker = new CircuitBreaker({
-  threshold: 5,
+  failureThreshold: 5,
   resetTimeout: 30000,
-  successThreshold: 2,
+  halfOpenRequests: 3,
+  onStateChange: (from, to) => console.log(`Circuit ${from} -> ${to}`),
 });
 
-if (breaker.canExecute()) {
-  try {
-    const result = await riskyOperation();
-    breaker.recordSuccess();
-  } catch (error) {
-    breaker.recordFailure();
-    throw error;
-  }
-}
+// Throws CIRCUIT_OPEN while open; counts successes and failures (by default only retryable errors, see isFailure)
+const result = await breaker.execute(() => riskyOperation());
 
-breaker.onStateChange((state) => {
-  console.log('Circuit state:', state);
+console.log(breaker.getState(), breaker.getStats());
+
+const registry = new CircuitBreakerRegistry({ failureThreshold: 3 });
+const apiBreaker = registry.get('payments-api');
+```
+
+### Fallback Patterns
+
+```typescript
+import {
+  CircuitBreakerRegistry,
+  withFallback,
+  withGracefulDegradation,
+  createLLMFallbackExecutor,
+} from '@cogitator-ai/core';
+
+const result = await withFallback({
+  primary: () => primaryCall(),
+  fallbacks: [
+    { name: 'secondary', fn: () => fallbackCall() },
+    { name: 'cache', fn: () => cachedResult() },
+  ],
+  retry: { maxRetries: 2 },
+  onFallback: (from, to, error) => console.warn(`${from} -> ${to}: ${error.message}`),
 });
+
+const degraded = await withGracefulDegradation(() => fullFeatureCall(), {
+  defaultValue: [],
+  onDegraded: (error) => console.warn('Degraded:', error.message),
+});
+
+const executeWithFallback = createLLMFallbackExecutor(
+  {
+    providers: [
+      { provider: 'openai', model: 'gpt-6.1-sol' },
+      { provider: 'anthropic', model: 'claude-sonnet-5-5' },
+      { provider: 'ollama', model: 'llama3.3:70b' },
+    ],
+  },
+  new CircuitBreakerRegistry()
+);
+const response = await executeWithFallback((provider, model) =>
+  cog.getLLMBackend(`${provider}/${model}`).chat({ model, messages })
+);
 ```
 
 ---
 
 ## Prompt Injection Detection
 
-Protect your agents from jailbreak attempts, prompt injections, and other adversarial inputs:
+Protect your agents from jailbreak attempts, prompt injections, and other adversarial inputs. See [Security](https://cogitator.app/docs/advanced/security).
 
 ```typescript
 import { Cogitator, PromptInjectionDetector } from '@cogitator-ai/core';
@@ -1273,7 +1559,7 @@ const stats = detector.getStats();
 
 ## Tool Caching
 
-Cache tool results to avoid redundant API calls with exact or semantic matching:
+Cache tool results to avoid redundant API calls with exact or semantic matching. See [Tool Caching](https://cogitator.app/docs/tools/tool-caching).
 
 ### Exact Match Caching
 
@@ -1310,18 +1596,17 @@ Similar queries hit the cache based on embedding similarity:
 
 ```typescript
 import { withCache } from '@cogitator-ai/core';
-import type { EmbeddingService } from '@cogitator-ai/types';
+import { OpenAIEmbeddingService } from '@cogitator-ai/memory';
 
-const embeddingService: EmbeddingService = {
-  embed: async (text) => openai.embeddings.create({ input: text }),
-  embedBatch: async (texts) => /* ... */,
-  dimensions: 1536,
+// Any EmbeddingService ({ embed, embedBatch, dimensions, model }) works
+const embeddingService = new OpenAIEmbeddingService({
+  apiKey: process.env.OPENAI_API_KEY!,
   model: 'text-embedding-3-small',
-};
+});
 
 const cachedSearch = withCache(webSearch, {
   strategy: 'semantic',
-  similarity: 0.95,         // 95% similarity threshold
+  similarity: 0.95, // 95% similarity threshold
   ttl: '1h',
   maxSize: 1000,
   storage: 'memory',
@@ -1334,10 +1619,27 @@ await cachedSearch.execute({ query: 'Paris weather forecast' }, ctx); // semanti
 
 ### Redis Storage
 
-For production with persistence:
+For production with persistence. `redisClient` must implement `RedisClientLike`, whose `scan` takes `(cursor, { match, count })`; ioredis and `@cogitator-ai/redis` clients take `scan(cursor, 'MATCH', pattern, 'COUNT', n)`, so wrap them:
 
 ```typescript
-import { withCache, RedisToolCacheStorage } from '@cogitator-ai/core';
+import { withCache, type RedisClientLike } from '@cogitator-ai/core';
+import { Redis } from 'ioredis';
+
+const redis = new Redis(process.env.REDIS_URL!);
+
+const redisClient: RedisClientLike = {
+  get: (key) => redis.get(key),
+  setex: (key, seconds, value) => redis.setex(key, seconds, value),
+  del: (...keys) => redis.del(...keys),
+  mget: (...keys) => redis.mget(...keys),
+  zadd: (key, score, member) => redis.zadd(key, score, member),
+  zrange: (key, start, stop) => redis.zrange(key, start, String(stop)),
+  zrem: (key, ...members) => redis.zrem(key, ...members),
+  incr: (key) => redis.incr(key),
+  decr: (key) => redis.decr(key),
+  exists: (...keys) => redis.exists(...keys),
+  scan: (cursor, { match, count = 100 }) => redis.scan(cursor, 'MATCH', match, 'COUNT', count),
+};
 
 const cachedTool = withCache(webSearch, {
   strategy: 'semantic',
@@ -1345,7 +1647,7 @@ const cachedTool = withCache(webSearch, {
   ttl: '1h',
   maxSize: 1000,
   storage: 'redis',
-  redisClient: redisClient, // ioredis compatible client
+  redisClient,
   keyPrefix: 'myapp:cache',
   embeddingService,
 });
@@ -1354,7 +1656,7 @@ const cachedTool = withCache(webSearch, {
 ### Cache Management
 
 ```typescript
-const cached = withCache(tool, config);
+const cached = withCache(searchTool, config);
 
 // Get statistics
 const stats = cached.cache.stats();
@@ -1375,44 +1677,15 @@ await cached.cache.warmup([
 ### Cache Callbacks
 
 ```typescript
-const cached = withCache(tool, {
+const cached = withCache(searchTool, {
   strategy: 'exact',
   ttl: '1h',
   maxSize: 100,
   storage: 'memory',
-  onHit: (key, params) => console.log('Cache hit:', key),
-  onMiss: (key, params) => console.log('Cache miss:', key),
+  onHit: (key) => console.log('Cache hit:', key),
+  onMiss: (key) => console.log('Cache miss:', key),
   onEvict: (key) => console.log('Evicted:', key),
 });
-```
-
----
-
-### Fallback Patterns
-
-```typescript
-import {
-  withFallback,
-  withGracefulDegradation,
-  createLLMFallbackExecutor,
-} from '@cogitator-ai/core';
-
-const result = await withFallback(
-  () => primaryCall(),
-  () => fallbackCall()
-);
-
-const degraded = await withGracefulDegradation(
-  () => fullFeatureCall(),
-  [() => reducedFeatureCall(), () => minimalCall(), () => cachedResult()]
-);
-
-const llmExecutor = createLLMFallbackExecutor([
-  { provider: 'openai', model: 'gpt-6.1-sol' },
-  { provider: 'anthropic', model: 'claude-sonnet-5-5' },
-  { provider: 'ollama', model: 'llama3.3:70b' },
-]);
-const response = await llmExecutor.chat(request);
 ```
 
 ---
@@ -1422,37 +1695,44 @@ const response = await llmExecutor.chat(request);
 Built-in content safety with input/output filtering, tool guards, and critique-revision loops:
 
 ```typescript
-import { ConstitutionalAI, InputFilter, OutputFilter, ToolGuard } from '@cogitator-ai/core';
+import {
+  Cogitator,
+  ConstitutionalAI,
+  createConstitution,
+  DEFAULT_PRINCIPLES,
+} from '@cogitator-ai/core';
 
 const constitutional = new ConstitutionalAI({
   llm: backend,
   constitution: createConstitution([...DEFAULT_PRINCIPLES, customPrinciple]),
-  config: { enabled: true },
+  config: { strictMode: true },
 });
 
-const inputFilter = new InputFilter({ llm: backend });
-const inputResult = await inputFilter.evaluate('user message');
-if (inputResult.isHarmful) {
-  console.log('Blocked:', inputResult.harmCategories);
+const inputResult = await constitutional.filterInput('user message');
+if (!inputResult.allowed) {
+  console.log('Blocked:', inputResult.blockedReason, inputResult.harmScores);
 }
 
-const outputFilter = new OutputFilter({ llm: backend });
-const outputResult = await outputFilter.evaluate('agent response');
+const outputResult = await constitutional.filterOutput('agent response', messages);
+const guardResult = await constitutional.guardTool(
+  deleteFileTool,
+  { path: '/etc/passwd' },
+  toolContext
+);
+console.log(guardResult.approved, guardResult.riskLevel, guardResult.reason);
 
-const toolGuard = new ToolGuard({ llm: backend, strictMode: true });
-const guardResult = await toolGuard.evaluate({
-  name: 'delete_file',
-  arguments: { path: '/etc/passwd' },
-});
+const revision = await constitutional.critiqueAndRevise('draft answer', messages);
 
-// Integrated with Cogitator runtime
+// Integrated with the Cogitator runtime: on when `guardrails` is set (unless enabled: false)
 const cog = new Cogitator({
   guardrails: {
-    enabled: true,
-    model: 'openai/gpt-6-luna',
+    model: 'openai/gpt-6-luna', // judge model; defaults to the agent's model
+    filterToolResults: true,
   },
 });
 ```
+
+Fields left out take `DEFAULT_GUARDRAIL_CONFIG` (input, output and tool-call filtering plus critique-revision on). `InputFilter`, `OutputFilter`, `ToolGuard` and `CritiqueReviser` are the layers `ConstitutionalAI` uses; each takes `{ config, constitution }` plus `llm` for the LLM-backed ones. `cog.setConstitution()` swaps the constitution at runtime. See [Constitutional AI](https://cogitator.app/docs/advanced/constitutional-ai).
 
 ---
 
@@ -1461,34 +1741,40 @@ const cog = new Cogitator({
 Automatically route tasks to the optimal model based on complexity, budget, and latency requirements:
 
 ```typescript
-import { CostAwareRouter, TaskAnalyzer, CostTracker, BudgetEnforcer } from '@cogitator-ai/core';
+import { Cogitator, CostAwareRouter } from '@cogitator-ai/core';
 
 const router = new CostAwareRouter({
   config: {
     enabled: true,
-    budgets: {
-      daily: 10.0,
-      monthly: 200.0,
+    budget: {
+      maxCostPerRun: 0.5,
+      maxCostPerDay: 10.0,
+      warningThreshold: 0.8,
+      onBudgetWarning: (current, limit) => console.warn(`$${current} of $${limit}`),
     },
   },
 });
 
-const recommendation = await router.route({
-  input: 'Simple greeting',
-  complexity: 'low',
-  speedPreference: 'fast',
-});
-console.log('Use model:', recommendation.model);
-console.log('Estimated cost:', recommendation.estimatedCost);
+const requirements = router.analyzeTask('Say hello'); // complexity, reasoning, speed, cost sensitivity
+const recommendation = await router.recommendModel('Say hello');
+console.log('Use model:', recommendation.provider, recommendation.modelId);
+console.log('Estimated cost:', recommendation.estimatedCost, recommendation.reasons);
 
 // Integrated with Cogitator
 const cog = new Cogitator({
   costRouting: {
     enabled: true,
-    budgets: { daily: 10.0 },
+    autoSelectModel: true, // pick the model per run; result.modelUsed tells which
+    budget: { maxCostPerDay: 10.0 },
   },
 });
+
+cog.getCostSummary(); // tracked costs
+const estimate = await cog.estimateCost({ agent, input: 'Summarize this report' });
+console.log(estimate.expectedCost);
 ```
+
+See [Cost Routing](https://cogitator.app/docs/advanced/cost-routing).
 
 ---
 
@@ -1499,15 +1785,16 @@ Automatic context window management with compression strategies:
 ```typescript
 const cog = new Cogitator({
   context: {
-    strategy: 'hybrid',
-    compressionThreshold: 0.8,
+    strategy: 'hybrid', // 'truncate' | 'sliding-window' | 'summarize' | 'hybrid'
+    compressionThreshold: 0.8, // compress above 80% of the usable window
+    outputReserve: 0.15, // share of the model's context kept for the answer
+    windowSize: 10, // recent messages kept verbatim by sliding-window / hybrid
+    summaryModel: 'openai/gpt-6-luna', // model that writes summaries
   },
 });
 ```
 
-Setting `context` turns compression on; pass `enabled: false` to keep the config but switch it off.
-
-Available strategies: `TruncateStrategy`, `SlidingWindowStrategy`, `SummarizeStrategy`, `HybridStrategy`.
+Setting `context` turns compression on; pass `enabled: false` to keep the config but switch it off. The strategies are also exported as classes (`TruncateStrategy`, `SlidingWindowStrategy`, `SummarizeStrategy`, `HybridStrategy`) and `ContextManager` can be used on its own. See [Context Management](https://cogitator.app/docs/advanced/context-management).
 
 ---
 
@@ -1524,11 +1811,30 @@ const langfuse = createLangfuseExporter({
   baseUrl: 'https://cloud.langfuse.com',
 });
 
+await langfuse.init(); // needs the optional `langfuse` package
+
 const otlp = createOTLPExporter({
   endpoint: 'http://localhost:4318/v1/traces',
   headers: { Authorization: 'Bearer ...' },
+  serviceName: 'my-agents',
+});
+otlp.start(); // flushes every 5 seconds
+
+let runId = '';
+const result = await cog.run(agent, {
+  input: 'Analyze this data...',
+  onRunStart: (data) => {
+    runId = data.runId;
+    langfuse.onRunStart({ ...data, agentName: agent.name });
+  },
+  onToolCall: (call) => langfuse.onToolCall(runId, call),
+  onToolResult: (toolResult) => langfuse.onToolResult(runId, toolResult),
+  onSpan: (span) => otlp.exportSpan(runId, span),
+  onRunComplete: (runResult) => langfuse.onRunComplete(runResult),
 });
 ```
+
+Exporters are not attached automatically; wire them to the run callbacks as above. See [Observability](https://cogitator.app/docs/deployment/observability).
 
 ---
 
@@ -1549,7 +1855,10 @@ const researcher = new Agent({
 const researchTool = agentAsTool(cog, researcher, {
   name: 'research',
   description: 'Delegate research tasks to a specialist agent',
+  timeout: 60_000,
   includeUsage: true,
+  includeToolCalls: false,
+  onApproval: () => ({ approved: false, reason: 'Not allowed in delegated runs' }),
 });
 
 const manager = new Agent({
@@ -1560,17 +1869,19 @@ const manager = new Agent({
 });
 ```
 
+Tool calls of the inner agent that need approval are declined unless `onApproval` decides them, since a delegated run cannot pause for a person. To hand the conversation over instead of calling a sub-agent, use [handoffs](#handoffs). See [Agent as Tool](https://cogitator.app/docs/tools/agent-as-tool).
+
 ---
 
 ## Logging
 
 ```typescript
-import { Logger, getLogger, setLogger, createLogger } from '@cogitator-ai/core';
+import { getLogger, setLogger, createLogger } from '@cogitator-ai/core';
 
 const logger = createLogger({
-  level: 'debug',
-  prefix: '[MyApp]',
-  timestamps: true,
+  level: 'debug', // default 'info'; the default logger reads LOG_LEVEL
+  format: 'json', // 'pretty' (default) or 'json'
+  output: (entry, formatted) => process.stderr.write(formatted + '\n'),
 });
 
 setLogger(logger);
@@ -1615,7 +1926,6 @@ import type {
   ChatRequest,
   ChatResponse,
   ChatStreamChunk,
-  ChatUsage,
   LLMErrorContext,
   LLMDebugOptions,
   LLMPlugin,
@@ -1698,10 +2008,11 @@ try {
 } catch (error) {
   if (error instanceof LLMError) {
     console.log('Provider:', error.provider);
-    console.log('Status:', error.statusCode);
+    console.log('Provider status:', error.details?.statusCode);
   } else if (error instanceof CogitatorError) {
-    console.log('Code:', error.code);
-    console.log('Retryable:', isRetryableError(error));
+    console.log('Code:', error.code); // an ErrorCode, e.g. ErrorCode.THREAD_ACCESS_DENIED
+    console.log('HTTP status:', error.statusCode);
+    console.log('Retryable:', isRetryableError(error), 'retry in', getRetryDelay(error), 'ms');
   }
 }
 ```
@@ -1714,6 +2025,7 @@ try {
 
 ```typescript
 import { Cogitator, Agent, tool } from '@cogitator-ai/core';
+import { z } from 'zod';
 
 const webSearch = tool({
   name: 'web_search',
