@@ -556,3 +556,134 @@ describe('HeartbeatScheduler', () => {
     expect(store.update).toHaveBeenCalledWith('j1', { enabled: false });
   });
 });
+
+describe('HeartbeatScheduler with a claiming TimerStore', () => {
+  type ClaimingStore = ReturnType<typeof createMockStore> & {
+    claimTtl: number;
+    renew: Mock<(id: string) => Promise<boolean>>;
+    release: Mock<(id: string) => Promise<void>>;
+  };
+
+  let onFire: Mock<(msg: ChannelMessage) => Promise<void> | void>;
+  let store: ClaimingStore;
+
+  function overdue(id: string, extra: Record<string, unknown> = {}) {
+    return { id, firesAt: Date.now() - 100, metadata: { description: id }, ...extra };
+  }
+
+  function startScheduler(
+    config: Partial<ConstructorParameters<typeof HeartbeatScheduler>[1]> = {}
+  ) {
+    const scheduler = new HeartbeatScheduler(store as unknown as TimerStore, {
+      onFire,
+      pollInterval: 1000,
+      ...config,
+    });
+    scheduler.start();
+    return scheduler;
+  }
+
+  beforeEach(() => {
+    onFire = vi.fn();
+    store = {
+      ...createMockStore(),
+      claimTtl: 30,
+      renew: vi.fn<(id: string) => Promise<boolean>>().mockResolvedValue(true),
+      release: vi.fn<(id: string) => Promise<void>>().mockResolvedValue(undefined),
+    };
+  });
+
+  it('renews the claim before firing and keeps it while the task runs', async () => {
+    store.getOverdue.mockResolvedValueOnce([overdue('t1')]).mockResolvedValue([]);
+    onFire.mockImplementation(() => new Promise((r) => setTimeout(r, 120)));
+
+    const scheduler = startScheduler();
+    await vi.waitFor(() => expect(store.markFired).toHaveBeenCalledWith('t1'), { timeout: 500 });
+    scheduler.stop();
+
+    expect(store.renew.mock.invocationCallOrder[0]).toBeLessThan(
+      onFire.mock.invocationCallOrder[0]
+    );
+    expect(store.renew.mock.calls.length).toBeGreaterThanOrEqual(3);
+    expect(store.renew).toHaveBeenCalledWith('t1');
+    expect(store.release).not.toHaveBeenCalled();
+
+    const renewsAfterFinish = store.renew.mock.calls.length;
+    await new Promise((r) => setTimeout(r, 60));
+    expect(store.renew).toHaveBeenCalledTimes(renewsAfterFinish);
+  });
+
+  it('skips a task whose claim was taken over and reports it', async () => {
+    const onClaimLost = vi.fn();
+    store.getOverdue.mockResolvedValueOnce([overdue('t2')]).mockResolvedValue([]);
+    store.renew.mockResolvedValue(false);
+
+    const scheduler = startScheduler({ onClaimLost });
+    await vi.waitFor(() => expect(onClaimLost).toHaveBeenCalledTimes(1), { timeout: 200 });
+    scheduler.stop();
+
+    expect(onClaimLost.mock.calls[0][0]).toMatchObject({ id: 't2' });
+    expect(onFire).not.toHaveBeenCalled();
+    expect(store.markFired).not.toHaveBeenCalled();
+    expect(store.update).not.toHaveBeenCalled();
+  });
+
+  it('reports a claim lost while the task runs and stops renewing it', async () => {
+    const onClaimLost = vi.fn();
+    store.getOverdue.mockResolvedValueOnce([overdue('t3')]).mockResolvedValue([]);
+    store.renew.mockResolvedValueOnce(true).mockResolvedValue(false);
+    onFire.mockImplementation(() => new Promise((r) => setTimeout(r, 120)));
+
+    const scheduler = startScheduler({ onClaimLost });
+    await vi.waitFor(() => expect(store.markFired).toHaveBeenCalledWith('t3'), { timeout: 500 });
+    scheduler.stop();
+
+    expect(onClaimLost).toHaveBeenCalledTimes(1);
+    expect(store.renew).toHaveBeenCalledTimes(2);
+  });
+
+  it('releases disabled and exhausted tasks instead of holding their lease', async () => {
+    store.getOverdue
+      .mockResolvedValueOnce([
+        overdue('disabled', { enabled: false }),
+        overdue('exhausted', { consecutiveErrors: 5 }),
+      ])
+      .mockResolvedValue([]);
+
+    const scheduler = startScheduler({ maxRetries: 5 });
+    await vi.waitFor(() => expect(store.release).toHaveBeenCalledTimes(2), { timeout: 200 });
+    scheduler.stop();
+
+    expect(store.release).toHaveBeenCalledWith('disabled');
+    expect(store.release).toHaveBeenCalledWith('exhausted');
+    expect(store.renew).not.toHaveBeenCalled();
+    expect(onFire).not.toHaveBeenCalled();
+  });
+
+  it('releases the claimed tasks it did not get to before stop()', async () => {
+    store.getOverdue.mockResolvedValueOnce([overdue('a'), overdue('b'), overdue('c')]);
+    let scheduler: HeartbeatScheduler | null = null;
+    onFire.mockImplementation(() => {
+      scheduler?.stop();
+    });
+
+    scheduler = startScheduler();
+    await vi.waitFor(() => expect(store.release).toHaveBeenCalledTimes(2), { timeout: 200 });
+
+    expect(onFire).toHaveBeenCalledTimes(1);
+    expect(store.markFired).toHaveBeenCalledWith('a');
+    expect(store.release.mock.calls).toEqual([['b'], ['c']]);
+  });
+
+  it('keeps the claim of a task whose bookkeeping failed so the lease spaces out retries', async () => {
+    const onError = vi.fn();
+    store.getOverdue.mockResolvedValueOnce([overdue('t4')]).mockResolvedValue([]);
+    store.update.mockRejectedValueOnce(new Error('db down'));
+
+    const scheduler = startScheduler({ onError });
+    await vi.waitFor(() => expect(onError).toHaveBeenCalled(), { timeout: 200 });
+    scheduler.stop();
+
+    expect(store.release).not.toHaveBeenCalled();
+  });
+});

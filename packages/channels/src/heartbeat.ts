@@ -14,6 +14,12 @@ export interface HeartbeatConfig {
     durationMs?: number
   ) => void;
   onError?: (error: Error, entry?: TimerEntry) => void;
+  /**
+   * Called when a store that claims timers says this scheduler no longer holds the claim on a
+   * task: before it fires (the task is then skipped, another worker has it) or while it runs
+   * (its lease ran out before a renewal got through, so another worker may fire it too).
+   */
+  onClaimLost?: (entry: TimerEntry) => void;
   /** How long fired/cancelled entries are kept before cleanup. Default: 7 days. */
   retentionMs?: number;
 }
@@ -107,7 +113,10 @@ export class HeartbeatScheduler {
     try {
       const overdue = await this.store.getOverdue();
       for (const entry of overdue) {
-        if (!this.running) break;
+        if (!this.running) {
+          await this.releaseClaim(entry);
+          continue;
+        }
         try {
           await this.processEntry(entry);
         } catch (err) {
@@ -129,15 +138,28 @@ export class HeartbeatScheduler {
     await this.store.cleanup(now - (this.config.retentionMs ?? DEFAULT_RETENTION_MS));
   }
 
+  /**
+   * Fire a single task. With a store that claims timers, the claim is renewed right before the
+   * task fires (a task whose claim ran out while it waited is left to the worker that took it) and
+   * every `claimTtl / 3` while it runs. Disabled and exhausted tasks are released so another
+   * worker's poll is not blocked by this one's lease. A task that throws keeps the claim until its
+   * lease runs out, which spaces out the retries.
+   */
   private async processEntry(entry: TimerEntry): Promise<void> {
-    if (entry.enabled === false) return;
+    if (entry.enabled === false) {
+      await this.releaseClaim(entry);
+      return;
+    }
 
     if ((entry.consecutiveErrors ?? 0) >= this.maxRetries) {
       if (entry.lastRunStatus !== 'skipped') {
         await this.store.update(entry.id, { lastRunStatus: 'skipped' });
       }
+      await this.releaseClaim(entry);
       return;
     }
+
+    if (!(await this.confirmClaim(entry))) return;
 
     const meta = entry.metadata ?? {};
     const description = readString(meta, 'description') ?? entry.name ?? '';
@@ -155,11 +177,14 @@ export class HeartbeatScheduler {
     let status: 'ok' | 'error' = 'ok';
     let errorMsg: string | undefined;
 
+    const stopRenewing = this.keepClaim(entry);
     try {
       await this.config.onFire(msg);
     } catch (err) {
       status = 'error';
       errorMsg = toError(err).message;
+    } finally {
+      await stopRenewing();
     }
 
     const durationMs = Date.now() - startedAt;
@@ -200,6 +225,58 @@ export class HeartbeatScheduler {
         ...(patch.lastError ? { lastError: patch.lastError } : {}),
         consecutiveErrors: patch.consecutiveErrors,
       });
+    }
+  }
+
+  private async confirmClaim(entry: TimerEntry): Promise<boolean> {
+    const store = this.store;
+    if (!store.renew || !store.claimTtl) return true;
+    try {
+      if (await store.renew(entry.id)) return true;
+      this.config.onClaimLost?.(entry);
+    } catch (err) {
+      this.config.onError?.(toError(err), entry);
+    }
+    return false;
+  }
+
+  /**
+   * Renews the store's claim on a task every `claimTtl / 3` until the returned function is called;
+   * it resolves once no renewal is in flight.
+   */
+  private keepClaim(entry: TimerEntry): () => Promise<void> {
+    const store = this.store;
+    const renew = store.renew;
+    if (!renew || !store.claimTtl) return async () => undefined;
+
+    let lost = false;
+    let renewal: Promise<void> = Promise.resolve();
+    const tick = async (): Promise<void> => {
+      if (lost) return;
+      try {
+        if (await renew.call(store, entry.id)) return;
+        lost = true;
+        clearInterval(interval);
+        this.config.onClaimLost?.(entry);
+      } catch (err) {
+        this.config.onError?.(toError(err), entry);
+      }
+    };
+    const interval = setInterval(() => {
+      renewal = renewal.then(tick);
+    }, store.claimTtl / 3);
+
+    return async () => {
+      clearInterval(interval);
+      await renewal;
+    };
+  }
+
+  private async releaseClaim(entry: TimerEntry): Promise<void> {
+    try {
+      await this.store.release?.(entry.id);
+    } catch (err) {
+      this.config.onError?.(toError(err), entry);
     }
   }
 
