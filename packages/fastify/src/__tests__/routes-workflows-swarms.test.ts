@@ -4,6 +4,7 @@ import type { FastifyInstance } from 'fastify';
 import type { CogitatorContext } from '../types.js';
 import { workflowRoutes } from '../routes/workflows.js';
 import { swarmRoutes } from '../routes/swarms.js';
+import { threadRoutes } from '../routes/threads.js';
 
 function mockRuntime() {
   return { run: vi.fn(), memory: undefined };
@@ -192,7 +193,6 @@ describe('thread error propagation', () => {
     fastify.decorateRequest('cogitatorRequestId', '');
     fastify.decorateRequest('cogitatorStartTime', 0);
 
-    const { threadRoutes } = await import('../routes/threads.js');
     await fastify.register(threadRoutes);
     await fastify.ready();
 
@@ -224,7 +224,6 @@ describe('thread error propagation', () => {
     fastify.decorateRequest('cogitatorRequestId', '');
     fastify.decorateRequest('cogitatorStartTime', 0);
 
-    const { threadRoutes } = await import('../routes/threads.js');
     await fastify.register(threadRoutes);
     await fastify.ready();
 
