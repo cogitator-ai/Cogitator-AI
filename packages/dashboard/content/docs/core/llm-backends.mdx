@@ -199,9 +199,30 @@ model: 'vllm/mistral-7b';
 
 All backends receive the same `Message[]`. Every `system` message (the agent instructions plus any later ones, such as reflection hints or context summaries) is combined into the provider's system prompt for Anthropic, Gemini and Bedrock, and consecutive tool results are sent together in a single turn, as those APIs expect for parallel tool calls.
 
-## Custom Backends (Plugin System)
+## Custom Backends
 
-Register custom LLM backends for providers not included by default:
+### Backend Instances
+
+Pass backends of your own to `llm.backends`. An agent whose model starts with the name, or whose `provider` is the name, runs on it; the rest of the model string is sent as the model name. A name of a built-in provider replaces it, for example with a `withDebug()` wrapper:
+
+```typescript
+const cog = new Cogitator({
+  llm: {
+    backends: {
+      local: new MyCustomBackend({ url: 'http://gpu-box:8000' }),
+      openai: withDebug(new OpenAIBackend({ apiKey: process.env.OPENAI_API_KEY! })),
+    },
+  },
+});
+
+const agent = new Agent({ name: 'a', model: 'local/my-finetune', instructions: '...' });
+```
+
+`cog.route('local/my-finetune')` returns the backend and model name a run would use. A run that names a provider nobody provides fails with `CONFIGURATION_ERROR`.
+
+### Plugin System
+
+Register custom LLM backends for providers not included by default. The runtime creates a plugin's backend the first time an agent uses its provider name, with the config under that name in `llm.plugins`:
 
 ```typescript
 import { defineBackend, registerLLMBackend } from '@cogitator-ai/core';
@@ -216,6 +237,9 @@ const myBackend = defineBackend({
 });
 
 registerLLMBackend(myBackend);
+
+const cog = new Cogitator({ llm: { plugins: { 'my-provider': { apiKey: '...' } } } });
+const agent = new Agent({ name: 'a', model: 'my-provider/model-x', instructions: '...' });
 ```
 
 List registered plugins:

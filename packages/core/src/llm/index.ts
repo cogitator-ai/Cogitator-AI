@@ -43,24 +43,9 @@ import { AnthropicBackend } from './anthropic';
 import { GoogleBackend } from './google';
 import { AzureOpenAIBackend } from './azure';
 import { BedrockBackend } from './bedrock';
+import { isLLMProvider } from './providers';
 
-const KNOWN_PROVIDERS: readonly LLMProvider[] = [
-  'ollama',
-  'openai',
-  'anthropic',
-  'google',
-  'azure',
-  'bedrock',
-  'vllm',
-  'mistral',
-  'groq',
-  'together',
-  'deepseek',
-];
-
-function isLLMProvider(provider: string): provider is LLMProvider {
-  return KNOWN_PROVIDERS.includes(provider as LLMProvider);
-}
+export { isLLMProvider } from './providers';
 
 /**
  * Create an LLM backend from configuration

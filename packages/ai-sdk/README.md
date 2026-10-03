@@ -131,6 +131,26 @@ for await (const chunk of backend.chatStream({ model: 'gemini-3.5-flash-lite', m
 
 The backend converts Cogitator messages (text, images, assistant tool calls and tool results), tools, `toolChoice`, `responseFormat`, sampling settings and the abort signal to the model's specification, and maps text, tool calls, finish reasons and usage (including cached and reasoning tokens) back. Gemini thought signatures on tool calls are preserved across turns.
 
+To run Cogitator agents on an AI SDK model, register the backend under a name in `llm.backends` and point agents at it with `name/model`:
+
+```typescript
+import { Agent, Cogitator } from '@cogitator-ai/core';
+
+const cog = new Cogitator({
+  llm: { backends: { gemini: fromAISDK(google('gemini-3.5-flash-lite')) } },
+});
+
+const agent = new Agent({
+  name: 'writer',
+  model: 'gemini/gemini-3.5-flash-lite',
+  instructions: 'You write short poems.',
+});
+
+const result = await cog.run(agent, { input: 'A haiku about types' });
+```
+
+Tools, memory, streaming and every other run feature work as with built-in providers. The wrapped model is used whatever model name the request carries; cost is reported only for models the price registry knows.
+
 ### Tool Conversion
 
 ```typescript

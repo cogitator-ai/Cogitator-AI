@@ -1,6 +1,7 @@
 import type {
   Message,
   LLMBackend,
+  ModelRoute,
   ContextManagerConfig,
   CompressionResult,
   ContextState,
@@ -19,6 +20,8 @@ import { parseModel } from '../llm/index';
 import { sanitizeToolHistory } from '../utils/tool-history';
 
 export interface ContextManagerDeps {
+  /** The backend and the model name for a model string; preferred over `getBackend`. */
+  route?: (model: string) => ModelRoute;
   getBackend?: (model: string) => LLMBackend;
 }
 
@@ -129,23 +132,17 @@ export class ContextManager {
       };
     }
 
-    let backend: LLMBackend | undefined;
-    let summaryModel = this.config.summaryModel;
-
-    if (summaryModel && this.deps.getBackend) {
-      backend = this.deps.getBackend(summaryModel);
-    } else if (this.deps.getBackend && this.config.strategy === 'summarize') {
-      summaryModel = modelString;
-      backend = this.deps.getBackend(modelString);
-    }
+    const summarySource =
+      this.config.summaryModel || (this.config.strategy === 'summarize' ? modelString : undefined);
+    const summary = summarySource ? this.resolve(summarySource) : undefined;
 
     const ctx: CompressionContext = {
       messages,
       targetTokens: state.maxTokens,
       currentTokens: state.currentTokens,
       windowSize: this.config.windowSize,
-      backend,
-      summaryModel: summaryModel ? parseModel(summaryModel).model : undefined,
+      backend: summary?.backend,
+      summaryModel: summary?.model,
     };
 
     const result = await this.strategy.compress(ctx);
@@ -162,5 +159,13 @@ export class ContextManager {
       messages: messagesWithValidToolPairs,
       compressedTokens: countMessagesTokens(messagesWithValidToolPairs),
     };
+  }
+
+  private resolve(modelString: string): Partial<ModelRoute> {
+    if (this.deps.route) return this.deps.route(modelString);
+    if (this.deps.getBackend) {
+      return { backend: this.deps.getBackend(modelString), model: parseModel(modelString).model };
+    }
+    return {};
   }
 }

@@ -3,7 +3,7 @@
  */
 
 import type { Message, ToolCall, ToolResult } from './message';
-import type { LLMProvider, LLMProvidersConfig } from './llm';
+import type { LLMBackend, LLMProvider, LLMProvidersConfig } from './llm';
 import type { MemoryConfig } from './memory';
 import type { SandboxManagerConfig } from './sandbox';
 import type { ReflectionConfig, Reflection, ReflectionSummary } from './reflection';
@@ -21,6 +21,13 @@ export interface CogitatorConfig {
     defaultProvider?: LLMProvider;
     defaultModel?: string;
     providers?: LLMProvidersConfig;
+    /**
+     * Backends of your own, by name: an agent with model `name/model` (or
+     * `provider: 'name'`) runs on it. A name of a built-in provider replaces it.
+     */
+    backends?: Record<string, LLMBackend>;
+    /** Configuration passed to backend plugins registered with `registerLLMBackend`, by provider name. */
+    plugins?: Record<string, unknown>;
   };
   limits?: {
     maxConcurrentRuns?: number;

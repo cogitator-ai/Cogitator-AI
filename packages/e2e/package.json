@@ -12,6 +12,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@ai-sdk/google": "^4.0.87",
     "@cogitator-ai/a2a": "workspace:*",
     "@cogitator-ai/browser": "workspace:*",
     "@cogitator-ai/channels": "workspace:*",

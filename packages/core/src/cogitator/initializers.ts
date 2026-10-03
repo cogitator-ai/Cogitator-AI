@@ -1,4 +1,4 @@
-import type { CogitatorConfig, LLMBackend, MemoryAdapter, InsightStore } from '@cogitator-ai/types';
+import type { CogitatorConfig, MemoryAdapter, InsightStore, ModelRoute } from '@cogitator-ai/types';
 import {
   InMemoryAdapter,
   RedisAdapter,
@@ -12,7 +12,6 @@ import { ConstitutionalAI } from '../constitutional/index';
 import { CostAwareRouter } from '../cost-routing/index';
 import { PromptInjectionDetector } from '../security/index';
 import { ContextManager } from '../context/index';
-import { parseModel } from '../llm/index';
 
 export type SandboxManager = {
   initialize(): Promise<void>;
@@ -156,18 +155,17 @@ export async function initializeReflection(
   config: CogitatorConfig,
   state: InitializerState,
   agentModel: string,
-  getBackend: (model: string) => LLMBackend
+  route: (model: string) => ModelRoute
 ): Promise<void> {
   if (state.reflectionInitialized || !config.reflection?.enabled) return;
 
-  const modelString = config.reflection.reflectionModel ?? agentModel;
-  const backend = getBackend(modelString);
+  const { backend, model } = route(config.reflection.reflectionModel ?? agentModel);
 
   state.insightStore = new InMemoryInsightStore();
   state.reflectionEngine = new ReflectionEngine({
     llm: backend,
     insightStore: state.insightStore,
-    config: { ...config.reflection, reflectionModel: parseModel(modelString).model },
+    config: { ...config.reflection, reflectionModel: model },
   });
 
   state.reflectionInitialized = true;
@@ -177,17 +175,16 @@ export function initializeGuardrails(
   config: CogitatorConfig,
   state: InitializerState,
   agentModel: string,
-  getBackend: (model: string) => LLMBackend
+  route: (model: string) => ModelRoute
 ): void {
   if (state.guardrailsInitialized || !config.guardrails?.enabled) return;
 
-  const modelString = config.guardrails.model ?? agentModel;
-  const backend = getBackend(modelString);
+  const { backend, model } = route(config.guardrails.model ?? agentModel);
 
   state.constitutionalAI = new ConstitutionalAI({
     llm: backend,
     constitution: config.guardrails.constitution,
-    config: { ...config.guardrails, model: parseModel(modelString).model },
+    config: { ...config.guardrails, model },
   });
 
   state.guardrailsInitialized = true;
@@ -204,16 +201,16 @@ export function initializeSecurity(
   config: CogitatorConfig,
   state: InitializerState,
   agentModel: string,
-  getBackend: (model: string) => LLMBackend
+  route: (model: string) => ModelRoute
 ): void {
   if (state.securityInitialized || !config.security?.promptInjection) return;
 
   const injectionConfig = { ...config.security.promptInjection };
 
   if (injectionConfig.classifier === 'llm' && !injectionConfig.llmBackend) {
-    const modelString = injectionConfig.llmModel ?? agentModel;
-    injectionConfig.llmBackend = getBackend(modelString);
-    injectionConfig.llmModel = parseModel(modelString).model;
+    const { backend, model } = route(injectionConfig.llmModel ?? agentModel);
+    injectionConfig.llmBackend = backend;
+    injectionConfig.llmModel = model;
   }
 
   state.injectionDetector = new PromptInjectionDetector(injectionConfig);
@@ -223,7 +220,7 @@ export function initializeSecurity(
 export function initializeContextManager(
   config: CogitatorConfig,
   state: InitializerState,
-  getBackend: (model: string) => LLMBackend
+  route: (model: string) => ModelRoute
 ): void {
   if (state.contextManagerInitialized) return;
   if (!config.context?.enabled) {
@@ -231,7 +228,7 @@ export function initializeContextManager(
     return;
   }
 
-  state.contextManager = new ContextManager(config.context, { getBackend });
+  state.contextManager = new ContextManager(config.context, { route });
   state.contextManagerInitialized = true;
 }
 

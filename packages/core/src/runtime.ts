@@ -7,7 +7,7 @@ import type {
   ToolCall,
   ToolResult,
   LLMBackend,
-  LLMProvider,
+  ModelRoute,
   Span,
   Reflection,
   ReflectionAction,
@@ -22,6 +22,8 @@ import { getPrice } from '@cogitator-ai/models';
 import { type Agent } from './agent';
 import { ToolRegistry } from './registry';
 import { createLLMBackend, parseModel } from './llm/index';
+import { isLLMProvider } from './llm/providers';
+import { createLLMBackendFromPlugin, hasLLMPlugin } from './llm/plugin';
 import { getLogger } from './logger';
 import {
   type InitializerState,
@@ -102,7 +104,7 @@ const DEFAULT_RUN_TIMEOUT = 120_000;
  */
 export class Cogitator {
   private config: CogitatorConfig;
-  private backends = new Map<LLMProvider, LLMBackend>();
+  private backends = new Map<string, LLMBackend>();
   /** Global tool registry shared across all runs */
   public readonly tools: ToolRegistry = new ToolRegistry();
 
@@ -245,8 +247,7 @@ export class Cogitator {
         backend = this.getBackend(effectiveModel, recommendation.provider);
         model = recommendation.modelId;
       } else {
-        backend = this.getBackend(effectiveModel, agent.config.provider);
-        model = agent.config.provider ? effectiveModel : parseModel(effectiveModel).model;
+        ({ backend, model } = this.route(effectiveModel, agent.config.provider));
       }
 
       const messages = await buildInitialMessages(
@@ -785,13 +786,11 @@ export class Cogitator {
     }
 
     if (this.config.reflection?.enabled && !this.state.reflectionInitialized) {
-      await initializeReflection(this.config, this.state, agentModel, (model) =>
-        this.getBackend(model)
-      );
+      await initializeReflection(this.config, this.state, agentModel, (model) => this.route(model));
     }
 
     if (this.config.guardrails?.enabled && !this.state.guardrailsInitialized) {
-      initializeGuardrails(this.config, this.state, agentModel, (model) => this.getBackend(model));
+      initializeGuardrails(this.config, this.state, agentModel, (model) => this.route(model));
     }
 
     if (this.config.costRouting?.enabled && !this.state.costRoutingInitialized) {
@@ -799,28 +798,70 @@ export class Cogitator {
     }
 
     if (this.config.security?.promptInjection && !this.state.securityInitialized) {
-      initializeSecurity(this.config, this.state, agentModel, (model) => this.getBackend(model));
+      initializeSecurity(this.config, this.state, agentModel, (model) => this.route(model));
     }
 
     if (this.config.context?.enabled && !this.state.contextManagerInitialized) {
-      initializeContextManager(this.config, this.state, (model) => this.getBackend(model));
+      initializeContextManager(this.config, this.state, (model) => this.route(model));
     }
   }
 
   private getBackend(modelString: string, explicitProvider?: string): LLMBackend {
-    const { provider: parsedProvider } = parseModel(modelString);
+    return this.route(modelString, explicitProvider).backend;
+  }
 
-    const actualProvider = (explicitProvider ??
-      parsedProvider ??
-      this.config.llm?.defaultProvider ??
-      'ollama') as LLMProvider;
-
-    let backend = this.backends.get(actualProvider);
-    if (!backend) {
-      backend = createLLMBackend(actualProvider, this.config.llm);
-      this.backends.set(actualProvider, backend);
+  /**
+   * The backend a model string runs on, and the model name to send it.
+   *
+   * `provider/model` picks the provider when `provider` is a backend in
+   * `llm.backends`, a built-in provider or a registered plugin; anything else
+   * runs on `llm.defaultProvider` (Ollama when unset) with the whole string.
+   * An explicit provider keeps the model string as it is.
+   */
+  route(modelString: string, explicitProvider?: string): ModelRoute {
+    if (explicitProvider) {
+      return { backend: this.backendFor(explicitProvider), model: modelString };
     }
+    const slash = modelString.indexOf('/');
+    if (slash > 0) {
+      const prefix = modelString.slice(0, slash);
+      if (this.knowsProvider(prefix)) {
+        return { backend: this.backendFor(prefix), model: modelString.slice(slash + 1) };
+      }
+    }
+    return {
+      backend: this.backendFor(this.config.llm?.defaultProvider ?? 'ollama'),
+      model: modelString,
+    };
+  }
 
+  private knowsProvider(name: string): boolean {
+    return (
+      Object.hasOwn(this.config.llm?.backends ?? {}, name) ||
+      isLLMProvider(name) ||
+      hasLLMPlugin(name)
+    );
+  }
+
+  private backendFor(name: string): LLMBackend {
+    const custom = this.config.llm?.backends;
+    if (custom && Object.hasOwn(custom, name)) return custom[name];
+
+    const cached = this.backends.get(name);
+    if (cached) return cached;
+
+    let backend: LLMBackend;
+    if (isLLMProvider(name)) {
+      backend = createLLMBackend(name, this.config.llm);
+    } else if (hasLLMPlugin(name)) {
+      backend = createLLMBackendFromPlugin(name, this.config.llm?.plugins?.[name]);
+    } else {
+      throw new CogitatorError({
+        message: `Unknown LLM provider "${name}": not a built-in provider, a backend in llm.backends or a registered plugin`,
+        code: ErrorCode.CONFIGURATION_ERROR,
+      });
+    }
+    this.backends.set(name, backend);
     return backend;
   }
 

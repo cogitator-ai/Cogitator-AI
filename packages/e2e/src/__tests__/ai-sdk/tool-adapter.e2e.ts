@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import {
   toAISDKTool,
+  fromAISDK,
   fromAISDKTool,
   convertToolsToAISDK,
   convertToolsFromAISDK,
 } from '@cogitator-ai/ai-sdk';
-import { tool } from '@cogitator-ai/core';
+import { Agent, Cogitator, tool } from '@cogitator-ai/core';
 import { z } from 'zod';
 
 const multiply = tool({
@@ -213,5 +215,34 @@ describe('AI SDK: Tool Adapter', () => {
 
     expect(schema.name).toBe('square');
     expect(schema.description).toBe('Square a number');
+  });
+});
+
+const describeGoogle = process.env.GOOGLE_API_KEY ? describe : describe.skip;
+
+describeGoogle('AI SDK: Cogitator agents on an AI SDK model', () => {
+  it('runs an agent with a tool on a Gemini model from @ai-sdk/google', async () => {
+    const google = createGoogleGenerativeAI({ apiKey: process.env.GOOGLE_API_KEY });
+    const cog = new Cogitator({
+      llm: { backends: { aisdk: fromAISDK(google('gemini-3.5-flash-lite')) } },
+    });
+    const times = tool({
+      name: 'multiply',
+      description: 'Multiply two numbers',
+      parameters: z.object({ a: z.number(), b: z.number() }),
+      execute: async ({ a, b }) => a * b,
+    });
+    const agent = new Agent({
+      name: 'calc',
+      model: 'aisdk/gemini-3.5-flash-lite',
+      instructions: 'Always use the multiply tool for multiplication, then give the result.',
+      tools: [times],
+    });
+
+    const result = await cog.run(agent, { input: 'What is 17 times 23?' });
+
+    expect(result.toolCalls.map((call) => call.name)).toContain('multiply');
+    expect(result.output).toContain('391');
+    await cog.close();
   });
 });

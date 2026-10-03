@@ -5,6 +5,12 @@
 import type { Message, ToolCall } from './message';
 import type { ToolSchema } from './tool';
 
+/** The backend a model string runs on, and the model name that backend expects. */
+export interface ModelRoute {
+  backend: LLMBackend;
+  model: string;
+}
+
 export type LLMProvider =
   | 'ollama'
   | 'openai'
