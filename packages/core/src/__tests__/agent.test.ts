@@ -4,6 +4,7 @@ import type { Tool } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 import { Agent } from '../agent';
 import { tool } from '../tool';
+import { builtinTools } from '../tools/index';
 
 vi.mock('nanoid', async (importOriginal) => {
   const actual = await importOriginal<typeof import('nanoid')>();
@@ -127,5 +128,11 @@ describe('Agent', () => {
       expect(original.name).toBe('test-agent');
       expect(original.config.temperature).toBe(0.5);
     });
+  });
+
+  it('takes the built-in tools as they are exported', () => {
+    const agent = new Agent({ name: 'toolbox', instructions: 'x', tools: builtinTools });
+
+    expect(agent.tools.map((t) => t.name)).toContain('calculator');
   });
 });

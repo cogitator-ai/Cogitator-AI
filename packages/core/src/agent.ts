@@ -245,7 +245,8 @@ export class Agent implements IAgent {
     if (!s.config || typeof s.config !== 'object') return false;
 
     const config = s.config as Record<string, unknown>;
-    if (typeof config.model !== 'string') return false;
+    if (config.model !== undefined && typeof config.model !== 'string') return false;
+    if (config.provider !== undefined && typeof config.provider !== 'string') return false;
     if (typeof config.instructions !== 'string') return false;
     if (!Array.isArray(config.tools)) return false;
     if (!config.tools.every((toolName) => typeof toolName === 'string')) return false;

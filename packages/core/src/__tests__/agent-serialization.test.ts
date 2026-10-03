@@ -317,6 +317,17 @@ describe('Agent Serialization', () => {
       ).toBe(false);
     });
 
+    it('returns false when the model is not a string', () => {
+      expect(
+        Agent.validateSnapshot({
+          version: '1.0.0',
+          id: 'x',
+          name: 'y',
+          config: { model: 42, instructions: 'test', tools: [] },
+        })
+      ).toBe(false);
+    });
+
     it('returns true for minimal valid snapshot', () => {
       expect(
         Agent.validateSnapshot({
@@ -373,6 +384,17 @@ describe('Agent Serialization', () => {
       expect(restored.config.stopSequences).toEqual(original.config.stopSequences);
       expect(restored.config.maxIterations).toBe(original.config.maxIterations);
       expect(restored.config.timeout).toBe(original.config.timeout);
+    });
+
+    it('restores an agent without a model, which runs on llm.defaultModel', () => {
+      const original = new Agent({ id: 'no-model', name: 'no-model', instructions: 'Hi' });
+
+      const parsed = JSON.parse(JSON.stringify(original.serialize()));
+      const restored = Agent.deserialize(parsed);
+
+      expect(restored.id).toBe('no-model');
+      expect(restored.model).toBeUndefined();
+      expect(restored.instructions).toBe('Hi');
     });
   });
 });
