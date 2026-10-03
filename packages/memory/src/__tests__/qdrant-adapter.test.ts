@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { QdrantAdapter } from '../adapters/qdrant';
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
 const mockClient = {
   getCollections: vi.fn(),
   createCollection: vi.fn().mockResolvedValue(undefined),
@@ -141,9 +143,10 @@ describe('QdrantAdapter', () => {
       expect(mockClient.upsert).toHaveBeenCalledWith('test_collection', {
         points: [
           {
-            id: expect.stringMatching(/^emb_/),
+            id: expect.stringMatching(UUID_PATTERN),
             vector: expect.any(Array),
             payload: expect.objectContaining({
+              embeddingId: expect.stringMatching(/^emb_/),
               sourceId: 'entry_123',
               sourceType: 'message',
               content: 'Test content',
@@ -151,6 +154,43 @@ describe('QdrantAdapter', () => {
           },
         ],
       });
+    });
+
+    it('stores the embedding under a UUID point id that Qdrant accepts', async () => {
+      const first = await adapter.addEmbedding({
+        sourceId: 'entry_1',
+        sourceType: 'message',
+        vector: [0.1, 0.2],
+        content: 'First',
+      });
+      const second = await adapter.addEmbedding({
+        sourceId: 'entry_2',
+        sourceType: 'message',
+        vector: [0.3, 0.4],
+        content: 'Second',
+      });
+
+      const points = mockClient.upsert.mock.calls.map((call) => call[1].points[0]);
+      expect(points[0].id).toMatch(UUID_PATTERN);
+      expect(points[1].id).toMatch(UUID_PATTERN);
+      expect(points[0].id).not.toBe(points[1].id);
+      expect(points[0].payload.embeddingId).toBe(first.success && first.data.id);
+      expect(points[1].payload.embeddingId).toBe(second.success && second.data.id);
+    });
+
+    it('deletes the same point it stored for an embedding id', async () => {
+      const added = await adapter.addEmbedding({
+        sourceId: 'entry_1',
+        sourceType: 'message',
+        vector: [0.1, 0.2],
+        content: 'First',
+      });
+      if (!added.success) throw new Error(added.error);
+
+      await adapter.deleteEmbedding(added.data.id);
+
+      const storedId = mockClient.upsert.mock.calls[0][1].points[0].id;
+      expect(mockClient.delete).toHaveBeenCalledWith('test_collection', { points: [storedId] });
     });
 
     it('includes metadata in payload', async () => {
@@ -440,7 +480,7 @@ describe('QdrantAdapter', () => {
 
       expect(result.success).toBe(true);
       expect(mockClient.delete).toHaveBeenCalledWith('test_collection', {
-        points: ['emb_123'],
+        points: [expect.stringMatching(UUID_PATTERN)],
       });
     });
 

@@ -6,6 +6,22 @@ import type {
   EmbeddingAdapter,
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
+import { createHash } from 'node:crypto';
+
+const POINT_ID_NAMESPACE = Buffer.from('a165b27944774045b57221d3df84e73b', 'hex');
+
+/**
+ * Qdrant only accepts unsigned integers and UUIDs as point ids, so each embedding id is mapped
+ * to a name-based (version 5) UUID. The mapping is deterministic, which lets deletes address a
+ * point by embedding id without a lookup; the embedding id itself travels in the payload.
+ */
+function qdrantPointId(embeddingId: string): string {
+  const hash = createHash('sha1').update(POINT_ID_NAMESPACE).update(embeddingId).digest();
+  hash[6] = (hash[6] & 0x0f) | 0x50;
+  hash[8] = (hash[8] & 0x3f) | 0x80;
+  const hex = hash.subarray(0, 16).toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 
 interface QdrantPoint {
   id: string;
@@ -127,7 +143,7 @@ export class QdrantAdapter implements EmbeddingAdapter {
       await this.client.upsert(this.collection, {
         points: [
           {
-            id: full.id,
+            id: qdrantPointId(full.id),
             vector: full.vector,
             payload: {
               embeddingId: full.id,
@@ -207,7 +223,7 @@ export class QdrantAdapter implements EmbeddingAdapter {
 
     try {
       await this.client.delete(this.collection, {
-        points: [embeddingId],
+        points: [qdrantPointId(embeddingId)],
       });
       return this.success(undefined);
     } catch (err) {
