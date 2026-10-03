@@ -41,6 +41,19 @@ function createBackend(): OllamaBackend {
   });
 }
 
+/**
+ * Weight 70 kg and height 1.75 m under whatever names the generated tool gave
+ * its parameters: a gap found by the analyzer does not fix them.
+ */
+function bmiArguments(tool: GeneratedTool): Record<string, number> {
+  const properties = tool.parameters.properties;
+  const names =
+    typeof properties === 'object' && properties !== null ? Object.keys(properties) : [];
+  const weight = names.find((name) => /weight|mass|kg/i.test(name)) ?? 'weight';
+  const height = names.find((name) => /height|meter|metre/i.test(name)) ?? 'height';
+  return { [weight]: 70, [height]: 1.75 };
+}
+
 function extractNumber(raw: unknown): number {
   if (typeof raw === 'number') return raw;
   if (typeof raw === 'string') {
@@ -231,7 +244,8 @@ describeE2E('self-modifying: tool lifecycle (real LLM)', () => {
     const validationResult = await validator.validate(genResult.tool!);
     expect(validationResult.securityIssues).toHaveLength(0);
 
-    const execResult = await sandbox.execute(genResult.tool!, { weight: 70, height: 1.75 });
+    const execResult = await sandbox.execute(genResult.tool!, bmiArguments(genResult.tool!));
+    expect(execResult.error).toBeUndefined();
     expect(execResult.success).toBe(true);
 
     const raw = execResult.result;
