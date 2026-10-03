@@ -1,15 +1,38 @@
-'use client';
-
+import type { Metadata } from 'next';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
 import { ArrowLeft, BookOpen } from 'lucide-react';
 import { Wordmark } from '@/components/landing/Logo';
 import { Vox, Window } from '@/components/landing/ui';
-import { DOCS_HOME } from '@/lib/site';
+import { DOCS_HOME, SITE_NAME } from '@/lib/site';
+import { NOT_FOUND_OG_IMAGE_ALT, NOT_FOUND_OG_IMAGE_PATH } from '@/lib/og-image';
+import { OPEN_GRAPH_BASE, socialImage } from '@/lib/seo';
+import { RequestedPath } from './requested-path';
+
+const title = 'Page not found';
+const description = `This page does not exist on the ${SITE_NAME} site. It may have moved, or the link was mistyped.`;
+const image = socialImage(NOT_FOUND_OG_IMAGE_PATH, NOT_FOUND_OG_IMAGE_ALT);
+
+export const metadata: Metadata = {
+  title,
+  description,
+  robots: null,
+  alternates: { canonical: null },
+  openGraph: {
+    ...OPEN_GRAPH_BASE,
+    type: 'website',
+    title: `${title} | ${SITE_NAME}`,
+    description,
+    images: [image],
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: `${title} | ${SITE_NAME}`,
+    description,
+    images: [image],
+  },
+};
 
 export default function NotFound() {
-  const pathname = usePathname();
-
   return (
     <div className="dark landing-noise flex min-h-screen flex-col items-center justify-center bg-l-bg px-5 text-l-text [color-scheme:dark]">
       <Link href="/" aria-label="Cogitator home" className="mb-12">
@@ -18,9 +41,12 @@ export default function NotFound() {
 
       <Window title="cogitator · vox log" crt className="w-full max-w-xl" bodyClassName="px-5 py-6">
         <div className="space-y-2 font-mono text-[13px] leading-relaxed">
-          <Vox tone="warn">transmission lost</Vox>
+          <h1>
+            <Vox tone="warn">transmission lost</Vox>
+            <span className="sr-only">: page not found</span>
+          </h1>
           <p className="text-l-muted">
-            <span className="text-l-faint">$</span> GET {pathname}
+            <span className="text-l-faint">$</span> GET <RequestedPath />
           </p>
           <p className="text-l-text">
             <span className="text-l-danger">404</span> · the machine spirit could not find this page

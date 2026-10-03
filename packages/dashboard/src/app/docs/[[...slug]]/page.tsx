@@ -1,6 +1,8 @@
 import { source } from '@/lib/source';
 import { markdownPath } from '@/lib/llms';
-import { DOCS_SOURCE_URL, SITE_URL } from '@/lib/site';
+import { DOCS_SOURCE_URL, SITE_NAME, SITE_URL } from '@/lib/site';
+import { OPEN_GRAPH_BASE, socialImage } from '@/lib/seo';
+import { docsLastModified, docsOgImageAlt, docsOgImagePath, docsSection } from '@/lib/docs-seo';
 import { DocsPage, DocsBody, DocsDescription, DocsTitle } from 'fumadocs-ui/page';
 import { MarkdownCopyButton, ViewOptionsPopover } from 'fumadocs-ui/layouts/docs/page';
 import { notFound } from 'next/navigation';
@@ -47,14 +49,35 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   const page = source.getPage(slug);
   if (!page) notFound();
 
+  const { title, description } = page.data;
+  const socialTitle = `${title} | ${SITE_NAME} Docs`;
+  const image = socialImage(docsOgImagePath(page), docsOgImageAlt(page));
+  const modified = docsLastModified(page);
+
   return {
-    title: page.data.title,
-    description: page.data.description,
+    title,
+    description,
     alternates: {
       canonical: page.url,
       types: {
         'text/markdown': markdownPath(page),
       },
+    },
+    openGraph: {
+      ...OPEN_GRAPH_BASE,
+      type: 'article',
+      url: page.url,
+      title: socialTitle,
+      description,
+      section: docsSection(page),
+      ...(modified && { modifiedTime: modified.toISOString() }),
+      images: [image],
+    },
+    twitter: {
+      card: 'summary_large_image',
+      title: socialTitle,
+      description,
+      images: [image],
     },
   };
 }

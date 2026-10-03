@@ -29,3 +29,15 @@ export const COOKBOOK_URL = '/cookbook';
 export const LLMS_TXT_URL = '/llms.txt';
 
 export const LLMS_FULL_TXT_URL = '/llms-full.txt';
+
+/** Locale of every page, as Open Graph spells it. */
+export const SITE_LOCALE = 'en_US';
+
+export const GITHUB_ORG_URL = 'https://github.com/cogitator-ai';
+
+/** npm scope every Cogitator package is published under. */
+export const NPM_ORG_URL = 'https://www.npmjs.com/org/cogitator-ai';
+
+export const LICENSE_URL = `${GITHUB_URL}/blob/main/LICENSE`;
+
+export const SECURITY_POLICY_URL = `${GITHUB_URL}/blob/main/docs/SECURITY.md`;

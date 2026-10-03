@@ -19,8 +19,10 @@ interface DocsSection {
 }
 
 /** Content type for every Markdown/plain-text response served to agents. */
+/** Markdown copies of docs pages are for agents; the HTML page is the canonical, indexed one. */
 export const MARKDOWN_HEADERS = {
   'Content-Type': 'text/markdown; charset=utf-8',
+  'X-Robots-Tag': 'noindex',
 } as const;
 
 export const PLAIN_TEXT_HEADERS = {

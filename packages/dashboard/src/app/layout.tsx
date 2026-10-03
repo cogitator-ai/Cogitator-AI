@@ -4,14 +4,27 @@ import { RootProvider } from 'fumadocs-ui/provider/next';
 import corePackage from '../../../core/package.json';
 import { CHANNELS, LLM_PROVIDERS, MEMORY_BACKENDS, SWARM_STRATEGIES } from '@/lib/stats';
 import {
-  COMMUNITY,
+  DOCS_HOME,
+  GITHUB_ORG_URL,
   GITHUB_URL,
+  LICENSE_URL,
   LLMS_TXT_URL,
+  NPM_ORG_URL,
   SITE_DESCRIPTION,
   SITE_NAME,
   SITE_TAGLINE,
   SITE_URL,
 } from '@/lib/site';
+import {
+  absoluteUrl,
+  jsonLd,
+  LOGO_PNG,
+  OPEN_GRAPH_BASE,
+  ORGANIZATION_ID,
+  SOFTWARE_ID,
+  SOURCE_CODE_ID,
+  WEBSITE_ID,
+} from '@/lib/seo';
 import './globals.css';
 
 const geistSans = Geist({
@@ -36,41 +49,49 @@ const screenMono = Share_Tech_Mono({
   subsets: ['latin'],
 });
 
-const siteUrl = SITE_URL;
 const siteTitle = `${SITE_NAME} - ${SITE_TAGLINE}`;
 
 export const metadata: Metadata = {
-  metadataBase: new URL(siteUrl),
+  metadataBase: new URL(SITE_URL),
   title: {
     default: siteTitle,
     template: `%s | ${SITE_NAME}`,
   },
   description: SITE_DESCRIPTION,
+  applicationName: SITE_NAME,
   keywords: [
     'AI agents',
+    'AI agent framework',
+    'AI agent runtime',
+    'TypeScript AI agents',
     'LLM orchestration',
-    'agent framework',
     'multi-agent systems',
-    'AI swarms',
+    'agent swarms',
+    'self-hosted AI',
+    'human-in-the-loop',
+    'tool calling',
+    'agent memory',
+    'RAG',
+    'DAG workflows',
+    'Model Context Protocol',
+    'MCP',
+    'Agent2Agent protocol',
+    'A2A',
+    'sandboxed code execution',
     'Ollama',
     'OpenAI',
     'Anthropic',
-    'Claude',
-    'GPT',
-    'self-hosted AI',
-    'TypeScript AI',
-    'RAG',
-    'vector memory',
-    'MCP protocol',
-    'AI workflows',
-    'autonomous agents',
-    'code sandbox',
-    'Docker AI',
-    'WASM sandbox',
+    'Gemini',
   ],
-  authors: [{ name: 'Cogitator Team' }],
-  creator: 'Cogitator',
-  publisher: 'Cogitator',
+  authors: [{ name: 'Cogitator contributors', url: `${GITHUB_URL}/graphs/contributors` }],
+  creator: SITE_NAME,
+  publisher: SITE_NAME,
+  category: 'technology',
+  formatDetection: {
+    telephone: false,
+    email: false,
+    address: false,
+  },
   robots: {
     index: true,
     follow: true,
@@ -83,15 +104,17 @@ export const metadata: Metadata = {
     },
   },
   icons: {
-    icon: '/favicon.svg',
-    apple: '/favicon.svg',
+    icon: [
+      { url: '/favicon.svg', type: 'image/svg+xml' },
+      { url: '/icon/48', type: 'image/png', sizes: '48x48' },
+    ],
+    apple: [{ url: '/apple-icon', type: 'image/png', sizes: '180x180' }],
   },
   manifest: '/manifest.json',
   openGraph: {
+    ...OPEN_GRAPH_BASE,
     type: 'website',
-    locale: 'en_US',
-    url: siteUrl,
-    siteName: SITE_NAME,
+    url: '/',
     title: siteTitle,
     description: SITE_DESCRIPTION,
   },
@@ -99,7 +122,6 @@ export const metadata: Metadata = {
     card: 'summary_large_image',
     title: siteTitle,
     description: SITE_DESCRIPTION,
-    creator: '@cogitator_dev',
   },
   alternates: {
     canonical: './',
@@ -107,59 +129,69 @@ export const metadata: Metadata = {
       'text/markdown': LLMS_TXT_URL,
     },
   },
-  category: 'technology',
 };
 
 export const viewport: Viewport = {
-  themeColor: [
-    { media: '(prefers-color-scheme: dark)', color: '#0a0a0a' },
-    { media: '(prefers-color-scheme: light)', color: '#ffffff' },
-  ],
+  themeColor: '#07080a',
   colorScheme: 'dark light',
   width: 'device-width',
   initialScale: 1,
 };
 
-const jsonLd = {
+const logoId = `${SITE_URL}/#logo`;
+
+/** Who publishes the site and what the software is; docs and cookbook pages reference these by `@id`. */
+const structuredData = {
   '@context': 'https://schema.org',
   '@graph': [
     {
-      '@type': 'WebSite',
-      '@id': `${siteUrl}/#website`,
-      url: siteUrl,
-      name: 'Cogitator',
-      description: 'Self-hosted, production-grade AI agent orchestration platform',
-      publisher: { '@id': `${siteUrl}/#organization` },
-    },
-    {
       '@type': 'Organization',
-      '@id': `${siteUrl}/#organization`,
-      name: 'Cogitator',
-      url: siteUrl,
+      '@id': ORGANIZATION_ID,
+      name: SITE_NAME,
+      url: SITE_URL,
       logo: {
         '@type': 'ImageObject',
-        url: `${siteUrl}/favicon.svg`,
+        '@id': logoId,
+        url: absoluteUrl(LOGO_PNG.path),
+        contentUrl: absoluteUrl(LOGO_PNG.path),
+        width: LOGO_PNG.size,
+        height: LOGO_PNG.size,
+        caption: SITE_NAME,
       },
-      sameAs: [GITHUB_URL, COMMUNITY.url],
+      image: { '@id': logoId },
+      sameAs: [GITHUB_ORG_URL, NPM_ORG_URL],
+    },
+    {
+      '@type': 'WebSite',
+      '@id': WEBSITE_ID,
+      url: SITE_URL,
+      name: SITE_NAME,
+      description: SITE_DESCRIPTION,
+      inLanguage: 'en',
+      publisher: { '@id': ORGANIZATION_ID },
     },
     {
       '@type': 'SoftwareApplication',
-      '@id': `${siteUrl}/#software`,
-      name: 'Cogitator',
-      description:
-        'The Sovereign AI Agent Runtime - Self-hosted, production-grade orchestration for LLM swarms and autonomous agents',
+      '@id': SOFTWARE_ID,
+      name: SITE_NAME,
+      url: SITE_URL,
+      description: SITE_DESCRIPTION,
+      image: absoluteUrl('/opengraph-image'),
       applicationCategory: 'DeveloperApplication',
+      applicationSubCategory: 'AI agent runtime',
       operatingSystem: 'Linux, macOS, Windows',
+      softwareVersion: corePackage.version,
+      license: LICENSE_URL,
+      isAccessibleForFree: true,
       offers: {
         '@type': 'Offer',
         price: '0',
         priceCurrency: 'USD',
       },
-      author: { '@id': `${siteUrl}/#organization` },
-      downloadUrl: GITHUB_URL,
-      softwareVersion: corePackage.version,
-      programmingLanguage: 'TypeScript',
-      runtimePlatform: 'Node.js',
+      downloadUrl: `https://www.npmjs.com/package/${corePackage.name}`,
+      softwareHelp: { '@type': 'CreativeWork', url: absoluteUrl(DOCS_HOME) },
+      author: { '@id': ORGANIZATION_ID },
+      publisher: { '@id': ORGANIZATION_ID },
       featureList: [
         `${LLM_PROVIDERS.length} built-in LLM providers (${LLM_PROVIDERS.join(', ')})`,
         'Tools with human approval, pause and resume',
@@ -175,6 +207,23 @@ const jsonLd = {
         'TypeScript-native SDK',
       ],
     },
+    {
+      '@type': 'SoftwareSourceCode',
+      '@id': SOURCE_CODE_ID,
+      name: SITE_NAME,
+      description: SITE_DESCRIPTION,
+      codeRepository: GITHUB_URL,
+      programmingLanguage: {
+        '@type': 'ComputerLanguage',
+        name: 'TypeScript',
+        url: 'https://www.typescriptlang.org',
+      },
+      runtimePlatform: 'Node.js',
+      version: corePackage.version,
+      license: LICENSE_URL,
+      targetProduct: { '@id': SOFTWARE_ID },
+      author: { '@id': ORGANIZATION_ID },
+    },
   ],
 };
 
@@ -188,7 +237,7 @@ export default function RootLayout({
       <head>
         <script
           type="application/ld+json"
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+          dangerouslySetInnerHTML={{ __html: jsonLd(structuredData) }}
         />
       </head>
       <body
