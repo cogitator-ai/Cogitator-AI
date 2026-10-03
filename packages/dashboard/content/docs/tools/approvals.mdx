@@ -1,0 +1,82 @@
+---
+title: Approvals
+description: Pause an agent before it runs a sensitive tool, let a person decide — now or hours later — and continue the run where it stopped.
+---
+
+## Overview
+
+A tool with `requiresApproval` never runs without a person's say-so. When the model calls it, the run either asks right away (`onApproval`) or **pauses**: it returns with `status: 'paused'` and the calls that wait, keeps its state, and goes on with `cogitator.resume()` once someone decided — a minute later, after a Telegram reply, or after the server restarted.
+
+```typescript
+const refund = tool({
+  name: 'refund',
+  description: 'Refund an order',
+  parameters: z.object({ order: z.string(), amount: z.number() }),
+  requiresApproval: ({ amount }) => amount > 100, // small refunds need no one
+  sideEffects: ['payment'],
+  execute: async ({ order, amount }) => payments.refund(order, amount),
+});
+
+const result = await cog.run(support, {
+  input: 'Refund order A-1, it arrived broken',
+  threadId,
+  userId,
+});
+
+if (result.status === 'paused') {
+  for (const call of result.pendingApprovals!) {
+    console.log(`${call.toolName}(${JSON.stringify(call.arguments)}) needs approval`);
+  }
+}
+```
+
+Nothing of the paused turn has run: if the model asked for several tools at once, all of them wait, so a decision never comes after side effects already happened.
+
+## Resuming
+
+The runtime keeps the paused run per thread. Resume it with a decision for each call — declined calls answer the model with the reason, so it can tell the user or try something else:
+
+```typescript
+const done = await cog.resume(support, threadId, {
+  userId,
+  decisions: {
+    [callId]: { approved: true },
+    // or { approved: false, reason: 'refunds over $100 need a manager' }
+  },
+});
+```
+
+`defaultDecision` answers every waiting call at once (`{ approved: true }` for "approve all"). Calls without a decision keep the run paused. Resuming by thread id checks the caller: only the user the run belongs to may resume it (`THREAD_ACCESS_DENIED` otherwise), and a thread with nothing paused answers `RUN_NOT_PAUSED`.
+
+If the user writes something new instead of deciding, the waiting calls are answered as declined ("the user moved on") and the new run starts from a consistent history.
+
+## Deciding Inline
+
+When a person can answer while the run waits — a CLI prompt, a confirm dialog over a WebSocket — decide inline. Return `'pause'` to fall back to pausing:
+
+```typescript
+await cog.run(agent, {
+  input,
+  onApproval: async (call) => {
+    const ok = await confirm(`Run ${call.toolName} with ${JSON.stringify(call.arguments)}?`);
+    return ok ? { approved: true } : { approved: false, reason: 'declined in the CLI' };
+  },
+});
+```
+
+Without `onApproval`, `guardrails.onToolApproval` decides when it is set; otherwise the run pauses.
+
+## Where Paused Runs Live
+
+| Setup                     | Paused runs are kept in                                                             |
+| ------------------------- | ----------------------------------------------------------------------------------- |
+| `memory` configured       | the thread's metadata — as durable as the memory (Redis, Postgres, SQLite, MongoDB) |
+| no memory                 | process memory                                                                      |
+| `runCheckpoints: myStore` | your `RunCheckpointStore` (`save`, `load(threadId)`, `delete(threadId)`)            |
+
+The checkpoint holds the whole conversation, so it stays on the server. You can also keep it yourself — `result.checkpoint` is plain JSON — and pass it back: `cog.resume(agent, checkpoint, { decisions })`.
+
+## Servers and Chats
+
+- **Server adapters** answer a paused run with `status: 'paused'` and `pendingApprovals`, stream an `approval-required` event, and take decisions on `POST /agents/:name/resume` (`{ threadId, decisions?, defaultDecision? }`).
+- **Channels** ask in the chat ("reply approve or deny") and resume when the user answers — see [Channels](/docs/channels).

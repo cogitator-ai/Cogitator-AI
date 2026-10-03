@@ -19,26 +19,27 @@ Cogitator ships five server adapters that turn your agent runtime into a product
 
 All adapters register the same route structure under a configurable base path (default: `/cogitator`):
 
-| Method   | Path                       | Description                  |
-| -------- | -------------------------- | ---------------------------- |
-| `GET`    | `/health`                  | Health check                 |
-| `GET`    | `/ready`                   | Readiness probe              |
-| `GET`    | `/agents`                  | List registered agents       |
-| `POST`   | `/agents/:name/run`        | Run an agent (JSON response) |
-| `POST`   | `/agents/:name/stream`     | Run an agent (SSE stream)    |
-| `GET`    | `/threads/:id`             | Get thread messages          |
-| `POST`   | `/threads/:id/messages`    | Add a message to a thread    |
-| `DELETE` | `/threads/:id`             | Delete a thread              |
-| `GET`    | `/tools`                   | List all registered tools    |
-| `GET`    | `/workflows`               | List workflows               |
-| `POST`   | `/workflows/:name/run`     | Execute a workflow           |
-| `POST`   | `/workflows/:name/stream`  | Stream workflow execution    |
-| `GET`    | `/swarms`                  | List swarms                  |
-| `POST`   | `/swarms/:name/run`        | Execute a swarm              |
-| `POST`   | `/swarms/:name/stream`     | Stream swarm execution       |
-| `GET`    | `/swarms/:name/blackboard` | Get swarm blackboard state   |
-| `GET`    | `/openapi.json`            | OpenAPI 3.0 spec             |
-| `GET`    | `/docs`                    | Swagger UI                   |
+| Method   | Path                       | Description                                                |
+| -------- | -------------------------- | ---------------------------------------------------------- |
+| `GET`    | `/health`                  | Health check                                               |
+| `GET`    | `/ready`                   | Readiness probe                                            |
+| `GET`    | `/agents`                  | List registered agents                                     |
+| `POST`   | `/agents/:name/run`        | Run an agent (JSON response)                               |
+| `POST`   | `/agents/:name/stream`     | Run an agent (SSE stream)                                  |
+| `POST`   | `/agents/:name/resume`     | Resume a run paused for [approvals](/docs/tools/approvals) |
+| `GET`    | `/threads/:id`             | Get thread messages                                        |
+| `POST`   | `/threads/:id/messages`    | Add a message to a thread                                  |
+| `DELETE` | `/threads/:id`             | Delete a thread                                            |
+| `GET`    | `/tools`                   | List all registered tools                                  |
+| `GET`    | `/workflows`               | List workflows                                             |
+| `POST`   | `/workflows/:name/run`     | Execute a workflow                                         |
+| `POST`   | `/workflows/:name/stream`  | Stream workflow execution                                  |
+| `GET`    | `/swarms`                  | List swarms                                                |
+| `POST`   | `/swarms/:name/run`        | Execute a swarm                                            |
+| `POST`   | `/swarms/:name/stream`     | Stream swarm execution                                     |
+| `GET`    | `/swarms/:name/blackboard` | Get swarm blackboard state                                 |
+| `GET`    | `/openapi.json`            | OpenAPI 3.0 spec                                           |
+| `GET`    | `/docs`                    | Swagger UI                                                 |
 
 With Tetsu the base path is the `group()` you mount the controller in, and `/openapi.json` and `/docs` come from `docs()` of `@tetsujs/openapi`.
 
@@ -67,6 +68,8 @@ data: {"type":"finish","messageId":"msg_abc123","usage":{"inputTokens":50,"outpu
 
 data: [DONE]
 ```
+
+Agents with `reasoning: { summary: true }` stream their reasoning as its own part — `reasoning-start`, `reasoning-delta`, `reasoning-end` — before the text it leads to. A run that pauses for approval sends `{"type":"approval-required","threadId":"...","approvals":[...]}` before `finish`; resume it with `POST /agents/:name/resume` and `{ threadId, decisions? , defaultDecision? }`.
 
 A failed run ends with `{"type":"error","message":"...","code":"..."}` instead of `finish`. Workflow and swarm streams send `{"type":"workflow" | "swarm","event":"...","data":{...}}` events.
 

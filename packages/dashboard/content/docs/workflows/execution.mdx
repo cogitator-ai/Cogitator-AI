@@ -205,6 +205,18 @@ const fileStore = new FileCheckpointStore('/tmp/checkpoints');
 const executor = new WorkflowExecutor(cogitator, fileStore);
 ```
 
+For several processes, or a process that may be replaced, keep checkpoints in Redis or Postgres. The stores take the client you already have — an `@cogitator-ai/redis` client or ioredis, a `pg` Pool — and add no dependency:
+
+```typescript
+import { RedisCheckpointStore, PostgresCheckpointStore } from '@cogitator-ai/workflows';
+
+const redisStore = new RedisCheckpointStore({ client: redis, keyPrefix: 'myapp:checkpoints' });
+
+const pgStore = new PostgresCheckpointStore({ client: pool }); // creates cogitator_workflow_checkpoints on first use
+```
+
+A checkpoint saved by one process resumes in any other that reads the same store. A `WorkflowManager` with a `checkpointStore` checkpoints every run, so `replay(workflow, runId, node)` can run that node and everything after it again, while the nodes before it keep their results.
+
 ### Enabling Checkpoints
 
 ```typescript

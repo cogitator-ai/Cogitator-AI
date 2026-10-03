@@ -60,6 +60,12 @@ interface GatewayConfig {
   debounce?: DebounceConfig;
   envelope?: EnvelopeConfig;
   queueMode?: 'parallel' | 'sequential' | 'interrupt' | 'collect';
+  approvals?: {
+    format?: (approvals: ToolApprovalRequest[], words: ApprovalReplyWords) => string;
+    approveWords?: string[]; // default: approve, yes, да, одобряю
+    denyWords?: string[]; // default: deny, no, нет, отклоняю
+    notAllowedMessage?: string;
+  };
 
   onError?: (error: Error, msg: ChannelMessage) => void;
 }
@@ -93,11 +99,13 @@ User sends message
   → Session lookup/create (emits session:created)
   → Compaction (if the thread holds ≥ threshold messages)
   → Status reaction: 👀 → 🤔 → 🔥 on tool calls (if enabled)
-  → cogitator.run(agent, { input, threadId, stream })
+  → Approve/deny reply on a paused thread? cogitator.resume(agent, threadId, { defaultDecision })
+    otherwise cogitator.run(agent, { input, threadId, stream })
   → Status reaction: 👍 or 😱
   → StreamBuffer flushes progressively via editText
   → Platform-specific markdown adaptation
   → Response delivered
+  → Run paused for approval? Prompt listing the waiting tool calls
 ```
 
 ## Status Reactions
@@ -227,6 +235,41 @@ const gateway = new Gateway({
 | Max message length | 4096         | 2000      | 40000          | 65536    | unlimited |
 | Public URL needed  | webhook only | no        | HTTP mode only | no       | no        |
 | Auth model         | Bot token    | Bot token | 3 tokens       | QR code  | custom    |
+
+## Approvals
+
+Tools marked `requiresApproval` (for example `create_tool` from `capabilities.selfTools`) pause the run before they execute. The Gateway turns that pause into a chat conversation:
+
+1. The paused run's text (if any) is sent, followed by a prompt listing each waiting call — tool name, description and compact JSON arguments (cut at 300 characters).
+2. The user replies `approve` / `yes` to run the calls, or `deny` / `no` to refuse, optionally followed by a reason (`no, too risky`) that the agent sees. Replies are case-insensitive and may end with punctuation; `да` / `одобряю` and `нет` / `отклоняю` work out of the box.
+3. The Gateway calls `cogitator.resume(agent, threadId, { userId, defaultDecision })` and delivers the result like any reply, streaming included. If the run pauses again, a new prompt is sent.
+
+Any other message on a paused thread runs as usual, and the runtime answers the waiting calls as declined. An approve-only word with more text after it (`yes, but rename it`) counts as a new message, so nothing runs by accident.
+
+Only the user who started the run can answer it: the runtime checks the run's `userId` on resume. In a shared thread (a `threadKey` per group chat), someone else replying `approve` gets `notAllowedMessage` and the pause stays put.
+
+Pauses survive restarts when the runtime persists them (in the thread's memory once the Cogitator has a memory adapter, or in `runCheckpoints`): the first approve/deny reply on a thread the Gateway has not seen since it started tries `resume`, and runs as a normal message if nothing is paused. On threads it has already seen, the Gateway resumes only pauses it sent a prompt for, so one Gateway process should serve a given thread.
+
+```typescript
+const gateway = new Gateway({
+  // ...
+  approvals: {
+    approveWords: ['approve', 'yes', 'да'],
+    denyWords: ['deny', 'no', 'нет'],
+    format: (approvals, { approveWords, denyWords }) =>
+      `Разрешить ${approvals.map((a) => a.toolName).join(', ')}? ` +
+      `Ответьте «${approveWords[0]}» или «${denyWords[0]}».`,
+    notAllowedMessage: 'Подтвердить может только автор запроса.',
+  },
+});
+
+hooks.on('approval:requested', ({ threadId, approvals }) => audit.log(threadId, approvals));
+hooks.on('approval:resolved', ({ threadId, decision, superseded }) =>
+  audit.log(threadId, decision, superseded)
+);
+```
+
+`parseApprovalReply(text, words)` and `formatApprovalPrompt(approvals, words)` are exported for custom channels and UIs.
 
 ## Session Management
 

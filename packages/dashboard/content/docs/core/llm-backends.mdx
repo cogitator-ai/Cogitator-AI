@@ -265,6 +265,42 @@ const debugBackend = withDebug(backend, {
 });
 ```
 
+## Reasoning
+
+`reasoning` on an agent (or a run, or a `ChatRequest`) controls reasoning models the same way on every provider:
+
+```typescript
+reasoning: {
+  effort: 'high',      // none | minimal | low | medium | high | xhigh | max
+  budgetTokens: 8000,  // providers that take a thinking budget
+  summary: true,       // return a readable summary of the reasoning
+}
+```
+
+| Provider           | What `reasoning` becomes                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Anthropic, Bedrock | Claude 4.6+ / 5.x / Fable: `thinking: { type: 'adaptive' }` and the closest `output_config.effort` the model accepts; `none` turns thinking off where the model allows it (`disabled`, or `between_tools` on Sonnet 5.5) and asks for the lowest effort where it does not (Opus 5.5, Fable). Claude 3.7 – 4.5: a thinking budget (`budgetTokens`, or derived from the effort) added on top of `maxTokens`. |
+| OpenAI (Responses) | `reasoning.effort` and, with `summary`, `reasoning.summary: 'auto'` — reasoning models only                                                                                                                                                                                                                                                                                                                |
+| OpenAI-compatible  | `reasoning_effort`; reasoning text comes from `reasoning_content` / `reasoning` (DeepSeek, vLLM, Groq, OpenRouter)                                                                                                                                                                                                                                                                                         |
+| Google             | Gemini 3+: `thinkingConfig.thinkingLevel`; Gemini 2.5: `thinkingBudget` (Pro never below 128); `summary` → `includeThoughts`                                                                                                                                                                                                                                                                               |
+| Ollama             | `think`: a level for gpt-oss, on or off for other thinking models                                                                                                                                                                                                                                                                                                                                          |
+
+The reasoning comes back as `ChatResponse.reasoning` and `delta.reasoning` while streaming; agent runs collect it into `RunResult.reasoning` and stream it to `onReasoning`. Reasoning tokens are reported in `usage.reasoningTokens` and counted in `outputTokens` (Gemini bills them as output too).
+
+**Reasoning across tool calls.** Claude and OpenAI reasoning models keep thinking between tool calls only if their reasoning comes back with the next request. Backends keep it with the tool calls it preceded (`ToolCall.replay`) and send it back while the agent works through a tool loop. Claude's thinking blocks are tied to the conversation that produced them, so they are replayed only after the latest user message; if history was rewritten in between (context compression), the backend retries once without them.
+
+## Prompt Caching
+
+Agent runs cache their prompt by default. Anthropic and Bedrock cache only what the request marks, so their backends mark the stable prefix (tools, system prompt, history); OpenAI and Gemini cache on their own. Every provider reports what it served from cache, and the run's cost prices those tokens at the model's cache price:
+
+```typescript
+const result = await cog.run(agent, { input });
+result.usage.cachedInputTokens; // read from the cache (about a tenth of the input price on Claude)
+result.usage.cacheWriteTokens; // written to it (Anthropic: 1.25× the input price)
+```
+
+In an agent loop every iteration resends the previous one's prompt, so after the first call most of the input is a cache read. `llm.promptCache: { ttl: '1h' }` keeps Anthropic's cache for an hour instead of five minutes; `llm.promptCache: false` turns marking off. A single `ChatRequest` takes the same setting as `cache`.
+
 ## Retries
 
 The runtime retries LLM calls that fail with a retryable error: rate limits (429), server errors (5xx), timeouts and dropped connections. Authentication, bad requests and content filters fail at once. Retries are on by default for every backend an agent runs on, including your own `llm.backends` and plugins:

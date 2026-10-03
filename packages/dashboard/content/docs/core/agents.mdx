@@ -33,6 +33,8 @@ interface AgentConfig {
   maxTokens?: number;
   stopSequences?: string[];
   responseFormat?: ResponseFormat;
+  reasoning?: ReasoningConfig; // effort and summaries for reasoning models
+  handoffs?: Array<Agent | Handoff>; // agents it can hand the conversation over to
   maxIterations?: number; // default: 10
   timeout?: number; // default: limits.defaultTimeout of the Cogitator, else 120000 (2 min)
 }
@@ -177,6 +179,67 @@ const orchestrator = new Agent({
   tools: [researchTool],
 });
 ```
+
+## Reasoning
+
+Reasoning models think before they answer. `reasoning` sets how hard, in one vocabulary for every provider, and can ask for a readable summary of the thinking:
+
+```typescript
+const analyst = new Agent({
+  name: 'analyst',
+  model: 'anthropic/claude-opus-5-5',
+  instructions: 'Answer questions about the quarterly numbers.',
+  reasoning: { effort: 'high', summary: true },
+});
+
+const result = await cog.run(analyst, {
+  input: 'Why did margins drop in Q3?',
+  stream: true,
+  onReasoning: (delta) => process.stdout.write(delta), // the summary, while it streams
+});
+
+result.reasoning; // the whole summary
+result.usage.reasoningTokens; // thinking tokens, billed as output
+```
+
+`effort` goes from `none` to `max`; a run can override it with `cog.run(agent, { reasoning })`. How each provider applies it is in [LLM Backends](/docs/core/llm-backends#reasoning).
+
+## Handoffs
+
+An agent can hand the conversation over to another one. `handoffs` lists the agents it may pass to; each becomes a `transfer_to_<name>` tool described by the target's `description`. When the model calls it, the rest of the run goes on **as the target agent** — its instructions, tools, model and reasoning — with the whole conversation so far:
+
+```typescript
+const billing = new Agent({
+  name: 'billing',
+  description: 'Invoices, payments and refunds',
+  model,
+  instructions,
+  tools: [lookupInvoice],
+});
+const support = new Agent({
+  name: 'tech_support',
+  description: 'Login problems and outages',
+  model,
+  instructions,
+  tools: [serviceStatus],
+});
+
+const triage = new Agent({
+  name: 'triage',
+  model,
+  instructions: 'Greet the customer and hand the conversation to the right specialist.',
+  handoffs: [billing, support], // or { agent: billing, toolName: 'ask_billing', description: '...' }
+});
+
+const result = await cog.run(triage, {
+  input: 'How much do I owe on INV-204?',
+  onHandoff: console.log,
+});
+result.handoffs; // [{ from: 'triage', to: 'billing', reason: '...' }]
+result.finalAgent; // 'billing' — send the next message of this thread to it
+```
+
+Unlike [agents as tools](#agents-as-tools), where a sub-agent answers the caller and the caller keeps the conversation, a handoff gives the conversation away. Unlike [swarms](/docs/swarms), there is no coordinator: each agent decides when to pass on. A run that pauses for [approval](/docs/tools/approvals) after a handoff resumes in the agent it was handed to.
 
 ## Temperature Guidelines
 

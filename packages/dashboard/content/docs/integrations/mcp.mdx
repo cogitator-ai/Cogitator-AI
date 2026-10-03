@@ -317,6 +317,33 @@ server.registerPrompt({
 });
 ```
 
+## Serving Agents
+
+`serveAgents` turns Cogitator agents into an MCP server in one call. Each agent becomes a tool that takes a `task` (and optionally the `threadId` of an earlier answer, to continue that conversation — needs `memory` on the Cogitator) and answers with the agent's reply:
+
+```typescript
+import { serveAgents } from '@cogitator-ai/mcp';
+
+await serveAgents(cog, [researcher, writer]); // stdio — for Claude Desktop, Cursor, Claude Code
+await serveAgents(cog, support, { transport: 'http', port: 3333, auth }); // remote, per-user
+```
+
+In the client's MCP config:
+
+```json
+{ "mcpServers": { "cogitator": { "command": "npx", "args": ["tsx", "my-agents.ts"] } } }
+```
+
+Each tool is named after its agent (`toolNames` renames them) and described by the agent's `description`. With `auth`, runs carry the caller's `userId`, so threads and memory stay per user ([Multiple Users](/docs/advanced/multi-user)).
+
+**Approvals.** When an agent's tool needs [approval](/docs/tools/approvals), the server asks the person at the client through MCP elicitation and the run goes on with their answer. Clients without elicitation get a paused answer (`status: 'paused'`, `pendingApprovals`) and a `<agent>_resume` tool to continue with the user's decision. Elicitation needs a connection the client can reply on: stdio, or HTTP with `sessions: true` — which `serveAgents` turns on.
+
+`agentTools(cog, agents)` returns the same tools to register on an `MCPServer` you configure yourself.
+
+### Sessions
+
+`MCPServer` over HTTP serves each request on its own by default. `sessions: true` keeps a session per client (`mcp-session-id`), which requests from the server to the client — such as elicitation — need. A session belongs to the caller that started it: a request with another caller's credentials gets `403`. Tools reach the elicitation channel through their context: `(context as MCPToolContext).elicit?.({ message, schema })`.
+
 ## Tool Adapter
 
 Convert tools between Cogitator and MCP formats manually when you need fine-grained control.

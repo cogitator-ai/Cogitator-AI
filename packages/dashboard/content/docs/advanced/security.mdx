@@ -1,6 +1,6 @@
 ---
 title: Security
-description: Protect agents from prompt injection, classify inputs/outputs for safety, enforce rate limits, and sandbox untrusted code.
+description: Protect agents from prompt injection, keep personal data from model providers, classify inputs/outputs for safety, enforce rate limits, and sandbox untrusted code.
 ---
 
 ## Overview
@@ -111,6 +111,68 @@ detector.updateConfig({ threshold: 0.8, action: 'warn' });
 | `block` | Reject the input entirely, return blocked result       |
 | `warn`  | Allow the input but flag it, increment warning counter |
 | `log`   | Allow the input, record the threat for monitoring      |
+
+## PII Masking
+
+`security.pii` keeps personal data and secrets away from the model provider. Before every LLM request, emails, phone numbers, card numbers, IBANs, SSNs, IP addresses and API keys in the messages — user input, history, tool results, instructions — are replaced with placeholders such as `[EMAIL_1]`. The provider only ever sees the placeholders.
+
+```typescript
+const cog = new Cogitator({
+  llm: { providers: { anthropic: { apiKey: process.env.ANTHROPIC_API_KEY! } } },
+  security: {
+    pii: {
+      mode: 'mask',
+      custom: [{ type: 'customer_id', pattern: /CUS-\d{6}/ }],
+      onDetect: (counts) => audit.log('pii_masked', counts),
+    },
+  },
+});
+
+const result = await cog.run(agent, { input: 'Email the invoice to ann@example.com' });
+// The model saw "Email the invoice to [EMAIL_1]" and called
+// send_email({ to: '[EMAIL_1]' }); the tool received ann@example.com.
+```
+
+| Mode     | Behavior                                                                                                                  |
+| -------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `mask`   | Default. Placeholders go to the provider; the answer, its stream and tool call arguments get the real values back         |
+| `redact` | Placeholders go to the provider and stay in the answer and tool arguments — the values never leave your side of the agent |
+| `block`  | A run whose input has personal data fails with `PII_DETECTED` (400) before any request is made                            |
+
+- **Detection** — card numbers must pass the Luhn check and IBANs the mod-97 check, so order numbers and dates are left alone. `detect: ['email', 'phone']` limits the built-in kinds; `custom` adds your own.
+- **Stable placeholders** — within one request the same value always gets the same placeholder, and the masking is deterministic, so prompt caching keeps working.
+- **Streaming** — a placeholder split across chunks (`[EM` + `AIL_1]`) is held back until it is complete, then restored.
+- **Audit** — `onDetect` receives counts per kind (`{ email: 1 }`), never the values.
+- **Storage** — memory keeps the real values; masking happens only on the way to the provider.
+
+In YAML config, custom patterns are strings:
+
+```yaml
+security:
+  pii:
+    mode: redact
+    detect: [email, phone, credit_card]
+    custom:
+      - type: customer_id
+        pattern: 'CUS-\d{6}'
+```
+
+`PiiMasker` and `withPiiMasking` are exported for use outside a run:
+
+```typescript
+import { OpenAIBackend, PiiMasker, PiiVault, withPiiMasking } from '@cogitator-ai/core';
+
+const masker = new PiiMasker({ detect: ['email'] });
+masker.find('mail a@b.io'); // [{ type: 'email', value: 'a@b.io' }]
+
+const vault = new PiiVault();
+const masked = masker.mask('mail a@b.io', vault); // 'mail [EMAIL_1]'
+vault.restore(masked); // 'mail a@b.io'
+
+const backend = withPiiMasking(new OpenAIBackend({ apiKey: process.env.OPENAI_API_KEY! }), {
+  mode: 'mask',
+});
+```
 
 ## Input/Output Safety Classifiers
 

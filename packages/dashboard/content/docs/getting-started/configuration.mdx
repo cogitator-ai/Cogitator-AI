@@ -235,6 +235,31 @@ llm:
     maxRetryAfter: 60000 # a longer Retry-After fails the call at once
 ```
 
+### Prompt Caching
+
+Agent runs cache their prompt by default (see [LLM Backends](/docs/core/llm-backends#prompt-caching)):
+
+```yaml
+llm:
+  promptCache:
+    ttl: 1h # Anthropic keeps the cache for an hour instead of 5 minutes
+  # promptCache: false   — turn it off
+```
+
+### PII Masking
+
+Keep emails, phones, card numbers and other personal data away from the provider (see [Security](/docs/advanced/security#pii-masking)):
+
+```yaml
+security:
+  pii:
+    mode: mask # mask | redact | block
+    detect: [email, phone, credit_card, iban, ssn, ip_address, api_key]
+    custom:
+      - type: customer_id
+        pattern: 'CUS-\d{6}'
+```
+
 ## Config Merging
 
 Configs are merged with this priority (highest wins):

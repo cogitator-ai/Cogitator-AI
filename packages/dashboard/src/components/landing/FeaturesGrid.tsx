@@ -23,7 +23,7 @@ const features = [
   {
     title: 'Multi-Agent Swarms',
     description:
-      '6 coordination strategies out of the box. Hierarchical, consensus, round-robin, and more.',
+      'Swarm strategies out of the box, plus agents that hand conversations to each other and pause for a person to approve.',
     icon: <Users className="w-6 h-6" />,
     glowColor: '#00aaff',
   },
@@ -44,7 +44,7 @@ const features = [
   {
     title: 'MCP Protocol',
     description:
-      'Connect any MCP server as a tool, or serve your own with per-user auth so agents act with each user’s credentials.',
+      'Use any MCP server as tools, serve your agents to Claude Desktop or Cursor in one line, act with each user’s own credentials.',
     icon: <Plug className="w-6 h-6" />,
     glowColor: '#00aaff',
   },

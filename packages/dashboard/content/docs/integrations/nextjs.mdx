@@ -13,11 +13,12 @@ pnpm add @cogitator-ai/next @cogitator-ai/core
 
 ## Server: Chat Handler
 
-`createChatHandler` turns a Cogitator agent into a streaming API route handler. It accepts a standard `Request`, runs the agent with token streaming enabled, and returns an SSE stream of typed events (`start`, `text-*`, `tool-call-*`, `tool-result`, `finish`, `error`). The event names follow the Vercel AI SDK style, but the payloads are Cogitator-specific — consume them with `useCogitatorChat`.
+`createChatHandler` turns a Cogitator agent into a streaming API route handler. It accepts a standard `Request`, runs the agent with token streaming enabled, and returns an SSE stream of typed events (`start`, `text-*`, `reasoning-*`, `tool-call-*`, `tool-result`, `finish`, `error`). The event names follow the Vercel AI SDK style, but the payloads are Cogitator-specific — consume them with `useCogitatorChat`.
 
 - The **last user message** is the run input; history lives in the thread (configure `memory` on `Cogitator`). The `finish` event carries the `threadId`, and `useCogitatorChat` adopts it automatically.
 - Request `metadata` is passed to the run as `context`.
 - The run is aborted when the client disconnects.
+- An agent with `reasoning: { summary: true }` streams its summary as `reasoning-start` / `reasoning-delta` / `reasoning-end`; a reasoning or text block is closed before the other kind, a tool call or `finish` starts.
 - Bodies over 1 MB get `413`; malformed bodies or a request without a user message get `400`.
 
 ```typescript title="app/api/chat/route.ts"
@@ -92,8 +93,53 @@ interface AgentResponse {
   usage: { inputTokens: number; outputTokens: number; totalTokens: number };
   toolCalls: ToolCall[];
   trace: { traceId: string; spans: unknown[] };
+  reasoning?: string;
+  status?: 'completed' | 'paused';
+  pendingApprovals?: PendingApproval[];
 }
 ```
+
+## Approvals
+
+A tool with `requiresApproval` pauses the run before it executes. The runtime keeps the checkpoint on the server, per thread; clients only see the calls waiting for a decision (`toolCallId`, `toolName`, `arguments`, `description`, `sideEffects`). `createAgentHandler` answers with `status: 'paused'` and `pendingApprovals`, and `createChatHandler` streams `{ type: 'approval-required', threadId, approvals }` right before `finish`.
+
+`createResumeHandler` continues the run. Its body is `{ threadId, decisions?, defaultDecision? }`, a decision being `{ approved: true }` or `{ approved: false, reason? }` by tool call id. Approved calls run, declined ones answer the model with the reason, and undecided ones pause the run again:
+
+```typescript title="app/api/chat/resume/route.ts"
+import { createResumeHandler } from '@cogitator-ai/next';
+
+export const POST = createResumeHandler(cog, agent, {
+  stream: true,
+  beforeRun: async (req) => ({ userId: await getUserId(req) }),
+});
+```
+
+It answers like `createAgentHandler`, or streams like `createChatHandler` with `stream: true`. Return the caller's `userId` from `beforeRun`: only the user the run belongs to may resume it (`403 THREAD_ACCESS_DENIED`), and a thread without a paused run answers `409 RUN_NOT_PAUSED`.
+
+```tsx title="components/chat.tsx"
+const { pendingApprovals, approve, deny, resume } = useCogitatorChat({
+  api: '/api/chat',
+  resumeApi: '/api/chat/resume',
+  onApprovalRequired: (approvals) => console.log('Waiting for', approvals),
+});
+
+return (
+  <>
+    {pendingApprovals.map((call) => (
+      <p key={call.toolCallId}>
+        {call.toolName}: {JSON.stringify(call.arguments)}
+        <button onClick={() => resume({ decisions: { [call.toolCallId]: { approved: true } } })}>
+          Approve this one
+        </button>
+      </p>
+    ))}
+    <button onClick={() => approve()}>Approve all</button>
+    <button onClick={() => deny('Over the refund limit')}>Deny all</button>
+  </>
+);
+```
+
+The rest of the run streams into a new assistant message (a JSON `resumeApi` is appended as one message). `pendingApprovals` clears once the resume is accepted, when the server has nothing paused anymore (`409`), or when the user sends a new message, which declines the waiting calls. `useCogitatorAgent({ api, resumeApi })` exposes the `pendingApprovals` of its last result and `resume(decisions)`.
 
 ## Client: useCogitatorChat
 
@@ -141,35 +187,42 @@ export function Chat() {
 
 ### UseChatOptions
 
-| Option            | Type                                | Description                                                            |
-| ----------------- | ----------------------------------- | ---------------------------------------------------------------------- |
-| `api`             | `string`                            | API endpoint URL (required)                                            |
-| `threadId`        | `string`                            | Initial thread ID for conversation context                             |
-| `initialMessages` | `ChatMessage[]`                     | Pre-populate the message list                                          |
-| `headers`         | `Record<string, string>`            | Custom headers sent with each request                                  |
-| `onError`         | `(error: Error) => void`            | Error callback                                                         |
-| `onFinish`        | `(message: ChatMessage) => void`    | Called when assistant message is complete (not after an `error` event) |
-| `onToolCall`      | `(toolCall: ToolCall) => void`      | Called when a tool is invoked                                          |
-| `onToolResult`    | `(result: ToolResultEvent) => void` | Called when a tool returns a result                                    |
-| `retry`           | `RetryConfig`                       | Retry on network failures and 408/429/502/503/504                      |
+| Option               | Type                                     | Description                                                                                |
+| -------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `api`                | `string`                                 | API endpoint URL (required)                                                                |
+| `threadId`           | `string`                                 | Initial thread ID for conversation context                                                 |
+| `initialMessages`    | `ChatMessage[]`                          | Pre-populate the message list                                                              |
+| `headers`            | `Record<string, string>`                 | Custom headers sent with each request                                                      |
+| `onError`            | `(error: Error) => void`                 | Error callback                                                                             |
+| `onFinish`           | `(message: ChatMessage) => void`         | Called when assistant message is complete (not after an `error` event)                     |
+| `onToolCall`         | `(toolCall: ToolCall) => void`           | Called when a tool is invoked                                                              |
+| `onToolResult`       | `(result: ToolResultEvent) => void`      | Called when a tool returns a result                                                        |
+| `onReasoning`        | `(delta: string) => void`                | Called with each piece of the reasoning summary; the pieces collect in `message.reasoning` |
+| `onApprovalRequired` | `(approvals: PendingApproval[]) => void` | Called when the run pauses for [approvals](#approvals)                                     |
+| `resumeApi`          | `string`                                 | Endpoint of a `createResumeHandler`, for `resume`, `approve` and `deny`                    |
+| `retry`              | `RetryConfig`                            | Retry on network failures and 408/429/502/503/504                                          |
 
 ### Return Values
 
-| Field           | Type                            | Description                                          |
-| --------------- | ------------------------------- | ---------------------------------------------------- |
-| `messages`      | `ChatMessage[]`                 | All messages including live streaming                |
-| `input`         | `string`                        | Current input value                                  |
-| `setInput`      | `(value: string) => void`       | Update input                                         |
-| `send`          | `(input?, metadata?) => void`   | Send a message                                       |
-| `isLoading`     | `boolean`                       | Whether agent is running                             |
-| `error`         | `Error \| null`                 | Last error                                           |
-| `stop`          | `() => void`                    | Abort the current stream (the partial reply is kept) |
-| `reload`        | `() => Promise<void>`           | Re-send the last user message                        |
-| `threadId`      | `string \| undefined`           | Current thread ID                                    |
-| `setThreadId`   | `(id: string) => void`          | Switch conversation thread                           |
-| `appendMessage` | `(msg: ChatMessage) => void`    | Add a message to the list                            |
-| `clearMessages` | `() => void`                    | Reset conversation                                   |
-| `setMessages`   | `(msgs: ChatMessage[]) => void` | Replace message list                                 |
+| Field              | Type                                            | Description                                          |
+| ------------------ | ----------------------------------------------- | ---------------------------------------------------- |
+| `messages`         | `ChatMessage[]`                                 | All messages including live streaming                |
+| `input`            | `string`                                        | Current input value                                  |
+| `setInput`         | `(value: string) => void`                       | Update input                                         |
+| `send`             | `(input?, metadata?) => void`                   | Send a message                                       |
+| `isLoading`        | `boolean`                                       | Whether agent is running                             |
+| `error`            | `Error \| null`                                 | Last error                                           |
+| `stop`             | `() => void`                                    | Abort the current stream (the partial reply is kept) |
+| `reload`           | `() => Promise<void>`                           | Re-send the last user message                        |
+| `threadId`         | `string \| undefined`                           | Current thread ID                                    |
+| `setThreadId`      | `(id: string) => void`                          | Switch conversation thread                           |
+| `appendMessage`    | `(msg: ChatMessage) => void`                    | Add a message to the list                            |
+| `clearMessages`    | `() => void`                                    | Reset conversation                                   |
+| `setMessages`      | `(msgs: ChatMessage[]) => void`                 | Replace message list                                 |
+| `pendingApprovals` | `PendingApproval[]`                             | Tool calls the paused run waits on                   |
+| `resume`           | `(decisions: ResumeDecisions) => Promise<void>` | Continue the paused run with these decisions         |
+| `approve`          | `() => Promise<void>`                           | Approve every pending call                           |
+| `deny`             | `(reason?: string) => Promise<void>`            | Decline every pending call                           |
 
 HTTP failures surface as `HttpError` (exported from `@cogitator-ai/next/client`) with a `status` field and a message such as `Request failed: 400 - No user message provided`.
 
@@ -199,7 +252,7 @@ export function AgentRunner() {
 }
 ```
 
-Starting a new `run()` aborts the previous request, and `reset()` cancels the in-flight one.
+`createAgentHandler` returns the run's reasoning summary as `reasoning` (also exposed by the hook as `reasoning`), and `usage` carries `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the provider reports them. Starting a new `run()` aborts the previous request, and `reset()` cancels the in-flight one.
 
 ## Server Actions
 
@@ -210,9 +263,7 @@ You can also use Cogitator directly inside Next.js Server Actions without the HT
 
 import { Cogitator, Agent } from '@cogitator-ai/core';
 
-const cog = new Cogitator({
-  /* ... */
-});
+const cog = new Cogitator({/* ... */});
 
 const agent = new Agent({
   name: 'summarizer',

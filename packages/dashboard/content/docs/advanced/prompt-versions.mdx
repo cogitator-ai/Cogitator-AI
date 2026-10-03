@@ -1,0 +1,71 @@
+---
+title: Prompt Versions
+description: Deploy new instructions without redeploying code, roll back in one call, and A/B test instructions on live traffic with the results recorded per version.
+---
+
+## Overview
+
+An agent's `instructions` in code are its starting point. `cogitator.prompts` keeps versions on top of them: deploy a new version and every following run of that agent uses it; roll back and the old one is live again. Each version collects how its runs went — run count, success rate, average score, latency and cost — so you can tell whether a change helped.
+
+```typescript
+const v2 = await cog.prompts.deploy(
+  writer,
+  'You write release notes. Lead with what changed for the user.'
+);
+
+await cog.run(writer, { input }); // runs with v2
+result.prompt; // { key: 'writer', versionId: v2.id, version: 2 }
+
+await cog.prompts.rollbackTo(writer); // back to the previous version (recorded as a new one)
+await cog.prompts.history(writer); // newest first, with metrics
+```
+
+Versions are kept per agent `id` when you set one, else per `name`, so they outlive the process when the stores are durable. `deploy`, `history` and the rest take the agent or that key.
+
+## A/B Tests
+
+Test new instructions against the current ones on real traffic. Each thread gets one variant for the length of the test, so a conversation never changes voice halfway:
+
+```typescript
+await cog.prompts.startABTest(writer, {
+  name: 'shorter notes',
+  treatment: 'You write release notes in at most five bullet points.',
+  treatmentAllocation: 0.3, // 30% of threads
+  minSampleSize: 50,
+});
+
+const result = await cog.run(writer, { input, threadId });
+result.prompt?.abTest; // { id, variant: 'control' | 'treatment' }
+```
+
+Every run's score is recorded for its variant. Once both variants have `minSampleSize` runs and the difference is significant (Welch's t-test at `confidenceLevel`), or `maxDuration` passed, the test completes; with `autoDeployWinner` a winning treatment becomes the next version. `completeABTest(id)` ends a test early.
+
+## Scoring Runs
+
+By default a completed run scores 1 and a failed one 0, which compares success rates. Score what matters to you instead — an [eval metric](/docs/evals), a user's thumbs-up stored by run id, the length of the answer:
+
+```typescript
+const cog = new Cogitator({
+  prompts: {
+    score: async (result) => (await judge.evaluate(result.output)).score, // 0 – 1
+    autoDeployWinner: true,
+  },
+});
+```
+
+## Stores
+
+Versions and tests live in process memory unless you pass stores. `PostgresTraceStore` from the [learning](/docs/advanced/learning) module holds both:
+
+```typescript
+import { PostgresTraceStore } from '@cogitator-ai/core';
+
+const store = new PostgresTraceStore({ connectionString: process.env.DATABASE_URL! });
+await store.connect();
+
+const cog = new Cogitator({
+  prompts: { versions: store.instructionVersions(), abTests: store.abTests() },
+});
+```
+
+Any object implementing `InstructionVersionStore` and `ABTestStore` works too.

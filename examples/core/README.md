@@ -26,6 +26,8 @@ cp .env.example .env  # add GOOGLE_API_KEY at minimum
 | 11  | `11-prompt-injection.ts`  | Prompt injection detection and threat analysis                     |
 | 12  | `12-causal-reasoning.ts`  | Causal graphs, interventions, counterfactual reasoning             |
 | 13  | `13-model-registry.ts`    | Model registry: pricing, filtering, provider discovery             |
+| 14  | `14-approvals.ts`         | Pause before a sensitive tool, resume after a person decides       |
+| 15  | `15-handoffs.ts`          | A triage agent hands the conversation to billing or tech support   |
 
 ## Running
 

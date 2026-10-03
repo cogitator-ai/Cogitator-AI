@@ -1,0 +1,116 @@
+---
+title: Edge Runtimes
+description: Run Cogitator agents on Cloudflare Workers, Deno and Bun with the Hono adapter — what works, what to configure, and what needs a Node.js server.
+---
+
+## Overview
+
+`@cogitator-ai/core` runs on any runtime with `fetch` and Web Streams. LLM calls, tools you define, streaming, reasoning, handoffs, approvals, PII masking and in-memory threads all work on Cloudflare Workers, Deno and Bun; the [Hono adapter](/docs/server-adapters/hono) serves agents over HTTP and SSE there.
+
+| Runtime            | Setup                                                                                        |
+| ------------------ | -------------------------------------------------------------------------------------------- |
+| Cloudflare Workers | `compatibility_date` 2026-08-04 or later, or `"compatibility_flags": ["nodejs_compat"]`      |
+| Deno 2             | `--allow-net` and `--allow-env` for the variables you read — no file system or `--allow-sys` |
+| Bun                | Nothing; the [Tetsu adapter](/docs/server-adapters/tetsu) is Bun-native                      |
+
+## Cloudflare Workers
+
+Agents, tools and the `Cogitator` itself can be created at module scope:
+
+```typescript
+import { env } from 'cloudflare:workers';
+import { Agent, Cogitator, tool } from '@cogitator-ai/core';
+import { cogitatorApp } from '@cogitator-ai/hono';
+import { z } from 'zod';
+
+const assistant = new Agent({
+  name: 'assistant',
+  model: 'google/gemini-3.5-flash-lite',
+  instructions: 'You are a helpful assistant.',
+  tools: [
+    tool({
+      name: 'add',
+      description: 'Add two numbers',
+      parameters: z.object({ a: z.number(), b: z.number() }),
+      execute: async ({ a, b }) => a + b,
+    }),
+  ],
+});
+
+const cogitator = new Cogitator({
+  llm: { providers: { google: { apiKey: env.GOOGLE_API_KEY } } },
+});
+
+export default cogitatorApp({ cogitator, agents: { assistant } });
+```
+
+```jsonc
+// wrangler.jsonc
+{
+  "name": "cogitator-agent",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+}
+```
+
+`POST /agents/assistant/run` answers with JSON, `POST /agents/assistant/stream` with SSE. A complete project is in [`examples/integrations/10-cloudflare-worker`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/examples/integrations/10-cloudflare-worker).
+
+### Database memory
+
+In-memory threads last as long as the isolate. For lasting conversations use the Postgres memory adapter, and create the `Cogitator` per request — Workers do not let a request use a connection that another request opened, so a pool shared across requests hangs:
+
+```typescript
+export default {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext) {
+    const cogitator = new Cogitator({
+      llm: { providers: { google: { apiKey: env.GOOGLE_API_KEY } } },
+      memory: { adapter: 'postgres', postgres: { connectionString: env.DATABASE_URL } },
+    });
+    const response = await cogitatorApp({ cogitator, agents: { assistant } }).fetch(
+      request,
+      env,
+      ctx
+    );
+    ctx.waitUntil(
+      response
+        .clone()
+        .arrayBuffer()
+        .then(() => cogitator.close())
+    );
+    return response;
+  },
+};
+```
+
+## Deno
+
+```typescript
+import { Agent, Cogitator } from '@cogitator-ai/core';
+import { cogitatorApp } from '@cogitator-ai/hono';
+import { Hono } from 'hono';
+
+const cog = new Cogitator({
+  llm: { providers: { google: { apiKey: Deno.env.get('GOOGLE_API_KEY')! } } },
+});
+const assistant = new Agent({ name: 'assistant', model: 'google/gemini-3.5-flash-lite' });
+
+const app = new Hono().route('/cogitator', cogitatorApp({ cogitator: cog, agents: { assistant } }));
+Deno.serve({ port: 3105 }, app.fetch);
+```
+
+```bash
+deno run --allow-net --allow-env=GOOGLE_API_KEY server.ts
+```
+
+The runtime reads environment variables only when a feature needs them, and the model price list stays in memory when the file system is not allowed. See [`examples/integrations/09-deno-server.ts`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/examples/integrations/09-deno-server.ts).
+
+## What Needs Node.js
+
+These rely on processes, the local file system or native modules and stay on a Node.js (or Bun) server:
+
+- the `exec` and `fileRead` / `fileWrite` / `fileList` / `fileExists` / `fileDelete` tools, `createDeviceTools()` and `createSelfTools()`
+- the Docker sandbox (`@cogitator-ai/sandbox`)
+- SQLite memory (`better-sqlite3`)
+- the worker queue (`@cogitator-ai/worker`, BullMQ)
+
+The model price cache is written to `~/.cogitator` only where a file system is available; elsewhere it stays in memory.

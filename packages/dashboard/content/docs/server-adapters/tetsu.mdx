@@ -70,6 +70,7 @@ Every error is answered in Tetsu's envelope `{ status, message, error }`. A requ
 | 403    | `THREAD_FORBIDDEN`      | `authorizeThread` refused the thread                        |
 | 404    | `AGENT_NOT_FOUND`, …    | No agent, workflow or swarm with that name                  |
 | 409    | `BLACKBOARD_DISABLED`   | The swarm has no blackboard                                 |
+| 409    | `RUN_NOT_PAUSED`        | A resume named a thread without a paused run                |
 | 501    | `PACKAGE_NOT_INSTALLED` | `@cogitator-ai/workflows` or `@cogitator-ai/swarms` missing |
 | 503    | `MEMORY_NOT_CONFIGURED` | A thread endpoint on a runtime without memory               |
 
@@ -129,9 +130,21 @@ cogitatorController({
 
 Use it for rules ownership does not express, such as thread ids your server hands out.
 
+## Approvals
+
+A tool with `requiresApproval` pauses the run before it executes. `POST /agents/:name/run` answers with `status: 'paused'` and `pendingApprovals` (`toolCallId`, `toolName`, `arguments`, `description`, `sideEffects`); the checkpoint stays on the server, stored by the runtime per thread. A paused stream sends `approval-required` with the same calls right before `finish`.
+
+```bash
+curl -X POST localhost:3000/cogitator/agents/support/resume \
+  -H 'content-type: application/json' \
+  -d '{ "threadId": "thread_…", "decisions": { "call_1": { "approved": true } } }'
+```
+
+`POST /agents/:name/resume` takes `{ threadId, decisions?, defaultDecision? }`, where a decision is `{ approved, reason? }` by tool call id. Approved calls run, declined ones answer the model with the reason, and calls left undecided pause the run again. `/agents/:name/resume/stream` streams the rest of the run, and the WebSocket accepts `{ type: 'resume', id, payload: { name, threadId, decisions? } }`. Only the user the run belongs to may resume it (`403 THREAD_ACCESS_DENIED`; `authorizeThread` is checked too), and a thread with nothing paused answers `409 RUN_NOT_PAUSED`.
+
 ## Streaming
 
-`/stream` routes use `@tetsujs/sse`: keep-alive comments, backpressure, and the run is aborted when the client leaves. Events follow the [shared protocol](/docs/server-adapters#streaming-protocol). Validation, `401`, `403` and `404` are answered as JSON before the stream opens.
+`/stream` routes use `@tetsujs/sse`: keep-alive comments, backpressure, and the run is aborted when the client leaves. Events follow the [shared protocol](/docs/server-adapters#streaming-protocol); an agent with `reasoning: { summary: true }` also streams `reasoning-start`, `reasoning-delta` and `reasoning-end`, closed before text, tool calls and `finish`, and `POST /agents/:name/run` returns the summary as `reasoning`. Validation, `401`, `403` and `404` are answered as JSON before the stream opens.
 
 ## WebSocket
 
@@ -139,7 +152,7 @@ Use it for rules ownership does not express, such as thread ids your server hand
 cogitatorController({ cogitator, agents, auth, websocket: true });
 ```
 
-The handshake runs `auth`. Send `{ type: 'run', id, payload: { type: 'agent', name, input, threadId? } }` and receive `event` frames (`token`, `tool-call`, `tool-result`, then `complete` or `cancelled`). `{ type: 'stop' }` cancels the run, `{ type: 'ping' }` is answered with `pong`, and errors arrive as `{ type: 'error', error, code }` without closing the socket.
+The handshake runs `auth`. Send `{ type: 'run', id, payload: { type: 'agent', name, input, threadId? } }` and receive `event` frames (`token`, `reasoning`, `tool-call`, `tool-result`, then `complete` or `cancelled`). `{ type: 'resume', id, payload: { name, threadId, decisions? } }` continues a run paused for [approvals](#approvals). `{ type: 'stop' }` cancels the run, `{ type: 'ping' }` is answered with `pong`, and errors arrive as `{ type: 'error', error, code }` without closing the socket.
 
 ## Shutdown
 

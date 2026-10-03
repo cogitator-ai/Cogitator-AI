@@ -59,6 +59,7 @@ console.log(result.output);
 - **Time Travel** - Checkpoint, replay, fork, and compare executions
 - **Causal Reasoning** - Pearl's do-calculus, counterfactuals, d-separation
 - **Resilience** - Retry, circuit breaker, and fallback patterns
+- **PII Masking** - Personal data and secrets replaced with placeholders before they reach the provider
 - **Observability** - Full tracing with spans and callbacks
 
 ---
@@ -216,6 +217,31 @@ const variant = agent.clone({
 });
 ```
 
+### Reasoning and Prompt Caching
+
+`reasoning` sets how hard a reasoning model thinks, in one vocabulary for every provider (Anthropic adaptive thinking and effort, OpenAI `reasoning.effort`, Gemini thinking levels or budgets, Ollama `think`), and can ask for a readable summary:
+
+```typescript
+const analyst = new Agent({
+  name: 'analyst',
+  model: 'anthropic/claude-opus-5-5',
+  instructions: 'Explain the numbers.',
+  reasoning: { effort: 'high', summary: true }, // none | minimal | low | medium | high | xhigh | max
+});
+
+const result = await cog.run(analyst, {
+  input,
+  stream: true,
+  onReasoning: (d) => process.stdout.write(d),
+});
+result.reasoning; // the summary
+result.usage.reasoningTokens; // billed as output
+```
+
+Reasoning that has to travel with tool calls (Claude thinking blocks, OpenAI reasoning items, Gemini thought signatures) is sent back while the agent works through a tool loop.
+
+Runs cache their prompt by default: Anthropic and Bedrock requests mark their stable prefix, OpenAI and Gemini cache on their own, and `usage.cachedInputTokens` / `cacheWriteTokens` are priced at the model's cache prices. `llm.promptCache: { ttl: '1h' }` or `false` changes it.
+
 ---
 
 ## Tools
@@ -239,6 +265,59 @@ const weatherTool = tool({
   },
 });
 ```
+
+### Handoffs
+
+`handoffs` lets an agent pass the conversation to another one: each target becomes a `transfer_to_<name>` tool, and the rest of the run goes on as the target — its instructions, tools and model — with the whole conversation:
+
+```typescript
+const triage = new Agent({
+  name: 'triage',
+  model,
+  instructions: 'Hand the customer to the right specialist.',
+  handoffs: [billing, techSupport],
+});
+
+const result = await cog.run(triage, { input: 'How much do I owe on INV-204?' });
+result.handoffs; // [{ from: 'triage', to: 'billing', reason }]
+result.finalAgent; // 'billing'
+```
+
+### Approvals
+
+A tool with `requiresApproval` (`true` or a function of its arguments) never runs without a person's decision. Decide inline with `onApproval`, or let the run pause and resume it later:
+
+```typescript
+const result = await cog.run(agent, { input: 'Refund order A-1', threadId, userId });
+
+if (result.status === 'paused') {
+  // result.pendingApprovals: [{ toolCallId, toolName, arguments, description }]
+  const done = await cog.resume(agent, threadId, {
+    userId,
+    decisions: { [result.pendingApprovals![0].toolCallId]: { approved: true } },
+  });
+}
+```
+
+Nothing of the paused turn runs until every call in it is decided. Paused runs live in the thread's memory (or process memory, or your `runCheckpoints` store), so a resume can come after a restart; a new message on the thread instead declines the waiting calls.
+
+### PII Masking
+
+`security.pii` replaces emails, phones, card numbers (Luhn-checked), IBANs, SSNs, IP addresses, API keys and your own patterns with placeholders before every LLM request, so the provider never sees them:
+
+```typescript
+const cog = new Cogitator({
+  security: {
+    pii: {
+      mode: 'mask', // 'redact' keeps placeholders in the answer, 'block' rejects such input
+      custom: [{ type: 'customer_id', pattern: /CUS-\d{6}/ }],
+      onDetect: (counts) => audit.log(counts), // { email: 1 } — never the values
+    },
+  },
+});
+```
+
+In `mask` mode the answer, its stream and tool call arguments get the real values back, so `send_email({ to: '[EMAIL_1]' })` reaches the tool as the real address. `PiiMasker`, `PiiVault` and `withPiiMasking` work outside a run too.
 
 ### Tool Context
 

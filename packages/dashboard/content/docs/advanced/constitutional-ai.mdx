@@ -134,7 +134,7 @@ if (!guardResult.approved) {
 }
 ```
 
-The `ToolGuard` checks for dangerous commands (`rm -rf /`, `format c:`), sensitive file paths (`/etc/shadow`, `~/.ssh/`), and respects each tool's `requiresApproval` and `sideEffects` declarations. In `strictMode`, all tools with side effects require explicit approval.
+The `ToolGuard` checks for dangerous commands (`rm -rf /`, `format c:`), sensitive file paths (`/etc/shadow`, `~/.ssh/`), and respects each tool's `requiresApproval` and `sideEffects` declarations. In `strictMode`, all tools with side effects require explicit approval. `requiresApproval` itself is enforced by the runtime whether or not guardrails are on: `onToolApproval` decides when the run has no `onApproval`, and without either the run pauses ([Approvals](/docs/tools/approvals)).
 
 ### Tool Results
 

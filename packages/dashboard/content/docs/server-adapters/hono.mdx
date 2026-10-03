@@ -104,6 +104,8 @@ const app = cogitatorApp({ cogitator, agents: { summarizer } });
 export default { fetch: app.fetch };
 ```
 
+Workers need a `compatibility_date` of 2026-08-04 or later (or the `nodejs_compat` flag), and a `Cogitator` with database memory is created per request. [Edge Runtimes](/docs/deployment/edge) covers setup, permissions on Deno and what needs a Node.js server.
+
 ## Authentication
 
 The auth function receives Hono's `Context<HonoEnv>` and returns an `AuthContext`:

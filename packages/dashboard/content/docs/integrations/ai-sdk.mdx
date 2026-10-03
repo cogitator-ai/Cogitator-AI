@@ -86,6 +86,7 @@ The first model uses the auto-detected spec; the second overrides it. On **ai@4*
   - All models list them in `providerMetadata.cogitator.toolCalls` next to `runId`, `threadId`, `agentId`, `model`, `cost` and `duration`.
 - The text of user and assistant messages becomes the agent input; multi-turn prompts are sent as a `User:` / `Assistant:` transcript. System messages, images and files are not forwarded (the agent `instructions` are the system prompt) and produce a warning.
 - `temperature`, `topP`, `maxOutputTokens` (`maxTokens` on ai@4) and `stopSequences` override the agent configuration for that call. `abortSignal` and cancelling a stream abort the run.
+- The `reasoning` option of `v4` models overrides the effort of the agent's `reasoning`. With `reasoning: { summary: true }` the agent's summary comes back as `reasoning` content and `reasoning-*` stream parts.
 - Structured output (`Output.object`, `generateObject`, ai@4 object modes) switches the agent to JSON mode and adds the JSON schema to the input.
 - AI SDK `tools` that the agent does not own cannot be called by the agent and produce a warning.
 
@@ -165,7 +166,8 @@ The backend branches on the model's `specificationVersion` and converts:
 
 - messages -- text, images (URL or base64), assistant tool calls and tool results as structured prompt parts
 - `tools`, `toolChoice`, `responseFormat`, `temperature`, `topP`, `maxTokens`, `stop` and the abort signal
-- responses -- text, client tool calls (provider-executed calls are skipped), finish reasons and usage including cached and reasoning tokens
+- `reasoning.effort` -- the `reasoning` call option of `v4` models (`max` becomes `xhigh`); for older specifications, set reasoning on the AI SDK provider model
+- responses -- text, reasoning (`ChatResponse.reasoning`, `delta.reasoning`), client tool calls (provider-executed calls are skipped), finish reasons and usage including cached, cache-write and reasoning tokens
 - Gemini thought signatures on tool calls, which are replayed on the next turn
 
 ### Running Agents on an AI SDK Model
