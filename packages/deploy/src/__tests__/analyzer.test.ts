@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ProjectAnalyzer } from '../analyzer';
+import type { ProjectBuild } from '../index';
 
 describe('ProjectAnalyzer', () => {
   it('detects server from package.json dependencies', () => {
@@ -171,5 +172,26 @@ describe('ProjectAnalyzer.analyze', () => {
     ]);
     expect(analyzer.isOllamaCloud('ollama/gpt-oss:120b-cloud')).toBe(true);
     expect(analyzer.detectSecrets('ollama/gpt-oss:120b-cloud')).toEqual(['OLLAMA_API_KEY']);
+  });
+
+  it('describes a project build with the ProjectBuild type exported from the package', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deploy-build-'));
+    try {
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { build: 'tsc' } }));
+      writeFileSync(join(dir, 'tsconfig.json'), '{}');
+      writeFileSync(join(dir, 'pnpm-lock.yaml'), '');
+
+      const build: ProjectBuild = new ProjectAnalyzer().detectBuild(dir);
+
+      expect(build).toEqual({
+        hasTypeScript: true,
+        packageManager: 'pnpm',
+        hasLockfile: true,
+        hasBuildScript: true,
+        startCommand: ['node', 'dist/server.js'],
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -1,5 +1,5 @@
 export { ProjectAnalyzer } from './analyzer.js';
-export type { AnalyzerResult, PackageManager } from './analyzer.js';
+export type { AnalyzerResult, PackageManager, ProjectBuild } from './analyzer.js';
 export { ArtifactGenerator } from './generator.js';
 export type { GeneratorOptions } from './generator.js';
 export { Deployer } from './deployer.js';
