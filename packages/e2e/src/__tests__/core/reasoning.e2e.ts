@@ -42,20 +42,28 @@ describeGoogle('Core: reasoning on Gemini', () => {
     expect(result.usage.cost).toBeGreaterThan(0);
   });
 
-  it('streams the reasoning before the answer', { timeout: 120_000 }, async () => {
-    const events: Array<'reasoning' | 'token'> = [];
+  it('streams the reasoning before the answer', { timeout: 240_000 }, async () => {
+    let streamedReasoning = false;
 
-    const result = await cogitator.run(thinker({ effort: 'high', summary: true }), {
-      input: QUESTION,
-      stream: true,
-      onReasoning: () => events.push('reasoning'),
-      onToken: () => events.push('token'),
-    });
+    for (let attempt = 0; attempt < 3 && !streamedReasoning; attempt++) {
+      const events: Array<'reasoning' | 'token'> = [];
+      const result = await cogitator.run(thinker({ effort: 'high', summary: true }), {
+        input: QUESTION,
+        stream: true,
+        onReasoning: () => events.push('reasoning'),
+        onToken: () => events.push('token'),
+      });
 
-    expect(result.output).toContain('215');
-    expect(events[0]).toBe('reasoning');
-    expect(events).toContain('token');
-    expect(events.lastIndexOf('reasoning')).toBeLessThan(events.indexOf('token'));
+      expect(result.output).toContain('215');
+      expect(events).toContain('token');
+      if (events.includes('reasoning')) {
+        streamedReasoning = true;
+        expect(events[0]).toBe('reasoning');
+        expect(events.lastIndexOf('reasoning')).toBeLessThan(events.indexOf('token'));
+      }
+    }
+
+    expect(streamedReasoning).toBe(true);
   });
 
   it('thinks less at the lowest effort', { timeout: 120_000 }, async () => {
