@@ -186,6 +186,12 @@ Available items to craft: wooden_sword, stone_pickaxe, iron_armor, gold_ring, fo
     );
     console.log(`  Original output: ${result.output.slice(0, 120)}...`);
     console.log(`  Fork output:     ${forkResult.result.output.slice(0, 120)}...`);
+
+    const diff = await tt.compareWithOriginal(forkResult.result);
+    console.log(
+      `\n  Diff: ${diff.commonSteps} common steps, diverged at step ${diff.divergencePoint ?? '-'}`
+    );
+    console.log(tt.formatDiff(diff));
   }
 
   await cog.close();

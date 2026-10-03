@@ -18,6 +18,7 @@ import { ExecutionReplayer } from './replayer';
 import { ExecutionForker } from './forker';
 import { TraceComparator } from './comparator';
 import { InMemoryTraceStore } from '../learning/trace-store';
+import { buildExecutionTrace, runInput } from '../learning/trace-builder';
 
 export interface TimeTravelOptions {
   checkpointStore?: TimeTravelCheckpointStore;
@@ -62,10 +63,12 @@ export class TimeTravel {
   ): Promise<ExecutionCheckpoint> {
     const checkpoint = this.checkpointStore.createFromRunResult(result, stepIndex, { label });
     await this.checkpointStore.save(checkpoint);
+    await this.recordTrace(result);
     return checkpoint;
   }
 
   async checkpointAll(result: RunResult, labelPrefix?: string): Promise<ExecutionCheckpoint[]> {
+    await this.recordTrace(result);
     return this.checkpointStore.createAllFromRunResult(result, { labelPrefix });
   }
 
@@ -78,6 +81,7 @@ export class TimeTravel {
       throw new Error('Checkpoint interval must be a positive integer');
     }
 
+    await this.recordTrace(result);
     const stepCount = this.countSteps(result);
     const checkpoints: ExecutionCheckpoint[] = [];
 
@@ -109,11 +113,17 @@ export class TimeTravel {
     checkpointId: string,
     options?: Partial<ReplayOptions>
   ): Promise<ReplayResult> {
-    return this.replayer.replay(this.cogitator, agent, {
+    const result = await this.replayer.replay(this.cogitator, agent, {
       fromCheckpoint: checkpointId,
       mode: options?.mode ?? 'live',
       ...options,
     });
+    if (options?.mode === 'deterministic') {
+      await this.recordDeterministicTrace(result);
+    } else {
+      await this.recordTrace(result, true);
+    }
+    return result;
   }
 
   async replayDeterministic(agent: Agent, checkpointId: string): Promise<ReplayResult> {
@@ -133,10 +143,12 @@ export class TimeTravel {
     checkpointId: string,
     options?: Partial<ForkOptions>
   ): Promise<ForkResult> {
-    return this.forker.fork(this.cogitator, agent, {
-      checkpointId,
-      ...options,
-    });
+    return this.recordFork(
+      await this.forker.fork(this.cogitator, agent, {
+        checkpointId,
+        ...options,
+      })
+    );
   }
 
   async forkWithContext(
@@ -145,12 +157,14 @@ export class TimeTravel {
     additionalContext: string,
     label?: string
   ): Promise<ForkResult> {
-    return this.forker.forkWithContext(
-      this.cogitator,
-      agent,
-      checkpointId,
-      additionalContext,
-      label
+    return this.recordFork(
+      await this.forker.forkWithContext(
+        this.cogitator,
+        agent,
+        checkpointId,
+        additionalContext,
+        label
+      )
     );
   }
 
@@ -161,12 +175,14 @@ export class TimeTravel {
     mockResult: unknown,
     label?: string
   ): Promise<ForkResult> {
-    return this.forker.forkWithMockedTools(
-      this.cogitator,
-      agent,
-      checkpointId,
-      { [toolName]: mockResult },
-      label
+    return this.recordFork(
+      await this.forker.forkWithMockedTools(
+        this.cogitator,
+        agent,
+        checkpointId,
+        { [toolName]: mockResult },
+        label
+      )
     );
   }
 
@@ -176,7 +192,9 @@ export class TimeTravel {
     mockResults: Record<string, unknown>,
     label?: string
   ): Promise<ForkResult> {
-    return this.forker.forkWithMockedTools(this.cogitator, agent, checkpointId, mockResults, label);
+    return this.recordFork(
+      await this.forker.forkWithMockedTools(this.cogitator, agent, checkpointId, mockResults, label)
+    );
   }
 
   async forkWithNewInput(
@@ -185,7 +203,9 @@ export class TimeTravel {
     newInput: string,
     label?: string
   ): Promise<ForkResult> {
-    return this.forker.forkWithNewInput(this.cogitator, agent, checkpointId, newInput, label);
+    return this.recordFork(
+      await this.forker.forkWithNewInput(this.cogitator, agent, checkpointId, newInput, label)
+    );
   }
 
   async forkMultiple(
@@ -193,7 +213,9 @@ export class TimeTravel {
     checkpointId: string,
     variants: Array<Partial<ForkOptions>>
   ): Promise<ForkResult[]> {
-    return this.forker.forkMultiple(this.cogitator, agent, checkpointId, variants);
+    const forks = await this.forker.forkMultiple(this.cogitator, agent, checkpointId, variants);
+    for (const fork of forks) await this.recordFork(fork);
+    return forks;
   }
 
   async compare(traceId1: string, traceId2: string): Promise<TraceDiff> {
@@ -218,6 +240,42 @@ export class TimeTravel {
 
   getConfig(): TimeTravelConfig {
     return { ...this.config };
+  }
+
+  /**
+   * Stores a run's trace under its trace id, so `compare()` can read it. The
+   * trace of an original run is stored once; a replay's is always new.
+   */
+  private async recordTrace(result: RunResult, replay = false): Promise<void> {
+    const id = result.trace.traceId;
+    if (!replay && (await this.traceStore.get(id))) return;
+    await this.traceStore.store(buildExecutionTrace(result, runInput(result), { id }));
+  }
+
+  /**
+   * A deterministic replay runs no model or tool calls, so its trace is the
+   * original's up to the replayed step, ending in the replayed output.
+   */
+  private async recordDeterministicTrace(result: ReplayResult): Promise<void> {
+    const original = await this.traceStore.get(result.originalTraceId);
+    if (!original) {
+      await this.recordTrace(result, true);
+      return;
+    }
+    await this.traceStore.store({
+      ...original,
+      id: result.trace.traceId,
+      runId: result.runId,
+      output: result.output,
+      steps: original.steps.slice(0, result.stepsReplayed),
+      createdAt: new Date(),
+      isDemo: false,
+    });
+  }
+
+  private async recordFork(fork: ForkResult): Promise<ForkResult> {
+    await this.recordTrace(fork.result, true);
+    return fork;
   }
 
   private countSteps(result: RunResult): number {

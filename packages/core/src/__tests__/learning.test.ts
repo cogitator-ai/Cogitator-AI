@@ -78,6 +78,7 @@ function createMockRunResult(overrides: Partial<RunResult> = {}): RunResult {
     threadId: 'thread_123',
     output: 'test output',
     toolCalls: [],
+    messages: [],
     usage: {
       inputTokens: 100,
       outputTokens: 50,

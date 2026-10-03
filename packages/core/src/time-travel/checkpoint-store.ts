@@ -7,6 +7,7 @@ import type {
   RunResult,
   ExecutionTrace,
 } from '@cogitator-ai/types';
+import { toolResultsByCallId } from '../learning/trace-builder';
 
 export class InMemoryCheckpointStore implements TimeTravelCheckpointStore {
   private checkpoints = new Map<string, ExecutionCheckpoint>();
@@ -281,17 +282,17 @@ export class InMemoryCheckpointStore implements TimeTravelCheckpointStore {
     stepIndex: number
   ): Record<string, unknown> {
     const toolResults: Record<string, unknown> = {};
+    const resultsByCall = toolResultsByCallId(result.messages);
     let count = 0;
 
     for (const span of result.trace.spans) {
       if (span.name.startsWith('tool.')) {
-        if (count < stepIndex && span.attributes?.result !== undefined) {
-          const callId =
-            this.getStringAttribute(span.attributes, 'tool.call_id') ??
-            this.getStringAttribute(span.attributes, 'call_id');
-          if (callId) {
-            toolResults[callId] = span.attributes.result;
-          }
+        const callId = this.callIdOf(span.attributes);
+        if (count < stepIndex && callId) {
+          const value = resultsByCall.has(callId)
+            ? resultsByCall.get(callId)
+            : span.attributes.result;
+          if (value !== undefined) toolResults[callId] = value;
         }
         count++;
       }
@@ -309,8 +310,11 @@ export class InMemoryCheckpointStore implements TimeTravelCheckpointStore {
     for (const span of result.trace.spans) {
       if (span.name.startsWith('tool.')) {
         if (count === stepIndex) {
+          const callId = this.callIdOf(span.attributes);
           const toolName = span.name.replace('tool.', '');
-          const toolCall = result.toolCalls.find((tc) => tc.name === toolName);
+          const toolCall =
+            (callId ? result.toolCalls.find((tc) => tc.id === callId) : undefined) ??
+            result.toolCalls.find((tc) => tc.name === toolName);
           return toolCall ? [toolCall] : [];
         }
         count++;
@@ -332,6 +336,13 @@ export class InMemoryCheckpointStore implements TimeTravelCheckpointStore {
       }
     }
     return count;
+  }
+
+  private callIdOf(attributes: Record<string, unknown>): string | undefined {
+    return (
+      this.getStringAttribute(attributes, 'tool.call_id') ??
+      this.getStringAttribute(attributes, 'call_id')
+    );
   }
 
   private getStringAttribute(attributes: Record<string, unknown>, key: string): string | undefined {

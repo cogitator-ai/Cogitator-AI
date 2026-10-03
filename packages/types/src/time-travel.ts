@@ -71,7 +71,12 @@ export interface ReplayOptions {
   mode: ReplayMode;
 
   modifiedMessages?: Message[];
+  /**
+   * Tool results to use instead of running the tools, by tool name; a deterministic
+   * replay also takes the call id of a cached result
+   */
   modifiedToolResults?: Record<string, unknown>;
+  /** Tools removed from the replayed agent, so the model cannot call them */
   skipTools?: string[];
 
   onStep?: (step: ExecutionStep, index: number) => void;

@@ -876,14 +876,14 @@ const result = await cogitator.run(agent, { input: 'Original task...' });
 const checkpoints = await timeTravel.checkpointAll(result, 'original');
 
 const replayResult = await timeTravel.replayLive(agent, checkpoints[2].id);
-console.log('Replayed from step 2:', replayResult.result.output);
+console.log('Replayed from step 2:', replayResult.output);
 
 const forkResult = await timeTravel.fork(agent, checkpoints[2].id, {
-  newInput: 'Modified task...',
+  input: 'Modified task...',
 });
 console.log('Forked result:', forkResult.result.output);
 
-const diff = await timeTravel.compareWithOriginal(forkResult);
+const diff = await timeTravel.compareWithOriginal(forkResult.result);
 console.log(timeTravel.formatDiff(diff));
 ```
 
@@ -913,8 +913,8 @@ const forkWithNewInput = await timeTravel.forkWithNewInput(
 );
 
 const variants = await timeTravel.forkMultiple(agent, checkpointId, [
-  { newInput: 'Variant A' },
-  { newInput: 'Variant B' },
+  { input: 'Variant A' },
+  { input: 'Variant B' },
   { additionalContext: 'Be more concise' },
 ]);
 ```
@@ -925,9 +925,12 @@ const variants = await timeTravel.forkMultiple(agent, checkpointId, [
 const deterministicReplay = await timeTravel.replayDeterministic(agent, checkpointId);
 
 const liveReplay = await timeTravel.replayLive(agent, checkpointId, {
-  maxSteps: 5,
+  skipTools: ['send_email'],
+  modifiedToolResults: { web_search: { results: [] } },
 });
 ```
+
+Mocked tool results are keyed by tool name (in deterministic replays also by call id): the tool answers with the given value and never runs. Tools in `skipTools` are removed from the replayed agent. Checkpoints, replays and forks store their traces in the trace store, so `compare()` and `compareWithOriginal()` can read them.
 
 ---
 

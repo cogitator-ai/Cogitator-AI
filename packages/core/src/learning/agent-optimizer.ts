@@ -1,9 +1,6 @@
-import { nanoid } from 'nanoid';
 import type {
   ExecutionTrace,
-  ExecutionStep,
   TraceStore,
-  TraceMetrics,
   Demo,
   OptimizationResult,
   CompileOptions,
@@ -15,6 +12,7 @@ import type {
   LLMBackend,
 } from '@cogitator-ai/types';
 import { InMemoryTraceStore } from './trace-store';
+import { buildExecutionTrace } from './trace-builder';
 import { MetricEvaluator } from './metrics';
 import { DemoSelector } from './demo-selector';
 import { InstructionOptimizer } from './instruction-optimizer';
@@ -82,39 +80,17 @@ export class AgentOptimizer {
     input: string,
     options?: { expected?: unknown; labels?: string[] }
   ): Promise<ExecutionTrace> {
-    const steps = this.extractSteps(runResult);
-
-    const metrics = this.computeQuickMetrics(runResult, steps);
-
-    const trace: ExecutionTrace = {
-      id: `trace_${nanoid(12)}`,
-      runId: runResult.runId,
-      agentId: runResult.agentId,
-      threadId: runResult.threadId,
-      input,
-      output: runResult.output,
-      steps,
-      toolCalls: [...runResult.toolCalls],
-      reflections: runResult.reflections ? [...runResult.reflections] : [],
-      metrics,
-      score: 0,
-      model: runResult.modelUsed ?? this.model,
-      createdAt: new Date(),
-      duration: runResult.usage.duration,
-      usage: {
-        inputTokens: runResult.usage.inputTokens,
-        outputTokens: runResult.usage.outputTokens,
-        cost: runResult.usage.cost,
-      },
-      labels: options?.labels,
-      isDemo: false,
+    const trace = buildExecutionTrace(runResult, input, {
+      model: this.model,
       expected: options?.expected,
-    };
+      labels: options?.labels,
+    });
 
     const evaluation = await this.metricEvaluator.evaluate(trace, options?.expected);
     trace.score = evaluation.score;
     trace.metrics.completeness =
-      evaluation.results.find((r) => r.name === 'completeness')?.value ?? metrics.completeness;
+      evaluation.results.find((r) => r.name === 'completeness')?.value ??
+      trace.metrics.completeness;
 
     await this.traceStore.store(trace);
 
@@ -261,120 +237,6 @@ export class AgentOptimizer {
           : 0,
       },
     };
-  }
-
-  private extractSteps(runResult: RunResult): ExecutionStep[] {
-    const steps: ExecutionStep[] = [];
-    let index = 0;
-
-    for (const span of runResult.trace.spans) {
-      const toolName =
-        this.getStringAttribute(span.attributes, 'tool.name') ??
-        this.getStringAttribute(span.attributes, 'toolName') ??
-        (span.name.startsWith('tool.') ? span.name.slice('tool.'.length) : undefined);
-
-      if (span.name.startsWith('tool.') || span.name.includes('tool_call') || toolName) {
-        const callId =
-          this.getStringAttribute(span.attributes, 'tool.call_id') ??
-          this.getStringAttribute(span.attributes, 'call_id');
-        const toolCall =
-          (callId ? runResult.toolCalls.find((tc) => tc.id === callId) : undefined) ??
-          (toolName ? runResult.toolCalls.find((tc) => tc.name === toolName) : undefined);
-        const resultCallId = callId ?? toolCall?.id;
-        const resultName = toolCall?.name ?? toolName;
-        const error =
-          span.status === 'error' || span.attributes['tool.success'] === false
-            ? String(span.attributes['tool.error'] ?? span.attributes.error ?? 'Unknown error')
-            : undefined;
-
-        steps.push({
-          index: index++,
-          type: 'tool_call',
-          timestamp: span.startTime,
-          duration: span.duration,
-          toolCall,
-          toolResult:
-            resultCallId && resultName
-              ? {
-                  callId: resultCallId,
-                  name: resultName,
-                  result: span.attributes?.result,
-                  error,
-                }
-              : undefined,
-        });
-      } else if (span.name.includes('llm') || span.name.includes('chat')) {
-        steps.push({
-          index: index++,
-          type: 'llm_call',
-          timestamp: span.startTime,
-          duration: span.duration,
-          tokensUsed: {
-            input:
-              this.getNumberAttribute(span.attributes, 'llm.input_tokens') ??
-              this.getNumberAttribute(span.attributes, 'inputTokens') ??
-              0,
-            output:
-              this.getNumberAttribute(span.attributes, 'llm.output_tokens') ??
-              this.getNumberAttribute(span.attributes, 'outputTokens') ??
-              0,
-          },
-        });
-      }
-    }
-
-    if (runResult.reflections) {
-      for (const reflection of runResult.reflections) {
-        steps.push({
-          index: index++,
-          type: 'reflection',
-          timestamp: reflection.timestamp.getTime(),
-          duration: 0,
-          reflection,
-        });
-      }
-    }
-
-    steps.sort((a, b) => a.timestamp - b.timestamp);
-    return steps;
-  }
-
-  private computeQuickMetrics(runResult: RunResult, steps: ExecutionStep[]): TraceMetrics {
-    const toolSteps = steps.filter((s) => s.type === 'tool_call');
-    const successfulTools = toolSteps.filter((s) => !s.toolResult?.error);
-
-    const hasErrors = steps.some((s) => s.toolResult?.error);
-    const toolAccuracy = toolSteps.length > 0 ? successfulTools.length / toolSteps.length : 1;
-
-    const totalTokens = runResult.usage.inputTokens + runResult.usage.outputTokens;
-    const efficiency = Math.min(1, 10000 / Math.max(totalTokens, 1));
-
-    const completeness = runResult.output.length > 50 ? 0.8 : 0.5;
-
-    return {
-      success: !hasErrors,
-      toolAccuracy,
-      efficiency,
-      completeness,
-      coherence: 0.5,
-    };
-  }
-
-  private getStringAttribute(attributes: Record<string, unknown>, key: string): string | undefined {
-    const value = attributes[key];
-    return typeof value === 'string' && value.length > 0 ? value : undefined;
-  }
-
-  private getNumberAttribute(attributes: Record<string, unknown>, key: string): number | undefined {
-    const value = attributes[key];
-    if (typeof value === 'number' && Number.isFinite(value)) {
-      return value;
-    }
-    if (typeof value === 'string') {
-      const parsed = Number(value);
-      return Number.isFinite(parsed) ? parsed : undefined;
-    }
-    return undefined;
   }
 
   getTraceStore(): TraceStore {

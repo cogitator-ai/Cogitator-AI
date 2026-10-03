@@ -8,6 +8,7 @@ import type {
   Span,
   TimeTravelCheckpointStore,
   RunResult,
+  Tool,
 } from '@cogitator-ai/types';
 import type { Agent } from '../agent';
 import type { Cogitator } from '../runtime';
@@ -43,10 +44,6 @@ export class ExecutionReplayer {
     options: ReplayOptions
   ): Promise<ReplayResult> {
     const messages = this.buildMessagesForReplay(checkpoint, options.modifiedMessages);
-    const mergedToolResults = this.mergeToolResults(
-      checkpoint.toolResults,
-      options.modifiedToolResults
-    );
 
     const stepsReplayed = checkpoint.stepIndex + 1;
     const stepsExecuted = 0;
@@ -73,7 +70,11 @@ export class ExecutionReplayer {
         duration: Date.now() - startTime,
       },
       toolCalls: checkpoint.pendingToolCalls,
-      messages: this.applyToolResultsToMessages(messages, mergedToolResults),
+      messages: this.applyToolResultsToMessages(
+        messages,
+        checkpoint.toolResults,
+        options.modifiedToolResults ?? {}
+      ),
       trace: {
         traceId,
         spans,
@@ -98,21 +99,11 @@ export class ExecutionReplayer {
 
     const input = this.extractUserInput(initialMessages);
 
-    const modifiedAgent = this.createReplayAgent(agent, initialMessages);
+    const modifiedAgent = this.createReplayAgent(agent, initialMessages, options);
 
     const runResult = await cogitator.run(modifiedAgent, {
       input,
       threadId: `replay_${checkpoint.runId}`,
-      onToolCall: (toolCall) => {
-        if (options.skipTools?.includes(toolCall.name)) {
-          return;
-        }
-      },
-      onToolResult: (result) => {
-        if (options.modifiedToolResults?.[result.callId]) {
-          (result as { result: unknown }).result = options.modifiedToolResults[result.callId];
-        }
-      },
     });
 
     const stepsReplayed = checkpoint.stepIndex + 1;
@@ -141,24 +132,26 @@ export class ExecutionReplayer {
     return [...checkpoint.messages];
   }
 
-  private mergeToolResults(
-    cached: Record<string, unknown>,
-    modified?: Record<string, unknown>
-  ): Record<string, unknown> {
-    return { ...cached, ...modified };
-  }
-
+  /**
+   * Puts tool results into the replayed tool messages: a modified result, keyed
+   * by call id or tool name, wins over the result cached in the checkpoint.
+   */
   private applyToolResultsToMessages(
     messages: Message[],
-    toolResults: Record<string, unknown>
+    cached: Record<string, unknown>,
+    modified: Record<string, unknown>
   ): Message[] {
-    if (Object.keys(toolResults).length === 0) return messages;
+    const pick = (record: Record<string, unknown>, keys: Array<string | undefined>) =>
+      keys.find((key): key is string => key !== undefined && Object.hasOwn(record, key));
 
     return messages.map((msg) => {
-      if (msg.role === 'tool' && msg.toolCallId && msg.toolCallId in toolResults) {
-        return { ...msg, content: String(toolResults[msg.toolCallId]) };
+      if (msg.role !== 'tool') return msg;
+      const modifiedKey = pick(modified, [msg.toolCallId, msg.name]);
+      if (modifiedKey !== undefined) {
+        return { ...msg, content: toolContent(modified[modifiedKey]) };
       }
-      return msg;
+      const cachedKey = pick(cached, [msg.toolCallId]);
+      return cachedKey === undefined ? msg : { ...msg, content: toolContent(cached[cachedKey]) };
     });
   }
 
@@ -168,7 +161,16 @@ export class ExecutionReplayer {
     return lastUserMessage ? this.getTextContent(lastUserMessage.content) : '';
   }
 
-  private createReplayAgent(agent: Agent, preloadedMessages: Message[]): Agent {
+  /**
+   * The agent a live replay runs: the original with the checkpoint's history in
+   * its instructions, tools in `skipTools` removed, and tools named in
+   * `modifiedToolResults` answering with the given value instead of running.
+   */
+  private createReplayAgent(
+    agent: Agent,
+    preloadedMessages: Message[],
+    options: ReplayOptions
+  ): Agent {
     const systemMessage = preloadedMessages.find((m) => m.role === 'system');
     const contextFromHistory = preloadedMessages
       .filter((m) => m.role === 'assistant' || m.role === 'tool')
@@ -183,6 +185,7 @@ export class ExecutionReplayer {
       ...agent.config,
       name: `${agent.name}_replay`,
       instructions: newInstructions,
+      tools: replayTools(agent.tools, options),
     });
   }
 
@@ -238,4 +241,25 @@ export class ExecutionReplayer {
       .map((part) => part.text)
       .join(' ');
   }
+}
+
+function replayTools(tools: readonly Tool[], options: ReplayOptions): Tool[] {
+  const skipped = new Set(options.skipTools ?? []);
+  const mocks = options.modifiedToolResults ?? {};
+  return tools
+    .filter((tool) => !skipped.has(tool.name))
+    .map((tool) => (Object.hasOwn(mocks, tool.name) ? mockedTool(tool, mocks[tool.name]) : tool));
+}
+
+function mockedTool(tool: Tool, result: unknown): Tool {
+  const mocked = Object.create(Object.getPrototypeOf(tool) as object | null) as Tool;
+  return Object.assign(mocked, tool, {
+    execute: async () => result,
+    sandbox: undefined,
+    requiresApproval: undefined,
+  });
+}
+
+function toolContent(value: unknown): string {
+  return typeof value === 'string' ? value : JSON.stringify(value);
 }
