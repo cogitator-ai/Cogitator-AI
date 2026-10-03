@@ -39,6 +39,9 @@ function mockRuntime(overrides?: { run?: unknown; memory?: unknown }) {
       toolCalls: [],
     }),
     memory: undefined,
+    getMemory() {
+      return Promise.resolve(this.memory);
+    },
     ...overrides,
   };
 }

@@ -9,7 +9,7 @@ interface ThreadParams {
 }
 
 export const threadRoutes: FastifyPluginAsync = async (fastify) => {
-  const getMemory = () => fastify.cogitator.runtime.memory;
+  const getMemory = () => fastify.cogitator.runtime.getMemory();
 
   fastify.get<{ Params: ThreadParams }>(
     '/threads/:id',
@@ -23,7 +23,7 @@ export const threadRoutes: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
-      const memory = getMemory();
+      const memory = await getMemory();
       if (!memory) {
         return sendError(reply, 503, 'Memory not configured', 'UNAVAILABLE');
       }
@@ -67,7 +67,7 @@ export const threadRoutes: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
-      const memory = getMemory();
+      const memory = await getMemory();
       if (!memory) {
         return sendError(reply, 503, 'Memory not configured', 'UNAVAILABLE');
       }
@@ -111,7 +111,7 @@ export const threadRoutes: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
-      const memory = getMemory();
+      const memory = await getMemory();
       if (!memory) {
         return sendError(reply, 503, 'Memory not configured', 'UNAVAILABLE');
       }

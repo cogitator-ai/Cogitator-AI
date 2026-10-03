@@ -7,7 +7,11 @@ import { swarmRoutes } from '../routes/swarms.js';
 import { threadRoutes } from '../routes/threads.js';
 
 function mockRuntime() {
-  return { run: vi.fn(), memory: undefined };
+  return {
+    run: vi.fn(),
+    memory: undefined,
+    getMemory: async () => undefined,
+  };
 }
 
 async function buildWorkflowServer(workflows: CogitatorContext['workflows'] = {}) {
@@ -184,7 +188,11 @@ describe('thread error propagation', () => {
     };
     const fastify = Fastify({ logger: false });
     fastify.decorate('cogitator', {
-      runtime: { run: vi.fn(), memory } as never,
+      runtime: {
+        run: vi.fn(),
+        memory,
+        getMemory: async () => memory,
+      } as never,
       agents: {},
       workflows: {},
       swarms: {},
@@ -215,7 +223,11 @@ describe('thread error propagation', () => {
     };
     const fastify = Fastify({ logger: false });
     fastify.decorate('cogitator', {
-      runtime: { run: vi.fn(), memory } as never,
+      runtime: {
+        run: vi.fn(),
+        memory,
+        getMemory: async () => memory,
+      } as never,
       agents: {},
       workflows: {},
       swarms: {},

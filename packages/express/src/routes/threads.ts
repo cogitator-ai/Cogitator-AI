@@ -23,12 +23,10 @@ function parseMessageBody(body: unknown): AddMessageRequest | null {
 export function createThreadRoutes(ctx: RouteContext): Router {
   const router = Router();
 
-  const getMemory = () => {
-    return ctx.cogitator.memory;
-  };
+  const getMemory = () => ctx.cogitator.getMemory();
 
   router.get('/threads/:id', async (req: CogitatorRequest<{ id: string }>, res: Response) => {
-    const memory = getMemory();
+    const memory = await getMemory();
     if (!memory) {
       sendError(res, 503, 'Memory not configured', 'UNAVAILABLE');
       return;
@@ -65,7 +63,7 @@ export function createThreadRoutes(ctx: RouteContext): Router {
   router.post(
     '/threads/:id/messages',
     async (req: CogitatorRequest<{ id: string }>, res: Response) => {
-      const memory = getMemory();
+      const memory = await getMemory();
       if (!memory) {
         sendError(res, 503, 'Memory not configured', 'UNAVAILABLE');
         return;
@@ -111,7 +109,7 @@ export function createThreadRoutes(ctx: RouteContext): Router {
   );
 
   router.delete('/threads/:id', async (req: CogitatorRequest<{ id: string }>, res: Response) => {
-    const memory = getMemory();
+    const memory = await getMemory();
     if (!memory) {
       sendError(res, 503, 'Memory not configured', 'UNAVAILABLE');
       return;

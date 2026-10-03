@@ -158,8 +158,8 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
   const errors = cogitatorErrors();
   const until = () => resolveSignal(deps.until);
 
-  const memoryOf = () => {
-    const memory = deps.cogitator.memory;
+  const memoryOf = async () => {
+    const memory = await deps.cogitator.getMemory();
     if (!memory) {
       throw httpError(503, 'MEMORY_NOT_CONFIGURED', 'The Cogitator runtime has no memory adapter');
     }
@@ -348,7 +348,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
       hooks: { beforeParse: [caller], onError: [errors] },
       docs: { summary: 'Read the messages of a memory thread', tags: ['threads'] },
       handler: async (ctx) => {
-        const memory = memoryOf();
+        const memory = await memoryOf();
         const id = ctx.params.id;
         await checkThreadAccess(deps, ctx.cogitatorAuth, id);
         await assertThreadAccess(memory, id, ctx.cogitatorAuth?.userId);
@@ -385,7 +385,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
         tags: ['threads'],
       },
       handler: async (ctx) => {
-        const memory = memoryOf();
+        const memory = await memoryOf();
         const id = ctx.params.id;
         await checkThreadAccess(deps, ctx.cogitatorAuth, id);
         await ensureThreadAccess(memory, id, { agentId: '', userId: ctx.cogitatorAuth?.userId });
@@ -417,7 +417,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
       hooks: { beforeParse: [caller], onError: [errors] },
       docs: { summary: 'Delete a memory thread', tags: ['threads'] },
       handler: async (ctx) => {
-        const memory = memoryOf();
+        const memory = await memoryOf();
         const id = ctx.params.id;
         await checkThreadAccess(deps, ctx.cogitatorAuth, id);
         await assertThreadAccess(memory, id, ctx.cogitatorAuth?.userId);

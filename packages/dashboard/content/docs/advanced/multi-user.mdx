@@ -74,10 +74,13 @@ Code that reads threads directly — a "load conversation" endpoint, an export j
 ```typescript
 import { assertThreadAccess, ensureThreadAccess } from '@cogitator-ai/core';
 
-const thread = await assertThreadAccess(cog.memory!, threadId, session.userId); // null if missing
-const entries = await cog.memory!.getEntries({ threadId });
+const memory = await cog.getMemory(); // connects the configured adapter on first use
+if (!memory) throw new Error('Memory is not configured');
 
-await ensureThreadAccess(cog.memory!, threadId, { agentId: agent.id, userId: session.userId }); // creates it for the user when missing
+const thread = await assertThreadAccess(memory, threadId, session.userId); // null if missing
+const entries = await memory.getEntries({ threadId });
+
+await ensureThreadAccess(memory, threadId, { agentId: agent.id, userId: session.userId }); // creates it for the user when missing
 ```
 
 ## Server Adapters

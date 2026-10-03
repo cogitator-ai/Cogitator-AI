@@ -38,7 +38,11 @@ async function start(
   const app = express();
   const srv = new CogitatorServer({
     app,
-    cogitator: { run, memory } as unknown as Cogitator,
+    cogitator: {
+      run,
+      memory,
+      getMemory: async () => memory,
+    } as unknown as Cogitator,
     agents: { bot: agent },
     ...overrides,
     config: { basePath: '/api', enableSwagger: false, ...overrides.config },

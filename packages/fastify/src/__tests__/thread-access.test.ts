@@ -56,7 +56,10 @@ afterEach(async () => {
 async function start(memory: ThreadMemory, auth?: AuthFunction) {
   app = Fastify({ logger: false });
   await app.register(cogitatorPlugin, {
-    cogitator: { memory } as unknown as CogitatorPluginOptions['cogitator'],
+    cogitator: {
+      memory,
+      getMemory: async () => memory,
+    } as unknown as CogitatorPluginOptions['cogitator'],
     prefix: '/api',
     auth,
   });

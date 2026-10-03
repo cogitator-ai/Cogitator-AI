@@ -171,6 +171,16 @@ Cogitator exposes a shared `tools` registry. Tools registered here are available
 cog.tools.register(myGlobalTool);
 ```
 
+## Memory
+
+The configured memory adapter connects on the first run. To read threads before any agent has run — an endpoint that lists a conversation, an export job — ask for it:
+
+```typescript
+const memory = await cog.getMemory(); // undefined when memory is not configured
+```
+
+`cog.memory` is the same adapter once connected, and `undefined` before.
+
 ## Cleanup
 
 Always call `close()` when done to release connections:

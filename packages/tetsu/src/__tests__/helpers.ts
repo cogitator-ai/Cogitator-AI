@@ -74,7 +74,12 @@ export function fakeCogitator(
 ) {
   const runMock = mock(run);
   const resumeMock = mock(resume);
-  const cogitator = { run: runMock, resume: resumeMock, memory } as unknown as Cogitator;
+  const cogitator = {
+    run: runMock,
+    resume: resumeMock,
+    memory,
+    getMemory: async () => memory,
+  } as unknown as Cogitator;
   return { cogitator, run: runMock, resume: resumeMock };
 }
 

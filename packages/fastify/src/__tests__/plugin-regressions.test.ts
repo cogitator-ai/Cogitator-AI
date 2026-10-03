@@ -52,7 +52,11 @@ async function start(
   app = Fastify({ logger: false });
   setup?.(app);
   await app.register(cogitatorPlugin, {
-    cogitator: { run, memory } as unknown as Cogitator,
+    cogitator: {
+      run,
+      memory,
+      getMemory: async () => memory,
+    } as unknown as Cogitator,
     agents: { bot: agent },
     prefix: '/api',
     ...overrides,

@@ -11,9 +11,6 @@ const info = { title: 'Cogitator', version: '1.0.0' };
 
 describe('OpenAPI document', () => {
   let fail = false;
-  const { cogitator } = fakeCogitator(async () => {
-    throw new CogitatorError({ message: 'Busy', code: ErrorCode.LLM_RATE_LIMITED });
-  });
   const memory = fakeMemory();
   memory.getThread.mockImplementation((threadId) =>
     Promise.resolve({
@@ -30,11 +27,14 @@ describe('OpenAPI document', () => {
           : null,
     })
   );
+  const { cogitator } = fakeCogitator(async () => {
+    throw new CogitatorError({ message: 'Busy', code: ErrorCode.LLM_RATE_LIMITED });
+  }, memory);
   const app = createApp({
     routes: group('/api', {
       children: [
         cogitatorController({
-          cogitator: Object.assign(cogitator, { memory }),
+          cogitator,
           agents: { chat: chatAgent() },
           auth: secured(
             callerHook(() => (fail ? undefined : { userId: 'ada' })),

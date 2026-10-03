@@ -14,6 +14,7 @@ function createMockCogitator() {
       toolCalls: [],
     }),
     memory: null,
+    getMemory: async () => null,
   } as unknown as CogitatorServerConfig['cogitator'];
 }
 

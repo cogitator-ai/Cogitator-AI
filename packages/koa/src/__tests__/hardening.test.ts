@@ -228,7 +228,16 @@ describe('request validation', () => {
       clearThread: vi.fn(),
       addEntry: vi.fn().mockResolvedValue({ success: true, data: {} }),
     };
-    const app = buildApp({}, { run: vi.fn(), memory });
+    const app = buildApp(
+      {},
+      {
+        run: vi.fn(),
+        memory,
+        getMemory() {
+          return Promise.resolve(this.memory);
+        },
+      }
+    );
 
     const bad = await postJson(app, '/threads/t1/messages', { role: 'tool', content: 'x' });
     expect(bad.status).toBe(400);

@@ -15,7 +15,7 @@ export function createThreadRoutes(): Hono<HonoEnv> {
   const app = new Hono<HonoEnv>();
 
   app.get('/threads/:id', async (c) => {
-    const memory = c.get('cogitator').runtime.memory;
+    const memory = await c.get('cogitator').runtime.getMemory();
     if (!memory) return memoryUnavailable(c);
 
     const id = c.req.param('id');
@@ -43,7 +43,7 @@ export function createThreadRoutes(): Hono<HonoEnv> {
   });
 
   app.post('/threads/:id/messages', async (c) => {
-    const memory = c.get('cogitator').runtime.memory;
+    const memory = await c.get('cogitator').runtime.getMemory();
     if (!memory) return memoryUnavailable(c);
 
     const id = c.req.param('id');
@@ -76,7 +76,7 @@ export function createThreadRoutes(): Hono<HonoEnv> {
   });
 
   app.delete('/threads/:id', async (c) => {
-    const memory = c.get('cogitator').runtime.memory;
+    const memory = await c.get('cogitator').runtime.getMemory();
     if (!memory) return memoryUnavailable(c);
 
     const id = c.req.param('id');

@@ -4,6 +4,7 @@ import type { Request } from 'express';
 import type { Server } from 'http';
 import type { AddressInfo } from 'net';
 import type { MemoryAdapter, MemoryEntry, Thread } from '@cogitator-ai/types';
+import { Cogitator } from '@cogitator-ai/core';
 import { CogitatorServer } from '../server.js';
 import type { AuthFunction, CogitatorServerConfig } from '../types.js';
 
@@ -55,7 +56,10 @@ async function start(memory: ThreadMemory, auth?: AuthFunction) {
   const app = express();
   const srv = new CogitatorServer({
     app,
-    cogitator: { memory } as unknown as CogitatorServerConfig['cogitator'],
+    cogitator: {
+      memory,
+      getMemory: async () => memory,
+    } as unknown as CogitatorServerConfig['cogitator'],
     config: { basePath: '/api', enableSwagger: false, auth },
   });
   await srv.init();
@@ -166,5 +170,29 @@ describe('thread routes ownership', () => {
 
     expect(res.status).toBe(200);
     expect(((await res.json()) as { messages: unknown[] }).messages).toEqual([]);
+  });
+});
+
+describe('threads before any run', () => {
+  it('connect the configured memory instead of answering 503', async () => {
+    const cogitator = new Cogitator({ memory: { adapter: 'memory' } });
+    const app = express();
+    await new CogitatorServer({
+      app,
+      cogitator,
+      config: { basePath: '/api', enableSwagger: false },
+    }).init();
+    server = await new Promise<Server>((resolve) => {
+      const s = app.listen(0, () => resolve(s));
+    });
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api`;
+
+    const added = await postMessage(base, 'fresh', undefined, 'hello');
+    const thread = await fetch(`${base}/threads/fresh`);
+
+    expect(added.status).toBe(201);
+    expect(thread.status).toBe(200);
+    expect((await thread.json()).messages).toHaveLength(1);
+    await cogitator.close();
   });
 });

@@ -141,6 +141,7 @@ export class Cogitator {
 
   private costEstimator?: CostEstimator;
   private initPromise?: Promise<void>;
+  private memoryInit?: Promise<void>;
   private runLimiter?: RunLimiter;
 
   /**
@@ -1251,9 +1252,7 @@ export class Cogitator {
   }
 
   private async _doInitializeAll(agentModel: string): Promise<void> {
-    if (this.config.memory?.adapter && !this.state.memoryInitialized) {
-      await initializeMemory(this.config, this.state);
-    }
+    await this.getMemory();
 
     if (this.config.reflection?.enabled && !this.state.reflectionInitialized) {
       await initializeReflection(this.config, this.state, agentModel, (model) => this.route(model));
@@ -1456,8 +1455,24 @@ export class Cogitator {
   }
 
   /**
-   * Get the memory adapter if configured and initialized.
-   * Returns undefined if memory is not configured or not yet initialized.
+   * The memory adapter, connecting it on first use when `memory` is
+   * configured, so threads can be read before any agent has run. `undefined`
+   * when memory is not configured or could not connect (it is tried again
+   * on the next call).
+   */
+  async getMemory(): Promise<MemoryAdapter | undefined> {
+    if (!this.state.memoryInitialized && this.config.memory?.adapter) {
+      this.memoryInit ??= initializeMemory(this.config, this.state).finally(() => {
+        this.memoryInit = undefined;
+      });
+      await this.memoryInit;
+    }
+    return this.state.memoryAdapter;
+  }
+
+  /**
+   * The memory adapter once connected: by a run, by {@link getMemory}, or
+   * set here. `undefined` before then — use `getMemory()` to connect it.
    */
   get memory(): MemoryAdapter | undefined {
     return this.state.memoryAdapter;

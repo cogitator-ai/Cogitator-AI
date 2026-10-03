@@ -38,6 +38,7 @@ function mockRuntime(runResult?: object, memoryResult?: object) {
   return {
     run: vi.fn().mockResolvedValue(runResult ?? defaultRun),
     memory: memoryResult,
+    getMemory: async () => memoryResult,
   };
 }
 
@@ -162,6 +163,7 @@ describe('agentRoutes', () => {
     const runtime = {
       run: vi.fn().mockRejectedValue(new Error('model unavailable')),
       memory: undefined,
+      getMemory: async () => undefined,
     };
     const server = await buildServer({
       agents: { myAgent: mockAgent('myAgent') as never },
@@ -189,7 +191,13 @@ describe('threadRoutes', () => {
   }
 
   it('GET /threads/:id returns 503 when memory not configured', async () => {
-    const server = await buildServer({ runtime: { run: vi.fn(), memory: undefined } as never });
+    const server = await buildServer({
+      runtime: {
+        run: vi.fn(),
+        memory: undefined,
+        getMemory: async () => undefined,
+      } as never,
+    });
     const res = await server.inject({ method: 'GET', url: '/threads/t1' });
     expect(res.statusCode).toBe(503);
     await server.close();
@@ -204,7 +212,11 @@ describe('threadRoutes', () => {
     ];
     const memory = mockMemory(entries);
     const server = await buildServer({
-      runtime: { run: vi.fn(), memory } as never,
+      runtime: {
+        run: vi.fn(),
+        memory,
+        getMemory: async () => memory,
+      } as never,
     });
     const res = await server.inject({ method: 'GET', url: '/threads/t1' });
     expect(res.statusCode).toBe(200);
@@ -223,7 +235,13 @@ describe('threadRoutes', () => {
 
   it('GET /threads/:id uses Date.now() for empty thread', async () => {
     const memory = mockMemory([]);
-    const server = await buildServer({ runtime: { run: vi.fn(), memory } as never });
+    const server = await buildServer({
+      runtime: {
+        run: vi.fn(),
+        memory,
+        getMemory: async () => memory,
+      } as never,
+    });
     const before = Date.now();
     const res = await server.inject({ method: 'GET', url: '/threads/empty' });
     const after = Date.now();
@@ -239,7 +257,13 @@ describe('threadRoutes', () => {
       getThread: vi.fn().mockResolvedValue({ success: true, data: null }),
       getEntries: vi.fn().mockResolvedValue({ success: false, error: 'storage error' }),
     };
-    const server = await buildServer({ runtime: { run: vi.fn(), memory } as never });
+    const server = await buildServer({
+      runtime: {
+        run: vi.fn(),
+        memory,
+        getMemory: async () => memory,
+      } as never,
+    });
     const res = await server.inject({ method: 'GET', url: '/threads/t1' });
     expect(res.statusCode).toBe(500);
     expect(res.json<{ error: { message: string } }>().error.message).toBe('storage error');
@@ -251,7 +275,13 @@ describe('threadRoutes', () => {
       getThread: vi.fn().mockResolvedValue({ success: true, data: null }),
       getEntries: vi.fn().mockResolvedValue({ success: false }),
     };
-    const server = await buildServer({ runtime: { run: vi.fn(), memory } as never });
+    const server = await buildServer({
+      runtime: {
+        run: vi.fn(),
+        memory,
+        getMemory: async () => memory,
+      } as never,
+    });
     const res = await server.inject({ method: 'GET', url: '/threads/t1' });
     expect(res.statusCode).toBe(500);
     expect(res.json<{ error: { message: string } }>().error.message).toBe('Unknown error');
@@ -260,7 +290,13 @@ describe('threadRoutes', () => {
 
   it('POST /threads/:id/messages adds entry', async () => {
     const memory = mockMemory();
-    const server = await buildServer({ runtime: { run: vi.fn(), memory } as never });
+    const server = await buildServer({
+      runtime: {
+        run: vi.fn(),
+        memory,
+        getMemory: async () => memory,
+      } as never,
+    });
     const res = await server.inject({
       method: 'POST',
       url: '/threads/t1/messages',
@@ -275,7 +311,13 @@ describe('threadRoutes', () => {
 
   it('DELETE /threads/:id clears thread', async () => {
     const memory = mockMemory();
-    const server = await buildServer({ runtime: { run: vi.fn(), memory } as never });
+    const server = await buildServer({
+      runtime: {
+        run: vi.fn(),
+        memory,
+        getMemory: async () => memory,
+      } as never,
+    });
     const res = await server.inject({ method: 'DELETE', url: '/threads/t1' });
     expect(res.statusCode).toBe(204);
     expect(memory.clearThread).toHaveBeenCalledWith('t1');

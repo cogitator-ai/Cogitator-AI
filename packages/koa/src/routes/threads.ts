@@ -23,7 +23,7 @@ export function createThreadRoutes(): Router<CogitatorState> {
   const router = new Router<CogitatorState>();
 
   router.get('/threads/:id', async (ctx) => {
-    const memory = ctx.state.cogitator.runtime.memory;
+    const memory = await ctx.state.cogitator.runtime.getMemory();
     if (!memory) {
       respondMemoryUnavailable(ctx);
       return;
@@ -55,7 +55,7 @@ export function createThreadRoutes(): Router<CogitatorState> {
   });
 
   router.post('/threads/:id/messages', async (ctx) => {
-    const memory = ctx.state.cogitator.runtime.memory;
+    const memory = await ctx.state.cogitator.runtime.getMemory();
     if (!memory) {
       respondMemoryUnavailable(ctx);
       return;
@@ -94,7 +94,7 @@ export function createThreadRoutes(): Router<CogitatorState> {
   });
 
   router.delete('/threads/:id', async (ctx) => {
-    const memory = ctx.state.cogitator.runtime.memory;
+    const memory = await ctx.state.cogitator.runtime.getMemory();
     if (!memory) {
       respondMemoryUnavailable(ctx);
       return;
