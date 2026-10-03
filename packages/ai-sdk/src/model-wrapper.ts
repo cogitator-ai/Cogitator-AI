@@ -14,7 +14,7 @@ import type {
   ChatUsage,
   ContentPart,
   LLMBackend,
-  LLMProvider,
+  LLMBackendProvider,
   LLMResponseFormat,
   Message,
   ReasoningConfig,
@@ -252,14 +252,14 @@ function mapResponseFormat(
  * specification the AI SDK has shipped: v1 (ai@4), v2 (ai@5), v3 (ai@6) and v4 (ai@7).
  */
 export class AISDKBackend implements LLMBackend {
-  readonly provider: LLMProvider;
+  readonly provider: LLMBackendProvider;
 
   private readonly model: AISDKLanguageModel;
   private thoughtSignatureKey: string | undefined;
 
   constructor(model: AISDKLanguageModel) {
     this.model = model;
-    this.provider = (model.provider ?? 'ai-sdk') as LLMProvider;
+    this.provider = model.provider ?? 'ai-sdk';
   }
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
