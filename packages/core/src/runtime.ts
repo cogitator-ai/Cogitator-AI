@@ -63,6 +63,7 @@ import { PromptRegistry } from './cogitator/prompts';
 import { InMemoryRunCheckpointStore, ThreadRunCheckpointStore } from './cogitator/run-checkpoints';
 import { parseStructuredOutput, toLLMResponseFormat } from './cogitator/response-format';
 import { CostEstimator } from './cost-routing/cost-estimator';
+import { readEnv } from './utils/env';
 
 /** Run timeout when neither the run, the agent nor `limits.defaultTimeout` sets one. */
 const DEFAULT_RUN_TIMEOUT = 120_000;
@@ -294,7 +295,6 @@ export class Cogitator {
       const agentModel = this.resolveModel(agent);
       await this.initializeAll(agentModel);
 
-        apiKey: this.config.llm?.providers?.openai?.apiKey ?? process.env.OPENAI_API_KEY,
       if (resumeFrom) {
         checkpoint ??= (await this.runCheckpointStore().load(threadId)) ?? undefined;
         if (!checkpoint) {
@@ -360,6 +360,9 @@ export class Cogitator {
         messages = [...checkpoint.messages];
       } else {
         input = await buildInputWithAudio(options.input, options.audio, {
+          apiKey:
+            this.config.llm?.providers?.openai?.apiKey ??
+            (options.audio?.length ? readEnv('OPENAI_API_KEY') : undefined),
           signal: abortController.signal,
         });
         const runOptions: RunOptions = input === options.input ? options : { ...options, input };

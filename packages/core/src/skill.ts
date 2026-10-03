@@ -1,5 +1,5 @@
-import { createRequire } from 'node:module';
 import type { Skill, SkillConfig, SkillValidationResult, Tool } from '@cogitator-ai/types';
+import { builtinModule, readEnv } from './utils/env';
 
 export function defineSkill(config: SkillConfig): Skill {
   return {
@@ -59,19 +59,24 @@ export function validateSkill(skill: Skill): SkillValidationResult {
 
   if (skill.env) {
     for (const envVar of skill.env) {
-      if (!process.env[envVar]) {
+      if (!readEnv(envVar)) {
         missingEnv.push(envVar);
       }
     }
   }
 
-  if (skill.dependencies) {
-    const require = createRequire(import.meta.url);
-    for (const dep of skill.dependencies) {
-      try {
-        require.resolve(dep);
-      } catch {
-        missingDependencies.push(dep);
+  if (skill.dependencies?.length) {
+    const nodeModule = builtinModule<typeof import('node:module')>('node:module');
+    if (!nodeModule) {
+      warnings.push('Dependencies were not checked: this runtime cannot resolve packages');
+    } else {
+      const require = nodeModule.createRequire(import.meta.url);
+      for (const dep of skill.dependencies) {
+        try {
+          require.resolve(dep);
+        } catch {
+          missingDependencies.push(dep);
+        }
       }
     }
   }

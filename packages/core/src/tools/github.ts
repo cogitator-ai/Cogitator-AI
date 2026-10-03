@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { tool } from '../tool';
 import { createLinkedAbortController, getAbortErrorMessage } from '../utils/abort';
+import { readEnv } from '../utils/env';
 
 const githubParams = z.object({
   action: z
@@ -415,7 +416,7 @@ export const githubApi = tool({
   tags: ['github', 'git', 'issues', 'pr', 'code', 'repository'],
   sideEffects: ['network'],
   execute: async (params, context) => {
-    const token = process.env.GITHUB_TOKEN;
+    const token = readEnv('GITHUB_TOKEN');
     if (!token) {
       return { error: 'GITHUB_TOKEN environment variable not set' };
     }

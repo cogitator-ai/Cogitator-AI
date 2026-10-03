@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { tool } from '../tool';
 import { createLinkedAbortController, getAbortErrorMessage } from '../utils/abort';
+import { readEnv } from '../utils/env';
 
 const SPEECH_GENERATION_TIMEOUT_MS = 60_000;
 
@@ -60,7 +61,7 @@ const formatSchema = z.enum(['mp3', 'opus', 'aac', 'flac', 'wav', 'pcm']);
 const modelSchema = z.enum(['tts-1', 'tts-1-hd', 'gpt-4o-mini-tts']);
 
 export function createGenerateSpeechTool(config: GenerateSpeechConfig = {}) {
-  const getApiKey = () => config.apiKey || process.env.OPENAI_API_KEY;
+  const getApiKey = () => config.apiKey || readEnv('OPENAI_API_KEY');
 
   return tool({
     name: 'generateSpeech',

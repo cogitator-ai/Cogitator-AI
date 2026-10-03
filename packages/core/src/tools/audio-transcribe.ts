@@ -3,6 +3,7 @@ import { tool } from '../tool';
 import { audioInputToBuffer } from '../utils/audio-fetch';
 import { createLinkedAbortController, getAbortErrorMessage } from '../utils/abort';
 import type { AudioInput } from '@cogitator-ai/types';
+import { readEnv } from '../utils/env';
 
 const TRANSCRIPTION_TIMEOUT_MS = 60_000;
 
@@ -141,7 +142,7 @@ export async function transcribeAudio(
 }
 
 export function createTranscribeAudioTool(config: TranscribeAudioConfig = {}) {
-  const getApiKey = () => config.apiKey || process.env.OPENAI_API_KEY;
+  const getApiKey = () => config.apiKey || readEnv('OPENAI_API_KEY');
 
   return tool({
     name: 'transcribeAudio',

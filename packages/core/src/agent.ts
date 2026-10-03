@@ -42,9 +42,9 @@ export class AgentDeserializationError extends Error {
  * });
  * ```
  */
+const generatedIds = new WeakMap<Agent, string>();
+
 export class Agent implements IAgent {
-  /** Unique identifier for this agent instance */
-  readonly id: string;
   /** Human-readable name of the agent */
   readonly name: string;
   /** Full configuration including model, instructions, tools, and parameters */
@@ -63,7 +63,6 @@ export class Agent implements IAgent {
    * @param config.timeout - Run timeout in milliseconds (default: 120000)
    */
   constructor(config: AgentConfig) {
-    this.id = config.id ?? `agent_${nanoid(12)}`;
     this.name = config.name;
 
     let finalConfig = { ...config };
@@ -77,6 +76,21 @@ export class Agent implements IAgent {
       maxIterations: 10,
       ...finalConfig,
     };
+  }
+
+  /**
+   * Unique identifier for this agent instance: `config.id`, or one generated
+   * on first read — not in the constructor, so agents can be created at module
+   * scope where generating random values is not allowed (Cloudflare Workers).
+   */
+  get id(): string {
+    if (this.config.id) return this.config.id;
+    let id = generatedIds.get(this);
+    if (!id) {
+      id = `agent_${nanoid(12)}`;
+      generatedIds.set(this, id);
+    }
+    return id;
   }
 
   /** LLM model identifier */

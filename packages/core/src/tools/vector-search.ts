@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { tool } from '../tool';
 import { createLinkedAbortController, getAbortErrorMessage } from '../utils/abort';
+import { readEnv } from '../utils/env';
 
 const EMBEDDING_TIMEOUT_MS = 30_000;
 
@@ -75,7 +76,7 @@ async function getEmbedding(
   try {
     switch (provider) {
       case 'openai': {
-        const apiKey = process.env.OPENAI_API_KEY;
+        const apiKey = readEnv('OPENAI_API_KEY');
         if (!apiKey) throw new Error('OPENAI_API_KEY not set');
 
         const response = await fetchEmbedding('https://api.openai.com/v1/embeddings', {
@@ -120,7 +121,7 @@ async function getEmbedding(
       }
 
       case 'google': {
-        const apiKey = process.env.GOOGLE_API_KEY;
+        const apiKey = readEnv('GOOGLE_API_KEY');
         if (!apiKey) throw new Error('GOOGLE_API_KEY not set');
 
         const modelId = model ?? DEFAULT_GOOGLE_EMBEDDING_MODEL;
@@ -153,16 +154,16 @@ async function getEmbedding(
 const DEFAULT_GOOGLE_EMBEDDING_MODEL = 'gemini-embedding-001';
 
 function resolveOllamaBaseUrl(): string {
-  const configured = process.env.OLLAMA_BASE_URL ?? process.env.OLLAMA_HOST;
+  const configured = readEnv('OLLAMA_BASE_URL') ?? readEnv('OLLAMA_HOST');
   if (!configured) return 'http://localhost:11434';
   const withScheme = /^https?:\/\//i.test(configured) ? configured : `http://${configured}`;
   return withScheme.replace(/\/+$/, '');
 }
 
 function detectEmbeddingProvider(): 'openai' | 'ollama' | 'google' | null {
-  if (process.env.OPENAI_API_KEY) return 'openai';
-  if (process.env.OLLAMA_BASE_URL || process.env.OLLAMA_HOST) return 'ollama';
-  if (process.env.GOOGLE_API_KEY) return 'google';
+  if (readEnv('OPENAI_API_KEY')) return 'openai';
+  if (readEnv('OLLAMA_BASE_URL') || readEnv('OLLAMA_HOST')) return 'ollama';
+  if (readEnv('GOOGLE_API_KEY')) return 'google';
   return null;
 }
 
@@ -261,7 +262,7 @@ export const vectorSearch = tool({
       };
     }
 
-    const connStr = connectionString ?? process.env.DATABASE_URL;
+    const connStr = connectionString ?? readEnv('DATABASE_URL');
     if (!connStr) {
       return {
         error:

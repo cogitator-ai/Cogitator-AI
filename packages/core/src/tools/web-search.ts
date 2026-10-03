@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { tool } from '../tool';
 import { createLinkedAbortController, getAbortErrorMessage } from '../utils/abort';
+import { readEnv } from '../utils/env';
 
 const SEARCH_TIMEOUT_MS = 30_000;
 
@@ -203,13 +204,13 @@ async function searchSerper(
 }
 
 function detectProvider(): { provider: 'tavily' | 'brave' | 'serper'; apiKey: string } | null {
-  const tavily = process.env.TAVILY_API_KEY;
+  const tavily = readEnv('TAVILY_API_KEY');
   if (tavily) return { provider: 'tavily', apiKey: tavily };
 
-  const brave = process.env.BRAVE_API_KEY;
+  const brave = readEnv('BRAVE_API_KEY');
   if (brave) return { provider: 'brave', apiKey: brave };
 
-  const serper = process.env.SERPER_API_KEY;
+  const serper = readEnv('SERPER_API_KEY');
   if (serper) return { provider: 'serper', apiKey: serper };
 
   return null;
@@ -218,11 +219,11 @@ function detectProvider(): { provider: 'tavily' | 'brave' | 'serper'; apiKey: st
 function getApiKey(provider: 'tavily' | 'brave' | 'serper'): string | null {
   switch (provider) {
     case 'tavily':
-      return process.env.TAVILY_API_KEY ?? null;
+      return readEnv('TAVILY_API_KEY') ?? null;
     case 'brave':
-      return process.env.BRAVE_API_KEY ?? null;
+      return readEnv('BRAVE_API_KEY') ?? null;
     case 'serper':
-      return process.env.SERPER_API_KEY ?? null;
+      return readEnv('SERPER_API_KEY') ?? null;
   }
 }
 

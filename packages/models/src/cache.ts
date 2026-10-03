@@ -1,12 +1,8 @@
 import { z } from 'zod';
 import type { ModelInfo, CacheOptions } from './types';
 import { ModelInfoSchema } from './types';
-import { writeFile, readFile, mkdir, unlink } from 'fs/promises';
-import { dirname, join } from 'path';
-import { homedir } from 'os';
 
 const CACHE_VERSION = '1.0.0';
-const DEFAULT_CACHE_PATH = join(homedir(), '.cogitator', 'models-cache.json');
 const CacheEntrySchema = z.object({
   models: z.array(ModelInfoSchema),
   timestamp: z.number().finite(),
@@ -17,13 +13,13 @@ type CacheEntry = z.infer<typeof CacheEntrySchema>;
 
 export class ModelCache {
   private memoryCache: CacheEntry | null = null;
-  private options: Required<CacheOptions>;
+  private options: Omit<Required<CacheOptions>, 'filePath'> & { filePath?: string };
 
   constructor(options: Partial<CacheOptions> = {}) {
     this.options = {
       ttl: options.ttl ?? 24 * 60 * 60 * 1000,
       storage: options.storage ?? 'memory',
-      filePath: options.filePath ?? DEFAULT_CACHE_PATH,
+      filePath: options.filePath,
     };
   }
 
@@ -61,9 +57,10 @@ export class ModelCache {
   async clear(): Promise<void> {
     this.memoryCache = null;
 
-    if (this.options.storage === 'file') {
+    const file = await this.file();
+    if (file) {
       try {
-        await unlink(this.options.filePath);
+        await file.fs.unlink(file.path);
       } catch {}
     }
   }
@@ -89,9 +86,28 @@ export class ModelCache {
     return null;
   }
 
-  private async readFromFile(): Promise<CacheEntry | null> {
+  /**
+   * The cache file and the file system to reach it, or null without file
+   * storage or where there is no file system (edge runtimes), which leaves
+   * the cache in memory.
+   */
+  private async file(): Promise<{ fs: typeof import('fs/promises'); path: string } | null> {
+    if (this.options.storage !== 'file') return null;
     try {
-      const content = await readFile(this.options.filePath, 'utf-8');
+      const fs = await import('fs/promises');
+      if (this.options.filePath) return { fs, path: this.options.filePath };
+      const [{ join }, { homedir }] = await Promise.all([import('path'), import('os')]);
+      return { fs, path: join(homedir(), '.cogitator', 'models-cache.json') };
+    } catch {
+      return null;
+    }
+  }
+
+  private async readFromFile(): Promise<CacheEntry | null> {
+    const file = await this.file();
+    if (!file) return null;
+    try {
+      const content = await file.fs.readFile(file.path, 'utf-8');
       if (!content.trim()) return null;
 
       const result = CacheEntrySchema.safeParse(JSON.parse(content));
@@ -107,9 +123,12 @@ export class ModelCache {
   }
 
   private async writeToFile(entry: CacheEntry): Promise<void> {
+    const file = await this.file();
+    if (!file) return;
     try {
-      await mkdir(dirname(this.options.filePath), { recursive: true });
-      await writeFile(this.options.filePath, JSON.stringify(entry, null, 2), 'utf-8');
+      const { dirname } = await import('path');
+      await file.fs.mkdir(dirname(file.path), { recursive: true });
+      await file.fs.writeFile(file.path, JSON.stringify(entry, null, 2), 'utf-8');
     } catch (error) {
       console.warn('Failed to write model cache to file:', error);
     }

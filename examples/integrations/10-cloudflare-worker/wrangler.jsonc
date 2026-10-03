@@ -1,0 +1,7 @@
+{
+  "name": "cogitator-agent",
+  "main": "src/index.ts",
+  // Node.js compatibility is on by default from 2026-08-04; with an older date
+  // add "compatibility_flags": ["nodejs_compat"]
+  "compatibility_date": "2026-09-01",
+}

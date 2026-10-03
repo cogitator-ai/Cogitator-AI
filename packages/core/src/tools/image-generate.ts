@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { tool } from '../tool';
 import { createLinkedAbortController, getAbortErrorMessage } from '../utils/abort';
+import { readEnv } from '../utils/env';
 
 const IMAGE_GENERATION_TIMEOUT_MS = 180_000;
 
@@ -165,7 +166,7 @@ export function createGenerateImageTool(config: GenerateImageConfig = {}) {
       { prompt, size, quality, style, outputFormat, background },
       context
     ): Promise<GeneratedImage> => {
-      const key = apiKey || process.env.OPENAI_API_KEY;
+      const key = apiKey || readEnv('OPENAI_API_KEY');
       if (!key) {
         throw new Error(
           'OpenAI API key required for image generation. Set OPENAI_API_KEY environment variable.'

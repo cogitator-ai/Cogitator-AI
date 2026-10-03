@@ -1,10 +1,28 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
 import type { Tool } from '@cogitator-ai/types';
+import { nanoid } from 'nanoid';
 import { Agent } from '../agent';
 import { tool } from '../tool';
 
+vi.mock('nanoid', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('nanoid')>();
+  return { ...actual, nanoid: vi.fn(actual.nanoid) };
+});
+
 describe('Agent', () => {
+  it('generates its id on first read, not in the constructor', () => {
+    vi.mocked(nanoid).mockClear();
+
+    const agent = new Agent({ name: 'edge', instructions: 'x' });
+    expect(nanoid).not.toHaveBeenCalled();
+
+    expect(agent.id).toMatch(/^agent_/);
+    expect(agent.id).toBe(agent.id);
+    expect(nanoid).toHaveBeenCalledTimes(1);
+    expect(new Agent({ name: 'edge', instructions: 'x', id: 'fixed' }).id).toBe('fixed');
+  });
+
   const createBasicConfig = () => ({
     name: 'test-agent',
     model: 'ollama/llama3.1:8b',

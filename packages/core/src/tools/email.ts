@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { tool } from '../tool';
 import { createLinkedAbortController, getAbortErrorMessage } from '../utils/abort';
+import { readEnv } from '../utils/env';
 
 const EMAIL_TIMEOUT_MS = 30_000;
 
@@ -54,7 +55,7 @@ async function sendViaResend(params: {
   const { to, subject, body, html, from, replyTo, cc, bcc, apiKey, signal } = params;
 
   const payload: Record<string, unknown> = {
-    from: from ?? process.env.RESEND_FROM_EMAIL ?? 'onboarding@resend.dev',
+    from: from ?? readEnv('RESEND_FROM_EMAIL') ?? 'onboarding@resend.dev',
     to,
     subject,
   };
@@ -138,10 +139,10 @@ async function sendViaSMTP(params: {
 
   const { to, subject, body, html, from, replyTo, cc, bcc } = params;
 
-  const smtpHost = process.env.SMTP_HOST;
-  const smtpPort = process.env.SMTP_PORT;
-  const smtpUser = process.env.SMTP_USER;
-  const smtpPass = process.env.SMTP_PASS;
+  const smtpHost = readEnv('SMTP_HOST');
+  const smtpPort = readEnv('SMTP_PORT');
+  const smtpUser = readEnv('SMTP_USER');
+  const smtpPass = readEnv('SMTP_PASS');
 
   if (!smtpHost || !smtpUser || !smtpPass) {
     throw new Error(
@@ -160,7 +161,7 @@ async function sendViaSMTP(params: {
   });
 
   const mailOptions: Parameters<typeof transporter.sendMail>[0] = {
-    from: from ?? process.env.SMTP_FROM ?? smtpUser,
+    from: from ?? readEnv('SMTP_FROM') ?? smtpUser,
     to: to.join(', '),
     subject,
   };
@@ -190,8 +191,8 @@ async function sendViaSMTP(params: {
 }
 
 function detectProvider(): 'resend' | 'smtp' | null {
-  if (process.env.RESEND_API_KEY) return 'resend';
-  if (process.env.SMTP_HOST && process.env.SMTP_USER) return 'smtp';
+  if (readEnv('RESEND_API_KEY')) return 'resend';
+  if (readEnv('SMTP_HOST') && readEnv('SMTP_USER')) return 'smtp';
   return null;
 }
 
@@ -225,7 +226,7 @@ export const sendEmail = tool({
     try {
       switch (provider) {
         case 'resend': {
-          const apiKey = process.env.RESEND_API_KEY;
+          const apiKey = readEnv('RESEND_API_KEY');
           if (!apiKey) {
             return { error: 'RESEND_API_KEY not set' };
           }

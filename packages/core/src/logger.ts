@@ -1,3 +1,5 @@
+import { readEnv } from './utils/env';
+
 /**
  * Structured logging for Cogitator
  */
@@ -141,12 +143,12 @@ let defaultLogger: Logger | null = null;
 const VALID_LOG_LEVELS = new Set<string>(['debug', 'info', 'warn', 'error']);
 
 export function getLogger(): Logger {
-  const envLevel = process.env.LOG_LEVEL;
+  const envLevel = readEnv('LOG_LEVEL');
   const level: LogLevel =
     envLevel && VALID_LOG_LEVELS.has(envLevel) ? (envLevel as LogLevel) : 'info';
   defaultLogger ??= new Logger({
     level,
-    format: process.env.NODE_ENV === 'production' ? 'json' : 'pretty',
+    format: readEnv('NODE_ENV') === 'production' ? 'json' : 'pretty',
   });
   return defaultLogger;
 }
