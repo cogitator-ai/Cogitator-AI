@@ -74,6 +74,7 @@ export const LLMConfigSchema = z.object({
   promptCache: z
     .union([z.literal(false), z.object({ ttl: z.enum(['5m', '1h']).optional() })])
     .optional(),
+  plugins: z.record(z.string(), z.unknown()).optional(),
 });
 
 export const LimitsConfigSchema = z.object({
@@ -93,6 +94,16 @@ export const MemoryProviderSchema = z.enum([
 
 export const ContextStrategySchema = z.enum(['recent', 'relevant', 'hybrid']);
 
+export const EntityTypeSchema = z.enum([
+  'person',
+  'organization',
+  'location',
+  'concept',
+  'event',
+  'object',
+  'custom',
+]);
+
 export const ContextBuilderConfigSchema = z.object({
   maxTokens: z.number().positive().optional(),
   reserveTokens: z.number().positive().optional(),
@@ -104,10 +115,15 @@ export const ContextBuilderConfigSchema = z.object({
   graphContextOptions: z
     .object({
       maxNodes: z.number().positive().optional(),
+      maxEdges: z.number().positive().optional(),
       maxDepth: z.number().positive().optional(),
+      includeInferred: z.boolean().optional(),
+      entityTypes: z.array(EntityTypeSchema).optional(),
     })
     .optional(),
 });
+
+const EmbeddingDimensionsSchema = z.number().int().positive();
 
 export const EmbeddingConfigSchema = z.discriminatedUnion('provider', [
   z.object({
@@ -115,16 +131,20 @@ export const EmbeddingConfigSchema = z.discriminatedUnion('provider', [
     apiKey: z.string(),
     model: z.string().optional(),
     baseUrl: z.string().optional(),
+    dimensions: EmbeddingDimensionsSchema.optional(),
   }),
   z.object({
     provider: z.literal('ollama'),
     model: z.string().optional(),
     baseUrl: z.string().optional(),
+    dimensions: EmbeddingDimensionsSchema.optional(),
   }),
   z.object({
     provider: z.literal('google'),
     apiKey: z.string(),
     model: z.string().optional(),
+    baseUrl: z.string().optional(),
+    dimensions: EmbeddingDimensionsSchema.optional(),
   }),
 ]);
 
@@ -198,19 +218,31 @@ export const SandboxNetworkSchema = z.object({
   dns: z.array(z.string()).optional(),
 });
 
+export const SandboxMountSchema = z.object({
+  source: z.string(),
+  target: z.string(),
+  readOnly: z.boolean().optional(),
+});
+
 export const SandboxDefaultsSchema = z.object({
   type: SandboxTypeSchema.optional(),
   image: z.string().optional(),
   resources: SandboxResourcesSchema.optional(),
   network: SandboxNetworkSchema.optional(),
+  mounts: z.array(SandboxMountSchema).optional(),
   timeout: z.number().positive().optional(),
   workdir: z.string().optional(),
+  env: z.record(z.string(), z.string()).optional(),
   user: z.string().optional(),
+  wasmModule: z.string().optional(),
+  wasmFunction: z.string().optional(),
+  wasi: z.boolean().optional(),
 });
 
 export const SandboxPoolSchema = z.object({
   maxSize: z.number().positive().optional(),
   idleTimeoutMs: z.number().positive().optional(),
+  reuseContainers: z.boolean().optional(),
 });
 
 export const SandboxDockerSchema = z.object({
@@ -232,6 +264,7 @@ export const SandboxConfigSchema = z.object({
   pool: SandboxPoolSchema.optional(),
   docker: SandboxDockerSchema.optional(),
   wasm: SandboxWasmSchema.optional(),
+  allowNativeFallback: z.boolean().optional(),
 });
 
 export const ReflectionConfigSchema = z.object({
@@ -259,8 +292,32 @@ export const HarmCategorySchema = z.enum([
 
 export const SeveritySchema = z.enum(['low', 'medium', 'high']);
 
+export const FilterLayerSchema = z.enum(['input', 'output', 'tool']);
+
+export const ConstitutionalPrincipleSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string(),
+  category: z.enum(['ethics', 'safety', 'privacy', 'legal', 'custom']),
+  critiquePrompt: z.string(),
+  revisionPrompt: z.string(),
+  harmCategories: z.array(HarmCategorySchema).optional(),
+  severity: SeveritySchema,
+  appliesTo: z.array(FilterLayerSchema).optional(),
+});
+
+export const ConstitutionSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  version: z.string(),
+  principles: z.array(ConstitutionalPrincipleSchema),
+  customizable: z.boolean(),
+  strictMode: z.boolean(),
+});
+
 export const GuardrailConfigSchema = z.object({
   enabled: z.boolean().optional(),
+  constitution: ConstitutionSchema.optional(),
   model: z.string().optional(),
   filterInput: z.boolean().optional(),
   filterOutput: z.boolean().optional(),
@@ -363,30 +420,7 @@ export const PromptOptimizationConfigSchema = z.object({
 export const InjectionActionSchema = z.enum(['block', 'warn', 'log']);
 export const InjectionClassifierSchema = z.enum(['local', 'llm']);
 
-export const PromptInjectionConfigSchema = z.object({
-  detectInjection: z.boolean().optional(),
-  detectJailbreak: z.boolean().optional(),
-  detectRoleplay: z.boolean().optional(),
-  detectEncoding: z.boolean().optional(),
-  detectContextManipulation: z.boolean().optional(),
-  classifier: InjectionClassifierSchema.optional(),
-  llmModel: z.string().optional(),
-  action: InjectionActionSchema.optional(),
-  threshold: z.number().min(0).max(1).optional(),
-  allowlist: z.array(z.string()).optional(),
-});
-
-export const PiiTypeSchema = z.enum([
-  'email',
-  'phone',
-  'credit_card',
-  'iban',
-  'ssn',
-  'ip_address',
-  'api_key',
-]);
-
-const PiiPatternSchema = z.union([
+const RegExpPatternSchema = z.union([
   z.instanceof(RegExp),
   z
     .string()
@@ -405,10 +439,35 @@ const PiiPatternSchema = z.union([
     .transform((source) => new RegExp(source)),
 ]);
 
+export const PromptInjectionConfigSchema = z.object({
+  detectInjection: z.boolean().optional(),
+  detectJailbreak: z.boolean().optional(),
+  detectRoleplay: z.boolean().optional(),
+  detectEncoding: z.boolean().optional(),
+  detectContextManipulation: z.boolean().optional(),
+  patterns: z.array(RegExpPatternSchema).optional(),
+  classifier: InjectionClassifierSchema.optional(),
+  llmModel: z.string().optional(),
+  action: InjectionActionSchema.optional(),
+  threshold: z.number().min(0).max(1).optional(),
+  failMode: z.enum(['secure', 'open']).optional(),
+  allowlist: z.array(z.string()).optional(),
+});
+
+export const PiiTypeSchema = z.enum([
+  'email',
+  'phone',
+  'credit_card',
+  'iban',
+  'ssn',
+  'ip_address',
+  'api_key',
+]);
+
 export const PiiConfigSchema = z.object({
   mode: z.enum(['mask', 'redact', 'block']).optional(),
   detect: z.array(PiiTypeSchema).optional(),
-  custom: z.array(z.object({ type: z.string().min(1), pattern: PiiPatternSchema })).optional(),
+  custom: z.array(z.object({ type: z.string().min(1), pattern: RegExpPatternSchema })).optional(),
 });
 
 export const SecurityConfigSchema = z.object({
@@ -466,8 +525,13 @@ export const DeployConfigSchema = z.object({
     .optional(),
 });
 
+export const PromptsConfigSchema = z.object({
+  autoDeployWinner: z.boolean().optional(),
+});
+
 export const CogitatorConfigSchema = z.object({
   llm: LLMConfigSchema.optional(),
+  prompts: PromptsConfigSchema.optional(),
   limits: LimitsConfigSchema.optional(),
   memory: MemoryConfigSchema.optional(),
   sandbox: SandboxConfigSchema.optional(),

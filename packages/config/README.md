@@ -60,7 +60,7 @@ const programmatic = defineConfig({
 });
 ```
 
-Both validate the result and throw `Invalid configuration: …` with every Zod issue when it does not fit the schema. The result is a `CogitatorConfig`, ready for the runtime. Options that hold functions or objects (stores, callbacks such as `security.pii.onDetect`, `prompts`, `runCheckpoints`) cannot come from YAML; add them in code:
+Both validate the result and throw `Invalid configuration: …` with every Zod issue when it does not fit the schema. The result is a `CogitatorConfig`, ready for the runtime. Options that hold functions or objects (stores, callbacks such as `security.pii.onDetect`, `llm.backends`, `prompts.versions` / `prompts.abTests` / `prompts.score`, `runCheckpoints`) cannot come from YAML; add them in code:
 
 ```typescript
 import { Cogitator } from '@cogitator-ai/core';
@@ -69,9 +69,11 @@ import { loadConfig } from '@cogitator-ai/config';
 const config = loadConfig();
 const cog = new Cogitator({
   ...config,
-  prompts: { autoDeployWinner: true },
+  prompts: { ...config.prompts, score: (result) => (result.output.length > 0 ? 1 : 0) },
 });
 ```
+
+`prompts.autoDeployWinner` can come from YAML (`prompts: { autoDeployWinner: true }`).
 
 ---
 
@@ -120,6 +122,9 @@ llm:
     maxRetryAfter: 60000
   promptCache: # or `false`; on by default
     ttl: 1h # 5m | 1h (Anthropic)
+  plugins: # settings for backend plugins registered with registerLLMBackend, by provider name
+    my-provider:
+      endpoint: http://localhost:9000
 ```
 
 ### Memory Configuration
@@ -179,7 +184,8 @@ memory:
     provider: openai # openai | ollama | google (apiKey required for openai and google)
     apiKey: sk-xxx
     model: text-embedding-3-small
-    baseUrl: https://api.openai.com/v1 # openai and ollama only
+    baseUrl: https://api.openai.com/v1 # optional, for every provider
+    dimensions: 1536 # optional output size (e.g. text-embedding-3-*)
 
   # Context builder settings
   contextBuilder:
@@ -192,10 +198,13 @@ memory:
     includeGraphContext: false
     graphContextOptions:
       maxNodes: 20
+      maxEdges: 50
       maxDepth: 3
+      includeInferred: true
+      entityTypes: [person, organization] # person | organization | location | concept | event | object | custom
 ```
 
-The `Cogitator` runtime builds the store `adapter` names from its section: `redis` needs `url`, `host`/`port` or `cluster`, `postgres` needs `connectionString`, `sqlite` needs `path` and `mongodb` needs `uri`. A Postgres store sizes its vector column to `embedding`. `qdrant` is not a thread store: keep one of the others as `adapter`, and with `contextBuilder` (`includeSemanticContext: true`) the runtime searches `memory.qdrant` for semantic context. `embedding.dimensions` is not in the schema yet and is stripped; set it in code when you need it.
+The `Cogitator` runtime builds the store `adapter` names from its section: `redis` needs `url`, `host`/`port` or `cluster`, `postgres` needs `connectionString`, `sqlite` needs `path` and `mongodb` needs `uri`. A Postgres store sizes its vector column to `embedding`. `qdrant` is not a thread store: keep one of the others as `adapter`, and with `contextBuilder` (`includeSemanticContext: true`) the runtime searches `memory.qdrant` for semantic context.
 
 ### Sandbox Configuration
 
@@ -207,6 +216,13 @@ sandbox:
     timeout: 30000
     workdir: /workspace
     user: sandbox
+    env:
+      PYTHONUNBUFFERED: '1'
+    mounts:
+      - source: /srv/data
+        target: /workspace/data
+        readOnly: true
+    # wasmModule / wasmFunction / wasi: defaults for wasm tools
     resources:
       memory: 512m
       cpus: 0.5
@@ -221,6 +237,10 @@ sandbox:
   pool:
     maxSize: 10
     idleTimeoutMs: 60000
+    reuseContainers: false # true: reuse containers between executions with the same settings
+
+  # false: fail Docker-sandboxed tools when Docker is unavailable instead of running them on the host
+  allowNativeFallback: true
 
   docker:
     socketPath: /var/run/docker.sock
@@ -236,7 +256,7 @@ sandbox:
     cacheSize: 100
 ```
 
-`sandbox.allowNativeFallback` (default `true`: Docker-sandboxed tools run unsandboxed on the host when Docker is unavailable) and `sandbox.pool.reuseContainers` (default `false`: every execution gets a fresh container) are not in the schema yet and are stripped by validation. Pass them to `new Cogitator()` in code next to the loaded config.
+`sandbox.allowNativeFallback` defaults to `true`: Docker-sandboxed tools run unsandboxed on the host when Docker is unavailable, with a warning. `sandbox.pool.reuseContainers` defaults to `false`: every execution gets a fresh container; `true` is faster but lets files and processes left by one execution reach the next.
 
 ### Reflection Configuration
 
@@ -268,6 +288,21 @@ guardrails:
   revisionConfidenceThreshold: 0.8
   strictMode: false
   logViolations: true
+  constitution: # optional: your own principles instead of the default constitution
+    id: support
+    name: Support desk
+    version: 1.0.0
+    customizable: true
+    strictMode: false
+    principles:
+      - id: no-refund-promises
+        name: No refund promises
+        description: Never promise refunds the policy does not allow
+        category: custom # ethics | safety | privacy | legal | custom
+        critiquePrompt: Does the reply promise a refund?
+        revisionPrompt: Rewrite the reply without promising a refund.
+        severity: medium
+        appliesTo: [output] # input | output | tool
   thresholds:
     violence: high
     hate: high
@@ -306,10 +341,13 @@ security:
     detectRoleplay: true
     detectEncoding: true
     detectContextManipulation: true
+    patterns: # your own regular expression sources, compiled to RegExp
+      - 'reveal (the|your) system prompt'
     classifier: local # local | llm
     llmModel: openai/gpt-6-luna # for classifier: llm
     action: block # block | warn | log
     threshold: 0.7
+    failMode: secure # when the classifier throws: secure (default) fails the check, open lets the input through
     allowlist:
       - ignore the previous search
   pii:
@@ -505,6 +543,7 @@ import type { CogitatorConfigInput, CogitatorConfigOutput } from '@cogitator-ai/
 | `SandboxConfigSchema`            | Sandbox execution settings             |
 | `ReflectionConfigSchema`         | Self-reflection settings               |
 | `GuardrailConfigSchema`          | Safety guardrails                      |
+| `ConstitutionSchema`             | `guardrails.constitution` principles   |
 | `CostRoutingConfigSchema`        | Cost-aware model selection             |
 | `KnowledgeGraphConfigSchema`     | Knowledge graph settings               |
 | `PromptOptimizationConfigSchema` | Prompt optimization                    |
@@ -515,6 +554,7 @@ import type { CogitatorConfigInput, CogitatorConfigOutput } from '@cogitator-ai/
 | `DeployTargetSchema`             | Deploy target enum (`docker` \| `fly`) |
 | `DeployServerSchema`             | Server framework enum                  |
 | `LLMRetryConfigSchema`           | `llm.retry` (`false` or retry options) |
+| `PromptsConfigSchema`            | `prompts` (`autoDeployWinner`)         |
 
 `KnowledgeGraphConfigSchema` and `PromptOptimizationConfigSchema` validate those configs on their own; they are not keys of `CogitatorConfigSchema`.
 

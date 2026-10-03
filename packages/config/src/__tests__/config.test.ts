@@ -254,6 +254,33 @@ describe('loadConfig hardening', () => {
     expect(() => defineConfig({ deploy: { instances: 1.5 } })).toThrow(/Invalid configuration/);
   });
 
+  it('passes sandbox and embedding options from YAML through to the runtime config', () => {
+    writeFileSync(
+      path,
+      [
+        'sandbox:',
+        '  allowNativeFallback: false',
+        '  pool:',
+        '    reuseContainers: true',
+        'memory:',
+        '  embedding:',
+        '    provider: openai',
+        '    apiKey: sk-test',
+        '    dimensions: 1536',
+        '',
+      ].join('\n')
+    );
+
+    const config = loadConfig({ configPath: path, skipEnv: true });
+
+    expect(config.sandbox).toEqual({ allowNativeFallback: false, pool: { reuseContainers: true } });
+    expect(config.memory?.embedding).toEqual({
+      provider: 'openai',
+      apiKey: 'sk-test',
+      dimensions: 1536,
+    });
+  });
+
   it('ignores prototype-polluting keys during merge', () => {
     writeFileSync(path, '__proto__:\n  polluted: true\nllm:\n  defaultModel: x\n');
     const config = loadConfig({ configPath: path, skipEnv: true });
