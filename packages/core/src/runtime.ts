@@ -34,7 +34,7 @@ import { isLLMProvider } from './llm/providers';
 import { createLLMBackendFromPlugin, hasLLMPlugin } from './llm/plugin';
 import { withLLMRetry } from './llm/retry';
 import { PiiMasker, withPiiMasking } from './security/pii';
-import { getLogger } from './logger';
+import { createLoggerFromConfig, getLogger, setLogger } from './logger';
 import {
   type InitializerState,
   initializeMemory,
@@ -143,6 +143,7 @@ export class Cogitator {
   private initPromise?: Promise<void>;
   private memoryInit?: Promise<void>;
   private runLimiter?: RunLimiter;
+  private constitution?: Constitution;
 
   /**
    * Create a new Cogitator runtime.
@@ -154,9 +155,12 @@ export class Cogitator {
    * @param config.reflection - Reflection engine settings
    * @param config.guardrails - Constitutional AI settings
    * @param config.costRouting - Cost-aware routing settings
+   * @param config.logging - Level, format and destination of the process-wide
+   *   logger (`getLogger()`); the last runtime created with `logging` sets it
    */
   constructor(config: CogitatorConfig = {}) {
     this.config = config;
+    if (config.logging) setLogger(createLoggerFromConfig(config.logging));
   }
 
   /**
@@ -283,7 +287,13 @@ export class Cogitator {
 
     if (timeout && timeout > 0) {
       timeoutId = setTimeout(() => {
-        abortController.abort(new Error(`Run timed out after ${timeout}ms`));
+        abortController.abort(
+          new CogitatorError({
+            message: `Run timed out after ${timeout}ms`,
+            code: ErrorCode.RUN_TIMEOUT,
+            details: { timeout },
+          })
+        );
       }, timeout);
     }
 
@@ -372,20 +382,30 @@ export class Cogitator {
         });
         const runOptions: RunOptions = input === options.input ? options : { ...options, input };
 
-        if (this.state.costRouter && this.config.costRouting?.autoSelectModel) {
-          const recommendation = await this.state.costRouter.recommendModel(input);
+        const costRouter = this.state.costRouter;
+        const recommendation =
+          costRouter && this.config.costRouting?.autoSelectModel
+            ? await costRouter.recommendAvailableModel(input, (provider) =>
+                this.servesProvider(provider, agentModel, agent.config.provider)
+              )
+            : undefined;
+
+        if (recommendation) {
           effectiveModel = `${recommendation.provider}/${recommendation.modelId}`;
-          routeProvider = recommendation.provider;
+          routeProvider = undefined;
+        }
+        ({ backend, model } = this.route(effectiveModel, routeProvider));
 
-          const budgetCheck = this.state.costRouter.checkBudget(recommendation.estimatedCost);
+        if (costRouter) {
+          const budgetCheck = recommendation
+            ? costRouter.checkBudget(recommendation.estimatedCost)
+            : costRouter.checkRunBudget(input, model);
           if (!budgetCheck.allowed) {
-            throw new Error(`Budget exceeded: ${budgetCheck.reason}`);
+            throw new CogitatorError({
+              message: `Budget exceeded: ${budgetCheck.reason}`,
+              code: ErrorCode.BUDGET_EXCEEDED,
+            });
           }
-
-          backend = this.getBackend(effectiveModel, recommendation.provider);
-          model = recommendation.modelId;
-        } else {
-          ({ backend, model } = this.route(effectiveModel, agent.config.provider));
         }
 
         await this.abandonPausedRun(agent, runOptions, threadId);
@@ -517,7 +537,14 @@ export class Cogitator {
         const pending: ToolApprovalRequest[] = [];
         for (const toolCall of toolCalls) {
           const tool = registry.get(toolCall.name);
-          if (!tool || decisions.has(toolCall.id) || !needsApproval(tool, toolCall.arguments)) {
+          if (
+            !tool ||
+            decisions.has(toolCall.id) ||
+            !(
+              needsApproval(tool, toolCall.arguments) ||
+              this.state.constitutionalAI?.toolNeedsApproval(tool, toolCall.arguments)
+            )
+          ) {
             continue;
           }
           const request: ToolApprovalRequest = {
@@ -565,7 +592,8 @@ export class Cogitator {
                 channelType: options.channelType,
                 channelId: options.channelId,
               },
-              decision?.approved === true
+              decision?.approved === true,
+              this.config.sandbox?.allowNativeFallback !== false
             ),
             abortController.signal
           );
@@ -780,9 +808,11 @@ export class Cogitator {
             if (outputResult.suggestedRevision) {
               outputContent = outputResult.suggestedRevision;
             } else {
-              throw new Error(
-                `Output blocked: ${outputResult.blockedReason ?? 'Policy violation'}`
-              );
+              throw new CogitatorError({
+                message: `Output blocked: ${outputResult.blockedReason ?? 'Policy violation'}`,
+                code: ErrorCode.LLM_CONTENT_FILTERED,
+                details: { harmScores: outputResult.harmScores },
+              });
             }
           }
         }
@@ -1085,7 +1115,11 @@ export class Cogitator {
     if (this.state.constitutionalAI?.config.filterInput) {
       const inputResult = await this.state.constitutionalAI.filterInput(input);
       if (!inputResult.allowed) {
-        throw new Error(`Input blocked: ${inputResult.blockedReason ?? 'Policy violation'}`);
+        throw new CogitatorError({
+          message: `Input blocked: ${inputResult.blockedReason ?? 'Policy violation'}`,
+          code: ErrorCode.LLM_CONTENT_FILTERED,
+          details: { harmScores: inputResult.harmScores },
+        });
       }
     }
 
@@ -1258,13 +1292,8 @@ export class Cogitator {
       await initializeReflection(this.config, this.state, agentModel, (model) => this.route(model));
     }
 
-    if (this.config.guardrails && !this.state.guardrailsInitialized) {
-      initializeGuardrails(this.config, this.state, agentModel, (model) => this.route(model));
-    }
-
-    if (this.config.costRouting?.enabled && !this.state.costRoutingInitialized) {
-      initializeCostRouting(this.config, this.state);
-    }
+    this.ensureGuardrails(agentModel);
+    this.ensureCostRouting();
 
     if (this.config.security?.promptInjection && !this.state.securityInitialized) {
       initializeSecurity(this.config, this.state, agentModel, (model) => this.route(model));
@@ -1272,6 +1301,30 @@ export class Cogitator {
 
     if (this.config.context && !this.state.contextManagerInitialized) {
       initializeContextManager(this.config, this.state, (model) => this.route(model));
+    }
+  }
+
+  /**
+   * Builds the guardrails once their model is known: `guardrails.model`, else
+   * the model of the agent being run, else `llm.defaultModel` — so they exist
+   * before the first run whenever one of the configured models names them.
+   */
+  private ensureGuardrails(agentModel?: string): void {
+    if (this.state.guardrailsInitialized || !this.config.guardrails) return;
+    const model = agentModel ?? this.config.guardrails.model ?? this.config.llm?.defaultModel;
+    if (!model) return;
+    initializeGuardrails(
+      this.config,
+      this.state,
+      model,
+      (target) => this.route(target),
+      this.constitution
+    );
+  }
+
+  private ensureCostRouting(): void {
+    if (this.config.costRouting?.enabled && !this.state.costRoutingInitialized) {
+      initializeCostRouting(this.config, this.state);
     }
   }
 
@@ -1288,20 +1341,43 @@ export class Cogitator {
    * An explicit provider keeps the model string as it is.
    */
   route(modelString: string, explicitProvider?: string): ModelRoute {
-    if (explicitProvider) {
-      return { backend: this.backendFor(explicitProvider), model: modelString };
-    }
+    const { provider, model } = this.resolveRoute(modelString, explicitProvider);
+    return { backend: this.backendFor(provider), model };
+  }
+
+  private resolveRoute(
+    modelString: string,
+    explicitProvider?: string
+  ): { provider: string; model: string } {
+    if (explicitProvider) return { provider: explicitProvider, model: modelString };
     const slash = modelString.indexOf('/');
     if (slash > 0) {
       const prefix = modelString.slice(0, slash);
       if (this.knowsProvider(prefix)) {
-        return { backend: this.backendFor(prefix), model: modelString.slice(slash + 1) };
+        return { provider: prefix, model: modelString.slice(slash + 1) };
       }
     }
-    return {
-      backend: this.backendFor(this.config.llm?.defaultProvider ?? 'ollama'),
-      model: modelString,
-    };
+    return { provider: this.config.llm?.defaultProvider ?? 'ollama', model: modelString };
+  }
+
+  /**
+   * Whether runs can be sent to `provider`: a backend in `llm.backends`, a
+   * registered plugin, `llm.defaultProvider`, the provider the agent's own
+   * model runs on, or a built-in provider configured in `llm.providers` with
+   * the credentials it needs.
+   */
+  private servesProvider(provider: string, agentModel: string, agentProvider?: string): boolean {
+    const llm = this.config.llm;
+    if (Object.hasOwn(llm?.backends ?? {}, provider) || hasLLMPlugin(provider)) return true;
+    if (provider === llm?.defaultProvider) return true;
+    if (provider === this.resolveRoute(agentModel, agentProvider).provider) return true;
+    if (!isLLMProvider(provider) || !Object.hasOwn(llm?.providers ?? {}, provider)) return false;
+    try {
+      this.backendFor(provider);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private knowsProvider(name: string): boolean {
@@ -1372,9 +1448,14 @@ export class Cogitator {
   /**
    * Get the constitutional AI guardrails instance.
    *
-   * @returns ConstitutionalAI instance, undefined if guardrails not enabled
+   * Built on first use from `guardrails.model` or `llm.defaultModel`; when
+   * neither is set, the first run builds it with its agent's model.
+   *
+   * @returns ConstitutionalAI instance, undefined if guardrails are not
+   *   configured (or are disabled), or no model for them is known yet
    */
   getGuardrails() {
+    this.ensureGuardrails();
     return this.state.constitutionalAI;
   }
 
@@ -1382,20 +1463,31 @@ export class Cogitator {
    * Set or update the constitution for guardrails.
    *
    * The constitution defines principles and rules that the agent
-   * must follow, filtering both input and output.
+   * must follow, filtering both input and output. It takes effect at once,
+   * or — when the guardrails are built later — as soon as they are, and
+   * stays in force after {@link close}. Has no effect without `guardrails`
+   * in the config.
    *
    * @param constitution - New constitution to apply
    */
   setConstitution(constitution: Constitution): void {
-    this.state.constitutionalAI?.setConstitution(constitution);
+    if (!this.config.guardrails || this.config.guardrails.enabled === false) {
+      getLogger().warn('setConstitution has no effect: guardrails are not enabled in the config');
+      return;
+    }
+    this.constitution = constitution;
+    if (this.state.constitutionalAI) this.state.constitutionalAI.setConstitution(constitution);
+    else this.ensureGuardrails();
   }
 
   /**
    * Get cost tracking summary across all runs.
    *
-   * @returns Cost summary with total spent, runs count, and per-model breakdown
+   * @returns Cost summary with total spent, runs count, and per-model breakdown,
+   *   undefined if cost routing is not enabled
    */
   getCostSummary(): CostSummary | undefined {
+    this.ensureCostRouting();
     return this.state.costRouter?.getCostSummary();
   }
 
@@ -1405,6 +1497,7 @@ export class Cogitator {
    * @returns CostAwareRouter instance, undefined if cost routing not enabled
    */
   getCostRouter() {
+    this.ensureCostRouting();
     return this.state.costRouter;
   }
 

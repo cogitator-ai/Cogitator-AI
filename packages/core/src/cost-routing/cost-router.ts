@@ -5,8 +5,9 @@ import type {
   CostRecord,
   CostSummary,
 } from '@cogitator-ai/types';
+import { calculateCost } from '@cogitator-ai/models';
 import { TaskAnalyzer } from './task-analyzer';
-import { ModelSelector } from './model-selector';
+import { ModelSelector, TASK_TOKEN_ESTIMATES } from './model-selector';
 import { CostTracker } from './cost-tracker';
 import { BudgetEnforcer, type BudgetCheckResult } from './budget-enforcer';
 
@@ -53,6 +54,30 @@ export class CostAwareRouter {
     requirements: TaskRequirements
   ): Promise<ModelRecommendation> {
     return this.modelSelector.selectModel(requirements);
+  }
+
+  /**
+   * The best model for `input` among the providers `isProviderAvailable`
+   * accepts — the ones a runtime can actually call. Unlike
+   * {@link recommendModel} there is no fallback: undefined when none of
+   * those providers has a fitting model.
+   */
+  async recommendAvailableModel(
+    input: string,
+    isProviderAvailable: (provider: string) => boolean
+  ): Promise<ModelRecommendation | undefined> {
+    return this.modelSelector.selectAvailableModel(this.analyzeTask(input), isProviderAvailable);
+  }
+
+  /**
+   * Checks the budget for a run of `input` on `model`, estimating its cost
+   * from the task's complexity and the model's price (0 when the price is
+   * unknown, so the hourly and daily limits still hold against what was spent).
+   */
+  checkRunBudget(input: string, model: string): BudgetCheckResult {
+    if (!this.budgetEnforcer) return { allowed: true };
+    const tokens = TASK_TOKEN_ESTIMATES[this.analyzeTask(input).complexity];
+    return this.budgetEnforcer.checkBudget(calculateCost(model, tokens) ?? 0);
   }
 
   checkBudget(estimatedCost: number): BudgetCheckResult {

@@ -1,4 +1,5 @@
-import { readEnv } from './utils/env';
+import type { LoggingConfig } from '@cogitator-ai/types';
+import { builtinModule, readEnv } from './utils/env';
 
 /**
  * Structured logging for Cogitator
@@ -16,19 +17,20 @@ export interface LogEntry {
 }
 
 export interface LoggerOptions {
-  /** Minimum log level to output. Default: 'info' */
-  level?: LogLevel;
+  /** Minimum log level to output; `'silent'` outputs nothing. Default: 'info' */
+  level?: LogLevel | 'silent';
   /** Output format: 'json' for production, 'pretty' for development. Default: 'pretty' */
   format?: 'json' | 'pretty';
   /** Custom output function. Default: console.log/warn/error */
   output?: (entry: LogEntry, formatted: string) => void;
 }
 
-const LOG_LEVELS: Record<LogLevel, number> = {
+const LOG_LEVELS: Record<LogLevel | 'silent', number> = {
   debug: 0,
   info: 1,
   warn: 2,
   error: 3,
+  silent: Number.POSITIVE_INFINITY,
 };
 
 const LEVEL_COLORS: Record<LogLevel, string> = {
@@ -62,14 +64,16 @@ function formatJson(entry: LogEntry): string {
 }
 
 export class Logger {
+  private levelName: LogLevel | 'silent';
   private level: number;
   private format: 'json' | 'pretty';
   private output?: (entry: LogEntry, formatted: string) => void;
   private context: LogContext;
 
   constructor(options: LoggerOptions = {}, context: LogContext = {}) {
-    const level = options.level ?? 'info';
-    this.level = LOG_LEVELS[level] ?? LOG_LEVELS.info;
+    this.levelName =
+      options.level && Object.hasOwn(LOG_LEVELS, options.level) ? options.level : 'info';
+    this.level = LOG_LEVELS[this.levelName];
     this.format = options.format ?? 'pretty';
     this.output = options.output;
     this.context = context;
@@ -122,11 +126,9 @@ export class Logger {
    * Create a child logger with additional context
    */
   child(context: LogContext): Logger {
-    const levelEntry = Object.entries(LOG_LEVELS).find(([, v]) => v === this.level);
-    const level: LogLevel = levelEntry ? (levelEntry[0] as LogLevel) : 'info';
     return new Logger(
       {
-        level,
+        level: this.levelName,
         format: this.format,
         output: this.output,
       },
@@ -165,4 +167,40 @@ export function setLogger(logger: Logger): void {
  */
 export function createLogger(options?: LoggerOptions): Logger {
   return new Logger(options);
+}
+
+interface AppendFileModule {
+  appendFileSync(path: string, data: string): void;
+}
+
+/**
+ * A logger built from the `logging` section of the Cogitator config:
+ * `level`, `format`, and `destination` — `'file'` appends one line per entry
+ * to `filePath` (JSON unless `format` says otherwise). Where the runtime has no file system, or `filePath` is
+ * missing, it logs to the console and says why.
+ */
+export function createLoggerFromConfig(config: LoggingConfig): Logger {
+  const options: LoggerOptions = {
+    ...(config.level && { level: config.level }),
+    ...(config.format && { format: config.format }),
+  };
+  if (config.destination !== 'file') return new Logger(options);
+
+  const fs = builtinModule<AppendFileModule>('node:fs');
+  if (!config.filePath || !fs) {
+    const logger = new Logger(options);
+    logger.warn(
+      config.filePath
+        ? 'logging.destination is "file", but this runtime has no file system; logging to the console'
+        : 'logging.destination is "file", but logging.filePath is not set; logging to the console'
+    );
+    return logger;
+  }
+
+  const filePath = config.filePath;
+  return new Logger({
+    ...options,
+    format: config.format ?? 'json',
+    output: (_entry, formatted) => fs.appendFileSync(filePath, `${formatted}\n`),
+  });
 }

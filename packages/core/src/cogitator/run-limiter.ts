@@ -1,3 +1,5 @@
+import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
+
 /**
  * Caps how many runs execute at once; the rest wait in arrival order.
  *
@@ -10,7 +12,10 @@ export class RunLimiter {
 
   constructor(private readonly max: number) {
     if (!Number.isInteger(max) || max < 1) {
-      throw new Error(`limits.maxConcurrentRuns must be a positive integer, got ${max}`);
+      throw new CogitatorError({
+        message: `limits.maxConcurrentRuns must be a positive integer, got ${max}`,
+        code: ErrorCode.CONFIGURATION_ERROR,
+      });
     }
   }
 

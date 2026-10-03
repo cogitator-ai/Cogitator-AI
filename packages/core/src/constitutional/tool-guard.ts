@@ -19,6 +19,12 @@ export class ToolGuard {
     this.config = options.config;
   }
 
+  /**
+   * Whether a call may run. Dangerous commands and paths are always blocked.
+   * A call that needs approval — `requiresApproval`, or any side effect in
+   * `strictMode` — runs only when `approvedByUser` (the runtime's approval
+   * flow decided it) or `onToolApproval` says yes; with neither it is denied.
+   */
   async evaluate(
     tool: Tool,
     args: Record<string, unknown>,
@@ -26,7 +32,6 @@ export class ToolGuard {
     options: { approvedByUser?: boolean } = {}
   ): Promise<ToolGuardResult> {
     const sideEffects = tool.sideEffects ?? [];
-    const requiresApproval = !options.approvedByUser && this.checkApproval(tool, args);
     const riskLevel = this.assessRisk(tool, args, sideEffects);
 
     const dangerCheck = this.checkDangerousOperation(tool, args);
@@ -40,25 +45,14 @@ export class ToolGuard {
       };
     }
 
-    if (this.config.strictMode && sideEffects.length > 0) {
-      const approved = await this.requestApproval(tool, args, sideEffects);
+    if (!options.approvedByUser && this.needsApproval(tool, args, sideEffects)) {
+      const denial = await this.requestApproval(tool, args, sideEffects);
       return {
-        approved,
+        approved: denial === undefined,
         requiresConfirmation: true,
         sideEffects,
         riskLevel,
-        reason: approved ? undefined : 'User denied tool execution',
-      };
-    }
-
-    if (requiresApproval) {
-      const approved = await this.requestApproval(tool, args, sideEffects);
-      return {
-        approved,
-        requiresConfirmation: true,
-        sideEffects,
-        riskLevel,
-        reason: approved ? undefined : 'User denied tool execution',
+        ...(denial !== undefined && { reason: denial }),
       };
     }
 
@@ -70,11 +64,22 @@ export class ToolGuard {
     };
   }
 
+  /** Whether a call needs someone's approval before it runs: see {@link evaluate}. */
+  needsApproval(
+    tool: Tool,
+    args: Record<string, unknown>,
+    sideEffects = tool.sideEffects ?? []
+  ): boolean {
+    return (this.config.strictMode && sideEffects.length > 0) || this.checkApproval(tool, args);
+  }
+
   private checkApproval(tool: Tool, args: Record<string, unknown>): boolean {
-    if (typeof tool.requiresApproval === 'function') {
+    if (typeof tool.requiresApproval !== 'function') return tool.requiresApproval ?? false;
+    try {
       return tool.requiresApproval(args);
+    } catch {
+      return true;
     }
-    return tool.requiresApproval ?? false;
   }
 
   private assessRisk(_tool: Tool, args: Record<string, unknown>, sideEffects: string[]): Severity {
@@ -144,15 +149,17 @@ export class ToolGuard {
     return dangerous.some((pattern) => pattern.test(path));
   }
 
+  /** Why the call may not run, or undefined when `onToolApproval` approved it. */
   private async requestApproval(
     tool: Tool,
     args: Record<string, unknown>,
     sideEffects: string[]
-  ): Promise<boolean> {
-    if (this.config.onToolApproval) {
-      return this.config.onToolApproval(tool.name, args, sideEffects);
+  ): Promise<string | undefined> {
+    if (!this.config.onToolApproval) {
+      return `Tool "${tool.name}" needs approval, and no approval handler is configured`;
     }
-    return true;
+    const approved = await this.config.onToolApproval(tool.name, args, sideEffects);
+    return approved ? undefined : 'User denied tool execution';
   }
 
   updateConstitution(_constitution: Constitution): void {}

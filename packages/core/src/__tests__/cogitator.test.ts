@@ -1206,6 +1206,51 @@ describe('Cogitator', () => {
       await cog.close();
     });
 
+    it('auto-selects only among providers the runtime can call', async () => {
+      const cog = new Cogitator({
+        llm: { providers: { anthropic: { apiKey: 'sk-ant-test' } } },
+        costRouting: { enabled: true, autoSelectModel: true },
+      });
+
+      const result = await cog.run(createTestAgent({ model: 'anthropic/claude-sonnet-4-5' }), {
+        input: 'Say hello',
+      });
+
+      expect(result.modelUsed?.split('/')[0]).toBe('anthropic');
+      await cog.close();
+    });
+
+    it('keeps the agent model when no configured provider has a model for auto-selection', async () => {
+      const local = createMockBackend();
+      const cog = new Cogitator({
+        llm: { backends: { local: local.backend } },
+        costRouting: { enabled: true, autoSelectModel: true },
+      });
+
+      const result = await cog.run(createTestAgent({ model: 'local/tiny' }), { input: 'Hi' });
+
+      expect(result.modelUsed).toBe('local/tiny');
+      expect(vi.mocked(local.backend.chat).mock.calls[0][0].model).toBe('tiny');
+      await cog.close();
+    });
+
+    it('enforces the budget without autoSelectModel', async () => {
+      const cog = new Cogitator({
+        costRouting: { enabled: true, budget: { maxCostPerRun: 0.0000001 } },
+      });
+
+      await expect(
+        cog.run(createTestAgent({ model: 'openai/gpt-4o' }), { input: 'Say hello' })
+      ).rejects.toMatchObject({
+        name: 'CogitatorError',
+        code: 'BUDGET_EXCEEDED',
+        statusCode: 429,
+        message: expect.stringContaining('Budget exceeded'),
+      });
+      expect(mockBackendHelper.backend.chat).not.toHaveBeenCalled();
+      await cog.close();
+    });
+
     describe('audio inputs', () => {
       const originalFetch = globalThis.fetch;
       const originalKey = process.env.OPENAI_API_KEY;

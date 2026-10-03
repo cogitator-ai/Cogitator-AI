@@ -65,6 +65,18 @@ const CODE_MODELS = [
   'qwen2.5-coder',
 ];
 
+type TaskComplexity = TaskRequirements['complexity'];
+
+/** Tokens a run of a task of each complexity is expected to use, for cost estimates. */
+export const TASK_TOKEN_ESTIMATES: Record<
+  TaskComplexity,
+  { inputTokens: number; outputTokens: number }
+> = {
+  simple: { inputTokens: 500, outputTokens: 200 },
+  moderate: { inputTokens: 2000, outputTokens: 1000 },
+  complex: { inputTokens: 8000, outputTokens: 4000 },
+};
+
 interface ScoredModel {
   model: ModelInfo;
   score: number;
@@ -79,28 +91,42 @@ export class ModelSelector {
   }
 
   async selectModel(requirements: TaskRequirements): Promise<ModelRecommendation> {
+    return (await this.rank(requirements)) ?? this.fallbackRecommendation();
+  }
+
+  /**
+   * The best model for the task among the providers `isProviderAvailable`
+   * accepts; undefined when none of them has a fitting model.
+   */
+  async selectAvailableModel(
+    requirements: TaskRequirements,
+    isProviderAvailable: (provider: string) => boolean
+  ): Promise<ModelRecommendation | undefined> {
+    return this.rank(requirements, isProviderAvailable);
+  }
+
+  private async rank(
+    requirements: TaskRequirements,
+    isProviderAvailable?: (provider: string) => boolean
+  ): Promise<ModelRecommendation | undefined> {
     const registry = getModelRegistry();
     await registry.initialize();
 
-    const candidates = registry.listModels({
-      supportsTools: requirements.needsToolCalling ? true : undefined,
-      supportsVision: requirements.needsVision ? true : undefined,
-      minContextWindow: requirements.needsLongContext ? 32000 : undefined,
-      excludeDeprecated: true,
-    });
-
-    if (candidates.length === 0) {
-      return this.fallbackRecommendation();
-    }
+    const candidates = registry
+      .listModels({
+        supportsTools: requirements.needsToolCalling ? true : undefined,
+        supportsVision: requirements.needsVision ? true : undefined,
+        minContextWindow: requirements.needsLongContext ? 32000 : undefined,
+        excludeDeprecated: true,
+      })
+      .filter((model) => !isProviderAvailable || isProviderAvailable(model.provider));
 
     const scored = candidates
       .map((m) => this.scoreModel(m, requirements))
       .filter((s) => s.score >= (this.config.minCapabilityMatch ?? 0.3) * 100)
       .sort((a, b) => b.score - a.score);
 
-    if (scored.length === 0) {
-      return this.fallbackRecommendation();
-    }
+    if (scored.length === 0) return undefined;
 
     if (this.config.preferLocal) {
       const local = scored.find((s) => this.isLocalModel(s.model));
@@ -224,16 +250,10 @@ export class ModelSelector {
     };
   }
 
-  private estimateCost(model: ModelInfo, complexity: 'simple' | 'moderate' | 'complex'): number {
-    const tokenEstimates = {
-      simple: { input: 500, output: 200 },
-      moderate: { input: 2000, output: 1000 },
-      complex: { input: 8000, output: 4000 },
-    };
-
-    const estimate = tokenEstimates[complexity];
-    const inputCost = (model.pricing.input * estimate.input) / 1_000_000;
-    const outputCost = (model.pricing.output * estimate.output) / 1_000_000;
+  private estimateCost(model: ModelInfo, complexity: TaskComplexity): number {
+    const estimate = TASK_TOKEN_ESTIMATES[complexity];
+    const inputCost = (model.pricing.input * estimate.inputTokens) / 1_000_000;
+    const outputCost = (model.pricing.output * estimate.outputTokens) / 1_000_000;
 
     return inputCost + outputCost;
   }

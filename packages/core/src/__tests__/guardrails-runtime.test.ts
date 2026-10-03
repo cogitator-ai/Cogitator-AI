@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { z } from 'zod';
-import type { ChatRequest, ChatResponse, ChatStreamChunk, LLMBackend } from '@cogitator-ai/types';
+import type {
+  ChatRequest,
+  ChatResponse,
+  ChatStreamChunk,
+  Constitution,
+  LLMBackend,
+} from '@cogitator-ai/types';
 import { Cogitator } from '../cogitator';
 import { Agent } from '../agent';
 import { tool } from '../tool';
@@ -102,6 +108,27 @@ describe('guardrails in runs', () => {
     await cog.close();
   });
 
+  it('rejects a blocked input with a CogitatorError that keeps its message', async () => {
+    await useBackend(backend([{ id: 'a', content: 'ok', finishReason: 'stop', usage: usage() }]));
+    vi.spyOn(ConstitutionalAI.prototype, 'filterInput').mockResolvedValue({
+      allowed: false,
+      harmScores: [],
+      blockedReason: 'violence',
+    });
+    const cog = new Cogitator({ guardrails: { filterOutput: false } });
+
+    const error = await cog
+      .run(new Agent({ name: 'a', model: 'openai/m', instructions: 'x' }), { input: 'hi' })
+      .catch((e: unknown) => e);
+
+    expect(error).toMatchObject({
+      name: 'CogitatorError',
+      code: 'LLM_CONTENT_FILTERED',
+      message: 'Input blocked: violence',
+    });
+    await cog.close();
+  });
+
   it('stays off with enabled: false', async () => {
     await useBackend(backend([{ id: 'a', content: 'ok', finishReason: 'stop', usage: usage() }]));
     const cog = new Cogitator({ guardrails: { enabled: false } });
@@ -148,5 +175,95 @@ describe('guardrails in runs', () => {
       error: 'Tool result blocked: injection',
     });
     await cog.close();
+  });
+
+  it('holds side-effect tools for approval in strictMode instead of running them', async () => {
+    const execute = vi.fn(async () => 'sent');
+    const send = tool({
+      name: 'send',
+      description: 'Send',
+      parameters: z.object({}),
+      sideEffects: ['network'],
+      execute,
+    });
+    const turns = (): ChatResponse[] => [
+      {
+        id: '1',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'send', arguments: {} }],
+        finishReason: 'tool_calls',
+        usage: usage(),
+      },
+      { id: '2', content: 'done', finishReason: 'stop', usage: usage() },
+    ];
+    const config = { guardrails: { filterInput: false, filterOutput: false, strictMode: true } };
+    const agent = new Agent({ name: 'a', model: 'openai/m', instructions: 'x', tools: [send] });
+
+    await useBackend(backend(turns()));
+    const strict = new Cogitator(config);
+    const paused = await strict.run(agent, { input: 'go' });
+
+    expect(paused.status).toBe('paused');
+    expect(paused.pendingApprovals?.map((p) => p.toolName)).toEqual(['send']);
+    expect(execute).not.toHaveBeenCalled();
+    await strict.close();
+
+    await useBackend(backend(turns()));
+    const approving = new Cogitator(config);
+    const onApproval = vi.fn(async () => ({ approved: true }) as const);
+    const approved = await approving.run(agent, { input: 'go', onApproval });
+
+    expect(approved.status).toBe('completed');
+    expect(onApproval).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledTimes(1);
+    await approving.close();
+  });
+});
+
+describe('runtime accessors before the first run', () => {
+  const custom: Constitution = {
+    id: 'custom',
+    name: 'Custom',
+    version: '1',
+    principles: [],
+    customizable: true,
+    strictMode: false,
+  };
+
+  it('builds the guardrails from llm.defaultModel and applies setConstitution at once', async () => {
+    await useBackend(backend([]));
+    const cog = new Cogitator({ llm: { defaultModel: 'openai/m' }, guardrails: {} });
+
+    cog.setConstitution(custom);
+
+    expect(cog.getGuardrails()?.constitution.id).toBe('custom');
+    await cog.close();
+  });
+
+  it('keeps a constitution set before the guardrails exist for when the first run builds them', async () => {
+    await useBackend(backend([{ id: 'a', content: 'ok', finishReason: 'stop', usage: usage() }]));
+    const cog = new Cogitator({ guardrails: { filterInput: false, filterOutput: false } });
+
+    cog.setConstitution(custom);
+    expect(cog.getGuardrails()).toBeUndefined();
+    await cog.run(new Agent({ name: 'a', model: 'openai/m', instructions: 'x' }), { input: 'hi' });
+
+    expect(cog.getGuardrails()?.constitution.id).toBe('custom');
+    await cog.close();
+  });
+
+  it('hands out the guardrails before any run when a model for them is configured', async () => {
+    await useBackend(backend([]));
+    const cog = new Cogitator({ guardrails: { model: 'openai/judge' } });
+
+    expect(cog.getGuardrails()?.config.model).toBe('judge');
+    await cog.close();
+  });
+
+  it('hands out the cost router and its summary before any run', () => {
+    const cog = new Cogitator({ costRouting: { enabled: true } });
+
+    expect(cog.getCostRouter()).toBeDefined();
+    expect(cog.getCostSummary()?.runCount).toBe(0);
   });
 });

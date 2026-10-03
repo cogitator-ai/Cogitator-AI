@@ -45,6 +45,49 @@ describe('createToolMessage', () => {
     expect(parsed).toEqual({ items: [1, 2, 3], total: 3 });
   });
 
+  it('delivers a base64 screenshot as an image after the rest of the result', () => {
+    const msg = createToolMessage(toolCall, {
+      callId: 'tc_1',
+      name: 'search',
+      result: { image: 'iVBORw0KGgoAAAANSUhEUg==', mimeType: 'image/png', width: 800, height: 600 },
+    });
+
+    expect(msg.content).toEqual([
+      {
+        type: 'text',
+        text: JSON.stringify({
+          mimeType: 'image/png',
+          width: 800,
+          height: 600,
+          image: '(image attached)',
+        }),
+      },
+      {
+        type: 'image_base64',
+        image_base64: { data: 'iVBORw0KGgoAAAANSUhEUg==', media_type: 'image/png' },
+      },
+    ]);
+  });
+
+  it('reads imageBase64 and data URLs, and keeps fields that are not images as JSON', () => {
+    const generated = createToolMessage(toolCall, {
+      callId: 'tc_1',
+      name: 'search',
+      result: { imageBase64: 'data:image/jpeg;base64,/9j/4AAQ', model: 'gpt-image' },
+    });
+    const caption = createToolMessage(toolCall, {
+      callId: 'tc_1',
+      name: 'search',
+      result: { image: 'a cat on a mat' },
+    });
+
+    expect(generated.content).toEqual([
+      { type: 'text', text: '{"model":"gpt-image","imageBase64":"(image attached)"}' },
+      { type: 'image_base64', image_base64: { data: '/9j/4AAQ', media_type: 'image/jpeg' } },
+    ]);
+    expect(caption.content).toBe('{"image":"a cat on a mat"}');
+  });
+
   it('returns "null" when result is null', () => {
     const result: ToolResult = {
       callId: 'tc_1',
@@ -151,6 +194,38 @@ describe('executeTool', () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  it('refuses to run a Docker tool on the host when native fallback is off', async () => {
+    const registry = new ToolRegistry();
+    const nativeExecute = vi.fn(async () => ({ ran: true }));
+    registry.register(
+      tool({
+        name: 'shell',
+        description: 'Run shell',
+        parameters: z.object({ command: z.string() }),
+        sandbox: { type: 'docker', image: 'alpine:latest' },
+        execute: nativeExecute,
+      })
+    );
+
+    const result = await executeTool(
+      registry,
+      { id: 'tc_1', name: 'shell', arguments: { command: 'rm -rf ./data' } },
+      'run_1',
+      'agent_1',
+      undefined,
+      undefined,
+      false,
+      async () => undefined,
+      undefined,
+      undefined,
+      false,
+      false
+    );
+
+    expect(nativeExecute).not.toHaveBeenCalled();
+    expect(result.error).toContain('sandbox.allowNativeFallback is false');
   });
 
   it('uses the sandbox manager created on first sandboxed call', async () => {

@@ -102,6 +102,9 @@ describe('limits.defaultTimeout', () => {
       .catch((e: unknown) => e);
 
     expect((error as Error).message).toContain('30ms');
+    expect(error).toBeInstanceOf(CogitatorError);
+    expect((error as CogitatorError).code).toBe(ErrorCode.RUN_TIMEOUT);
+    expect((error as CogitatorError).statusCode).toBe(504);
     await cog.close();
   });
 
@@ -214,7 +217,12 @@ describe('RunLimiter', () => {
   });
 
   it('refuses a limit that is not a positive integer', () => {
-    expect(() => new RunLimiter(0)).toThrow('maxConcurrentRuns');
+    expect(() => new RunLimiter(0)).toThrow(
+      expect.objectContaining({
+        code: ErrorCode.CONFIGURATION_ERROR,
+        message: expect.stringContaining('maxConcurrentRuns'),
+      })
+    );
   });
 });
 

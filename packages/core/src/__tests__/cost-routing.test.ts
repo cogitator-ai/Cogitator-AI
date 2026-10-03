@@ -405,6 +405,31 @@ describe('CostAwareRouter', () => {
     expect(blocked.allowed).toBe(false);
   });
 
+  it('recommends only models of available providers, and nothing when none fits', async () => {
+    const router = new CostAwareRouter();
+
+    const anthropic = await router.recommendAvailableModel('Say hello', (p) => p === 'anthropic');
+    const none = await router.recommendAvailableModel('Say hello', () => false);
+
+    expect(anthropic?.provider).toBe('anthropic');
+    expect(none).toBeUndefined();
+  });
+
+  it('checks a run against the hourly budget even when the model price is unknown', () => {
+    const router = new CostAwareRouter({ config: { budget: { maxCostPerHour: 0.01 } } });
+
+    expect(router.checkRunBudget('hi', 'unpriced-local-model').allowed).toBe(true);
+    router.recordCost({
+      runId: 'run1',
+      agentId: 'agent1',
+      model: 'gpt-4o',
+      inputTokens: 1000,
+      outputTokens: 500,
+      cost: 0.02,
+    });
+    expect(router.checkRunBudget('hi', 'unpriced-local-model').allowed).toBe(false);
+  });
+
   it('allows all when no budget configured', () => {
     const router = new CostAwareRouter();
 

@@ -139,6 +139,17 @@ export class ConstitutionalAI {
     return this.toolGuard.evaluate(tool, args, context, options);
   }
 
+  /**
+   * Whether the tool guard holds a call for approval: the tool's
+   * `requiresApproval`, or any side effect in `strictMode`. The runtime asks
+   * for these approvals (`onApproval`, `onToolApproval`, or a paused run)
+   * before the call reaches {@link guardTool}.
+   */
+  toolNeedsApproval(tool: Tool, args: Record<string, unknown>): boolean {
+    if (!this._config.enabled || !this._config.filterToolCalls) return false;
+    return this.toolGuard.needsApproval(tool, args);
+  }
+
   async critiqueAndRevise(response: string, context: Message[]): Promise<RevisionResult> {
     if (!this._config.enabled) {
       return {

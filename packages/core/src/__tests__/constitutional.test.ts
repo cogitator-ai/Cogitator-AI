@@ -668,6 +668,52 @@ describe('ToolGuard', () => {
 
     expect(onToolApproval).toHaveBeenCalledWith('test_tool', { test: true }, []);
   });
+
+  it('denies a call that needs approval when no approval handler is configured', async () => {
+    const result = await guard.evaluate(
+      createTool({ requiresApproval: true }),
+      {},
+      createContext()
+    );
+
+    expect(result.approved).toBe(false);
+    expect(result.reason).toContain('no approval handler');
+  });
+
+  it('holds side-effect tools for approval in strictMode, failing closed without a handler', async () => {
+    const strict = new ToolGuard({
+      config: createGuardrailConfig({ strictMode: true }),
+      constitution: DEFAULT_CONSTITUTION,
+    });
+
+    const sideEffect = await strict.evaluate(
+      createTool({ sideEffects: ['network'] }),
+      {},
+      createContext()
+    );
+    const pure = await strict.evaluate(createTool(), {}, createContext());
+
+    expect(sideEffect).toMatchObject({ approved: false, requiresConfirmation: true });
+    expect(pure.approved).toBe(true);
+  });
+
+  it('does not ask again for a call the user already approved', async () => {
+    const onToolApproval = vi.fn().mockResolvedValue(false);
+    const strict = new ToolGuard({
+      config: createGuardrailConfig({ strictMode: true, onToolApproval }),
+      constitution: DEFAULT_CONSTITUTION,
+    });
+
+    const result = await strict.evaluate(
+      createTool({ sideEffects: ['network'], requiresApproval: true }),
+      {},
+      createContext(),
+      { approvedByUser: true }
+    );
+
+    expect(result.approved).toBe(true);
+    expect(onToolApproval).not.toHaveBeenCalled();
+  });
 });
 
 describe('CritiqueReviser', () => {

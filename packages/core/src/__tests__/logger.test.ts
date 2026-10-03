@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { Logger, createLogger, getLogger, setLogger } from '../logger';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Logger, createLogger, createLoggerFromConfig, getLogger, setLogger } from '../logger';
+import { Cogitator } from '../cogitator';
 import type { LogEntry } from '../logger';
 
 describe('Logger', () => {
@@ -236,6 +240,68 @@ describe('Logger', () => {
 
       expect(spy).toHaveBeenCalledTimes(2);
       spy.mockRestore();
+    });
+  });
+
+  describe('logging config', () => {
+    afterEach(() => {
+      setLogger(createLogger());
+      vi.restoreAllMocks();
+    });
+
+    it('outputs nothing at level silent, children included', () => {
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const logger = createLoggerFromConfig({ level: 'silent' });
+
+      logger.error('hidden');
+      logger.child({ component: 'x' }).error('hidden');
+
+      expect(log).not.toHaveBeenCalled();
+      expect(error).not.toHaveBeenCalled();
+    });
+
+    it('appends JSON lines to logging.filePath for the file destination', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'cogitator-log-'));
+      const filePath = join(dir, 'app.log');
+      try {
+        const logger = createLoggerFromConfig({ level: 'warn', destination: 'file', filePath });
+
+        logger.info('skipped');
+        logger.warn('first', { n: 1 });
+        logger.error('second');
+
+        const lines = readFileSync(filePath, 'utf8').trim().split('\n');
+        expect(lines.map((line) => (JSON.parse(line) as LogEntry).message)).toEqual([
+          'first',
+          'second',
+        ]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('logs to the console and warns when the file destination has no filePath', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      createLoggerFromConfig({ destination: 'file' });
+
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('logging.filePath is not set'));
+    });
+
+    it('is applied to the default logger by a Cogitator created with logging', () => {
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      new Cogitator({ logging: { level: 'warn', format: 'json' } });
+      getLogger().info('hidden');
+      getLogger().warn('shown');
+
+      expect(log).not.toHaveBeenCalled();
+      expect(JSON.parse(String(warn.mock.calls[0][0]))).toMatchObject({
+        level: 'warn',
+        message: 'shown',
+      });
     });
   });
 });

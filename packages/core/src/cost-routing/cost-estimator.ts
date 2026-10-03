@@ -6,6 +6,7 @@ import type {
   TaskComplexity,
   ToolSchema,
 } from '@cogitator-ai/types';
+import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import { getModelRegistry } from '@cogitator-ai/models';
 import type { Agent } from '../agent';
 import { TaskAnalyzer } from './task-analyzer';
@@ -37,7 +38,10 @@ export class CostEstimator {
 
     const modelString = params.model ?? agent.model;
     if (!modelString) {
-      throw new Error(`Agent "${agent.name}" has no model to estimate the cost of`);
+      throw new CogitatorError({
+        message: `Agent "${agent.name}" has no model to estimate the cost of`,
+        code: ErrorCode.CONFIGURATION_ERROR,
+      });
     }
     const parsed = parseModel(modelString);
     const modelId = parsed.model;

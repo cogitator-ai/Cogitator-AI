@@ -13,6 +13,7 @@ import type { Agent } from '../agent';
 import { ABTestingFramework } from '../learning/ab-testing';
 import { RollbackManager, type RollbackResult } from '../learning/rollback-manager';
 import { InMemoryABTestStore, InMemoryInstructionVersionStore } from '../learning/prompt-stores';
+import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import { getLogger } from '../logger';
 
 /** An agent, or the key its instructions are versioned under. */
@@ -94,7 +95,10 @@ export class PromptRegistry {
       (await this.current(key))?.instructions ??
       (typeof target === 'string' ? undefined : target.instructions);
     if (control === undefined) {
-      throw new Error(`No current instructions for "${key}" to test against`);
+      throw new CogitatorError({
+        message: `No current instructions for "${key}" to test against`,
+        code: ErrorCode.VALIDATION_ERROR,
+      });
     }
     const test = await this.abTesting.createTest({
       agentId: key,

@@ -1,4 +1,12 @@
-import type { Tool, ToolCall, ToolResult, ToolContext, Message } from '@cogitator-ai/types';
+import type {
+  ImageBase64ContentPart,
+  Message,
+  MessageContent,
+  Tool,
+  ToolCall,
+  ToolContext,
+  ToolResult,
+} from '@cogitator-ai/types';
 import { ToolRegistry } from '../registry';
 import { getLogger } from '../logger';
 import type { SandboxManager } from './initializers';
@@ -23,7 +31,8 @@ export async function executeTool(
   initializeSandbox: () => Promise<SandboxManager | undefined>,
   signal?: AbortSignal,
   extraContext?: ExtraToolContext,
-  approvedByUser = false
+  approvedByUser = false,
+  allowNativeFallback = true
 ): Promise<ToolResult> {
   const tool = registry.get(toolCall.name);
 
@@ -84,6 +93,7 @@ export async function executeTool(
           agentId,
           sandboxManager,
           initializeSandbox,
+          allowNativeFallback,
           signal,
           extraContext
         )
@@ -187,13 +197,28 @@ async function executeInSandbox(
   agentId: string,
   sandboxManager: SandboxManager | undefined,
   initializeSandbox: () => Promise<SandboxManager | undefined>,
+  allowNativeFallback: boolean,
   signal?: AbortSignal,
   extraContext?: ExtraToolContext
 ): Promise<ToolResult> {
   const manager = sandboxManager ?? (await initializeSandbox());
 
   if (!manager) {
-    getLogger().warn('Sandbox unavailable, executing natively', { tool: tool.name });
+    const type = tool.sandbox?.type;
+    if (type === 'docker' && !allowNativeFallback) {
+      return {
+        callId: toolCall.id,
+        name: toolCall.name,
+        result: null,
+        error: `Tool "${tool.name}" needs a Docker sandbox, which is unavailable, and sandbox.allowNativeFallback is false`,
+      };
+    }
+    getLogger().warn(
+      type === 'docker'
+        ? 'Sandbox unavailable: running a Docker-sandboxed tool UNSANDBOXED on the host. Set sandbox.allowNativeFallback: false to refuse instead.'
+        : 'Sandbox unavailable: running the WASM tool through its own execute function',
+      { tool: tool.name }
+    );
     return executeNatively(
       tool,
       toolCall,
@@ -273,14 +298,57 @@ async function executeInSandbox(
   };
 }
 
+/**
+ * The message that answers a tool call. A result object carrying a base64
+ * image in `image` or `imageBase64` (a PNG, JPEG, GIF or WebP, plain or as a
+ * `data:` URL) reaches the model as an image after the rest of the result as
+ * JSON, so vision models see a screenshot instead of its base64 text.
+ */
 export function createToolMessage(toolCall: ToolCall, result: ToolResult): Message {
-  const content = result.error
+  const image = result.error ? undefined : findImage(result.result);
+  const content: MessageContent = result.error
     ? JSON.stringify({ error: result.error })
-    : JSON.stringify(result.result ?? null);
+    : image
+      ? [
+          { type: 'text', text: JSON.stringify({ ...image.rest, [image.key]: IMAGE_PLACEHOLDER }) },
+          { type: 'image_base64', image_base64: { data: image.data, media_type: image.mediaType } },
+        ]
+      : JSON.stringify(result.result ?? null);
   return {
     role: 'tool',
     content,
     toolCallId: toolCall.id,
     name: toolCall.name,
   };
+}
+
+type ImageMediaType = ImageBase64ContentPart['image_base64']['media_type'];
+
+const IMAGE_PLACEHOLDER = '(image attached)';
+const IMAGE_KEYS = ['image', 'imageBase64'] as const;
+const IMAGE_SIGNATURES: readonly (readonly [string, ImageMediaType])[] = [
+  ['iVBORw0KGgo', 'image/png'],
+  ['/9j/', 'image/jpeg'],
+  ['R0lGOD', 'image/gif'],
+  ['UklGR', 'image/webp'],
+];
+const DATA_URL = /^data:image\/[a-z+.-]+;base64,/i;
+
+function findImage(
+  value: unknown
+):
+  | { key: string; data: string; mediaType: ImageMediaType; rest: Record<string, unknown> }
+  | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  for (const key of IMAGE_KEYS) {
+    const raw = record[key];
+    if (typeof raw !== 'string') continue;
+    const data = raw.replace(DATA_URL, '');
+    const mediaType = IMAGE_SIGNATURES.find(([signature]) => data.startsWith(signature))?.[1];
+    if (!mediaType) continue;
+    const { [key]: _image, ...rest } = record;
+    return { key, data, mediaType, rest };
+  }
+  return undefined;
 }

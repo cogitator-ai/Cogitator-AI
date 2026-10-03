@@ -9,6 +9,7 @@ import type {
   AudioInput,
 } from '@cogitator-ai/types';
 import { ContextBuilder, countMessageTokens } from '@cogitator-ai/memory';
+import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import { getLogger } from '../logger';
 import { ensureThreadAccess, threadMetadata } from './threads';
 import type { Agent } from '../agent';
@@ -30,9 +31,11 @@ export async function buildInputWithAudio(
   }
 
   if (!options.apiKey) {
-    throw new Error(
-      'Audio inputs require an OpenAI API key for transcription. Set llm.providers.openai.apiKey or OPENAI_API_KEY.'
-    );
+    throw new CogitatorError({
+      message:
+        'Audio inputs require an OpenAI API key for transcription. Set llm.providers.openai.apiKey or OPENAI_API_KEY.',
+      code: ErrorCode.CONFIGURATION_ERROR,
+    });
   }
 
   const transcripts: string[] = [];

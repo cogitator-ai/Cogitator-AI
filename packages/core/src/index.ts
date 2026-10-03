@@ -77,7 +77,7 @@ export {
 } from './utils/index';
 export type { FetchedImage, FetchedAudio } from './utils/index';
 
-export { Logger, getLogger, setLogger, createLogger } from './logger';
+export { Logger, getLogger, setLogger, createLogger, createLoggerFromConfig } from './logger';
 export type { LogLevel, LogContext, LogEntry, LoggerOptions } from './logger';
 
 export { ReflectionEngine, InMemoryInsightStore } from './reflection/index';
@@ -269,6 +269,7 @@ export type {
   ToolCall,
   ToolResult,
   LLMBackend,
+  LLMBackendProvider,
   LLMProvider,
   LLMConfig,
   ChatRequest,
