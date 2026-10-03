@@ -144,6 +144,8 @@ describe('request validation', () => {
 
   it('rejects unknown roles and forwards metadata with a token estimate', async () => {
     const memory = {
+      getThread: vi.fn().mockResolvedValue({ success: true, data: null }),
+      createThread: vi.fn().mockResolvedValue({ success: true, data: {} }),
       getEntries: vi.fn(),
       clearThread: vi.fn(),
       addEntry: vi.fn().mockResolvedValue({ success: true, data: {} }),
@@ -387,6 +389,36 @@ describe('websocket route', () => {
     const allowed = await connect(app, sockets, { authorization: 'Bearer ok' });
     expect(allowed.res.status).toBe(200);
     expect(sockets).toHaveLength(1);
+  });
+
+  it('runs agents as the user authenticated on the upgrade request', async () => {
+    const { upgradeWebSocket, sockets } = createUpgradeHelper();
+    const run = vi.fn().mockResolvedValue(runResult());
+    const app = buildApp(
+      {
+        enableWebSocket: true,
+        websocket: { upgradeWebSocket },
+        auth: (c) => ({ userId: c.req.header('x-user') }),
+      },
+      { run }
+    );
+
+    const alice = (await connect(app, sockets, { 'x-user': 'alice' })).socket!;
+    const bob = (await connect(app, sockets, { 'x-user': 'bob' })).socket!;
+    await send(alice, {
+      type: 'run',
+      id: 'a',
+      payload: { type: 'agent', name: 'bot', input: 'hi', threadId: 'thread-a' },
+    });
+    await send(bob, {
+      type: 'run',
+      id: 'b',
+      payload: { type: 'agent', name: 'bot', input: 'hi', threadId: 'thread-b' },
+    });
+
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(2));
+    expect(run.mock.calls[0][1]).toMatchObject({ threadId: 'thread-a', userId: 'alice' });
+    expect(run.mock.calls[1][1]).toMatchObject({ threadId: 'thread-b', userId: 'bob' });
   });
 
   it('aborts the active run when the socket closes', async () => {

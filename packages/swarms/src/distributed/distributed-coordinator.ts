@@ -49,6 +49,7 @@ export interface SwarmAgentJobPayload {
   context?: Record<string, unknown>;
   runOptions?: {
     threadId?: string;
+    userId?: string;
     timeout?: number;
     saveHistory?: boolean;
   };
@@ -237,6 +238,7 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
       context,
       runOptions: {
         threadId: request.threadId,
+        userId: request.userId,
         timeout: request.timeout,
         saveHistory: request.saveHistory,
       },

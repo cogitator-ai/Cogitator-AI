@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
+import { assertThreadAccess, ensureThreadAccess } from '@cogitator-ai/core';
 import { countMessageTokens } from '@cogitator-ai/memory';
 import type { Message } from '@cogitator-ai/types';
 import type { HonoEnv, ThreadResponse } from '../types.js';
@@ -18,8 +19,10 @@ export function createThreadRoutes(): Hono<HonoEnv> {
     if (!memory) return memoryUnavailable(c);
 
     const id = c.req.param('id');
+    const userId = c.get('cogitatorAuth')?.userId;
 
     try {
+      await assertThreadAccess(memory, id, userId);
       const result = await memory.getEntries({ threadId: id });
       if (!result.success) {
         return errorResponse(c, new Error(result.error), 'Thread get error');
@@ -51,8 +54,10 @@ export function createThreadRoutes(): Hono<HonoEnv> {
     if (!parsed.ok) return invalidInput(c, parsed.message);
 
     const message: Message = { role: parsed.value.role, content: parsed.value.content };
+    const userId = c.get('cogitatorAuth')?.userId;
 
     try {
+      await ensureThreadAccess(memory, id, { agentId: '', userId });
       const result = await memory.addEntry({
         threadId: id,
         message,
@@ -75,8 +80,10 @@ export function createThreadRoutes(): Hono<HonoEnv> {
     if (!memory) return memoryUnavailable(c);
 
     const id = c.req.param('id');
+    const userId = c.get('cogitatorAuth')?.userId;
 
     try {
+      await assertThreadAccess(memory, id, userId);
       const result = await memory.clearThread(id);
       if (!result.success) {
         return errorResponse(c, new Error(result.error), 'Thread delete error');

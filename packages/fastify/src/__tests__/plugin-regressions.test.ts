@@ -146,7 +146,11 @@ describe('plugin validation and errors', () => {
   });
 
   it('stores thread message metadata on the memory entry', async () => {
-    const memory = { addEntry: vi.fn(async () => ({ success: true, data: {} })) };
+    const memory = {
+      getThread: vi.fn(async () => ({ success: true, data: null })),
+      createThread: vi.fn(async () => ({ success: true, data: {} })),
+      addEntry: vi.fn(async () => ({ success: true, data: {} })),
+    };
     const { base } = await start(async () => runResult(), {}, memory);
     const res = await post(`${base}/threads/t1/messages`, {
       role: 'user',

@@ -164,6 +164,7 @@ async function execute(
         deps,
         config,
         { input: payload.input, context: payload.context, threadId: payload.threadId },
+        auth,
         signal
       );
       return toSwarmRunResponse(swarm, result);

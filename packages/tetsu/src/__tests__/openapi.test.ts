@@ -14,11 +14,27 @@ describe('OpenAPI document', () => {
   const { cogitator } = fakeCogitator(async () => {
     throw new CogitatorError({ message: 'Busy', code: ErrorCode.LLM_RATE_LIMITED });
   });
+  const memory = fakeMemory();
+  memory.getThread.mockImplementation((threadId) =>
+    Promise.resolve({
+      success: true,
+      data:
+        threadId === 'graces'
+          ? {
+              id: threadId,
+              agentId: 'chat',
+              metadata: { userId: 'grace' },
+              createdAt: new Date(0),
+              updatedAt: new Date(0),
+            }
+          : null,
+    })
+  );
   const app = createApp({
     routes: group('/api', {
       children: [
         cogitatorController({
-          cogitator: Object.assign(cogitator, { memory: fakeMemory() }),
+          cogitator: Object.assign(cogitator, { memory }),
           agents: { chat: chatAgent() },
           auth: secured(
             callerHook(() => (fail ? undefined : { userId: 'ada' })),
@@ -102,6 +118,24 @@ describe('OpenAPI document', () => {
 
     for (const [operation, path, init] of cases) {
       await assertDescribed(document, operation, await request(path, init));
+    }
+  });
+
+  test("describes the refusal of another user's thread", async () => {
+    const cases: Array<[string, string, RequestInit?]> = [
+      ['GET /api/threads/graces', '/api/threads/graces'],
+      ['DELETE /api/threads/graces', '/api/threads/graces', { method: 'DELETE' }],
+      [
+        'POST /api/threads/graces/messages',
+        '/api/threads/graces/messages',
+        json({ role: 'user', content: 'hi' }),
+      ],
+    ];
+
+    for (const [operation, path, init] of cases) {
+      const res = await request(path, init);
+      expect(res.status).toBe(403);
+      await assertDescribed(document, operation, res);
     }
   });
 

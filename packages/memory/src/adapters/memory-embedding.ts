@@ -29,13 +29,18 @@ function cosineSimilarity(a: number[], b: number[]): number {
 }
 
 /**
- * Embeddings are scoped by `metadata.agentId` / `metadata.threadId`.
+ * Embeddings are scoped by `metadata.agentId` / `metadata.threadId`; a user
+ * filter also lets through embeddings of no user (`metadata.userId` unset).
  */
 function matchesFilter(embedding: Embedding, filter: SearchFilter | undefined): boolean {
   if (!filter) return true;
   if (filter.sourceType && embedding.sourceType !== filter.sourceType) return false;
   if (filter.agentId && embedding.metadata?.agentId !== filter.agentId) return false;
   if (filter.threadId && embedding.metadata?.threadId !== filter.threadId) return false;
+  if (filter.userId) {
+    const owner = embedding.metadata?.userId;
+    if (owner !== undefined && owner !== null && owner !== filter.userId) return false;
+  }
   return true;
 }
 

@@ -58,7 +58,10 @@ export function createSwarmRoutes(): Hono<HonoEnv> {
       if (abortController.signal.aborted) return requestAborted(c);
       abortController.signal.addEventListener('abort', () => swarm.abort(), { once: true });
 
-      const result = await swarm.run(parsed.value);
+      const result = await swarm.run({
+        ...parsed.value,
+        userId: c.get('cogitatorAuth')?.userId,
+      });
       if (abortController.signal.aborted) return requestAborted(c);
 
       return c.json(toSwarmRunResponse(swarm, result));
@@ -109,6 +112,7 @@ export function createSwarmRoutes(): Hono<HonoEnv> {
 
         const result = await swarm.run({
           ...parsed.value,
+          userId: c.get('cogitatorAuth')?.userId,
           onAgentStart: (agentName: string) => {
             void writer.swarmEvent('agent_start', { agentName, timestamp: Date.now() });
           },

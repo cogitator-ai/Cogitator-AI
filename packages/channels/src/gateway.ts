@@ -393,6 +393,7 @@ export class Gateway {
     return {
       input,
       threadId,
+      threadAccess: 'shared' as const,
       useMemory: !!this.config.memory,
       userId: msg.userId,
       channelType: msg.channelType,

@@ -44,8 +44,25 @@ function mockRuntime(overrides?: { run?: unknown; memory?: unknown }) {
   };
 }
 
-function mockMemory(entries: Array<{ message: unknown; createdAt: Date }> = []) {
+function storedThread(id: string, metadata: Record<string, unknown>) {
+  return { id, agentId: '', metadata, createdAt: new Date(0), updatedAt: new Date(0) };
+}
+
+function mockMemory(
+  entries: Array<{ message: unknown; createdAt: Date }> = [],
+  threads: Record<string, Record<string, unknown>> = {}
+) {
   return {
+    getThread: vi.fn(async (id: string) => ({
+      success: true,
+      data: Object.hasOwn(threads, id) ? storedThread(id, threads[id]) : null,
+    })),
+    createThread: vi.fn(
+      async (_agentId: string, metadata: Record<string, unknown>, id: string) => ({
+        success: true,
+        data: storedThread(id, metadata),
+      })
+    ),
     getEntries: vi.fn().mockResolvedValue({ success: true, data: entries }),
     addEntry: vi.fn().mockResolvedValue({ success: true, data: {} }),
     clearThread: vi.fn().mockResolvedValue({ success: true }),
@@ -303,6 +320,7 @@ describe('threadRoutes', () => {
 
   it('GET /threads/:id returns 500 when getEntries fails', async () => {
     const memory = {
+      ...mockMemory(),
       getEntries: vi.fn().mockResolvedValue({ success: false, error: 'disk full' }),
     };
     const runtime = mockRuntime({ memory });
@@ -317,6 +335,7 @@ describe('threadRoutes', () => {
 
   it('GET /threads/:id returns 500 on thrown exception', async () => {
     const memory = {
+      ...mockMemory(),
       getEntries: vi.fn().mockRejectedValue(new Error('connection lost')),
     };
     const runtime = mockRuntime({ memory });
@@ -475,6 +494,135 @@ describe('threadRoutes', () => {
     const res = await request(app.callback()).delete('/threads/t1');
     expect(res.status).toBe(500);
     expect(res.body.error.message).toBe('Internal server error');
+  });
+});
+
+describe('multi-user isolation', () => {
+  function buildUserApp(runtime: ReturnType<typeof mockRuntime>) {
+    return buildApp({
+      cogitator: runtime as unknown as CogitatorAppOptions['cogitator'],
+      agents: { bot: mockAgent('bot') as never },
+      auth: (ctx) => ({ userId: ctx.get('x-user') || undefined }),
+    });
+  }
+
+  function postAs(app: Koa<CogitatorState>, path: string, userId: string, body: unknown) {
+    return request(app.callback())
+      .post(path)
+      .set('x-user', userId)
+      .set('Content-Type', 'application/json')
+      .send(JSON.stringify(body));
+  }
+
+  it('POST /agents/:name/run runs as the authenticated user', async () => {
+    const runtime = mockRuntime();
+    const app = buildUserApp(runtime);
+
+    const res = await postAs(app, '/agents/bot/run', 'alice', { input: 'hi', threadId: 't1' });
+
+    expect(res.status).toBe(200);
+    expect(runtime.run).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ threadId: 't1', userId: 'alice' })
+    );
+  });
+
+  it('POST /agents/:name/stream runs as the authenticated user', async () => {
+    const runtime = mockRuntime();
+    const app = buildUserApp(runtime);
+
+    await postAs(app, '/agents/bot/stream', 'alice', { input: 'hi', threadId: 't1' });
+
+    expect(runtime.run).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ threadId: 't1', userId: 'alice', stream: true })
+    );
+  });
+
+  it('GET /threads/:id returns a thread owned by the caller', async () => {
+    const entries = [{ message: { role: 'user', content: 'mine' }, createdAt: new Date() }];
+    const memory = mockMemory(entries, { t1: { userId: 'alice' } });
+    const app = buildUserApp(mockRuntime({ memory }));
+
+    const res = await request(app.callback()).get('/threads/t1').set('x-user', 'alice');
+
+    expect(res.status).toBe(200);
+    expect(res.body.messages).toEqual([{ role: 'user', content: 'mine' }]);
+  });
+
+  it('GET /threads/:id answers 403 for a thread owned by another user without reading it', async () => {
+    const memory = mockMemory([], { t1: { userId: 'alice' } });
+    const app = buildUserApp(mockRuntime({ memory }));
+
+    const res = await request(app.callback()).get('/threads/t1').set('x-user', 'bob');
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('THREAD_ACCESS_DENIED');
+    expect(memory.getEntries).not.toHaveBeenCalled();
+  });
+
+  it('POST /threads/:id/messages answers 403 for a thread owned by another user without writing', async () => {
+    const memory = mockMemory([], { t1: { userId: 'alice' } });
+    const app = buildUserApp(mockRuntime({ memory }));
+
+    const res = await postAs(app, '/threads/t1/messages', 'bob', {
+      role: 'user',
+      content: 'sneaky',
+    });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('THREAD_ACCESS_DENIED');
+    expect(memory.addEntry).not.toHaveBeenCalled();
+    expect(memory.createThread).not.toHaveBeenCalled();
+  });
+
+  it('DELETE /threads/:id answers 403 for a thread owned by another user without clearing it', async () => {
+    const memory = mockMemory([], { t1: { userId: 'alice' } });
+    const app = buildUserApp(mockRuntime({ memory }));
+
+    const res = await request(app.callback()).delete('/threads/t1').set('x-user', 'bob');
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('THREAD_ACCESS_DENIED');
+    expect(memory.clearThread).not.toHaveBeenCalled();
+  });
+
+  it('POST /threads/:id/messages creates a missing thread owned by the caller', async () => {
+    const memory = mockMemory();
+    const app = buildUserApp(mockRuntime({ memory }));
+
+    const res = await postAs(app, '/threads/fresh/messages', 'alice', {
+      role: 'user',
+      content: 'hello',
+    });
+
+    expect(res.status).toBe(201);
+    expect(memory.createThread).toHaveBeenCalledWith('', { agentId: '', userId: 'alice' }, 'fresh');
+    expect(memory.addEntry).toHaveBeenCalledWith(expect.objectContaining({ threadId: 'fresh' }));
+  });
+
+  it('keeps threads without an owner closed to authenticated callers', async () => {
+    const memory = mockMemory([], { legacy: {} });
+    const app = buildUserApp(mockRuntime({ memory }));
+
+    const res = await request(app.callback()).get('/threads/legacy').set('x-user', 'alice');
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('THREAD_ACCESS_DENIED');
+  });
+
+  it('GET /threads/:id answers 500 without reading entries when the thread cannot be read', async () => {
+    const memory = {
+      ...mockMemory(),
+      getThread: vi.fn().mockResolvedValue({ success: false, error: 'db down' }),
+    };
+    const app = buildUserApp(mockRuntime({ memory }));
+
+    const res = await request(app.callback()).get('/threads/t1').set('x-user', 'alice');
+
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe('MEMORY_READ_FAILED');
+    expect(memory.getEntries).not.toHaveBeenCalled();
   });
 });
 
@@ -656,6 +804,20 @@ describe('swaggerRoutes', () => {
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toMatch(/html/);
     expect(res.text).toContain('swagger');
+  });
+
+  it("describes the refusal of another user's thread", async () => {
+    const app = buildApp({ enableSwagger: true });
+    const res = await request(app.callback()).get('/openapi.json');
+    const paths = res.body.paths as Record<string, Record<string, { responses: object }>>;
+
+    for (const [path, method] of [
+      ['/threads/{id}', 'get'],
+      ['/threads/{id}', 'delete'],
+      ['/threads/{id}/messages', 'post'],
+    ]) {
+      expect(paths[path][method].responses).toHaveProperty('403');
+    }
   });
 
   it('swagger routes not available when enableSwagger is false', async () => {

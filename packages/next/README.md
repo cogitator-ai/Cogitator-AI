@@ -163,6 +163,24 @@ Response format:
 }
 ```
 
+A failed run answers `{ "error": message, "code": code }` with the status of its `CogitatorError` (for example `429 LLM_RATE_LIMITED`), and `500` for anything else.
+
+### Multiple users
+
+When several people share a server, return the caller's `userId` from `beforeRun`. It reaches `cogitator.run`, which keeps every `threadId` to the user whose run created it:
+
+```typescript
+export const POST = createChatHandler(cogitator, agent, {
+  beforeRun: async (req) => {
+    const user = await getSession(req);
+    if (!user) throw Object.assign(new Error('Unauthorized'), { status: 401 });
+    return { userId: user.id };
+  },
+});
+```
+
+A `threadId` that belongs to another user is refused before the model is called: `createAgentHandler` answers `403` with `code: "THREAD_ACCESS_DENIED"`, and `createChatHandler` ends the stream with an `error` event carrying that code. Without a `userId`, a caller can use only threads that have no owner.
+
 ## Client Hooks
 
 ### `useCogitatorChat`
@@ -372,7 +390,7 @@ if (error) {
 }
 ```
 
-HTTP failures are thrown as `HttpError` (exported from `@cogitator-ai/next/client`) with a `status` property and a message like `Request failed: 400 - No user message provided`. Stream-level `error` events call `onError` and skip `onFinish`.
+HTTP failures are thrown as `HttpError` (exported from `@cogitator-ai/next/client`) with a `status` property and a message like `Request failed: 400 - No user message provided`. Stream-level `error` events call `onError` and skip `onFinish`; when the runtime failed with a `CogitatorError`, the event carries its `code`.
 
 With retry enabled, transient errors (network failures, 408/429/502/503/504) are automatically retried; the backoff wait is cancelled by `stop()`:
 

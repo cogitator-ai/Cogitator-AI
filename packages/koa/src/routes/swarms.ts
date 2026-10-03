@@ -63,7 +63,7 @@ export function createSwarmRoutes(): Router<CogitatorState> {
       abortSwarm = () => swarm.abort();
       if (aborted) return;
 
-      const result = await swarm.run(parsed.value);
+      const result = await swarm.run({ ...parsed.value, userId: ctx.state.auth?.userId });
       if (aborted) return;
 
       ctx.body = toSwarmRunResponse(swarm, result);
@@ -121,6 +121,7 @@ export function createSwarmRoutes(): Router<CogitatorState> {
 
       const result = await swarm.run({
         ...parsed.value,
+        userId: ctx.state.auth?.userId,
         onAgentStart: (agentName: string) => {
           writer.swarmEvent('agent_start', { agentName, timestamp: Date.now() });
         },

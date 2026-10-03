@@ -285,6 +285,28 @@ describe('QdrantAdapter', () => {
       });
     });
 
+    it('filters by user, letting through embeddings of no user', async () => {
+      mockClient.search.mockResolvedValue([]);
+
+      await adapter.search({ vector: [0.1], filter: { userId: 'alice' } });
+
+      expect(mockClient.search).toHaveBeenCalledWith('test_collection', {
+        vector: [0.1],
+        limit: 10,
+        score_threshold: undefined,
+        filter: {
+          must: [
+            {
+              should: [
+                { key: 'metadata.userId', match: { value: 'alice' } },
+                { is_empty: { key: 'metadata.userId' } },
+              ],
+            },
+          ],
+        },
+      });
+    });
+
     it('filters by threadId', async () => {
       mockClient.search.mockResolvedValue([]);
 

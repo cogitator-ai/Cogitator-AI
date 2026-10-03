@@ -19,8 +19,13 @@ interface QdrantSearchResult {
   payload: Record<string, unknown>;
 }
 
+type QdrantCondition =
+  | { key: string; match: { value: unknown } }
+  | { is_empty: { key: string } }
+  | { should: QdrantCondition[] };
+
 interface QdrantFilter {
-  must?: Array<{ key: string; match: { value: unknown } }>;
+  must?: QdrantCondition[];
 }
 
 interface QdrantClient {
@@ -151,7 +156,7 @@ export class QdrantAdapter implements EmbeddingAdapter {
     }
 
     try {
-      const filter: { must?: Array<{ key: string; match: { value: unknown } }> } = {};
+      const filter: QdrantFilter = {};
       if (options.filter) {
         filter.must = [];
         if (options.filter.sourceType) {
@@ -162,6 +167,14 @@ export class QdrantAdapter implements EmbeddingAdapter {
         }
         if (options.filter.agentId) {
           filter.must.push({ key: 'metadata.agentId', match: { value: options.filter.agentId } });
+        }
+        if (options.filter.userId) {
+          filter.must.push({
+            should: [
+              { key: 'metadata.userId', match: { value: options.filter.userId } },
+              { is_empty: { key: 'metadata.userId' } },
+            ],
+          });
         }
       }
 

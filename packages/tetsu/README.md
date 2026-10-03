@@ -109,6 +109,7 @@ Every error is answered in Tetsu's envelope:
 | Status  | `error`                                                    | When                                                                 |
 | ------- | ---------------------------------------------------------- | -------------------------------------------------------------------- |
 | 401     | `UNAUTHORIZED`                                             | `auth` returned `undefined`                                          |
+| 403     | `THREAD_ACCESS_DENIED`                                     | The thread belongs to another user                                   |
 | 403     | `THREAD_FORBIDDEN`                                         | `authorizeThread` refused the thread                                 |
 | 404     | `AGENT_NOT_FOUND`, `WORKFLOW_NOT_FOUND`, `SWARM_NOT_FOUND` | No such name                                                         |
 | 409     | `BLACKBOARD_DISABLED`                                      | The swarm has no blackboard                                          |
@@ -142,7 +143,7 @@ cogitatorController({
 });
 ```
 
-The caller's `userId` is passed to every run, so memory, cost tracking and tools (`context.userId`) know who is asking.
+The caller's `userId` is passed to every run, so tools (`context.userId`) know who is asking, and runs and thread endpoints are scoped to the caller; see [Users and threads](#users-and-threads).
 
 To have the OpenAPI document describe the scheme and the `401`, build the hook with `callerHook()` and wrap it in `secured()`. The same hook can guard your own routes, where the caller is `ctx.cogitatorAuth`:
 
@@ -175,7 +176,19 @@ createApp({
 
 ## Users and threads
 
-`authorizeThread` is checked on the thread endpoints and on every run, stream and WebSocket run that names a `threadId`, before the model is called:
+### Multiple users
+
+A thread belongs to the user whose run or message created it, recorded as its `userId`. Runs and the thread endpoints only let that user in: another user's `threadId` answers `403 THREAD_ACCESS_DENIED` and leaves the thread untouched. Callers without a `userId` share the threads that have no owner, and cannot open an owned one.
+
+- `GET` and `DELETE /threads/:id` check the owner first; a thread that does not exist yet reads as empty.
+- `POST /threads/:id/messages` creates a missing thread owned by the caller.
+- A run or stream on another user's thread is refused before the model is called; a stream ends with an `error` event carrying `THREAD_ACCESS_DENIED`.
+
+So whenever several people share a server, have `auth` return a `userId`.
+
+### `authorizeThread`
+
+On top of ownership, `authorizeThread` is checked on the thread endpoints and on every run, stream and WebSocket run that names a `threadId`, before the model is called:
 
 ```typescript
 cogitatorController({
@@ -186,7 +199,7 @@ cogitatorController({
 });
 ```
 
-Without it, any caller that passes `auth` may read and write any thread.
+Use it for rules ownership does not express, such as thread ids your server hands out.
 
 ## Streaming
 

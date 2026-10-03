@@ -80,9 +80,11 @@ describe('processors/agent', () => {
       agentConfig: agentConfig({ model: 'ollama/qwen2.5:0.5b' }),
       input: 'hi',
       threadId: 't',
+      userId: 'alice',
     });
 
     expect(result).toMatchObject({ type: 'agent', output: 'hello', tokenUsage: { total: 5 } });
+    expect(runMock.mock.calls[0][1]).toMatchObject({ threadId: 't', userId: 'alice' });
     expect(runMock.mock.calls[0][0].model).toBe('ollama/qwen2.5:0.5b');
   });
 
@@ -107,7 +109,7 @@ describe('processors/swarm-agent', () => {
     agentName: 'writer',
     agentConfig: agentConfig(),
     input: 'draft',
-    runOptions: { timeout: 1000, threadId: 'th' },
+    runOptions: { timeout: 1000, threadId: 'th', userId: 'alice' },
     stateKeys: { blackboard: 'b', messages: 'm', results: 'swarm:swarm_1:results' },
   };
 
@@ -123,6 +125,7 @@ describe('processors/swarm-agent', () => {
     const options = runMock.mock.calls[0][1] as RunOptions;
     expect(options.timeout).toBe(1000);
     expect(options.threadId).toBe('th');
+    expect(options.userId).toBe('alice');
   });
 
   it('publishes failures only on the final attempt and rethrows', async () => {

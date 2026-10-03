@@ -692,7 +692,7 @@ export class PostgresAdapter
 
   /**
    * SQL conditions for a search filter; agent and thread scoping use `metadata.agentId` /
-   * `metadata.threadId`.
+   * `metadata.threadId`, and a user filter also lets through embeddings of no user.
    */
   private embeddingFilterClause(
     filter: SearchFilter | undefined,
@@ -712,6 +712,10 @@ export class PostgresAdapter
     if (filter?.threadId) {
       sql += ` AND metadata->>'threadId' = $${index++}`;
       params.push(filter.threadId);
+    }
+    if (filter?.userId) {
+      sql += ` AND (metadata->>'userId' = $${index++} OR metadata->>'userId' IS NULL)`;
+      params.push(filter.userId);
     }
     return { sql, nextIndex: index };
   }

@@ -319,6 +319,13 @@ describe('swarm routes', () => {
 describe('thread routes', () => {
   function memoryStub() {
     return {
+      getThread: vi.fn(async () => ({ success: true, data: null })),
+      createThread: vi.fn(
+        async (agentId: string, metadata: Record<string, unknown>, id: string) => ({
+          success: true,
+          data: { id, agentId, metadata, createdAt: new Date(), updatedAt: new Date() },
+        })
+      ),
       addEntry: vi.fn(async () => ({ success: true, data: {} })),
       getEntries: vi.fn(async () => ({ success: true, data: [] })),
       clearThread: vi.fn(async () => ({ success: true, data: undefined })),

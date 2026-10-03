@@ -7,6 +7,7 @@ import {
   jsonError,
   jsonResponse,
   readJsonBody,
+  runErrorResponse,
 } from './http.js';
 
 type ParseResult = { ok: true; input: AgentInput } | { ok: false; error: string };
@@ -103,8 +104,7 @@ export function createAgentHandler(
 
       return jsonResponse(response);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Internal server error';
-      return jsonError(message, 500);
+      return runErrorResponse(err);
     }
   };
 }

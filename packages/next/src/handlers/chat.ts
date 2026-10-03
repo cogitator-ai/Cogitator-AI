@@ -8,6 +8,7 @@ import {
   isPlainObject,
   jsonError,
   readJsonBody,
+  runErrorCode,
 } from './http.js';
 
 const SSE_HEADERS = {
@@ -213,7 +214,7 @@ export function createChatHandler(
           const message = err instanceof Error ? err.message : 'Unknown error';
           await emit(async () => {
             await endText();
-            await sw.error(message);
+            await sw.error(message, runErrorCode(err));
           });
         }
       } finally {

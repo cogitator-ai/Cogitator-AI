@@ -22,6 +22,7 @@ export async function executeSwarmAgentJob(
       input,
       context: { ...context, _distributedSwarm: true },
       ...(runOptions?.threadId && { threadId: runOptions.threadId }),
+      ...(runOptions?.userId !== undefined && { userId: runOptions.userId }),
       ...(runOptions?.timeout !== undefined && { timeout: runOptions.timeout }),
       ...(runOptions?.saveHistory !== undefined && { saveHistory: runOptions.saveHistory }),
     });

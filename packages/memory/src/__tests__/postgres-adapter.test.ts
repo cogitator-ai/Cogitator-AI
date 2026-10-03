@@ -469,6 +469,16 @@ describe('PostgresAdapter', () => {
       expect(lastCall[1]).toContain('fact');
     });
 
+    it('filters search by user, letting through embeddings of no user', async () => {
+      mockPool.query.mockResolvedValueOnce({ rows: [] });
+
+      await adapter.search({ vector: [0.1, 0.2, 0.3], filter: { userId: 'alice' } });
+
+      const [sql, params] = mockPool.query.mock.calls[mockPool.query.mock.calls.length - 1];
+      expect(sql).toMatch(/\(metadata->>'userId' = \$\d+ OR metadata->>'userId' IS NULL\)/);
+      expect(params).toContain('alice');
+    });
+
     it('deletes an embedding', async () => {
       const result = await adapter.deleteEmbedding('emb_123');
 

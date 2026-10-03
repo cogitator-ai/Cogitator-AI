@@ -137,6 +137,25 @@ describe('Gateway', () => {
     );
   });
 
+  it('runs on threads it derives itself as shared, so group chats take every member', async () => {
+    const gateway = new Gateway({
+      agent: { name: 'bot', id: 'a1', instructions: 'hi', tools: [], config: {} } as never,
+      channels: [channel],
+      cogitator: cogitator as never,
+      session: { threadKey: (msg) => `group:${msg.channelId}` },
+    });
+
+    await gateway.start();
+    await channel.triggerMessage(createTestMessage({ userId: 'user_1' }));
+    await channel.triggerMessage(createTestMessage({ id: 'msg_2', userId: 'user_2' }));
+
+    const calls = vi.mocked(cogitator.run).mock.calls.map(([, options]) => options);
+    expect(calls).toEqual([
+      expect.objectContaining({ threadId: 'group:ch_1', userId: 'user_1', threadAccess: 'shared' }),
+      expect.objectContaining({ threadId: 'group:ch_1', userId: 'user_2', threadAccess: 'shared' }),
+    ]);
+  });
+
   it('middleware can block messages', async () => {
     const blockMiddleware: GatewayMiddleware = {
       name: 'blocker',

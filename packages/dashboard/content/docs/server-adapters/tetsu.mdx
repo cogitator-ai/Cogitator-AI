@@ -66,6 +66,7 @@ Every error is answered in Tetsu's envelope `{ status, message, error }`. A requ
 | Status | `error`                 | When                                                        |
 | ------ | ----------------------- | ----------------------------------------------------------- |
 | 401    | `UNAUTHORIZED`          | `auth` returned `undefined`                                 |
+| 403    | `THREAD_ACCESS_DENIED`  | The thread belongs to another user                          |
 | 403    | `THREAD_FORBIDDEN`      | `authorizeThread` refused the thread                        |
 | 404    | `AGENT_NOT_FOUND`, …    | No agent, workflow or swarm with that name                  |
 | 409    | `BLACKBOARD_DISABLED`   | The swarm has no blackboard                                 |
@@ -90,7 +91,7 @@ cogitatorController({
 });
 ```
 
-The caller's `userId` reaches every run, so tools see it as `context.userId`.
+The caller's `userId` reaches every run, so tools see it as `context.userId`, and scopes runs and thread endpoints to the caller.
 
 To document the scheme, build the hook with `callerHook()`, wrap it in `secured()`, and reuse it on your own routes, where the caller is `ctx.cogitatorAuth`:
 
@@ -109,7 +110,13 @@ cogitatorController({ cogitator, agents, auth: signedIn });
 
 ## Users and Threads
 
-`authorizeThread` guards the thread endpoints and every run that names a `threadId`, before the model is called:
+### Multiple users
+
+A thread belongs to the user who created it, through a run or `POST /threads/:id/messages`. Runs and the thread endpoints let only that user in: another user's thread answers `403 THREAD_ACCESS_DENIED` and stays untouched, and a stream on it ends with an `error` event carrying that code. Callers without a `userId` share the threads that have no owner. When several people share a server, have `auth` return a `userId`.
+
+### `authorizeThread`
+
+On top of ownership, `authorizeThread` guards the thread endpoints and every run that names a `threadId`, before the model is called:
 
 ```typescript
 cogitatorController({
@@ -120,7 +127,7 @@ cogitatorController({
 });
 ```
 
-Without it, any authenticated caller may use any thread.
+Use it for rules ownership does not express, such as thread ids your server hands out.
 
 ## Streaming
 

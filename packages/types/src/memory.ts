@@ -8,7 +8,10 @@ import type { GraphContext, GraphContextOptions } from './knowledge-graph';
 export type MemoryType = 'conversation' | 'fact' | 'embedding';
 
 /**
- * A thread represents a conversation session
+ * A thread represents a conversation session.
+ *
+ * `metadata.userId` names the user the thread belongs to: the runtime sets it
+ * from the `userId` of the run that creates the thread.
  */
 export interface Thread {
   id: string;
@@ -33,7 +36,10 @@ export interface MemoryEntry {
 }
 
 /**
- * A fact is a long-term memory (user preference, learned info)
+ * A fact is a long-term memory (user preference, learned info).
+ *
+ * A fact with `metadata.userId` belongs to that user and is only put into
+ * that user's context; a fact without one is shared by everyone the agent serves.
  */
 export interface Fact {
   id: string;
@@ -149,6 +155,8 @@ export interface SemanticSearchOptions {
     sourceType?: Embedding['sourceType'];
     threadId?: string;
     agentId?: string;
+    /** Only embeddings of this user (`metadata.userId`) and those of no user */
+    userId?: string;
   };
 }
 
@@ -290,6 +298,8 @@ export interface SearchFilter {
   sourceType?: Embedding['sourceType'];
   threadId?: string;
   agentId?: string;
+  /** Only embeddings of this user (`metadata.userId`) and those of no user */
+  userId?: string;
 }
 
 export interface SearchOptions {

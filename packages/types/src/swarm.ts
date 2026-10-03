@@ -410,6 +410,11 @@ export interface SwarmRunOptions {
   context?: Record<string, unknown>;
   /** Thread ID for memory persistence */
   threadId?: string;
+  /**
+   * The user the swarm acts for: every agent run carries it, so the swarm's
+   * threads belong to this user and another user cannot continue them.
+   */
+  userId?: string;
   /** Override timeout */
   timeout?: number;
   /** Whether to save run history to memory (default: true) */

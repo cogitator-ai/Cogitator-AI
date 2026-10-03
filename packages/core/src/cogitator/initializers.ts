@@ -1,9 +1,17 @@
-import type { CogitatorConfig, MemoryAdapter, InsightStore, ModelRoute } from '@cogitator-ai/types';
+import type {
+  CogitatorConfig,
+  EmbeddingAdapter,
+  FactAdapter,
+  MemoryAdapter,
+  InsightStore,
+  ModelRoute,
+} from '@cogitator-ai/types';
 import {
   InMemoryAdapter,
   RedisAdapter,
   PostgresAdapter,
   ContextBuilder,
+  createEmbeddingService,
   type ContextBuilderDeps,
 } from '@cogitator-ai/memory';
 import { getLogger } from '../logger';
@@ -114,8 +122,12 @@ export async function initializeMemory(
   state.memoryAdapter = adapter;
 
   if (config.memory.contextBuilder) {
+    const embedding = config.memory.embedding;
     const deps: ContextBuilderDeps = {
-      memoryAdapter: state.memoryAdapter,
+      memoryAdapter: adapter,
+      ...(isFactAdapter(adapter) && { factAdapter: adapter }),
+      ...(isEmbeddingAdapter(adapter) && { embeddingAdapter: adapter }),
+      ...(embedding && { embeddingService: createEmbeddingService(embedding) }),
     };
     const contextConfig = {
       ...config.memory.contextBuilder,
@@ -259,4 +271,14 @@ export async function cleanupState(state: InitializerState): Promise<void> {
   state.securityInitialized = false;
   state.contextManager = undefined;
   state.contextManagerInitialized = false;
+}
+
+function isFactAdapter(adapter: MemoryAdapter): adapter is MemoryAdapter & FactAdapter {
+  const candidate = adapter as Partial<FactAdapter>;
+  return typeof candidate.getFacts === 'function' && typeof candidate.addFact === 'function';
+}
+
+function isEmbeddingAdapter(adapter: MemoryAdapter): adapter is MemoryAdapter & EmbeddingAdapter {
+  const candidate = adapter as Partial<EmbeddingAdapter>;
+  return typeof candidate.search === 'function' && typeof candidate.addEmbedding === 'function';
 }

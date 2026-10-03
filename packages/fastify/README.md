@@ -135,6 +135,15 @@ await fastify.register(cogitatorPlugin, {
 });
 ```
 
+### Multiple users
+
+When `auth` returns a `userId`, everything a caller does with threads is scoped to it:
+
+- Agent runs and streams (REST and WebSocket) pass the `userId` to `cogitator.run()`, so a thread created by a run belongs to that user and a `threadId` owned by someone else is refused.
+- `GET /threads/:id`, `POST /threads/:id/messages` and `DELETE /threads/:id` check the thread's owner first; `POST` to an unknown id creates the thread owned by the caller.
+- Another user's thread answers `403` with code `THREAD_ACCESS_DENIED`, and its messages are neither returned nor changed.
+- Threads created earlier without an owner (no `userId`) stay open only to callers without a `userId`, such as servers with no `auth` configured.
+
 ## SSE Streaming
 
 The `/agents/:name/stream` endpoint returns Server-Sent Events:

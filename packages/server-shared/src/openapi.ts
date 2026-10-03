@@ -69,6 +69,10 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
     },
   };
 
+  const threadForbidden = {
+    description: 'The thread belongs to another user (THREAD_ACCESS_DENIED)',
+  };
+
   for (const [name] of Object.entries(ctx.agents)) {
     spec.paths[`/agents/${name}/run`] = {
       post: {
@@ -87,6 +91,7 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
               'application/json': { schema: { $ref: '#/components/schemas/AgentRunResponse' } },
             },
           },
+          403: threadForbidden,
           404: { description: 'Agent not found' },
         },
       },
@@ -121,6 +126,7 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
             'application/json': { schema: { $ref: '#/components/schemas/ThreadResponse' } },
           },
         },
+        403: threadForbidden,
         503: { description: 'Memory not configured' },
       },
     },
@@ -128,7 +134,7 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
       tags: ['threads'],
       summary: 'Delete thread',
       parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
-      responses: { 204: { description: 'Thread deleted' } },
+      responses: { 204: { description: 'Thread deleted' }, 403: threadForbidden },
     },
   };
 
@@ -143,7 +149,10 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
           'application/json': { schema: { $ref: '#/components/schemas/AddMessageRequest' } },
         },
       },
-      responses: { 201: { description: 'Message added' } },
+      responses: {
+        201: { description: 'Message added; a missing thread is created for the caller' },
+        403: threadForbidden,
+      },
     },
   };
 

@@ -222,6 +222,8 @@ describe('request validation', () => {
 
   it('rejects unknown message roles and forwards metadata with a token estimate', async () => {
     const memory = {
+      getThread: vi.fn().mockResolvedValue({ success: true, data: null }),
+      createThread: vi.fn().mockResolvedValue({ success: true, data: {} }),
       getEntries: vi.fn(),
       clearThread: vi.fn(),
       addEntry: vi.fn().mockResolvedValue({ success: true, data: {} }),

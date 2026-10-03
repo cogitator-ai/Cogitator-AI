@@ -17,6 +17,7 @@ import {
   createWorkflowEvent,
   generateId,
 } from '@cogitator-ai/server-shared';
+import { assertThreadAccess, ensureThreadAccess } from '@cogitator-ai/core';
 import type { Agent } from '@cogitator-ai/core';
 import type {
   Message,
@@ -54,6 +55,7 @@ import {
   AgentRunResponse,
   BlackboardResponse,
   errorEnvelope,
+  errorsEnvelope,
   failureEnvelope,
   HealthResponse,
   NameParams,
@@ -90,9 +92,18 @@ const NotImplemented = failureEnvelope(
   'The optional package this endpoint needs is not installed',
   ['PACKAGE_NOT_INSTALLED']
 );
-const ThreadForbidden = errorEnvelope(
-  'THREAD_FORBIDDEN',
-  'The caller may not use this memory thread'
+const ThreadForbidden = failureEnvelope(
+  403,
+  'The memory thread belongs to another user, or `authorizeThread` refused it',
+  ['THREAD_FORBIDDEN']
+);
+const ThreadUnreadable = errorsEnvelope(
+  ['MEMORY_READ_FAILED'],
+  'The memory adapter could not read the thread, so its owner is unknown'
+);
+const ThreadUnwritable = errorsEnvelope(
+  ['MEMORY_READ_FAILED', 'MEMORY_WRITE_FAILED'],
+  'The memory adapter could not read or create the thread'
 );
 const MemoryNotConfigured = errorEnvelope(
   'MEMORY_NOT_CONFIGURED',
@@ -232,7 +243,12 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
       path: '/threads/:id',
       schema: {
         params: ThreadParams,
-        response: { 200: ThreadResponse, 403: ThreadForbidden, 503: MemoryNotConfigured },
+        response: {
+          200: ThreadResponse,
+          403: ThreadForbidden,
+          500: ThreadUnreadable,
+          503: MemoryNotConfigured,
+        },
       },
       hooks: { beforeParse: [caller], onError: [errors] },
       docs: { summary: 'Read the messages of a memory thread', tags: ['threads'] },
@@ -240,6 +256,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
         const memory = memoryOf();
         const id = ctx.params.id;
         await checkThreadAccess(deps, ctx.cogitatorAuth, id);
+        await assertThreadAccess(memory, id, ctx.cogitatorAuth?.userId);
         const result = await memory.getEntries({ threadId: id });
         if (!result.success) throw new Error(result.error);
         const entries = result.data;
@@ -259,14 +276,24 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
       schema: {
         params: ThreadParams,
         body: AddMessageBody,
-        response: { 201: AddMessageResponse, 403: ThreadForbidden, 503: MemoryNotConfigured },
+        response: {
+          201: AddMessageResponse,
+          403: ThreadForbidden,
+          500: ThreadUnwritable,
+          503: MemoryNotConfigured,
+        },
       },
       hooks: { beforeParse: [caller], onError: [errors] },
-      docs: { summary: 'Append a message to a memory thread', tags: ['threads'] },
+      docs: {
+        summary: 'Append a message to a memory thread',
+        description: 'A thread that does not exist yet is created, owned by the caller.',
+        tags: ['threads'],
+      },
       handler: async (ctx) => {
         const memory = memoryOf();
         const id = ctx.params.id;
         await checkThreadAccess(deps, ctx.cogitatorAuth, id);
+        await ensureThreadAccess(memory, id, { agentId: '', userId: ctx.cogitatorAuth?.userId });
         const message: Message = { role: ctx.body.role, content: ctx.body.content };
         const result = await memory.addEntry({
           threadId: id,
@@ -285,14 +312,21 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
       path: '/threads/:id',
       schema: {
         params: ThreadParams,
-        response: { 204: null, 403: ThreadForbidden, 503: MemoryNotConfigured },
+        response: {
+          204: null,
+          403: ThreadForbidden,
+          500: ThreadUnreadable,
+          503: MemoryNotConfigured,
+        },
       },
       hooks: { beforeParse: [caller], onError: [errors] },
       docs: { summary: 'Delete a memory thread', tags: ['threads'] },
       handler: async (ctx) => {
         const memory = memoryOf();
-        await checkThreadAccess(deps, ctx.cogitatorAuth, ctx.params.id);
-        const result = await memory.clearThread(ctx.params.id);
+        const id = ctx.params.id;
+        await checkThreadAccess(deps, ctx.cogitatorAuth, id);
+        await assertThreadAccess(memory, id, ctx.cogitatorAuth?.userId);
+        const result = await memory.clearThread(id);
         if (!result.success) throw new Error(result.error);
       },
     }),
@@ -402,7 +436,13 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
         await checkThreadAccess(deps, ctx.cogitatorAuth, ctx.body.threadId);
         const signal = ctx.req.signal;
         try {
-          const { swarm, result } = await executeSwarm(deps, config, ctx.body, signal);
+          const { swarm, result } = await executeSwarm(
+            deps,
+            config,
+            ctx.body,
+            ctx.cogitatorAuth,
+            signal
+          );
           if (signal.aborted) throw clientClosedRequest();
           return toSwarmRunResponse(swarm, result);
         } catch (error) {
@@ -430,7 +470,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
         const config = findSwarm(deps, ctx.params.name);
         const body = ctx.body;
         await checkThreadAccess(deps, ctx.cogitatorAuth, body.threadId);
-        return sse(ctx, (signal) => swarmEvents(deps, config, body, signal), {
+        return sse(ctx, (signal) => swarmEvents(deps, config, body, ctx.cogitatorAuth, signal), {
           until: until(),
         });
       },
@@ -583,6 +623,7 @@ async function* swarmEvents(
   deps: CogitatorDeps,
   config: SwarmConfig,
   body: SwarmRunRequest,
+  auth: AuthContext | undefined,
   signal: AbortSignal
 ): AsyncGenerator<ServerSentEvent, void, undefined> {
   const messageId = generateId('swarm');
@@ -610,6 +651,7 @@ async function* swarmEvents(
           onMessage: (message) => event('message', message),
           onEvent: (swarmEvent) => event(swarmEvent.type, swarmEvent.data),
         },
+        auth,
         signal
       );
     });

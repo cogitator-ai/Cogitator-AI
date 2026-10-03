@@ -191,14 +191,10 @@ function codesFor(status: number): string[] {
     .map(([code]) => code);
 }
 
-/**
- * The envelope of every `CogitatorError` that maps to `status`, plus `extra` codes
- * the adapter answers with itself.
- */
-export function failureEnvelope(status: number, description: string, extra: string[] = []) {
-  const codes = [...new Set([...codesFor(status), ...extra])];
+/** The envelope of an answer whose `error` is one of `codes`. */
+export function errorsEnvelope(codes: readonly string[], description: string) {
   const [first, ...rest] = codes;
-  if (first === undefined) throw new Error(`No error codes map to status ${status}`);
+  if (first === undefined) throw new Error('An error envelope needs at least one code');
   return z
     .object({
       status: z.number().int(),
@@ -206,6 +202,16 @@ export function failureEnvelope(status: number, description: string, extra: stri
       error: z.enum([first, ...rest]),
     })
     .describe(description);
+}
+
+/**
+ * The envelope of every `CogitatorError` that maps to `status`, plus `extra` codes
+ * the adapter answers with itself.
+ */
+export function failureEnvelope(status: number, description: string, extra: string[] = []) {
+  const codes = [...new Set([...codesFor(status), ...extra])];
+  if (codes.length === 0) throw new Error(`No error codes map to status ${status}`);
+  return errorsEnvelope(codes, description);
 }
 
 /** What a run of an agent, a workflow or a swarm can fail with, besides its own refusals. */

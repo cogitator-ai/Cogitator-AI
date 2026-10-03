@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { WSContext, WSMessageReceive } from 'hono/ws';
 import type {
+  AuthContext,
   CogitatorContext,
   HonoEnv,
   WebSocketClientState,
@@ -55,7 +56,7 @@ export function createWebSocketRoutes(config: WebSocketConfig | string = {}): Ho
     path,
     options.upgradeWebSocket((c) => {
       const ctx: CogitatorContext = c.get('cogitator');
-      const state = createClientState();
+      const state = createClientState(c.get('cogitatorAuth'));
 
       return {
         onMessage(event, ws) {
@@ -96,8 +97,8 @@ async function messageToText(data: WSMessageReceive): Promise<string> {
   return new TextDecoder().decode(new Uint8Array(data));
 }
 
-export function createClientState(): WebSocketClientState {
-  return { id: generateId('ws') };
+export function createClientState(auth?: AuthContext): WebSocketClientState {
+  return { id: generateId('ws'), ...(auth && { auth }) };
 }
 
 export async function handleWebSocketMessage(
@@ -204,7 +205,7 @@ async function handleRun(
   };
 
   try {
-    const result = await executeRun(payload, ctx, abortController.signal, emit);
+    const result = await executeRun(payload, ctx, state.auth?.userId, abortController.signal, emit);
     if (abortController.signal.aborted) {
       emit({ type: 'cancelled' });
     } else {
@@ -229,6 +230,7 @@ async function handleRun(
 async function executeRun(
   payload: WebSocketRunPayload,
   ctx: CogitatorContext,
+  userId: string | undefined,
   signal: AbortSignal,
   emit: (event: Record<string, unknown>) => void
 ): Promise<unknown> {
@@ -241,6 +243,7 @@ async function executeRun(
         input: payload.input,
         context: payload.context,
         threadId: payload.threadId,
+        userId,
         stream: true,
         signal,
         onToken: (token: string) => emit({ type: 'token', delta: token }),
@@ -276,6 +279,7 @@ async function executeRun(
           input: payload.input,
           context: payload.context,
           threadId: payload.threadId,
+          userId,
         });
         return toSwarmRunResponse(swarm, result);
       } finally {

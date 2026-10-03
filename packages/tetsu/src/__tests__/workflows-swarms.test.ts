@@ -164,6 +164,35 @@ describe('swarms', () => {
     expect(run).toHaveBeenCalled();
   });
 
+  test('runs every swarm agent for the authenticated user', async () => {
+    const { cogitator: owned, run: ownedRun } = fakeCogitator((runAgent) =>
+      Promise.resolve(runResult({ output: `${runAgent.name} says hi` }))
+    );
+    const authed = serve(
+      createApp({
+        routes: cogitatorController({
+          cogitator: owned,
+          swarms: { team },
+          auth: () => ({ userId: 'ada' }),
+        }),
+      })
+    );
+
+    await authed('/swarms/team/run', json({ input: 'hello', threadId: 'plan' }));
+    await readStream(
+      await authed('/swarms/team/stream', json({ input: 'again', threadId: 'plan' }))
+    );
+
+    const options = ownedRun.mock.calls.map(
+      (call) => call[1] as { userId?: string; threadId?: string }
+    );
+    expect(options.length).toBeGreaterThan(1);
+    for (const option of options) {
+      expect(option.userId).toBe('ada');
+      expect(option.threadId?.startsWith('plan:')).toBe(true);
+    }
+  });
+
   test('streams swarm events', async () => {
     const { events, done } = await readStream(
       await request('/swarms/team/stream', json({ input: 'hello' }))

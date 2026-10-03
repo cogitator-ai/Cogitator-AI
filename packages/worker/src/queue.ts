@@ -58,6 +58,7 @@ export class JobQueue {
     input: string,
     options?: {
       threadId?: string;
+      userId?: string;
       priority?: number;
       delay?: number;
       metadata?: Record<string, unknown>;
@@ -72,6 +73,7 @@ export class JobQueue {
       agentConfig,
       input,
       threadId,
+      ...(options?.userId !== undefined && { userId: options.userId }),
       metadata: options?.metadata,
     };
 

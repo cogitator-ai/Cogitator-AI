@@ -79,6 +79,7 @@ export const swarmRoutes: FastifyPluginAsync = async (fastify) => {
           input: request.body.input,
           context: request.body.context,
           threadId: request.body.threadId,
+          userId: request.cogitatorAuth?.userId,
           timeout: request.body.timeout,
         });
 
@@ -148,6 +149,7 @@ export const swarmRoutes: FastifyPluginAsync = async (fastify) => {
           input: request.body.input,
           context: request.body.context,
           threadId: request.body.threadId,
+          userId: request.cogitatorAuth?.userId,
           timeout: request.body.timeout,
           onAgentStart: (agentName: string) => {
             writer.swarmEvent('agent_start', { agentName, timestamp: Date.now() });

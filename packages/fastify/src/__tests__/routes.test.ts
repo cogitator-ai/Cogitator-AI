@@ -180,6 +180,8 @@ describe('agentRoutes', () => {
 describe('threadRoutes', () => {
   function mockMemory(entries: Array<{ message: unknown; createdAt: Date }> = []) {
     return {
+      getThread: vi.fn().mockResolvedValue({ success: true, data: null }),
+      createThread: vi.fn().mockResolvedValue({ success: true, data: {} }),
       getEntries: vi.fn().mockResolvedValue({ success: true, data: entries }),
       addEntry: vi.fn().mockResolvedValue({ success: true, data: {} }),
       clearThread: vi.fn().mockResolvedValue({ success: true }),
@@ -234,6 +236,7 @@ describe('threadRoutes', () => {
 
   it('GET /threads/:id propagates memory error message', async () => {
     const memory = {
+      getThread: vi.fn().mockResolvedValue({ success: true, data: null }),
       getEntries: vi.fn().mockResolvedValue({ success: false, error: 'storage error' }),
     };
     const server = await buildServer({ runtime: { run: vi.fn(), memory } as never });
@@ -245,6 +248,7 @@ describe('threadRoutes', () => {
 
   it('GET /threads/:id returns Unknown error when error is missing', async () => {
     const memory = {
+      getThread: vi.fn().mockResolvedValue({ success: true, data: null }),
       getEntries: vi.fn().mockResolvedValue({ success: false }),
     };
     const server = await buildServer({ runtime: { run: vi.fn(), memory } as never });

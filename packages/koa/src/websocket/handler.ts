@@ -1,6 +1,7 @@
 import { STATUS_CODES, type IncomingMessage, type Server as HttpServer } from 'http';
 import type { Duplex } from 'stream';
 import type {
+  AuthContext,
   RouteContext,
   WebSocketAuthFunction,
   WebSocketConfig,
@@ -18,8 +19,11 @@ type WebSocketServerType = import('ws').WebSocketServer;
 type RawData = import('ws').RawData;
 
 interface ClientState {
+  auth?: AuthContext;
   abortController?: AbortController;
 }
+
+type AuthorizeOutcome = { ok: true; auth: AuthContext | undefined } | { ok: false; status: number };
 
 type ParsedMessage =
   | { type: 'ping'; id?: string }
@@ -59,6 +63,7 @@ export async function setupWebSocket(
     noServer: true,
     maxPayload: config.maxPayloadSize ?? DEFAULT_MAX_PAYLOAD,
   });
+  const authResults = new WeakMap<IncomingMessage, AuthContext | undefined>();
 
   const onUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     if (getPathname(req) !== path) {
@@ -69,13 +74,14 @@ export async function setupWebSocket(
     const onSocketError = () => socket.destroy();
     socket.on('error', onSocketError);
 
-    void authorize(config.auth, req).then((status) => {
-      if (status !== 200) {
-        rejectUpgrade(socket, status);
+    void authorize(config.auth, req).then((outcome) => {
+      if (!outcome.ok) {
+        rejectUpgrade(socket, outcome.status);
         return;
       }
       if (socket.destroyed) return;
       socket.off('error', onSocketError);
+      authResults.set(req, outcome.auth);
       wss.handleUpgrade(req, socket, head, (ws) => {
         wss.emit('connection', ws, req);
       });
@@ -87,8 +93,8 @@ export async function setupWebSocket(
     server.off('upgrade', onUpgrade);
   });
 
-  wss.on('connection', (ws: WebSocketType) => {
-    handleConnection(ws, ctx, pingInterval, pingTimeout);
+  wss.on('connection', (ws: WebSocketType, req: IncomingMessage) => {
+    handleConnection(ws, ctx, authResults.get(req), pingInterval, pingTimeout);
   });
 
   return wss;
@@ -105,18 +111,17 @@ function getPathname(req: IncomingMessage): string {
 async function authorize(
   auth: WebSocketAuthFunction | undefined,
   req: IncomingMessage
-): Promise<number> {
-  if (!auth) return 200;
+): Promise<AuthorizeOutcome> {
+  if (!auth) return { ok: true, auth: undefined };
   try {
-    await auth(req);
-    return 200;
+    return { ok: true, auth: await auth(req) };
   } catch (error) {
     const status = (error as { status?: number } | null)?.status;
     if (status !== undefined && status >= 500) {
       console.error('[CogitatorKoa] WebSocket auth error:', error);
-      return 500;
+      return { ok: false, status: 500 };
     }
-    return 401;
+    return { ok: false, status: 401 };
   }
 }
 
@@ -137,10 +142,11 @@ function rejectUpgrade(socket: Duplex, status: number): void {
 function handleConnection(
   ws: WebSocketType,
   ctx: RouteContext,
+  auth: AuthContext | undefined,
   pingInterval: number,
   pingTimeout: number
 ): void {
-  const state: ClientState = {};
+  const state: ClientState = { ...(auth && { auth }) };
   let pongTimer: NodeJS.Timeout | undefined;
 
   const heartbeat = setInterval(() => {
@@ -277,7 +283,7 @@ async function handleRun(
   };
 
   try {
-    const result = await executeRun(payload, ctx, abortController.signal, emit);
+    const result = await executeRun(payload, ctx, state.auth?.userId, abortController.signal, emit);
     if (abortController.signal.aborted) {
       emit({ type: 'cancelled' });
     } else {
@@ -302,6 +308,7 @@ async function handleRun(
 async function executeRun(
   payload: WebSocketRunPayload,
   ctx: RouteContext,
+  userId: string | undefined,
   signal: AbortSignal,
   emit: (event: Record<string, unknown>) => void
 ): Promise<unknown> {
@@ -314,6 +321,7 @@ async function executeRun(
         input: payload.input,
         context: payload.context,
         threadId: payload.threadId,
+        userId,
         stream: true,
         signal,
         onToken: (token: string) => emit({ type: 'token', delta: token }),
@@ -349,6 +357,7 @@ async function executeRun(
           input: payload.input,
           context: payload.context,
           threadId: payload.threadId,
+          userId,
         });
         return toSwarmRunResponse(swarm, result);
       } finally {

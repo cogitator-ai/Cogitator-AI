@@ -232,6 +232,7 @@ export interface WebSocketRunPayload {
 
 export interface WebSocketClientState {
   id: string;
+  auth?: AuthContext;
   abortController?: AbortController;
 }
 

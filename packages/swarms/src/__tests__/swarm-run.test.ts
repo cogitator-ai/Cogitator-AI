@@ -107,6 +107,17 @@ describe('Swarm.run', () => {
 
     expect(run.mock.calls[0][1].threadId).toBe('conversation-7:a');
   });
+
+  it('runs every agent for the user the swarm acts for', async () => {
+    const { cogitator, run } = instant();
+    const swarm = roundRobin(cogitator);
+
+    await swarm.run({ input: 'go', threadId: 'conversation-7', userId: 'alice' });
+    await swarm.run({ input: 'go', threadId: 'conversation-8' });
+
+    expect(run.mock.calls[0][1]).toMatchObject({ threadId: 'conversation-7:a', userId: 'alice' });
+    expect(run.mock.calls[1][1]).not.toHaveProperty('userId');
+  });
 });
 
 describe('Swarm subscriptions', () => {

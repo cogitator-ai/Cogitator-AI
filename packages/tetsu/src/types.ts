@@ -24,8 +24,10 @@ import type {
 /**
  * Who is calling, as the `auth` function established it.
  *
- * `userId` is passed to every agent run, so memory and cost tracking are
- * attributed to the caller.
+ * `userId` scopes agent runs and the thread routes to the caller: a thread
+ * belongs to the user who created it, and another user's thread answers
+ * `403 THREAD_ACCESS_DENIED`. Callers without a `userId` share the threads
+ * that have no owner.
  */
 export interface AuthContext {
   userId?: string;
@@ -46,7 +48,8 @@ export type Authenticate = (
 ) => AuthContext | undefined | Promise<AuthContext | undefined>;
 
 /**
- * Decides whether the caller may read or write a memory thread.
+ * Decides whether the caller may read or write a memory thread, on top of the
+ * ownership check every thread route and agent run makes.
  *
  * Checked on the thread routes and on every run, stream and WebSocket run
  * that names a `threadId`. A refusal answers `403 THREAD_FORBIDDEN`.

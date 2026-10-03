@@ -39,6 +39,7 @@ export class SwarmCoordinator extends BaseSwarmCoordinator<
       saveHistory: request.saveHistory,
       signal: request.signal,
       ...(request.threadId && { threadId: request.threadId }),
+      ...(request.userId !== undefined && { userId: request.userId }),
       ...(request.timeout !== undefined && { timeout: request.timeout }),
     });
   }

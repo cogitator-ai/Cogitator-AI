@@ -80,6 +80,7 @@ export function createSwarmRoutes(ctx: RouteContext): Router {
           input: body.input,
           context: body.context,
           threadId: body.threadId,
+          userId: req.cogitator?.auth?.userId,
           timeout: body.timeout,
         });
 
@@ -161,6 +162,7 @@ export function createSwarmRoutes(ctx: RouteContext): Router {
           input: body.input,
           context: body.context,
           threadId: body.threadId,
+          userId: req.cogitator?.auth?.userId,
           timeout: body.timeout,
           onAgentStart: (agentName: string) => {
             writer.swarmEvent('agent_start', { agentName, timestamp: Date.now() });

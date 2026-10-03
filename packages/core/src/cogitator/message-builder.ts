@@ -10,6 +10,7 @@ import type {
 } from '@cogitator-ai/types';
 import { ContextBuilder, countMessageTokens } from '@cogitator-ai/memory';
 import { getLogger } from '../logger';
+import { ensureThreadAccess, threadMetadata } from './threads';
 import type { Agent } from '../agent';
 import type { ReflectionEngine } from '../reflection/index';
 import type { AgentContext } from '@cogitator-ai/types';
@@ -91,16 +92,22 @@ export async function buildInitialMessages(
     ];
   }
 
-  const threadResult = await memoryAdapter.getThread(threadId);
-  if (!threadResult.success || !threadResult.data) {
-    await memoryAdapter.createThread(agent.id, { agentId: agent.id }, threadId);
+  if (options.threadId !== undefined && options.threadAccess !== 'shared') {
+    await ensureThreadAccess(memoryAdapter, threadId, {
+      agentId: agent.id,
+      userId: options.userId,
+    });
+  } else {
+    await createThreadIfMissing(memoryAdapter, threadId, agent.id, options.userId);
   }
 
   if (contextBuilder && options.loadHistory !== false) {
     const ctx = await contextBuilder.build({
       threadId,
       agentId: agent.id,
+      userId: options.userId,
       systemPrompt: agent.instructions,
+      currentInput: options.input,
     });
     return [...sanitizeToolHistory(ctx.messages), { role: 'user', content: userContent }];
   }
@@ -121,6 +128,22 @@ export async function buildInitialMessages(
   ];
 }
 
+/**
+ * Creates thread `threadId`, owned by `userId`, unless it exists. A thread
+ * that cannot be read is left alone: creating it would overwrite its owner.
+ */
+async function createThreadIfMissing(
+  memoryAdapter: MemoryAdapter,
+  threadId: string,
+  agentId: string,
+  userId: string | undefined
+): Promise<void> {
+  const threadResult = await memoryAdapter.getThread(threadId);
+  if (threadResult.success && !threadResult.data) {
+    await memoryAdapter.createThread(agentId, threadMetadata({ agentId, userId }), threadId);
+  }
+}
+
 export async function saveEntry(
   threadId: string,
   agentId: string,
@@ -128,15 +151,13 @@ export async function saveEntry(
   memoryAdapter: MemoryAdapter | undefined,
   toolCalls?: ToolCall[],
   toolResults?: ToolResult[],
-  onError?: (error: Error, operation: 'save' | 'load') => void
+  onError?: (error: Error, operation: 'save' | 'load') => void,
+  userId?: string
 ): Promise<void> {
   if (!memoryAdapter) return;
 
   try {
-    const threadResult = await memoryAdapter.getThread(threadId);
-    if (!threadResult.success || !threadResult.data) {
-      await memoryAdapter.createThread(agentId, { agentId }, threadId);
-    }
+    await createThreadIfMissing(memoryAdapter, threadId, agentId, userId);
 
     await memoryAdapter.addEntry({
       threadId,

@@ -45,11 +45,13 @@ export function createAgentRoutes(): Hono<HonoEnv> {
     const parsed = parseAgentRunRequest(body.value);
     if (!parsed.ok) return invalidInput(c, parsed.message);
 
+    const userId = c.get('cogitatorAuth')?.userId;
     const abortController = createRequestAbortController(c);
 
     try {
       const result = await ctx.runtime.run(agent, {
         ...parsed.value,
+        userId,
         signal: abortController.signal,
       });
 
@@ -85,6 +87,7 @@ export function createAgentRoutes(): Hono<HonoEnv> {
     const parsed = parseAgentRunRequest(body.value);
     if (!parsed.ok) return invalidInput(c, parsed.message);
 
+    const userId = c.get('cogitatorAuth')?.userId;
     const abortController = createRequestAbortController(c);
 
     return streamSSE(c, async (stream) => {
@@ -103,6 +106,7 @@ export function createAgentRoutes(): Hono<HonoEnv> {
 
         const result = await ctx.runtime.run(agent, {
           ...parsed.value,
+          userId,
           stream: true,
           signal: abortController.signal,
           onToken: (token: string) => {

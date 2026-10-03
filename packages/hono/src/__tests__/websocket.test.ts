@@ -77,6 +77,11 @@ describe('createClientState', () => {
     const state = createClientState();
     expect(state).not.toHaveProperty('abortController');
   });
+
+  it('keeps the auth context of the connection', () => {
+    expect(createClientState({ userId: 'u1' }).auth).toEqual({ userId: 'u1' });
+    expect(createClientState()).not.toHaveProperty('auth');
+  });
 });
 
 describe('handleWebSocketMessage', () => {
@@ -193,6 +198,27 @@ describe('handleWebSocketMessage', () => {
       id: 'r3',
       payload: { type: 'complete', result: { output: 'Hello world', usage: { totalTokens: 5 } } },
     });
+  });
+
+  it('runs agents as the user of the connection', async () => {
+    ctx = mockContext({ agents: { writer: { name: 'writer' } as never } });
+    const { socket } = mockSocket();
+
+    await handleWebSocketMessage(
+      socket,
+      JSON.stringify({
+        type: 'run',
+        id: 'r4',
+        payload: { type: 'agent', name: 'writer', input: 'hi', threadId: 'thread-1' },
+      }),
+      ctx,
+      createClientState({ userId: 'alice' })
+    );
+
+    expect(ctx.runtime.run).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ threadId: 'thread-1', userId: 'alice' })
+    );
   });
 
   it('sends tool-call and tool-result events', async () => {

@@ -104,6 +104,8 @@ export interface AgentJobPayload {
   agentConfig: SerializedAgent;
   input: string;
   threadId: string;
+  /** User the run acts for: owns the thread, see `RunOptions.userId` */
+  userId?: string;
   metadata?: Record<string, unknown>;
 }
 

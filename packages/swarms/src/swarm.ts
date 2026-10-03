@@ -173,7 +173,11 @@ export class Swarm {
         }, timeoutMs);
       }
 
-      this.coordinator.beginRun({ threadId: options.threadId, signal: runController.signal });
+      this.coordinator.beginRun({
+        threadId: options.threadId,
+        userId: options.userId,
+        signal: runController.signal,
+      });
       detachCallbacks = this.attachRunCallbacks(options);
 
       this.coordinator.events.emit('swarm:start', {

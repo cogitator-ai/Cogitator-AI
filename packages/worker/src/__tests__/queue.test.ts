@@ -92,6 +92,16 @@ describe('JobQueue', () => {
       );
     });
 
+    it('carries the user the job runs for', async () => {
+      await queue.addAgentJob(mockAgentConfig, 'Hello', { threadId: 't1', userId: 'alice' });
+
+      expect(mockAdd).toHaveBeenCalledWith(
+        'agent',
+        expect.objectContaining({ threadId: 't1', userId: 'alice' }),
+        expect.any(Object)
+      );
+    });
+
     it('includes optional threadId', async () => {
       await queue.addAgentJob(mockAgentConfig, 'Hello', { threadId: 'thread_custom' });
 

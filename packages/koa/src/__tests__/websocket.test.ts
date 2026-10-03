@@ -670,6 +670,44 @@ describe('setupWebSocket hardening', () => {
     expect(await sendAndWait(ws, { type: 'ping', id: 'p1' })).toEqual({ type: 'pong', id: 'p1' });
   });
 
+  it('runs agents as the user returned by auth for each connection', async () => {
+    const ctx = mockRouteContext({ agents: { bot: { name: 'bot' } as never } });
+    const { port } = await createTestServer(ctx, {
+      auth: (req) => ({ userId: String(req.headers['x-user']) }),
+    });
+
+    const connectAs = async (userId: string) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { 'x-user': userId } });
+      clients.push(ws);
+      await waitForOpen(ws);
+      return ws;
+    };
+    const alice = await connectAs('alice');
+    const bob = await connectAs('bob');
+
+    await sendAndWait(alice, {
+      type: 'run',
+      id: 'a',
+      payload: { type: 'agent', name: 'bot', input: 'hi', threadId: 'thread-a' },
+    });
+    await sendAndWait(bob, {
+      type: 'run',
+      id: 'b',
+      payload: { type: 'agent', name: 'bot', input: 'hi', threadId: 'thread-b' },
+    });
+
+    expect(ctx.runtime.run).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      expect.objectContaining({ threadId: 'thread-a', userId: 'alice' })
+    );
+    expect(ctx.runtime.run).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      expect.objectContaining({ threadId: 'thread-b', userId: 'bob' })
+    );
+  });
+
   it('rejects upgrades on other paths when no other upgrade handler exists', async () => {
     const { port } = await createTestServer(mockRouteContext());
     await expectUpgradeStatus(port, '/elsewhere', 404);

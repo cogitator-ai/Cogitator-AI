@@ -50,6 +50,10 @@ export class GraphContextBuilder {
     const maxEdges = options?.maxEdges ?? this.config.maxEdges;
     const maxDepth = options?.maxDepth ?? this.config.maxDepth;
     const includeInferred = options?.includeInferred ?? this.config.includeInferred;
+    const visible = (node: GraphNode) => {
+      const owner = node.metadata?.userId;
+      return owner === undefined || owner === null || owner === options?.userId;
+    };
 
     const relevantNodes: GraphNode[] = [];
     const relevantEdges: GraphEdge[] = [];
@@ -67,7 +71,7 @@ export class GraphContextBuilder {
       });
 
       if (semanticResults.success) {
-        for (const node of semanticResults.data) {
+        for (const node of semanticResults.data.filter(visible)) {
           if (!seenNodeIds.has(node.id)) {
             relevantNodes.push(node);
             seenNodeIds.add(node.id);
@@ -87,7 +91,7 @@ export class GraphContextBuilder {
       });
 
       if (nodesResult.success) {
-        for (const node of nodesResult.data) {
+        for (const node of nodesResult.data.filter(visible)) {
           if (!seenNodeIds.has(node.id) && relevantNodes.length < maxNodes) {
             relevantNodes.push(node);
             seenNodeIds.add(node.id);
@@ -108,7 +112,7 @@ export class GraphContextBuilder {
       });
 
       if (traversalResult.success) {
-        for (const node of traversalResult.data.visitedNodes) {
+        for (const node of traversalResult.data.visitedNodes.filter(visible)) {
           if (!seenNodeIds.has(node.id) && relevantNodes.length < maxNodes) {
             relevantNodes.push(node);
             seenNodeIds.add(node.id);

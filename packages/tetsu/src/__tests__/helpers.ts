@@ -1,7 +1,13 @@
 import { mock } from 'bun:test';
 import { Agent, tool } from '@cogitator-ai/core';
 import type { Cogitator } from '@cogitator-ai/core';
-import type { RunOptions, RunResult } from '@cogitator-ai/types';
+import type {
+  MemoryAdapter,
+  MemoryResult,
+  RunOptions,
+  RunResult,
+  Thread,
+} from '@cogitator-ai/types';
 import { z } from 'zod';
 
 export function runResult(overrides: Partial<RunResult> = {}): RunResult {
@@ -27,6 +33,22 @@ export interface MemoryEntry {
 
 export function fakeMemory(entries: MemoryEntry[] = []) {
   return {
+    getThread: mock((_threadId: string): Promise<MemoryResult<Thread | null>> =>
+      Promise.resolve({ success: true, data: null })
+    ),
+    createThread: mock(
+      (agentId: string, metadata: Record<string, unknown> | undefined, threadId: string) =>
+        Promise.resolve({
+          success: true as const,
+          data: {
+            id: threadId,
+            agentId,
+            metadata: metadata ?? {},
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+        })
+    ),
     getEntries: mock(() => Promise.resolve({ success: true as const, data: entries })),
     addEntry: mock(() => Promise.resolve({ success: true as const, data: {} })),
     clearThread: mock(() => Promise.resolve({ success: true as const, data: undefined })),
@@ -41,7 +63,7 @@ export function lastRunOptions(run: { mock: { calls: Array<[Agent, RunOptions]> 
 
 export function fakeCogitator(
   run: RunImpl = () => Promise.resolve(runResult()),
-  memory?: ReturnType<typeof fakeMemory>
+  memory?: MemoryAdapter | ReturnType<typeof fakeMemory>
 ) {
   const runMock = mock(run);
   const cogitator = { run: runMock, memory } as unknown as Cogitator;

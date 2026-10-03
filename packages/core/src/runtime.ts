@@ -295,7 +295,8 @@ export class Cogitator {
           this.state.memoryAdapter,
           undefined,
           undefined,
-          options.onMemoryError
+          options.onMemoryError,
+          options.userId
         );
       }
 
@@ -436,7 +437,8 @@ export class Cogitator {
             this.state.memoryAdapter,
             response.toolCalls,
             undefined,
-            options.onMemoryError
+            options.onMemoryError,
+            options.userId
           );
         }
 
@@ -472,7 +474,8 @@ export class Cogitator {
                   this.state.memoryAdapter,
                   undefined,
                   [errorResult],
-                  options.onMemoryError
+                  options.onMemoryError,
+                  options.userId
                 );
               }
             }
@@ -561,7 +564,8 @@ export class Cogitator {
                 this.state.memoryAdapter,
                 undefined,
                 [result],
-                options.onMemoryError
+                options.onMemoryError,
+                options.userId
               );
             }
 

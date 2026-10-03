@@ -217,6 +217,13 @@ export type {
 } from './llm/index';
 
 export {
+  threadOwner,
+  threadMetadata,
+  assertThreadAccess,
+  ensureThreadAccess,
+} from './cogitator/threads';
+
+export {
   withRetry,
   retryable,
   CircuitBreaker,

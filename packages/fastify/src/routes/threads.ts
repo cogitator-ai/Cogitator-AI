@@ -1,4 +1,5 @@
 import type { FastifyPluginAsync } from 'fastify';
+import { assertThreadAccess, ensureThreadAccess } from '@cogitator-ai/core';
 import type { ThreadResponse, AddMessageRequest } from '../types.js';
 import { AddMessageRequestSchema } from '../types.js';
 import { sendError, sendRouteError } from './utils.js';
@@ -28,8 +29,10 @@ export const threadRoutes: FastifyPluginAsync = async (fastify) => {
       }
 
       const { id } = request.params;
+      const userId = request.cogitatorAuth?.userId;
 
       try {
+        await assertThreadAccess(memory, id, userId);
         const result = await memory.getEntries({ threadId: id });
         if (!result.success) {
           return sendError(reply, 500, result.error ?? 'Unknown error', 'INTERNAL');
@@ -71,8 +74,10 @@ export const threadRoutes: FastifyPluginAsync = async (fastify) => {
 
       const { id } = request.params;
       const body = request.body;
+      const userId = request.cogitatorAuth?.userId;
 
       try {
+        await ensureThreadAccess(memory, id, { agentId: '', userId });
         const result = await memory.addEntry({
           threadId: id,
           message: {
@@ -112,8 +117,10 @@ export const threadRoutes: FastifyPluginAsync = async (fastify) => {
       }
 
       const { id } = request.params;
+      const userId = request.cogitatorAuth?.userId;
 
       try {
+        await assertThreadAccess(memory, id, userId);
         const result = await memory.clearThread(id);
         if (!result.success) {
           return sendError(reply, 500, result.error ?? 'Unknown error', 'INTERNAL');

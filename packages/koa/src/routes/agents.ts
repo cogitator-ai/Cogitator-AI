@@ -47,6 +47,7 @@ export function createAgentRoutes(): Router<CogitatorState> {
     try {
       const result = await runtime.run(agent, {
         ...parsed.value,
+        userId: ctx.state.auth?.userId,
         signal: abortController.signal,
       });
 
@@ -105,6 +106,7 @@ export function createAgentRoutes(): Router<CogitatorState> {
     try {
       const result = await runtime.run(agent, {
         ...parsed.value,
+        userId: ctx.state.auth?.userId,
         stream: true,
         signal: abortController.signal,
         onToken: (token: string) => {

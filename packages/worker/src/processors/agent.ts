@@ -11,10 +11,14 @@ export async function processAgentJob(
   payload: AgentJobPayload,
   runtime: WorkerRuntime = {}
 ): Promise<AgentJobResult> {
-  const { agentConfig, input, threadId } = payload;
+  const { agentConfig, input, threadId, userId } = payload;
 
   const agent = createAgentFromConfig(agentConfig, runtime);
-  const result = await resolveCogitator(runtime).run(agent, { input, threadId });
+  const result = await resolveCogitator(runtime).run(agent, {
+    input,
+    threadId,
+    ...(userId !== undefined && { userId }),
+  });
 
   return {
     type: 'agent',

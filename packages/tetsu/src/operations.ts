@@ -214,6 +214,7 @@ export async function executeSwarm(
   deps: CogitatorDeps,
   config: SwarmConfig,
   options: SwarmRunOptions,
+  auth: AuthContext | undefined,
   signal: AbortSignal,
   onStart?: (swarm: SwarmHandle) => void
 ): Promise<{ swarm: SwarmHandle; result: StrategyResult }> {
@@ -227,7 +228,10 @@ export async function executeSwarm(
   signal.addEventListener('abort', abort, { once: true });
   try {
     onStart?.(swarm);
-    const result = await swarm.run(options);
+    const result = await swarm.run({
+      ...options,
+      ...(auth?.userId !== undefined && { userId: auth.userId }),
+    });
     return { swarm, result };
   } finally {
     signal.removeEventListener('abort', abort);

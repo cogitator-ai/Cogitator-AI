@@ -1,10 +1,13 @@
-import { describe, expect, test } from 'bun:test';
+import { afterAll, describe, expect, mock, test } from 'bun:test';
 import { createApp, group, HttpError } from '@tetsujs/core';
 import type { FailureReport } from '@tetsujs/core';
 import { serve } from '@tetsujs/core/testing';
+import { Agent, Cogitator } from '@cogitator-ai/core';
+import { InMemoryAdapter } from '@cogitator-ai/memory';
 import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
+import type { ChatStreamChunk, LLMBackend, MemoryAdapter } from '@cogitator-ai/types';
 import { cogitatorController } from '../index.js';
-import type { CogitatorDeps } from '../index.js';
+import type { Authenticate, CogitatorDeps } from '../index.js';
 import {
   chatAgent,
   deferred,
@@ -274,6 +277,191 @@ describe('threads', () => {
       json({ role: 'tool', content: 'x' })
     );
     expect(res.status).toBe(422);
+  });
+});
+
+const userFromHeader: Authenticate = (ctx) => {
+  const userId = ctx.req.headers.get('x-user');
+  return userId ? { userId } : {};
+};
+
+function as(userId: string | undefined, init: RequestInit = {}): RequestInit {
+  const headers = new Headers(init.headers);
+  if (userId !== undefined) headers.set('x-user', userId);
+  return { ...init, headers };
+}
+
+async function errorCode(res: Response): Promise<string> {
+  return ((await res.json()) as { error: string }).error;
+}
+
+async function contents(memory: MemoryAdapter, threadId: string): Promise<unknown[]> {
+  const result = await memory.getEntries({ threadId });
+  if (!result.success) throw new Error(result.error);
+  return result.data.map((entry) => entry.message.content);
+}
+
+describe('thread ownership', () => {
+  async function adaThread() {
+    const memory = new InMemoryAdapter();
+    await memory.createThread('chat', { agentId: 'chat', userId: 'ada' }, 'ada-1');
+    await memory.addEntry({
+      threadId: 'ada-1',
+      message: { role: 'user', content: 'secret' },
+      tokenCount: 1,
+    });
+    const { cogitator } = fakeCogitator(undefined, memory);
+    return { memory, request: serveCogitator({ cogitator, auth: userFromHeader }) };
+  }
+
+  test("refuses another user's thread on every route and leaves it untouched", async () => {
+    const { memory, request } = await adaThread();
+
+    for (const userId of ['grace', undefined]) {
+      const read = await request('/cogitator/threads/ada-1', as(userId));
+      expect(read.status).toBe(403);
+      expect(await read.json()).toEqual({
+        status: 403,
+        message: 'Thread ada-1 belongs to another user',
+        error: 'THREAD_ACCESS_DENIED',
+      });
+
+      const added = await request(
+        '/cogitator/threads/ada-1/messages',
+        as(userId, json({ role: 'user', content: 'injected' }))
+      );
+      expect(added.status).toBe(403);
+      expect(await errorCode(added)).toBe('THREAD_ACCESS_DENIED');
+
+      const deleted = await request('/cogitator/threads/ada-1', as(userId, { method: 'DELETE' }));
+      expect(deleted.status).toBe(403);
+      expect(await errorCode(deleted)).toBe('THREAD_ACCESS_DENIED');
+    }
+
+    expect(await contents(memory, 'ada-1')).toEqual(['secret']);
+  });
+
+  test('serves the owner', async () => {
+    const { memory, request } = await adaThread();
+
+    const read = await request('/cogitator/threads/ada-1', as('ada'));
+    expect(read.status).toBe(200);
+    expect(((await read.json()) as { messages: unknown[] }).messages).toEqual([
+      { role: 'user', content: 'secret' },
+    ]);
+
+    const added = await request(
+      '/cogitator/threads/ada-1/messages',
+      as('ada', json({ role: 'assistant', content: 'noted' }))
+    );
+    expect(added.status).toBe(201);
+    expect(await contents(memory, 'ada-1')).toEqual(['secret', 'noted']);
+
+    const deleted = await request('/cogitator/threads/ada-1', as('ada', { method: 'DELETE' }));
+    expect(deleted.status).toBe(204);
+    expect(await contents(memory, 'ada-1')).toEqual([]);
+  });
+
+  test('creates a thread owned by the caller on its first message', async () => {
+    const { memory, request } = await adaThread();
+
+    const added = await request(
+      '/cogitator/threads/grace-1/messages',
+      as('grace', json({ role: 'user', content: 'hello' }))
+    );
+    expect(added.status).toBe(201);
+
+    const thread = await memory.getThread('grace-1');
+    expect(thread.success && thread.data?.metadata.userId).toBe('grace');
+    expect((await request('/cogitator/threads/grace-1', as('ada'))).status).toBe(403);
+    expect((await request('/cogitator/threads/grace-1', as('grace'))).status).toBe(200);
+  });
+
+  test('reads a thread that does not exist yet as empty', async () => {
+    const { request } = await adaThread();
+    const res = await request('/cogitator/threads/new-1', as('grace'));
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { messages: unknown[] }).messages).toEqual([]);
+  });
+
+  test('answers 500 MEMORY_READ_FAILED when the owner cannot be read', async () => {
+    const memory = fakeMemory();
+    memory.getThread.mockImplementation(() =>
+      Promise.resolve({ success: false, error: 'redis down' })
+    );
+    const { cogitator } = fakeCogitator(undefined, memory);
+    const request = serveCogitator({ cogitator, auth: userFromHeader });
+
+    const res = await request('/cogitator/threads/t-1', as('ada', { method: 'DELETE' }));
+
+    expect(res.status).toBe(500);
+    expect(await errorCode(res)).toBe('MEMORY_READ_FAILED');
+    expect(memory.clearThread).not.toHaveBeenCalled();
+  });
+});
+
+describe('agent runs on owned threads', () => {
+  const chat = mock(async () => ({
+    id: 'r',
+    content: 'ok',
+    finishReason: 'stop' as const,
+    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+  }));
+  const backend: LLMBackend = {
+    provider: 'openai',
+    chat,
+    chatStream: async function* (): AsyncGenerator<ChatStreamChunk> {
+      yield { id: 's', delta: { content: 'ok' }, finishReason: 'stop' };
+    },
+  };
+  const cogitator = new Cogitator({
+    llm: { backends: { mock: backend } },
+    memory: { adapter: 'memory' },
+  });
+  const agent = new Agent({ name: 'chat', model: 'mock/m', instructions: 'Help.' });
+  const request = serveCogitator({ cogitator, agents: { chat: agent }, auth: userFromHeader });
+
+  afterAll(() => cogitator.close());
+
+  test("answers 403 for a run on another user's thread", async () => {
+    const own = await request(
+      '/cogitator/agents/chat/run',
+      as('ada', json({ input: 'hi', threadId: 'ada-run' }))
+    );
+    expect(own.status).toBe(200);
+    const calls = chat.mock.calls.length;
+
+    const foreign = await request(
+      '/cogitator/agents/chat/run',
+      as('grace', json({ input: 'hi', threadId: 'ada-run' }))
+    );
+
+    expect(foreign.status).toBe(403);
+    expect(await errorCode(foreign)).toBe('THREAD_ACCESS_DENIED');
+    expect(chat.mock.calls.length).toBe(calls);
+    expect((await request('/cogitator/threads/ada-run', as('grace'))).status).toBe(403);
+    expect((await request('/cogitator/threads/ada-run', as('ada'))).status).toBe(200);
+  });
+
+  test("ends a stream on another user's thread with THREAD_ACCESS_DENIED", async () => {
+    await request(
+      '/cogitator/agents/chat/run',
+      as('ada', json({ input: 'hi', threadId: 'ada-s' }))
+    );
+
+    const { events, done } = await readStream(
+      await request(
+        '/cogitator/agents/chat/stream',
+        as('grace', json({ input: 'hi', threadId: 'ada-s' }))
+      )
+    );
+
+    expect(done).toBe(false);
+    expect(events.at(-1)).toEqual({
+      type: 'error',
+      message: 'Thread ada-s belongs to another user',
+      code: 'THREAD_ACCESS_DENIED',
+    });
   });
 });
 

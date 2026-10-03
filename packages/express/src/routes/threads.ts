@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import type { Response } from 'express';
+import { assertThreadAccess, ensureThreadAccess } from '@cogitator-ai/core';
 import type {
   RouteContext,
   CogitatorRequest,
@@ -34,8 +35,10 @@ export function createThreadRoutes(ctx: RouteContext): Router {
     }
 
     const { id } = req.params;
+    const userId = req.cogitator?.auth?.userId;
 
     try {
+      await assertThreadAccess(memory, id, userId);
       const result = await memory.getEntries({ threadId: id });
       if (!result.success) {
         sendError(res, 500, result.error, 'INTERNAL');
@@ -81,7 +84,10 @@ export function createThreadRoutes(ctx: RouteContext): Router {
         return;
       }
 
+      const userId = req.cogitator?.auth?.userId;
+
       try {
+        await ensureThreadAccess(memory, id, { agentId: '', userId });
         const result = await memory.addEntry({
           threadId: id,
           message: {
@@ -112,8 +118,10 @@ export function createThreadRoutes(ctx: RouteContext): Router {
     }
 
     const { id } = req.params;
+    const userId = req.cogitator?.auth?.userId;
 
     try {
+      await assertThreadAccess(memory, id, userId);
       const result = await memory.clearThread(id);
       if (!result.success) {
         sendError(res, 500, result.error, 'INTERNAL');

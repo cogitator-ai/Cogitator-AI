@@ -31,6 +31,8 @@ type RetryConfig = NonNullable<NonNullable<SwarmConfig['errorHandling']>['retry'
 export interface SwarmRunScope {
   /** Base thread id; each agent gets its own `${threadId}:${agentName}` thread */
   threadId?: string;
+  /** User every agent run of the current swarm run acts for */
+  userId?: string;
   /** Signal that cancels every agent run of the current swarm run */
   signal?: AbortSignal;
 }
@@ -57,6 +59,7 @@ export interface AgentRunRequest {
   context: Record<string, unknown>;
   signal: AbortSignal;
   threadId?: string;
+  userId?: string;
   timeout?: number;
   saveHistory: boolean;
 }
@@ -339,6 +342,7 @@ export abstract class BaseSwarmCoordinator<
         signal: this.currentSignal(),
         saveHistory: this.saveHistory,
         threadId: this.runScope.threadId ? `${this.runScope.threadId}:${agentName}` : undefined,
+        userId: this.runScope.userId,
         timeout: minDefined(this.config.resources?.perAgent?.timeout, options.timeout),
         context: {
           ...context,

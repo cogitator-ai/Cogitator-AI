@@ -23,12 +23,22 @@ import { countMessageTokens, countTokens } from './token-counter';
 const SEMANTIC_RESULTS = 5;
 
 /**
- * Embeddings scoped to another agent (`metadata.agentId`) are never injected; unscoped
- * embeddings (shared documents) are visible to every agent.
+ * Whether memory scoped by `metadata` may go into a context: never when it
+ * belongs to another agent (`metadata.agentId`) or another user
+ * (`metadata.userId`); memory without an owner (shared documents, agent-wide
+ * facts) is visible to everyone.
  */
-function isVisibleToAgent(embedding: Embedding, agentId: string): boolean {
-  const owner = embedding.metadata?.agentId;
-  return owner === undefined || owner === null || owner === agentId;
+function isVisibleTo(
+  metadata: Record<string, unknown> | undefined,
+  agentId: string,
+  userId: string | undefined
+): boolean {
+  const agent = metadata?.agentId;
+  const user = metadata?.userId;
+  return (
+    (agent === undefined || agent === null || agent === agentId) &&
+    (user === undefined || user === null || user === userId)
+  );
 }
 
 export interface ContextBuilderDeps {
@@ -42,6 +52,8 @@ export interface ContextBuilderDeps {
 export interface BuildContextOptions {
   threadId: string;
   agentId: string;
+  /** The user the context is built for: facts and embeddings of other users are left out */
+  userId?: string;
   systemPrompt?: string;
   currentInput?: string;
 }
@@ -89,8 +101,11 @@ export class ContextBuilder {
       if (factsResult.success && factsResult.data.length > 0) {
         const factTokenBudget = Math.floor(availableTokens * 0.1);
         let factTokens = 0;
+        const visibleFacts = factsResult.data.filter((fact) =>
+          isVisibleTo(fact.metadata, options.agentId, options.userId)
+        );
 
-        for (const fact of factsResult.data) {
+        for (const fact of visibleFacts) {
           const tokens = countTokens(`- ${fact.content}`);
           if (factTokens + tokens <= factTokenBudget) {
             facts.push(fact);
@@ -129,12 +144,13 @@ export class ContextBuilder {
         vector,
         limit: SEMANTIC_RESULTS * 4,
         threshold: 0.7,
+        ...(options.userId !== undefined && { filter: { userId: options.userId } }),
       });
       const searchResult = rawResult.success
         ? {
             ...rawResult,
             data: rawResult.data
-              .filter((r) => isVisibleToAgent(r, options.agentId))
+              .filter((r) => isVisibleTo(r.metadata, options.agentId, options.userId))
               .slice(0, SEMANTIC_RESULTS),
           }
         : rawResult;
@@ -171,10 +187,11 @@ export class ContextBuilder {
     }
 
     if (this.config.includeGraphContext && this.deps.graphContextBuilder && options.currentInput) {
+      const graphOptions = { ...this.config.graphContextOptions, userId: options.userId };
       const gc = await this.deps.graphContextBuilder.buildContext(
         options.agentId,
         options.currentInput,
-        this.config.graphContextOptions
+        graphOptions
       );
 
       if (gc.nodes.length > 0) {
@@ -192,7 +209,7 @@ export class ContextBuilder {
             options.agentId,
             options.currentInput,
             {
-              ...this.config.graphContextOptions,
+              ...graphOptions,
               maxNodes: limitedNodes.length,
               maxEdges: limitedEdges.length,
             }

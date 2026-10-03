@@ -102,7 +102,19 @@ export interface RunOptions {
   /** Execute tool calls in parallel. Default: false (sequential execution) */
   parallelToolCalls?: boolean;
 
+  /**
+   * The user the run acts for. It owns the threads the run creates, scopes the
+   * facts and embeddings put into the context, and reaches tools as `context.userId`.
+   */
   userId?: string;
+  /**
+   * Who may continue a given `threadId`. `'owner'` (default): only the user who
+   * created the thread, so a client cannot read or extend another user's
+   * conversation by sending its id; the run fails with `THREAD_ACCESS_DENIED`.
+   * `'shared'`: anyone, for threads your server derives itself, such as a group
+   * chat several users write to.
+   */
+  threadAccess?: 'owner' | 'shared';
   channelType?: string;
   channelId?: string;
 }

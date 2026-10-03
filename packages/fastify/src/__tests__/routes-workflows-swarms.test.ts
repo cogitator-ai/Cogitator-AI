@@ -175,6 +175,8 @@ describe('swarmRoutes', () => {
 describe('thread error propagation', () => {
   it('addEntry returns Unknown error when result.error is undefined', async () => {
     const memory = {
+      getThread: vi.fn().mockResolvedValue({ success: true, data: null }),
+      createThread: vi.fn().mockResolvedValue({ success: true, data: {} }),
       addEntry: vi.fn().mockResolvedValue({ success: false }),
       getEntries: vi.fn(),
       clearThread: vi.fn(),
@@ -206,6 +208,7 @@ describe('thread error propagation', () => {
 
   it('clearThread returns Unknown error when result.error is undefined', async () => {
     const memory = {
+      getThread: vi.fn().mockResolvedValue({ success: true, data: null }),
       getEntries: vi.fn(),
       addEntry: vi.fn(),
       clearThread: vi.fn().mockResolvedValue({ success: false }),

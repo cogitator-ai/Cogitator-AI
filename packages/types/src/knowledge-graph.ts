@@ -275,6 +275,8 @@ export interface GraphContextOptions {
   maxDepth?: number;
   includeInferred?: boolean;
   entityTypes?: EntityType[];
+  /** Leave out nodes of other users (`metadata.userId`) and the edges that touch them */
+  userId?: string;
 }
 
 export interface KnowledgeGraphExtractionConfig {

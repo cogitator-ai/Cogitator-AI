@@ -1,6 +1,7 @@
 import Router from '@koa/router';
 import type { Context } from 'koa';
 import type { CogitatorState, ThreadResponse } from '../types.js';
+import { assertThreadAccess, ensureThreadAccess } from '@cogitator-ai/core';
 import { countMessageTokens } from '@cogitator-ai/memory';
 import type { Message } from '@cogitator-ai/types';
 import { resolveError } from '../utils/errors.js';
@@ -29,8 +30,10 @@ export function createThreadRoutes(): Router<CogitatorState> {
     }
 
     const { id } = ctx.params;
+    const userId = ctx.state.auth?.userId;
 
     try {
+      await assertThreadAccess(memory, id, userId);
       const result = await memory.getEntries({ threadId: id });
       if (!result.success) {
         respondWithError(ctx, new Error(result.error), 'Thread get error');
@@ -67,8 +70,10 @@ export function createThreadRoutes(): Router<CogitatorState> {
     }
 
     const message: Message = { role: parsed.value.role, content: parsed.value.content };
+    const userId = ctx.state.auth?.userId;
 
     try {
+      await ensureThreadAccess(memory, id, { agentId: '', userId });
       const result = await memory.addEntry({
         threadId: id,
         message,
@@ -96,8 +101,10 @@ export function createThreadRoutes(): Router<CogitatorState> {
     }
 
     const { id } = ctx.params;
+    const userId = ctx.state.auth?.userId;
 
     try {
+      await assertThreadAccess(memory, id, userId);
       const result = await memory.clearThread(id);
       if (!result.success) {
         respondWithError(ctx, new Error(result.error), 'Thread delete error');
