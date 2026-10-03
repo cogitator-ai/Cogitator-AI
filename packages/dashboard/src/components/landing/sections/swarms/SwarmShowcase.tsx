@@ -155,7 +155,7 @@ export function SwarmShowcase({ snippets }: { snippets: Record<StrategyId, React
         ref={tabsRef}
         role="tablist"
         aria-label="Swarm strategies"
-        className="flex gap-1 overflow-x-auto rounded-xl border border-l-line bg-l-surface/60 p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        className="plate-tabs flex gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
         {SCENES.map((item, index) => {
           const selected = index === position.index;
@@ -172,10 +172,7 @@ export function SwarmShowcase({ snippets }: { snippets: Record<StrategyId, React
               onClick={() => select(index)}
               onKeyDown={onTabKeyDown}
               className={cx(
-                'relative flex-1 shrink-0 overflow-hidden whitespace-nowrap rounded-lg px-3 py-2 font-mono text-[12px] transition-colors outline-none focus-visible:ring-1 focus-visible:ring-l-accent/60',
-                selected
-                  ? 'bg-white/[0.06] text-l-text'
-                  : 'text-l-faint hover:bg-white/[0.03] hover:text-l-muted'
+                'plate-tab relative flex-1 shrink-0 overflow-hidden whitespace-nowrap rounded-lg px-3 py-2 text-[13px] outline-none focus-visible:ring-1 focus-visible:ring-l-accent/60'
               )}
             >
               {item.id}

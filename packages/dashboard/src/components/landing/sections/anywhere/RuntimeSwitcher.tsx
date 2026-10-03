@@ -87,7 +87,7 @@ export function RuntimeSwitcher({ tabs }: { tabs: RuntimeTab[] }) {
           role="tablist"
           aria-label="Runtimes and frameworks"
           onKeyDown={onKeyDown}
-          className="flex w-max gap-1 sm:w-auto sm:flex-wrap"
+          className="plate-tabs flex w-max gap-1 sm:w-auto sm:flex-wrap"
         >
           {tabs.map((item, index) => {
             const selected = index === active;
@@ -105,13 +105,10 @@ export function RuntimeSwitcher({ tabs }: { tabs: RuntimeTab[] }) {
                 tabIndex={selected ? 0 : -1}
                 onClick={() => select(index)}
                 className={cx(
-                  'inline-flex items-center gap-2 whitespace-nowrap rounded-lg border px-3 py-2 text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-l-accent/60',
-                  selected
-                    ? 'border-l-line-strong bg-white/[0.05] text-l-text'
-                    : 'border-transparent text-l-muted hover:text-l-text'
+                  'plate-tab inline-flex items-center gap-2 whitespace-nowrap rounded-lg px-3 py-2 text-[13px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-l-accent/60'
                 )}
               >
-                <span className={selected ? 'text-l-text' : 'text-l-faint'}>{item.icon}</span>
+                <span className={selected ? 'text-l-brass' : 'text-l-faint'}>{item.icon}</span>
                 {item.label}
               </button>
             );

@@ -59,7 +59,6 @@
   --color-l-brass-dim: #8a6f3a;
   --color-l-phosphor: #8dffbf;
   --color-l-candle: #ffb347;
-  --font-screen: var(--font-share-tech), 'Share Tech Mono', ui-monospace, monospace;
 
   /* Font families */
   --font-sans: 'Geist', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -72,6 +71,15 @@
   /* Shadows */
   --shadow-glow: 0 0 20px var(--color-accent-glow), 0 0 40px var(--color-accent-glow);
   --shadow-glow-sm: 0 0 10px var(--color-accent-glow);
+}
+
+/*
+ * Font stacks used from plain CSS. They live on body, where next/font defines the font variables
+ * they reference (and Tailwind drops @theme variables that no utility uses).
+ */
+body {
+  --font-screen: var(--font-share-tech), 'Share Tech Mono', ui-monospace, monospace;
+  --font-display: var(--font-cinzel), 'Cinzel', Georgia, serif;
 }
 
 /* Docs palette: Fumadocs' light theme with the brand green, and the site's dark theme. */
@@ -651,5 +659,188 @@
     .cog-screen {
       animation: none;
     }
+  }
+}
+
+@layer components {
+  /* Imperial chrome for the page around the cogitator screens. */
+  .iron-panel {
+    background:
+      linear-gradient(180deg, rgb(255 255 255 / 0.05), transparent 30%),
+      repeating-linear-gradient(90deg, rgb(255 255 255 / 0.012) 0 2px, transparent 2px 5px),
+      linear-gradient(180deg, #1d1e21 0%, #121315 100%);
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.07),
+      inset 0 -1px 0 rgb(0 0 0 / 0.7);
+  }
+
+  .brass-edge {
+    border-color: rgb(201 164 92 / 0.28);
+  }
+
+  .brass-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    border-radius: 7px;
+    border: 1px solid rgb(201 164 92 / 0.5);
+    padding: 0.55rem 1rem;
+    font-family: var(--font-display);
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #dcc08a;
+    text-shadow: 0 1px 0 rgb(0 0 0 / 0.8);
+    background: linear-gradient(180deg, #2a2419 0%, #17140f 100%);
+    box-shadow:
+      inset 0 1px 0 rgb(226 197 140 / 0.16),
+      inset 0 -2px 0 rgb(0 0 0 / 0.55),
+      0 0 0 1px #050505,
+      0 10px 24px -14px rgb(201 164 92 / 0.45);
+    transition:
+      color 0.2s,
+      border-color 0.2s,
+      background 0.2s,
+      box-shadow 0.2s;
+  }
+
+  .brass-btn:hover {
+    color: #f0d9a6;
+    border-color: rgb(201 164 92 / 0.8);
+    background: linear-gradient(180deg, #332b1d 0%, #1b1711 100%);
+    box-shadow:
+      inset 0 1px 0 rgb(226 197 140 / 0.22),
+      inset 0 -2px 0 rgb(0 0 0 / 0.55),
+      0 0 0 1px #050505,
+      0 0 22px -6px rgb(201 164 92 / 0.4);
+  }
+
+  .brass-btn:active {
+    transform: translateY(1px);
+  }
+
+  .brass-ghost {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    border-radius: 7px;
+    border: 1px solid rgb(201 164 92 / 0.25);
+    padding: 0.55rem 1rem;
+    font-family: var(--font-display);
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgb(220 192 138 / 0.8);
+    background: transparent;
+    transition:
+      color 0.2s,
+      border-color 0.2s,
+      background 0.2s;
+  }
+
+  .brass-ghost:hover {
+    color: #e8cf9c;
+    background: rgb(201 164 92 / 0.06);
+    border-color: rgb(201 164 92 / 0.5);
+  }
+
+  .vox-label {
+    font-family: var(--font-screen);
+    font-size: 13px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: #c9a45c;
+  }
+
+  .imperial {
+    font-family: var(--font-display);
+    letter-spacing: 0.01em;
+  }
+
+  /* A brass rule with a riveted diamond in the middle, between sections. */
+  .brass-rule {
+    position: relative;
+    height: 14px;
+    max-width: 72rem;
+    margin: 0 auto;
+  }
+
+  .brass-rule::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 1px;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgb(201 164 92 / 0.35) 20%,
+      rgb(201 164 92 / 0.35) 80%,
+      transparent
+    );
+  }
+
+  .brass-rule::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 10px;
+    height: 10px;
+    transform: translate(-50%, -50%) rotate(45deg);
+    border: 1px solid rgb(201 164 92 / 0.6);
+    background: radial-gradient(circle, #c9a45c 0 1.5px, #0d0c0a 2px);
+    box-shadow: 0 0 0 4px var(--color-l-bg);
+  }
+
+  /* Tabs as iron plates; the selected one is lit brass with a phosphor label. */
+  .plate-tabs {
+    border-radius: 12px;
+    border: 1px solid rgb(201 164 92 / 0.22);
+    padding: 4px;
+    background: linear-gradient(180deg, #17181a, #0e0f10);
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.05),
+      inset 0 0 12px rgb(0 0 0 / 0.6);
+  }
+
+  .plate-tab {
+    font-family: var(--font-screen);
+    letter-spacing: 0.06em;
+    color: var(--color-l-faint);
+    border: 1px solid transparent;
+    transition:
+      color 0.2s,
+      background 0.2s,
+      border-color 0.2s;
+  }
+
+  .plate-tab:hover {
+    color: var(--color-l-muted);
+    background: rgb(255 255 255 / 0.03);
+  }
+
+  .plate-tab[aria-selected='true'] {
+    color: #a8d9c7;
+    text-shadow: 0 0 6px rgb(127 212 181 / 0.3);
+    border-color: rgb(201 164 92 / 0.45);
+    background: linear-gradient(180deg, #23201a, #15130f);
+    box-shadow:
+      inset 0 1px 0 rgb(226 197 140 / 0.12),
+      0 0 12px -4px rgb(201 164 92 / 0.35);
+  }
+
+  /* A small phosphor read-out for counters. */
+  .readout {
+    border-radius: 8px;
+    border: 1px solid rgb(201 164 92 / 0.3);
+    background: radial-gradient(120% 120% at 50% 30%, #0c1c1a, #050b0a);
+    box-shadow:
+      inset 0 0 18px rgb(0 0 0 / 0.85),
+      0 0 0 3px #0b0b0c;
+    font-family: var(--font-screen);
+    color: #a8d9c7;
+    text-shadow: 0 0 8px rgb(127 212 181 / 0.35);
   }
 }

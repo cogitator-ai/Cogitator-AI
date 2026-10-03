@@ -169,8 +169,8 @@ export function Explorer({ features }: { features: ExplorerFeature[] }) {
         className="mt-12 sm:mt-16 lg:grid lg:grid-cols-[248px_minmax(0,1fr)] lg:gap-10"
       >
         <div className="min-w-0">
-          <p className="mb-3 hidden font-mono text-[10.5px] uppercase tracking-[0.16em] text-l-brass/80 lg:block">
-            {count} capabilities
+          <p className="vox-label mb-3 hidden !text-[12px] lg:block">
+            +++ {count} capabilities +++
           </p>
           <div
             ref={listRef}
@@ -200,7 +200,7 @@ export function Explorer({ features }: { features: ExplorerFeature[] }) {
                     'rounded-full border px-3.5 py-1.5 text-[13px]',
                     'lg:rounded-none lg:border-0 lg:py-2.5 lg:pl-4 lg:pr-2',
                     selected
-                      ? 'border-l-accent/35 bg-white/[0.05] text-l-text lg:bg-transparent'
+                      ? 'border-l-brass/50 bg-l-brass/[0.06] text-[#a8d9c7] [text-shadow:0_0_6px_rgb(127_212_181/0.3)] lg:bg-[linear-gradient(90deg,rgb(201_164_92/0.1),transparent)]'
                       : 'border-l-line text-l-muted hover:text-l-text'
                   )}
                 >
@@ -208,10 +208,10 @@ export function Explorer({ features }: { features: ExplorerFeature[] }) {
                     aria-hidden
                     className={cx(
                       'absolute inset-y-0 left-0 hidden w-px transition-colors lg:block',
-                      selected ? 'bg-l-accent' : 'bg-l-line group-hover:bg-l-line-strong'
+                      selected ? 'bg-l-brass' : 'bg-l-brass/15 group-hover:bg-l-brass/35'
                     )}
                   />
-                  <span className="block whitespace-nowrap lg:text-[14px] lg:whitespace-normal">
+                  <span className="block whitespace-nowrap font-[family-name:var(--font-screen)] tracking-[0.03em] lg:text-[14.5px] lg:whitespace-normal">
                     {item.title}
                   </span>
                   <span
@@ -256,7 +256,7 @@ export function Explorer({ features }: { features: ExplorerFeature[] }) {
               <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between sm:gap-8">
                 <div className="min-w-0">
                   <p className="font-mono text-[11px] text-l-brass">{feature.pkg}</p>
-                  <h3 className="mt-2 text-xl font-semibold tracking-[-0.02em] text-l-text sm:text-2xl">
+                  <h3 className="imperial mt-2 text-xl font-semibold text-l-text sm:text-[1.6rem]">
                     {feature.title}
                   </h3>
                   <p className="mt-2 max-w-xl text-[15px] leading-relaxed text-l-muted text-pretty">

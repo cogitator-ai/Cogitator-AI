@@ -127,21 +127,21 @@ const STATS = [
 
 export function LogoMarquee() {
   return (
-    <section className="relative border-y border-l-line bg-l-surface/40 py-10">
-      <p className="mb-6 text-center font-mono text-xs uppercase tracking-[0.18em] text-l-muted">
-        Any model · any runtime · your infrastructure
+    <section className="iron-panel brass-edge relative border-y py-10">
+      <p className="vox-label mb-6 text-center">
+        +++ Any model · any runtime · your infrastructure +++
       </p>
       <div className="space-y-2">
         <MarqueeRow brands={MODELS} seconds={48} label="Supported model providers" />
         <MarqueeRow brands={PLATFORM} seconds={70} label="Runtimes, frameworks and integrations" />
       </div>
-      <dl className="mx-auto mt-10 grid max-w-4xl grid-cols-2 gap-y-6 px-5 sm:grid-cols-4">
+      <dl className="mx-auto mt-10 grid max-w-4xl grid-cols-2 gap-4 px-5 sm:grid-cols-4">
         {STATS.map((stat) => (
-          <div key={stat.label} className="flex flex-col text-center">
-            <dt className="order-2 mt-1 text-sm text-l-muted">{stat.label}</dt>
-            <dd className="text-3xl font-semibold tracking-[-0.03em] text-l-text tabular-nums">
-              {stat.value}
-            </dd>
+          <div key={stat.label} className="readout flex flex-col px-3 py-3 text-center">
+            <dt className="order-2 mt-1 text-[12px] uppercase tracking-[0.14em] text-[#7fa89a]">
+              {stat.label}
+            </dt>
+            <dd className="text-3xl tabular-nums">{stat.value}</dd>
           </div>
         ))}
       </dl>

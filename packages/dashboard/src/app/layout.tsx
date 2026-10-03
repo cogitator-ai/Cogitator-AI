@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from 'next';
-import { Geist, Geist_Mono, Share_Tech_Mono } from 'next/font/google';
+import { Cinzel, Geist, Geist_Mono, Share_Tech_Mono } from 'next/font/google';
 import { RootProvider } from 'fumadocs-ui/provider/next';
 import corePackage from '../../../core/package.json';
 import { CHANNELS, LLM_PROVIDERS, MEMORY_BACKENDS, SWARM_STRATEGIES } from '@/lib/stats';
@@ -21,6 +21,12 @@ const geistSans = Geist({
 
 const geistMono = Geist_Mono({
   variable: '--font-geist-mono',
+  subsets: ['latin'],
+});
+
+const imperial = Cinzel({
+  variable: '--font-cinzel',
+  weight: ['500', '600', '700'],
   subsets: ['latin'],
 });
 
@@ -186,7 +192,7 @@ export default function RootLayout({
         />
       </head>
       <body
-        className={`${geistSans.variable} ${geistMono.variable} ${screenMono.variable} antialiased`}
+        className={`${geistSans.variable} ${geistMono.variable} ${screenMono.variable} ${imperial.variable} antialiased`}
       >
         <RootProvider theme={{ defaultTheme: 'dark' }}>{children}</RootProvider>
       </body>

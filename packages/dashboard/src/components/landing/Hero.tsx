@@ -64,15 +64,16 @@ export async function Hero() {
             href="https://www.npmjs.com/package/@cogitator-ai/core"
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 rounded-full border border-l-line-strong bg-l-surface/60 py-1 pl-1 pr-3 text-xs text-l-muted transition-colors hover:text-l-text"
+            className="cog-plaque inline-flex items-center gap-2 !px-3 !py-1 font-[family-name:var(--font-screen)] text-[11px] uppercase tracking-[0.08em] sm:gap-2.5 sm:!px-4 sm:text-[12px] sm:tracking-[0.14em] text-[#e2c58c] transition-colors hover:text-[#f3dcaa]"
           >
-            <span className="rounded-full bg-l-accent/10 px-2 py-0.5 font-mono text-[10.5px] text-l-accent">
+            <span className="text-[#a8d9c7] [text-shadow:0_0_6px_rgb(127_212_181/0.35)]">
               v{corePackage.version}
             </span>
+            <span className="text-l-brass/60">·</span>
             Open source · MIT · TypeScript
           </a>
 
-          <h1 className="mt-7 text-[2.75rem] font-semibold leading-[1.02] tracking-[-0.045em] text-l-text text-balance sm:text-7xl">
+          <h1 className="imperial mt-8 text-[2.3rem] font-semibold leading-[1.1] text-l-text text-balance sm:text-[3.6rem]">
             Agents that survive
             <br />
             <span className="text-l-muted">production.</span>
@@ -86,12 +87,9 @@ export async function Hero() {
 
           <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">
             <CopyCommand command="npx create-cogitator-app" />
-            <Link
-              href={DOCS_HOME}
-              className="group inline-flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium text-l-text"
-            >
+            <Link href={DOCS_HOME} className="brass-ghost group text-[13px]">
               Read the docs
-              <ArrowRight className="size-4 text-l-muted transition-transform group-hover:translate-x-0.5" />
+              <ArrowRight className="size-4 transition-transform group-hover:translate-x-0.5" />
             </Link>
           </div>
 

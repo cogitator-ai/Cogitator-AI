@@ -23,7 +23,7 @@ export function CopyCommand({ command, className }: { command: string; className
       onClick={copy}
       aria-label={`Copy ${command}`}
       className={cx(
-        'group inline-flex items-center gap-3 rounded-lg border border-l-line-strong bg-l-surface/80 py-2.5 pl-4 pr-3 font-mono text-[13px] text-l-text transition-colors hover:border-white/25',
+        'readout group inline-flex items-center gap-3 py-2.5 pl-4 pr-3 text-[14px] transition-colors hover:border-[rgb(201_164_92/0.6)]',
         className
       )}
     >

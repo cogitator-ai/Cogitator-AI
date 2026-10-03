@@ -34,7 +34,9 @@ export function Wordmark({ className }: { className?: string }) {
   return (
     <span className={cx('inline-flex items-center gap-2.5', className)}>
       <LogoMark />
-      <span className="text-[15px] font-semibold tracking-[-0.02em] text-l-text">Cogitator</span>
+      <span className="imperial text-[16px] font-semibold tracking-[0.06em] text-l-text">
+        Cogitator
+      </span>
     </span>
   );
 }

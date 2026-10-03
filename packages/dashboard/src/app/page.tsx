@@ -17,11 +17,17 @@ export default function LandingPage() {
       <main>
         <Hero />
         <LogoMarquee />
+        <div className="brass-rule" aria-hidden />
         <WorkflowsSection />
+        <div className="brass-rule" aria-hidden />
         <SwarmsSection />
+        <div className="brass-rule" aria-hidden />
         <FeatureExplorerSection />
+        <div className="brass-rule" aria-hidden />
         <RunsAnywhereSection />
+        <div className="brass-rule" aria-hidden />
         <AgentFriendlySection />
+        <div className="brass-rule" aria-hidden />
         <FinalCta />
       </main>
       <Footer />

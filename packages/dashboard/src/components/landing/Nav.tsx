@@ -28,9 +28,7 @@ export function Nav() {
     <header
       className={cx(
         'fixed inset-x-0 top-0 z-50 transition-colors duration-300',
-        scrolled
-          ? 'border-b border-l-line bg-l-bg/75 backdrop-blur-xl'
-          : 'border-b border-transparent'
+        scrolled ? 'iron-panel border-b brass-edge backdrop-blur-xl' : 'border-b border-transparent'
       )}
     >
       <nav className="mx-auto flex h-16 max-w-6xl items-center justify-between px-5 sm:px-8">
@@ -42,7 +40,7 @@ export function Nav() {
             <Link
               key={link.label}
               href={link.href}
-              className="hidden rounded-md px-3 py-1.5 text-sm text-l-muted transition-colors hover:text-l-text sm:block"
+              className="vox-label hidden rounded-md px-3 py-1.5 !text-[12px] !text-l-muted transition-colors hover:!text-[#e2c58c] sm:block"
             >
               {link.label}
             </Link>
@@ -56,10 +54,7 @@ export function Nav() {
           >
             <GithubIcon className="size-[18px]" />
           </a>
-          <Link
-            href={GET_STARTED_URL}
-            className="group ml-1 inline-flex items-center gap-1.5 rounded-lg bg-l-text px-3.5 py-1.5 text-sm font-medium text-l-bg transition-colors hover:bg-white"
-          >
+          <Link href={GET_STARTED_URL} className="brass-btn group ml-1 !px-3 !py-1.5 text-[12px]">
             Get started
             <ArrowRight className="size-3.5 transition-transform group-hover:translate-x-0.5" />
           </Link>

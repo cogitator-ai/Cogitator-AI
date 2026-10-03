@@ -22,9 +22,7 @@ export function Section({
 }
 
 export function Eyebrow({ children }: { children: ReactNode }) {
-  return (
-    <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-l-accent/90">{children}</p>
-  );
+  return <p className="vox-label">+++ {children} +++</p>;
 }
 
 export function SectionHeader({
@@ -41,7 +39,7 @@ export function SectionHeader({
   return (
     <div className={cx('max-w-2xl', align === 'center' && 'mx-auto text-center')}>
       <Eyebrow>{eyebrow}</Eyebrow>
-      <h2 className="mt-4 text-3xl sm:text-[2.6rem] font-semibold tracking-[-0.03em] leading-[1.08] text-l-text text-balance">
+      <h2 className="imperial mt-4 text-[1.9rem] sm:text-[2.55rem] font-semibold leading-[1.12] text-l-text text-balance">
         {title}
       </h2>
       {description && (
