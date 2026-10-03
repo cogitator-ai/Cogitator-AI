@@ -13,6 +13,7 @@ import Link from 'next/link';
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -21,8 +22,8 @@ import {
 } from 'react';
 import { CodeBody, Section, SectionHeader, Window, cx } from '../../ui';
 import type { ExplorerFeature } from './types';
+import { DemoCycleContext, type DemoCycle } from './cycle';
 
-const ADVANCE_MS = 24000;
 const EASE = [0.16, 1, 0.3, 1] as const;
 const DESKTOP_QUERY = '(min-width: 1024px)';
 const PANEL_ID = 'feature-explorer-panel';
@@ -76,18 +77,35 @@ export function Explorer({ features }: { features: ExplorerFeature[] }) {
   const count = features.length;
   const running = inView && !hovered && !focused && !reduced && count > 1;
 
+  const runningRef = useRef(running);
+  const progressAnimation = useRef<ReturnType<typeof animate> | null>(null);
+
   useEffect(() => {
-    if (!running) return;
-    const controls = animate(progress, 1, {
-      duration: ((1 - progress.get()) * ADVANCE_MS) / 1000,
-      ease: 'linear',
-      onComplete: () => {
+    runningRef.current = running;
+  }, [running]);
+
+  useEffect(() => () => progressAnimation.current?.stop(), []);
+
+  const cycle = useMemo<DemoCycle>(
+    () => ({
+      step(elapsedMs, stepMs, totalMs) {
+        progressAnimation.current?.stop();
+        progress.set(elapsedMs / totalMs);
+        progressAnimation.current = animate(progress, (elapsedMs + stepMs) / totalMs, {
+          duration: stepMs / 1000,
+          ease: 'linear',
+        });
+      },
+      complete() {
+        if (!runningRef.current) return false;
+        progressAnimation.current?.stop();
         progress.set(0);
         setActive((current) => (current + 1) % count);
+        return true;
       },
-    });
-    return () => controls.stop();
-  }, [active, count, progress, running]);
+    }),
+    [count, progress]
+  );
 
   useEffect(() => {
     const scroller = listRef.current;
@@ -260,7 +278,7 @@ export function Explorer({ features }: { features: ExplorerFeature[] }) {
                 className="mt-6"
                 bodyClassName="relative h-[300px] overflow-hidden bg-l-bg/40"
               >
-                {feature.demo}
+                <DemoCycleContext.Provider value={cycle}>{feature.demo}</DemoCycleContext.Provider>
               </Window>
 
               <Window title={`${feature.id}.ts`} className="mt-4">

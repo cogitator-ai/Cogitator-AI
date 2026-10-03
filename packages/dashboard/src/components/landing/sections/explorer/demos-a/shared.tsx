@@ -10,7 +10,7 @@ import {
   type RefObject,
 } from 'react';
 import { cx } from '../../../ui';
-import { paced } from '../../../pace';
+import { cycleTiming, useDemoCycle } from '../cycle';
 
 export const EASE = [0.16, 1, 0.3, 1] as const;
 
@@ -46,18 +46,20 @@ export function useDemoTimeline(durations: readonly number[]): DemoTimeline {
   const reduced = hydrated && prefersReduced;
   const last = durations.length - 1;
   const [position, setPosition] = useState({ step: 0, loop: 0 });
+  const cycle = useDemoCycle();
 
   useEffect(() => {
     if (reduced || !inView) return;
-    const timer = setTimeout(
-      () =>
-        setPosition(({ step, loop }) =>
-          step >= last ? { step: 0, loop: loop + 1 } : { step: step + 1, loop }
-        ),
-      paced(durations, position.step)
-    );
+    const { elapsedMs, stepMs, totalMs } = cycleTiming(durations, position.step);
+    cycle?.step(elapsedMs, stepMs, totalMs);
+    const timer = setTimeout(() => {
+      if (position.step >= last && cycle?.complete()) return;
+      setPosition(({ step, loop }) =>
+        step >= last ? { step: 0, loop: loop + 1 } : { step: step + 1, loop }
+      );
+    }, stepMs);
     return () => clearTimeout(timer);
-  }, [durations, inView, last, position.step, reduced]);
+  }, [cycle, durations, inView, last, position.step, reduced]);
 
   return { ref, step: reduced ? last : position.step, loop: position.loop, reduced };
 }

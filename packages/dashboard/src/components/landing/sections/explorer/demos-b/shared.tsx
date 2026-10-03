@@ -3,7 +3,7 @@
 import { AnimatePresence, MotionConfig, motion, useInView, useReducedMotion } from 'framer-motion';
 import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { cx } from '../../../ui';
-import { paced } from '../../../pace';
+import { cycleTiming, useDemoCycle } from '../cycle';
 
 export const EASE = [0.16, 1, 0.3, 1] as const;
 
@@ -26,15 +26,18 @@ export function useDemoTimeline(durations: readonly number[]): DemoTimeline {
   const last = durations.length - 1;
   const [step, setStep] = useState(0);
   const [pinned, setPinned] = useState<number | null>(null);
+  const cycle = useDemoCycle();
 
   useEffect(() => {
     if (reduced || !inView) return;
-    const timer = setTimeout(
-      () => setStep((current) => (current >= last ? 0 : current + 1)),
-      paced(durations, step)
-    );
+    const { elapsedMs, stepMs, totalMs } = cycleTiming(durations, step);
+    cycle?.step(elapsedMs, stepMs, totalMs);
+    const timer = setTimeout(() => {
+      if (step >= last && cycle?.complete()) return;
+      setStep((current) => (current >= last ? 0 : current + 1));
+    }, stepMs);
     return () => clearTimeout(timer);
-  }, [durations, inView, last, reduced, step]);
+  }, [cycle, durations, inView, last, reduced, step]);
 
   const goTo = useCallback((target: number) => {
     setPinned(target);
