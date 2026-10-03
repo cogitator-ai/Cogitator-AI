@@ -109,29 +109,29 @@ export function HeroRun() {
   const status = statusAt(step);
 
   return (
-    <div ref={ref} className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b border-l-line px-4 py-2.5">
-        <span className="font-mono text-[11px] text-l-faint">run · ticket-7731</span>
+    <div ref={ref} className="cog-text flex h-full flex-col text-[14px]">
+      <div className="flex items-center justify-between border-b border-l-accent/10 px-4 py-2.5">
+        <span className="text-[12px] tracking-[0.12em] text-l-accent/60">RUN · TICKET-7731</span>
         {statusBadge[status]}
       </div>
 
       <div className="flex-1 space-y-3 px-4 py-4 text-[13px] leading-relaxed">
         <Row show={step >= 0}>
-          <div className="ml-auto w-fit max-w-[85%] rounded-lg rounded-tr-sm bg-white/[0.06] px-3 py-2 text-l-text">
+          <div className="ml-auto w-fit max-w-[85%] rounded-lg rounded-tr-sm border border-l-accent/20 bg-l-accent/[0.06] px-3 py-2 text-l-phosphor">
             Order A-1001 arrived broken, please refund all $340.
           </div>
         </Row>
 
         <Row show={step >= 1}>
-          <div className="text-l-muted">
+          <div className="text-l-phosphor/75">
             <Streamed text="Sorry about that — issuing the refund now." play={step === 1} />
           </div>
         </Row>
 
         <Row show={step >= 2}>
-          <div className="rounded-lg border border-l-line bg-l-raised px-3 py-2.5">
+          <div className="rounded-lg border border-l-brass/30 bg-black/30 px-3 py-2.5">
             <div className="flex items-center justify-between gap-2">
-              <span className="flex items-center gap-2 font-mono text-xs text-l-text">
+              <span className="flex items-center gap-2 text-[13px] text-l-phosphor">
                 <Wrench className="size-3.5 text-l-violet" />
                 refund_order
               </span>
@@ -139,7 +139,7 @@ export function HeroRun() {
                 amount &gt; 100 → needs approval
               </span>
             </div>
-            <div className="mt-1.5 font-mono text-[11.5px] text-l-muted">
+            <div className="mt-1.5 text-[12.5px] text-l-phosphor/70">
               {'{ order: "A-1001", amount: 340 }'}
             </div>
           </div>
@@ -149,17 +149,17 @@ export function HeroRun() {
           <div
             className={cx(
               'rounded-lg border px-3 py-2.5 transition-colors duration-500',
-              step < 5 ? 'border-l-warn/30 bg-l-warn/[0.05]' : 'border-l-line bg-transparent'
+              step < 5 ? 'border-l-warn/30 bg-l-warn/[0.05]' : 'border-l-accent/15 bg-transparent'
             )}
           >
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-              <span className="flex items-center gap-2 text-xs text-l-text">
+              <span className="flex items-center gap-2 text-[13px] text-l-phosphor">
                 <ShieldCheck className="size-3.5 text-l-warn" />
                 Waiting for a manager
               </span>
               <Vox tone="brass">checkpoint enshrined</Vox>
               <div className="ml-auto flex gap-1.5">
-                <span className="rounded-md border border-l-line px-2 py-0.5 text-[11px] text-l-faint">
+                <span className="rounded-md border border-l-accent/20 px-2 py-0.5 text-[12px] text-l-accent/50">
                   Decline
                 </span>
                 <motion.span
@@ -167,7 +167,9 @@ export function HeroRun() {
                   transition={{ duration: 0.35 }}
                   className={cx(
                     'rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors',
-                    step >= 5 ? 'bg-l-accent text-l-bg' : 'bg-l-text/90 text-l-bg'
+                    step >= 5
+                      ? 'border border-l-accent/60 bg-l-accent/15 text-l-accent'
+                      : 'border border-l-phosphor/40 bg-l-phosphor/[0.06] text-l-phosphor'
                   )}
                 >
                   {step >= 5 ? 'Approved' : 'Approve'}
@@ -178,7 +180,7 @@ export function HeroRun() {
         </Row>
 
         <Row show={step >= 4}>
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-l-faint">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-l-accent/55">
             <RotateCcw className="size-3 text-l-brass" />
             worker restarted
             <Vox tone="accent">machine spirit restored</Vox>
@@ -186,14 +188,14 @@ export function HeroRun() {
         </Row>
 
         <Row show={step >= 6}>
-          <div className="flex items-center gap-2 font-mono text-[11.5px] text-l-muted">
+          <div className="flex items-center gap-2 text-[12.5px] text-l-phosphor/80">
             <Play className="size-3 text-l-accent" />
             refund_order → <span className="text-l-accent">{'{ refunded: 340 }'}</span>
           </div>
         </Row>
 
         <Row show={step >= 7}>
-          <div className="text-l-text">
+          <div className="text-l-phosphor">
             <Streamed
               text="Done — $340 is on its way back to your card. It usually lands in 3–5 days."
               play={step === 7}
@@ -202,7 +204,7 @@ export function HeroRun() {
         </Row>
       </div>
 
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-l-line px-4 py-2.5 font-mono text-[10.5px] text-l-faint">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-l-accent/10 px-4 py-2.5 text-[11.5px] text-l-accent/50">
         <span>claude-sonnet-5-5</span>
         <span>{step >= 7 ? '1,184' : step >= 2 ? '612' : '208'} tokens</span>
         <span>{step >= 7 ? '$0.0041' : '$0.0019'}</span>

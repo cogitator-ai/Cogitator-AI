@@ -5,7 +5,8 @@ import { DOCS_HOME, LLMS_TXT_URL } from '@/lib/site';
 import { CopyCommand } from './CopyCommand';
 import { HeroRun } from './HeroRun';
 import { highlightCode } from './highlight';
-import { CodeBody, Window } from './ui';
+import { CogitatorFrame } from './CogitatorFrame';
+import { CodeBody } from './ui';
 
 const AGENT_CODE = `
 const refund = tool({
@@ -32,6 +33,9 @@ if (run.status === 'paused') {
 }
 `;
 
+const HERO_PSALM =
+  '+++ INVOCATION 14-APPROVALS +++ 01100011 01101111 01100111 01101001 01110100 01100001 01110100 01101111 01110010 +++ 0x7C3A 9F41 E2B0 +++ 01110011 01110000 01101001 01110010 01101001 01110100 +++';
+
 export async function Hero() {
   const code = await highlightCode(AGENT_CODE);
 
@@ -46,6 +50,14 @@ export async function Hero() {
         className="pointer-events-none absolute inset-x-0 top-0 h-[720px] bg-[linear-gradient(to_right,rgb(255_255_255/0.035)_1px,transparent_1px),linear-gradient(to_bottom,rgb(255_255_255/0.035)_1px,transparent_1px)] bg-[size:64px_64px] [mask-image:radial-gradient(55%_60%_at_50%_0%,black,transparent)]"
       />
 
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -left-40 top-[520px] h-[620px] w-[520px] bg-[radial-gradient(closest-side,rgba(255,179,71,0.10),transparent)] blur-2xl"
+      />
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -right-40 top-[560px] h-[620px] w-[520px] bg-[radial-gradient(closest-side,rgba(255,179,71,0.09),transparent)] blur-2xl"
+      />
       <div className="relative mx-auto max-w-6xl">
         <div className="mx-auto max-w-3xl text-center">
           <a
@@ -97,16 +109,20 @@ export async function Hero() {
             aria-hidden
             className="pointer-events-none absolute -inset-x-10 -top-10 bottom-0 bg-[radial-gradient(50%_60%_at_50%_30%,rgba(0,255,136,0.07),transparent_70%)] blur-2xl"
           />
-          <Window
-            title="support-agent.ts"
+          <CogitatorFrame
+            title="+++ support-agent · ticket 7731 +++"
             className="relative"
-            bodyClassName="grid lg:grid-cols-[1.08fr_1fr]"
+            psalm={HERO_PSALM}
           >
-            <CodeBody className="border-b border-l-line lg:border-b-0 lg:border-r">{code}</CodeBody>
-            <div className="crt min-h-[420px] bg-l-bg/40">
-              <HeroRun />
+            <div className="grid lg:grid-cols-[1.08fr_1fr]">
+              <CodeBody className="border-b border-l-accent/10 lg:border-b-0 lg:border-r">
+                {code}
+              </CodeBody>
+              <div className="min-h-[420px]">
+                <HeroRun />
+              </div>
             </div>
-          </Window>
+          </CogitatorFrame>
           <p className="mt-4 text-center font-mono text-[11px] text-l-faint">
             A run pauses before a sensitive tool and resumes when a human approves — even after a
             restart, with a durable checkpoint store · examples/core/14-approvals.ts
