@@ -106,12 +106,14 @@ export const OllamaEmbeddingConfigSchema = z.object({
   provider: z.literal('ollama'),
   model: z.string().optional(),
   baseUrl: z.string().url().optional(),
+  dimensions: z.number().positive().optional(),
 });
 
 export const GoogleEmbeddingConfigSchema = z.object({
   provider: z.literal('google'),
   apiKey: z.string(),
   model: z.string().optional(),
+  baseUrl: z.string().url().optional(),
   dimensions: z.number().positive().optional(),
 });
 

@@ -47,6 +47,21 @@ describe('CompactionService', () => {
       keepRecent: 4,
     };
 
+    it('passes summaryModel and summaryPrompt to the summarizer', async () => {
+      await addMessages(10);
+
+      await service.compact(threadId, {
+        ...config,
+        summaryModel: 'openai/gpt-4o-mini',
+        summaryPrompt: 'List decisions only.',
+      });
+
+      expect(summarize).toHaveBeenCalledWith(expect.any(Array), {
+        model: 'openai/gpt-4o-mini',
+        prompt: 'List decisions only.',
+      });
+    });
+
     it('summarizes old messages and keeps recent ones', async () => {
       await addMessages(10);
 

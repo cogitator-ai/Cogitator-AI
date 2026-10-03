@@ -41,7 +41,9 @@ export interface CompactionConfig {
   strategy: CompactionStrategy;
   threshold: number;
   keepRecent: number;
+  /** Model that writes the summary; handed to the summarizer as `options.model`. */
   summaryModel?: string;
+  /** Instructions for the summary; handed to the summarizer as `options.prompt`. */
   summaryPrompt?: string;
 }
 

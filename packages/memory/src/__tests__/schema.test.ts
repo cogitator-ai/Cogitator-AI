@@ -290,6 +290,26 @@ describe('EmbeddingServiceConfigSchema', () => {
     expect(EmbeddingServiceConfigSchema.parse(config)).toEqual(config);
   });
 
+  it('keeps ollama dimensions', () => {
+    const config = {
+      provider: 'ollama' as const,
+      model: 'custom-embedder',
+      baseUrl: 'http://localhost:11434',
+      dimensions: 512,
+    };
+    expect(EmbeddingServiceConfigSchema.parse(config)).toEqual(config);
+  });
+
+  it('keeps google baseUrl', () => {
+    const config = {
+      provider: 'google' as const,
+      apiKey: 'AIza-test',
+      baseUrl: 'https://proxy.example.com/v1beta',
+      dimensions: 768,
+    };
+    expect(EmbeddingServiceConfigSchema.parse(config)).toEqual(config);
+  });
+
   it('accepts google config', () => {
     const config = { provider: 'google' as const, apiKey: 'AIza-test' };
     expect(EmbeddingServiceConfigSchema.parse(config)).toEqual(config);

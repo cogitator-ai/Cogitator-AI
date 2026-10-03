@@ -60,7 +60,12 @@ export { CoreFactsStore } from './core-facts';
 export type { CoreFactsStoreConfig, FactHistoryEntry } from './core-facts';
 
 export { SessionManager, type SessionManagerOptions } from './session-manager';
-export { CompactionService, type SummarizeFn, type CompactionServiceConfig } from './compaction';
+export {
+  CompactionService,
+  type SummarizeFn,
+  type SummarizeOptions,
+  type CompactionServiceConfig,
+} from './compaction';
 
 export {
   MemoryProviderSchema,

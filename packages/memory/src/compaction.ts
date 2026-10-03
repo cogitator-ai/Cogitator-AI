@@ -8,7 +8,21 @@ import type {
 } from '@cogitator-ai/types';
 import { countMessagesTokens } from './token-counter';
 
-export type SummarizeFn = (messages: Message[]) => Promise<string>;
+/**
+ * Summary settings taken from the `CompactionConfig` passed to `compact()`.
+ */
+export interface SummarizeOptions {
+  /** `CompactionConfig.summaryModel`: the model that should write the summary. */
+  model?: string;
+  /** `CompactionConfig.summaryPrompt`: instructions for writing the summary. */
+  prompt?: string;
+}
+
+/**
+ * Turns the messages being compacted into summary text. `CompactionService` always passes the
+ * `summaryModel` / `summaryPrompt` of the current compaction as `options`.
+ */
+export type SummarizeFn = (messages: Message[], options?: SummarizeOptions) => Promise<string>;
 
 export interface CompactionServiceConfig {
   adapter: MemoryAdapter;
@@ -136,7 +150,10 @@ const summaryStrategy: StrategyFn = async (service, sessionId, entries, config) 
   const recentEntries = entries.slice(splitAt);
   const oldMessages = oldEntries.map((e) => e.message);
 
-  const summary = await service.getSummarizeFn()(oldMessages);
+  const summary = await service.getSummarizeFn()(oldMessages, {
+    model: config.summaryModel,
+    prompt: config.summaryPrompt,
+  });
   const summaryTokens = await service.applySummary(sessionId, oldEntries, summary, recentEntries);
 
   return {
