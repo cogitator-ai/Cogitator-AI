@@ -153,8 +153,18 @@ async function getEmbedding(
 
 const DEFAULT_GOOGLE_EMBEDDING_MODEL = 'gemini-embedding-001';
 
+const OLLAMA_URL_ENV_VARS = ['OLLAMA_BASE_URL', 'OLLAMA_URL', 'OLLAMA_HOST'] as const;
+
+function configuredOllamaUrl(): string | undefined {
+  for (const name of OLLAMA_URL_ENV_VARS) {
+    const value = readEnv(name)?.trim();
+    if (value) return value;
+  }
+  return undefined;
+}
+
 function resolveOllamaBaseUrl(): string {
-  const configured = readEnv('OLLAMA_BASE_URL') ?? readEnv('OLLAMA_HOST');
+  const configured = configuredOllamaUrl();
   if (!configured) return 'http://localhost:11434';
   const withScheme = /^https?:\/\//i.test(configured) ? configured : `http://${configured}`;
   return withScheme.replace(/\/+$/, '');
@@ -162,7 +172,7 @@ function resolveOllamaBaseUrl(): string {
 
 function detectEmbeddingProvider(): 'openai' | 'ollama' | 'google' | null {
   if (readEnv('OPENAI_API_KEY')) return 'openai';
-  if (readEnv('OLLAMA_BASE_URL') || readEnv('OLLAMA_HOST')) return 'ollama';
+  if (configuredOllamaUrl()) return 'ollama';
   if (readEnv('GOOGLE_API_KEY')) return 'google';
   return null;
 }
@@ -258,7 +268,7 @@ export const vectorSearch = tool({
     if (!provider) {
       return {
         error:
-          'No embedding provider detected. Set OPENAI_API_KEY, GOOGLE_API_KEY, or OLLAMA_BASE_URL.',
+          'No embedding provider detected. Set OPENAI_API_KEY, GOOGLE_API_KEY, or OLLAMA_BASE_URL (or OLLAMA_URL / OLLAMA_HOST).',
       };
     }
 

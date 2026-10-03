@@ -60,6 +60,18 @@ describe('sql-query tool', () => {
       expect((result as { error: string }).error).toContain('No connection string');
     });
 
+    it('answers with a missing connection string where reading the environment is forbidden', async () => {
+      process.env = new Proxy({} as NodeJS.ProcessEnv, {
+        get() {
+          throw new Error('Requires env access');
+        },
+      });
+
+      const result = await sqlQuery.execute({ query: 'SELECT 1' }, createToolContext());
+
+      expect((result as { error: string }).error).toContain('No connection string');
+    });
+
     it('uses DATABASE_URL env var when connectionString not provided', async () => {
       process.env.DATABASE_URL = 'postgres://user:pass@localhost/db';
 

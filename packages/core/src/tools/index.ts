@@ -1,3 +1,5 @@
+import type { Tool } from '@cogitator-ai/types';
+
 export { calculator } from './calculator';
 export { datetime } from './datetime';
 
@@ -80,7 +82,8 @@ import { vectorSearch } from './vector-search';
 import { sendEmail } from './email';
 import { githubApi } from './github';
 
-export const builtinTools = [
+/** Every built-in tool, ready for `new Agent({ tools: builtinTools })` */
+export const builtinTools: Tool[] = [
   calculator,
   datetime,
   uuid,
@@ -107,4 +110,4 @@ export const builtinTools = [
   vectorSearch,
   sendEmail,
   githubApi,
-] as const;
+];

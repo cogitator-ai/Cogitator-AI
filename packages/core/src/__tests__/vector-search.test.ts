@@ -26,6 +26,9 @@ describe('vector-search tool', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     process.env = { ...originalEnv };
+    delete process.env.OLLAMA_BASE_URL;
+    delete process.env.OLLAMA_URL;
+    delete process.env.OLLAMA_HOST;
     mockFetch = vi.fn();
     vi.stubGlobal('fetch', mockFetch);
   });
@@ -418,6 +421,26 @@ describe('vector-search tool', () => {
 
       expect((result as { provider: string }).provider).toBe('ollama');
       expect(mockFetch.mock.calls[0][0]).toBe('http://gpu-box:11434/api/embeddings');
+    });
+
+    it('resolves the Ollama endpoint from OLLAMA_URL, as the config loader does', async () => {
+      delete process.env.OPENAI_API_KEY;
+      delete process.env.GOOGLE_API_KEY;
+      process.env.OLLAMA_URL = 'https://ollama.example.com/';
+      process.env.OLLAMA_HOST = 'ignored:11434';
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ embedding: Array(768).fill(0.1) }),
+      });
+
+      const { Client } = await import('pg');
+      const mockInstance = new Client();
+      (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
+
+      const result = await vectorSearch.execute({ query: 'test' }, ctx);
+
+      expect((result as { provider: string }).provider).toBe('ollama');
+      expect(mockFetch.mock.calls[0][0]).toBe('https://ollama.example.com/api/embeddings');
     });
 
     it('handles Google API errors', async () => {

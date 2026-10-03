@@ -94,6 +94,20 @@ describe('toolToSchema()', () => {
     expect(schema.parameters.required).not.toContain('limit');
   });
 
+  it('does not require parameters that have a default', () => {
+    const paged = tool({
+      name: 'list',
+      description: 'List items',
+      parameters: z.object({ query: z.string(), limit: z.number().default(10) }),
+      execute: () => Promise.resolve([]),
+    });
+
+    const schema = toolToSchema(paged);
+
+    expect(schema.parameters.required).toEqual(['query']);
+    expect(schema.parameters.properties.limit).toMatchObject({ default: 10 });
+  });
+
   it('handles complex nested schemas', () => {
     const complexTool = tool({
       name: 'complex',

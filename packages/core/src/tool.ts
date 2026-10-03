@@ -92,6 +92,7 @@ export function toolToSchema<TParams, TResult>(t: Tool<TParams, TResult>): ToolS
       jsonSchema = z.toJSONSchema(t.parameters as ZodType, {
         target: 'openapi-3.0',
         unrepresentable: 'any',
+        io: 'input',
       }) as Record<string, unknown>;
     } catch (err) {
       console.warn(

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { tool } from '../tool';
+import { readEnv } from '../utils/env';
 
 const sqlQueryParams = z.object({
   query: z.string().min(1).describe('SQL query to execute'),
@@ -362,7 +363,7 @@ export const sqlQuery = tool({
     maxRows = 100,
     readOnly = true,
   }) => {
-    const connStr = connectionString ?? process.env.DATABASE_URL;
+    const connStr = connectionString ?? readEnv('DATABASE_URL');
 
     if (!connStr) {
       return {
