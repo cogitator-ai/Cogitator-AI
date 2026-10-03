@@ -19,9 +19,13 @@ export interface WhatsAppChannelConfig {
 
 interface BaileysMessageKey {
   remoteJid?: string | null;
+  /** Baileys 7: the phone-number JID when `remoteJid` is a LID (`...@lid`) */
+  remoteJidAlt?: string | null;
   id?: string | null;
   fromMe?: boolean | null;
   participant?: string | null;
+  /** Baileys 7: the phone-number JID of a group participant addressed by LID */
+  participantAlt?: string | null;
 }
 
 interface BaileysMediaMessage {
@@ -275,9 +279,11 @@ export class WhatsAppChannel implements Channel {
       if (oldest !== undefined) this.recent.delete(oldest);
     }
 
-    const sender = msg.key.participant ?? jid;
-    const userId = sender.split('@')[0];
     const isGroup = jid.endsWith('@g.us');
+    const sender = isGroup
+      ? (msg.key.participantAlt ?? msg.key.participant ?? jid)
+      : (msg.key.remoteJidAlt ?? jid);
+    const userId = sender.split('@')[0];
 
     await this.handler({
       id,

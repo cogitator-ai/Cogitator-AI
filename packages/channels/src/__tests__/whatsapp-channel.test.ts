@@ -89,6 +89,37 @@ describe('WhatsAppChannel', () => {
     }
   });
 
+  it('identifies users by phone number when Baileys 7 addresses them by LID', async () => {
+    const channel = new WhatsAppChannel({ printQr: false });
+    const handler = vi.fn().mockResolvedValue(undefined);
+    channel.onMessage(handler);
+    await channel.start();
+
+    upsert(0, {
+      key: { remoteJid: '9001@lid', remoteJidAlt: '79990001122@s.whatsapp.net', id: 'd1' },
+      message: { conversation: 'hi' },
+    });
+    upsert(0, {
+      key: {
+        remoteJid: '123@g.us',
+        id: 'g1',
+        participant: '9002@lid',
+        participantAlt: '79990003344@s.whatsapp.net',
+      },
+      message: { conversation: 'hello group' },
+    });
+    upsert(0, {
+      key: { remoteJid: '9003@lid', id: 'd2' },
+      message: { conversation: 'no phone shared' },
+    });
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(3));
+
+    const [direct, group, hidden] = handler.mock.calls.map(([msg]) => msg as ChannelMessage);
+    expect(direct).toMatchObject({ userId: '79990001122', channelId: '9001@lid' });
+    expect(group).toMatchObject({ userId: '79990003344', channelId: '123@g.us' });
+    expect(hidden).toMatchObject({ userId: '9003', channelId: '9003@lid' });
+  });
+
   it('extracts captions and media attachments', async () => {
     const channel = new WhatsAppChannel({ printQr: false });
     const handler = vi.fn().mockResolvedValue(undefined);

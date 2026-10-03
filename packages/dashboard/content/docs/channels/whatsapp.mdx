@@ -62,6 +62,10 @@ interface WhatsAppChannelConfig {
 | Auto-reconnect | ✅ exponential backoff (1s → 60s), not after `stop()` or logout |
 | Session persistence | ✅ (filesystem) |
 
+### User ids
+
+Baileys 6 and 7 both work. WhatsApp increasingly addresses people by a private id (LID, `...@lid`) instead of their phone number; Baileys 7 passes the number along when WhatsApp shares it. A message's `userId` is the phone number whenever it is known — so owner lists and per-user memory keep matching — and the LID only for someone whose number WhatsApp hides. Replies go to the chat the message came from either way.
+
 ## WhatsApp Markdown
 
 WhatsApp uses its own formatting syntax. Cogitator auto-converts standard markdown before sending:
