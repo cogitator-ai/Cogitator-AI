@@ -259,7 +259,7 @@ The timeout resolution follows this priority:
 
 1. `timeout` in `AgentAsToolOptions` (if set)
 2. `timeout` in the inner agent's config
-3. Cogitator runtime's `defaultTimeout`
+3. Cogitator runtime's `limits.defaultTimeout`, then 120 seconds
 
 For long-running sub-agents (research, code generation), explicitly set a generous timeout:
 

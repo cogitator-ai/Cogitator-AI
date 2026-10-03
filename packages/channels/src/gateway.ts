@@ -361,7 +361,10 @@ export class Gateway {
     let images: ImageInput[] | undefined;
 
     if (this.config.mediaProcessor && msg.attachments?.length) {
-      const result = await this.config.mediaProcessor.process(msg.attachments, agent.model);
+      const result = await this.config.mediaProcessor.process(
+        msg.attachments,
+        this.config.cogitator.resolveModel(agent)
+      );
 
       if (result.images.length > 0) images = result.images;
       if (result.transcribedText) {
@@ -571,7 +574,7 @@ export class Gateway {
   }
 
   private createSummarizeFn(agent: Agent, compaction: CompactionConfig): SummarizeFn {
-    const modelId = compaction.summaryModel ?? agent.model;
+    const modelId = compaction.summaryModel ?? this.config.cogitator.resolveModel(agent);
     const explicitProvider = compaction.summaryModel ? undefined : agent.config?.provider;
     const prompt = compaction.summaryPrompt ?? DEFAULT_SUMMARY_PROMPT;
 

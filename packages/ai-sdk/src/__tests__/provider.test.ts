@@ -10,7 +10,7 @@ import type { RunOptions, RunResult } from '@cogitator-ai/types';
 import { z } from 'zod';
 import { createCogitatorProvider, cogitatorModel } from '../provider';
 import type { LanguageModelV1CallOptions } from '../v1-types';
-import { collect, createAgent, createFakeCogitator } from './helpers';
+import { collect, createAgent, createFakeCogitator, modelOf } from './helpers';
 
 const searchTool = tool({
   name: 'search',
@@ -357,6 +357,7 @@ describe('LanguageModelV2', () => {
           runSignal = options.signal;
           options.signal?.addEventListener('abort', () => reject(new Error('aborted')));
         }),
+      resolveModel: modelOf,
     } as unknown as Cogitator;
 
     const { stream } = await cogitatorModel(pendingCogitator, createAgent('test'), V2).doStream(

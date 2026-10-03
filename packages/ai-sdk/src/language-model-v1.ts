@@ -162,10 +162,10 @@ export class AgentLanguageModelV1 implements LanguageModelV1 {
       response: {
         id: result.runId,
         timestamp: new Date(),
-        modelId: result.modelUsed ?? prepared.agent.model,
+        modelId: result.modelUsed ?? prepared.model,
       },
       warnings: this.warnings(prepared, options),
-      providerMetadata: runMetadata(result, prepared.agent, results),
+      providerMetadata: runMetadata(result, prepared.model, results),
     };
   }
 
@@ -198,7 +198,7 @@ export class AgentLanguageModelV1 implements LanguageModelV1 {
                   type: 'response-metadata',
                   id,
                   timestamp: new Date(),
-                  modelId: prepared.agent.model,
+                  modelId: prepared.model,
                 });
               },
               onTextDelta: (delta) => {
@@ -238,7 +238,7 @@ export class AgentLanguageModelV1 implements LanguageModelV1 {
                   promptTokens: result.usage.inputTokens,
                   completionTokens: result.usage.outputTokens,
                 },
-                providerMetadata: runMetadata(result, prepared.agent, results),
+                providerMetadata: runMetadata(result, prepared.model, results),
               });
             },
             (error: unknown) => emit({ type: 'error', error })

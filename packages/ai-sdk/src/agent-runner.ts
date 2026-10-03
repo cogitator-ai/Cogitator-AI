@@ -35,6 +35,8 @@ export type CallWarning =
 
 export interface PreparedAgentCall {
   agent: Agent;
+  /** The model the run uses: the agent's own, or the Cogitator's `llm.defaultModel`. */
+  model: string;
   input: string;
   warnings: CallWarning[];
   abortSignal?: AbortSignal;
@@ -91,8 +93,10 @@ export class AgentRunner {
       finalInput = `${input}\n\n${jsonInstruction(call.responseFormat.schema)}`;
     }
 
+    const agent = Object.keys(overrides).length > 0 ? this.agent.clone(overrides) : this.agent;
     return {
-      agent: Object.keys(overrides).length > 0 ? this.agent.clone(overrides) : this.agent,
+      agent,
+      model: this.cogitator.resolveModel(agent),
       input: finalInput,
       warnings,
       abortSignal: call.abortSignal,
@@ -191,14 +195,14 @@ export function toolResultValue(result: ToolResult): {
 
 export function runMetadata(
   result: RunResult,
-  agent: Agent,
+  model: string,
   toolResults: ReadonlyMap<string, ToolResult>
 ): { cogitator: JSONObject } {
   const metadata: JSONObject = {
     runId: result.runId,
     threadId: result.threadId,
     agentId: result.agentId,
-    model: result.modelUsed ?? agent.model,
+    model: result.modelUsed ?? model,
     cost: result.usage.cost,
     duration: result.usage.duration,
   };

@@ -12,7 +12,6 @@ import { ConstitutionalAI } from '../constitutional/index';
 import { CostAwareRouter } from '../cost-routing/index';
 import { PromptInjectionDetector } from '../security/index';
 import { ContextManager } from '../context/index';
-import type { Agent } from '../agent';
 import { parseModel } from '../llm/index';
 
 export type SandboxManager = {
@@ -156,12 +155,12 @@ export async function initializeSandbox(
 export async function initializeReflection(
   config: CogitatorConfig,
   state: InitializerState,
-  agent: Agent,
+  agentModel: string,
   getBackend: (model: string) => LLMBackend
 ): Promise<void> {
   if (state.reflectionInitialized || !config.reflection?.enabled) return;
 
-  const modelString = config.reflection.reflectionModel ?? agent.model;
+  const modelString = config.reflection.reflectionModel ?? agentModel;
   const backend = getBackend(modelString);
 
   state.insightStore = new InMemoryInsightStore();
@@ -177,12 +176,12 @@ export async function initializeReflection(
 export function initializeGuardrails(
   config: CogitatorConfig,
   state: InitializerState,
-  agent: Agent,
+  agentModel: string,
   getBackend: (model: string) => LLMBackend
 ): void {
   if (state.guardrailsInitialized || !config.guardrails?.enabled) return;
 
-  const modelString = config.guardrails.model ?? agent.model;
+  const modelString = config.guardrails.model ?? agentModel;
   const backend = getBackend(modelString);
 
   state.constitutionalAI = new ConstitutionalAI({
@@ -204,7 +203,7 @@ export function initializeCostRouting(config: CogitatorConfig, state: Initialize
 export function initializeSecurity(
   config: CogitatorConfig,
   state: InitializerState,
-  agent: Agent,
+  agentModel: string,
   getBackend: (model: string) => LLMBackend
 ): void {
   if (state.securityInitialized || !config.security?.promptInjection) return;
@@ -212,7 +211,7 @@ export function initializeSecurity(
   const injectionConfig = { ...config.security.promptInjection };
 
   if (injectionConfig.classifier === 'llm' && !injectionConfig.llmBackend) {
-    const modelString = injectionConfig.llmModel ?? agent.model;
+    const modelString = injectionConfig.llmModel ?? agentModel;
     injectionConfig.llmBackend = getBackend(modelString);
     injectionConfig.llmModel = parseModel(modelString).model;
   }

@@ -70,7 +70,12 @@ export function createFakeCogitator(script: FakeRunScript = {}): FakeCogitator {
     };
   });
 
-  return { cogitator: { run } as unknown as Cogitator, run };
+  return { cogitator: { run, resolveModel: modelOf } as unknown as Cogitator, run };
+}
+
+export function modelOf(agent: Agent): string {
+  if (!agent.model) throw new Error(`Agent "${agent.name}" has no model`);
+  return agent.model;
 }
 
 export function createAgent(name = 'assistant', tools: Tool[] = []): Agent {

@@ -57,7 +57,7 @@ export class ThoughtTreeExecutor {
 
     const llm = await this.getLLMBackend(agent);
     this.cachedLLM = llm;
-    this.currentModel = agent.model;
+    this.currentModel = this.cogitator.resolveModel(agent);
 
     this.branchGenerator = new BranchGenerator(llm, this.currentModel);
     this.branchEvaluator = new BranchEvaluator({
@@ -429,7 +429,7 @@ export class ThoughtTreeExecutor {
   }
 
   private async getLLMBackend(agent: Agent): Promise<LLMBackend> {
-    return this.cogitator.getLLMBackend(agent.model);
+    return this.cogitator.getLLMBackend(this.cogitator.resolveModel(agent));
   }
 
   private cachedLLM?: LLMBackend;

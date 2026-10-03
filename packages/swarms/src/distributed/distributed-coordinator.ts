@@ -2,6 +2,7 @@ import { nanoid } from 'nanoid';
 import Redis from 'ioredis';
 import { parseModel } from '@cogitator-ai/core';
 import type {
+  Agent,
   SwarmConfig,
   SwarmAgent,
   RunResult,
@@ -17,6 +18,8 @@ import { BaseSwarmCoordinator, type AgentRunRequest } from '../base-coordinator.
 export interface DistributedCoordinatorOptions {
   config: SwarmConfig;
   distributed: DistributedSwarmConfig;
+  /** The model an agent runs on when it sets none, e.g. `(agent) => cogitator.resolveModel(agent)` */
+  resolveModel?: (agent: Agent) => string;
 }
 
 /**
@@ -97,6 +100,7 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
   private readonly pendingJobs = new Map<string, PendingJob>();
   private initialization?: Promise<void>;
   private closed = false;
+  private readonly resolveAgentModel: (agent: Agent) => string;
 
   constructor(options: DistributedCoordinatorOptions) {
     const keyPrefix = options.distributed.redis?.keyPrefix ?? 'swarm';
@@ -123,6 +127,16 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
     });
 
     this.distributed = options.distributed;
+    this.resolveAgentModel =
+      options.resolveModel ??
+      ((agent) => {
+        if (!agent.model) {
+          throw new Error(
+            `Agent "${agent.name}" has no model: set one, or pass resolveModel to the coordinator`
+          );
+        }
+        return agent.model;
+      });
     this.keyPrefix = keyPrefix;
     this.redis = redis;
     this.subscriber = new Redis(redisOptions);
@@ -201,7 +215,8 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
 
   private createJobPayload(request: AgentRunRequest): SwarmAgentJobPayload {
     const { agent, input, context } = request;
-    const parsed = parseModel(agent.model);
+    const model = this.resolveAgentModel(agent);
+    const parsed = parseModel(model);
 
     return {
       type: 'swarm-agent',
@@ -211,7 +226,7 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
       agentConfig: {
         name: agent.name,
         instructions: agent.instructions,
-        model: agent.model,
+        model,
         provider: agent.config.provider ?? parsed.provider ?? 'ollama',
         temperature: agent.config.temperature,
         maxTokens: agent.config.maxTokens,

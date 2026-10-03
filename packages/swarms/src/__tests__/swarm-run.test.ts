@@ -6,7 +6,8 @@ import { createMockAgent, createMockRunResult } from './strategies/__mocks__/moc
 
 function mockCogitator(handler: (agent: Agent, options: RunOptions) => Promise<RunResult>) {
   const run = vi.fn(handler);
-  return { cogitator: { run } as unknown as Cogitator, run };
+  const resolveModel = (agent: Agent) => agent.model ?? 'ollama/test';
+  return { cogitator: { run, resolveModel } as unknown as Cogitator, run };
 }
 
 const instant = () => mockCogitator(async (agent) => createMockRunResult(`${agent.name} done`));

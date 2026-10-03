@@ -69,7 +69,15 @@ export class SwarmAssessor implements Assessor {
     this.roleMatcher = new RoleMatcher();
   }
 
-  async analyze(task: string, swarmConfig: SwarmConfig): Promise<AssessmentResult> {
+  /**
+   * @param resolveModel - the model an agent runs on when it sets none, e.g.
+   *   `(agent) => cogitator.resolveModel(agent)`
+   */
+  async analyze(
+    task: string,
+    swarmConfig: SwarmConfig,
+    resolveModel: (agent: Agent) => string = requireOwnModel
+  ): Promise<AssessmentResult> {
     const cacheKey = this.getCacheKey(task, swarmConfig);
     if (this.config.cacheAssessments) {
       const cached = this.assessmentCache.get(cacheKey);
@@ -89,12 +97,13 @@ export class SwarmAssessor implements Assessor {
     const warnings: string[] = [];
 
     for (const agent of agents) {
+      const currentModel = resolveModel(agent.agent);
       if (agent.metadata.locked) {
         assignments.push({
           agentName: agent.agent.name,
-          originalModel: agent.agent.model,
-          assignedModel: agent.agent.model,
-          provider: this.detectProvider(agent.agent.model),
+          originalModel: currentModel,
+          assignedModel: currentModel,
+          provider: this.detectProvider(currentModel),
           score: 100,
           reasons: ['Model locked by configuration'],
           fallbackModels: [],
@@ -111,7 +120,7 @@ export class SwarmAssessor implements Assessor {
       const validModels = scoredModels.filter((s) => s.score >= minScore);
 
       if (validModels.length === 0) {
-        const originalModel = agent.agent.model;
+        const originalModel = currentModel;
         warnings.push(
           `No suitable model found for ${agent.agent.name}, keeping original: ${originalModel}`
         );
@@ -138,7 +147,7 @@ export class SwarmAssessor implements Assessor {
 
       assignments.push({
         agentName: agent.agent.name,
-        originalModel: agent.agent.model,
+        originalModel: currentModel,
         assignedModel: qualifiedModelId(selectedModel.model),
         provider: selectedModel.model.provider,
         score: selectedModel.score,
@@ -380,4 +389,13 @@ function isModelProvider(value: string): value is ModelProvider {
 
 export function createAssessor(config?: AssessorConfig): SwarmAssessor {
   return new SwarmAssessor(config);
+}
+
+function requireOwnModel(agent: Agent): string {
+  if (!agent.model) {
+    throw new Error(
+      `Agent "${agent.name}" has no model: set one, or pass a resolver such as cogitator.resolveModel`
+    );
+  }
+  return agent.model;
 }

@@ -446,6 +446,45 @@ describe('SwarmAssessor', () => {
     });
   });
 
+  describe('analyze with agents that set no model', () => {
+    function withoutDiscovery() {
+      const assessor = createAssessor({});
+      (assessor as unknown as { modelDiscovery: unknown }).modelDiscovery = {
+        discoverAll: async () => [],
+      };
+      return assessor;
+    }
+
+    const config: SwarmConfig = {
+      name: 'defaults',
+      strategy: 'hierarchical',
+      supervisor: new Agent({ name: 'lead', instructions: 'Lead' }),
+      workers: [new Agent({ name: 'worker', model: 'openai/gpt-6-luna', instructions: 'Work' })],
+      agentMetadata: { lead: { locked: true } },
+    };
+
+    it('uses the resolver for the model the agent runs on', async () => {
+      const result = await withoutDiscovery().analyze(
+        'Summarize',
+        config,
+        (agent) => agent.model ?? 'google/gemini-3.5-flash-lite'
+      );
+
+      const lead = result.assignments.find((a) => a.agentName === 'lead');
+      const worker = result.assignments.find((a) => a.agentName === 'worker');
+      expect(lead).toMatchObject({
+        originalModel: 'google/gemini-3.5-flash-lite',
+        assignedModel: 'google/gemini-3.5-flash-lite',
+        provider: 'google',
+      });
+      expect(worker?.originalModel).toBe('openai/gpt-6-luna');
+    });
+
+    it('refuses an agent without a model when no resolver is given', async () => {
+      await expect(withoutDiscovery().analyze('Summarize', config)).rejects.toThrow('"lead"');
+    });
+  });
+
   describe('assignModels', () => {
     it('should skip locked agents', () => {
       const assessor = createAssessor({});

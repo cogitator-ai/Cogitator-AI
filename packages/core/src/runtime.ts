@@ -45,8 +45,12 @@ import {
 import { createSpan, getTextContent } from './cogitator/span-factory';
 import { executeTool, createToolMessage } from './cogitator/tool-executor';
 import { streamChat } from './cogitator/streaming';
+import { RunLimiter } from './cogitator/run-limiter';
 import { parseStructuredOutput, toLLMResponseFormat } from './cogitator/response-format';
 import { CostEstimator } from './cost-routing/cost-estimator';
+
+/** Run timeout when neither the run, the agent nor `limits.defaultTimeout` sets one. */
+const DEFAULT_RUN_TIMEOUT = 120_000;
 
 /**
  * Main runtime for executing AI agents.
@@ -114,6 +118,7 @@ export class Cogitator {
 
   private costEstimator?: CostEstimator;
   private initPromise?: Promise<void>;
+  private runLimiter?: RunLimiter;
 
   /**
    * Create a new Cogitator runtime.
@@ -171,7 +176,11 @@ export class Cogitator {
     const startTime = Date.now();
     const spans: Span[] = [];
 
-    const timeout = options.timeout ?? agent.config?.timeout;
+    const timeout =
+      options.timeout ??
+      agent.config?.timeout ??
+      this.config.limits?.defaultTimeout ??
+      DEFAULT_RUN_TIMEOUT;
     const abortController = new AbortController();
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     let removeParentAbortListener: (() => void) | undefined;
@@ -198,12 +207,15 @@ export class Cogitator {
     }
 
     const rootSpanId = `span_${nanoid(12)}`;
+    let releaseRunSlot: (() => void) | undefined;
 
     try {
+      releaseRunSlot = await this.acquireRunSlot(abortController.signal);
       throwIfAborted(abortController.signal);
       options.onRunStart?.({ runId, agentId: agent.id, input: options.input, threadId });
 
-      await this.initializeAll(agent);
+      const agentModel = this.resolveModel(agent);
+      await this.initializeAll(agentModel);
 
       const input = await buildInputWithAudio(options.input, options.audio, {
         apiKey: this.config.llm?.providers?.openai?.apiKey ?? process.env.OPENAI_API_KEY,
@@ -217,7 +229,7 @@ export class Cogitator {
         registry.registerMany(agent.tools);
       }
 
-      let effectiveModel = agent.model;
+      let effectiveModel = agentModel;
       let backend: LLMBackend;
       let model: string;
 
@@ -312,6 +324,7 @@ export class Cogitator {
 
       while (iterations < maxIterations) {
         throwIfAborted(abortController.signal);
+        this.assertTokenBudget(totalInputTokens + totalOutputTokens);
 
         if (this.state.contextManager?.shouldCompress(messages, effectiveModel)) {
           const compressionResult = await this.state.contextManager.compress(
@@ -630,7 +643,7 @@ export class Cogitator {
         {
           'agent.id': agent.id,
           'agent.name': agent.name,
-          'agent.model': agent.model,
+          'agent.model': agentModel,
           'run.id': runId,
           'run.thread_id': threadId,
           'run.iterations': iterations,
@@ -700,7 +713,7 @@ export class Cogitator {
         {
           'agent.id': agent.id,
           'agent.name': agent.name,
-          'agent.model': agent.model,
+          'agent.model': agent.model ?? this.config.llm?.defaultModel,
           'run.id': runId,
           error: error instanceof Error ? error.message : String(error),
         },
@@ -715,6 +728,7 @@ export class Cogitator {
 
       throw error;
     } finally {
+      releaseRunSlot?.();
       if (timeoutId) {
         clearTimeout(timeoutId);
       }
@@ -722,9 +736,42 @@ export class Cogitator {
     }
   }
 
-  private async initializeAll(agent: Agent): Promise<void> {
+  private async acquireRunSlot(signal: AbortSignal): Promise<(() => void) | undefined> {
+    const max = this.config.limits?.maxConcurrentRuns;
+    if (max === undefined) return undefined;
+    this.runLimiter ??= new RunLimiter(max);
+    return this.runLimiter.acquire(signal);
+  }
+
+  private assertTokenBudget(used: number): void {
+    const max = this.config.limits?.maxTokensPerRun;
+    if (max === undefined || used < max) return;
+    throw new CogitatorError({
+      message: `Run used ${used} tokens, which reaches limits.maxTokensPerRun (${max})`,
+      code: ErrorCode.RUN_TOKEN_LIMIT_EXCEEDED,
+      details: { used, max },
+    });
+  }
+
+  /**
+   * The model a run of `agent` uses: the agent's own, or `llm.defaultModel`.
+   *
+   * @throws CogitatorError (`CONFIGURATION_ERROR`) when neither is set
+   */
+  resolveModel(agent: Agent): string {
+    const model = agent.model || this.config.llm?.defaultModel;
+    if (!model) {
+      throw new CogitatorError({
+        message: `Agent "${agent.name}" has no model and llm.defaultModel is not set`,
+        code: ErrorCode.CONFIGURATION_ERROR,
+      });
+    }
+    return model;
+  }
+
+  private async initializeAll(agentModel: string): Promise<void> {
     if (!this.initPromise) {
-      this.initPromise = this._doInitializeAll(agent).catch((error: unknown) => {
+      this.initPromise = this._doInitializeAll(agentModel).catch((error: unknown) => {
         this.initPromise = undefined;
         throw error;
       });
@@ -732,17 +779,19 @@ export class Cogitator {
     await this.initPromise;
   }
 
-  private async _doInitializeAll(agent: Agent): Promise<void> {
+  private async _doInitializeAll(agentModel: string): Promise<void> {
     if (this.config.memory?.adapter && !this.state.memoryInitialized) {
       await initializeMemory(this.config, this.state);
     }
 
     if (this.config.reflection?.enabled && !this.state.reflectionInitialized) {
-      await initializeReflection(this.config, this.state, agent, (model) => this.getBackend(model));
+      await initializeReflection(this.config, this.state, agentModel, (model) =>
+        this.getBackend(model)
+      );
     }
 
     if (this.config.guardrails?.enabled && !this.state.guardrailsInitialized) {
-      initializeGuardrails(this.config, this.state, agent, (model) => this.getBackend(model));
+      initializeGuardrails(this.config, this.state, agentModel, (model) => this.getBackend(model));
     }
 
     if (this.config.costRouting?.enabled && !this.state.costRoutingInitialized) {
@@ -750,7 +799,7 @@ export class Cogitator {
     }
 
     if (this.config.security?.promptInjection && !this.state.securityInitialized) {
-      initializeSecurity(this.config, this.state, agent, (model) => this.getBackend(model));
+      initializeSecurity(this.config, this.state, agentModel, (model) => this.getBackend(model));
     }
 
     if (this.config.context?.enabled && !this.state.contextManagerInitialized) {
@@ -888,11 +937,15 @@ export class Cogitator {
     agent: Agent;
     input: string;
     options?: EstimateOptions;
+    model?: string;
   }): Promise<CostEstimate> {
     if (!this.costEstimator) {
       this.costEstimator = new CostEstimator();
     }
-    return this.costEstimator.estimate(params);
+    return this.costEstimator.estimate({
+      ...params,
+      model: params.model ?? this.resolveModel(params.agent),
+    });
   }
 
   /**

@@ -29,12 +29,15 @@ describe('Agent', () => {
       expect(agent1.id).not.toBe(agent2.id);
     });
 
-    it('applies default values for temperature, maxIterations, timeout', () => {
+    it('applies default values for temperature and maxIterations', () => {
       const agent = new Agent(createBasicConfig());
 
       expect(agent.config.temperature).toBe(0.7);
       expect(agent.config.maxIterations).toBe(10);
-      expect(agent.config.timeout).toBe(120_000);
+    });
+
+    it('leaves timeout unset so limits.defaultTimeout of the runtime can apply', () => {
+      expect(new Agent(createBasicConfig()).config.timeout).toBeUndefined();
     });
 
     it('allows overriding default values', () => {

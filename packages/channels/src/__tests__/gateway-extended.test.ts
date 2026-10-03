@@ -113,6 +113,7 @@ describe('Gateway regressions', () => {
       cogitator: {
         run: vi.fn().mockResolvedValue({ output: 'ok' }),
         getLLMBackend: vi.fn().mockReturnValue({ chat }),
+        resolveModel: (a: { model?: string }) => a.model,
       } as never,
       memory,
       hooks,
@@ -177,7 +178,11 @@ describe('Gateway regressions', () => {
     const gateway = new Gateway({
       agent,
       channels: [channel],
-      cogitator: { run: vi.fn().mockResolvedValue({ output: 'ok' }), getLLMBackend } as never,
+      cogitator: {
+        run: vi.fn().mockResolvedValue({ output: 'ok' }),
+        getLLMBackend,
+        resolveModel: (a: { model?: string }) => a.model,
+      } as never,
       memory,
       session: { compaction: { strategy: 'summary', threshold: 50, keepRecent: 10 } },
     });

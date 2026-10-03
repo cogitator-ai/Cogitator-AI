@@ -610,7 +610,14 @@ export interface AssessorConfig {
 }
 
 export interface Assessor {
-  analyze(task: string, config: SwarmConfig): Promise<AssessmentResult>;
+  /**
+   * @param resolveModel - the model an agent runs on when it sets none of its own
+   */
+  analyze(
+    task: string,
+    config: SwarmConfig,
+    resolveModel?: (agent: Agent) => string
+  ): Promise<AssessmentResult>;
   assignModels(config: SwarmConfig, result: AssessmentResult): SwarmConfig;
   suggestModels(requirements: TaskRequirements): Promise<ModelCandidate[]>;
 }

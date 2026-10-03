@@ -24,7 +24,7 @@ interface AgentConfig {
   id?: string;
   name: string;
   description?: string;
-  model: string;
+  model?: string; // default: llm.defaultModel of the Cogitator
   provider?: string;
   instructions: string;
   tools?: Tool[];
@@ -34,7 +34,7 @@ interface AgentConfig {
   stopSequences?: string[];
   responseFormat?: ResponseFormat;
   maxIterations?: number; // default: 10
-  timeout?: number; // default: 120000 (2 min)
+  timeout?: number; // default: limits.defaultTimeout of the Cogitator, else 120000 (2 min)
 }
 ```
 
@@ -49,7 +49,7 @@ model: 'ollama/llama3.3:latest';
 model: 'google/gemini-3.8-flash';
 ```
 
-If you omit the provider prefix, Cogitator uses the `defaultProvider` from your runtime config.
+If you omit the provider prefix, Cogitator uses the `defaultProvider` from your runtime config. If you omit `model` altogether, the agent runs on `llm.defaultModel`; a run fails with a `CONFIGURATION_ERROR` when neither is set. `cog.resolveModel(agent)` returns the model a run would use.
 
 ### Provider Override
 

@@ -49,9 +49,9 @@ interface CogitatorConfig {
     providers?: LLMProvidersConfig;
   };
   limits?: {
-    maxConcurrentRuns?: number;
-    defaultTimeout?: number;
-    maxTokensPerRun?: number;
+    maxConcurrentRuns?: number; // runs over the limit wait in order
+    defaultTimeout?: number; // ms, for agents and runs that set no timeout (default 120000)
+    maxTokensPerRun?: number; // checked before each model call
   };
   memory?: MemoryConfig;
   sandbox?: SandboxManagerConfig;
@@ -62,6 +62,13 @@ interface CogitatorConfig {
   context?: ContextManagerConfig;
 }
 ```
+
+### Defaults and Limits
+
+- `llm.defaultModel` is the model of every agent that sets no `model` of its own.
+- `limits.maxConcurrentRuns` caps how many `run()` calls execute at once on this instance. The rest wait in arrival order; their timeout and abort signal also cover the wait.
+- `limits.defaultTimeout` applies to runs whose options and agent set no `timeout`. Without it, runs time out after 2 minutes.
+- `limits.maxTokensPerRun` is checked before every model call: once the run has used that many input and output tokens, the next call fails with `RUN_TOKEN_LIMIT_EXCEEDED`. The answer of the call that crosses the limit is still returned.
 
 ## Multi-Provider Setup
 

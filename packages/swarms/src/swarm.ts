@@ -217,7 +217,9 @@ export class Swarm {
     }
 
     const assessor = createAssessor(this.assessorConfig);
-    return assessor.analyze(options.input, this.config);
+    return assessor.analyze(options.input, this.config, (agent) =>
+      this.cogitator.resolveModel(agent)
+    );
   }
 
   /**
@@ -229,7 +231,9 @@ export class Swarm {
 
   private async runAssessment(task: string): Promise<void> {
     const assessor = createAssessor(this.assessorConfig);
-    this.lastAssessment = await assessor.analyze(task, this.config);
+    this.lastAssessment = await assessor.analyze(task, this.config, (agent) =>
+      this.cogitator.resolveModel(agent)
+    );
 
     this.coordinator.events.emit('assessor:complete', {
       swarmId: this.id,
@@ -428,7 +432,11 @@ export class Swarm {
 
   private createCoordinator(config: SwarmConfig): ManagedCoordinator {
     if (config.distributed?.enabled) {
-      return new DistributedSwarmCoordinator({ config, distributed: config.distributed });
+      return new DistributedSwarmCoordinator({
+        config,
+        distributed: config.distributed,
+        resolveModel: (agent) => this.cogitator.resolveModel(agent),
+      });
     }
     return new SwarmCoordinator(this.cogitator, config);
   }

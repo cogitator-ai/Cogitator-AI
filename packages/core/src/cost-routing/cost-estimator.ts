@@ -29,14 +29,20 @@ export class CostEstimator {
     agent: Agent;
     input: string;
     options?: EstimateOptions;
+    /** The model to price, when it is not the agent's own (e.g. `llm.defaultModel`). */
+    model?: string;
   }): Promise<CostEstimate> {
     const { agent, input, options = {} } = params;
     const warnings: string[] = [];
 
-    const parsed = parseModel(agent.model);
+    const modelString = params.model ?? agent.model;
+    if (!modelString) {
+      throw new Error(`Agent "${agent.name}" has no model to estimate the cost of`);
+    }
+    const parsed = parseModel(modelString);
     const modelId = parsed.model;
     const provider = parsed.provider ?? 'unknown';
-    const isLocal = this.isLocalModel(agent.model);
+    const isLocal = this.isLocalModel(modelString);
 
     if (isLocal) {
       return this.createLocalModelEstimate(modelId, provider, warnings);

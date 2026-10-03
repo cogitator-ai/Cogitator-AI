@@ -75,13 +75,12 @@ export class Agent implements IAgent {
     this.config = {
       temperature: 0.7,
       maxIterations: 10,
-      timeout: 120_000,
       ...finalConfig,
     };
   }
 
   /** LLM model identifier */
-  get model(): string {
+  get model(): string | undefined {
     return this.config.model;
   }
 

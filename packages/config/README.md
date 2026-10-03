@@ -273,9 +273,9 @@ costRouting:
 
 ```yaml
 limits:
-  maxConcurrentRuns: 10
-  defaultTimeout: 120000
-  maxTokensPerRun: 100000
+  maxConcurrentRuns: 10 # runs over the limit wait in order
+  defaultTimeout: 120000 # ms, for runs and agents that set no timeout
+  maxTokensPerRun: 100000 # checked before each model call
 ```
 
 ### Logging Configuration

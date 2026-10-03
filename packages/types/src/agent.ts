@@ -12,7 +12,8 @@ export interface AgentConfig {
   description?: string;
   /** Explicit provider override (e.g., 'openai' for OpenRouter) */
   provider?: string;
-  model: string;
+  /** `provider/model`. Falls back to `llm.defaultModel` of the Cogitator that runs the agent. */
+  model?: string;
   instructions: string;
   tools?: Tool[];
   skills?: Skill[];
@@ -33,7 +34,7 @@ export interface Agent {
   readonly name: string;
   readonly config: AgentConfig;
   /** Model accessor (shortcut to config.model) */
-  readonly model: string;
+  readonly model: string | undefined;
   /** Instructions accessor (shortcut to config.instructions) */
   readonly instructions: string;
   /** Tools accessor (shortcut to config.tools) */
@@ -57,7 +58,7 @@ export interface AgentSnapshotMetadata {
 }
 
 export interface SerializedAgentConfig {
-  model: string;
+  model?: string;
   provider?: string;
   instructions: string;
   tools: string[];

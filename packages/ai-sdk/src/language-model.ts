@@ -146,12 +146,12 @@ abstract class AgentLanguageModel<
       content,
       finishReason: this.stopReason(),
       usage: this.toUsage(result),
-      providerMetadata: runMetadata(result, prepared.agent, toolResults),
+      providerMetadata: runMetadata(result, prepared.model, toolResults),
       request: { body: { input: prepared.input } },
       response: {
         id: result.runId,
         timestamp: new Date(),
-        modelId: result.modelUsed ?? prepared.agent.model,
+        modelId: result.modelUsed ?? prepared.model,
       },
       warnings: prepared.warnings.map((warning) => this.toWarning(warning)),
     };
@@ -194,7 +194,7 @@ abstract class AgentLanguageModel<
                   type: 'response-metadata',
                   id: runId,
                   timestamp: new Date(),
-                  modelId: prepared.agent.model,
+                  modelId: prepared.model,
                 }),
               onTextDelta: (delta) => {
                 if (!delta) return;
@@ -235,7 +235,7 @@ abstract class AgentLanguageModel<
                 type: 'finish',
                 usage: this.toUsage(result),
                 finishReason: this.stopReason(),
-                providerMetadata: runMetadata(result, prepared.agent, toolResults),
+                providerMetadata: runMetadata(result, prepared.model, toolResults),
               });
             },
             (error: unknown) => {
