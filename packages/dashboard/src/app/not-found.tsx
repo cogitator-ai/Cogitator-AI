@@ -59,17 +59,11 @@ export default function NotFound() {
       </Window>
 
       <div className="mt-8 flex gap-3">
-        <Link
-          href="/"
-          className="inline-flex items-center gap-2 rounded-lg bg-l-text px-4 py-2 text-sm font-medium text-l-bg transition-colors hover:bg-white"
-        >
-          <ArrowLeft className="size-4" />
+        <Link href="/" className="brass-btn group text-[13px]">
+          <ArrowLeft className="size-4 transition-transform group-hover:-translate-x-0.5" />
           Home
         </Link>
-        <Link
-          href={DOCS_HOME}
-          className="inline-flex items-center gap-2 rounded-lg border border-l-line-strong px-4 py-2 text-sm text-l-text transition-colors hover:border-white/25"
-        >
+        <Link href={DOCS_HOME} className="brass-ghost text-[13px]">
           <BookOpen className="size-4" />
           Docs
         </Link>
