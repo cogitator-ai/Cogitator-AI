@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import type { Message } from '@cogitator-ai/types';
 import { MockLLMBackend, createMockLLMBackend } from '../mocks/mock-llm-backend';
 import { collectStreamContent } from '../helpers/streams';
 
@@ -19,6 +20,20 @@ describe('MockLLMBackend', () => {
       expect(response.content).toBe('');
       expect(response.finishReason).toBe('stop');
       expect(response.id).toMatch(/^mock_/);
+    });
+
+    it('records each call as it was sent, though the caller keeps appending to its messages', async () => {
+      const messages: Message[] = [{ role: 'user', content: 'Hi' }];
+
+      await backend.chat({ model: 'test-model', messages });
+      messages.push({ role: 'assistant', content: '' }, { role: 'user', content: 'More' });
+      await backend.chat({ model: 'test-model', messages });
+      messages.push({ role: 'assistant', content: '' });
+      const stream = backend.chatStream({ model: 'test-model', messages });
+      await stream.next();
+      messages.push({ role: 'user', content: 'Later' });
+
+      expect(backend.getCalls().map((call) => call.messages.length)).toEqual([1, 3, 4]);
     });
 
     it('returns configured response', async () => {

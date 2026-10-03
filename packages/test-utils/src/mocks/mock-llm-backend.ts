@@ -95,7 +95,7 @@ export class MockLLMBackend implements LLMBackend {
   }
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
-    this._calls.push(request);
+    this._calls.push(snapshot(request));
 
     const mockResponse = this.responses[this.responseIndex] ?? this.responses[0];
     if (this.responseIndex < this.responses.length - 1) {
@@ -134,7 +134,7 @@ export class MockLLMBackend implements LLMBackend {
   }
 
   async *chatStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk> {
-    this._calls.push(request);
+    this._calls.push(snapshot(request));
 
     const chunks = this.streamChunks[this.streamIndex] ?? this.streamChunks[0] ?? [];
     if (this.streamIndex < this.streamChunks.length - 1) {
@@ -200,4 +200,17 @@ export class MockLLMBackend implements LLMBackend {
 
 export function createMockLLMBackend(): MockLLMBackend {
   return new MockLLMBackend();
+}
+
+/**
+ * The request as it was sent: callers keep appending to the same messages
+ * array, so a recorded call would otherwise show the final conversation.
+ */
+function snapshot(request: ChatRequest): ChatRequest {
+  return {
+    ...request,
+    messages: [...request.messages],
+    ...(request.tools && { tools: [...request.tools] }),
+    ...(request.stop && { stop: [...request.stop] }),
+  };
 }
