@@ -23,6 +23,7 @@ import type {
   ApprovalChainStep,
 } from '@cogitator-ai/types';
 import { isUnanswered, submitOrExisting, WITHDRAWN } from './approval-outcomes';
+import { AbortError } from '../timers/timer-node';
 
 /**
  * Context for human node execution
@@ -33,6 +34,8 @@ export interface HumanNodeContext {
   nodeId: string;
   approvalStore: ApprovalStore;
   approvalNotifier?: ApprovalNotifier;
+  /** Abort signal of the workflow run; aborts the wait and withdraws the request */
+  signal?: AbortSignal;
   /** Called for every request created: the node's own, each chain step and escalations */
   onApprovalRequired?: (request: ApprovalRequest) => void;
 }
@@ -230,29 +233,60 @@ async function waitForResponse(
   context: HumanNodeContext
 ): Promise<AwaitedResponse> {
   const store = context.approvalStore;
-  return new Promise<AwaitedResponse>((resolve) => {
+  const signal = context.signal;
+  return new Promise<AwaitedResponse>((resolve, reject) => {
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     let unsubscribeFn: (() => void) | undefined;
+    let settled = false;
 
-    const cleanup = () => {
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
       if (timeoutId) clearTimeout(timeoutId);
       unsubscribeFn?.();
+      void withdrawRequest(request, store).then(() =>
+        reject(new AbortError(`Human approval request '${request.id}' aborted`))
+      );
     };
 
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+
     unsubscribeFn = store.onResponse(request.id, (response) => {
-      cleanup();
+      if (settled) return;
+      settled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+      signal?.removeEventListener('abort', onAbort);
       resolve({ response, escalated: false });
     });
 
     if (request.timeout) {
-      timeoutId = setTimeout(async () => {
-        cleanup();
-        resolve(await handleTimeout(request, context));
+      timeoutId = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener('abort', onAbort);
+        unsubscribeFn?.();
+        handleTimeout(request, context).then(resolve, reject);
       }, request.timeout);
     }
 
+    signal?.addEventListener('abort', onAbort, { once: true });
     reportRequest(request, context);
   });
+}
+
+/**
+ * Remove a request from the store so approvers no longer see it. Failures are
+ * tolerated: the wait already unwound, and a missing request is not an error.
+ */
+async function withdrawRequest(request: ApprovalRequest, store: ApprovalStore): Promise<void> {
+  try {
+    await store.deleteRequest(request.id);
+  } catch {
+    // Best effort — the request may already be gone.
+  }
 }
 
 /**
@@ -329,21 +363,43 @@ async function handleTimeout(
 
         const escalationTimeout = Math.max(request.timeout ?? 0, 30 * 60 * 1000);
 
-        const response = await new Promise<ApprovalResponse>((resolve) => {
+        const response = await new Promise<ApprovalResponse>((resolve, reject) => {
           let settled = false;
-          const escalationTimer = setTimeout(() => {
+          let escalationTimer: ReturnType<typeof setTimeout> | undefined;
+          let unsubscribe: (() => void) | undefined;
+
+          const onAbort = () => {
             if (settled) return;
             settled = true;
+            if (escalationTimer) clearTimeout(escalationTimer);
+            unsubscribe?.();
+            void withdrawRequest(escalatedRequest, store).then(() =>
+              reject(new AbortError(`Human approval request '${escalatedRequest.id}' aborted`))
+            );
+          };
+
+          if (context.signal?.aborted) {
+            onAbort();
+            return;
+          }
+
+          escalationTimer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            context.signal?.removeEventListener('abort', onAbort);
             unsubscribe?.();
             void createFailResponse(escalatedRequest, store).then(resolve);
           }, escalationTimeout);
 
-          const unsubscribe = store.onResponse(escalatedRequest.id, (resp) => {
+          unsubscribe = store.onResponse(escalatedRequest.id, (resp) => {
             if (settled) return;
             settled = true;
             clearTimeout(escalationTimer);
+            context.signal?.removeEventListener('abort', onAbort);
             resolve(resp);
           });
+
+          context.signal?.addEventListener('abort', onAbort, { once: true });
           reportRequest(escalatedRequest, context);
         });
         return { response, escalated: true };

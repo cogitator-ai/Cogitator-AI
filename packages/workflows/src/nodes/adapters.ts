@@ -106,6 +106,7 @@ export function humanWorkflowNode<S extends WorkflowState>(
         nodeId: ctx.nodeId,
         approvalStore,
         approvalNotifier: options.approvalNotifier ?? extended(ctx).approvalNotifier,
+        signal: extended(ctx).signal,
         onApprovalRequired: extended(ctx).onApprovalRequired,
       });
       return {
