@@ -37,9 +37,9 @@ Stages run on OpenRouter, registered as a custom backend (`openrouter/<vendor>/<
 | ------- | -------------------------- |
 | Primary | `deepseek/deepseek-v4-pro` |
 | Second  | `openai/gpt-6-luna`        |
-| Third   | `qwen/qwen3.8-flash`       |
+| Third   | `z-ai/glm-5.3-flash`       |
 
-The model matrix stage also runs `xiaomi/mimo-v2.6-flash` and `z-ai/glm-5.3-flash`. Override the three with `GAUNTLET_MODELS=vendor/model,vendor/model,...` (primary first). Prices come from the OpenRouter catalogue, so the cost shown is real.
+The model matrix stage also runs `xiaomi/mimo-v2.6-flash` and `qwen/qwen3.8-flash`. Override the three with `GAUNTLET_MODELS=vendor/model,vendor/model,...` (primary first). The cost shown is what OpenRouter reports for every call. OpenRouter spreads a model across providers whose prices differ several times over, so the catalogue price is only the fallback for a call that reports none.
 
 ## What a stage is
 
@@ -63,7 +63,7 @@ When a stage exposes a bug in a package, keep the check that exposes it and fix 
 | Variable                | Default                                                         |
 | ----------------------- | --------------------------------------------------------------- |
 | `OPENROUTER_API_KEY`    | required, also read from `packages/gauntlet/.env`               |
-| `GAUNTLET_MODELS`       | `deepseek/deepseek-v4-pro,openai/gpt-6-luna,qwen/qwen3.8-flash` |
+| `GAUNTLET_MODELS`       | `deepseek/deepseek-v4-pro,openai/gpt-6-luna,z-ai/glm-5.3-flash` |
 | `GAUNTLET_POSTGRES_URL` | `postgresql://gauntlet:gauntlet@127.0.0.1:55432/gauntlet`       |
 | `GAUNTLET_REDIS_URL`    | `redis://127.0.0.1:56379`                                       |
 | `GAUNTLET_QDRANT_URL`   | `http://127.0.0.1:56333`                                        |

@@ -21,14 +21,14 @@ export const BACKEND = 'openrouter';
 export const DEFAULT_MODELS = [
   'deepseek/deepseek-v4-pro',
   'openai/gpt-6-luna',
-  'qwen/qwen3.8-flash',
+  'z-ai/glm-5.3-flash',
 ] as const;
 
 /**
  * Further popular models only the model matrix runs: a cheap way to check the runtime against
  * more vendors without making every multi-agent stage slower.
  */
-export const MATRIX_EXTRA_MODELS = ['xiaomi/mimo-v2.6-flash', 'z-ai/glm-5.3-flash'] as const;
+export const MATRIX_EXTRA_MODELS = ['xiaomi/mimo-v2.6-flash', 'qwen/qwen3.8-flash'] as const;
 
 export interface ModelPrice {
   /** USD per input token. */
@@ -40,11 +40,15 @@ export interface ModelPrice {
 /** Which stage a model call belongs to, so usage lands on the right stage. */
 export const currentStage = new AsyncLocalStorage<string>();
 
-export type UsageListener = (
-  stageId: string | undefined,
-  model: string,
-  usage: { inputTokens: number; outputTokens: number }
-) => void;
+/** One model call's tokens, and what the provider charged when it says so. */
+export interface CallUsage {
+  inputTokens: number;
+  outputTokens: number;
+  /** USD the provider reported for the call (OpenRouter's `usage.cost`). */
+  costUsd?: number;
+}
+
+export type UsageListener = (stageId: string | undefined, model: string, usage: CallUsage) => void;
 
 /**
  * Wraps the OpenRouter backend and reports the token usage of every call, streamed or not,
@@ -78,6 +82,7 @@ export class MeteredBackend implements LLMBackend {
     this.onUsage(currentStage.getStore(), model, {
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
+      ...(usage.cost !== undefined && { costUsd: usage.cost }),
     });
   }
 }
@@ -98,6 +103,39 @@ interface OpenRouterModel {
   id: string;
   pricing?: { prompt?: string; completion?: string };
   supported_parameters?: string[];
+}
+
+/** The cheapest and dearest provider prices of a model on OpenRouter. */
+export interface PriceRange {
+  low: ModelPrice;
+  high: ModelPrice;
+  providers: number;
+}
+
+/** Every provider's price for one model, from OpenRouter's endpoints API. */
+export async function fetchPriceRange(id: string, signal?: AbortSignal): Promise<PriceRange> {
+  const response = await fetch(`${OPENROUTER_BASE_URL}/models/${id}/endpoints`, { signal });
+  if (!response.ok)
+    throw new Error(`OpenRouter endpoints API answered ${response.status} for ${id}`);
+  const { data } = (await response.json()) as {
+    data: { endpoints: { pricing?: { prompt?: string; completion?: string } }[] };
+  };
+  const prices = data.endpoints.map((endpoint) => ({
+    input: Number(endpoint.pricing?.prompt ?? 0),
+    output: Number(endpoint.pricing?.completion ?? 0),
+  }));
+  if (prices.length === 0) throw new Error(`OpenRouter lists no provider for ${id}`);
+  return {
+    low: {
+      input: Math.min(...prices.map((p) => p.input)),
+      output: Math.min(...prices.map((p) => p.output)),
+    },
+    high: {
+      input: Math.max(...prices.map((p) => p.input)),
+      output: Math.max(...prices.map((p) => p.output)),
+    },
+    providers: prices.length,
+  };
 }
 
 /**
@@ -131,7 +169,11 @@ export async function fetchModelCatalogue(
   return { prices, missing, withoutTools };
 }
 
-/** USD for a call, given the request's model string (`openrouter/<id>` or a bare id). */
+/**
+ * USD for a call at the catalogue price, given the request's model string (`openrouter/<id>` or a
+ * bare id). Only an estimate: OpenRouter routes a model across providers whose prices differ
+ * several times over, so a reported cost beats it.
+ */
 export function costOf(
   prices: Map<string, ModelPrice>,
   model: string,

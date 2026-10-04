@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Cogitator } from '@cogitator-ai/core';
 import type { LLMBackend } from '@cogitator-ai/types';
-import { costOf, currentStage, modelRef, type ModelPrice } from '../llm.js';
+import { costOf, currentStage, modelRef, type CallUsage, type ModelPrice } from '../llm.js';
 import { RequirementProbe } from './requirements.js';
 import type {
   ArtifactStore,
@@ -153,15 +153,11 @@ export class GauntletRunner extends EventEmitter<{ event: [GauntletEvent] }> {
   }
 
   /** Called by the metered backend for every model call. */
-  recordModelCall(
-    stageId: string | undefined,
-    model: string,
-    usage: { inputTokens: number; outputTokens: number }
-  ): void {
+  recordModelCall(stageId: string | undefined, model: string, usage: CallUsage): void {
     const delta: Usage = {
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
-      costUsd: costOf(this.options.prices, model, usage),
+      costUsd: usage.costUsd ?? costOf(this.options.prices, model, usage),
       calls: 1,
     };
     addUsage(this.report.usage, delta);

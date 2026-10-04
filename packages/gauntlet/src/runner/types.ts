@@ -1,3 +1,4 @@
+import type { CallUsage } from '../llm.js';
 import type { Cogitator } from '@cogitator-ai/core';
 
 /**
@@ -94,7 +95,7 @@ export interface StageContext {
    * Counts tokens and cost of model calls the metered backend cannot see, such as a server in a
    * child process. `model` is the model string used (`openrouter/<id>` or a bare OpenRouter id).
    */
-  recordUsage(model: string, usage: { inputTokens: number; outputTokens: number }): void;
+  recordUsage(model: string, usage: CallUsage): void;
   /** A free TCP port on localhost. */
   freePort(): Promise<number>;
   /** Runs when the gauntlet finishes, newest first, also after failures. */

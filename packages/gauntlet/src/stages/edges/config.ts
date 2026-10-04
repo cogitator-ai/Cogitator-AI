@@ -5,7 +5,7 @@ import { loadConfig, loadDotenvFile, loadYamlConfig } from '@cogitator-ai/config
 import { Agent, Cogitator, registerLLMBackend, unregisterLLMBackend } from '@cogitator-ai/core';
 import { BUILTIN_MODELS, ModelRegistry, type ModelInfo } from '@cogitator-ai/models';
 import type { ChatResponse, ChatStreamChunk, LLMBackend } from '@cogitator-ai/types';
-import { fetchModelCatalogue } from '../../llm.js';
+import { fetchModelCatalogue, fetchPriceRange } from '../../llm.js';
 import type { StageDefinition } from '../../runner/types.js';
 
 const CONFIG = '@cogitator-ai/config';
@@ -392,7 +392,7 @@ const modelRegistry: StageDefinition = {
 
     await ctx.check('a run reports what the provider charged', async (evidence) => {
       const id = ctx.model.replace(/^openrouter\//, '');
-      const listed = comparisons.find((entry) => entry.id === id)?.openRouterPerMillion;
+      const range = await fetchPriceRange(id);
       const agent = new Agent({
         name: 'priced',
         model: ctx.model,
@@ -401,15 +401,16 @@ const modelRegistry: StageDefinition = {
       });
       const result = await ctx.cogitator.run(agent, { input: 'What is a cogitator?' });
       const { inputTokens, outputTokens, cost } = result.usage;
-      const estimate = listed
-        ? (inputTokens * listed.input + outputTokens * listed.output) / 1e6
-        : undefined;
+      const lowest = inputTokens * range.low.input + outputTokens * range.low.output;
+      const highest = inputTokens * range.high.input + outputTokens * range.high.output;
       evidence('cost', cost);
-      evidence('catalogueEstimate', estimate);
+      evidence('providerRange', { lowest, highest, providers: range.providers });
       evidence('tokens', { inputTokens, outputTokens });
       if (!(cost > 0)) throw new Error(`RunResult.usage.cost is ${cost}`);
-      if (estimate !== undefined && (cost > estimate * 2 || cost < estimate / 2)) {
-        throw new Error(`Reported ${cost} USD, the catalogue price gives ${estimate} USD`);
+      if (cost < lowest / 2 || cost > highest * 2) {
+        throw new Error(
+          `Reported ${cost} USD, outside what ${range.providers} providers charge for these tokens (${lowest} to ${highest} USD)`
+        );
       }
     });
   },
