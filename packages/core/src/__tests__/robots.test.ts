@@ -99,3 +99,33 @@ describe('RobotsPolicy', () => {
     expect(await policy.allows('file:///etc/hosts')).toBe(true);
   });
 });
+
+describe('robots pattern matching', () => {
+  const allows = (pattern: string, path: string) =>
+    robotsAllowsPath([{ allow: false, pattern }], path) === false;
+
+  it('handles wildcards, anchors and literal regex characters', () => {
+    expect(allows('/a*b', '/axxxb')).toBe(true);
+    expect(allows('/a*b', '/axxx')).toBe(false);
+    expect(allows('/*.php$', '/index.php')).toBe(true);
+    expect(allows('/*.php$', '/index.php?x=1')).toBe(false);
+    expect(allows('/a*b*c$', '/abbbc')).toBe(true);
+    expect(allows('/a*b*c$', '/acb')).toBe(false);
+    expect(allows('/x.y', '/xzy')).toBe(false);
+    expect(allows('/p(1)', '/p(1)/page')).toBe(true);
+    expect(allows('/exact$', '/exact')).toBe(true);
+    expect(allows('/exact$', '/exactly')).toBe(false);
+    expect(allows('*', '/anything')).toBe(true);
+  });
+
+  it('stays fast on adversarial patterns and paths', () => {
+    const pattern = `/${'a*'.repeat(200)}b`;
+    const path = `/${'a'.repeat(50_000)}`;
+    const started = performance.now();
+    expect(allows(pattern, path)).toBe(false);
+    expect(
+      robotsRulesFor(`#${'#'.repeat(100_000)}\nUser-agent: *\nDisallow: /x`, 'bot')
+    ).toHaveLength(1);
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+});

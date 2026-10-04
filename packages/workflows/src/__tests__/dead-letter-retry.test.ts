@@ -4,10 +4,10 @@ import { InMemoryCheckpointStore } from '../checkpoint';
 import { createWorkflowManager } from '../manager';
 import { InMemoryDLQ } from '../saga';
 
-interface State {
+type State = {
   fetched?: string;
   published?: string;
-}
+};
 
 function flakyWorkflow(failures: { left: number }, calls: string[]) {
   return new WorkflowBuilder<State>('newsroom-publish')

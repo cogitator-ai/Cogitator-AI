@@ -23,7 +23,8 @@ function parseGroups(text: string): Group[] {
   let lastWasAgent = false;
 
   for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.replace(/#.*$/, '').trim();
+    const hash = rawLine.indexOf('#');
+    const line = (hash >= 0 ? rawLine.slice(0, hash) : rawLine).trim();
     const colon = line.indexOf(':');
     if (colon < 0) continue;
     const key = line.slice(0, colon).trim().toLowerCase();
@@ -59,13 +60,30 @@ export function robotsRulesFor(text: string, token: string): Rule[] {
   return chosen.flatMap((group) => group.rules);
 }
 
-function patternToRegExp(pattern: string): RegExp {
+/**
+ * Whether a robots.txt pattern matches a path, without regular expressions: robots.txt comes
+ * from other sites, and a pattern like `/a*a*a*a*b` must not be able to stall the matcher. The
+ * pattern is cut at every `*`: the first piece must start the path, the others are found in
+ * order from left to right (the earliest place is always the best for later pieces), and with a
+ * trailing `$` the last piece must end the path.
+ */
+function patternMatches(pattern: string, path: string): boolean {
   const anchored = pattern.endsWith('$');
-  const body = (anchored ? pattern.slice(0, -1) : pattern)
-    .split('*')
-    .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
-    .join('.*');
-  return new RegExp(`^${body}${anchored ? '$' : ''}`);
+  const pieces = (anchored ? pattern.slice(0, -1) : pattern).split('*');
+  const first = pieces[0] ?? '';
+  if (!path.startsWith(first)) return false;
+  if (pieces.length === 1) return !anchored || path.length === first.length;
+
+  let cursor = first.length;
+  const last = pieces[pieces.length - 1] ?? '';
+  for (let i = 1; i < pieces.length - 1; i++) {
+    const piece = pieces[i] ?? '';
+    const at = path.indexOf(piece, cursor);
+    if (at < 0) return false;
+    cursor = at + piece.length;
+  }
+  if (anchored) return path.length - last.length >= cursor && path.endsWith(last);
+  return path.indexOf(last, cursor) >= 0;
 }
 
 /**
@@ -78,7 +96,7 @@ export function robotsAllowsPath(rules: RobotsRules, pathWithQuery: string): boo
   if (rules === 'disallow-all') return false;
   let best: Rule | undefined;
   for (const rule of rules) {
-    if (!patternToRegExp(rule.pattern).test(pathWithQuery)) continue;
+    if (!patternMatches(rule.pattern, pathWithQuery)) continue;
     if (
       !best ||
       rule.pattern.length > best.pattern.length ||

@@ -6,13 +6,13 @@ import { InMemoryApprovalStore, approvalNode } from '../human';
 import { InMemoryRunStore, createWorkflowManager } from '../manager';
 import { humanWorkflowNode } from '../nodes/adapters';
 
-interface EditionState {
+type EditionState = {
   draft?: string;
   approved?: boolean;
   note?: string;
   round?: number;
   published?: string;
-}
+};
 
 async function until<T>(read: () => Promise<T | undefined>, timeoutMs = 3000): Promise<T> {
   const start = Date.now();
