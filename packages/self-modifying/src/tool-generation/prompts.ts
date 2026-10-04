@@ -1,4 +1,5 @@
 import type { CapabilityGap, GeneratedTool, ToolValidationResult } from '@cogitator-ai/types';
+import { Script } from 'node:vm';
 import { extractJson } from '../utils';
 
 export const TOOL_GENERATION_SYSTEM_PROMPT = `You generate JavaScript tools. Respond with ONLY a JSON object, no other text.
@@ -340,6 +341,30 @@ function parseExamples(value: unknown): Array<{ input: Record<string, unknown> }
   });
 }
 
+function compiles(code: string): boolean {
+  try {
+    new Script(`(async function () {\n${code}\n})`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Some models escape the code twice, so it arrives on one line with literal `\n` and `\"`
+ * sequences that do not compile. Such code is unescaped once, and kept as is when that does not
+ * make it compile.
+ */
+function repairEscapedImplementation(code: string): string {
+  if (code.includes('\n') || !/\\[nrt"]/.test(code) || compiles(code)) return code;
+  try {
+    const unescaped: unknown = JSON.parse(`"${code}"`);
+    return typeof unescaped === 'string' && compiles(unescaped) ? unescaped : code;
+  } catch {
+    return code;
+  }
+}
+
 function buildToolFromParsed(parsed: Record<string, unknown>): GeneratedTool {
   const examples = parseExamples(parsed.examples);
   const metadata: Record<string, unknown> = {};
@@ -350,7 +375,7 @@ function buildToolFromParsed(parsed: Record<string, unknown>): GeneratedTool {
     id: `gen_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     name: sanitizeToolName(String(parsed.name)),
     description: typeof parsed.description === 'string' ? parsed.description.trim() : '',
-    implementation: String(parsed.implementation),
+    implementation: repairEscapedImplementation(String(parsed.implementation)),
     parameters: normalizeParameters(parsed.parameters),
     createdAt: new Date(),
     version: 1,

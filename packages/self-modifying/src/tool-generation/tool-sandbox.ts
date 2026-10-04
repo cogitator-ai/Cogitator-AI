@@ -85,10 +85,22 @@ const context = vm.createContext(Object.create(null), {
   codeGeneration: { strings: false, wasm: false },
 });
 
-let started = false;
+let script;
 try {
+  script = new vm.Script(runner);
+} catch (err) {
+  parentPort.postMessage({
+    success: false,
+    thrown: false,
+    error: 'Tool code does not compile: ' + (err && typeof err.message === 'string' ? err.message : String(err)),
+    logs: [],
+  });
+}
+
+let started = false;
+if (script) try {
   vm.runInContext(BOOTSTRAP, context);
-  vm.runInContext(runner, context, { timeout });
+  script.runInContext(context, { timeout });
   started = true;
 } catch (err) {
   const timedOut = err && err.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT';

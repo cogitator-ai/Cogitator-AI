@@ -134,6 +134,18 @@ describe('ToolSandbox.testWithCases', () => {
 
     expect(results.map((r) => r.passed)).toEqual([true, true, true, false, false]);
   });
+
+  it('does not count code that fails to compile as an error thrown by the tool', async () => {
+    const tool = makeTool(String.raw`async function execute(params) {\n  return params.text;\n}`);
+
+    const { results } = await sandbox.testWithCases(tool, [
+      { input: { text: 'a' }, allowThrow: true },
+      { input: { text: 'a' }, shouldThrow: true },
+    ]);
+
+    expect(results.map((r) => r.passed)).toEqual([false, false]);
+    expect(results[0]?.error).toMatch(/^Tool code does not compile/);
+  });
 });
 
 describe('ToolSandbox without isolation', () => {

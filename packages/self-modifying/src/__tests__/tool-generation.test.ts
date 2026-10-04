@@ -498,4 +498,26 @@ describe('Parsing functions', () => {
     expect(parsed).not.toBeNull();
     expect(parsed?.name).toBe('calculator');
   });
+
+  it('unescapes an implementation the model escaped twice', () => {
+    const escaped = String.raw`async function execute(params) {\n  if (!params.text) throw new Error(\"text is required\");\n  return params.text.split('').reverse().join('');\n}`;
+
+    const parsed = parseToolGenerationResponse(
+      JSON.stringify({ name: 'reverse_string', implementation: escaped })
+    );
+
+    expect(parsed?.implementation).toBe(
+      "async function execute(params) {\n  if (!params.text) throw new Error(\"text is required\");\n  return params.text.split('').reverse().join('');\n}"
+    );
+  });
+
+  it('keeps escape sequences that belong to valid code', () => {
+    const implementation = String.raw`async function execute(p) { return p.text.split('\n').length; }`;
+
+    const parsed = parseToolGenerationResponse(
+      JSON.stringify({ name: 'count_lines', implementation })
+    );
+
+    expect(parsed?.implementation).toBe(implementation);
+  });
 });
