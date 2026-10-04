@@ -1,6 +1,10 @@
 import type { FastifyRequest } from 'fastify';
 import type { Cogitator, Agent } from '@cogitator-ai/core';
-import { NON_BLANK_PATTERN, RUN_INPUT_SCHEMA } from '@cogitator-ai/server-shared';
+import {
+  MAX_RUN_TIMEOUT_MS,
+  NON_BLANK_PATTERN,
+  RUN_INPUT_SCHEMA,
+} from '@cogitator-ai/server-shared';
 import type { PendingApproval, RunUsage } from '@cogitator-ai/server-shared';
 import type {
   Message,
@@ -404,7 +408,7 @@ export const SwarmRunRequestSchema = {
     input: RUN_INPUT_SCHEMA,
     context: { type: 'object', additionalProperties: true },
     threadId: { type: 'string' },
-    timeout: { type: 'number', exclusiveMinimum: 0 },
+    timeout: { type: 'number', exclusiveMinimum: 0, maximum: MAX_RUN_TIMEOUT_MS },
   },
   required: ['input'],
 } as const;

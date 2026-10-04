@@ -73,6 +73,9 @@ import { readEnv } from './utils/env';
 /** Run timeout when neither the run, the agent nor `limits.defaultTimeout` sets one. */
 const DEFAULT_RUN_TIMEOUT = 120_000;
 
+/** The largest delay a timer can hold. Node fires a longer one at once, so a run never arms a deadline past it. */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
 /**
  * How many times a run asks again when the model ends its turn with neither text nor tool calls.
  * Some models (Gemini after a function response, notably) occasionally stop with an empty turn;
@@ -302,7 +305,7 @@ export class Cogitator {
       }
     }
 
-    if (timeout && timeout > 0) {
+    if (timeout && timeout > 0 && timeout <= MAX_TIMER_DELAY_MS) {
       timeoutId = setTimeout(() => {
         abortController.abort(
           new CogitatorError({

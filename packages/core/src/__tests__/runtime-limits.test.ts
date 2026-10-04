@@ -108,6 +108,22 @@ describe('limits.defaultTimeout', () => {
     await cog.close();
   });
 
+  it('does not abort at once when the timeout is beyond what a timer can hold', async () => {
+    const { backend } = scriptedBackend(
+      () => new Promise((resolve) => setTimeout(() => resolve(answer('finished')), 20))
+    );
+    await useBackend(backend);
+    const cog = new Cogitator();
+
+    const result = await cog.run(new Agent({ name: 'a', model: 'openai/x', instructions: 'x' }), {
+      input: 'hi',
+      timeout: 3_000_000_000,
+    });
+
+    expect(result.output).toBe('finished');
+    await cog.close();
+  });
+
   it("does not override the agent's own timeout", async () => {
     const { backend } = scriptedBackend(
       () => new Promise((resolve) => setTimeout(() => resolve(answer('slow but fine')), 60))

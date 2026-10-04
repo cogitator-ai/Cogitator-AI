@@ -49,6 +49,7 @@ export {
 } from './heartbeat.js';
 
 export {
+  MAX_RUN_TIMEOUT_MS,
   NON_BLANK_PATTERN,
   RUN_INPUT_SCHEMA,
   isJsonObject,

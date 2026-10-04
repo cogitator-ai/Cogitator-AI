@@ -93,7 +93,7 @@ interface CogitatorServerConfig {
 
 ## Request Handling
 
-- Agent and swarm bodies are validated: `input` must contain more than whitespace (`""` and `"   "` are refused before the model is called), `context` an object, `threadId` a non-empty string, swarm `timeout` a positive number. Invalid or malformed JSON bodies return `400 INVALID_INPUT`.
+- Agent and swarm bodies are validated: `input` must contain more than whitespace (`""` and `"   "` are refused before the model is called), `context` an object, `threadId` a non-empty string, swarm `timeout` a positive number of at most `MAX_RUN_TIMEOUT_MS` (2147483647, the longest delay a timer can hold). Invalid or malformed JSON bodies return `400 INVALID_INPUT`.
 - Workflow `options` are limited to `maxConcurrency`, `maxIterations` (positive integers) and `checkpoint` (boolean); other options are dropped and wrongly typed ones return `400`.
 - Thread messages need a `role` of `user`, `assistant` or `system` and a non-empty string `content`.
 - A workflow that fails returns `500 WORKFLOW_FAILED`, and its stream ends with an `error` event instead of `workflow_completed`. Without `@cogitator-ai/workflows` or `@cogitator-ai/swarms` installed, those routes return `501 UNIMPLEMENTED`.
