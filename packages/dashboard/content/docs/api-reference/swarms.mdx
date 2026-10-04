@@ -111,7 +111,7 @@ interface StrategyResult {
 | `'consensus'`    | `ConsensusStrategy`    | `consensus: { threshold, maxRounds, resolution: 'majority' \| 'unanimous' \| 'weighted', onNoConsensus, weights? }` | 2+ `agents`               |
 | `'auction'`      | `AuctionStrategy`      | `auction: { bidding: 'capability-match' \| 'custom', bidFunction?, selection, minBid? }`                            | 1+ `agents`               |
 | `'pipeline'`     | `PipelineStrategy`     | `pipeline: { stages: PipelineStage[], stageInput?, gates? }` (or top-level `stages`)                                | 1+ stages                 |
-| `'debate'`       | `DebateStrategy`       | `debate: { rounds, maxTokensPerTurn?, format? }`                                                                    | 2+ `agents`, `rounds` ≥ 1 |
+| `'debate'`       | `DebateStrategy`       | `debate: { rounds, maxTokensPerTurn?, format?, synthesisPrompt? }`                                                  | 2+ `agents`, `rounds` ≥ 1 |
 | `'negotiation'`  | `NegotiationStrategy`  | `negotiation?: Partial<NegotiationConfig>`                                                                          | 2+ `agents`               |
 
 | Export                                                        | Signature                                                                                | Purpose                                     |

@@ -253,15 +253,16 @@ const debateTeam = swarm('risk-assessment')
   .build(cogitator);
 ```
 
-| Option             | Default        | Description                                                                          |
-| ------------------ | -------------- | ------------------------------------------------------------------------------------ |
-| `rounds`           | required       | Number of debate rounds (at least 1)                                                 |
-| `format`           | `'structured'` | `'structured'` asks for clearly structured points; `'freeform'` drops that guideline |
-| `maxTokensPerTurn` | —              | Caps the response length of every debate turn                                        |
+| Option             | Default        | Description                                                                                                                                                                           |
+| ------------------ | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rounds`           | required       | Number of debate rounds (at least 1)                                                                                                                                                  |
+| `format`           | `'structured'` | `'structured'` asks for clearly structured points; `'freeform'` drops that guideline                                                                                                  |
+| `maxTokensPerTurn` | —              | Caps the output tokens of every debate turn. A reasoning model spends its reasoning from the same budget, so give it a few thousand and keep the length of a turn in the instructions |
+| `synthesisPrompt`  | —              | The moderator's task after the last round instead of the default balanced summary; `{topic}` and `{transcript}` are filled in                                                         |
 
 Roles come from `agentMetadata` (`advocate` / `critic`, each with its own instructions); when any agent has one of those roles, only those agents debate. Without roles, all non-moderator agents debate as neutral debaters. At least two debaters are required.
 
-Each round, debaters see previous arguments and refine their positions. The moderator (if present) produces the final output; otherwise the output lists every agent's arguments by round. `result.debateTranscript` holds every turn as a `SwarmMessage`. Events: `debate:round`, `debate:turn`.
+Each round, debaters see previous arguments and refine their positions. Every turn in what debaters and the moderator read is labelled with the speaker's name, and its role when it has one: `[optimist (advocate)]: ...`. The moderator (if present) produces the final output, from its default synthesis task or from `synthesisPrompt`; otherwise the output lists every agent's arguments by round. `result.debateTranscript` holds every turn as a `SwarmMessage`. Events: `debate:round`, `debate:turn`.
 
 **Best for:** Risk assessment, decision analysis, exploring trade-offs.
 

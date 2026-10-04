@@ -201,6 +201,49 @@ describe('DebateStrategy', () => {
       expect(modCall?.input).toContain('con argument');
     });
 
+    it('labels every turn with the speaker and the role, for the moderator and later rounds', async () => {
+      coordinator.addAgent(createMockSwarmAgent('moderator', { role: 'moderator' }));
+      coordinator.setAgentResponse('moderator', 'synthesis');
+
+      const strategy = new DebateStrategy(coordinator, { rounds: 2 });
+      await strategy.execute({ input: 'topic' });
+
+      expect(coordinator.getLastCallFor('moderator')?.input).toContain(
+        '[advocate (advocate)]: pro argument'
+      );
+      expect(coordinator.getLastCallFor('advocate')?.input).toContain(
+        '[critic (critic)]: con argument'
+      );
+    });
+
+    it('labels turns of debaters without a role by name alone', async () => {
+      const plain = new MockCoordinator();
+      plain.addAgent(createMockSwarmAgent('tomas'));
+      plain.addAgent(createMockSwarmAgent('nadia'));
+      plain.setAgentResponse('tomas', 'run the bridge story');
+      plain.setAgentResponse('nadia', 'run the agent explainer');
+
+      await new DebateStrategy(plain, { rounds: 2 }).execute({ input: 'topic' });
+
+      expect(plain.getLastCallFor('tomas')?.input).toContain('[nadia]: run the agent explainer');
+    });
+
+    it('gives the moderator a custom synthesis task when one is set', async () => {
+      coordinator.addAgent(createMockSwarmAgent('moderator', { role: 'moderator' }));
+      coordinator.setAgentResponse('moderator', 'the edition');
+
+      const strategy = new DebateStrategy(coordinator, {
+        rounds: 1,
+        synthesisPrompt: 'Choose the stories for: {topic}\n\n{transcript}\n\nAnswer with ids only.',
+      });
+      await strategy.execute({ input: 'the morning edition' });
+
+      const input = coordinator.getLastCallFor('moderator')?.input ?? '';
+      expect(input.startsWith('Choose the stories for: the morning edition')).toBe(true);
+      expect(input).toContain('[critic (critic)]: con argument');
+      expect(input).not.toContain('Synthesize');
+    });
+
     it('should pass moderatorContext', async () => {
       coordinator.addAgent(createMockSwarmAgent('moderator', { role: 'moderator' }));
       coordinator.setAgentResponse('moderator', 'synthesis');

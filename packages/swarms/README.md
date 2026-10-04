@@ -166,6 +166,8 @@ const swarm = new SwarmBuilder('analysis-team')
   .build(cogitator);
 ```
 
+Turns are labelled with the speaker's name and role (`[optimist (advocate)]: ...`). `synthesisPrompt` replaces the moderator's default task, with `{topic}` and `{transcript}` filled in. `maxTokensPerTurn` also covers a reasoning model's reasoning, so give such models a few thousand tokens.
+
 ### Auction
 
 ```typescript
