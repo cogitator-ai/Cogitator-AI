@@ -131,6 +131,8 @@ const BlackboardDisabled = errorEnvelope(
 const STREAM_DESCRIPTION =
   'Server-sent events in the Cogitator stream protocol, one JSON event per `data:` line, ending with `data: [DONE]`.';
 
+const AGENT_STREAM_DESCRIPTION = `${STREAM_DESCRIPTION} The \`finish\` event carries the run usage, the same as \`usage\` in the JSON response of \`/run\`, with the reasoning and cache token counts the model reported.`;
+
 type SwarmRunRequest = z.output<typeof SwarmRunBody>;
 type WorkflowRunRequest = z.output<typeof WorkflowRunBody>;
 
@@ -241,7 +243,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
       hooks: { beforeParse: [caller], onError: [errors] },
       docs: {
         summary: 'Run an agent and stream tokens, tool calls and results',
-        description: STREAM_DESCRIPTION,
+        description: AGENT_STREAM_DESCRIPTION,
         tags: ['agents'],
       },
       handler: async (ctx) => {
@@ -314,7 +316,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
       hooks: { beforeParse: [caller], onError: [errors] },
       docs: {
         summary: 'Resume a run paused for tool approvals and stream the rest of it',
-        description: STREAM_DESCRIPTION,
+        description: AGENT_STREAM_DESCRIPTION,
         tags: ['agents'],
       },
       handler: async (ctx) => {
@@ -659,13 +661,7 @@ async function* agentEvents(
       )
     );
   }
-  yield sseEvent(
-    createFinishEvent(messageId, {
-      inputTokens: result.usage.inputTokens,
-      outputTokens: result.usage.outputTokens,
-      totalTokens: result.usage.totalTokens,
-    })
-  );
+  yield sseEvent(createFinishEvent(messageId, result.usage));
   yield DONE_EVENT;
 }
 

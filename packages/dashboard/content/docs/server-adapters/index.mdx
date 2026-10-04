@@ -50,7 +50,7 @@ Request bodies:
 - Swarm: `{ input, context?, threadId?, timeout? }`.
 - Thread message: `{ role: 'user' | 'assistant' | 'system', content, metadata? }`.
 
-`POST /agents/:name/run` answers `{ output, threadId, usage, toolCalls, reasoning?, status, pendingApprovals? }`; a run paused for approval has `status: 'paused'`, and its checkpoint stays on the server. `usage` carries `inputTokens`, `outputTokens` and `totalTokens`, plus `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the model reported them, on every adapter.
+`POST /agents/:name/run` answers `{ output, threadId, usage, toolCalls, reasoning?, status, pendingApprovals? }`; a run paused for approval has `status: 'paused'`, and its checkpoint stays on the server. `usage` carries `inputTokens`, `outputTokens` and `totalTokens`, plus `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the model reported them, on every adapter. The `finish` event of an agent stream carries the same `usage`. Neither includes the run's cost or duration.
 
 ## Threads and Users
 
@@ -94,7 +94,7 @@ data: {"type":"text-delta","id":"txt_mno345","delta":"It is sunny in Paris."}
 
 data: {"type":"text-end","id":"txt_mno345"}
 
-data: {"type":"finish","messageId":"msg_abc123","usage":{"inputTokens":50,"outputTokens":120,"totalTokens":170}}
+data: {"type":"finish","messageId":"msg_abc123","usage":{"inputTokens":50,"outputTokens":120,"totalTokens":170,"reasoningTokens":64,"cachedInputTokens":32}}
 
 data: [DONE]
 ```
@@ -110,6 +110,8 @@ data: [DONE]
 | `error`                                                 | `message`, `code?`                                   |
 | `finish`                                                | `messageId`, `usage?`                                |
 | `workflow` / `swarm`                                    | `event`, `data`                                      |
+
+The `finish` event of an agent stream (and of a resumed one) carries the run's `usage`, the same object as in the JSON answer of `POST /agents/:name/run`: `inputTokens`, `outputTokens`, `totalTokens`, and `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the model reported them. Workflow and swarm streams finish without `usage`. `createFinishEvent` builds it with `toRunUsage`, the converter of the JSON answer, so a run's `RunResult.usage` can be passed as is.
 
 Text and reasoning blocks are closed before a tool call starts. Agents with `reasoning: { summary: true }` stream their reasoning as its own part before the text it leads to. A run that pauses for approval sends `approval-required` with the pending calls (`toolCallId`, `toolName`, `arguments`, `description`, `sideEffects?`) right before `finish`; resume it with `POST /agents/:name/resume`.
 

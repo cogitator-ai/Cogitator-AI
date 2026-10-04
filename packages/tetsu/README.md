@@ -269,7 +269,7 @@ data: {"type":"finish","messageId":"msg_…","usage":{"inputTokens":12,"outputTo
 data: [DONE]
 ```
 
-An agent with `reasoning: { summary: true }` also streams its reasoning summary as `reasoning-start`, `reasoning-delta` and `reasoning-end` events. A text or reasoning part opens with its first delta and is closed before a part of the other kind, a tool call or `finish`, so parts never overlap. `POST /agents/:name/run` returns the summary as `reasoning`, and `usage` gains `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the provider reports them.
+An agent with `reasoning: { summary: true }` also streams its reasoning summary as `reasoning-start`, `reasoning-delta` and `reasoning-end` events. A text or reasoning part opens with its first delta and is closed before a part of the other kind, a tool call or `finish`, so parts never overlap. `POST /agents/:name/run` returns the summary as `reasoning`, and `usage` gains `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the provider reports them. The `finish` event of an agent stream carries the same `usage` as the JSON answer, these counts included.
 
 A run that fails ends with `{"type":"error","message":"…","code":"…"}` instead of `finish`. A `CogitatorError` keeps its message and code; anything else is sent as `"message":"Internal server error","code":"INTERNAL_SERVER_ERROR"` and reported to the application's `reportError` with `source: "stream"`. Workflow streams send `workflow` events (`node_started`, `node_completed`, `node_error`, `node_progress`, `workflow_completed`), swarm streams send `swarm` events (`agent_start`, `agent_complete`, `agent_error`, `message`, `swarm_completed`).
 

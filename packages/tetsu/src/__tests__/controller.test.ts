@@ -542,6 +542,43 @@ describe('agent stream', () => {
     });
   });
 
+  test('ends with the usage of the JSON response, reasoning and cache tokens included', async () => {
+    const { cogitator } = fakeCogitator(() =>
+      Promise.resolve(
+        runResult({
+          usage: {
+            inputTokens: 10,
+            outputTokens: 20,
+            totalTokens: 30,
+            reasoningTokens: 12,
+            cachedInputTokens: 8,
+            cacheWriteTokens: 2,
+            cost: 0.5,
+            duration: 5,
+          },
+        })
+      )
+    );
+    const request = serveCogitator({ cogitator, agents: { chat: chatAgent() } });
+
+    const { events } = await readStream(
+      await request('/cogitator/agents/chat/stream', json({ input: 'hi' }))
+    );
+
+    expect(events.at(-1)).toEqual({
+      type: 'finish',
+      messageId: expect.any(String),
+      usage: {
+        inputTokens: 10,
+        outputTokens: 20,
+        totalTokens: 30,
+        reasoningTokens: 12,
+        cachedInputTokens: 8,
+        cacheWriteTokens: 2,
+      },
+    });
+  });
+
   test('streams reasoning as its own part, closed before text and tool calls', async () => {
     const { cogitator } = fakeCogitator(async (_agent, options) => {
       options.onReasoning?.('Think');

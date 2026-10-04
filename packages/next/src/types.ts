@@ -5,7 +5,7 @@ import type {
   RunResult,
   ToolApprovalDecision,
 } from '@cogitator-ai/types';
-import type { PendingApproval } from './streaming/protocol.js';
+import type { PendingApproval, Usage } from './streaming/protocol.js';
 
 export type { Message, ToolCall, ToolResult, RunResult, ToolApprovalDecision, PendingApproval };
 
@@ -73,17 +73,7 @@ export interface ResumeHandlerOptions {
 export interface AgentResponse {
   output: string;
   threadId: string;
-  usage: {
-    inputTokens: number;
-    outputTokens: number;
-    totalTokens: number;
-    /** Hidden reasoning tokens, already counted in `outputTokens` */
-    reasoningTokens?: number;
-    /** Input tokens read from the provider's prompt cache */
-    cachedInputTokens?: number;
-    /** Input tokens written to the provider's prompt cache */
-    cacheWriteTokens?: number;
-  };
+  usage: Usage;
   toolCalls: ToolCall[];
   trace?: {
     traceId: string;

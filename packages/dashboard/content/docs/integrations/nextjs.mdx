@@ -13,7 +13,7 @@ pnpm add @cogitator-ai/next @cogitator-ai/core
 
 ## Server: Chat Handler
 
-`createChatHandler` turns a Cogitator agent into a streaming API route handler. It accepts a standard `Request`, runs the agent with token streaming enabled, and returns an SSE stream of typed events (`start`, `text-*`, `reasoning-*`, `tool-call-*`, `tool-result`, `approval-required`, `finish`, `error`) ending with `data: [DONE]`. The events are the [server adapters' streaming protocol](/docs/server-adapters#streaming-protocol), with the `threadId` added to `finish` — consume them with `useCogitatorChat`. The handlers are plain `(req: Request) => Promise<Response>` functions, so they also work in other fetch-based runtimes.
+`createChatHandler` turns a Cogitator agent into a streaming API route handler. It accepts a standard `Request`, runs the agent with token streaming enabled, and returns an SSE stream of typed events (`start`, `text-*`, `reasoning-*`, `tool-call-*`, `tool-result`, `approval-required`, `finish`, `error`) ending with `data: [DONE]`. The events are the [server adapters' streaming protocol](/docs/server-adapters#streaming-protocol), with the `threadId` added to `finish` — consume them with `useCogitatorChat`. `finish` carries the run's `usage`, the same object `createAgentHandler` answers: `inputTokens`, `outputTokens`, `totalTokens`, and `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the model reported them. The handlers are plain `(req: Request) => Promise<Response>` functions, so they also work in other fetch-based runtimes.
 
 The default body is `{ messages, threadId?, metadata? }`.
 
@@ -93,7 +93,14 @@ The response shape:
 interface AgentResponse {
   output: string;
   threadId: string;
-  usage: { inputTokens: number; outputTokens: number; totalTokens: number };
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    reasoningTokens?: number;
+    cachedInputTokens?: number;
+    cacheWriteTokens?: number;
+  };
   toolCalls: ToolCall[];
   trace?: { traceId: string; spans: unknown[] };
   reasoning?: string;

@@ -225,6 +225,24 @@ describe('createChatHandler streaming', () => {
     expect(new Set(starts).size).toBe(2);
   });
 
+  it('ends with the usage of the JSON response, reasoning and cache tokens included', async () => {
+    const usage = {
+      inputTokens: 10,
+      outputTokens: 20,
+      totalTokens: 30,
+      reasoningTokens: 12,
+      cachedInputTokens: 8,
+      cacheWriteTokens: 2,
+    };
+    const { cogitator } = cogitatorWith(() =>
+      runResult({ output: 'ok', usage: { ...usage, cost: 0.5, duration: 5 } })
+    );
+    const res = await createChatHandler(cogitator, agent)(chatRequest(userBody));
+    const finish = parseEvents(await res.text()).find((e) => e.type === 'finish');
+
+    expect(finish?.usage).toEqual(usage);
+  });
+
   it('includes the server thread id in the finish event', async () => {
     const { cogitator } = cogitatorWith(() => runResult({ output: 'x', threadId: 'thread_42' }));
     const res = await createChatHandler(cogitator, agent)(chatRequest(userBody));

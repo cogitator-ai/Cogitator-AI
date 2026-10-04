@@ -55,7 +55,7 @@ POST   /api/agents/:name/stream       - Run agent (SSE stream)
 POST   /api/agents/:name/resume       - Resume a run paused for tool approvals
 ```
 
-Bodies are validated with JSON Schema (`input` must contain more than whitespace, the same rule the other adapters share from `@cogitator-ai/server-shared`); validation failures return `400 INVALID_INPUT` before the model is called. The `usage` of a run answer carries `inputTokens`, `outputTokens` and `totalTokens`, plus `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the model reported them, the same shape as every other adapter. The agent list exposes `config.description`, never the instructions. The authenticated `userId` is passed to the run, and runs are aborted when the client disconnects.
+Bodies are validated with JSON Schema (`input` must contain more than whitespace, the same rule the other adapters share from `@cogitator-ai/server-shared`); validation failures return `400 INVALID_INPUT` before the model is called. The `usage` of a run answer carries `inputTokens`, `outputTokens` and `totalTokens`, plus `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the model reported them, the same shape as every other adapter. The `finish` event of an agent stream carries the same `usage` (never the run's cost or duration). The agent list exposes `config.description`, never the instructions. The authenticated `userId` is passed to the run, and runs are aborted when the client disconnects.
 
 ### Threads (Memory)
 
@@ -203,24 +203,24 @@ while (true) {
 
 ### Stream Events
 
-| Event Type          | Description                              |
-| ------------------- | ---------------------------------------- |
-| `start`             | Stream started, includes message ID      |
-| `text-start`        | Text generation started                  |
-| `text-delta`        | Text chunk received                      |
-| `text-end`          | Text generation finished                 |
-| `reasoning-start`   | Reasoning summary started                |
-| `reasoning-delta`   | Reasoning summary chunk received         |
-| `reasoning-end`     | Reasoning summary finished               |
-| `tool-call-start`   | Tool call started (`id` = model call id) |
-| `tool-call-delta`   | Tool call arguments (JSON text)          |
-| `tool-call-end`     | Tool call finished                       |
-| `tool-result`       | Tool result (`toolCallId` = call id)     |
-| `approval-required` | Run paused: `{ threadId, approvals }`    |
-| `workflow`          | Workflow event (node started/completed)  |
-| `swarm`             | Swarm event (agent started/completed)    |
-| `error`             | Error occurred                           |
-| `finish`            | Stream finished, includes usage stats    |
+| Event Type          | Description                                 |
+| ------------------- | ------------------------------------------- |
+| `start`             | Stream started, includes message ID         |
+| `text-start`        | Text generation started                     |
+| `text-delta`        | Text chunk received                         |
+| `text-end`          | Text generation finished                    |
+| `reasoning-start`   | Reasoning summary started                   |
+| `reasoning-delta`   | Reasoning summary chunk received            |
+| `reasoning-end`     | Reasoning summary finished                  |
+| `tool-call-start`   | Tool call started (`id` = model call id)    |
+| `tool-call-delta`   | Tool call arguments (JSON text)             |
+| `tool-call-end`     | Tool call finished                          |
+| `tool-result`       | Tool result (`toolCallId` = call id)        |
+| `approval-required` | Run paused: `{ threadId, approvals }`       |
+| `workflow`          | Workflow event (node started/completed)     |
+| `swarm`             | Swarm event (agent started/completed)       |
+| `error`             | Error occurred                              |
+| `finish`            | Stream finished, with the `usage` of `/run` |
 
 While an SSE stream is open it writes a `: keep-alive` comment every `sseHeartbeatMs` (5 s by default, `0` turns it off), which SSE clients skip, so a proxy or load balancer does not close a stream that waits on a slow tool or model (nginx closes a connection silent for 60 s).
 

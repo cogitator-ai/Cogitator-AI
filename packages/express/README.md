@@ -58,7 +58,7 @@ POST   /api/agents/:name/stream       - Run agent (SSE stream)
 POST   /api/agents/:name/resume       - Resume a run paused for tool approvals
 ```
 
-Run/stream body: `{ input: string; context?: object; threadId?: string }`. `input` must contain more than whitespace and `threadId`, when sent, must be a non-empty string (`400 INVALID_INPUT` otherwise, before the model is called). The validator comes from `@cogitator-ai/server-shared`, so Express, Fastify, Hono and Koa refuse exactly the same bodies. The `usage` of a run answer carries `inputTokens`, `outputTokens` and `totalTokens`, plus `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the model reported them, the same shape as every other adapter. The agent list exposes `config.description`, never the agent instructions. The authenticated `userId` (from `auth`) is passed to the run, and the run is aborted when the client disconnects.
+Run/stream body: `{ input: string; context?: object; threadId?: string }`. `input` must contain more than whitespace and `threadId`, when sent, must be a non-empty string (`400 INVALID_INPUT` otherwise, before the model is called). The validator comes from `@cogitator-ai/server-shared`, so Express, Fastify, Hono and Koa refuse exactly the same bodies. The `usage` of a run answer carries `inputTokens`, `outputTokens` and `totalTokens`, plus `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the model reported them, the same shape as every other adapter. The `finish` event of an agent stream carries the same `usage` (never the run's cost or duration). The agent list exposes `config.description`, never the agent instructions. The authenticated `userId` (from `auth`) is passed to the run, and the run is aborted when the client disconnects.
 
 ### Threads (Memory)
 
@@ -216,7 +216,7 @@ while (true) {
 
 While an SSE stream is open it writes a `: keep-alive` comment every `sseHeartbeatMs` (5 s by default, `0` turns it off), which SSE clients skip, so a proxy or load balancer does not close a stream that waits on a slow tool or model (nginx closes a connection silent for 60 s).
 
-Events: `start`, `text-start`/`text-delta`/`text-end`, `tool-call-start`/`tool-call-delta`/`tool-call-end` (with the model's tool call id), `tool-result` (`toolCallId` matches the call), `approval-required`, `error` (`{ message, code }`), and `finish` with usage, followed by `data: [DONE]`.
+Events: `start`, `text-start`/`text-delta`/`text-end`, `tool-call-start`/`tool-call-delta`/`tool-call-end` (with the model's tool call id), `tool-result` (`toolCallId` matches the call), `approval-required`, `error` (`{ message, code }`), and `finish` with the run's `usage` (the same object as the JSON answer), followed by `data: [DONE]`.
 
 When the agent sets `reasoning: { summary: true }` and the provider returns a reasoning summary, it streams as its own part: `reasoning-start`, `reasoning-delta` (`{ id, delta }`), `reasoning-end`. A reasoning part is always closed before text or a tool call starts, so reasoning and text parts never interleave.
 

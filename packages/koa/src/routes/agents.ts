@@ -200,11 +200,7 @@ export function createAgentRoutes(): Router<CogitatorState> {
       if (result.status === 'paused' && result.pendingApprovals) {
         writer.approvalRequired(result.threadId, result.pendingApprovals);
       }
-      writer.finish(messageId, {
-        inputTokens: result.usage.inputTokens,
-        outputTokens: result.usage.outputTokens,
-        totalTokens: result.usage.totalTokens,
-      });
+      writer.finish(messageId, result.usage);
     } catch (error) {
       if (!abortController.signal.aborted) {
         endParts();

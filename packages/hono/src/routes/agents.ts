@@ -195,11 +195,7 @@ export function createAgentRoutes(): Hono<HonoEnv> {
         if (result.status === 'paused' && result.pendingApprovals) {
           await writer.approvalRequired(result.threadId, result.pendingApprovals);
         }
-        await writer.finish(messageId, {
-          inputTokens: result.usage.inputTokens,
-          outputTokens: result.usage.outputTokens,
-          totalTokens: result.usage.totalTokens,
-        });
+        await writer.finish(messageId, result.usage);
       } catch (error) {
         if (abortController.signal.aborted) return;
         endParts();

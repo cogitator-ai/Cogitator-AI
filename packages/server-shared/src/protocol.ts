@@ -1,7 +1,21 @@
+import { toRunUsage } from './usage.js';
+
+/**
+ * Token usage of a finished agent run, the same in the JSON run response and in the
+ * stream's `finish` event.
+ *
+ * The provider-specific counts are present only when the model reported them.
+ */
 export interface Usage {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  /** Hidden reasoning tokens, already counted in `outputTokens` */
+  reasoningTokens?: number;
+  /** Input tokens read from the provider's prompt cache, already counted in `inputTokens` */
+  cachedInputTokens?: number;
+  /** Input tokens written to the provider's prompt cache, already counted in `inputTokens` */
+  cacheWriteTokens?: number;
 }
 
 export type StreamEvent =
@@ -183,8 +197,12 @@ export function createErrorEvent(message: string, code?: string): ErrorEvent {
   return { type: 'error', message, code };
 }
 
-export function createFinishEvent(messageId: string, usage?: Usage): FinishEvent {
-  return { type: 'finish', messageId, usage };
+/**
+ * The last event of a stream. `usage` goes through `toRunUsage`, so a run's `RunResult.usage`
+ * can be passed as is: the event carries exactly the counts of the JSON run response.
+ */
+export function createFinishEvent(messageId: string, usage?: Readonly<Usage>): FinishEvent {
+  return { type: 'finish', messageId, usage: usage && toRunUsage(usage) };
 }
 
 export function createWorkflowEvent(event: string, data: unknown): WorkflowEvent {

@@ -136,7 +136,11 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
           },
         },
         responses: {
-          200: { description: 'SSE stream', content: { 'text/event-stream': {} } },
+          200: {
+            description:
+              'SSE stream of protocol events. It ends with a finish event (StreamFinishEvent) whose usage matches the JSON run response',
+            content: { 'text/event-stream': {} },
+          },
         },
       },
     };
@@ -431,32 +435,45 @@ function generateSchemas(): Record<string, unknown> {
         defaultDecision: { $ref: '#/components/schemas/ToolApprovalDecision' },
       },
     },
+    RunUsage: {
+      type: 'object',
+      description:
+        'Token usage of a run, the same in the JSON response and in the finish event of the stream',
+      required: ['inputTokens', 'outputTokens', 'totalTokens'],
+      properties: {
+        inputTokens: { type: 'number' },
+        outputTokens: { type: 'number' },
+        totalTokens: { type: 'number' },
+        reasoningTokens: {
+          type: 'number',
+          description: 'Hidden reasoning tokens, already counted in outputTokens',
+        },
+        cachedInputTokens: {
+          type: 'number',
+          description: "Input tokens read from the provider's prompt cache",
+        },
+        cacheWriteTokens: {
+          type: 'number',
+          description: "Input tokens written to the provider's prompt cache",
+        },
+      },
+    },
+    StreamFinishEvent: {
+      type: 'object',
+      description: 'The last event of a stream, sent before `data: [DONE]`',
+      required: ['type', 'messageId'],
+      properties: {
+        type: { type: 'string', enum: ['finish'] },
+        messageId: { type: 'string' },
+        usage: { $ref: '#/components/schemas/RunUsage' },
+      },
+    },
     AgentRunResponse: {
       type: 'object',
       properties: {
         output: { type: 'string' },
         threadId: { type: 'string' },
-        usage: {
-          type: 'object',
-          required: ['inputTokens', 'outputTokens', 'totalTokens'],
-          properties: {
-            inputTokens: { type: 'number' },
-            outputTokens: { type: 'number' },
-            totalTokens: { type: 'number' },
-            reasoningTokens: {
-              type: 'number',
-              description: 'Hidden reasoning tokens, already counted in outputTokens',
-            },
-            cachedInputTokens: {
-              type: 'number',
-              description: "Input tokens read from the provider's prompt cache",
-            },
-            cacheWriteTokens: {
-              type: 'number',
-              description: "Input tokens written to the provider's prompt cache",
-            },
-          },
-        },
+        usage: { $ref: '#/components/schemas/RunUsage' },
         toolCalls: { type: 'array' },
         reasoning: { type: 'string' },
         status: { type: 'string', enum: ['completed', 'paused'] },

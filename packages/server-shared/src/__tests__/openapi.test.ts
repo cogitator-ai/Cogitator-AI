@@ -36,9 +36,7 @@ describe('generateOpenAPISpec', () => {
     );
 
   it('documents the provider token counts of a run', () => {
-    expect(
-      Object.keys(property('AgentRunResponse', 'properties', 'usage', 'properties') ?? {})
-    ).toEqual([
+    expect(Object.keys(property('RunUsage', 'properties') ?? {})).toEqual([
       'inputTokens',
       'outputTokens',
       'totalTokens',
@@ -46,6 +44,12 @@ describe('generateOpenAPISpec', () => {
       'cachedInputTokens',
       'cacheWriteTokens',
     ]);
+  });
+
+  it('documents the same usage for the JSON run response and the finish event of the stream', () => {
+    const usage = { $ref: '#/components/schemas/RunUsage' };
+    expect(property('AgentRunResponse', 'properties', 'usage')).toEqual(usage);
+    expect(property('StreamFinishEvent', 'properties', 'usage')).toEqual(usage);
   });
 
   it('documents that a run input must contain more than whitespace', () => {

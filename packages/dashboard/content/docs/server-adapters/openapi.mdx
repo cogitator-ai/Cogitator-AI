@@ -150,6 +150,8 @@ The generated spec includes schemas for all request and response types:
 - `AgentListResponse` — list of agent names, descriptions, and tool names
 - `AgentRunRequest` — input (required), context, threadId
 - `AgentRunResponse` — output, threadId, usage, toolCalls, reasoning, status (`completed` | `paused`), pendingApprovals
+- `RunUsage` — inputTokens, outputTokens, totalTokens, and reasoningTokens, cachedInputTokens, cacheWriteTokens when the model reported them
+- `StreamFinishEvent` — the last event of an agent stream: type, messageId, usage (the same `RunUsage` as the JSON run response)
 - `AgentResumeRequest` — threadId (required), decisions, defaultDecision
 - `PendingApproval` — toolCallId, toolName, arguments, description, sideEffects
 - `ToolApprovalDecision` — approved (required), reason

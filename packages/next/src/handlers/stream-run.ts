@@ -137,17 +137,7 @@ export function streamAgentRun({ req, runContext, start, afterRun }: StreamRunOp
         await afterRun(result);
       }
 
-      await emit(() =>
-        sw.finish(
-          messageId,
-          {
-            inputTokens: result.usage.inputTokens,
-            outputTokens: result.usage.outputTokens,
-            totalTokens: result.usage.totalTokens,
-          },
-          result.threadId
-        )
-      );
+      await emit(() => sw.finish(messageId, result.usage, result.threadId));
     } catch (err) {
       await queue;
       if (!sw.isClosed) {

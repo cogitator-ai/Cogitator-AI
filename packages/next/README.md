@@ -406,7 +406,7 @@ data: {"type":"finish","messageId":"msg-1","usage":{...},"threadId":"thread-abc"
 data: [DONE]
 ```
 
-An agent with `reasoning: { summary: true }` also streams its reasoning summary as `reasoning-start`, `reasoning-delta` and `reasoning-end` events. A text or reasoning block opens with its first delta and is closed before a block of the other kind, a tool call or `finish`, so blocks never overlap. `useCogitatorChat` collects the deltas into `message.reasoning` (and calls `onReasoning` with each one), and `createAgentHandler` returns the summary as `reasoning` next to `usage.reasoningTokens`, `usage.cachedInputTokens` and `usage.cacheWriteTokens` when the provider reports them.
+An agent with `reasoning: { summary: true }` also streams its reasoning summary as `reasoning-start`, `reasoning-delta` and `reasoning-end` events. A text or reasoning block opens with its first delta and is closed before a block of the other kind, a tool call or `finish`, so blocks never overlap. `useCogitatorChat` collects the deltas into `message.reasoning` (and calls `onReasoning` with each one), and `createAgentHandler` returns the summary as `reasoning` next to `usage.reasoningTokens`, `usage.cachedInputTokens` and `usage.cacheWriteTokens` when the provider reports them. The `finish` event of `createChatHandler` carries the same `usage`, these counts included.
 
 A run that pauses for [approvals](#approvals) sends `{"type":"approval-required","threadId":"…","approvals":[…]}` after the open block is closed and before `finish`.
 

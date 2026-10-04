@@ -87,6 +87,23 @@ describe('blank input', () => {
   );
 });
 
+const detailedUsage = {
+  inputTokens: 1,
+  outputTokens: 2,
+  totalTokens: 3,
+  reasoningTokens: 5,
+  cachedInputTokens: 4,
+  cacheWriteTokens: 2,
+};
+
+function finishEvent(sse: string): unknown {
+  return sse
+    .split('\n')
+    .filter((line) => line.startsWith('data: {'))
+    .map((line) => JSON.parse(line.slice('data: '.length)) as { type: string })
+    .find((event) => event.type === 'finish');
+}
+
 describe('run usage', () => {
   it('passes the provider token counts through, like Tetsu and Next', async () => {
     const { base } = await start(
@@ -104,6 +121,18 @@ describe('run usage', () => {
       reasoningTokens: 5,
       cachedInputTokens: 4,
       cacheWriteTokens: 2,
+    });
+  });
+
+  it('ends a stream with a finish event carrying the same counts, without the cost', async () => {
+    const { base } = await start(
+      vi.fn().mockResolvedValue(runResult({ ...detailedUsage, cost: 0.5 }))
+    );
+    const text = await (await post(`${base}/agents/bot/stream`, { input: 'hi' })).text();
+    expect(finishEvent(text)).toEqual({
+      type: 'finish',
+      messageId: expect.any(String),
+      usage: detailedUsage,
     });
   });
 });
