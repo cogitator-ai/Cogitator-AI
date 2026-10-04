@@ -35,6 +35,7 @@ export {
   exec,
   webSearch,
   webScrape,
+  createWebScrapeTool,
   sqlQuery,
   vectorSearch,
   sendEmail,
@@ -54,7 +55,12 @@ export {
   createSelfTools,
   loadCustomTools,
 } from './tools/index';
-export type { MemoryToolsConfig, CoreFactsLike, SchedulerToolsConfig } from './tools/index';
+export type {
+  MemoryToolsConfig,
+  CoreFactsLike,
+  SchedulerToolsConfig,
+  WebScrapeOptions,
+} from './tools/index';
 export {
   RobotsPolicy,
   robotsRulesFor,

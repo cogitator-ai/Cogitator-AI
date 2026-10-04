@@ -20,7 +20,7 @@ export { httpRequest } from './http';
 export { exec } from './exec';
 
 export { webSearch } from './web-search';
-export { webScrape } from './web-scrape';
+export { webScrape, createWebScrapeTool, type WebScrapeOptions } from './web-scrape';
 export { sqlQuery } from './sql-query';
 export { vectorSearch } from './vector-search';
 export { sendEmail } from './email';

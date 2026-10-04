@@ -3177,6 +3177,8 @@ await robots.allows('https://example.com/news/today'); // true or false
 
 The token defaults to the User-Agent's first word (`NewsBot`); pass `token` to match another. `robotsRulesFor(text, token)` and `robotsAllowsPath(rules, path)` expose the parser for robots.txt files you already have.
 
+`createWebScrapeTool({ userAgent, robots })` builds a `web_scrape` tool with your User-Agent and a robots.txt check on every hop, redirects included (a disallowed page comes back as an `error`). The plain `webScrape` keeps the default User-Agent and checks nothing.
+
 ## Tool Caching
 
 Cache tool results to avoid redundant API calls with exact or semantic matching. See [Tool Caching](https://cogitator.app/docs/tools/tool-caching).

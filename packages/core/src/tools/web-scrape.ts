@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { RobotsChecker } from '@cogitator-ai/types';
 import { tool } from '../tool';
 import { createLinkedAbortController, getAbortErrorMessage } from '../utils/abort';
 import {
@@ -285,105 +286,147 @@ function extractBySelector(
   return paragraphs.length > 0 ? paragraphs.join('\n') : null;
 }
 
-export const webScrape = tool({
-  name: 'web_scrape',
-  description:
-    'Fetch and extract content from a web page. Supports text, markdown, or HTML output. Can extract specific elements using CSS selectors.',
-  parameters: webScrapeParams,
-  category: 'web',
-  tags: ['scrape', 'web', 'extract', 'html'],
-  sideEffects: ['network'],
-  execute: async (
-    {
-      url,
-      selector,
-      format = 'text',
-      maxLength = 50000,
-      timeout = 30000,
-      includeLinks = false,
-      includeImages = false,
-    },
-    context
-  ) => {
-    const abort = createLinkedAbortController(context?.signal, timeout);
+/** How a `web_scrape` tool fetches pages. */
+export interface WebScrapeOptions {
+  /** Sent as the User-Agent. Default: a CogitatorBot string */
+  userAgent?: string;
+  /**
+   * Checks every URL, redirect targets included, against the site's robots.txt before fetching
+   * it, e.g. `new RobotsPolicy({ userAgent })`. A disallowed page is reported as an error
+   */
+  robots?: RobotsChecker;
+}
 
-    try {
-      const response = await fetch(url, {
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (compatible; CogitatorBot/1.0; +https://github.com/cogitator-ai/Cogitator-AI)',
-          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        },
-        signal: abort.signal,
-      });
+const DEFAULT_USER_AGENT =
+  'Mozilla/5.0 (compatible; CogitatorBot/1.0; +https://github.com/cogitator-ai/Cogitator-AI)';
+const MAX_REDIRECTS = 5;
 
-      if (!response.ok) {
-        return { error: `HTTP ${response.status}: ${response.statusText}`, url };
-      }
+/**
+ * A `web_scrape` tool with its own User-Agent and, optionally, a robots.txt checker. With a
+ * checker the tool follows redirects itself so every hop is checked.
+ */
+export function createWebScrapeTool(options: WebScrapeOptions = {}) {
+  const userAgent = options.userAgent ?? DEFAULT_USER_AGENT;
+  const robots = options.robots;
 
-      const contentType = response.headers.get('content-type') ?? '';
-      if (!contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
-        return { error: `Not an HTML page: ${contentType}`, url };
-      }
-
-      const page = await response.text();
-      const pageTokens = tokenizeHtml(page);
-      const title = extractTitle(pageTokens);
-
-      let html = page;
-      let tokens = pageTokens;
-      if (selector) {
-        const extracted = extractBySelector(page, pageTokens, selector);
-        if (!extracted) {
-          return { error: `Selector "${selector}" not found on page`, url };
-        }
-        html = extracted;
-        tokens = tokenizeHtml(extracted);
-      }
-
-      let content: string;
-      switch (format) {
-        case 'markdown':
-          content = renderMarkdown(tokens);
-          break;
-        case 'html':
-          content = html;
-          break;
-        default:
-          content = renderText(tokens);
-      }
-
-      const truncated = content.length > maxLength;
-      if (truncated) {
-        content = content.slice(0, maxLength);
-      }
-
-      const result: ScrapeResult = {
+  return tool({
+    name: 'web_scrape',
+    description:
+      'Fetch and extract content from a web page. Supports text, markdown, or HTML output. Can extract specific elements using CSS selectors.',
+    parameters: webScrapeParams,
+    category: 'web',
+    tags: ['scrape', 'web', 'extract', 'html'],
+    sideEffects: ['network'],
+    execute: async (
+      {
         url,
-        title,
-        content,
-        format,
-        length: content.length,
-        truncated,
-      };
+        selector,
+        format = 'text',
+        maxLength = 50000,
+        timeout = 30000,
+        includeLinks = false,
+        includeImages = false,
+      },
+      context
+    ) => {
+      const abort = createLinkedAbortController(context?.signal, timeout);
 
-      if (includeLinks) {
-        result.links = extractLinks(tokens, url).slice(0, 50);
-      }
+      try {
+        const headers = {
+          'User-Agent': userAgent,
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        };
+        let current = url;
+        let response: Response | undefined;
+        for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+          if (robots && !(await robots.allows(current))) {
+            return { error: `robots.txt does not allow fetching ${current}`, url };
+          }
+          response = await fetch(current, {
+            headers,
+            signal: abort.signal,
+            redirect: robots ? 'manual' : 'follow',
+          });
+          const location = response.headers.get('location');
+          if (!robots || response.status < 300 || response.status >= 400 || !location) break;
+          current = new URL(location, current).href;
+          response = undefined;
+        }
+        if (!response) {
+          return { error: `Too many redirects (max ${MAX_REDIRECTS})`, url };
+        }
 
-      if (includeImages) {
-        result.images = extractImages(tokens, url).slice(0, 20);
-      }
+        if (!response.ok) {
+          return { error: `HTTP ${response.status}: ${response.statusText}`, url };
+        }
 
-      return result;
-    } catch (err) {
-      const error = err as Error;
-      if (error.name === 'AbortError') {
-        return { error: getAbortErrorMessage('Request', abort, timeout), url };
+        const contentType = response.headers.get('content-type') ?? '';
+        if (!contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
+          return { error: `Not an HTML page: ${contentType}`, url };
+        }
+
+        const page = await response.text();
+        const pageTokens = tokenizeHtml(page);
+        const title = extractTitle(pageTokens);
+
+        let html = page;
+        let tokens = pageTokens;
+        if (selector) {
+          const extracted = extractBySelector(page, pageTokens, selector);
+          if (!extracted) {
+            return { error: `Selector "${selector}" not found on page`, url };
+          }
+          html = extracted;
+          tokens = tokenizeHtml(extracted);
+        }
+
+        let content: string;
+        switch (format) {
+          case 'markdown':
+            content = renderMarkdown(tokens);
+            break;
+          case 'html':
+            content = html;
+            break;
+          default:
+            content = renderText(tokens);
+        }
+
+        const truncated = content.length > maxLength;
+        if (truncated) {
+          content = content.slice(0, maxLength);
+        }
+
+        const result: ScrapeResult = {
+          url,
+          title,
+          content,
+          format,
+          length: content.length,
+          truncated,
+        };
+
+        if (includeLinks) {
+          result.links = extractLinks(tokens, url).slice(0, 50);
+        }
+
+        if (includeImages) {
+          result.images = extractImages(tokens, url).slice(0, 20);
+        }
+
+        return result;
+      } catch (err) {
+        const error = err as Error;
+        if (error.name === 'AbortError') {
+          return { error: getAbortErrorMessage('Request', abort, timeout), url };
+        }
+        return { error: error.message, url };
+      } finally {
+        abort.cleanup();
       }
-      return { error: error.message, url };
-    } finally {
-      abort.cleanup();
-    }
-  },
-});
+    },
+  });
+}
+
+/** The `web_scrape` tool with the default User-Agent and no robots.txt check. */
+export const webScrape = createWebScrapeTool();
