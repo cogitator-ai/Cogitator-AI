@@ -1,5 +1,28 @@
 # @cogitator-ai/core
 
+## 0.27.0
+
+### Minor Changes
+
+- [`13f8ca5`](https://github.com/cogitator-ai/Cogitator-AI/commit/13f8ca50083debbadeebbc2e30e4432c3234b0fe) - New `cog.knowsProvider(name)` tells whether a `name/...` model prefix routes to that provider: a backend in `llm.backends`, a built-in provider or a registered plugin. It is the check `cog.route()` uses, so code that hands a model string to another process (such as `@cogitator-ai/worker`) can tell a provider prefix from a model name that merely contains a slash, like `meta-llama/llama-4-scout`.
+
+- [`063ee72`](https://github.com/cogitator-ai/Cogitator-AI/commit/063ee7289ebb670da69951b93843652bbf0465b2) - `RunResult.usage.cost` uses what the provider charged when it says so. OpenAI-compatible services that add the call's price to `usage` (OpenRouter does, as `usage.cost`) now pass it on as `ChatUsage.cost`, and the runtime adds those prices up instead of estimating them, so runs on models the model registry does not list (for example DeepSeek or Qwen through OpenRouter) no longer report a cost of 0. Calls without a reported price are priced from the registry as before, now with the full model string (`openrouter/deepseek/deepseek-v4-pro`) so the registry can pick that provider's listing. The cost so far is kept in run checkpoints, so a paused and resumed run adds to it. Thought trees and cost estimates use the same rules.
+
+### Patch Changes
+
+- [`8a386b3`](https://github.com/cogitator-ai/Cogitator-AI/commit/8a386b3fb79bf12a89db0ae72b66216b0a828bc7) - Structured output with tools now works on OpenAI-compatible servers other than OpenAI. When an agent has both tools and a `responseFormat`, requests to such servers (OpenRouter, DeepSeek, Groq, Together, Mistral, vLLM or an `OpenAIBackend` with a custom `baseUrl`) carry the JSON schema as a system-prompt instruction instead of `response_format`. Many of these providers enforced `response_format` from the first turn, so the model answered in JSON without calling its tools, or ignored the schema: through OpenRouter, DeepSeek V4 Pro called the tool in 1 of 5 runs and matched the schema in none, and Qwen 3.8 Flash never matched it. With the schema in the prompt all tested models (DeepSeek, GPT-6 Luna, Qwen, MiMo, GLM) called the tool and matched the schema every time. The official OpenAI API and Azure OpenAI, and every request without tools, still use `response_format`.
+
+- [`9c8ca91`](https://github.com/cogitator-ai/Cogitator-AI/commit/9c8ca914282662b93d0a42f5913c2dde8064eb57) - `LangfuseExporter.flush()` and `shutdown()` now wait until Langfuse has received the queued events. They called the Langfuse client's `flush()` and `shutdown()`, which return immediately without waiting, so traces sent just before a process exited could be lost. They now await `flushAsync()` and `shutdownAsync()`. A hand-written type declaration for `langfuse` hid the difference, and it is gone together with the ones for `nodemailer` and `better-sqlite3`: the exporter, the `send_email` tool and the `sql_query` tool are now checked against the real packages' types. Generations no longer send unset `temperature` or `maxTokens` as `undefined` model parameters.
+
+- [`a208f5f`](https://github.com/cogitator-ai/Cogitator-AI/commit/a208f5f123b6ba86e58223829fd8435ba766c5e9) - Memory failures are no longer dropped silently. Adapters report most failures as a failed `MemoryResult` rather than by throwing, and the runtime only caught throws, so a history entry the store refused (for example every tool call turn on Postgres) was lost without a warning and `onMemoryError` was never called. Failed `addEntry`, `getThread`, `createThread` and history `getEntries` results are now logged and passed to `onMemoryError` (`'save'` or `'load'`), and the run still goes on, as documented.
+
+- [`8a386b3`](https://github.com/cogitator-ai/Cogitator-AI/commit/8a386b3fb79bf12a89db0ae72b66216b0a828bc7) - `OpenAIBackend` accepts any provider name, not only the built-in ones, so an OpenAI-compatible service registered as a custom backend reports its own name in errors and traces: `new OpenAIBackend({ apiKey, baseUrl: 'https://openrouter.ai/api/v1', provider: 'openrouter' })` now compiles and its errors say `openrouter` instead of `openai`.
+- Updated dependencies [[`65786f6`](https://github.com/cogitator-ai/Cogitator-AI/commit/65786f66fc66bac3ee0997c7a467546b403e07c7), [`69ff26f`](https://github.com/cogitator-ai/Cogitator-AI/commit/69ff26fff42fe23e5be9ec3eef483837f304aac6), [`f6f8c58`](https://github.com/cogitator-ai/Cogitator-AI/commit/f6f8c58a837be665febfb99d2b670e913df2ff36), [`5caa2aa`](https://github.com/cogitator-ai/Cogitator-AI/commit/5caa2aa17e737fb7c5fcd56f3acab57744af7217), [`063ee72`](https://github.com/cogitator-ai/Cogitator-AI/commit/063ee7289ebb670da69951b93843652bbf0465b2), [`e150c83`](https://github.com/cogitator-ai/Cogitator-AI/commit/e150c83e8c9dc1bd9961d0a3413cf31d0d9175f1)]:
+  - @cogitator-ai/memory@0.11.1
+  - @cogitator-ai/models@18.2.0
+  - @cogitator-ai/types@0.30.0
+  - @cogitator-ai/sandbox@0.5.1
+
 ## 0.26.2
 
 ### Patch Changes

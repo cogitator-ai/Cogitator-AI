@@ -1,5 +1,14 @@
 # @cogitator-ai/workflows
 
+## 0.10.3
+
+### Patch Changes
+
+- [`cdc2b80`](https://github.com/cogitator-ai/Cogitator-AI/commit/cdc2b801b6914b50318d080b0eba5d8547b7c23a) - A timer interrupted by a pause or an abort no longer counts as completed. The timer node swallowed the abort and returned `{ cancelled: true }`, so the run checkpointed it as done and `resume()` ran the following nodes at once, skipping the rest of the wait (an embargo of 3 s paused after 0.5 s released 2.4 s early). The node now fails with an `AbortError` like a human node does, so it is not checkpointed and a resumed run waits again. A persisted timer (`persist: true` with a `timerStore`) is cancelled in its store and marked as interrupted, and on resume the node waits only until the original `firesAt`. A persisted timer cancelled through its store while the node waits (`TimerManager.cancel`) now reports `cancelled: true` and `onCancelled` instead of `onFired`.
+- Updated dependencies [[`8a386b3`](https://github.com/cogitator-ai/Cogitator-AI/commit/8a386b3fb79bf12a89db0ae72b66216b0a828bc7), [`13f8ca5`](https://github.com/cogitator-ai/Cogitator-AI/commit/13f8ca50083debbadeebbc2e30e4432c3234b0fe), [`9c8ca91`](https://github.com/cogitator-ai/Cogitator-AI/commit/9c8ca914282662b93d0a42f5913c2dde8064eb57), [`a208f5f`](https://github.com/cogitator-ai/Cogitator-AI/commit/a208f5f123b6ba86e58223829fd8435ba766c5e9), [`8a386b3`](https://github.com/cogitator-ai/Cogitator-AI/commit/8a386b3fb79bf12a89db0ae72b66216b0a828bc7), [`063ee72`](https://github.com/cogitator-ai/Cogitator-AI/commit/063ee7289ebb670da69951b93843652bbf0465b2)]:
+  - @cogitator-ai/core@0.27.0
+  - @cogitator-ai/types@0.30.0
+
 ## 0.10.2
 
 ### Patch Changes

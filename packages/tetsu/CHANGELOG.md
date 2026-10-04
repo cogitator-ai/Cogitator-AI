@@ -1,5 +1,22 @@
 # @cogitator-ai/tetsu
 
+## 0.4.0
+
+### Minor Changes
+
+- [`1c16684`](https://github.com/cogitator-ai/Cogitator-AI/commit/1c16684976705ab5c34778728f27f7efd247242f) - An `input` of only whitespace is now refused with `422 VALIDATION_FAILED` on run, stream and swarm routes and over the WebSocket. It used to reach the model, which answered and was billed.
+
+  Long runs on Bun are no longer cut off. `Bun.serve` closes a connection silent for 10 seconds, but streams sent their keep-alive comment only every 15, so a stream waiting on a slow tool ended with "terminated (other side closed)", and a JSON run did too. Streams now write a heartbeat every 5 seconds (new `sseHeartbeatMs` option, `0` turns it off), and the JSON run routes lift Bun's idle timeout for their own request once the body is validated.
+
+### Patch Changes
+
+- [`9d40b76`](https://github.com/cogitator-ai/Cogitator-AI/commit/9d40b763f9fb25f9cb7cb2aba8a52ff2989fc5e9) - The `finish` event of `/agents/:name/stream` and `/agents/:name/resume/stream` now carries the same `usage` as the JSON run response: `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` are included when the model reported them. Before, the stream sent only the input, output and total tokens, so a streaming client lost the reasoning and cache counts. The OpenAPI description of both routes says so.
+- Updated dependencies [[`8a386b3`](https://github.com/cogitator-ai/Cogitator-AI/commit/8a386b3fb79bf12a89db0ae72b66216b0a828bc7), [`13f8ca5`](https://github.com/cogitator-ai/Cogitator-AI/commit/13f8ca50083debbadeebbc2e30e4432c3234b0fe), [`9c8ca91`](https://github.com/cogitator-ai/Cogitator-AI/commit/9c8ca914282662b93d0a42f5913c2dde8064eb57), [`a208f5f`](https://github.com/cogitator-ai/Cogitator-AI/commit/a208f5f123b6ba86e58223829fd8435ba766c5e9), [`65786f6`](https://github.com/cogitator-ai/Cogitator-AI/commit/65786f66fc66bac3ee0997c7a467546b403e07c7), [`69ff26f`](https://github.com/cogitator-ai/Cogitator-AI/commit/69ff26fff42fe23e5be9ec3eef483837f304aac6), [`f6f8c58`](https://github.com/cogitator-ai/Cogitator-AI/commit/f6f8c58a837be665febfb99d2b670e913df2ff36), [`8a386b3`](https://github.com/cogitator-ai/Cogitator-AI/commit/8a386b3fb79bf12a89db0ae72b66216b0a828bc7), [`063ee72`](https://github.com/cogitator-ai/Cogitator-AI/commit/063ee7289ebb670da69951b93843652bbf0465b2), [`9d40b76`](https://github.com/cogitator-ai/Cogitator-AI/commit/9d40b763f9fb25f9cb7cb2aba8a52ff2989fc5e9), [`1c16684`](https://github.com/cogitator-ai/Cogitator-AI/commit/1c16684976705ab5c34778728f27f7efd247242f)]:
+  - @cogitator-ai/core@0.27.0
+  - @cogitator-ai/memory@0.11.1
+  - @cogitator-ai/types@0.30.0
+  - @cogitator-ai/server-shared@0.4.0
+
 ## 0.3.4
 
 ### Patch Changes

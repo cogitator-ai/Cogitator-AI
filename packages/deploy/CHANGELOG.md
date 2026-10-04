@@ -1,5 +1,14 @@
 # @cogitator-ai/deploy
 
+## 0.4.1
+
+### Patch Changes
+
+- [`26745cd`](https://github.com/cogitator-ai/Cogitator-AI/commit/26745cdeb375bd6193e782b4a6f72d649da1e1d9) - The programmatic `Deployer` now reads the `deploy` section of the project's `cogitator.yml`. Only `cogitator deploy` used to pass it in, so `deployer.plan()` and `deployer.deploy()` ignored a configured `health.path`, `port`, `secrets` and the rest, and the generated Dockerfile `HEALTHCHECK` and Fly.io check probed `/cogitator/health` even on a server mounted elsewhere, which Docker then marked unhealthy. `configOverrides` still win over the file, field by field inside `services`, `env`, `health` and `resources`, and both win over auto-detection.
+- Updated dependencies [[`063ee72`](https://github.com/cogitator-ai/Cogitator-AI/commit/063ee7289ebb670da69951b93843652bbf0465b2)]:
+  - @cogitator-ai/types@0.30.0
+  - @cogitator-ai/config@0.11.1
+
 ## 0.4.0
 
 ### Minor Changes

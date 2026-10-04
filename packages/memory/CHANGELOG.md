@@ -1,5 +1,28 @@
 # @cogitator-ai/memory
 
+## 0.11.1
+
+### Patch Changes
+
+- [`65786f6`](https://github.com/cogitator-ai/Cogitator-AI/commit/65786f66fc66bac3ee0997c7a467546b403e07c7) - Fixes in `MongoDBAdapter`, found by running it against a real MongoDB server for the first time:
+
+  - Fields left `undefined` are no longer stored as `null`. The driver serializes `undefined` as BSON null by default, so an entry saved without tool calls came back with `toolCalls: null`, `toolResults: null` and `metadata: null`, a message without a name came back with `name: null`, and a thread metadata key set to `undefined` was stored as `null`. Every other store leaves those fields out. The adapter now opens its client with `ignoreUndefined`, and entries an earlier version stored with those nulls read back without them, while a tool result that really is `null` stays `null`.
+  - A failed `connect()` leaves the adapter disconnected. It kept the half-open client, so the next `connect()` reported success while every call failed with `Not connected`. The failed client is now closed and the next `connect()` tries again, concurrent `connect()` calls share one attempt, and `disconnect()` waits for a pending one.
+
+- [`69ff26f`](https://github.com/cogitator-ai/Cogitator-AI/commit/69ff26fff42fe23e5be9ec3eef483837f304aac6) - The SQLite (`SQLiteAdapter`, `SQLiteGraphAdapter`, `CoreFactsStore`) and MongoDB adapters are now type checked against the real `better-sqlite3` and `mongodb` drivers instead of hand-written declarations of them. Those declarations took precedence over the drivers' own types, which is how a Qdrant client method that no longer existed went unnoticed. A driver release that drops or changes a method the adapters call now fails the build instead of failing at runtime. Checking the adapters against `better-sqlite3` 13 and `mongodb` 7 found no mismatch, so behaviour is unchanged.
+
+- [`f6f8c58`](https://github.com/cogitator-ai/Cogitator-AI/commit/f6f8c58a837be665febfb99d2b670e913df2ff36) - Fixes in the memory stores, found by running them against real Postgres, Qdrant and OpenRouter:
+
+  - `QdrantAdapter.search()` works again. It called `client.search()`, which `@qdrant/js-client-rest` 1.19 (the version the package asks for) no longer has, so every search failed with `this.client.search is not a function`. It now uses `client.query()`, and deletes wait until Qdrant has applied them, so a search right after a delete no longer finds the deleted points.
+  - `PostgresAdapter.addEntry()` stores entries with `toolCalls` or `toolResults`. node-pg sent those arrays as Postgres array literals, and Postgres rejected them with `invalid input syntax for type json`, so every tool exchange of an agent was lost. All `jsonb` columns are now written as JSON text.
+  - pgvector search finds every row. `connect()` built an `ivfflat` index on the empty table, and for small limits Postgres used it and missed most rows (`search({ limit: 3 })` returned 0 or 1 of 6 rows). The adapter now builds an HNSW index, which needs no training data, and replaces an existing `ivfflat` index on the first `connect()` after upgrading. On a large table that rebuild takes a while, the adapters docs show how to build the index ahead of the deploy. Searches also raise `hnsw.ef_search` to the requested limit and use iterative scans on pgvector 0.8+, so a limit above 40 or a filter no longer cuts results short, and equally similar rows come back ordered by id. `PostgresGraphAdapter` builds its node embedding index with HNSW too.
+  - The `recent` context strategy keeps an unbroken run of the newest messages. It skipped a message that did not fit the budget and kept older ones, so the model could see an answer without the question it answered. It now stops at the first message that does not fit.
+  - `createEmbeddingAdapter()` returns a `ConnectableEmbeddingAdapter`, an `EmbeddingAdapter` with `connect()` and `disconnect()`, so the adapter can be connected without a cast.
+  - `OpenAIEmbeddingService` sends `dimensions` for gateway model ids such as `openai/text-embedding-3-small` (OpenRouter) and knows their native size. It reported 512 while the gateway returned 1536-dimensional vectors, so vector columns and collections were created with the wrong size. A response whose vectors do not match a configured `dimensions` now throws instead of reaching the store.
+
+- Updated dependencies [[`063ee72`](https://github.com/cogitator-ai/Cogitator-AI/commit/063ee7289ebb670da69951b93843652bbf0465b2)]:
+  - @cogitator-ai/types@0.30.0
+
 ## 0.11.0
 
 ### Minor Changes

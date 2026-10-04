@@ -1,5 +1,13 @@
 # @cogitator-ai/server-shared
 
+## 0.4.0
+
+### Minor Changes
+
+- [`9d40b76`](https://github.com/cogitator-ai/Cogitator-AI/commit/9d40b763f9fb25f9cb7cb2aba8a52ff2989fc5e9) - The `finish` event of a stream now carries the same usage as the JSON run response. The protocol's `Usage` type gains the optional `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` (`RunUsage` is now the same type), and `createFinishEvent` passes its usage through `toRunUsage`, so a run's `RunResult.usage` can be given as is: the event keeps the counts the model reported and leaves out the run's cost and duration, exactly like the JSON answer. Before, a client streaming a run lost the reasoning and cache token counts that `/run` returned. The OpenAPI document gains a shared `RunUsage` schema, used by `AgentRunResponse` and by the new `StreamFinishEvent`.
+
+- [`1c16684`](https://github.com/cogitator-ai/Cogitator-AI/commit/1c16684976705ab5c34778728f27f7efd247242f) - One run contract for every server adapter. `parseRunRequest` and `parseSwarmRunRequest` validate the body of agent and swarm runs (an `input` of only whitespace is refused, so a request that says nothing never reaches the model), `RUN_INPUT_SCHEMA` and `NON_BLANK_PATTERN` give schema-driven adapters the same rule, and `isNonBlankString` checks a single value. `toRunUsage` and the `RunUsage` type describe the usage of a run answer, now with the optional `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens`. `DEFAULT_SSE_HEARTBEAT_MS`, `encodeHeartbeat`, `resolveSseHeartbeatMs` and `startHeartbeat` let SSE streams write a comment every 5 seconds while a run is silent. The OpenAPI document now states that `input` must contain more than whitespace and lists the three optional usage counts.
+
 ## 0.3.1
 
 ### Patch Changes

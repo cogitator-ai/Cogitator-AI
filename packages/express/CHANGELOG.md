@@ -1,5 +1,25 @@
 # @cogitator-ai/express
 
+## 0.7.0
+
+### Minor Changes
+
+- [`1c16684`](https://github.com/cogitator-ai/Cogitator-AI/commit/1c16684976705ab5c34778728f27f7efd247242f) - `CogitatorServer.init()` no longer prints `[CogitatorServer] Initialized at ...` to the console, and the WebSocket setup no longer prints where it listens. Both now report through the core logger at `debug` level, so they stay silent unless `LOG_LEVEL=debug` or your own logger set with `setLogger()` asks for them. Errors are still logged.
+
+  Run bodies are now validated by the validator shared with every adapter from `@cogitator-ai/server-shared`. Blank inputs are still refused with `400 INVALID_INPUT`, the messages now name the field the same way as Hono and Koa (`Field "input" must not be blank`), and an empty `threadId` is refused too.
+
+  SSE streams now write a `: keep-alive` comment every 5 seconds while a run is silent, so proxies and load balancers do not close a stream that waits on a slow tool or model. Set it with the new `config.sseHeartbeatMs` option (also on `ExpressStreamWriter`), `0` turns it off.
+
+  The `usage` of a run answer now includes `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the model reported them, like Tetsu and Next.
+
+### Patch Changes
+
+- [`9d40b76`](https://github.com/cogitator-ai/Cogitator-AI/commit/9d40b763f9fb25f9cb7cb2aba8a52ff2989fc5e9) - The `finish` event of an agent stream now carries the same `usage` as `POST /agents/:name/run`: `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` are included when the model reported them. Before, the stream sent only the input, output and total tokens, so a streaming client lost the reasoning and cache counts.
+- Updated dependencies [[`8a386b3`](https://github.com/cogitator-ai/Cogitator-AI/commit/8a386b3fb79bf12a89db0ae72b66216b0a828bc7), [`13f8ca5`](https://github.com/cogitator-ai/Cogitator-AI/commit/13f8ca50083debbadeebbc2e30e4432c3234b0fe), [`9c8ca91`](https://github.com/cogitator-ai/Cogitator-AI/commit/9c8ca914282662b93d0a42f5913c2dde8064eb57), [`a208f5f`](https://github.com/cogitator-ai/Cogitator-AI/commit/a208f5f123b6ba86e58223829fd8435ba766c5e9), [`8a386b3`](https://github.com/cogitator-ai/Cogitator-AI/commit/8a386b3fb79bf12a89db0ae72b66216b0a828bc7), [`063ee72`](https://github.com/cogitator-ai/Cogitator-AI/commit/063ee7289ebb670da69951b93843652bbf0465b2), [`9d40b76`](https://github.com/cogitator-ai/Cogitator-AI/commit/9d40b763f9fb25f9cb7cb2aba8a52ff2989fc5e9), [`1c16684`](https://github.com/cogitator-ai/Cogitator-AI/commit/1c16684976705ab5c34778728f27f7efd247242f)]:
+  - @cogitator-ai/core@0.27.0
+  - @cogitator-ai/types@0.30.0
+  - @cogitator-ai/server-shared@0.4.0
+
 ## 0.6.4
 
 ### Patch Changes

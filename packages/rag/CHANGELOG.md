@@ -1,5 +1,17 @@
 # @cogitator-ai/rag
 
+## 0.4.0
+
+### Minor Changes
+
+- [`12ac6a8`](https://github.com/cogitator-ai/Cogitator-AI/commit/12ac6a851f60fdbdafcc7a05aa8aa65e91426572) - `LLMReranker` failures can be observed. When the model's answer held no ranking, for example because a reasoning model spent its token budget on reasoning and answered with empty content, the reranker only logged a console warning and returned the retrieval order, so a pipeline looked reranked while it was not. Pass `onError` to be told about every fallback, with the raw answer, or `strict: true` to make `rerank()` throw an `LLMRerankError` instead. Without either option the reranker falls back and warns as before.
+
+### Patch Changes
+
+- Updated dependencies [[`65786f6`](https://github.com/cogitator-ai/Cogitator-AI/commit/65786f66fc66bac3ee0997c7a467546b403e07c7), [`69ff26f`](https://github.com/cogitator-ai/Cogitator-AI/commit/69ff26fff42fe23e5be9ec3eef483837f304aac6), [`f6f8c58`](https://github.com/cogitator-ai/Cogitator-AI/commit/f6f8c58a837be665febfb99d2b670e913df2ff36), [`063ee72`](https://github.com/cogitator-ai/Cogitator-AI/commit/063ee7289ebb670da69951b93843652bbf0465b2)]:
+  - @cogitator-ai/memory@0.11.1
+  - @cogitator-ai/types@0.30.0
+
 ## 0.3.5
 
 ### Patch Changes

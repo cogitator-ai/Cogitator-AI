@@ -1,5 +1,18 @@
 # @cogitator-ai/worker
 
+## 0.7.3
+
+### Patch Changes
+
+- [`13f8ca5`](https://github.com/cogitator-ai/Cogitator-AI/commit/13f8ca50083debbadeebbc2e30e4432c3234b0fe) - Serialized agents now route like the same agent in-process. The worker only recognised built-in providers as a model prefix, so `model: 'openrouter/deepseek/deepseek-v4-pro'` with `provider: 'openai'` ran as `openai/openrouter/...` on the OpenAI backend (failing with "OpenAI API key is required") instead of on the worker's `openrouter` backend, and plugin providers were lost the same way. A model whose prefix names a built-in provider, a backend in the worker Cogitator's `llm.backends` or a registered plugin now runs there unchanged, and `provider` is prepended only to a model whose prefix names none. `SerializedAgent.provider` accepts any provider name (`LLMBackendProvider`), custom backends and plugins included, and is optional: without it such a model runs on the worker's `llm.defaultProvider`. A `provider` the worker cannot route to now fails the job with a clear error instead of silently running on the default provider.
+
+  `JobQueue.getMetrics()` now counts jobs added with a `priority`. BullMQ keeps them in its `prioritized` state, which `waiting`, `depth` and the `cogitator_queue_depth` metric left out, so a queue of prioritized jobs looked empty to an autoscaler. They now count in `waiting` and `depth`. `getJobState()` returns the new `JobState` type, which lists `'prioritized'` and `'waiting-children'` next to the states documented before.
+
+- Updated dependencies [[`8a386b3`](https://github.com/cogitator-ai/Cogitator-AI/commit/8a386b3fb79bf12a89db0ae72b66216b0a828bc7), [`13f8ca5`](https://github.com/cogitator-ai/Cogitator-AI/commit/13f8ca50083debbadeebbc2e30e4432c3234b0fe), [`9c8ca91`](https://github.com/cogitator-ai/Cogitator-AI/commit/9c8ca914282662b93d0a42f5913c2dde8064eb57), [`a208f5f`](https://github.com/cogitator-ai/Cogitator-AI/commit/a208f5f123b6ba86e58223829fd8435ba766c5e9), [`8a386b3`](https://github.com/cogitator-ai/Cogitator-AI/commit/8a386b3fb79bf12a89db0ae72b66216b0a828bc7), [`063ee72`](https://github.com/cogitator-ai/Cogitator-AI/commit/063ee7289ebb670da69951b93843652bbf0465b2), [`13f8ca5`](https://github.com/cogitator-ai/Cogitator-AI/commit/13f8ca50083debbadeebbc2e30e4432c3234b0fe)]:
+  - @cogitator-ai/core@0.27.0
+  - @cogitator-ai/types@0.30.0
+  - @cogitator-ai/swarms@0.9.3
+
 ## 0.7.2
 
 ### Patch Changes

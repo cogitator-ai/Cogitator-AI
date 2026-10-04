@@ -1,5 +1,14 @@
 # @cogitator-ai/neuro-symbolic
 
+## 17.0.9
+
+### Patch Changes
+
+- [`e1f9192`](https://github.com/cogitator-ai/Cogitator-AI/commit/e1f919218e385f927c8bc05fda59718541c1dcd0) - `PostgresGraphAdapter.searchNodesSemantic()` finds every matching node. `connect()` built an `ivfflat` index on the still empty `graph_nodes` table, and once Postgres used it, searches missed nodes (a search for 60 nodes in a graph of 3000 returned 31, and with the index forced a search for 10 returned none). The adapter now builds an HNSW index, which needs no training data, and replaces an existing `ivfflat` index on the first `connect()` after upgrading. On a large graph that rebuild takes a while, the README shows how to build the index ahead of the deploy. Searches also raise `hnsw.ef_search` to the requested limit and use iterative scans on pgvector 0.8+, so a limit above 40 or an `entityTypes` filter no longer cuts results short, and equally similar nodes come back ordered by id. A failed search now returns a failed result instead of throwing.
+- Updated dependencies [[`8a386b3`](https://github.com/cogitator-ai/Cogitator-AI/commit/8a386b3fb79bf12a89db0ae72b66216b0a828bc7), [`13f8ca5`](https://github.com/cogitator-ai/Cogitator-AI/commit/13f8ca50083debbadeebbc2e30e4432c3234b0fe), [`9c8ca91`](https://github.com/cogitator-ai/Cogitator-AI/commit/9c8ca914282662b93d0a42f5913c2dde8064eb57), [`a208f5f`](https://github.com/cogitator-ai/Cogitator-AI/commit/a208f5f123b6ba86e58223829fd8435ba766c5e9), [`8a386b3`](https://github.com/cogitator-ai/Cogitator-AI/commit/8a386b3fb79bf12a89db0ae72b66216b0a828bc7), [`063ee72`](https://github.com/cogitator-ai/Cogitator-AI/commit/063ee7289ebb670da69951b93843652bbf0465b2)]:
+  - @cogitator-ai/core@0.27.0
+  - @cogitator-ai/types@0.30.0
+
 ## 17.0.8
 
 ### Patch Changes
