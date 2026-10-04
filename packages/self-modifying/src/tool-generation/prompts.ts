@@ -272,10 +272,10 @@ export function parseToolGenerationResponse(response: string): GeneratedTool | n
     } catch {}
   }
 
-  const fnRegex = /(?:async\s+)?function\s+execute\s*\([^)]*\)\s*\{[\s\S]*\}/;
-  const fnMatch = fnRegex.exec(response);
-  if (fnMatch) {
-    let impl = fnMatch[0];
+  const fnHeader = /(?:async\s+)?function\s+execute\s*\([^()]*\)\s*\{/.exec(response);
+  const lastBrace = response.lastIndexOf('}');
+  if (fnHeader && lastBrace >= fnHeader.index + fnHeader[0].length) {
+    let impl = response.slice(fnHeader.index, lastBrace + 1);
     let braceDepth = 0;
     let endIdx = impl.length;
     const firstBrace = impl.indexOf('{');

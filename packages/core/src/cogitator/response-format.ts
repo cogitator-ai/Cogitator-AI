@@ -104,8 +104,7 @@ function checkStructuredOutput(
 /** JSON in `text`: the whole text, a fenced block, or the outermost object or array within prose. */
 function parseJson(text: string): unknown {
   const trimmed = text.trim();
-  const fenced = /^```(?:json)?\s*\n?([\s\S]*?)\n?```$/i.exec(trimmed);
-  const candidate = fenced ? fenced[1] : trimmed;
+  const candidate = unfence(trimmed) ?? trimmed;
   const whole = tryParse(candidate);
   if (whole !== undefined) return whole;
 
@@ -121,6 +120,14 @@ function parseJson(text: string): unknown {
     }
   }
   return undefined;
+}
+
+function unfence(text: string): string | undefined {
+  if (text.length < 6 || !text.startsWith('```') || !text.endsWith('```')) return undefined;
+  let body = text.slice(3, -3);
+  if (body.slice(0, 4).toLowerCase() === 'json') body = body.slice(4);
+  body = body.trimStart();
+  return body.endsWith('\n') ? body.slice(0, -1) : body;
 }
 
 function tryParse(text: string): unknown {

@@ -4,7 +4,8 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 
-const ENV_LINE = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_.-]*)\s*=\s*(.*?)\s*$/;
+const ENV_KEY = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_.-]*)\s*=/;
+const LINE_BREAK = /[\r\u2028\u2029]/;
 const DOUBLE_QUOTE_ESCAPES: Record<string, string> = {
   n: '\n',
   r: '\r',
@@ -46,8 +47,10 @@ function parseValue(raw: string): string {
 export function parseDotenv(content: string): Record<string, string> {
   const result: Record<string, string> = {};
   for (const line of content.split(/\r?\n/)) {
-    const match = ENV_LINE.exec(line);
-    if (match) result[match[1]] = parseValue(match[2]);
+    const match = ENV_KEY.exec(line);
+    if (!match) continue;
+    const value = line.slice(match[0].length).trim();
+    if (!LINE_BREAK.test(value)) result[match[1]] = parseValue(value);
   }
   return result;
 }

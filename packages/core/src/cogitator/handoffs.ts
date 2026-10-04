@@ -62,5 +62,13 @@ function toHandoff(entry: IAgent | Handoff): Handoff {
 }
 
 function toToolName(name: string): string {
-  return name.replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'agent';
+  return trimUnderscores(name.replace(/[^a-zA-Z0-9_-]+/g, '_')) || 'agent';
+}
+
+function trimUnderscores(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value[start] === '_') start++;
+  while (end > start && value[end - 1] === '_') end--;
+  return value.slice(start, end);
 }
