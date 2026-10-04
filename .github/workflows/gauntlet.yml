@@ -17,6 +17,9 @@ concurrency:
 env:
   ONNXRUNTIME_NODE_INSTALL_CUDA: skip
 
+permissions:
+  contents: read
+
 jobs:
   gauntlet:
     name: Gauntlet

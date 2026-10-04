@@ -17,6 +17,9 @@ env:
   # download host times out now and then.
   ONNXRUNTIME_NODE_INSTALL_CUDA: skip
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: Lint
