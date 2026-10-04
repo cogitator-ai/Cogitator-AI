@@ -83,7 +83,7 @@ function patternMatches(pattern: string, path: string): boolean {
     cursor = at + piece.length;
   }
   if (anchored) return path.length - last.length >= cursor && path.endsWith(last);
-  return path.indexOf(last, cursor) >= 0;
+  return path.includes(last, cursor);
 }
 
 /**
