@@ -1,6 +1,6 @@
 import type { Server as HttpServer, IncomingMessage } from 'http';
 import type { Request } from 'express';
-import type { Agent } from '@cogitator-ai/core';
+import { getLogger, type Agent } from '@cogitator-ai/core';
 import type { RunOptions, RunResult } from '@cogitator-ai/types';
 import type {
   AgentResumeRequest,
@@ -10,6 +10,7 @@ import type {
   RouteContext,
   WebSocketConfig,
 } from '../types.js';
+import { isNonBlankString } from '@cogitator-ai/server-shared';
 import { generateId } from '../streaming/helpers.js';
 import { parseResumeBody, resolveError, withoutCheckpoint } from '../routes/utils.js';
 
@@ -119,7 +120,7 @@ function parseRunPayload(payload: unknown): RunPayload | null {
   const { type, name, input, context, threadId } = payload;
   if (type !== 'agent' && type !== 'workflow' && type !== 'swarm') return null;
   if (typeof name !== 'string' || !name) return null;
-  if (typeof input !== 'string' || !input.trim()) return null;
+  if (!isNonBlankString(input)) return null;
   if (context !== undefined && !isPlainObject(context)) return null;
   if (threadId !== undefined && typeof threadId !== 'string') return null;
   return { type, name, input, context, threadId };
@@ -234,7 +235,7 @@ export async function setupWebSocket(
     for (const client of wss.clients) client.terminate();
   });
 
-  console.log(`[CogitatorServer] WebSocket enabled at ${path}`);
+  getLogger().debug('[CogitatorServer] WebSocket enabled', { path });
   return wss;
 }
 

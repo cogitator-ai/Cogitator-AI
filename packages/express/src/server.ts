@@ -1,4 +1,6 @@
 import { Router, json } from 'express';
+import { getLogger } from '@cogitator-ai/core';
+import { resolveSseHeartbeatMs } from '@cogitator-ai/server-shared';
 import type { Server as HttpServer } from 'http';
 import type { CogitatorServerConfig, RouteContext } from './types.js';
 import {
@@ -51,6 +53,7 @@ export class CogitatorServer {
       cors: cfg.cors,
       swagger: cfg.swagger ?? {},
       websocket: cfg.websocket ?? {},
+      sseHeartbeatMs: resolveSseHeartbeatMs(cfg.sseHeartbeatMs),
     } as Required<NonNullable<CogitatorServerConfig['config']>>;
   }
 
@@ -100,7 +103,7 @@ export class CogitatorServer {
     this.app.use(basePath, router);
 
     this.initialized = true;
-    console.log(`[CogitatorServer] Initialized at ${basePath}`);
+    getLogger().debug('[CogitatorServer] Initialized', { basePath });
   }
 
   private setupSwagger(router: Router, ctx: RouteContext): void {

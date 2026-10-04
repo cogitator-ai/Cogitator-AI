@@ -100,7 +100,9 @@ export function createSwarmRoutes(): Router<CogitatorState> {
     }
 
     setupSSEHeaders(ctx);
-    const writer = new KoaStreamWriter(ctx);
+    const writer = new KoaStreamWriter(ctx, {
+      heartbeatMs: ctx.state.cogitator.sseHeartbeatMs,
+    });
     const messageId = generateId('swarm');
 
     let aborted = false;

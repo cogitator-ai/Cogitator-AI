@@ -84,15 +84,16 @@ interface CogitatorServerConfig {
     cors?: CorsConfig;
     swagger?: SwaggerConfig;
     websocket?: WebSocketConfig; // { path?, pingInterval? (ms, default 30000), maxPayloadSize? (bytes, default 1 MiB) }
+    sseHeartbeatMs?: number; // SSE heartbeat interval in ms, default 5000, 0 turns it off
   };
 }
 ```
 
-`init()` mounts the router once (calling it again does nothing); `server.isInitialized` tells whether it ran.
+`init()` mounts the router once (calling it again does nothing); `server.isInitialized` tells whether it ran. It writes nothing to the console: `init()` and the WebSocket setup report through the core logger at `debug` level (`LOG_LEVEL=debug`, or your own logger via `setLogger()` from `@cogitator-ai/core`).
 
 ## Request Handling
 
-- Agent and swarm bodies are validated: `input` must be a non-empty string, `context` an object, `threadId` a string, swarm `timeout` a positive number. Invalid or malformed JSON bodies return `400 INVALID_INPUT`.
+- Agent and swarm bodies are validated: `input` must contain more than whitespace (`""` and `"   "` are refused before the model is called), `context` an object, `threadId` a non-empty string, swarm `timeout` a positive number. Invalid or malformed JSON bodies return `400 INVALID_INPUT`.
 - Workflow `options` are limited to `maxConcurrency`, `maxIterations` (positive integers) and `checkpoint` (boolean); other options are dropped and wrongly typed ones return `400`.
 - Thread messages need a `role` of `user`, `assistant` or `system` and a non-empty string `content`.
 - A workflow that fails returns `500 WORKFLOW_FAILED`, and its stream ends with an `error` event instead of `workflow_completed`. Without `@cogitator-ai/workflows` or `@cogitator-ai/swarms` installed, those routes return `501 UNIMPLEMENTED`.

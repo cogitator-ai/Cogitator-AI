@@ -109,7 +109,9 @@ export const workflowRoutes: FastifyPluginAsync = async (fastify) => {
         return sendError(reply, 404, `Workflow '${name}' not found`, 'NOT_FOUND');
       }
 
-      const writer = new FastifyStreamWriter(reply);
+      const writer = new FastifyStreamWriter(reply, {
+        heartbeatMs: fastify.cogitator.sseHeartbeatMs,
+      });
       const messageId = generateId('wf');
       const abortController = new AbortController();
 

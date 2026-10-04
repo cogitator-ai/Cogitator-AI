@@ -12,7 +12,7 @@ import type {
   WebSocketRunPayload,
 } from '../types.js';
 import type { RunOptions, ToolCall, ToolResult } from '@cogitator-ai/types';
-import { generateId } from '@cogitator-ai/server-shared';
+import { generateId, isNonBlankString } from '@cogitator-ai/server-shared';
 import { getOwn } from '../utils/lookup.js';
 import { isModuleNotFoundError, resolveError } from '../utils/errors.js';
 import { toSwarmRunResponse, toWorkflowRunResponse, withoutCheckpoint } from '../utils/results.js';
@@ -171,7 +171,7 @@ function parseRunPayload(payload: unknown): WebSocketRunPayload | string {
 
   if (!isRunType(type)) return `Unsupported run type: ${String(type)}`;
   if (typeof name !== 'string' || !name) return 'Invalid run payload: "name" is required';
-  if (typeof input !== 'string' || !input) return 'Invalid run payload: "input" is required';
+  if (!isNonBlankString(input)) return 'Invalid run payload: "input" is required';
   if (context !== undefined && !isRecord(context)) {
     return 'Invalid run payload: "context" must be an object';
   }

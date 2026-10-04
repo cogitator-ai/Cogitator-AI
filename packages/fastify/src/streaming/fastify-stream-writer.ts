@@ -1,5 +1,10 @@
 import type { FastifyReply } from 'fastify';
 import type { OutgoingHttpHeaders } from 'http';
+import {
+  encodeHeartbeat,
+  resolveSseHeartbeatMs,
+  startHeartbeat,
+} from '@cogitator-ai/server-shared';
 import { encodeSSE, encodeDone } from './helpers.js';
 import {
   createStartEvent,
@@ -22,13 +27,31 @@ import {
   type Usage,
 } from './protocol.js';
 
+export interface FastifyStreamWriterOptions {
+  /**
+   * How often an SSE comment is written while the stream is open, in milliseconds,
+   * so proxies and load balancers do not close a stream that waits on a slow tool or
+   * model. Default: 5000. `0` turns it off.
+   */
+  heartbeatMs?: number;
+}
+
 export class FastifyStreamWriter {
   private reply: FastifyReply;
   private closed = false;
   private started = false;
+  private readonly heartbeatMs: number;
+  private stopHeartbeat: () => void = () => {};
 
-  constructor(reply: FastifyReply) {
+  constructor(reply: FastifyReply, options: FastifyStreamWriterOptions = {}) {
     this.reply = reply;
+    this.heartbeatMs = resolveSseHeartbeatMs(options.heartbeatMs);
+  }
+
+  private heartbeat(): boolean {
+    if (!this.writable) return false;
+    this.reply.raw.write(encodeHeartbeat());
+    return true;
   }
 
   private get writable(): boolean {
@@ -61,6 +84,7 @@ export class FastifyStreamWriter {
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
     });
+    this.stopHeartbeat = startHeartbeat(() => this.heartbeat(), this.heartbeatMs);
   }
 
   start(messageId: string): void {
@@ -137,6 +161,7 @@ export class FastifyStreamWriter {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.stopHeartbeat();
     if (!this.started || this.reply.raw.writableEnded) return;
     try {
       this.reply.raw.end();

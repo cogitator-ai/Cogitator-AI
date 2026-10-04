@@ -19,16 +19,43 @@ import {
   createFinishEvent,
   createWorkflowEvent,
   createSwarmEvent,
+  encodeHeartbeat,
+  resolveSseHeartbeatMs,
+  startHeartbeat,
   type PendingApproval,
   type Usage,
 } from '@cogitator-ai/server-shared';
 
+export interface KoaStreamWriterOptions {
+  /**
+   * How often an SSE comment is written while the stream is open, in milliseconds,
+   * so proxies and load balancers do not close a stream that waits on a slow tool or
+   * model. Default: 5000. `0` turns it off.
+   */
+  heartbeatMs?: number;
+}
+
 export class KoaStreamWriter {
   private res: ServerResponse;
   private closed = false;
+  private readonly stopHeartbeat: () => void;
 
-  constructor(ctx: Context) {
+  constructor(ctx: Context, options: KoaStreamWriterOptions = {}) {
     this.res = ctx.res;
+    this.stopHeartbeat = startHeartbeat(
+      () => this.heartbeat(),
+      resolveSseHeartbeatMs(options.heartbeatMs)
+    );
+  }
+
+  private get writable(): boolean {
+    return !this.closed && !this.res.writableEnded && !this.res.destroyed;
+  }
+
+  private heartbeat(): boolean {
+    if (!this.writable) return false;
+    this.res.write(encodeHeartbeat());
+    return true;
   }
 
   private write(data: unknown): void {
@@ -107,6 +134,7 @@ export class KoaStreamWriter {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.stopHeartbeat();
     try {
       this.res.end();
     } catch {}

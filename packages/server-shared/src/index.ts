@@ -41,6 +41,28 @@ export type {
 
 export { generateId, encodeSSE, encodeDone } from './helpers.js';
 
+export {
+  DEFAULT_SSE_HEARTBEAT_MS,
+  encodeHeartbeat,
+  resolveSseHeartbeatMs,
+  startHeartbeat,
+} from './heartbeat.js';
+
+export {
+  NON_BLANK_PATTERN,
+  RUN_INPUT_SCHEMA,
+  isJsonObject,
+  isNonBlankString,
+  parseRunRequest,
+  parseSwarmRunRequest,
+} from './validation.js';
+
+export type { ParseResult, RunRequestBody, SwarmRunRequestBody } from './validation.js';
+
+export { toRunUsage } from './usage.js';
+
+export type { RunUsage } from './usage.js';
+
 export { generateOpenAPISpec, generateSwaggerHTML } from './openapi.js';
 
 export type { OpenAPISpec, SwaggerConfig, OpenAPIContext } from './openapi-types.js';

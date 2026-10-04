@@ -1,5 +1,6 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { CogitatorError, ERROR_STATUS_CODES, ErrorCode, type RunResult } from '@cogitator-ai/types';
+import { toRunUsage } from '@cogitator-ai/server-shared';
 import type { AgentRunResponse } from '../types.js';
 
 export function sendError(
@@ -68,11 +69,7 @@ export function toAgentRunResponse(result: RunResult): AgentRunResponse {
   return {
     output: result.output,
     threadId: result.threadId,
-    usage: {
-      inputTokens: result.usage.inputTokens,
-      outputTokens: result.usage.outputTokens,
-      totalTokens: result.usage.totalTokens,
-    },
+    usage: toRunUsage(result.usage),
     toolCalls: [...result.toolCalls],
     ...(result.reasoning && { reasoning: result.reasoning }),
     status: result.status ?? 'completed',

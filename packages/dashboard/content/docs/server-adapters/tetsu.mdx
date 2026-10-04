@@ -42,6 +42,8 @@ const app = createApp({
 Bun.serve({ ...app, port: 3000 });
 ```
 
+`Bun.serve` closes a connection that stays silent for `idleTimeout` seconds, 10 by default, and an agent waiting on a slow tool or model is silent for longer. The controller keeps both kinds of answer open without any setting: the JSON routes (`run`, `resume`, workflow and swarm `run`) lift the idle timeout for their own request once its body is validated, and SSE streams write a heartbeat comment every `sseHeartbeatMs` (5 s by default). If you set `idleTimeout`, keep it above `sseHeartbeatMs` and at 5 seconds or more, since Bun cuts connections at once below that whatever is written.
+
 The routes are the [common endpoints](/docs/server-adapters#common-endpoints) under the group's prefix. The document is at `/openapi.json` and the page at `/docs`.
 
 ## Options
@@ -56,6 +58,7 @@ interface CogitatorDeps {
   authorizeThread?: (auth: AuthContext | undefined, threadId: string) => boolean | Promise<boolean>;
   websocket?: boolean | { path?: `/${string}` };
   until?: AbortSignal | (() => AbortSignal | undefined);
+  sseHeartbeatMs?: number; // SSE heartbeat interval in ms, default 5000, 0 turns it off
 }
 ```
 
@@ -144,7 +147,7 @@ curl -X POST localhost:3000/cogitator/agents/support/resume \
 
 ## Streaming
 
-`/stream` routes use `@tetsujs/sse`: keep-alive comments, backpressure, and the run is aborted when the client leaves. Events follow the [shared protocol](/docs/server-adapters#streaming-protocol); an agent with `reasoning: { summary: true }` also streams `reasoning-start`, `reasoning-delta` and `reasoning-end`, closed before text, tool calls and `finish`, and `POST /agents/:name/run` returns the summary as `reasoning`. Validation, `401`, `403` and `404` are answered as JSON before the stream opens.
+`/stream` routes use `@tetsujs/sse`: keep-alive comments every `sseHeartbeatMs`, backpressure, and the run is aborted when the client leaves. Events follow the [shared protocol](/docs/server-adapters#streaming-protocol); an agent with `reasoning: { summary: true }` also streams `reasoning-start`, `reasoning-delta` and `reasoning-end`, closed before text, tool calls and `finish`, and `POST /agents/:name/run` returns the summary as `reasoning`. Validation, `401`, `403` and `404` are answered as JSON before the stream opens.
 
 ## WebSocket
 

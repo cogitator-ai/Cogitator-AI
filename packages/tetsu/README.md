@@ -46,6 +46,8 @@ curl -X POST http://localhost:3000/cogitator/agents/chat/run \
   -H 'Content-Type: application/json' -d '{"input": "Hello"}'
 ```
 
+A run that waits on a slow tool or model can stay silent for longer than the `idleTimeout` of `Bun.serve` (10 seconds by default), after which Bun closes the connection. The controller keeps both kinds of answer open without any setting: the JSON routes (`run`, `resume`, workflow and swarm `run`) lift the idle timeout for their own request once its body is validated (`ctx.server.timeout(ctx.req, 0)`), and SSE streams write a heartbeat comment every `sseHeartbeatMs` (5 seconds by default). If you change `idleTimeout`, keep it above `sseHeartbeatMs` and at 5 seconds or more, since Bun cuts connections at once below that whatever is written.
+
 ## `cogitatorController(deps)`
 
 A Tetsu controller named `Cogitator`: `operationId`s in the OpenAPI document are `cogitatorRunAgent`, `cogitatorGetThread` and so on.
@@ -60,6 +62,7 @@ A Tetsu controller named `Cogitator`: `operationId`s in the OpenAPI document are
 | `authorizeThread` | `(auth, threadId) => boolean`               | Decides who may use a memory thread; see [Users and threads](#users-and-threads) |
 | `websocket`       | `boolean \| { path?: string }`              | Serve the WebSocket endpoint (default path `/ws`)                                |
 | `until`           | `AbortSignal \| (() => AbortSignal)`        | Ends open streams and sockets, such as `draining` from `@tetsujs/lifecycle`      |
+| `sseHeartbeatMs`  | `number`                                    | Heartbeat comment interval of SSE streams (default `5000`, `0` turns it off)     |
 
 ## Endpoints
 
@@ -88,7 +91,7 @@ Request bodies:
 
 ```typescript
 // POST /agents/:name/run, /agents/:name/stream
-{ input: string; context?: Record<string, unknown>; threadId?: string }
+{ input: string; context?: Record<string, unknown>; threadId?: string } // input must contain more than whitespace
 
 // POST /agents/:name/resume, /agents/:name/resume/stream
 {
@@ -251,7 +254,7 @@ Approved calls run, declined ones answer the model with the `reason`, and calls 
 
 ## Streaming
 
-`/stream` endpoints answer with `text/event-stream` through `@tetsujs/sse`: keep-alive comments every 15 seconds, backpressure, and the run is aborted when the client goes away. Events follow the Cogitator stream protocol shared with the other adapters, one JSON object per `data:` line, ending with `data: [DONE]`:
+`/stream` endpoints answer with `text/event-stream` through `@tetsujs/sse`: keep-alive comments every `sseHeartbeatMs` (5 seconds by default, under the 10 second `idleTimeout` of `Bun.serve`), backpressure, and the run is aborted when the client goes away. Events follow the Cogitator stream protocol shared with the other adapters, one JSON object per `data:` line, ending with `data: [DONE]`:
 
 ```
 data: {"type":"start","messageId":"msg_…"}

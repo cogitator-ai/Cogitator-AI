@@ -96,7 +96,9 @@ export function createWorkflowRoutes(): Router<CogitatorState> {
     }
 
     setupSSEHeaders(ctx);
-    const writer = new KoaStreamWriter(ctx);
+    const writer = new KoaStreamWriter(ctx, {
+      heartbeatMs: ctx.state.cogitator.sseHeartbeatMs,
+    });
     const messageId = generateId('wf');
     const abortController = new AbortController();
 

@@ -115,7 +115,7 @@ export function createWorkflowRoutes(ctx: RouteContext): Router {
       const body = parsed.value;
 
       setupSSEHeaders(res);
-      const writer = new ExpressStreamWriter(res);
+      const writer = new ExpressStreamWriter(res, { heartbeatMs: ctx.config.sseHeartbeatMs });
       const messageId = generateId('wf');
       const abortController = new AbortController();
 

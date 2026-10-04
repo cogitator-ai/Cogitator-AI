@@ -58,7 +58,7 @@ POST   /api/agents/:name/stream       - Run agent (SSE stream)
 POST   /api/agents/:name/resume       - Resume a run paused for tool approvals
 ```
 
-Run/stream body: `{ input: string; context?: object; threadId?: string }` — `input` must be a non-empty string (400 otherwise). The agent list exposes `config.description`, never the agent instructions. The authenticated `userId` (from `auth`) is passed to the run, and the run is aborted when the client disconnects.
+Run/stream body: `{ input: string; context?: object; threadId?: string }`. `input` must contain more than whitespace and `threadId`, when sent, must be a non-empty string (`400 INVALID_INPUT` otherwise, before the model is called). The validator comes from `@cogitator-ai/server-shared`, so Express, Fastify, Hono and Koa refuse exactly the same bodies. The `usage` of a run answer carries `inputTokens`, `outputTokens` and `totalTokens`, plus `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the model reported them, the same shape as every other adapter. The agent list exposes `config.description`, never the agent instructions. The authenticated `userId` (from `auth`) is passed to the run, and the run is aborted when the client disconnects.
 
 ### Threads (Memory)
 
@@ -213,6 +213,8 @@ while (true) {
   }
 }
 ```
+
+While an SSE stream is open it writes a `: keep-alive` comment every `sseHeartbeatMs` (5 s by default, `0` turns it off), which SSE clients skip, so a proxy or load balancer does not close a stream that waits on a slow tool or model (nginx closes a connection silent for 60 s).
 
 Events: `start`, `text-start`/`text-delta`/`text-end`, `tool-call-start`/`tool-call-delta`/`tool-call-end` (with the model's tool call id), `tool-result` (`toolCallId` matches the call), `approval-required`, `error` (`{ message, code }`), and `finish` with usage, followed by `data: [DONE]`.
 
@@ -375,9 +377,12 @@ interface CogitatorServerConfig {
     cors?: CorsConfig;
     swagger?: SwaggerConfig;
     websocket?: WebSocketConfig;
+    sseHeartbeatMs?: number; // Default: 5000, 0 turns SSE heartbeats off
   };
 }
 ```
+
+`CogitatorServer` writes nothing to the console when it starts. `init()` and the WebSocket setup report through the core logger at `debug` level (`getLogger()` from `@cogitator-ai/core`, `LOG_LEVEL=debug` to see them, or `setLogger()` to route them into your own logger). Errors are still logged.
 
 ### ExpressStreamWriter
 

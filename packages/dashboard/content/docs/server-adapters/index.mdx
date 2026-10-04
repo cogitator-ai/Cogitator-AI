@@ -44,13 +44,13 @@ Tetsu also serves `POST /agents/:name/resume/stream`. Fastify serves its spec at
 
 Request bodies:
 
-- Agent run and stream: `{ input, context?, threadId? }` — `input` is a non-empty string.
+- Agent run and stream: `{ input, context?, threadId? }`. `input` must contain more than whitespace (`""` and `"   "` are refused before the model is called). Express, Fastify, Hono and Koa share one validator from `@cogitator-ai/server-shared` and Tetsu applies the same rule in its schema, so every adapter refuses the same bodies.
 - Resume: `{ threadId, decisions?, defaultDecision? }`, where a decision is `{ approved: boolean, reason?: string }` keyed by tool call id.
 - Workflow: `{ input?, options? }` with `options` limited to `maxConcurrency`, `maxIterations` and `checkpoint`.
 - Swarm: `{ input, context?, threadId?, timeout? }`.
 - Thread message: `{ role: 'user' | 'assistant' | 'system', content, metadata? }`.
 
-`POST /agents/:name/run` answers `{ output, threadId, usage, toolCalls, reasoning?, status, pendingApprovals? }`; a run paused for approval has `status: 'paused'`, and its checkpoint stays on the server.
+`POST /agents/:name/run` answers `{ output, threadId, usage, toolCalls, reasoning?, status, pendingApprovals? }`; a run paused for approval has `status: 'paused'`, and its checkpoint stays on the server. `usage` carries `inputTokens`, `outputTokens` and `totalTokens`, plus `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the model reported them, on every adapter.
 
 ## Threads and Users
 
@@ -112,6 +112,8 @@ data: [DONE]
 | `workflow` / `swarm`                                    | `event`, `data`                                      |
 
 Text and reasoning blocks are closed before a tool call starts. Agents with `reasoning: { summary: true }` stream their reasoning as its own part before the text it leads to. A run that pauses for approval sends `approval-required` with the pending calls (`toolCallId`, `toolName`, `arguments`, `description`, `sideEffects?`) right before `finish`; resume it with `POST /agents/:name/resume`.
+
+Every stream also writes a heartbeat comment, `: keep-alive`, every 5 seconds while it is open (`sseHeartbeatMs` on each adapter, `0` turns it off). SSE clients skip comments, and the heartbeat keeps a stream that waits on a slow tool or model from being closed by an idle timeout: `Bun.serve` closes a connection silent for 10 seconds, nginx one silent for 60.
 
 Workflow streams send `workflow` events named `node_started`, `node_completed`, `node_error`, `node_progress` and `workflow_completed`; swarm streams send `swarm` events named `agent_start`, `agent_complete`, `agent_error`, `message`, the swarm's own events, and `swarm_completed`. Disconnecting the client aborts the run.
 

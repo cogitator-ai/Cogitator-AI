@@ -6,6 +6,7 @@ import {
   type RunResult,
   type ToolApprovalDecision,
 } from '@cogitator-ai/types';
+import { toRunUsage, type ParseResult } from '@cogitator-ai/server-shared';
 import type { AgentResumeRequest, AgentRunResponse } from '../types.js';
 
 export function sendError(res: Response, status: number, message: string, code: string): void {
@@ -55,42 +56,7 @@ export function onClientDisconnect(res: Response, handler: () => void): void {
   });
 }
 
-export interface RunBody {
-  input: string;
-  context?: Record<string, unknown>;
-  threadId?: string;
-  timeout?: number;
-}
-
-export type ParseResult<T> = { ok: true; value: T } | { ok: false; message: string };
-
-export function parseRunBody(body: unknown, allowTimeout = false): ParseResult<RunBody> {
-  if (!isPlainObject(body) || typeof body.input !== 'string' || body.input.trim() === '') {
-    return { ok: false, message: 'Missing required field: input' };
-  }
-  if (body.context !== undefined && !isPlainObject(body.context)) {
-    return { ok: false, message: 'Field context must be an object' };
-  }
-  if (body.threadId !== undefined && typeof body.threadId !== 'string') {
-    return { ok: false, message: 'Field threadId must be a string' };
-  }
-  if (
-    allowTimeout &&
-    body.timeout !== undefined &&
-    (typeof body.timeout !== 'number' || !Number.isFinite(body.timeout) || body.timeout <= 0)
-  ) {
-    return { ok: false, message: 'Field timeout must be a positive number' };
-  }
-  return {
-    ok: true,
-    value: {
-      input: body.input,
-      context: body.context,
-      threadId: body.threadId,
-      timeout: allowTimeout && typeof body.timeout === 'number' ? body.timeout : undefined,
-    },
-  };
-}
+export type { ParseResult };
 
 const DECISION_SHAPE = '{ approved: boolean, reason?: string }';
 
@@ -148,11 +114,7 @@ export function toAgentRunResponse(result: RunResult): AgentRunResponse {
   return {
     output: result.output,
     threadId: result.threadId,
-    usage: {
-      inputTokens: result.usage.inputTokens,
-      outputTokens: result.usage.outputTokens,
-      totalTokens: result.usage.totalTokens,
-    },
+    usage: toRunUsage(result.usage),
     toolCalls: [...result.toolCalls],
     ...(result.reasoning && { reasoning: result.reasoning }),
     status: result.status ?? 'completed',

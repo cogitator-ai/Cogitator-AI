@@ -1,12 +1,12 @@
 import { Router } from 'express';
 import type { Response } from 'express';
 import type { RouteContext, CogitatorRequest, AgentListResponse } from '../types.js';
+import { parseRunRequest } from '@cogitator-ai/server-shared';
 import { ExpressStreamWriter, setupSSEHeaders, generateId } from '../streaming/index.js';
 import {
   handleRouteError,
   onClientDisconnect,
   parseResumeBody,
-  parseRunBody,
   resolveError,
   sendError,
   toAgentRunResponse,
@@ -40,7 +40,7 @@ export function createAgentRoutes(ctx: RouteContext): Router {
         return;
       }
 
-      const parsed = parseRunBody(req.body);
+      const parsed = parseRunRequest(req.body);
       if (!parsed.ok) {
         sendError(res, 400, parsed.message, 'INVALID_INPUT');
         return;
@@ -115,7 +115,7 @@ export function createAgentRoutes(ctx: RouteContext): Router {
         return;
       }
 
-      const parsed = parseRunBody(req.body);
+      const parsed = parseRunRequest(req.body);
       if (!parsed.ok) {
         sendError(res, 400, parsed.message, 'INVALID_INPUT');
         return;
@@ -123,7 +123,7 @@ export function createAgentRoutes(ctx: RouteContext): Router {
       const body = parsed.value;
 
       setupSSEHeaders(res);
-      const writer = new ExpressStreamWriter(res);
+      const writer = new ExpressStreamWriter(res, { heartbeatMs: ctx.config.sseHeartbeatMs });
       const messageId = generateId('msg');
       const abortController = new AbortController();
 

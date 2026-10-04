@@ -1,4 +1,5 @@
 import type { OpenAPIContext, SwaggerConfig, OpenAPISpec } from './openapi-types.js';
+import { RUN_INPUT_SCHEMA } from './validation.js';
 
 export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig): OpenAPISpec {
   const spec: OpenAPISpec = {
@@ -397,9 +398,9 @@ function generateSchemas(): Record<string, unknown> {
       type: 'object',
       required: ['input'],
       properties: {
-        input: { type: 'string' },
+        input: { ...RUN_INPUT_SCHEMA },
         context: { type: 'object' },
-        threadId: { type: 'string' },
+        threadId: { type: 'string', minLength: 1 },
       },
     },
     PendingApproval: {
@@ -437,10 +438,23 @@ function generateSchemas(): Record<string, unknown> {
         threadId: { type: 'string' },
         usage: {
           type: 'object',
+          required: ['inputTokens', 'outputTokens', 'totalTokens'],
           properties: {
             inputTokens: { type: 'number' },
             outputTokens: { type: 'number' },
             totalTokens: { type: 'number' },
+            reasoningTokens: {
+              type: 'number',
+              description: 'Hidden reasoning tokens, already counted in outputTokens',
+            },
+            cachedInputTokens: {
+              type: 'number',
+              description: "Input tokens read from the provider's prompt cache",
+            },
+            cacheWriteTokens: {
+              type: 'number',
+              description: "Input tokens written to the provider's prompt cache",
+            },
           },
         },
         toolCalls: { type: 'array' },
@@ -539,9 +553,9 @@ function generateSchemas(): Record<string, unknown> {
       type: 'object',
       required: ['input'],
       properties: {
-        input: { type: 'string' },
+        input: { ...RUN_INPUT_SCHEMA },
         context: { type: 'object' },
-        threadId: { type: 'string' },
+        threadId: { type: 'string', minLength: 1 },
         timeout: { type: 'number' },
       },
     },

@@ -105,7 +105,9 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
         return sendError(reply, 404, `Agent '${name}' not found`, 'NOT_FOUND');
       }
 
-      const writer = new FastifyStreamWriter(reply);
+      const writer = new FastifyStreamWriter(reply, {
+        heartbeatMs: fastify.cogitator.sseHeartbeatMs,
+      });
       const messageId = generateId('msg');
       const abortController = new AbortController();
 

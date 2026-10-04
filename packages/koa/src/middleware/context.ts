@@ -1,6 +1,6 @@
 import type { Context, Next } from 'koa';
 import type { CogitatorAppOptions, CogitatorState, RouteContext } from '../types.js';
-import { generateId } from '@cogitator-ai/server-shared';
+import { generateId, resolveSseHeartbeatMs } from '@cogitator-ai/server-shared';
 
 export function createContextMiddleware(opts: CogitatorAppOptions) {
   const routeCtx: RouteContext = {
@@ -8,6 +8,7 @@ export function createContextMiddleware(opts: CogitatorAppOptions) {
     agents: opts.agents ?? {},
     workflows: opts.workflows ?? {},
     swarms: opts.swarms ?? {},
+    sseHeartbeatMs: resolveSseHeartbeatMs(opts.sseHeartbeatMs),
   };
 
   return async (ctx: Context, next: Next) => {

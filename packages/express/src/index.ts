@@ -58,6 +58,7 @@ export {
   encodeSSE,
   encodeDone,
 } from './streaming/index.js';
+export type { ExpressStreamWriterOptions } from './streaming/index.js';
 
 export type {
   StreamEvent,

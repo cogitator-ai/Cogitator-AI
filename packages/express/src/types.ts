@@ -1,6 +1,6 @@
 import type { Request, Response, NextFunction, Router } from 'express';
 import type { Cogitator, Agent } from '@cogitator-ai/core';
-import type { SwaggerConfig, PendingApproval } from '@cogitator-ai/server-shared';
+import type { SwaggerConfig, PendingApproval, RunUsage } from '@cogitator-ai/server-shared';
 import type {
   Message,
   ToolCall,
@@ -96,6 +96,12 @@ export interface CogitatorServerConfig {
     cors?: CorsConfig;
     swagger?: SwaggerConfig;
     websocket?: WebSocketConfig;
+    /**
+     * How often the SSE routes write a comment while a stream is open, in milliseconds,
+     * so proxies and load balancers do not close a stream that waits on a slow tool or
+     * model. Default: 5000. `0` turns heartbeats off.
+     */
+    sseHeartbeatMs?: number;
   };
 }
 
@@ -116,11 +122,7 @@ export interface AgentRunRequest {
 export interface AgentRunResponse {
   output: string;
   threadId?: string;
-  usage: {
-    inputTokens: number;
-    outputTokens: number;
-    totalTokens: number;
-  };
+  usage: RunUsage;
   toolCalls: ToolCall[];
   reasoning?: string;
   status?: 'completed' | 'paused';

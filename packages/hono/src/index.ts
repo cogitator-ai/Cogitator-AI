@@ -35,6 +35,7 @@ export type {
 } from './types.js';
 
 export { HonoStreamWriter } from './streaming/hono-stream-writer.js';
+export type { HonoStreamWriterOptions } from './streaming/hono-stream-writer.js';
 
 export { createContextMiddleware } from './middleware/context.js';
 export { createAuthMiddleware } from './middleware/auth.js';

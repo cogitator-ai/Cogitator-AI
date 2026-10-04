@@ -1,4 +1,10 @@
 import type { ToolApprovalDecision } from '@cogitator-ai/types';
+import {
+  isJsonObject,
+  parseRunRequest,
+  parseSwarmRunRequest as parseSharedSwarmRunRequest,
+  type ParseResult,
+} from '@cogitator-ai/server-shared';
 import type {
   AddMessageRequest,
   AgentResumeRequest,
@@ -7,7 +13,7 @@ import type {
   WorkflowRunRequest,
 } from '../types.js';
 
-export type ParseResult<T> = { ok: true; value: T } | { ok: false; message: string };
+export type { ParseResult };
 
 const MESSAGE_ROLES: readonly AddMessageRequest['role'][] = ['user', 'assistant', 'system'];
 
@@ -15,9 +21,7 @@ function isMessageRole(value: unknown): value is AddMessageRequest['role'] {
   return MESSAGE_ROLES.some((role) => role === value);
 }
 
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
+export const isRecord = isJsonObject;
 
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value > 0;
@@ -27,32 +31,9 @@ function fail(message: string): { ok: false; message: string } {
   return { ok: false, message };
 }
 
-function parseRunFields(
-  body: unknown
-): ParseResult<{ input: string; context?: Record<string, unknown>; threadId?: string }> {
-  if (!isRecord(body) || body.input === undefined || body.input === null || body.input === '') {
-    return fail('Missing required field: input');
-  }
-  if (typeof body.input !== 'string') return fail('Field "input" must be a string');
-  if (body.context !== undefined && !isRecord(body.context)) {
-    return fail('Field "context" must be an object');
-  }
-  if (body.threadId !== undefined && (typeof body.threadId !== 'string' || !body.threadId)) {
-    return fail('Field "threadId" must be a non-empty string');
-  }
-
-  return {
-    ok: true,
-    value: {
-      input: body.input,
-      ...(body.context !== undefined && { context: body.context }),
-      ...(body.threadId !== undefined && { threadId: body.threadId }),
-    },
-  };
-}
-
+/** Agent runs and streams share one validator with every other adapter */
 export function parseAgentRunRequest(body: unknown): ParseResult<AgentRunRequest> {
-  return parseRunFields(body);
+  return parseRunRequest(body);
 }
 
 const DECISION_SHAPE = '{ approved: boolean, reason?: string }';
@@ -96,16 +77,9 @@ export function parseAgentResumeRequest(body: unknown): ParseResult<AgentResumeR
   return { ok: true, value: request };
 }
 
+/** Swarm runs and streams share one validator with every other adapter */
 export function parseSwarmRunRequest(body: unknown): ParseResult<SwarmRunRequest> {
-  const parsed = parseRunFields(body);
-  if (!parsed.ok) return parsed;
-
-  const timeout = isRecord(body) ? body.timeout : undefined;
-  if (timeout === undefined) return parsed;
-  if (typeof timeout !== 'number' || !Number.isFinite(timeout) || timeout <= 0) {
-    return fail('Field "timeout" must be a positive number');
-  }
-  return { ok: true, value: { ...parsed.value, timeout } };
+  return parseSharedSwarmRunRequest(body);
 }
 
 export function parseWorkflowRunRequest(body: unknown): ParseResult<WorkflowRunRequest> {

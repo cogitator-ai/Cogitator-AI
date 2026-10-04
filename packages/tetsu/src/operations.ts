@@ -1,6 +1,6 @@
 import { httpError } from '@tetsujs/core';
 import type { Agent } from '@cogitator-ai/core';
-import type { PendingApproval } from '@cogitator-ai/server-shared';
+import { toRunUsage, type PendingApproval } from '@cogitator-ai/server-shared';
 import type {
   ResumeOptions,
   RunOptions,
@@ -120,20 +120,7 @@ export function toAgentRunResponse(result: RunResult): AgentRunResponseBody {
     output: result.output,
     ...(result.structured !== undefined && { structured: result.structured }),
     threadId: result.threadId,
-    usage: {
-      inputTokens: result.usage.inputTokens,
-      outputTokens: result.usage.outputTokens,
-      totalTokens: result.usage.totalTokens,
-      ...(result.usage.reasoningTokens !== undefined && {
-        reasoningTokens: result.usage.reasoningTokens,
-      }),
-      ...(result.usage.cachedInputTokens !== undefined && {
-        cachedInputTokens: result.usage.cachedInputTokens,
-      }),
-      ...(result.usage.cacheWriteTokens !== undefined && {
-        cacheWriteTokens: result.usage.cacheWriteTokens,
-      }),
-    },
+    usage: toRunUsage(result.usage),
     toolCalls: result.toolCalls.map((call) => ({
       id: call.id,
       name: call.name,

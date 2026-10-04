@@ -25,3 +25,35 @@ describe('generateSwaggerHTML', () => {
     expect(Object.keys(parsed.paths).join()).toContain('</script><script>alert(1)</script>');
   });
 });
+
+describe('generateOpenAPISpec', () => {
+  const spec = generateOpenAPISpec({ agents: {}, workflows: {}, swarms: {} }, {});
+  const property = (schema: string, ...path: string[]): unknown =>
+    path.reduce<unknown>(
+      (node, key) =>
+        typeof node === 'object' && node !== null ? Reflect.get(node, key) : undefined,
+      spec.components?.schemas?.[schema]
+    );
+
+  it('documents the provider token counts of a run', () => {
+    expect(
+      Object.keys(property('AgentRunResponse', 'properties', 'usage', 'properties') ?? {})
+    ).toEqual([
+      'inputTokens',
+      'outputTokens',
+      'totalTokens',
+      'reasoningTokens',
+      'cachedInputTokens',
+      'cacheWriteTokens',
+    ]);
+  });
+
+  it('documents that a run input must contain more than whitespace', () => {
+    for (const name of ['AgentRunRequest', 'SwarmRunRequest']) {
+      expect(property(name, 'properties', 'input')).toMatchObject({
+        type: 'string',
+        pattern: '\\S',
+      });
+    }
+  });
+});

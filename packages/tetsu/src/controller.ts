@@ -14,6 +14,7 @@ import {
   createToolResultEvent,
   createWorkflowEvent,
   generateId,
+  resolveSseHeartbeatMs,
 } from '@cogitator-ai/server-shared';
 import type { StreamEvent } from '@cogitator-ai/server-shared';
 import { assertThreadAccess, ensureThreadAccess } from '@cogitator-ai/core';
@@ -28,6 +29,7 @@ import type {
 import { httpError } from '@tetsujs/core';
 import type { z } from 'zod';
 import { resolveCaller } from './auth.js';
+import { holdConnection } from './connection.js';
 import { clientClosedRequest, cogitatorErrors, describeError } from './errors.js';
 import {
   checkThreadAccess,
@@ -156,7 +158,8 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
   const builtAt = Date.now();
   const caller = resolveCaller(deps.auth);
   const errors = cogitatorErrors();
-  const until = () => resolveSignal(deps.until);
+  const heartbeatMs = resolveSseHeartbeatMs(deps.sseHeartbeatMs);
+  const streamOptions = () => ({ until: resolveSignal(deps.until), heartbeatMs });
 
   const memoryOf = async () => {
     const memory = await deps.cogitator.getMemory();
@@ -211,7 +214,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
           404: RunNotFound,
         },
       },
-      hooks: { beforeParse: [caller], onError: [errors] },
+      hooks: { beforeParse: [caller], beforeHandle: [holdConnection], onError: [errors] },
       docs: { summary: 'Run an agent and wait for its answer', tags: ['agents'] },
       handler: async (ctx) => {
         const agent = findAgent(deps, ctx.params.name);
@@ -253,7 +256,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
               (callbacks) => runAgent(deps, agent, { ...body, ...callbacks }, auth),
               signal
             ),
-          { until: until() }
+          streamOptions()
         );
       },
     }),
@@ -272,7 +275,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
           409: ResumeConflict,
         },
       },
-      hooks: { beforeParse: [caller], onError: [errors] },
+      hooks: { beforeParse: [caller], beforeHandle: [holdConnection], onError: [errors] },
       docs: {
         summary: 'Resume a run paused for tool approvals and wait for its answer',
         description:
@@ -328,7 +331,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
                 resumeAgent(deps, agent, threadId, { ...decisions, ...callbacks }, auth),
               signal
             ),
-          { until: until() }
+          streamOptions()
         );
       },
     }),
@@ -457,7 +460,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
           501: NotImplemented,
         },
       },
-      hooks: { beforeParse: [caller], onError: [errors] },
+      hooks: { beforeParse: [caller], beforeHandle: [holdConnection], onError: [errors] },
       docs: { summary: 'Run a workflow and wait for its final state', tags: ['workflows'] },
       handler: async (ctx) => {
         const workflow = findWorkflow(deps, ctx.params.name);
@@ -495,9 +498,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
       handler: (ctx) => {
         const workflow = findWorkflow(deps, ctx.params.name);
         const body = ctx.body;
-        return sse(ctx, (signal) => workflowEvents(deps, workflow, body, signal), {
-          until: until(),
-        });
+        return sse(ctx, (signal) => workflowEvents(deps, workflow, body, signal), streamOptions());
       },
     }),
 
@@ -524,7 +525,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
           501: NotImplemented,
         },
       },
-      hooks: { beforeParse: [caller], onError: [errors] },
+      hooks: { beforeParse: [caller], beforeHandle: [holdConnection], onError: [errors] },
       docs: { summary: 'Run a swarm and wait for its result', tags: ['swarms'] },
       handler: async (ctx) => {
         const config = findSwarm(deps, ctx.params.name);
@@ -565,9 +566,11 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
         const config = findSwarm(deps, ctx.params.name);
         const body = ctx.body;
         await checkThreadAccess(deps, ctx.cogitatorAuth, body.threadId);
-        return sse(ctx, (signal) => swarmEvents(deps, config, body, ctx.cogitatorAuth, signal), {
-          until: until(),
-        });
+        return sse(
+          ctx,
+          (signal) => swarmEvents(deps, config, body, ctx.cogitatorAuth, signal),
+          streamOptions()
+        );
       },
     }),
 

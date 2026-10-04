@@ -41,6 +41,7 @@ export {
 } from './types.js';
 
 export { FastifyStreamWriter } from './streaming/index.js';
+export type { FastifyStreamWriterOptions } from './streaming/index.js';
 
 export type { StreamEvent, Usage } from './streaming/protocol.js';
 

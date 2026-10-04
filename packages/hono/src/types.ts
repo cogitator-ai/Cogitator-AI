@@ -1,7 +1,7 @@
 import type { Context as HonoContext } from 'hono';
 import type { UpgradeWebSocket } from 'hono/ws';
 import type { Cogitator, Agent } from '@cogitator-ai/core';
-import type { PendingApproval } from '@cogitator-ai/server-shared';
+import type { PendingApproval, RunUsage } from '@cogitator-ai/server-shared';
 import type {
   Message,
   ToolCall,
@@ -68,6 +68,13 @@ export interface CogitatorAppOptions {
   enableWebSocket?: boolean;
   websocket?: WebSocketConfig;
   bodyLimit?: number;
+  /**
+   * How often the SSE routes write a comment while a stream is open, in milliseconds.
+   * Keeps a run that waits on a slow tool or model from being cut off by an idle
+   * timeout (`Bun.serve` closes a connection silent for 10 s, nginx one silent for
+   * 60 s). Default: 5000. `0` turns heartbeats off.
+   */
+  sseHeartbeatMs?: number;
 }
 
 export interface CogitatorContext {
@@ -75,6 +82,8 @@ export interface CogitatorContext {
   agents: Record<string, Agent>;
   workflows: Record<string, Workflow<WorkflowState>>;
   swarms: Record<string, SwarmConfig>;
+  /** The resolved `sseHeartbeatMs` option; the default applies when it is absent */
+  sseHeartbeatMs?: number;
 }
 
 export type HonoEnv = {
@@ -103,11 +112,7 @@ export interface AgentRunRequest {
 export interface AgentRunResponse {
   output: string;
   threadId?: string;
-  usage: {
-    inputTokens: number;
-    outputTokens: number;
-    totalTokens: number;
-  };
+  usage: RunUsage;
   toolCalls: ToolCall[];
   reasoning?: string;
   status?: 'completed' | 'paused';

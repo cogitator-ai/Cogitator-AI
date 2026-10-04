@@ -8,6 +8,7 @@ import { getOwn } from '../utils/lookup.js';
 import { isModuleNotFoundError, resolveError } from '../utils/errors.js';
 import {
   createRequestAbortController,
+  holdConnectionOpen,
   errorResponse,
   invalidInput,
   invalidJson,
@@ -50,6 +51,7 @@ export function createSwarmRoutes(): Hono<HonoEnv> {
     const parsed = parseSwarmRunRequest(body.value);
     if (!parsed.ok) return invalidInput(c, parsed.message);
 
+    holdConnectionOpen(c);
     const abortController = createRequestAbortController(c);
 
     try {
@@ -94,7 +96,7 @@ export function createSwarmRoutes(): Hono<HonoEnv> {
     const abortController = createRequestAbortController(c);
 
     return streamSSE(c, async (stream) => {
-      const writer = new HonoStreamWriter(stream);
+      const writer = new HonoStreamWriter(stream, { heartbeatMs: ctx.sseHeartbeatMs });
       const messageId = generateId('swarm');
 
       stream.onAbort(() => {

@@ -1,6 +1,7 @@
 import type { FastifyRequest } from 'fastify';
 import type { Cogitator, Agent } from '@cogitator-ai/core';
-import type { PendingApproval } from '@cogitator-ai/server-shared';
+import { NON_BLANK_PATTERN, RUN_INPUT_SCHEMA } from '@cogitator-ai/server-shared';
+import type { PendingApproval, RunUsage } from '@cogitator-ai/server-shared';
 import type {
   Message,
   ToolCall,
@@ -94,6 +95,12 @@ export interface CogitatorPluginOptions {
   enableWebSocket?: boolean;
   swagger?: SwaggerConfig;
   websocket?: WebSocketConfig;
+  /**
+   * How often the SSE routes write a comment while a stream is open, in milliseconds,
+   * so proxies and load balancers do not close a stream that waits on a slow tool or
+   * model. Default: 5000. `0` turns heartbeats off.
+   */
+  sseHeartbeatMs?: number;
 }
 
 export interface CogitatorContext {
@@ -101,6 +108,8 @@ export interface CogitatorContext {
   agents: Record<string, Agent>;
   workflows: Record<string, Workflow<WorkflowState>>;
   swarms: Record<string, SwarmConfig>;
+  /** The resolved `sseHeartbeatMs` option; the default applies when it is absent */
+  sseHeartbeatMs?: number;
 }
 
 declare module 'fastify' {
@@ -132,11 +141,7 @@ export interface AgentRunRequest {
 export interface AgentRunResponse {
   output: string;
   threadId?: string;
-  usage: {
-    inputTokens: number;
-    outputTokens: number;
-    totalTokens: number;
-  };
+  usage: RunUsage;
   toolCalls: ToolCall[];
   reasoning?: string;
   status?: 'completed' | 'paused';
@@ -299,12 +304,12 @@ export interface OpenAPISpec {
   tags?: Array<{ name: string; description?: string }>;
 }
 
-const NON_BLANK_STRING = { type: 'string', minLength: 1, pattern: '\\S' } as const;
+const NON_BLANK_STRING = { type: 'string', minLength: 1, pattern: NON_BLANK_PATTERN } as const;
 
 export const AgentRunRequestSchema = {
   type: 'object',
   properties: {
-    input: NON_BLANK_STRING,
+    input: RUN_INPUT_SCHEMA,
     context: { type: 'object', additionalProperties: true },
     threadId: { type: 'string' },
   },
@@ -342,6 +347,9 @@ export const AgentRunResponseSchema = {
         inputTokens: { type: 'number' },
         outputTokens: { type: 'number' },
         totalTokens: { type: 'number' },
+        reasoningTokens: { type: 'number' },
+        cachedInputTokens: { type: 'number' },
+        cacheWriteTokens: { type: 'number' },
       },
     },
     toolCalls: { type: 'array' },
@@ -393,7 +401,7 @@ export const WorkflowRunRequestSchema = {
 export const SwarmRunRequestSchema = {
   type: 'object',
   properties: {
-    input: NON_BLANK_STRING,
+    input: RUN_INPUT_SCHEMA,
     context: { type: 'object', additionalProperties: true },
     threadId: { type: 'string' },
     timeout: { type: 'number', exclusiveMinimum: 0 },

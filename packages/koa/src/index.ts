@@ -54,6 +54,7 @@ export {
 export { createSwaggerRoutes } from './swagger/index.js';
 
 export { KoaStreamWriter, setupSSEHeaders } from './streaming/koa-stream-writer.js';
+export type { KoaStreamWriterOptions } from './streaming/koa-stream-writer.js';
 
 export {
   generateId,

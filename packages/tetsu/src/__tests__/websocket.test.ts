@@ -210,6 +210,16 @@ describe('websocket', () => {
     expect(runSignal?.aborted).toBe(true);
   });
 
+  test('refuses a whitespace-only input before the model is called', async () => {
+    const { cogitator, run } = fakeCogitator();
+    const request = serveSockets({ cogitator, agents: { chat: chatAgent() } });
+    const connection = await connect(request.url);
+
+    connection.send({ type: 'run', payload: { type: 'agent', name: 'chat', input: '   ' } });
+    expect(await connection.next()).toMatchObject({ type: 'error', code: 'INVALID_MESSAGE' });
+    expect(run).not.toHaveBeenCalled();
+  });
+
   test('answers an invalid frame without closing the socket', async () => {
     const { cogitator } = fakeCogitator();
     const request = serveSockets({ cogitator });

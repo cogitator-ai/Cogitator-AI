@@ -8,6 +8,7 @@ import { getOwn } from '../utils/lookup.js';
 import { resolveError } from '../utils/errors.js';
 import {
   createRequestAbortController,
+  holdConnectionOpen,
   errorResponse,
   invalidInput,
   invalidJson,
@@ -47,6 +48,7 @@ export function createAgentRoutes(): Hono<HonoEnv> {
     if (!parsed.ok) return invalidInput(c, parsed.message);
 
     const userId = c.get('cogitatorAuth')?.userId;
+    holdConnectionOpen(c);
     const abortController = createRequestAbortController(c);
 
     try {
@@ -79,6 +81,7 @@ export function createAgentRoutes(): Hono<HonoEnv> {
 
     const { threadId, decisions, defaultDecision } = parsed.value;
     const userId = c.get('cogitatorAuth')?.userId;
+    holdConnectionOpen(c);
     const abortController = createRequestAbortController(c);
 
     try {
@@ -114,7 +117,7 @@ export function createAgentRoutes(): Hono<HonoEnv> {
     const abortController = createRequestAbortController(c);
 
     return streamSSE(c, async (stream) => {
-      const writer = new HonoStreamWriter(stream);
+      const writer = new HonoStreamWriter(stream, { heartbeatMs: ctx.sseHeartbeatMs });
       const messageId = generateId('msg');
 
       stream.onAbort(() => {

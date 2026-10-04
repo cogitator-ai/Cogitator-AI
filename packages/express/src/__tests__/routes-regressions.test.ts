@@ -297,10 +297,16 @@ describe('agent run', () => {
   });
 
   it.each([
-    ['numeric input', { input: 42 }, 'Missing required field: input'],
-    ['blank input', { input: '  ' }, 'Missing required field: input'],
-    ['array context', { input: 'q', context: [] }, 'Field context must be an object'],
-    ['numeric threadId', { input: 'q', threadId: 1 }, 'Field threadId must be a string'],
+    ['numeric input', { input: 42 }, 'Field "input" must be a string'],
+    ['empty input', { input: '' }, 'Field "input" must not be blank'],
+    ['blank input', { input: '  ' }, 'Field "input" must not be blank'],
+    ['array context', { input: 'q', context: [] }, 'Field "context" must be an object'],
+    [
+      'numeric threadId',
+      { input: 'q', threadId: 1 },
+      'Field "threadId" must be a non-empty string',
+    ],
+    ['empty threadId', { input: 'q', threadId: '' }, 'Field "threadId" must be a non-empty string'],
   ])('rejects %s with 400', async (_name, body, message) => {
     const { base, run } = await start(async () => runResult());
     const res = await post(`${base}/agents/bot/run`, body);
@@ -412,7 +418,7 @@ describe('swarm routes', () => {
     const { base } = await start(async () => runResult(), { swarms });
     const res = await post(`${base}/swarms/team/run`, { input: 'go', timeout: 0 });
     expect(res.status).toBe(400);
-    expect((await res.json()).error.message).toBe('Field timeout must be a positive number');
+    expect((await res.json()).error.message).toBe('Field "timeout" must be a positive number');
   });
 });
 

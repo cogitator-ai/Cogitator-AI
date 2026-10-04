@@ -7,13 +7,13 @@ import type {
   SwarmRunResponse,
   BlackboardResponse,
 } from '../types.js';
+import { parseSwarmRunRequest } from '@cogitator-ai/server-shared';
 import { ExpressStreamWriter, setupSSEHeaders, generateId } from '../streaming/index.js';
 import type { RunResult, SwarmMessage, SwarmEvent } from '@cogitator-ai/types';
 import {
   handleRouteError,
   isModuleNotFound,
   onClientDisconnect,
-  parseRunBody,
   resolveError,
   sendError,
 } from './utils.js';
@@ -56,7 +56,7 @@ export function createSwarmRoutes(ctx: RouteContext): Router {
         return;
       }
 
-      const parsed = parseRunBody(req.body, true);
+      const parsed = parseSwarmRunRequest(req.body);
       if (!parsed.ok) {
         sendError(res, 400, parsed.message, 'INVALID_INPUT');
         return;
@@ -131,7 +131,7 @@ export function createSwarmRoutes(ctx: RouteContext): Router {
         return;
       }
 
-      const parsed = parseRunBody(req.body, true);
+      const parsed = parseSwarmRunRequest(req.body);
       if (!parsed.ok) {
         sendError(res, 400, parsed.message, 'INVALID_INPUT');
         return;
@@ -139,7 +139,7 @@ export function createSwarmRoutes(ctx: RouteContext): Router {
       const body = parsed.value;
 
       setupSSEHeaders(res);
-      const writer = new ExpressStreamWriter(res);
+      const writer = new ExpressStreamWriter(res, { heartbeatMs: ctx.config.sseHeartbeatMs });
       const messageId = generateId('swarm');
 
       let disconnected = false;

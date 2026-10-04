@@ -78,6 +78,7 @@ interface CogitatorPluginOptions {
   enableWebSocket?: boolean;
   swagger?: SwaggerConfig;
   websocket?: WebSocketConfig; // { path? }, default '/ws'
+  sseHeartbeatMs?: number; // SSE heartbeat interval in ms, default 5000, 0 turns it off
 }
 ```
 
@@ -212,4 +213,4 @@ import {
 } from '@cogitator-ai/fastify';
 ```
 
-`AgentRunRequestSchema` and `SwarmRunRequestSchema` require a non-blank `input`, `AgentResumeRequestSchema` a `threadId` with optional `decisions` / `defaultDecision` (the swarm `timeout` must be greater than 0), `AddMessageRequestSchema` requires a non-empty `content` and a `user`/`assistant`/`system` role, and `WorkflowRunRequestSchema.options` only allows `maxConcurrency`/`maxIterations` (integers ≥ 1) and `checkpoint` (`additionalProperties: false`). These can be used in custom Fastify route schemas for native validation.
+`AgentRunRequestSchema` and `SwarmRunRequestSchema` require an `input` with more than whitespace (the `RUN_INPUT_SCHEMA` of `@cogitator-ai/server-shared`), `AgentResumeRequestSchema` a `threadId` with optional `decisions` / `defaultDecision` (the swarm `timeout` must be greater than 0), `AddMessageRequestSchema` requires a non-empty `content` and a `user`/`assistant`/`system` role, and `WorkflowRunRequestSchema.options` only allows `maxConcurrency`/`maxIterations` (integers ≥ 1) and `checkpoint` (`additionalProperties: false`). These can be used in custom Fastify route schemas for native validation.

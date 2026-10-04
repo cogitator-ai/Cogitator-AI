@@ -55,7 +55,7 @@ POST   /api/agents/:name/stream       - Run agent (SSE stream)
 POST   /api/agents/:name/resume       - Resume a run paused for tool approvals
 ```
 
-Bodies are validated with JSON Schema (`input` must be a non-blank string); validation failures return `400 INVALID_INPUT`. The agent list exposes `config.description`, never the instructions. The authenticated `userId` is passed to the run, and runs are aborted when the client disconnects.
+Bodies are validated with JSON Schema (`input` must contain more than whitespace, the same rule the other adapters share from `@cogitator-ai/server-shared`); validation failures return `400 INVALID_INPUT` before the model is called. The `usage` of a run answer carries `inputTokens`, `outputTokens` and `totalTokens`, plus `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the model reported them, the same shape as every other adapter. The agent list exposes `config.description`, never the instructions. The authenticated `userId` is passed to the run, and runs are aborted when the client disconnects.
 
 ### Threads (Memory)
 
@@ -222,6 +222,8 @@ while (true) {
 | `error`             | Error occurred                           |
 | `finish`            | Stream finished, includes usage stats    |
 
+While an SSE stream is open it writes a `: keep-alive` comment every `sseHeartbeatMs` (5 s by default, `0` turns it off), which SSE clients skip, so a proxy or load balancer does not close a stream that waits on a slow tool or model (nginx closes a connection silent for 60 s).
+
 Text is emitted in `text-start`/`text-delta`/`text-end` blocks that are closed around tool calls; when the agent sets `reasoning: { summary: true }` and the provider returns a reasoning summary, it streams as separate `reasoning-start`/`reasoning-delta`/`reasoning-end` blocks that are closed before text or a tool call starts; the stream ends with `data: [DONE]` after `finish`. Headers set by your hooks (CORS, rate-limit) are kept on SSE responses.
 
 ## WebSocket Support
@@ -359,6 +361,7 @@ interface CogitatorPluginOptions {
   enableWebSocket?: boolean; // Default: false
   swagger?: SwaggerConfig;
   websocket?: WebSocketConfig;
+  sseHeartbeatMs?: number; // Default: 5000, 0 turns SSE heartbeats off
 }
 ```
 

@@ -1,4 +1,5 @@
 import fp from 'fastify-plugin';
+import { resolveSseHeartbeatMs } from '@cogitator-ai/server-shared';
 import type { FastifyPluginAsync, FastifyError } from 'fastify';
 import type { CogitatorPluginOptions, CogitatorContext } from './types.js';
 import { createAuthHook, errorHandler } from './hooks/index.js';
@@ -18,6 +19,7 @@ const cogitatorPluginImpl: FastifyPluginAsync<CogitatorPluginOptions> = async (f
     agents: opts.agents ?? {},
     workflows: opts.workflows ?? {},
     swarms: opts.swarms ?? {},
+    sseHeartbeatMs: resolveSseHeartbeatMs(opts.sseHeartbeatMs),
   };
 
   fastify.decorate('cogitator', context);

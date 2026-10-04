@@ -56,10 +56,12 @@ Creates a Hono sub-application with all Cogitator endpoints.
 | `enableWebSocket` | `boolean`                     | Enable the WebSocket endpoint                                                                                    |
 | `websocket`       | `WebSocketConfig`             | `{ path?, maxPayloadSize?, upgradeWebSocket? }` (see below)                                                      |
 | `bodyLimit`       | `number`                      | Max request body size in bytes (default 1 MiB)                                                                   |
+| `sseHeartbeatMs`  | `number`                      | How often SSE streams write a `: keep-alive` comment while a run is silent (default `5000`, `0` turns it off)    |
 
 ## Request Handling
 
-- Request bodies are validated before anything reaches the runtime: `input` must be a non-empty string, `context` an object, `threadId` a non-empty string, swarm `timeout` a positive number. Invalid bodies return `400 INVALID_INPUT` with the offending field in the message.
+- Request bodies are validated before anything reaches the runtime: `input` must contain more than whitespace (`""` and `"   "` are refused before the model is called), `context` an object, `threadId` a non-empty string, swarm `timeout` a positive number. Invalid bodies return `400 INVALID_INPUT` with the offending field in the message. The validator comes from `@cogitator-ai/server-shared`, so Express, Fastify, Hono and Koa refuse exactly the same bodies.
+- The `usage` of a run answer carries `inputTokens`, `outputTokens` and `totalTokens`, plus `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the model reported them, the same shape as every other adapter.
 - Workflow runs accept an optional body. `options` is limited to `maxConcurrency`, `maxIterations` (positive integers) and `checkpoint` (boolean); any other option is dropped, and a wrongly typed one returns `400 INVALID_INPUT`.
 - Thread messages accept `role` of `user`, `assistant` or `system`; `metadata` is stored with the entry and a token estimate is recorded.
 - Thread routes use `cogitator.getMemory()`, which connects the configured memory adapter on first use, so threads can be read on a fresh server before any agent has run. Only a `Cogitator` without `memory` configured answers `503 UNAVAILABLE`.
@@ -174,7 +176,7 @@ import { serve } from '@hono/node-server';
 serve(app, { port: 3000 });
 
 // Bun
-export default app;
+Bun.serve({ fetch: app.fetch, port: 3000 });
 
 // Cloudflare Workers
 export default app;
@@ -182,6 +184,8 @@ export default app;
 // Deno
 Deno.serve(app.fetch);
 ```
+
+On Bun, `Bun.serve` closes a connection that stays silent for `idleTimeout` seconds (10 by default), and a run that waits on a slow tool or model is silent for longer. The adapter handles both kinds of answer: SSE streams write a heartbeat comment every `sseHeartbeatMs` (5 s by default, keep it under `idleTimeout`), and the JSON routes (`run`, `resume`, workflow and swarm `run`) lift the idle timeout for their own request once its body is read, through the server Bun hands to `fetch`. Serve the app with `fetch: app.fetch` (or `export default app`) so Hono receives that server. Keep `idleTimeout` at its default or above, since Bun cuts connections at once below 5 s whatever is written.
 
 On Cloudflare Workers use a `compatibility_date` of 2026-08-04 or later (or the `nodejs_compat` flag); with database memory create the `Cogitator` per request, since Workers do not share connections between requests. Deno needs only `--allow-net` and `--allow-env`. Complete projects: [`09-deno-server.ts`](https://github.com/cogitator-ai/Cogitator-AI/blob/main/examples/integrations/09-deno-server.ts), [`10-cloudflare-worker`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/examples/integrations/10-cloudflare-worker). See also [cogitator.app/docs/deployment/edge](https://cogitator.app/docs/deployment/edge).
 
@@ -195,7 +199,9 @@ When the agent sets `reasoning: { summary: true }` and the provider returns a re
 
 Workflow streams send `{ type: 'workflow', event, data }` (`node_started`, `node_completed`, `node_error`, `node_progress`, `workflow_completed`); swarm streams send `{ type: 'swarm', event, data }` (`agent_start`, `agent_complete`, `agent_error`, `message`, the swarm's own events, `swarm_completed`). Every stream ends with `finish` and `data: [DONE]`, or with an `error` event.
 
-For custom routes, `HonoStreamWriter` wraps the stream of Hono's `streamSSE`; its methods (`start`, `textDelta`, `toolCallStart`, `approvalRequired`, `workflowEvent`, `finish`, …) return promises:
+While a stream is open, every `sseHeartbeatMs` (5 s by default) it also writes an SSE comment, `: keep-alive`, which SSE clients skip. It keeps a stream that waits on a slow tool or model from being closed by Bun's `idleTimeout` or by a proxy (nginx closes a connection silent for 60 s).
+
+For custom routes, `HonoStreamWriter` wraps the stream of Hono's `streamSSE` and sends the same heartbeats (`new HonoStreamWriter(stream, { heartbeatMs })`, stopped by `close()`); its methods (`start`, `textDelta`, `toolCallStart`, `approvalRequired`, `workflowEvent`, `finish`, …) return promises:
 
 ```typescript
 import { streamSSE } from 'hono/streaming';
@@ -211,6 +217,7 @@ app.post('/custom/stream', (c) =>
     await writer.textDelta(textId, 'Hello!');
     await writer.textEnd(textId);
     await writer.finish(messageId);
+    writer.close();
   })
 );
 ```

@@ -45,22 +45,25 @@ Creates a Koa Router with all Cogitator endpoints.
 
 **Options:**
 
-| Option          | Type                          | Description                                                                                                       |
-| --------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `cogitator`     | `Cogitator`                   | **Required.** Cogitator runtime instance                                                                          |
-| `agents`        | `Record<string, Agent>`       | Named agents to expose                                                                                            |
-| `workflows`     | `Record<string, Workflow>`    | Named workflows                                                                                                   |
-| `swarms`        | `Record<string, SwarmConfig>` | Named swarms                                                                                                      |
-| `auth`          | `AuthFunction`                | `(ctx) => AuthContext \| undefined` (sync or async), receives the Koa Context; throw to answer `401 UNAUTHORIZED` |
-| `enableSwagger` | `boolean`                     | Serve `/openapi.json` and Swagger UI at `/docs`                                                                   |
-| `swagger`       | `SwaggerConfig`               | Swagger configuration                                                                                             |
-| `bodyLimit`     | `number`                      | Max JSON body size in bytes (default 1 MiB)                                                                       |
+| Option           | Type                          | Description                                                                                                       |
+| ---------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `cogitator`      | `Cogitator`                   | **Required.** Cogitator runtime instance                                                                          |
+| `agents`         | `Record<string, Agent>`       | Named agents to expose                                                                                            |
+| `workflows`      | `Record<string, Workflow>`    | Named workflows                                                                                                   |
+| `swarms`         | `Record<string, SwarmConfig>` | Named swarms                                                                                                      |
+| `auth`           | `AuthFunction`                | `(ctx) => AuthContext \| undefined` (sync or async), receives the Koa Context; throw to answer `401 UNAUTHORIZED` |
+| `enableSwagger`  | `boolean`                     | Serve `/openapi.json` and Swagger UI at `/docs`                                                                   |
+| `swagger`        | `SwaggerConfig`               | Swagger configuration                                                                                             |
+| `bodyLimit`      | `number`                      | Max JSON body size in bytes (default 1 MiB)                                                                       |
+| `sseHeartbeatMs` | `number`                      | How often SSE streams write a `: keep-alive` comment while a run is silent (default `5000`, `0` turns it off)     |
 
 WebSocket support is attached to the HTTP server with [`setupWebSocket`](#websocket), not through router options.
 
 ## Request Handling
 
-- Request bodies are validated before anything reaches the runtime: `input` must be a non-empty string, `context` an object, `threadId` a non-empty string, swarm `timeout` a positive number. Invalid bodies return `400 INVALID_INPUT` with the offending field in the message.
+- Request bodies are validated before anything reaches the runtime: `input` must contain more than whitespace (`""` and `"   "` are refused before the model is called), `context` an object, `threadId` a non-empty string, swarm `timeout` a positive number. Invalid bodies return `400 INVALID_INPUT` with the offending field in the message. The validator comes from `@cogitator-ai/server-shared`, so Express, Fastify, Hono and Koa refuse exactly the same bodies.
+- The `usage` of a run answer carries `inputTokens`, `outputTokens` and `totalTokens`, plus `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the model reported them, the same shape as every other adapter.
+- While an SSE stream is open it writes a `: keep-alive` comment every `sseHeartbeatMs` (5 s by default, `0` turns it off), which SSE clients skip, so a proxy or load balancer does not close a stream that waits on a slow tool or model (nginx closes a connection silent for 60 s).
 - Workflow runs accept an optional body. `options` is limited to `maxConcurrency`, `maxIterations` (positive integers) and `checkpoint` (boolean); any other option is dropped, and a wrongly typed one returns `400 INVALID_INPUT`.
 - Thread messages accept `role` of `user`, `assistant` or `system`; `metadata` is stored with the entry and a token estimate is recorded.
 - Thread routes use `cogitator.getMemory()`, which connects the configured memory adapter on first use, so threads can be read on a fresh server before any agent has run. Only a `Cogitator` without `memory` configured answers `503 UNAVAILABLE`.

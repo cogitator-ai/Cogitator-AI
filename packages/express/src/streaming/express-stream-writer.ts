@@ -1,4 +1,9 @@
 import type { Response } from 'express';
+import {
+  encodeHeartbeat,
+  resolveSseHeartbeatMs,
+  startHeartbeat,
+} from '@cogitator-ai/server-shared';
 import { encodeSSE, encodeDone } from './helpers.js';
 import {
   createStartEvent,
@@ -21,12 +26,32 @@ import {
   type Usage,
 } from './protocol.js';
 
+export interface ExpressStreamWriterOptions {
+  /**
+   * How often an SSE comment is written while the stream is open, in milliseconds,
+   * so proxies and load balancers do not close a stream that waits on a slow tool or
+   * model. Default: 5000. `0` turns it off.
+   */
+  heartbeatMs?: number;
+}
+
 export class ExpressStreamWriter {
   private res: Response;
   private closed = false;
+  private readonly stopHeartbeat: () => void;
 
-  constructor(res: Response) {
+  constructor(res: Response, options: ExpressStreamWriterOptions = {}) {
     this.res = res;
+    this.stopHeartbeat = startHeartbeat(
+      () => this.heartbeat(),
+      resolveSseHeartbeatMs(options.heartbeatMs)
+    );
+  }
+
+  private heartbeat(): boolean {
+    if (!this.writable) return false;
+    this.res.write(encodeHeartbeat());
+    return true;
   }
 
   private get writable(): boolean {
@@ -114,6 +139,7 @@ export class ExpressStreamWriter {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.stopHeartbeat();
     if (this.res.writableEnded) return;
     try {
       this.res.end();

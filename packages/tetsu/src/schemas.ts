@@ -1,13 +1,20 @@
 import { z } from 'zod';
 import { ERROR_STATUS_CODES } from '@cogitator-ai/types';
+import { NON_BLANK_PATTERN } from '@cogitator-ai/server-shared';
 
 const JsonObject = z.record(z.string(), z.unknown());
 
 export const NameParams = z.object({ name: z.string().min(1) });
 export const ThreadParams = z.object({ id: z.string().min(1) });
 
+/** Text that must say something: refused when empty or whitespace only, like every adapter */
+const RunInput = z
+  .string()
+  .regex(new RegExp(NON_BLANK_PATTERN), 'must not be blank')
+  .describe('The message for the agent; must contain more than whitespace');
+
 export const RunBody = z.object({
-  input: z.string().min(1).describe('The message for the agent'),
+  input: RunInput,
   context: JsonObject.optional().describe('Extra values passed to the run as context'),
   threadId: z.string().min(1).optional().describe('Conversation thread kept in memory'),
 });
@@ -219,7 +226,7 @@ export const SocketMessage = z.discriminatedUnion('type', [
     payload: z.object({
       type: z.enum(['agent', 'workflow', 'swarm']),
       name: z.string().min(1),
-      input: z.string().min(1),
+      input: RunInput,
       context: JsonObject.optional(),
       threadId: z.string().min(1).optional(),
     }),

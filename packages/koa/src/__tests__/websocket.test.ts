@@ -207,6 +207,28 @@ describe('setupWebSocket', () => {
     });
   });
 
+  it('refuses a whitespace-only input before the model is called', async () => {
+    const ctx = mockRouteContext({
+      agents: { bot: { config: { instructions: 'x', tools: [] } } as never },
+    });
+    const { port } = await createTestServer(ctx);
+    const ws = createClient(port);
+    await waitForOpen(ws);
+
+    const response = await sendAndWait(ws, {
+      type: 'run',
+      id: 'r1',
+      payload: { type: 'agent', name: 'bot', input: '   ' },
+    });
+
+    expect(response).toEqual({
+      type: 'error',
+      id: 'r1',
+      error: 'Invalid run payload: "input" is required',
+    });
+    expect(ctx.runtime.run).not.toHaveBeenCalled();
+  });
+
   it('returns error when agent not found', async () => {
     const ctx = mockRouteContext();
     const { port } = await createTestServer(ctx);

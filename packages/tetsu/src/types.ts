@@ -88,6 +88,13 @@ export interface CogitatorDeps {
   websocket?: boolean | WebSocketOptions;
   /** Ends streams and sockets when the server starts draining. */
   until?: ShutdownSignal;
+  /**
+   * How often the SSE routes write a comment while a stream is open, in milliseconds.
+   * Keeps a run that waits on a slow tool or model from being cut off by the idle
+   * timeout of `Bun.serve` (10 s by default) or of a proxy. Default: 5000. `0` turns
+   * heartbeats off.
+   */
+  sseHeartbeatMs?: number;
 }
 
 export type AgentRunRequest = z.input<typeof RunBody>;

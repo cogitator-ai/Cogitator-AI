@@ -126,7 +126,9 @@ export const swarmRoutes: FastifyPluginAsync = async (fastify) => {
         return sendError(reply, 404, `Swarm '${name}' not found`, 'NOT_FOUND');
       }
 
-      const writer = new FastifyStreamWriter(reply);
+      const writer = new FastifyStreamWriter(reply, {
+        heartbeatMs: fastify.cogitator.sseHeartbeatMs,
+      });
       const messageId = generateId('swarm');
 
       let disconnected = false;

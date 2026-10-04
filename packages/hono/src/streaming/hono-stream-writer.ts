@@ -16,16 +16,40 @@ import {
   createFinishEvent,
   createWorkflowEvent,
   createSwarmEvent,
+  encodeHeartbeat,
+  resolveSseHeartbeatMs,
+  startHeartbeat,
   type PendingApproval,
   type Usage,
 } from '@cogitator-ai/server-shared';
 
+export interface HonoStreamWriterOptions {
+  /**
+   * How often an SSE comment is written while the stream is open, in milliseconds,
+   * so a run waiting on a slow tool or model is not cut off by an idle timeout
+   * (`Bun.serve` closes a connection silent for 10 s, proxies one silent for 60 s).
+   * Default: 5000. `0` turns it off.
+   */
+  heartbeatMs?: number;
+}
+
 export class HonoStreamWriter {
   private stream: SSEStreamingApi;
   private closed = false;
+  private readonly stopHeartbeat: () => void;
 
-  constructor(stream: SSEStreamingApi) {
+  constructor(stream: SSEStreamingApi, options: HonoStreamWriterOptions = {}) {
     this.stream = stream;
+    this.stopHeartbeat = startHeartbeat(
+      () => this.heartbeat(),
+      resolveSseHeartbeatMs(options.heartbeatMs)
+    );
+  }
+
+  private heartbeat(): boolean {
+    if (this.closed || this.stream.closed || this.stream.aborted) return false;
+    this.stream.write(encodeHeartbeat()).catch(() => this.close());
+    return true;
   }
 
   private async write(data: unknown): Promise<void> {
@@ -106,6 +130,7 @@ export class HonoStreamWriter {
 
   close(): void {
     this.closed = true;
+    this.stopHeartbeat();
   }
 
   get isClosed(): boolean {

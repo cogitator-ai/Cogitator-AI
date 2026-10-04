@@ -119,7 +119,9 @@ export function createAgentRoutes(): Router<CogitatorState> {
     }
 
     setupSSEHeaders(ctx);
-    const writer = new KoaStreamWriter(ctx);
+    const writer = new KoaStreamWriter(ctx, {
+      heartbeatMs: ctx.state.cogitator.sseHeartbeatMs,
+    });
     const messageId = generateId('msg');
     const abortController = new AbortController();
 
