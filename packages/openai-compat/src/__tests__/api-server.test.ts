@@ -368,6 +368,26 @@ describe('Auth Middleware', () => {
     expect(response.statusCode).toBe(200);
   });
 
+  it.each(['Bearer   sk-test-key', 'Bearer\tsk-test-key', 'bearer  sk-test-key  '])(
+    'accepts any whitespace between the scheme and the key: %j',
+    async (authorization) => {
+      fastify.addHook(
+        'preHandler',
+        createAuthMiddleware({ apiKeys: ['sk-test-key'], required: true })
+      );
+      fastify.get('/test', async () => ({ status: 'ok' }));
+      await fastify.ready();
+
+      const response = await fastify.inject({
+        method: 'GET',
+        url: '/test',
+        headers: { authorization },
+      });
+
+      expect(response.statusCode).toBe(200);
+    }
+  );
+
   it('rejects requests without API key', async () => {
     const authMiddleware = createAuthMiddleware({
       apiKeys: ['sk-test-key'],

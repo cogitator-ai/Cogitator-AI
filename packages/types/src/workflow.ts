@@ -801,7 +801,8 @@ export interface WorkflowManager {
   replay<S extends WorkflowState>(
     workflow: Workflow<S>,
     runId: string,
-    fromNode: string
+    fromNode: string,
+    options?: WorkflowExecuteOptionsV2
   ): Promise<WorkflowResult<S>>;
 
   /**
@@ -811,7 +812,8 @@ export interface WorkflowManager {
    */
   retryDeadLetter<S extends WorkflowState>(
     queue: DeadLetterQueue,
-    entryId: string
+    entryId: string,
+    options?: WorkflowExecuteOptionsV2
   ): Promise<WorkflowResult<S>>;
 
   getActiveCount(): Promise<number>;

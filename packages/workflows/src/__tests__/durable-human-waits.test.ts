@@ -30,9 +30,13 @@ const pending = (store: InMemoryApprovalStore) => async (): Promise<ApprovalRequ
 describe('human waits that survive a restart', () => {
   it('lets another process pick up the run and the same open request', async () => {
     const published: string[] = [];
+    let drafted = 0;
     const workflow = new WorkflowBuilder<EditionState>('edition')
       .initialState({})
-      .addNode('draft', async () => ({ state: { draft: 'Bridge strike leads' } }))
+      .addNode('draft', async () => {
+        drafted++;
+        return { state: { draft: 'Bridge strike leads' } };
+      })
       .addNode(
         'editor',
         humanWorkflowNode<EditionState>(approvalNode('editor', { title: 'Approve the edition' }), {
@@ -86,6 +90,7 @@ describe('human waits that survive a restart', () => {
 
     expect(run.state).toMatchObject({ approved: true, published: 'Bridge strike leads' });
     expect(published).toEqual(['Bridge strike leads']);
+    expect(drafted).toBe(1);
   });
 
   it('asks again in every round of a rewrite loop instead of reusing the last answer', async () => {
@@ -136,5 +141,61 @@ describe('human waits that survive a restart', () => {
 
     const done = await result;
     expect(done.state).toMatchObject({ round: 2, approved: true });
+  });
+
+  it('picks up a pending escalation instead of escalating twice', async () => {
+    const workflow = new WorkflowBuilder<EditionState>('escalating')
+      .initialState({})
+      .addNode(
+        'editor',
+        humanWorkflowNode<EditionState>(
+          {
+            name: 'editor',
+            approval: {
+              type: 'approve-reject',
+              title: 'Approve',
+              assignee: 'editor',
+              timeout: 20,
+              timeoutAction: 'escalate',
+              escalateTo: 'deputy',
+            },
+          },
+          { stateMapper: (result) => ({ approved: result.approved }) }
+        )
+      )
+      .build();
+    const runStore = new InMemoryRunStore();
+    const checkpointStore = new InMemoryCheckpointStore();
+
+    const before = new InMemoryApprovalStore();
+    const crashed = createWorkflowManager({ cogitator: {} as never, runStore, checkpointStore });
+    void crashed.execute(workflow, undefined, { approvalStore: before });
+    const escalation = await until(async () =>
+      (await before.getPendingRequests()).find((r) => r.assignee === 'deputy')
+    );
+
+    const durable = new InMemoryApprovalStore();
+    for (const request of await before.getPendingRequests()) await durable.createRequest(request);
+
+    const restarted = createWorkflowManager({ cogitator: {} as never, runStore, checkpointStore });
+    restarted.registerWorkflow(workflow);
+    const finished = new Promise<WorkflowRun>((resolve) => {
+      restarted.onRunStateChange((run) => {
+        if (run.status === 'completed') resolve(run);
+      });
+    });
+    await restarted.recoverRuns({ approvalStore: durable });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    const deputies = (await durable.getPendingRequests()).filter((r) => r.assignee === 'deputy');
+    expect(deputies.map((r) => r.id)).toEqual([escalation.id]);
+
+    await durable.submitResponse({
+      requestId: escalation.id,
+      decision: true,
+      respondedBy: 'deputy',
+      respondedAt: Date.now(),
+    });
+    expect((await finished).state).toMatchObject({ approved: true });
   });
 });

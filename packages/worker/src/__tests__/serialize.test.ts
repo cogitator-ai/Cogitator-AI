@@ -134,3 +134,23 @@ describe('resolveRedisOptions', () => {
     );
   });
 });
+
+describe('redis cluster connections', () => {
+  it('give every node the url credentials and TLS', async () => {
+    const { createBullConnection } = await import('../connection');
+    const connection = createBullConnection({
+      url: 'rediss://news:secret@ignored.example:6380',
+      cluster: { nodes: [{ host: 'node-1', port: 7000 }] },
+    });
+    const cluster = connection.connection as unknown as {
+      options: { redisOptions: Record<string, unknown> };
+    };
+    expect(cluster.options.redisOptions).toMatchObject({
+      username: 'news',
+      password: 'secret',
+      tls: {},
+    });
+    expect(cluster.options.redisOptions).not.toHaveProperty('host');
+    await connection.dispose();
+  });
+});

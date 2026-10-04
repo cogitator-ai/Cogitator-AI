@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { WorkflowBuilder } from '../builder';
 import { InMemoryCheckpointStore } from '../checkpoint';
 import { createWorkflowManager } from '../manager';
+import { InMemoryApprovalStore, approvalNode } from '../human';
+import { humanWorkflowNode } from '../nodes/adapters';
 import { InMemoryDLQ } from '../saga';
 
 type State = {
@@ -105,6 +107,48 @@ describe('WorkflowManager.retryDeadLetter', () => {
     await expect(manager.retryDeadLetter(dlq, entry!.id)).rejects.toThrow(
       'needs a manager with a checkpointStore'
     );
+  });
+
+  it('passes execute options such as an approval store to the retried run', async () => {
+    let left = 1;
+    const workflow = new WorkflowBuilder<{ fetched?: string; approved?: boolean }>(
+      'fetch-then-approve'
+    )
+      .initialState({})
+      .addNode('fetch', async () => {
+        if (left-- > 0) throw new Error('feed down');
+        return { state: { fetched: 'story' } };
+      })
+      .addNode(
+        'editor',
+        humanWorkflowNode(
+          approvalNode('editor', { title: 'Approve', timeout: 50, timeoutAction: 'approve' }),
+          {
+            stateMapper: (result) => ({ approved: result.approved }),
+          }
+        ),
+        { after: ['fetch'] }
+      )
+      .build();
+    const dlq = new InMemoryDLQ();
+    const approvalStore = new InMemoryApprovalStore();
+    const manager = createWorkflowManager({
+      cogitator: {} as never,
+      checkpointStore: new InMemoryCheckpointStore(),
+    });
+    await manager.execute(workflow, undefined, { deadLetterQueue: dlq, approvalStore });
+    const [entry] = await dlq.list();
+
+    const retried = await manager.retryDeadLetter<{ fetched?: string; approved?: boolean }>(
+      dlq,
+      entry!.id,
+      {
+        approvalStore,
+      }
+    );
+
+    expect(retried.error).toBeUndefined();
+    expect(retried.state).toMatchObject({ fetched: 'story', approved: true });
   });
 
   it('refuses entries it cannot run', async () => {

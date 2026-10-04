@@ -338,11 +338,10 @@ export class DefaultWorkflowManager implements IWorkflowManager {
       throw new Error(`Workflow not found: ${run.workflowName}`);
     }
 
-    const checkpoint = run.checkpointId
-      ? await this.checkpointStore?.load(run.checkpointId)
-      : undefined;
-    if (run.checkpointId && !checkpoint) {
-      throw new Error(`Checkpoint '${run.checkpointId}' of run '${runId}' not found`);
+    const checkpointId = await this.latestCheckpointId(run);
+    const checkpoint = checkpointId ? await this.checkpointStore?.load(checkpointId) : undefined;
+    if (checkpointId && !checkpoint) {
+      throw new Error(`Checkpoint '${checkpointId}' of run '${runId}' not found`);
     }
 
     await this.runStore.update(runId, {
@@ -371,6 +370,23 @@ export class DefaultWorkflowManager implements IWorkflowManager {
           }
         : { input: run.input as Partial<WorkflowState> | undefined }),
     }).catch(() => {});
+  }
+
+  /**
+   * The run's latest checkpoint: the one recorded on the run, else the newest one the executor
+   * saved for it. A run whose process stopped mid-flight has saved checkpoints the run record
+   * never heard of, since the manager records the id only when the run returns.
+   */
+  private async latestCheckpointId(run: WorkflowRun): Promise<string | undefined> {
+    if (run.checkpointId) return run.checkpointId;
+    if (!this.checkpointStore) return undefined;
+    const saved = await this.checkpointStore.list(run.workflowName);
+    let latest: { id: string; timestamp: number } | undefined;
+    for (const checkpoint of saved) {
+      if (checkpoint.workflowId !== run.id) continue;
+      if (!latest || checkpoint.timestamp > latest.timestamp) latest = checkpoint;
+    }
+    return latest?.id;
   }
 
   /**
@@ -472,19 +488,21 @@ export class DefaultWorkflowManager implements IWorkflowManager {
   async replay<S extends WorkflowState>(
     workflow: Workflow<S>,
     runId: string,
-    fromNode: string
+    fromNode: string,
+    options?: WorkflowExecuteOptionsV2
   ): Promise<WorkflowResult<S>> {
     const run = await this.runStore.get(runId);
     if (!run) throw new Error(`Run not found: ${runId}`);
 
-    if (!run.checkpointId) {
+    const checkpointId = await this.latestCheckpointId(run);
+    if (!checkpointId) {
       throw new Error('Run has no checkpoint to replay from');
     }
 
     const newRunId = nanoid();
     const now = Date.now();
     const rerun = new Set([fromNode, ...(this.reachability(workflow).get(fromNode) ?? [])]);
-    const checkpoint = await this.checkpointStore?.load(run.checkpointId);
+    const checkpoint = await this.checkpointStore?.load(checkpointId);
     const done = checkpoint?.completedNodes ?? run.completedNodes;
     const kept = done.filter((n) => workflow.nodes.has(n) && !rerun.has(n));
     const keptResults = Object.fromEntries(
@@ -521,6 +539,7 @@ export class DefaultWorkflowManager implements IWorkflowManager {
       runId: newRunId,
       workflow,
       input: run.state as Partial<S>,
+      ...(options && { options }),
       timeout: this.defaultTimeout,
       resumeFrom: {
         workflowId: newRunId,
@@ -534,14 +553,16 @@ export class DefaultWorkflowManager implements IWorkflowManager {
    * Runs a dead-lettered node again by replaying its run from the failed node, or running the
    * workflow again from its input when the run failed before any checkpoint (nothing had
    * completed, so nothing runs twice). The attempt is recorded on the entry first, and the entry is removed when the replay succeeds, so an entry
-   * that fails again stays in the queue with one more attempt.
+   * that fails again stays in the queue with one more attempt. Pass the execute options the run
+   * needs, such as `approvalStore` or `timerStore`: they lived in the process that ran it.
    *
    * @throws Error when the entry is gone, its workflow is not registered here, the node no longer
    *   exists, its run is unknown, or the manager keeps no checkpoints
    */
   async retryDeadLetter<S extends WorkflowState>(
     queue: DeadLetterQueue,
-    entryId: string
+    entryId: string,
+    options?: WorkflowExecuteOptionsV2
   ): Promise<WorkflowResult<S>> {
     const entry = await queue.get(entryId);
     if (!entry) throw new Error(`Dead letter entry not found: ${entryId}`);
@@ -562,9 +583,9 @@ export class DefaultWorkflowManager implements IWorkflowManager {
     if (!run) throw new Error(`Run not found: ${entry.workflowId}`);
 
     await queue.retry(entryId);
-    const result = run.checkpointId
-      ? await this.replay(workflow, run.id, entry.nodeId)
-      : await this.execute(workflow, run.input as Partial<S> | undefined);
+    const result = (await this.latestCheckpointId(run))
+      ? await this.replay(workflow, run.id, entry.nodeId, options)
+      : await this.execute(workflow, run.input as Partial<S> | undefined, options);
     if (!result.error) await queue.remove(entryId);
     return result;
   }

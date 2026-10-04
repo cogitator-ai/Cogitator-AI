@@ -72,6 +72,17 @@ export interface BullConnection {
 }
 
 /**
+ * What every cluster node connection needs from the config: the credentials and TLS of the url
+ * and the explicit fields, without a host, port or database (a cluster has no database).
+ */
+function clusterNodeOptions(
+  redis: RedisConnectionConfig
+): Omit<RedisConnectionOptions, 'host' | 'port' | 'db'> {
+  const { host: _host, port: _port, db: _db, ...rest } = resolveRedisOptions(redis);
+  return rest;
+}
+
+/**
  * Connection for BullMQ queues and workers. Blocking (worker) connections must not limit
  * retries per request, as BullMQ requires. Cluster instances are shared with BullMQ, which
  * does not close them, so callers must `dispose()` them.
@@ -88,7 +99,7 @@ export function createBullConnection(
     }
     const cluster = new Cluster(redis.cluster.nodes, {
       lazyConnect: true,
-      redisOptions: { password: redis.password, maxRetriesPerRequest },
+      redisOptions: { ...clusterNodeOptions(redis), maxRetriesPerRequest },
     });
     return {
       connection: cluster,
@@ -117,7 +128,7 @@ export function createRedisClient(redis: RedisConnectionConfig): RedisClient {
     if (redis.cluster.nodes.length === 0) {
       throw new Error('Redis cluster configuration requires at least one node');
     }
-    return new Cluster(redis.cluster.nodes, { redisOptions: { password: redis.password } });
+    return new Cluster(redis.cluster.nodes, { redisOptions: clusterNodeOptions(redis) });
   }
 
   return new Redis(resolveRedisOptions(redis));
