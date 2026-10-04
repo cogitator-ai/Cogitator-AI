@@ -34,6 +34,7 @@ export {
   httpRequest,
   exec,
   webSearch,
+  createWebSearchTool,
   webScrape,
   createWebScrapeTool,
   sqlQuery,
@@ -60,6 +61,13 @@ export type {
   CoreFactsLike,
   SchedulerToolsConfig,
   WebScrapeOptions,
+  WebSearchOptions,
+  SearchProvider,
+  SearchTopic,
+  SearchRecency,
+  SearchDepth,
+  SearchResult,
+  SearchResponse,
 } from './tools/index';
 export {
   RobotsPolicy,

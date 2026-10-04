@@ -19,7 +19,17 @@ export { httpRequest } from './http';
 
 export { exec } from './exec';
 
-export { webSearch } from './web-search';
+export {
+  webSearch,
+  createWebSearchTool,
+  type WebSearchOptions,
+  type SearchProvider,
+  type SearchTopic,
+  type SearchRecency,
+  type SearchDepth,
+  type SearchResult,
+  type SearchResponse,
+} from './web-search';
 export { webScrape, createWebScrapeTool, type WebScrapeOptions } from './web-scrape';
 export { sqlQuery } from './sql-query';
 export { vectorSearch } from './vector-search';

@@ -540,10 +540,10 @@ const schemas = registry.getSchemas();
 
 #### Web & Search Tools
 
-| Tool        | Description                            |
-| ----------- | -------------------------------------- |
-| `webSearch` | Search the web (Tavily, Brave, Serper) |
-| `webScrape` | Extract content from web pages         |
+| Tool        | Description                                                                                    |
+| ----------- | ---------------------------------------------------------------------------------------------- |
+| `webSearch` | Search the web or news (Tavily, Brave, Serper) with date, domain, country and language filters |
+| `webScrape` | Extract content from web pages                                                                 |
 
 #### Database Tools
 
@@ -2125,10 +2125,10 @@ const schemas = registry.getSchemas();
 
 #### Web & Search Tools
 
-| Tool        | Description                            |
-| ----------- | -------------------------------------- |
-| `webSearch` | Search the web (Tavily, Brave, Serper) |
-| `webScrape` | Extract content from web pages         |
+| Tool        | Description                                                                                    |
+| ----------- | ---------------------------------------------------------------------------------------------- |
+| `webSearch` | Search the web or news (Tavily, Brave, Serper) with date, domain, country and language filters |
+| `webScrape` | Extract content from web pages                                                                 |
 
 #### Database Tools
 
@@ -3178,6 +3178,17 @@ await robots.allows('https://example.com/news/today'); // true or false
 The token defaults to the User-Agent's first word (`NewsBot`); pass `token` to match another. `robotsRulesFor(text, token)` and `robotsAllowsPath(rules, path)` expose the parser for robots.txt files you already have.
 
 `createWebScrapeTool({ userAgent, robots })` builds a `web_scrape` tool with your User-Agent and a robots.txt check on every hop, redirects included (a disallowed page comes back as an `error`). The plain `webScrape` keeps the default User-Agent and checks nothing.
+
+### Web Search
+
+`webSearch` searches through Tavily, Brave or Serper, whichever key is set first (`TAVILY_API_KEY`, `BRAVE_API_KEY`, `SERPER_API_KEY`). The same filters work on all three: `topic: 'news'`, `recency` (`day`, `week`, `month`, `year`) or a `dateRange`, `includeDomains` / `excludeDomains`, `country`, `language` and `page`. A filter a provider cannot apply comes back as an `error` instead of being dropped. Results carry `publishedAt` when the provider reports a date.
+
+```typescript
+import { createWebSearchTool } from '@cogitator-ai/core';
+
+const search = createWebSearchTool({ provider: 'tavily', apiKeys: { tavily: config.tavilyKey } });
+// a model can call it with { query: 'solar storms', topic: 'news', recency: 'week', language: 'en' }
+```
 
 ## Tool Caching
 

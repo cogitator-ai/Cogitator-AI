@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { webSearch } from '../tools/web-search';
+import { createWebSearchTool, toPublishedAt, webSearch } from '../tools/web-search';
 
 const mockFetch = vi.fn();
 
@@ -295,6 +295,352 @@ describe('web_search tool', () => {
       expect(schema.parameters.properties).toHaveProperty('query');
       expect(schema.parameters.properties).toHaveProperty('provider');
       expect(schema.parameters.properties).toHaveProperty('maxResults');
+    });
+  });
+
+  describe('news, recency and domain filters', () => {
+    const okJson = (body: unknown) => ({ ok: true, json: async () => body });
+
+    it('sends Tavily its own topic, time range and domain parameters', async () => {
+      vi.stubEnv('TAVILY_API_KEY', 'k');
+      mockFetch.mockResolvedValueOnce(
+        okJson({
+          results: [
+            {
+              title: 'T',
+              url: 'https://reuters.com/a',
+              content: 'c',
+              published_date: 'Fri, 03 Oct 2026 14:00:00 GMT',
+            },
+          ],
+        })
+      );
+
+      const result = await webSearch.execute(
+        {
+          query: 'EU AI Act',
+          topic: 'news',
+          recency: 'week',
+          includeDomains: ['reuters.com', 'apnews.com'],
+          excludeDomains: ['msn.com'],
+        },
+        ctx
+      );
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body).toMatchObject({
+        query: 'EU AI Act',
+        topic: 'news',
+        time_range: 'week',
+        include_domains: ['reuters.com', 'apnews.com'],
+        exclude_domains: ['msn.com'],
+        include_published_date: true,
+      });
+      expect(result).toMatchObject({
+        results: [{ url: 'https://reuters.com/a', publishedAt: '2026-10-03T14:00:00.000Z' }],
+      });
+    });
+
+    it('leaves optional Tavily filters out of a plain search', async () => {
+      vi.stubEnv('TAVILY_API_KEY', 'k');
+      mockFetch.mockResolvedValueOnce(okJson({ results: [] }));
+
+      await webSearch.execute({ query: 'plain' }, ctx);
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body.topic).toBe('general');
+      expect(body).not.toHaveProperty('time_range');
+      expect(body).not.toHaveProperty('include_domains');
+      expect(body).not.toHaveProperty('exclude_domains');
+    });
+
+    it('uses the Brave news endpoint with freshness and site operators', async () => {
+      vi.stubEnv('BRAVE_API_KEY', 'k');
+      mockFetch.mockResolvedValueOnce(
+        okJson({
+          type: 'news',
+          results: [
+            {
+              title: 'B',
+              url: 'https://apnews.com/b',
+              description: 'd',
+              age: '2 hours ago',
+              page_age: '2026-10-04T10:30:00',
+            },
+          ],
+        })
+      );
+
+      const result = await webSearch.execute(
+        {
+          query: 'quake',
+          provider: 'brave',
+          topic: 'news',
+          recency: 'day',
+          includeDomains: ['apnews.com', 'reuters.com'],
+          excludeDomains: ['msn.com'],
+        },
+        ctx
+      );
+
+      const url = new URL(mockFetch.mock.calls[0][0] as string);
+      expect(url.pathname).toBe('/res/v1/news/search');
+      expect(url.searchParams.get('freshness')).toBe('pd');
+      expect(url.searchParams.get('q')).toBe(
+        'quake (site:apnews.com OR site:reuters.com) -site:msn.com'
+      );
+      expect(result).toMatchObject({
+        query: 'quake',
+        results: [{ url: 'https://apnews.com/b', publishedAt: '2026-10-04T10:30:00.000Z' }],
+      });
+    });
+
+    it('uses the Serper news endpoint with a time filter and resolves relative dates', async () => {
+      vi.stubEnv('SERPER_API_KEY', 'k');
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-10-04T12:00:00Z'));
+      try {
+        mockFetch.mockResolvedValueOnce(
+          okJson({
+            news: [
+              {
+                title: 'S',
+                link: 'https://bbc.co.uk/s',
+                snippet: 's',
+                date: '3 hours ago',
+                source: 'BBC',
+              },
+            ],
+          })
+        );
+
+        const result = await webSearch.execute(
+          {
+            query: 'launch',
+            provider: 'serper',
+            topic: 'news',
+            recency: 'month',
+            includeDomains: ['bbc.co.uk'],
+          },
+          ctx
+        );
+
+        expect(mockFetch.mock.calls[0][0]).toBe('https://google.serper.dev/news');
+        const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+        expect(body).toMatchObject({ q: 'launch site:bbc.co.uk', tbs: 'qdr:m' });
+        expect(result).toMatchObject({
+          query: 'launch',
+          results: [
+            {
+              url: 'https://bbc.co.uk/s',
+              source: 'BBC',
+              publishedAt: '2026-10-04T09:00:00.000Z',
+            },
+          ],
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('refuses domains that are not bare domains', () => {
+      const parse = (domains: string[]) =>
+        webSearch.parameters.safeParse({ query: 'q', includeDomains: domains }).success;
+      expect(parse(['reuters.com', 'news.bbc.co.uk'])).toBe(true);
+      expect(parse(['https://reuters.com'])).toBe(false);
+      expect(parse(['reuters.com/world'])).toBe(false);
+      expect(parse(['site:reuters.com OR x'])).toBe(false);
+    });
+  });
+
+  describe('createWebSearchTool', () => {
+    it('uses a key passed in options over the environment', async () => {
+      vi.stubEnv('TAVILY_API_KEY', 'env-key');
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ results: [] }) });
+
+      const search = createWebSearchTool({ apiKeys: { tavily: 'option-key' } });
+      await search.execute({ query: 'q' }, ctx);
+
+      const init = mockFetch.mock.calls[0][1] as RequestInit;
+      expect(init.headers).toMatchObject({ Authorization: 'Bearer option-key' });
+    });
+
+    it('defaults to the configured provider when a call names none', async () => {
+      vi.stubEnv('TAVILY_API_KEY', 'tavily-key');
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ organic: [] }) });
+
+      const search = createWebSearchTool({ provider: 'serper', apiKeys: { serper: 's' } });
+      const result = await search.execute({ query: 'q' }, ctx);
+
+      expect(mockFetch.mock.calls[0][0]).toBe('https://google.serper.dev/search');
+      expect(result).toMatchObject({ provider: 'serper' });
+    });
+
+    it('reports a missing key for the configured provider', async () => {
+      vi.stubEnv('TAVILY_API_KEY', 'tavily-key');
+      const search = createWebSearchTool({ provider: 'brave' });
+      const result = await search.execute({ query: 'q' }, ctx);
+      expect((result as { error: string }).error).toContain('BRAVE_API_KEY');
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('toPublishedAt', () => {
+    const now = Date.parse('2026-10-04T12:00:00Z');
+
+    it('reads absolute dates, a zoneless timestamp as UTC', () => {
+      expect(toPublishedAt('2026-10-04T10:30:00', now)).toBe('2026-10-04T10:30:00.000Z');
+      expect(toPublishedAt('2026-10-04T10:30:00+02:00', now)).toBe('2026-10-04T08:30:00.000Z');
+      expect(toPublishedAt('Fri, 03 Oct 2026 14:00:00 GMT', now)).toBe('2026-10-03T14:00:00.000Z');
+    });
+
+    it('resolves relative dates against now', () => {
+      expect(toPublishedAt('3 hours ago', now)).toBe('2026-10-04T09:00:00.000Z');
+      expect(toPublishedAt('a day ago', now)).toBe('2026-10-03T12:00:00.000Z');
+      expect(toPublishedAt('1 week ago', now)).toBe('2026-09-27T12:00:00.000Z');
+    });
+
+    it('drops what it cannot read instead of guessing', () => {
+      expect(toPublishedAt('recently', now)).toBeUndefined();
+      expect(toPublishedAt('', now)).toBeUndefined();
+      expect(toPublishedAt(null, now)).toBeUndefined();
+      expect(toPublishedAt(42, now)).toBeUndefined();
+    });
+  });
+
+  describe('country, language, date range and paging', () => {
+    const okJson = (body: unknown) => ({ ok: true, json: async () => body });
+
+    it('maps country and language to Tavily names and asks for raw content', async () => {
+      vi.stubEnv('TAVILY_API_KEY', 'k');
+      mockFetch.mockResolvedValueOnce(
+        okJson({
+          results: [{ title: 'T', url: 'https://a.cz', content: 'c', raw_content: '# Full page' }],
+        })
+      );
+
+      const result = await webSearch.execute(
+        {
+          query: 'q',
+          country: 'cz',
+          language: 'CS',
+          dateRange: { from: '2026-09-01', to: '2026-09-30' },
+          includeRawContent: true,
+          searchDepth: 'fast',
+        },
+        ctx
+      );
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body).toMatchObject({
+        country: 'czech republic',
+        language: 'cs',
+        start_date: '2026-09-01',
+        end_date: '2026-09-30',
+        include_raw_content: 'markdown',
+        search_depth: 'fast',
+      });
+      expect(result).toMatchObject({ results: [{ content: '# Full page' }] });
+    });
+
+    it('ends an open date range today', async () => {
+      vi.stubEnv('TAVILY_API_KEY', 'k');
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-10-04T12:00:00Z'));
+      try {
+        mockFetch.mockResolvedValueOnce(okJson({ results: [] }));
+        await webSearch.execute({ query: 'q', dateRange: { from: '2026-09-01' } }, ctx);
+        const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+        expect(body).toMatchObject({ start_date: '2026-09-01', end_date: '2026-10-04' });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('refuses what Tavily cannot do instead of dropping it', async () => {
+      vi.stubEnv('TAVILY_API_KEY', 'k');
+      const errorOf = async (args: Parameters<typeof webSearch.execute>[0]) =>
+        ((await webSearch.execute(args, ctx)) as { error?: string }).error;
+
+      expect(await errorOf({ query: 'q', page: 2 })).toContain('one page');
+      expect(await errorOf({ query: 'q', topic: 'news', country: 'us' })).toContain('general');
+      expect(await errorOf({ query: 'q', country: 'aq' })).toContain('"aq"');
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('refuses recency together with a date range, and a range that ends before it starts', async () => {
+      vi.stubEnv('BRAVE_API_KEY', 'k');
+      const both = await webSearch.execute(
+        { query: 'q', recency: 'week', dateRange: { from: '2026-09-01' } },
+        ctx
+      );
+      expect((both as { error: string }).error).toContain('not both');
+
+      const backwards = await webSearch.execute(
+        { query: 'q', dateRange: { from: '2026-09-30', to: '2026-09-01' } },
+        ctx
+      );
+      expect((backwards as { error: string }).error).toContain('starts after it ends');
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('sends Brave country, language, a date range and the page offset', async () => {
+      vi.stubEnv('BRAVE_API_KEY', 'k');
+      mockFetch.mockResolvedValueOnce(okJson({ web: { results: [] } }));
+
+      await webSearch.execute(
+        {
+          query: 'q',
+          provider: 'brave',
+          country: 'de',
+          language: 'de',
+          dateRange: { from: '2026-09-01', to: '2026-09-30' },
+          page: 3,
+        },
+        ctx
+      );
+
+      const url = new URL(mockFetch.mock.calls[0][0] as string);
+      expect(url.searchParams.get('country')).toBe('DE');
+      expect(url.searchParams.get('search_lang')).toBe('de');
+      expect(url.searchParams.get('freshness')).toBe('2026-09-01to2026-09-30');
+      expect(url.searchParams.get('offset')).toBe('2');
+    });
+
+    it('sends Serper gl, hl, a custom date range and the page', async () => {
+      vi.stubEnv('SERPER_API_KEY', 'k');
+      mockFetch.mockResolvedValueOnce(okJson({ organic: [] }));
+
+      await webSearch.execute(
+        {
+          query: 'q',
+          provider: 'serper',
+          country: 'FR',
+          language: 'fr',
+          dateRange: { from: '2026-09-01', to: '2026-09-30' },
+          page: 2,
+        },
+        ctx
+      );
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body).toMatchObject({
+        gl: 'fr',
+        hl: 'fr',
+        page: 2,
+        tbs: 'cdr:1,cd_min:9/1/2026,cd_max:9/30/2026',
+      });
+    });
+
+    it('validates dates, country and language codes', () => {
+      const ok = (args: Record<string, unknown>) =>
+        webSearch.parameters.safeParse({ query: 'q', ...args }).success;
+      expect(ok({ dateRange: { from: '2026-09-01' } })).toBe(true);
+      expect(ok({ dateRange: { from: '2026-13-01' } })).toBe(false);
+      expect(ok({ dateRange: { from: '1 Sep 2026' } })).toBe(false);
+      expect(ok({ country: 'usa' })).toBe(false);
+      expect(ok({ language: 'pt-br' })).toBe(true);
+      expect(ok({ language: 'english' })).toBe(false);
     });
   });
 });
