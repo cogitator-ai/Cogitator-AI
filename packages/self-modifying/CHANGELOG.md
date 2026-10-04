@@ -1,5 +1,11 @@
 # @cogitator-ai/self-modifying
 
+## 19.3.1
+
+### Patch Changes
+
+- [`aaa4a1e`](https://github.com/cogitator-ai/Cogitator-AI/commit/aaa4a1e656e70f749fd72f3d64c4210f1ee3ca79) - Reject generated tools whose code does not compile, and repair code a model escaped twice. A compile error in the sandbox was reported as an error thrown by the tool, so the validator accepted a tool that could never run as long as its checks allowed a descriptive error. Code that arrives on one line with literal `\n` sequences is now unescaped once when that makes it compile.
+
 ## 19.3.0
 
 ### Minor Changes
