@@ -161,6 +161,45 @@ describe('the iteration limit', () => {
     expect(result.structured).toEqual({ city: 'Lisbon', celsius: 18 });
   });
 
+  it('closes a run whose last allowed tool call waited for approval', async () => {
+    const { backend, requests } = scripted(
+      lookup('c1', 'Lisbon'),
+      text('{"city":"Lisbon","celsius":18}')
+    );
+    const execute = vi.fn(async ({ city }: { city: string }) => ({ city, celsius: 18 }));
+    const guarded = tool({
+      name: 'lookup_weather',
+      description: 'Current weather for a city',
+      parameters: z.object({ city: z.string() }),
+      requiresApproval: true,
+      execute,
+    });
+    const cog = new Cogitator({ llm: { backends: { mock: backend } } });
+    const agent = new Agent({
+      name: 'weather',
+      model: 'mock/m',
+      instructions: 'Use the tool, then report the weather.',
+      tools: [guarded],
+      responseFormat: { type: 'json_schema', schema: Weather },
+      maxIterations: 1,
+    });
+
+    const paused = await cog.run(agent, { input: 'Lisbon?' });
+    expect(paused.status).toBe('paused');
+    if (!paused.checkpoint) throw new Error('The paused run has no checkpoint');
+
+    const result = await cog.resume(agent, paused.checkpoint, {
+      decisions: { c1: { approved: true } },
+    });
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(requests).toHaveLength(2);
+    expect(requests[1].toolChoice).toBe('none');
+    expect(result.status).toBe('completed');
+    expect(result.structured).toEqual({ city: 'Lisbon', celsius: 18 });
+    expect(result.iterationLimitReached).toBe(true);
+  });
+
   it('keeps onIterationLimit through serialize and deserialize', () => {
     const weather = weatherTool();
     const snapshot = agentWith(weather, { onIterationLimit: 'stop' }).serialize();

@@ -728,11 +728,21 @@ export class Cogitator {
         return undefined;
       };
 
+      const reachedLimit = (): boolean => {
+        if (iterations < maxIterations) return false;
+        iterationLimitReached = true;
+        if (!answerAtLimit) return true;
+        closingTurn = true;
+        messages.push({ role: 'user', content: ITERATION_LIMIT_PROMPT });
+        return false;
+      };
+
       if (checkpoint && resumeFrom) {
         pausedTurn = await handleToolTurn(checkpoint.turn.toolCalls, {
           decisions: { ...checkpoint.turn.decisions, ...resumeFrom.decisions },
           fallback: resumeFrom.defaultDecision,
         });
+        if (!pausedTurn) reachedLimit();
       }
 
       const streaming = Boolean(options.stream && (options.onToken ?? options.onReasoning));
@@ -912,13 +922,7 @@ export class Cogitator {
         if (finalAnswer || !response.toolCalls) break;
         pausedTurn = await handleToolTurn(response.toolCalls);
         if (pausedTurn) break;
-
-        if (iterations >= maxIterations) {
-          iterationLimitReached = true;
-          if (!answerAtLimit) break;
-          closingTurn = true;
-          messages.push({ role: 'user', content: ITERATION_LIMIT_PROMPT });
-        }
+        if (reachedLimit()) break;
       }
 
       if (pausedTurn) {
