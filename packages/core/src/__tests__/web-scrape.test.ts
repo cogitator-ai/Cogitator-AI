@@ -110,6 +110,19 @@ describe('web_scrape tool', () => {
       expect(content).toContain('[A link](https://link.com)');
     });
 
+    it('keeps multi-line link text on one line and drops links without text', async () => {
+      const page = `<p><a href="/docs">Read
+        the docs</a> or <a href="/home"><img src="/logo.png"></a> go home</p>`;
+      mockFetch.mockResolvedValueOnce(createHtmlResponse(page));
+
+      const result = await webScrape.execute(
+        { url: 'https://example.com', format: 'markdown' },
+        ctx
+      );
+
+      expect((result as { content: string }).content).toBe('[Read the docs](/docs) or  go home');
+    });
+
     it('returns raw HTML when requested', async () => {
       mockFetch.mockResolvedValueOnce(createHtmlResponse(html));
 
@@ -465,17 +478,61 @@ describe('web_scrape tool', () => {
       expect(content).toBe('Kept');
     });
 
-    it('removes nested script fragments that a single pass would reassemble', async () => {
+    it('reads a tag broken by another tag the way a browser does', async () => {
       const html =
         '<html><body><p>Before</p><scr<script>x</script>ipt>alert(1)</script><p>After</p></body></html>';
       mockFetch.mockResolvedValueOnce(createHtmlResponse(html));
 
       const result = await webScrape.execute({ url: 'https://example.com' }, ctx);
-      const content = (result as { content: string }).content;
 
-      expect(content).not.toContain('alert');
-      expect(content).toContain('Before');
-      expect(content).toContain('After');
+      expect((result as { content: string }).content).toBe('Before x ipt>alert(1) After');
+    });
+
+    it('reads script and style content as raw text up to their closing tag', async () => {
+      const html =
+        '<p>Start</p><script>if (a<b) { x = "</p>" }</script><style>a<b{}</style><p>End</p>';
+      mockFetch.mockResolvedValueOnce(createHtmlResponse(html));
+
+      const result = await webScrape.execute({ url: 'https://example.com' }, ctx);
+
+      expect((result as { content: string }).content).toBe('Start End');
+    });
+
+    it('hides a script that is never closed, as a browser does', async () => {
+      const html = '<p>Visible</p><script>var hidden = 1; <p>still script</p>';
+      mockFetch.mockResolvedValueOnce(createHtmlResponse(html));
+
+      const result = await webScrape.execute({ url: 'https://example.com' }, ctx);
+
+      expect((result as { content: string }).content).toBe('Visible');
+    });
+
+    it('keeps a bare < in text and a > inside a quoted attribute in its tag', async () => {
+      const html = '<p>if a < b and c > d</p><p title="x > y">Titled</p>';
+      mockFetch.mockResolvedValueOnce(createHtmlResponse(html));
+
+      const result = await webScrape.execute({ url: 'https://example.com' }, ctx);
+
+      expect((result as { content: string }).content).toBe('if a < b and c > d Titled');
+    });
+
+    it.each([
+      ['unclosed tags', '<a'.repeat(100_000)],
+      ['unclosed scripts', '<script>'.repeat(40_000)],
+      ['unclosed headings and links', '<h1><a href="x">'.repeat(20_000)],
+      ['unterminated quotes', '<a title="x '.repeat(30_000)],
+      ['unterminated comments', '<!--'.repeat(50_000)],
+      ['nested fragments', '<scr'.repeat(20_000) + 'x' + 'ipt>x</script>'.repeat(20_000)],
+    ])('cleans hostile markup with %s in linear time', async (_name, html) => {
+      for (const format of ['text', 'markdown'] as const) {
+        mockFetch.mockResolvedValueOnce(createHtmlResponse(html));
+        const started = performance.now();
+        await webScrape.execute(
+          { url: 'https://example.com', format, includeLinks: true, includeImages: true },
+          ctx
+        );
+        expect(performance.now() - started).toBeLessThan(1000);
+      }
     });
   });
 
