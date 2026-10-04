@@ -452,8 +452,13 @@ describe('Cogitator', () => {
 
         const result = await cog.run(agent, { input: 'Loop forever' });
 
-        expect(mockBackendHelper.backend.chat).toHaveBeenCalledTimes(3);
+        expect(mockBackendHelper.backend.chat).toHaveBeenCalledTimes(4);
+        expect(mockBackendHelper.backend.chat).toHaveBeenLastCalledWith(
+          expect.objectContaining({ toolChoice: 'none' })
+        );
         expect(result.toolCalls.length).toBeLessThanOrEqual(3);
+        expect(result.output).toBe('Max iterations reached');
+        expect(result.iterationLimitReached).toBe(true);
 
         await cog.close();
       });

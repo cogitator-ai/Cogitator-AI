@@ -32,6 +32,13 @@ export interface AgentConfig {
    */
   handoffs?: Array<Agent | Handoff>;
   maxIterations?: number;
+  /**
+   * What happens when tool calls use up `maxIterations` before the model answers. `answer`
+   * (default): the model gets one more turn, without tools, to answer with what it has, so the
+   * run ends with an answer and structured output can still be parsed. `stop`: the run ends at
+   * the last tool turn, with no answer. Either way `RunResult.iterationLimitReached` is set.
+   */
+  onIterationLimit?: 'answer' | 'stop';
   timeout?: number;
 }
 
@@ -88,6 +95,7 @@ export interface SerializedAgentConfig {
     { type: 'text' } | { type: 'json' } | { type: 'json_schema'; schemaName: string };
   reasoning?: ReasoningConfig;
   maxIterations?: number;
+  onIterationLimit?: 'answer' | 'stop';
   timeout?: number;
 }
 

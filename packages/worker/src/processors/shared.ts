@@ -58,6 +58,7 @@ export interface SerializedAgentLike {
   topP?: number;
   maxTokens?: number;
   maxIterations?: number;
+  onIterationLimit?: 'answer' | 'stop';
   responseFormat?: SerializedResponseFormat;
   reasoning?: ReasoningConfig;
   tools: readonly ToolSchema[];
@@ -99,6 +100,7 @@ export function createAgentFromConfig(
     topP: config.topP,
     maxTokens: config.maxTokens,
     maxIterations: config.maxIterations,
+    ...(config.onIterationLimit && { onIterationLimit: config.onIterationLimit }),
     responseFormat: toResponseFormat(config.responseFormat),
     reasoning: config.reasoning,
     tools: resolveTools(config.tools, runtime.tools ?? []),

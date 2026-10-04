@@ -158,6 +158,7 @@ export class Agent implements IAgent {
         responseFormat: serializeResponseFormat(this.config.responseFormat),
         ...(this.config.reasoning && { reasoning: this.config.reasoning }),
         maxIterations: this.config.maxIterations,
+        ...(this.config.onIterationLimit && { onIterationLimit: this.config.onIterationLimit }),
         timeout: this.config.timeout,
       },
       metadata: {
@@ -224,6 +225,9 @@ export class Agent implements IAgent {
       responseFormat: deserializeResponseFormat(snapshot, overrides?.responseFormat),
       ...(snapshot.config.reasoning && { reasoning: snapshot.config.reasoning }),
       maxIterations: snapshot.config.maxIterations,
+      ...(snapshot.config.onIterationLimit && {
+        onIterationLimit: snapshot.config.onIterationLimit,
+      }),
       timeout: snapshot.config.timeout,
       ...overrides,
     });

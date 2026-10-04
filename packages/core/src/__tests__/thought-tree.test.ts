@@ -201,7 +201,7 @@ describe('ThoughtTreeExecutor', () => {
     await overridden.cog.close();
   });
 
-  it('caps the iterations of each branch run at maxIterationsPerBranch', async () => {
+  it('caps the tool turns of each branch run at maxIterationsPerBranch, then lets it answer', async () => {
     const { cog, agent, runCalls } = setup({
       children: (thought) => (thought === 'root' ? ['A'] : []),
       confidence: () => 0.6,
@@ -211,7 +211,7 @@ describe('ThoughtTreeExecutor', () => {
 
     await executor.explore(agent, 'goal');
 
-    expect(runCalls()).toBe(2);
+    expect(runCalls()).toBe(3);
     await cog.close();
   });
 
@@ -232,7 +232,7 @@ describe('ThoughtTreeExecutor', () => {
 
     await executor.explore(agent, 'goal');
 
-    expect(runCalls()).toBe(1);
+    expect(runCalls()).toBe(2);
     await cog.close();
   });
 

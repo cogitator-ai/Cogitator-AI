@@ -41,6 +41,8 @@ export interface SerializedAgent {
   topP?: number;
   maxTokens?: number;
   maxIterations?: number;
+  /** What happens when tool calls use up `maxIterations`, as in `AgentConfig.onIterationLimit` */
+  onIterationLimit?: 'answer' | 'stop';
   /** Structured output: the job result carries `structured` when the run's answer fits */
   responseFormat?: SerializedResponseFormat;
   /** Reasoning effort and summaries, as in `AgentConfig.reasoning` */

@@ -318,6 +318,11 @@ export interface RunResult {
   readonly finalAgent?: string;
   /** `paused` when tool calls wait for approval; see `pendingApprovals` and `checkpoint` */
   readonly status?: 'completed' | 'paused';
+  /**
+   * True when tool calls used up the agent's `maxIterations` before the model answered. With
+   * `onIterationLimit: 'answer'` the output is the answer of one extra turn without tools.
+   */
+  readonly iterationLimitReached?: boolean;
   readonly pendingApprovals?: readonly ToolApprovalRequest[];
   /** Pass to `cogitator.resume()` with the decisions to continue a paused run */
   readonly checkpoint?: RunCheckpoint;
