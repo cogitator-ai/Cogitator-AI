@@ -41,8 +41,8 @@ function createMockClient() {
   const mockTrace = createMockTrace();
   return {
     trace: vi.fn(() => mockTrace),
-    flush: vi.fn().mockResolvedValue(undefined),
-    shutdown: vi.fn().mockResolvedValue(undefined),
+    flushAsync: vi.fn().mockResolvedValue(undefined),
+    shutdownAsync: vi.fn().mockResolvedValue(undefined),
     _mockTrace: mockTrace,
   };
 }
@@ -397,12 +397,33 @@ describe('LangfuseExporter', () => {
   });
 
   describe('flush / shutdown', () => {
-    it('delegates to client', async () => {
+    it('waits until the client has sent its queued events', async () => {
+      let sent = false;
+      mockClient.flushAsync.mockImplementation(
+        () => new Promise<void>((resolve) => setTimeout(() => ((sent = true), resolve()), 20))
+      );
+
       await exporter.flush();
-      expect(mockClient.flush).toHaveBeenCalled();
+
+      expect(sent).toBe(true);
+    });
+
+    it('waits until the client has shut down', async () => {
+      let stopped = false;
+      mockClient.shutdownAsync.mockImplementation(
+        () => new Promise<void>((resolve) => setTimeout(() => ((stopped = true), resolve()), 20))
+      );
 
       await exporter.shutdown();
-      expect(mockClient.shutdown).toHaveBeenCalled();
+
+      expect(stopped).toBe(true);
+    });
+
+    it('mocks only methods the real Langfuse client has', async () => {
+      const { Langfuse } = await import('langfuse');
+      for (const method of ['trace', 'flushAsync', 'shutdownAsync']) {
+        expect(typeof Reflect.get(Langfuse.prototype, method)).toBe('function');
+      }
     });
 
     it('handles no client gracefully', async () => {

@@ -1,4 +1,10 @@
 import type { Span, RunResult, ToolCall, ToolResult, Message } from '@cogitator-ai/types';
+import type {
+  Langfuse,
+  LangfuseGenerationClient,
+  LangfuseSpanClient,
+  LangfuseTraceClient,
+} from 'langfuse';
 
 export interface LangfuseConfig {
   publicKey: string;
@@ -10,64 +16,18 @@ export interface LangfuseConfig {
   enabled?: boolean;
 }
 
-interface LangfuseClient {
-  trace(options: TraceOptions): LangfuseTrace;
-  flush(): Promise<void>;
-  shutdown(): Promise<void>;
-}
-
-interface LangfuseTrace {
-  id: string;
-  span(options: SpanOptions): LangfuseSpan;
-  generation(options: GenerationOptions): LangfuseGeneration;
-  update(options: { output?: unknown; metadata?: Record<string, unknown> }): void;
-}
-
-interface LangfuseSpan {
-  id: string;
-  span(options: SpanOptions): LangfuseSpan;
-  generation(options: GenerationOptions): LangfuseGeneration;
-  end(options?: { output?: unknown }): void;
-}
-
-interface LangfuseGeneration {
-  id: string;
-  end(options?: {
-    output?: unknown;
-    usage?: { input?: number; output?: number; total?: number };
-  }): void;
-}
-
-interface TraceOptions {
-  id?: string;
-  name: string;
-  input?: unknown;
-  metadata?: Record<string, unknown>;
-  userId?: string;
-  sessionId?: string;
-  tags?: string[];
-}
-
-interface SpanOptions {
-  name: string;
-  input?: unknown;
-  metadata?: Record<string, unknown>;
-}
-
-interface GenerationOptions {
-  name: string;
-  model: string;
-  input?: unknown;
-  metadata?: Record<string, unknown>;
-  modelParameters?: Record<string, unknown>;
-}
+/**
+ * The part of the Langfuse client the exporter uses, taken from the real `langfuse` types so a
+ * change in the client is a compile error here.
+ */
+type LangfuseClient = Pick<Langfuse, 'trace' | 'flushAsync' | 'shutdownAsync'>;
 
 export class LangfuseExporter {
   private client: LangfuseClient | null = null;
   private config: LangfuseConfig;
-  private activeTraces = new Map<string, LangfuseTrace>();
-  private activeSpans = new Map<string, LangfuseSpan>();
-  private activeGenerations = new Map<string, LangfuseGeneration>();
+  private activeTraces = new Map<string, LangfuseTraceClient>();
+  private activeSpans = new Map<string, LangfuseSpanClient>();
+  private activeGenerations = new Map<string, LangfuseGenerationClient>();
   private spanRunIds = new Map<string, string>();
   private generationRunIds = new Map<string, string>();
 
@@ -78,22 +38,14 @@ export class LangfuseExporter {
   async init(): Promise<void> {
     if (!this.config.enabled) return;
 
-    let Langfuse: new (config: {
-      publicKey: string;
-      secretKey: string;
-      baseUrl?: string;
-      flushAt?: number;
-      flushInterval?: number;
-    }) => LangfuseClient;
-
+    let LangfuseClass: typeof Langfuse;
     try {
-      const langfuse = await import('langfuse');
-      Langfuse = langfuse.Langfuse as unknown as typeof Langfuse;
+      LangfuseClass = (await import('langfuse')).Langfuse;
     } catch {
       throw new Error('langfuse not installed. Run: pnpm add langfuse');
     }
 
-    this.client = new Langfuse({
+    this.client = new LangfuseClass({
       publicKey: this.config.publicKey,
       secretKey: this.config.secretKey,
       baseUrl: this.config.baseUrl,
@@ -189,8 +141,8 @@ export class LangfuseExporter {
       model: options.model,
       input: options.messages,
       modelParameters: {
-        temperature: options.temperature,
-        maxTokens: options.maxTokens,
+        ...(options.temperature !== undefined && { temperature: options.temperature }),
+        ...(options.maxTokens !== undefined && { maxTokens: options.maxTokens }),
       },
     });
 
@@ -265,12 +217,14 @@ export class LangfuseExporter {
     }
   }
 
+  /** Sends every queued event and resolves once Langfuse has received them. */
   async flush(): Promise<void> {
-    await this.client?.flush();
+    await this.client?.flushAsync();
   }
 
+  /** Flushes queued events and stops the client; resolves when both are done. */
   async shutdown(): Promise<void> {
-    await this.client?.shutdown();
+    await this.client?.shutdownAsync();
   }
 }
 

@@ -286,7 +286,7 @@ async function querySqlite(
   maxRows: number,
   readOnly = true
 ): Promise<QueryResult> {
-  let Database: typeof import('better-sqlite3').default;
+  let Database: typeof import('better-sqlite3');
 
   try {
     const betterSqlite = await import('better-sqlite3');

@@ -518,9 +518,15 @@ importers:
       '@cogitator-ai/sandbox':
         specifier: workspace:*
         version: link:../sandbox
+      '@types/better-sqlite3':
+        specifier: ^9.6.0
+        version: 9.6.0
       '@types/node':
         specifier: ^22.20.4
         version: 22.20.4
+      '@types/nodemailer':
+        specifier: ^8.0.2
+        version: 8.0.2
       '@types/pg':
         specifier: ^8.23.1
         version: 8.23.1
@@ -909,6 +915,181 @@ importers:
       '@fastify/websocket':
         specifier: ^11.3.1
         version: 11.3.1
+
+  packages/gauntlet:
+    dependencies:
+      '@cogitator-ai/a2a':
+        specifier: workspace:*
+        version: link:../a2a
+      '@cogitator-ai/ai-sdk':
+        specifier: workspace:*
+        version: link:../ai-sdk
+      '@cogitator-ai/browser':
+        specifier: workspace:*
+        version: link:../browser
+      '@cogitator-ai/channels':
+        specifier: workspace:*
+        version: link:../channels
+      '@cogitator-ai/cli':
+        specifier: workspace:*
+        version: link:../cli
+      '@cogitator-ai/config':
+        specifier: workspace:*
+        version: link:../config
+      '@cogitator-ai/core':
+        specifier: workspace:*
+        version: link:../core
+      '@cogitator-ai/deploy':
+        specifier: workspace:*
+        version: link:../deploy
+      '@cogitator-ai/evals':
+        specifier: workspace:*
+        version: link:../evals
+      '@cogitator-ai/express':
+        specifier: workspace:*
+        version: link:../express
+      '@cogitator-ai/fastify':
+        specifier: workspace:*
+        version: link:../fastify
+      '@cogitator-ai/hono':
+        specifier: workspace:*
+        version: link:../hono
+      '@cogitator-ai/koa':
+        specifier: workspace:*
+        version: link:../koa
+      '@cogitator-ai/mcp':
+        specifier: workspace:*
+        version: link:../mcp
+      '@cogitator-ai/memory':
+        specifier: workspace:*
+        version: link:../memory
+      '@cogitator-ai/models':
+        specifier: workspace:*
+        version: link:../models
+      '@cogitator-ai/neuro-symbolic':
+        specifier: workspace:*
+        version: link:../neuro-symbolic
+      '@cogitator-ai/next':
+        specifier: workspace:*
+        version: link:../next
+      '@cogitator-ai/openai-compat':
+        specifier: workspace:*
+        version: link:../openai-compat
+      '@cogitator-ai/rag':
+        specifier: workspace:*
+        version: link:../rag
+      '@cogitator-ai/redis':
+        specifier: workspace:*
+        version: link:../redis
+      '@cogitator-ai/sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
+      '@cogitator-ai/self-modifying':
+        specifier: workspace:*
+        version: link:../self-modifying
+      '@cogitator-ai/server-shared':
+        specifier: workspace:*
+        version: link:../server-shared
+      '@cogitator-ai/swarms':
+        specifier: workspace:*
+        version: link:../swarms
+      '@cogitator-ai/test-utils':
+        specifier: workspace:*
+        version: link:../test-utils
+      '@cogitator-ai/tetsu':
+        specifier: workspace:*
+        version: link:../tetsu
+      '@cogitator-ai/types':
+        specifier: workspace:*
+        version: link:../types
+      '@cogitator-ai/voice':
+        specifier: workspace:*
+        version: link:../voice
+      '@cogitator-ai/wasm-tools':
+        specifier: workspace:*
+        version: link:../wasm-tools
+      '@cogitator-ai/worker':
+        specifier: workspace:*
+        version: link:../worker
+      '@cogitator-ai/workflows':
+        specifier: workspace:*
+        version: link:../workflows
+      '@hono/node-server':
+        specifier: ^2.1.3
+        version: 2.1.3(hono@4.13.12)
+      '@koa/router':
+        specifier: ^15.7.0
+        version: 15.7.0(koa@3.2.1)(supports-color@10.2.2)
+      '@qdrant/js-client-rest':
+        specifier: ^1.19.0
+        version: 1.19.0(typescript@6.0.3)
+      '@tetsujs/core':
+        specifier: ^0.6.1
+        version: 0.6.1
+      '@tetsujs/openapi':
+        specifier: ^0.6.1
+        version: 0.6.1(@tetsujs/core@0.6.1)
+      '@tetsujs/sse':
+        specifier: ^0.6.1
+        version: 0.6.1(@tetsujs/core@0.6.1)
+      ai:
+        specifier: ^7.0.127
+        version: 7.0.127(zod@4.6.5)
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
+      create-cogitator-app:
+        specifier: workspace:*
+        version: link:../create-cogitator-app
+      express:
+        specifier: ^5.2.1
+        version: 5.2.1(supports-color@10.2.2)
+      fastify:
+        specifier: ^5.12.5
+        version: 5.12.5
+      hono:
+        specifier: ^4.13.12
+        version: 4.13.12
+      ioredis:
+        specifier: ^6.0.0
+        version: 6.0.0(supports-color@10.2.2)
+      koa:
+        specifier: ^3.2.1
+        version: 3.2.1
+      openai:
+        specifier: ^7.25.0
+        version: 7.25.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@7.30.0)(ws@8.22.0)(zod@4.6.5)
+      pg:
+        specifier: ^8.23.1
+        version: 8.23.1
+      playwright:
+        specifier: ^1.63.0
+        version: 1.63.0
+      ws:
+        specifier: ^8.22.0
+        version: 8.22.0
+      zod:
+        specifier: ^4.6.5
+        version: 4.6.5
+    devDependencies:
+      '@types/express':
+        specifier: ^5.0.6
+        version: 5.0.6
+      '@types/koa':
+        specifier: ^3.0.3
+        version: 3.0.3
+      '@types/node':
+        specifier: ^22.20.4
+        version: 22.20.4
+      '@types/pg':
+        specifier: ^8.23.1
+        version: 8.23.1
+      tsx:
+        specifier: ^4.23.15
+        version: 4.23.15
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
 
   packages/hono:
     dependencies:
@@ -3750,6 +3931,9 @@ packages:
 
   '@types/node@22.20.4':
     resolution: {integrity: sha512-zJRE40jpHtKqE/C4fgHrAKQLJuSpzEnP9ff9Y7YtoR3Wd2pwqzlekDeEuUQXjRd+QCYnVnNwuJYmhdk9XV8gvA==}
+
+  '@types/nodemailer@8.0.2':
+    resolution: {integrity: sha512-c7M5ox8p0nEOfbJ2E9Qcmt8/QCu/VzsiAhzBiZbvky2PhKZDHpKB3sQHBM5MEZNkCfBOaS6S9//AGPRTNB7IaA==}
 
   '@types/papaparse@5.5.2':
     resolution: {integrity: sha512-gFnFp/JMzLHCwRf7tQHrNnfhN4eYBVYYI897CGX4MY1tzY9l2aLkVyx2IlKZ/SAqDbB3I1AOZW5gTMGGsqWliA==}
@@ -8500,10 +8684,8 @@ snapshots:
       '@qdrant/openapi-typescript-fetch': 1.2.6
       typescript: 6.0.3
       undici: 7.30.0
-    optional: true
 
-  '@qdrant/openapi-typescript-fetch@1.2.6':
-    optional: true
+  '@qdrant/openapi-typescript-fetch@1.2.6': {}
 
   '@radix-ui/number@1.1.3': {}
 
@@ -9380,6 +9562,10 @@ snapshots:
   '@types/node@22.20.4':
     dependencies:
       undici-types: 6.21.0
+
+  '@types/nodemailer@8.0.2':
+    dependencies:
+      '@types/node': 22.20.4
 
   '@types/papaparse@5.5.2':
     dependencies:
