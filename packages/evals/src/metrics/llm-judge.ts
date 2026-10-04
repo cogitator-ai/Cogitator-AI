@@ -96,9 +96,25 @@ function createJudgeMetric(name: string, systemPrompt: string): LLMMetricFn {
   return fn;
 }
 
+function contextText(context: Record<string, unknown>): string {
+  return Object.entries(context)
+    .map(
+      ([key, value]) =>
+        `${key}: ${typeof value === 'string' ? value : JSON.stringify(value, null, 2)}`
+    )
+    .join('\n');
+}
+
+/**
+ * What the judge reads: the input, the case's context when it has one (source documents, a
+ * dossier, retrieved passages), the expected answer and the response.
+ */
 function buildUserMessage(result: EvalCaseResult): string {
   const expected = result.case.expected || 'N/A';
-  return `Input: ${result.case.input}\nExpected: ${expected}\nResponse: ${result.output}`;
+  const context = result.case.context;
+  const contextBlock =
+    context && Object.keys(context).length > 0 ? `\nContext:\n${contextText(context)}` : '';
+  return `Input: ${result.case.input}${contextBlock}\nExpected: ${expected}\nResponse: ${result.output}`;
 }
 
 export function bindJudgeContext(metric: LLMMetricFn, context: JudgeContext): MetricFn {
@@ -141,7 +157,7 @@ export function bindJudgeContext(metric: LLMMetricFn, context: JudgeContext): Me
 export function faithfulness(): LLMMetricFn {
   return createJudgeMetric(
     'faithfulness',
-    'You are evaluating the faithfulness of an AI assistant\'s response.\n\nGiven the input and the response, rate how faithful the response is to the facts and information in the input.\n\nScore from 0.0 (completely unfaithful) to 1.0 (perfectly faithful).\n\nRespond with JSON: {"score": <number>, "reasoning": "<explanation>"}'
+    'You are evaluating the faithfulness of an AI assistant\'s response.\n\nGiven the input, the context when there is one, and the response, rate how faithful the response is to the facts and information in the input and the context. Claims that neither supports count against it.\n\nScore from 0.0 (completely unfaithful) to 1.0 (perfectly faithful).\n\nRespond with JSON: {"score": <number>, "reasoning": "<explanation>"}'
   );
 }
 

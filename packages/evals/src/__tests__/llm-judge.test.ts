@@ -97,6 +97,31 @@ describe('LLM judge metrics', () => {
   });
 
   describe('relevance', () => {
+    it('shows the judge the case context, so faithfulness can be checked against sources', async () => {
+      const ctx = makeJudgeContext('{"score": 0.2, "reasoning": "Invents a number"}');
+      const bound = bindJudgeContext(faithfulness(), ctx);
+      await bound({
+        case: {
+          input: 'Write the lede',
+          context: { dossier: 'The council voted 7 to 2.', sources: ['minutes', 'report'] },
+        },
+        output: 'The council voted 8 to 1.',
+        duration: 10,
+      });
+
+      const call = (ctx.cogitator.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(call.input).toContain('Context:\ndossier: The council voted 7 to 2.');
+      expect(call.input).toContain('"minutes"');
+      expect(call.input.indexOf('Context:')).toBeLessThan(call.input.indexOf('Response:'));
+    });
+
+    it('leaves the context block out when a case has none', async () => {
+      const ctx = makeJudgeContext('{"score": 1, "reasoning": "ok"}');
+      await bindJudgeContext(faithfulness(), ctx)(makeResult('out'));
+      const call = (ctx.cogitator.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(call.input).not.toContain('Context:');
+    });
+
     it('returns correct score', async () => {
       const ctx = makeJudgeContext('{"score": 0.7, "reasoning": "Somewhat relevant"}');
       const bound = bindJudgeContext(relevance(), ctx);
