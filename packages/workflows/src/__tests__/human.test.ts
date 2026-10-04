@@ -712,6 +712,70 @@ describe('Human-in-the-Loop', () => {
       store.dispose();
     });
 
+    it('aborts a waiting human node and withdraws the request', async () => {
+      const store = new InMemoryApprovalStore();
+      const controller = new AbortController();
+      const config: HumanNodeConfig<TestState> = {
+        name: 'aborted',
+        approval: { type: 'approve-reject', title: 'Aborted' },
+      };
+
+      const resultPromise = executeHumanNode({ value: 1 }, config, {
+        workflowId: 'wf-1',
+        runId: 'run-1',
+        nodeId: 'node-1',
+        approvalStore: store,
+        signal: controller.signal,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(await store.getPendingRequests()).toHaveLength(1);
+
+      controller.abort();
+
+      await expect(resultPromise).rejects.toMatchObject({ name: 'AbortError' });
+      expect(await store.getPendingRequests()).toHaveLength(0);
+      store.dispose();
+    });
+
+    it('aborts an escalated wait and withdraws the escalated request', async () => {
+      const store = new InMemoryApprovalStore();
+      const controller = new AbortController();
+      const requested: ApprovalRequest[] = [];
+      const config: HumanNodeConfig<TestState> = {
+        name: 'escalated-abort',
+        approval: {
+          type: 'approve-reject',
+          title: 'Refund',
+          assignee: 'agent',
+          timeout: 20,
+          timeoutAction: 'escalate',
+          escalateTo: 'supervisor',
+        },
+      };
+
+      const resultPromise = executeHumanNode({ value: 1 }, config, {
+        workflowId: 'wf-1',
+        runId: 'run-1',
+        nodeId: 'node-1',
+        approvalStore: store,
+        signal: controller.signal,
+        onApprovalRequired: (request) => requested.push(request),
+      });
+
+      while (requested.length < 2) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+
+      controller.abort();
+
+      await expect(resultPromise).rejects.toMatchObject({ name: 'AbortError' });
+      // The escalated request is withdrawn; the escalated-from request stays pending
+      // (its timeout already fired, which is how it reached the escalation wait).
+      const remaining = await store.getPendingRequests();
+      expect(remaining.map((r) => r.id)).not.toContain(requested[1].id);
+      store.dispose();
+    });
+
     it('handles timeout with auto-reject', async () => {
       const store = new InMemoryApprovalStore();
 
