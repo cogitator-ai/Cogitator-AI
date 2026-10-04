@@ -1,3 +1,4 @@
+import type { RobotsChecker } from './web';
 export type BrowserType = 'chromium' | 'firefox' | 'webkit';
 
 export type WaitUntilState = 'load' | 'domcontentloaded' | 'networkidle' | 'commit';
@@ -43,6 +44,12 @@ export interface BrowserSessionConfig {
   timeout?: number;
   actionTimeout?: number;
   pool?: { maxPages: number };
+  /**
+   * Checks every page navigation (typed URLs, clicked links, redirects, frames) against the
+   * site's robots.txt and blocks the ones it disallows, e.g. `new RobotsPolicy({ userAgent })`
+   * from `@cogitator-ai/core`
+   */
+  robots?: RobotsChecker;
 }
 
 export interface BrowserCookie {

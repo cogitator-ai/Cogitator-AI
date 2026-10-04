@@ -4,7 +4,7 @@ import https from 'node:https';
 import { BlockList, isIP } from 'node:net';
 import type { Readable } from 'node:stream';
 import { createBrotliDecompress, createGunzip, createInflate } from 'node:zlib';
-import type { DocumentLoader, RAGDocument } from '@cogitator-ai/types';
+import type { DocumentLoader, RAGDocument, RobotsChecker } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 import { HTMLLoader } from './html-loader.js';
 
@@ -200,6 +200,20 @@ export interface WebLoaderOptions {
    * Disabled by default to prevent SSRF when URLs come from untrusted input.
    */
   allowPrivateNetwork?: boolean;
+  /**
+   * Checks every URL against its site's robots.txt before fetching it, redirect targets
+   * included, e.g. `new RobotsPolicy({ userAgent })` from `@cogitator-ai/core`. A URL the site
+   * disallows fails the load with `RobotsDisallowedError`
+   */
+  robots?: RobotsChecker;
+}
+
+/** The site's robots.txt does not allow fetching this URL. */
+export class RobotsDisallowedError extends Error {
+  constructor(readonly url: string) {
+    super(`WebLoader: robots.txt does not allow fetching ${url}`);
+    this.name = 'RobotsDisallowedError';
+  }
 }
 
 interface FetchedPage {
@@ -220,6 +234,7 @@ export class WebLoader implements DocumentLoader {
   private readonly timeoutMs: number;
   private readonly maxResponseBytes: number;
   private readonly allowPrivateNetwork: boolean;
+  private readonly robots?: RobotsChecker;
   private readonly lookup = createGuardedLookup();
 
   constructor(options?: WebLoaderOptions) {
@@ -228,6 +243,7 @@ export class WebLoader implements DocumentLoader {
     this.timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.maxResponseBytes = options?.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
     this.allowPrivateNetwork = options?.allowPrivateNetwork ?? false;
+    this.robots = options?.robots;
   }
 
   async load(source: string): Promise<RAGDocument[]> {
@@ -260,6 +276,9 @@ export class WebLoader implements DocumentLoader {
     let current = parseUrl(source, this.allowPrivateNetwork);
 
     for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {
+      if (this.robots && !(await this.robots.allows(current.href))) {
+        throw new RobotsDisallowedError(current.href);
+      }
       const response = await this.request(current);
       const status = response.statusCode ?? 0;
 

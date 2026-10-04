@@ -55,6 +55,13 @@ export {
   loadCustomTools,
 } from './tools/index';
 export type { MemoryToolsConfig, CoreFactsLike, SchedulerToolsConfig } from './tools/index';
+export {
+  RobotsPolicy,
+  robotsRulesFor,
+  robotsAllowsPath,
+  type RobotsPolicyOptions,
+  type RobotsRules,
+} from './web/robots';
 export type {
   AnalyzeImageConfig,
   GenerateImageConfig,

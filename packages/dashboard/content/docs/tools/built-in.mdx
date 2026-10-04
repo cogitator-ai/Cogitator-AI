@@ -409,3 +409,16 @@ These build tools around state you provide; they are not part of `builtinTools`.
 | `loadCustomTools(toolsDir)`                                              | the tools in `toolsDir`                                          | Loads the `.mjs` default exports `createSelfTools` wrote                                             |
 
 Tools created with `createSelfTools` run with full Node.js access in your process.
+
+## Polite crawling with robots.txt
+
+`RobotsPolicy` reads and caches a site's robots.txt and answers whether a URL may be fetched, by RFC 9309: the groups that name your product token (else `*`), longest match wins with `*` and `$` patterns, a 4xx robots.txt allows everything, a 5xx or a network failure allows nothing until the cache (one hour by default) expires. It implements `RobotsChecker`, which `WebLoader` in `@cogitator-ai/rag` and `BrowserSession` in `@cogitator-ai/browser` take as `robots`:
+
+```typescript
+import { RobotsPolicy } from '@cogitator-ai/core';
+
+const robots = new RobotsPolicy({ userAgent: 'NewsBot/1.0 (+https://example.com/bot)' });
+await robots.allows('https://example.com/news/today'); // true or false
+```
+
+The token defaults to the User-Agent's first word (`NewsBot`); pass `token` to match another. `robotsRulesFor(text, token)` and `robotsAllowsPath(rules, path)` expose the parser for robots.txt files you already have.

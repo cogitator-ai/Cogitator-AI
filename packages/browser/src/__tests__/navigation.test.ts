@@ -41,7 +41,10 @@ function createMockSession() {
     waitForSelector: vi.fn().mockResolvedValue({ isVisible: () => true }),
   };
 
-  const session = { page: mockPage } as unknown as BrowserSession;
+  const session = {
+    page: mockPage,
+    assertRobotsAllow: vi.fn().mockResolvedValue(undefined),
+  } as unknown as BrowserSession;
   return { session, mockPage };
 }
 

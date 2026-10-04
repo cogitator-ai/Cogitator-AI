@@ -225,8 +225,11 @@ interface BrowserSessionConfig {
   timeout?: number; // navigation timeout, default: 30000ms
   actionTimeout?: number; // action timeout, default: 10000ms
   pool?: { maxPages: number }; // maximum number of open tabs for newTab()
+  robots?: RobotsChecker; // block navigations a site's robots.txt disallows
 }
 ```
+
+With `robots` (for example `new RobotsPolicy({ userAgent })` from `@cogitator-ai/core`) every page navigation, typed, clicked, redirected or in a frame, is checked against the site's robots.txt and blocked when disallowed. `browser_navigate` and `newTab(url)` throw `robots.txt does not allow visiting <url>` so an agent learns why.
 
 ### Lifecycle
 

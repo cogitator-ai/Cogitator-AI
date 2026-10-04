@@ -23,6 +23,7 @@ export function createNavigateTool(session: BrowserSession) {
     tags: ['browser', 'navigation'],
     parameters: navigateSchema,
     execute: async (params: NavigateInput) => {
+      await session.assertRobotsAllow(params.url);
       const page = session.page;
       const response = await page.goto(params.url, {
         waitUntil: params.waitUntil ?? 'load',
