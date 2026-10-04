@@ -93,7 +93,9 @@ const app = cogitatorApp({ cogitator, agents: { summarizer } });
 export default { fetch: app.fetch, port: 3000 };
 ```
 
-`Bun.serve` closes a connection that stays silent for `idleTimeout` seconds, 10 by default, and an agent waiting on a slow tool or model is silent for longer. The adapter keeps both kinds of answer open: SSE streams write a heartbeat comment every `sseHeartbeatMs` (5 s by default), and the JSON routes (`run`, `resume`, workflow and swarm `run`) lift the idle timeout for their own request once its body is read, through the server Bun passes to `fetch`. If you set `idleTimeout`, keep it above `sseHeartbeatMs` and at 5 seconds or more, since Bun cuts connections at once below that whatever is written.
+#### Long runs on Bun
+
+`Bun.serve` closes a connection that stays silent for `idleTimeout` seconds, 10 by default, so without help a run that waits on a slow tool or model for longer ends with the connection closed. The adapter keeps both kinds of answer open: SSE streams write a heartbeat comment every `sseHeartbeatMs` (5 s by default), and the JSON routes (`run`, `resume`, workflow and swarm `run`) lift the idle timeout for their own request once its body is read, through the server Bun passes to `fetch`. If you set `idleTimeout`, keep it above `sseHeartbeatMs` and at 5 seconds or more, since Bun cuts connections at once below that whatever is written. See [Long-Running Runs](/docs/server-adapters#long-running-runs) for proxies and load balancers.
 
 ### Deno
 

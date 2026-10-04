@@ -119,6 +119,14 @@ Workflow streams send `workflow` events named `node_started`, `node_completed`, 
 
 The event types (`StreamEvent`, `TextDeltaEvent`, …), their factories (`createTextDeltaEvent`, `createFinishEvent`, …) and the `encodeSSE` / `encodeDone` helpers are exported from `@cogitator-ai/server-shared`, and the adapters re-export the event types.
 
+## Long-Running Runs
+
+An agent waiting on a slow tool or a reasoning model can stay silent for tens of seconds. Anything between the client and the server that closes idle connections then cuts the answer: the client sees the connection close (`terminated`, `other side closed`, `socket hang up` and the like) and a stream ends without `finish` and `data: [DONE]`.
+
+- **SSE streams.** Every adapter writes a `: keep-alive` comment every `sseHeartbeatMs` (5 seconds by default) while a stream is open, and SSE clients skip comments. Leave it on unless something else keeps the connection alive. `0` turns it off.
+- **Bun.** `Bun.serve` closes a connection that stays silent for `idleTimeout` seconds, 10 by default. The [Hono](/docs/server-adapters/hono#long-runs-on-bun) adapter and the [Tetsu](/docs/server-adapters/tetsu#long-runs-on-bun) controller handle it for you: streams send heartbeats and the JSON routes lift the idle timeout for their own request. If you set `idleTimeout` yourself, keep it at 5 seconds or more and above `sseHeartbeatMs`. Routes you add next to the adapter need the same care: call `server.timeout(request, 0)` in a long JSON route, or send heartbeats in your own streams.
+- **Reverse proxies and load balancers.** Heartbeats keep streams open through them, but a JSON `run` answers only when the run ends. Raise the read or idle timeout above your longest run, or use the `stream` route for long runs. Common defaults: nginx `proxy_read_timeout` 60 seconds, AWS Application Load Balancer idle timeout 60 seconds, Cloudflare 100 seconds. For SSE also turn off response buffering in the proxy (nginx: `proxy_buffering off;`), or events arrive in bursts.
+
 ## WebSocket
 
 All adapters offer a WebSocket endpoint, but not the same one:
