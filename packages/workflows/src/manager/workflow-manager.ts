@@ -24,6 +24,7 @@ import type {
   RunStore,
   CheckpointStore,
   DeadLetterQueue,
+  RecoveredRuns,
 } from '@cogitator-ai/types';
 import type { Cogitator } from '@cogitator-ai/core';
 import { WorkflowExecutor } from '../executor';
@@ -370,6 +371,40 @@ export class DefaultWorkflowManager implements IWorkflowManager {
           }
         : { input: run.input as Partial<WorkflowState> | undefined }),
     }).catch(() => {});
+  }
+
+  /**
+   * Picks up the runs a stopped process left running or waiting: each run of a workflow
+   * registered here is marked paused and resumed from its last checkpoint, so its completed nodes
+   * are kept and its human nodes find their open requests again. Pass the options the runs need
+   * that only lived in the stopped process, such as `approvalStore`.
+   *
+   * Call it once at startup, from the one process that runs these workflows: runs another live
+   * process is still executing would run twice.
+   */
+  async recoverRuns(options?: WorkflowExecuteOptionsV2): Promise<RecoveredRuns> {
+    const orphans = await this.runStore.list({ status: ['running', 'waiting'] });
+    const resumed: string[] = [];
+    const skipped: RecoveredRuns['skipped'] = [];
+
+    for (const run of orphans) {
+      if (this.activeRuns.has(run.id)) continue;
+      if (!this.workflows.has(run.workflowName)) {
+        skipped.push({ runId: run.id, reason: `workflow ${run.workflowName} is not registered` });
+        continue;
+      }
+      await this.runStore.update(run.id, { status: 'paused', pausedAt: Date.now() });
+      try {
+        await this.resume(run.id, options);
+        resumed.push(run.id);
+      } catch (error) {
+        skipped.push({
+          runId: run.id,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return { resumed, skipped };
   }
 
   /**

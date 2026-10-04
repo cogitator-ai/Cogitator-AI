@@ -550,6 +550,8 @@ await approvalStore.submitResponse({
 
 Other configs: `choiceNode`, `inputNode`, `ratingNode`, `chainNode`, `managementChain`; all of them return a config whose `name` is set, so `config.name` is a `string`. Notifiers: `ConsoleNotifier`, `WebhookNotifier`, `slackNotifier`, `CompositeNotifier`, `filteredNotifier`, `priorityRouter`. `FileApprovalStore` persists requests; `RedisApprovalStore` and `PostgresApprovalStore` share them between processes.
 
+Waits survive a restart. A request's id comes from the run and the question, so a human node that runs again after a restart finds its own request instead of asking twice, takes an answer given while the process was down, and keeps the original deadline. A node visited again in a loop asks about a changed state and so opens a new request. At startup, `await manager.recoverRuns({ approvalStore })` resumes the runs the stopped process left running or waiting, from their last checkpoint (call it from the one process that runs these workflows).
+
 A request is answered once, in every store (atomically across processes for Redis and Postgres): the first `submitResponse` wins and a later one throws `ApprovalAlreadyAnsweredError` carrying the answer that stands. A human node whose timeout fires just after someone answered keeps that answer. Deleting (or expiring) a request nobody answered withdraws it: waiters in any process get a withdrawal and the node finishes with `withdrawn: true` instead of waiting forever. A timeout or withdrawal never counts as approval, also for `multi-choice` requests.
 
 ```typescript

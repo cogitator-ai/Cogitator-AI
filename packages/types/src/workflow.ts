@@ -732,6 +732,12 @@ export interface WorkflowRun {
   metadata?: Record<string, unknown>;
 }
 
+/** What `WorkflowManager.recoverRuns` did with each orphaned run. */
+export interface RecoveredRuns {
+  resumed: string[];
+  skipped: { runId: string; reason: string }[];
+}
+
 export interface WorkflowRunFilters {
   status?: WorkflowRunStatus | WorkflowRunStatus[];
   workflowName?: string;
@@ -783,6 +789,12 @@ export interface WorkflowManager {
   pause(runId: string): Promise<void>;
 
   resume(runId: string): Promise<void>;
+
+  /**
+   * Picks up the runs a stopped process left running or waiting and resumes them from their last
+   * checkpoint. Call it once at startup, from the one process that runs these workflows
+   */
+  recoverRuns(options?: WorkflowExecuteOptionsV2): Promise<RecoveredRuns>;
 
   retry(runId: string): Promise<string>;
 
