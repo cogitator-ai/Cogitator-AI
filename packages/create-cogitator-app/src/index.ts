@@ -19,15 +19,25 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const options = await collectOptions(args);
 
-  await scaffold(options);
+  const result = await scaffold(options);
+
+  if (result.install.status === 'failed') {
+    p.log.warn(`${options.packageManager} install failed: ${result.install.error.message}`);
+  }
+  if (result.git.status === 'failed') {
+    p.log.warn(`git init failed: ${result.git.error.message}`);
+  }
 
   const dev = devCommand(options.packageManager);
+  const install =
+    result.install.status === 'done' ? [] : [`  ${pc.cyan(`${options.packageManager} install`)}`];
 
   p.outro(
     [
       pc.green('Done! ') + 'Next steps:',
       '',
       `  ${pc.cyan('cd')} ${options.name}`,
+      ...install,
       `  ${pc.cyan(dev)}`,
       '',
       pc.dim(`Docs: ${DOCS_URL}`),

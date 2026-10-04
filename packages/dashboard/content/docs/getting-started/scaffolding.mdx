@@ -20,7 +20,7 @@ The prompts ask for:
 5. Docker Compose (default yes)
 6. Git repository (default yes)
 
-The target directory must not exist or be empty. The scaffolder then writes the files, runs `<pm> install` and, if chosen and git is installed, creates a repository. A failed install or git step is reported and left for you to run by hand.
+The target directory must not exist or be empty. The scaffolder then writes the files, runs `<pm> install` (unless you pass `--no-install`) and, if chosen and git is installed, creates a repository. A failed install or git step is reported and left for you to run by hand.
 
 ## Templates
 
@@ -61,6 +61,7 @@ npx create-cogitator-app my-project --provider openai --yes
 | `--pm`                     |           | `pnpm`, `npm`, `yarn`, `bun`                                   |
 | `--docker` / `--no-docker` |           | Include Docker Compose                                         |
 | `--git` / `--no-git`       |           | Initialize a git repository                                    |
+| `--no-install`             |           | Write the files without installing dependencies                |
 | `--yes`                    | `-y`      | Don't prompt; use the defaults for every missing value         |
 
 An invalid flag value is ignored and asked for interactively; anything not given by a flag is prompted for. With `--yes` nothing is prompted and the defaults fill the gaps: `my-agents`, `basic`, `ollama`, the detected package manager, Docker Compose on, git on.
@@ -93,7 +94,7 @@ my-project/
 └── README.md
 ```
 
-`cogitator.yml` is in [`@cogitator-ai/config`](/docs/getting-started/configuration) format (`llm.defaultProvider`, `llm.defaultModel`, and `memory` for the `memory` template) and is read by `cogitator run` and `cogitator deploy`. The generated code configures `Cogitator` in `src/` itself and does not load it.
+`cogitator.yml` is in [`@cogitator-ai/config`](/docs/getting-started/configuration) format (`llm.defaultProvider`, `llm.defaultModel`, `memory` for the `memory` template, and `deploy.health.path: /api/health` for the `api-server` and `nextjs` templates, the route their app serves health on) and is read by `cogitator run` and `cogitator deploy`. The generated code configures `Cogitator` in `src/` itself and does not load it.
 
 `docker-compose.yml` runs Redis 7 and Postgres 16 (credentials from `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, all defaulting to `cogitator`), plus Ollama when it is the provider.
 
@@ -106,7 +107,7 @@ The package also exports its building blocks:
 ```ts
 import { scaffold } from 'create-cogitator-app';
 
-await scaffold({
+const result = await scaffold({
   name: 'my-agent',
   path: '/projects/my-agent',
   template: 'basic',
@@ -114,7 +115,10 @@ await scaffold({
   packageManager: 'pnpm',
   docker: false,
   git: true,
+  install: false, // optional, default true
 });
+
+if (result.install.status === 'failed') console.error(result.install.error);
 ```
 
-`scaffold()` writes the files, installs dependencies and initializes git exactly like the CLI. `parseArgs(argv)` and `collectOptions(args)` turn command-line arguments into these options (prompting for the rest); `getTemplate(name)`, `templateChoices`, `defaultModels`, `providerConfig(provider)`, `providerEnvKey(provider)`, `detectPackageManager()` and `devCommand(pm)` are exported as well.
+`scaffold()` writes the files, installs dependencies and initializes git like the CLI. Pass `install: false` to only write the files, for example when you embed the scaffolder and install later. It throws when the directory is not empty, and otherwise resolves to a `ScaffoldResult`: the generated `files`, and `install` and `git` steps that are each `{ status: 'done' }`, `{ status: 'skipped' }` or `{ status: 'failed', error }`. A failed step never throws, so the project stays on disk. `parseArgs(argv)` and `collectOptions(args)` turn command-line arguments into these options (prompting for the rest). `getTemplate(name)`, `templateChoices`, `defaultModels`, `providerConfig(provider)`, `providerEnvKey(provider)`, `detectPackageManager()` and `devCommand(pm)` are exported as well.

@@ -75,6 +75,12 @@ describe('parseArgs', () => {
     expect(result.packageManager).toBe('npm');
   });
 
+  it('parses --no-install and --install', () => {
+    expect(parseArgs(['--no-install']).install).toBe(false);
+    expect(parseArgs(['--install']).install).toBe(true);
+    expect(parseArgs([]).install).toBeUndefined();
+  });
+
   it('ignores invalid package manager values', () => {
     const result = parseArgs(['--pm', 'cargo']);
     expect(result.packageManager).toBeUndefined();
@@ -167,6 +173,13 @@ describe('collectOptions with --yes', () => {
     });
     expect(clack.text).not.toHaveBeenCalled();
     expect(clack.select).not.toHaveBeenCalled();
+    expect(clack.confirm).not.toHaveBeenCalled();
+  });
+
+  it('passes --no-install through without prompting', async () => {
+    const options = await collectOptions(parseArgs(['-y', '--no-install']));
+
+    expect(options.install).toBe(false);
     expect(clack.confirm).not.toHaveBeenCalled();
   });
 

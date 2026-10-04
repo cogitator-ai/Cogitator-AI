@@ -9,4 +9,6 @@ export type {
   LLMProvider,
   PackageManager,
   TemplateFile,
+  ScaffoldResult,
+  ScaffoldStep,
 } from './types.js';

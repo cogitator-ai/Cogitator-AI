@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { getTemplate, templateChoices } from '../templates/index.js';
 import { defaultModels } from '../utils/providers.js';
 import { generatePnpmWorkspace } from '../templates/base/pnpm-workspace.js';
+import { generateCogitatorYml } from '../templates/base/cogitator-yml.js';
 import type { ProjectOptions } from '../types.js';
 
 const baseOptions: ProjectOptions = {
@@ -217,6 +218,46 @@ describe('api-server template', () => {
   it('has express dependency', () => {
     const deps = template.dependencies();
     expect(deps).toHaveProperty('express');
+  });
+
+  it('types express with the same major version it installs', () => {
+    const major = (range: string | undefined) => /\d+/.exec(range ?? '')?.[0];
+    expect(major(template.devDependencies()['@types/express'])).toBe(
+      major(template.dependencies().express)
+    );
+  });
+});
+
+describe('deploy health checks', () => {
+  function healthPathIn(yml: string): string | undefined {
+    return /^deploy:\n {2}health:\n {4}path: (\S+)$/m.exec(yml)?.[1];
+  }
+
+  it('points the api-server health check at the route the server serves', () => {
+    const opts = { ...baseOptions, template: 'api-server' as const };
+    const indexTs = getTemplate('api-server')
+      .files(opts)
+      .find((f) => f.path === 'src/index.ts')!.content;
+    const basePath = /basePath: '([^']+)'/.exec(indexTs)?.[1];
+
+    expect(basePath).toBeDefined();
+    expect(healthPathIn(generateCogitatorYml('openai', 'api-server').content)).toBe(
+      `${basePath}/health`
+    );
+  });
+
+  it('gives the nextjs app a health route and points the health check at it', () => {
+    const opts = { ...baseOptions, template: 'nextjs' as const };
+    const files = getTemplate('nextjs').files(opts);
+
+    expect(files.map((f) => f.path)).toContain('src/app/api/health/route.ts');
+    expect(healthPathIn(generateCogitatorYml('openai', 'nextjs').content)).toBe('/api/health');
+  });
+
+  it('writes no deploy section for templates without a server', () => {
+    for (const template of ['basic', 'memory', 'swarm', 'workflow'] as const) {
+      expect(generateCogitatorYml('openai', template).content).not.toContain('deploy:');
+    }
   });
 });
 

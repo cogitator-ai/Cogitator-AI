@@ -68,6 +68,32 @@ function isStringRecord(value: unknown): value is Record<string, string> {
   );
 }
 
+function mergeSection<T extends object>(
+  file: T | undefined,
+  override: T | undefined
+): T | undefined {
+  return file && override ? { ...file, ...override } : (override ?? file);
+}
+
+/**
+ * The deploy config the project asks for: the `deploy` section of its
+ * cogitator.yml under explicit overrides, merging the nested sections
+ * (services, env, health, resources) field by field.
+ */
+function mergeDeployConfig(
+  file: DeployConfig | undefined,
+  overrides: Partial<DeployConfig> | undefined
+): Partial<DeployConfig> {
+  return {
+    ...file,
+    ...overrides,
+    services: mergeSection(file?.services, overrides?.services),
+    env: mergeSection(file?.env, overrides?.env),
+    health: mergeSection(file?.health, overrides?.health),
+    resources: mergeSection(file?.resources, overrides?.resources),
+  };
+}
+
 function readPackageJson(projectDir: string, warnings: string[]): PackageJson {
   const pkgPath = join(projectDir, 'package.json');
   if (!existsSync(pkgPath)) return {};
@@ -199,12 +225,19 @@ export class ProjectAnalyzer {
     };
   }
 
+  /**
+   * Reads the project in `projectDir` into a deploy config: what it detects,
+   * under the `deploy` section of the project's cogitator.yml, under
+   * `configOverrides`.
+   */
   analyze(projectDir: string, configOverrides?: Partial<DeployConfig>): AnalyzerResult {
     const warnings: string[] = [];
     const pkg = readPackageJson(projectDir, warnings);
+    const fullConfig = this.loadProjectConfig(projectDir, warnings);
+    const configured = mergeDeployConfig(fullConfig?.deploy, configOverrides);
 
-    const server = configOverrides?.server ?? this.detectServer(pkg);
-    const target = configOverrides?.target ?? 'docker';
+    const server = configured.server ?? this.detectServer(pkg);
+    const target = configured.target ?? 'docker';
     const build = this.buildOf(projectDir, pkg);
     const { hasTypeScript, hasBuildScript, startCommand } = build;
 
@@ -219,22 +252,20 @@ export class ProjectAnalyzer {
       );
     }
 
-    const fullConfig = this.loadProjectConfig(projectDir, warnings);
     const model = fullConfig?.llm?.defaultModel ?? '';
     const defaultProvider = fullConfig?.llm?.defaultProvider;
 
     const services =
-      configOverrides?.services ??
+      configured.services ??
       (fullConfig ? this.detectServices(fullConfig) : { redis: false, postgres: false });
-    const secrets =
-      configOverrides?.secrets ?? (model ? this.detectSecrets(model, defaultProvider) : []);
+    const secrets = configured.secrets ?? (model ? this.detectSecrets(model, defaultProvider) : []);
     if (model) warnings.push(...this.getDeployWarnings(model, target, defaultProvider));
 
-    if (target === 'docker' && (configOverrides?.instances ?? 1) > 1) {
+    if (target === 'docker' && (configured.instances ?? 1) > 1) {
       warnings.push('instances > 1 is not supported for the docker target; running one container');
     }
 
-    const image = configOverrides?.image ?? sanitizeName(pkg.name ?? '');
+    const image = configured.image ?? sanitizeName(pkg.name ?? '');
 
     return {
       server,
@@ -243,12 +274,12 @@ export class ProjectAnalyzer {
       warnings,
       ...build,
       deployConfig: {
-        ...configOverrides,
+        ...configured,
         server,
         image,
         services,
         secrets,
-        port: configOverrides?.port ?? 3000,
+        port: configured.port ?? 3000,
       },
     };
   }

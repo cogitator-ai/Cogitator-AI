@@ -21,7 +21,7 @@ npx create-cogitator-app -y
 npx create-cogitator-app my-project -p openai --yes
 ```
 
-Prompts are shown only for values not given on the command line: project directory, template, provider, package manager, Docker Compose and git. With `-y` / `--yes` nothing is asked and the defaults fill the gaps: `my-agents`, `basic`, `ollama`, the detected package manager, Docker Compose on, git on. The target directory must be empty or not exist. After writing the files the scaffolder runs `<pm> install` and, unless disabled, creates a git repository with an initial commit.
+Prompts are shown only for values not given on the command line: project directory, template, provider, package manager, Docker Compose and git. With `-y` / `--yes` nothing is asked and the defaults fill the gaps: `my-agents`, `basic`, `ollama`, the detected package manager, Docker Compose on, git on. The target directory must be empty or not exist. After writing the files the scaffolder runs `<pm> install` (skip it with `--no-install`) and, unless disabled, creates a git repository with an initial commit. A failed install or git step is reported and left for you to run by hand.
 
 Requires Node.js 22.12+.
 
@@ -46,6 +46,7 @@ Requires Node.js 22.12+.
 | `--pm <name>`              |           | Package manager (`pnpm`, `npm`, `yarn`, `bun`)            |
 | `--docker` / `--no-docker` |           | Include Docker Compose (Redis, Postgres, plus Ollama)     |
 | `--git` / `--no-git`       |           | Initialize git repository                                 |
+| `--no-install`             |           | Write the files without running `<pm> install`            |
 | `--yes`                    | `-y`      | Don't prompt; use the defaults for every missing value    |
 
 Unknown values for `--template`, `--provider` and `--pm` are ignored and asked for interactively (or replaced by the default with `--yes`). The package manager prompt defaults to the one that invoked the scaffolder (`npm_config_user_agent`), falling back to `pnpm`.
@@ -80,16 +81,16 @@ my-project/
 
 Template-specific sources:
 
-| Template     | Files                                                                                              |
-| ------------ | -------------------------------------------------------------------------------------------------- |
-| `basic`      | `src/index.ts`, `src/tools.ts`                                                                     |
-| `memory`     | `src/index.ts`, `src/tools.ts`                                                                     |
-| `swarm`      | `src/index.ts`, `src/tools.ts`, `src/agents/{researcher,writer,reviewer}.ts`                       |
-| `workflow`   | `src/index.ts`, `src/agents.ts`                                                                    |
-| `api-server` | `src/index.ts`, `src/agents.ts`                                                                    |
-| `nextjs`     | `src/lib/agent.ts`, `src/app/api/chat/route.ts`, `src/app/{page,layout}.tsx`, Next/Tailwind config |
+| Template     | Files                                                                                                       |
+| ------------ | ----------------------------------------------------------------------------------------------------------- |
+| `basic`      | `src/index.ts`, `src/tools.ts`                                                                              |
+| `memory`     | `src/index.ts`, `src/tools.ts`                                                                              |
+| `swarm`      | `src/index.ts`, `src/tools.ts`, `src/agents/{researcher,writer,reviewer}.ts`                                |
+| `workflow`   | `src/index.ts`, `src/agents.ts`                                                                             |
+| `api-server` | `src/index.ts`, `src/agents.ts`                                                                             |
+| `nextjs`     | `src/lib/agent.ts`, `src/app/api/{chat,health}/route.ts`, `src/app/{page,layout}.tsx`, Next/Tailwind config |
 
-The generated code configures `Cogitator` in `src/` itself, reading the provider key from the environment. Copy `.env.example` to `.env` and fill it in, then run `pnpm dev` (or `npm run dev`, `yarn dev`, `bun dev`).
+The generated code configures `Cogitator` in `src/` itself, reading the provider key from the environment. For the `api-server` and `nextjs` templates `cogitator.yml` also sets `deploy.health.path: /api/health`, the route the app serves, so `cogitator deploy` produces a container that reports healthy. Copy `.env.example` to `.env` and fill it in, then run `pnpm dev` (or `npm run dev`, `yarn dev`, `bun dev`).
 
 ## Programmatic API
 
@@ -105,18 +106,21 @@ const options: ProjectOptions = {
   packageManager: 'pnpm',
   docker: false,
   git: true,
+  install: false, // optional, default true
 };
 
-await scaffold(options);
+const result = await scaffold(options);
+// { files: ['package.json', 'src/index.ts', ...], install: { status: 'skipped' }, git: { status: 'done' } }
+if (result.install.status === 'failed') console.error(result.install.error);
 
 // or: parse CLI arguments and prompt for the rest
 const fromCli = await collectOptions(parseArgs(process.argv.slice(2)));
 await scaffold(fromCli);
 ```
 
-`scaffold()` writes the files, installs dependencies with `packageManager` and initializes git when `git` is `true`; it throws when `path` exists and is not empty.
+`scaffold()` writes the files, installs dependencies with `packageManager` unless `install` is `false`, and initializes git when `git` is `true`. It throws when `path` exists and is not empty. A failed install or git step does not throw: the returned `ScaffoldResult` lists the generated `files` and reports each step as `{ status: 'done' }`, `{ status: 'skipped' }` or `{ status: 'failed', error }`, and the project stays on disk.
 
-Other exports: `getTemplate(name)` and `templateChoices` (template generators and their labels), `detectPackageManager()`, `devCommand(pm)`, `defaultModels`, `providerConfig(provider)` and `providerEnvKey(provider)`, and the types `ProjectOptions`, `Template`, `LLMProvider`, `PackageManager` and `TemplateFile`.
+Other exports: `getTemplate(name)` and `templateChoices` (template generators and their labels), `detectPackageManager()`, `devCommand(pm)`, `defaultModels`, `providerConfig(provider)` and `providerEnvKey(provider)`, and the types `ProjectOptions`, `ScaffoldResult`, `ScaffoldStep`, `Template`, `LLMProvider`, `PackageManager` and `TemplateFile`.
 
 ## License
 

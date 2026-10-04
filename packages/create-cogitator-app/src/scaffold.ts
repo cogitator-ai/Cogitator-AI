@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import * as p from '@clack/prompts';
-import type { ProjectOptions, TemplateFile } from './types.js';
+import type { ProjectOptions, ScaffoldResult, ScaffoldStep, TemplateFile } from './types.js';
 import { getTemplate } from './templates/index.js';
 import { generateTsconfig } from './templates/base/tsconfig.js';
 import { generateGitignore } from './templates/base/gitignore.js';
@@ -62,7 +62,29 @@ function collectFiles(options: ProjectOptions): TemplateFile[] {
   return files;
 }
 
-export async function scaffold(options: ProjectOptions) {
+function runStep(
+  spinner: ReturnType<typeof p.spinner>,
+  messages: { start: string; done: string; failed: string },
+  step: () => void
+): ScaffoldStep {
+  spinner.start(messages.start);
+  try {
+    step();
+    spinner.stop(messages.done);
+    return { status: 'done' };
+  } catch (error) {
+    spinner.stop(messages.failed);
+    return { status: 'failed', error: error instanceof Error ? error : new Error(String(error)) };
+  }
+}
+
+/**
+ * Writes the project described by `options`, then installs its dependencies
+ * (unless `install` is `false`) and initializes git (when `git` is `true`).
+ * Throws when `path` exists and is not empty. A failed install or git step
+ * does not throw: the result reports it, and the project stays written.
+ */
+export async function scaffold(options: ProjectOptions): Promise<ScaffoldResult> {
   if (fs.existsSync(options.path) && fs.readdirSync(options.path).length > 0) {
     throw new Error(`Directory "${options.path}" already exists and is not empty`);
   }
@@ -78,21 +100,31 @@ export async function scaffold(options: ProjectOptions) {
   }
   s.stop('Generated project files');
 
-  s.start('Installing dependencies');
-  try {
-    installDependencies(options.path, options.packageManager);
-    s.stop('Installed dependencies');
-  } catch {
-    s.stop('Failed to install dependencies — run manually');
-  }
+  const install: ScaffoldStep =
+    options.install === false
+      ? { status: 'skipped' }
+      : runStep(
+          s,
+          {
+            start: 'Installing dependencies',
+            done: 'Installed dependencies',
+            failed: `Failed to install dependencies, run "${options.packageManager} install" yourself`,
+          },
+          () => installDependencies(options.path, options.packageManager)
+        );
 
-  if (options.git && isGitInstalled()) {
-    s.start('Initializing git repository');
-    try {
-      initGitRepo(options.path);
-      s.stop('Initialized git repository');
-    } catch {
-      s.stop('Failed to initialize git — run manually');
-    }
-  }
+  const git: ScaffoldStep =
+    options.git && isGitInstalled()
+      ? runStep(
+          s,
+          {
+            start: 'Initializing git repository',
+            done: 'Initialized git repository',
+            failed: 'Failed to initialize git, run "git init" yourself',
+          },
+          () => initGitRepo(options.path)
+        )
+      : { status: 'skipped' };
+
+  return { files: files.map((file) => file.path), install, git };
 }

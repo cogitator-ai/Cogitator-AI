@@ -61,7 +61,7 @@ console.log(result.url); // https://my-app.fly.dev
 
 ## Configuration
 
-`cogitator deploy` reads the `deploy` section of `cogitator.yml`; with the programmatic API pass the same fields as `configOverrides` (the `Deployer` reads only `llm` and `memory` from `cogitator.yml`, for auto-detection):
+Both `cogitator deploy` and the programmatic `Deployer` read the `deploy` section of the project's `cogitator.yml`. `configOverrides` win over it field by field (inside `services`, `env`, `health` and `resources` too), and both win over auto-detection:
 
 ```yaml
 deploy:
@@ -88,7 +88,7 @@ deploy:
     cpu: 1
 ```
 
-`health.path` defaults to the path the Express and Fastify adapters serve at their default `/cogitator` base path. Set it only when the adapter is mounted elsewhere (Hono, Koa and Tetsu answer wherever you mount them).
+`health.path` defaults to the path the Express and Fastify adapters serve at their default `/cogitator` base path. Set it only when the adapter is mounted elsewhere (Hono, Koa and Tetsu answer wherever you mount them). Projects from `create-cogitator-app` already set it: the `api-server` template mounts the adapter at `/api` and writes `health.path: /api/health`.
 
 Secrets are read from the current environment or the project's `.env` file. They are checked during preflight, passed through to the Docker Compose stack, and imported into Fly.io with `fly secrets import --stage`.
 

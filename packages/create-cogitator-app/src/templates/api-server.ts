@@ -2,7 +2,12 @@ import type { ProjectOptions, TemplateGenerator } from '../types.js';
 import { defaultModels, providerConfig } from '../utils/providers.js';
 import { ZOD_VERSION } from './versions.js';
 
+/** Where the generated server mounts the Cogitator routes. */
+const BASE_PATH = '/api';
+
 export const apiServerTemplate: TemplateGenerator = {
+  healthPath: `${BASE_PATH}/health`,
+
   files(options: ProjectOptions) {
     const model = defaultModels[options.provider];
 
@@ -56,7 +61,7 @@ export const apiServerTemplate: TemplateGenerator = {
       `  cogitator,`,
       `  agents: { assistant, coder },`,
       `  config: {`,
-      `    basePath: '/api',`,
+      `    basePath: '${BASE_PATH}',`,
       `    enableSwagger: true,`,
       `    cors: { origin: '*' },`,
       `    swagger: {`,
@@ -71,7 +76,7 @@ export const apiServerTemplate: TemplateGenerator = {
       ``,
       `  app.listen(port, () => {`,
       `    console.log(\`Server running at http://localhost:\${port}\`)`,
-      `    console.log(\`Swagger docs at http://localhost:\${port}/api/docs\`)`,
+      `    console.log(\`Swagger docs at http://localhost:\${port}${BASE_PATH}/docs\`)`,
       `  })`,
       `}`,
       ``,
@@ -89,7 +94,7 @@ export const apiServerTemplate: TemplateGenerator = {
     return {
       '@cogitator-ai/core': 'latest',
       '@cogitator-ai/express': 'latest',
-      express: '^4.21.0',
+      express: '^5.2.1',
       zod: ZOD_VERSION,
     };
   },
@@ -99,7 +104,7 @@ export const apiServerTemplate: TemplateGenerator = {
       typescript: '^5.8.0',
       tsx: '^4.19.0',
       '@types/node': '^22.0.0',
-      '@types/express': '^5.0.0',
+      '@types/express': '^5.0.6',
     };
   },
 

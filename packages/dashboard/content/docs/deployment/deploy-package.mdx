@@ -62,7 +62,7 @@ console.log(result.endpoints); // { api, a2a, health }
 
 ## Configuration
 
-Add a `deploy` section to `cogitator.yml` — the CLI loads it for you. The programmatic `Deployer` does not read it; pass the same object as `configOverrides`:
+Add a `deploy` section to `cogitator.yml`. Both the CLI and the programmatic `Deployer` read it from the project directory, and `configOverrides` win over it field by field (inside `services`, `env`, `health` and `resources` too):
 
 ```yaml
 deploy:
@@ -91,7 +91,7 @@ deploy:
 
 Explicit `services` and `secrets` replace auto-detection rather than merging with it.
 
-`health.path` defaults to `/cogitator/health`, where the Express and Fastify adapters answer at their default base path. Set it only when the adapter is mounted elsewhere (Hono, Koa and Tetsu answer wherever you mount them).
+`health.path` defaults to `/cogitator/health`, where the Express and Fastify adapters answer at their default base path. Set it only when the adapter is mounted elsewhere (Hono, Koa and Tetsu answer wherever you mount them). Projects from `create-cogitator-app` already set it: the `api-server` template mounts the adapter at `/api` and writes `health.path: /api/health`, and the `nextjs` template serves `/api/health` from its own route.
 
 Secrets are read from the current environment or the project's `.env` file (the environment wins). They are checked during preflight, passed through to the Docker Compose stack, and imported into Fly.io with `fly secrets import --stage`. Multi-line secret values are rejected for Fly.io because `fly secrets import` cannot carry them.
 

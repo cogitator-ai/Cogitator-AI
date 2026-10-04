@@ -83,6 +83,31 @@ describe('Deployer.deploy', () => {
     expect(deploy).toHaveBeenCalledWith(expect.objectContaining({ port: 3000 }), artifacts, dir);
   });
 
+  it("probes the health path the project's cogitator.yml configures", async () => {
+    writeFileSync(
+      join(dir, 'package.json'),
+      JSON.stringify({
+        name: 'api',
+        scripts: { start: 'node dist/index.js' },
+        dependencies: { '@cogitator-ai/express': 'latest' },
+      })
+    );
+    writeFileSync(join(dir, 'cogitator.yml'), 'deploy:\n  health:\n    path: /api/health\n');
+    const deployer = new Deployer();
+
+    const docker = await deployer.plan({ projectDir: dir, target: 'docker', noPush: true });
+    const fly = await deployer.plan({ projectDir: dir, target: 'fly', noPush: true });
+    const dockerfile = (await docker.provider.generate(docker.config, dir)).files.find(
+      (f) => f.path === 'Dockerfile'
+    )?.content;
+    const flyToml = (await fly.provider.generate(fly.config, dir)).files.find(
+      (f) => f.path === 'fly.toml'
+    )?.content;
+
+    expect(dockerfile).toContain('http://localhost:3000/api/health');
+    expect(flyToml).toContain('path = "/api/health"');
+  });
+
   it('builds the Dockerfile from the detected package manager and start command', async () => {
     writeFileSync(
       join(dir, 'package.json'),

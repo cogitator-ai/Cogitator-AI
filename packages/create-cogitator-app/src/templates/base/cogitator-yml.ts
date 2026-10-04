@@ -1,10 +1,12 @@
 import type { LLMProvider, Template, TemplateFile } from '../../types.js';
 import { defaultModels } from '../../utils/providers.js';
+import { getTemplate } from '../index.js';
 
 /**
  * `cogitator.yml` in the shape `@cogitator-ai/config` loads: the provider and model
- * the generated code uses, and the memory it connects to. API keys stay in the
- * environment, where the config loader picks them up.
+ * the generated code uses, the memory it connects to, and for servers the path
+ * `cogitator deploy` probes for health. API keys stay in the environment, where
+ * the config loader picks them up.
  */
 export function generateCogitatorYml(provider: LLMProvider, template?: Template): TemplateFile {
   const lines = [
@@ -29,6 +31,11 @@ export function generateCogitatorYml(provider: LLMProvider, template?: Template)
       '  redis:',
       '    url: ${REDIS_URL:-redis://localhost:6379}'
     );
+  }
+
+  const healthPath = template ? getTemplate(template).healthPath : undefined;
+  if (healthPath) {
+    lines.push('', 'deploy:', '  health:', `    path: ${healthPath}`);
   }
 
   lines.push('');

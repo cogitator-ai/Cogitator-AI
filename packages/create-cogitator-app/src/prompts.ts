@@ -12,6 +12,7 @@ interface ParsedArgs {
   packageManager?: PackageManager;
   docker?: boolean;
   git?: boolean;
+  install?: boolean;
   yes?: boolean;
 }
 
@@ -48,6 +49,10 @@ export function parseArgs(args: string[]): ParsedArgs {
       parsed.git = true;
     } else if (arg === '--no-git') {
       parsed.git = false;
+    } else if (arg === '--install') {
+      parsed.install = true;
+    } else if (arg === '--no-install') {
+      parsed.install = false;
     } else if (arg === '-y' || arg === '--yes') {
       parsed.yes = true;
     } else if (!arg.startsWith('-') && !parsed.name) {
@@ -184,5 +189,6 @@ export async function collectOptions(args: ParsedArgs): Promise<ProjectOptions> 
     packageManager,
     docker,
     git,
+    ...(args.install !== undefined && { install: args.install }),
   };
 }

@@ -129,6 +129,44 @@ describe('ProjectAnalyzer.analyze', () => {
     });
   });
 
+  it("honours the deploy section of the project's cogitator.yml", () => {
+    write(
+      'cogitator.yml',
+      [
+        'llm:',
+        '  defaultModel: openai/gpt-4o',
+        'deploy:',
+        '  port: 8080',
+        '  health:',
+        '    path: /api/health',
+        '    interval: 10s',
+        '  secrets: [OPENAI_API_KEY, SEARCH_API_KEY]',
+        '',
+      ].join('\n')
+    );
+
+    const result = analyzer.analyze(dir);
+
+    expect(result.deployConfig).toMatchObject({
+      port: 8080,
+      health: { path: '/api/health', interval: '10s' },
+      secrets: ['OPENAI_API_KEY', 'SEARCH_API_KEY'],
+    });
+    expect(result.secrets).toEqual(['OPENAI_API_KEY', 'SEARCH_API_KEY']);
+  });
+
+  it('lets overrides win over the deploy section field by field', () => {
+    write(
+      'cogitator.yml',
+      'deploy:\n  port: 8080\n  health:\n    path: /api/health\n    interval: 10s\n'
+    );
+
+    const result = analyzer.analyze(dir, { port: 9000, health: { interval: '1m' } });
+
+    expect(result.deployConfig.port).toBe(9000);
+    expect(result.deployConfig.health).toEqual({ path: '/api/health', interval: '1m' });
+  });
+
   it('detects the package manager from lockfiles', () => {
     expect(analyzer.detectPackageManager(dir)).toEqual({
       packageManager: 'npm',

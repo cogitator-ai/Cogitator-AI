@@ -3,6 +3,8 @@ import { defaultModels, providerConfig } from '../utils/providers.js';
 import { ZOD_VERSION } from './versions.js';
 
 export const nextjsTemplate: TemplateGenerator = {
+  healthPath: '/api/health',
+
   files(options: ProjectOptions) {
     const model = defaultModels[options.provider];
 
@@ -40,6 +42,13 @@ export const nextjsTemplate: TemplateGenerator = {
       `import { cogitator, agent } from '@/lib/agent'`,
       ``,
       `export const POST = createChatHandler(cogitator, agent)`,
+      ``,
+    ].join('\n');
+
+    const healthRouteTs = [
+      `export function GET() {`,
+      `  return Response.json({ status: 'ok' })`,
+      `}`,
       ``,
     ].join('\n');
 
@@ -216,6 +225,7 @@ export const nextjsTemplate: TemplateGenerator = {
     return [
       { path: 'src/lib/agent.ts', content: agentTs },
       { path: 'src/app/api/chat/route.ts', content: routeTs },
+      { path: 'src/app/api/health/route.ts', content: healthRouteTs },
       { path: 'src/app/page.tsx', content: pageTsx },
       { path: 'src/app/layout.tsx', content: layoutTsx },
       { path: 'src/app/globals.css', content: globalsCss },
