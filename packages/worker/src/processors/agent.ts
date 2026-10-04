@@ -5,7 +5,7 @@
  */
 
 import type { AgentJobPayload, AgentJobResult, WorkerRuntime } from '../types';
-import { createAgentFromConfig, resolveCogitator } from './shared.js';
+import { createAgentFromConfig, resolveRuntime } from './shared.js';
 
 export async function processAgentJob(
   payload: AgentJobPayload,
@@ -13,8 +13,9 @@ export async function processAgentJob(
 ): Promise<AgentJobResult> {
   const { agentConfig, input, threadId, userId } = payload;
 
-  const agent = createAgentFromConfig(agentConfig, runtime);
-  const result = await resolveCogitator(runtime).run(agent, {
+  const resolved = resolveRuntime(runtime);
+  const agent = createAgentFromConfig(agentConfig, resolved);
+  const result = await resolved.cogitator.run(agent, {
     input,
     threadId,
     ...(userId !== undefined && { userId }),

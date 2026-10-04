@@ -42,11 +42,11 @@ export function formatPrometheusMetrics(
   const labelSuffix = labelStr ? `{${labelStr}}` : '';
 
   const lines: string[] = [
-    '# HELP cogitator_queue_depth Total number of jobs waiting to be processed',
+    '# HELP cogitator_queue_depth Jobs waiting to be processed (ready, prioritized and delayed)',
     '# TYPE cogitator_queue_depth gauge',
     `cogitator_queue_depth${labelSuffix} ${metrics.depth}`,
     '',
-    '# HELP cogitator_queue_waiting Number of jobs in waiting state',
+    '# HELP cogitator_queue_waiting Jobs ready to be processed, prioritized jobs included',
     '# TYPE cogitator_queue_waiting gauge',
     `cogitator_queue_waiting${labelSuffix} ${metrics.waiting}`,
     '',

@@ -3,7 +3,7 @@
  */
 
 import type { Cogitator } from '@cogitator-ai/core';
-import type { LLMProvider, Tool, ToolSchema } from '@cogitator-ai/types';
+import type { LLMBackendProvider, Tool, ToolSchema } from '@cogitator-ai/types';
 import type {
   SwarmAgentJobPayload as SwarmAgentJobContract,
   SwarmAgentJobResult as SwarmAgentJobResultContract,
@@ -16,10 +16,19 @@ import type {
 export interface SerializedAgent {
   name: string;
   instructions: string;
-  /** Model name; may already carry a provider prefix (e.g. 'openai/gpt-6.1-sol') */
+  /**
+   * Model string, routed on the worker like the same agent in-process: a prefix naming a
+   * built-in provider, a backend in the worker Cogitator's `llm.backends` or a registered
+   * plugin picks that provider (e.g. 'openai/gpt-6.1-sol', 'openrouter/deepseek/deepseek-v4-pro')
+   */
   model: string;
-  /** Provider used when `model` has no provider prefix */
-  provider: LLMProvider;
+  /**
+   * Provider for a model whose prefix names none the worker routes to (e.g. 'gpt-6.1-sol'
+   * or 'meta-llama/llama-4-scout' with `provider: 'openrouter'`). Any provider the worker
+   * Cogitator routes to, custom backends and plugins included. Without it such a model runs
+   * on the worker's `llm.defaultProvider`
+   */
+  provider?: LLMBackendProvider;
   temperature?: number;
   maxTokens?: number;
   maxIterations?: number;
@@ -225,8 +234,29 @@ export interface WorkerConfig extends QueueConfig, WorkerRuntime {
   stalledInterval?: number;
 }
 
+/**
+ * State of a queued job, as `JobQueue.getJobState()` reports it:
+ * - `waiting`: ready to run, in arrival order
+ * - `prioritized`: ready to run, added with a `priority` (lower runs first, jobs without
+ *   a priority run before prioritized ones)
+ * - `delayed`: added with a `delay`, or waiting for its next retry
+ * - `active`: being processed by a worker
+ * - `completed` / `failed`: finished (`failed` after its last attempt)
+ * - `waiting-children`: a parent job of a BullMQ flow waiting for its children
+ * - `unknown`: not in the queue (never added, or removed after finishing)
+ */
+export type JobState =
+  | 'waiting'
+  | 'prioritized'
+  | 'delayed'
+  | 'active'
+  | 'completed'
+  | 'failed'
+  | 'waiting-children'
+  | 'unknown';
+
 export interface QueueMetrics {
-  /** Jobs waiting to be processed */
+  /** Jobs ready to be processed, prioritized jobs included */
   waiting: number;
   /** Jobs currently being processed */
   active: number;
@@ -236,7 +266,7 @@ export interface QueueMetrics {
   failed: number;
   /** Jobs scheduled for later */
   delayed: number;
-  /** Total queue depth (waiting + delayed) */
+  /** Total queue depth (waiting + delayed), the metric to scale workers on */
   depth: number;
   /** Number of active workers */
   workerCount: number;

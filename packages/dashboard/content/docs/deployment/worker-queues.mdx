@@ -34,7 +34,7 @@ const job = await queue.addAgentJob(
     name: 'researcher',
     instructions: 'You are a research assistant.',
     model: 'gpt-5.5',
-    provider: 'openai', // used when `model` has no provider prefix
+    provider: 'openai', // prepended when `model` names no provider the worker routes to
     tools: [],
   },
   'Summarize the latest AI papers on reasoning',
@@ -43,6 +43,10 @@ const job = await queue.addAgentJob(
 
 console.log('State:', await queue.getJobState(job.id!));
 ```
+
+The worker routes `model` like the same agent in-process: a prefix naming a built-in provider, a backend in the worker Cogitator's `llm.backends` or a registered plugin picks that provider, so `openrouter/deepseek/deepseek-v4-pro` runs on an `openrouter` backend whatever `provider` says. The optional `provider` (any provider the worker routes to, custom backends and plugins included) is prepended only to a model whose prefix names none, such as `meta-llama/llama-4-scout` with `provider: 'openrouter'`. Without it such a model runs on the worker's `llm.defaultProvider`, and a `provider` the worker cannot route to fails the job.
+
+`getJobState(id)` returns `'waiting'`, `'prioritized'` (added with a `priority`), `'delayed'`, `'active'`, `'completed'`, `'failed'`, `'waiting-children'` (the parent of a BullMQ flow) or `'unknown'` (the `JobState` type).
 
 `threadId` defaults to a fresh id; `userId` makes the run act for that user (it owns the thread), and `metadata` is stored on the payload. Other queue methods: `getJob(id)`, `getMetrics()`, `pause()`, `resume()`, `clean(grace, limit, state)`, `getQueue()` (the underlying BullMQ `Queue`) and `close()`.
 
@@ -156,7 +160,7 @@ Label values are escaped per the Prometheus exposition format. Without a pool, `
 | Metric                           | Type      | Description                                                 |
 | -------------------------------- | --------- | ----------------------------------------------------------- |
 | `cogitator_queue_depth`          | gauge     | Jobs waiting + delayed                                      |
-| `cogitator_queue_waiting`        | gauge     | Jobs waiting                                                |
+| `cogitator_queue_waiting`        | gauge     | Jobs ready to run, prioritized jobs included                |
 | `cogitator_queue_delayed`        | gauge     | Delayed / scheduled jobs                                    |
 | `cogitator_queue_active`         | gauge     | Jobs currently processing                                   |
 | `cogitator_queue_completed`      | gauge     | Completed jobs kept in Redis (capped by `removeOnComplete`) |

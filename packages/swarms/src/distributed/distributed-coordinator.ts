@@ -1,8 +1,8 @@
 import { nanoid } from 'nanoid';
 import Redis from 'ioredis';
-import { parseModel } from '@cogitator-ai/core';
 import type {
   Agent,
+  LLMBackendProvider,
   SwarmConfig,
   SwarmAgent,
   RunResult,
@@ -34,10 +34,19 @@ export interface DistributedCoordinatorOptions {
 export interface SerializedSwarmAgentConfig {
   name: string;
   instructions: string;
-  /** Model string exactly as configured on the agent (may include a provider prefix) */
+  /**
+   * Model string the worker runs, routed like the agent in-process: the agent's model,
+   * prefixed with the agent's own `provider` when it sets one (an explicit provider gets
+   * the model string unchanged, so `{ model: 'openai/gpt-4o', provider: 'openrouter' }`
+   * travels as `'openrouter/openai/gpt-4o'`)
+   */
   model: string;
-  /** Provider resolved on the coordinator side */
-  provider: string;
+  /**
+   * The agent's own `provider`, if any. Workers prepend it to a model whose prefix names
+   * no provider they route to, and refuse it when they cannot route to it either. Without
+   * it such a model runs on the worker's `llm.defaultProvider`
+   */
+  provider?: LLMBackendProvider;
   temperature?: number;
   maxTokens?: number;
   maxIterations?: number;
@@ -247,7 +256,7 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
   private createJobPayload(request: AgentRunRequest): SwarmAgentJobPayload {
     const { agent, input, context } = request;
     const model = this.resolveAgentModel(agent);
-    const parsed = parseModel(model);
+    const provider = agent.config.provider;
 
     return {
       type: 'swarm-agent',
@@ -257,8 +266,8 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
       agentConfig: {
         name: agent.name,
         instructions: agent.instructions,
-        model,
-        provider: agent.config.provider ?? parsed.provider ?? 'ollama',
+        model: provider ? `${provider}/${model}` : model,
+        ...(provider && { provider }),
         temperature: agent.config.temperature,
         maxTokens: agent.config.maxTokens,
         maxIterations: agent.config.maxIterations,

@@ -223,7 +223,7 @@ const cog = new Cogitator({
 const agent = new Agent({ name: 'a', model: 'local/my-finetune', instructions: '...' });
 ```
 
-`cog.route('local/my-finetune')` returns the backend and model name a run would use. A run that names a provider nobody provides fails with `CONFIGURATION_ERROR`.
+`cog.route('local/my-finetune')` returns the backend and model name a run would use. A run that names a provider nobody provides fails with `CONFIGURATION_ERROR`. `cog.knowsProvider('local')` tells whether a `local/...` prefix routes to that provider (a backend in `llm.backends`, a built-in provider or a registered plugin) or stays part of the model name on `llm.defaultProvider`.
 
 ### Plugin System
 

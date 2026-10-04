@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { JobQueue } from '../queue';
-import type { SerializedAgent, SerializedWorkflow, SerializedSwarm } from '../types';
+import type { JobState, SerializedAgent, SerializedWorkflow, SerializedSwarm } from '../types';
 
 const mockAdd = vi.fn();
 const mockGetJob = vi.fn();
@@ -10,6 +10,7 @@ const mockGetCompletedCount = vi.fn();
 const mockGetFailedCount = vi.fn();
 const mockGetDelayedCount = vi.fn();
 const mockGetWorkersCount = vi.fn();
+const mockGetJobCounts = vi.fn();
 const mockPause = vi.fn();
 const mockResume = vi.fn();
 const mockClean = vi.fn();
@@ -25,6 +26,7 @@ vi.mock('bullmq', () => {
     getFailedCount = mockGetFailedCount;
     getDelayedCount = mockGetDelayedCount;
     getWorkersCount = mockGetWorkersCount;
+    getJobCounts = mockGetJobCounts;
     pause = mockPause;
     resume = mockResume;
     clean = mockClean;
@@ -70,6 +72,14 @@ describe('JobQueue', () => {
     mockGetFailedCount.mockResolvedValue(3);
     mockGetDelayedCount.mockResolvedValue(1);
     mockGetWorkersCount.mockResolvedValue(4);
+    mockGetJobCounts.mockResolvedValue({
+      waiting: 5,
+      prioritized: 0,
+      active: 2,
+      completed: 100,
+      failed: 3,
+      delayed: 1,
+    });
   });
 
   afterEach(async () => {
@@ -253,6 +263,17 @@ describe('JobQueue', () => {
       expect(state).toBe('active');
     });
 
+    it('reports a job added with a priority as prioritized', async () => {
+      mockGetJob.mockResolvedValueOnce({
+        id: 'job_1',
+        getState: vi.fn().mockResolvedValue('prioritized'),
+      });
+
+      const state: JobState = await queue.getJobState('job_1');
+
+      expect(state).toBe('prioritized');
+    });
+
     it('returns unknown for non-existent job', async () => {
       mockGetJob.mockResolvedValueOnce(undefined);
 
@@ -275,6 +296,21 @@ describe('JobQueue', () => {
         depth: 6,
         workerCount: 4,
       });
+    });
+
+    it('counts jobs added with a priority as waiting and toward the depth', async () => {
+      mockGetJobCounts.mockResolvedValue({
+        waiting: 1,
+        prioritized: 1,
+        active: 0,
+        completed: 0,
+        failed: 0,
+        delayed: 0,
+      });
+
+      const metrics = await queue.getMetrics();
+
+      expect(metrics).toMatchObject({ waiting: 2, depth: 2 });
     });
   });
 

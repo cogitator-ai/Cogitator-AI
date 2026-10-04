@@ -8,7 +8,6 @@
  */
 
 import { z } from 'zod';
-import type { LLMProvider } from '@cogitator-ai/types';
 import type {
   ConditionNodeConfig,
   SerializedWorkflow,
@@ -18,29 +17,15 @@ import type {
   WorkflowJobPayload,
   WorkflowJobResult,
 } from '../types';
-import { createAgentFromConfig, resolveCogitator } from './shared.js';
+import { createAgentFromConfig, resolveRuntime, type ResolvedRuntime } from './shared.js';
 
 type WorkflowState = Record<string, unknown>;
-
-const LLM_PROVIDERS = [
-  'ollama',
-  'openai',
-  'anthropic',
-  'google',
-  'azure',
-  'bedrock',
-  'vllm',
-  'mistral',
-  'groq',
-  'together',
-  'deepseek',
-] as const satisfies readonly LLMProvider[];
 
 const serializedAgentSchema = z.object({
   name: z.string().min(1),
   instructions: z.string(),
   model: z.string().min(1),
-  provider: z.enum(LLM_PROVIDERS),
+  provider: z.string().min(1).optional(),
   temperature: z.number().optional(),
   maxTokens: z.number().int().positive().optional(),
   maxIterations: z.number().int().positive().optional(),
@@ -248,7 +233,7 @@ class WorkflowRun {
   constructor(
     private readonly workflow: SerializedWorkflow,
     input: Record<string, unknown>,
-    private readonly runtime: WorkerRuntime
+    private readonly runtime: ResolvedRuntime
   ) {
     this.nodes = new Map(workflow.nodes.map((n) => [n.id, n]));
     this.state = { ...input };
@@ -323,7 +308,7 @@ class WorkflowRun {
         const prompt = config.prompt
           ? renderTemplate(config.prompt, this.state)
           : JSON.stringify(this.state);
-        const result = await resolveCogitator(this.runtime).run(agent, { input: prompt });
+        const result = await this.runtime.cogitator.run(agent, { input: prompt });
         return this.store(node.id, config.outputKey, result.output);
       }
 
@@ -365,7 +350,7 @@ export async function processWorkflowJob(
   const { state, nodeResults } = await new WorkflowRun(
     payload.workflowConfig,
     payload.input,
-    runtime
+    resolveRuntime(runtime)
   ).execute();
 
   return {

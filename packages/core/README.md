@@ -183,6 +183,8 @@ const backend = createLLMBackendFromPlugin('my-provider', { apiKey: '...' });
 
 A backend's `provider` field is an `LLMBackendProvider`: a built-in provider name or one of your own, such as the plugin's provider or its key in `llm.backends`.
 
+`cog.route(model)` returns the backend and model name a run would use, and `cog.knowsProvider(name)` tells whether a `name/...` model prefix routes to that provider (a backend in `llm.backends`, a built-in provider or a registered plugin) or stays part of the model name on `llm.defaultProvider`.
+
 ### LLM Debug Wrapper
 
 Wrap any backend for request/response logging:

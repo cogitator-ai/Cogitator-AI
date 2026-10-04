@@ -186,6 +186,29 @@ describe('DistributedSwarmCoordinator jobs', () => {
     }
   });
 
+  it('sends each agent model so the worker routes it like the agent in-process', async () => {
+    onJobs(() => ({}));
+    const custom = createMockAgent('custom', { model: 'openrouter/deepseek/deepseek-v4-pro' });
+    const proxied = createMockAgent('proxied', { model: 'openai/gpt-4o' });
+    proxied.config.provider = 'openrouter';
+    const coord = new DistributedSwarmCoordinator({
+      config: { name: 'remote', strategy: 'round-robin', agents: [custom, proxied] },
+      distributed: { enabled: true },
+    });
+
+    await coord.runAgent('custom', 'go');
+    await coord.runAgent('proxied', 'go');
+    await coord.close();
+
+    const configs = (redisState.jobs as SwarmAgentJobPayload[]).map((job) => job.agentConfig);
+    expect(configs[0].model).toBe('openrouter/deepseek/deepseek-v4-pro');
+    expect(configs[0]).not.toHaveProperty('provider');
+    expect(configs[1]).toMatchObject({
+      model: 'openrouter/openai/gpt-4o',
+      provider: 'openrouter',
+    });
+  });
+
   it('keeps the swarm state for an hour by default', async () => {
     onJobs(() => ({}));
     const coord = coordinator();

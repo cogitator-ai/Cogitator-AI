@@ -1,13 +1,30 @@
-import { Agent, Cogitator, parseModel } from '@cogitator-ai/core';
+import { Agent, Cogitator } from '@cogitator-ai/core';
 import type { Tool, ToolSchema } from '@cogitator-ai/types';
 import type { WorkerRuntime } from '../types';
 
 /**
- * Model string to run: models with a provider prefix are used as-is, otherwise the
- * serialized provider is prepended.
+ * Model string to run on `cogitator`, so a serialized agent routes like the same agent
+ * would in-process. A model whose prefix names a provider, backend or plugin the Cogitator
+ * routes to is used as-is. Otherwise `provider` is prepended, and without a provider the
+ * model stays unchanged and runs on the Cogitator's `llm.defaultProvider`.
+ *
+ * @throws Error when `provider` is needed but the Cogitator cannot route to it
  */
-export function resolveModelString(model: string, provider: string): string {
-  return parseModel(model).provider ? model : `${provider}/${model}`;
+export function resolveModelString(
+  model: string,
+  provider: string | undefined,
+  cogitator: Cogitator
+): string {
+  const slash = model.indexOf('/');
+  if (slash > 0 && cogitator.knowsProvider(model.slice(0, slash))) return model;
+  if (!provider) return model;
+  if (!cogitator.knowsProvider(provider)) {
+    throw new Error(
+      `Provider "${provider}" of model "${model}" is not available on this worker: ` +
+        'it is not a built-in provider, a backend in llm.backends or a registered plugin of the worker Cogitator.'
+    );
+  }
+  return `${provider}/${model}`;
 }
 
 /**
@@ -35,27 +52,38 @@ export interface SerializedAgentLike {
   name: string;
   instructions: string;
   model: string;
-  provider: string;
+  provider?: string;
   temperature?: number;
   maxTokens?: number;
   maxIterations?: number;
   tools: readonly ToolSchema[];
 }
 
-export function createAgentFromConfig(config: SerializedAgentLike, runtime: WorkerRuntime): Agent {
+/**
+ * Worker runtime with the Cogitator settled, so the agents of a job are routed by the
+ * same Cogitator that runs them.
+ */
+export interface ResolvedRuntime extends WorkerRuntime {
+  cogitator: Cogitator;
+}
+
+export function resolveRuntime(runtime: WorkerRuntime): ResolvedRuntime {
+  return { ...runtime, cogitator: runtime.cogitator ?? new Cogitator() };
+}
+
+export function createAgentFromConfig(
+  config: SerializedAgentLike,
+  runtime: ResolvedRuntime
+): Agent {
   return new Agent({
     name: config.name,
-    model: resolveModelString(config.model, config.provider),
+    model: resolveModelString(config.model, config.provider, runtime.cogitator),
     instructions: config.instructions,
     temperature: config.temperature,
     maxTokens: config.maxTokens,
     maxIterations: config.maxIterations,
     tools: resolveTools(config.tools, runtime.tools ?? []),
   });
-}
-
-export function resolveCogitator(runtime: WorkerRuntime): Cogitator {
-  return runtime.cogitator ?? new Cogitator();
 }
 
 export function toErrorMessage(error: unknown): string {

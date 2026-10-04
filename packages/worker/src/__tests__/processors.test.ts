@@ -6,8 +6,10 @@ const runMock = vi.fn();
 
 vi.mock('@cogitator-ai/core', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@cogitator-ai/core')>();
+  const routing = new actual.Cogitator();
   class Cogitator {
     run = runMock;
+    knowsProvider = (name: string) => routing.knowsProvider(name);
   }
   return { ...actual, Cogitator };
 });
@@ -36,9 +38,13 @@ const agentConfig = (overrides: Partial<SerializedAgent> = {}): SerializedAgent 
 
 describe('processors/shared', () => {
   it('prefixes unqualified models with the serialized provider', async () => {
+    const { Cogitator } = await import('@cogitator-ai/core');
     const { resolveModelString } = await import('../processors/shared');
-    expect(resolveModelString('gpt-4o', 'openai')).toBe('openai/gpt-4o');
-    expect(resolveModelString('ollama/llama3', 'openai')).toBe('ollama/llama3');
+    const cog = new Cogitator();
+    expect(resolveModelString('gpt-4o', 'openai', cog)).toBe('openai/gpt-4o');
+    expect(resolveModelString('ollama/llama3', 'openai', cog)).toBe('ollama/llama3');
+    expect(resolveModelString('meta-llama/llama-4', 'groq', cog)).toBe('groq/meta-llama/llama-4');
+    expect(resolveModelString('meta-llama/llama-4', undefined, cog)).toBe('meta-llama/llama-4');
   });
 
   it('resolves tools by name from the worker registry', async () => {

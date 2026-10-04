@@ -133,7 +133,7 @@ interface QueueConfig {
 const agentConfig: SerializedAgent = {
   name: 'Researcher',
   instructions: 'Research and summarize topics.',
-  model: 'openai/gpt-6.1-sol', // or 'gpt-6.1-sol' — the provider is prepended when missing
+  model: 'openai/gpt-6.1-sol', // or 'gpt-6.1-sol' - the provider is prepended when missing
   provider: 'openai',
   temperature: 0.7,
   maxTokens: 2048,
@@ -155,6 +155,8 @@ const job = await queue.addAgentJob(agentConfig, 'Research quantum computing', {
   metadata: { source: 'api' },
 });
 ```
+
+The worker routes `model` exactly like the same agent in-process: a prefix that names a built-in provider, a backend in the worker Cogitator's `llm.backends` or a registered plugin picks that provider, so `'openrouter/deepseek/deepseek-v4-pro'` runs on an `openrouter` backend whatever `provider` says. `provider` (optional, any provider the worker routes to, custom backends and plugins included) is prepended only to a model whose prefix names none, such as `'meta-llama/llama-4-scout'` with `provider: 'openrouter'`. Without `provider` such a model runs on the worker's `llm.defaultProvider`, and a `provider` the worker cannot route to fails the job.
 
 **Workflow Jobs:**
 
@@ -235,10 +237,12 @@ await queue.addSwarmJob(swarmConfig, 'Write an article about AI', {
 ```typescript
 const job = await queue.getJob('job-id');
 
-const state = await queue.getJobState('job-id');
-// 'waiting' | 'active' | 'completed' | 'failed' | 'delayed' | 'unknown'
+const state: JobState = await queue.getJobState('job-id');
+// 'waiting' | 'prioritized' | 'delayed' | 'active' | 'completed' | 'failed'
+// | 'waiting-children' | 'unknown'
 
 const metrics = await queue.getMetrics();
+// { waiting, active, completed, failed, delayed, depth, workerCount }
 
 await queue.pause();
 await queue.resume();
@@ -250,6 +254,8 @@ const bullQueue = queue.getQueue();
 
 await queue.close();
 ```
+
+A job added with a `priority` waits in BullMQ's `prioritized` state instead of `waiting`. `getMetrics()` counts it in `waiting` and `depth` all the same, so `cogitator_queue_depth` covers every job that still has to run. `waiting-children` is the parent of a BullMQ flow (added through `getQueue()`) that waits for its children and is not counted, as its children are.
 
 ---
 
@@ -404,7 +410,7 @@ await worker.start();
 process.on('SIGTERM', () => void worker.stop()); // waits for in-flight turns
 ```
 
-Failed turns are reported back to the swarm as errors, so the swarm's own `errorHandling` (retry, failover, skip) applies.
+Failed turns are reported back to the swarm as errors, so the swarm's own `errorHandling` (retry, failover, skip) applies. Each turn runs on the model its agent would use in-process, routed by the worker's `cogitator`, so give the worker the same `llm.backends`, plugins and provider keys as the process that runs the swarm.
 
 ---
 
@@ -487,7 +493,7 @@ app.listen(9090);
 | Metric                           | Type      | Description                                                 |
 | -------------------------------- | --------- | ----------------------------------------------------------- |
 | `cogitator_queue_depth`          | gauge     | Total waiting + delayed jobs                                |
-| `cogitator_queue_waiting`        | gauge     | Jobs waiting to be processed                                |
+| `cogitator_queue_waiting`        | gauge     | Jobs ready to run, prioritized jobs included                |
 | `cogitator_queue_active`         | gauge     | Jobs currently being processed                              |
 | `cogitator_queue_completed`      | gauge     | Completed jobs kept in Redis (capped by `removeOnComplete`) |
 | `cogitator_queue_failed`         | gauge     | Failed jobs kept in Redis (capped by `removeOnFail`)        |
@@ -602,8 +608,8 @@ Jobs use serialized configurations that can be stored in Redis.
 interface SerializedAgent {
   name: string;
   instructions: string;
-  model: string; // may include the provider prefix
-  provider: LLMProvider; // used when model has no prefix
+  model: string; // routed like in-process: a known provider prefix picks the provider
+  provider?: LLMBackendProvider; // prepended when model names no provider the worker routes to
   temperature?: number;
   maxTokens?: number;
   maxIterations?: number;
@@ -807,6 +813,7 @@ import type {
   WorkerConfig,
   WorkerRuntime,
   QueueMetrics,
+  JobState,
   DistributedSwarmWorkerConfig,
   DistributedSwarmWorkerEvents,
 } from '@cogitator-ai/worker';

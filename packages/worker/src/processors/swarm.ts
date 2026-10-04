@@ -14,7 +14,7 @@ import type {
   SwarmJobResult,
   WorkerRuntime,
 } from '../types';
-import { createAgentFromConfig, resolveCogitator } from './shared.js';
+import { createAgentFromConfig, resolveRuntime } from './shared.js';
 
 const DEFAULT_MAX_ROUNDS = 3;
 
@@ -26,7 +26,8 @@ export function buildSwarmConfig(
   runtime: WorkerRuntime,
   name = `worker-swarm-${Date.now()}`
 ): SwarmConfig {
-  const create = (agent: SerializedAgent): Agent => createAgentFromConfig(agent, runtime);
+  const resolved = resolveRuntime(runtime);
+  const create = (agent: SerializedAgent): Agent => createAgentFromConfig(agent, resolved);
   const agents = serialized.agents.map(create);
   const coordinator = serialized.coordinator ? create(serialized.coordinator) : undefined;
   const maxRounds = serialized.maxRounds ?? DEFAULT_MAX_ROUNDS;
@@ -95,8 +96,9 @@ export async function processSwarmJob(
   payload: SwarmJobPayload,
   runtime: WorkerRuntime = {}
 ): Promise<SwarmJobResult> {
-  const config = buildSwarmConfig(payload.swarmConfig, runtime, `worker-swarm-${payload.jobId}`);
-  const swarm = new Swarm(resolveCogitator(runtime), config);
+  const resolved = resolveRuntime(runtime);
+  const config = buildSwarmConfig(payload.swarmConfig, resolved, `worker-swarm-${payload.jobId}`);
+  const swarm = new Swarm(resolved.cogitator, config);
 
   try {
     const result = await swarm.run({ input: payload.input });

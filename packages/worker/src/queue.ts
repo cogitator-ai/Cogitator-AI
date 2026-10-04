@@ -11,6 +11,7 @@
 import { Queue, type Job } from 'bullmq';
 import { nanoid } from 'nanoid';
 import type {
+  JobState,
   QueueConfig,
   QueueMetrics,
   JobPayload,
@@ -203,32 +204,32 @@ export class JobQueue {
   }
 
   /**
-   * Get job state
+   * State of a job, `'unknown'` when the queue does not have it (never added, or removed
+   * after completing or failing). A job added with a `priority` waits as `'prioritized'`
    */
-  async getJobState(jobId: string): Promise<string> {
+  async getJobState(jobId: string): Promise<JobState> {
     const job = await this.queue.getJob(jobId);
     if (!job) return 'unknown';
     return job.getState();
   }
 
   /**
-   * Get queue metrics for monitoring and HPA
+   * Get queue metrics for monitoring and HPA. `waiting` counts jobs ready to run, those
+   * added with a `priority` included, and `depth` adds the delayed ones
    */
   async getMetrics(): Promise<QueueMetrics> {
-    const [waiting, active, completed, failed, delayed, workerCount] = await Promise.all([
-      this.queue.getWaitingCount(),
-      this.queue.getActiveCount(),
-      this.queue.getCompletedCount(),
-      this.queue.getFailedCount(),
-      this.queue.getDelayedCount(),
+    const [counts, workerCount] = await Promise.all([
+      this.queue.getJobCounts('waiting', 'prioritized', 'active', 'completed', 'failed', 'delayed'),
       this.queue.getWorkersCount(),
     ]);
+    const waiting = (counts.waiting ?? 0) + (counts.prioritized ?? 0);
+    const delayed = counts.delayed ?? 0;
 
     return {
       waiting,
-      active,
-      completed,
-      failed,
+      active: counts.active ?? 0,
+      completed: counts.completed ?? 0,
+      failed: counts.failed ?? 0,
       delayed,
       depth: waiting + delayed,
       workerCount,

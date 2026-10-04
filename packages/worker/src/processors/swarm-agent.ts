@@ -7,7 +7,7 @@
  */
 
 import type { SwarmAgentJobPayload, SwarmAgentJobResult, WorkerRuntime } from '../types';
-import { createAgentFromConfig, resolveCogitator, toErrorMessage } from './shared.js';
+import { createAgentFromConfig, resolveRuntime, toErrorMessage } from './shared.js';
 import { findToolOutput } from './agent.js';
 
 export async function executeSwarmAgentJob(
@@ -17,8 +17,9 @@ export async function executeSwarmAgentJob(
   const { jobId, swarmId, agentName, agentConfig, input, context, runOptions } = payload;
 
   try {
-    const agent = createAgentFromConfig(agentConfig, runtime);
-    const result = await resolveCogitator(runtime).run(agent, {
+    const resolved = resolveRuntime(runtime);
+    const agent = createAgentFromConfig(agentConfig, resolved);
+    const result = await resolved.cogitator.run(agent, {
       input,
       context: { ...context, _distributedSwarm: true },
       ...(runOptions?.threadId && { threadId: runOptions.threadId }),

@@ -1412,7 +1412,16 @@ export class Cogitator {
     }
   }
 
-  private knowsProvider(name: string): boolean {
+  /**
+   * Whether `name` is a provider this instance routes to: a backend in
+   * `llm.backends`, a built-in provider or a registered plugin. A model string
+   * `name/model` runs on that provider (see {@link route}), any other prefix
+   * stays part of the model name on `llm.defaultProvider`.
+   *
+   * Credentials are not checked: a built-in provider counts even when
+   * `llm.providers` has no key for it, as a run would still be sent there.
+   */
+  knowsProvider(name: string): boolean {
     return (
       Object.hasOwn(this.config.llm?.backends ?? {}, name) ||
       isLLMProvider(name) ||

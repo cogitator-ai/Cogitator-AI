@@ -55,4 +55,5 @@ export type {
   WorkerConfig,
   WorkerRuntime,
   QueueMetrics,
+  JobState,
 } from './types';

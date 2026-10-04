@@ -147,4 +147,21 @@ describe('backend routing', () => {
     expect(result.output).toBe('local:tiny');
     await cog.close();
   });
+
+  it('tells which provider names a model prefix routes to', () => {
+    registerLLMBackend(
+      defineBackend({
+        provider: 'acme',
+        metadata: { name: 'Acme', version: '1.0.0' },
+        create: () => recordingBackend('x').backend,
+      })
+    );
+    const cog = new Cogitator({ llm: { backends: { openrouter: recordingBackend('x').backend } } });
+
+    expect(cog.knowsProvider('openrouter')).toBe(true);
+    expect(cog.knowsProvider('acme')).toBe(true);
+    expect(cog.knowsProvider('anthropic')).toBe(true);
+    expect(cog.knowsProvider('meta-llama')).toBe(false);
+    expect(cog.knowsProvider('toString')).toBe(false);
+  });
 });
