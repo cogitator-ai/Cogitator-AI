@@ -2,6 +2,7 @@ import type {
   Message,
   RunOptions,
   MemoryAdapter,
+  MemoryResult,
   ToolCall,
   ToolResult,
   ContentPart,
@@ -101,7 +102,11 @@ export async function buildInitialMessages(
       userId: options.userId,
     });
   } else {
-    await createThreadIfMissing(memoryAdapter, threadId, agent.id, options.userId);
+    try {
+      await createThreadIfMissing(memoryAdapter, threadId, agent.id, options.userId);
+    } catch (err) {
+      reportMemoryError(err, 'load', options.onMemoryError);
+    }
   }
 
   if (contextBuilder && options.loadHistory !== false) {
@@ -120,6 +125,12 @@ export async function buildInitialMessages(
     const messages: Message[] = [{ role: 'system', content: agent.instructions }];
     if (entries.success) {
       messages.push(...sanitizeToolHistory(entries.data.map((e) => e.message)));
+    } else {
+      reportMemoryError(
+        new Error(`Memory getEntries failed: ${entries.error}`),
+        'load',
+        options.onMemoryError
+      );
     }
     messages.push({ role: 'user', content: userContent });
     return messages;
@@ -135,15 +146,24 @@ export async function buildInitialMessages(
  * Creates thread `threadId`, owned by `userId`, unless it exists. A thread
  * that cannot be read is left alone: creating it would overwrite its owner.
  */
+/** The value of a memory operation, or an error naming the operation that failed. */
+function unwrap<T>(result: MemoryResult<T>, operation: string): T {
+  if (!result.success) throw new Error(`Memory ${operation} failed: ${result.error}`);
+  return result.data;
+}
+
 async function createThreadIfMissing(
   memoryAdapter: MemoryAdapter,
   threadId: string,
   agentId: string,
   userId: string | undefined
 ): Promise<void> {
-  const threadResult = await memoryAdapter.getThread(threadId);
-  if (threadResult.success && !threadResult.data) {
-    await memoryAdapter.createThread(agentId, threadMetadata({ agentId, userId }), threadId);
+  const thread = unwrap(await memoryAdapter.getThread(threadId), 'getThread');
+  if (!thread) {
+    unwrap(
+      await memoryAdapter.createThread(agentId, threadMetadata({ agentId, userId }), threadId),
+      'createThread'
+    );
   }
 }
 
@@ -162,18 +182,30 @@ export async function saveEntry(
   try {
     await createThreadIfMissing(memoryAdapter, threadId, agentId, userId);
 
-    await memoryAdapter.addEntry({
-      threadId,
-      message,
-      toolCalls,
-      toolResults,
-      tokenCount: countMessageTokens(message),
-    });
+    unwrap(
+      await memoryAdapter.addEntry({
+        threadId,
+        message,
+        toolCalls,
+        toolResults,
+        tokenCount: countMessageTokens(message),
+      }),
+      'addEntry'
+    );
   } catch (err) {
-    const error = err instanceof Error ? err : new Error(String(err));
-    getLogger().warn('Failed to save memory entry', { error: error.message });
-    onError?.(error, 'save');
+    reportMemoryError(err, 'save', onError);
   }
+}
+
+/** Logs a memory failure and hands it to the run's `onMemoryError`; the run goes on. */
+function reportMemoryError(
+  err: unknown,
+  operation: 'save' | 'load',
+  onError: ((error: Error, operation: 'save' | 'load') => void) | undefined
+): void {
+  const error = err instanceof Error ? err : new Error(String(err));
+  getLogger().warn(`Failed to ${operation} memory`, { error: error.message });
+  onError?.(error, operation);
 }
 
 export async function enrichMessagesWithInsights(
