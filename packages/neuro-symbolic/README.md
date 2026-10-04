@@ -536,6 +536,8 @@ await neo4j.connect();
 
 All adapters scope traversal and shortest-path search to the requesting agent, treat bidirectional edges as traversable in both directions and reject merges into a node listed among its own sources.
 
+The Postgres adapter uses the pgvector extension for `searchNodesSemantic()`. It indexes node embeddings with HNSW, which needs no training data, so the index built on the empty table finds every node as the graph grows. Earlier versions built an `ivfflat` index there, which missed nodes once Postgres used it (a search for 60 nodes in a graph of 3000 returned 31). The first `connect()` after upgrading replaces that index with HNSW, which takes a while on a large graph. To avoid the wait, build the index ahead of the deploy with `CREATE INDEX CONCURRENTLY idx_graph_nodes_embedding_new ON cogitator_graph.graph_nodes USING hnsw (embedding vector_cosine_ops)`, then drop the old index and rename the new one to `idx_graph_nodes_embedding`. An existing HNSW index is kept as it is. Each search raises `hnsw.ef_search` to the requested `limit` (up to 1000) and, on pgvector 0.8 or later, turns on iterative scans, so a large limit or an `entityTypes` filter still gets every matching node. Equally similar nodes are ordered by id.
+
 ---
 
 ## Module Imports

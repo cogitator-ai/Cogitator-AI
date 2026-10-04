@@ -135,7 +135,7 @@ const answer = await kg.askGraph('Who works at "Acme"?');
 console.log(answer.data?.naturalLanguageResponse);
 ```
 
-Patterns join on shared variables, bidirectional edges match in both directions, `?x a person` matches node types and `FILTER`, `ORDER BY`, `LIMIT`, `OFFSET` are supported. `createReasoningEngine(adapter, agentId)` adds shortest paths, multi-hop relation chains and de-duplicated transitive / inverse / compositional inference. Postgres and Neo4j adapters are available via `createPostgresGraphAdapter` and `createNeo4jGraphAdapter`.
+Patterns join on shared variables, bidirectional edges match in both directions, `?x a person` matches node types and `FILTER`, `ORDER BY`, `LIMIT`, `OFFSET` are supported. `createReasoningEngine(adapter, agentId)` adds shortest paths, multi-hop relation chains and de-duplicated transitive / inverse / compositional inference. Postgres and Neo4j adapters are available via `createPostgresGraphAdapter` and `createNeo4jGraphAdapter`. The Postgres adapter indexes node embeddings with HNSW (pgvector), so semantic search finds every node from the first insert on, and raises `hnsw.ef_search` to the requested limit. Earlier versions built an `ivfflat` index on the empty table that missed nodes. The first `connect()` after upgrading replaces it, see the package README for building the new index ahead of a deploy on a large graph.
 
 ## Verified Planning
 

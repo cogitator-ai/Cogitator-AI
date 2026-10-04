@@ -15,6 +15,12 @@ import type {
   MemoryResult,
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
+import {
+  detectVectorSearchTuning,
+  ensureHnswCosineIndex,
+  hnswSearchSettings,
+  type VectorSearchTuning,
+} from './pgvector';
 
 export interface PostgresGraphAdapterConfig {
   connectionString: string;
@@ -31,7 +37,7 @@ type Pool = {
 
 type PoolClient = {
   query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
-  release(): void;
+  release(destroy?: boolean): void;
 };
 
 const NEIGHBOR_COLUMNS = `
@@ -55,6 +61,7 @@ export class PostgresGraphAdapter implements GraphAdapter {
   private config: PostgresGraphAdapterConfig;
   private schema: string;
   private vectorDimensions: number;
+  private vectorTuning: VectorSearchTuning = { iterativeScan: false };
 
   constructor(config: PostgresGraphAdapterConfig) {
     this.config = config;
@@ -167,11 +174,13 @@ export class PostgresGraphAdapter implements GraphAdapter {
     `);
 
     try {
-      await this.pool.query(`
-        CREATE INDEX IF NOT EXISTS idx_graph_nodes_embedding
-        ON ${this.schema}.graph_nodes
-        USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)
-      `);
+      await ensureHnswCosineIndex(this.pool, {
+        schema: this.schema,
+        table: 'graph_nodes',
+        column: 'embedding',
+        index: 'idx_graph_nodes_embedding',
+      });
+      this.vectorTuning = await detectVectorSearchTuning(this.pool);
     } catch {}
   }
 
@@ -388,25 +397,40 @@ export class PostgresGraphAdapter implements GraphAdapter {
     const limit = options.limit ?? 10;
     const threshold = options.threshold ?? 0.7;
 
-    let sql = `
-      SELECT *, 1 - (embedding <=> $1) as score
-      FROM ${this.schema}.graph_nodes
-      WHERE agent_id = $2
-        AND embedding IS NOT NULL
-        AND 1 - (embedding <=> $1) >= $3
-    `;
+    const settings = hnswSearchSettings(limit, this.vectorTuning);
     const params: unknown[] = [vectorStr, options.agentId, threshold];
-    let paramIndex = 4;
-
+    let typeFilter = '';
     if (options.entityTypes && options.entityTypes.length > 0) {
-      sql += ` AND type = ANY($${paramIndex++})`;
       params.push(options.entityTypes);
+      typeFilter = ` AND type = ANY($${params.length})`;
     }
+    params.push(settings.candidates, limit);
+    const candidatesParam = params.length - 1;
+    const limitParam = params.length;
 
-    sql += ` ORDER BY embedding <=> $1 LIMIT $${paramIndex}`;
-    params.push(limit);
+    const sql = `
+      SELECT * FROM (
+        SELECT *, 1 - (embedding <=> $1) as score
+        FROM ${this.schema}.graph_nodes
+        WHERE agent_id = $2
+          AND embedding IS NOT NULL
+          AND 1 - (embedding <=> $1) >= $3${typeFilter}
+        ORDER BY embedding <=> $1
+        LIMIT $${candidatesParam}
+      ) nearest
+      ORDER BY score DESC, id
+      LIMIT $${limitParam}
+    `;
 
-    const result = await this.pool.query(sql, params);
+    let result: { rows: Record<string, unknown>[] };
+    try {
+      result = await this.inTransaction(async (client) => {
+        await client.query(settings.sql, settings.params);
+        return client.query(sql, params);
+      });
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
 
     return {
       success: true,
@@ -415,6 +439,28 @@ export class PostgresGraphAdapter implements GraphAdapter {
         score: row.score as number,
       })),
     };
+  }
+
+  /** Runs `work` on one pooled connection inside a transaction, so `SET LOCAL` style settings apply to it only. */
+  private async inTransaction<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
+    if (!this.pool) throw new Error('Not connected');
+    const client = await this.pool.connect();
+    let broken = false;
+    try {
+      await client.query('BEGIN');
+      const result = await work(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        broken = true;
+      }
+      throw error;
+    } finally {
+      client.release(broken);
+    }
   }
 
   async addEdge(
