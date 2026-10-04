@@ -28,6 +28,9 @@ import type { ObservableBlackboard } from './communication/blackboard.js';
 import type { QueryableSwarmEventEmitter } from './communication/event-emitter.js';
 import { NegotiationStrategy } from './strategies/negotiation-strategy.js';
 
+/** The largest delay a timer can hold. Node fires a longer one at once, so a run never arms a deadline past it. */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
 const VALID_STRATEGIES: readonly SwarmConfig['strategy'][] = [
   'hierarchical',
   'round-robin',
@@ -173,7 +176,11 @@ export class Swarm {
         this.coordinator.setSaveHistory(options.saveHistory);
       }
 
-      if (options.timeout !== undefined && options.timeout > 0) {
+      if (
+        options.timeout !== undefined &&
+        options.timeout > 0 &&
+        options.timeout <= MAX_TIMER_DELAY_MS
+      ) {
         const timeoutMs = options.timeout;
         timeoutHandle = setTimeout(() => {
           runController.abort(new SwarmTimeoutError(this.config.name, timeoutMs));

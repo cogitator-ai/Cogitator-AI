@@ -10,6 +10,7 @@
  * - Priority-based routing
  */
 
+import { createHash } from 'node:crypto';
 import { nanoid } from 'nanoid';
 import type {
   WorkflowState,
@@ -105,9 +106,7 @@ export async function executeHumanNode<S extends WorkflowState>(
     createdAt: Date.now(),
   };
 
-  await openRequest(request, context);
-
-  const { response, escalated } = await waitForResponse(request, context);
+  const { response, escalated } = await openAndAwait(request, context);
 
   const approved = !isUnanswered(response) && isApproved(request.type, response.decision);
 
@@ -168,9 +167,7 @@ async function executeApprovalChain<S extends WorkflowState>(
       createdAt: Date.now(),
     };
 
-    await openRequest(request, context);
-
-    const { response, escalated } = await waitForResponse(request, context);
+    const { response, escalated } = await openAndAwait(request, context);
 
     responses.push(response);
     lastResponse = response;
@@ -203,6 +200,56 @@ async function executeApprovalChain<S extends WorkflowState>(
     response: lastResponse!,
     state,
   };
+}
+
+/** How many times one node may ask again after its earlier requests were withdrawn. */
+const MAX_REQUEST_EPOCHS = 1000;
+
+/**
+ * The id a request gets: the same for the same question in the same run, so a node that runs
+ * again after a restart, with its state restored from the checkpoint, finds its request instead
+ * of asking twice. A node visited again in a loop asks about a changed state, which makes a new
+ * question with a new id. A request withdrawn by a pause moves the question to the next epoch.
+ */
+export function approvalRequestId(runId: string, request: ApprovalRequest, epoch: number): string {
+  const question = JSON.stringify([
+    request.nodeId,
+    request.type,
+    request.title,
+    request.description ?? null,
+    request.choices ?? null,
+    request.assignee ?? null,
+    request.assigneeGroup ?? null,
+    request.metadata?.state ?? null,
+  ]);
+  const hash = createHash('sha256').update(`${runId}\u0000${question}`).digest('hex').slice(0, 32);
+  return epoch === 0 ? `apr_${hash}` : `apr_${hash}_${epoch}`;
+}
+
+/**
+ * Opens the node's request, or picks up the one an earlier attempt of the run left: an answer
+ * given while the run was down is used at once, a pending request is waited on again without a
+ * second notification, and a withdrawn one makes the node ask again under the next epoch.
+ */
+async function openAndAwait(
+  fresh: ApprovalRequest,
+  context: HumanNodeContext
+): Promise<AwaitedResponse> {
+  const store = context.approvalStore;
+  for (let epoch = 0; epoch < MAX_REQUEST_EPOCHS; epoch++) {
+    const id = approvalRequestId(context.runId, fresh, epoch);
+    const [existing, answer] = await Promise.all([store.getRequest(id), store.getResponse(id)]);
+    if (answer?.respondedBy === WITHDRAWN) continue;
+    if (answer) return { response: answer, escalated: false };
+    if (existing) return waitForResponse(existing, context);
+
+    const request = { ...fresh, id };
+    await openRequest(request, context);
+    return waitForResponse(request, context);
+  }
+  throw new Error(
+    `Node '${fresh.nodeId}' of run '${context.runId}' was withdrawn ${MAX_REQUEST_EPOCHS} times`
+  );
 }
 
 /**
@@ -263,13 +310,17 @@ async function waitForResponse(
     });
 
     if (request.timeout) {
+      const remaining =
+        request.deadline !== undefined
+          ? Math.max(0, request.deadline - Date.now())
+          : request.timeout;
       timeoutId = setTimeout(() => {
         if (settled) return;
         settled = true;
         signal?.removeEventListener('abort', onAbort);
         unsubscribeFn?.();
         handleTimeout(request, context).then(resolve, reject);
-      }, request.timeout);
+      }, remaining);
     }
 
     signal?.addEventListener('abort', onAbort, { once: true });
@@ -282,11 +333,7 @@ async function waitForResponse(
  * tolerated: the wait already unwound, and a missing request is not an error.
  */
 async function withdrawRequest(request: ApprovalRequest, store: ApprovalStore): Promise<void> {
-  try {
-    await store.deleteRequest(request.id);
-  } catch {
-    // Best effort — the request may already be gone.
-  }
+  await store.deleteRequest(request.id).catch(() => undefined);
 }
 
 /**
@@ -315,10 +362,13 @@ async function handleTimeout(
 ): Promise<AwaitedResponse> {
   const store = context.approvalStore;
   const notifier = context.approvalNotifier;
-  await notifier?.notifyTimeout(request);
-
   const action = request.timeoutAction ?? 'fail';
 
+  if (action === 'escalate' && request.escalateTo) {
+    return escalate(request, request.escalateTo, context);
+  }
+
+  await notifier?.notifyTimeout(request);
   switch (action) {
     case 'approve': {
       const response: ApprovalResponse = {
@@ -342,75 +392,110 @@ async function handleTimeout(
       return { response: await submitOrExisting(store, response), escalated: false };
     }
 
-    case 'escalate': {
-      if (request.escalateTo) {
-        await notifier?.notifyEscalation(request, 'Timeout exceeded');
-
-        const escalatedRequest: ApprovalRequest = {
-          ...request,
-          id: nanoid(),
-          assignee: request.escalateTo,
-          assigneeGroup: undefined,
-          metadata: {
-            ...request.metadata,
-            escalatedFrom: request.assignee,
-            escalationReason: 'Timeout exceeded',
-          },
-          createdAt: Date.now(),
-        };
-
-        await openRequest(escalatedRequest, context);
-
-        const escalationTimeout = Math.max(request.timeout ?? 0, 30 * 60 * 1000);
-
-        const response = await new Promise<ApprovalResponse>((resolve, reject) => {
-          let settled = false;
-          let escalationTimer: ReturnType<typeof setTimeout> | undefined;
-          let unsubscribe: (() => void) | undefined;
-
-          const onAbort = () => {
-            if (settled) return;
-            settled = true;
-            if (escalationTimer) clearTimeout(escalationTimer);
-            unsubscribe?.();
-            void withdrawRequest(escalatedRequest, store).then(() =>
-              reject(new AbortError(`Human approval request '${escalatedRequest.id}' aborted`))
-            );
-          };
-
-          if (context.signal?.aborted) {
-            onAbort();
-            return;
-          }
-
-          escalationTimer = setTimeout(() => {
-            if (settled) return;
-            settled = true;
-            context.signal?.removeEventListener('abort', onAbort);
-            unsubscribe?.();
-            void createFailResponse(escalatedRequest, store).then(resolve);
-          }, escalationTimeout);
-
-          unsubscribe = store.onResponse(escalatedRequest.id, (resp) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(escalationTimer);
-            context.signal?.removeEventListener('abort', onAbort);
-            resolve(resp);
-          });
-
-          context.signal?.addEventListener('abort', onAbort, { once: true });
-          reportRequest(escalatedRequest, context);
-        });
-        return { response, escalated: true };
-      }
-      return { response: await createFailResponse(request, store), escalated: false };
-    }
-
-    case 'fail':
     default:
       return { response: await createFailResponse(request, store), escalated: false };
   }
+}
+
+/** How long an escalated request waits at least before it fails. */
+const MIN_ESCALATION_WAIT_MS = 30 * 60 * 1000;
+
+/**
+ * Hands a timed-out request to its `escalateTo` assignee. The escalation's id comes from the
+ * original request's, and it keeps its own deadline, so a node that runs again after a restart
+ * picks up the escalation (or the answer given to it meanwhile) instead of escalating twice.
+ */
+async function escalate(
+  request: ApprovalRequest,
+  escalateTo: string,
+  context: HumanNodeContext
+): Promise<AwaitedResponse> {
+  const store = context.approvalStore;
+  const waitMs = Math.max(request.timeout ?? 0, MIN_ESCALATION_WAIT_MS);
+
+  for (let epoch = 0; epoch < MAX_REQUEST_EPOCHS; epoch++) {
+    const id = epoch === 0 ? `${request.id}_esc` : `${request.id}_esc_${epoch}`;
+    const [existing, answer] = await Promise.all([store.getRequest(id), store.getResponse(id)]);
+    if (answer?.respondedBy === WITHDRAWN) continue;
+    if (answer) return { response: answer, escalated: true };
+
+    let escalated = existing;
+    if (!escalated) {
+      await context.approvalNotifier?.notifyTimeout(request);
+      await context.approvalNotifier?.notifyEscalation(request, 'Timeout exceeded');
+      const now = Date.now();
+      escalated = {
+        ...request,
+        id,
+        assignee: escalateTo,
+        assigneeGroup: undefined,
+        timeout: waitMs,
+        timeoutAction: 'fail',
+        deadline: now + waitMs,
+        metadata: {
+          ...request.metadata,
+          escalatedFrom: request.assignee,
+          escalationReason: 'Timeout exceeded',
+        },
+        createdAt: now,
+      };
+      await openRequest(escalated, context);
+    }
+
+    const remaining = Math.max(0, (escalated.deadline ?? Date.now() + waitMs) - Date.now());
+    return { response: await waitForEscalation(escalated, remaining, context), escalated: true };
+  }
+  throw new Error(
+    `Request '${request.id}' was withdrawn ${MAX_REQUEST_EPOCHS} times while escalated`
+  );
+}
+
+/** Waits for the escalation's answer, failing it when its time runs out. */
+function waitForEscalation(
+  escalatedRequest: ApprovalRequest,
+  waitMs: number,
+  context: HumanNodeContext
+): Promise<ApprovalResponse> {
+  const store = context.approvalStore;
+  return new Promise<ApprovalResponse>((resolve, reject) => {
+    let settled = false;
+    let escalationTimer: ReturnType<typeof setTimeout> | undefined;
+    let unsubscribe: (() => void) | undefined;
+
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      if (escalationTimer) clearTimeout(escalationTimer);
+      unsubscribe?.();
+      void withdrawRequest(escalatedRequest, store).then(() =>
+        reject(new AbortError(`Human approval request '${escalatedRequest.id}' aborted`))
+      );
+    };
+
+    if (context.signal?.aborted) {
+      onAbort();
+      return;
+    }
+
+    escalationTimer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      context.signal?.removeEventListener('abort', onAbort);
+      unsubscribe?.();
+      void createFailResponse(escalatedRequest, store).then(resolve);
+    }, waitMs);
+
+    unsubscribe = store.onResponse(escalatedRequest.id, (resp) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(escalationTimer);
+      context.signal?.removeEventListener('abort', onAbort);
+      resolve(resp);
+    });
+
+    context.signal?.addEventListener('abort', onAbort, { once: true });
+    reportRequest(escalatedRequest, context);
+  });
 }
 
 /**

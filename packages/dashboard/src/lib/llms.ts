@@ -91,7 +91,7 @@ export function getDocsSections(): DocsSection[] {
 }
 
 function formatEntry(page: DocsPage): string {
-  const title = page.data.title.replace(/([[\]])/g, '\\$1');
+  const title = page.data.title.replace(/([\\[\]])/g, '\\$1');
   const description = page.data.description?.trim();
   const link = `[${title}](${absolute(markdownPath(page))})`;
   return description ? `- ${link}: ${description}` : `- ${link}`;

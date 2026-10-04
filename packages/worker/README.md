@@ -106,9 +106,13 @@ const queue = new JobQueue({
 interface QueueConfig {
   name?: string; // Default: 'cogitator-jobs'
   redis: {
+    url?: string; // 'redis://user:password@host:port/db', 'rediss://' for TLS
     host?: string; // Default: 'localhost'
     port?: number; // Default: 6379
+    username?: string;
     password?: string;
+    db?: number;
+    tls?: boolean; // implied by a rediss:// url
     cluster?: {
       nodes: { host: string; port: number }[];
     };
@@ -129,6 +133,28 @@ interface QueueConfig {
 
 **Agent Jobs:**
 
+The simplest way is to serialize an agent you already have. `serializeAgent` keeps its model, instructions, sampling, reasoning effort, response format and tool schemas, and turns a Zod response schema into JSON Schema, so the worker validates the structured answer the same way an in-process run does:
+
+```typescript
+import { Agent } from '@cogitator-ai/core';
+import { serializeAgent } from '@cogitator-ai/worker';
+import { z } from 'zod';
+
+const Verdict = z.object({ verdict: z.enum(['run', 'hold']), reason: z.string() });
+const chief = new Agent({
+  name: 'chief',
+  model: 'openrouter/openai/gpt-6-luna',
+  instructions: 'Decide whether the pitch runs.',
+  reasoning: { effort: 'medium' },
+  responseFormat: { type: 'json_schema', schema: Verdict },
+});
+
+const job = await queue.addAgentJob(serializeAgent(chief), 'A pitch about ...');
+// later: (await queue.getJob(job.id))?.returnvalue.structured -> { verdict, reason }
+```
+
+Or write the serialized form by hand:
+
 ```typescript
 const agentConfig: SerializedAgent = {
   name: 'Researcher',
@@ -138,6 +164,8 @@ const agentConfig: SerializedAgent = {
   temperature: 0.7,
   maxTokens: 2048,
   maxIterations: 5,
+  reasoning: { effort: 'low' }, // optional
+  responseFormat: { type: 'json_schema', schema: { type: 'object', properties: {} } }, // optional, JSON Schema
   tools: [
     {
       name: 'search',
@@ -424,11 +452,22 @@ Each job type returns a specific result structure.
 interface AgentJobResult {
   type: 'agent';
   output: string;
+  structured?: unknown; // the validated answer of a json_schema agent, when it fits
+  reasoning?: string; // the reasoning summary, when the agent asked for one
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    cost: number; // USD, as the run reported it
+    reasoningTokens?: number;
+    cachedInputTokens?: number;
+  };
   toolCalls: {
     name: string;
     input: unknown;
     output: unknown;
   }[];
+  /** @deprecated use usage */
   tokenUsage?: {
     prompt: number;
     completion: number;

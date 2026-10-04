@@ -435,6 +435,35 @@ const store = createInMemoryIdempotencyStore();
 const receipt = await idempotent(store, `charge:${orderId}`, () => payments.charge(orderId));
 ```
 
+#### Retrying a dead letter
+
+`manager.retryDeadLetter(dlq, id)` runs a dead-lettered node again. It replays the node's run from the failed node (the nodes before it keep their checkpointed results and do not run twice), or runs the workflow again from its input when the run failed before its first checkpoint. The attempt is recorded on the entry first, and the entry is removed when the retry succeeds, so an entry that fails again stays with one more attempt. The workflow must be registered with the manager and the manager needs a `checkpointStore`. Pass the execute options the run needs, such as `approvalStore` or `timerStore`, as the third argument:
+
+```typescript
+const manager = createWorkflowManager({ cogitator, checkpointStore, runStore });
+await manager.execute(checkout, input, { deadLetterQueue: dlq });
+
+for (const entry of await dlq.list({ workflowName: 'checkout-workflow' })) {
+  const result = await manager.retryDeadLetter(dlq, entry.id, { approvalStore });
+  if (result.error) console.log(`${entry.nodeId} failed again: ${result.error.message}`);
+}
+```
+
+#### Postgres DLQ
+
+`PostgresDLQ` keeps the queue in Postgres, so failed nodes survive restarts and every process sees the same queue. It takes a `pg` Pool or Client, creates its table on first use, filters in SQL and deletes expired entries with `cleanupExpired()`:
+
+```typescript
+import pg from 'pg';
+import { PostgresDLQ } from '@cogitator-ai/workflows';
+
+const dlq = new PostgresDLQ({
+  client: new pg.Pool({ connectionString: process.env.DATABASE_URL }),
+  table: 'checkout_dead_letters', // default cogitator_workflow_dead_letters
+  defaultTTL: 14 * 24 * 60 * 60 * 1000,
+});
+```
+
 ---
 
 ## Subworkflows
@@ -520,6 +549,8 @@ await approvalStore.submitResponse({
 ```
 
 Other configs: `choiceNode`, `inputNode`, `ratingNode`, `chainNode`, `managementChain`; all of them return a config whose `name` is set, so `config.name` is a `string`. Notifiers: `ConsoleNotifier`, `WebhookNotifier`, `slackNotifier`, `CompositeNotifier`, `filteredNotifier`, `priorityRouter`. `FileApprovalStore` persists requests; `RedisApprovalStore` and `PostgresApprovalStore` share them between processes.
+
+Waits survive a restart. A request's id comes from the run and the question, so a human node that runs again after a restart finds its own request instead of asking twice, takes an answer given while the process was down, and keeps the original deadline. An escalation is picked up the same way. A node visited again in a loop asks about a changed state and so opens a new request. At startup, `await manager.recoverRuns({ approvalStore })` resumes the runs the stopped process left running or waiting, from their last checkpoint (call it from the one process that runs these workflows).
 
 A request is answered once, in every store (atomically across processes for Redis and Postgres): the first `submitResponse` wins and a later one throws `ApprovalAlreadyAnsweredError` carrying the answer that stands. A human node whose timeout fires just after someone answered keeps that answer. Deleting (or expiring) a request nobody answered withdraws it: waiters in any process get a withdrawal and the node finishes with `withdrawn: true` instead of waiting forever. A timeout or withdrawal never counts as approval, also for `multi-choice` requests.
 

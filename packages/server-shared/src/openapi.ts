@@ -1,5 +1,5 @@
 import type { OpenAPIContext, SwaggerConfig, OpenAPISpec } from './openapi-types.js';
-import { RUN_INPUT_SCHEMA } from './validation.js';
+import { MAX_RUN_TIMEOUT_MS, RUN_INPUT_SCHEMA } from './validation.js';
 
 export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig): OpenAPISpec {
   const spec: OpenAPISpec = {
@@ -573,7 +573,7 @@ function generateSchemas(): Record<string, unknown> {
         input: { ...RUN_INPUT_SCHEMA },
         context: { type: 'object' },
         threadId: { type: 'string', minLength: 1 },
-        timeout: { type: 'number' },
+        timeout: { type: 'number', exclusiveMinimum: 0, maximum: MAX_RUN_TIMEOUT_MS },
       },
     },
     SwarmRunResponse: {

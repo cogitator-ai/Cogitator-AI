@@ -39,7 +39,10 @@ const FORCED_TOOL_CHOICE_REJECTED_FROM: Readonly<Record<string, ModelVersionThre
 };
 const DEFAULT_FORCED_TOOL_CHOICE_REJECTED_FROM: ModelVersionThreshold = { major: 5, minor: 5 };
 
-const CLAUDE_ID_PATTERN = /(?:^|[./:])claude-([a-z0-9][a-z0-9.@:[\]-]*)$/i;
+const CLAUDE_ID_PREFIX = 'claude-';
+const CLAUDE_ID_CHAR = /[a-z0-9.@:[\]-]/i;
+const CLAUDE_ID_REST_START = /[a-z0-9]/i;
+const CLAUDE_ID_BOUNDARIES = './:';
 const NAMED_FAMILY_PATTERN = /^([a-z]+)(?:-(\d+)(?:[-.](\d{1,2})(?!\d))?)?/i;
 const LEGACY_PATTERN = /^(\d+)(?:[-.](\d))?-([a-z]+)/i;
 
@@ -54,9 +57,8 @@ const LEGACY_PATTERN = /^(\d+)(?:[-.](\d))?-([a-z]+)/i;
  * parseClaudeModelId('gpt-4o');                                 // null
  */
 export function parseClaudeModelId(modelId: string): ClaudeModelVersion | null {
-  const match = CLAUDE_ID_PATTERN.exec(modelId.trim());
-  if (!match) return null;
-  const rest = match[1];
+  const rest = claudeIdRest(modelId.trim());
+  if (rest === null) return null;
 
   const legacy = LEGACY_PATTERN.exec(rest);
   if (legacy) {
@@ -74,6 +76,22 @@ export function parseClaudeModelId(modelId: string): ClaudeModelVersion | null {
     major: named[2] === undefined ? null : Number(named[2]),
     minor: named[3] === undefined ? 0 : Number(named[3]),
   };
+}
+
+/**
+ * Text after the leftmost `claude-` that starts the id or follows `.`, `/` or `:`
+ * and is followed only by model-id characters up to the end.
+ */
+function claudeIdRest(modelId: string): string | null {
+  let tailStart = modelId.length;
+  while (tailStart > 0 && CLAUDE_ID_CHAR.test(modelId[tailStart - 1])) tailStart--;
+  const restOffset = CLAUDE_ID_PREFIX.length;
+  for (let i = tailStart; i + restOffset < modelId.length; i++) {
+    if (i > 0 && !CLAUDE_ID_BOUNDARIES.includes(modelId[i - 1])) continue;
+    if (modelId.slice(i, i + restOffset).toLowerCase() !== CLAUDE_ID_PREFIX) continue;
+    if (CLAUDE_ID_REST_START.test(modelId[i + restOffset])) return modelId.slice(i + restOffset);
+  }
+  return null;
 }
 
 function isAtLeast(version: ClaudeModelVersion, threshold: ModelVersionThreshold): boolean {

@@ -64,7 +64,7 @@ export function createAuthMiddleware(config: AuthConfig) {
       });
     }
 
-    const match = /^Bearer\s+(.+)$/i.exec(authHeader);
+    const match = /^Bearer\s(.+)$/i.exec(authHeader);
     if (!match) {
       return reply.status(401).send({
         error: {

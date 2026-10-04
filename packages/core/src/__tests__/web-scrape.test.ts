@@ -110,6 +110,19 @@ describe('web_scrape tool', () => {
       expect(content).toContain('[A link](https://link.com)');
     });
 
+    it('keeps multi-line link text on one line and drops links without text', async () => {
+      const page = `<p><a href="/docs">Read
+        the docs</a> or <a href="/home"><img src="/logo.png"></a> go home</p>`;
+      mockFetch.mockResolvedValueOnce(createHtmlResponse(page));
+
+      const result = await webScrape.execute(
+        { url: 'https://example.com', format: 'markdown' },
+        ctx
+      );
+
+      expect((result as { content: string }).content).toBe('[Read the docs](/docs) or  go home');
+    });
+
     it('returns raw HTML when requested', async () => {
       mockFetch.mockResolvedValueOnce(createHtmlResponse(html));
 
@@ -244,6 +257,26 @@ describe('web_scrape tool', () => {
       expect(links).toContainEqual({ text: 'Relative Link', href: 'https://example.com/relative' });
       expect(links.some((l) => l.href.includes('#anchor'))).toBe(false);
       expect(links.some((l) => l.href.includes('javascript'))).toBe(false);
+    });
+
+    it('drops script-capable links regardless of case', async () => {
+      const html = `
+        <html><body>
+          <a href="JavaScript:alert(1)">Mixed case</a>
+          <a href="data:text/html,<b>x</b>">Data</a>
+          <a href=" vbscript:msgbox(1)">VB</a>
+          <a href="mailto:team@example.com">Mail</a>
+        </body></html>
+      `;
+      mockFetch.mockResolvedValueOnce(createHtmlResponse(html));
+
+      const result = await webScrape.execute(
+        { url: 'https://example.com', includeLinks: true },
+        ctx
+      );
+
+      const links = (result as { links: Array<{ text: string; href: string }> }).links;
+      expect(links).toEqual([{ text: 'Mail', href: 'mailto:team@example.com' }]);
     });
 
     it('deduplicates links', async () => {
@@ -417,6 +450,98 @@ describe('web_scrape tool', () => {
       expect(content).toContain('>');
       expect(content).toContain('"');
       expect(content).toContain("'");
+    });
+
+    it('decodes each entity once, so escaped entities stay literal', async () => {
+      const html = '<html><body><p>Write &amp;lt;b&amp;gt; for bold</p></body></html>';
+      mockFetch.mockResolvedValueOnce(createHtmlResponse(html));
+
+      const text = await webScrape.execute({ url: 'https://example.com' }, ctx);
+      expect((text as { content: string }).content).toBe('Write &lt;b&gt; for bold');
+
+      mockFetch.mockResolvedValueOnce(createHtmlResponse(html));
+      const markdown = await webScrape.execute(
+        { url: 'https://example.com', format: 'markdown' },
+        ctx
+      );
+      expect((markdown as { content: string }).content).toBe('Write &lt;b&gt; for bold');
+    });
+
+    it('removes scripts whose closing tag carries whitespace or attributes', async () => {
+      const html =
+        '<html><body><script>alert(1)</script ><p>Kept</p><style >x{}</style foo="bar"></body></html>';
+      mockFetch.mockResolvedValueOnce(createHtmlResponse(html));
+
+      const result = await webScrape.execute({ url: 'https://example.com' }, ctx);
+      const content = (result as { content: string }).content;
+
+      expect(content).toBe('Kept');
+    });
+
+    it('reads a tag broken by another tag the way a browser does', async () => {
+      const html =
+        '<html><body><p>Before</p><scr<script>x</script>ipt>alert(1)</script><p>After</p></body></html>';
+      mockFetch.mockResolvedValueOnce(createHtmlResponse(html));
+
+      const result = await webScrape.execute({ url: 'https://example.com' }, ctx);
+
+      expect((result as { content: string }).content).toBe('Before x ipt>alert(1) After');
+    });
+
+    it('reads script and style content as raw text up to their closing tag', async () => {
+      const html =
+        '<p>Start</p><script>if (a<b) { x = "</p>" }</script><style>a<b{}</style><p>End</p>';
+      mockFetch.mockResolvedValueOnce(createHtmlResponse(html));
+
+      const result = await webScrape.execute({ url: 'https://example.com' }, ctx);
+
+      expect((result as { content: string }).content).toBe('Start End');
+    });
+
+    it('hides a script that is never closed, as a browser does', async () => {
+      const html = '<p>Visible</p><script>var hidden = 1; <p>still script</p>';
+      mockFetch.mockResolvedValueOnce(createHtmlResponse(html));
+
+      const result = await webScrape.execute({ url: 'https://example.com' }, ctx);
+
+      expect((result as { content: string }).content).toBe('Visible');
+    });
+
+    it('keeps a bare < in text and a > inside a quoted attribute in its tag', async () => {
+      const html = '<p>if a < b and c > d</p><p title="x > y">Titled</p>';
+      mockFetch.mockResolvedValueOnce(createHtmlResponse(html));
+
+      const result = await webScrape.execute({ url: 'https://example.com' }, ctx);
+
+      expect((result as { content: string }).content).toBe('if a < b and c > d Titled');
+    });
+
+    async function scrapeTime(html: string): Promise<number> {
+      let total = 0;
+      for (const format of ['text', 'markdown'] as const) {
+        mockFetch.mockResolvedValueOnce(createHtmlResponse(html));
+        const started = performance.now();
+        await webScrape.execute(
+          { url: 'https://example.com', format, includeLinks: true, includeImages: true },
+          ctx
+        );
+        total += performance.now() - started;
+      }
+      return total;
+    }
+
+    it.each([
+      ['unclosed tags', (n: number) => '<a'.repeat(n * 5)],
+      ['unclosed scripts', (n: number) => '<script>'.repeat(n * 2)],
+      ['unclosed headings and links', (n: number) => '<h1><a href="x">'.repeat(n)],
+      ['unterminated quotes', (n: number) => '<a title="x '.repeat(n * 2)],
+      ['unterminated comments', (n: number) => '<!--'.repeat(n * 3)],
+      ['nested fragments', (n: number) => '<scr'.repeat(n) + 'x' + 'ipt>x</script>'.repeat(n)],
+    ])('cleans hostile markup with %s in linear time', async (_name, build) => {
+      await scrapeTime(build(500));
+      const small = await scrapeTime(build(5_000));
+      const large = await scrapeTime(build(20_000));
+      expect(large / Math.max(small, 1)).toBeLessThan(10);
     });
   });
 

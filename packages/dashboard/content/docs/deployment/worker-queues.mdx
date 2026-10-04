@@ -46,6 +46,22 @@ console.log('State:', await queue.getJobState(job.id!));
 
 The worker routes `model` like the same agent in-process: a prefix naming a built-in provider, a backend in the worker Cogitator's `llm.backends` or a registered plugin picks that provider, so `openrouter/deepseek/deepseek-v4-pro` runs on an `openrouter` backend whatever `provider` says. The optional `provider` (any provider the worker routes to, custom backends and plugins included) is prepended only to a model whose prefix names none, such as `meta-llama/llama-4-scout` with `provider: 'openrouter'`. Without it such a model runs on the worker's `llm.defaultProvider`, and a `provider` the worker cannot route to fails the job.
 
+### Queueing an agent you already have
+
+`serializeAgent` turns an `Agent` into a job: its model, instructions, sampling, reasoning effort, tool schemas and response format, with a Zod response schema turned into JSON Schema. The worker turns the schema back into a Zod schema, so a queued run validates and repairs its structured answer like an in-process run, and the job result carries it:
+
+```typescript
+import { serializeAgent, type AgentJobResult } from '@cogitator-ai/worker';
+
+const job = await queue.addAgentJob(serializeAgent(chiefEditor), 'Pitches: ...');
+// once the job completes
+const result = (await queue.getJob(job.id!))?.returnvalue as AgentJobResult;
+result.structured; // the validated answer of a json_schema agent, when it fits
+result.usage; // { inputTokens, outputTokens, totalTokens, cost, reasoningTokens? }
+```
+
+The redis config also takes a `url` (`redis://user:password@host:port/db`, or `rediss://` for TLS); explicit `host`, `port`, `username`, `password`, `db` and `tls` fields override what it says.
+
 `getJobState(id)` returns `'waiting'`, `'prioritized'` (added with a `priority`), `'delayed'`, `'active'`, `'completed'`, `'failed'`, `'waiting-children'` (the parent of a BullMQ flow) or `'unknown'` (the `JobState` type).
 
 `threadId` defaults to a fresh id; `userId` makes the run act for that user (it owns the thread), and `metadata` is stored on the payload. Other queue methods: `getJob(id)`, `getMetrics()`, `pause()`, `resume()`, `clean(grace, limit, state)`, `getQueue()` (the underlying BullMQ `Queue`) and `close()`.

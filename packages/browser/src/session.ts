@@ -165,6 +165,7 @@ export class BrowserSession {
 
     if (url) {
       try {
+        await this.assertRobotsAllow(url);
         await page.goto(url, { timeout: this._config.timeout });
       } catch (error) {
         this._untrackPage(page);
@@ -174,6 +175,16 @@ export class BrowserSession {
     }
 
     return page;
+  }
+
+  /**
+   * Throws when the session has a robots checker and the site's robots.txt disallows the URL, so
+   * a caller learns why instead of seeing a blocked navigation.
+   */
+  async assertRobotsAllow(url: string): Promise<void> {
+    if (this._config.robots && !(await this._config.robots.allows(url))) {
+      throw new Error(`robots.txt does not allow visiting ${url}`);
+    }
   }
 
   switchTab(index: number): void {
@@ -299,6 +310,18 @@ export class BrowserSession {
 
       if (this._config.cookies?.length) {
         await context.addCookies(toPlaywrightCookies(this._config.cookies));
+      }
+
+      const robots = this._config.robots;
+      if (robots) {
+        await context.route('**/*', async (route) => {
+          const request = route.request();
+          if (!request.isNavigationRequest() || (await robots.allows(request.url()))) {
+            await route.fallback();
+            return;
+          }
+          await route.abort('blockedbyclient');
+        });
       }
 
       const existingPages = context.pages();

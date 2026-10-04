@@ -48,6 +48,7 @@ function createPlaywrightMock() {
     close: vi.fn().mockResolvedValue(undefined),
     setDefaultNavigationTimeout: vi.fn(),
     setDefaultTimeout: vi.fn(),
+    route: vi.fn().mockResolvedValue(undefined),
   };
 
   mockContext.newPage.mockResolvedValueOnce(firstPage);
@@ -369,6 +370,58 @@ describe('BrowserSession', () => {
           },
         })
       );
+    });
+  });
+
+  describe('robots', () => {
+    const robots = {
+      allows: vi.fn(async (url: string) => !new URL(url).pathname.startsWith('/private')),
+    };
+
+    function routeHandler() {
+      const call = pw.mockContext.route.mock.calls[0] as unknown as
+        [string, (route: unknown) => Promise<void>] | undefined;
+      if (!call) throw new Error('no route registered');
+      return call;
+    }
+
+    function fakeRoute(url: string, navigation: boolean) {
+      return {
+        request: () => ({ url: () => url, isNavigationRequest: () => navigation }),
+        fallback: vi.fn().mockResolvedValue(undefined),
+        abort: vi.fn().mockResolvedValue(undefined),
+      };
+    }
+
+    it('blocks navigations the site disallows and passes everything else on', async () => {
+      await createAndStart({ robots });
+      const [pattern, handler] = routeHandler();
+      expect(pattern).toBe('**/*');
+
+      const blocked = fakeRoute('https://site.test/private/x', true);
+      await handler(blocked);
+      expect(blocked.abort).toHaveBeenCalledWith('blockedbyclient');
+
+      const allowed = fakeRoute('https://site.test/news', true);
+      await handler(allowed);
+      expect(allowed.fallback).toHaveBeenCalled();
+
+      const image = fakeRoute('https://site.test/private/logo.png', false);
+      await handler(image);
+      expect(image.fallback).toHaveBeenCalled();
+    });
+
+    it('explains a disallowed tab instead of opening it', async () => {
+      const session = await createAndStart({ robots });
+      await expect(session.newTab('https://site.test/private/x')).rejects.toThrow(
+        'robots.txt does not allow visiting https://site.test/private/x'
+      );
+      expect(session.tabs).toHaveLength(1);
+    });
+
+    it('registers no route without a checker', async () => {
+      await createAndStart();
+      expect(pw.mockContext.route).not.toHaveBeenCalled();
     });
   });
 

@@ -35,6 +35,9 @@ export interface RunRequestBody {
   threadId?: string;
 }
 
+/** The longest `timeout` a run accepts: the largest delay a JavaScript timer can hold (about 24.8 days) */
+export const MAX_RUN_TIMEOUT_MS = 2_147_483_647;
+
 /** The body of `POST /swarms/:name/run` and `/swarms/:name/stream` */
 export interface SwarmRunRequestBody extends RunRequestBody {
   timeout?: number;
@@ -83,6 +86,9 @@ export function parseSwarmRunRequest(body: unknown): ParseResult<SwarmRunRequest
   if (timeout === undefined) return parsed;
   if (typeof timeout !== 'number' || !Number.isFinite(timeout) || timeout <= 0) {
     return fail('Field "timeout" must be a positive number');
+  }
+  if (timeout > MAX_RUN_TIMEOUT_MS) {
+    return fail(`Field "timeout" must be at most ${MAX_RUN_TIMEOUT_MS} ms`);
   }
   return { ok: true, value: { ...parsed.value, timeout } };
 }

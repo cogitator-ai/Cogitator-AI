@@ -1,6 +1,7 @@
 import { Agent, Cogitator } from '@cogitator-ai/core';
-import type { Tool, ToolSchema } from '@cogitator-ai/types';
-import type { WorkerRuntime } from '../types';
+import type { ReasoningConfig, ResponseFormat, Tool, ToolSchema } from '@cogitator-ai/types';
+import { z } from 'zod';
+import type { SerializedResponseFormat, WorkerRuntime } from '../types';
 
 /**
  * Model string to run on `cogitator`, so a serialized agent routes like the same agent
@@ -54,9 +55,24 @@ export interface SerializedAgentLike {
   model: string;
   provider?: string;
   temperature?: number;
+  topP?: number;
   maxTokens?: number;
   maxIterations?: number;
+  responseFormat?: SerializedResponseFormat;
+  reasoning?: ReasoningConfig;
   tools: readonly ToolSchema[];
+}
+
+/**
+ * The agent's response format back from its queue form: JSON Schema becomes a Zod schema, so the
+ * runtime validates the structured output and asks for a repair as it does in-process.
+ */
+export function toResponseFormat(
+  format: SerializedResponseFormat | undefined
+): ResponseFormat | undefined {
+  if (!format) return undefined;
+  if (format.type !== 'json_schema') return format;
+  return { type: 'json_schema', schema: z.fromJSONSchema(format.schema) };
 }
 
 /**
@@ -80,8 +96,11 @@ export function createAgentFromConfig(
     model: resolveModelString(config.model, config.provider, runtime.cogitator),
     instructions: config.instructions,
     temperature: config.temperature,
+    topP: config.topP,
     maxTokens: config.maxTokens,
     maxIterations: config.maxIterations,
+    responseFormat: toResponseFormat(config.responseFormat),
+    reasoning: config.reasoning,
     tools: resolveTools(config.tools, runtime.tools ?? []),
   });
 }

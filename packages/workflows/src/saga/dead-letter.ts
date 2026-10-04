@@ -42,6 +42,10 @@ export abstract class BaseDLQ {
   abstract add(entry: DeadLetterEntry): Promise<string>;
   abstract get(id: string): Promise<DeadLetterEntry | null>;
   abstract list(filters?: DLQFilters): Promise<DeadLetterEntry[]>;
+  /**
+   * Records a retry attempt: `attempts` goes up by one and `lastAttempt` is now. Running the node
+   * again is `WorkflowManager.retryDeadLetter`'s job, which calls this.
+   */
   abstract retry(id: string): Promise<boolean>;
   abstract remove(id: string): Promise<boolean>;
   abstract count(filters?: DLQFilters): Promise<number>;
@@ -133,6 +137,10 @@ export class InMemoryDLQ extends BaseDLQ {
     return results;
   }
 
+  /**
+   * Records a retry attempt: `attempts` goes up by one and `lastAttempt` is now. Running the node
+   * again is `WorkflowManager.retryDeadLetter`'s job, which calls this.
+   */
   async retry(id: string): Promise<boolean> {
     const entry = await this.get(id);
     if (!entry) return false;
@@ -298,6 +306,10 @@ export class FileDLQ extends BaseDLQ {
     return results;
   }
 
+  /**
+   * Records a retry attempt: `attempts` goes up by one and `lastAttempt` is now. Running the node
+   * again is `WorkflowManager.retryDeadLetter`'s job, which calls this.
+   */
   async retry(id: string): Promise<boolean> {
     const entry = await this.get(id);
     if (!entry) return false;

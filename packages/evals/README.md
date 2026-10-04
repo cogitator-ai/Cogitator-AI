@@ -175,6 +175,12 @@ const suite = new EvalSuite({
 });
 ```
 
+The judge reads the case's `context` too, so `faithfulness()` can check a response against the source documents of a case without putting them into `input`:
+
+```typescript
+Dataset.from([{ input: 'Write the lede', context: { dossier: dossierText } }]);
+```
+
 The `judge` option is a `JudgeConfigInput`: `{ model, temperature?, maxTokens?, cogitator? }`, with `temperature` defaulting to `0`.
 
 ### Statistical

@@ -13,7 +13,7 @@ const DEFAULT_CONFIG_NAMES = [
   '.cogitator.yml',
 ];
 
-const ENV_REFERENCE = /\$\$|\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?-)([^}]*))?\}/g;
+const ENV_REFERENCE_HEAD = /\$(?:\$|\{([A-Za-z_][A-Za-z0-9_]*)(\}|:?-)?)/g;
 
 type Env = Record<string, string | undefined>;
 
@@ -22,21 +22,38 @@ type Env = Record<string, string | undefined>;
  * `${VAR-default}` (default when unset) in a string. `$$` yields a literal `$`.
  */
 export function interpolateEnvString(value: string, env: Env = process.env): string {
-  return value.replace(
-    ENV_REFERENCE,
-    (
-      match,
-      name: string | undefined,
-      operator: string | undefined,
-      fallback: string | undefined
-    ) => {
-      if (match === '$$') return '$';
-      const current = name ? env[name] : undefined;
-      if (operator === ':-') return current ? current : (fallback ?? '');
-      if (operator === '-') return current !== undefined ? current : (fallback ?? '');
-      return current ?? '';
+  let output = '';
+  let cursor = 0;
+  let closingBrace = -1;
+  ENV_REFERENCE_HEAD.lastIndex = 0;
+  for (let match = ENV_REFERENCE_HEAD.exec(value); match; match = ENV_REFERENCE_HEAD.exec(value)) {
+    const [head, name, operator] = match;
+    const headEnd = match.index + head.length;
+    let replacement: string;
+    let end = headEnd;
+    if (head === '$$') {
+      replacement = '$';
+    } else if (operator === '}') {
+      replacement = env[name] ?? '';
+    } else if (operator) {
+      if (closingBrace < headEnd) {
+        const found = value.indexOf('}', headEnd);
+        closingBrace = found === -1 ? value.length : found;
+      }
+      if (closingBrace === value.length) continue;
+      const fallback = value.slice(headEnd, closingBrace);
+      const current = env[name];
+      replacement =
+        operator === ':-' ? current || fallback : current !== undefined ? current : fallback;
+      end = closingBrace + 1;
+    } else {
+      continue;
     }
-  );
+    output += value.slice(cursor, match.index) + replacement;
+    cursor = end;
+    ENV_REFERENCE_HEAD.lastIndex = end;
+  }
+  return output + value.slice(cursor);
 }
 
 /**

@@ -89,6 +89,112 @@ const intranet = new WebLoader({
 });
 ```
 
+#### robots.txt
+
+Pass a `robots` checker and every URL is checked against its site's robots.txt before it is fetched, redirect targets included. A disallowed URL fails the load with `RobotsDisallowedError` and is never requested. `RobotsPolicy` from `@cogitator-ai/core` reads and caches robots.txt per site by RFC 9309 (longest match wins, `*` and `# @cogitator-ai/rag
+
+Retrieval-Augmented Generation pipeline for Cogitator AI agents. Load documents, chunk them, embed, retrieve, and rerank — all with a single builder API.
+
+## Installation
+
+```bash
+pnpm add @cogitator-ai/rag
+
+# Optional dependencies for specific loaders
+pnpm add cheerio    # HTML and web page loading
+pnpm add papaparse  # CSV loading
+pnpm add pdf-parse  # PDF loading
+```
+
+`@cogitator-ai/memory` (optional peer) provides the embedding services, vector stores (`InMemoryEmbeddingAdapter`, `PostgresAdapter`, `QdrantAdapter`) and `HybridSearch` used below; any `EmbeddingService` / `EmbeddingAdapter` implementation works. Website docs: [RAG](https://cogitator.app/docs/rag), [Loaders](https://cogitator.app/docs/rag/loaders), [Chunking](https://cogitator.app/docs/rag/chunking), [Retrieval](https://cogitator.app/docs/rag/retrieval), [Reranking](https://cogitator.app/docs/rag/reranking).
+
+## Features
+
+- **7 Document Loaders** — Text, Markdown, JSON, CSV, HTML, PDF, Web pages
+- **3 Chunking Strategies** — Fixed-size, recursive, semantic (embedding-based)
+- **4 Retrieval Strategies** — Similarity, MMR, hybrid (BM25 + vector), multi-query
+- **2 Rerankers** — LLM-based scoring, Cohere Rerank API
+- **Pipeline Builder** — Fluent API to wire everything together
+- **Agent Tools** — Drop-in `rag_search` and `rag_ingest` tools for Cogitator agents
+- **Zod Validation** — Type-safe configuration with runtime checks
+
+---
+
+## Quick Start
+
+```typescript
+import { RAGPipelineBuilder, TextLoader } from '@cogitator-ai/rag';
+import { InMemoryEmbeddingAdapter, OpenAIEmbeddingService } from '@cogitator-ai/memory';
+
+const pipeline = new RAGPipelineBuilder()
+  .withLoader(new TextLoader())
+  .withEmbeddingService(
+    new OpenAIEmbeddingService({
+      apiKey: process.env.OPENAI_API_KEY!,
+    })
+  )
+  .withEmbeddingAdapter(new InMemoryEmbeddingAdapter())
+  .withConfig({
+    chunking: { strategy: 'recursive', chunkSize: 500, chunkOverlap: 50 },
+    retrieval: { strategy: 'similarity', topK: 5, threshold: 0.3 },
+  })
+  .build();
+
+// ingest documents from a file or directory
+const { documents, chunks } = await pipeline.ingest('./docs');
+
+// query the knowledge base (options override the configured retrieval for this call)
+const results = await pipeline.query('How does authentication work?', { topK: 3 });
+
+for (const r of results) {
+  console.log(`[${r.score.toFixed(3)}] ${r.source}: ${r.content.slice(0, 100)}...`);
+}
+```
+
+Every stored chunk carries the document's loader metadata (e.g. Markdown frontmatter, PDF page numbers, CSV metadata columns, page title/URL) plus `documentId`, `source`, `sourceType`, `order`, `startOffset` and `endOffset`. Retrieval results expose the document path/URL as `result.source` and the rest in `result.metadata`.
+
+---
+
+## Document Loaders
+
+| Loader           | Formats               | Optional Dep | Notes                                                  |
+| ---------------- | --------------------- | ------------ | ------------------------------------------------------ |
+| `TextLoader`     | `.txt`                | —            | Files and directories                                  |
+| `MarkdownLoader` | `.md`, `.mdx`         | —            | Optional frontmatter -> metadata                       |
+| `JSONLoader`     | `.json`               | —            | Configurable content field                             |
+| `CSVLoader`      | `.csv`                | `papaparse`  | Column selection, `row` number in metadata             |
+| `HTMLLoader`     | `.html`, `.htm`       | `cheerio`    | CSS selector, scripts/styles removed, block-aware text |
+| `PDFLoader`      | `.pdf`                | `pdf-parse`  | Whole document or one document per page                |
+| `WebLoader`      | `http://`, `https://` | `cheerio`    | HTML, plain text and JSON pages; SSRF-protected        |
+
+Directory sources (`TextLoader`, `MarkdownLoader`) are loaded in sorted file-name order.
+
+### WebLoader security
+
+`WebLoader` blocks loopback, private, link-local, CGNAT, multicast and cloud-metadata addresses — including IPv4-mapped IPv6 forms and hostnames that **resolve** to such addresses. The check runs at connect time for every redirect hop, so DNS rebinding cannot bypass it. To ingest an intranet site, opt in explicitly:
+
+```typescript
+const intranet = new WebLoader({
+  allowPrivateNetwork: true,
+  headers: { Authorization: `Bearer ${process.env.WIKI_TOKEN}` },
+  timeoutMs: 15_000,
+  maxResponseBytes: 10 * 1024 * 1024,
+});
+```
+
+patterns, a 4xx robots.txt allows everything, a 5xx or a network failure allows nothing until the cache expires):
+
+```typescript
+import { RobotsPolicy } from '@cogitator-ai/core';
+import { WebLoader } from '@cogitator-ai/rag';
+
+const userAgent = 'NewsBot/1.0 (+https://example.com/bot)';
+const loader = new WebLoader({
+  headers: { 'user-agent': userAgent },
+  robots: new RobotsPolicy({ userAgent }), // matches "User-agent: NewsBot" groups, else "*"
+});
+```
+
 Responses are decompressed (gzip, deflate, br), decoded using the declared charset, and limited to `maxResponseBytes` (50MB by default). Non-text content types are rejected.
 
 ```typescript

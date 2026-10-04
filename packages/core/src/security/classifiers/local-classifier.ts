@@ -11,6 +11,23 @@ import {
   matchPatterns,
 } from '../patterns';
 
+const COMBINED_ATTACK_SEQUENCES: readonly (readonly string[])[] = [
+  ['pretend', 'ignore', 'instructions'],
+  ['roleplay', 'bypass', 'safety'],
+  ['imagine', 'no', 'restrictions'],
+  ['act', 'like', 'unrestricted'],
+];
+
+function containsInOrder(text: string, words: readonly string[]): boolean {
+  let from = 0;
+  for (const word of words) {
+    const index = text.indexOf(word, from);
+    if (index === -1) return false;
+    from = index + word.length;
+  }
+  return true;
+}
+
 export class LocalInjectionClassifier implements InjectionClassifier {
   async analyze(input: string, config: PromptInjectionConfig): Promise<InjectionThreat[]> {
     const threats: InjectionThreat[] = [];
@@ -111,7 +128,7 @@ export class LocalInjectionClassifier implements InjectionClassifier {
     }
 
     const imperativePatterns = [
-      /^(now|first|before anything|immediately)\s*,?\s*(you must|ignore|forget|disregard)/i,
+      /^(now|first|before anything|immediately)\s*(?:,\s*)?(you must|ignore|forget|disregard)/i,
       /^(important|critical|urgent)\s*:\s*(ignore|forget|new instructions)/i,
     ];
 
@@ -128,15 +145,10 @@ export class LocalInjectionClassifier implements InjectionClassifier {
     }
 
     if (enabledTypes.has('jailbreak') || enabledTypes.has('roleplay')) {
-      const combinedAttackPatterns = [
-        /pretend.*ignore.*instructions/i,
-        /roleplay.*bypass.*safety/i,
-        /imagine.*no.*restrictions/i,
-        /act.*like.*unrestricted/i,
-      ];
+      const loweredLines = lowered.split(/[\n\r\u2028\u2029]/);
 
-      for (const pattern of combinedAttackPatterns) {
-        if (pattern.test(input)) {
+      for (const words of COMBINED_ATTACK_SEQUENCES) {
+        if (loweredLines.some((line) => containsInOrder(line, words))) {
           threats.push({
             type: 'jailbreak',
             confidence: 0.85,

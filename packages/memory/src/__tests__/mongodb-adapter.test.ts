@@ -362,7 +362,7 @@ describe('MongoDBAdapter', () => {
       });
 
       expect(mockCollection.find).toHaveBeenCalledWith({
-        threadId: 'thread_123',
+        threadId: { $eq: 'thread_123' },
         createdAt: {
           $lt: before,
           $gt: after,

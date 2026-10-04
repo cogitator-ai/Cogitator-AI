@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  MAX_RUN_TIMEOUT_MS,
   NON_BLANK_PATTERN,
   isNonBlankString,
   parseRunRequest,
@@ -61,6 +62,20 @@ describe('parseSwarmRunRequest', () => {
     expect(parseSwarmRunRequest({ input: 'go', timeout: 500 })).toEqual({
       ok: true,
       value: { input: 'go', timeout: 500 },
+    });
+  });
+
+  it('accepts the longest timeout a timer can hold', () => {
+    expect(parseSwarmRunRequest({ input: 'go', timeout: MAX_RUN_TIMEOUT_MS })).toEqual({
+      ok: true,
+      value: { input: 'go', timeout: MAX_RUN_TIMEOUT_MS },
+    });
+  });
+
+  it('refuses a timeout a timer would overflow and fire at once', () => {
+    expect(parseSwarmRunRequest({ input: 'go', timeout: MAX_RUN_TIMEOUT_MS + 1 })).toEqual({
+      ok: false,
+      message: `Field "timeout" must be at most ${MAX_RUN_TIMEOUT_MS} ms`,
     });
   });
 });

@@ -111,4 +111,19 @@ describe('reasoning and prompt caching in runs', () => {
     expect(result.reasoning).toBe('I should look it up.\n\nNow I can answer.');
     await cog.close();
   });
+
+  it('streams reasoning to onReasoning without an onToken', async () => {
+    const { backend } = reasoningBackend();
+    const cog = new Cogitator({ llm: { backends: { anthropic: backend } } });
+    const deltas: string[] = [];
+
+    await cog.run(agent({ summary: true }), {
+      input: 'q',
+      stream: true,
+      onReasoning: (delta) => deltas.push(delta),
+    });
+
+    expect(deltas).toEqual(['I should look it up.', 'Now I can answer.']);
+    await cog.close();
+  });
 });

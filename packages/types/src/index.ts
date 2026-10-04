@@ -37,3 +37,4 @@ export * from './voice';
 export * from './session';
 export * from './channel';
 export * from './skill';
+export * from './web';

@@ -375,7 +375,36 @@ for (const entry of entries) {
 }
 ```
 
-`get(id)`, `remove(id)`, `count(filters)` and `clear()` manage entries. `retry(id)` only records another attempt on the entry (`attempts`, `lastAttempt`) — re-running the node is up to you. Entries expire after `defaultTTL` (7 days by default), and the in-memory queue keeps at most `maxSize` entries (10 000).
+`get(id)`, `remove(id)`, `count(filters)` and `clear()` manage entries. `retry(id)` records another attempt on the entry (`attempts`, `lastAttempt`); `manager.retryDeadLetter(dlq, id)` runs the node again and calls it. Entries expire after `defaultTTL` (7 days by default), and the in-memory queue keeps at most `maxSize` entries (10 000).
+
+### Retrying a dead letter
+
+`manager.retryDeadLetter(dlq, id)` runs a dead-lettered node again. It replays the node's run from the failed node (the nodes before it keep their checkpointed results and do not run twice), or runs the workflow again from its input when the run failed before its first checkpoint. The attempt is recorded on the entry first, and the entry is removed when the retry succeeds, so an entry that fails again stays with one more attempt. The workflow must be registered with the manager and the manager needs a `checkpointStore`. Pass the execute options the run needs, such as `approvalStore` or `timerStore`, as the third argument:
+
+```typescript
+const manager = createWorkflowManager({ cogitator, checkpointStore, runStore });
+await manager.execute(checkout, input, { deadLetterQueue: dlq });
+
+for (const entry of await dlq.list({ workflowName: 'checkout-workflow' })) {
+  const result = await manager.retryDeadLetter(dlq, entry.id, { approvalStore });
+  if (result.error) console.log(`${entry.nodeId} failed again: ${result.error.message}`);
+}
+```
+
+### Postgres DLQ
+
+`PostgresDLQ` keeps the queue in Postgres, so failed nodes survive restarts and every process sees the same queue. It takes a `pg` Pool or Client, creates its table on first use, filters in SQL and deletes expired entries with `cleanupExpired()`:
+
+```typescript
+import pg from 'pg';
+import { PostgresDLQ } from '@cogitator-ai/workflows';
+
+const dlq = new PostgresDLQ({
+  client: new pg.Pool({ connectionString: process.env.DATABASE_URL }),
+  table: 'checkout_dead_letters', // default cogitator_workflow_dead_letters
+  defaultTTL: 14 * 24 * 60 * 60 * 1000,
+});
+```
 
 ### File-based DLQ
 

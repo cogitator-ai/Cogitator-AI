@@ -13,10 +13,9 @@ export function sanitizeName(value: string, fallback = 'cogitator-app'): string 
   const cleaned = value
     .toLowerCase()
     .replace(/^@[^/]+\//, '')
-    .replace(/[^a-z0-9-]+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-+|-+$/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
     .slice(0, 63)
-    .replace(/-+$/g, '');
+    .replace(/-$/, '');
   return /^[a-z0-9]/.test(cleaned) ? cleaned : fallback;
 }

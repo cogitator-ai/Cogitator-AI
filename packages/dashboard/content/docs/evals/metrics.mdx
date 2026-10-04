@@ -117,16 +117,16 @@ const suite = new EvalSuite({
 
 The option type is `JudgeConfigInput`; the suite parses it into `JudgeConfig`, filling in the `temperature` default.
 
-Each judge metric sends one prompt per case containing the rubric, the case `input`, the `expected` value (or `N/A`) and the response, and asks for JSON with `score` and `reasoning`; the judge agent (one iteration, no memory) requests that shape with a JSON schema. The score is clamped to [0, 1] and `reasoning` becomes the score's `details`. An answer without a parsable score, or a judge error, counts as 0 with the reason in `details` — it never fails the run.
+Each judge metric sends one prompt per case containing the rubric, the case `input`, its `context` when it has one (each key on its own line, objects as JSON), the `expected` value (or `N/A`) and the response, and asks for JSON with `score` and `reasoning`; the judge agent (one iteration, no memory) requests that shape with a JSON schema. The score is clamped to [0, 1] and `reasoning` becomes the score's `details`. An answer without a parsable score, or a judge error, counts as 0 with the reason in `details` — it never fails the run.
 
 ### Built-in Judge Metrics
 
-| Metric           | Evaluates                                              |
-| ---------------- | ------------------------------------------------------ |
-| `faithfulness()` | Whether the response is faithful to facts in the input |
-| `relevance()`    | Whether the response addresses the question asked      |
-| `coherence()`    | Whether the response is logical and well-structured    |
-| `helpfulness()`  | Whether the response would be useful to the user       |
+| Metric           | Evaluates                                                                   |
+| ---------------- | --------------------------------------------------------------------------- |
+| `faithfulness()` | Whether the response is faithful to facts in the input and the case context |
+| `relevance()`    | Whether the response addresses the question asked                           |
+| `coherence()`    | Whether the response is logical and well-structured                         |
+| `helpfulness()`  | Whether the response would be useful to the user                            |
 
 ### Custom Judge Metrics
 

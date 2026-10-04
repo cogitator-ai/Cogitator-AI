@@ -1,6 +1,16 @@
 import { z } from 'zod';
+import type { RobotsChecker } from '@cogitator-ai/types';
 import { tool } from '../tool';
 import { createLinkedAbortController, getAbortErrorMessage } from '../utils/abort';
+import {
+  decodeEntities,
+  findClosingTag,
+  getAttribute,
+  removeElements,
+  tokenizeHtml,
+  type HtmlTagToken,
+  type HtmlToken,
+} from '../utils/html';
 
 const webScrapeParams = z.object({
   url: z.string().url().describe('URL to scrape'),
@@ -48,278 +58,375 @@ export interface ScrapeResult {
   images?: ExtractedImage[];
 }
 
-function stripHtmlTags(html: string): string {
-  return html
-    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-    .replace(/<nav[^>]*>[\s\S]*?<\/nav>/gi, '')
-    .replace(/<footer[^>]*>[\s\S]*?<\/footer>/gi, '')
-    .replace(/<header[^>]*>[\s\S]*?<\/header>/gi, ' ')
-    .replace(/<aside[^>]*>[\s\S]*?<\/aside>/gi, '')
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n\n')
-    .replace(/<\/div>/gi, '\n')
-    .replace(/<\/li>/gi, '\n')
-    .replace(/<\/h[1-6]>/gi, '\n\n')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
+const UNSAFE_LINK_PROTOCOLS = new Set(['javascript:', 'data:', 'vbscript:']);
+const NON_CONTENT = new Set(['script', 'style', 'nav', 'footer', 'aside', 'template', 'noscript']);
+const TEXT_NON_CONTENT = new Set([...NON_CONTENT, 'header']);
+const SELECTABLE_TAGS = new Set(['article', 'main', 'section', 'div', 'p']);
+const HEADINGS: Record<string, number> = { h1: 1, h2: 2, h3: 3, h4: 4, h5: 5, h6: 6 };
+const TEXT_BREAKS: Record<string, string> = {
+  p: '\n\n',
+  div: '\n',
+  li: '\n',
+  h1: '\n\n',
+  h2: '\n\n',
+  h3: '\n\n',
+  h4: '\n\n',
+  h5: '\n\n',
+  h6: '\n\n',
+};
+const MARKDOWN_EMPHASIS: Record<string, string> = {
+  strong: '**',
+  b: '**',
+  em: '*',
+  i: '*',
+  code: '`',
+};
+
+function collapseWhitespace(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+function renderText(tokens: readonly HtmlToken[]): string {
+  let text = '';
+  for (const token of removeElements(tokens, TEXT_NON_CONTENT)) {
+    if (token.type === 'text') text += decodeEntities(token.text);
+    else if (token.name === 'br') text += '\n';
+    else text += (token.closing && TEXT_BREAKS[token.name]) || ' ';
+  }
+  return text
     .replace(/\s+/g, ' ')
     .replace(/\n\s+/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
 
-function htmlToMarkdown(html: string): string {
-  return html
-    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-    .replace(/<nav[^>]*>[\s\S]*?<\/nav>/gi, '')
-    .replace(/<footer[^>]*>[\s\S]*?<\/footer>/gi, '')
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<h1[^>]*>(.*?)<\/h1>/gi, '# $1\n\n')
-    .replace(/<h2[^>]*>(.*?)<\/h2>/gi, '## $1\n\n')
-    .replace(/<h3[^>]*>(.*?)<\/h3>/gi, '### $1\n\n')
-    .replace(/<h4[^>]*>(.*?)<\/h4>/gi, '#### $1\n\n')
-    .replace(/<h5[^>]*>(.*?)<\/h5>/gi, '##### $1\n\n')
-    .replace(/<h6[^>]*>(.*?)<\/h6>/gi, '###### $1\n\n')
-    .replace(/<strong[^>]*>(.*?)<\/strong>/gi, '**$1**')
-    .replace(/<b[^>]*>(.*?)<\/b>/gi, '**$1**')
-    .replace(/<em[^>]*>(.*?)<\/em>/gi, '*$1*')
-    .replace(/<i[^>]*>(.*?)<\/i>/gi, '*$1*')
-    .replace(/<code[^>]*>(.*?)<\/code>/gi, '`$1`')
-    .replace(/<a[^>]*href=["']([^"']+)["'][^>]*>(.*?)<\/a>/gi, '[$2]($1)')
-    .replace(/<li[^>]*>(.*?)<\/li>/gi, '- $1\n')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n\n')
-    .replace(/<\/div>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
+function renderMarkdownTag(tag: HtmlTagToken): string {
+  const level = HEADINGS[tag.name];
+  if (level) return tag.closing ? '\n\n' : `${'#'.repeat(level)} `;
 
-function extractTitle(html: string): string {
-  const titleMatch = /<title[^>]*>(.*?)<\/title>/i.exec(html);
-  if (titleMatch) {
-    return titleMatch[1].replace(/&[^;]+;/g, ' ').trim();
+  const emphasis = MARKDOWN_EMPHASIS[tag.name];
+  if (emphasis) return emphasis;
+
+  switch (tag.name) {
+    case 'li':
+      return tag.closing ? '\n' : '- ';
+    case 'br':
+      return '\n';
+    case 'p':
+      return tag.closing ? '\n\n' : '';
+    case 'div':
+      return tag.closing ? '\n' : '';
+    default:
+      return '';
   }
-
-  const h1Match = /<h1[^>]*>(.*?)<\/h1>/i.exec(html);
-  if (h1Match) {
-    return h1Match[1].replace(/<[^>]+>/g, '').trim();
-  }
-
-  return '';
 }
 
-function extractLinks(html: string, baseUrl: string): ExtractedLink[] {
-  const links: ExtractedLink[] = [];
-  const regex = /<a[^>]*href=["']([^"']+)["'][^>]*>(.*?)<\/a>/gi;
-  let match;
+/**
+ * Markdown for a page. A link becomes `[text](href)` with its text on one line, a link
+ * without text (an icon, say) leaves only its whitespace, and an `a` opened inside
+ * another ends the outer one, as browsers do.
+ */
+function renderMarkdown(tokens: readonly HtmlToken[]): string {
+  let markdown = '';
+  let link: { href: string; start: number } | null = null;
 
-  while ((match = regex.exec(html)) !== null) {
-    const href = match[1];
-    const text = match[2].replace(/<[^>]+>/g, '').trim();
-
-    if (!href || !text || href.startsWith('#') || href.startsWith('javascript:')) {
-      continue;
-    }
-
-    try {
-      const absoluteUrl = new URL(href, baseUrl).href;
-      links.push({ text, href: absoluteUrl });
-    } catch {
-      continue;
-    }
-  }
-
-  const seen = new Set<string>();
-  return links.filter((link) => {
-    if (seen.has(link.href)) return false;
-    seen.add(link.href);
-    return true;
-  });
-}
-
-function extractImages(html: string, baseUrl: string): ExtractedImage[] {
-  const images: ExtractedImage[] = [];
-  const regex = /<img[^>]*src=["']([^"']+)["'][^>]*>/gi;
-  let match;
-
-  while ((match = regex.exec(html)) !== null) {
-    const src = match[1];
-    const altMatch = /alt=["']([^"']*?)["']/i.exec(match[0]);
-    const alt = altMatch ? altMatch[1] : '';
-
-    if (!src || src.startsWith('data:')) {
-      continue;
-    }
-
-    try {
-      const absoluteUrl = new URL(src, baseUrl).href;
-      images.push({ src: absoluteUrl, alt });
-    } catch {
-      continue;
-    }
-  }
-
-  const seen = new Set<string>();
-  return images.filter((img) => {
-    if (seen.has(img.src)) return false;
-    seen.add(img.src);
-    return true;
-  });
-}
-
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function extractBySelector(html: string, selector: string): string | null {
-  const tagSelectors: Record<string, RegExp> = {
-    article: /<article[^>]*>([\s\S]*?)<\/article>/i,
-    main: /<main[^>]*>([\s\S]*?)<\/main>/i,
-    section: /<section[^>]*>([\s\S]*?)<\/section>/i,
-    div: /<div[^>]*>([\s\S]*?)<\/div>/i,
-    p: /<p[^>]*>([\s\S]*?)<\/p>/gi,
+  const closeLink = () => {
+    if (!link) return;
+    const text = markdown.slice(link.start);
+    const label = collapseWhitespace(text);
+    markdown = markdown.slice(0, link.start) + (label ? `[${label}](${link.href})` : text);
+    link = null;
   };
 
-  if (selector.startsWith('.')) {
-    const className = escapeRegex(selector.slice(1));
-    const classRegex = new RegExp(
-      `<[^>]+class=["'][^"']*\\b${className}\\b[^"']*["'][^>]*>([\\s\\S]*?)<\\/[^>]+>`,
-      'i'
-    );
-    const match = classRegex.exec(html);
-    return match ? match[1] : null;
-  }
-
-  if (selector.startsWith('#')) {
-    const id = escapeRegex(selector.slice(1));
-    const idRegex = new RegExp(`<[^>]+id=["']${id}["'][^>]*>([\\s\\S]*?)<\\/[^>]+>`, 'i');
-    const match = idRegex.exec(html);
-    return match ? match[1] : null;
-  }
-
-  const regex = tagSelectors[selector.toLowerCase()];
-  if (regex) {
-    if (selector.toLowerCase() === 'p') {
-      const matches = html.match(regex);
-      return matches ? matches.join('\n') : null;
+  for (const token of removeElements(tokens, NON_CONTENT)) {
+    if (token.type === 'text') {
+      markdown += decodeEntities(token.text);
+    } else if (token.name !== 'a') {
+      markdown += renderMarkdownTag(token);
+    } else {
+      closeLink();
+      const href = token.closing ? undefined : getAttribute(token, 'href');
+      if (href) link = { href, start: markdown.length };
     }
-    const match = html.match(regex);
-    return match ? match[1] : null;
   }
+  closeLink();
 
-  return null;
+  return markdown.replace(/\n{3,}/g, '\n\n').trim();
 }
 
-export const webScrape = tool({
-  name: 'web_scrape',
-  description:
-    'Fetch and extract content from a web page. Supports text, markdown, or HTML output. Can extract specific elements using CSS selectors.',
-  parameters: webScrapeParams,
-  category: 'web',
-  tags: ['scrape', 'web', 'extract', 'html'],
-  sideEffects: ['network'],
-  execute: async (
-    {
-      url,
-      selector,
-      format = 'text',
-      maxLength = 50000,
-      timeout = 30000,
-      includeLinks = false,
-      includeImages = false,
-    },
-    context
-  ) => {
-    const abort = createLinkedAbortController(context?.signal, timeout);
+function innerText(tokens: readonly HtmlToken[], open: number, close: number): string {
+  let text = '';
+  for (let i = open + 1; i < close; i++) {
+    const token = tokens[i];
+    text += token.type === 'text' ? decodeEntities(token.text) : ' ';
+  }
+  return collapseWhitespace(text);
+}
 
-    try {
-      const response = await fetch(url, {
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (compatible; CogitatorBot/1.0; +https://github.com/cogitator-ai/Cogitator-AI)',
-          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        },
-        signal: abort.signal,
-      });
+function findElement(tokens: readonly HtmlToken[], name: string): [number, number] | null {
+  const open = tokens.findIndex((t) => t.type === 'tag' && !t.closing && t.name === name);
+  if (open === -1) return null;
+  const close = findClosingTag(tokens, open);
+  return close === -1 ? null : [open, close];
+}
 
-      if (!response.ok) {
-        return { error: `HTTP ${response.status}: ${response.statusText}`, url };
-      }
+function extractTitle(tokens: readonly HtmlToken[]): string {
+  const title = findElement(tokens, 'title');
+  if (title) return innerText(tokens, ...title);
 
-      const contentType = response.headers.get('content-type') ?? '';
-      if (!contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
-        return { error: `Not an HTML page: ${contentType}`, url };
-      }
+  const heading = findElement(tokens, 'h1');
+  return heading ? innerText(tokens, ...heading) : '';
+}
 
-      let html = await response.text();
-      const title = extractTitle(html);
+function resolveUrl(target: string, baseUrl: string): URL | null {
+  try {
+    return new URL(target, baseUrl);
+  } catch {
+    return null;
+  }
+}
 
-      if (selector) {
-        const extracted = extractBySelector(html, selector);
-        if (!extracted) {
-          return { error: `Selector "${selector}" not found on page`, url };
-        }
-        html = extracted;
-      }
+function uniqueBy<T>(items: T[], key: (item: T) => string): T[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const value = key(item);
+    if (seen.has(value)) return false;
+    seen.add(value);
+    return true;
+  });
+}
 
-      let content: string;
-      switch (format) {
-        case 'markdown':
-          content = htmlToMarkdown(html);
-          break;
-        case 'html':
-          content = html;
-          break;
-        default:
-          content = stripHtmlTags(html);
-      }
+function extractLinks(tokens: readonly HtmlToken[], baseUrl: string): ExtractedLink[] {
+  const links: ExtractedLink[] = [];
+  let open: { href: string; text: string } | null = null;
 
-      const truncated = content.length > maxLength;
-      if (truncated) {
-        content = content.slice(0, maxLength);
-      }
-
-      const result: ScrapeResult = {
-        url,
-        title,
-        content,
-        format,
-        length: content.length,
-        truncated,
-      };
-
-      if (includeLinks) {
-        result.links = extractLinks(html, url).slice(0, 50);
-      }
-
-      if (includeImages) {
-        result.images = extractImages(html, url).slice(0, 20);
-      }
-
-      return result;
-    } catch (err) {
-      const error = err as Error;
-      if (error.name === 'AbortError') {
-        return { error: getAbortErrorMessage('Request', abort, timeout), url };
-      }
-      return { error: error.message, url };
-    } finally {
-      abort.cleanup();
+  for (const token of tokens) {
+    if (token.type === 'text') {
+      if (open) open.text += decodeEntities(token.text);
+      continue;
     }
-  },
-});
+    if (token.name !== 'a') {
+      if (open) open.text += ' ';
+      continue;
+    }
+    if (!token.closing) {
+      const href = getAttribute(token, 'href');
+      open = href ? { href, text: '' } : null;
+      continue;
+    }
+    if (!open) continue;
+
+    const text = collapseWhitespace(open.text);
+    const url = open.href.startsWith('#') ? null : resolveUrl(open.href, baseUrl);
+    open = null;
+    if (text && url && !UNSAFE_LINK_PROTOCOLS.has(url.protocol)) {
+      links.push({ text, href: url.href });
+    }
+  }
+
+  return uniqueBy(links, (link) => link.href);
+}
+
+function extractImages(tokens: readonly HtmlToken[], baseUrl: string): ExtractedImage[] {
+  const images: ExtractedImage[] = [];
+
+  for (const token of tokens) {
+    if (token.type !== 'tag' || token.closing || token.name !== 'img') continue;
+    const src = getAttribute(token, 'src');
+    if (!src || src.toLowerCase().startsWith('data:')) continue;
+    const url = resolveUrl(src, baseUrl);
+    if (url) images.push({ src: url.href, alt: getAttribute(token, 'alt') ?? '' });
+  }
+
+  return uniqueBy(images, (image) => image.src);
+}
+
+function matchesSelector(tag: HtmlTagToken, selector: string): boolean {
+  if (selector.startsWith('.')) {
+    const className = selector.slice(1);
+    return (getAttribute(tag, 'class') ?? '').split(/\s+/).includes(className);
+  }
+  if (selector.startsWith('#')) return getAttribute(tag, 'id') === selector.slice(1);
+  return tag.name === selector;
+}
+
+/**
+ * The HTML a selector picks: the inner HTML of the first element with that class, id or
+ * tag name (`article`, `main`, `section`, `div`), or every `p` element joined by newlines.
+ */
+function extractBySelector(
+  html: string,
+  tokens: readonly HtmlToken[],
+  selector: string
+): string | null {
+  const normalized =
+    selector.startsWith('.') || selector.startsWith('#') ? selector : selector.toLowerCase();
+  if (
+    !normalized.startsWith('.') &&
+    !normalized.startsWith('#') &&
+    !SELECTABLE_TAGS.has(normalized)
+  ) {
+    return null;
+  }
+
+  const paragraphs: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token.type !== 'tag' || token.closing || !matchesSelector(token, normalized)) continue;
+
+    const close = findClosingTag(tokens, i);
+    const end = close === -1 ? html.length : tokens[close].start;
+    if (normalized !== 'p') return html.slice(token.end, end) || null;
+
+    paragraphs.push(html.slice(token.start, close === -1 ? end : tokens[close].end));
+    if (close === -1) break;
+    i = close;
+  }
+
+  return paragraphs.length > 0 ? paragraphs.join('\n') : null;
+}
+
+/** How a `web_scrape` tool fetches pages. */
+export interface WebScrapeOptions {
+  /** Sent as the User-Agent. Default: a CogitatorBot string */
+  userAgent?: string;
+  /**
+   * Checks every URL, redirect targets included, against the site's robots.txt before fetching
+   * it, e.g. `new RobotsPolicy({ userAgent })`. A disallowed page is reported as an error
+   */
+  robots?: RobotsChecker;
+}
+
+const DEFAULT_USER_AGENT =
+  'Mozilla/5.0 (compatible; CogitatorBot/1.0; +https://github.com/cogitator-ai/Cogitator-AI)';
+const MAX_REDIRECTS = 5;
+
+/**
+ * A `web_scrape` tool with its own User-Agent and, optionally, a robots.txt checker. With a
+ * checker the tool follows redirects itself so every hop is checked.
+ */
+export function createWebScrapeTool(options: WebScrapeOptions = {}) {
+  const userAgent = options.userAgent ?? DEFAULT_USER_AGENT;
+  const robots = options.robots;
+
+  return tool({
+    name: 'web_scrape',
+    description:
+      'Fetch and extract content from a web page. Supports text, markdown, or HTML output. Can extract specific elements using CSS selectors.',
+    parameters: webScrapeParams,
+    category: 'web',
+    tags: ['scrape', 'web', 'extract', 'html'],
+    sideEffects: ['network'],
+    execute: async (
+      {
+        url,
+        selector,
+        format = 'text',
+        maxLength = 50000,
+        timeout = 30000,
+        includeLinks = false,
+        includeImages = false,
+      },
+      context
+    ) => {
+      const abort = createLinkedAbortController(context?.signal, timeout);
+
+      try {
+        const headers = {
+          'User-Agent': userAgent,
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        };
+        let current = url;
+        let response: Response | undefined;
+        for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+          if (robots && !(await robots.allows(current))) {
+            return { error: `robots.txt does not allow fetching ${current}`, url };
+          }
+          response = await fetch(current, {
+            headers,
+            signal: abort.signal,
+            redirect: robots ? 'manual' : 'follow',
+          });
+          const location = response.headers.get('location');
+          if (!robots || response.status < 300 || response.status >= 400 || !location) break;
+          current = new URL(location, current).href;
+          response = undefined;
+        }
+        if (!response) {
+          return { error: `Too many redirects (max ${MAX_REDIRECTS})`, url };
+        }
+
+        if (!response.ok) {
+          return { error: `HTTP ${response.status}: ${response.statusText}`, url };
+        }
+
+        const contentType = response.headers.get('content-type') ?? '';
+        if (!contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
+          return { error: `Not an HTML page: ${contentType}`, url };
+        }
+
+        const page = await response.text();
+        const pageTokens = tokenizeHtml(page);
+        const title = extractTitle(pageTokens);
+
+        let html = page;
+        let tokens = pageTokens;
+        if (selector) {
+          const extracted = extractBySelector(page, pageTokens, selector);
+          if (!extracted) {
+            return { error: `Selector "${selector}" not found on page`, url };
+          }
+          html = extracted;
+          tokens = tokenizeHtml(extracted);
+        }
+
+        let content: string;
+        switch (format) {
+          case 'markdown':
+            content = renderMarkdown(tokens);
+            break;
+          case 'html':
+            content = html;
+            break;
+          default:
+            content = renderText(tokens);
+        }
+
+        const truncated = content.length > maxLength;
+        if (truncated) {
+          content = content.slice(0, maxLength);
+        }
+
+        const result: ScrapeResult = {
+          url,
+          title,
+          content,
+          format,
+          length: content.length,
+          truncated,
+        };
+
+        if (includeLinks) {
+          result.links = extractLinks(tokens, url).slice(0, 50);
+        }
+
+        if (includeImages) {
+          result.images = extractImages(tokens, url).slice(0, 20);
+        }
+
+        return result;
+      } catch (err) {
+        const error = err as Error;
+        if (error.name === 'AbortError') {
+          return { error: getAbortErrorMessage('Request', abort, timeout), url };
+        }
+        return { error: error.message, url };
+      } finally {
+        abort.cleanup();
+      }
+    },
+  });
+}
+
+/** The `web_scrape` tool with the default User-Agent and no robots.txt check. */
+export const webScrape = createWebScrapeTool();

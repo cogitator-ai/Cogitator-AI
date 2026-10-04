@@ -336,6 +336,10 @@ export interface DeadLetterQueue {
     nodeId?: string;
     limit?: number;
   }): Promise<DeadLetterEntry[]>;
+  /**
+   * Records a retry attempt (`attempts` + 1, `lastAttempt` now). `WorkflowManager.retryDeadLetter`
+   * runs the failed node again and calls it
+   */
   retry(id: string): Promise<boolean>;
   remove(id: string): Promise<boolean>;
   count(filters?: { workflowId?: string; nodeId?: string }): Promise<number>;
@@ -728,6 +732,12 @@ export interface WorkflowRun {
   metadata?: Record<string, unknown>;
 }
 
+/** What `WorkflowManager.recoverRuns` did with each orphaned run. */
+export interface RecoveredRuns {
+  resumed: string[];
+  skipped: { runId: string; reason: string }[];
+}
+
 export interface WorkflowRunFilters {
   status?: WorkflowRunStatus | WorkflowRunStatus[];
   workflowName?: string;
@@ -780,12 +790,30 @@ export interface WorkflowManager {
 
   resume(runId: string): Promise<void>;
 
+  /**
+   * Picks up the runs a stopped process left running or waiting and resumes them from their last
+   * checkpoint. Call it once at startup, from the one process that runs these workflows
+   */
+  recoverRuns(options?: WorkflowExecuteOptionsV2): Promise<RecoveredRuns>;
+
   retry(runId: string): Promise<string>;
 
   replay<S extends WorkflowState>(
     workflow: Workflow<S>,
     runId: string,
-    fromNode: string
+    fromNode: string,
+    options?: WorkflowExecuteOptionsV2
+  ): Promise<WorkflowResult<S>>;
+
+  /**
+   * Runs a dead-lettered node again: replays its run from the failed node, recording the attempt
+   * on the entry and removing the entry when the replay succeeds. The workflow must be registered
+   * with this manager and its run must have a checkpoint
+   */
+  retryDeadLetter<S extends WorkflowState>(
+    queue: DeadLetterQueue,
+    entryId: string,
+    options?: WorkflowExecuteOptionsV2
   ): Promise<WorkflowResult<S>>;
 
   getActiveCount(): Promise<number>;

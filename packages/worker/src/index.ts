@@ -17,6 +17,8 @@ export {
   type DistributedSwarmWorkerEvents,
 } from './distributed-swarm-worker';
 export { formatPrometheusMetrics, DurationHistogram, MetricsCollector } from './metrics';
+export { serializeAgent, serializeResponseFormat } from './serialize';
+export { resolveRedisOptions, type RedisConnectionOptions } from './connection';
 
 export {
   processAgentJob,
@@ -32,6 +34,8 @@ export {
 
 export type {
   SerializedAgent,
+  SerializedResponseFormat,
+  AgentJobUsage,
   SerializedWorkflow,
   SerializedWorkflowNode,
   SerializedWorkflowEdge,

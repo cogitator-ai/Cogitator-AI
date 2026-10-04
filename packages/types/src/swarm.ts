@@ -117,10 +117,20 @@ export interface PipelineConfig {
 export interface DebateConfig {
   /** Number of debate rounds */
   rounds: number;
-  /** Max tokens per turn */
+  /**
+   * Max output tokens per turn. A reasoning model spends its reasoning from the same budget, so
+   * a low limit can leave its turn empty or cut off: give such models a few thousand and keep
+   * the length of a turn in the instructions instead
+   */
   maxTokensPerTurn?: number;
   /** Debate format */
   format?: 'structured' | 'freeform';
+  /**
+   * The moderator's task after the last round, replacing the default "summarise both sides and
+   * recommend". `{topic}` and `{transcript}` are replaced with the debate's input and its
+   * transcript, each turn labelled with the speaker's name and role
+   */
+  synthesisPrompt?: string;
 }
 
 export type SwarmMessageType = 'request' | 'response' | 'notification' | 'error';

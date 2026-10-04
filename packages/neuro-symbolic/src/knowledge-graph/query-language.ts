@@ -657,11 +657,60 @@ const FILTER_OPERATORS: Record<string, QueryOperator> = {
   notin: 'notIn',
 };
 
-const QUERY_TOKEN =
-  /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[{}()[\],]|!=|>=|<=|==|[<>=]|[^\s{}()[\],<>=!"']+/g;
+const QUERY_TOKEN = /[{}()[\],]|!=|>=|<=|==|[<>=]|[^\s{}()[\],<>=!"']+/y;
+const LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
+
+interface QuotedScan {
+  closed: boolean;
+  end: number;
+}
+
+/** Scan a quoted string opened at `start`: the closing quote index, or where scanning gave up. */
+function scanQuoted(input: string, start: number): QuotedScan {
+  const quote = input[start];
+  let i = start + 1;
+  while (i < input.length) {
+    const char = input[i];
+    if (char === quote) return { closed: true, end: i };
+    if (char === '\\') {
+      if (i + 1 === input.length || LINE_TERMINATOR.test(input[i + 1])) break;
+      i += 2;
+    } else {
+      i++;
+    }
+  }
+  return { closed: false, end: i };
+}
 
 function tokenizeQuery(input: string): string[] {
-  return input.match(QUERY_TOKEN) ?? [];
+  const tokens: string[] = [];
+  const unclosedBefore: Record<'"' | "'", number> = { '"': 0, "'": 0 };
+  let i = 0;
+  while (i < input.length) {
+    const char = input[i];
+    if (char === '"' || char === "'") {
+      if (i >= unclosedBefore[char]) {
+        const scan = scanQuoted(input, i);
+        if (scan.closed) {
+          tokens.push(input.slice(i, scan.end + 1));
+          i = scan.end + 1;
+          continue;
+        }
+        unclosedBefore[char] = scan.end;
+      }
+      i++;
+      continue;
+    }
+    QUERY_TOKEN.lastIndex = i;
+    const match = QUERY_TOKEN.exec(input);
+    if (match) {
+      tokens.push(match[0]);
+      i = QUERY_TOKEN.lastIndex;
+    } else {
+      i++;
+    }
+  }
+  return tokens;
 }
 
 function isQuoted(token: string): boolean {

@@ -52,6 +52,8 @@ export {
   type DLQFilters,
 } from './dead-letter';
 
+export { PostgresDLQ, type PostgresDLQOptions, type DLQPgClient } from './postgres-dlq';
+
 export {
   BaseIdempotencyStore,
   InMemoryIdempotencyStore,

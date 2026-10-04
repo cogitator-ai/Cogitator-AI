@@ -43,6 +43,17 @@ describe('Swarm.run', () => {
     expect(result.output).toBe('quick');
   });
 
+  it('does not abort at once when the timeout is beyond what a timer can hold', async () => {
+    const { cogitator } = mockCogitator(
+      () => new Promise((resolve) => setTimeout(() => resolve(createMockRunResult('ok')), 10))
+    );
+    const swarm = roundRobin(cogitator);
+
+    const result = await swarm.run({ input: 'go', timeout: 3_000_000_000 });
+
+    expect(result.output).toBe('ok');
+  });
+
   it('refuses concurrent runs on the same instance', async () => {
     const { cogitator } = mockCogitator(
       () => new Promise((resolve) => setTimeout(() => resolve(createMockRunResult('ok')), 10))

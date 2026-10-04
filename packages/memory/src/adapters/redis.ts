@@ -39,7 +39,7 @@ export class RedisAdapter extends BaseMemoryAdapter {
   private static resolvePrefix(config: RedisAdapterConfig): string {
     if (!config.cluster) return config.keyPrefix ?? 'cogitator:';
     const prefix = config.keyPrefix ?? '{cogitator}:';
-    return /\{[^}]+\}/.test(prefix) ? prefix : `{${prefix.replace(/:$/, '')}}:`;
+    return /\{[^{}]*[^}]\}/.test(prefix) ? prefix : `{${prefix.replace(/:$/, '')}}:`;
   }
 
   private async run<T>(

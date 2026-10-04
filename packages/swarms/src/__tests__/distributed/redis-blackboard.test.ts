@@ -34,7 +34,7 @@ const createMockRedis = () => {
     }),
     lrange: vi.fn().mockImplementation((key: string) => Promise.resolve(lists.get(key) ?? [])),
     keys: vi.fn().mockImplementation((pattern: string) => {
-      const prefix = pattern.replace('*', '');
+      const prefix = pattern.replaceAll('*', '');
       const matchingKeys = Array.from(data.keys()).filter((k) => k.startsWith(prefix));
       return Promise.resolve(matchingKeys);
     }),

@@ -3,10 +3,11 @@ export { llmChat } from './llm-helper';
 export function extractJson(text: string): string | null {
   let cleaned = text;
 
-  const codeBlockRegex = /```(?:json)?\s*\n?([\s\S]*?)```/;
-  const codeBlockMatch = codeBlockRegex.exec(cleaned);
-  if (codeBlockMatch) {
-    cleaned = codeBlockMatch[1].trim();
+  const fenceStart = text.indexOf('```');
+  const fenceEnd = fenceStart === -1 ? -1 : text.indexOf('```', fenceStart + 3);
+  if (fenceEnd !== -1) {
+    const bodyStart = text.startsWith('json', fenceStart + 3) ? fenceStart + 7 : fenceStart + 3;
+    cleaned = text.slice(bodyStart, fenceEnd).trim();
   }
 
   const objectStart = cleaned.indexOf('{');

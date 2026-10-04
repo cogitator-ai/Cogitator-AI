@@ -12,6 +12,12 @@ import type {
 } from '@cogitator-ai/types';
 import { BaseStrategy } from './base.js';
 
+/** Who spoke a turn: the agent's name, with its role when it has one, e.g. "pro (advocate)". */
+function speaker(message: SwarmMessage): string {
+  const role = message.metadata?.role;
+  return typeof role === 'string' && role !== '' ? `${message.from} (${role})` : message.from;
+}
+
 export class DebateStrategy extends BaseStrategy {
   private config: DebateConfig;
 
@@ -152,11 +158,18 @@ export class DebateStrategy extends BaseStrategy {
     let moderatorResult: RunResult | undefined;
 
     if (moderator) {
-      const synthesisInput = `
+      const transcriptText = debateTranscript
+        .map((m) => `[${speaker(m)}]: ${m.content}`)
+        .join('\n\n');
+      const synthesisInput = this.config.synthesisPrompt
+        ? this.config.synthesisPrompt
+            .replaceAll('{topic}', options.input)
+            .replaceAll('{transcript}', transcriptText)
+        : `
 Synthesize the following debate on the topic: "${options.input}"
 
 Debate transcript:
-${debateTranscript.map((m) => `[${m.metadata?.role ?? m.from}]: ${m.content}`).join('\n\n')}
+${transcriptText}
 
 Please provide:
 1. A balanced summary of the key arguments from each side
@@ -192,9 +205,7 @@ Please provide:
 
     if (previousMessages.length === 0) return '';
 
-    return previousMessages
-      .map((m) => `[${m.metadata?.role ?? m.from}]: ${m.content}`)
-      .join('\n\n');
+    return previousMessages.map((m) => `[${speaker(m)}]: ${m.content}`).join('\n\n');
   }
 
   private buildDebateInstructions(

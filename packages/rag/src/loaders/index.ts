@@ -9,5 +9,5 @@ export { HTMLLoader } from './html-loader.js';
 export type { HTMLLoaderOptions } from './html-loader.js';
 export { PDFLoader } from './pdf-loader.js';
 export type { PDFLoaderOptions } from './pdf-loader.js';
-export { WebLoader } from './web-loader.js';
+export { WebLoader, RobotsDisallowedError } from './web-loader.js';
 export type { WebLoaderOptions } from './web-loader.js';

@@ -86,7 +86,7 @@ export class A2AError extends Error {
 }
 
 function logInternalError(error: unknown, context: string): void {
-  console.error(`[a2a] ${context}:`, error);
+  console.error('[a2a] %s:', context, error);
 }
 
 /**

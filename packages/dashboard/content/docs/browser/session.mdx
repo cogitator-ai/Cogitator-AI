@@ -43,6 +43,7 @@ interface BrowserSessionConfig {
   timeout?: number; // navigation timeout, default: 30000ms
   actionTimeout?: number; // action timeout, default: 10000ms
   pool?: { maxPages: number }; // max open tabs for newTab(), positive integer
+  robots?: RobotsChecker; // block navigations the site's robots.txt disallows
 }
 ```
 
@@ -61,6 +62,17 @@ await session.start();
 
 ```typescript
 const session = new BrowserSession({ pool: { maxPages: 3 } });
+```
+
+### robots.txt
+
+`robots` takes a checker such as `RobotsPolicy` from `@cogitator-ai/core`. Every page navigation, typed, clicked, redirected or in a frame, is checked against the site's robots.txt, and disallowed ones are blocked. `newTab(url)` and the `browser_navigate` tool throw `robots.txt does not allow visiting <url>`, so an agent learns why.
+
+```typescript
+import { RobotsPolicy } from '@cogitator-ai/core';
+
+const userAgent = 'NewsBot/1.0 (+https://example.com/bot)';
+const session = new BrowserSession({ userAgent, robots: new RobotsPolicy({ userAgent }) });
 ```
 
 ### Browser Types

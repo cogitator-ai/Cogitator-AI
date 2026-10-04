@@ -134,7 +134,7 @@ describe('streaming', () => {
 
     expect(last?.type === 'status-update' && last.status.state).toBe('failed');
     expect(last?.type === 'status-update' && last.status.message).toBe('Internal error');
-    expect(String(consoleError.mock.calls.at(-1)?.[1])).toContain('store unavailable');
+    expect(String(consoleError.mock.calls.at(-1)?.[2])).toContain('store unavailable');
     consoleError.mockRestore();
   });
 
