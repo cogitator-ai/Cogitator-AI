@@ -167,6 +167,8 @@ const memory = new MongoDBAdapter({
 await memory.connect();
 ```
 
+Threads and entries live in the `<collectionPrefix>threads` and `<collectionPrefix>entries` collections (prefix `memory_` by default), indexed on `agentId` and `(threadId, createdAt)`. Fields left `undefined` are omitted from the stored documents, not stored as `null`. A failed `connect()` leaves the adapter disconnected, so a later `connect()` retries.
+
 ### Qdrant Adapter (Embedding)
 
 ```typescript

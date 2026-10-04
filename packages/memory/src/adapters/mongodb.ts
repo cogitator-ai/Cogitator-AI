@@ -3,8 +3,11 @@ import type {
   MemoryEntry,
   MemoryQueryOptions,
   MemoryResult,
+  Message,
   MongoDBAdapterConfig,
   MemoryProvider,
+  ToolCall,
+  ToolResult,
 } from '@cogitator-ai/types';
 import type {
   Collection,
@@ -49,15 +52,58 @@ interface ThreadDoc {
   updatedAt: Date;
 }
 
+/**
+ * `T` as an earlier version of the adapter may have stored it: its client serialized optional
+ * fields left `undefined` as BSON null, so they read back as `null`.
+ */
+type Nullable<T, K extends keyof T> = Omit<T, K> & { [P in K]?: T[P] | null };
+
+type StoredMessage = Nullable<Message, 'name' | 'toolCallId'>;
+type StoredToolCall = Nullable<ToolCall, 'thoughtSignature' | 'replay'>;
+type StoredToolResult = Nullable<ToolResult, 'error'>;
+
 interface EntryDoc {
   _id: string;
   threadId: string;
-  message: unknown;
-  toolCalls?: unknown[];
-  toolResults?: unknown[];
+  message: StoredMessage;
+  toolCalls?: StoredToolCall[] | null;
+  toolResults?: StoredToolResult[] | null;
   tokenCount: number;
   createdAt: Date;
-  metadata?: Record<string, unknown>;
+  metadata?: Record<string, unknown> | null;
+}
+
+function readMessage({ name, toolCallId, ...message }: StoredMessage): Message {
+  return {
+    ...message,
+    ...(name != null && { name }),
+    ...(toolCallId != null && { toolCallId }),
+  };
+}
+
+function readToolCall({ thoughtSignature, replay, ...call }: StoredToolCall): ToolCall {
+  return {
+    ...call,
+    ...(thoughtSignature != null && { thoughtSignature }),
+    ...(replay != null && { replay }),
+  };
+}
+
+function readToolResult({ error, ...result }: StoredToolResult): ToolResult {
+  return { ...result, ...(error != null && { error }) };
+}
+
+function readEntry(doc: WithId<EntryDoc>, withToolCalls: boolean): MemoryEntry {
+  return {
+    id: doc._id,
+    threadId: doc.threadId,
+    message: readMessage(doc.message),
+    toolCalls: withToolCalls ? doc.toolCalls?.map(readToolCall) : undefined,
+    toolResults: withToolCalls ? doc.toolResults?.map(readToolResult) : undefined,
+    tokenCount: doc.tokenCount,
+    createdAt: doc.createdAt,
+    metadata: doc.metadata ?? undefined,
+  };
 }
 
 export class MongoDBAdapter extends BaseMemoryAdapter {
@@ -65,6 +111,7 @@ export class MongoDBAdapter extends BaseMemoryAdapter {
 
   private client: MongoClient | null = null;
   private db: MongoDatabase | null = null;
+  private connecting: Promise<MemoryResult<void>> | null = null;
   private uri: string;
   private database: string;
   private prefix: string;
@@ -86,9 +133,19 @@ export class MongoDBAdapter extends BaseMemoryAdapter {
     return this.db.collection<EntryDoc>(`${this.prefix}entries`);
   }
 
+  /**
+   * Opens the client and builds the indexes. Concurrent calls share one attempt, and a failed
+   * attempt closes its client and leaves the adapter disconnected, so the next call tries again.
+   */
   async connect(): Promise<MemoryResult<void>> {
     if (this.client) return this.success(undefined);
+    this.connecting ??= this.open().finally(() => {
+      this.connecting = null;
+    });
+    return this.connecting;
+  }
 
+  private async open(): Promise<MemoryResult<void>> {
     let MongoClient: typeof DriverClient;
     try {
       ({ MongoClient } = await import('mongodb'));
@@ -96,21 +153,27 @@ export class MongoDBAdapter extends BaseMemoryAdapter {
       return this.failure('mongodb not installed. Run: pnpm add mongodb');
     }
 
+    let client: MongoClient | undefined;
     try {
-      this.client = new MongoClient(this.uri);
-      await this.client.connect();
-      this.db = this.client.db(this.database);
+      client = new MongoClient(this.uri, { ignoreUndefined: true });
+      await client.connect();
+      const db = client.db(this.database);
+      await db.collection<ThreadDoc>(`${this.prefix}threads`).createIndex({ agentId: 1 });
+      await db
+        .collection<EntryDoc>(`${this.prefix}entries`)
+        .createIndex({ threadId: 1, createdAt: 1 });
 
-      await this.threads.createIndex({ agentId: 1 });
-      await this.entries.createIndex({ threadId: 1, createdAt: 1 });
-
+      this.client = client;
+      this.db = db;
       return this.success(undefined);
     } catch (err) {
+      await client?.close().catch(() => undefined);
       return this.failure((err as Error).message);
     }
   }
 
   async disconnect(): Promise<MemoryResult<void>> {
+    if (this.connecting) await this.connecting;
     if (this.client) {
       try {
         await this.client.close();
@@ -257,22 +320,7 @@ export class MongoDBAdapter extends BaseMemoryAdapter {
       const docs = await cursor.toArray();
       docs.reverse();
 
-      const entries: MemoryEntry[] = docs.map((doc) => ({
-        id: doc._id,
-        threadId: doc.threadId,
-        message: doc.message as MemoryEntry['message'],
-        toolCalls: options.includeToolCalls
-          ? (doc.toolCalls as MemoryEntry['toolCalls'])
-          : undefined,
-        toolResults: options.includeToolCalls
-          ? (doc.toolResults as MemoryEntry['toolResults'])
-          : undefined,
-        tokenCount: doc.tokenCount,
-        createdAt: doc.createdAt,
-        metadata: doc.metadata,
-      }));
-
-      return this.success(entries);
+      return this.success(docs.map((doc) => readEntry(doc, options.includeToolCalls === true)));
     } catch (err) {
       return this.failure((err as Error).message);
     }
@@ -283,18 +331,7 @@ export class MongoDBAdapter extends BaseMemoryAdapter {
 
     try {
       const doc = await this.entries.findOne({ _id: entryId });
-      if (!doc) return this.success(null);
-
-      return this.success({
-        id: doc._id,
-        threadId: doc.threadId,
-        message: doc.message as MemoryEntry['message'],
-        toolCalls: doc.toolCalls as MemoryEntry['toolCalls'],
-        toolResults: doc.toolResults as MemoryEntry['toolResults'],
-        tokenCount: doc.tokenCount,
-        createdAt: doc.createdAt,
-        metadata: doc.metadata,
-      });
+      return this.success(doc ? readEntry(doc, true) : null);
     } catch (err) {
       return this.failure((err as Error).message);
     }

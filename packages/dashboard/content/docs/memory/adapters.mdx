@@ -245,6 +245,8 @@ unwrap(await memory.connect());
 | `database`         | string | `cogitator` | Database name          |
 | `collectionPrefix` | string | `memory_`   | Prefix for collections |
 
+Fields an entry or a thread leaves `undefined` are left out of the stored document rather than stored as `null`, so entries read back the same as from the other stores. A failed `connect()` closes its client and leaves the adapter disconnected, so calling `connect()` again retries. The adapter is checked against MongoDB 7.0 with the `mongodb` 7 driver.
+
 **Requires:** `pnpm add mongodb`
 
 **When to use:** When your stack already uses MongoDB, or when you need flexible document schemas.

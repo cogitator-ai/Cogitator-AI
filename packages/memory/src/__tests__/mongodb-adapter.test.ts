@@ -5,6 +5,7 @@ import type {
   Filter,
   FindCursor,
   MongoClient as DriverClient,
+  MongoClientOptions,
   WithId,
 } from 'mongodb';
 import { MongoDBAdapter } from '../adapters/mongodb';
@@ -68,8 +69,14 @@ function cursorOver(docs: WithId<StoredDoc>[]) {
   } satisfies CursorSurface;
 }
 
+const clientOptions: Array<MongoClientOptions | undefined> = [];
+const { BSON } = await vi.importActual<typeof import('mongodb')>('mongodb');
+
 vi.mock('mongodb', () => {
   class MongoClient {
+    constructor(_uri: string, options?: MongoClientOptions) {
+      clientOptions.push(options);
+    }
     connect = mockClient.connect;
     close = mockClient.close;
     db = mockClient.db;
@@ -525,6 +532,123 @@ describe('MongoDBAdapter', () => {
       if (!result.success) {
         expect(result.error).toContain('Query timeout');
       }
+    });
+  });
+
+  describe('connection failures', () => {
+    it('leaves the adapter disconnected after a failed connect, so the next connect retries', async () => {
+      const fresh = new MongoDBAdapter({ provider: 'mongodb', uri: 'mongodb://down:27017' });
+      vi.clearAllMocks();
+      mockClient.connect
+        .mockRejectedValueOnce(new Error('connect ECONNREFUSED'))
+        .mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
+
+      const first = await fresh.connect();
+      const second = await fresh.connect();
+
+      expect(first).toEqual({ success: false, error: 'connect ECONNREFUSED' });
+      expect(second).toEqual({ success: false, error: 'connect ECONNREFUSED' });
+      expect(mockClient.connect).toHaveBeenCalledTimes(2);
+      expect(mockClient.close).toHaveBeenCalledTimes(2);
+
+      expect((await fresh.connect()).success).toBe(true);
+      expect((await fresh.getThread('thread_1')).success).toBe(true);
+      await fresh.disconnect();
+    });
+
+    it('closes the client when the indexes cannot be built', async () => {
+      const fresh = new MongoDBAdapter({ provider: 'mongodb', uri: 'mongodb://localhost:27017' });
+      mockCollection.createIndex.mockRejectedValueOnce(new Error('not authorized'));
+
+      const result = await fresh.connect();
+
+      expect(result).toEqual({ success: false, error: 'not authorized' });
+      expect(mockClient.close).toHaveBeenCalledTimes(1);
+      expect(await fresh.getThread('thread_1')).toEqual({
+        success: false,
+        error: 'Not connected',
+      });
+    });
+  });
+
+  describe('stored documents', () => {
+    /** What the driver writes: BSON serialized with the client's or the operation's `ignoreUndefined`. */
+    function asStored(doc: Document, operation?: { ignoreUndefined?: boolean }): Document {
+      const ignoreUndefined =
+        operation?.ignoreUndefined ?? clientOptions.at(-1)?.ignoreUndefined ?? false;
+      return BSON.deserialize(BSON.serialize(doc, { ignoreUndefined }));
+    }
+
+    it('keeps fields the caller left undefined absent instead of storing null', async () => {
+      const stored = new Map<string, WithId<StoredDoc>>();
+      mockCollection.insertOne.mockImplementationOnce(async (doc, options) => {
+        const id = String(doc._id);
+        stored.set(id, { ...asStored(doc, options), _id: id });
+        return { acknowledged: true, insertedId: id };
+      });
+      mockCollection.findOne.mockImplementationOnce(
+        async (filter) => stored.get(String(filter._id)) ?? null
+      );
+
+      const written = await adapter.addEntry({
+        threadId: 'thread_123',
+        message: { role: 'user', content: 'Hello', name: undefined },
+        toolCalls: undefined,
+        tokenCount: 2,
+      });
+      if (!written.success) throw new Error(written.error);
+      const doc = stored.get(written.data.id);
+      const read = await adapter.getEntry(written.data.id);
+
+      expect(doc).toBeDefined();
+      expect(Object.keys(doc ?? {})).not.toContain('toolCalls');
+      expect(Object.keys(doc ?? {})).not.toContain('metadata');
+      expect(read.success && read.data).toEqual({
+        id: written.data.id,
+        threadId: 'thread_123',
+        message: { role: 'user', content: 'Hello' },
+        tokenCount: 2,
+        createdAt: written.data.createdAt,
+      });
+    });
+
+    it('keeps undefined thread metadata values absent', async () => {
+      await adapter.createThread('agent1', { topic: 'dinner', channel: undefined }, 'thread_meta');
+
+      const [, update, options] = mockCollection.updateOne.mock.calls[0] ?? [];
+      const set = update && '$set' in update ? update.$set : undefined;
+      const stored = asStored({ ...set }, options);
+
+      expect(stored.metadata).toEqual({ topic: 'dinner' });
+    });
+
+    it('reads documents an earlier version stored with null optional fields as absent', async () => {
+      const now = new Date();
+      const legacy: WithId<StoredDoc> = {
+        _id: 'entry_legacy',
+        threadId: 'thread_123',
+        message: { role: 'user', content: 'Hello', name: null, toolCallId: null },
+        toolCalls: null,
+        toolResults: null,
+        tokenCount: 2,
+        createdAt: now,
+        metadata: null,
+      };
+      mockCollection.findOne.mockResolvedValueOnce(legacy);
+      mockCollection.find.mockReturnValueOnce(cursorOver([legacy]));
+
+      const single = await adapter.getEntry('entry_legacy');
+      const listed = await adapter.getEntries({ threadId: 'thread_123', includeToolCalls: true });
+      const expected = {
+        id: 'entry_legacy',
+        threadId: 'thread_123',
+        message: { role: 'user', content: 'Hello' },
+        tokenCount: 2,
+        createdAt: now,
+      };
+
+      expect(single.success && single.data).toEqual(expected);
+      expect(listed.success && listed.data).toEqual([expected]);
     });
   });
 
