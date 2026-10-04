@@ -53,7 +53,9 @@ export interface TimerWorkflowNodeOptions<S> {
 
 /**
  * Wait according to a timer config (`delayNode`, `dynamicDelayNode`, `cronWaitNode`,
- * `untilNode`). The wait is cancelled when the workflow run is aborted.
+ * `untilNode`). Aborting the run (a pause or cancel) stops the wait and fails the node, so
+ * it is not checkpointed as completed. A resumed run waits again, a persisted timer only
+ * until its original `firesAt`.
  */
 export function timerWorkflowNode<S extends WorkflowState>(
   config: AnyTimerNodeConfig<S>,

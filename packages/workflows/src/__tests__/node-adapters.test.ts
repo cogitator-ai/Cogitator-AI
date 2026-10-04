@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { Cogitator } from '@cogitator-ai/core';
-import type { WorkflowState } from '@cogitator-ai/types';
+import type { TimerEntry, WorkflowNode, WorkflowState } from '@cogitator-ai/types';
 import { WorkflowBuilder } from '../builder';
 import { WorkflowExecutor } from '../executor';
 import {
@@ -10,7 +10,9 @@ import {
   subworkflowWorkflowNode,
   parallelSubworkflowsNode,
 } from '../nodes/adapters';
-import { delayNode } from '../timers/timer-node';
+import { delayNode, type TimerNodeResult } from '../timers/timer-node';
+import { InMemoryTimerStore } from '../timers/timer-store';
+import { InMemoryCheckpointStore } from '../checkpoint';
 import { approvalNode } from '../human/human-node';
 import { InMemoryApprovalStore } from '../human/approval-store';
 import { mapReduceNode } from '../patterns/map-reduce';
@@ -33,7 +35,7 @@ describe('timerWorkflowNode', () => {
     expect(result.nodeResults.get('wait')?.output).toMatchObject({ cancelled: false });
   });
 
-  it('cancels the wait when the run is aborted', async () => {
+  it('stops waiting when the run is aborted without completing the node', async () => {
     const controller = new AbortController();
     const workflow = new WorkflowBuilder('timer-abort')
       .addNode('wait', timerWorkflowNode(delayNode('wait', 10_000)))
@@ -50,9 +52,83 @@ describe('timerWorkflowNode', () => {
     );
 
     expect(Date.now() - started).toBeLessThan(1000);
-    expect(result.nodeResults.get('wait')?.output).toMatchObject({ cancelled: true });
+    expect(result.error).toBeDefined();
+    expect(result.nodeResults.has('wait')).toBe(false);
+  });
+
+  it('does not checkpoint an interrupted wait as completed, so resume waits again', async () => {
+    const checkpointStore = new InMemoryCheckpointStore();
+    const executor = new WorkflowExecutor(cogitator, checkpointStore);
+    const workflow = embargoWorkflow(timerWorkflowNode(delayNode('embargo', 300)));
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 30);
+
+    const paused = await executor.execute(
+      workflow,
+      {},
+      { signal: controller.signal, checkpoint: true }
+    );
+    const checkpoint = await checkpointStore.load(paused.checkpointId!);
+    const resumedAt = Date.now();
+    const resumed = await executor.resume(workflow, paused.checkpointId!);
+
+    expect(paused.error).toBeDefined();
+    expect(checkpoint?.completedNodes).toEqual(['prepare']);
+    expect(resumed.error).toBeUndefined();
+    expect(resumed.state.releasedAt! - resumedAt).toBeGreaterThanOrEqual(280);
+  });
+
+  it('resumes a persisted timer interrupted by an abort until its original firesAt', async () => {
+    const timerStore = new InMemoryTimerStore();
+    const checkpointStore = new InMemoryCheckpointStore();
+    const executor = new WorkflowExecutor(cogitator, checkpointStore);
+    const workflow = embargoWorkflow(
+      timerWorkflowNode(delayNode('embargo', 400, { persist: true }), { timerStore })
+    );
+    const scheduled: TimerEntry[] = [];
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 100);
+
+    const paused = await executor.execute(
+      workflow,
+      {},
+      {
+        signal: controller.signal,
+        checkpoint: true,
+        onTimerScheduled: (entry) => scheduled.push(entry),
+      }
+    );
+    const [original] = scheduled;
+    const interrupted = await timerStore.get(original.id);
+    const resumedAt = Date.now();
+    const resumed = await executor.resume(workflow, paused.checkpointId!, {
+      onTimerScheduled: (entry) => scheduled.push(entry),
+    });
+    const output = resumed.nodeResults.get('embargo')?.output as TimerNodeResult;
+
+    expect(interrupted).toMatchObject({ cancelled: true, fired: false });
+    expect(resumed.error).toBeUndefined();
+    expect(resumed.state.releasedAt).toBeGreaterThanOrEqual(original.firesAt);
+    expect(resumed.state.releasedAt! - resumedAt).toBeLessThan(380);
+    expect(output).toMatchObject({ firesAt: original.firesAt, cancelled: false });
+    expect(scheduled).toHaveLength(2);
+    expect(scheduled[1].firesAt).toBe(original.firesAt);
+    expect(await timerStore.get(scheduled[1].id)).toMatchObject({ fired: true });
   });
 });
+
+type EmbargoState = { releasedAt?: number };
+
+function embargoWorkflow(embargo: WorkflowNode<EmbargoState>) {
+  return new WorkflowBuilder<EmbargoState>('embargo')
+    .initialState({})
+    .addNode('prepare', async () => ({ output: 'ready' }))
+    .addNode('embargo', embargo, { after: ['prepare'] })
+    .addNode('release', async () => ({ state: { releasedAt: Date.now() } }), {
+      after: ['embargo'],
+    })
+    .build();
+}
 
 describe('humanWorkflowNode', () => {
   it('pauses until the approval is answered and maps the decision into state', async () => {

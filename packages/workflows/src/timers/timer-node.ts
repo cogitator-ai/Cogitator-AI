@@ -78,6 +78,10 @@ export interface TimerNodeResult {
   scheduledAt: number;
   firesAt: number;
   waited: number;
+  /**
+   * The persisted timer was cancelled through its store (for example `TimerManager.cancel`)
+   * before the wait ended. An abort of the run does not resolve, it rejects with `AbortError`
+   */
   cancelled: boolean;
 }
 
@@ -89,6 +93,7 @@ export interface TimerExecutionContext {
   runId: string;
   nodeId: string;
   timerStore?: TimerStore;
+  /** Abort signal of the run; aborting it stops the wait and rejects with `AbortError` */
   signal?: AbortSignal;
   /** Called with the stored entry once a persisted timer is scheduled */
   onTimerScheduled?: (entry: TimerEntry) => void;
@@ -198,7 +203,27 @@ export function calculateTimerDelay<S>(config: AnyTimerNodeConfig<S>, state: S):
 }
 
 /**
+ * Metadata key set on a persisted timer whose wait was interrupted by an abort of the run.
+ * The next execution of the same node in the same run waits until its `firesAt`.
+ */
+const INTERRUPTED = 'interrupted';
+
+/**
+ * Metadata key pointing from an interrupted timer to the timer that took over its wait.
+ */
+const RESUMED_BY = 'resumedBy';
+
+/**
  * Execute a timer node
+ *
+ * Aborting `context.signal` stops the wait and rejects with {@link AbortError}, so a run
+ * paused or cancelled mid-wait does not record the node as completed. A persisted timer is
+ * cancelled in its store and marked as interrupted, and the next execution of the node in
+ * the same run (a resumed run) waits only until the interrupted timer's `firesAt`.
+ *
+ * A persisted timer cancelled through its store while the node waits (for example with
+ * `TimerManager.cancel`) resolves with `cancelled: true` once the wait ends, and reports
+ * `onCancelled` instead of `onFired`.
  */
 export async function executeTimerNode<S>(
   config: AnyTimerNodeConfig<S>,
@@ -206,22 +231,34 @@ export async function executeTimerNode<S>(
   context: TimerExecutionContext
 ): Promise<TimerNodeResult> {
   const now = Date.now();
-  const delay = calculateTimerDelay(config, state);
-  const firesAt = now + delay;
+  const store = config.persist ? context.timerStore : undefined;
+  const interrupted = store ? await findInterruptedTimer(store, context) : undefined;
+  const firesAt = interrupted?.firesAt ?? now + calculateTimerDelay(config, state);
+  const delay = Math.max(0, firesAt - now);
 
-  let timerId: string | undefined;
+  let timerId: string;
 
-  if (config.persist && context.timerStore) {
-    timerId = await context.timerStore.schedule({
+  if (store) {
+    timerId = await store.schedule({
       workflowId: context.workflowId,
       runId: context.runId,
       nodeId: context.nodeId,
       firesAt,
       type: config.type === 'until' ? 'fixed' : config.type,
-      metadata: { nodeType: config.type, delay },
+      metadata: {
+        nodeType: config.type,
+        delay,
+        ...(interrupted && { resumedFrom: interrupted.id }),
+      },
     });
 
-    const entry = await context.timerStore.get(timerId);
+    if (interrupted) {
+      await store.update(interrupted.id, {
+        metadata: { ...interrupted.metadata, [RESUMED_BY]: timerId },
+      });
+    }
+
+    const entry = await store.get(timerId);
     if (entry) {
       config.onScheduled?.(entry);
       try {
@@ -235,33 +272,26 @@ export async function executeTimerNode<S>(
   }
 
   const startWait = Date.now();
-  let cancelled = false;
 
   try {
     await waitWithAbort(delay, context.signal);
   } catch (error) {
-    if (error instanceof AbortError) {
-      cancelled = true;
-
-      if (config.persist && context.timerStore && timerId) {
-        await context.timerStore.cancel(timerId);
-        const entry = await context.timerStore.get(timerId);
-        if (entry) {
-          config.onCancelled?.(entry);
-        }
-      }
-    } else {
-      throw error;
+    if (error instanceof AbortError && store) {
+      await interruptTimer(store, timerId, config);
     }
+    throw error;
   }
 
   const waited = Date.now() - startWait;
+  let cancelled = false;
 
-  if (!cancelled && config.persist && context.timerStore && timerId) {
-    await context.timerStore.markFired(timerId);
-    const entry = await context.timerStore.get(timerId);
+  if (store) {
+    await store.markFired(timerId);
+    const entry = await store.get(timerId);
+    cancelled = entry?.cancelled === true && !entry.fired;
     if (entry) {
-      config.onFired?.(entry);
+      if (cancelled) config.onCancelled?.(entry);
+      else config.onFired?.(entry);
     }
   }
 
@@ -272,6 +302,43 @@ export async function executeTimerNode<S>(
     waited,
     cancelled,
   };
+}
+
+/**
+ * The latest persisted timer of this node and run whose wait an abort interrupted and no
+ * later execution has taken over yet
+ */
+async function findInterruptedTimer(
+  store: TimerStore,
+  context: TimerExecutionContext
+): Promise<TimerEntry | undefined> {
+  const entries = await store.getByRun(context.runId);
+  return entries
+    .filter(
+      (entry) =>
+        entry.workflowId === context.workflowId &&
+        entry.nodeId === context.nodeId &&
+        !entry.fired &&
+        entry.metadata?.[INTERRUPTED] === true &&
+        entry.metadata[RESUMED_BY] === undefined
+    )
+    .sort((a, b) => b.createdAt - a.createdAt)[0];
+}
+
+/**
+ * Cancel a persisted timer whose wait was aborted and mark it as interrupted
+ */
+async function interruptTimer<S>(
+  store: TimerStore,
+  timerId: string,
+  config: AnyTimerNodeConfig<S>
+): Promise<void> {
+  await store.cancel(timerId);
+  const entry = await store.get(timerId);
+  if (!entry) return;
+  const metadata = { ...entry.metadata, [INTERRUPTED]: true };
+  await store.update(timerId, { metadata });
+  config.onCancelled?.({ ...entry, metadata });
 }
 
 /**

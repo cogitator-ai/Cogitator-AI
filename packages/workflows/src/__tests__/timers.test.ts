@@ -1,5 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
+  AbortError,
+  delayNode,
+  executeTimerNode,
   InMemoryTimerStore,
   parseCronExpression,
   getNextCronOccurrence,
@@ -382,6 +385,80 @@ describe('Timer System', () => {
       expect((firedTimer as { id: string }).id).toBe(timerId);
 
       unsubscribe();
+    });
+  });
+
+  describe('executeTimerNode', () => {
+    const context = (timerStore: InMemoryTimerStore, signal?: AbortSignal) => ({
+      workflowId: 'wf',
+      runId: 'run',
+      nodeId: 'wait',
+      timerStore,
+      signal,
+    });
+
+    it('rejects with AbortError when aborted and cancels the persisted timer', async () => {
+      const timerStore = new InMemoryTimerStore();
+      const onCancelled = vi.fn();
+      const onFired = vi.fn();
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), 10);
+
+      const waiting = executeTimerNode(
+        delayNode('wait', 5_000, { persist: true, onCancelled, onFired }),
+        {},
+        context(timerStore, controller.signal)
+      );
+
+      await expect(waiting).rejects.toBeInstanceOf(AbortError);
+      const [timer] = await timerStore.getByRun('run');
+      expect(timer).toMatchObject({ cancelled: true, fired: false });
+      expect(timer.metadata).toMatchObject({ interrupted: true });
+      expect(onCancelled).toHaveBeenCalledTimes(1);
+      expect(onFired).not.toHaveBeenCalled();
+    });
+
+    it('reports a timer cancelled through its store as cancelled, not fired', async () => {
+      const timerStore = new InMemoryTimerStore();
+      const onCancelled = vi.fn();
+      const onFired = vi.fn();
+
+      const result = await executeTimerNode(
+        delayNode('wait', 30, {
+          persist: true,
+          onCancelled,
+          onFired,
+          onScheduled: (entry) => void timerStore.cancel(entry.id),
+        }),
+        {},
+        context(timerStore)
+      );
+
+      expect(result.cancelled).toBe(true);
+      expect(onCancelled).toHaveBeenCalledTimes(1);
+      expect(onFired).not.toHaveBeenCalled();
+    });
+
+    it('waits the full delay again in a later execution after an explicit cancellation', async () => {
+      const timerStore = new InMemoryTimerStore();
+      await executeTimerNode(
+        delayNode('wait', 10, {
+          persist: true,
+          onScheduled: (entry) => void timerStore.cancel(entry.id),
+        }),
+        {},
+        context(timerStore)
+      );
+
+      const started = Date.now();
+      const result = await executeTimerNode(
+        delayNode('wait', 60, { persist: true }),
+        {},
+        context(timerStore)
+      );
+
+      expect(result.firesAt - started).toBeGreaterThanOrEqual(60);
+      expect(result.cancelled).toBe(false);
     });
   });
 });

@@ -329,7 +329,7 @@ builder
 formatDuration(90_000); // '1.5m'
 ```
 
-Waits are cancelled when the run is aborted. Pass `{ timerStore }` to `timerWorkflowNode` together with `persist: true` configs (or use `createTimerNodeHelpers(store)`) to persist timers; `createTimerManager(store)` and `createRecurringScheduler(manager)` process persisted and recurring timers. Cron helpers: `validateCronExpression`, `getNextCronOccurrence(s)`, `describeCronExpression`, `CRON_PRESETS`.
+Aborting the run (`signal`, a manager's `pause()` or `cancel()`) stops the wait and fails the node with an `AbortError`, so the node is not checkpointed as completed and a resumed run waits again. Pass `{ timerStore }` to `timerWorkflowNode` together with `persist: true` configs (or use `createTimerNodeHelpers(store)`) to persist timers: an interrupted persisted timer is cancelled in its store, and on resume the node waits only until the original `firesAt`, so a pause never shortens or extends the wait. A persisted timer cancelled through its store while the node waits (`TimerManager.cancel`) is not marked fired: the node reports `cancelled: true` and `onCancelled` when the wait ends. `createTimerManager(store)` and `createRecurringScheduler(manager)` process persisted and recurring timers. Cron helpers: `validateCronExpression`, `getNextCronOccurrence(s)`, `describeCronExpression`, `CRON_PRESETS`.
 
 ---
 
