@@ -1,11 +1,52 @@
 import type { ModelInfo, ModelFilter, ModelPricing, RegistryOptions, ProviderInfo } from './types';
 import { ModelCache } from './cache';
-import { fetchLiteLLMData, transformLiteLLMData } from './fetcher';
+import { fetchLiteLLMData, normalizeProviderId, transformLiteLLMData } from './fetcher';
 import { BUILTIN_MODELS, BUILTIN_PROVIDERS } from './providers/index';
+
+/** Providers a bare model name prefers, first-party APIs and the major clouds first. */
+const PREFERRED_PROVIDERS: readonly string[] = BUILTIN_PROVIDERS.map((provider) => provider.id);
+
+function modelKey(model: Pick<ModelInfo, 'provider' | 'id'>): string {
+  return `${model.provider}/${model.id}`.toLowerCase();
+}
+
+function isFirstParty(model: ModelInfo): boolean {
+  return !model.catalogId?.includes('/');
+}
+
+function providerRank(provider: string): number {
+  const index = PREFERRED_PROVIDERS.indexOf(provider);
+  return index === -1 ? PREFERRED_PROVIDERS.length : index;
+}
+
+function compareText(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * Orders the models a name could mean, best first: active before deprecated,
+ * a first-party listing (a built-in model or an unprefixed catalogue key)
+ * before resellers, then {@link PREFERRED_PROVIDERS}, then a model named
+ * exactly so before one it is the tail of, then the shorter id, then
+ * alphabetically, so the answer never depends on the catalogue order.
+ */
+function compareCandidates(name: string, a: ModelInfo, b: ModelInfo): number {
+  return (
+    Number(a.deprecated ?? false) - Number(b.deprecated ?? false) ||
+    Number(!isFirstParty(a)) - Number(!isFirstParty(b)) ||
+    providerRank(a.provider) - providerRank(b.provider) ||
+    Number(a.id.toLowerCase() !== name) - Number(b.id.toLowerCase() !== name) ||
+    a.id.split('/').length - b.id.split('/').length ||
+    compareText(a.provider, b.provider) ||
+    compareText((a.catalogId ?? a.id).toLowerCase(), (b.catalogId ?? b.id).toLowerCase())
+  );
+}
 
 export class ModelRegistry {
   private models = new Map<string, ModelInfo>();
-  private aliases = new Map<string, string>();
+  private keys = new Map<string, ModelInfo>();
+  private aliases = new Map<string, ModelInfo>();
+  private names = new Map<string, ModelInfo[]>();
   private providers = new Map<string, ProviderInfo>();
   private cache: ModelCache;
   private options: Required<RegistryOptions>;
@@ -79,20 +120,16 @@ export class ModelRegistry {
     }
   }
 
+  /**
+   * The model an id names, case-insensitively. A provider-qualified id
+   * (`openrouter/deepseek/deepseek-v4-pro`, `azure_ai/deepseek-v4-pro`,
+   * `google/gemini-3.8-flash`) finds that provider's entry. A bare name, or a
+   * prefix whose provider does not list the model, finds the best listing of
+   * the model by fixed rules, the vendor's own first.
+   */
   getModel(id: string): ModelInfo | null {
     this.ensureInitialized();
-
-    const normalized = this.normalizeModelId(id);
-
-    const direct = this.models.get(normalized);
-    if (direct) return direct;
-
-    const aliasTarget = this.aliases.get(normalized);
-    if (aliasTarget) {
-      return this.models.get(aliasTarget) ?? null;
-    }
-
-    return null;
+    return this.resolve(id.toLowerCase());
   }
 
   getPrice(id: string): { input: number; output: number } | null {
@@ -182,24 +219,39 @@ export class ModelRegistry {
 
   private loadModels(models: ModelInfo[]): void {
     this.models.clear();
+    this.keys.clear();
     this.aliases.clear();
+    this.names.clear();
     this.providers.clear();
 
     const providerModels = new Map<string, string[]>();
 
     for (const model of models) {
-      const modelKey = model.id.toLowerCase();
-      this.models.set(modelKey, model);
+      this.models.set(modelKey(model), model);
+    }
 
-      if (model.aliases) {
-        for (const alias of model.aliases) {
-          this.aliases.set(alias.toLowerCase(), modelKey);
-        }
-      }
+    for (const [key, model] of this.models) {
+      this.keys.set(key, model);
 
       const existing = providerModels.get(model.provider) ?? [];
       existing.push(model.id);
       providerModels.set(model.provider, existing);
+
+      const segments = model.id.toLowerCase().split('/');
+      for (let start = 0; start < segments.length; start++) {
+        const name = segments.slice(start).join('/');
+        const named = this.names.get(name) ?? [];
+        named.push(model);
+        this.names.set(name, named);
+      }
+    }
+
+    for (const model of this.models.values()) {
+      if (model.catalogId) this.setOnce(this.keys, model.catalogId, model);
+      for (const alias of model.aliases ?? []) {
+        this.setOnce(this.aliases, alias, model);
+        this.setOnce(this.aliases, `${model.provider}/${alias}`, model);
+      }
     }
 
     for (const provider of BUILTIN_PROVIDERS) {
@@ -222,23 +274,26 @@ export class ModelRegistry {
     const modelMap = new Map<string, ModelInfo>();
 
     for (const model of BUILTIN_MODELS) {
-      modelMap.set(model.id.toLowerCase(), model);
+      modelMap.set(modelKey(model), model);
     }
 
     for (const model of fetched) {
-      const modelKey = model.id.toLowerCase();
-      const existing = modelMap.get(modelKey);
+      const key = modelKey(model);
+      const existing = modelMap.get(key);
       if (existing) {
-        modelMap.set(modelKey, {
+        const aliases = [...new Set([...(existing.aliases ?? []), ...(model.aliases ?? [])])];
+        modelMap.set(key, {
           ...existing,
+          ...(model.catalogId !== undefined && { catalogId: model.catalogId }),
           pricing: model.pricing,
           contextWindow: model.contextWindow ?? existing.contextWindow,
           maxOutputTokens: model.maxOutputTokens ?? existing.maxOutputTokens,
           capabilities: this.mergeCapabilities(existing.capabilities, model.capabilities),
           deprecated: existing.deprecated || model.deprecated || undefined,
+          ...(aliases.length > 0 && { aliases }),
         });
       } else {
-        modelMap.set(modelKey, model);
+        modelMap.set(key, model);
       }
     }
 
@@ -260,14 +315,39 @@ export class ModelRegistry {
     };
   }
 
-  private normalizeModelId(id: string): string {
-    let normalized = id.toLowerCase();
+  private resolve(id: string): ModelInfo | null {
+    const direct = this.keys.get(id) ?? this.aliases.get(id);
+    if (direct) return direct;
 
-    if (normalized.includes('/')) {
-      normalized = normalized.split('/').pop() ?? normalized;
+    const slash = id.indexOf('/');
+    if (slash !== -1) {
+      const rest = id.slice(slash + 1);
+      const provider = normalizeProviderId(id.slice(0, slash));
+      const qualified = `${provider}/${rest}`;
+      const listed =
+        this.keys.get(qualified) ?? this.aliases.get(qualified) ?? this.best(rest, provider);
+      if (listed) return listed;
     }
 
-    return normalized;
+    const named = this.best(id);
+    if (named) return named;
+
+    return slash === -1 ? null : this.resolve(id.slice(slash + 1));
+  }
+
+  /** The best model whose id is `name` or ends in `/name`, at `provider` when one is given. */
+  private best(name: string, provider?: string): ModelInfo | null {
+    let best: ModelInfo | null = null;
+    for (const model of this.names.get(name) ?? []) {
+      if (provider !== undefined && model.provider !== provider) continue;
+      if (!best || compareCandidates(name, model, best) < 0) best = model;
+    }
+    return best;
+  }
+
+  private setOnce(map: Map<string, ModelInfo>, key: string, model: ModelInfo): void {
+    const normalized = key.toLowerCase();
+    if (!map.has(normalized)) map.set(normalized, model);
   }
 
   private formatProviderName(id: string): string {

@@ -1,0 +1,7 @@
+---
+'@cogitator-ai/models': minor
+---
+
+Provider-qualified model ids now get that provider's price. The registry used to key every LiteLLM model by the last segment of its id, keep whichever provider the catalogue listed first and ignore any `provider/` prefix on lookups, so `getModel('openrouter/deepseek/deepseek-v4-pro')` returned Azure's entry at 1.74/3.48 USD per million tokens instead of OpenRouter's 0.2088/0.4176, and `calculateCost` priced runs the same wrong way. The registry now keeps one entry per provider: `id` is the model's name at that provider (`deepseek/deepseek-v4-pro` on OpenRouter), and the new `catalogId` field holds the LiteLLM key (`openrouter/deepseek/deepseek-v4-pro`).
+
+Lookups find the named provider's entry for both Cogitator model strings (`openai/gpt-6.1-sol`, `google/gemini-3.8-flash`) and LiteLLM keys (`azure_ai/...`, `gemini/...`). When that provider does not list the model, the prefix is dropped and the rest is looked up. A bare name picks a listing by fixed rules instead of catalogue order, the vendor's own listing first, so `deepseek-v4-pro` is DeepSeek's price. Built-in models and the pricing helpers follow the same rules. Prices keep their exact value instead of being rounded to a thousandth of a dollar per million tokens, and OpenRouter is listed among `BUILTIN_PROVIDERS`. The cache format version changed, so existing model caches are refetched once.

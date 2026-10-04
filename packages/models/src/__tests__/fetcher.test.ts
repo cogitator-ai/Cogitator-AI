@@ -108,15 +108,66 @@ describe('transformLiteLLMData', () => {
     expect(result[0].id).toBe('gpt-4');
   });
 
-  it('deduplicates models by normalized id', () => {
+  it('keeps a model listed by several providers once per provider', () => {
     const data: LiteLLMModelData = {
-      'openai/gpt-4': { max_tokens: 8192, litellm_provider: 'openai' },
-      'azure/gpt-4': { max_tokens: 8192, litellm_provider: 'azure' },
+      'azure/gpt-4': { max_tokens: 8192, litellm_provider: 'azure', input_cost_per_token: 6e-5 },
+      'openai/gpt-4': { max_tokens: 8192, litellm_provider: 'openai', input_cost_per_token: 3e-5 },
     };
 
     const result = transformLiteLLMData(data);
 
-    expect(result).toHaveLength(1);
+    expect(result.map((m) => [m.provider, m.id, m.catalogId, m.pricing.input])).toEqual([
+      ['azure', 'gpt-4', 'azure/gpt-4', 60],
+      ['openai', 'gpt-4', 'openai/gpt-4', 30],
+    ]);
+  });
+
+  it('keeps the name a provider serves the model under', () => {
+    const data: LiteLLMModelData = {
+      'openrouter/deepseek/deepseek-v4-pro': { litellm_provider: 'openrouter' },
+      'gemini/gemini-3.8-flash': { litellm_provider: 'gemini' },
+      'low/1024-x-1024/gpt-image-1': { litellm_provider: 'openai' },
+    };
+
+    const ids = Object.fromEntries(
+      transformLiteLLMData(data).map((m) => [m.catalogId, `${m.provider}:${m.id}`])
+    );
+
+    expect(ids).toEqual({
+      'openrouter/deepseek/deepseek-v4-pro': 'openrouter:deepseek/deepseek-v4-pro',
+      'gemini/gemini-3.8-flash': 'google:gemini-3.8-flash',
+      'low/1024-x-1024/gpt-image-1': 'openai:low/1024-x-1024/gpt-image-1',
+    });
+  });
+
+  it('merges keys of one provider into the shortest, whatever the catalogue order', () => {
+    const entries: LiteLLMModelData = {
+      'deepseek/deepseek-v4-pro': { litellm_provider: 'deepseek' },
+      'deepseek-v4-pro': { litellm_provider: 'deepseek' },
+    };
+
+    for (const data of [entries, Object.fromEntries(Object.entries(entries).reverse())]) {
+      const result = transformLiteLLMData(data);
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({
+        id: 'deepseek-v4-pro',
+        provider: 'deepseek',
+        catalogId: 'deepseek-v4-pro',
+        aliases: ['deepseek/deepseek-v4-pro'],
+      });
+    }
+  });
+
+  it('keeps prices exact to the millionth of a dollar', () => {
+    const data: LiteLLMModelData = {
+      'openrouter/deepseek/deepseek-v4-pro': {
+        litellm_provider: 'openrouter',
+        input_cost_per_token: 2.088e-7,
+        output_cost_per_token: 4.176e-7,
+      },
+    };
+
+    expect(transformLiteLLMData(data)[0].pricing).toEqual({ input: 0.2088, output: 0.4176 });
   });
 
   it('calculates pricing correctly', () => {

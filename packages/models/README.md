@@ -43,7 +43,28 @@ const toolModels = listModels({
 });
 ```
 
-Lookups are case-insensitive, accept a `provider/` prefix (`getModel('openai/gpt-6.1-sol')`) and resolve aliases. Calling them before `initializeModels()` works too: the registry then loads the built-in models only.
+Lookups are case-insensitive and resolve aliases. Calling them before `initializeModels()` works too: the registry then loads the built-in models only, with the same lookup rules.
+
+### Provider-qualified ids
+
+The registry keeps one entry per provider, so a model sold by several providers keeps each provider's price. `id` is the model's name at its provider and `catalogId` the key LiteLLM lists it under:
+
+```typescript
+await initializeModels();
+
+getModel('openrouter/deepseek/deepseek-v4-pro');
+// { id: 'deepseek/deepseek-v4-pro', provider: 'openrouter',
+//   catalogId: 'openrouter/deepseek/deepseek-v4-pro', pricing: { input: 0.2088, output: 0.4176 }, ... }
+
+getModel('openai/gpt-6.1-sol'); // Cogitator model strings work
+getModel('azure_ai/deepseek-v4-pro'); // and so do LiteLLM keys, at that provider's price
+```
+
+- A provider-qualified id finds that provider's entry.
+- When that provider does not list the model, the prefix is dropped and the rest is looked up (`openai/deepseek/deepseek-v4-pro` is priced as `deepseek/deepseek-v4-pro`).
+- A bare name picks one listing by fixed rules, never by catalogue order: active before deprecated, the vendor's own listing (a built-in model or an unprefixed LiteLLM key) before resellers, then the providers in `BUILTIN_PROVIDERS` order, then the shorter id, then alphabetically.
+
+Price runs with the full model string the agent runs on (`calculateCost('openrouter/deepseek/deepseek-v4-pro', usage)`).
 
 ---
 
@@ -172,8 +193,9 @@ shutdownModels();
 
 ```typescript
 interface ModelInfo {
-  id: string;
+  id: string; // the model's name at its provider
   provider: string;
+  catalogId?: string; // the LiteLLM key, e.g. 'openrouter/deepseek/deepseek-v4-pro'
   displayName: string;
   pricing: ModelPricing;
   contextWindow: number;
@@ -300,6 +322,7 @@ import { BUILTIN_PROVIDERS } from '@cogitator-ai/models';
 | Perplexity   | perplexity.ai          |
 | Replicate    | replicate.com          |
 | xAI          | x.ai                   |
+| OpenRouter   | openrouter.ai          |
 
 ### Provider Information
 

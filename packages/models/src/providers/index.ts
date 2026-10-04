@@ -33,4 +33,5 @@ export const BUILTIN_PROVIDERS = [
   { id: 'perplexity', name: 'Perplexity', website: 'https://perplexity.ai' },
   { id: 'replicate', name: 'Replicate', website: 'https://replicate.com' },
   { id: 'xai', name: 'xAI', website: 'https://x.ai' },
+  { id: 'openrouter', name: 'OpenRouter', website: 'https://openrouter.ai' },
 ];

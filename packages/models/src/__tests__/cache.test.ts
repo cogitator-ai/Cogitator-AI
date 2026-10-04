@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { ModelCache } from '../cache';
+import { CACHE_VERSION, ModelCache } from '../cache';
 import type { ModelInfo } from '../types';
 
 type CacheEntry = Parameters<ModelCache['isStale']>[0];
@@ -88,7 +88,7 @@ describe('ModelCache', () => {
       const mockEntry = {
         models: [mockModel],
         timestamp: Date.now(),
-        version: '1.0.0',
+        version: CACHE_VERSION,
       };
       vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify(mockEntry));
 
@@ -138,7 +138,7 @@ describe('ModelCache', () => {
       const mockEntry = {
         models: [{ id: 'broken-model' }],
         timestamp: Date.now(),
-        version: '1.0.0',
+        version: CACHE_VERSION,
       };
       vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify(mockEntry));
 
@@ -197,7 +197,7 @@ describe('ModelCache', () => {
       const entry: CacheEntry = {
         models: [mockModel],
         timestamp: Date.now() - 2000,
-        version: '1.0.0',
+        version: CACHE_VERSION,
       };
 
       expect(cache.isStale(entry)).toBe(true);
@@ -208,7 +208,7 @@ describe('ModelCache', () => {
       const entry: CacheEntry = {
         models: [mockModel],
         timestamp: Date.now(),
-        version: '1.0.0',
+        version: CACHE_VERSION,
       };
 
       expect(cache.isStale(entry)).toBe(false);
@@ -219,7 +219,7 @@ describe('ModelCache', () => {
       const entry: CacheEntry = {
         models: [mockModel],
         timestamp: Date.now(),
-        version: '1.0.0',
+        version: CACHE_VERSION,
       };
       Reflect.set(entry, 'version', '0.0.1');
 

@@ -20,7 +20,30 @@ const price = getPrice('claude-sonnet-5-5');
 console.log(`$${price?.input}/M input, $${price?.output}/M output`);
 ```
 
-Model ids are matched case-insensitively, a `provider/` prefix is ignored (`openai/gpt-6.1-sol` finds `gpt-6.1-sol`), and `aliases` resolve too (`claude-sonnet-5.5` → `claude-sonnet-5-5`). Lookups return `null` for unknown models.
+Model ids are matched case-insensitively and `aliases` resolve too (`claude-sonnet-5.5` → `claude-sonnet-5-5`). Lookups return `null` for unknown models.
+
+### Provider-qualified ids
+
+The same model is often sold by several providers at different prices, so the registry keeps one entry per provider. Each entry's `id` is the model's name at that provider, `provider` is the registry's provider id, and `catalogId` is the key LiteLLM lists it under:
+
+```typescript
+await initializeModels();
+
+getModel('openrouter/deepseek/deepseek-v4-pro');
+// { id: 'deepseek/deepseek-v4-pro', provider: 'openrouter',
+//   catalogId: 'openrouter/deepseek/deepseek-v4-pro', pricing: { input: 0.2088, output: 0.4176 }, ... }
+
+getModel('azure_ai/deepseek-v4-pro')?.provider; // 'azure', at Azure's price
+getModel('google/gemini-3.8-flash')?.id; // 'gemini-3.8-flash' (also found as gemini/gemini-3.8-flash)
+```
+
+A lookup resolves in this order:
+
+1. A provider-qualified id finds that provider's entry. Both Cogitator model strings (`openai/gpt-6.1-sol`, `google/gemini-3.8-flash`, `openrouter/deepseek/deepseek-v4-pro`) and LiteLLM keys (`gemini/...`, `azure_ai/...`) work.
+2. When that provider does not list the model, the prefix is dropped and the rest is looked up, so `openai/deepseek/deepseek-v4-pro` (an OpenAI-compatible server) is priced as `deepseek/deepseek-v4-pro`.
+3. A bare name (`deepseek-v4-pro`) picks one listing by fixed rules, never by catalogue order: active models before deprecated ones, the vendor's own listing (a built-in model or an unprefixed LiteLLM key) before resellers, then the providers in `BUILTIN_PROVIDERS` order, then the shorter id, then alphabetically.
+
+Pass the full model string your agent runs on to get that provider's price. The built-in models follow the same rules before `initializeModels()` runs.
 
 ## Pricing and Cost
 
@@ -125,9 +148,9 @@ const largeContext = listModels({
 
 ## Built-in Providers
 
-The registry includes provider entries (`BUILTIN_PROVIDERS`) for 15 providers:
+The registry includes provider entries (`BUILTIN_PROVIDERS`) for 16 providers:
 
-OpenAI (`openai`), Anthropic (`anthropic`), Google (`google`), Ollama (`ollama`), Azure OpenAI (`azure`), AWS Bedrock (`aws`), Mistral AI (`mistral`), Cohere (`cohere`), Groq (`groq`), Together AI (`together`), Fireworks AI (`fireworks`), DeepInfra (`deepinfra`), Perplexity (`perplexity`), Replicate (`replicate`), xAI (`xai`).
+OpenAI (`openai`), Anthropic (`anthropic`), Google (`google`), Ollama (`ollama`), Azure OpenAI (`azure`), AWS Bedrock (`aws`), Mistral AI (`mistral`), Cohere (`cohere`), Groq (`groq`), Together AI (`together`), Fireworks AI (`fireworks`), DeepInfra (`deepinfra`), Perplexity (`perplexity`), Replicate (`replicate`), xAI (`xai`), OpenRouter (`openrouter`).
 
 Built-in model data covers OpenAI, Anthropic and Google; models of the other providers, and additional providers, come from LiteLLM data once it is fetched. `getProvider(id).models` lists the model ids loaded for a provider.
 

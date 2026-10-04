@@ -31,6 +31,7 @@ export async function fetchLiteLLMData(): Promise<LiteLLMModelData> {
 
 const PROVIDER_MAPPINGS: Record<string, string> = {
   openai: 'openai',
+  'text-completion-openai': 'openai',
   azure: 'azure',
   azure_ai: 'azure',
   anthropic: 'anthropic',
@@ -68,19 +69,31 @@ const PROVIDER_MAPPINGS: Record<string, string> = {
   xai: 'xai',
 };
 
+function mapProvider(name: string): string | undefined {
+  const mapped = PROVIDER_MAPPINGS[name];
+  if (mapped) return mapped;
+  for (const [prefix, provider] of Object.entries(PROVIDER_MAPPINGS)) {
+    if (name.startsWith(prefix)) return provider;
+  }
+  return undefined;
+}
+
+/**
+ * The registry's provider id for a LiteLLM provider or a model id prefix:
+ * `gemini` and `vertex_ai` become `google`, `azure_ai` becomes `azure`, and
+ * names without a mapping (`openrouter`, `deepseek`) stay as they are.
+ */
+export function normalizeProviderId(name: string): string {
+  const id = name.toLowerCase();
+  return mapProvider(id) ?? id;
+}
+
 function normalizeProvider(litellmProvider: string | undefined, modelId: string): string {
   const normalizedProvider = litellmProvider?.toLowerCase();
   const normalizedModelId = modelId.toLowerCase();
 
   if (normalizedProvider) {
-    const normalized = PROVIDER_MAPPINGS[normalizedProvider];
-    if (normalized) return normalized;
-
-    for (const [prefix, provider] of Object.entries(PROVIDER_MAPPINGS)) {
-      if (normalizedProvider.startsWith(prefix)) {
-        return provider;
-      }
-    }
+    return mapProvider(normalizedProvider) ?? normalizedProvider;
   }
 
   const prefixMatch = /^([a-z_-]+)\//.exec(normalizedModelId);
@@ -123,6 +136,34 @@ function extractModelName(modelId: string): string {
   return modelId;
 }
 
+/**
+ * The model's name at its provider: the catalogue key without its leading
+ * provider segment (`openrouter/deepseek/deepseek-v4-pro` on `openrouter` is
+ * `deepseek/deepseek-v4-pro`). A leading segment that names no provider, like
+ * the quality in `low/1024-x-1024/gpt-image-1`, belongs to the name.
+ */
+function providerModelName(catalogId: string, provider: string): string {
+  const slash = catalogId.indexOf('/');
+  if (slash === -1) return catalogId;
+  return normalizeProviderId(catalogId.slice(0, slash)) === provider
+    ? catalogId.slice(slash + 1)
+    : catalogId;
+}
+
+function segmentCount(id: string): number {
+  return id.split('/').length;
+}
+
+/** Orders catalogue keys of one model from the most direct listing to the least. */
+function compareCatalogIds(a: string, b: string): number {
+  const bySegments = segmentCount(a) - segmentCount(b);
+  if (bySegments !== 0) return bySegments;
+  const lowerA = a.toLowerCase();
+  const lowerB = b.toLowerCase();
+  if (lowerA !== lowerB) return lowerA < lowerB ? -1 : 1;
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 function createDisplayName(modelId: string): string {
   const name = extractModelName(modelId);
 
@@ -134,6 +175,15 @@ function createDisplayName(modelId: string): string {
     .replace(/Ai/g, 'AI')
     .replace(/(\d+)k/gi, '$1K')
     .trim();
+}
+
+/** Drops floating point noise (`0.20879999999999999`) from a price per million tokens. */
+function roundPrice(perMillionTokens: number): number {
+  return Math.round(perMillionTokens * 1_000_000) / 1_000_000;
+}
+
+function perMillion(costPerToken: number): number {
+  return roundPrice(costPerToken * 1_000_000);
 }
 
 function calculatePricing(entry: LiteLLMModelEntry): ModelPricing {
@@ -152,10 +202,9 @@ function calculatePricing(entry: LiteLLMModelEntry): ModelPricing {
     outputCost = entry.output_cost_per_character * 4 * 1_000_000;
   }
 
-  const perMillion = (cost: number) => Math.round(cost * 1_000_000 * 1000) / 1000;
   return {
-    input: Math.round(inputCost * 1000) / 1000,
-    output: Math.round(outputCost * 1000) / 1000,
+    input: roundPrice(inputCost),
+    output: roundPrice(outputCost),
     ...(entry.cache_read_input_token_cost !== undefined && {
       inputCached: perMillion(entry.cache_read_input_token_cost),
     }),
@@ -165,24 +214,23 @@ function calculatePricing(entry: LiteLLMModelEntry): ModelPricing {
   };
 }
 
+/**
+ * Turns the LiteLLM catalogue into registry models: one model per provider
+ * and name, keeping the catalogue key as `catalogId`. When a provider lists
+ * a model under several keys (`deepseek-v4-pro` and `deepseek/deepseek-v4-pro`),
+ * the shortest key wins and the others become aliases, whatever the catalogue order.
+ */
 export function transformLiteLLMData(data: LiteLLMModelData): ModelInfo[] {
-  const models: ModelInfo[] = [];
-  const seenIds = new Set<string>();
+  const byModel = new Map<string, ModelInfo>();
 
-  for (const [modelId, entry] of Object.entries(data)) {
-    if (modelId.startsWith('sample_spec')) {
+  for (const [catalogId, entry] of Object.entries(data)) {
+    if (catalogId.startsWith('sample_spec')) {
       continue;
     }
 
-    const normalizedId = extractModelName(modelId).toLowerCase();
-
-    if (seenIds.has(normalizedId)) {
-      continue;
-    }
-    seenIds.add(normalizedId);
-
-    const provider = normalizeProvider(entry.litellm_provider, modelId);
-    const pricing = calculatePricing(entry);
+    const provider = normalizeProvider(entry.litellm_provider, catalogId);
+    const id = providerModelName(catalogId, provider);
+    const key = `${provider}/${id.toLowerCase()}`;
 
     const contextWindow = entry.max_input_tokens ?? entry.max_tokens ?? 4096;
     const maxOutputTokens = entry.max_output_tokens ?? entry.max_tokens;
@@ -192,10 +240,11 @@ export function transformLiteLLMData(data: LiteLLMModelData): ModelInfo[] {
       : false;
 
     const model: ModelInfo = {
-      id: extractModelName(modelId),
+      id,
       provider,
-      displayName: createDisplayName(modelId),
-      pricing,
+      catalogId,
+      displayName: createDisplayName(catalogId),
+      pricing: calculatePricing(entry),
       contextWindow,
       maxOutputTokens,
       capabilities: {
@@ -207,8 +256,28 @@ export function transformLiteLLMData(data: LiteLLMModelData): ModelInfo[] {
       deprecated: isDeprecated,
     };
 
-    models.push(model);
+    const existing = byModel.get(key);
+    if (!existing) {
+      byModel.set(key, model);
+      continue;
+    }
+
+    const [kept, dropped] =
+      compareCatalogIds(catalogId, existing.catalogId ?? existing.id) < 0
+        ? [model, existing]
+        : [existing, model];
+    const aliases = [...(dropped.aliases ?? []), ...(kept.aliases ?? [])];
+    if (dropped.catalogId) aliases.push(dropped.catalogId);
+    byModel.set(key, {
+      ...kept,
+      aliases: [...new Set(aliases)].sort(compareCatalogIds),
+    });
   }
 
-  return models.sort((a, b) => a.id.localeCompare(b.id));
+  return Array.from(byModel.values()).sort(
+    (a, b) =>
+      a.id.localeCompare(b.id) ||
+      a.provider.localeCompare(b.provider) ||
+      compareCatalogIds(a.catalogId ?? a.id, b.catalogId ?? b.id)
+  );
 }

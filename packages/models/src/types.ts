@@ -24,8 +24,14 @@ export const ModelPricingSchema = z.object({
 export type ModelPricing = z.infer<typeof ModelPricingSchema>;
 
 export const ModelInfoSchema = z.object({
+  /** The model's name at its provider, e.g. `gpt-6-luna` or `deepseek/deepseek-v4-pro` on OpenRouter. */
   id: z.string(),
   provider: z.string(),
+  /**
+   * The key the LiteLLM catalogue lists the model under, e.g. `openrouter/deepseek/deepseek-v4-pro`
+   * or `gpt-6-luna`. Absent on built-in models the catalogue does not list.
+   */
+  catalogId: z.string().optional(),
   displayName: z.string(),
   pricing: ModelPricingSchema,
   contextWindow: z.number(),

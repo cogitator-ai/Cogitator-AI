@@ -246,8 +246,9 @@ describe('ModelRegistry initialization', () => {
     });
     await reg.initialize();
 
-    expect(reg.getModel('mixed-case-model')?.id).toBe('Mixed-Case-Model');
-    expect(reg.getModel('openai/MIXED-CASE-MODEL')?.id).toBe('Mixed-Case-Model');
+    expect(reg.getModel('custom/MIXED-case-model')?.id).toBe('custom/Mixed-Case-Model');
+    expect(reg.getModel('mixed-case-model')?.id).toBe('custom/Mixed-Case-Model');
+    expect(reg.getModel('openai/MIXED-CASE-MODEL')?.id).toBe('custom/Mixed-Case-Model');
   });
 
   it('should merge fetched builtin updates without losing local metadata', async () => {
