@@ -1039,4 +1039,58 @@ describe('OpenAIBackend (Chat Completions wire API)', () => {
       expect(sent().messages[0]).toMatchObject({ role: 'system' });
     });
   });
+  describe('reported cost', () => {
+    it('reads the cost an OpenAI-compatible service adds to usage', async () => {
+      mockCreate.mockResolvedValueOnce({
+        id: 'chatcmpl-1',
+        choices: [{ message: { role: 'assistant', content: 'hi' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 6, completion_tokens: 10, total_tokens: 16, cost: 0.0000246 },
+      });
+
+      const response = await backend.chat({
+        model: 'deepseek/deepseek-v4-pro',
+        messages: [{ role: 'user', content: 'Say hi' }],
+      });
+
+      expect(response.usage).toMatchObject({ inputTokens: 6, outputTokens: 10, cost: 0.0000246 });
+    });
+
+    it('reads it from the final chunk of a stream', async () => {
+      mockCreate.mockResolvedValueOnce(
+        (async function* () {
+          yield { id: 'c', choices: [{ delta: { content: 'hi' }, finish_reason: 'stop' }] };
+          yield {
+            id: 'c',
+            choices: [],
+            usage: { prompt_tokens: 6, completion_tokens: 10, total_tokens: 16, cost: 0.00003 },
+          };
+        })()
+      );
+
+      const usages = [];
+      for await (const chunk of backend.chatStream({
+        model: 'deepseek/deepseek-v4-pro',
+        messages: [{ role: 'user', content: 'Say hi' }],
+      })) {
+        if (chunk.usage) usages.push(chunk.usage);
+      }
+
+      expect(usages.at(-1)).toMatchObject({ cost: 0.00003 });
+    });
+
+    it('leaves cost out when the service reports none or a bad value', async () => {
+      mockCreate.mockResolvedValueOnce({
+        id: 'chatcmpl-1',
+        choices: [{ message: { role: 'assistant', content: 'hi' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2, cost: 'free' },
+      });
+
+      const response = await backend.chat({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'Hi' }],
+      });
+
+      expect(response.usage).not.toHaveProperty('cost');
+    });
+  });
 });

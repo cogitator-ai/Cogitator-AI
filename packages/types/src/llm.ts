@@ -126,6 +126,11 @@ export interface ChatUsage {
   cacheWriteTokens?: number;
   /** Hidden reasoning tokens; already counted in `outputTokens`. */
   reasoningTokens?: number;
+  /**
+   * What the provider charged for this call in USD, when it reports it (OpenRouter does). The
+   * runtime prefers it over prices from the model registry.
+   */
+  cost?: number;
 }
 
 export interface ChatStreamChunk {

@@ -446,13 +446,21 @@ export function parseToolCallArguments(str: string, ctx: LLMErrorContext): Recor
 function toChatUsage(usage: OpenAI.CompletionUsage | null | undefined): ChatUsage {
   const cached = usage?.prompt_tokens_details?.cached_tokens;
   const reasoning = usage?.completion_tokens_details?.reasoning_tokens;
+  const cost = reportedCost(usage);
   return {
     inputTokens: usage?.prompt_tokens ?? 0,
     outputTokens: usage?.completion_tokens ?? 0,
     totalTokens: usage?.total_tokens ?? 0,
     ...(cached ? { cachedInputTokens: cached } : {}),
     ...(reasoning ? { reasoningTokens: reasoning } : {}),
+    ...(cost !== undefined ? { cost } : {}),
   };
+}
+
+/** The USD cost some OpenAI-compatible services add to `usage` (OpenRouter's `usage.cost`). */
+function reportedCost(usage: OpenAI.CompletionUsage | null | undefined): number | undefined {
+  const cost = (usage as { cost?: unknown } | null | undefined)?.cost;
+  return typeof cost === 'number' && Number.isFinite(cost) && cost >= 0 ? cost : undefined;
 }
 
 /**

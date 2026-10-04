@@ -64,7 +64,7 @@ const cost = calculateCost('claude-sonnet-5-5', {
 // 0.0156 (USD), or null when the model's price is unknown
 ```
 
-Cache reads and writes are charged at `inputCached` / `inputCacheWrite` where the model has them, and at the input price otherwise. The runtime uses `calculateCost()` with the shared registry for `RunResult.usage.cost`, so a model the registry does not know costs `0`.
+Cache reads and writes are charged at `inputCached` / `inputCacheWrite` where the model has them, and at the input price otherwise. `RunResult.usage.cost` adds up the cost of each model call. When the provider reports what a call cost (OpenRouter does, in `usage.cost`), the runtime takes that price, which also reflects which upstream served the call. Other calls are priced with `calculateCost()` on the shared registry, using the full model string the agent runs on, so a model the registry does not know and whose provider reports nothing costs `0`. Call `initializeModels()` at startup to price more than the built-in models.
 
 ## ModelRegistry
 

@@ -55,7 +55,7 @@ export class CostEstimator {
     const registry = getModelRegistry();
     await registry.initialize();
 
-    const modelInfo = registry.getModel(modelId);
+    const modelInfo = registry.getModel(modelString);
     const pricing = modelInfo?.pricing ?? null;
 
     if (!pricing) {

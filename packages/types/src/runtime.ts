@@ -204,6 +204,19 @@ export type ToolApprovalDecision = { approved: true } | { approved: false; reaso
  * Everything needed to continue a paused run, as plain JSON: keep it on your
  * server (it holds the conversation) and hand it to `cogitator.resume()`.
  */
+/** The part of a run's cost already counted, kept in checkpoints so a resumed run adds to it. */
+export interface RunCostState {
+  /** USD providers reported for their calls. */
+  reportedUsd: number;
+  /** Tokens of the calls whose provider reported no cost. */
+  unreported: {
+    inputTokens: number;
+    outputTokens: number;
+    cachedInputTokens: number;
+    cacheWriteTokens: number;
+  };
+}
+
 export interface RunCheckpoint {
   version: 1;
   runId: string;
@@ -233,6 +246,12 @@ export interface RunCheckpoint {
     cachedInputTokens: number;
     cacheWriteTokens: number;
     reasoningTokens: number;
+    /**
+     * Cost so far: USD the providers reported, and the tokens of calls that reported none (priced
+     * from the model registry). Missing in checkpoints saved before it existed, which then price
+     * every token from the registry.
+     */
+    cost?: RunCostState;
   };
   reasoning: string[];
   startedAt: number;

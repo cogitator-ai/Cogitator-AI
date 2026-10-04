@@ -27,15 +27,15 @@ import type {
   ToolApprovalDecision,
   ToolApprovalRequest,
 } from '@cogitator-ai/types';
-import { calculateCost as calculateModelCost, type TokenUsageForCost } from '@cogitator-ai/models';
 import { type Agent } from './agent';
 import { ToolRegistry } from './registry';
-import { createLLMBackend, parseModel } from './llm/index';
+import { createLLMBackend } from './llm/index';
 import { isLLMProvider } from './llm/providers';
 import { createLLMBackendFromPlugin, hasLLMPlugin } from './llm/plugin';
 import { withLLMRetry } from './llm/retry';
 import { PiiMasker, withPiiMasking } from './security/pii';
 import { createLoggerFromConfig, getLogger, setLogger } from './logger';
+import { RunCostMeter } from './cogitator/run-cost';
 import {
   type InitializerState,
   initializeMemory,
@@ -435,6 +435,7 @@ export class Cogitator {
       let cachedInputTokens = checkpoint?.usage.cachedInputTokens ?? 0;
       let cacheWriteTokens = checkpoint?.usage.cacheWriteTokens ?? 0;
       let reasoningTokens = checkpoint?.usage.reasoningTokens ?? 0;
+      const costMeter = new RunCostMeter(checkpoint?.usage.cost, checkpoint?.usage);
       const reasoningParts: string[] = [...(checkpoint?.reasoning ?? [])];
       let reasoning = options.reasoning ?? active.config.reasoning;
       const promptCache = this.config.llm?.promptCache ?? {};
@@ -813,6 +814,7 @@ export class Cogitator {
         cachedInputTokens += response.usage.cachedInputTokens ?? 0;
         cacheWriteTokens += response.usage.cacheWriteTokens ?? 0;
         reasoningTokens += response.usage.reasoningTokens ?? 0;
+        costMeter.add(response.usage);
         if (response.reasoning) reasoningParts.push(response.reasoning);
 
         if (
@@ -923,6 +925,7 @@ export class Cogitator {
             cachedInputTokens,
             cacheWriteTokens,
             reasoningTokens,
+            cost: costMeter.state(),
           },
           reasoning: reasoningParts,
           startedAt: checkpoint?.startedAt ?? startTime,
@@ -940,12 +943,7 @@ export class Cogitator {
             inputTokens: totalInputTokens,
             outputTokens: totalOutputTokens,
             totalTokens: totalInputTokens + totalOutputTokens,
-            cost: this.calculateCost(effectiveModel, {
-              inputTokens: totalInputTokens,
-              outputTokens: totalOutputTokens,
-              cachedInputTokens,
-              cacheWriteTokens,
-            }),
+            cost: costMeter.total(effectiveModel),
             duration: Date.now() - startTime,
           },
           ...(reasoningParts.length > 0 && { reasoning: reasoningParts.join('\n\n') }),
@@ -1008,12 +1006,7 @@ export class Cogitator {
       );
       spans.unshift(rootSpan);
 
-      const runCost = this.calculateCost(effectiveModel, {
-        inputTokens: totalInputTokens,
-        outputTokens: totalOutputTokens,
-        cachedInputTokens,
-        cacheWriteTokens,
-      });
+      const runCost = costMeter.total(effectiveModel);
 
       if (this.state.costRouter) {
         this.state.costRouter.recordCost({
@@ -1451,11 +1444,6 @@ export class Cogitator {
       message: `Unknown LLM provider "${name}": not a built-in provider, a backend in llm.backends or a registered plugin`,
       code: ErrorCode.CONFIGURATION_ERROR,
     });
-  }
-
-  private calculateCost(model: string, usage: TokenUsageForCost): number {
-    const { model: modelName } = parseModel(model);
-    return calculateModelCost(modelName, usage) ?? 0;
   }
 
   /**
