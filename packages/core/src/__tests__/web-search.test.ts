@@ -335,6 +335,7 @@ describe('web_search tool', () => {
         include_domains: ['reuters.com', 'apnews.com'],
         exclude_domains: ['msn.com'],
         include_published_date: true,
+        filter_by_published_date: true,
       });
       expect(result).toMatchObject({
         results: [{ url: 'https://reuters.com/a', publishedAt: '2026-10-03T14:00:00.000Z' }],
@@ -350,6 +351,7 @@ describe('web_search tool', () => {
       const body = JSON.parse(mockFetch.mock.calls[0][1].body);
       expect(body.topic).toBe('general');
       expect(body).not.toHaveProperty('time_range');
+      expect(body).not.toHaveProperty('filter_by_published_date');
       expect(body).not.toHaveProperty('include_domains');
       expect(body).not.toHaveProperty('exclude_domains');
     });
@@ -537,6 +539,7 @@ describe('web_search tool', () => {
         language: 'cs',
         start_date: '2026-09-01',
         end_date: '2026-09-30',
+        filter_by_published_date: true,
         include_raw_content: 'markdown',
         search_depth: 'fast',
       });

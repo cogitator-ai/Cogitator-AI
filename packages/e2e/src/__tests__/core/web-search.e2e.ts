@@ -46,18 +46,16 @@ describe.skipIf(!tavilyKey)('Core: web search on Tavily', () => {
     for (const r of result.results) expect(hostOf(r.url)).not.toMatch(/(^|\.)wikipedia\.org$/);
   });
 
-  it('keeps results to a date range', { timeout: 60_000 }, async () => {
+  it('keeps every result inside a date range', { timeout: 60_000 }, async () => {
     const result = (await search.execute(
       { query: 'space telescope discovery', dateRange: { from: '2026-09-01', to: '2026-09-15' } },
       ctx
     )) as SearchResponse;
 
-    const dates = result.results.flatMap((r) =>
-      r.publishedAt ? [r.publishedAt.slice(0, 10)] : []
-    );
-    expect(dates.length).toBeGreaterThan(0);
-    for (const date of dates) {
-      expect(date >= '2026-09-01' && date <= '2026-09-15').toBe(true);
+    expect(result.results.length).toBeGreaterThan(0);
+    for (const r of result.results) {
+      const day = r.publishedAt?.slice(0, 10) ?? 'undated';
+      expect(day >= '2026-09-01' && day <= '2026-09-15', `${r.url} ${day}`).toBe(true);
     }
   });
 

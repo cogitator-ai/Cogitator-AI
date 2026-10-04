@@ -228,6 +228,7 @@ async function searchTavily(
         include_answer: request.includeAnswer,
         topic: request.topic,
         include_published_date: true,
+        ...((request.recency ?? request.dateRange) && { filter_by_published_date: true }),
         ...(request.recency && { time_range: request.recency }),
         ...(request.dateRange && {
           start_date: request.dateRange.from,
