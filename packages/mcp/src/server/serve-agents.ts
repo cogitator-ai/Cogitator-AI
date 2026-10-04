@@ -196,8 +196,16 @@ function defineTool<TParams>(definition: {
 }
 
 function toToolName(name: string): string {
-  const cleaned = name.replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '');
+  const cleaned = trimUnderscores(name.replace(/[^a-zA-Z0-9_-]+/g, '_'));
   return (cleaned || 'agent').slice(0, 56);
+}
+
+function trimUnderscores(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value[start] === '_') start++;
+  while (end > start && value[end - 1] === '_') end--;
+  return value.slice(start, end);
 }
 
 function firstSentence(text: string): string {

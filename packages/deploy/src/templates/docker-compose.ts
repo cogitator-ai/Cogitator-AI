@@ -7,10 +7,16 @@ function yamlString(value: string): string {
   return JSON.stringify(value);
 }
 
+function stripTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === '/') end--;
+  return value.slice(0, end);
+}
+
 export function imageTag(config: DeployConfig): string {
   const image = config.image ?? 'cogitator-app';
   return config.registry
-    ? `${config.registry.replace(/\/+$/, '')}/${image}:latest`
+    ? `${stripTrailingSlashes(config.registry)}/${image}:latest`
     : `${image}:latest`;
 }
 
