@@ -1,5 +1,18 @@
 # @cogitator-ai/worker
 
+## 0.8.0
+
+### Minor Changes
+
+- [#110](https://github.com/cogitator-ai/Cogitator-AI/pull/110) [`a74da9a`](https://github.com/cogitator-ai/Cogitator-AI/commit/a74da9aa11d338175c7a929fedb98d887e078406) - Queued agents now do everything an in-process agent does with its answer and its bill. A job result carries `structured` (the validated answer of a JSON schema agent), the reasoning summary and `usage` with the run's cost, so a producer no longer parses JSON from `output` or prices tokens itself. `serializeAgent(agent)` builds a job from an existing agent, turning its Zod response schema into JSON Schema that the worker turns back into a schema, and carries its reasoning effort and `topP`. The redis config takes a `url` (`redis://`, or `rediss://` for TLS) with a username and a database, and explicit fields override it. Cluster nodes get the same username, password and TLS. `tokenUsage` stays for compatibility and is deprecated.
+
+### Patch Changes
+
+- Updated dependencies [[`a74da9a`](https://github.com/cogitator-ai/Cogitator-AI/commit/a74da9aa11d338175c7a929fedb98d887e078406), [`a74da9a`](https://github.com/cogitator-ai/Cogitator-AI/commit/a74da9aa11d338175c7a929fedb98d887e078406), [`a74da9a`](https://github.com/cogitator-ai/Cogitator-AI/commit/a74da9aa11d338175c7a929fedb98d887e078406), [`a74da9a`](https://github.com/cogitator-ai/Cogitator-AI/commit/a74da9aa11d338175c7a929fedb98d887e078406), [`a74da9a`](https://github.com/cogitator-ai/Cogitator-AI/commit/a74da9aa11d338175c7a929fedb98d887e078406), [`a74da9a`](https://github.com/cogitator-ai/Cogitator-AI/commit/a74da9aa11d338175c7a929fedb98d887e078406)]:
+  - @cogitator-ai/core@0.28.0
+  - @cogitator-ai/swarms@0.10.0
+  - @cogitator-ai/types@0.31.0
+
 ## 0.7.3
 
 ### Patch Changes
