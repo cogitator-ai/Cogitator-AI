@@ -1,6 +1,9 @@
 {
   "$schema": "https://unpkg.com/@changesets/config@4.0.1/schema.json",
-  "changelog": "@changesets/cli/changelog",
+  "changelog": [
+    "./changelog.cjs",
+    { "repo": "cogitator-ai/Cogitator-AI", "maintainers": ["eL1fe"] }
+  ],
   "commit": false,
   "fixed": [],
   "linked": [],
