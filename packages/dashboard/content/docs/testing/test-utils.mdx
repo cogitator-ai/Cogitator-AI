@@ -145,8 +145,6 @@ expect(
 ).toBe(true);
 ```
 
-The mock records each request object as it was passed in, and the runtime keeps appending to the same `messages` array during a run. After the run, the `messages` of every recorded request show the conversation as it ended (including the final answer), not what that request contained. Assert on `model`, `tools` and the leading messages, or use your own scripted backend (below) that copies `messages` on the way in.
-
 `provider` of the mock is always `'openai'`; routing goes by the `llm.backends` key, not by this field.
 
 ### Your Own Scripted Backend
@@ -181,7 +179,7 @@ const backend: LLMBackend = {
 const cog = new Cogitator({ llm: { backends: { mock: backend } } });
 ```
 
-Copying `messages` on the way in gives you a true snapshot of every request.
+Copy `messages` on the way in, as `MockLLMBackend` does, so each recorded request keeps what was sent at that moment rather than the conversation as it ended.
 
 ## MockMemoryAdapter
 
