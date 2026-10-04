@@ -1,0 +1,914 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cogitator Gauntlet</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600&family=Geist:wght@400;500&family=Share+Tech+Mono&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #07080a;
+        --text: #ededef;
+        --muted: #a1a5ae;
+        --faint: #7c818b;
+        --brass: #c9a45c;
+        --brass-dim: #8a6f3a;
+        --phosphor: #a8d9c7;
+        --mint: #7fd4b5;
+        --screen-text: #c6e6da;
+        --screen-muted: #7fa89a;
+        --screen-faint: #557a6e;
+        --pass: #7fd4b5;
+        --fail: #ff6b6b;
+        --warn: #d8b26a;
+        --skip: #6b7280;
+        --screen-font: 'Share Tech Mono', ui-monospace, monospace;
+        --display-font: 'Cinzel', Georgia, serif;
+        --body-font: 'Geist', ui-sans-serif, system-ui, sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(80% 50% at 50% -10%, rgb(255 179 71 / 0.07), transparent 70%), var(--bg);
+        color: var(--text);
+        font-family: var(--body-font);
+      }
+
+      .wrap {
+        max-width: 1500px;
+        margin: 0 auto;
+        padding: 28px 24px 60px;
+      }
+
+      .vox {
+        font-family: var(--screen-font);
+        font-size: 12px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--brass);
+      }
+
+      header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 18px;
+        margin-bottom: 22px;
+      }
+
+      h1 {
+        margin: 6px 0 0;
+        font-family: var(--display-font);
+        font-weight: 600;
+        font-size: 34px;
+        letter-spacing: 0.01em;
+      }
+
+      h1 span {
+        color: var(--muted);
+      }
+
+      .models {
+        margin-top: 8px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+
+      .chip {
+        font-family: var(--screen-font);
+        font-size: 11px;
+        letter-spacing: 0.06em;
+        padding: 2px 8px;
+        border-radius: 4px;
+        border: 1px solid rgb(201 164 92 / 0.35);
+        background: linear-gradient(180deg, #1d1912, #0c0b09);
+        color: #d9bf86;
+        white-space: nowrap;
+      }
+
+      .readouts {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .readout {
+        min-width: 112px;
+        padding: 8px 14px;
+        border-radius: 8px;
+        border: 1px solid rgb(201 164 92 / 0.3);
+        background: radial-gradient(120% 120% at 50% 30%, #0c1c1a, #050b0a);
+        box-shadow:
+          inset 0 0 18px rgb(0 0 0 / 0.85),
+          0 0 0 3px #0b0b0c;
+        font-family: var(--screen-font);
+      }
+
+      .readout b {
+        display: block;
+        font-weight: 400;
+        font-size: 20px;
+        color: var(--phosphor);
+        text-shadow: 0 0 6px rgb(127 212 181 / 0.35);
+      }
+
+      .readout small {
+        font-size: 10px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--brass);
+      }
+
+      .verdict b {
+        letter-spacing: 0.12em;
+      }
+
+      .verdict[data-state='passed'] b {
+        color: var(--pass);
+      }
+
+      .verdict[data-state='failed'] b {
+        color: var(--fail);
+        text-shadow: 0 0 8px rgb(255 107 107 / 0.4);
+      }
+
+      .verdict[data-state='running'] b {
+        color: var(--warn);
+      }
+
+      .progress {
+        height: 6px;
+        border-radius: 3px;
+        background: repeating-linear-gradient(90deg, #121315 0 6px, #0a0a0c 6px 8px);
+        overflow: hidden;
+        margin-bottom: 26px;
+        box-shadow: inset 0 0 2px #000;
+      }
+
+      .progress div {
+        height: 100%;
+        width: 0;
+        background: linear-gradient(90deg, var(--brass-dim), var(--brass));
+        box-shadow: 0 0 10px rgb(201 164 92 / 0.6);
+        transition: width 0.4s ease;
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 520px);
+        gap: 24px;
+        align-items: start;
+      }
+
+      @media (max-width: 1100px) {
+        .layout {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+        gap: 16px;
+      }
+
+      .bezel {
+        position: relative;
+        border-radius: 14px;
+        padding: 8px 12px 12px;
+        background:
+          linear-gradient(180deg, rgb(255 255 255 / 0.06), transparent 18%),
+          repeating-linear-gradient(90deg, rgb(255 255 255 / 0.012) 0 2px, transparent 2px 5px),
+          linear-gradient(180deg, #26272a 0%, #151618 45%, #1b1c1f 100%);
+        box-shadow:
+          inset 0 1px 0 rgb(255 255 255 / 0.09),
+          inset 0 -2px 0 rgb(0 0 0 / 0.7),
+          0 0 0 1px #000,
+          0 30px 60px -35px #000;
+      }
+
+      .tile {
+        cursor: pointer;
+        transition: transform 0.15s ease;
+      }
+
+      .tile:hover {
+        transform: translateY(-2px);
+      }
+
+      .tile[aria-selected='true'] {
+        box-shadow:
+          inset 0 1px 0 rgb(255 255 255 / 0.09),
+          0 0 0 1px var(--brass),
+          0 0 30px -6px rgb(201 164 92 / 0.45);
+      }
+
+      .plate {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 28px;
+        padding: 0 4px 6px;
+      }
+
+      .rivet {
+        width: 6px;
+        height: 6px;
+        flex: none;
+        border-radius: 999px;
+        background: radial-gradient(circle at 35% 35%, #e2c58c, #8a6f3a 55%, #3b2f18);
+        box-shadow: 0 1px 1px rgb(0 0 0 / 0.8);
+      }
+
+      .lamp {
+        width: 8px;
+        height: 8px;
+        flex: none;
+        border-radius: 999px;
+        background: #1d2a22;
+        box-shadow: inset 0 1px 1px rgb(0 0 0 / 0.8);
+      }
+
+      .lamp[data-status='running'] {
+        background: #ffb347;
+        box-shadow: 0 0 8px #ffb347;
+        animation: blink 0.9s steps(1) infinite;
+      }
+
+      .lamp[data-status='passed'] {
+        background: #00ff88;
+        box-shadow: 0 0 8px #00ff88;
+      }
+
+      .lamp[data-status='failed'] {
+        background: #ff4d4d;
+        box-shadow: 0 0 9px #ff4d4d;
+      }
+
+      .lamp[data-status='blocked'] {
+        background: #b07a2a;
+        box-shadow: 0 0 6px #b07a2a;
+      }
+
+      .lamp[data-status='skipped'] {
+        background: #3a3d44;
+      }
+
+      @keyframes blink {
+        50% {
+          opacity: 0.25;
+        }
+      }
+
+      .title {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        text-align: center;
+        font-family: var(--screen-font);
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--phosphor);
+        text-shadow: 0 0 6px rgb(127 212 181 / 0.35);
+      }
+
+      .screen {
+        position: relative;
+        isolation: isolate;
+        overflow: hidden;
+        border-radius: 8px;
+        padding: 12px 14px;
+        color: var(--screen-text);
+        background: radial-gradient(120% 95% at 50% 35%, #0c1c1a 0%, #081413 55%, #040a0a 100%);
+        box-shadow:
+          inset 0 0 0 1px rgb(127 212 181 / 0.1),
+          inset 0 0 50px rgb(0 0 0 / 0.9),
+          0 0 0 3px #0b0b0c,
+          0 0 0 4px rgb(201 164 92 / 0.25);
+        font-family: var(--screen-font);
+      }
+
+      .screen::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+        pointer-events: none;
+        background:
+          repeating-linear-gradient(to bottom, rgb(0 0 0 / 0.2) 0 1px, transparent 1px 3px),
+          radial-gradient(130% 100% at 50% 50%, transparent 55%, rgb(0 0 0 / 0.5) 100%);
+      }
+
+      .tile .screen {
+        min-height: 128px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .desc {
+        font-family: var(--body-font);
+        font-size: 12.5px;
+        line-height: 1.45;
+        color: var(--screen-muted);
+      }
+
+      .pkgs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+      }
+
+      .pkg {
+        font-size: 10px;
+        padding: 1px 6px;
+        border-radius: 3px;
+        border: 1px solid rgb(127 212 181 / 0.18);
+        color: var(--screen-muted);
+      }
+
+      .meta {
+        margin-top: auto;
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 11px;
+        color: var(--screen-faint);
+      }
+
+      .meta .status {
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+
+      .status[data-status='passed'] {
+        color: var(--pass);
+      }
+
+      .status[data-status='failed'] {
+        color: var(--fail);
+      }
+
+      .status[data-status='running'] {
+        color: var(--warn);
+      }
+
+      .status[data-status='blocked'] {
+        color: #c48a3a;
+      }
+
+      .reason {
+        font-size: 11px;
+        color: #e0a26a;
+        line-height: 1.4;
+        overflow: hidden;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+      }
+
+      .detail {
+        position: sticky;
+        top: 20px;
+      }
+
+      .detail .screen {
+        max-height: calc(100vh - 120px);
+        overflow-y: auto;
+        padding: 16px 18px;
+      }
+
+      .detail h2 {
+        margin: 0 0 4px;
+        font-family: var(--display-font);
+        font-weight: 600;
+        font-size: 22px;
+        color: var(--screen-text);
+      }
+
+      .section {
+        margin-top: 16px;
+      }
+
+      .section > .label {
+        font-size: 10.5px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--brass);
+        margin-bottom: 8px;
+      }
+
+      .check {
+        border-left: 2px solid rgb(127 212 181 / 0.25);
+        padding: 4px 0 6px 10px;
+        margin-bottom: 6px;
+      }
+
+      .check[data-ok='false'] {
+        border-color: var(--fail);
+      }
+
+      .check .head {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        font-size: 13px;
+      }
+
+      .check .head .mark {
+        color: var(--pass);
+      }
+
+      .check[data-ok='false'] .head .mark,
+      .check .error {
+        color: var(--fail);
+      }
+
+      .check .error {
+        font-size: 12px;
+        margin-top: 4px;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .evidence {
+        margin-top: 4px;
+        font-size: 11.5px;
+        color: var(--screen-muted);
+      }
+
+      .evidence div {
+        display: grid;
+        grid-template-columns: minmax(90px, max-content) minmax(0, 1fr);
+        gap: 8px;
+        padding: 1px 0;
+      }
+
+      .evidence span:first-child {
+        color: var(--screen-faint);
+      }
+
+      .evidence span:last-child {
+        white-space: pre-wrap;
+        word-break: break-word;
+        color: var(--screen-text);
+      }
+
+      .logs {
+        font-size: 11.5px;
+        line-height: 1.55;
+        color: var(--screen-muted);
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .logs time {
+        color: var(--screen-faint);
+        margin-right: 8px;
+      }
+
+      .empty {
+        color: var(--screen-faint);
+        font-size: 12px;
+      }
+
+      .coverage {
+        margin-top: 34px;
+      }
+
+      .coverage .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 10px;
+      }
+
+      .cov {
+        font-family: var(--screen-font);
+        font-size: 11px;
+        padding: 3px 8px;
+        border-radius: 4px;
+        border: 1px solid rgb(255 255 255 / 0.08);
+        background: #0c0d10;
+        color: var(--faint);
+      }
+
+      .cov[data-status='passed'] {
+        border-color: rgb(127 212 181 / 0.45);
+        color: var(--pass);
+      }
+
+      .cov[data-status='failed'] {
+        border-color: rgb(255 107 107 / 0.5);
+        color: var(--fail);
+      }
+
+      .cov[data-status='running'] {
+        border-color: rgb(216 178 106 / 0.5);
+        color: var(--warn);
+      }
+
+      .cov[data-status='uncovered'] {
+        border-style: dashed;
+        border-color: var(--fail);
+        color: var(--fail);
+      }
+
+      .connection {
+        font-family: var(--screen-font);
+        font-size: 11px;
+        color: var(--faint);
+      }
+
+      .connection[data-live='true']::before {
+        content: '';
+        display: inline-block;
+        width: 6px;
+        height: 6px;
+        margin-right: 6px;
+        border-radius: 999px;
+        background: #00ff88;
+        box-shadow: 0 0 6px #00ff88;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .lamp[data-status='running'] {
+          animation: none;
+        }
+        .tile {
+          transition: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <div>
+          <div class="vox">+++ Proving ground +++</div>
+          <h1>Cogitator <span>Gauntlet</span></h1>
+          <div class="models" id="models"></div>
+        </div>
+        <div class="readouts">
+          <div class="readout verdict" id="verdict" data-state="running">
+            <small>Verdict</small><b>Running</b>
+          </div>
+          <div class="readout"><small>Passed</small><b id="count-passed">0</b></div>
+          <div class="readout"><small>Failed</small><b id="count-failed">0</b></div>
+          <div class="readout"><small>Skipped</small><b id="count-skipped">0</b></div>
+          <div class="readout"><small>Tokens</small><b id="tokens">0</b></div>
+          <div class="readout"><small>Cost</small><b id="cost">$0.0000</b></div>
+          <div class="readout"><small>Elapsed</small><b id="elapsed">0.0s</b></div>
+        </div>
+      </header>
+      <div class="progress"><div id="progress"></div></div>
+
+      <div class="layout">
+        <div>
+          <div class="grid" id="grid"></div>
+          <div class="coverage">
+            <div class="vox">+++ Package coverage +++</div>
+            <div class="row" id="coverage"></div>
+          </div>
+        </div>
+        <aside class="detail">
+          <div class="bezel">
+            <div class="plate">
+              <span class="rivet"></span><span class="lamp" id="detail-lamp"></span>
+              <span class="title" id="detail-title">Select a stage</span>
+              <span class="lamp"></span><span class="rivet"></span>
+            </div>
+            <div class="screen" id="detail">
+              <div class="empty">Pick a stage to see its checks, evidence and logs.</div>
+            </div>
+          </div>
+          <p class="connection" id="connection">Connecting</p>
+        </aside>
+      </div>
+    </div>
+
+    <script>
+      const DONE = new Set(['passed', 'failed', 'skipped', 'blocked']);
+      let report = null;
+      let selected = null;
+
+      const $ = (id) => document.getElementById(id);
+      const el = (tag, attrs = {}, ...children) => {
+        const node = document.createElement(tag);
+        for (const [key, value] of Object.entries(attrs)) {
+          if (key === 'text') node.textContent = value;
+          else if (key.startsWith('on')) node.addEventListener(key.slice(2), value);
+          else node.setAttribute(key, value);
+        }
+        for (const child of children) if (child) node.append(child);
+        return node;
+      };
+      const seconds = (ms) => (ms == null ? '' : `${(ms / 1000).toFixed(1)}s`);
+      const money = (usd) => `$${usd.toFixed(4)}`;
+      const time = (at) => new Date(at).toLocaleTimeString([], { hour12: false });
+      const format = (value) =>
+        typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+
+      function apply(event) {
+        if (event.type === 'snapshot' || event.type === 'run:start' || event.type === 'run:end') {
+          report = event.report;
+          if (!selected) {
+            selected = report.stages[0]?.id ?? null;
+          }
+          renderAll();
+          return;
+        }
+        if (!report) return;
+        const result = report.results[event.stageId ?? event.result?.id];
+        switch (event.type) {
+          case 'stage:start':
+            result.status = 'running';
+            result.startedAt = event.at;
+            break;
+          case 'stage:check':
+            result.checks.push(event.check);
+            break;
+          case 'stage:log':
+            result.logs.push(event.line);
+            break;
+          case 'stage:usage':
+            result.usage = event.usage;
+            report.usage = event.total;
+            break;
+          case 'stage:end':
+            report.results[event.result.id] = event.result;
+            break;
+        }
+        renderAll();
+      }
+
+      function renderHeader() {
+        const results = Object.values(report.results);
+        const count = (status) => results.filter((r) => r.status === status).length;
+        $('count-passed').textContent = count('passed');
+        $('count-failed').textContent = count('failed');
+        $('count-skipped').textContent = count('skipped') + count('blocked');
+        $('tokens').textContent = (
+          report.usage.inputTokens + report.usage.outputTokens
+        ).toLocaleString('en-US');
+        $('cost').textContent = money(report.usage.costUsd);
+        const done = results.filter((r) => DONE.has(r.status)).length;
+        $('progress').style.width = `${results.length ? (done / results.length) * 100 : 0}%`;
+
+        const verdict = $('verdict');
+        const state = report.passed === undefined ? 'running' : report.passed ? 'passed' : 'failed';
+        verdict.dataset.state = state;
+        verdict.querySelector('b').textContent = {
+          running: 'Running',
+          passed: 'Passed',
+          failed: 'Failed',
+        }[state];
+
+        const models = $('models');
+        models.replaceChildren(
+          ...report.models.map((model) => el('span', { class: 'chip', text: model }))
+        );
+      }
+
+      function renderGrid() {
+        const grid = $('grid');
+        grid.replaceChildren(
+          ...report.stages.map((stage) => {
+            const result = report.results[stage.id];
+            const passedChecks = result.checks.filter((c) => c.ok).length;
+            return el(
+              'div',
+              {
+                class: 'bezel tile',
+                'aria-selected': String(stage.id === selected),
+                onclick: () => {
+                  selected = stage.id;
+                  renderAll();
+                },
+              },
+              el(
+                'div',
+                { class: 'plate' },
+                el('span', { class: 'rivet' }),
+                el('span', { class: 'lamp', 'data-status': result.status }),
+                el('span', { class: 'title', text: stage.title }),
+                el('span', { class: 'rivet' })
+              ),
+              el(
+                'div',
+                { class: 'screen' },
+                el('div', { class: 'desc', text: stage.description }),
+                el(
+                  'div',
+                  { class: 'pkgs' },
+                  ...stage.packages.map((name) =>
+                    el('span', { class: 'pkg', text: name.replace('@cogitator-ai/', '') })
+                  )
+                ),
+                result.reason && result.status !== 'passed'
+                  ? el('div', { class: 'reason', text: result.reason })
+                  : null,
+                el(
+                  'div',
+                  { class: 'meta' },
+                  el('span', {
+                    class: 'status',
+                    'data-status': result.status,
+                    text: result.status,
+                  }),
+                  el('span', {
+                    text: [
+                      result.checks.length ? `${passedChecks}/${result.checks.length} checks` : '',
+                      seconds(result.durationMs),
+                      result.usage.calls ? money(result.usage.costUsd) : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' · '),
+                  })
+                )
+              )
+            );
+          })
+        );
+      }
+
+      function renderDetail() {
+        const stage = report.stages.find((s) => s.id === selected);
+        const target = $('detail');
+        if (!stage) return;
+        const result = report.results[stage.id];
+        $('detail-title').textContent = stage.title;
+        $('detail-lamp').dataset.status = result.status;
+
+        const checks = result.checks.length
+          ? result.checks.map((check) =>
+              el(
+                'div',
+                { class: 'check', 'data-ok': String(check.ok) },
+                el(
+                  'div',
+                  { class: 'head' },
+                  el(
+                    'span',
+                    {},
+                    el('span', { class: 'mark', text: check.ok ? '✓ ' : '✗ ' }),
+                    check.name
+                  ),
+                  el('span', { class: 'empty', text: seconds(check.durationMs) })
+                ),
+                check.error ? el('div', { class: 'error', text: check.error }) : null,
+                Object.keys(check.evidence).length
+                  ? el(
+                      'div',
+                      { class: 'evidence' },
+                      ...Object.entries(check.evidence).map(([key, value]) =>
+                        el(
+                          'div',
+                          {},
+                          el('span', { text: key }),
+                          el('span', { text: format(value) })
+                        )
+                      )
+                    )
+                  : null
+              )
+            )
+          : [
+              el('div', {
+                class: 'empty',
+                text: result.status === 'pending' ? 'Waiting to run.' : 'No checks recorded.',
+              }),
+            ];
+
+        const logs = result.logs.length
+          ? el(
+              'div',
+              { class: 'logs' },
+              ...result.logs.map((line) =>
+                el('div', {}, el('time', { text: time(line.at) }), line.message)
+              )
+            )
+          : el('div', { class: 'empty', text: 'No log lines.' });
+
+        const sections = [
+          el('h2', { text: stage.title }),
+          el('div', { class: 'desc', text: stage.description }),
+          result.reason
+            ? el(
+                'div',
+                { class: 'section' },
+                el('div', {
+                  class: 'label',
+                  text: result.status === 'failed' ? 'Failure' : 'Reason',
+                }),
+                el('div', { class: 'reason', text: result.reason })
+              )
+            : null,
+          el(
+            'div',
+            { class: 'section' },
+            el('div', { class: 'label', text: 'Model usage' }),
+            el(
+              'div',
+              { class: 'evidence' },
+              el(
+                'div',
+                {},
+                el('span', { text: 'calls' }),
+                el('span', { text: String(result.usage.calls) })
+              ),
+              el(
+                'div',
+                {},
+                el('span', { text: 'tokens' }),
+                el('span', {
+                  text: `${result.usage.inputTokens} in / ${result.usage.outputTokens} out`,
+                })
+              ),
+              el(
+                'div',
+                {},
+                el('span', { text: 'cost' }),
+                el('span', { text: money(result.usage.costUsd) })
+              )
+            )
+          ),
+          el(
+            'div',
+            { class: 'section' },
+            el('div', { class: 'label', text: `Checks (${result.checks.length})` }),
+            ...checks
+          ),
+          el('div', { class: 'section' }, el('div', { class: 'label', text: 'Log' }), logs),
+        ];
+        target.replaceChildren(...sections.filter(Boolean));
+      }
+
+      function renderCoverage() {
+        const rank = { failed: 5, running: 4, blocked: 3, passed: 2, skipped: 1, pending: 0 };
+        $('coverage').replaceChildren(
+          ...Object.entries(report.coverage)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([name, stages]) => {
+              let status = stages.length ? 'pending' : 'uncovered';
+              for (const id of stages) {
+                const s = report.results[id]?.status;
+                if (s && rank[s] > (rank[status] ?? -1)) status = s;
+              }
+              return el('span', {
+                class: 'cov',
+                'data-status': status,
+                title: stages.length
+                  ? `Exercised by: ${stages.join(', ')}`
+                  : 'No stage exercises this package',
+                text: name.replace('@cogitator-ai/', ''),
+              });
+            })
+        );
+      }
+
+      function renderAll() {
+        if (!report) return;
+        renderHeader();
+        renderGrid();
+        renderDetail();
+        renderCoverage();
+      }
+
+      setInterval(() => {
+        if (!report) return;
+        const end = report.finishedAt ?? Date.now();
+        $('elapsed').textContent = seconds(end - report.startedAt);
+      }, 200);
+
+      const source = new EventSource('/events');
+      source.onopen = () => {
+        $('connection').textContent = 'Live';
+        $('connection').dataset.live = 'true';
+      };
+      source.onerror = () => {
+        $('connection').textContent = report?.finishedAt
+          ? 'Run finished, stream closed'
+          : 'Reconnecting';
+        $('connection').dataset.live = 'false';
+      };
+      source.onmessage = (message) => apply(JSON.parse(message.data));
+    </script>
+  </body>
+</html>

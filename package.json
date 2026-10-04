@@ -34,7 +34,8 @@
     "dashboard:start": "pnpm --filter @cogitator-ai/dashboard start",
     "services": "docker-compose up -d",
     "services:down": "docker-compose down",
-    "start": "pnpm build && concurrently \"pnpm services\" \"pnpm dashboard\""
+    "start": "pnpm build && concurrently \"pnpm services\" \"pnpm dashboard\"",
+    "gauntlet": "pnpm --filter @cogitator-ai/gauntlet start"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.3.0",

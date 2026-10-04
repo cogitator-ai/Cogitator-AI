@@ -68,6 +68,7 @@ Cogitator-AI/
 │   ├── create-cogitator-app/  # Project scaffolder
 │   ├── test-utils/            # Mock backends, fixtures and helpers for tests
 │   ├── e2e/                   # End-to-end test suite (not published)
+│   ├── gauntlet/              # Integration proving ground: every package together on real models (not published)
 │   └── dashboard/             # Website: landing, docs, cookbook (not published)
 ├── examples/                  # Runnable examples, grouped by package
 ├── docs/                      # Repository guides (architecture, security, deployment, …)
@@ -233,6 +234,18 @@ describe('tool()', () => {
 pnpm --filter @cogitator-ai/core test                       # one package
 pnpm --filter @cogitator-ai/e2e exec vitest run src/__tests__/memory   # one e2e area
 ```
+
+### The gauntlet
+
+`packages/gauntlet` runs every published package together, the way users wire them, against real models through OpenRouter, and shows the result in a live dashboard. Run it before a release and after changes that cross packages:
+
+```bash
+docker compose -f packages/gauntlet/compose.yml up -d   # Postgres, Redis, Qdrant
+echo "OPENROUTER_API_KEY=sk-or-..." > packages/gauntlet/.env
+pnpm build && pnpm gauntlet                             # dashboard at http://localhost:4400
+```
+
+A full run costs a few cents. A new package must be exercised by a gauntlet stage, the coverage check fails otherwise. When a stage exposes a bug, fix the package and keep the stage as its acceptance test. See [packages/gauntlet/README.md](./packages/gauntlet/README.md).
 
 ### Documentation
 

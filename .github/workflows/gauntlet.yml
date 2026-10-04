@@ -1,0 +1,112 @@
+name: Gauntlet
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      only:
+        description: 'Comma-separated stage ids (empty runs every stage)'
+        required: false
+        default: ''
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  ONNXRUNTIME_NODE_INSTALL_CUDA: skip
+
+jobs:
+  gauntlet:
+    name: Gauntlet
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: gauntlet
+          POSTGRES_PASSWORD: gauntlet
+          POSTGRES_DB: gauntlet
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U gauntlet"
+          --health-interval 2s
+          --health-retries 30
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 56379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-retries 30
+      qdrant:
+        image: qdrant/qdrant:latest
+        ports:
+          - 56333:6333
+
+    steps:
+      - name: Check for the OpenRouter key
+        id: key
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "::notice::OPENROUTER_API_KEY secret is not set, skipping the gauntlet"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v7
+        if: steps.key.outputs.present == 'true'
+
+      - uses: pnpm/action-setup@v6
+        if: steps.key.outputs.present == 'true'
+
+      - uses: actions/setup-node@v7
+        if: steps.key.outputs.present == 'true'
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: oven-sh/setup-bun@v2
+        if: steps.key.outputs.present == 'true'
+        with:
+          bun-version: 1.4.x
+
+      - uses: denoland/setup-deno@v2
+        if: steps.key.outputs.present == 'true'
+        with:
+          deno-version: v2.x
+
+      - run: pnpm install --frozen-lockfile
+        if: steps.key.outputs.present == 'true'
+
+      - run: pnpm build
+        if: steps.key.outputs.present == 'true'
+
+      - name: Install Playwright Chromium
+        if: steps.key.outputs.present == 'true'
+        run: pnpm --filter @cogitator-ai/gauntlet exec playwright install --with-deps chromium
+
+      - name: Run the gauntlet
+        if: steps.key.outputs.present == 'true'
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          ONLY: ${{ inputs.only }}
+        run: |
+          args="--no-dashboard --json gauntlet-report.json"
+          if [ -n "$ONLY" ]; then args="$args --only $ONLY"; fi
+          pnpm gauntlet $args
+
+      - name: Upload the report
+        if: always() && steps.key.outputs.present == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: gauntlet-report
+          path: gauntlet-report.json
+          if-no-files-found: ignore
