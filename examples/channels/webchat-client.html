@@ -49,7 +49,7 @@
 
   <script>
     let ws = null;
-    const messages = {};
+    const messages = new Map();
 
     function setStatus(text, cls) {
       const el = document.getElementById('status');
@@ -64,7 +64,7 @@
       div.textContent = text;
       if (id) {
         div.id = `msg-${id}`;
-        messages[id] = div;
+        messages.set(id, div);
       }
       container.appendChild(div);
       container.scrollTop = container.scrollHeight;
@@ -99,14 +99,14 @@
             addMessage(data.text, 'bot', data.id);
             break;
           case 'edit':
-            if (messages[data.id]) {
-              messages[data.id].textContent = data.text;
+            if (messages.has(data.id)) {
+              messages.get(data.id).textContent = data.text;
             }
             break;
           case 'delete':
-            if (messages[data.id]) {
-              messages[data.id].remove();
-              delete messages[data.id];
+            if (messages.has(data.id)) {
+              messages.get(data.id).remove();
+              messages.delete(data.id);
             }
             break;
           case 'typing':

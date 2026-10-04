@@ -305,7 +305,7 @@ export class MongoDBAdapter extends BaseMemoryAdapter {
     if (!this.db) return this.failure('Not connected');
 
     try {
-      const filter: Filter<EntryDoc> = { threadId: options.threadId };
+      const filter: Filter<EntryDoc> = { threadId: { $eq: options.threadId } };
 
       if (options.before || options.after) {
         const createdAt: { $lt?: Date; $gt?: Date } = {};

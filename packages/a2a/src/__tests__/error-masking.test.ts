@@ -94,7 +94,7 @@ describe('JSON-RPC error masking', () => {
 
     expect(response.error).toEqual({ code: -32603, message: 'Internal error' });
     expect(JSON.stringify(response)).not.toContain('10.0.0.5');
-    expect(String(logged.mock.calls[0]?.[1])).toContain(SECRET);
+    expect(String(logged.mock.calls[0]?.[2])).toContain(SECRET);
   });
 
   it('keeps A2A errors as they are', async () => {

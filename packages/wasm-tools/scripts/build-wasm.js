@@ -12,7 +12,7 @@
  *   bash install.sh
  */
 
-import { execSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { buildSync } from 'esbuild';
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -61,8 +61,8 @@ function buildPlugin(name) {
     });
 
     // Compile to WASM with interface file
-    const interfaceFlag = existsSync(inputDts) ? `-i ${inputDts}` : '';
-    execSync(`extism-js ${outputJs} ${interfaceFlag} -o ${outputWasm}`, {
+    const interfaceArgs = existsSync(inputDts) ? ['-i', inputDts] : [];
+    execFileSync('extism-js', [outputJs, ...interfaceArgs, '-o', outputWasm], {
       stdio: 'inherit',
       cwd: rootDir,
     });
