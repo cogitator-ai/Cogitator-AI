@@ -516,14 +516,8 @@ describe('web_scrape tool', () => {
       expect((result as { content: string }).content).toBe('if a < b and c > d Titled');
     });
 
-    it.each([
-      ['unclosed tags', '<a'.repeat(100_000)],
-      ['unclosed scripts', '<script>'.repeat(40_000)],
-      ['unclosed headings and links', '<h1><a href="x">'.repeat(20_000)],
-      ['unterminated quotes', '<a title="x '.repeat(30_000)],
-      ['unterminated comments', '<!--'.repeat(50_000)],
-      ['nested fragments', '<scr'.repeat(20_000) + 'x' + 'ipt>x</script>'.repeat(20_000)],
-    ])('cleans hostile markup with %s in linear time', async (_name, html) => {
+    async function scrapeTime(html: string): Promise<number> {
+      let total = 0;
       for (const format of ['text', 'markdown'] as const) {
         mockFetch.mockResolvedValueOnce(createHtmlResponse(html));
         const started = performance.now();
@@ -531,8 +525,23 @@ describe('web_scrape tool', () => {
           { url: 'https://example.com', format, includeLinks: true, includeImages: true },
           ctx
         );
-        expect(performance.now() - started).toBeLessThan(1000);
+        total += performance.now() - started;
       }
+      return total;
+    }
+
+    it.each([
+      ['unclosed tags', (n: number) => '<a'.repeat(n * 5)],
+      ['unclosed scripts', (n: number) => '<script>'.repeat(n * 2)],
+      ['unclosed headings and links', (n: number) => '<h1><a href="x">'.repeat(n)],
+      ['unterminated quotes', (n: number) => '<a title="x '.repeat(n * 2)],
+      ['unterminated comments', (n: number) => '<!--'.repeat(n * 3)],
+      ['nested fragments', (n: number) => '<scr'.repeat(n) + 'x' + 'ipt>x</script>'.repeat(n)],
+    ])('cleans hostile markup with %s in linear time', async (_name, build) => {
+      await scrapeTime(build(500));
+      const small = await scrapeTime(build(5_000));
+      const large = await scrapeTime(build(20_000));
+      expect(large / Math.max(small, 1)).toBeLessThan(10);
     });
   });
 

@@ -22,7 +22,7 @@ describe('RuntimeBuilder E2E', () => {
         capabilities: {},
         memory: { adapter: 'sqlite', path: ':memory:' },
       }),
-      { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY ?? 'test-key' }
+      { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY || 'test-key' }
     );
 
     runtime = await builder.build();
@@ -43,7 +43,7 @@ describe('RuntimeBuilder E2E', () => {
         capabilities: {},
         memory: { adapter: 'sqlite', path: ':memory:', knowledgeGraph: true },
       }),
-      { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY ?? 'test-key' }
+      { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY || 'test-key' }
     );
 
     runtime = await builder.build();
@@ -64,7 +64,7 @@ describe('RuntimeBuilder E2E', () => {
         capabilities: {},
         memory: { adapter: 'sqlite', path: ':memory:', knowledgeGraph: false },
       }),
-      { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY ?? 'test-key' }
+      { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY || 'test-key' }
     );
 
     runtime = await builder.build();
@@ -85,7 +85,7 @@ describe('RuntimeBuilder E2E', () => {
         capabilities: { scheduler: true },
         memory: { adapter: 'sqlite', path: ':memory:' },
       }),
-      { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY ?? 'test-key' }
+      { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY || 'test-key' }
     );
 
     runtime = await builder.build();
@@ -108,7 +108,7 @@ describe('RuntimeBuilder E2E', () => {
         capabilities: { webSearch: true },
         memory: { adapter: 'sqlite', path: ':memory:' },
       }),
-      { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY ?? 'test-key' }
+      { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY || 'test-key' }
     );
 
     runtime = await builder.build();
@@ -127,7 +127,7 @@ describe('RuntimeBuilder E2E', () => {
         capabilities: {},
         memory: { adapter: 'sqlite', path: ':memory:' },
       }),
-      { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY ?? 'test-key' }
+      { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY || 'test-key' }
     );
 
     runtime = await builder.build();
@@ -147,7 +147,7 @@ describe('RuntimeBuilder E2E', () => {
         capabilities: {},
         memory: { adapter: 'sqlite', path: ':memory:' },
       }),
-      { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY ?? 'test-key' }
+      { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY || 'test-key' }
     );
 
     runtime = await builder.build();
@@ -165,7 +165,7 @@ describe('RuntimeBuilder E2E', () => {
         capabilities: {},
         memory: { adapter: 'sqlite', path: ':memory:' },
       }),
-      { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY ?? 'test-key' }
+      { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY || 'test-key' }
     );
 
     runtime = await builder.build();
@@ -183,7 +183,7 @@ describe('RuntimeBuilder E2E', () => {
         capabilities: { deviceTools: true },
         memory: { adapter: 'sqlite', path: ':memory:' },
       }),
-      { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY ?? 'test-key' }
+      { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY || 'test-key' }
     );
 
     runtime = await builder.build();
@@ -205,7 +205,7 @@ describe('RuntimeBuilder E2E', () => {
         capabilities: {},
         memory: { adapter: 'sqlite', path: ':memory:', knowledgeGraph: true },
       }),
-      { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY ?? 'test-key' }
+      { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY || 'test-key' }
     );
 
     runtime = await builder.build();
