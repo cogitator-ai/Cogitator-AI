@@ -28,6 +28,10 @@ export class AzureOpenAIBackend extends OpenAICompatibleBackend {
     });
   }
 
+  protected override supportsResponseFormatWithTools(): boolean {
+    return true;
+  }
+
   protected override resolveModel(request: ChatRequest): string {
     return request.model || this.defaultDeployment || '';
   }

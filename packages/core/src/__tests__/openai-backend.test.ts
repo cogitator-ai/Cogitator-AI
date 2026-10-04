@@ -355,6 +355,24 @@ describe('OpenAIBackend (Chat Completions wire API)', () => {
       expect(mockCreate.mock.calls[0][0]).not.toHaveProperty('max_completion_tokens');
     });
 
+    it('reports a custom provider name for an OpenAI-compatible service', async () => {
+      const openRouter = new OpenAIBackend({
+        apiKey: 'test-api-key',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        provider: 'openrouter',
+      });
+      mockCreate.mockRejectedValueOnce(new MockAPIError('Upstream overloaded', 503));
+
+      expect(openRouter.provider).toBe('openrouter');
+      await expect(
+        openRouter.chat({
+          model: 'deepseek/deepseek-v4-pro',
+          messages: [{ role: 'user', content: 'Hi' }],
+        })
+      ).rejects.toMatchObject({ details: expect.objectContaining({ provider: 'openrouter' }) });
+      expect(mockCreate).toHaveBeenCalledTimes(1);
+    });
+
     it('treats empty tool call arguments as an empty object', async () => {
       mockCreate.mockResolvedValueOnce({
         id: 'chatcmpl-123',
@@ -895,6 +913,129 @@ describe('OpenAIBackend (Chat Completions wire API)', () => {
       }
 
       expect(chunks[0].usage).toEqual({ inputTokens: 7, outputTokens: 2, totalTokens: 9 });
+    });
+  });
+  describe('structured output with tools', () => {
+    const schema = {
+      type: 'object',
+      properties: { units: { type: 'integer' } },
+      required: ['units'],
+    };
+    const tools = [
+      {
+        name: 'warehouse_stock',
+        description: 'Stock of an item',
+        parameters: { type: 'object', properties: { item: { type: 'string' } } },
+      },
+    ];
+    const responseFormat = {
+      type: 'json_schema' as const,
+      jsonSchema: { name: 'Stock', schema },
+    };
+    const answer = {
+      id: 'chatcmpl-1',
+      choices: [{ message: { role: 'assistant', content: '{"units":1}' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    };
+    const openRouter = () =>
+      new OpenAIBackend({
+        apiKey: 'test-api-key',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        provider: 'openrouter',
+      });
+    type SentMessage = { role: string; content: unknown };
+    const sent = () =>
+      mockCreate.mock.calls[0][0] as { response_format?: unknown; messages: SentMessage[] };
+
+    it('moves the schema into the system prompt for an OpenAI-compatible server', async () => {
+      mockCreate.mockResolvedValueOnce(answer);
+
+      await openRouter().chat({
+        model: 'deepseek/deepseek-v4-pro',
+        messages: [
+          { role: 'system', content: 'You manage a warehouse.' },
+          { role: 'user', content: 'Stock?' },
+        ],
+        tools,
+        responseFormat,
+      });
+
+      expect(sent().response_format).toBeUndefined();
+      expect(sent().messages[0]).toEqual({
+        role: 'system',
+        content: `You manage a warehouse.\n\nWhen you give your final answer, respond with valid JSON only, conforming to this JSON schema:\n${JSON.stringify(schema)}`,
+      });
+      expect(sent().messages).toHaveLength(2);
+    });
+
+    it('adds a system message when the request has none', async () => {
+      mockCreate.mockResolvedValueOnce(answer);
+
+      await openRouter().chat({
+        model: 'qwen/qwen3.8-flash',
+        messages: [{ role: 'user', content: 'Stock?' }],
+        tools,
+        responseFormat: { type: 'json_object' },
+      });
+
+      expect(sent().response_format).toBeUndefined();
+      expect(sent().messages[0]).toEqual({
+        role: 'system',
+        content: 'When you give your final answer, respond with valid JSON only.',
+      });
+    });
+
+    it('keeps response_format when no tools are offered', async () => {
+      mockCreate.mockResolvedValueOnce(answer);
+
+      await openRouter().chat({
+        model: 'deepseek/deepseek-v4-pro',
+        messages: [{ role: 'user', content: 'Stock?' }],
+        responseFormat,
+      });
+
+      expect(sent().response_format).toMatchObject({
+        type: 'json_schema',
+        json_schema: { name: 'Stock', schema },
+      });
+      expect(sent().messages).toEqual([{ role: 'user', content: 'Stock?' }]);
+    });
+
+    it('keeps response_format with tools on the official OpenAI API', async () => {
+      mockCreate.mockResolvedValueOnce(answer);
+
+      await backend.chat({
+        model: 'gpt-6-luna',
+        messages: [{ role: 'user', content: 'Stock?' }],
+        tools,
+        responseFormat,
+      });
+
+      expect(sent().response_format).toMatchObject({ type: 'json_schema' });
+      expect(sent().messages).toEqual([{ role: 'user', content: 'Stock?' }]);
+    });
+
+    it('moves the schema into the prompt for streamed requests too', async () => {
+      mockCreate.mockResolvedValueOnce(
+        (async function* () {
+          yield {
+            id: 'c',
+            choices: [{ delta: { content: '{"units":1}' }, finish_reason: 'stop' }],
+          };
+        })()
+      );
+
+      for await (const chunk of openRouter().chatStream({
+        model: 'deepseek/deepseek-v4-pro',
+        messages: [{ role: 'user', content: 'Stock?' }],
+        tools,
+        responseFormat,
+      })) {
+        expect(chunk).toBeDefined();
+      }
+
+      expect(sent().response_format).toBeUndefined();
+      expect(sent().messages[0]).toMatchObject({ role: 'system' });
     });
   });
 });

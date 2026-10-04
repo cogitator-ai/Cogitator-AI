@@ -33,6 +33,7 @@ import {
   type LLMErrorContext,
 } from './errors';
 import { getLogger } from '../logger';
+import { jsonInstruction } from './json-instruction';
 
 interface GoogleConfig {
   apiKey: string;
@@ -710,12 +711,6 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
  */
 function supportsJsonModeWithTools(model: string): boolean {
   return !/^gemini-[12](\.|-|$)/.test(model);
-}
-
-function jsonInstruction(schema: Record<string, unknown> | undefined): string {
-  return schema
-    ? `When you give your final answer, respond with valid JSON only, conforming to this JSON schema:\n${JSON.stringify(schema)}`
-    : 'When you give your final answer, respond with valid JSON only.';
 }
 
 function toToolCall(part: {

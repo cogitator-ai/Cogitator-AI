@@ -99,6 +99,8 @@ text: {
 
 OpenAI-compatible providers (and requests with stop sequences) use Chat Completions, where the same schema goes into `response_format: { type: 'json_schema', json_schema: { ... } }`.
 
+When the agent also has tools, OpenAI-compatible servers other than OpenAI and Azure OpenAI (OpenRouter, DeepSeek, Groq, Together, Mistral, vLLM, a custom `OpenAIBackend` with a `baseUrl`) get the schema as an instruction in the system prompt instead of `response_format`. Many of them apply `response_format` from the first turn, so the model answers in JSON without calling its tools, or ignore the schema altogether, while the same models follow a schema in the prompt reliably. Requests without tools keep `response_format`.
+
 ### Anthropic
 
 - `json` mode: Appends "respond with valid JSON only" to the system prompt

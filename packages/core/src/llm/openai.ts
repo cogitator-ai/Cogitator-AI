@@ -4,7 +4,7 @@ import type {
   ChatRequest,
   ChatResponse,
   ChatStreamChunk,
-  LLMProvider,
+  LLMBackendProvider,
   OpenAIWireApi,
 } from '@cogitator-ai/types';
 import { OpenAICompatibleBackend } from './openai-compatible-base';
@@ -19,7 +19,8 @@ import {
 interface OpenAIConfig {
   apiKey: string;
   baseUrl?: string;
-  provider?: LLMProvider;
+  /** Name the backend reports (errors, traces); a built-in provider or your own, e.g. `openrouter`. */
+  provider?: LLMBackendProvider;
   /**
    * Wire API to use. Defaults to the Responses API for the official OpenAI endpoint and to
    * Chat Completions for every other OpenAI-compatible server.
@@ -41,22 +42,27 @@ function isOfficialEndpoint(baseUrl: string | undefined): boolean {
 }
 
 export class OpenAIBackend extends OpenAICompatibleBackend {
-  readonly provider: LLMProvider;
+  readonly provider: LLMBackendProvider;
   readonly api: OpenAIWireApi;
   protected client: OpenAI;
   protected override readonly maxTokensField: 'max_tokens' | 'max_completion_tokens';
+  private readonly official: boolean;
 
   constructor(config: OpenAIConfig) {
     super();
     this.provider = config.provider ?? 'openai';
-    const official = this.provider === 'openai' && isOfficialEndpoint(config.baseUrl);
-    this.maxTokensField = official ? 'max_completion_tokens' : 'max_tokens';
-    this.api = config.api ?? (official ? 'responses' : 'chat-completions');
+    this.official = this.provider === 'openai' && isOfficialEndpoint(config.baseUrl);
+    this.maxTokensField = this.official ? 'max_completion_tokens' : 'max_tokens';
+    this.api = config.api ?? (this.official ? 'responses' : 'chat-completions');
     this.client = new OpenAI({
       apiKey: config.apiKey,
       baseURL: config.baseUrl,
       maxRetries: config.maxRetries,
     });
+  }
+
+  protected override supportsResponseFormatWithTools(): boolean {
+    return this.official;
   }
 
   protected override resolveModel(request: ChatRequest): string {

@@ -14,6 +14,7 @@ import type {
 import { ErrorCode } from '@cogitator-ai/types';
 import { BaseLLMBackend } from './base';
 import { LLMError, wrapSDKError, llmInvalidResponse, type LLMErrorContext } from './errors';
+import { jsonInstruction, withSystemInstruction } from './json-instruction';
 
 export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
   protected abstract client: OpenAI;
@@ -36,6 +37,42 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
     return request.model;
   }
 
+  /**
+   * Whether the server enforces `response_format` while tools are offered and still lets the
+   * model call them. The official OpenAI API does. Many OpenAI-compatible providers do not: they
+   * force JSON from the first turn, so the model stops calling tools, or ignore the schema. For
+   * those the schema goes into the system prompt instead, which their models follow reliably.
+   */
+  protected supportsResponseFormatWithTools(): boolean {
+    return false;
+  }
+
+  /** The messages and `response_format` for a request, moving the schema into the prompt when needed. */
+  private structuredOutput(request: ChatRequest): {
+    messages: OpenAI.Chat.ChatCompletionMessageParam[];
+    response_format: OpenAI.Chat.ChatCompletionCreateParams['response_format'];
+  } {
+    const format = request.responseFormat;
+    const viaPrompt =
+      format !== undefined &&
+      format.type !== 'text' &&
+      (request.tools?.length ?? 0) > 0 &&
+      !this.supportsResponseFormatWithTools();
+    if (!viaPrompt) {
+      return {
+        messages: this.convertMessages(request.messages),
+        response_format: this.convertResponseFormat(format),
+      };
+    }
+    const schema = format.type === 'json_schema' ? format.jsonSchema.schema : undefined;
+    return {
+      messages: this.convertMessages(
+        withSystemInstruction(request.messages, jsonInstruction(schema))
+      ),
+      response_format: undefined,
+    };
+  }
+
   async chat(request: ChatRequest): Promise<ChatResponse> {
     const model = this.resolveModel(request);
     const ctx: LLMErrorContext = {
@@ -48,7 +85,7 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
     try {
       const params = {
         model,
-        messages: this.convertMessages(request.messages),
+        ...this.structuredOutput(request),
         tools: request.tools
           ? request.tools.map((t) => ({
               type: 'function' as const,
@@ -64,7 +101,6 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
         top_p: request.topP,
         ...this.maxTokensParams(request.maxTokens),
         stop: request.stop,
-        response_format: this.convertResponseFormat(request.responseFormat),
         ...(request.reasoning?.effort && { reasoning_effort: request.reasoning.effort }),
       };
 
@@ -112,7 +148,7 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
     try {
       const params = {
         model,
-        messages: this.convertMessages(request.messages),
+        ...this.structuredOutput(request),
         tools: request.tools
           ? request.tools.map((t) => ({
               type: 'function' as const,
@@ -130,7 +166,6 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
         stop: request.stop,
         stream: true as const,
         stream_options: { include_usage: true },
-        response_format: this.convertResponseFormat(request.responseFormat),
         ...(request.reasoning?.effort && { reasoning_effort: request.reasoning.effort }),
       };
 
