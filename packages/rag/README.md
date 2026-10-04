@@ -307,6 +307,17 @@ const pipeline = new RAGPipelineBuilder()
   .build();
 ```
 
+When the model's answer holds no ranking (a reasoning model that spent its token budget on reasoning returns empty content, for example) or `generateFn` throws, the reranker keeps the retrieval order and logs a warning. Pass `onError` to observe that fallback, or `strict: true` to make `rerank()` throw an `LLMRerankError` (with the raw answer in `response` and the original error in `cause`):
+
+```typescript
+const observed = new LLMReranker({
+  generateFn: (prompt) => llm.generate(prompt),
+  onError: (error, { query, response }) => logger.warn({ query, response }, error.message),
+});
+
+const strict = new LLMReranker({ generateFn: (prompt) => llm.generate(prompt), strict: true });
+```
+
 ### Cohere Reranker
 
 Uses the Cohere Rerank API (rerank-v3.5 by default).

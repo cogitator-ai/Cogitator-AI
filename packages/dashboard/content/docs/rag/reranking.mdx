@@ -40,11 +40,34 @@ const reranker = new LLMReranker({
 const reranked = await reranker.rerank('How do agents handle tool errors?', retrievalResults, 5);
 ```
 
-The reranker builds a prompt asking the LLM to score each document and return a JSON array of `{ index, score }` objects. Scores are normalized to 0–1 in the output. Only the first 50 results are put into the prompt; results the LLM does not score (including any beyond 50) get a score of 0. If `generateFn` throws or the response can't be parsed, a warning is logged and the original order is kept.
+The reranker builds a prompt asking the LLM to score each document and return a JSON array of `{ index, score }` objects. Scores are normalized to 0–1 in the output. Only the first 50 results are put into the prompt; results the LLM does not score (including any beyond 50) get a score of 0. If `generateFn` throws or the response holds no ranking (for example a reasoning model spent its token budget on reasoning and answered with empty content), the reranker returns the results in retrieval order. By default it only logs a warning. To notice the fallback, pass `onError`, or set `strict` to make `rerank()` throw an `LLMRerankError` like `CohereReranker` does:
 
-| Option       | Type                                  | Description             |
-| ------------ | ------------------------------------- | ----------------------- |
-| `generateFn` | (prompt: string) => Promise\<string\> | LLM generation function |
+```typescript
+import { LLMReranker, LLMRerankError } from '@cogitator-ai/rag';
+
+const reranker = new LLMReranker({
+  generateFn,
+  onError: (error, { query, response }) => {
+    metrics.increment('rerank.fallback');
+    logger.warn({ query, response, cause: error.cause }, error.message);
+  },
+});
+
+const strictReranker = new LLMReranker({ generateFn, strict: true });
+try {
+  await strictReranker.rerank(query, retrievalResults, 5);
+} catch (error) {
+  if (error instanceof LLMRerankError) console.error(error.message, error.response);
+}
+```
+
+| Option       | Type                                                             | Default | Description                                                                                                     |
+| ------------ | ---------------------------------------------------------------- | ------- | --------------------------------------------------------------------------------------------------------------- |
+| `generateFn` | (prompt: string) => Promise\<string\>                            | -       | LLM generation function                                                                                         |
+| `onError`    | (error: LLMRerankError, context: \{ query, response? \}) => void | -       | Called instead of the console warning when reranking falls back. `response` is the raw answer, if there was one |
+| `strict`     | boolean                                                          | `false` | Throw an `LLMRerankError` instead of falling back to the retrieval order                                        |
+
+An `LLMRerankError` carries the raw model answer in `response` and, when `generateFn` threw, the original error in `cause`.
 
 **When to use:** When you already have an LLM backend in your stack and want better precision without an external reranking service. Works with any model — local Ollama, OpenAI, Anthropic.
 

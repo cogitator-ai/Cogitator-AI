@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { LLMReranker } from '../rerankers/llm-reranker';
+import { LLMReranker, LLMRerankError } from '../rerankers/llm-reranker';
 import { CohereReranker } from '../rerankers/cohere-reranker';
 import type { RetrievalResult } from '@cogitator-ai/types';
 
@@ -49,6 +49,73 @@ describe('LLMReranker', () => {
     const reranker = new LLMReranker({ generateFn });
     const results = await reranker.rerank('query', sampleResults);
     expect(results).toHaveLength(3);
+  });
+
+  describe('when the ranking cannot be used', () => {
+    it('reports the failure to onError with the raw response, then keeps the retrieval order', async () => {
+      const onError = vi.fn();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const reranker = new LLMReranker({ generateFn: async () => '', onError });
+
+      const results = await reranker.rerank('query', sampleResults, 2);
+
+      expect(results.map((r) => r.chunkId)).toEqual(['c1', 'c2']);
+      expect(results.map((r) => r.score)).toEqual([0.8, 0.7]);
+      expect(onError).toHaveBeenCalledTimes(1);
+      const [error, context] = onError.mock.calls[0] as [LLMRerankError, unknown];
+      expect(error).toBeInstanceOf(LLMRerankError);
+      expect(error.message).toMatch(/empty response/);
+      expect(context).toEqual({ query: 'query', response: '' });
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it('passes a generateFn failure to onError as the cause', async () => {
+      const onError = vi.fn();
+      const cause = new Error('LLM down');
+      const reranker = new LLMReranker({ generateFn: () => Promise.reject(cause), onError });
+
+      await reranker.rerank('query', sampleResults);
+
+      const [error, context] = onError.mock.calls[0] as [LLMRerankError, unknown];
+      expect(error.cause).toBe(cause);
+      expect(context).toEqual({ query: 'query', response: undefined });
+    });
+
+    it('treats a missing answer like an empty one', async () => {
+      const onError = vi.fn();
+      const generateFn = vi.fn().mockResolvedValue(undefined);
+      const reranker = new LLMReranker({ generateFn, onError });
+
+      await reranker.rerank('query', sampleResults);
+
+      expect((onError.mock.calls[0] as [LLMRerankError])[0].message).toMatch(/empty response/);
+    });
+
+    it('throws in strict mode instead of falling back', async () => {
+      const reranker = new LLMReranker({
+        generateFn: async () => 'The most relevant is the first one.',
+        strict: true,
+      });
+
+      const failure = reranker.rerank('query', sampleResults);
+
+      await expect(failure).rejects.toBeInstanceOf(LLMRerankError);
+      await expect(failure).rejects.toMatchObject({
+        response: 'The most relevant is the first one.',
+      });
+    });
+
+    it('still warns on the console by default', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const reranker = new LLMReranker({ generateFn: async () => 'no ranking here' });
+
+      const results = await reranker.rerank('query', sampleResults);
+
+      expect(results.map((r) => r.chunkId)).toEqual(['c1', 'c2', 'c3']);
+      expect(warn).toHaveBeenCalledTimes(1);
+      warn.mockRestore();
+    });
   });
 
   it('returns empty array for empty results', async () => {

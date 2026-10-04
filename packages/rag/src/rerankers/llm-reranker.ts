@@ -1,16 +1,49 @@
 import type { Reranker, RetrievalResult } from '@cogitator-ai/types';
 
+/** What the reranker was doing when it failed. */
+export interface LLMRerankFailureContext {
+  query: string;
+  /** The model's raw answer, or undefined when `generateFn` itself failed. */
+  response?: string;
+}
+
 export interface LLMRerankerConfig {
   generateFn: (prompt: string) => Promise<string>;
+  /**
+   * Called when the model's answer cannot be turned into a ranking, or `generateFn` fails. The
+   * reranker then returns the results in retrieval order (unless `strict` is set) and does not
+   * log to the console.
+   */
+  onError?: (error: LLMRerankError, context: LLMRerankFailureContext) => void;
+  /** Throw an `LLMRerankError` instead of falling back to the retrieval order. Defaults to false. */
+  strict?: boolean;
+}
+
+/** Reranking failed: the model gave no usable ranking, or `generateFn` threw (see `cause`). */
+export class LLMRerankError extends Error {
+  override readonly name = 'LLMRerankError';
+
+  constructor(
+    message: string,
+    /** The model's raw answer, when there was one. */
+    readonly response?: string,
+    options?: { cause?: unknown }
+  ) {
+    super(message, options);
+  }
 }
 
 const MAX_DOCUMENTS_IN_PROMPT = 50;
 
 export class LLMReranker implements Reranker {
   private readonly generateFn: (prompt: string) => Promise<string>;
+  private readonly onError?: LLMRerankerConfig['onError'];
+  private readonly strict: boolean;
 
   constructor(config: LLMRerankerConfig) {
     this.generateFn = config.generateFn;
+    this.onError = config.onError;
+    this.strict = config.strict ?? false;
   }
 
   async rerank(
@@ -20,9 +53,9 @@ export class LLMReranker implements Reranker {
   ): Promise<RetrievalResult[]> {
     if (results.length === 0) return [];
 
+    let response: string | undefined;
     try {
-      const prompt = this.buildPrompt(query, results);
-      const response = await this.generateFn(prompt);
+      response = await this.generateFn(this.buildPrompt(query, results));
       const scores = this.parseScores(response, results.length);
 
       const scored = results.map((result, i) => {
@@ -38,7 +71,22 @@ export class LLMReranker implements Reranker {
 
       return topN ? reranked.slice(0, topN) : reranked;
     } catch (error) {
-      console.warn('[LLMReranker] Reranking failed, returning original order:', error);
+      const failure =
+        error instanceof LLMRerankError
+          ? error
+          : new LLMRerankError(
+              `${response === undefined ? 'generateFn failed' : 'Reranking failed'}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+              response,
+              { cause: error }
+            );
+      if (this.strict) throw failure;
+      if (this.onError) {
+        this.onError(failure, { query, response });
+      } else {
+        console.warn('[LLMReranker] Reranking failed, returning original order:', failure);
+      }
       const fallback = [...results];
       return topN ? fallback.slice(0, topN) : fallback;
     }
@@ -60,8 +108,15 @@ export class LLMReranker implements Reranker {
   }
 
   private parseScores(response: string, count: number): Array<{ index: number; score: number }> {
+    if (typeof response !== 'string' || response.trim() === '') {
+      throw new LLMRerankError(
+        'The model returned an empty response (a reasoning model may have spent its token budget on reasoning)',
+        response
+      );
+    }
+
     const candidates = response.match(/\[[\s\S]*?\]/g);
-    if (!candidates) throw new Error('No JSON array found in response');
+    if (!candidates) throw new LLMRerankError('No JSON array found in the response', response);
 
     for (let i = candidates.length - 1; i >= 0; i--) {
       try {
@@ -84,6 +139,9 @@ export class LLMReranker implements Reranker {
       }
     }
 
-    throw new Error('No valid JSON array found in response');
+    throw new LLMRerankError(
+      'No JSON array of { index, score } objects found in the response',
+      response
+    );
   }
 }
