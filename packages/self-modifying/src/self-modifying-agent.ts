@@ -53,6 +53,12 @@ export interface SelfModifyingAgentConfig {
   metaReasoning?: MetaReasoningOverrides;
   architectureEvolution?: Partial<ArchitectureEvolutionConfig>;
   constraints?: Partial<ModificationConstraintsConfig>;
+  /**
+   * Upper bound on the output tokens of each internal LLM call: gap analysis, tool
+   * generation and review, and architecture evolution. Unset leaves the backend default.
+   * Meta-reasoning has its own bound, `metaReasoning.maxMetaTokens`.
+   */
+  maxInternalTokens?: number;
 }
 
 export interface SelfModifyingAgentOptions {
@@ -184,11 +190,18 @@ export class SelfModifyingAgent {
 
     const toolGenConfig = this.config.toolGeneration;
     const agentModel = this.modelName;
-    this.gapAnalyzer = new GapAnalyzer({ llm: this.llm, config: toolGenConfig, model: agentModel });
+    const maxTokens = options.config?.maxInternalTokens;
+    this.gapAnalyzer = new GapAnalyzer({
+      llm: this.llm,
+      config: toolGenConfig,
+      model: agentModel,
+      maxTokens,
+    });
     this.toolGenerator = new ToolGenerator({
       llm: this.llm,
       config: toolGenConfig,
       model: agentModel,
+      maxTokens,
     });
     this.toolStore = new InMemoryGeneratedToolStore();
 
@@ -204,6 +217,7 @@ export class SelfModifyingAgent {
       baseConfig: this.createBaseArchitectureConfig(),
       model: agentModel,
       availableModels: options.availableModels,
+      maxTokens,
     });
 
     this.modificationValidator = new ModificationValidator({
@@ -621,7 +635,9 @@ export class SelfModifyingAgent {
 
   private async analyzeAndGenerateTools(ctx: RunContext): Promise<void> {
     try {
-      const analysis = await this.gapAnalyzer.analyze(ctx.input, ctx.tools);
+      const analysis = await this.gapAnalyzer.analyze(ctx.input, ctx.tools, {
+        instructions: this.agent.instructions,
+      });
 
       for (const gap of analysis.gaps) {
         if (ctx.generatedTools.length >= this.config.toolGeneration.maxToolsPerSession) break;

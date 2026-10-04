@@ -47,17 +47,27 @@ console.log('Adaptations:', result.adaptationsMade.length);
 
 The backend's provider prefix (`openai/` here) is stripped from the agent model, the agent's `temperature` and `maxTokens` form the baseline configuration, and concurrent `run()` calls on one instance are serialized. Set `config.enabled: false` to run as a plain tool-calling agent. Pass `modificationConstraints` to add constraints and `availableModels` to let architecture evolution switch models.
 
+`config.maxInternalTokens` bounds the output tokens of every internal LLM call (gap analysis, tool generation and review, architecture evolution), which keeps reasoning models from spending minutes on those steps. Unset leaves the backend default. Meta-reasoning has its own bound, `metaReasoning.maxMetaTokens`. The components used on their own (`GapAnalyzer`, `ToolGenerator`, `ToolValidator`, `CapabilityAnalyzer`, `ParameterOptimizer`) take it as `maxTokens`.
+
 ## Tool Self-Generation
 
 When the agent encounters a task requiring capabilities it doesn't have, it generates new tools at runtime.
 
 ### How It Works
 
-1. **Gap Analysis** — LLM compares user intent with available tools, identifies missing capabilities
-2. **Code Synthesis** — Generates a plain JavaScript `execute(params)` implementation
-3. **Validation** — Static security scanning, generated test cases in the sandbox, optional LLM review
-4. **Constraint Check** — The tool must satisfy the modification constraints (sandboxing, size, depth)
-5. **Registration** — Accepted tools are stored as `active`, used immediately and loaded into later runs
+1. **Gap Analysis** - LLM compares user intent and the agent's instructions with available tools (including tools generated earlier), identifies missing capabilities
+2. **Code Synthesis** - Generates a plain JavaScript `execute(params)` implementation, a description of what the tool does, and a few example inputs
+3. **Validation** - Static security scanning, test cases in the sandbox, optional LLM review
+4. **Constraint Check** - The tool must satisfy the modification constraints (sandboxing, size, depth)
+5. **Registration** - Accepted tools are stored as `active`, used immediately and loaded into later runs
+
+A generated tool's `description` is what the model wrote about the tool. When it is empty or only repeats the gap text, the gap's `requiredCapability` is used, so the next gap analysis sees what the tool does and reuses it instead of generating a duplicate.
+
+### Validation
+
+- **Static checks** are authoritative: a security rule hit (`eval`, `require`, `process.`, prototype tricks, shell or file system access) makes the tool invalid with score 0, whatever a review says.
+- **Sandbox tests** are authoritative too: any failed case makes the tool invalid. Without explicit test cases, the tool runs on the example inputs it was generated with (they must succeed) and on inputs synthesized from its parameters schema. Synthesized inputs only prove the tool runs, so a descriptive error is accepted for them, while leaving out a required parameter must throw.
+- **LLM review** (`requireLLMValidation`) follows the reviewer's verdict. An approving review keeps the tool valid and its security and logic notes become `suggestions`. A review that recommends `revise` or `reject` makes the tool invalid, and its findings are what the next iteration fixes.
 
 Generated code runs in a worker thread inside a fresh `vm` context without host objects (`process`, `require`, timers, host constructors) and with string code generation disabled. Parameters and results cross the boundary as JSON.
 
@@ -97,7 +107,8 @@ const toolGenerator = new ToolGenerator({ llm, config: toolGenConfig, model: 'gp
 
 const analysis = await gapAnalyzer.analyze(
   'Calculate compound interest over 10 years',
-  existingTools
+  existingTools,
+  { instructions: agent.instructions }
 );
 
 for (const gap of analysis.gaps) {

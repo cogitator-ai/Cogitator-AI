@@ -1,4 +1,4 @@
-export { GapAnalyzer, type GapAnalyzerOptions } from './gap-analyzer';
+export { GapAnalyzer, type GapAnalyzerOptions, type GapAnalysisContext } from './gap-analyzer';
 export {
   ToolGenerator,
   type ToolGeneratorOptions,
@@ -26,4 +26,5 @@ export {
   parseToolGenerationResponse,
   parseValidationResponse,
   TOOL_GENERATION_SYSTEM_PROMPT,
+  type ToolReview,
 } from './prompts';

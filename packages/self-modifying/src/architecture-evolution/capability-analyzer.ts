@@ -21,6 +21,8 @@ export interface CapabilityAnalyzerOptions {
   llm?: LLMBackend;
   enableLLMAnalysis?: boolean;
   model?: string;
+  /** Upper bound on the output tokens of the task profile call. Unset leaves the backend default. */
+  maxTokens?: number;
 }
 
 interface DomainKeywords {
@@ -145,11 +147,13 @@ export class CapabilityAnalyzer {
   private readonly llm?: LLMBackend;
   private readonly enableLLMAnalysis: boolean;
   private readonly model: string;
+  private readonly maxTokens?: number;
   private readonly profileCache = new Map<string, { profile: TaskProfile; timestamp: number }>();
   private readonly cacheTTL = 60000;
 
   constructor(options: CapabilityAnalyzerOptions = {}) {
     this.llm = options.llm;
+    this.maxTokens = options.maxTokens;
     this.enableLLMAnalysis = options.enableLLMAnalysis ?? false;
     this.model = this.enableLLMAnalysis
       ? requireModelForLLM(options.llm, options.model, 'CapabilityAnalyzer')
@@ -218,7 +222,7 @@ export class CapabilityAnalyzer {
           },
           { role: 'user', content: prompt },
         ],
-        { model: this.model, temperature: 0.2 }
+        { model: this.model, temperature: 0.2, maxTokens: this.maxTokens }
       );
 
       const parsed = parseTaskProfileResponse(content);

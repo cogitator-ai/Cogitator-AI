@@ -497,6 +497,58 @@ describe('SelfModifyingAgent tool generation', () => {
       expect.objectContaining({ success: false, error: 'Rejected by modification constraints' }),
     ]);
   });
+
+  it('shows the next gap analysis what a generated tool does, and the agent instructions', async () => {
+    const gap = JSON.stringify({
+      hasGap: true,
+      gaps: [
+        {
+          id: 'gap_crc',
+          description: 'No available tool can compute a CRC-32 checksum',
+          requiredCapability: 'CRC-32 checksum of a text',
+          suggestedToolName: 'crc32_calculator',
+          complexity: 'simple',
+          confidence: 0.95,
+        },
+      ],
+      canProceed: false,
+    });
+    const tool = JSON.stringify({
+      name: 'crc32_calculator',
+      description: 'No available tool can compute a CRC-32 checksum',
+      implementation:
+        "async function execute(params) { if (typeof params.text !== 'string') { throw new Error('text must be a string'); } return params.text.length; }",
+      parameters: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+    });
+    const llm = routedLLM({ gap, tool, agent: () => chatResponse('done') });
+    const agent = {
+      ...createMockAgent(),
+      instructions: 'Never compute checksums yourself: always call a tool.',
+    } as Agent;
+    const selfMod = new SelfModifyingAgent({
+      agent,
+      llm,
+      config: {
+        toolGeneration: { requireLLMValidation: false },
+        metaReasoning: { enabled: false },
+        architectureEvolution: { enabled: false },
+        maxInternalTokens: 800,
+      },
+    });
+
+    await selfMod.run('CRC-32 of "abc"?');
+    llm.chat.mockClear();
+    await selfMod.run('CRC-32 of "xyz"?');
+
+    const gapRequest = llm.chat.mock.calls
+      .map((call) => call[0] as ChatRequest)
+      .find((request) => String(request.messages[0]?.content).includes('capability analyzer'));
+    const prompt = String(gapRequest?.messages[1]?.content);
+    expect(prompt).toContain('- crc32_calculator: CRC-32 checksum of a text');
+    expect(prompt).not.toContain('crc32_calculator: No available tool');
+    expect(prompt).toContain('Never compute checksums yourself: always call a tool.');
+    expect(gapRequest?.maxTokens).toBe(800);
+  });
 });
 
 describe('SelfModifyingAgent meta-reasoning', () => {

@@ -26,6 +26,11 @@ export interface ParameterOptimizerOptions {
   /** Model the LLM calls use, without the provider prefix of the backend */
   model: string;
   availableModels?: string[];
+  /**
+   * Upper bound on the output tokens of each task profile, candidate and analysis call.
+   * Unset leaves the backend default.
+   */
+  maxTokens?: number;
 }
 
 export interface OptimizationResult {
@@ -50,6 +55,7 @@ export class ParameterOptimizer {
   private readonly llm: LLMBackend;
   private readonly config: ArchitectureEvolutionConfig;
   private readonly model: string;
+  private readonly maxTokens?: number;
   private readonly baseConfig: ArchitectureConfig;
   private readonly availableModels: string[];
   private readonly capabilityAnalyzer: CapabilityAnalyzer;
@@ -65,6 +71,7 @@ export class ParameterOptimizer {
     this.llm = options.llm;
     this.config = options.config;
     this.model = options.model;
+    this.maxTokens = options.maxTokens;
     this.baseConfig = options.baseConfig;
     this.availableModels = options.availableModels ?? [];
 
@@ -72,6 +79,7 @@ export class ParameterOptimizer {
       llm: options.llm,
       enableLLMAnalysis: true,
       model: this.model,
+      maxTokens: options.maxTokens,
     });
 
     this.evolutionStrategy = new EvolutionStrategy({
@@ -170,7 +178,7 @@ export class ParameterOptimizer {
           },
           { role: 'user', content: prompt },
         ],
-        { model: this.model, temperature: 0.5 }
+        { model: this.model, temperature: 0.5, maxTokens: this.maxTokens }
       );
 
       const generated = parseCandidateGenerationResponse(content, {
@@ -529,7 +537,7 @@ export class ParameterOptimizer {
           { role: 'system', content: 'You are an AI performance analyst.' },
           { role: 'user', content: prompt },
         ],
-        { model: this.model, temperature: 0.2 }
+        { model: this.model, temperature: 0.2, maxTokens: this.maxTokens }
       );
 
       return parsePerformanceAnalysisResponse(content);

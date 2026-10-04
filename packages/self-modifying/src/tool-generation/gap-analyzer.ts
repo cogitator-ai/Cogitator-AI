@@ -14,27 +14,38 @@ export interface GapAnalyzerOptions {
   config: ToolSelfGenerationConfig;
   /** Model the LLM calls use, without the provider prefix of the backend */
   model: string;
+  /** Upper bound on the output tokens of the analysis call. Unset leaves the backend default. */
+  maxTokens?: number;
+}
+
+export interface GapAnalysisContext {
+  failedAttempts?: string[];
+  previousGaps?: CapabilityGap[];
+  /**
+   * The agent's instructions. Shown to the analyzer, so a capability the instructions require
+   * a tool for counts as a gap even when the model could answer on its own.
+   */
+  instructions?: string;
 }
 
 export class GapAnalyzer {
   private readonly llm: LLMBackend;
   private readonly config: ToolSelfGenerationConfig;
   private readonly model: string;
+  private readonly maxTokens?: number;
   private readonly analysisCache = new Map<string, GapAnalysisResult>();
 
   constructor(options: GapAnalyzerOptions) {
     this.llm = options.llm;
     this.config = options.config;
     this.model = options.model;
+    this.maxTokens = options.maxTokens;
   }
 
   async analyze(
     userIntent: string,
     availableTools: Tool[],
-    context?: {
-      failedAttempts?: string[];
-      previousGaps?: CapabilityGap[];
-    }
+    context?: GapAnalysisContext
   ): Promise<GapAnalysisResult> {
     const cacheKey = this.buildCacheKey(userIntent, availableTools, context);
     const cached = this.analysisCache.get(cacheKey);
@@ -47,7 +58,12 @@ export class GapAnalyzer {
       description: t.description,
     }));
 
-    const prompt = buildGapAnalysisPrompt(userIntent, toolSummaries, context?.failedAttempts);
+    const prompt = buildGapAnalysisPrompt(
+      userIntent,
+      toolSummaries,
+      context?.failedAttempts,
+      context?.instructions
+    );
 
     const content = await llmChat(
       this.llm,
@@ -61,7 +77,7 @@ Consider tool composition before suggesting new tools.`,
         },
         { role: 'user', content: prompt },
       ],
-      { model: this.model, temperature: 0.3 }
+      { model: this.model, temperature: 0.3, maxTokens: this.maxTokens }
     );
 
     const parsed = parseGapAnalysisResponse(content);
@@ -220,11 +236,7 @@ Consider tool composition before suggesting new tools.`,
     return `Identified ${gaps.length} capability gap(s):\n${gapDescriptions}`;
   }
 
-  private buildCacheKey(
-    userIntent: string,
-    tools: Tool[],
-    context?: { failedAttempts?: string[]; previousGaps?: CapabilityGap[] }
-  ): string {
+  private buildCacheKey(userIntent: string, tools: Tool[], context?: GapAnalysisContext): string {
     const toolSignature = tools
       .map((t) => `${t.name}:${t.description}`)
       .sort()
@@ -234,6 +246,7 @@ Consider tool composition before suggesting new tools.`,
       toolSignature,
       context?.failedAttempts ?? [],
       (context?.previousGaps ?? []).map((g) => g.id).sort(),
+      context?.instructions ?? '',
     ]);
     return createHash('sha256').update(raw).digest('hex');
   }

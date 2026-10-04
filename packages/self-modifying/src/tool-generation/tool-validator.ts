@@ -5,17 +5,19 @@ import type {
   ToolSelfGenerationConfig,
 } from '@cogitator-ai/types';
 import { ToolSandbox, type SandboxTestCase } from './tool-sandbox';
-import { buildToolValidationPrompt, parseValidationResponse } from './prompts';
+import { buildToolValidationPrompt, parseValidationResponse, type ToolReview } from './prompts';
 import { llmChat, requireModelForLLM } from '../utils/llm-helper';
 
 export interface ToolValidatorOptions {
   llm?: LLMBackend;
   config: ToolSelfGenerationConfig;
   model?: string;
+  /** Upper bound on the output tokens of the review call. Unset leaves the backend default. */
+  maxTokens?: number;
 }
 
 interface JsonPropertySchema {
-  type?: string;
+  type?: string | string[];
   default?: unknown;
   enum?: unknown[];
   examples?: unknown[];
@@ -147,20 +149,89 @@ const STATIC_VALIDATION_RULES: ValidationRule[] = [
   },
 ];
 
+/** Edge cases and approved review notes lower the score, but never below a passing grade on their own. */
+const MAX_ADVISORY_PENALTY = 0.3;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function primaryType(type: JsonPropertySchema['type']): string | undefined {
+  return Array.isArray(type) ? type.find((t) => t !== 'null') : type;
+}
+
+function matchesType(value: unknown, type: JsonPropertySchema['type']): boolean {
+  if (type === undefined) return true;
+  const types = Array.isArray(type) ? type : [type];
+  return types.some((t) => {
+    switch (t) {
+      case 'string':
+        return typeof value === 'string';
+      case 'number':
+        return typeof value === 'number' && Number.isFinite(value);
+      case 'integer':
+        return Number.isInteger(value);
+      case 'boolean':
+        return typeof value === 'boolean';
+      case 'array':
+        return Array.isArray(value);
+      case 'object':
+        return isRecord(value);
+      case 'null':
+        return value === null;
+      default:
+        return true;
+    }
+  });
+}
+
+/** Whether an input has every required parameter, no unknown one, and values of the declared types. */
+function fitsSchema(input: Record<string, unknown>, parameters: Record<string, unknown>): boolean {
+  const properties = isRecord(parameters.properties)
+    ? (parameters.properties as Record<string, JsonPropertySchema>)
+    : {};
+  const required = Array.isArray(parameters.required) ? parameters.required : [];
+  if (required.some((key) => typeof key === 'string' && !(key in input))) return false;
+  if (Object.keys(properties).length === 0) return true;
+
+  return Object.entries(input).every(([key, value]) => {
+    const schema = properties[key];
+    return schema !== undefined && matchesType(value, schema.type);
+  });
+}
+
+/** A review approves when it calls the tool valid and does not ask for a revision or a rejection. */
+function approves(review: ToolReview): boolean {
+  return review.isValid && (review.recommendation ?? 'approve') === 'approve';
+}
+
 export class ToolValidator {
   private readonly llm?: LLMBackend;
   private readonly config: ToolSelfGenerationConfig;
   private readonly model: string;
+  private readonly maxTokens?: number;
   private readonly sandbox: ToolSandbox;
   private readonly customRules: ValidationRule[] = [];
 
   constructor(options: ToolValidatorOptions) {
     this.llm = options.llm;
+    this.maxTokens = options.maxTokens;
     this.config = options.config;
     this.model = requireModelForLLM(options.llm, options.model, 'ToolValidator');
     this.sandbox = new ToolSandbox(options.config.sandboxConfig);
   }
 
+  /**
+   * Grades a tool. Static security checks and sandbox test failures are authoritative: either
+   * makes the tool invalid whatever a review says. When `requireLLMValidation` is on, the
+   * reviewer's verdict decides the rest: an approving review keeps its security and logic
+   * notes as suggestions, while a review that recommends a revision or rejects the tool makes
+   * it invalid and its findings become the issues to fix.
+   *
+   * Without `testCases`, the tool runs on the example inputs it was generated with (they must
+   * succeed) and on inputs synthesized from its parameters schema (they only prove the tool
+   * runs: a descriptive error is accepted).
+   */
   async validate(
     tool: GeneratedTool,
     testCases?: SandboxTestCase[]
@@ -186,7 +257,10 @@ export class ToolValidator {
       };
     }
 
-    const effectiveTestCases = testCases || this.generateBasicTestCases(tool);
+    const effectiveTestCases = testCases ?? [
+      ...this.exampleTestCases(tool),
+      ...this.generateBasicTestCases(tool),
+    ];
     const sandboxResult = await this.sandbox.testWithCases(tool, effectiveTestCases);
 
     const testResults = sandboxResult.results.map((r) => ({
@@ -206,26 +280,42 @@ export class ToolValidator {
       );
     }
 
+    let advisoryNotes = 0;
     if (this.llm && this.config.requireLLMValidation) {
-      const llmResult = await this.runLLMValidation(tool, effectiveTestCases);
-      if (llmResult) {
-        securityIssues.push(...llmResult.securityIssues);
-        logicIssues.push(...llmResult.logicIssues);
-        edgeCases.push(...llmResult.edgeCases);
-        suggestions.push(...llmResult.suggestions);
+      const review = await this.runLLMValidation(tool, effectiveTestCases);
+      if (review) {
+        edgeCases.push(...review.edgeCases);
+        suggestions.push(...review.suggestions);
+
+        if (approves(review)) {
+          const notes = [
+            ...review.securityIssues.map((issue) => `Review note (security): ${issue}`),
+            ...review.logicIssues.map((issue) => `Review note (logic): ${issue}`),
+          ];
+          advisoryNotes = notes.length;
+          suggestions.push(...notes);
+        } else {
+          securityIssues.push(...review.securityIssues);
+          logicIssues.push(...review.logicIssues);
+          if (review.securityIssues.length === 0 && review.logicIssues.length === 0) {
+            logicIssues.push(
+              `The review recommends to ${review.recommendation ?? 'reject'} the tool without naming an issue: check it against its description`
+            );
+          }
+        }
       }
     }
 
     const score = this.calculateScore(
       securityIssues.length,
       logicIssues.length,
-      edgeCases.length,
+      edgeCases.length + advisoryNotes,
       sandboxResult.passed,
       sandboxResult.failed
     );
 
     return {
-      isValid: securityIssues.length === 0 && logicIssues.length === 0 && score >= 0.7,
+      isValid: securityIssues.length === 0 && logicIssues.length === 0,
       securityIssues: [...new Set(securityIssues)],
       logicIssues: [...new Set(logicIssues)],
       edgeCases: [...new Set(edgeCases)],
@@ -264,7 +354,7 @@ export class ToolValidator {
   private async runLLMValidation(
     tool: GeneratedTool,
     testCases: SandboxTestCase[]
-  ): Promise<ToolValidationResult | null> {
+  ): Promise<ToolReview | null> {
     if (!this.llm) return null;
 
     try {
@@ -293,13 +383,24 @@ Be thorough but practical - focus on real issues.`,
           },
           { role: 'user', content: prompt },
         ],
-        { model: this.model, temperature: 0.2 }
+        { model: this.model, temperature: 0.2, maxTokens: this.maxTokens }
       );
 
       return parseValidationResponse(content);
     } catch {
       return null;
     }
+  }
+
+  /** The example inputs the tool was generated with that fit its schema, as cases that must succeed. */
+  private exampleTestCases(tool: GeneratedTool): SandboxTestCase[] {
+    const examples = tool.metadata?.examples;
+    if (!Array.isArray(examples)) return [];
+
+    return examples.flatMap((example: unknown) => {
+      if (!isRecord(example) || !isRecord(example.input)) return [];
+      return fitsSchema(example.input, tool.parameters) ? [{ input: example.input }] : [];
+    });
   }
 
   private generateBasicTestCases(tool: GeneratedTool): SandboxTestCase[] {
@@ -318,11 +419,11 @@ Be thorough but practical - focus on real issues.`,
     const entries = Object.entries(properties);
     const testCases: SandboxTestCase[] = [];
 
-    const validInput: Record<string, unknown> = {};
+    const sampleInput: Record<string, unknown> = {};
     for (const [key, schema] of entries) {
-      validInput[key] = this.generateSampleValue(schema);
+      sampleInput[key] = this.generateSampleValue(schema);
     }
-    testCases.push({ input: validInput });
+    testCases.push({ input: sampleInput, allowThrow: true });
 
     const hasOptional = entries.some(([key]) => !required.has(key));
     if (required.size > 0 && hasOptional) {
@@ -332,12 +433,12 @@ Be thorough but practical - focus on real issues.`,
           requiredOnlyInput[key] = this.generateSampleValue(schema);
         }
       }
-      testCases.push({ input: requiredOnlyInput });
+      testCases.push({ input: requiredOnlyInput, allowThrow: true });
     }
 
     const edgeInput: Record<string, unknown> = {};
     for (const [key, schema] of entries) {
-      edgeInput[key] = this.generateEdgeValue(schema.type);
+      edgeInput[key] = this.generateEdgeValue(primaryType(schema.type));
     }
     testCases.push({ input: edgeInput, allowThrow: true });
 
@@ -359,7 +460,7 @@ Be thorough but practical - focus on real issues.`,
     if (Array.isArray(schema.examples) && schema.examples.length > 0) return schema.examples[0];
     if (Array.isArray(schema.enum) && schema.enum.length > 0) return schema.enum[0];
 
-    switch (schema.type) {
+    switch (primaryType(schema.type)) {
       case 'string':
         return 'test';
       case 'number':
@@ -407,7 +508,7 @@ Be thorough but practical - focus on real issues.`,
     let score = 1.0;
 
     score -= logicCount * 0.2;
-    score -= edgeCaseCount * 0.05;
+    score -= Math.min(MAX_ADVISORY_PENALTY, edgeCaseCount * 0.05);
 
     const totalTests = testsPassed + testsFailed;
     if (totalTests > 0) {

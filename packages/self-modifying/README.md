@@ -53,6 +53,8 @@ A provider prefix that matches the backend (`ollama/` for `OllamaBackend`) is st
 | `modificationConstraints` | Extra safety / capability / resource / custom constraints merged with the defaults                |
 | `availableModels`         | Models architecture evolution may switch to; without it the model is never changed                |
 
+`config.maxInternalTokens` bounds the output tokens of every internal LLM call (gap analysis, tool generation and review, architecture evolution). Unset leaves the backend default. It keeps reasoning models from spending minutes on those steps. Meta-reasoning has its own bound, `metaReasoning.maxMetaTokens`. Used on their own, `GapAnalyzer`, `ToolGenerator`, `ToolValidator`, `CapabilityAnalyzer` and `ParameterOptimizer` take the same bound as `maxTokens`.
+
 ### Run Semantics
 
 - Runs are serialized: concurrent `run()` calls on one instance execute one after another.
@@ -78,11 +80,11 @@ When the agent encounters a task requiring capabilities it doesn't have, it can 
 
 ### How It Works
 
-1. **Gap Analysis** — LLM compares user intent with available tools, identifies missing capabilities
-2. **Code Synthesis** — Generates a plain JavaScript `execute(params)` implementation
-3. **Validation** — Static security scanning, generated test cases in the sandbox, optional LLM review
-4. **Constraint Check** — The tool must pass the modification constraints (sandboxing, size, depth)
-5. **Registration** — Accepted tools are stored as `active`, used in the current run and loaded into every later run (`getGeneratedTools()` lists them)
+1. **Gap Analysis** - LLM compares user intent and the agent's instructions with available tools (including tools generated earlier), identifies missing capabilities
+2. **Code Synthesis** - Generates a plain JavaScript `execute(params)` implementation, a description of what the tool does, and a few example inputs
+3. **Validation** - Static security scanning, test cases in the sandbox, optional LLM review (see [Validation](#validation))
+4. **Constraint Check** - The tool must pass the modification constraints (sandboxing, size, depth)
+5. **Registration** - Accepted tools are stored as `active`, used in the current run and loaded into every later run (`getGeneratedTools()` lists them)
 
 ### Configuration
 
@@ -121,7 +123,8 @@ const toolGenerator = new ToolGenerator({ llm, config: toolGenConfig, model: 'll
 // Analyze what's missing
 const analysis = await gapAnalyzer.analyze(
   'Calculate compound interest over 10 years',
-  existingTools
+  existingTools,
+  { instructions: agent.instructions }
 );
 
 console.log('Gaps found:', analysis.gaps.length);
@@ -134,6 +137,20 @@ for (const gap of analysis.gaps) {
   }
 }
 ```
+
+`gapAnalyzer.analyze(input, tools, { instructions })` shows the agent's instructions to the analyzer, so a task the instructions require a tool for ("never compute checksums yourself") counts as a gap. `SelfModifyingAgent` passes its agent's instructions.
+
+A generated tool's `description` is what the model wrote about the tool. When it is empty or only repeats the gap text, the gap's `requiredCapability` is used instead, so a later gap analysis sees what the tool does and reuses it. `tool.metadata.capability` keeps the capability it was generated for.
+
+### Validation
+
+`ToolValidator.validate(tool, testCases?)` grades a tool in this order:
+
+- **Static checks** are authoritative: a security rule hit (`eval`, `require`, `process.`, prototype tricks, shell or file system access, no `execute`) makes the tool invalid with score 0, whatever a review says.
+- **Sandbox tests** are authoritative too: any failed case makes the tool invalid. Without `testCases`, the tool runs on the example inputs it was generated with (`metadata.examples` entries that fit its parameters schema, which must succeed) and on inputs synthesized from the schema. Synthesized inputs only prove the tool runs, so a descriptive error is accepted for them, while leaving out a required parameter must throw.
+- **LLM review** (`requireLLMValidation`) follows the reviewer's verdict. A review with `isValid: true` and `recommendation: 'approve'` (or none) keeps the tool valid, and its security and logic notes are kept in `suggestions` as `Review note (...)` entries. A review that recommends `revise` or `reject` makes the tool invalid, and its findings become the `securityIssues` / `logicIssues` the next iteration fixes.
+
+`overallScore` is a quality grade: blocking issues lower it, edge cases and approved review notes lower it by 0.05 each (at most 0.3 together), and the sandbox pass rate weighs 40%.
 
 ### Generated Tool Store
 

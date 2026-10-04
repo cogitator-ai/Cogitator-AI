@@ -23,6 +23,11 @@ export interface ToolGeneratorOptions {
   config: ToolSelfGenerationConfig;
   /** Model the LLM calls use, without the provider prefix of the backend */
   model: string;
+  /**
+   * Upper bound on the output tokens of each generation, improvement and review call.
+   * Unset leaves the backend default.
+   */
+  maxTokens?: number;
 }
 
 export interface GenerateOptions {
@@ -41,6 +46,7 @@ export class ToolGenerator {
   private readonly llm: LLMBackend;
   private readonly config: ToolSelfGenerationConfig;
   private readonly model: string;
+  private readonly maxTokens?: number;
   private readonly validator: ToolValidator;
   private readonly sandbox: ToolSandbox;
 
@@ -48,10 +54,12 @@ export class ToolGenerator {
     this.llm = options.llm;
     this.config = options.config;
     this.model = options.model;
+    this.maxTokens = options.maxTokens;
     this.validator = new ToolValidator({
       llm: options.llm,
       config: options.config,
       model: this.model,
+      maxTokens: options.maxTokens,
     });
     this.sandbox = new ToolSandbox(options.config.sandboxConfig);
   }
@@ -85,6 +93,8 @@ export class ToolGenerator {
         if (!currentTool) {
           continue;
         }
+
+        currentTool.description = describeTool(currentTool.description, gap);
 
         if (options.parameters) {
           currentTool.parameters = options.parameters;
@@ -183,7 +193,7 @@ export class ToolGenerator {
         { role: 'system', content: TOOL_GENERATION_SYSTEM_PROMPT },
         { role: 'user', content: prompt },
       ],
-      { model: this.model, temperature: 0.4 }
+      { model: this.model, temperature: 0.4, maxTokens: this.maxTokens }
     );
 
     const tool = parseToolGenerationResponse(content);
@@ -192,6 +202,7 @@ export class ToolGenerator {
       tool.metadata = {
         ...tool.metadata,
         gapId: gap.id,
+        capability: gap.requiredCapability,
         complexity: gap.complexity,
       };
     }
@@ -212,12 +223,13 @@ export class ToolGenerator {
         { role: 'system', content: TOOL_GENERATION_SYSTEM_PROMPT },
         { role: 'user', content: prompt },
       ],
-      { model: this.model, temperature: 0.3 }
+      { model: this.model, temperature: 0.3, maxTokens: this.maxTokens }
     );
 
     const improved = parseToolGenerationResponse(content);
 
     if (improved) {
+      improved.description ||= tool.description;
       improved.id = tool.id;
       improved.name = tool.name;
       improved.createdAt = tool.createdAt;
@@ -266,6 +278,25 @@ export class ToolGenerator {
       }),
     };
   }
+}
+
+/**
+ * What an agent is told the tool does. The model writes it, but a copy of the gap text
+ * ("no tool can ...") or an empty one would make the next gap analysis think the
+ * capability is still missing, so those fall back to the capability the tool provides.
+ */
+function describeTool(description: string, gap: CapabilityGap): string {
+  const written = description.trim();
+  const echoesGap = normalize(written) === normalize(gap.description);
+  if (written && !echoesGap) return written;
+  return gap.requiredCapability.trim() || gap.description.trim() || written;
+}
+
+function normalize(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
 }
 
 function toToolJsonSchema(parameters: Record<string, unknown>): ToolSchema['parameters'] {

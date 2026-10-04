@@ -35,9 +35,16 @@ function sanitizeToolName(name: string): string {
 export function buildGapAnalysisPrompt(
   userIntent: string,
   availableTools: Array<{ name: string; description: string }>,
-  failedAttempts?: string[]
+  failedAttempts?: string[],
+  agentInstructions?: string
 ): string {
-  const toolList = availableTools.map((t) => `- ${t.name}: ${t.description}`).join('\n');
+  const toolList = availableTools.length
+    ? availableTools.map((t) => `- ${t.name}: ${t.description}`).join('\n')
+    : '(none)';
+
+  const instructionsSection = agentInstructions?.trim()
+    ? `\nAGENT INSTRUCTIONS (the agent must follow these, so a capability they require a tool for is a gap when no tool provides it, even if the model could answer on its own):\n${agentInstructions.trim()}\n`
+    : '';
 
   const failureContext = failedAttempts?.length
     ? `\n\nPrevious failed attempts:\n${failedAttempts.map((f) => `- ${f}`).join('\n')}`
@@ -47,8 +54,8 @@ export function buildGapAnalysisPrompt(
 
 USER INTENT:
 ${userIntent}
-
-AVAILABLE TOOLS:
+${instructionsSection}
+AVAILABLE TOOLS (each one works as described, including tools generated earlier; a capability a listed tool already provides is not a gap, whatever the tool is called):
 ${toolList}
 ${failureContext}
 
@@ -82,7 +89,7 @@ export function buildToolGenerationPrompt(
   }
 ): string {
   const toolName = sanitizeToolName(gap.suggestedToolName);
-  const description = sanitizeForPrompt(gap.description);
+  const task = sanitizeForPrompt(gap.description);
   const capability = sanitizeForPrompt(gap.requiredCapability);
 
   const existingToolsSection =
@@ -121,11 +128,14 @@ export function buildToolGenerationPrompt(
     : '';
 
   return `Create a tool named "${toolName}".
-Task: ${description}
+Task: ${task}
 Formula/Logic: ${capability}
 ${existingToolsSection}${constraintsText}${parametersText}
+"description" tells an agent what the tool does: one sentence naming its input and its output, not the task above.
+"examples" lists 2 or 3 realistic valid inputs the tool must accept without throwing.
+
 Respond with ONLY this JSON (no other text):
-{"name":"${toolName}","description":"${description}","implementation":"async function execute(params) { /* YOUR CODE HERE — throw on invalid input */ }","parameters":${parametersJson},"reasoning":"explanation"}`;
+{"name":"${toolName}","description":"WHAT THE TOOL DOES","implementation":"async function execute(params) { /* YOUR CODE HERE - throw on invalid input */ }","parameters":${parametersJson},"examples":[{"input":{/* VALID PARAMS */}}],"reasoning":"explanation"}`;
 }
 
 export function buildToolValidationPrompt(
@@ -199,9 +209,10 @@ IMPORTANT: Use plain JavaScript only (NO TypeScript, NO type annotations). The e
 Respond with the same JSON format as before:
 {
   "name": "${tool.name}",
-  "description": "Updated description if needed",
+  "description": "What the tool does, its input and its output",
   "implementation": "async function execute(params) { ... }",
   "parameters": { ... },
+  "examples": [{ "input": { ... } }],
   "reasoning": "What was changed and why"
 }`;
 }
@@ -315,23 +326,48 @@ function normalizeParameters(value: unknown): Record<string, unknown> {
   return normalized;
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** Example inputs from a generation response, as `{ input }` entries. Bare input objects are accepted. */
+function parseExamples(value: unknown): Array<{ input: Record<string, unknown> }> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry: unknown) => {
+    if (!isPlainObject(entry)) return [];
+    if ('input' in entry) return isPlainObject(entry.input) ? [{ input: entry.input }] : [];
+    return [{ input: entry }];
+  });
+}
+
 function buildToolFromParsed(parsed: Record<string, unknown>): GeneratedTool {
+  const examples = parseExamples(parsed.examples);
+  const metadata: Record<string, unknown> = {};
+  if (parsed.reasoning) metadata.reasoning = String(parsed.reasoning);
+  if (examples.length > 0) metadata.examples = examples;
+
   return {
     id: `gen_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     name: sanitizeToolName(String(parsed.name)),
-    description: String(parsed.description || ''),
+    description: typeof parsed.description === 'string' ? parsed.description.trim() : '',
     implementation: String(parsed.implementation),
     parameters: normalizeParameters(parsed.parameters),
     createdAt: new Date(),
     version: 1,
     status: 'pending_validation',
-    metadata: {
-      reasoning: parsed.reasoning ? String(parsed.reasoning) : undefined,
-    },
+    metadata,
   };
 }
 
-export function parseValidationResponse(response: string): ToolValidationResult | null {
+/** A reviewer's verdict on a generated tool. */
+export interface ToolReview extends ToolValidationResult {
+  /** What the reviewer wants done with the tool, when it said so */
+  recommendation?: 'approve' | 'revise' | 'reject';
+}
+
+const RECOMMENDATIONS = new Set(['approve', 'revise', 'reject']);
+
+export function parseValidationResponse(response: string): ToolReview | null {
   const json = extractJson(response);
   if (!json) {
     return null;
@@ -355,6 +391,9 @@ export function parseValidationResponse(response: string): ToolValidationResult 
           }))
         : [],
       overallScore: typeof parsed.overallScore === 'number' ? parsed.overallScore : 0,
+      ...(RECOMMENDATIONS.has(parsed.recommendation) && {
+        recommendation: parsed.recommendation as ToolReview['recommendation'],
+      }),
     };
   } catch {
     return null;
