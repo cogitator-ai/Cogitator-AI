@@ -23,6 +23,7 @@ import type {
   WorkflowExecuteOptionsV2,
   RunStore,
   CheckpointStore,
+  DeadLetterQueue,
 } from '@cogitator-ai/types';
 import type { Cogitator } from '@cogitator-ai/core';
 import { WorkflowExecutor } from '../executor';
@@ -492,6 +493,45 @@ export class DefaultWorkflowManager implements IWorkflowManager {
         nodeResults: keptResults,
       },
     });
+  }
+
+  /**
+   * Runs a dead-lettered node again by replaying its run from the failed node, or running the
+   * workflow again from its input when the run failed before any checkpoint (nothing had
+   * completed, so nothing runs twice). The attempt is recorded on the entry first, and the entry is removed when the replay succeeds, so an entry
+   * that fails again stays in the queue with one more attempt.
+   *
+   * @throws Error when the entry is gone, its workflow is not registered here, the node no longer
+   *   exists, its run is unknown, or the manager keeps no checkpoints
+   */
+  async retryDeadLetter<S extends WorkflowState>(
+    queue: DeadLetterQueue,
+    entryId: string
+  ): Promise<WorkflowResult<S>> {
+    const entry = await queue.get(entryId);
+    if (!entry) throw new Error(`Dead letter entry not found: ${entryId}`);
+    const workflow = this.workflows.get(entry.workflowName) as Workflow<S> | undefined;
+    if (!workflow) {
+      throw new Error(
+        `Workflow not found: ${entry.workflowName}. Register it with registerWorkflow() before retrying its dead letters`
+      );
+    }
+    if (!workflow.nodes.has(entry.nodeId)) {
+      throw new Error(`Node ${entry.nodeId} is no longer part of workflow ${entry.workflowName}`);
+    }
+
+    if (!this.checkpointStore) {
+      throw new Error('Retrying a dead letter needs a manager with a checkpointStore');
+    }
+    const run = await this.runStore.get(entry.workflowId);
+    if (!run) throw new Error(`Run not found: ${entry.workflowId}`);
+
+    await queue.retry(entryId);
+    const result = run.checkpointId
+      ? await this.replay(workflow, run.id, entry.nodeId)
+      : await this.execute(workflow, run.input as Partial<S> | undefined);
+    if (!result.error) await queue.remove(entryId);
+    return result;
   }
 
   /**

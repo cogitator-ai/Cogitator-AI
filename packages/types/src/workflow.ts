@@ -336,6 +336,10 @@ export interface DeadLetterQueue {
     nodeId?: string;
     limit?: number;
   }): Promise<DeadLetterEntry[]>;
+  /**
+   * Records a retry attempt (`attempts` + 1, `lastAttempt` now). `WorkflowManager.retryDeadLetter`
+   * runs the failed node again and calls it
+   */
   retry(id: string): Promise<boolean>;
   remove(id: string): Promise<boolean>;
   count(filters?: { workflowId?: string; nodeId?: string }): Promise<number>;
@@ -786,6 +790,16 @@ export interface WorkflowManager {
     workflow: Workflow<S>,
     runId: string,
     fromNode: string
+  ): Promise<WorkflowResult<S>>;
+
+  /**
+   * Runs a dead-lettered node again: replays its run from the failed node, recording the attempt
+   * on the entry and removing the entry when the replay succeeds. The workflow must be registered
+   * with this manager and its run must have a checkpoint
+   */
+  retryDeadLetter<S extends WorkflowState>(
+    queue: DeadLetterQueue,
+    entryId: string
   ): Promise<WorkflowResult<S>>;
 
   getActiveCount(): Promise<number>;

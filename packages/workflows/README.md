@@ -435,6 +435,35 @@ const store = createInMemoryIdempotencyStore();
 const receipt = await idempotent(store, `charge:${orderId}`, () => payments.charge(orderId));
 ```
 
+#### Retrying a dead letter
+
+`manager.retryDeadLetter(dlq, id)` runs a dead-lettered node again. It replays the node's run from the failed node (the nodes before it keep their checkpointed results and do not run twice), or runs the workflow again from its input when the run failed before its first checkpoint. The attempt is recorded on the entry first, and the entry is removed when the retry succeeds, so an entry that fails again stays with one more attempt. The workflow must be registered with the manager and the manager needs a `checkpointStore`:
+
+```typescript
+const manager = createWorkflowManager({ cogitator, checkpointStore, runStore });
+await manager.execute(checkout, input, { deadLetterQueue: dlq });
+
+for (const entry of await dlq.list({ workflowName: 'checkout-workflow' })) {
+  const result = await manager.retryDeadLetter(dlq, entry.id);
+  if (result.error) console.log(`${entry.nodeId} failed again: ${result.error.message}`);
+}
+```
+
+#### Postgres DLQ
+
+`PostgresDLQ` keeps the queue in Postgres, so failed nodes survive restarts and every process sees the same queue. It takes a `pg` Pool or Client, creates its table on first use, filters in SQL and deletes expired entries with `cleanupExpired()`:
+
+```typescript
+import pg from 'pg';
+import { PostgresDLQ } from '@cogitator-ai/workflows';
+
+const dlq = new PostgresDLQ({
+  client: new pg.Pool({ connectionString: process.env.DATABASE_URL }),
+  table: 'checkout_dead_letters', // default cogitator_workflow_dead_letters
+  defaultTTL: 14 * 24 * 60 * 60 * 1000,
+});
+```
+
 ---
 
 ## Subworkflows
