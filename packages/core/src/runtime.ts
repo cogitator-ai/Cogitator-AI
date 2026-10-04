@@ -726,7 +726,8 @@ export class Cogitator {
         });
       }
 
-      const streaming = Boolean(options.stream && options.onToken);
+      const streaming = Boolean(options.stream && (options.onToken ?? options.onReasoning));
+      const onToken = options.onToken ?? (() => undefined);
       let structuredRepaired = false;
       let emptyAnswerRetries = 0;
 
@@ -750,7 +751,7 @@ export class Cogitator {
         const llmSpanStart = Date.now();
 
         let response;
-        if (streaming && options.onToken) {
+        if (streaming) {
           response = await waitForAbortable(
             streamChat(
               backend,
@@ -758,7 +759,7 @@ export class Cogitator {
               messages,
               registry,
               active,
-              options.onToken,
+              onToken,
               abortController.signal,
               responseFormat,
               { reasoning, cache: promptCache, onReasoning: options.onReasoning }

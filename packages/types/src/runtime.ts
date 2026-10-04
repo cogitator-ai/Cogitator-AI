@@ -104,7 +104,10 @@ export interface RunOptions {
   signal?: AbortSignal;
   stream?: boolean;
   onToken?: (token: string) => void;
-  /** Pieces of the model's reasoning summary while streaming (needs `reasoning.summary`) */
+  /**
+   * Pieces of the model's reasoning summary while streaming: needs `stream: true` and
+   * `reasoning.summary`, with or without `onToken`
+   */
   onReasoning?: (delta: string) => void;
   /** Called when an agent hands the conversation over to another */
   onHandoff?: (handoff: HandoffEvent) => void;
