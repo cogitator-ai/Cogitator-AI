@@ -109,7 +109,7 @@ describe('TaskManager', () => {
       expect(failed.status.state).toBe('failed');
       expect(failed.status.message).toBe('Internal error');
       expect(failed.status.errorDetails?.message).toBe('Internal error');
-      expect(consoleError).toHaveBeenCalledWith(`[a2a] Task ${task.id} failed:`, internal);
+      expect(consoleError).toHaveBeenCalledWith('[a2a] %s:', `Task ${task.id} failed`, internal);
       consoleError.mockRestore();
     });
 

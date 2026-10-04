@@ -17,7 +17,7 @@ function createMockRedis(): RedisClientLike {
       store.delete(key);
     }),
     keys: vi.fn(async (pattern: string) => {
-      const prefix = pattern.replace('*', '');
+      const prefix = pattern.replaceAll('*', '');
       return Array.from(store.keys()).filter((k) => k.startsWith(prefix));
     }),
   };
@@ -234,7 +234,7 @@ describe('RedisTaskStore', () => {
       });
       mgetRedis.get = vi.fn(async (key: string) => internalStore.get(key) ?? null);
       mgetRedis.keys = vi.fn(async (pattern: string) => {
-        const prefix = pattern.replace('*', '');
+        const prefix = pattern.replaceAll('*', '');
         return Array.from(internalStore.keys()).filter((k) => k.startsWith(prefix));
       });
       (mgetRedis as RedisClientLike).mget = vi.fn(async (...keys: string[]) =>
