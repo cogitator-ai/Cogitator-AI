@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { resolveRedisOptions } from '../connection';
 import { processAgentJob } from '../processors/agent';
+import { createAgentFromConfig, resolveRuntime } from '../processors/shared';
 import { serializeAgent } from '../serialize';
 
 const Verdict = z.object({ verdict: z.enum(['run', 'hold']), reason: z.string() });
@@ -40,6 +41,23 @@ describe('serializeAgent', () => {
       tools: [{ name: 'lookup' }],
     });
     expect(JSON.parse(JSON.stringify(serialized))).toEqual(serialized);
+  });
+
+  it('carries what happens at the iteration limit into the worker agent', () => {
+    const agent = new Agent({
+      name: 'reporter',
+      model: 'mock/m',
+      instructions: 'Report.',
+      maxIterations: 4,
+      onIterationLimit: 'stop',
+    });
+    const serialized = serializeAgent(agent);
+    expect(serialized).toMatchObject({ maxIterations: 4, onIterationLimit: 'stop' });
+    expect(
+      createAgentFromConfig(serialized, resolveRuntime({ cogitator: new Cogitator() })).config
+    ).toMatchObject({
+      onIterationLimit: 'stop',
+    });
   });
 
   it('refuses an agent without a model', () => {

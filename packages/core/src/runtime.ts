@@ -83,6 +83,9 @@ const MAX_TIMER_DELAY_MS = 2_147_483_647;
  */
 const MAX_EMPTY_ANSWER_RETRIES = 2;
 
+const ITERATION_LIMIT_PROMPT =
+  'You have used every step this run allows. Do not call any more tools. Give your final answer now, from what you have.';
+
 /** A finished turn with no text and no tool calls: nothing a caller could use as an answer. */
 function isEmptyAnswer(response: ChatResponse): boolean {
   return (
@@ -444,6 +447,9 @@ export class Cogitator {
       const promptCache = this.config.llm?.promptCache ?? {};
       let iterations = checkpoint?.iterations ?? 0;
       const maxIterations = agent.config?.maxIterations ?? 10;
+      const answerAtLimit = (agent.config?.onIterationLimit ?? 'answer') === 'answer';
+      let closingTurn = false;
+      let iterationLimitReached = false;
       let lastToolCallSig = checkpoint?.lastToolCallSignature ?? '';
       let pausedTurn: PausedTurn | undefined;
       let responseFormat = toLLMResponseFormat(active.config.responseFormat);
@@ -734,7 +740,7 @@ export class Cogitator {
       let structuredRepaired = false;
       let emptyAnswerRetries = 0;
 
-      while (!pausedTurn && iterations < maxIterations) {
+      while (!pausedTurn && (iterations < maxIterations || closingTurn)) {
         throwIfAborted(abortController.signal);
         this.assertTokenBudget(totalInputTokens + totalOutputTokens);
 
@@ -765,7 +771,12 @@ export class Cogitator {
               onToken,
               abortController.signal,
               responseFormat,
-              { reasoning, cache: promptCache, onReasoning: options.onReasoning }
+              {
+                reasoning,
+                cache: promptCache,
+                onReasoning: options.onReasoning,
+                ...(closingTurn && { toolChoice: 'none' as const }),
+              }
             ),
             abortController.signal
           );
@@ -775,6 +786,7 @@ export class Cogitator {
               model,
               messages,
               tools: registry.getSchemas(),
+              ...(closingTurn && { toolChoice: 'none' as const }),
               temperature: active.config.temperature,
               topP: active.config.topP,
               maxTokens: active.config.maxTokens,
@@ -855,7 +867,8 @@ export class Cogitator {
           }
         }
 
-        const assistantMessage = response.toolCalls?.length
+        const requestsTools = !closingTurn && Boolean(response.toolCalls?.length);
+        const assistantMessage = requestsTools
           ? ({
               role: 'assistant',
               content: outputContent,
@@ -864,11 +877,7 @@ export class Cogitator {
           : ({ role: 'assistant', content: outputContent } as Message);
         messages.push(assistantMessage);
 
-        const finalAnswer = !(
-          response.finishReason === 'tool_calls' &&
-          response.toolCalls &&
-          response.toolCalls.length > 0
-        );
+        const finalAnswer = !(requestsTools && response.finishReason === 'tool_calls');
         const structuredProblem =
           finalAnswer && !streaming && !structuredRepaired && iterations < maxIterations
             ? structuredOutputProblem(active.config.responseFormat, outputContent)
@@ -893,7 +902,7 @@ export class Cogitator {
             active.id,
             assistantMessage,
             this.state.memoryAdapter,
-            response.toolCalls,
+            requestsTools ? response.toolCalls : undefined,
             undefined,
             options.onMemoryError,
             options.userId
@@ -903,6 +912,13 @@ export class Cogitator {
         if (finalAnswer || !response.toolCalls) break;
         pausedTurn = await handleToolTurn(response.toolCalls);
         if (pausedTurn) break;
+
+        if (iterations >= maxIterations) {
+          iterationLimitReached = true;
+          if (!answerAtLimit) break;
+          closingTurn = true;
+          messages.push({ role: 'user', content: ITERATION_LIMIT_PROMPT });
+        }
       }
 
       if (pausedTurn) {
@@ -1028,6 +1044,7 @@ export class Cogitator {
         output: finalOutput,
         ...(structured !== undefined && { structured }),
         status: 'completed',
+        ...(iterationLimitReached && { iterationLimitReached: true }),
         ...(prompt && { prompt }),
         ...(handoffs.length > 0 && { handoffs, finalAgent: active.name }),
         runId,

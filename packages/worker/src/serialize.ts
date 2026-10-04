@@ -40,6 +40,7 @@ export function serializeAgent(agent: Agent): SerializedAgent {
     ...(config.topP !== undefined && { topP: config.topP }),
     ...(config.maxTokens !== undefined && { maxTokens: config.maxTokens }),
     ...(config.maxIterations !== undefined && { maxIterations: config.maxIterations }),
+    ...(config.onIterationLimit !== undefined && { onIterationLimit: config.onIterationLimit }),
     ...(config.reasoning !== undefined && { reasoning: config.reasoning }),
     ...(responseFormat && { responseFormat }),
     tools: agent.tools.map((tool) => tool.toJSON()),

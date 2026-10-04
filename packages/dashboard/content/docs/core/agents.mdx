@@ -37,6 +37,7 @@ interface AgentConfig {
   reasoning?: ReasoningConfig; // effort and summaries for reasoning models
   handoffs?: Array<Agent | Handoff>; // agents it can hand the conversation over to
   maxIterations?: number; // default: 10
+  onIterationLimit?: 'answer' | 'stop'; // default: 'answer'
   timeout?: number; // default: limits.defaultTimeout of the Cogitator, else 120000 (2 min)
 }
 ```
@@ -96,6 +97,8 @@ const researcher = new Agent({
 ```
 
 The agent loops up to `maxIterations` times. Each iteration the LLM may call tools or produce a final response. The loop ends when the LLM responds without tool calls. An empty turn (no text and no tool calls) is not taken as the final response: the run asks the model again, up to twice.
+
+When tool calls use up `maxIterations` before the model answers, the run gets one more turn with `toolChoice: 'none'` and an instruction to answer from what it has, so it still ends with an answer and `structured` output can be parsed. Tools the model asks for on that turn are not run. `result.iterationLimitReached` is `true` either way, and `onIterationLimit: 'stop'` ends the run at the last tool turn instead, without an answer.
 
 ## Agent with Structured Output
 
@@ -169,7 +172,7 @@ const restored = Agent.deserialize(saved, {
 
 Tools are stored by name in the snapshot. During deserialization, each tool name is resolved from `toolRegistry` (any `{ get(name) }`, such as a `ToolRegistry`) when given, otherwise from the `tools` array; a missing tool throws `AgentDeserializationError`. `overrides` replaces any config field of the restored agent.
 
-A snapshot keeps the model, instructions, sampling parameters, `reasoning`, `maxIterations` and `timeout`, but not `handoffs` or `skills` (their tools are kept by name). A `json_schema` response format is saved by name only, so pass the Zod schema back as `overrides.responseFormat`. `Agent.validateSnapshot(value)` checks a parsed snapshot; it rejects snapshots without a `model`, so give agents you serialize an explicit model.
+A snapshot keeps the model, instructions, sampling parameters, `reasoning`, `maxIterations`, `onIterationLimit` and `timeout`, but not `handoffs` or `skills` (their tools are kept by name). A `json_schema` response format is saved by name only, so pass the Zod schema back as `overrides.responseFormat`. `Agent.validateSnapshot(value)` checks a parsed snapshot; it rejects snapshots without a `model`, so give agents you serialize an explicit model.
 
 ## Skills
 

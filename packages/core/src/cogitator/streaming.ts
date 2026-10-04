@@ -7,6 +7,7 @@ import type {
   PromptCacheConfig,
   ReasoningConfig,
   ToolCall,
+  ToolChoice,
 } from '@cogitator-ai/types';
 import { countMessagesTokens } from '@cogitator-ai/memory';
 import { ToolRegistry } from '../registry';
@@ -23,6 +24,7 @@ export interface StreamChatResult {
 
 export interface StreamChatExtras {
   reasoning?: ReasoningConfig;
+  toolChoice?: ToolChoice;
   cache?: PromptCacheConfig | false;
   onReasoning?: (delta: string) => void;
 }
@@ -53,6 +55,7 @@ export async function streamChat(
     model,
     messages,
     tools: registry.getSchemas(),
+    ...(extras.toolChoice && { toolChoice: extras.toolChoice }),
     temperature: agent.config.temperature,
     topP: agent.config.topP,
     maxTokens: agent.config.maxTokens,

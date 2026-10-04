@@ -29,6 +29,7 @@ const serializedAgentSchema = z.object({
   temperature: z.number().optional(),
   maxTokens: z.number().int().positive().optional(),
   maxIterations: z.number().int().positive().optional(),
+  onIterationLimit: z.enum(['answer', 'stop']).optional(),
   tools: z.array(
     z.object({
       name: z.string(),

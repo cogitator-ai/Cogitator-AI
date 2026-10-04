@@ -235,6 +235,7 @@ const agent = new Agent({
   topP: 0.9,
   maxTokens: 4096,
   maxIterations: 15,
+  onIterationLimit: 'answer', // when tools use up maxIterations: one more turn without tools
   timeout: 120_000,
   stopSequences: ['DONE'],
   // responseFormat, reasoning, handoffs, skills, description are covered below
@@ -1820,6 +1821,7 @@ const agent = new Agent({
   topP: 0.9,
   maxTokens: 4096,
   maxIterations: 15,
+  onIterationLimit: 'answer', // when tools use up maxIterations: one more turn without tools
   timeout: 120_000,
   stopSequences: ['DONE'],
   // responseFormat, reasoning, handoffs, skills, description are covered below
