@@ -1,5 +1,12 @@
 # @cogitator-ai/openai-compat
 
+## 21.1.2
+
+### Patch Changes
+
+- Updated dependencies [[`de07e80`](https://github.com/cogitator-ai/Cogitator-AI/commit/de07e80fd5a1b4b066dc1d4e8710716a53959d41)]:
+  - @cogitator-ai/core@0.26.2
+
 ## 21.1.1
 
 ### Patch Changes

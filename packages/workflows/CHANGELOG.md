@@ -1,5 +1,13 @@
 # @cogitator-ai/workflows
 
+## 0.10.2
+
+### Patch Changes
+
+- [#104](https://github.com/cogitator-ai/Cogitator-AI/pull/104) [`c237c48`](https://github.com/cogitator-ai/Cogitator-AI/commit/c237c4836c654c3521c82bb11d3f0ccf4ed3a78f) Thanks [@lb1192176991-lab](https://github.com/lb1192176991-lab)! - Human approval nodes now stop waiting when the workflow run is aborted: the pending approval request is withdrawn from the store and the node fails with an abort error instead of hanging until someone answers or the request times out.
+- Updated dependencies [[`de07e80`](https://github.com/cogitator-ai/Cogitator-AI/commit/de07e80fd5a1b4b066dc1d4e8710716a53959d41)]:
+  - @cogitator-ai/core@0.26.2
+
 ## 0.10.1
 
 ### Patch Changes
