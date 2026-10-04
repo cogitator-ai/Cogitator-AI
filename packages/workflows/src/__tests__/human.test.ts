@@ -769,8 +769,6 @@ describe('Human-in-the-Loop', () => {
       controller.abort();
 
       await expect(resultPromise).rejects.toMatchObject({ name: 'AbortError' });
-      // The escalated request is withdrawn; the escalated-from request stays pending
-      // (its timeout already fired, which is how it reached the escalation wait).
       const remaining = await store.getPendingRequests();
       expect(remaining.map((r) => r.id)).not.toContain(requested[1].id);
       store.dispose();

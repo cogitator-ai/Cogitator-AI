@@ -3,11 +3,19 @@
  */
 
 import type { Cogitator } from '@cogitator-ai/core';
-import type { LLMBackendProvider, Tool, ToolSchema } from '@cogitator-ai/types';
+import type { LLMBackendProvider, ReasoningConfig, Tool, ToolSchema } from '@cogitator-ai/types';
 import type {
   SwarmAgentJobPayload as SwarmAgentJobContract,
   SwarmAgentJobResult as SwarmAgentJobResultContract,
 } from '@cogitator-ai/swarms';
+
+/**
+ * An agent's response format in a form that travels through the queue: a Zod schema becomes
+ * JSON Schema (see `serializeAgent`), and the worker turns it back into a schema to validate the
+ * run's structured output.
+ */
+export type SerializedResponseFormat =
+  { type: 'text' } | { type: 'json' } | { type: 'json_schema'; schema: Record<string, unknown> };
 
 /**
  * Serialized agent configuration for queue transport
@@ -30,8 +38,13 @@ export interface SerializedAgent {
    */
   provider?: LLMBackendProvider;
   temperature?: number;
+  topP?: number;
   maxTokens?: number;
   maxIterations?: number;
+  /** Structured output: the job result carries `structured` when the run's answer fits */
+  responseFormat?: SerializedResponseFormat;
+  /** Reasoning effort and summaries, as in `AgentConfig.reasoning` */
+  reasoning?: ReasoningConfig;
   /** Tool schemas; tools are resolved by name from the worker's tool registry */
   tools: ToolSchema[];
 }
@@ -143,14 +156,31 @@ export type SwarmAgentJobPayload = SwarmAgentJobContract;
 export type JobPayload =
   AgentJobPayload | WorkflowJobPayload | SwarmJobPayload | SwarmAgentJobPayload;
 
+/** What an agent run used and cost, as `RunResult.usage` reports it. */
+export interface AgentJobUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  /** USD: what the provider reported, else the model registry's price, else 0 */
+  cost: number;
+  reasoningTokens?: number;
+  cachedInputTokens?: number;
+}
+
 export interface AgentJobResult {
   type: 'agent';
   output: string;
+  /** The validated answer of an agent with a JSON schema response format, when it fits */
+  structured?: unknown;
+  /** The model's reasoning summary, when the agent asked for one */
+  reasoning?: string;
+  usage: AgentJobUsage;
   toolCalls: {
     name: string;
     input: unknown;
     output: unknown;
   }[];
+  /** @deprecated Use `usage`, which also carries the cost */
   tokenUsage?: {
     prompt: number;
     completion: number;
@@ -184,11 +214,19 @@ export type JobResult = AgentJobResult | WorkflowJobResult | SwarmJobResult | Sw
 export interface QueueConfig {
   /** Queue name (default: 'cogitator-jobs') */
   name?: string;
-  /** Redis connection config */
+  /**
+   * Redis connection config. `url` (`redis://user:password@host:port/db`, or `rediss://` for
+   * TLS) is read first, and the explicit fields override what it says
+   */
   redis: {
+    url?: string;
     host?: string;
     port?: number;
+    username?: string;
     password?: string;
+    db?: number;
+    /** Connect over TLS; implied by a `rediss://` url */
+    tls?: boolean;
     /** For cluster mode */
     cluster?: {
       nodes: { host: string; port: number }[];

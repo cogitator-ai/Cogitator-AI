@@ -24,6 +24,20 @@ export async function processAgentJob(
   return {
     type: 'agent',
     output: result.output,
+    ...(result.structured !== undefined && { structured: result.structured }),
+    ...(result.reasoning && { reasoning: result.reasoning }),
+    usage: {
+      inputTokens: result.usage.inputTokens,
+      outputTokens: result.usage.outputTokens,
+      totalTokens: result.usage.totalTokens,
+      cost: result.usage.cost,
+      ...(result.usage.reasoningTokens !== undefined && {
+        reasoningTokens: result.usage.reasoningTokens,
+      }),
+      ...(result.usage.cachedInputTokens !== undefined && {
+        cachedInputTokens: result.usage.cachedInputTokens,
+      }),
+    },
     toolCalls: result.toolCalls.map((tc) => ({
       name: tc.name,
       input: tc.arguments,

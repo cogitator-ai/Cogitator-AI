@@ -281,12 +281,9 @@ async function waitForResponse(
  * Remove a request from the store so approvers no longer see it. Failures are
  * tolerated: the wait already unwound, and a missing request is not an error.
  */
+/** Withdraws an open request. A request that is already gone needs no withdrawing. */
 async function withdrawRequest(request: ApprovalRequest, store: ApprovalStore): Promise<void> {
-  try {
-    await store.deleteRequest(request.id);
-  } catch {
-    // Best effort — the request may already be gone.
-  }
+  await store.deleteRequest(request.id).catch(() => undefined);
 }
 
 /**

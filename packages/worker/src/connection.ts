@@ -4,6 +4,56 @@ import type { QueueConfig } from './types';
 
 export const DEFAULT_QUEUE_NAME = 'cogitator-jobs';
 
+/** A single Redis server's connection settings, the url read and the explicit fields applied. */
+export interface RedisConnectionOptions {
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+  db?: number;
+  tls?: Record<string, never>;
+}
+
+/**
+ * Connection settings from the queue's redis config: `url` first (`redis://` or `rediss://` for
+ * TLS, `user:password@`, a `/db` path), then the explicit fields, which win.
+ *
+ * @throws Error for a url that is not redis:// or rediss://, or a db path that is not a number
+ */
+export function resolveRedisOptions(redis: RedisConnectionConfig): RedisConnectionOptions {
+  let fromUrl: Partial<RedisConnectionOptions> & { tlsFromUrl?: boolean } = {};
+  if (redis.url) {
+    const url = new URL(redis.url);
+    if (url.protocol !== 'redis:' && url.protocol !== 'rediss:') {
+      throw new Error(`Redis url must start with redis:// or rediss://, got ${url.protocol}//`);
+    }
+    const dbPath = url.pathname.replace(/^\//, '');
+    if (dbPath !== '' && !/^\d+$/.test(dbPath)) {
+      throw new Error(`Redis url database must be a number, got "${dbPath}"`);
+    }
+    fromUrl = {
+      ...(url.hostname && { host: url.hostname }),
+      ...(url.port && { port: Number(url.port) }),
+      ...(url.username && { username: decodeURIComponent(url.username) }),
+      ...(url.password && { password: decodeURIComponent(url.password) }),
+      ...(dbPath !== '' && { db: Number(dbPath) }),
+      tlsFromUrl: url.protocol === 'rediss:',
+    };
+  }
+  const tls = redis.tls ?? fromUrl.tlsFromUrl ?? false;
+  const username = redis.username ?? fromUrl.username;
+  const password = redis.password ?? fromUrl.password;
+  const db = redis.db ?? fromUrl.db;
+  return {
+    host: redis.host ?? fromUrl.host ?? 'localhost',
+    port: redis.port ?? fromUrl.port ?? 6379,
+    ...(username !== undefined && { username }),
+    ...(password !== undefined && { password }),
+    ...(db !== undefined && { db }),
+    ...(tls && { tls: {} }),
+  };
+}
+
 export type RedisClient = Redis | Cluster;
 
 type RedisConnectionConfig = QueueConfig['redis'];
@@ -54,12 +104,7 @@ export function createBullConnection(
   }
 
   return {
-    connection: {
-      host: redis.host ?? 'localhost',
-      port: redis.port ?? 6379,
-      password: redis.password,
-      maxRetriesPerRequest,
-    },
+    connection: { ...resolveRedisOptions(redis), maxRetriesPerRequest },
     dispose: async () => {},
   };
 }
@@ -75,9 +120,5 @@ export function createRedisClient(redis: RedisConnectionConfig): RedisClient {
     return new Cluster(redis.cluster.nodes, { redisOptions: { password: redis.password } });
   }
 
-  return new Redis({
-    host: redis.host ?? 'localhost',
-    port: redis.port ?? 6379,
-    password: redis.password,
-  });
+  return new Redis(resolveRedisOptions(redis));
 }
