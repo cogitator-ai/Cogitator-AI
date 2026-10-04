@@ -1,26 +1,72 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type {
+  Collection,
+  Document,
+  Filter,
+  FindCursor,
+  MongoClient as DriverClient,
+  WithId,
+} from 'mongodb';
 import { MongoDBAdapter } from '../adapters/mongodb';
 import type { Message } from '@cogitator-ai/types';
 
-const mockCollection = {
-  createIndex: vi.fn().mockResolvedValue('index_name'),
-  insertOne: vi.fn().mockResolvedValue({ insertedId: 'test-id' }),
-  findOne: vi.fn(),
-  find: vi.fn(),
-  updateOne: vi.fn().mockResolvedValue({ modifiedCount: 1 }),
-  deleteOne: vi.fn().mockResolvedValue({ deletedCount: 1 }),
-  deleteMany: vi.fn().mockResolvedValue({ deletedCount: 5 }),
+interface StoredDoc extends Document {
+  _id: string;
+}
+
+type CursorSurface = Pick<FindCursor<WithId<StoredDoc>>, 'sort' | 'limit' | 'toArray'>;
+type CollectionSurface = Pick<
+  Collection<StoredDoc>,
+  'createIndex' | 'insertOne' | 'updateOne' | 'deleteOne' | 'deleteMany'
+> & {
+  findOne(filter: Filter<StoredDoc>): Promise<WithId<StoredDoc> | null>;
+  find(filter: Filter<StoredDoc>): CursorSurface;
 };
+type ClientSurface = Pick<DriverClient, 'connect' | 'close'> & {
+  db(name?: string): { collection(name: string): CollectionSurface };
+};
+
+const deleted = { acknowledged: true, deletedCount: 1 };
+
+const mockCollection = {
+  createIndex: vi.fn<CollectionSurface['createIndex']>().mockResolvedValue('index_name'),
+  insertOne: vi
+    .fn<CollectionSurface['insertOne']>()
+    .mockResolvedValue({ acknowledged: true, insertedId: 'test-id' }),
+  findOne: vi.fn<CollectionSurface['findOne']>(),
+  find: vi.fn<CollectionSurface['find']>(),
+  updateOne: vi.fn<CollectionSurface['updateOne']>().mockResolvedValue({
+    acknowledged: true,
+    matchedCount: 1,
+    modifiedCount: 1,
+    upsertedCount: 0,
+    upsertedId: null,
+  }),
+  deleteOne: vi.fn<CollectionSurface['deleteOne']>().mockResolvedValue(deleted),
+  deleteMany: vi
+    .fn<CollectionSurface['deleteMany']>()
+    .mockResolvedValue({ ...deleted, deletedCount: 5 }),
+} satisfies CollectionSurface;
 
 const mockDb = {
-  collection: vi.fn().mockReturnValue(mockCollection),
-};
+  collection: vi.fn<(name: string) => CollectionSurface>().mockReturnValue(mockCollection),
+} satisfies ReturnType<ClientSurface['db']>;
 
 const mockClient = {
-  connect: vi.fn().mockResolvedValue(undefined),
-  close: vi.fn().mockResolvedValue(undefined),
-  db: vi.fn().mockReturnValue(mockDb),
-};
+  connect: vi.fn<ClientSurface['connect']>(function (this: DriverClient) {
+    return Promise.resolve(this);
+  }),
+  close: vi.fn<ClientSurface['close']>().mockResolvedValue(undefined),
+  db: vi.fn<ClientSurface['db']>().mockReturnValue(mockDb),
+} satisfies ClientSurface;
+
+function cursorOver(docs: WithId<StoredDoc>[]) {
+  return {
+    sort: vi.fn<CursorSurface['sort']>().mockReturnThis(),
+    limit: vi.fn<CursorSurface['limit']>().mockReturnThis(),
+    toArray: vi.fn<CursorSurface['toArray']>().mockResolvedValue(docs),
+  } satisfies CursorSurface;
+}
 
 vi.mock('mongodb', () => {
   class MongoClient {
@@ -31,16 +77,29 @@ vi.mock('mongodb', () => {
   return { MongoClient };
 });
 
+describe('the mocked mongodb driver', () => {
+  it('only stubs methods the real mongodb driver has', async () => {
+    const real = await vi.importActual<typeof import('mongodb')>('mongodb');
+    const prototypes: [string, object, object][] = [
+      ['MongoClient', real.MongoClient.prototype, mockClient],
+      ['Db', real.Db.prototype, mockDb],
+      ['Collection', real.Collection.prototype, mockCollection],
+      ['FindCursor', real.FindCursor.prototype, cursorOver([])],
+    ];
+    for (const [name, prototype, mock] of prototypes) {
+      for (const method of Object.keys(mock)) {
+        expect(typeof Reflect.get(prototype, method), `${name}.${method}`).toBe('function');
+      }
+    }
+  });
+});
+
 describe('MongoDBAdapter', () => {
   let adapter: MongoDBAdapter;
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    mockCollection.find.mockReturnValue({
-      sort: vi.fn().mockReturnThis(),
-      limit: vi.fn().mockReturnThis(),
-      toArray: vi.fn().mockResolvedValue([]),
-    });
+    mockCollection.find.mockReturnValue(cursorOver([]));
     mockCollection.findOne.mockResolvedValue(null);
 
     adapter = new MongoDBAdapter({
@@ -261,10 +320,8 @@ describe('MongoDBAdapter', () => {
 
     it('gets entries for thread', async () => {
       const now = new Date();
-      mockCollection.find.mockReturnValueOnce({
-        sort: vi.fn().mockReturnThis(),
-        limit: vi.fn().mockReturnThis(),
-        toArray: vi.fn().mockResolvedValue([
+      mockCollection.find.mockReturnValueOnce(
+        cursorOver([
           {
             _id: 'entry_123',
             threadId: 'thread_123',
@@ -272,8 +329,8 @@ describe('MongoDBAdapter', () => {
             tokenCount: 10,
             createdAt: now,
           },
-        ]),
-      });
+        ])
+      );
 
       const result = await adapter.getEntries({ threadId: 'thread_123' });
 
@@ -285,11 +342,7 @@ describe('MongoDBAdapter', () => {
     });
 
     it('gets entries with time filter', async () => {
-      const cursor = {
-        sort: vi.fn().mockReturnThis(),
-        limit: vi.fn().mockReturnThis(),
-        toArray: vi.fn().mockResolvedValue([]),
-      };
+      const cursor = cursorOver([]);
       mockCollection.find.mockReturnValueOnce(cursor);
 
       const before = new Date('2024-12-31');
@@ -311,11 +364,7 @@ describe('MongoDBAdapter', () => {
     });
 
     it('gets entries with limit', async () => {
-      const cursor = {
-        sort: vi.fn().mockReturnThis(),
-        limit: vi.fn().mockReturnThis(),
-        toArray: vi.fn().mockResolvedValue([]),
-      };
+      const cursor = cursorOver([]);
       mockCollection.find.mockReturnValueOnce(cursor);
 
       await adapter.getEntries({ threadId: 'thread_123', limit: 5 });
@@ -325,10 +374,8 @@ describe('MongoDBAdapter', () => {
 
     it('excludes tool calls when not requested', async () => {
       const now = new Date();
-      mockCollection.find.mockReturnValueOnce({
-        sort: vi.fn().mockReturnThis(),
-        limit: vi.fn().mockReturnThis(),
-        toArray: vi.fn().mockResolvedValue([
+      mockCollection.find.mockReturnValueOnce(
+        cursorOver([
           {
             _id: 'entry_123',
             threadId: 'thread_123',
@@ -338,8 +385,8 @@ describe('MongoDBAdapter', () => {
             tokenCount: 10,
             createdAt: now,
           },
-        ]),
-      });
+        ])
+      );
 
       const result = await adapter.getEntries({
         threadId: 'thread_123',
@@ -355,10 +402,8 @@ describe('MongoDBAdapter', () => {
 
     it('includes tool calls when requested', async () => {
       const now = new Date();
-      mockCollection.find.mockReturnValueOnce({
-        sort: vi.fn().mockReturnThis(),
-        limit: vi.fn().mockReturnThis(),
-        toArray: vi.fn().mockResolvedValue([
+      mockCollection.find.mockReturnValueOnce(
+        cursorOver([
           {
             _id: 'entry_123',
             threadId: 'thread_123',
@@ -368,8 +413,8 @@ describe('MongoDBAdapter', () => {
             tokenCount: 10,
             createdAt: now,
           },
-        ]),
-      });
+        ])
+      );
 
       const result = await adapter.getEntries({
         threadId: 'thread_123',

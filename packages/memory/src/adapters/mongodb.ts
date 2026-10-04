@@ -6,40 +6,39 @@ import type {
   MongoDBAdapterConfig,
   MemoryProvider,
 } from '@cogitator-ai/types';
+import type {
+  Collection,
+  Document,
+  Filter,
+  FindCursor,
+  MongoClient as DriverClient,
+  WithId,
+} from 'mongodb';
 import { BaseMemoryAdapter } from './base';
 
-interface MongoClient {
-  connect(): Promise<void>;
-  close(): Promise<void>;
-  db(name?: string): Db;
+/** A cursor over `find()` results, as far as the adapter reads it. */
+type MongoCursor<T extends Document> = Pick<FindCursor<WithId<T>>, 'sort' | 'limit' | 'toArray'>;
+
+/**
+ * The collection methods the adapter calls, typed against the installed `mongodb` driver so a
+ * method it no longer has, or one whose signature changed, fails to compile. The overloaded
+ * lookups are narrowed to the one form the adapter uses, which the driver's collection still has
+ * to satisfy.
+ */
+interface MongoCollection<T extends Document> extends Pick<
+  Collection<T>,
+  'createIndex' | 'insertOne' | 'updateOne' | 'deleteOne' | 'deleteMany'
+> {
+  findOne(filter: Filter<T>): Promise<WithId<T> | null>;
+  find(filter: Filter<T>): MongoCursor<T>;
 }
 
-interface Db {
-  collection<T = Document>(name: string): Collection<T>;
+interface MongoDatabase {
+  collection<T extends Document>(name: string): MongoCollection<T>;
 }
 
-interface Collection<T = Document> {
-  createIndex(keys: Record<string, 1 | -1>, options?: { unique?: boolean }): Promise<string>;
-  insertOne(doc: T): Promise<{ insertedId: unknown }>;
-  findOne(filter: Record<string, unknown>): Promise<T | null>;
-  find(filter: Record<string, unknown>): Cursor<T>;
-  updateOne(
-    filter: Record<string, unknown>,
-    update: { $set: Partial<T>; $setOnInsert?: Partial<T> },
-    options?: { upsert?: boolean }
-  ): Promise<{ modifiedCount: number }>;
-  deleteOne(filter: Record<string, unknown>): Promise<{ deletedCount: number }>;
-  deleteMany(filter: Record<string, unknown>): Promise<{ deletedCount: number }>;
-}
-
-interface Cursor<T> {
-  sort(sort: Record<string, 1 | -1>): Cursor<T>;
-  limit(n: number): Cursor<T>;
-  toArray(): Promise<T[]>;
-}
-
-interface Document {
-  _id?: unknown;
+interface MongoClient extends Pick<DriverClient, 'connect' | 'close'> {
+  db(name?: string): MongoDatabase;
 }
 
 interface ThreadDoc {
@@ -65,7 +64,7 @@ export class MongoDBAdapter extends BaseMemoryAdapter {
   readonly provider: MemoryProvider = 'mongodb';
 
   private client: MongoClient | null = null;
-  private db: Db | null = null;
+  private db: MongoDatabase | null = null;
   private uri: string;
   private database: string;
   private prefix: string;
@@ -77,12 +76,12 @@ export class MongoDBAdapter extends BaseMemoryAdapter {
     this.prefix = config.collectionPrefix ?? 'memory_';
   }
 
-  private get threads(): Collection<ThreadDoc> {
+  private get threads(): MongoCollection<ThreadDoc> {
     if (!this.db) throw new Error('Not connected');
     return this.db.collection<ThreadDoc>(`${this.prefix}threads`);
   }
 
-  private get entries(): Collection<EntryDoc> {
+  private get entries(): MongoCollection<EntryDoc> {
     if (!this.db) throw new Error('Not connected');
     return this.db.collection<EntryDoc>(`${this.prefix}entries`);
   }
@@ -90,10 +89,9 @@ export class MongoDBAdapter extends BaseMemoryAdapter {
   async connect(): Promise<MemoryResult<void>> {
     if (this.client) return this.success(undefined);
 
-    let MongoClient: new (uri: string) => MongoClient;
+    let MongoClient: typeof DriverClient;
     try {
-      const mongodb = await import('mongodb');
-      MongoClient = mongodb.MongoClient as unknown as new (uri: string) => MongoClient;
+      ({ MongoClient } = await import('mongodb'));
     } catch {
       return this.failure('mongodb not installed. Run: pnpm add mongodb');
     }
@@ -244,12 +242,13 @@ export class MongoDBAdapter extends BaseMemoryAdapter {
     if (!this.db) return this.failure('Not connected');
 
     try {
-      const filter: Record<string, unknown> = { threadId: options.threadId };
+      const filter: Filter<EntryDoc> = { threadId: options.threadId };
 
       if (options.before || options.after) {
-        filter.createdAt = {};
-        if (options.before) (filter.createdAt as Record<string, Date>).$lt = options.before;
-        if (options.after) (filter.createdAt as Record<string, Date>).$gt = options.after;
+        const createdAt: { $lt?: Date; $gt?: Date } = {};
+        if (options.before) createdAt.$lt = options.before;
+        if (options.after) createdAt.$gt = options.after;
+        filter.createdAt = createdAt;
       }
 
       let cursor = this.entries.find(filter).sort({ createdAt: -1 });

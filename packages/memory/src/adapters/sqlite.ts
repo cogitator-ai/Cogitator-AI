@@ -7,19 +7,7 @@ import type {
   MemoryProvider,
 } from '@cogitator-ai/types';
 import { BaseMemoryAdapter } from './base';
-
-interface Database {
-  prepare(sql: string): Statement;
-  exec(sql: string): void;
-  close(): void;
-  pragma(pragma: string): unknown;
-}
-
-interface Statement {
-  run(...params: unknown[]): { changes: number; lastInsertRowid: number | bigint };
-  get(...params: unknown[]): unknown;
-  all(...params: unknown[]): unknown[];
-}
+import type { SqliteDatabase } from './sqlite-driver';
 
 interface ThreadRow {
   id: string;
@@ -32,7 +20,7 @@ interface ThreadRow {
 export class SQLiteAdapter extends BaseMemoryAdapter {
   readonly provider: MemoryProvider = 'sqlite';
 
-  private db: Database | null = null;
+  private db: SqliteDatabase | null = null;
   private path: string;
   private walMode: boolean;
 
@@ -47,10 +35,9 @@ export class SQLiteAdapter extends BaseMemoryAdapter {
       return this.success(undefined);
     }
 
-    let Database: new (path: string) => Database;
+    let Database: typeof import('better-sqlite3');
     try {
-      const betterSqlite = await import('better-sqlite3');
-      Database = betterSqlite.default as unknown as new (path: string) => Database;
+      Database = (await import('better-sqlite3')).default;
     } catch {
       return this.failure('better-sqlite3 not installed. Run: pnpm add better-sqlite3');
     }

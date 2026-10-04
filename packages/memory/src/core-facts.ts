@@ -1,3 +1,8 @@
+/**
+ * The database a {@link CoreFactsStore} shares when given `{ db }`. A `better-sqlite3` `Database`
+ * satisfies it. It is declared here instead of imported so the published types do not require
+ * `better-sqlite3`, and the store assigns the real driver to it, so drift fails to compile.
+ */
 interface Database {
   prepare(sql: string): Statement;
   exec(sql: string): void;
@@ -53,10 +58,9 @@ export class CoreFactsStore {
 
     if (!this.db) {
       if (!this.path) throw new Error('No database path configured');
-      let DatabaseCtor: new (path: string) => Database;
+      let DatabaseCtor: typeof import('better-sqlite3');
       try {
-        const betterSqlite = await import('better-sqlite3');
-        DatabaseCtor = betterSqlite.default as unknown as new (path: string) => Database;
+        DatabaseCtor = (await import('better-sqlite3')).default;
       } catch {
         throw new Error('better-sqlite3 not installed. Run: pnpm add better-sqlite3');
       }

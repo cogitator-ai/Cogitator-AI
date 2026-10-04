@@ -16,19 +16,7 @@ import type {
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 import { unwrap } from '../result';
-
-interface Database {
-  prepare(sql: string): Statement;
-  exec(sql: string): void;
-  close(): void;
-  pragma(pragma: string): unknown;
-}
-
-interface Statement {
-  run(...params: unknown[]): { changes: number; lastInsertRowid: number | bigint };
-  get(...params: unknown[]): unknown;
-  all(...params: unknown[]): unknown[];
-}
+import type { SqliteDatabase } from '../adapters/sqlite-driver';
 
 interface NodeRow {
   id: string;
@@ -92,7 +80,7 @@ export interface SQLiteGraphAdapterConfig {
 }
 
 export class SQLiteGraphAdapter implements GraphAdapter {
-  private db: Database | null = null;
+  private db: SqliteDatabase | null = null;
   private path: string;
   private walMode: boolean;
   private initialized = false;
@@ -106,10 +94,8 @@ export class SQLiteGraphAdapter implements GraphAdapter {
     if (this.initialized) return;
 
     if (!this.db) {
-      let DatabaseCtor: new (path: string) => Database;
-      const betterSqlite = await import('better-sqlite3');
-      DatabaseCtor = betterSqlite.default as unknown as new (path: string) => Database;
-      this.db = new DatabaseCtor(this.path);
+      const Database = (await import('better-sqlite3')).default;
+      this.db = new Database(this.path);
 
       this.db.pragma('foreign_keys = ON');
       if (this.walMode && this.path !== ':memory:') {
@@ -175,7 +161,7 @@ export class SQLiteGraphAdapter implements GraphAdapter {
     }
   }
 
-  private ensureDb(): Database {
+  private ensureDb(): SqliteDatabase {
     if (!this.db) throw new Error('Not initialized');
     return this.db;
   }

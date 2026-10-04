@@ -1,19 +1,25 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type BetterSqlite3 from 'better-sqlite3';
 import { SQLiteAdapter } from '../adapters/sqlite';
 import type { Message } from '@cogitator-ai/types';
 
-const mockStmt = {
-  run: vi.fn().mockReturnValue({ changes: 1, lastInsertRowid: 1 }),
-  get: vi.fn(),
-  all: vi.fn().mockReturnValue([]),
+type StatementSurface = Pick<BetterSqlite3.Statement<unknown[]>, 'run' | 'get' | 'all'>;
+type DatabaseSurface = Pick<BetterSqlite3.Database, 'exec' | 'close' | 'pragma'> & {
+  prepare(source: string): StatementSurface;
 };
 
+const mockStmt = {
+  run: vi.fn<StatementSurface['run']>().mockReturnValue({ changes: 1, lastInsertRowid: 1 }),
+  get: vi.fn<StatementSurface['get']>(),
+  all: vi.fn<StatementSurface['all']>().mockReturnValue([]),
+} satisfies StatementSurface;
+
 const mockDb = {
-  prepare: vi.fn().mockReturnValue(mockStmt),
-  exec: vi.fn(),
-  close: vi.fn(),
-  pragma: vi.fn(),
-};
+  prepare: vi.fn<DatabaseSurface['prepare']>().mockReturnValue(mockStmt),
+  exec: vi.fn<DatabaseSurface['exec']>(),
+  close: vi.fn<DatabaseSurface['close']>(),
+  pragma: vi.fn<DatabaseSurface['pragma']>(),
+} satisfies DatabaseSurface;
 
 vi.mock('better-sqlite3', () => {
   class Database {
@@ -26,15 +32,33 @@ vi.mock('better-sqlite3', () => {
 });
 
 const returnInsertedThread = () =>
-  mockStmt.get.mockImplementationOnce(
-    (id: string, agentId: string, metadata: string, createdAt: string, updatedAt: string) => ({
-      id,
-      agent_id: agentId,
-      metadata,
-      created_at: createdAt,
-      updated_at: updatedAt,
-    })
-  );
+  mockStmt.get.mockImplementationOnce((id, agentId, metadata, createdAt, updatedAt) => ({
+    id,
+    agent_id: agentId,
+    metadata,
+    created_at: createdAt,
+    updated_at: updatedAt,
+  }));
+
+describe('the mocked better-sqlite3 driver', () => {
+  it('only stubs methods the real better-sqlite3 has', async () => {
+    const { default: Database } = await vi.importActual<{ default: typeof BetterSqlite3 }>(
+      'better-sqlite3'
+    );
+    const db = new Database(':memory:');
+    try {
+      const statement = db.prepare('SELECT 1');
+      for (const method of Object.keys(mockDb)) {
+        expect(typeof Reflect.get(db, method), `Database.${method}`).toBe('function');
+      }
+      for (const method of Object.keys(mockStmt)) {
+        expect(typeof Reflect.get(statement, method), `Statement.${method}`).toBe('function');
+      }
+    } finally {
+      db.close();
+    }
+  });
+});
 
 describe('SQLiteAdapter', () => {
   let adapter: SQLiteAdapter;
