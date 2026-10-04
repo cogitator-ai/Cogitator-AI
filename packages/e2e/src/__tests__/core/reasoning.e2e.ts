@@ -42,8 +42,8 @@ describeGoogle('Core: reasoning on Gemini', () => {
     expect(result.usage.cost).toBeGreaterThan(0);
   });
 
-  /** Gemini leaves the summary out of about 40% of streamed answers; 8 tries miss all in under 0.1% of runs. */
-  const STREAM_ATTEMPTS = 8;
+  /** Gemini leaves the summary out of about half of streamed answers (measured on the raw API too), so 14 tries all miss in under 0.01% of runs. */
+  const STREAM_ATTEMPTS = 14;
 
   it('streams the reasoning before the answer', { timeout: 240_000 }, async () => {
     let streamedReasoning = false;
