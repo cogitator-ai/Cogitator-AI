@@ -64,7 +64,7 @@ interface CogitatorAppOptions {
 
 ## Request Handling
 
-- Bodies are validated before anything reaches the runtime: `input` must contain more than whitespace (`""` and `"   "` are refused before the model is called), `context` an object, `threadId` a non-empty string, swarm `timeout` a positive number. Invalid bodies return `400 INVALID_INPUT`; bodies above `bodyLimit` return `413 PAYLOAD_TOO_LARGE`.
+- Bodies are validated before anything reaches the runtime: `input` must contain more than whitespace (`""` and `"   "` are refused before the model is called), `context` an object, `threadId` a non-empty string, swarm `timeout` a positive number of at most `MAX_RUN_TIMEOUT_MS` (2147483647, the longest delay a timer can hold). Invalid bodies return `400 INVALID_INPUT`; bodies above `bodyLimit` return `413 PAYLOAD_TOO_LARGE`.
 - Workflow `options` are limited to `maxConcurrency`, `maxIterations` (positive integers) and `checkpoint` (boolean); other options are dropped and wrongly typed ones return `400 INVALID_INPUT`. The body itself is optional.
 - Thread messages accept the roles `user`, `assistant` and `system`; `metadata` is stored with the entry.
 - Unknown agents, workflows and swarms return `404 NOT_FOUND`; workflow and swarm routes return `501 UNIMPLEMENTED` when `@cogitator-ai/workflows` or `@cogitator-ai/swarms` is not installed. `GET /swarms/:name/blackboard` returns the configured `blackboard.sections`, or `400` when the blackboard is disabled.
