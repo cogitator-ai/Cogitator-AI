@@ -53,7 +53,7 @@ Every factory accepts an optional `{ timeout }` in milliseconds — 5000 by defa
 const calc = createCalcTool({ timeout: 10000 });
 ```
 
-The Zod schemas are exported too (`calcToolSchema`, `jsonToolSchema`, …, `signingToolSchema`, with matching `CalcToolInput`-style types), as is `getWasmPath(name)`, the path of a bundled module (`getWasmPath('calc')`). `calcToolConfig`, `jsonToolConfig`, `hashToolConfig` and `base64ToolConfig` are ready-made `SandboxConfig`s for those four modules.
+The Zod schemas are exported too (`calcToolSchema`, `jsonToolSchema`, …, `signingToolSchema`, with matching `CalcToolInput`-style types), as is `getWasmPath(name)`, the absolute path of a bundled module (`getWasmPath('calc')`). With `@cogitator-ai/sandbox` the package path `@cogitator-ai/wasm-tools/wasm/calc.wasm` works as well: the executor resolves it from your application. `calcToolConfig`, `jsonToolConfig`, `hashToolConfig` and `base64ToolConfig` are ready-made `SandboxConfig`s for those four modules.
 
 ### Executing Tools
 

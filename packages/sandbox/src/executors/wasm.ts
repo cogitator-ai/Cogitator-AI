@@ -16,6 +16,7 @@ import { BaseSandboxExecutor } from './base';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { capModuleMemory } from './wasm-memory.js';
 
 export interface WasmExecutorOptions {
@@ -225,18 +226,7 @@ export class WasmSandboxExecutor extends BaseSandboxExecutor {
       }
       return new Uint8Array(await response.arrayBuffer());
     }
-
-    if (existsSync(wasmModule)) {
-      return new Uint8Array(await readFile(wasmModule));
-    }
-
-    let resolved: string;
-    try {
-      resolved = createRequire(import.meta.url).resolve(wasmModule);
-    } catch {
-      throw new Error(`WASM module not found: ${wasmModule}`);
-    }
-    return new Uint8Array(await readFile(resolved));
+    return new Uint8Array(await readFile(resolveModulePath(wasmModule)));
   }
 
   private buildInput(request: SandboxExecutionRequest): string {
@@ -283,6 +273,40 @@ export class WasmSandboxExecutor extends BaseSandboxExecutor {
       clearTimeout(timer);
     }
   }
+}
+
+/**
+ * The file a local `wasmModule` names. A path (absolute, or starting with `.`) is taken
+ * relative to the working directory. A package specifier such as
+ * `@cogitator-ai/wasm-tools/wasm/calc.wasm` is resolved like an import from the
+ * application: from the working directory, then from the entry script's directory,
+ * then from this package (which also covers `NODE_PATH` and hoisted installs).
+ */
+function resolveModulePath(wasmModule: string): string {
+  if (isAbsolute(wasmModule) || wasmModule.startsWith('.')) {
+    const path = resolve(wasmModule);
+    if (!existsSync(path)) throw new Error(`WASM module not found: ${path}`);
+    return path;
+  }
+
+  const file = resolve(wasmModule);
+  if (existsSync(file)) return file;
+
+  const bases = [join(process.cwd(), 'noop.js')];
+  const entry = process.argv[1];
+  if (entry && isAbsolute(entry)) bases.push(join(dirname(entry), 'noop.js'));
+  bases.push(import.meta.url);
+
+  for (const base of bases) {
+    try {
+      return createRequire(base).resolve(wasmModule);
+    } catch {
+      continue;
+    }
+  }
+  throw new Error(
+    `WASM module not found: ${wasmModule} is neither a file nor a package path resolvable from ${process.cwd()}`
+  );
 }
 
 function describeError(error: unknown): string {

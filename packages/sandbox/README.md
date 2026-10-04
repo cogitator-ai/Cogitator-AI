@@ -271,7 +271,10 @@ const result = await wasm.execute(
 await wasm.disconnect();
 ```
 
-- Local paths, module specifiers and `http(s)` URLs are supported for `wasmModule`.
+- `wasmModule` takes an `http(s)` URL, a file path or a package path:
+  - a path that is absolute or starts with `.` is read relative to the working directory
+  - anything else is first tried as a file relative to the working directory, then resolved like an import made by your application (for example `@cogitator-ai/wasm-tools/wasm/calc.wasm`): from the working directory, then from the entry script's directory, then from `@cogitator-ai/sandbox` itself (which covers `NODE_PATH` and hoisted installs). This works with pnpm's strict layout, where the sandbox package cannot see your dependencies.
+  - when the module ships with a package that exports a path helper, such as `getWasmPath()` from `@cogitator-ai/wasm-tools`, pass that absolute path to skip resolution entirely.
 - `wasmModule`, `functionName` and `wasi` from the executor options are used when the per-request config omits them.
 - `network.allowedHosts` is forwarded to Extism's HTTP allow-list (empty when `network.mode` is `'none'`).
 - `memoryPages` (default 256 = 16 MB) caps the module's own memory: its memory section gets that maximum before the module loads, so `memory.grow` past it fails inside the module, and a module that needs more to start is refused. Extism's memory for plugin input, output and vars gets the same limit. Modules from a URL are fetched by the executor so the cap applies to them too.

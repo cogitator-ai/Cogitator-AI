@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { WasmSandboxExecutor } from '../executors/wasm';
 import type { SandboxConfig, SandboxExecutionRequest } from '@cogitator-ai/types';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 vi.mock('@extism/extism', () => {
   const mockCall = vi.fn();
@@ -83,6 +86,61 @@ describe('WasmSandboxExecutor', () => {
 
       expect(result.success).toBe(false);
       if (!result.success) expect(result.error).toContain('HTTP 404');
+    });
+
+    describe('from the application', () => {
+      let app: string;
+      const MODULE_BYTES = new Uint8Array([...EMPTY_MODULE, 0x00, 0x01, 0x00]);
+
+      beforeEach(async () => {
+        app = await mkdtemp(join(tmpdir(), 'wasm-app-'));
+        const pkg = join(app, 'node_modules', '@acme', 'wasm-mods');
+        await mkdir(join(pkg, 'dist', 'wasm'), { recursive: true });
+        await writeFile(
+          join(pkg, 'package.json'),
+          JSON.stringify({ name: '@acme/wasm-mods', exports: { './wasm/*': './dist/wasm/*' } })
+        );
+        await writeFile(join(pkg, 'dist', 'wasm', 'calc.wasm'), MODULE_BYTES);
+        await writeFile(join(app, 'local.wasm'), MODULE_BYTES);
+        vi.spyOn(process, 'cwd').mockReturnValue(app);
+      });
+
+      afterEach(async () => {
+        vi.restoreAllMocks();
+        await rm(app, { recursive: true, force: true });
+      });
+
+      async function loadedBytes(wasmModule: string) {
+        await executor.connect();
+        const { mockCreatePlugin, mockCall } = await getMocks();
+        mockCall.mockResolvedValue(new TextEncoder().encode('ok'));
+        const result = await executor.execute({ command: [] }, { type: 'wasm', wasmModule });
+        return { result, manifest: mockCreatePlugin.mock.calls.at(-1)?.[0] };
+      }
+
+      it('resolves a package specifier from the working directory', async () => {
+        const { result, manifest } = await loadedBytes('@acme/wasm-mods/wasm/calc.wasm');
+
+        expect(result.success).toBe(true);
+        expect(manifest.wasm[0].data).toEqual(MODULE_BYTES);
+      });
+
+      it('resolves a relative path from the working directory', async () => {
+        const { result, manifest } = await loadedBytes('./local.wasm');
+
+        expect(result.success).toBe(true);
+        expect(manifest.wasm[0].data).toEqual(MODULE_BYTES);
+      });
+
+      it('names the module and the directory when nothing matches', async () => {
+        const { result } = await loadedBytes('@acme/wasm-mods/wasm/missing.wasm');
+
+        expect(result.success).toBe(false);
+        if (!result.success) {
+          expect(result.error).toContain('WASM module not found');
+          expect(result.error).toContain(app);
+        }
+      });
     });
   });
 

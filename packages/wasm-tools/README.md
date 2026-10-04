@@ -385,6 +385,8 @@ const calcPath = getWasmPath('calc'); // Path to calc.wasm
 const jsonPath = getWasmPath('json'); // Path to json.wasm
 ```
 
+The result is an absolute path, so it works as `wasmModule` everywhere, whatever the package manager layout. With `@cogitator-ai/sandbox` you can also pass the package path `@cogitator-ai/wasm-tools/wasm/calc.wasm`: the WASM executor resolves it from your application (working directory first, then the entry script's directory).
+
 ### WasmToolManager
 
 Manage WASM tools with hot-reload support.
