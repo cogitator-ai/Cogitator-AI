@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { ToolSchema } from '@cogitator-ai/types';
 import { OpenAIBackend } from '../llm/openai';
 
 const mockCreate = vi.fn();
@@ -921,7 +922,7 @@ describe('OpenAIBackend (Chat Completions wire API)', () => {
       properties: { units: { type: 'integer' } },
       required: ['units'],
     };
-    const tools = [
+    const tools: ToolSchema[] = [
       {
         name: 'warehouse_stock',
         description: 'Stock of an item',
