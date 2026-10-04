@@ -48,27 +48,66 @@ export interface ScrapeResult {
   images?: ExtractedImage[];
 }
 
+const HTML_ENTITIES: Record<string, string> = {
+  '&nbsp;': ' ',
+  '&amp;': '&',
+  '&lt;': '<',
+  '&gt;': '>',
+  '&quot;': '"',
+  '&#39;': "'",
+};
+
+const UNSAFE_LINK_PROTOCOLS = new Set(['javascript:', 'data:', 'vbscript:']);
+
+function decodeEntities(text: string): string {
+  return text.replace(/&(?:nbsp|amp|lt|gt|quot|#39);/g, (entity) => HTML_ENTITIES[entity]);
+}
+
+function removeUntilStable(html: string, pattern: RegExp, replacement = ''): string {
+  let previous: string;
+  let current = html;
+  do {
+    previous = current;
+    current = current.replace(pattern, replacement);
+  } while (current !== previous);
+  return current;
+}
+
+function removeElements(html: string, tags: readonly string[], replacement = ''): string {
+  return tags.reduce(
+    (result, tag) =>
+      removeUntilStable(
+        result,
+        new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?<\\/${tag}\\b[^>]*>`, 'gi'),
+        replacement
+      ),
+    html
+  );
+}
+
+function stripTags(html: string, replacement = ''): string {
+  return removeUntilStable(html, /<[^>]*>/g, replacement);
+}
+
+function removeNonContent(html: string): string {
+  return removeUntilStable(
+    removeElements(html, ['script', 'style', 'nav', 'footer', 'aside']),
+    /<!--[\s\S]*?-->/g
+  );
+}
+
 function stripHtmlTags(html: string): string {
-  return html
-    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-    .replace(/<nav[^>]*>[\s\S]*?<\/nav>/gi, '')
-    .replace(/<footer[^>]*>[\s\S]*?<\/footer>/gi, '')
-    .replace(/<header[^>]*>[\s\S]*?<\/header>/gi, ' ')
-    .replace(/<aside[^>]*>[\s\S]*?<\/aside>/gi, '')
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n\n')
-    .replace(/<\/div>/gi, '\n')
-    .replace(/<\/li>/gi, '\n')
-    .replace(/<\/h[1-6]>/gi, '\n\n')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
+  const withoutChrome = removeElements(removeNonContent(html), ['header'], ' ');
+  const text = stripTags(
+    withoutChrome
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n\n')
+      .replace(/<\/div>/gi, '\n')
+      .replace(/<\/li>/gi, '\n')
+      .replace(/<\/h[1-6]>/gi, '\n\n'),
+    ' '
+  );
+  return decodeEntities(text)
     .replace(/\s+/g, ' ')
     .replace(/\n\s+/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
@@ -76,35 +115,26 @@ function stripHtmlTags(html: string): string {
 }
 
 function htmlToMarkdown(html: string): string {
-  return html
-    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-    .replace(/<nav[^>]*>[\s\S]*?<\/nav>/gi, '')
-    .replace(/<footer[^>]*>[\s\S]*?<\/footer>/gi, '')
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<h1[^>]*>(.*?)<\/h1>/gi, '# $1\n\n')
-    .replace(/<h2[^>]*>(.*?)<\/h2>/gi, '## $1\n\n')
-    .replace(/<h3[^>]*>(.*?)<\/h3>/gi, '### $1\n\n')
-    .replace(/<h4[^>]*>(.*?)<\/h4>/gi, '#### $1\n\n')
-    .replace(/<h5[^>]*>(.*?)<\/h5>/gi, '##### $1\n\n')
-    .replace(/<h6[^>]*>(.*?)<\/h6>/gi, '###### $1\n\n')
-    .replace(/<strong[^>]*>(.*?)<\/strong>/gi, '**$1**')
-    .replace(/<b[^>]*>(.*?)<\/b>/gi, '**$1**')
-    .replace(/<em[^>]*>(.*?)<\/em>/gi, '*$1*')
-    .replace(/<i[^>]*>(.*?)<\/i>/gi, '*$1*')
-    .replace(/<code[^>]*>(.*?)<\/code>/gi, '`$1`')
-    .replace(/<a[^>]*href=["']([^"']+)["'][^>]*>(.*?)<\/a>/gi, '[$2]($1)')
-    .replace(/<li[^>]*>(.*?)<\/li>/gi, '- $1\n')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n\n')
-    .replace(/<\/div>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
+  const markdown = stripTags(
+    removeNonContent(html)
+      .replace(/<h1[^>]*>(.*?)<\/h1>/gi, '# $1\n\n')
+      .replace(/<h2[^>]*>(.*?)<\/h2>/gi, '## $1\n\n')
+      .replace(/<h3[^>]*>(.*?)<\/h3>/gi, '### $1\n\n')
+      .replace(/<h4[^>]*>(.*?)<\/h4>/gi, '#### $1\n\n')
+      .replace(/<h5[^>]*>(.*?)<\/h5>/gi, '##### $1\n\n')
+      .replace(/<h6[^>]*>(.*?)<\/h6>/gi, '###### $1\n\n')
+      .replace(/<strong[^>]*>(.*?)<\/strong>/gi, '**$1**')
+      .replace(/<b[^>]*>(.*?)<\/b>/gi, '**$1**')
+      .replace(/<em[^>]*>(.*?)<\/em>/gi, '*$1*')
+      .replace(/<i[^>]*>(.*?)<\/i>/gi, '*$1*')
+      .replace(/<code[^>]*>(.*?)<\/code>/gi, '`$1`')
+      .replace(/<a[^>]*href=["']([^"']+)["'][^>]*>(.*?)<\/a>/gi, '[$2]($1)')
+      .replace(/<li[^>]*>(.*?)<\/li>/gi, '- $1\n')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n\n')
+      .replace(/<\/div>/gi, '\n')
+  );
+  return decodeEntities(markdown)
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
@@ -117,7 +147,7 @@ function extractTitle(html: string): string {
 
   const h1Match = /<h1[^>]*>(.*?)<\/h1>/i.exec(html);
   if (h1Match) {
-    return h1Match[1].replace(/<[^>]+>/g, '').trim();
+    return stripTags(h1Match[1]).trim();
   }
 
   return '';
@@ -130,15 +160,16 @@ function extractLinks(html: string, baseUrl: string): ExtractedLink[] {
 
   while ((match = regex.exec(html)) !== null) {
     const href = match[1];
-    const text = match[2].replace(/<[^>]+>/g, '').trim();
+    const text = stripTags(match[2]).trim();
 
-    if (!href || !text || href.startsWith('#') || href.startsWith('javascript:')) {
+    if (!href || !text || href.startsWith('#')) {
       continue;
     }
 
     try {
-      const absoluteUrl = new URL(href, baseUrl).href;
-      links.push({ text, href: absoluteUrl });
+      const absoluteUrl = new URL(href, baseUrl);
+      if (UNSAFE_LINK_PROTOCOLS.has(absoluteUrl.protocol)) continue;
+      links.push({ text, href: absoluteUrl.href });
     } catch {
       continue;
     }

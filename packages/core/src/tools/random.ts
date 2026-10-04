@@ -2,7 +2,7 @@
  * Random tools - generate random numbers and strings
  */
 
-import { randomBytes } from 'node:crypto';
+import { randomInt } from 'node:crypto';
 import { z } from 'zod';
 import { tool } from '../tool';
 
@@ -62,10 +62,9 @@ export const randomString = tool({
             ? HEX
             : ALPHANUMERIC;
 
-    const bytes = randomBytes(length);
     let result = '';
     for (let i = 0; i < length; i++) {
-      result += chars[bytes[i] % chars.length];
+      result += chars[randomInt(chars.length)];
     }
     return { result, length, charset };
   },

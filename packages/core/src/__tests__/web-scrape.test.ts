@@ -246,6 +246,26 @@ describe('web_scrape tool', () => {
       expect(links.some((l) => l.href.includes('javascript'))).toBe(false);
     });
 
+    it('drops script-capable links regardless of case', async () => {
+      const html = `
+        <html><body>
+          <a href="JavaScript:alert(1)">Mixed case</a>
+          <a href="data:text/html,<b>x</b>">Data</a>
+          <a href=" vbscript:msgbox(1)">VB</a>
+          <a href="mailto:team@example.com">Mail</a>
+        </body></html>
+      `;
+      mockFetch.mockResolvedValueOnce(createHtmlResponse(html));
+
+      const result = await webScrape.execute(
+        { url: 'https://example.com', includeLinks: true },
+        ctx
+      );
+
+      const links = (result as { links: Array<{ text: string; href: string }> }).links;
+      expect(links).toEqual([{ text: 'Mail', href: 'mailto:team@example.com' }]);
+    });
+
     it('deduplicates links', async () => {
       const html = `
         <html><body>
@@ -417,6 +437,45 @@ describe('web_scrape tool', () => {
       expect(content).toContain('>');
       expect(content).toContain('"');
       expect(content).toContain("'");
+    });
+
+    it('decodes each entity once, so escaped entities stay literal', async () => {
+      const html = '<html><body><p>Write &amp;lt;b&amp;gt; for bold</p></body></html>';
+      mockFetch.mockResolvedValueOnce(createHtmlResponse(html));
+
+      const text = await webScrape.execute({ url: 'https://example.com' }, ctx);
+      expect((text as { content: string }).content).toBe('Write &lt;b&gt; for bold');
+
+      mockFetch.mockResolvedValueOnce(createHtmlResponse(html));
+      const markdown = await webScrape.execute(
+        { url: 'https://example.com', format: 'markdown' },
+        ctx
+      );
+      expect((markdown as { content: string }).content).toBe('Write &lt;b&gt; for bold');
+    });
+
+    it('removes scripts whose closing tag carries whitespace or attributes', async () => {
+      const html =
+        '<html><body><script>alert(1)</script ><p>Kept</p><style >x{}</style foo="bar"></body></html>';
+      mockFetch.mockResolvedValueOnce(createHtmlResponse(html));
+
+      const result = await webScrape.execute({ url: 'https://example.com' }, ctx);
+      const content = (result as { content: string }).content;
+
+      expect(content).toBe('Kept');
+    });
+
+    it('removes nested script fragments that a single pass would reassemble', async () => {
+      const html =
+        '<html><body><p>Before</p><scr<script>x</script>ipt>alert(1)</script><p>After</p></body></html>';
+      mockFetch.mockResolvedValueOnce(createHtmlResponse(html));
+
+      const result = await webScrape.execute({ url: 'https://example.com' }, ctx);
+      const content = (result as { content: string }).content;
+
+      expect(content).not.toContain('alert');
+      expect(content).toContain('Before');
+      expect(content).toContain('After');
     });
   });
 
