@@ -448,8 +448,7 @@ export class Cogitator {
       let iterations = checkpoint?.iterations ?? 0;
       const maxIterations = agent.config?.maxIterations ?? 10;
       const answerAtLimit = (agent.config?.onIterationLimit ?? 'answer') === 'answer';
-      let closingTurn = false;
-      let iterationLimitReached = false;
+      const limit = { reached: false, closingTurn: false };
       let lastToolCallSig = checkpoint?.lastToolCallSignature ?? '';
       let pausedTurn: PausedTurn | undefined;
       let responseFormat = toLLMResponseFormat(active.config.responseFormat);
@@ -730,9 +729,9 @@ export class Cogitator {
 
       const reachedLimit = (): boolean => {
         if (iterations < maxIterations) return false;
-        iterationLimitReached = true;
+        limit.reached = true;
         if (!answerAtLimit) return true;
-        closingTurn = true;
+        limit.closingTurn = true;
         messages.push({ role: 'user', content: ITERATION_LIMIT_PROMPT });
         return false;
       };
@@ -750,7 +749,7 @@ export class Cogitator {
       let structuredRepaired = false;
       let emptyAnswerRetries = 0;
 
-      while (!pausedTurn && (iterations < maxIterations || closingTurn)) {
+      while (!pausedTurn && (iterations < maxIterations || limit.closingTurn)) {
         throwIfAborted(abortController.signal);
         this.assertTokenBudget(totalInputTokens + totalOutputTokens);
 
@@ -785,7 +784,7 @@ export class Cogitator {
                 reasoning,
                 cache: promptCache,
                 onReasoning: options.onReasoning,
-                ...(closingTurn && { toolChoice: 'none' as const }),
+                ...(limit.closingTurn && { toolChoice: 'none' as const }),
               }
             ),
             abortController.signal
@@ -796,7 +795,7 @@ export class Cogitator {
               model,
               messages,
               tools: registry.getSchemas(),
-              ...(closingTurn && { toolChoice: 'none' as const }),
+              ...(limit.closingTurn && { toolChoice: 'none' as const }),
               temperature: active.config.temperature,
               topP: active.config.topP,
               maxTokens: active.config.maxTokens,
@@ -877,7 +876,7 @@ export class Cogitator {
           }
         }
 
-        const requestsTools = !closingTurn && Boolean(response.toolCalls?.length);
+        const requestsTools = !limit.closingTurn && Boolean(response.toolCalls?.length);
         const assistantMessage = requestsTools
           ? ({
               role: 'assistant',
@@ -1048,7 +1047,7 @@ export class Cogitator {
         output: finalOutput,
         ...(structured !== undefined && { structured }),
         status: 'completed',
-        ...(iterationLimitReached && { iterationLimitReached: true }),
+        ...(limit.reached && { iterationLimitReached: true }),
         ...(prompt && { prompt }),
         ...(handoffs.length > 0 && { handoffs, finalAgent: active.name }),
         runId,
