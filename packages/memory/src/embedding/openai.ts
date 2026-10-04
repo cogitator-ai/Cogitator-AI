@@ -11,6 +11,18 @@ const DEFAULT_DIMENSIONS: Record<string, number> = {
   'text-embedding-ada-002': 1536,
 };
 
+/** Models that shorten their output to the requested `dimensions`. */
+const SHORTENABLE_MODEL = 'text-embedding-3';
+
+/**
+ * The native size of a known OpenAI model, also when a gateway prefixes the id with a vendor, as
+ * in `openai/text-embedding-3-small`.
+ */
+function nativeDimensions(model: string): number | undefined {
+  const known = Object.keys(DEFAULT_DIMENSIONS).find((name) => model.includes(name));
+  return known === undefined ? undefined : DEFAULT_DIMENSIONS[known];
+}
+
 export class OpenAIEmbeddingService implements EmbeddingService {
   readonly model: string;
   readonly dimensions: number;
@@ -24,11 +36,24 @@ export class OpenAIEmbeddingService implements EmbeddingService {
     this.model = config.model ?? 'text-embedding-3-small';
     this.baseUrl = config.baseUrl ?? 'https://api.openai.com/v1';
     this.customDimensions = config.dimensions !== undefined;
-    this.dimensions = config.dimensions ?? DEFAULT_DIMENSIONS[this.model] ?? 1536;
+    this.dimensions = config.dimensions ?? nativeDimensions(this.model) ?? 1536;
   }
 
   private get supportsDimensions(): boolean {
-    return this.customDimensions && this.model.startsWith('text-embedding-3');
+    return this.customDimensions && this.model.includes(SHORTENABLE_MODEL);
+  }
+
+  /**
+   * A configured `dimensions` is what callers size their vector columns and collections by, so a
+   * response of another size fails here instead of in the store.
+   */
+  private checkDimensions(embedding: number[]): number[] {
+    if (this.customDimensions && embedding.length !== this.dimensions) {
+      throw new Error(
+        `OpenAI embedding failed: ${this.model} returned ${embedding.length}-dimensional vectors, but the service is configured with dimensions ${this.dimensions}. Only text-embedding-3 models can shorten their output, for other models set dimensions to the size they return`
+      );
+    }
+    return embedding;
   }
 
   async embed(text: string): Promise<number[]> {
@@ -63,7 +88,7 @@ export class OpenAIEmbeddingService implements EmbeddingService {
       throw new Error('OpenAI embedding failed: missing embedding in response');
     }
 
-    return embedding;
+    return this.checkDimensions(embedding);
   }
 
   async embedBatch(texts: string[]): Promise<number[][]> {
@@ -103,7 +128,7 @@ export class OpenAIEmbeddingService implements EmbeddingService {
         if (!Array.isArray(item.embedding)) {
           throw new Error('OpenAI batch embedding failed: missing embedding in response');
         }
-        return item.embedding;
+        return this.checkDimensions(item.embedding);
       });
   }
 }

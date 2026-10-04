@@ -182,7 +182,7 @@ Facts, semantic and graph context are merged into the system message. The remain
 
 | Strategy   | Behavior                                                                                                                       |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `recent`   | Fills context with the most recent entries that fit                                                                            |
+| `recent`   | Fills context with the newest entries that fit, as one unbroken run: it stops at the first entry that does not fit             |
 | `relevant` | Selects entries by semantic similarity to the current input                                                                    |
 | `hybrid`   | Spends up to 30% of the budget on older entries (outside the last 10) scoring above 0.6 similarity, the rest on recent entries |
 

@@ -51,6 +51,84 @@ describe('OpenAIEmbeddingService', () => {
     });
   });
 
+  describe('dimensions', () => {
+    const vectorOf = (size: number) => Array.from({ length: size }, () => 0.01);
+    const answer = (...sizes: number[]) =>
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            data: sizes.map((size, index) => ({ embedding: vectorOf(size), index })),
+          }),
+      });
+    const sentBody = () => JSON.parse(String(mockFetch.mock.calls.at(-1)?.[1]?.body)) as unknown;
+
+    it('sends dimensions for a gateway id of a text-embedding-3 model', async () => {
+      const gateway = new OpenAIEmbeddingService({
+        apiKey: 'test-api-key',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        model: 'openai/text-embedding-3-small',
+        dimensions: 512,
+      });
+      answer(512);
+
+      const vector = await gateway.embed('pgvector column size');
+
+      expect(sentBody()).toMatchObject({ model: 'openai/text-embedding-3-small', dimensions: 512 });
+      expect(vector).toHaveLength(gateway.dimensions);
+    });
+
+    it('sends dimensions in batches too', async () => {
+      const gateway = new OpenAIEmbeddingService({
+        apiKey: 'test-api-key',
+        model: 'openai/text-embedding-3-large',
+        dimensions: 256,
+      });
+      answer(256, 256);
+
+      await gateway.embedBatch(['a', 'b']);
+
+      expect(sentBody()).toMatchObject({ dimensions: 256 });
+    });
+
+    it('reports the native size of a gateway model id', () => {
+      const large = new OpenAIEmbeddingService({
+        apiKey: 'test-api-key',
+        model: 'openai/text-embedding-3-large',
+      });
+
+      expect(large.dimensions).toBe(3072);
+    });
+
+    it('does not send dimensions to a model that cannot shorten its output', async () => {
+      const ada = new OpenAIEmbeddingService({
+        apiKey: 'test-api-key',
+        model: 'text-embedding-ada-002',
+        dimensions: 1536,
+      });
+      answer(1536);
+
+      await ada.embed('fixed size');
+
+      expect(sentBody()).not.toHaveProperty('dimensions');
+    });
+
+    it('fails instead of returning vectors of another size than it reports', async () => {
+      const ada = new OpenAIEmbeddingService({
+        apiKey: 'test-api-key',
+        model: 'text-embedding-ada-002',
+        dimensions: 512,
+      });
+      answer(1536);
+      await expect(ada.embed('wrong size')).rejects.toThrow(
+        /returned 1536-dimensional vectors.*512/
+      );
+
+      answer(512, 1536);
+      await expect(ada.embedBatch(['a', 'b'])).rejects.toThrow(/returned 1536-dimensional/);
+    });
+  });
+
   describe('embed', () => {
     it('returns embedding vector', async () => {
       const mockEmbedding = [0.1, 0.2, 0.3, 0.4, 0.5];

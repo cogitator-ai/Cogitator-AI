@@ -123,7 +123,7 @@ await adapter.connect(); // creates tables automatically
 | `cogitator.threads`    | Conversation sessions                    |
 | `cogitator.entries`    | Memory entries (messages + token counts) |
 | `cogitator.facts`      | Long-term agent knowledge                |
-| `cogitator.embeddings` | Vector embeddings (ivfflat + GIN index)  |
+| `cogitator.embeddings` | Vector embeddings (HNSW + GIN index)     |
 
 Vector dimensions default to 768 (nomic-embed-text). Override with `adapter.setVectorDimensions(1536)` before connecting (it throws after `connect()`). The `embeddings` table also gets a generated `content_tsv` column with a GIN index for keyword search.
 

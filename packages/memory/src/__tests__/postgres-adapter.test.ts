@@ -1,12 +1,45 @@
+import { createRequire } from 'node:module';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { PostgresAdapter } from '../adapters/postgres';
-import type { Message } from '@cogitator-ai/types';
+import type { Message, ToolCall, ToolResult } from '@cogitator-ai/types';
+
+/** How node-pg turns a JS parameter into the text it sends to the server. */
+const { prepareValue } = createRequire(import.meta.url)('pg/lib/utils.js') as {
+  prepareValue(value: unknown): unknown;
+};
+
+type QueryResult = { rows: Record<string, unknown>[] };
 
 const mockPool = {
-  query: vi.fn(),
-  connect: vi.fn().mockResolvedValue({ release: vi.fn() }),
+  query: vi.fn<(sql: string, params?: unknown[]) => Promise<QueryResult>>(),
+  connect: vi.fn(),
   end: vi.fn().mockResolvedValue(undefined),
 };
+
+const TRANSACTION_CONTROL = /^\s*(BEGIN|COMMIT|ROLLBACK)\b|set_config\(/;
+
+const mockPoolClient = {
+  query: vi.fn(async (sql: string, params?: unknown[]): Promise<QueryResult> =>
+    TRANSACTION_CONTROL.test(sql) ? { rows: [] } : mockPool.query(sql, params)
+  ),
+  release: vi.fn(),
+};
+mockPool.connect.mockResolvedValue(mockPoolClient);
+
+/** The SQL and the parameters, as node-pg serializes them, of the first query containing `fragment`. */
+function sentToPostgres(fragment: string): { sql: string; params: unknown[] } {
+  const call = mockPool.query.mock.calls.find(([sql]) => sql.includes(fragment));
+  if (!call) throw new Error(`No query containing ${fragment}`);
+  const [sql, params = []] = call;
+  return { sql, params: params.map((param) => prepareValue(param)) };
+}
+
+/** Parses a JSONB parameter the way Postgres would, failing on anything that is not JSON text. */
+function asJsonb(param: unknown): unknown {
+  if (param === null) return null;
+  if (typeof param !== 'string') throw new Error(`JSONB parameter sent as ${typeof param}`);
+  return JSON.parse(param);
+}
 
 vi.mock('pg', () => {
   class Pool {
@@ -74,12 +107,12 @@ describe('PostgresAdapter', () => {
 
   describe('thread operations', () => {
     it('creates a thread', async () => {
-      mockPool.query.mockImplementationOnce(async (_sql: string, params: unknown[]) => ({
+      mockPool.query.mockImplementationOnce(async (_sql: string, params: unknown[] = []) => ({
         rows: [
           {
             id: params[0],
             agent_id: params[1],
-            metadata: params[2],
+            metadata: JSON.parse(String(params[2])),
             created_at: params[3],
             updated_at: params[3],
           },
@@ -550,12 +583,12 @@ describe('PostgresAdapter', () => {
   describe('createThread upsert', () => {
     it('returns the stored createdAt when the thread already exists', async () => {
       const storedCreatedAt = new Date('2024-01-01T00:00:00.000Z');
-      mockPool.query.mockImplementationOnce(async (_sql: string, params: unknown[]) => ({
+      mockPool.query.mockImplementationOnce(async (_sql: string, params: unknown[] = []) => ({
         rows: [
           {
             id: params[0],
             agent_id: params[1],
-            metadata: params[2],
+            metadata: JSON.parse(String(params[2])),
             created_at: storedCreatedAt.toISOString(),
             updated_at: params[3],
           },
@@ -575,6 +608,211 @@ describe('PostgresAdapter', () => {
         expect(result.data.metadata).toEqual({ v: 2 });
       }
     });
+  });
+
+  describe('JSONB columns', () => {
+    const toolCalls: ToolCall[] = [
+      { id: 'call_1', name: 'book_table', arguments: { venue: 'Quillon', guests: 2 } },
+    ];
+    const toolResults: ToolResult[] = [
+      { callId: 'call_1', name: 'book_table', result: { confirmation: 'QX-5521' } },
+    ];
+
+    it('sends tool calls and tool results as JSON text, not as Postgres array literals', async () => {
+      const message: Message = { role: 'assistant', content: '' };
+      const result = await adapter.addEntry({
+        threadId: 'thread_1',
+        message,
+        toolCalls,
+        toolResults,
+        tokenCount: 1,
+        metadata: { tags: ['booking'] },
+      });
+
+      expect(result.success).toBe(true);
+      const { sql, params } = sentToPostgres('INSERT INTO cogitator.entries');
+      expect(sql).toMatch(/\$3::jsonb, \$4::jsonb, \$5::jsonb, \$6, \$7::jsonb/);
+      expect(asJsonb(params[2])).toEqual(message);
+      expect(asJsonb(params[3])).toEqual(toolCalls);
+      expect(asJsonb(params[4])).toEqual(toolResults);
+      expect(asJsonb(params[6])).toEqual({ tags: ['booking'] });
+    });
+
+    it('stores NULL for an entry without tool calls', async () => {
+      await adapter.addEntry({
+        threadId: 'thread_1',
+        message: { role: 'user', content: 'Hi' },
+        tokenCount: 1,
+      });
+
+      const { params } = sentToPostgres('INSERT INTO cogitator.entries');
+      expect(params[3]).toBeNull();
+      expect(params[4]).toBeNull();
+      expect(asJsonb(params[6])).toEqual({});
+    });
+
+    it.each([
+      [
+        'createThread',
+        () => adapter.createThread('agent1', { tags: ['a'] }),
+        'INSERT INTO cogitator.threads',
+        2,
+      ],
+      [
+        'updateThread',
+        () => adapter.updateThread('thread_1', { tags: ['b'] }),
+        'UPDATE cogitator.threads',
+        1,
+      ],
+      [
+        'addFact',
+        () =>
+          adapter.addFact({
+            agentId: 'agent1',
+            content: 'Likes tea',
+            category: 'preference',
+            confidence: 1,
+            source: 'user',
+            metadata: { tags: ['c'] },
+          }),
+        'INSERT INTO cogitator.facts',
+        6,
+      ],
+      [
+        'updateFact',
+        () => adapter.updateFact('fact_1', { metadata: { tags: ['d'] } }),
+        'UPDATE cogitator.facts',
+        0,
+      ],
+      [
+        'addEmbedding',
+        () =>
+          adapter.addEmbedding({
+            sourceId: 'doc_1',
+            sourceType: 'document',
+            vector: [0.1, 0.2],
+            content: 'Doc',
+            metadata: { tags: ['e'] },
+          }),
+        'INSERT INTO cogitator.embeddings',
+        5,
+      ],
+    ])('%s sends metadata as JSON text cast to jsonb', async (_name, call, fragment, index) => {
+      await call();
+
+      const { sql, params } = sentToPostgres(fragment);
+      expect(sql).toContain(`$${index + 1}::jsonb`);
+      expect(asJsonb(params[index])).toEqual({ tags: [expect.any(String)] });
+    });
+  });
+
+  describe('vector index', () => {
+    async function connectWith(
+      answer: (sql: string) => QueryResult | undefined
+    ): Promise<{ fresh: PostgresAdapter; queries: string[] }> {
+      vi.clearAllMocks();
+      mockPool.query.mockImplementation(async (sql: string) => answer(sql) ?? { rows: [] });
+      const fresh = new PostgresAdapter({
+        provider: 'postgres',
+        connectionString: 'postgresql://localhost:5432/test',
+      });
+      const result = await fresh.connect();
+      expect(result.success).toBe(true);
+      const queries = mockPool.query.mock.calls.map(([sql]) => sql.replace(/\s+/g, ' ').trim());
+      return { fresh, queries };
+    }
+
+    it('builds an HNSW cosine index, which needs no rows to be trained on', async () => {
+      const { queries } = await connectWith(() => undefined);
+
+      expect(queries).toContainEqual(
+        expect.stringMatching(
+          /CREATE INDEX IF NOT EXISTS idx_embeddings_vector ON cogitator\.embeddings USING hnsw \(vector vector_cosine_ops\)/
+        )
+      );
+      expect(queries.some((sql) => /ivfflat/i.test(sql))).toBe(false);
+    });
+
+    it('replaces the ivfflat index that earlier versions built on the empty table', async () => {
+      const { queries } = await connectWith((sql) =>
+        sql.includes('pg_indexes')
+          ? {
+              rows: [
+                {
+                  indexdef:
+                    'CREATE INDEX idx_embeddings_vector ON cogitator.embeddings USING ivfflat (vector vector_cosine_ops) WITH (lists=100)',
+                },
+              ],
+            }
+          : undefined
+      );
+
+      const drop = queries.indexOf('DROP INDEX IF EXISTS cogitator.idx_embeddings_vector');
+      const create = queries.findIndex((sql) => sql.includes('USING hnsw'));
+      expect(drop).toBeGreaterThan(-1);
+      expect(create).toBeGreaterThan(drop);
+    });
+
+    it('keeps an HNSW index that already exists', async () => {
+      const { queries } = await connectWith((sql) =>
+        sql.includes('pg_indexes')
+          ? {
+              rows: [
+                {
+                  indexdef:
+                    'CREATE INDEX idx_embeddings_vector ON cogitator.embeddings USING hnsw (vector vector_cosine_ops)',
+                },
+              ],
+            }
+          : undefined
+      );
+
+      expect(queries.some((sql) => sql.startsWith('DROP INDEX'))).toBe(false);
+      expect(queries.some((sql) => sql.includes('USING hnsw'))).toBe(false);
+    });
+
+    it('orders equally distant rows by id across all candidates the index computes', async () => {
+      await adapter.search({ vector: [0.1, 0.2], limit: 3, threshold: 0 });
+
+      const [sql, params] = mockPool.query.mock.calls.at(-1) ?? [''];
+      const flat = sql.replace(/\s+/g, ' ');
+      expect(flat).toMatch(
+        /ORDER BY vector <=> \$1 LIMIT \$3 \) nearest ORDER BY score DESC, id LIMIT \$4/
+      );
+      expect(params).toEqual(['[0.1,0.2]', 0, 40, 3]);
+    });
+
+    it('does not cap a limit above the largest HNSW candidate list', async () => {
+      await adapter.search({ vector: [0.1], limit: 5000, threshold: 0 });
+
+      const [, params] = mockPool.query.mock.calls.at(-1) ?? [''];
+      expect(params?.slice(-2)).toEqual([5000, 5000]);
+    });
+
+    it.each([
+      ['0.8.0', 100, true],
+      ['0.7.4', 100, false],
+      ['0.8.5', 3, true],
+    ])(
+      'with pgvector %s a search for %i rows asks the index for enough candidates',
+      async (version, limit, iterative) => {
+        const { fresh } = await connectWith((sql) =>
+          sql.includes('pg_extension') ? { rows: [{ extversion: version }] } : undefined
+        );
+        mockPoolClient.query.mockClear();
+        await fresh.search({ vector: [0.1, 0.2], limit, threshold: 0 });
+
+        const sent = mockPoolClient.query.mock.calls.map(([sql, params]) => ({ sql, params }));
+        const settings = sent.find(({ sql }) => sql.includes('set_config'));
+        expect(sent[0]?.sql).toBe('BEGIN');
+        expect(settings?.params).toEqual([String(Math.max(40, limit))]);
+        expect(settings?.sql.includes("'hnsw.iterative_scan', 'strict_order'")).toBe(iterative);
+        const search = sent.find(({ sql }) => sql.includes('ORDER BY vector <=> $1'));
+        expect(search?.params?.slice(-2)).toEqual([Math.max(40, limit), limit]);
+        expect(sent.at(-1)?.sql).toBe('COMMIT');
+        expect(mockPoolClient.release).toHaveBeenCalled();
+      }
+    );
   });
 
   describe('provider', () => {

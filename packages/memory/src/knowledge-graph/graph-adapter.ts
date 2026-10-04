@@ -16,6 +16,7 @@ import type {
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 import { unwrap } from '../result';
+import { ensureHnswCosineIndex } from '../adapters/pgvector';
 
 type Pool = {
   query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
@@ -133,11 +134,12 @@ export class PostgresGraphAdapter implements GraphAdapter {
     `);
 
     try {
-      await this.pool.query(`
-        CREATE INDEX IF NOT EXISTS idx_graph_nodes_embedding
-        ON ${this.schema}.graph_nodes
-        USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)
-      `);
+      await ensureHnswCosineIndex(this.pool, {
+        schema: this.schema,
+        table: 'graph_nodes',
+        column: 'embedding',
+        index: 'idx_graph_nodes_embedding',
+      });
     } catch {}
   }
 

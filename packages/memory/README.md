@@ -137,6 +137,8 @@ const memory = new PostgresAdapter({
 await memory.connect();
 ```
 
+On `connect()` the adapter creates its tables and an HNSW cosine index on the embeddings, which works from the first row on (no training data needed). An `ivfflat` index left by an earlier version is replaced on the first connect after upgrading, see the [adapters docs](https://cogitator.app/docs/memory/adapters) for building the new index ahead of time on a large table. `search()` raises `hnsw.ef_search` to the requested limit and, on pgvector 0.8+, uses iterative scans, so large limits and filters still get every matching row. Messages, tool calls, tool results and metadata are stored as `jsonb`.
+
 ### SQLite Adapter
 
 ```typescript
@@ -210,6 +212,7 @@ const qdrant = await createEmbeddingAdapter({
 });
 
 await postgres.connect(); // the factories create adapters; connect them before use
+await qdrant.connect(); // typed as ConnectableEmbeddingAdapter, no cast needed
 ```
 
 `createMemoryAdapter` loads the adapter's driver lazily, so only the drivers you use need to be installed.
@@ -311,7 +314,7 @@ interface ContextBuilderConfig {
 
 Strategies:
 
-- `recent` - newest messages that fit into the token budget
+- `recent` - the newest messages that fit into the token budget, as one unbroken run: the window stops at the first message that does not fit, so a reply never appears without the message it answers
 - `relevant` - messages ranked by embedding similarity to `currentInput` (requires `embeddingService`; falls back to `recent` without input), returned in chronological order
 - `hybrid` - always keeps the latest messages and fills the remaining budget with the most relevant older ones
 
@@ -500,7 +503,7 @@ import { OpenAIEmbeddingService, createEmbeddingService } from '@cogitator-ai/me
 const embeddings = new OpenAIEmbeddingService({
   apiKey: process.env.OPENAI_API_KEY!,
   model: 'text-embedding-3-small', // default
-  dimensions: 512, // optional, text-embedding-3-* only
+  dimensions: 512, // optional, sent to text-embedding-3 models (gateway ids like openai/text-embedding-3-small too)
 });
 
 // or through the factory
@@ -513,6 +516,8 @@ const vector = await embeddings.embed('Hello, world!');
 
 const vectors = await embeddings.embedBatch(['Hello', 'World']);
 ```
+
+For other models `dimensions` declares the size they return. When a response holds vectors of another size than the configured `dimensions`, `embed()` and `embedBatch()` throw instead of handing them to a store sized for it.
 
 ### Ollama Embeddings
 

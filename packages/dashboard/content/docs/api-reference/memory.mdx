@@ -62,11 +62,11 @@ The adapter configs take `provider` plus the fields above; inside `CogitatorConf
 | `EmbeddingAdapter`     | `addEmbedding(embedding)`, `search(options: SemanticSearchOptions)` → `(Embedding & { score })[]`, `deleteEmbedding(id)`, `deleteBySource(sourceId)` |
 | `KeywordSearchAdapter` | `keywordSearch(options: KeywordSearchOptions): Promise<MemoryResult<SearchResult[]>>`                                                                |
 
-| Export                     | Constructor                                                                      | Implements                                                                                                                                    |
-| -------------------------- | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `QdrantAdapter`            | `new QdrantAdapter(config: QdrantAdapterConfig)`                                 | `EmbeddingAdapter` (+ `connect`/`disconnect`); `dimensions` required, `url` default `http://localhost:6333`, `collection` default `cogitator` |
-| `InMemoryEmbeddingAdapter` | `new InMemoryEmbeddingAdapter()`                                                 | `EmbeddingAdapter`, `KeywordSearchAdapter`; `size`, `clear()`                                                                                 |
-| `createEmbeddingAdapter`   | `createEmbeddingAdapter(config: QdrantAdapterConfig): Promise<EmbeddingAdapter>` | —                                                                                                                                             |
+| Export                     | Constructor                                                                                 | Implements                                                                                                                                    |
+| -------------------------- | ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `QdrantAdapter`            | `new QdrantAdapter(config: QdrantAdapterConfig)`                                            | `EmbeddingAdapter` (+ `connect`/`disconnect`); `dimensions` required, `url` default `http://localhost:6333`, `collection` default `cogitator` |
+| `InMemoryEmbeddingAdapter` | `new InMemoryEmbeddingAdapter()`                                                            | `EmbeddingAdapter`, `KeywordSearchAdapter`; `size`, `clear()`                                                                                 |
+| `createEmbeddingAdapter`   | `createEmbeddingAdapter(config: QdrantAdapterConfig): Promise<ConnectableEmbeddingAdapter>` | —                                                                                                                                             |
 
 ## Embedding Services
 

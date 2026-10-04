@@ -305,21 +305,21 @@ export class ContextBuilder {
     };
   }
 
+  /**
+   * The longest run of newest entries that fits the budget. The window stops at the first entry
+   * that does not fit instead of skipping it, so the model never sees a reply without the message
+   * it answers.
+   */
   private selectRecentEntries(entries: MemoryEntry[], availableTokens: number): MemoryEntry[] {
-    const reversed = [...entries].reverse();
-    const selected: MemoryEntry[] = [];
+    let start = entries.length;
     let usedTokens = 0;
 
-    for (const entry of reversed) {
-      if (usedTokens + entry.tokenCount <= availableTokens) {
-        selected.unshift(entry);
-        usedTokens += entry.tokenCount;
-      } else {
-        continue;
-      }
+    while (start > 0 && usedTokens + entries[start - 1].tokenCount <= availableTokens) {
+      start--;
+      usedTokens += entries[start].tokenCount;
     }
 
-    return selected;
+    return entries.slice(start);
   }
 
   /**

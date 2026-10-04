@@ -4,6 +4,7 @@
 
 import type {
   MemoryAdapter,
+  MemoryResult,
   EmbeddingAdapter,
   InMemoryAdapterConfig,
   RedisAdapterConfig,
@@ -25,6 +26,15 @@ export type MemoryAdapterConfigUnion =
   | MongoDBAdapterConfig;
 
 export type EmbeddingAdapterConfigUnion = QdrantAdapterConfig;
+
+/**
+ * An embedding store that talks to a server, as `createEmbeddingAdapter` returns it: call
+ * `connect()` before the first operation and `disconnect()` when done.
+ */
+export interface ConnectableEmbeddingAdapter extends EmbeddingAdapter {
+  connect(): Promise<MemoryResult<void>>;
+  disconnect(): Promise<MemoryResult<void>>;
+}
 
 export async function createMemoryAdapter(
   config: MemoryAdapterConfigUnion
@@ -64,7 +74,7 @@ export async function createMemoryAdapter(
 
 export async function createEmbeddingAdapter(
   config: EmbeddingAdapterConfigUnion
-): Promise<EmbeddingAdapter> {
+): Promise<ConnectableEmbeddingAdapter> {
   switch (config.provider) {
     case 'qdrant': {
       const { QdrantAdapter } = await import('./qdrant');

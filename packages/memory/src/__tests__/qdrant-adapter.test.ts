@@ -1,25 +1,70 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, expectTypeOf, beforeEach, afterEach, vi } from 'vitest';
+import type { QdrantClient as RealQdrantClient, Schemas } from '@qdrant/js-client-rest';
+import type { MemoryResult } from '@cogitator-ai/types';
 import { QdrantAdapter } from '../adapters/qdrant';
+import { createEmbeddingAdapter } from '../adapters/index';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
+type ClientSurface = Pick<
+  RealQdrantClient,
+  'getCollections' | 'createCollection' | 'upsert' | 'query' | 'delete'
+>;
+
+const updated: Schemas['UpdateResult'] = { operation_id: 1, status: 'completed' };
+
 const mockClient = {
-  getCollections: vi.fn(),
-  createCollection: vi.fn().mockResolvedValue(undefined),
-  upsert: vi.fn().mockResolvedValue(undefined),
-  search: vi.fn(),
-  delete: vi.fn().mockResolvedValue(undefined),
-};
+  getCollections: vi.fn<ClientSurface['getCollections']>(),
+  createCollection: vi.fn<ClientSurface['createCollection']>().mockResolvedValue(true),
+  upsert: vi.fn<ClientSurface['upsert']>().mockResolvedValue(updated),
+  query: vi.fn<ClientSurface['query']>(),
+  delete: vi.fn<ClientSurface['delete']>().mockResolvedValue(updated),
+} satisfies ClientSurface;
 
 vi.mock('@qdrant/js-client-rest', () => {
   class QdrantClient {
-    getCollections = mockClient.getCollections;
-    createCollection = mockClient.createCollection;
-    upsert = mockClient.upsert;
-    search = mockClient.search;
-    delete = mockClient.delete;
+    constructor() {
+      return mockClient;
+    }
   }
   return { QdrantClient };
+});
+
+function upsertedPoints(): Schemas['PointStruct'][] {
+  return mockClient.upsert.mock.calls.flatMap(([, operation]) =>
+    'points' in operation ? operation.points : []
+  );
+}
+
+function scored(
+  id: string,
+  score: number,
+  payload: Record<string, unknown> | null
+): Schemas['ScoredPoint'] {
+  return { id, version: 1, score, payload };
+}
+
+describe('the mocked Qdrant client', () => {
+  it('only stubs methods the real @qdrant/js-client-rest client has', async () => {
+    const real =
+      await vi.importActual<typeof import('@qdrant/js-client-rest')>('@qdrant/js-client-rest');
+    const prototype = real.QdrantClient.prototype as unknown as Record<string, unknown>;
+    for (const method of Object.keys(mockClient)) {
+      expect(typeof prototype[method], `QdrantClient.${method}`).toBe('function');
+    }
+  });
+});
+
+describe('createEmbeddingAdapter', () => {
+  it('returns an adapter typed with the connect and disconnect it must be called with', async () => {
+    mockClient.getCollections.mockResolvedValue({ collections: [] });
+    const adapter = await createEmbeddingAdapter({ provider: 'qdrant', dimensions: 8 });
+
+    expectTypeOf(adapter.connect).returns.toEqualTypeOf<Promise<MemoryResult<void>>>();
+    expectTypeOf(adapter.disconnect).returns.toEqualTypeOf<Promise<MemoryResult<void>>>();
+    expect(await adapter.connect()).toEqual({ success: true, data: undefined });
+    expect(await adapter.disconnect()).toEqual({ success: true, data: undefined });
+  });
 });
 
 describe('QdrantAdapter', () => {
@@ -28,7 +73,7 @@ describe('QdrantAdapter', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     mockClient.getCollections.mockResolvedValue({ collections: [] });
-    mockClient.search.mockResolvedValue([]);
+    mockClient.query.mockResolvedValue({ points: [] });
 
     adapter = new QdrantAdapter({
       provider: 'qdrant',
@@ -170,12 +215,12 @@ describe('QdrantAdapter', () => {
         content: 'Second',
       });
 
-      const points = mockClient.upsert.mock.calls.map((call) => call[1].points[0]);
+      const points = upsertedPoints();
       expect(points[0].id).toMatch(UUID_PATTERN);
       expect(points[1].id).toMatch(UUID_PATTERN);
       expect(points[0].id).not.toBe(points[1].id);
-      expect(points[0].payload.embeddingId).toBe(first.success && first.data.id);
-      expect(points[1].payload.embeddingId).toBe(second.success && second.data.id);
+      expect(points[0].payload?.embeddingId).toBe(first.success && first.data.id);
+      expect(points[1].payload?.embeddingId).toBe(second.success && second.data.id);
     });
 
     it('deletes the same point it stored for an embedding id', async () => {
@@ -189,8 +234,11 @@ describe('QdrantAdapter', () => {
 
       await adapter.deleteEmbedding(added.data.id);
 
-      const storedId = mockClient.upsert.mock.calls[0][1].points[0].id;
-      expect(mockClient.delete).toHaveBeenCalledWith('test_collection', { points: [storedId] });
+      const storedId = upsertedPoints()[0]?.id;
+      expect(mockClient.delete).toHaveBeenCalledWith('test_collection', {
+        wait: true,
+        points: [storedId],
+      });
     });
 
     it('includes metadata in payload', async () => {
@@ -254,20 +302,18 @@ describe('QdrantAdapter', () => {
   describe('search', () => {
     it('searches by vector', async () => {
       const now = new Date();
-      mockClient.search.mockResolvedValueOnce([
-        {
-          id: 'emb_123',
-          score: 0.95,
-          payload: {
+      mockClient.query.mockResolvedValueOnce({
+        points: [
+          scored('6f1c2f8e-1d2b-5c3a-8e4f-0a1b2c3d4e5f', 0.95, {
             embeddingId: 'emb_123',
             sourceId: 'entry_123',
             sourceType: 'message',
             content: 'Similar content',
             createdAt: now.toISOString(),
             metadata: { category: 'test' },
-          },
-        },
-      ]);
+          }),
+        ],
+      });
 
       const result = await adapter.search({
         vector: Array(1536).fill(0.1),
@@ -285,46 +331,43 @@ describe('QdrantAdapter', () => {
     });
 
     it('uses default limit', async () => {
-      mockClient.search.mockResolvedValue([]);
-
       await adapter.search({ vector: [0.1] });
 
-      expect(mockClient.search).toHaveBeenCalledWith('test_collection', {
-        vector: [0.1],
+      expect(mockClient.query).toHaveBeenCalledWith('test_collection', {
+        query: [0.1],
         limit: 10,
         score_threshold: undefined,
+        with_payload: true,
         filter: undefined,
       });
     });
 
     it('applies threshold', async () => {
-      mockClient.search.mockResolvedValue([]);
-
       await adapter.search({
         vector: [0.1],
         threshold: 0.8,
       });
 
-      expect(mockClient.search).toHaveBeenCalledWith('test_collection', {
-        vector: [0.1],
+      expect(mockClient.query).toHaveBeenCalledWith('test_collection', {
+        query: [0.1],
         limit: 10,
         score_threshold: 0.8,
+        with_payload: true,
         filter: undefined,
       });
     });
 
     it('filters by sourceType', async () => {
-      mockClient.search.mockResolvedValue([]);
-
       await adapter.search({
         vector: [0.1],
         filter: { sourceType: 'fact' },
       });
 
-      expect(mockClient.search).toHaveBeenCalledWith('test_collection', {
-        vector: [0.1],
+      expect(mockClient.query).toHaveBeenCalledWith('test_collection', {
+        query: [0.1],
         limit: 10,
         score_threshold: undefined,
+        with_payload: true,
         filter: {
           must: [{ key: 'sourceType', match: { value: 'fact' } }],
         },
@@ -332,14 +375,13 @@ describe('QdrantAdapter', () => {
     });
 
     it('filters by user, letting through embeddings of no user', async () => {
-      mockClient.search.mockResolvedValue([]);
-
       await adapter.search({ vector: [0.1], filter: { userId: 'alice' } });
 
-      expect(mockClient.search).toHaveBeenCalledWith('test_collection', {
-        vector: [0.1],
+      expect(mockClient.query).toHaveBeenCalledWith('test_collection', {
+        query: [0.1],
         limit: 10,
         score_threshold: undefined,
+        with_payload: true,
         filter: {
           must: [
             {
@@ -354,17 +396,16 @@ describe('QdrantAdapter', () => {
     });
 
     it('filters by threadId', async () => {
-      mockClient.search.mockResolvedValue([]);
-
       await adapter.search({
         vector: [0.1],
         filter: { threadId: 'thread_123' },
       });
 
-      expect(mockClient.search).toHaveBeenCalledWith('test_collection', {
-        vector: [0.1],
+      expect(mockClient.query).toHaveBeenCalledWith('test_collection', {
+        query: [0.1],
         limit: 10,
         score_threshold: undefined,
+        with_payload: true,
         filter: {
           must: [{ key: 'metadata.threadId', match: { value: 'thread_123' } }],
         },
@@ -372,17 +413,16 @@ describe('QdrantAdapter', () => {
     });
 
     it('filters by agentId', async () => {
-      mockClient.search.mockResolvedValue([]);
-
       await adapter.search({
         vector: [0.1],
         filter: { agentId: 'agent_123' },
       });
 
-      expect(mockClient.search).toHaveBeenCalledWith('test_collection', {
-        vector: [0.1],
+      expect(mockClient.query).toHaveBeenCalledWith('test_collection', {
+        query: [0.1],
         limit: 10,
         score_threshold: undefined,
+        with_payload: true,
         filter: {
           must: [{ key: 'metadata.agentId', match: { value: 'agent_123' } }],
         },
@@ -390,8 +430,6 @@ describe('QdrantAdapter', () => {
     });
 
     it('combines multiple filters', async () => {
-      mockClient.search.mockResolvedValue([]);
-
       await adapter.search({
         vector: [0.1],
         filter: {
@@ -401,10 +439,11 @@ describe('QdrantAdapter', () => {
         },
       });
 
-      expect(mockClient.search).toHaveBeenCalledWith('test_collection', {
-        vector: [0.1],
+      expect(mockClient.query).toHaveBeenCalledWith('test_collection', {
+        query: [0.1],
         limit: 10,
         score_threshold: undefined,
+        with_payload: true,
         filter: {
           must: [
             { key: 'sourceType', match: { value: 'message' } },
@@ -441,7 +480,7 @@ describe('QdrantAdapter', () => {
     });
 
     it('handles search errors', async () => {
-      mockClient.search.mockRejectedValueOnce(new Error('Search timeout'));
+      mockClient.query.mockRejectedValueOnce(new Error('Search timeout'));
 
       const result = await adapter.search({ vector: [0.1] });
 
@@ -452,24 +491,33 @@ describe('QdrantAdapter', () => {
     });
 
     it('returns empty vector in results', async () => {
-      mockClient.search.mockResolvedValueOnce([
-        {
-          id: 'emb_123',
-          score: 0.9,
-          payload: {
+      mockClient.query.mockResolvedValueOnce({
+        points: [
+          scored('emb_123', 0.9, {
             sourceId: 'entry_123',
             sourceType: 'message',
             content: 'Test',
             createdAt: new Date().toISOString(),
-          },
-        },
-      ]);
+          }),
+        ],
+      });
 
       const result = await adapter.search({ vector: [0.1] });
 
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data[0].vector).toEqual([]);
+      }
+    });
+
+    it('maps a point without payload instead of failing the whole search', async () => {
+      mockClient.query.mockResolvedValueOnce({ points: [scored('emb_1', 0.5, null)] });
+
+      const result = await adapter.search({ vector: [0.1] });
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data[0]).toMatchObject({ id: 'emb_1', score: 0.5, metadata: {} });
       }
     });
   });
@@ -480,6 +528,7 @@ describe('QdrantAdapter', () => {
 
       expect(result.success).toBe(true);
       expect(mockClient.delete).toHaveBeenCalledWith('test_collection', {
+        wait: true,
         points: [expect.stringMatching(UUID_PATTERN)],
       });
     });
@@ -515,6 +564,7 @@ describe('QdrantAdapter', () => {
 
       expect(result.success).toBe(true);
       expect(mockClient.delete).toHaveBeenCalledWith('test_collection', {
+        wait: true,
         filter: {
           must: [{ key: 'sourceId', match: { value: 'entry_123' } }],
         },

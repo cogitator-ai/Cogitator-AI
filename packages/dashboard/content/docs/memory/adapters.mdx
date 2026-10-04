@@ -14,7 +14,7 @@ const memory = await createMemoryAdapter({ provider: 'sqlite', path: './memory.d
 unwrap(await memory.connect());
 ```
 
-`createMemoryAdapter` handles `memory`, `redis`, `postgres`, `sqlite` and `mongodb` and returns the common `MemoryAdapter` interface. For Qdrant use `createEmbeddingAdapter({ provider: 'qdrant', dimensions })`. Construct the class directly (e.g. `new PostgresAdapter(...)`) when you need its extra capabilities — facts, vector or keyword search.
+`createMemoryAdapter` handles `memory`, `redis`, `postgres`, `sqlite` and `mongodb` and returns the common `MemoryAdapter` interface. For Qdrant use `createEmbeddingAdapter({ provider: 'qdrant', dimensions })`, which returns a `ConnectableEmbeddingAdapter` (an `EmbeddingAdapter` with `connect()` and `disconnect()`) to connect before use. Construct the class directly (e.g. `new PostgresAdapter(...)`) when you need its extra capabilities — facts, vector or keyword search.
 
 All conversation adapters share the same `MemoryAdapter` interface: `createThread`, `getThread`, `updateThread`, `deleteThread`, `addEntry`, `getEntries`, `getEntry`, `deleteEntry`, `clearThread`, `connect` and `disconnect`. Some adapters add `FactAdapter`, `EmbeddingAdapter` or `KeywordSearchAdapter`.
 
@@ -113,7 +113,11 @@ memory.setVectorDimensions(1536); // before connect(); default 768
 unwrap(await memory.connect());
 ```
 
-On `connect()` the adapter creates the schema, the `threads`, `entries`, `facts` and `embeddings` tables, the pgvector extension, an `ivfflat` cosine index and a generated English `tsvector` column for keyword search. If the extension or an index cannot be created, it logs a warning and carries on.
+On `connect()` the adapter creates the schema, the `threads`, `entries`, `facts` and `embeddings` tables, the pgvector extension, an HNSW cosine index on the vectors and a generated English `tsvector` column for keyword search. If the extension or an index cannot be created, it logs a warning and carries on.
+
+HNSW needs no training data, so the index built on the empty table finds every row as the table fills up. Earlier versions built an `ivfflat` index there instead, which missed rows for small limits. The first `connect()` after upgrading replaces that index with HNSW, which on a large table takes a while. To avoid the wait, build the index ahead of the deploy with `CREATE INDEX CONCURRENTLY idx_embeddings_vector_new ON <schema>.embeddings USING hnsw (vector vector_cosine_ops)`, then drop the old index and rename the new one to `idx_embeddings_vector`. An existing HNSW index is kept as it is.
+
+`search()` sizes each query for the index: it raises `hnsw.ef_search` to the requested `limit` (up to 1000) and, on pgvector 0.8 or later, turns on iterative scans, so a large limit or a filter on agent, thread or user still gets every matching row. Equally similar rows are ordered by id, so the result does not depend on the query plan.
 
 The `embeddings.vector` column is created with the dimension set at that moment, so call `setVectorDimensions(n)` **before** `connect()` — it throws once connected. An existing table keeps its original dimension.
 

@@ -74,7 +74,7 @@ const vectors = await embeddings.embedBatch([
 // vectors.length === 3, each vector.length === 1536
 ```
 
-Request shorter vectors from `text-embedding-3-*` models with `dimensions`:
+Request shorter vectors from `text-embedding-3-*` models with `dimensions`. Gateway ids such as `openai/text-embedding-3-small` (OpenRouter) count as the same model:
 
 ```typescript
 const compact = new OpenAIEmbeddingService({
@@ -84,12 +84,12 @@ const compact = new OpenAIEmbeddingService({
 });
 ```
 
-| Option       | Type   | Default                     | Description                                                       |
-| ------------ | ------ | --------------------------- | ----------------------------------------------------------------- |
-| `apiKey`     | string | —                           | OpenAI API key                                                    |
-| `model`      | string | `text-embedding-3-small`    | Embedding model name                                              |
-| `baseUrl`    | string | `https://api.openai.com/v1` | API base URL (for proxies and compatible APIs)                    |
-| `dimensions` | number | model default               | Output size; sent to the API only for `text-embedding-3-*` models |
+| Option       | Type   | Default                     | Description                                    |
+| ------------ | ------ | --------------------------- | ---------------------------------------------- |
+| `apiKey`     | string | —                           | OpenAI API key                                 |
+| `model`      | string | `text-embedding-3-small`    | Embedding model name                           |
+| `baseUrl`    | string | `https://api.openai.com/v1` | API base URL (for proxies and compatible APIs) |
+| `dimensions` | number | model default               | Output size, see below                         |
 
 **Dimensions by model:**
 
@@ -99,7 +99,9 @@ const compact = new OpenAIEmbeddingService({
 | `text-embedding-3-large` | 3072       |
 | `text-embedding-ada-002` | 1536       |
 
-Unknown models report 1536 unless you pass `dimensions`.
+Gateway ids that contain one of these names, such as `openai/text-embedding-3-large`, report that model's size. Other models report 1536 unless you pass `dimensions`.
+
+`dimensions` is sent to the API only for `text-embedding-3` models, which shorten their output to it. For any other model it declares the size the model returns. Either way it is the size the service promises: when a response holds vectors of another size, `embed()` and `embedBatch()` throw instead of handing them to a store sized for `dimensions`.
 
 ## Ollama
 
@@ -225,7 +227,7 @@ The vector dimensions of your embedding model **must** match the adapter configu
 
 When memory is configured through `Cogitator` (`memory.adapter: 'postgres'`), the table is created with the dimensions of `memory.embedding` (768 without one). `memory.qdrant.dimensions` must be set to match the embedding model; the runtime logs a warning when it does not.
 
-pgvector's `ivfflat` index supports up to 2000 dimensions; with larger vectors (e.g. 3072) the adapter logs a warning and searches without the index.
+The adapter indexes vectors with a pgvector HNSW index, which supports up to 2000 dimensions. With larger vectors (e.g. 3072) the adapter logs a warning and searches without the index.
 
 ## Provider Comparison
 

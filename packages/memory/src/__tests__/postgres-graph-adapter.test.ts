@@ -46,6 +46,16 @@ describe('PostgresGraphAdapter', () => {
     });
   });
 
+  it('indexes node embeddings with HNSW, which works on the empty table', async () => {
+    await adapter.initialize();
+
+    const statements = query.mock.calls.map(([text]) => text.replace(/\s+/g, ' ').trim());
+    expect(statements).toContain(
+      'CREATE INDEX IF NOT EXISTS idx_graph_nodes_embedding ON cogitator.graph_nodes USING hnsw (embedding vector_cosine_ops)'
+    );
+    expect(statements.some((text) => /ivfflat/i.test(text))).toBe(false);
+  });
+
   it('returns a failed result when schema initialization fails', async () => {
     query.mockRejectedValueOnce(new Error('permission denied for schema cogitator'));
 

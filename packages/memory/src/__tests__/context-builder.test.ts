@@ -113,6 +113,48 @@ describe('ContextBuilder', () => {
       expect(result.messages[2].content).toBe('Message 4');
     });
 
+    it('keeps a contiguous window of the newest messages when an older one does not fit', async () => {
+      const turns: Array<{ message: Message; tokenCount: number }> = [
+        { message: { role: 'user', content: 'Q1' }, tokenCount: 10 },
+        { message: { role: 'assistant', content: 'A1, a very long answer' }, tokenCount: 300 },
+        { message: { role: 'user', content: 'Q2' }, tokenCount: 10 },
+        { message: { role: 'assistant', content: 'A2' }, tokenCount: 10 },
+        { message: { role: 'user', content: 'Thanks' }, tokenCount: 10 },
+      ];
+      for (const turn of turns) {
+        await adapter.addEntry({ threadId, ...turn });
+      }
+
+      const builder = new ContextBuilder(
+        { maxTokens: 200, reserveTokens: 0, strategy: 'recent' },
+        { memoryAdapter: adapter }
+      );
+
+      const result = await builder.build({ threadId, agentId: 'agent1' });
+
+      expect(result.messages.map((message) => message.content)).toEqual(['Q2', 'A2', 'Thanks']);
+      expect(result.truncated).toBe(true);
+    });
+
+    it('keeps no history when the newest message alone exceeds the budget', async () => {
+      await adapter.addEntry({ threadId, message: { role: 'user', content: 'Hi' }, tokenCount: 5 });
+      await adapter.addEntry({
+        threadId,
+        message: { role: 'user', content: 'A huge paste' },
+        tokenCount: 500,
+      });
+
+      const builder = new ContextBuilder(
+        { maxTokens: 100, reserveTokens: 0, strategy: 'recent' },
+        { memoryAdapter: adapter }
+      );
+
+      const result = await builder.build({ threadId, agentId: 'agent1' });
+
+      expect(result.messages).toHaveLength(0);
+      expect(result.truncated).toBe(true);
+    });
+
     it('respects reserve tokens', async () => {
       await adapter.addEntry({
         threadId,

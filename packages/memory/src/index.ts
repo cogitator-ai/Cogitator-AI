@@ -11,6 +11,7 @@ export {
   createEmbeddingAdapter,
   type MemoryAdapterConfigUnion,
   type EmbeddingAdapterConfigUnion,
+  type ConnectableEmbeddingAdapter,
 } from './adapters/index';
 
 export { RedisAdapter } from './adapters/redis';

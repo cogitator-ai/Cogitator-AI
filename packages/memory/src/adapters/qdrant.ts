@@ -5,6 +5,7 @@ import type {
   QdrantAdapterConfig,
   EmbeddingAdapter,
 } from '@cogitator-ai/types';
+import type { QdrantClient as RestClient, Schemas } from '@qdrant/js-client-rest';
 import { nanoid } from 'nanoid';
 import { createHash } from 'node:crypto';
 
@@ -23,45 +24,17 @@ function qdrantPointId(embeddingId: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-interface QdrantPoint {
-  id: string;
-  vector: number[];
-  payload: Record<string, unknown>;
-}
+/**
+ * The part of the `@qdrant/js-client-rest` client the adapter calls, typed against the real
+ * client so a method the installed version does not have fails to compile.
+ */
+type QdrantClient = Pick<
+  RestClient,
+  'getCollections' | 'createCollection' | 'upsert' | 'query' | 'delete'
+>;
 
-interface QdrantSearchResult {
-  id: string;
-  score: number;
-  payload: Record<string, unknown>;
-}
-
-type QdrantCondition =
-  | { key: string; match: { value: unknown } }
-  | { is_empty: { key: string } }
-  | { should: QdrantCondition[] };
-
-interface QdrantFilter {
-  must?: QdrantCondition[];
-}
-
-interface QdrantClient {
-  getCollections(): Promise<{ collections: Array<{ name: string }> }>;
-  createCollection(
-    name: string,
-    config: { vectors: { size: number; distance: string } }
-  ): Promise<void>;
-  upsert(collection: string, options: { points: QdrantPoint[] }): Promise<void>;
-  search(
-    collection: string,
-    options: {
-      vector: number[];
-      limit: number;
-      score_threshold?: number;
-      filter?: QdrantFilter;
-    }
-  ): Promise<QdrantSearchResult[]>;
-  delete(collection: string, options: { points?: string[]; filter?: QdrantFilter }): Promise<void>;
-}
+type QdrantFilter = Schemas['Filter'];
+type QdrantCondition = Schemas['Condition'];
 
 export class QdrantAdapter implements EmbeddingAdapter {
   private client: QdrantClient | null = null;
@@ -80,13 +53,9 @@ export class QdrantAdapter implements EmbeddingAdapter {
   async connect(): Promise<MemoryResult<void>> {
     if (this.client) return this.success(undefined);
 
-    let QdrantClient: new (options: { url: string; apiKey?: string }) => QdrantClient;
+    let qdrant: typeof import('@qdrant/js-client-rest');
     try {
-      const qdrant = await import('@qdrant/js-client-rest');
-      QdrantClient = qdrant.QdrantClient as unknown as new (options: {
-        url: string;
-        apiKey?: string;
-      }) => QdrantClient;
+      qdrant = await import('@qdrant/js-client-rest');
     } catch {
       return this.failure(
         '@qdrant/js-client-rest not installed. Run: pnpm add @qdrant/js-client-rest'
@@ -94,37 +63,27 @@ export class QdrantAdapter implements EmbeddingAdapter {
     }
 
     try {
-      this.client = new QdrantClient({ url: this.url, apiKey: this.apiKey });
+      const client: QdrantClient = new qdrant.QdrantClient({ url: this.url, apiKey: this.apiKey });
 
-      const collections = await this.client.getCollections();
+      const collections = await client.getCollections();
       const exists = collections.collections.some((c) => c.name === this.collection);
 
       if (!exists) {
-        await this.client.createCollection(this.collection, {
+        await client.createCollection(this.collection, {
           vectors: { size: this.dimensions, distance: 'Cosine' },
         });
       }
 
+      this.client = client;
       return this.success(undefined);
     } catch (err) {
       return this.failure((err as Error).message);
     }
   }
 
+  /** The REST client holds no connection, so disconnecting only drops it. */
   async disconnect(): Promise<MemoryResult<void>> {
-    if (this.client) {
-      try {
-        const client = this.client as QdrantClient & { close?: () => Promise<void> };
-        if (typeof client.close === 'function') {
-          await client.close();
-        }
-        return this.success(undefined);
-      } catch (err) {
-        return this.failure((err as Error).message);
-      } finally {
-        this.client = null;
-      }
-    }
+    this.client = null;
     return this.success(undefined);
   }
 
@@ -172,20 +131,19 @@ export class QdrantAdapter implements EmbeddingAdapter {
     }
 
     try {
-      const filter: QdrantFilter = {};
+      const must: QdrantCondition[] = [];
       if (options.filter) {
-        filter.must = [];
         if (options.filter.sourceType) {
-          filter.must.push({ key: 'sourceType', match: { value: options.filter.sourceType } });
+          must.push({ key: 'sourceType', match: { value: options.filter.sourceType } });
         }
         if (options.filter.threadId) {
-          filter.must.push({ key: 'metadata.threadId', match: { value: options.filter.threadId } });
+          must.push({ key: 'metadata.threadId', match: { value: options.filter.threadId } });
         }
         if (options.filter.agentId) {
-          filter.must.push({ key: 'metadata.agentId', match: { value: options.filter.agentId } });
+          must.push({ key: 'metadata.agentId', match: { value: options.filter.agentId } });
         }
         if (options.filter.userId) {
-          filter.must.push({
+          must.push({
             should: [
               { key: 'metadata.userId', match: { value: options.filter.userId } },
               { is_empty: { key: 'metadata.userId' } },
@@ -194,23 +152,28 @@ export class QdrantAdapter implements EmbeddingAdapter {
         }
       }
 
-      const results = await this.client.search(this.collection, {
-        vector: options.vector,
+      const filter: QdrantFilter | undefined = must.length > 0 ? { must } : undefined;
+      const { points } = await this.client.query(this.collection, {
+        query: options.vector,
         limit: options.limit ?? 10,
         score_threshold: options.threshold,
-        filter: filter.must?.length ? filter : undefined,
+        with_payload: true,
+        filter,
       });
 
-      const embeddings: (Embedding & { score: number })[] = results.map((r) => ({
-        id: (r.payload.embeddingId as string) ?? r.id,
-        sourceId: r.payload.sourceId as string,
-        sourceType: r.payload.sourceType as Embedding['sourceType'],
-        vector: [],
-        content: r.payload.content as string,
-        createdAt: new Date(r.payload.createdAt as string),
-        metadata: (r.payload.metadata as Record<string, unknown>) ?? {},
-        score: r.score,
-      }));
+      const embeddings: (Embedding & { score: number })[] = points.map((point) => {
+        const payload: Record<string, unknown> = point.payload ?? {};
+        return {
+          id: typeof payload.embeddingId === 'string' ? payload.embeddingId : String(point.id),
+          sourceId: payload.sourceId as string,
+          sourceType: payload.sourceType as Embedding['sourceType'],
+          vector: [],
+          content: payload.content as string,
+          createdAt: new Date(payload.createdAt as string),
+          metadata: (payload.metadata as Record<string, unknown> | undefined) ?? {},
+          score: point.score,
+        };
+      });
 
       return this.success(embeddings);
     } catch (err) {
@@ -223,6 +186,7 @@ export class QdrantAdapter implements EmbeddingAdapter {
 
     try {
       await this.client.delete(this.collection, {
+        wait: true,
         points: [qdrantPointId(embeddingId)],
       });
       return this.success(undefined);
@@ -236,6 +200,7 @@ export class QdrantAdapter implements EmbeddingAdapter {
 
     try {
       await this.client.delete(this.collection, {
+        wait: true,
         filter: { must: [{ key: 'sourceId', match: { value: sourceId } }] },
       });
       return this.success(undefined);

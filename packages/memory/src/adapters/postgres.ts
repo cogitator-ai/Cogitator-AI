@@ -25,12 +25,27 @@ import type {
   SearchResult,
 } from '@cogitator-ai/types';
 import { BaseMemoryAdapter } from './base';
+import {
+  detectVectorSearchTuning,
+  ensureHnswCosineIndex,
+  hnswSearchSettings,
+  type SqlQueryable,
+  type VectorSearchTuning,
+} from './pgvector';
 
-type Pool = {
-  query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
-  connect(): Promise<{ release(): void }>;
+type PoolClient = SqlQueryable & {
+  release(destroy?: boolean): void;
+};
+
+type Pool = SqlQueryable & {
+  connect(): Promise<PoolClient>;
   end(): Promise<void>;
 };
+
+/** JSON text for a JSONB parameter. node-pg would send a JS array as a Postgres array literal. */
+function toJsonb(value: unknown): string | null {
+  return value === undefined || value === null ? null : JSON.stringify(value);
+}
 
 export class PostgresAdapter
   extends BaseMemoryAdapter
@@ -42,6 +57,7 @@ export class PostgresAdapter
   private config: PostgresAdapterConfig;
   private schema: string;
   private vectorDimensions = 768;
+  private vectorTuning: VectorSearchTuning = { iterativeScan: false };
 
   constructor(config: PostgresAdapterConfig) {
     super();
@@ -149,13 +165,15 @@ export class PostgresAdapter
     `);
 
     try {
-      await this.pool.query(`
-        CREATE INDEX IF NOT EXISTS idx_embeddings_vector
-        ON ${this.schema}.embeddings
-        USING ivfflat (vector vector_cosine_ops) WITH (lists = 100)
-      `);
+      await ensureHnswCosineIndex(this.pool, {
+        schema: this.schema,
+        table: 'embeddings',
+        column: 'vector',
+        index: 'idx_embeddings_vector',
+      });
+      this.vectorTuning = await detectVectorSearchTuning(this.pool);
     } catch (err) {
-      console.warn('Failed to create ivfflat index:', (err as Error).message);
+      console.warn('Failed to create the HNSW vector index:', (err as Error).message);
     }
 
     try {
@@ -198,10 +216,10 @@ export class PostgresAdapter
     try {
       const result = await this.pool.query(
         `INSERT INTO ${this.schema}.threads (id, agent_id, metadata, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $4)
-         ON CONFLICT (id) DO UPDATE SET agent_id = $2, metadata = $3, updated_at = $4
+         VALUES ($1, $2, $3::jsonb, $4, $4)
+         ON CONFLICT (id) DO UPDATE SET agent_id = $2, metadata = $3::jsonb, updated_at = $4
          RETURNING *`,
-        [id, agentId, metadata, now]
+        [id, agentId, toJsonb(metadata), now]
       );
 
       const row = result.rows[0];
@@ -236,10 +254,10 @@ export class PostgresAdapter
     try {
       const result = await this.pool.query(
         `UPDATE ${this.schema}.threads
-         SET metadata = metadata || $2, updated_at = NOW()
+         SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb, updated_at = NOW()
          WHERE id = $1
          RETURNING *`,
-        [threadId, metadata]
+        [threadId, toJsonb(metadata)]
       );
 
       if (result.rows.length === 0) {
@@ -272,15 +290,15 @@ export class PostgresAdapter
       await this.pool.query(
         `INSERT INTO ${this.schema}.entries
          (id, thread_id, message, tool_calls, tool_results, token_count, metadata, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+         VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7::jsonb, $8)`,
         [
           id,
           entry.threadId,
-          entry.message,
-          entry.toolCalls ?? null,
-          entry.toolResults ?? null,
+          toJsonb(entry.message),
+          toJsonb(entry.toolCalls),
+          toJsonb(entry.toolResults),
           entry.tokenCount,
-          entry.metadata ?? {},
+          toJsonb(entry.metadata ?? {}),
           now,
         ]
       );
@@ -397,7 +415,7 @@ export class PostgresAdapter
       await this.pool.query(
         `INSERT INTO ${this.schema}.facts
          (id, agent_id, content, category, confidence, source, metadata, expires_at, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $9)`,
         [
           id,
           fact.agentId,
@@ -405,7 +423,7 @@ export class PostgresAdapter
           fact.category,
           fact.confidence,
           fact.source,
-          fact.metadata ?? {},
+          toJsonb(fact.metadata ?? {}),
           fact.expiresAt ?? null,
           now,
         ]
@@ -477,8 +495,8 @@ export class PostgresAdapter
       params.push(updates.confidence);
     }
     if (updates.metadata !== undefined) {
-      setClauses.push(`metadata = $${paramIndex++}`);
-      params.push(updates.metadata);
+      setClauses.push(`metadata = $${paramIndex++}::jsonb`);
+      params.push(toJsonb(updates.metadata));
     }
     if (updates.expiresAt !== undefined) {
       setClauses.push(`expires_at = $${paramIndex++}`);
@@ -571,14 +589,14 @@ export class PostgresAdapter
       await this.pool.query(
         `INSERT INTO ${this.schema}.embeddings
          (id, source_id, source_type, vector, content, metadata, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
         [
           id,
           embedding.sourceId,
           embedding.sourceType,
           vectorStr,
           embedding.content,
-          embedding.metadata ?? {},
+          toJsonb(embedding.metadata ?? {}),
           now,
         ]
       );
@@ -604,24 +622,30 @@ export class PostgresAdapter
     const limit = options.limit ?? 10;
     const threshold = options.threshold ?? 0.7;
 
-    let query = `
-      SELECT *, 1 - (vector <=> $1) as score
-      FROM ${this.schema}.embeddings
-      WHERE 1 - (vector <=> $1) >= $2
-    `;
+    const settings = hnswSearchSettings(limit, this.vectorTuning);
     const params: unknown[] = [vectorStr, threshold];
-    let paramIndex = 3;
-
-    const filterClause = this.embeddingFilterClause(options.filter, params, paramIndex);
-    query += filterClause.sql;
-    paramIndex = filterClause.nextIndex;
-
-    query += ` ORDER BY vector <=> $1 LIMIT $${paramIndex}`;
-    params.push(limit);
+    const filter = this.embeddingFilterClause(options.filter, params, 3);
+    params.push(settings.candidates, limit);
+    const candidatesParam = filter.nextIndex;
+    const limitParam = filter.nextIndex + 1;
+    const query = `
+      SELECT * FROM (
+        SELECT *, 1 - (vector <=> $1) as score
+        FROM ${this.schema}.embeddings
+        WHERE 1 - (vector <=> $1) >= $2${filter.sql}
+        ORDER BY vector <=> $1
+        LIMIT $${candidatesParam}
+      ) nearest
+      ORDER BY score DESC, id
+      LIMIT $${limitParam}
+    `;
 
     let result: { rows: Record<string, unknown>[] };
     try {
-      result = await this.pool.query(query, params);
+      result = await this.inTransaction(async (client) => {
+        await client.query(settings.sql, settings.params);
+        return client.query(query, params);
+      });
     } catch (err) {
       return this.failure((err as Error).message);
     }
@@ -738,6 +762,28 @@ export class PostgresAdapter
       params.push(filter.userId);
     }
     return { sql, nextIndex: index };
+  }
+
+  /** Runs `work` on one pooled connection inside a transaction, so `SET LOCAL` style settings apply to it only. */
+  private async inTransaction<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
+    if (!this.pool) throw new Error('Not connected');
+    const client = await this.pool.connect();
+    let broken = false;
+    try {
+      await client.query('BEGIN');
+      const result = await work(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        broken = true;
+      }
+      throw err;
+    } finally {
+      client.release(broken);
+    }
   }
 
   private rowToThread(row: Record<string, unknown>): Thread {
