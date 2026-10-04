@@ -259,13 +259,34 @@ Makes HTTP requests with custom headers, body, and timeout. Response bodies long
 
 Searches the web via Tavily, Brave Search, or Serper. Without `provider` it uses the first of `TAVILY_API_KEY`, `BRAVE_API_KEY`, `SERPER_API_KEY` that is set.
 
-| Parameter       | Type      | Description                                         |
-| --------------- | --------- | --------------------------------------------------- |
-| `query`         | `string`  | Search query                                        |
-| `provider`      | `enum`    | `tavily` \| `brave` \| `serper`                     |
-| `maxResults`    | `number`  | Max results (1 - 20, default: 5)                    |
-| `searchDepth`   | `enum`    | `basic` \| `advanced` (Tavily only, default: basic) |
-| `includeAnswer` | `boolean` | Include AI summary (Tavily only)                    |
+| Parameter           | Type                            | Description                                                                     |
+| ------------------- | ------------------------------- | ------------------------------------------------------------------------------- |
+| `query`             | `string`                        | Search query                                                                    |
+| `provider`          | `enum`                          | `tavily` \| `brave` \| `serper`                                                 |
+| `maxResults`        | `number`                        | Max results (1 - 20, default: 5)                                                |
+| `page`              | `number`                        | Page of results (1 - 10, Brave and Serper only)                                 |
+| `topic`             | `enum`                          | `general` \| `news` (default: general)                                          |
+| `recency`           | `enum`                          | `day` \| `week` \| `month` \| `year`: only results from that period             |
+| `dateRange`         | `{ from: string, to?: string }` | Only results published within these days (`YYYY-MM-DD`, `to` defaults to today) |
+| `includeDomains`    | `string[]`                      | Search only these domains, e.g. `["reuters.com"]`                               |
+| `excludeDomains`    | `string[]`                      | Leave out results from these domains                                            |
+| `country`           | `string`                        | Favour results from a country, ISO 3166-1 alpha-2 (`us`, `de`)                  |
+| `language`          | `string`                        | Favour results in a language, ISO 639-1 (`en`, `pt-br`)                         |
+| `searchDepth`       | `enum`                          | `ultra-fast` \| `fast` \| `basic` \| `advanced` (Tavily only)                   |
+| `includeAnswer`     | `boolean`                       | Include AI summary (Tavily only)                                                |
+| `includeRawContent` | `boolean`                       | Full page content as markdown in each result (Tavily only)                      |
+
+The filters work on every provider, each through its own parameters: Tavily's `topic`, `time_range`, `start_date`, `include_domains`, `country` and `language`, the news endpoints, `freshness`, `country` and `search_lang` of Brave, and the news endpoint, `tbs`, `gl` and `hl` of Serper. Domain filters become `site:` operators for Brave and Serper. A filter a provider cannot apply comes back as an `error` instead of being dropped: Tavily has no result pages, and it favours a country only in general searches.
+
+Results carry `publishedAt` (ISO 8601) when the provider reports a date, Serper's relative dates ("3 hours ago") resolved at the time of the search, `source` for Serper news, and `content` with `includeRawContent`.
+
+`createWebSearchTool({ provider, apiKeys })` builds the same tool with a default provider and keys passed in code instead of the environment:
+
+```typescript
+import { createWebSearchTool } from '@cogitator-ai/core';
+
+const search = createWebSearchTool({ provider: 'tavily', apiKeys: { tavily: config.tavilyKey } });
+```
 
 ### `web_scrape`
 
