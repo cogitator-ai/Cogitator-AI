@@ -7,7 +7,7 @@ Unit and end-to-end tests check each package on its own. The gauntlet checks tha
 ## Run it
 
 ```bash
-# 1. Services the stages talk to (Postgres with pgvector, Redis, Qdrant)
+# 1. Services the stages talk to (Postgres with pgvector, Redis, Qdrant, MongoDB)
 docker compose -f packages/gauntlet/compose.yml up -d
 
 # 2. An OpenRouter key (https://openrouter.ai/keys)
@@ -67,3 +67,4 @@ When a stage exposes a bug in a package, keep the check that exposes it and fix 
 | `GAUNTLET_POSTGRES_URL` | `postgresql://gauntlet:gauntlet@127.0.0.1:55432/gauntlet`       |
 | `GAUNTLET_REDIS_URL`    | `redis://127.0.0.1:56379`                                       |
 | `GAUNTLET_QDRANT_URL`   | `http://127.0.0.1:56333`                                        |
+| `GAUNTLET_MONGODB_URL`  | `mongodb://127.0.0.1:57017`                                     |

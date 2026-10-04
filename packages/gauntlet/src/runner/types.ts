@@ -24,12 +24,13 @@ export type Requirement =
   | { kind: 'service'; name: ServiceName }
   | { kind: 'playwright' };
 
-export type ServiceName = 'postgres' | 'redis' | 'qdrant';
+export type ServiceName = 'postgres' | 'redis' | 'qdrant' | 'mongodb';
 
 export interface ServiceUrls {
   postgres: string;
   redis: string;
   qdrant: string;
+  mongodb: string;
 }
 
 export type StageStatus = 'pending' | 'running' | 'passed' | 'failed' | 'skipped' | 'blocked';

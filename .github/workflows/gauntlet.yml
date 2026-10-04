@@ -47,6 +47,14 @@ jobs:
         image: qdrant/qdrant:latest
         ports:
           - 56333:6333
+      mongodb:
+        image: mongo:7.0
+        ports:
+          - 57017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ping:1}).ok'"
+          --health-interval 2s
+          --health-retries 30
 
     steps:
       - name: Check for the OpenRouter key

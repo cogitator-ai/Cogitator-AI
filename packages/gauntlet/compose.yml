@@ -1,5 +1,5 @@
 # Services the gauntlet stages talk to. Ports are offset so they do not clash with the
-# Postgres, Redis and Qdrant you may already run for development.
+# Postgres, Redis, Qdrant and MongoDB you may already run for development.
 #   docker compose -f packages/gauntlet/compose.yml up -d
 name: cogitator-gauntlet
 
@@ -27,3 +27,13 @@ services:
   qdrant:
     image: qdrant/qdrant:latest
     ports: ['56333:6333']
+
+  # MongoDB 8 refuses to start on Linux 6.19 and newer (SERVER-121912), which recent Docker
+  # VMs run, so the gauntlet stays on 7.0 until that is fixed.
+  mongodb:
+    image: mongo:7.0
+    ports: ['57017:27017']
+    healthcheck:
+      test: ['CMD', 'mongosh', '--quiet', '--eval', 'db.adminCommand({ping:1}).ok']
+      interval: 2s
+      retries: 30

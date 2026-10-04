@@ -17,6 +17,7 @@ import { QdrantClient } from '@qdrant/js-client-rest';
 import type { MemoryResult } from '@cogitator-ai/types';
 import type { StageContext, StageDefinition } from '../runner/types.js';
 import { memoryAgentStage } from './data/memory-agent.js';
+import { memoryMongodbStage } from './data/mongodb.js';
 import { ragStage } from './data/rag.js';
 import {
   HashingEmbeddingService,
@@ -598,6 +599,7 @@ export const dataStages: StageDefinition[] = [
   memoryPgvector,
   memoryRedis,
   memoryQdrant,
+  memoryMongodbStage,
   memoryAgentStage,
   ragStage,
 ];

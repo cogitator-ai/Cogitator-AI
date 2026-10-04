@@ -31,7 +31,8 @@ Usage: pnpm gauntlet [options]
   -h, --help          show this help
 
 Environment: OPENROUTER_API_KEY (required, also read from packages/gauntlet/.env),
-GAUNTLET_MODELS, GAUNTLET_POSTGRES_URL, GAUNTLET_REDIS_URL, GAUNTLET_QDRANT_URL.`;
+GAUNTLET_MODELS, GAUNTLET_POSTGRES_URL, GAUNTLET_REDIS_URL, GAUNTLET_QDRANT_URL,
+GAUNTLET_MONGODB_URL.`;
 
 function services(): ServiceUrls {
   return {
@@ -40,6 +41,7 @@ function services(): ServiceUrls {
       'postgresql://gauntlet:gauntlet@127.0.0.1:55432/gauntlet',
     redis: process.env.GAUNTLET_REDIS_URL ?? 'redis://127.0.0.1:56379',
     qdrant: process.env.GAUNTLET_QDRANT_URL ?? 'http://127.0.0.1:56333',
+    mongodb: process.env.GAUNTLET_MONGODB_URL ?? 'mongodb://127.0.0.1:57017',
   };
 }
 

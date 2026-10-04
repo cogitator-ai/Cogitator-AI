@@ -83,5 +83,5 @@ export class RequirementProbe {
 }
 
 function serviceLabel(name: ServiceName): string {
-  return { postgres: 'Postgres', redis: 'Redis', qdrant: 'Qdrant' }[name];
+  return { postgres: 'Postgres', redis: 'Redis', qdrant: 'Qdrant', mongodb: 'MongoDB' }[name];
 }
