@@ -17,6 +17,8 @@ export interface Attachment {
   buffer?: Uint8Array;
   mimeType: string;
   filename?: string;
+  /** Text shown with an outgoing file, formatted as `SendOptions.format` says */
+  caption?: string;
 }
 
 export interface ChannelMessage {
@@ -29,6 +31,11 @@ export interface ChannelMessage {
   text: string;
   attachments?: Attachment[];
   replyTo?: string;
+  /**
+   * The topic or thread inside the chat the message was posted in, such as a Telegram forum
+   * topic or a topic of a private chat. Replies go to the same topic.
+   */
+  topicId?: string;
   raw: unknown;
 }
 
@@ -39,10 +46,76 @@ export interface ChannelUser {
   username?: string;
 }
 
+/** A button under a message. Exactly one of `data`, `url` or `copyText` says what it does. */
+export interface ChannelButton {
+  text: string;
+  /** Sent back as `ChannelAction.data` when the button is pressed */
+  data?: string;
+  /** Opened when the button is pressed */
+  url?: string;
+  /** Copied to the clipboard when the button is pressed */
+  copyText?: string;
+  /** Color of the button, where the platform has colors */
+  style?: 'primary' | 'success' | 'danger';
+  /** Shown but does nothing */
+  disabled?: boolean;
+}
+
 export interface SendOptions {
   replyTo?: string;
   format?: 'plain' | 'markdown' | 'html';
   silent?: boolean;
+  /** Rows of buttons under the message, on channels that support them */
+  buttons?: ChannelButton[][];
+  /** The topic or thread of the chat to post in (`ChannelMessage.topicId`) */
+  topicId?: string;
+  /** Keep the message from being forwarded or saved, where the platform allows it */
+  protect?: boolean;
+  /** Link preview: `false` to turn it off, or which link to preview and how */
+  linkPreview?: false | { url?: string; aboveText?: boolean; size?: 'small' | 'large' };
+  /** A platform message effect, such as a Telegram message effect id (private chats only) */
+  effect?: string;
+  /** Show the message to this user only, where the platform has ephemeral messages */
+  visibleTo?: string;
+}
+
+/** Options of a streamed draft */
+export interface DraftOptions extends SendOptions {
+  /**
+   * Show the user a button that stops the generation. A press arrives through
+   * `Channel.onStop` with the draft's id.
+   */
+  canStop?: boolean;
+}
+
+/** A button press: the `data` of a `ChannelButton` a user pressed */
+export interface ChannelAction {
+  /** Identifier to answer the press with (`Channel.answerAction`) */
+  readonly id: string;
+  readonly channelType: ChannelType;
+  readonly channelId: string;
+  readonly userId: string;
+  userName?: string;
+  /** The message the button is under */
+  messageId?: string;
+  topicId?: string;
+  data: string;
+  raw: unknown;
+}
+
+/** A user stopped a streamed draft with its stop button */
+export interface ChannelStop {
+  readonly channelType: ChannelType;
+  readonly channelId: string;
+  readonly draftId: number;
+  topicId?: string;
+}
+
+/** A command in a channel's command menu */
+export interface ChannelCommand {
+  /** The command without its slash: lowercase letters, digits and underscores */
+  command: string;
+  description: string;
 }
 
 export interface Channel {
@@ -54,10 +127,16 @@ export interface Channel {
   onMessage(handler: (msg: ChannelMessage) => Promise<void>): void;
 
   sendText(channelId: string, text: string, options?: SendOptions): Promise<string>;
-  editText(channelId: string, messageId: string, text: string): Promise<void>;
-  sendFile(channelId: string, file: Attachment): Promise<void>;
+  editText(
+    channelId: string,
+    messageId: string,
+    text: string,
+    options?: SendOptions
+  ): Promise<void>;
+  /** Sends a file; resolves with the id of its message where the channel knows it */
+  sendFile(channelId: string, file: Attachment, options?: SendOptions): Promise<string | void>;
 
-  sendTyping(channelId: string): Promise<void>;
+  sendTyping(channelId: string, options?: Pick<SendOptions, 'topicId'>): Promise<void>;
 
   deleteMessage?(channelId: string, messageId: string): Promise<void>;
 
@@ -65,9 +144,41 @@ export interface Channel {
     channelId: string,
     draftId: number,
     text: string,
-    options?: SendOptions
+    options?: DraftOptions
   ): Promise<void>;
   setReaction?(channelId: string, messageId: string, emoji: string): Promise<void>;
+
+  /**
+   * True when the channel renders standard (GitHub Flavored) Markdown itself, so text with
+   * `format: 'markdown'` is sent as written instead of adapted to a platform dialect.
+   */
+  readonly nativeMarkdown?: boolean;
+  /** The longest message the channel sends as one, in characters, when it differs from the platform default */
+  readonly maxMessageChars?: number;
+
+  /**
+   * Several files sent together as one album, where the platform groups them; resolves with
+   * the ids of the messages where the channel knows them
+   */
+  sendFiles?(
+    channelId: string,
+    files: Attachment[],
+    options?: SendOptions
+  ): Promise<string[] | void>;
+  /** Called when a user presses a button with `data` */
+  onAction?(handler: (action: ChannelAction) => Promise<void>): void;
+  /** Acknowledges a button press, optionally with a short notice shown to the user */
+  answerAction?(actionId: string, options?: { text?: string; alert?: boolean }): Promise<void>;
+  /** Replaces a message's buttons; `null` removes them */
+  editButtons?(
+    channelId: string,
+    messageId: string,
+    buttons: ChannelButton[][] | null
+  ): Promise<void>;
+  /** Called when a user stops a streamed draft that was sent with `canStop` */
+  onStop?(handler: (stop: ChannelStop) => void): void;
+  /** Sets the command menu users see; `chatId` limits it to one chat */
+  setCommands?(commands: ChannelCommand[], scope?: { chatId?: string }): Promise<void>;
 }
 
 export interface StreamConfig {
@@ -76,6 +187,11 @@ export interface StreamConfig {
   minInitialChars?: number;
   maxMessageChars?: number;
   deleteOnAbort?: boolean;
+  /**
+   * Show a stop button on streamed drafts where the channel supports it (default true).
+   * A press stops the run and keeps what was written so far as the reply.
+   */
+  stopButton?: boolean;
 }
 
 export interface MiddlewareContext {
@@ -201,6 +317,15 @@ export interface ApprovalResolvedEvent {
   superseded: boolean;
 }
 
+/**
+ * Payload of `action:received`: a user pressed a button the gateway does not handle itself.
+ * Call `answer` to acknowledge it with a notice; the gateway answers it silently otherwise.
+ */
+export interface ActionReceivedEvent {
+  action: ChannelAction;
+  answer(options?: { text?: string; alert?: boolean }): Promise<void>;
+}
+
 /** Payload type of every gateway hook, by hook name */
 export interface HookPayloads {
   'message:received': MessageReceivedEvent;
@@ -215,6 +340,7 @@ export interface HookPayloads {
   'stream:finished': StreamFinishedEvent;
   'approval:requested': ApprovalRequestedEvent;
   'approval:resolved': ApprovalResolvedEvent;
+  'action:received': ActionReceivedEvent;
 }
 
 export type HookName = keyof HookPayloads;

@@ -283,6 +283,8 @@ hooks.on('approval:resolved', ({ threadId, decision, superseded }) => {
 
 `approval:resolved` carries `superseded: true` when the user sent a new message instead of answering (the calls were declined), and has no `approvals` when the pause predates this process.
 
+On channels with buttons (Telegram), the prompt also carries **Approve** and **Deny** buttons. A press answers like the reply words, through the same middleware and checks, and the buttons then show the decision. `approvals: { buttons: false }` turns them off, and `buttonLabels` renames them. A press counts only from the user the prompt asked, while their run is still paused; anyone else gets `notAllowedMessage`, and a press after the request was answered, dropped or the Gateway restarted gets `expiredMessage` (a reply word still works then).
+
 `parseApprovalReply(text, words)` and `formatApprovalPrompt(approvals, words)` are exported for custom channels and UIs, together with `DEFAULT_APPROVE_WORDS`, `DEFAULT_DENY_WORDS` and `DEFAULT_NOT_ALLOWED_MESSAGE`.
 
 With `cogitator up`, set `approveWords`, `denyWords` and `notAllowedMessage` in the `approvals` block of `cogitator.yml`; a custom `format` goes in `RuntimeBuilder`'s `approvals` option, which is merged over the YAML block (see [Wizard Setup](/docs/channels/wizard#config-reference)).
@@ -306,20 +308,21 @@ const gateway = new Gateway({ agent, cogitator, channels, hooks });
 
 Handlers are typed by hook name: `hooks.on(name, handler)` gives the handler the payload type `HookPayloads[name]`. `HookPayloads` is exported from `@cogitator-ai/channels` and `@cogitator-ai/types`; the per-hook event types below come from `@cogitator-ai/types` (`ApprovalRequestedEvent` / `ApprovalResolvedEvent` also from `@cogitator-ai/channels`). A handler typed with an `unknown` payload (`HookHandler`) is still accepted for any hook.
 
-| Hook                 | Payload type             | Fields                                                          |
-| -------------------- | ------------------------ | --------------------------------------------------------------- |
-| `message:received`   | `MessageReceivedEvent`   | `{ msg, threadId, user }` — after middleware accepted a message |
-| `session:created`    | `SessionCreatedEvent`    | `{ session, threadId }` — first message of a session            |
-| `session:compacted`  | `SessionCompactedEvent`  | `{ threadId, result }` (`CompactionResult`)                     |
-| `agent:before_run`   | `AgentBeforeRunEvent`    | `{ msg, threadId, agent }` (agent name)                         |
-| `agent:after_run`    | `AgentAfterRunEvent`     | `{ msg, threadId, output }`                                     |
-| `agent:error`        | `AgentErrorEvent`        | `{ msg, threadId, error }` — `error` is always an `Error`       |
-| `stream:started`     | `StreamStartedEvent`     | `{ msg, threadId }`                                             |
-| `stream:finished`    | `StreamFinishedEvent`    | `{ msg, threadId, messageIds }`                                 |
-| `message:sending`    | `MessageSendingEvent`    | `{ msg, threadId, text, channelId }`                            |
-| `message:sent`       | `MessageSentEvent`       | `{ msg, threadId, text, messageId }` (id of the first chunk)    |
-| `approval:requested` | `ApprovalRequestedEvent` | `{ msg, threadId, userId, approvals }`                          |
-| `approval:resolved`  | `ApprovalResolvedEvent`  | `{ msg, threadId, userId, decision, approvals?, superseded }`   |
+| Hook                 | Payload type             | Fields                                                                     |
+| -------------------- | ------------------------ | -------------------------------------------------------------------------- |
+| `message:received`   | `MessageReceivedEvent`   | `{ msg, threadId, user }` — after middleware accepted a message            |
+| `session:created`    | `SessionCreatedEvent`    | `{ session, threadId }` — first message of a session                       |
+| `session:compacted`  | `SessionCompactedEvent`  | `{ threadId, result }` (`CompactionResult`)                                |
+| `agent:before_run`   | `AgentBeforeRunEvent`    | `{ msg, threadId, agent }` (agent name)                                    |
+| `agent:after_run`    | `AgentAfterRunEvent`     | `{ msg, threadId, output }`                                                |
+| `agent:error`        | `AgentErrorEvent`        | `{ msg, threadId, error }` — `error` is always an `Error`                  |
+| `stream:started`     | `StreamStartedEvent`     | `{ msg, threadId }`                                                        |
+| `stream:finished`    | `StreamFinishedEvent`    | `{ msg, threadId, messageIds }`                                            |
+| `message:sending`    | `MessageSendingEvent`    | `{ msg, threadId, text, channelId }`                                       |
+| `message:sent`       | `MessageSentEvent`       | `{ msg, threadId, text, messageId }` (id of the first chunk)               |
+| `approval:requested` | `ApprovalRequestedEvent` | `{ msg, threadId, userId, approvals }`                                     |
+| `approval:resolved`  | `ApprovalResolvedEvent`  | `{ msg, threadId, userId, decision, approvals?, superseded }`              |
+| `action:received`    | `ActionReceivedEvent`    | `{ action, answer(options?) }`: a button press the Gateway does not handle |
 
 Handlers run in registration order and are awaited, so a slow handler delays the reply; a throwing handler is logged and does not stop the others. `message:sending` / `message:sent` fire for replies when `stream` is off and for approval prompts — with `stream` on, the answer reports its messages through `stream:finished`. A thrown non-`Error` value is wrapped in an `Error` before it reaches `agent:error`. `hooks.off(name, handler)` removes a handler.
 
