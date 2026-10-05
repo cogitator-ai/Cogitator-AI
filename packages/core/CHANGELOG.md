@@ -1,5 +1,18 @@
 # @cogitator-ai/core
 
+## 0.33.0
+
+### Minor Changes
+
+- [`151d675`](https://github.com/cogitator-ai/Cogitator-AI/commit/151d6758803e4f01f79bb1546784010aa702493e) - `RunResult.structuredError` says why the final answer does not match the agent's `responseFormat` after the run's one correction, in the words the model was given, such as `the answer is not valid JSON` or `celsius: expected number, received string`. Before, `structured` was simply `undefined` with no reason to read.
+
+### Patch Changes
+
+- Updated dependencies [[`151d675`](https://github.com/cogitator-ai/Cogitator-AI/commit/151d6758803e4f01f79bb1546784010aa702493e)]:
+  - @cogitator-ai/types@0.35.0
+  - @cogitator-ai/memory@0.11.8
+  - @cogitator-ai/sandbox@0.5.8
+
 ## 0.32.0
 
 ### Minor Changes
