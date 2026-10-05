@@ -2,6 +2,14 @@
   "name": "@cogitator-ai/test-utils",
   "version": "0.2.9",
   "description": "Shared testing utilities for Cogitator packages",
+  "keywords": [
+    "cogitator",
+    "ai",
+    "agents",
+    "testing",
+    "test-utils",
+    "mocks"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

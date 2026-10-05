@@ -2,6 +2,15 @@
   "name": "@cogitator-ai/worker",
   "version": "0.8.3",
   "description": "Distributed job queue for Cogitator agent execution",
+  "keywords": [
+    "cogitator",
+    "ai",
+    "agents",
+    "job-queue",
+    "bullmq",
+    "distributed",
+    "workers"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

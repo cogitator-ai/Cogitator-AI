@@ -2,6 +2,15 @@
   "name": "@cogitator-ai/openai-compat",
   "version": "21.1.7",
   "description": "OpenAI Assistants API compatibility layer for Cogitator",
+  "keywords": [
+    "cogitator",
+    "ai",
+    "agents",
+    "llm",
+    "openai",
+    "assistants-api",
+    "compatibility"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

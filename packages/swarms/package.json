@@ -2,6 +2,15 @@
   "name": "@cogitator-ai/swarms",
   "version": "0.10.3",
   "description": "Multi-agent swarm coordination for Cogitator",
+  "keywords": [
+    "cogitator",
+    "ai",
+    "agents",
+    "llm",
+    "multi-agent",
+    "swarms",
+    "agent-orchestration"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

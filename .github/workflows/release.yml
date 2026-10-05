@@ -79,6 +79,9 @@ jobs:
       - name: Publish to npm
         # Needs the NPM_TOKEN repository secret (granular token with publish
         # rights that bypasses 2FA); skipped when it is not configured.
+        # provenance=true signs each package with this workflow's OIDC token
+        # (id-token: write above) and records it in the public transparency
+        # log, so npm shows where and from which commit it was built.
         run: |
           if [ -z "$NPM_TOKEN" ]; then
             echo "NPM_TOKEN is not set, skipping npm publish"
@@ -88,7 +91,8 @@ jobs:
           printf '%s\n' \
             'registry=https://registry.npmjs.org/' \
             '@cogitator-ai:registry=https://registry.npmjs.org/' \
-            '//registry.npmjs.org/:_authToken=${NPM_TOKEN}' > "$npmrc"
+            '//registry.npmjs.org/:_authToken=${NPM_TOKEN}' \
+            'provenance=true' > "$npmrc"
           NPM_CONFIG_USERCONFIG="$npmrc" pnpm publish -r --access public --no-git-checks --report-summary
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -2,6 +2,17 @@
   "name": "@cogitator-ai/rag",
   "version": "0.5.2",
   "description": "Retrieval Augmented Generation for Cogitator AI agents",
+  "keywords": [
+    "cogitator",
+    "ai",
+    "llm",
+    "rag",
+    "retrieval-augmented-generation",
+    "embeddings",
+    "chunking",
+    "reranking",
+    "vector-search"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

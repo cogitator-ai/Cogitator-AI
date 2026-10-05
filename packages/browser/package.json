@@ -2,6 +2,17 @@
   "name": "@cogitator-ai/browser",
   "version": "0.4.3",
   "description": "Browser automation tools for Cogitator AI agents",
+  "keywords": [
+    "cogitator",
+    "ai",
+    "agents",
+    "llm",
+    "browser-automation",
+    "playwright",
+    "web-scraping",
+    "stealth",
+    "vision"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

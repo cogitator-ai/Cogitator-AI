@@ -2,6 +2,17 @@
   "name": "@cogitator-ai/workflows",
   "version": "0.11.3",
   "description": "DAG-based workflow engine for Cogitator agents",
+  "keywords": [
+    "cogitator",
+    "ai",
+    "agents",
+    "workflows",
+    "workflow-engine",
+    "dag",
+    "sagas",
+    "map-reduce",
+    "durable"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
