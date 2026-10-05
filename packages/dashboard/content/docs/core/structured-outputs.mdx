@@ -178,7 +178,7 @@ JSON wrapped in prose or a code fence is still read. When the final answer is no
 
 A turn that ends with neither text nor tool calls (some models, Gemini in particular, occasionally stop empty after a tool result) is not treated as an answer: the run asks again, up to twice, and the empty turn never reaches the thread. This applies to every run, with or without a response format, and the retries count towards `maxIterations`.
 
-`structured` is `undefined` when even that answer does not fit, so check it before use. Agents with tools can call them as usual: the format applies to the final answer.
+`structured` is `undefined` when even that answer does not fit, so check it before use: `result.structuredError` then says why, in the words the model was given (`the answer is not valid JSON`, `celsius: expected number, received string`). Agents with tools can call them as usual: the format applies to the final answer.
 
 Strict mode is requested only when the schema allows it: OpenAI rejects strict schemas with optional fields, so a schema with `.optional()` properties is sent with `strict: false`.
 

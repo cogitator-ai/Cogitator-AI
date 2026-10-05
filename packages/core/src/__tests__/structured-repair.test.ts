@@ -81,6 +81,7 @@ describe('structured output repair', () => {
     const result = await cog.run(agent(), { input: 'Rome?' });
 
     expect(result.structured).toBeUndefined();
+    expect(result.structuredError).toBe('the answer is not valid JSON');
     expect(requests).toHaveLength(2);
     await cog.close();
   });
@@ -92,7 +93,29 @@ describe('structured output repair', () => {
     const result = await cog.run(agent(), { input: 'Rome?', stream: true, onToken: () => {} });
 
     expect(result.structured).toBeUndefined();
+    expect(result.structuredError).toBe('the answer is not valid JSON');
     expect(requests).toHaveLength(1);
+    await cog.close();
+  });
+
+  it('says nothing went wrong when the answer matches the format', async () => {
+    const { backend } = answering('{"city":"Rome","celsius":21}');
+    const cog = new Cogitator({ llm: { backends: { mock: backend } } });
+
+    const result = await cog.run(agent(), { input: 'Rome?' });
+
+    expect(result.structured).toEqual({ city: 'Rome', celsius: 21 });
+    expect(result.structuredError).toBeUndefined();
+    await cog.close();
+  });
+
+  it('reports the validation problem of an answer that is JSON but not the schema', async () => {
+    const { backend } = answering('{"city":"Rome","celsius":"21"}');
+    const cog = new Cogitator({ llm: { backends: { mock: backend } } });
+
+    const result = await cog.run(agent(), { input: 'Rome?' });
+
+    expect(result.structuredError).toMatch(/^celsius: /);
     await cog.close();
   });
 });

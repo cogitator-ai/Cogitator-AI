@@ -298,6 +298,12 @@ export interface ResumeOptions extends Omit<
 export interface RunResult {
   readonly output: string;
   readonly structured?: unknown;
+  /**
+   * Why the final answer does not match the agent's `responseFormat`, after the one chance the
+   * run gives the model to correct it, in the words the model was given: `structured` is then
+   * absent. Unset when the answer matches or the agent asked for plain text
+   */
+  readonly structuredError?: string;
   readonly runId: string;
   readonly agentId: string;
   readonly threadId: string;

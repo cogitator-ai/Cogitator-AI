@@ -304,7 +304,7 @@ const result = await cog.run(extractor, { input: 'Paris, 21 degrees' });
 const weather = Weather.parse(result.structured);
 ```
 
-When the final answer does not fit the schema, the run asks the model once more with the validation problem (for example `celsius: expected number, received string`) and does not save the rejected answer to the thread; if the retry fails too, `structured` is `undefined`. Streamed runs keep the first answer, since the client has already seen it. JSON wrapped in prose or code fences is still read. See [Structured Outputs](https://cogitator.app/docs/core/structured-outputs).
+When the final answer does not fit the schema, the run asks the model once more with the validation problem (for example `celsius: expected number, received string`) and does not save the rejected answer to the thread; if the retry fails too, `structured` is `undefined` and `structuredError` says why. Streamed runs keep the first answer, since the client has already seen it. JSON wrapped in prose or code fences is still read. See [Structured Outputs](https://cogitator.app/docs/core/structured-outputs).
 
 ### Reasoning and Prompt Caching
 
@@ -1890,7 +1890,7 @@ const result = await cog.run(extractor, { input: 'Paris, 21 degrees' });
 const weather = Weather.parse(result.structured);
 ```
 
-When the final answer does not fit the schema, the run asks the model once more with the validation problem (for example `celsius: expected number, received string`) and does not save the rejected answer to the thread; if the retry fails too, `structured` is `undefined`. Streamed runs keep the first answer, since the client has already seen it. JSON wrapped in prose or code fences is still read. See [Structured Outputs](https://cogitator.app/docs/core/structured-outputs).
+When the final answer does not fit the schema, the run asks the model once more with the validation problem (for example `celsius: expected number, received string`) and does not save the rejected answer to the thread; if the retry fails too, `structured` is `undefined` and `structuredError` says why. Streamed runs keep the first answer, since the client has already seen it. JSON wrapped in prose or code fences is still read. See [Structured Outputs](https://cogitator.app/docs/core/structured-outputs).
 
 ### Reasoning and Prompt Caching
 

@@ -997,6 +997,10 @@ export class Cogitator {
       const lastAssistantMessage = messages.filter((m) => m.role === 'assistant').pop();
       const finalOutput = lastAssistantMessage ? getTextContent(lastAssistantMessage.content) : '';
       const structured = parseStructuredOutput(active.config.responseFormat, finalOutput);
+      const structuredError =
+        structured === undefined
+          ? structuredOutputProblem(active.config.responseFormat, finalOutput)
+          : undefined;
 
       if (
         this.state.reflectionEngine &&
@@ -1048,6 +1052,7 @@ export class Cogitator {
       const result: RunResult = {
         output: finalOutput,
         ...(structured !== undefined && { structured }),
+        ...(structuredError && { structuredError }),
         status: 'completed',
         ...(limit.reached && { iterationLimitReached: true }),
         ...(prompt && { prompt }),

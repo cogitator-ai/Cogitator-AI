@@ -142,7 +142,10 @@ describeGoogle('Core: Structured Output with a JSON schema on Gemini', () => {
     const result = await cogitator.run(agent, { input: 'What is the weather in Lisbon?' });
 
     expect(result.toolCalls.map((call) => call.name)).toContain('lookup_weather');
-    expect(result.structured, `final answer: ${result.output}`).toEqual({
+    expect(
+      result.structured,
+      `tools: ${result.toolCalls.map((call) => call.name).join(', ')}; format problem: ${result.structuredError}; final answer: ${result.output}`
+    ).toEqual({
       city: 'Lisbon',
       celsius: 18,
       sunny: true,
