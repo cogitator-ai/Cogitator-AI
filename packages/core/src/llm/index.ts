@@ -20,6 +20,7 @@ export {
   llmTimeout,
   llmConfigError,
   llmNotImplemented,
+  providerErrorIn,
   retryAfterFromHeaders,
   type LLMErrorContext,
 } from './errors';

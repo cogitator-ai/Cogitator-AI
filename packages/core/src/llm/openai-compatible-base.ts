@@ -13,7 +13,13 @@ import type {
 } from '@cogitator-ai/types';
 import { ErrorCode } from '@cogitator-ai/types';
 import { BaseLLMBackend } from './base';
-import { LLMError, wrapSDKError, llmInvalidResponse, type LLMErrorContext } from './errors';
+import {
+  LLMError,
+  wrapSDKError,
+  llmInvalidResponse,
+  providerErrorIn,
+  type LLMErrorContext,
+} from './errors';
 import { jsonInstruction, withSystemInstruction } from './json-instruction';
 
 export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
@@ -111,7 +117,9 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
       throw this.wrapAPIError(e, ctx);
     }
 
-    const choice = response.choices[0];
+    const failure = providerErrorIn(response, ctx);
+    if (failure) throw failure;
+    const choice = Array.isArray(response.choices) ? response.choices[0] : undefined;
     if (!choice) {
       throw llmInvalidResponse(ctx, `No choices in ${this.provider} response`);
     }
@@ -180,7 +188,9 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
     const toolCallArgsAccum = new Map<number, string>();
 
     for await (const chunk of stream) {
-      const choice = chunk.choices[0];
+      const failure = providerErrorIn(chunk, ctx);
+      if (failure) throw failure;
+      const choice = Array.isArray(chunk.choices) ? chunk.choices[0] : undefined;
 
       if (!choice && chunk.usage) {
         yield { id: chunk.id, delta: {}, usage: toChatUsage(chunk.usage) };

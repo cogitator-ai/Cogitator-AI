@@ -212,6 +212,7 @@ export {
   llmTimeout,
   llmConfigError,
   llmNotImplemented,
+  providerErrorIn,
   retryAfterFromHeaders,
   RetryingBackend,
   withLLMRetry,

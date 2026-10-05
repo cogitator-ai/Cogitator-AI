@@ -215,7 +215,7 @@ try {
 }
 ```
 
-`llmUnavailable`, `llmTimeout`, `llmInvalidResponse`, `llmConfigError` and `wrapSDKError` build these errors in your own backends; `withLLMRetry(backend, options)` / `RetryingBackend` add retries with `Retry-After` support to any backend.
+`llmUnavailable`, `llmTimeout`, `llmInvalidResponse`, `llmConfigError` and `wrapSDKError` build these errors in your own backends, and `providerErrorIn` reads the error a router such as OpenRouter puts in the body of a successful response; `withLLMRetry(backend, options)` / `RetryingBackend` add retries with `Retry-After` support to any backend.
 
 ---
 
@@ -1801,7 +1801,7 @@ try {
 }
 ```
 
-`llmUnavailable`, `llmTimeout`, `llmInvalidResponse`, `llmConfigError` and `wrapSDKError` build these errors in your own backends; `withLLMRetry(backend, options)` / `RetryingBackend` add retries with `Retry-After` support to any backend.
+`llmUnavailable`, `llmTimeout`, `llmInvalidResponse`, `llmConfigError` and `wrapSDKError` build these errors in your own backends, and `providerErrorIn` reads the error a router such as OpenRouter puts in the body of a successful response; `withLLMRetry(backend, options)` / `RetryingBackend` add retries with `Retry-After` support to any backend.
 
 ---
 

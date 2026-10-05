@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { ToolSchema } from '@cogitator-ai/types';
+import { ErrorCode, type ToolSchema } from '@cogitator-ai/types';
 import { OpenAIBackend } from '../llm/openai';
 
 const mockCreate = vi.fn();
@@ -557,6 +557,71 @@ describe('OpenAIBackend (Chat Completions wire API)', () => {
       ).rejects.toThrow(/Internal server error/);
     });
 
+    it('reports a provider error sent in a successful response, retryable', async () => {
+      mockCreate.mockResolvedValueOnce({
+        id: 'gen-1',
+        error: {
+          code: 502,
+          message: 'Upstream provider returned an error',
+          metadata: { provider_name: 'Example' },
+        },
+      });
+
+      await expect(
+        backend.chat({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'Test' }] })
+      ).rejects.toMatchObject({
+        name: 'LLMError',
+        code: ErrorCode.LLM_UNAVAILABLE,
+        retryable: true,
+        message: expect.stringContaining('Upstream provider returned an error') as unknown,
+      });
+    });
+
+    it('reads a rate limit in the body as a rate limit', async () => {
+      mockCreate.mockResolvedValueOnce({
+        error: { code: 429, message: 'Rate limited upstream', retry_after: 3 },
+      });
+
+      await expect(
+        backend.chat({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'Test' }] })
+      ).rejects.toMatchObject({
+        code: ErrorCode.LLM_RATE_LIMITED,
+        retryable: true,
+        retryAfter: 3000,
+      });
+    });
+
+    it('keeps a client error in the body from being retried', async () => {
+      mockCreate.mockResolvedValueOnce({
+        error: { code: 402, message: 'Insufficient credits' },
+      });
+
+      await expect(
+        backend.chat({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'Test' }] })
+      ).rejects.toMatchObject({ retryable: false });
+    });
+
+    it('treats an error code that is not a status as a bad gateway', async () => {
+      mockCreate.mockResolvedValueOnce({
+        error: { code: 'server_error', message: 'Something broke' },
+      });
+
+      await expect(
+        backend.chat({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'Test' }] })
+      ).rejects.toMatchObject({ code: ErrorCode.LLM_UNAVAILABLE, retryable: true });
+    });
+
+    it('rejects a response without choices as invalid', async () => {
+      mockCreate.mockResolvedValueOnce({ id: 'gen-2' });
+
+      await expect(
+        backend.chat({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'Test' }] })
+      ).rejects.toMatchObject({
+        code: ErrorCode.LLM_INVALID_RESPONSE,
+        message: expect.stringContaining('No choices') as unknown,
+      });
+    });
+
     it('maps finish reasons correctly', async () => {
       const testCases = [
         { reason: 'stop', expected: 'stop' },
@@ -860,6 +925,48 @@ describe('OpenAIBackend (Chat Completions wire API)', () => {
           /* consume stream */
         }
       }).rejects.toThrow('Rate limit exceeded');
+    });
+
+    it('stops with a retryable error when a chunk carries a provider error', async () => {
+      mockCreate.mockResolvedValueOnce(
+        (async function* () {
+          yield { id: 'gen-3', choices: [{ delta: { content: 'Hel' }, finish_reason: null }] };
+          yield {
+            id: 'gen-3',
+            error: { code: 503, message: 'Provider overloaded' },
+            choices: [{ delta: { content: '' }, finish_reason: 'error' }],
+          };
+        })()
+      );
+
+      const content: string[] = [];
+      await expect(async () => {
+        for await (const chunk of backend.chatStream({
+          model: 'gpt-4o-mini',
+          messages: [{ role: 'user', content: 'Test' }],
+        })) {
+          if (chunk.delta.content) content.push(chunk.delta.content);
+        }
+      }).rejects.toMatchObject({ code: ErrorCode.LLM_UNAVAILABLE, retryable: true });
+      expect(content).toEqual(['Hel']);
+    });
+
+    it('skips a chunk without choices', async () => {
+      mockCreate.mockResolvedValueOnce(
+        (async function* () {
+          yield { id: 'gen-4' };
+          yield { id: 'gen-4', choices: [{ delta: { content: 'Hi' }, finish_reason: 'stop' }] };
+        })()
+      );
+
+      const content: string[] = [];
+      for await (const chunk of backend.chatStream({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'Test' }],
+      })) {
+        if (chunk.delta.content) content.push(chunk.delta.content);
+      }
+      expect(content).toEqual(['Hi']);
     });
 
     it('yields usage in final chunk', async () => {
