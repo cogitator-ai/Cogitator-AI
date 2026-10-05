@@ -3,7 +3,14 @@ import { Cogitator } from '../cogitator';
 import { Agent } from '../agent';
 import { tool } from '../tool';
 import { z } from 'zod';
-import type { ChatResponse, ChatStreamChunk, LLMBackend, ToolCall } from '@cogitator-ai/types';
+import type {
+  ChatRequest,
+  ChatResponse,
+  ChatStreamChunk,
+  LLMBackend,
+  Message,
+  ToolCall,
+} from '@cogitator-ai/types';
 
 const createMockBackend = () => {
   const responses: ChatResponse[] = [];
@@ -330,6 +337,72 @@ describe('Cogitator', () => {
 
         expect(executionOrder).toEqual(['tool_a', 'tool_b']);
         expect(result.toolCalls).toHaveLength(2);
+
+        await cog.close();
+      });
+
+      it('feeds each tool result back to the model before its next call', async () => {
+        const cog = new Cogitator();
+        const added: [number, number][] = [];
+        const numbers = z.object({ a: z.number(), b: z.number() });
+        const multiply = tool({
+          name: 'multiply',
+          description: 'Multiply two numbers',
+          parameters: numbers,
+          execute: async ({ a, b }) => ({ result: a * b }),
+        });
+        const add = tool({
+          name: 'add',
+          description: 'Add two numbers',
+          parameters: numbers,
+          execute: async ({ a, b }) => {
+            added.push([a, b]);
+            return { result: a + b };
+          },
+        });
+        const usage = { inputTokens: 20, outputTokens: 10, totalTokens: 30 };
+        mockBackendHelper.setResponses([
+          {
+            id: 'resp_1',
+            content: '',
+            finishReason: 'tool_calls',
+            toolCalls: [{ id: 'call_multiply', name: 'multiply', arguments: { a: 3, b: 4 } }],
+            usage,
+          },
+          {
+            id: 'resp_2',
+            content: '',
+            finishReason: 'tool_calls',
+            toolCalls: [{ id: 'call_add', name: 'add', arguments: { a: 12, b: 5 } }],
+            usage,
+          },
+          { id: 'resp_3', content: 'It is 17.', finishReason: 'stop', usage },
+        ]);
+
+        const seen: Message[][] = [];
+        const { backend } = mockBackendHelper;
+        const chat = backend.chat.bind(backend);
+        backend.chat = vi.fn((request: ChatRequest) => {
+          seen.push(structuredClone(request.messages));
+          return chat(request);
+        });
+
+        const result = await cog.run(createTestAgent({ tools: [multiply, add] }), {
+          input: 'What is 3 times 4, plus 5?',
+        });
+
+        const toolResult = (messages: Message[] | undefined, id: string) =>
+          messages?.find((message) => message.role === 'tool' && message.toolCallId === id)
+            ?.content;
+        expect(seen).toHaveLength(3);
+        expect(toolResult(seen[0], 'call_multiply')).toBeUndefined();
+        expect(String(toolResult(seen[1], 'call_multiply'))).toContain('12');
+        expect(toolResult(seen[1], 'call_add')).toBeUndefined();
+        expect(String(toolResult(seen[2], 'call_multiply'))).toContain('12');
+        expect(String(toolResult(seen[2], 'call_add'))).toContain('17');
+        expect(added).toEqual([[12, 5]]);
+        expect(result.toolCalls.map((call) => call.name)).toEqual(['multiply', 'add']);
+        expect(result.output).toBe('It is 17.');
 
         await cog.close();
       });

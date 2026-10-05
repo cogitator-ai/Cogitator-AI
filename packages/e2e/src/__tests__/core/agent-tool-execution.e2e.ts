@@ -124,29 +124,26 @@ describeE2E('Core: Agent Tool Execution', () => {
 
   it('calls multiple tools in sequence', async () => {
     const agent = createTestAgent({
-      instructions: [
-        'You are a calculator. You CANNOT do math yourself. You MUST call a tool for EVERY arithmetic operation.',
-        'IMPORTANT: After getting a tool result, if there is another operation to do, you MUST call another tool.',
-        'NEVER say the answer without calling ALL required tools first.',
-        'Available: multiply(a,b) and add(a,b).',
-      ].join(' '),
+      instructions:
+        'You are a calculator that cannot do arithmetic. Every reply is either exactly one tool call or the final answer. Only answer once every operation has been done by a tool.',
       tools: [tools.multiply, tools.add],
     });
+    const usedBoth = (run: RunResult) =>
+      run.toolCalls.some((tc) => tc.name === 'multiply') &&
+      run.toolCalls.some((tc) => tc.name === 'add');
 
     let result: RunResult | undefined;
-    for (let attempt = 0; attempt < 8; attempt++) {
+    for (let attempt = 0; attempt < 5; attempt++) {
       result = await cogitator.run(agent, {
         input:
-          'Compute this in two steps: Step 1 - call multiply(3, 4). Step 2 - call add(result_of_step_1, 5). You MUST call BOTH tools.',
+          'Work out (3 * 4) + 5. First call multiply with a=3 and b=4. When it returns, call add with a set to its result and b=5. Then give the final answer.',
       });
-      const usedBoth =
-        result.toolCalls.some((tc) => tc.name === 'multiply') &&
-        result.toolCalls.some((tc) => tc.name === 'add');
-      if (usedBoth) break;
+      if (usedBoth(result)) break;
     }
 
     expect(result).toBeDefined();
-    expect(result!.toolCalls.some((tc) => tc.name === 'multiply')).toBe(true);
-    expect(result!.toolCalls.some((tc) => tc.name === 'add')).toBe(true);
+    expect(result!.toolCalls.map((tc) => tc.name)).toEqual(
+      expect.arrayContaining(['multiply', 'add'])
+    );
   });
 });
