@@ -211,13 +211,21 @@ export type ToolApprovalDecision = { approved: true } | { approved: false; reaso
 export interface RunCostState {
   /** USD providers reported for their calls. */
   reportedUsd: number;
-  /** Tokens of the calls whose provider reported no cost. */
-  unreported: {
-    inputTokens: number;
-    outputTokens: number;
-    cachedInputTokens: number;
-    cacheWriteTokens: number;
-  };
+  /**
+   * Tokens of calls whose provider reported no cost, kept before costs were kept per model, so
+   * priced on the run's model. A checkpoint saved since then holds them in `unreportedByModel`.
+   */
+  unreported: RunCostTokens;
+  /** Tokens of calls whose provider reported no cost, by the model each call used. */
+  unreportedByModel?: Record<string, RunCostTokens>;
+}
+
+/** Tokens a run used, as its cost is counted. */
+export interface RunCostTokens {
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  cacheWriteTokens: number;
 }
 
 export interface RunCheckpoint {

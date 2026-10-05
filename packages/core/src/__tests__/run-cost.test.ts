@@ -11,22 +11,25 @@ const tokens = (inputTokens: number, outputTokens: number) => ({
   outputTokens,
   totalTokens: inputTokens + outputTokens,
 });
+const EXPENSIVE = 'openai/gpt-4o';
+const priceOn = (model: string, inputTokens: number, outputTokens: number) =>
+  calculateCost(model, { inputTokens, outputTokens }) ?? 0;
 const registryPrice = (inputTokens: number, outputTokens: number) =>
-  calculateCost(PRICED, { inputTokens, outputTokens }) ?? 0;
+  priceOn(PRICED, inputTokens, outputTokens);
 
 describe('RunCostMeter', () => {
   it('uses the cost providers report', () => {
     const meter = new RunCostMeter();
-    meter.add({ ...tokens(1000, 100), cost: 0.0021 });
-    meter.add({ ...tokens(500, 50), cost: 0.0004 });
+    meter.add({ ...tokens(1000, 100), cost: 0.0021 }, PRICED);
+    meter.add({ ...tokens(500, 50), cost: 0.0004 }, PRICED);
 
     expect(meter.total(PRICED)).toBeCloseTo(0.0025, 10);
   });
 
   it('prices only the calls that report nothing from the registry', () => {
     const meter = new RunCostMeter();
-    meter.add({ ...tokens(1000, 100), cost: 0.01 });
-    meter.add(tokens(2000, 300));
+    meter.add({ ...tokens(1000, 100), cost: 0.01 }, PRICED);
+    meter.add(tokens(2000, 300), PRICED);
 
     expect(registryPrice(2000, 300)).toBeGreaterThan(0);
     expect(meter.total(PRICED)).toBeCloseTo(0.01 + registryPrice(2000, 300), 10);
@@ -34,18 +37,18 @@ describe('RunCostMeter', () => {
 
   it('is 0 for a model the registry does not know and calls without a reported cost', () => {
     const meter = new RunCostMeter();
-    meter.add(tokens(1000, 100));
+    meter.add(tokens(1000, 100), 'local/my-finetune-that-nobody-prices');
 
     expect(meter.total('local/my-finetune-that-nobody-prices')).toBe(0);
   });
 
   it('continues from the state a paused run saved', () => {
     const before = new RunCostMeter();
-    before.add({ ...tokens(100, 10), cost: 0.003 });
-    before.add(tokens(400, 40));
+    before.add({ ...tokens(100, 10), cost: 0.003 }, PRICED);
+    before.add(tokens(400, 40), PRICED);
 
     const after = new RunCostMeter(before.state());
-    after.add({ ...tokens(100, 10), cost: 0.002 });
+    after.add({ ...tokens(100, 10), cost: 0.002 }, PRICED);
 
     expect(after.total(PRICED)).toBeCloseTo(0.005 + registryPrice(400, 40), 10);
   });
@@ -57,9 +60,95 @@ describe('RunCostMeter', () => {
       cachedInputTokens: 0,
       cacheWriteTokens: 0,
     });
-    meter.add({ ...tokens(10, 1), cost: 0.001 });
+    meter.add({ ...tokens(10, 1), cost: 0.001 }, PRICED);
 
     expect(meter.total(PRICED)).toBeCloseTo(0.001 + registryPrice(1000, 100), 10);
+  });
+
+  it('prices each call on the model that answered it, whichever model the run is on', () => {
+    const meter = new RunCostMeter();
+    meter.add(tokens(10_000, 1000), EXPENSIVE);
+    meter.add(tokens(10_000, 1000), PRICED);
+
+    const expected = priceOn(EXPENSIVE, 10_000, 1000) + registryPrice(10_000, 1000);
+    expect(priceOn(EXPENSIVE, 10_000, 1000)).toBeGreaterThan(registryPrice(10_000, 1000));
+    expect(meter.total(PRICED)).toBeCloseTo(expected, 10);
+    expect(meter.total(EXPENSIVE)).toBeCloseTo(expected, 10);
+
+    const resumed = new RunCostMeter(meter.state());
+    expect(resumed.total(PRICED)).toBeCloseTo(expected, 10);
+  });
+
+  it('prices the tokens of a checkpoint saved before costs were kept per model on the run model', () => {
+    const meter = new RunCostMeter({
+      reportedUsd: 0.001,
+      unreported: {
+        inputTokens: 1000,
+        outputTokens: 100,
+        cachedInputTokens: 0,
+        cacheWriteTokens: 0,
+      },
+    });
+    meter.add(tokens(1000, 100), EXPENSIVE);
+
+    expect(meter.total(PRICED)).toBeCloseTo(
+      0.001 + registryPrice(1000, 100) + priceOn(EXPENSIVE, 1000, 100),
+      10
+    );
+  });
+});
+
+describe('the cost of a run that hands off', () => {
+  const usage = { ...tokens(10_000, 1000) };
+  const cheap = new Agent({ name: 'cheap', model: PRICED, instructions: 'You are cheap.' });
+  const expensive = new Agent({
+    name: 'expensive',
+    model: EXPENSIVE,
+    instructions: 'You are expensive.',
+    handoffs: [cheap],
+  });
+  const backend = (): LLMBackend => ({
+    provider: 'openai',
+    chat: vi.fn(async (request: ChatRequest): Promise<ChatResponse> => {
+      if (String(request.messages[0].content).startsWith('You are expensive.')) {
+        return {
+          id: 'e',
+          content: '',
+          toolCalls: [{ id: 'h', name: 'transfer_to_cheap', arguments: { reason: 'routine' } }],
+          finishReason: 'tool_calls',
+          usage,
+        };
+      }
+      return { id: 'c', content: 'done', finishReason: 'stop', usage };
+    }),
+    chatStream: vi.fn(async function* (): AsyncGenerator<ChatStreamChunk> {
+      yield { id: 's', delta: {}, finishReason: 'stop' };
+    }),
+  });
+  const expensiveCall = () => priceOn(EXPENSIVE, 10_000, 1000);
+
+  it('counts each call at the price of the model that answered it', async () => {
+    const cog = new Cogitator({ llm: { backends: { openai: backend() } } });
+
+    const result = await cog.run(expensive, { input: 'hi' });
+
+    expect(result.finalAgent).toBe('cheap');
+    expect(result.usage.cost).toBeCloseTo(expensiveCall() + registryPrice(10_000, 1000), 10);
+    await cog.close();
+  });
+
+  it('holds maxCostPerRun after handing off to a cheaper model', async () => {
+    const llm = backend();
+    const cog = new Cogitator({
+      llm: { backends: { openai: llm } },
+      costRouting: { enabled: true, budget: { maxCostPerRun: expensiveCall() * 0.9 } },
+    });
+
+    await expect(cog.run(expensive, { input: 'hi' })).rejects.toMatchObject({
+      code: 'BUDGET_EXCEEDED',
+    });
+    expect(llm.chat).toHaveBeenCalledTimes(1);
+    await cog.close();
   });
 });
 
