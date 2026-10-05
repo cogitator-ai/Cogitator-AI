@@ -1,5 +1,24 @@
 # @cogitator-ai/core
 
+## 0.31.0
+
+### Minor Changes
+
+- [#121](https://github.com/cogitator-ai/Cogitator-AI/pull/121) [`51338f4`](https://github.com/cogitator-ai/Cogitator-AI/commit/51338f448b0a6310ecf47b1e0ba63e7d9fffd006) - `web_scrape`, `http_request` and the `transcribe_audio` tool reach only public hosts. A model chooses their URLs, so a page or a prompt could point them at a cloud's metadata endpoint, `localhost` or a service on the internal network. A loopback, private, link-local, carrier-grade NAT, multicast or documentation address, `localhost`, `*.local`, `*.internal` or a metadata host is now refused, every redirect target is checked, and a hostname is checked by the address it resolves to when the request connects, which also stops DNS rebinding. A refused URL comes back to the model as an `error`. With a robots.txt checker, `web_scrape` checks a URL and the addresses its host resolves to before the checker reads robots.txt, and `RobotsPolicy` takes `fetch: fetchPublic` to keep those reads on public hosts too.
+
+  To reach a trusted network, pass `allowPrivateNetwork: true` to `createWebScrapeTool`, `createHttpRequestTool` (new) or `createTranscribeAudioTool`, or give them a `fetch` of your own. The guard is exported for your code too: `fetchPublic`, `createPublicFetch`, `assertPublicUrl`, `assertPublicHost`, `isPrivateAddress`, `createGuardedLookup`, `PrivateNetworkError` and `DEFAULT_USER_AGENT`, on `node:http` in Node and Bun alike. Its requests carry a User-Agent and `Accept: */*` unless the caller sets its own. `fetchAudioAsBuffer`, `audioInputToBuffer` and `transcribeAudio` take a `fetch` option and keep the global `fetch` by default.
+
+### Patch Changes
+
+- [#122](https://github.com/cogitator-ai/Cogitator-AI/pull/122) [`561f0be`](https://github.com/cogitator-ai/Cogitator-AI/commit/561f0beb7c33c9f1fb214c2bc205a5f2f9347af2) - Cost-routing budgets hold against what runs really spend. Before, a run was checked once against an estimate of its cost and recorded once it completed, so a run with many tool calls could spend far past `maxCostPerRun`, a failed or cancelled run never counted toward the hourly and daily budget, and runs side by side did not see each other's spending. Now the runtime also checks before every model call: the run's real cost so far against `maxCostPerRun`, and every run's recorded spending against `maxCostPerHour` and `maxCostPerDay`. A run that reaches a limit stops with `BUDGET_EXCEEDED`. Each call's cost is recorded as soon as it is answered, and a budget keeps its records even with `trackCosts: false`. `CostAwareRouter.checkSpent(runCost)` and `BudgetEnforcer.checkSpent(runCost)` expose the check.
+
+  A run that hands off to another model now counts each call at the price of the model that answered it, where the tokens of every call without a reported cost were priced on the model active at the end. That fixes `usage.cost` of such runs, and keeps a handoff to a cheaper model from slipping past `maxCostPerRun`. The checkpoint of a paused run keeps those tokens by model in `RunCostState.unreportedByModel`; a checkpoint saved before prices its tokens on the run's model, as it did.
+
+- Updated dependencies [[`561f0be`](https://github.com/cogitator-ai/Cogitator-AI/commit/561f0beb7c33c9f1fb214c2bc205a5f2f9347af2)]:
+  - @cogitator-ai/types@0.33.2
+  - @cogitator-ai/memory@0.11.6
+  - @cogitator-ai/sandbox@0.5.6
+
 ## 0.30.4
 
 ### Patch Changes
