@@ -251,7 +251,7 @@ Tools marked `requiresApproval` (for example `create_tool` from `capabilities.se
 2. The user replies `approve` / `yes` to run the calls, or `deny` / `no` to refuse, optionally followed by a reason (`no, too risky`) that the agent sees. Replies are case-insensitive and may end with punctuation; `да` / `одобряю` and `нет` / `отклоняю` work out of the box.
 3. The Gateway calls `cogitator.resume(agent, threadId, { userId, defaultDecision })` and delivers the result like any reply, streaming included. If the run pauses again, a new prompt is sent.
 
-On channels with buttons (Telegram), the prompt also carries **Approve** and **Deny** buttons. A press answers exactly like the reply words, through the same middleware and checks, and the buttons then show the decision. `approvals.buttons: false` turns them off and `approvals.buttonLabels` renames them.
+On channels with buttons (Telegram), the prompt also carries **Approve** and **Deny** buttons. A press answers exactly like the reply words, through the same middleware and checks, and the buttons then show the decision. `approvals.buttons: false` turns them off and `approvals.buttonLabels` renames them. A press counts only from the user the prompt asked, while their run is still paused; any other press gets an alert (`notAllowedMessage`, or `expiredMessage` once the request was answered, dropped or predates a restart, when a reply word still works).
 
 Any other message on a paused thread runs as usual, and the runtime answers the waiting calls as declined. An approve-only word with more text after it (`yes, but rename it`) counts as a new message, so nothing runs by accident.
 

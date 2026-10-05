@@ -50,7 +50,7 @@ function createChannel(overrides: Partial<Channel> = {}): ButtonChannel {
     onStop: vi.fn((h) => {
       onStop = h;
     }),
-    sendText: vi.fn().mockResolvedValue('sent_1'),
+    sendText: vi.fn().mockResolvedValue('prompt_1'),
     editText: vi.fn().mockResolvedValue(undefined),
     sendFile: vi.fn().mockResolvedValue(undefined),
     sendTyping: vi.fn().mockResolvedValue(undefined),
@@ -171,24 +171,58 @@ describe('Gateway buttons', () => {
     );
   });
 
-  it('refuses a press from someone else, or with nothing waiting, with an alert', async () => {
+  it('refuses a press from someone else in a shared thread', async () => {
     await startGateway({ session: { threadKey: (msg) => msg.channelId } });
     await channel.trigger(message('Publish the noon edition'));
 
     await channel.press({ data: APPROVE_ACTION, userId: '7' });
+
     expect(channel.answerAction).toHaveBeenLastCalledWith('press_1', {
       text: 'Only the person who made this request can approve or deny it.',
       alert: true,
     });
+    expect(channel.editButtons).not.toHaveBeenCalled();
+    expect(cogitator.resume).not.toHaveBeenCalled();
+  });
 
-    await channel.press({ data: APPROVE_ACTION });
-    await channel.press({ data: APPROVE_ACTION, id: 'press_2' });
+  it('refuses a stranger with a thread of their own, who never wrote to the bot', async () => {
+    await startGateway();
+    await channel.trigger(message('Publish the noon edition'));
+
+    await channel.press({ data: APPROVE_ACTION, userId: '7', channelId: '42' });
+
     expect(channel.answerAction).toHaveBeenLastCalledWith(
-      'press_2',
+      'press_1',
       expect.objectContaining({ alert: true })
     );
-    expect(cogitator.resume).toHaveBeenCalledTimes(1);
+    expect(channel.editButtons).not.toHaveBeenCalled();
     expect(cogitator.run).toHaveBeenCalledTimes(1);
+    expect(cogitator.resume).not.toHaveBeenCalled();
+  });
+
+  it('retires the buttons once the request is answered, and refuses later presses', async () => {
+    await startGateway();
+    await channel.trigger(message('Publish the noon edition'));
+
+    await channel.trigger(message('approve'));
+    expect(channel.editButtons).toHaveBeenCalledWith('42', 'prompt_1', [
+      [{ text: 'Approved', disabled: true, style: 'success' }],
+    ]);
+
+    await channel.press({ data: DENY_ACTION, id: 'late' });
+    expect(channel.answerAction).toHaveBeenLastCalledWith('late', {
+      text: 'This request is no longer waiting. Reply "approve" or "deny" if it is still paused.',
+      alert: true,
+    });
+    expect(cogitator.resume).toHaveBeenCalledTimes(1);
+  });
+
+  it('takes the buttons away when the user moves on without answering', async () => {
+    await startGateway();
+    await channel.trigger(message('Publish the noon edition'));
+    cogitator.run.mockResolvedValueOnce(completed('Sure.'));
+    await channel.trigger(message('Actually, tell me a joke'));
+    expect(channel.editButtons).toHaveBeenCalledWith('42', 'prompt_1', null);
   });
 
   it('hands every other press to the action:received hook and answers it once', async () => {

@@ -17,7 +17,7 @@ Telegram:
 
 Gateway:
 
-- Tool approval prompts carry Approve and Deny buttons on channels with buttons; a press answers like the reply words. `approvals.buttons` and `approvals.buttonLabels` configure them.
+- Tool approval prompts carry Approve and Deny buttons on channels with buttons; a press answers like the reply words, and counts only from the user the prompt asked while their run is paused. `approvals.buttons`, `approvals.buttonLabels` and `approvals.expiredMessage` configure them.
 - Other button presses reach the new `action:received` hook.
 - Replies, streams and typing stay in the topic a message came from.
 - Channels that render Markdown themselves (`nativeMarkdown`) get it as written, and `maxMessageChars` sets their own limit.

@@ -151,7 +151,7 @@ Without a Gateway, use `telegram.onAction(handler)` and `telegram.answerAction(i
 
 ## Tool approvals
 
-When a run pauses for tool approval, the prompt comes with **Approve** and **Deny** buttons. A press answers exactly as the reply words do: it goes through the middleware, only the user who started the run can answer, and the buttons then show the decision. Turn the buttons off or rename them in the Gateway's `approvals` config:
+When a run pauses for tool approval, the prompt comes with **Approve** and **Deny** buttons. A press answers exactly as the reply words do: it goes through the middleware, only the user who started the run can answer, and the buttons then show the decision. A press after the request was answered or dropped, or after a restart, gets an alert instead, and answering with a reply word still works. Turn the buttons off or rename them in the Gateway's `approvals` config:
 
 ```typescript
 new Gateway({

@@ -31,7 +31,12 @@ export interface GatewayApprovalsConfig {
   buttons?: boolean;
   /** Labels of the buttons and of the decision they show once pressed */
   buttonLabels?: { approve?: string; deny?: string; approved?: string; denied?: string };
+  /** Shown on a press of buttons whose request was answered, dropped or is from before a restart */
+  expiredMessage?: string;
 }
+
+export const DEFAULT_EXPIRED_MESSAGE =
+  'This request is no longer waiting. Reply "approve" or "deny" if it is still paused.';
 
 /** The `data` of the approval buttons the gateway puts under its prompt. */
 export const APPROVE_ACTION = 'cogitator:approve';

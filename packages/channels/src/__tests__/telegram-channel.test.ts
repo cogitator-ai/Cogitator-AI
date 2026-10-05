@@ -440,6 +440,51 @@ describe('TelegramChannel', () => {
       );
     });
 
+    it('sends GIFs on their own and long album captions after the album', async () => {
+      const { channel, raw } = await started();
+      raw('sendMediaGroup').mockResolvedValueOnce([{ message_id: 20 }, { message_id: 21 }]);
+      const ids = await channel.sendFiles('1', [
+        { type: 'image', mimeType: 'image/jpeg', url: 'https://1', caption: 'x'.repeat(1100) },
+        { type: 'image', mimeType: 'image/gif', url: 'https://2' },
+        { type: 'image', mimeType: 'image/jpeg', url: 'https://3' },
+        { type: 'video', mimeType: 'video/mp4', url: 'https://4' },
+      ]);
+
+      expect(raw('sendPhoto')).toHaveBeenCalledWith({ chat_id: 1, photo: 'https://1' });
+      expect(raw('sendMessage')).toHaveBeenCalledWith(
+        expect.objectContaining({ text: 'x'.repeat(1100) })
+      );
+      expect(raw('sendAnimation')).toHaveBeenCalledWith({ chat_id: 1, animation: 'https://2' });
+      expect(raw('sendMediaGroup')).toHaveBeenCalledWith({
+        chat_id: 1,
+        media: [
+          { type: 'photo', media: 'https://3' },
+          { type: 'video', media: 'https://4' },
+        ],
+      });
+      expect(ids).toEqual(['7', '7', '20', '21']);
+    });
+
+    it('keeps an oversized caption of an album file as a message after the album', async () => {
+      const { channel, raw } = await started();
+      raw('sendMediaGroup').mockResolvedValueOnce([{ message_id: 10 }, { message_id: 11 }]);
+      const ids = await channel.sendFiles('1', [
+        { type: 'image', mimeType: 'image/jpeg', url: 'https://1', caption: 'y'.repeat(1100) },
+        { type: 'image', mimeType: 'image/jpeg', url: 'https://2' },
+      ]);
+      expect(raw('sendMediaGroup').mock.calls[0]?.[0]).toEqual({
+        chat_id: 1,
+        media: [
+          { type: 'photo', media: 'https://1' },
+          { type: 'photo', media: 'https://2' },
+        ],
+      });
+      expect(raw('sendMessage')).toHaveBeenCalledWith(
+        expect.objectContaining({ text: 'y'.repeat(1100) })
+      );
+      expect(ids).toEqual(['10', '11', '7']);
+    });
+
     it('groups photos and videos into albums and keeps documents apart', async () => {
       const { channel, raw } = await started();
       await channel.sendFiles(

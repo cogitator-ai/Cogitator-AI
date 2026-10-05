@@ -35,6 +35,7 @@ import {
   DEFAULT_APPROVE_WORDS,
   DEFAULT_DENY_WORDS,
   DEFAULT_NOT_ALLOWED_MESSAGE,
+  DEFAULT_EXPIRED_MESSAGE,
   APPROVE_ACTION,
   DENY_ACTION,
   formatApprovalPrompt,
@@ -97,6 +98,19 @@ function draftKey(channelType: string, channelId: string, draftId: number): stri
   return `${channelType}:${channelId}:${draftId}`;
 }
 
+function promptKey(channelType: string, channelId: string, messageId: string): string {
+  return `${channelType}:${channelId}:${messageId}`;
+}
+
+/** An approval prompt with buttons: whose paused run it answers, and where it was sent. */
+interface ApprovalPrompt {
+  threadId: string;
+  userId: string;
+  channel: Channel;
+  channelId: string;
+  messageId: string;
+}
+
 type RunInvocation = (extra: Pick<RunOptions, 'stream' | 'onToken'>) => Promise<RunResult>;
 
 const DEFAULT_SUMMARY_PROMPT =
@@ -149,6 +163,8 @@ export class Gateway {
   private readonly stops = new WeakMap<AbortSignal, AbortController>();
   /** The stop of each run streaming into a draft with a stop button, by channel, chat and draft */
   private readonly stoppableDrafts = new Map<string, AbortController>();
+  /** Approval prompts with buttons, by channel, chat and message: whose paused run each answers */
+  private readonly approvalPrompts = new Map<string, ApprovalPrompt>();
   private readonly lastMessageTime = new Map<string, number>();
   private readonly threads = new Map<string, Omit<GatewaySessionInfo, 'threadId' | 'active'>>();
   private readonly inFlight = new Map<string, number>();
@@ -314,10 +330,23 @@ export class Gateway {
       text: (approve ? this.approvalWords.approveWords : this.approvalWords.denyWords)[0] ?? '',
       raw: action.raw,
     };
-    const threadId = this.getThreadId(msg);
-    const paused = this.pausedThreads.get(threadId);
-    const waiting = paused ? paused.userId === action.userId : !this.threads.has(threadId);
-    if (!waiting) {
+    const key = action.messageId
+      ? promptKey(action.channelType, action.channelId, action.messageId)
+      : undefined;
+    const prompt = key ? this.approvalPrompts.get(key) : undefined;
+
+    if (!prompt || !this.pausedThreads.has(prompt.threadId)) {
+      if (key) this.approvalPrompts.delete(key);
+      if (action.messageId) {
+        await channel.editButtons?.(action.channelId, action.messageId, null).catch(() => {});
+      }
+      await answer({
+        text: this.config.approvals?.expiredMessage ?? DEFAULT_EXPIRED_MESSAGE,
+        alert: true,
+      });
+      return;
+    }
+    if (prompt.userId !== action.userId || this.getThreadId(msg) !== prompt.threadId) {
       await answer({
         text: this.config.approvals?.notAllowedMessage ?? DEFAULT_NOT_ALLOWED_MESSAGE,
         alert: true,
@@ -325,20 +354,38 @@ export class Gateway {
       return;
     }
 
-    const labels = this.config.approvals?.buttonLabels;
     await answer();
-    if (action.messageId) {
-      await channel
-        .editButtons?.(action.channelId, action.messageId, [
-          [
-            approve
-              ? { text: labels?.approved ?? 'Approved', disabled: true, style: 'success' }
-              : { text: labels?.denied ?? 'Denied', disabled: true, style: 'danger' },
-          ],
-        ])
+    await this.closePrompts(prompt.threadId, approve);
+    await this.handleIncoming(msg);
+  }
+
+  /**
+   * Retires the buttons of a thread's approval prompts once it is answered: they show the
+   * decision, or go away when the request was dropped.
+   */
+  private async closePrompts(threadId: string, approved: boolean | null): Promise<void> {
+    const labels = this.config.approvals?.buttonLabels;
+    for (const [key, prompt] of this.approvalPrompts) {
+      if (prompt.threadId !== threadId) continue;
+      this.approvalPrompts.delete(key);
+      const buttons =
+        approved === null
+          ? null
+          : [
+              [
+                approved
+                  ? {
+                      text: labels?.approved ?? 'Approved',
+                      disabled: true,
+                      style: 'success' as const,
+                    }
+                  : { text: labels?.denied ?? 'Denied', disabled: true, style: 'danger' as const },
+              ],
+            ];
+      await prompt.channel
+        .editButtons?.(prompt.channelId, prompt.messageId, buttons)
         .catch(() => {});
     }
-    await this.handleIncoming(msg);
   }
 
   private async handleIncoming(msg: ChannelMessage): Promise<void> {
@@ -564,6 +611,7 @@ export class Gateway {
           ...extra,
         });
         this.pausedThreads.delete(threadId);
+        await this.closePrompts(threadId, decision.approved);
         const event: ApprovalResolvedEvent = {
           msg,
           threadId,
@@ -580,6 +628,7 @@ export class Gateway {
       if (!CogitatorError.isCogitatorError(error)) throw error;
       if (error.code === ErrorCode.RUN_NOT_PAUSED) {
         this.pausedThreads.delete(threadId);
+        await this.closePrompts(threadId, null);
         return false;
       }
       if (error.code === ErrorCode.THREAD_ACCESS_DENIED) {
@@ -595,6 +644,7 @@ export class Gateway {
     const paused = this.pausedThreads.get(threadId);
     if (!paused) return;
     this.pausedThreads.delete(threadId);
+    await this.closePrompts(threadId, null);
     const event: ApprovalResolvedEvent = {
       msg,
       threadId,
@@ -636,7 +686,18 @@ export class Gateway {
             ],
           ]
         : undefined;
-    if (prompt) await this.sendReply(channel, msg, threadId, prompt, replyTo, buttons);
+    if (!prompt) return;
+    const ids = await this.sendReply(channel, msg, threadId, prompt, replyTo, buttons);
+    const last = ids[ids.length - 1];
+    if (buttons && last) {
+      this.approvalPrompts.set(promptKey(channel.type, msg.channelId, last), {
+        threadId,
+        userId: msg.userId,
+        channel,
+        channelId: msg.channelId,
+        messageId: last,
+      });
+    }
   }
 
   private async deliver(
@@ -710,19 +771,20 @@ export class Gateway {
     output: string,
     replyTo: string | undefined,
     buttons?: ChannelButton[][]
-  ): Promise<string> {
+  ): Promise<string[]> {
     const chunks = chunkMessage(output, limitFor(channel, msg));
-    let sentId = '';
+    const ids: string[] = [];
     for (let i = 0; i < chunks.length; i++) {
-      const id = await channel.sendText(msg.channelId, chunks[i], {
-        ...(i === 0 && replyTo ? { replyTo } : {}),
-        ...(i === chunks.length - 1 && buttons ? { buttons } : {}),
-        ...(msg.topicId ? { topicId: msg.topicId } : {}),
-        format: 'markdown',
-      });
-      if (i === 0) sentId = id;
+      ids.push(
+        await channel.sendText(msg.channelId, chunks[i], {
+          ...(i === 0 && replyTo ? { replyTo } : {}),
+          ...(i === chunks.length - 1 && buttons ? { buttons } : {}),
+          ...(msg.topicId ? { topicId: msg.topicId } : {}),
+          format: 'markdown',
+        })
+      );
     }
-    return sentId;
+    return ids;
   }
 
   private async sendReply(
@@ -732,7 +794,7 @@ export class Gateway {
     text: string,
     replyTo: string | undefined,
     buttons?: ChannelButton[][]
-  ): Promise<void> {
+  ): Promise<string[]> {
     await this.hooks?.emit('message:sending', {
       msg,
       threadId,
@@ -740,14 +802,15 @@ export class Gateway {
       channelId: msg.channelId,
     });
 
-    const sentId = await this.sendChunked(channel, msg, text, replyTo, buttons);
+    const ids = await this.sendChunked(channel, msg, text, replyTo, buttons);
 
     await this.hooks?.emit('message:sent', {
       msg,
       threadId,
       text,
-      messageId: sentId,
+      messageId: ids[0] ?? '',
     });
+    return ids;
   }
 
   private async runDirect(

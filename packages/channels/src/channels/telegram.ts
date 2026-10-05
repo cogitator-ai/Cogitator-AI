@@ -793,8 +793,10 @@ export class TelegramChannel implements Channel {
 
   /**
    * Sends files as albums of up to ten. Photos and videos share an album, while audio and
-   * documents each go in albums of their own kind, as Telegram requires. Each file keeps its own
-   * caption. Albums carry no buttons. Returns the ids of every message sent.
+   * documents each go in albums of their own kind, as Telegram requires; GIFs, which albums do
+   * not take, go on their own as animations. Each file keeps its own caption, and a caption too
+   * long for an album follows it as a message. Albums carry no buttons. Returns the ids of every
+   * message sent.
    */
   async sendFiles(
     channelId: string,
@@ -804,12 +806,20 @@ export class TelegramChannel implements Channel {
     if (files.length === 1 && files[0]) {
       return [await this.sendFile(channelId, files[0], options)];
     }
-    const kindOf = (file: Attachment) =>
-      file.type === 'image' || file.type === 'video' ? 'visual' : file.type;
+    const kindOf = (file: Attachment) => {
+      if (TelegramChannel.mediaKind(file).method === 'sendAnimation') return 'animation';
+      return file.type === 'image' || file.type === 'video' ? 'visual' : file.type;
+    };
     const groups: Attachment[][] = [];
     for (const file of files) {
       const last = groups[groups.length - 1];
-      if (last && last.length < 10 && last[0] && kindOf(last[0]) === kindOf(file)) last.push(file);
+      const joins =
+        last &&
+        last.length < 10 &&
+        last[0] &&
+        kindOf(file) !== 'animation' &&
+        kindOf(last[0]) === kindOf(file);
+      if (joins) last.push(file);
       else groups.push([file]);
     }
     const chatId = telegramChatId(channelId);
@@ -836,6 +846,17 @@ export class TelegramChannel implements Channel {
           ...this.envelope({ ...options, replyTo, buttons: undefined, visibleTo: undefined }),
         });
         if (Array.isArray(album)) ids.push(...album.map(sentId));
+        for (const file of group) {
+          if (file.caption && file.caption.length > CAPTION_LIMIT) {
+            ids.push(
+              await this.sendText(channelId, file.caption, {
+                ...options,
+                replyTo: undefined,
+                buttons: undefined,
+              })
+            );
+          }
+        }
       }
       replyTo = undefined;
     }
