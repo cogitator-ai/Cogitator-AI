@@ -431,6 +431,27 @@ These build tools around state you provide; they are not part of `builtinTools`.
 
 Tools created with `createSelfTools` run with full Node.js access in your process.
 
+## Public hosts only
+
+A model chooses the URLs `web_scrape` and `http_request` fetch, and the audio URL `transcribe_audio` reads, so a page it read or a prompt it was given can point it at `http://169.254.169.254/` (a cloud's credentials), `http://localhost:8080/admin` or a database on the internal network. These tools reach only the public internet: a URL on a loopback, private, link-local, carrier-grade NAT, multicast or documentation address, `localhost`, `*.local`, `*.internal` or a metadata host is refused, every redirect target is checked again, and a hostname is checked by the address it resolves to when the request connects, so a name that resolves elsewhere a moment later (DNS rebinding) is refused too. A refused URL comes back to the model as an `error` naming it.
+
+An agent meant to work on a trusted network opts in, or brings its own client:
+
+```typescript
+import { createHttpRequestTool, createWebScrapeTool } from '@cogitator-ai/core';
+
+const intranet = createWebScrapeTool({ allowPrivateNetwork: true });
+const api = createHttpRequestTool({ fetch: proxiedFetch });
+```
+
+A `fetch` of your own is trusted with every URL, so it should apply your network policy. `createTranscribeAudioTool` takes the same two options.
+
+The guard is yours to use too: `fetchPublic` is a `fetch` for public hosts, `createPublicFetch({ allowPrivateNetwork, maxRedirects, resolver, isBlocked })` builds one to your rules, `assertPublicUrl(url)` checks a URL up front, `assertPublicHost(url)` checks the addresses its host resolves to as well and `isPrivateAddress(ip)` classifies an address. They run on `node:http`, in Node and Bun alike, and a refusal throws a `PrivateNetworkError`.
+
+With `robots`, the tool checks a URL and the addresses its host resolves to before it reads the site's robots.txt. `RobotsPolicy` reads robots.txt with the global `fetch` unless given another: `new RobotsPolicy({ userAgent, fetch: fetchPublic })` keeps those reads on public hosts too.
+
+Requests carry `DEFAULT_USER_AGENT` and `Accept: */*` unless the caller sets its own headers.
+
 ## Polite crawling with robots.txt
 
 `RobotsPolicy` reads and caches a site's robots.txt and answers whether a URL may be fetched, by RFC 9309: the groups that name your product token (else `*`), longest match wins with `*` and `$` patterns, a 4xx robots.txt allows everything, a 5xx or a network failure allows nothing until the cache (one hour by default) expires. It implements `RobotsChecker`, which `WebLoader` in `@cogitator-ai/rag` and `BrowserSession` in `@cogitator-ai/browser` take as `robots`:

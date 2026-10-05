@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { webScrape } from '../tools/web-scrape';
+import { createWebScrapeTool } from '../tools/web-scrape';
+import type { FetchFunction } from '../utils/public-network';
+/** Sends the tool's requests through the global `fetch`, which these tests stub. */
+const viaGlobalFetch: FetchFunction = (input, init) => fetch(input, init);
+const webScrape = createWebScrapeTool({ fetch: viaGlobalFetch });
 
 const mockFetch = vi.fn();
 
@@ -516,22 +520,33 @@ describe('web_scrape tool', () => {
       expect((result as { content: string }).content).toBe('if a < b and c > d Titled');
     });
 
-    async function scrapeTime(html: string): Promise<number> {
-      let best = Infinity;
-      for (let run = 0; run < 3; run++) {
-        let total = 0;
-        for (const format of ['text', 'markdown'] as const) {
-          mockFetch.mockResolvedValueOnce(createHtmlResponse(html));
-          const started = performance.now();
-          await webScrape.execute(
-            { url: 'https://example.com', format, includeLinks: true, includeImages: true },
-            ctx
-          );
-          total += performance.now() - started;
-        }
-        best = Math.min(best, total);
+    /**
+     * The CPU time this process spends scraping the HTML in both text and markdown, in ms.
+     * CPU time and not the clock, so other test workers busy at the same time do not count.
+     */
+    async function scrapeOnce(html: string): Promise<number> {
+      const started = process.cpuUsage();
+      for (const format of ['text', 'markdown'] as const) {
+        mockFetch.mockResolvedValueOnce(createHtmlResponse(html));
+        await webScrape.execute(
+          { url: 'https://example.com', format, includeLinks: true, includeImages: true },
+          ctx
+        );
       }
-      return best;
+      const used = process.cpuUsage(started);
+      return (used.user + used.system) / 1000;
+    }
+
+    /** How much longer four times the input takes: small and large runs alternate, best of five. */
+    async function growth(build: (n: number) => string): Promise<number> {
+      await scrapeOnce(build(500));
+      let small = Infinity;
+      let large = Infinity;
+      for (let run = 0; run < 5; run++) {
+        small = Math.min(small, await scrapeOnce(build(40_000)));
+        large = Math.min(large, await scrapeOnce(build(160_000)));
+      }
+      return large / Math.max(small, 5);
     }
 
     it.each([
@@ -542,10 +557,7 @@ describe('web_scrape tool', () => {
       ['unterminated comments', (n: number) => '<!--'.repeat(n * 3)],
       ['nested fragments', (n: number) => '<scr'.repeat(n) + 'x' + 'ipt>x</script>'.repeat(n)],
     ])('cleans hostile markup with %s in linear time', async (_name, build) => {
-      await scrapeTime(build(500));
-      const small = await scrapeTime(build(10_000));
-      const large = await scrapeTime(build(40_000));
-      expect(large / Math.max(small, 1)).toBeLessThan(10);
+      expect(await growth(build)).toBeLessThan(10);
     });
   });
 

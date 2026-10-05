@@ -3181,6 +3181,27 @@ The token defaults to the User-Agent's first word (`NewsBot`); pass `token` to m
 
 `createWebScrapeTool({ userAgent, robots })` builds a `web_scrape` tool with your User-Agent and a robots.txt check on every hop, redirects included (a disallowed page comes back as an `error`). The plain `webScrape` keeps the default User-Agent and checks nothing.
 
+### Public hosts only
+
+A model chooses the URLs `web_scrape` and `http_request` fetch, and the audio URL `transcribe_audio` reads, so a page it read or a prompt it was given can point it at `http://169.254.169.254/` (a cloud's credentials), `http://localhost:8080/admin` or a database on the internal network. These tools reach only the public internet: a URL on a loopback, private, link-local, carrier-grade NAT, multicast or documentation address, `localhost`, `*.local`, `*.internal` or a metadata host is refused, every redirect target is checked again, and a hostname is checked by the address it resolves to when the request connects, so a name that resolves elsewhere a moment later (DNS rebinding) is refused too. A refused URL comes back to the model as an `error` naming it.
+
+An agent meant to work on a trusted network opts in, or brings its own client:
+
+```typescript
+import { createHttpRequestTool, createWebScrapeTool } from '@cogitator-ai/core';
+
+const intranet = createWebScrapeTool({ allowPrivateNetwork: true });
+const api = createHttpRequestTool({ fetch: proxiedFetch });
+```
+
+A `fetch` of your own is trusted with every URL, so it should apply your network policy. `createTranscribeAudioTool` takes the same two options.
+
+The guard is yours to use too: `fetchPublic` is a `fetch` for public hosts, `createPublicFetch({ allowPrivateNetwork, maxRedirects, resolver, isBlocked })` builds one to your rules, `assertPublicUrl(url)` checks a URL up front, `assertPublicHost(url)` checks the addresses its host resolves to as well and `isPrivateAddress(ip)` classifies an address. They run on `node:http`, in Node and Bun alike, and a refusal throws a `PrivateNetworkError`.
+
+With `robots`, the tool checks a URL and the addresses its host resolves to before it reads the site's robots.txt. `RobotsPolicy` reads robots.txt with the global `fetch` unless given another: `new RobotsPolicy({ userAgent, fetch: fetchPublic })` keeps those reads on public hosts too.
+
+Requests carry `DEFAULT_USER_AGENT` and `Accept: */*` unless the caller sets its own headers.
+
 ### Web Search
 
 `webSearch` searches through Tavily, Brave or Serper, whichever key is set first (`TAVILY_API_KEY`, `BRAVE_API_KEY`, `SERPER_API_KEY`). The same filters work on all three: `topic: 'news'`, `recency` (`day`, `week`, `month`, `year`) or a `dateRange`, `includeDomains` / `excludeDomains`, `country`, `language` and `page`. A filter a provider cannot apply comes back as an `error` instead of being dropped. Results carry `publishedAt` when the provider reports a date.

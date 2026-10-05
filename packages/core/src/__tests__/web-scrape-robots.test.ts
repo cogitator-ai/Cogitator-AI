@@ -1,6 +1,9 @@
 import type { RobotsChecker } from '@cogitator-ai/types';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createWebScrapeTool } from '../tools/web-scrape';
+import type { FetchFunction } from '../utils/public-network';
+/** Sends the tool's requests through the global `fetch`, which these tests stub. */
+const viaGlobalFetch: FetchFunction = (input, init) => fetch(input, init);
 
 const fetchMock = vi.fn();
 const html = (body: string) =>
@@ -22,7 +25,11 @@ describe('web_scrape with a robots checker', () => {
     vi.unstubAllGlobals();
   });
 
-  const scrape = createWebScrapeTool({ userAgent: 'NewsBot/1.0', robots: noPrivate });
+  const scrape = createWebScrapeTool({
+    userAgent: 'NewsBot/1.0',
+    robots: noPrivate,
+    fetch: viaGlobalFetch,
+  });
 
   it('fetches an allowed page with its own User-Agent', async () => {
     fetchMock.mockResolvedValueOnce(html('<p>Open news</p>'));

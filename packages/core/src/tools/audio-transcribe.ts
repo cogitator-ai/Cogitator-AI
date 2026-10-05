@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { tool } from '../tool';
 import { audioInputToBuffer } from '../utils/audio-fetch';
+import { createPublicFetch, type FetchFunction } from '../utils/public-network';
 import { createLinkedAbortController, getAbortErrorMessage } from '../utils/abort';
 import type { AudioInput } from '@cogitator-ai/types';
 import { readEnv } from '../utils/env';
@@ -32,6 +33,13 @@ export interface TranscribeAudioConfig {
   apiKey?: string;
   defaultModel?: TranscriptionModel;
   defaultLanguage?: string;
+  /**
+   * Let the tool fetch audio from loopback, private and link-local hosts. Off by default: the
+   * model chooses the URL
+   */
+  allowPrivateNetwork?: boolean;
+  /** Fetches audio URLs instead of the built-in client; it should apply its own network policy */
+  fetch?: FetchFunction;
 }
 
 export interface TranscriptionWord {
@@ -63,6 +71,8 @@ export interface TranscribeAudioOptions {
   language?: string;
   timestamps?: boolean;
   signal?: AbortSignal;
+  /** Fetches an audio URL instead of the global `fetch` */
+  fetch?: FetchFunction;
 }
 
 /**
@@ -77,6 +87,7 @@ export async function transcribeAudio(
   const { buffer, filename } = await audioInputToBuffer(audio, {
     signal: options.signal,
     timeout: TRANSCRIPTION_TIMEOUT_MS,
+    ...(options.fetch && { fetch: options.fetch }),
   });
 
   const selectedModel =
@@ -143,6 +154,8 @@ export async function transcribeAudio(
 
 export function createTranscribeAudioTool(config: TranscribeAudioConfig = {}) {
   const getApiKey = () => config.apiKey || readEnv('OPENAI_API_KEY');
+  const fetchAudio =
+    config.fetch ?? createPublicFetch({ allowPrivateNetwork: config.allowPrivateNetwork });
 
   return tool({
     name: 'transcribeAudio',
@@ -180,6 +193,7 @@ export function createTranscribeAudioTool(config: TranscribeAudioConfig = {}) {
         language: language || config.defaultLanguage,
         timestamps,
         signal: context?.signal,
+        fetch: fetchAudio,
       });
     },
   });
