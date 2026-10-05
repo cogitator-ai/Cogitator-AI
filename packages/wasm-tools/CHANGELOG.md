@@ -1,5 +1,13 @@
 # @cogitator-ai/wasm-tools
 
+## 0.7.10
+
+### Patch Changes
+
+- [#117](https://github.com/cogitator-ai/Cogitator-AI/pull/117) [`0caa714`](https://github.com/cogitator-ai/Cogitator-AI/commit/0caa714e0d52b0effb983f63c5edca499a22235b) - npm keywords for every package, so a search for what a package does finds it, and packages are now published with provenance: npm shows that each version was built and signed by the repository's release workflow, from which commit.
+- Updated dependencies [[`0caa714`](https://github.com/cogitator-ai/Cogitator-AI/commit/0caa714e0d52b0effb983f63c5edca499a22235b)]:
+  - @cogitator-ai/types@0.33.1
+
 ## 0.7.9
 
 ### Patch Changes
