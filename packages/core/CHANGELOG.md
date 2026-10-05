@@ -1,5 +1,11 @@
 # @cogitator-ai/core
 
+## 0.30.4
+
+### Patch Changes
+
+- [#120](https://github.com/cogitator-ai/Cogitator-AI/pull/120) [`f52311d`](https://github.com/cogitator-ai/Cogitator-AI/commit/f52311d225c550419398e4978cb480231f9a4e1b) - `web_scrape` renders Markdown in linear time. Each link rebuilt the whole Markdown string written so far to wrap its text, so a page of many links took time quadratic in its length: 40,000 unclosed headings with links took about 750 ms instead of 45. The Markdown is now kept in parts and a link rewrites only its own.
+
 ## 0.30.3
 
 ### Patch Changes

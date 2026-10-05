@@ -338,7 +338,7 @@ importers:
   packages/channels:
     dependencies:
       '@cogitator-ai/browser':
-        specifier: workspace:>=0.4.5
+        specifier: workspace:>=0.4.6
         version: link:../browser
       '@cogitator-ai/core':
         specifier: workspace:*
