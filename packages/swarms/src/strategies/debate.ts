@@ -21,10 +21,23 @@ function speaker(message: SwarmMessage): string {
 /** Room for reasoning a turn gets on its retry when `reasoningTokensPerTurn` is not set. */
 const DEFAULT_REASONING_ROOM = 4096;
 
-/** Whether a turn came back empty or cut off at its limit while the model was reasoning. */
+/** About how many characters a token of English text takes. */
+const CHARS_PER_TOKEN = 4;
+
+/**
+ * Whether a reasoning model spent a turn's output limit thinking: its last answer stopped at the
+ * limit (or came back empty after reasoning) with less than half the limit in visible text. Every
+ * provider reports a cut-off answer, while only some report reasoning tokens, so the visible text
+ * tells a starved turn from an answer that simply ran long. A turn that called tools is never
+ * starved here: running it again would repeat what its tools did.
+ */
 function starvedByReasoning(result: RunResult, limit: number): boolean {
-  if ((result.usage.reasoningTokens ?? 0) === 0) return false;
-  return result.output.trim() === '' || result.usage.outputTokens >= limit;
+  if (result.toolCalls.length > 0) return false;
+  const visible = Math.ceil(result.output.trim().length / CHARS_PER_TOKEN);
+  if (result.truncated) {
+    return (result.usage.reasoningTokens ?? 0) > 0 || visible < limit / 2;
+  }
+  return visible === 0 && (result.usage.reasoningTokens ?? 0) > 0;
 }
 
 export class DebateStrategy extends BaseStrategy {
@@ -238,13 +251,15 @@ Guidelines:
 - Address counterarguments if applicable
 - Maintain a professional and constructive tone
 ${this.config.format === 'structured' ? '- Structure your argument with clear points' : ''}
+${this.config.maxTokensPerTurn !== undefined ? `- Keep your answer within about ${Math.max(1, Math.floor(this.config.maxTokensPerTurn * 0.75))} words` : ''}
 `.trim();
   }
 
   /**
    * One debater's turn under `maxTokensPerTurn`. A reasoning model spends its reasoning from the
-   * same limit, so a turn it came back from empty or cut off is run once more with room for the
-   * reasoning on top of the answer. A model that does not reason keeps the limit as it is.
+   * same limit, so a turn it spent thinking is run once more with room for the reasoning on top
+   * of the answer. A model that does not reason keeps the limit as it is, and a turn that called
+   * tools is not run again.
    */
   private async runTurn(
     name: string,

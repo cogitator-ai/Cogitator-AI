@@ -318,6 +318,11 @@ export interface RunResult {
   };
   /** The model's reasoning summary for the run, when the agent asked for one (`reasoning.summary`) */
   readonly reasoning?: string;
+  /**
+   * True when the model's last answer stopped at the output token limit (`maxTokens`): the
+   * output may be cut off, or empty when a reasoning model spent the whole limit thinking
+   */
+  readonly truncated?: boolean;
   /** The versioned instructions or A/B variant the run used */
   readonly prompt?: RunPrompt;
   /** Handoffs during the run, in order */
