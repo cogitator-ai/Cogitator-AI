@@ -122,8 +122,11 @@ export class MockCoordinator implements SwarmCoordinatorInterface {
         agentId: swarmAgent.agent.id,
       });
     } else if (typeof responseOrGenerator === 'function') {
-      const output = await responseOrGenerator(input, context);
-      result = createMockRunResult(output, { agentId: swarmAgent.agent.id });
+      const produced = await responseOrGenerator(input, context);
+      result =
+        typeof produced === 'string'
+          ? createMockRunResult(produced, { agentId: swarmAgent.agent.id })
+          : produced;
     } else {
       result = responseOrGenerator;
     }

@@ -745,6 +745,7 @@ export class Cogitator {
         if (!pausedTurn) reachedLimit();
       }
 
+      let lastFinishReason: ChatResponse['finishReason'] | undefined;
       const streaming = Boolean(options.stream && (options.onToken ?? options.onReasoning));
       const onToken = options.onToken ?? (() => undefined);
       let structuredRepaired = false;
@@ -841,6 +842,7 @@ export class Cogitator {
         cachedInputTokens += response.usage.cachedInputTokens ?? 0;
         cacheWriteTokens += response.usage.cacheWriteTokens ?? 0;
         reasoningTokens += response.usage.reasoningTokens ?? 0;
+        lastFinishReason = response.finishReason;
         const spentBefore = costMeter.total(costModel);
         costMeter.add(response.usage, effectiveModel);
         this.state.costRouter?.recordCost({
@@ -1065,6 +1067,7 @@ export class Cogitator {
           ...(cacheWriteTokens > 0 && { cacheWriteTokens }),
         },
         ...(reasoningParts.length > 0 && { reasoning: reasoningParts.join('\n\n') }),
+        ...(lastFinishReason === 'length' && { truncated: true }),
         toolCalls: allToolCalls,
         messages,
         trace: {

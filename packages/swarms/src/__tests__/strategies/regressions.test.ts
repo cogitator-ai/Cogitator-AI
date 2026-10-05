@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import type { ToolContext } from '@cogitator-ai/types';
+import type { DebateConfig, ToolContext } from '@cogitator-ai/types';
 import { HierarchicalStrategy } from '../../strategies/hierarchical';
 import { ConsensusStrategy } from '../../strategies/consensus';
 import { PipelineStrategy } from '../../strategies/pipeline';
@@ -9,7 +9,11 @@ import { createDelegationTools } from '../../tools/delegation';
 import { createVotingTools } from '../../tools/voting';
 import { createNegotiationTools } from '../../tools/negotiation';
 import { MockCoordinator } from './__mocks__/mock-coordinator';
-import { createMockAgent, createMockSwarmAgent } from './__mocks__/mock-helpers';
+import {
+  createMockAgent,
+  createMockRunResult,
+  createMockSwarmAgent,
+} from './__mocks__/mock-helpers';
 
 const toolContext: ToolContext = {
   agentId: 'agent',
@@ -237,6 +241,137 @@ describe('DebateStrategy', () => {
     for (const call of coordinator.getCalls()) {
       expect(call.options).toEqual({ maxTokens: 128 });
     }
+  });
+
+  const turn = (
+    output: string,
+    outputTokens: number,
+    extra: { reasoningTokens?: number; truncated?: boolean; toolCalled?: boolean } = {}
+  ) =>
+    createMockRunResult(output, {
+      usage: {
+        inputTokens: 100,
+        outputTokens,
+        totalTokens: 100 + outputTokens,
+        cost: 0,
+        duration: 10,
+        ...(extra.reasoningTokens !== undefined && { reasoningTokens: extra.reasoningTokens }),
+      },
+      ...(extra.truncated && { truncated: true }),
+      ...(extra.toolCalled && {
+        toolCalls: [{ id: 'c1', name: 'search', arguments: {} }],
+      }),
+    });
+
+  function debate(responses: Record<string, ReturnType<typeof turn>[]>) {
+    const coordinator = new MockCoordinator();
+    coordinator.addAgent(createMockSwarmAgent('pro', { role: 'advocate' }));
+    coordinator.addAgent(createMockSwarmAgent('con', { role: 'critic' }));
+    for (const [name, results] of Object.entries(responses)) {
+      let call = 0;
+      coordinator.setAgentResponse(name, () => results[Math.min(call++, results.length - 1)]);
+    }
+    return coordinator;
+  }
+
+  const limits = (coordinator: MockCoordinator, name: string) =>
+    coordinator.getCallsFor(name).map((call) => call.options);
+
+  const run = (coordinator: MockCoordinator, extra: Partial<DebateConfig> = {}) =>
+    new DebateStrategy(coordinator, { rounds: 1, maxTokensPerTurn: 128, ...extra }).execute({
+      input: 'topic',
+    });
+
+  it('runs again a turn a reasoning model came back from empty, with room to reason', async () => {
+    const coordinator = debate({
+      pro: [
+        turn('', 128, { reasoningTokens: 128, truncated: true }),
+        turn('The case for', 900, { reasoningTokens: 700 }),
+      ],
+      con: [turn('The case against', 120)],
+    });
+
+    const result = await run(coordinator);
+
+    expect(limits(coordinator, 'pro')).toEqual([{ maxTokens: 128 }, { maxTokens: 128 + 4096 }]);
+    expect(limits(coordinator, 'con')).toEqual([{ maxTokens: 128 }]);
+    expect(result.output).toContain('The case for');
+  });
+
+  it('gives a turn cut off by long reasoning twice the reasoning it spent', async () => {
+    const coordinator = debate({
+      pro: [
+        turn('The case f', 6000, { reasoningTokens: 5900, truncated: true }),
+        turn('The case for', 9000, { reasoningTokens: 8800 }),
+      ],
+    });
+
+    await run(coordinator);
+
+    expect(limits(coordinator, 'pro')[1]).toEqual({ maxTokens: 128 + 5900 * 2 });
+  });
+
+  it('spots a starved turn of a provider that reports no reasoning tokens', async () => {
+    const coordinator = debate({
+      pro: [turn('The', 128, { truncated: true }), turn('The case for', 900)],
+    });
+
+    await run(coordinator);
+
+    expect(limits(coordinator, 'pro')).toEqual([{ maxTokens: 128 }, { maxTokens: 128 + 4096 }]);
+  });
+
+  it('keeps the limit for a long answer of a model that does not reason', async () => {
+    const coordinator = debate({ pro: [turn('word '.repeat(110), 128, { truncated: true })] });
+
+    await run(coordinator);
+
+    expect(limits(coordinator, 'pro')).toHaveLength(1);
+  });
+
+  it('keeps the limit for a model that does not reason, even on an empty turn', async () => {
+    const coordinator = debate({ pro: [turn('', 128)] });
+
+    await run(coordinator);
+
+    expect(limits(coordinator, 'pro')).toHaveLength(1);
+  });
+
+  it('never runs again a turn that called tools', async () => {
+    const coordinator = debate({
+      pro: [turn('', 128, { reasoningTokens: 128, truncated: true, toolCalled: true })],
+    });
+
+    await run(coordinator);
+
+    expect(limits(coordinator, 'pro')).toHaveLength(1);
+  });
+
+  it('does not take the summed output of a finished turn for a cut-off one', async () => {
+    const coordinator = debate({
+      pro: [turn('The case for, after a search', 5000, { reasoningTokens: 3000 })],
+    });
+
+    await run(coordinator);
+
+    expect(limits(coordinator, 'pro')).toHaveLength(1);
+  });
+
+  it('gives reasoningTokensPerTurn from the first try', async () => {
+    const coordinator = debate({ pro: [turn('The case for', 1500, { reasoningTokens: 1400 })] });
+
+    await run(coordinator, { reasoningTokensPerTurn: 2000 });
+
+    expect(limits(coordinator, 'pro')).toEqual([{ maxTokens: 2128 }]);
+  });
+
+  it('tells debaters how long an answer may be', async () => {
+    const coordinator = debate({ pro: [turn('The case for', 100)] });
+
+    await run(coordinator);
+
+    const instructions = coordinator.getCallsFor('pro')[0]?.context?.debateInstructions;
+    expect(instructions).toEqual(expect.stringContaining('Keep your answer within about 96 words'));
   });
 
   it('rejects a non-positive number of rounds', async () => {

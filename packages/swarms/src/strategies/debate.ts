@@ -18,6 +18,28 @@ function speaker(message: SwarmMessage): string {
   return typeof role === 'string' && role !== '' ? `${message.from} (${role})` : message.from;
 }
 
+/** Room for reasoning a turn gets on its retry when `reasoningTokensPerTurn` is not set. */
+const DEFAULT_REASONING_ROOM = 4096;
+
+/** About how many characters a token of English text takes. */
+const CHARS_PER_TOKEN = 4;
+
+/**
+ * Whether a reasoning model spent a turn's output limit thinking: its last answer stopped at the
+ * limit (or came back empty after reasoning) with less than half the limit in visible text. Every
+ * provider reports a cut-off answer, while only some report reasoning tokens, so the visible text
+ * tells a starved turn from an answer that simply ran long. A turn that called tools is never
+ * starved here: running it again would repeat what its tools did.
+ */
+function starvedByReasoning(result: RunResult, limit: number): boolean {
+  if (result.toolCalls.length > 0) return false;
+  const visible = Math.ceil(result.output.trim().length / CHARS_PER_TOKEN);
+  if (result.truncated) {
+    return (result.usage.reasoningTokens ?? 0) > 0 || visible < limit / 2;
+  }
+  return visible === 0 && (result.usage.reasoningTokens ?? 0) > 0;
+}
+
 export class DebateStrategy extends BaseStrategy {
   private config: DebateConfig;
 
@@ -111,14 +133,7 @@ export class DebateStrategy extends BaseStrategy {
           debater.agent.name
         );
 
-        const result = await this.coordinator.runAgent(
-          debater.agent.name,
-          input,
-          debaterContext,
-          this.config.maxTokensPerTurn !== undefined
-            ? { maxTokens: this.config.maxTokensPerTurn }
-            : undefined
-        );
+        const result = await this.runTurn(debater.agent.name, input, debaterContext);
         agentResults.set(`${debater.agent.name}_round${round}`, result);
 
         const message: SwarmMessage = {
@@ -236,7 +251,31 @@ Guidelines:
 - Address counterarguments if applicable
 - Maintain a professional and constructive tone
 ${this.config.format === 'structured' ? '- Structure your argument with clear points' : ''}
+${this.config.maxTokensPerTurn !== undefined ? `- Keep your answer within about ${Math.max(1, Math.floor(this.config.maxTokensPerTurn * 0.75))} words` : ''}
 `.trim();
+  }
+
+  /**
+   * One debater's turn under `maxTokensPerTurn`. A reasoning model spends its reasoning from the
+   * same limit, so a turn it spent thinking is run once more with room for the reasoning on top
+   * of the answer. A model that does not reason keeps the limit as it is, and a turn that called
+   * tools is not run again.
+   */
+  private async runTurn(
+    name: string,
+    input: string,
+    context: Record<string, unknown>
+  ): Promise<RunResult> {
+    const answer = this.config.maxTokensPerTurn;
+    if (answer === undefined) return this.coordinator.runAgent(name, input, context);
+    const room = this.config.reasoningTokensPerTurn;
+    const limit = answer + (room ?? 0);
+    const first = await this.coordinator.runAgent(name, input, context, { maxTokens: limit });
+    if (!starvedByReasoning(first, limit)) return first;
+    const reasoned = first.usage.reasoningTokens ?? 0;
+    return this.coordinator.runAgent(name, input, context, {
+      maxTokens: answer + Math.max(room ?? DEFAULT_REASONING_ROOM, reasoned * 2),
+    });
   }
 
   private synthesizeDebate(transcript: SwarmMessage[], topic: string): string {

@@ -309,7 +309,8 @@ const debateSwarm = new Swarm(cog, {
 
   debate: {
     rounds: 3,
-    maxTokensPerTurn: 500, // caps each debater turn
+    maxTokensPerTurn: 500, // the length of a turn's answer
+    reasoningTokensPerTurn: 4000, // room for a reasoning model to think on top of it
     format: 'structured', // 'structured' (default) | 'freeform'
   },
 });

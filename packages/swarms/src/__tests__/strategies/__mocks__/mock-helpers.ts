@@ -96,7 +96,7 @@ export function createMockSwarmAgent(
 export type ResponseGenerator = (
   input: string,
   context?: Record<string, unknown>
-) => string | Promise<string>;
+) => string | RunResult | Promise<string | RunResult>;
 
 export function createVoteResponse(vote: string, reasoning?: string): string {
   return `${reasoning ?? 'After careful consideration'}\n\nVOTE: ${vote}`;

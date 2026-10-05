@@ -166,7 +166,7 @@ const swarm = new SwarmBuilder('analysis-team')
   .build(cogitator);
 ```
 
-Turns are labelled with the speaker's name and role (`[optimist (advocate)]: ...`). `synthesisPrompt` replaces the moderator's default task, with `{topic}` and `{transcript}` filled in. `maxTokensPerTurn` also covers a reasoning model's reasoning, so give such models a few thousand tokens.
+Turns are labelled with the speaker's name and role (`[optimist (advocate)]: ...`). `synthesisPrompt` replaces the moderator's default task, with `{topic}` and `{transcript}` filled in. `maxTokensPerTurn` is the length of a turn's answer: the output limit of a model that does not reason, and the length debaters are asked to keep to. A reasoning model spends its reasoning from the same limit, so a turn it spent thinking (cut off or empty, with little visible text) is run once more with room to reason on top: `reasoningTokensPerTurn`, 4096, or twice what it reasoned. Set `reasoningTokensPerTurn` to give that room from the first try; within it the instructions, not the provider, keep the answer short. A model that does not reason keeps the limit as it is, and a turn that called tools is never run again.
 
 ### Auction
 

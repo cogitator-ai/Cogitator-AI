@@ -100,6 +100,8 @@ The agent loops up to `maxIterations` times. Each iteration the LLM may call too
 
 When tool calls use up `maxIterations` before the model answers, the run gets one more turn with `toolChoice: 'none'` and an instruction to answer from what it has, so it still ends with an answer and `structured` output can be parsed. Tools the model asks for on that turn are not run. `result.iterationLimitReached` is `true` either way, and `onIterationLimit: 'stop'` ends the run at the last tool turn instead, without an answer.
 
+`result.truncated` is `true` when the model's last answer stopped at the output token limit (`maxTokens`): the output may be cut off, or empty when a reasoning model spent the whole limit thinking. Every provider reports it, so it is the way to tell a cut-off answer from a short one.
+
 ## Agent with Structured Output
 
 Force the LLM to respond with a specific JSON shape using Zod schemas:

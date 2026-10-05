@@ -1329,6 +1329,22 @@ describe('Cogitator', () => {
       await cog.close();
     });
 
+    it('says when the last answer stopped at the token limit', async () => {
+      const cog = new Cogitator();
+      const usage = { inputTokens: 10, outputTokens: 64, totalTokens: 74 };
+      mockBackendHelper.setResponses([
+        { id: 'a', content: 'A long answer that was cu', finishReason: 'length', usage },
+        { id: 'b', content: 'Done.', finishReason: 'stop', usage },
+      ]);
+
+      const cut = await cog.run(createTestAgent(), { input: 'Write a lot' });
+      const whole = await cog.run(createTestAgent(), { input: 'Write a little' });
+
+      expect(cut.truncated).toBe(true);
+      expect(whole.truncated).toBeUndefined();
+      await cog.close();
+    });
+
     describe('budget by real spending', () => {
       const step = tool({
         name: 'step',

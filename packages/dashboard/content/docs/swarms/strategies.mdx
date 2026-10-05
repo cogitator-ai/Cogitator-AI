@@ -253,12 +253,19 @@ const debateTeam = swarm('risk-assessment')
   .build(cogitator);
 ```
 
-| Option             | Default        | Description                                                                                                                                                                           |
-| ------------------ | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `rounds`           | required       | Number of debate rounds (at least 1)                                                                                                                                                  |
-| `format`           | `'structured'` | `'structured'` asks for clearly structured points; `'freeform'` drops that guideline                                                                                                  |
-| `maxTokensPerTurn` | —              | Caps the output tokens of every debate turn. A reasoning model spends its reasoning from the same budget, so give it a few thousand and keep the length of a turn in the instructions |
-| `synthesisPrompt`  | —              | The moderator's task after the last round instead of the default balanced summary; `{topic}` and `{transcript}` are filled in                                                         |
+| Option                   | Default        | Description                                                                                                                                                                                                                     |
+| ------------------------ | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rounds`                 | required       | Number of debate rounds (at least 1)                                                                                                                                                                                            |
+| `format`                 | `'structured'` | `'structured'` asks for clearly structured points; `'freeform'` drops that guideline                                                                                                                                            |
+| `maxTokensPerTurn`       | —              | How long a turn's answer may be, in tokens: the output limit of a model that does not reason, and the length debaters are asked to keep to. A turn a reasoning model spent thinking is run once more with room to reason on top |
+| `reasoningTokensPerTurn` | —              | Output room on top of `maxTokensPerTurn` from the first try, sparing reasoning models the retry. Unset, a starved turn gets 4096, or twice what it reasoned, on its retry                                                       |
+| `synthesisPrompt`        | —              | The moderator's task after the last round instead of the default balanced summary; `{topic}` and `{transcript}` are filled in                                                                                                   |
+
+Providers count a reasoning model's reasoning in the same output limit as its answer, so a short `maxTokensPerTurn` alone would leave such a model's turn empty. The debate runs a turn again when the model spent it thinking: its answer stopped at the limit, or came back empty after reasoning, with less than half the limit in visible text. That works on every provider, those that report reasoning tokens and those that do not. A model that does not reason keeps the limit as it is, and a turn that called tools is never run again, so its tools do not run twice. Providers cannot cap the answer apart from the reasoning, so with room to reason the answer's length is held by the debaters' instructions, which ask for about three quarters of `maxTokensPerTurn` in words. With `reasoningTokensPerTurn` the room is given from the first try:
+
+```typescript
+debate: { rounds: 2, maxTokensPerTurn: 300, reasoningTokensPerTurn: 4000 }
+```
 
 Roles come from `agentMetadata` (`advocate` / `critic`, each with its own instructions); when any agent has one of those roles, only those agents debate. Without roles, all non-moderator agents debate as neutral debaters. At least two debaters are required.
 

@@ -537,14 +537,23 @@ describe('web_scrape tool', () => {
       return (used.user + used.system) / 1000;
     }
 
-    /** How much longer four times the input takes: small and large runs alternate, best of five. */
+    /**
+     * How much longer eight times the input takes. The input grows until a run takes about 20 ms
+     * of CPU, after a warm-up and each size measured twice, so a parser not yet compiled does not
+     * stop it early: a slow machine measures a smaller page and a fast one a bigger. A linear parser grows about 8 times, a
+     * quadratic one towards 64. Small and large runs alternate, best of three.
+     */
     async function growth(build: (n: number) => string): Promise<number> {
-      await scrapeOnce(build(500));
+      for (let run = 0; run < 5; run++) await scrapeOnce(build(1_000));
+      const settled = async (n: number) =>
+        Math.min(await scrapeOnce(build(n)), await scrapeOnce(build(n)));
+      let n = 2_000;
+      while (n < 80_000 && (await settled(n)) < 20) n *= 2;
       let small = Infinity;
       let large = Infinity;
-      for (let run = 0; run < 5; run++) {
-        small = Math.min(small, await scrapeOnce(build(40_000)));
-        large = Math.min(large, await scrapeOnce(build(160_000)));
+      for (let run = 0; run < 3; run++) {
+        small = Math.min(small, await scrapeOnce(build(n)));
+        large = Math.min(large, await scrapeOnce(build(8 * n)));
       }
       return large / Math.max(small, 5);
     }
@@ -556,9 +565,13 @@ describe('web_scrape tool', () => {
       ['unterminated quotes', (n: number) => '<a title="x '.repeat(n * 2)],
       ['unterminated comments', (n: number) => '<!--'.repeat(n * 3)],
       ['nested fragments', (n: number) => '<scr'.repeat(n) + 'x' + 'ipt>x</script>'.repeat(n)],
-    ])('cleans hostile markup with %s in linear time', async (_name, build) => {
-      expect(await growth(build)).toBeLessThan(10);
-    });
+    ])(
+      'cleans hostile markup with %s in linear time',
+      async (_name, build) => {
+        expect(await growth(build)).toBeLessThan(20);
+      },
+      60_000
+    );
   });
 
   describe('CSS selector with regex metacharacters', () => {
