@@ -2,6 +2,14 @@
   "name": "@cogitator-ai/models",
   "version": "18.2.0",
   "description": "Dynamic model registry with pricing for Cogitator",
+  "keywords": [
+    "cogitator",
+    "ai",
+    "llm",
+    "models",
+    "model-registry",
+    "pricing"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

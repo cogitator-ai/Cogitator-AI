@@ -2,6 +2,14 @@
   "name": "@cogitator-ai/deploy",
   "version": "0.4.4",
   "description": "One-command deployment for Cogitator agents",
+  "keywords": [
+    "cogitator",
+    "ai",
+    "agents",
+    "deploy",
+    "docker",
+    "fly-io"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

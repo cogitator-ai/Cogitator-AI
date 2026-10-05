@@ -2,6 +2,15 @@
   "name": "@cogitator-ai/mcp",
   "version": "19.2.6",
   "description": "MCP (Model Context Protocol) integration for Cogitator",
+  "keywords": [
+    "cogitator",
+    "ai",
+    "agents",
+    "llm",
+    "mcp",
+    "model-context-protocol",
+    "tools"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

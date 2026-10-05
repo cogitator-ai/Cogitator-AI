@@ -2,6 +2,16 @@
   "name": "@cogitator-ai/voice",
   "version": "0.4.4",
   "description": "Voice/Realtime agent capabilities for Cogitator",
+  "keywords": [
+    "cogitator",
+    "ai",
+    "agents",
+    "voice",
+    "realtime",
+    "speech-to-text",
+    "text-to-speech",
+    "vad"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
