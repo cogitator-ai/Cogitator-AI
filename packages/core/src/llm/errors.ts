@@ -192,12 +192,16 @@ export function wrapSDKError(error: unknown, ctx: LLMErrorContext): LLMError {
  * the choices, or in a chunk of a stream. The code is read as the HTTP status it stands for, so a
  * rate limit or a server error stays retryable. A code that is not a status counts as a bad gateway.
  */
-export function providerErrorIn(body: unknown, context: LLMErrorContext): LLMError | undefined {
+export function providerErrorIn(
+  body: unknown,
+  context: LLMErrorContext,
+  cause?: Error
+): LLMError | undefined {
   const error = asRecord(asRecord(body)?.error);
   if (!error) return undefined;
   const { code } = error;
   const status = typeof code === 'number' && code >= 400 && code < 600 ? code : 502;
-  return createLLMError(context, status, JSON.stringify(error));
+  return createLLMError(context, status, JSON.stringify(error), cause && { cause });
 }
 
 function isSDKAPIError(error: unknown): error is SDKAPIError {

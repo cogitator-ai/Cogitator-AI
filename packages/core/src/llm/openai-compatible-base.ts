@@ -187,7 +187,7 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
     const toolCallsAccum = new Map<number, { id?: string; name?: string }>();
     const toolCallArgsAccum = new Map<number, string>();
 
-    for await (const chunk of stream) {
+    for await (const chunk of this.readStream(stream, ctx)) {
       const failure = providerErrorIn(chunk, ctx);
       if (failure) throw failure;
       const choice = Array.isArray(chunk.choices) ? chunk.choices[0] : undefined;
@@ -249,6 +249,23 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
           : undefined,
         ...(usage ? { usage } : {}),
       };
+    }
+  }
+
+  /**
+   * The chunks of a stream, with the provider error the SDK raises while reading one made an
+   * `LLMError`: the OpenAI SDK throws an `APIError` without a status when an event carries
+   * `{ error }`, before the chunk is handed out. Anything else, an abort included, goes on as is.
+   */
+  private async *readStream<T>(stream: AsyncIterable<T>, ctx: LLMErrorContext): AsyncGenerator<T> {
+    try {
+      for await (const chunk of stream) yield chunk;
+    } catch (error) {
+      if (error instanceof LLMError || !(error instanceof Error)) throw error;
+      const { status, error: payload } = error as Error & { status?: unknown; error?: unknown };
+      const failure =
+        status === undefined ? providerErrorIn({ error: payload }, ctx, error) : undefined;
+      throw failure ?? error;
     }
   }
 
