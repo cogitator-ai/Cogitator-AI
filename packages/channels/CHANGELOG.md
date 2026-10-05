@@ -1,5 +1,13 @@
 # @cogitator-ai/channels
 
+## 0.8.2
+
+### Patch Changes
+
+- Updated dependencies [[`7bffbeb`](https://github.com/cogitator-ai/Cogitator-AI/commit/7bffbeb32394ea52a5662eac5fd104e8e76ed32a)]:
+  - @cogitator-ai/core@0.30.3
+  - @cogitator-ai/browser@0.4.5
+
 ## 0.8.1
 
 ### Patch Changes

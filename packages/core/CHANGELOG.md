@@ -1,5 +1,11 @@
 # @cogitator-ai/core
 
+## 0.30.3
+
+### Patch Changes
+
+- [#118](https://github.com/cogitator-ai/Cogitator-AI/pull/118) [`7bffbeb`](https://github.com/cogitator-ai/Cogitator-AI/commit/7bffbeb32394ea52a5662eac5fd104e8e76ed32a) - OpenAI-compatible backends read the error a router such as OpenRouter sends in place of an answer: `{ error: { code, message } }` in the body of a successful response, or in an event of a stream, which the OpenAI SDK raises as an `APIError` without a status while the stream is read. Both now become an `LLMError` by the code they carry, so a rate limit or a provider failure is retryable, where before the backend crashed on `response.choices[0]` with a `TypeError`, or let the SDK's status-less error through, and nothing retried either. A response without choices is an invalid response, and a stream chunk without them is skipped. `providerErrorIn(body, context, cause?)` is exported for custom backends.
+
 ## 0.30.2
 
 ### Patch Changes

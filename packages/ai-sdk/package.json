@@ -27,7 +27,7 @@
     "@ai-sdk/provider": "^4.0.21"
   },
   "peerDependencies": {
-    "@cogitator-ai/core": "workspace:>=0.30.2",
+    "@cogitator-ai/core": "workspace:>=0.30.3",
     "@cogitator-ai/types": "workspace:>=0.33.1",
     "ai": "^4.0.0 || ^5.0.0 || ^6.0.0 || ^7.0.0"
   },
