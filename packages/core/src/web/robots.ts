@@ -1,4 +1,5 @@
 import type { RobotsChecker } from '@cogitator-ai/types';
+import type { FetchFunction } from '../utils/public-network';
 
 interface Rule {
   allow: boolean;
@@ -116,7 +117,8 @@ export interface RobotsPolicyOptions {
   /** How long a site's rules are cached, default one hour */
   cacheMs?: number;
   timeoutMs?: number;
-  fetch?: typeof fetch;
+  /** Reads robots.txt, e.g. `fetchPublic` to keep the reads on public hosts. Default: global `fetch` */
+  fetch?: FetchFunction;
   now?: () => number;
 }
 
@@ -132,7 +134,7 @@ export interface RobotsPolicyOptions {
 export class RobotsPolicy implements RobotsChecker {
   private readonly cache = new Map<string, { rules: RobotsRules; until: number }>();
   private readonly token: string;
-  private readonly doFetch: typeof fetch;
+  private readonly doFetch: FetchFunction;
   private readonly now: () => number;
 
   constructor(private readonly options: RobotsPolicyOptions) {

@@ -101,6 +101,8 @@ export {
   fetchPublic,
   isPrivateAddress,
   assertPublicUrl,
+  assertPublicHost,
+  DEFAULT_USER_AGENT,
   createGuardedLookup,
   PrivateNetworkError,
 } from './utils/index';

@@ -1,12 +1,15 @@
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { gzipSync } from 'node:zlib';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createHttpRequestTool } from '../tools/http';
 import { createTranscribeAudioTool } from '../tools/audio-transcribe';
 import { createWebScrapeTool } from '../tools/web-scrape';
+import { RobotsPolicy } from '../web/robots';
 import {
+  assertPublicHost,
   assertPublicUrl,
+  DEFAULT_USER_AGENT,
   createGuardedLookup,
   createPublicFetch,
   fetchPublic,
@@ -121,6 +124,23 @@ describe('createGuardedLookup', () => {
   });
 });
 
+describe('assertPublicHost', () => {
+  it('refuses a name that resolves to a private address before any request is made', async () => {
+    await expect(assertPublicHost('http://public.test/', { resolver: toLoopback })).rejects.toThrow(
+      PrivateNetworkError
+    );
+    await expect(assertPublicHost('http://10.0.0.1/')).rejects.toThrow(PrivateNetworkError);
+  });
+
+  it('lets a name with only public addresses through', async () => {
+    const resolver: Resolver = (_hostname, callback) =>
+      callback(null, [{ address: '93.184.215.14', family: 4 }]);
+    expect((await assertPublicHost('https://example.com/a', { resolver })).href).toBe(
+      'https://example.com/a'
+    );
+  });
+});
+
 describe('createPublicFetch', () => {
   let main: { server: http.Server; port: number };
   let other: { server: http.Server; port: number };
@@ -147,6 +167,12 @@ describe('createPublicFetch', () => {
         case '/echo':
           res.setHeader('content-type', 'application/json');
           res.end(JSON.stringify({ method: req.method, body, header: req.headers['x-test'] }));
+          return;
+        case '/headers':
+          res.setHeader('content-type', 'application/json');
+          res.end(
+            JSON.stringify({ userAgent: req.headers['user-agent'], accept: req.headers.accept })
+          );
           return;
         case '/gzip':
           res.setHeader('content-encoding', 'gzip');
@@ -215,6 +241,18 @@ describe('createPublicFetch', () => {
     expect(await response.json()).toEqual({ method: 'POST', body: 'hello', header: 'yes' });
   });
 
+  it('sends a User-Agent and Accept unless the caller sets its own', async () => {
+    const open = createPublicFetch({ allowPrivateNetwork: true });
+    expect(await (await open(`http://127.0.0.1:${main.port}/headers`)).json()).toEqual({
+      userAgent: DEFAULT_USER_AGENT,
+      accept: '*/*',
+    });
+    const custom = await open(`http://127.0.0.1:${main.port}/headers`, {
+      headers: { 'User-Agent': 'MyAgent/2.0', Accept: 'application/json' },
+    });
+    expect(await custom.json()).toEqual({ userAgent: 'MyAgent/2.0', accept: 'application/json' });
+  });
+
   it('decompresses gzip and turns a 303 into a GET', async () => {
     const open = createPublicFetch({ allowPrivateNetwork: true });
     expect(await (await open(`http://127.0.0.1:${main.port}/gzip`)).text()).toBe('unzipped');
@@ -264,9 +302,11 @@ describe('createPublicFetch', () => {
 
 describe('the network tools', () => {
   let site: { server: http.Server; port: number };
+  const hits: string[] = [];
 
   beforeAll(async () => {
     site = await listen((req, res) => {
+      hits.push(req.url ?? '');
       if (req.url === '/audio.mp3') {
         res.setHeader('content-type', 'audio/mpeg');
         res.end('fake audio');
@@ -293,6 +333,24 @@ describe('the network tools', () => {
       title: 'Admin',
       content: expect.stringContaining('Internal') as unknown,
     });
+  });
+
+  it('web_scrape checks a private host before its robots.txt is read', async () => {
+    const robots = { allows: vi.fn(() => Promise.resolve(true)) };
+    for (const url of [`http://127.0.0.1:${site.port}/`, `http://localhost:${site.port}/`]) {
+      const refused = await createWebScrapeTool({ robots }).execute({ url }, ctx);
+      expect(refused).toMatchObject({
+        error: expect.stringContaining('Refused to reach') as unknown,
+      });
+    }
+    expect(robots.allows).not.toHaveBeenCalled();
+  });
+
+  it('a robots policy reading through fetchPublic stays off private hosts', async () => {
+    hits.length = 0;
+    const policy = new RobotsPolicy({ userAgent: 'TestBot/1.0', fetch: fetchPublic });
+    expect(await policy.allows(`http://127.0.0.1:${site.port}/page`)).toBe(false);
+    expect(hits).toEqual([]);
   });
 
   it('http_request refuses a private host unless allowed', async () => {

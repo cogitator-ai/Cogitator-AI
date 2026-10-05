@@ -11,7 +11,12 @@ import {
   type HtmlTagToken,
   type HtmlToken,
 } from '../utils/html';
-import { createPublicFetch, type FetchFunction } from '../utils/public-network';
+import {
+  assertPublicHost,
+  createPublicFetch,
+  DEFAULT_USER_AGENT,
+  type FetchFunction,
+} from '../utils/public-network';
 
 const webScrapeParams = z.object({
   url: z.string().url().describe('URL to scrape'),
@@ -297,7 +302,9 @@ export interface WebScrapeOptions {
   userAgent?: string;
   /**
    * Checks every URL, redirect targets included, against the site's robots.txt before fetching
-   * it, e.g. `new RobotsPolicy({ userAgent })`. A disallowed page is reported as an error
+   * it, e.g. `new RobotsPolicy({ userAgent, fetch: fetchPublic })`. A disallowed page is reported
+   * as an error. While the tool reaches only public hosts, a URL is checked before its robots.txt
+   * is read; a policy with `fetch: fetchPublic` keeps its own reads on public hosts too
    */
   robots?: RobotsChecker;
   /**
@@ -313,8 +320,6 @@ export interface WebScrapeOptions {
   fetch?: FetchFunction;
 }
 
-const DEFAULT_USER_AGENT =
-  'Mozilla/5.0 (compatible; CogitatorBot/1.0; +https://github.com/cogitator-ai/Cogitator-AI)';
 const MAX_REDIRECTS = 5;
 
 /**
@@ -327,6 +332,7 @@ export function createWebScrapeTool(options: WebScrapeOptions = {}) {
   const robots = options.robots;
   const fetchPage =
     options.fetch ?? createPublicFetch({ allowPrivateNetwork: options.allowPrivateNetwork });
+  const guarded = !options.fetch && !options.allowPrivateNetwork;
 
   return tool({
     name: 'web_scrape',
@@ -358,6 +364,7 @@ export function createWebScrapeTool(options: WebScrapeOptions = {}) {
         let current = url;
         let response: Response | undefined;
         for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+          if (robots && guarded) await assertPublicHost(current);
           if (robots && !(await robots.allows(current))) {
             return { error: `robots.txt does not allow fetching ${current}`, url };
           }

@@ -3196,7 +3196,11 @@ const api = createHttpRequestTool({ fetch: proxiedFetch });
 
 A `fetch` of your own is trusted with every URL, so it should apply your network policy. `createTranscribeAudioTool` takes the same two options.
 
-The guard is yours to use too: `fetchPublic` is a `fetch` for public hosts, `createPublicFetch({ allowPrivateNetwork, maxRedirects, resolver, isBlocked })` builds one to your rules, `assertPublicUrl(url)` checks a URL up front and `isPrivateAddress(ip)` classifies an address. They run on `node:http`, in Node and Bun alike, and a refusal throws a `PrivateNetworkError`.
+The guard is yours to use too: `fetchPublic` is a `fetch` for public hosts, `createPublicFetch({ allowPrivateNetwork, maxRedirects, resolver, isBlocked })` builds one to your rules, `assertPublicUrl(url)` checks a URL up front, `assertPublicHost(url)` checks the addresses its host resolves to as well and `isPrivateAddress(ip)` classifies an address. They run on `node:http`, in Node and Bun alike, and a refusal throws a `PrivateNetworkError`.
+
+With `robots`, the tool checks a URL and the addresses its host resolves to before it reads the site's robots.txt. `RobotsPolicy` reads robots.txt with the global `fetch` unless given another: `new RobotsPolicy({ userAgent, fetch: fetchPublic })` keeps those reads on public hosts too.
+
+Requests carry `DEFAULT_USER_AGENT` and `Accept: */*` unless the caller sets its own headers.
 
 ### Web Search
 

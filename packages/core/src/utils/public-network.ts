@@ -5,6 +5,10 @@ import { BlockList, isIP } from 'node:net';
 import { Readable } from 'node:stream';
 import { createBrotliDecompress, createGunzip, createInflate } from 'node:zlib';
 
+/** The User-Agent requests carry unless the caller sets one. */
+export const DEFAULT_USER_AGENT =
+  'Mozilla/5.0 (compatible; CogitatorBot/1.0; +https://github.com/cogitator-ai/Cogitator-AI)';
+
 /** What a tool fetches with: the global `fetch` or anything shaped like it. */
 export type FetchFunction = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
@@ -177,6 +181,28 @@ export function createGuardedLookup(
   };
 }
 
+/**
+ * The URL, when it is http or https and its host and every address the host resolves to are
+ * public. For a check before other network I/O about the URL, such as reading its robots.txt:
+ * a request made later is checked again when it connects.
+ */
+export async function assertPublicHost(
+  input: string | URL,
+  options: Pick<PublicFetchOptions, 'resolver' | 'isBlocked'> = {}
+): Promise<URL> {
+  const url = assertPublicUrl(input);
+  const hostname = url.hostname.replace(/^\[|\]$/g, '');
+  if (isIP(hostname)) return url;
+  const lookup = createGuardedLookup(options.resolver, options.isBlocked ?? isPrivateAddress);
+  await new Promise<void>((resolve, reject) => {
+    lookup(hostname, { all: true }, (err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+  return url;
+}
+
 export interface PublicFetchOptions {
   /** Reach loopback and private hosts too, for a trusted intranet. Default: false */
   allowPrivateNetwork?: boolean;
@@ -235,7 +261,9 @@ function send(
     const request = transport.request(url, {
       method,
       headers: {
+        accept: '*/*',
         'accept-encoding': 'gzip, deflate, br',
+        'user-agent': DEFAULT_USER_AGENT,
         ...Object.fromEntries(headers),
         ...(body && { 'content-length': String(body.length) }),
       },
