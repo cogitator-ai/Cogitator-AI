@@ -1,5 +1,11 @@
 # @cogitator-ai/workflows
 
+## 0.11.7
+
+### Patch Changes
+
+- [#105](https://github.com/cogitator-ai/Cogitator-AI/pull/105) [`a34d4f9`](https://github.com/cogitator-ai/Cogitator-AI/commit/a34d4f97a970b8df2c2d45ef78dc4a3243f3e62b) Thanks [@lb1192176991-lab](https://github.com/lb1192176991-lab)! - Subworkflows now inherit the parent run's approval store, approval notifier and timer store. A human (approval) node inside a subworkflow can be answered through the parent's store, and durable timers in a child persist where the parent's do.
+
 ## 0.11.6
 
 ### Patch Changes

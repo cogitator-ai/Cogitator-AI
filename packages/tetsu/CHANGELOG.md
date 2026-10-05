@@ -1,5 +1,9 @@
 # @cogitator-ai/tetsu
 
+## 0.4.8
+
+No changes in this release.
+
 ## 0.4.7
 
 ### Patch Changes
