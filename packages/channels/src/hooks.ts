@@ -18,6 +18,7 @@ export function createHookRegistry(): HookRegistry {
     'stream:finished': new Set(),
     'approval:requested': new Set(),
     'approval:resolved': new Set(),
+    'action:received': new Set(),
   };
 
   return {

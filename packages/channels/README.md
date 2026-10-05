@@ -72,7 +72,30 @@ telegramChannel({
 });
 ```
 
-Supports: text, photos (→ vision), voice and audio (→ STT), video, documents, replies, streaming via drafts/editText, emoji reactions, sending files from buffers or URLs, 4096 char limit. Docs: [Telegram](https://cogitator.app/docs/channels/telegram).
+Built on the current Bot API, through grammY's raw API so newer methods work on any grammY:
+
+- **Rich Markdown** (default on, `richMessages: false` to turn off): the agent's Markdown goes out as written, with headings, tables, code blocks, task lists, footnotes and formulas, up to 32,768 characters. A refused rich message falls back to classic Markdown, then plain text.
+- **Streaming** through rich drafts with a **stop button**: a press stops the run and keeps what was written as the reply. Groups stream by editing.
+- **Buttons** with colors, URLs, copy-text and disabled buttons (`SendOptions.buttons`); presses reach the `action:received` hook or `onAction`. Tool approval prompts get Approve and Deny buttons.
+- **Topics** (forum topics and private chat topics), `@username` chat ids, captions, GIFs and voice notes, **albums** (`sendFiles`), silent, protected, ephemeral and effect messages, link preview options.
+- **Command menus** by scope and language (`setCommands`, `setCommandMenu`), bot name and descriptions (`setProfile`), and `call(method, args)` for any other Bot API method.
+- Incoming text, photos (→ vision), voice and audio (→ STT), video, video notes, GIFs, documents, replies and topics.
+
+```typescript
+const telegram = telegramChannel({ token: process.env.TG_TOKEN! });
+
+await telegram.sendText(chatId, 'Publish the noon edition?', {
+  buttons: [
+    [
+      { text: 'Publish', data: 'publish', style: 'success' },
+      { text: 'Hold', data: 'hold', style: 'danger' },
+    ],
+  ],
+});
+await telegram.setCommands([{ command: 'status', description: 'What is going on' }], { chatId });
+```
+
+Docs: [Telegram](https://cogitator.app/docs/channels/telegram).
 
 ### Discord
 
@@ -227,6 +250,8 @@ Tools marked `requiresApproval` (for example `create_tool` from `capabilities.se
 1. The paused run's text (if any) is sent, followed by a prompt listing each waiting call — tool name, description and compact JSON arguments (cut at 300 characters).
 2. The user replies `approve` / `yes` to run the calls, or `deny` / `no` to refuse, optionally followed by a reason (`no, too risky`) that the agent sees. Replies are case-insensitive and may end with punctuation; `да` / `одобряю` and `нет` / `отклоняю` work out of the box.
 3. The Gateway calls `cogitator.resume(agent, threadId, { userId, defaultDecision })` and delivers the result like any reply, streaming included. If the run pauses again, a new prompt is sent.
+
+On channels with buttons (Telegram), the prompt also carries **Approve** and **Deny** buttons. A press answers exactly like the reply words, through the same middleware and checks, and the buttons then show the decision. `approvals.buttons: false` turns them off and `approvals.buttonLabels` renames them.
 
 Any other message on a paused thread runs as usual, and the runtime answers the waiting calls as declined. An approve-only word with more text after it (`yes, but rename it`) counts as a new message, so nothing runs by accident.
 
@@ -402,20 +427,21 @@ const gateway = new Gateway({ /* ... */ hooks });
 
 Handlers are typed by hook name through `HookPayloads` (exported here and from `@cogitator-ai/types`, which also exports each event type):
 
-| Hook                 | Payload                  | Fields                                                              |
-| -------------------- | ------------------------ | ------------------------------------------------------------------- |
-| `message:received`   | `MessageReceivedEvent`   | `msg`, `threadId`, `user`                                           |
-| `message:sending`    | `MessageSendingEvent`    | `msg`, `threadId`, `text`, `channelId`                              |
-| `message:sent`       | `MessageSentEvent`       | `msg`, `threadId`, `text`, `messageId` (first chunk)                |
-| `agent:before_run`   | `AgentBeforeRunEvent`    | `msg`, `threadId`, `agent` (agent name)                             |
-| `agent:after_run`    | `AgentAfterRunEvent`     | `msg`, `threadId`, `output`                                         |
-| `agent:error`        | `AgentErrorEvent`        | `msg`, `threadId`, `error` (always an `Error`)                      |
-| `session:created`    | `SessionCreatedEvent`    | `session`, `threadId`                                               |
-| `session:compacted`  | `SessionCompactedEvent`  | `threadId`, `result` (`CompactionResult`)                           |
-| `stream:started`     | `StreamStartedEvent`     | `msg`, `threadId`                                                   |
-| `stream:finished`    | `StreamFinishedEvent`    | `msg`, `threadId`, `messageIds`                                     |
-| `approval:requested` | `ApprovalRequestedEvent` | `msg`, `threadId`, `userId`, `approvals`                            |
-| `approval:resolved`  | `ApprovalResolvedEvent`  | `msg`, `threadId`, `userId`, `decision`, `approvals?`, `superseded` |
+| Hook                 | Payload                  | Fields                                                                          |
+| -------------------- | ------------------------ | ------------------------------------------------------------------------------- |
+| `message:received`   | `MessageReceivedEvent`   | `msg`, `threadId`, `user`                                                       |
+| `message:sending`    | `MessageSendingEvent`    | `msg`, `threadId`, `text`, `channelId`                                          |
+| `message:sent`       | `MessageSentEvent`       | `msg`, `threadId`, `text`, `messageId` (first chunk)                            |
+| `agent:before_run`   | `AgentBeforeRunEvent`    | `msg`, `threadId`, `agent` (agent name)                                         |
+| `agent:after_run`    | `AgentAfterRunEvent`     | `msg`, `threadId`, `output`                                                     |
+| `agent:error`        | `AgentErrorEvent`        | `msg`, `threadId`, `error` (always an `Error`)                                  |
+| `session:created`    | `SessionCreatedEvent`    | `session`, `threadId`                                                           |
+| `session:compacted`  | `SessionCompactedEvent`  | `threadId`, `result` (`CompactionResult`)                                       |
+| `stream:started`     | `StreamStartedEvent`     | `msg`, `threadId`                                                               |
+| `stream:finished`    | `StreamFinishedEvent`    | `msg`, `threadId`, `messageIds`                                                 |
+| `approval:requested` | `ApprovalRequestedEvent` | `msg`, `threadId`, `userId`, `approvals`                                        |
+| `approval:resolved`  | `ApprovalResolvedEvent`  | `msg`, `threadId`, `userId`, `decision`, `approvals?`, `superseded`             |
+| `action:received`    | `ActionReceivedEvent`    | `action`, `answer(options?)`: a button press the Gateway does not handle itself |
 
 A handler typed `HookHandler` (`unknown` payload) is still accepted for any hook. Errors in one handler don't affect others (they are logged). Unsubscribe with `hooks.off(name, handler)`. Docs: [Lifecycle Hooks](https://cogitator.app/docs/channels/gateway#lifecycle-hooks).
 

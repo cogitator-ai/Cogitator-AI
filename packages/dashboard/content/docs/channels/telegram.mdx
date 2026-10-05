@@ -1,6 +1,6 @@
 ---
 title: Telegram
-description: Connect your AI agent to Telegram using grammY.
+description: Connect your AI agent to Telegram on the current Bot API, with rich Markdown, streamed drafts with a stop button, buttons, topics, albums and command menus.
 ---
 
 ## Setup
@@ -11,7 +11,7 @@ Install the Telegram SDK as a peer dependency:
 pnpm add grammy
 ```
 
-grammY is loaded at runtime via dynamic `import()` -- if it's not installed, the channel throws a clear error on startup.
+grammY is loaded at runtime via dynamic `import()` -- if it's not installed, the channel throws a clear error on startup. Every call goes through grammY's raw API, so Bot API features newer than the installed grammY still work.
 
 ## Get Your Bot Token
 
@@ -20,12 +20,13 @@ grammY is loaded at runtime via dynamic `import()` -- if it's not installed, the
 3. Choose a display name, e.g. "My AI Assistant"
 4. Choose a username (must end with `bot`), e.g. `my_ai_assistant_bot`
 5. BotFather replies with a token like `7204891735:AAHr...` -- save it
-6. Optionally, send `/setdescription` and `/setabouttext` to customize how your bot appears in search
-7. Set the env var:
+6. Set the env var:
 
 ```bash
 export TG_TOKEN=7204891735:AAHr...
 ```
+
+The name, descriptions and command menu can be set from code too, see [Commands and profile](#commands-and-profile).
 
 ## Usage
 
@@ -49,6 +50,7 @@ const gateway = new Gateway({
     },
   }),
   channels: [telegram],
+  stream: { flushInterval: 500, minChunkSize: 20 },
 });
 
 await gateway.start();
@@ -66,25 +68,177 @@ interface TelegramConfig {
     path?: string; // defaults to the pathname of `url`
     secretToken?: string; // checked against X-Telegram-Bot-Api-Secret-Token
   };
+  richMessages?: boolean; // send Markdown as rich messages (default true)
 }
 ```
 
 ## Features
 
-| Feature                | Support                                                               |
-| ---------------------- | --------------------------------------------------------------------- |
-| Text messages          | Supported                                                             |
-| Photos                 | Supported (passed to LLM as vision, caption becomes the text)         |
-| Voice / audio messages | Supported (transcribed via STT)                                       |
-| Video                  | Supported (announced to the model)                                    |
-| Documents              | Supported (text files are inlined)                                    |
-| Replies                | `replyTo` is set from `reply_to_message`                              |
-| Sending files          | Buffers (via `InputFile`) or URLs; photo/audio/video/document by type |
-| Streaming              | Drafts (`sendMessageDraft`) with fallback to `editMessageText`        |
-| Reactions              | Supported via `setMessageReaction`                                    |
-| Typing indicator       | Supported                                                             |
-| Max message length     | 4096 chars (auto-chunked)                                             |
-| Groups                 | Supported                                                             |
+| Feature               | Support                                                                                         |
+| --------------------- | ----------------------------------------------------------------------------------------------- |
+| Rich Markdown         | Headings, tables, code blocks, task lists, footnotes, formulas, `<details>`, up to 32,768 chars |
+| Streaming             | Rich drafts (`sendRichMessageDraft`) with a stop button; `editMessageText` in groups            |
+| Buttons               | Inline buttons with colors, copy-text and disabled buttons; presses arrive as actions           |
+| Tool approvals        | Approve and Deny buttons under the prompt, besides the reply words                              |
+| Topics                | Forum topics and topics of private chats; replies stay in the topic                             |
+| Text messages         | Supported, including `@username` chat ids for public channels                                   |
+| Photos                | Passed to the LLM as vision, the caption becomes the text                                       |
+| Voice / audio / video | Voice and audio transcribed via STT; video, video notes and GIFs announced to the model         |
+| Documents             | Text files are inlined, images become image attachments                                         |
+| Sending files         | Captions, GIFs as animations, OGG as voice notes, albums of up to ten                           |
+| Message options       | Silent, protected content, message effects, link previews, ephemeral messages                   |
+| Commands and profile  | Command menus by scope and language; bot name and descriptions                                  |
+| Reactions             | Supported via `setMessageReaction`                                                              |
+| Anything else         | `telegram.call(method, args)` reaches every Bot API method                                      |
+
+## Rich Markdown
+
+Telegram's rich messages (Bot API 10.1) render standard, GitHub Flavored Markdown: headings, tables, fenced code with a language, task lists, block quotes, footnotes, `$...$` and `$$...$$` formulas, `<details>` blocks and media by URL. With `richMessages` on, which is the default, the Gateway sends the agent's Markdown as written, so an answer with a table or a heading looks in Telegram the way the model wrote it. A rich message holds up to 32,768 characters, so long answers are rarely split.
+
+When Telegram refuses a rich message, the text goes out in Telegram's classic Markdown instead (headings become bold, `**bold**` becomes `*bold*`), split at 4,096 characters, and as plain text if even that cannot be parsed. On a Bot API server that does not know rich messages, the channel stops trying them. Set `richMessages: false` to always use classic Markdown.
+
+```typescript
+await telegram.sendText(
+  chatId,
+  '## Weekly report\n\n| Metric | Value |\n|:--|--:|\n| Users | **1,204** |',
+  {
+    format: 'markdown',
+  }
+);
+```
+
+`format: 'html'` sends classic Telegram HTML (`<b>`, `<i>`, `<code>`, `<pre>`, `<a>`, `<blockquote>`, `<tg-spoiler>`).
+
+## Streaming and the stop button
+
+In private chats, answers stream as drafts: Telegram shows the text growing with an animation, and the final answer is sent as a message. Drafts carry a stop button. When the user presses it, the run stops and what was written so far is kept as the reply. Turn the button off with `stream: { stopButton: false }`.
+
+Groups have no drafts, so there the answer is sent and edited as it grows.
+
+## Buttons
+
+Any message can carry rows of inline buttons:
+
+```typescript
+await telegram.sendText(chatId, 'Publish the noon edition?', {
+  buttons: [
+    [
+      { text: 'Publish', data: 'publish:noon', style: 'success' },
+      { text: 'Hold', data: 'hold:noon', style: 'danger' },
+    ],
+    [
+      { text: 'Preview', url: 'https://example.com/preview' },
+      { text: 'Copy id', copyText: 'noon-2026-10-05' },
+    ],
+  ],
+});
+```
+
+A button does exactly one thing: `data` (up to 64 bytes, sent back when pressed), `url`, `copyText`, or nothing with `disabled: true`. `style` colors it `primary`, `success` or `danger`.
+
+Presses of buttons with `data` reach the Gateway's `action:received` hook. Call `answer` to show a notice; otherwise the Gateway acknowledges the press silently:
+
+```typescript
+hooks.on('action:received', async ({ action, answer }) => {
+  if (action.data.startsWith('publish:')) {
+    await publish(action.data.slice(8));
+    await answer({ text: 'Publishing' });
+  }
+});
+```
+
+Without a Gateway, use `telegram.onAction(handler)` and `telegram.answerAction(id, options)`. `telegram.editButtons(chatId, messageId, rows)` replaces a message's buttons, and `null` removes them.
+
+## Tool approvals
+
+When a run pauses for tool approval, the prompt comes with **Approve** and **Deny** buttons. A press answers exactly as the reply words do: it goes through the middleware, only the user who started the run can answer, and the buttons then show the decision. Turn the buttons off or rename them in the Gateway's `approvals` config:
+
+```typescript
+new Gateway({
+  // ...
+  approvals: {
+    buttons: true,
+    buttonLabels: { approve: 'Run it', deny: 'Cancel', approved: 'Running', denied: 'Cancelled' },
+  },
+});
+```
+
+## Topics
+
+Messages from a forum topic, or from a topic of a private chat, carry `topicId`, and the Gateway replies, streams and shows typing in the same topic. Send into a topic yourself with `{ topicId }`.
+
+## Files
+
+```typescript
+await telegram.sendFile(
+  chatId,
+  {
+    type: 'image',
+    mimeType: 'image/png',
+    buffer: png,
+    caption: '**Edition card**',
+  },
+  { format: 'markdown', buttons: [[{ text: 'Read', url: 'https://example.com' }]] }
+);
+
+await telegram.sendFiles(chatId, [photo1, photo2, video], { replyTo: messageId });
+```
+
+Images go as photos and GIFs as animations, OGG and Opus audio as voice notes, other audio as audio, and anything else as a document. A caption longer than Telegram's 1,024 characters follows the file as its own message. `sendFiles` sends albums of up to ten: photos and videos share an album, audio and documents each get albums of their own kind. Albums carry no buttons. Both return the ids of the messages they sent.
+
+## Message options
+
+Every send takes the common `SendOptions`:
+
+| Option        | What it does                                                |
+| ------------- | ----------------------------------------------------------- | ---------- |
+| `replyTo`     | Reply to a message                                          |
+| `topicId`     | Post in a topic                                             |
+| `silent`      | No notification sound                                       |
+| `protect`     | Keep the message from being forwarded or saved              |
+| `effect`      | A message effect id (private chats only)                    |
+| `linkPreview` | `false` to turn it off, or `{ url, aboveText, size: 'small' | 'large' }` |
+| `visibleTo`   | Show the message to one user only (an ephemeral message)    |
+| `buttons`     | Rows of inline buttons                                      |
+
+Chat ids are numbers as strings (`'-1003921845978'`) or a public `@username`.
+
+## Commands and profile
+
+```typescript
+await telegram.setCommands(
+  [
+    { command: 'status', description: 'What is going on' },
+    { command: 'run', description: 'Start a job now' },
+  ],
+  { chatId: ownerChatId }
+);
+
+await telegram.setCommandMenu(commands, {
+  scope: { type: 'all_private_chats' },
+  languageCode: 'en',
+});
+
+await telegram.setProfile({
+  name: 'Desk',
+  description: 'Shown in an empty chat with the bot.',
+  shortDescription: 'Shown on the profile and in shared links.',
+});
+```
+
+`setCommands` with a `chatId` gives the menu to that chat only, so other users of the bot never see it. `setCommandMenu` takes every Telegram scope: `default`, `all_private_chats`, `all_group_chats`, `all_chat_administrators`, `chat`, `chat_administrators` and `chat_member`. Commands are 1-32 lowercase letters, digits or underscores.
+
+## Anything else
+
+`telegram.call(method, args)` calls any Bot API method with its parameters as Telegram documents them, for polls, checklists, pinned messages and everything the channel does not wrap:
+
+```typescript
+await telegram.call('sendPoll', {
+  chat_id: chatId,
+  question: 'Which story leads tomorrow?',
+  options: [{ text: 'Ports' }, { text: 'Elections' }],
+});
+```
 
 ## Webhook vs Polling
 
@@ -103,7 +257,7 @@ telegramChannel({
 });
 ```
 
-On `start()` the channel initializes the bot, starts an HTTP server on `port` that accepts `POST` requests on the webhook path (other paths return 404), and calls `setWebhook`. `stop()` closes the server. Put a reverse proxy with TLS in front of it, or expose the port directly — Telegram supports webhook ports 443, 80, 88, and 8443.
+On `start()` the channel initializes the bot, starts an HTTP server on `port` that accepts `POST` requests on the webhook path (other paths return 404), and calls `setWebhook`. `stop()` closes the server. Put a reverse proxy with TLS in front of it, or expose the port directly -- Telegram supports webhook ports 443, 80, 88, and 8443.
 
 ## Media Support
 
@@ -111,14 +265,12 @@ On `start()` the channel initializes the bot, starts an HTTP server on `port` th
 
 **Voice messages** are downloaded as OGG audio and passed through the Gateway's `mediaProcessor` (Deepgram, Groq or OpenAI API, or local Whisper). The transcribed text is sent to the LLM as the user's message, followed by the caption if any. See [Media and Voice Messages](/docs/channels/gateway#media-and-voice-messages) for STT configuration.
 
-**Documents** are downloaded and attached to the message. Image documents (PNG, JPEG, etc.) are treated as image attachments; text-like files are inlined into the prompt and other files are announced to the model.
-
-**Formatting:** answers are sent with legacy `Markdown` parse mode — `**bold**` is converted to `*bold*`, headings to bold and `* item` bullets to `•`. If Telegram still rejects the entities the message is re-sent as plain text. `message is not modified` errors during streaming are ignored.
+**Documents** are downloaded and attached to the message. Image documents (PNG, JPEG, etc.) are treated as image attachments; text-like files are inlined into the prompt and other files are announced to the model. Video notes and GIFs arrive as video attachments.
 
 ## Tips
 
-- Use `/setcommands` in BotFather to add command hints that appear when users type `/`
 - Disable "Group Privacy" in BotFather settings (via `/setprivacy`) if the bot should see all group messages, not just commands and @mentions
+- To post to a channel, add the bot to it as an administrator with the right to post messages; a public channel can be addressed by its `@username`
 - Telegram rate limits: ~30 messages/sec to the same chat, ~20 message edits/sec globally
 - Pending updates are dropped on startup (`drop_pending_updates: true`) to avoid replaying old messages after a restart
 - In groups `groupId` is the chat id, so `DmPolicyMiddleware`'s `groupPolicy` applies; a reply's `replyTo` is the quoted message id

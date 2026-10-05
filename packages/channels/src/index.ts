@@ -7,6 +7,8 @@ export {
   DEFAULT_APPROVE_WORDS,
   DEFAULT_DENY_WORDS,
   DEFAULT_NOT_ALLOWED_MESSAGE,
+  APPROVE_ACTION,
+  DENY_ACTION,
 } from './approvals';
 export type {
   GatewayApprovalsConfig,
@@ -16,6 +18,7 @@ export type {
 } from './approvals';
 
 export { StreamBuffer } from './stream-buffer';
+export type { StreamTarget } from './stream-buffer';
 
 export { HeartbeatScheduler } from './heartbeat';
 export type { HeartbeatConfig } from './heartbeat';
@@ -32,8 +35,13 @@ export type { TerminalConfig } from './channels/terminal';
 export { WebChatChannel, webchatChannel } from './channels/webchat';
 export type { WebChatConfig } from './channels/webchat';
 
-export { TelegramChannel, telegramChannel } from './channels/telegram';
-export type { TelegramConfig } from './channels/telegram';
+export {
+  TelegramChannel,
+  telegramChannel,
+  telegramChatId,
+  telegramKeyboard,
+} from './channels/telegram';
+export type { TelegramCommandScope, TelegramConfig, TelegramProfile } from './channels/telegram';
 
 export { DiscordChannel, discordChannel } from './channels/discord';
 export type { DiscordConfig } from './channels/discord';

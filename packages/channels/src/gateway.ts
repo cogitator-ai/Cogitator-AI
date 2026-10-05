@@ -2,6 +2,8 @@ import type {
   GatewayConfig,
   GatewayStats,
   Channel,
+  ChannelAction,
+  ChannelButton,
   ChannelMessage,
   ChannelUser,
   CompactionConfig,
@@ -33,6 +35,8 @@ import {
   DEFAULT_APPROVE_WORDS,
   DEFAULT_DENY_WORDS,
   DEFAULT_NOT_ALLOWED_MESSAGE,
+  APPROVE_ACTION,
+  DENY_ACTION,
   formatApprovalPrompt,
   parseApprovalReply,
 } from './approvals';
@@ -77,6 +81,20 @@ type GatewaySessionManager = ISessionManager & {
 interface PausedThread {
   userId: string;
   approvals: readonly ToolApprovalRequest[];
+}
+
+/** Markdown as the channel takes it: as written when it renders Markdown itself. */
+function adaptFor(channel: Channel, msg: ChannelMessage, text: string): string {
+  return channel.nativeMarkdown ? text : adaptMarkdown(text, msg.channelType);
+}
+
+/** The longest message the channel sends as one. */
+function limitFor(channel: Channel, msg: ChannelMessage): number {
+  return channel.maxMessageChars ?? getPlatformLimit(msg.channelType);
+}
+
+function draftKey(channelType: string, channelId: string, draftId: number): string {
+  return `${channelType}:${channelId}:${draftId}`;
 }
 
 type RunInvocation = (extra: Pick<RunOptions, 'stream' | 'onToken'>) => Promise<RunResult>;
@@ -127,6 +145,10 @@ export class Gateway {
   private readonly hooks: HookRegistry | null;
   private readonly approvalWords: ApprovalReplyWords;
   private readonly pausedThreads = new Map<string, PausedThread>();
+  /** The stop of each run, by the signal the run was given */
+  private readonly stops = new WeakMap<AbortSignal, AbortController>();
+  /** The stop of each run streaming into a draft with a stop button, by channel, chat and draft */
+  private readonly stoppableDrafts = new Map<string, AbortController>();
   private readonly lastMessageTime = new Map<string, number>();
   private readonly threads = new Map<string, Omit<GatewaySessionInfo, 'threadId' | 'active'>>();
   private readonly inFlight = new Map<string, number>();
@@ -160,6 +182,12 @@ export class Gateway {
 
     for (const channel of this.channels) {
       channel.onMessage((msg) => this.handleIncoming(msg));
+      channel.onAction?.((action) => this.handleAction(channel, action));
+      channel.onStop?.((stop) => {
+        this.stoppableDrafts
+          .get(draftKey(stop.channelType, stop.channelId, stop.draftId))
+          ?.abort(new Error('Stopped by the user'));
+      });
     }
   }
 
@@ -245,6 +273,74 @@ export class Gateway {
     await this.compactThread(threadId, agent);
   }
 
+  /**
+   * A button press. The gateway's own Approve and Deny buttons answer a paused run as the reply
+   * words do, through the same middleware and checks; every other press goes to the
+   * `action:received` hook.
+   */
+  private async handleAction(channel: Channel, action: ChannelAction): Promise<void> {
+    let answered = false;
+    const answer = async (options?: { text?: string; alert?: boolean }) => {
+      if (answered) return;
+      answered = true;
+      await channel.answerAction?.(action.id, options);
+    };
+
+    try {
+      if (action.data === APPROVE_ACTION || action.data === DENY_ACTION) {
+        await this.answerApprovalButton(channel, action, answer);
+        return;
+      }
+      await this.hooks?.emit('action:received', { action, answer });
+    } finally {
+      await answer().catch(() => {});
+    }
+  }
+
+  private async answerApprovalButton(
+    channel: Channel,
+    action: ChannelAction,
+    answer: (options?: { text?: string; alert?: boolean }) => Promise<void>
+  ): Promise<void> {
+    const approve = action.data === APPROVE_ACTION;
+    const msg: ChannelMessage = {
+      id: action.messageId ?? action.id,
+      channelType: action.channelType,
+      channelId: action.channelId,
+      userId: action.userId,
+      ...(action.userName ? { userName: action.userName } : {}),
+      ...(action.channelId.startsWith('-') ? { groupId: action.channelId } : {}),
+      ...(action.topicId ? { topicId: action.topicId } : {}),
+      text: (approve ? this.approvalWords.approveWords : this.approvalWords.denyWords)[0] ?? '',
+      raw: action.raw,
+    };
+    const threadId = this.getThreadId(msg);
+    const paused = this.pausedThreads.get(threadId);
+    const waiting = paused ? paused.userId === action.userId : !this.threads.has(threadId);
+    if (!waiting) {
+      await answer({
+        text: this.config.approvals?.notAllowedMessage ?? DEFAULT_NOT_ALLOWED_MESSAGE,
+        alert: true,
+      });
+      return;
+    }
+
+    const labels = this.config.approvals?.buttonLabels;
+    await answer();
+    if (action.messageId) {
+      await channel
+        .editButtons?.(action.channelId, action.messageId, [
+          [
+            approve
+              ? { text: labels?.approved ?? 'Approved', disabled: true, style: 'success' }
+              : { text: labels?.denied ?? 'Denied', disabled: true, style: 'danger' },
+          ],
+        ])
+        .catch(() => {});
+    }
+    await this.handleIncoming(msg);
+  }
+
   private async handleIncoming(msg: ChannelMessage): Promise<void> {
     if (this.debouncer) {
       this.debouncer.enqueue(msg);
@@ -289,10 +385,14 @@ export class Gateway {
     const threadId = this.getThreadId(msg);
     this.inFlight.set(threadId, (this.inFlight.get(threadId) ?? 0) + 1);
 
+    const stop = new AbortController();
+    const runSignal = signal ? AbortSignal.any([signal, stop.signal]) : stop.signal;
+    this.stops.set(runSignal, stop);
+
     try {
-      await this.processWithChannel(msg, channel, threadId, signal);
+      await this.processWithChannel(msg, channel, threadId, runSignal);
     } catch (error) {
-      if (signal?.aborted) return;
+      if (runSignal.aborted) return;
       this.config.onError?.(toError(error), msg);
     } finally {
       const remaining = (this.inFlight.get(threadId) ?? 1) - 1;
@@ -370,12 +470,16 @@ export class Gateway {
         : undefined;
     tracker?.setPhase('queued');
 
+    const typing = () =>
+      msg.topicId
+        ? channel.sendTyping(msg.channelId, { topicId: msg.topicId })
+        : channel.sendTyping(msg.channelId);
     const typingInterval = setInterval(() => {
-      channel.sendTyping(msg.channelId).catch(() => {});
+      typing().catch(() => {});
     }, TYPING_INTERVAL_MS);
 
     try {
-      await channel.sendTyping(msg.channelId).catch(() => {});
+      await typing().catch(() => {});
       tracker?.setPhase('thinking');
 
       const resumed =
@@ -480,7 +584,7 @@ export class Gateway {
       }
       if (error.code === ErrorCode.THREAD_ACCESS_DENIED) {
         const text = this.config.approvals?.notAllowedMessage ?? DEFAULT_NOT_ALLOWED_MESSAGE;
-        await this.sendReply(channel, msg, threadId, adaptMarkdown(text, msg.channelType), msg.id);
+        await this.sendReply(channel, msg, threadId, adaptFor(channel, msg, text), msg.id);
         return true;
       }
       throw error;
@@ -517,8 +621,22 @@ export class Gateway {
     await this.hooks?.emit('approval:requested', event);
 
     const format = this.config.approvals?.format ?? formatApprovalPrompt;
-    const prompt = adaptMarkdown(format(approvals, this.approvalWords), msg.channelType);
-    if (prompt) await this.sendReply(channel, msg, threadId, prompt, replyTo);
+    const prompt = adaptFor(channel, msg, format(approvals, this.approvalWords));
+    const labels = this.config.approvals?.buttonLabels;
+    const buttons =
+      channel.onAction && this.config.approvals?.buttons !== false
+        ? [
+            [
+              {
+                text: labels?.approve ?? 'Approve',
+                data: APPROVE_ACTION,
+                style: 'success' as const,
+              },
+              { text: labels?.deny ?? 'Deny', data: DENY_ACTION, style: 'danger' as const },
+            ],
+          ]
+        : undefined;
+    if (prompt) await this.sendReply(channel, msg, threadId, prompt, replyTo, buttons);
   }
 
   private async deliver(
@@ -590,13 +708,16 @@ export class Gateway {
     channel: Channel,
     msg: ChannelMessage,
     output: string,
-    replyTo: string | undefined
+    replyTo: string | undefined,
+    buttons?: ChannelButton[][]
   ): Promise<string> {
-    const chunks = chunkMessage(output, getPlatformLimit(msg.channelType));
+    const chunks = chunkMessage(output, limitFor(channel, msg));
     let sentId = '';
     for (let i = 0; i < chunks.length; i++) {
       const id = await channel.sendText(msg.channelId, chunks[i], {
         ...(i === 0 && replyTo ? { replyTo } : {}),
+        ...(i === chunks.length - 1 && buttons ? { buttons } : {}),
+        ...(msg.topicId ? { topicId: msg.topicId } : {}),
         format: 'markdown',
       });
       if (i === 0) sentId = id;
@@ -609,7 +730,8 @@ export class Gateway {
     msg: ChannelMessage,
     threadId: string,
     text: string,
-    replyTo: string | undefined
+    replyTo: string | undefined,
+    buttons?: ChannelButton[][]
   ): Promise<void> {
     await this.hooks?.emit('message:sending', {
       msg,
@@ -618,7 +740,7 @@ export class Gateway {
       channelId: msg.channelId,
     });
 
-    const sentId = await this.sendChunked(channel, msg, text, replyTo);
+    const sentId = await this.sendChunked(channel, msg, text, replyTo, buttons);
 
     await this.hooks?.emit('message:sent', {
       msg,
@@ -653,7 +775,7 @@ export class Gateway {
     await this.hooks?.emit('agent:after_run', { msg, threadId, output: result.output });
     if (signal?.aborted) return;
 
-    const output = adaptMarkdown(result.output, msg.channelType);
+    const output = adaptFor(channel, msg, result.output);
     if (output) await this.sendReply(channel, msg, threadId, output, replyTo);
 
     await this.requestApprovals(result, msg, channel, threadId, output ? undefined : replyTo);
@@ -670,17 +792,58 @@ export class Gateway {
     const replyTo = isScheduled(msg) ? undefined : msg.id;
     const streamCfg = {
       ...this.streamConfig,
-      maxMessageChars: this.streamConfig.maxMessageChars ?? getPlatformLimit(msg.channelType),
+      maxMessageChars: this.streamConfig.maxMessageChars ?? limitFor(channel, msg),
     };
+    const stop = signal ? this.stops.get(signal) : undefined;
     const stream = new StreamBuffer(
       channel,
       msg.channelId,
       streamCfg,
       replyTo,
       !!channel.sendDraft,
-      (text) => adaptMarkdown(text, msg.channelType)
+      (text) => adaptFor(channel, msg, text),
+      {
+        ...(msg.topicId ? { topicId: msg.topicId } : {}),
+        canStop: !!stop && !!channel.onStop && this.streamConfig.stopButton !== false,
+      }
     );
     stream.start();
+    const stoppable =
+      stop && channel.onStop && this.streamConfig.stopButton !== false && stream.draftId !== null
+        ? draftKey(channel.type, msg.channelId, stream.draftId)
+        : undefined;
+    if (stoppable && stop) this.stoppableDrafts.set(stoppable, stop);
+    try {
+      await this.streamRun(agent, msg, channel, threadId, signal, invoke, stream, stop, replyTo);
+    } finally {
+      if (stoppable) this.stoppableDrafts.delete(stoppable);
+    }
+  }
+
+  /**
+   * Streams one run into its buffer. A run the user stopped keeps what it wrote so far as its
+   * reply instead of failing.
+   */
+  private async streamRun(
+    agent: Agent,
+    msg: ChannelMessage,
+    channel: Channel,
+    threadId: string,
+    signal: AbortSignal | undefined,
+    invoke: RunInvocation,
+    stream: StreamBuffer,
+    stop: AbortController | undefined,
+    replyTo: string | undefined
+  ): Promise<void> {
+    const stoppedByUser = () => stop?.signal.aborted === true;
+    const keepWhatWasWritten = async () => {
+      await stream.finish();
+      await this.hooks?.emit('stream:finished', {
+        msg,
+        threadId,
+        messageIds: stream.getMessageIds(),
+      });
+    };
 
     await this.hooks?.emit('agent:before_run', { msg, threadId, agent: agent.name });
     await this.hooks?.emit('stream:started', { msg, threadId });
@@ -696,6 +859,10 @@ export class Gateway {
         },
       });
     } catch (error) {
+      if (stoppedByUser()) {
+        await keepWhatWasWritten();
+        return;
+      }
       await stream.abort();
       if (!isResumeRejection(error)) {
         await this.hooks?.emit('agent:error', { msg, threadId, error: toError(error) });
@@ -703,6 +870,10 @@ export class Gateway {
       throw error;
     }
 
+    if (stoppedByUser()) {
+      await keepWhatWasWritten();
+      return;
+    }
     if (signal?.aborted) {
       await stream.abort();
       return;
@@ -713,7 +884,7 @@ export class Gateway {
       await stream.finish();
     } else {
       await stream.abort();
-      const output = adaptMarkdown(result.output, msg.channelType);
+      const output = adaptFor(channel, msg, result.output);
       if (output) {
         await this.sendChunked(channel, msg, output, replyTo);
         replied = true;

@@ -24,7 +24,18 @@ export interface GatewayApprovalsConfig {
   denyWords?: readonly string[];
   /** Sent when someone other than the user who started the run answers it */
   notAllowedMessage?: string;
+  /**
+   * Put Approve and Deny buttons under the prompt on channels that have buttons (default
+   * true). A press answers like the reply words do, and the buttons then show the decision.
+   */
+  buttons?: boolean;
+  /** Labels of the buttons and of the decision they show once pressed */
+  buttonLabels?: { approve?: string; deny?: string; approved?: string; denied?: string };
 }
+
+/** The `data` of the approval buttons the gateway puts under its prompt. */
+export const APPROVE_ACTION = 'cogitator:approve';
+export const DENY_ACTION = 'cogitator:deny';
 
 export const DEFAULT_APPROVE_WORDS: readonly string[] = ['approve', 'yes', 'да', 'одобряю'];
 export const DEFAULT_DENY_WORDS: readonly string[] = ['deny', 'no', 'нет', 'отклоняю'];

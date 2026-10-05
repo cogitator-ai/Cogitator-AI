@@ -1,5 +1,13 @@
 import type { Channel, StreamConfig } from '@cogitator-ai/types';
 
+/** Where a streamed reply goes inside the chat, and whether its draft can be stopped. */
+export interface StreamTarget {
+  /** The topic of the chat to stream into */
+  topicId?: string;
+  /** Show a stop button on the draft, where the channel has one */
+  canStop?: boolean;
+}
+
 const DEFAULT_FLUSH_INTERVAL = 500;
 const DEFAULT_MIN_CHUNK_SIZE = 20;
 
@@ -28,7 +36,7 @@ export class StreamBuffer {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private ops: Promise<void> = Promise.resolve();
   private flushing = false;
-  private readonly draftId: number | null = null;
+  private readonly draftIdValue: number | null = null;
   private draftFailed = false;
   private replySent = false;
   private lastFlushEnd = 0;
@@ -44,10 +52,11 @@ export class StreamBuffer {
     },
     private readonly replyTo?: string,
     useDraft = false,
-    private readonly format: (text: string) => string = (text) => text
+    private readonly format: (text: string) => string = (text) => text,
+    private readonly target: StreamTarget = {}
   ) {
     if (useDraft && channel.sendDraft) {
-      this.draftId = Math.floor(Math.random() * 2_147_483_646) + 1;
+      this.draftIdValue = Math.floor(Math.random() * 2_147_483_646) + 1;
     }
   }
 
@@ -78,6 +87,11 @@ export class StreamBuffer {
     }
     this.buffer = '';
     this.segment = createSegment();
+  }
+
+  /** The id of the draft the reply streams into, or null when it streams by editing messages. */
+  get draftId(): number | null {
+    return this.draftActive ? this.draftIdValue : null;
   }
 
   getMessageIds(): readonly string[] {
@@ -130,7 +144,7 @@ export class StreamBuffer {
   }
 
   private get draftActive(): boolean {
-    return this.draftId !== null && !this.draftFailed;
+    return this.draftIdValue !== null && !this.draftFailed;
   }
 
   private nextReplyTo(): string | undefined {
@@ -143,6 +157,7 @@ export class StreamBuffer {
     const msgId = await this.channel.sendText(this.channelId, this.format(text), {
       replyTo: this.nextReplyTo(),
       format: 'markdown',
+      ...(this.target.topicId ? { topicId: this.target.topicId } : {}),
     });
     segment.messageId = msgId;
     segment.lastSentText = text;
@@ -209,7 +224,11 @@ export class StreamBuffer {
 
     if (this.draftActive) {
       try {
-        await this.channel.sendDraft!(this.channelId, this.draftId!, this.format(text));
+        await this.channel.sendDraft!(this.channelId, this.draftIdValue!, this.format(text), {
+          format: 'markdown',
+          ...(this.target.topicId ? { topicId: this.target.topicId } : {}),
+          ...(this.target.canStop ? { canStop: true } : {}),
+        });
         segment.lastSentText = text;
       } catch {
         this.draftFailed = true;
