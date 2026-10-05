@@ -122,7 +122,7 @@ describeE2E('Core: Agent Tool Execution', () => {
     expect(result.toolCalls.length).toBeLessThanOrEqual(1);
   });
 
-  it('calls multiple tools in sequence', async () => {
+  it("calls multiple tools in sequence, the second on the first one's result", async () => {
     const agent = createTestAgent({
       instructions: [
         'You are a calculator. You CANNOT do math yourself. You MUST call a tool for EVERY arithmetic operation.',
@@ -131,22 +131,28 @@ describeE2E('Core: Agent Tool Execution', () => {
         'Available: multiply(a,b) and add(a,b).',
       ].join(' '),
       tools: [tools.multiply, tools.add],
+      temperature: 0,
     });
+    const chained = (run: RunResult) =>
+      run.toolCalls.some((tc) => tc.name === 'multiply') &&
+      run.toolCalls.some(
+        (tc) =>
+          tc.name === 'add' && Object.values(tc.arguments as Record<string, number>).includes(12)
+      );
 
     let result: RunResult | undefined;
-    for (let attempt = 0; attempt < 8; attempt++) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       result = await cogitator.run(agent, {
         input:
           'Compute this in two steps: Step 1 - call multiply(3, 4). Step 2 - call add(result_of_step_1, 5). You MUST call BOTH tools.',
       });
-      const usedBoth =
-        result.toolCalls.some((tc) => tc.name === 'multiply') &&
-        result.toolCalls.some((tc) => tc.name === 'add');
-      if (usedBoth) break;
+      if (chained(result)) break;
     }
 
     expect(result).toBeDefined();
-    expect(result!.toolCalls.some((tc) => tc.name === 'multiply')).toBe(true);
-    expect(result!.toolCalls.some((tc) => tc.name === 'add')).toBe(true);
+    expect(result!.toolCalls.map((tc) => tc.name)).toEqual(
+      expect.arrayContaining(['multiply', 'add'])
+    );
+    expect(chained(result!)).toBe(true);
   });
 });
