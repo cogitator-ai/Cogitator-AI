@@ -124,34 +124,38 @@ function renderMarkdownTag(tag: HtmlTagToken): string {
 /**
  * Markdown for a page. A link becomes `[text](href)` with its text on one line, a link
  * without text (an icon, say) leaves only its whitespace, and an `a` opened inside
- * another ends the outer one, as browsers do.
+ * another ends the outer one, as browsers do. The page is kept in parts and a link
+ * rewrites only its own, so a page of many links costs as much as its length.
  */
 function renderMarkdown(tokens: readonly HtmlToken[]): string {
-  let markdown = '';
+  const parts: string[] = [];
   let link: { href: string; start: number } | null = null;
 
   const closeLink = () => {
     if (!link) return;
-    const text = markdown.slice(link.start);
+    const text = parts.splice(link.start).join('');
     const label = collapseWhitespace(text);
-    markdown = markdown.slice(0, link.start) + (label ? `[${label}](${link.href})` : text);
+    parts.push(label ? `[${label}](${link.href})` : text);
     link = null;
   };
 
   for (const token of removeElements(tokens, NON_CONTENT)) {
     if (token.type === 'text') {
-      markdown += decodeEntities(token.text);
+      parts.push(decodeEntities(token.text));
     } else if (token.name !== 'a') {
-      markdown += renderMarkdownTag(token);
+      parts.push(renderMarkdownTag(token));
     } else {
       closeLink();
       const href = token.closing ? undefined : getAttribute(token, 'href');
-      if (href) link = { href, start: markdown.length };
+      if (href) link = { href, start: parts.length };
     }
   }
   closeLink();
 
-  return markdown.replace(/\n{3,}/g, '\n\n').trim();
+  return parts
+    .join('')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 function innerText(tokens: readonly HtmlToken[], open: number, close: number): string {

@@ -517,17 +517,21 @@ describe('web_scrape tool', () => {
     });
 
     async function scrapeTime(html: string): Promise<number> {
-      let total = 0;
-      for (const format of ['text', 'markdown'] as const) {
-        mockFetch.mockResolvedValueOnce(createHtmlResponse(html));
-        const started = performance.now();
-        await webScrape.execute(
-          { url: 'https://example.com', format, includeLinks: true, includeImages: true },
-          ctx
-        );
-        total += performance.now() - started;
+      let best = Infinity;
+      for (let run = 0; run < 3; run++) {
+        let total = 0;
+        for (const format of ['text', 'markdown'] as const) {
+          mockFetch.mockResolvedValueOnce(createHtmlResponse(html));
+          const started = performance.now();
+          await webScrape.execute(
+            { url: 'https://example.com', format, includeLinks: true, includeImages: true },
+            ctx
+          );
+          total += performance.now() - started;
+        }
+        best = Math.min(best, total);
       }
-      return total;
+      return best;
     }
 
     it.each([
@@ -539,8 +543,8 @@ describe('web_scrape tool', () => {
       ['nested fragments', (n: number) => '<scr'.repeat(n) + 'x' + 'ipt>x</script>'.repeat(n)],
     ])('cleans hostile markup with %s in linear time', async (_name, build) => {
       await scrapeTime(build(500));
-      const small = await scrapeTime(build(5_000));
-      const large = await scrapeTime(build(20_000));
+      const small = await scrapeTime(build(10_000));
+      const large = await scrapeTime(build(40_000));
       expect(large / Math.max(small, 1)).toBeLessThan(10);
     });
   });
