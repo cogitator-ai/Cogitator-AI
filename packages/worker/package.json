@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/worker",
-  "version": "0.8.8",
+  "version": "0.8.9",
   "description": "Distributed job queue for Cogitator agent execution",
   "keywords": [
     "cogitator",
