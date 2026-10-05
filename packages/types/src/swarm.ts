@@ -118,11 +118,18 @@ export interface DebateConfig {
   /** Number of debate rounds */
   rounds: number;
   /**
-   * Max output tokens per turn. A reasoning model spends its reasoning from the same budget, so
-   * a low limit can leave its turn empty or cut off: give such models a few thousand and keep
-   * the length of a turn in the instructions instead
+   * How long a turn's answer may be, in tokens. A model that does not reason gets exactly this
+   * limit. A reasoning model spends its reasoning from the same limit, so a turn that came back
+   * empty or cut off while the model reasoned is run once more with room for its reasoning on
+   * top: `reasoningTokensPerTurn`, or twice what it reasoned when that is more
    */
   maxTokensPerTurn?: number;
+  /**
+   * Tokens a turn may spend reasoning on top of `maxTokensPerTurn`, given from the first try.
+   * Set it for reasoning models to spare them the retry. Unset, a turn starved by its reasoning
+   * gets 4096 on its retry
+   */
+  reasoningTokensPerTurn?: number;
   /** Debate format */
   format?: 'structured' | 'freeform';
   /**

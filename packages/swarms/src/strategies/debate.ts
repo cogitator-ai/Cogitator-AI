@@ -18,6 +18,15 @@ function speaker(message: SwarmMessage): string {
   return typeof role === 'string' && role !== '' ? `${message.from} (${role})` : message.from;
 }
 
+/** Room for reasoning a turn gets on its retry when `reasoningTokensPerTurn` is not set. */
+const DEFAULT_REASONING_ROOM = 4096;
+
+/** Whether a turn came back empty or cut off at its limit while the model was reasoning. */
+function starvedByReasoning(result: RunResult, limit: number): boolean {
+  if ((result.usage.reasoningTokens ?? 0) === 0) return false;
+  return result.output.trim() === '' || result.usage.outputTokens >= limit;
+}
+
 export class DebateStrategy extends BaseStrategy {
   private config: DebateConfig;
 
@@ -111,14 +120,7 @@ export class DebateStrategy extends BaseStrategy {
           debater.agent.name
         );
 
-        const result = await this.coordinator.runAgent(
-          debater.agent.name,
-          input,
-          debaterContext,
-          this.config.maxTokensPerTurn !== undefined
-            ? { maxTokens: this.config.maxTokensPerTurn }
-            : undefined
-        );
+        const result = await this.runTurn(debater.agent.name, input, debaterContext);
         agentResults.set(`${debater.agent.name}_round${round}`, result);
 
         const message: SwarmMessage = {
@@ -237,6 +239,28 @@ Guidelines:
 - Maintain a professional and constructive tone
 ${this.config.format === 'structured' ? '- Structure your argument with clear points' : ''}
 `.trim();
+  }
+
+  /**
+   * One debater's turn under `maxTokensPerTurn`. A reasoning model spends its reasoning from the
+   * same limit, so a turn it came back from empty or cut off is run once more with room for the
+   * reasoning on top of the answer. A model that does not reason keeps the limit as it is.
+   */
+  private async runTurn(
+    name: string,
+    input: string,
+    context: Record<string, unknown>
+  ): Promise<RunResult> {
+    const answer = this.config.maxTokensPerTurn;
+    if (answer === undefined) return this.coordinator.runAgent(name, input, context);
+    const room = this.config.reasoningTokensPerTurn;
+    const limit = answer + (room ?? 0);
+    const first = await this.coordinator.runAgent(name, input, context, { maxTokens: limit });
+    if (!starvedByReasoning(first, limit)) return first;
+    const reasoned = first.usage.reasoningTokens ?? 0;
+    return this.coordinator.runAgent(name, input, context, {
+      maxTokens: answer + Math.max(room ?? DEFAULT_REASONING_ROOM, reasoned * 2),
+    });
   }
 
   private synthesizeDebate(transcript: SwarmMessage[], topic: string): string {
