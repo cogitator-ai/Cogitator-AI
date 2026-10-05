@@ -15,7 +15,7 @@ export { regexMatch, regexReplace } from './regex';
 
 export { fileRead, fileWrite, fileList, fileExists, fileDelete } from './filesystem';
 
-export { httpRequest } from './http';
+export { httpRequest, createHttpRequestTool, type HttpRequestToolOptions } from './http';
 
 export { exec } from './exec';
 

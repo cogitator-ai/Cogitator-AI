@@ -11,6 +11,7 @@ import {
   type HtmlTagToken,
   type HtmlToken,
 } from '../utils/html';
+import { createPublicFetch, type FetchFunction } from '../utils/public-network';
 
 const webScrapeParams = z.object({
   url: z.string().url().describe('URL to scrape'),
@@ -299,6 +300,17 @@ export interface WebScrapeOptions {
    * it, e.g. `new RobotsPolicy({ userAgent })`. A disallowed page is reported as an error
    */
   robots?: RobotsChecker;
+  /**
+   * Let the tool reach loopback, private and link-local hosts, for an agent that scrapes a
+   * trusted intranet. Off by default: a model chooses the URL, and a page or a prompt can ask
+   * it for `http://169.254.169.254/` or an internal admin page
+   */
+  allowPrivateNetwork?: boolean;
+  /**
+   * Fetches pages instead of the built-in client, e.g. through a proxy. The tool then trusts it
+   * with every URL, so it should apply its own network policy
+   */
+  fetch?: FetchFunction;
 }
 
 const DEFAULT_USER_AGENT =
@@ -307,11 +319,14 @@ const MAX_REDIRECTS = 5;
 
 /**
  * A `web_scrape` tool with its own User-Agent and, optionally, a robots.txt checker. With a
- * checker the tool follows redirects itself so every hop is checked.
+ * checker the tool follows redirects itself so every hop is checked. It reaches only public
+ * hosts unless `allowPrivateNetwork` is set or a `fetch` of the caller's own is given.
  */
 export function createWebScrapeTool(options: WebScrapeOptions = {}) {
   const userAgent = options.userAgent ?? DEFAULT_USER_AGENT;
   const robots = options.robots;
+  const fetchPage =
+    options.fetch ?? createPublicFetch({ allowPrivateNetwork: options.allowPrivateNetwork });
 
   return tool({
     name: 'web_scrape',
@@ -346,7 +361,7 @@ export function createWebScrapeTool(options: WebScrapeOptions = {}) {
           if (robots && !(await robots.allows(current))) {
             return { error: `robots.txt does not allow fetching ${current}`, url };
           }
-          response = await fetch(current, {
+          response = await fetchPage(current, {
             headers,
             signal: abort.signal,
             redirect: robots ? 'manual' : 'follow',
@@ -432,5 +447,5 @@ export function createWebScrapeTool(options: WebScrapeOptions = {}) {
   });
 }
 
-/** The `web_scrape` tool with the default User-Agent and no robots.txt check. */
+/** The `web_scrape` tool with the default User-Agent, no robots.txt check and public hosts only. */
 export const webScrape = createWebScrapeTool();

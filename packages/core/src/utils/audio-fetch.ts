@@ -1,5 +1,6 @@
 import type { AudioFormat, AudioInput } from '@cogitator-ai/types';
 import { createLinkedAbortController, getAbortErrorMessage } from './abort';
+import type { FetchFunction } from './public-network';
 
 export interface FetchedAudio {
   buffer: Buffer;
@@ -52,15 +53,23 @@ function detectAudioFormat(contentType: string | null, url: string): AudioFormat
   return 'mp3';
 }
 
+/** How audio is fetched from a URL. */
+export interface AudioFetchOptions {
+  timeout?: number;
+  signal?: AbortSignal;
+  /** Fetches the audio instead of the global `fetch`, e.g. `fetchPublic` for URLs a model chose */
+  fetch?: FetchFunction;
+}
+
 export async function fetchAudioAsBuffer(
   url: string,
-  options?: { timeout?: number; signal?: AbortSignal }
+  options?: AudioFetchOptions
 ): Promise<FetchedAudio> {
   const timeout = options?.timeout ?? 60000;
   const abort = createLinkedAbortController(options?.signal, timeout);
 
   try {
-    const response = await fetch(url, {
+    const response = await (options?.fetch ?? fetch)(url, {
       signal: abort.signal,
       headers: { Accept: 'audio/*' },
     });
@@ -100,7 +109,7 @@ export async function fetchAudioAsBuffer(
 
 export async function audioInputToBuffer(
   input: AudioInput,
-  options?: { timeout?: number; signal?: AbortSignal }
+  options?: AudioFetchOptions
 ): Promise<{ buffer: Buffer; filename: string; format: AudioFormat }> {
   if (typeof input === 'string') {
     if (input.startsWith('data:audio/')) {

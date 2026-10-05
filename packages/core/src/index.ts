@@ -32,6 +32,7 @@ export {
   fileExists,
   fileDelete,
   httpRequest,
+  createHttpRequestTool,
   exec,
   webSearch,
   createWebSearchTool,
@@ -61,6 +62,7 @@ export type {
   CoreFactsLike,
   SchedulerToolsConfig,
   WebScrapeOptions,
+  HttpRequestToolOptions,
   WebSearchOptions,
   SearchProvider,
   SearchTopic,
@@ -95,8 +97,21 @@ export {
   audioInputToBuffer,
   isValidAudioFormat,
   getAudioMimeType,
+  createPublicFetch,
+  fetchPublic,
+  isPrivateAddress,
+  assertPublicUrl,
+  createGuardedLookup,
+  PrivateNetworkError,
 } from './utils/index';
-export type { FetchedImage, FetchedAudio } from './utils/index';
+export type {
+  FetchedImage,
+  FetchedAudio,
+  AudioFetchOptions,
+  FetchFunction,
+  PublicFetchOptions,
+  Resolver,
+} from './utils/index';
 
 export { Logger, getLogger, setLogger, createLogger, createLoggerFromConfig } from './logger';
 export type { LogLevel, LogContext, LogEntry, LoggerOptions } from './logger';

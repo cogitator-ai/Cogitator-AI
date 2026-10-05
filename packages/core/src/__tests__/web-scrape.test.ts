@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { webScrape } from '../tools/web-scrape';
+import { createWebScrapeTool } from '../tools/web-scrape';
+import type { FetchFunction } from '../utils/public-network';
+/** Sends the tool's requests through the global `fetch`, which these tests stub. */
+const viaGlobalFetch: FetchFunction = (input, init) => fetch(input, init);
+const webScrape = createWebScrapeTool({ fetch: viaGlobalFetch });
 
 const mockFetch = vi.fn();
 

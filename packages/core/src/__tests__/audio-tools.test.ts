@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createTranscribeAudioTool } from '../tools/audio-transcribe';
+import type { FetchFunction } from '../utils/public-network';
 import { createGenerateSpeechTool } from '../tools/audio-generate';
 import type { ToolContext } from '@cogitator-ai/types';
+/** Sends the tool's requests through the global `fetch`, which these tests stub. */
+const viaGlobalFetch: FetchFunction = (input, init) => fetch(input, init);
 
 describe('audio tools', () => {
   const mockContext: ToolContext = {
@@ -21,7 +24,7 @@ describe('audio tools', () => {
 
   describe('createTranscribeAudioTool', () => {
     it('should create a tool with correct metadata', () => {
-      const tool = createTranscribeAudioTool({ apiKey: 'test-key' });
+      const tool = createTranscribeAudioTool({ fetch: viaGlobalFetch, apiKey: 'test-key' });
 
       expect(tool.name).toBe('transcribeAudio');
       expect(tool.description).toContain('Transcribe audio');
@@ -42,7 +45,7 @@ describe('audio tools', () => {
         })
       );
 
-      const tool = createTranscribeAudioTool({ apiKey: 'test-key' });
+      const tool = createTranscribeAudioTool({ fetch: viaGlobalFetch, apiKey: 'test-key' });
       const audioData = Buffer.from('fake audio').toString('base64');
 
       const result = await tool.execute(
@@ -81,7 +84,7 @@ describe('audio tools', () => {
         })
       );
 
-      const tool = createTranscribeAudioTool({ apiKey: 'test-key' });
+      const tool = createTranscribeAudioTool({ fetch: viaGlobalFetch, apiKey: 'test-key' });
       const audioData = Buffer.from('fake audio').toString('base64');
 
       const result = await tool.execute(
@@ -106,7 +109,7 @@ describe('audio tools', () => {
         })
       );
 
-      const tool = createTranscribeAudioTool({ apiKey: 'test-key' });
+      const tool = createTranscribeAudioTool({ fetch: viaGlobalFetch, apiKey: 'test-key' });
       const audioData = Buffer.from('fake audio').toString('base64');
 
       const result = await tool.execute(
@@ -141,7 +144,7 @@ describe('audio tools', () => {
         })
       );
 
-      const tool = createTranscribeAudioTool({ apiKey: 'test-key' });
+      const tool = createTranscribeAudioTool({ fetch: viaGlobalFetch, apiKey: 'test-key' });
       const audioData = Buffer.from('fake audio').toString('base64');
 
       const result = await tool.execute(
@@ -167,6 +170,7 @@ describe('audio tools', () => {
       );
 
       const tool = createTranscribeAudioTool({
+        fetch: viaGlobalFetch,
         apiKey: 'test-key',
         defaultModel: 'gpt-4o-transcribe',
       });
@@ -183,7 +187,7 @@ describe('audio tools', () => {
       const originalEnv = process.env.OPENAI_API_KEY;
       delete process.env.OPENAI_API_KEY;
 
-      const tool = createTranscribeAudioTool({});
+      const tool = createTranscribeAudioTool({ fetch: viaGlobalFetch });
       const audioData = Buffer.from('fake audio').toString('base64');
 
       await expect(
@@ -203,7 +207,7 @@ describe('audio tools', () => {
         })
       );
 
-      const tool = createTranscribeAudioTool({ apiKey: 'test-key' });
+      const tool = createTranscribeAudioTool({ fetch: viaGlobalFetch, apiKey: 'test-key' });
       const audioData = Buffer.from('fake audio').toString('base64');
 
       await expect(
@@ -224,7 +228,7 @@ describe('audio tools', () => {
         })
       );
 
-      const tool = createTranscribeAudioTool({ apiKey: 'test-key' });
+      const tool = createTranscribeAudioTool({ fetch: viaGlobalFetch, apiKey: 'test-key' });
       const audioData = Buffer.from('fake audio').toString('base64');
 
       await expect(

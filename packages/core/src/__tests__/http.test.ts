@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { httpRequest } from '../tools/http';
+import { createHttpRequestTool } from '../tools/http';
+import type { FetchFunction } from '../utils/public-network';
+/** Sends the tool's requests through the global `fetch`, which these tests stub. */
+const viaGlobalFetch: FetchFunction = (input, init) => fetch(input, init);
+const httpRequest = createHttpRequestTool({ fetch: viaGlobalFetch });
 
 const mockContext = {
   agentId: 'agent_test',
