@@ -177,6 +177,9 @@ function subworkflowContext<S>(
     parentNodeId: ctx.nodeId,
     depth: (ext.depth ?? 0) + 1,
     checkpointStore: options.checkpointStore,
+    approvalStore: ext.approvalStore,
+    approvalNotifier: ext.approvalNotifier,
+    timerStore: ext.timerStore,
     signal: ext.signal,
   };
 }

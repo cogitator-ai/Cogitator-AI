@@ -4,6 +4,9 @@ import type {
   WorkflowExecuteOptionsV2,
   WorkflowResult,
   CheckpointStore,
+  ApprovalStore,
+  ApprovalNotifier,
+  TimerStore,
 } from '@cogitator-ai/types';
 import type { Cogitator } from '@cogitator-ai/core';
 import { WorkflowExecutor } from '../executor';
@@ -43,6 +46,10 @@ export interface SubworkflowContext {
   parentNodeId: string;
   depth: number;
   checkpointStore?: CheckpointStore;
+  /** Run-level stores inherited from the parent, so child human/timer nodes share them */
+  approvalStore?: ApprovalStore;
+  approvalNotifier?: ApprovalNotifier;
+  timerStore?: TimerStore;
   metadata?: Record<string, unknown>;
   signal?: AbortSignal;
 }
@@ -106,6 +113,9 @@ export async function executeSubworkflow<PS extends WorkflowState, CS extends Wo
     checkpoint: config.shareCheckpoints !== false && !!context.checkpointStore,
     depth: context.depth,
     signal: context.signal,
+    approvalStore: context.approvalStore,
+    approvalNotifier: context.approvalNotifier,
+    timerStore: context.timerStore,
     metadata: {
       ...context.metadata,
       parentWorkflowId: context.parentWorkflowId,

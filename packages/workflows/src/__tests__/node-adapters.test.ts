@@ -243,6 +243,56 @@ describe('subworkflowWorkflowNode', () => {
     expect(result.state.doubled).toBe(42);
   });
 
+  it('passes the parent run stores to a human node inside a subworkflow', async () => {
+    const approvalStore = new InMemoryApprovalStore();
+
+    interface ApprovedState extends WorkflowState {
+      approved?: boolean;
+    }
+
+    const child = new WorkflowBuilder<ApprovedState>('child-approval')
+      .initialState({})
+      .addNode(
+        'review',
+        humanWorkflowNode(approvalNode('review', { title: 'Ship child?' }), {
+          stateMapper: (result) => ({ approved: result.approved }),
+        })
+      )
+      .build();
+
+    const parent = new WorkflowBuilder<ApprovedState>('parent-approval')
+      .initialState({})
+      .addNode(
+        'child',
+        subworkflowWorkflowNode(
+          subworkflowNode<ApprovedState, ApprovedState>('child', {
+            workflow: child,
+            inputMapper: () => ({}),
+            outputMapper: (result, state) => ({ ...state, approved: result.state.approved }),
+          })
+        )
+      )
+      .build();
+
+    const running = new WorkflowExecutor(cogitator).execute(parent, {}, { approvalStore });
+
+    let pending = await approvalStore.getPendingRequests();
+    while (pending.length === 0) {
+      await new Promise((r) => setTimeout(r, 2));
+      pending = await approvalStore.getPendingRequests();
+    }
+    await approvalStore.submitResponse({
+      requestId: pending[0].id,
+      decision: true,
+      respondedBy: 'lead',
+      respondedAt: Date.now(),
+    });
+
+    const result = await running;
+    expect(result.error).toBeUndefined();
+    expect(result.state.approved).toBe(true);
+  });
+
   it('propagates child workflow failures', async () => {
     const failing = new WorkflowBuilder('failing')
       .addNode('boom', async () => {
