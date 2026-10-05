@@ -85,8 +85,22 @@ export class CostAwareRouter {
     return this.budgetEnforcer.checkBudget(estimatedCost);
   }
 
+  /**
+   * Whether a run that has really spent `runCost` so far may make another model call, against
+   * the per-run, hourly and daily limits. The runtime asks before every call.
+   */
+  checkSpent(runCost: number): BudgetCheckResult {
+    if (!this.budgetEnforcer) return { allowed: true };
+    return this.budgetEnforcer.checkSpent(runCost);
+  }
+
+  /**
+   * Records what a model call cost. The runtime records each call as it is answered, so a run
+   * that fails or is cancelled still counts, and runs side by side see each other's spending.
+   * A budget keeps its records even with `trackCosts: false`, since its limits are read from them.
+   */
   recordCost(record: Omit<CostRecord, 'timestamp'>): void {
-    if (this.config.trackCosts) {
+    if (this.config.trackCosts || this.budgetEnforcer) {
       this.costTracker.record(record);
     }
   }

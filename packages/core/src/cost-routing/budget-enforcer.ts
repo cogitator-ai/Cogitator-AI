@@ -19,6 +19,7 @@ export class BudgetEnforcer {
     this.tracker = tracker;
   }
 
+  /** Whether a run estimated to cost this much may start, before it has spent anything. */
   checkBudget(estimatedCost: number): BudgetCheckResult {
     if (this.config.maxCostPerRun && estimatedCost > this.config.maxCostPerRun) {
       this.triggerExceeded(estimatedCost, this.config.maxCostPerRun);
@@ -47,6 +48,48 @@ export class BudgetEnforcer {
         return {
           allowed: false,
           reason: `Would exceed daily budget ($${daily.toFixed(2)} + $${estimatedCost.toFixed(4)} > $${this.config.maxCostPerDay})`,
+        };
+      }
+      this.checkDailyWarning(daily);
+    }
+
+    return { allowed: true };
+  }
+
+  /**
+   * Whether a run may make another model call, by what has really been spent: the run's own
+   * cost against `maxCostPerRun`, and every run's in the last hour and day against the hourly
+   * and daily limits. Checked before each call, so a call in flight can take spending past a
+   * limit by its own cost, never further.
+   */
+  checkSpent(runCost: number): BudgetCheckResult {
+    if (this.config.maxCostPerRun && runCost >= this.config.maxCostPerRun) {
+      this.triggerExceeded(runCost, this.config.maxCostPerRun);
+      return {
+        allowed: false,
+        reason: `The run has spent $${runCost.toFixed(4)}, which reaches its per-run limit $${this.config.maxCostPerRun}`,
+      };
+    }
+
+    if (this.config.maxCostPerHour) {
+      const hourly = this.tracker.getHourlyCost();
+      if (hourly >= this.config.maxCostPerHour) {
+        this.triggerExceeded(hourly, this.config.maxCostPerHour);
+        return {
+          allowed: false,
+          reason: `$${hourly.toFixed(4)} spent in the last hour reaches the hourly budget $${this.config.maxCostPerHour}`,
+        };
+      }
+      this.checkHourlyWarning(hourly);
+    }
+
+    if (this.config.maxCostPerDay) {
+      const daily = this.tracker.getDailyCost();
+      if (daily >= this.config.maxCostPerDay) {
+        this.triggerExceeded(daily, this.config.maxCostPerDay);
+        return {
+          allowed: false,
+          reason: `$${daily.toFixed(4)} spent in the last day reaches the daily budget $${this.config.maxCostPerDay}`,
         };
       }
       this.checkDailyWarning(daily);

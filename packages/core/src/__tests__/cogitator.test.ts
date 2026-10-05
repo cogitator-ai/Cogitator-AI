@@ -1329,6 +1329,106 @@ describe('Cogitator', () => {
       await cog.close();
     });
 
+    describe('budget by real spending', () => {
+      const step = tool({
+        name: 'step',
+        description: 'Do one step',
+        parameters: z.object({}),
+        execute: async () => ({ done: true }),
+      });
+      const call = (id: string, cost: number): ChatResponse => ({
+        id,
+        content: '',
+        finishReason: 'tool_calls',
+        toolCalls: [{ id: `call_${id}`, name: 'step', arguments: {} }],
+        usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120, cost },
+      });
+      const answer = (cost: number): ChatResponse => ({
+        id: 'answer',
+        content: 'Done.',
+        finishReason: 'stop',
+        usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120, cost },
+      });
+
+      it('stops a run whose real cost reaches maxCostPerRun, though its estimate was under it', async () => {
+        const cog = new Cogitator({
+          costRouting: { enabled: true, budget: { maxCostPerRun: 1 } },
+        });
+        mockBackendHelper.setResponses([call('a', 0.6), call('b', 0.6), answer(0.1)]);
+
+        await expect(
+          cog.run(createTestAgent({ tools: [step] }), { input: 'Take three steps' })
+        ).rejects.toMatchObject({
+          code: 'BUDGET_EXCEEDED',
+          message: expect.stringContaining('per-run limit') as unknown,
+        });
+        expect(mockBackendHelper.backend.chat).toHaveBeenCalledTimes(2);
+        expect(cog.getCostRouter()?.getHourlyCost()).toBeCloseTo(1.2);
+        await cog.close();
+      });
+
+      it('counts what a failed run spent toward the hourly budget', async () => {
+        const cog = new Cogitator({
+          costRouting: { enabled: true, budget: { maxCostPerHour: 1 } },
+        });
+        vi.mocked(mockBackendHelper.backend.chat)
+          .mockResolvedValueOnce(call('a', 0.7))
+          .mockRejectedValueOnce(new Error('provider down'));
+
+        await expect(
+          cog.run(createTestAgent({ tools: [step] }), { input: 'Take two steps' })
+        ).rejects.toThrow('provider down');
+        expect(cog.getCostRouter()?.getHourlyCost()).toBeCloseTo(0.7);
+
+        mockBackendHelper.setResponses([call('b', 0.4), answer(0.1)]);
+        await expect(
+          cog.run(createTestAgent({ tools: [step] }), { input: 'Take one step' })
+        ).rejects.toMatchObject({
+          code: 'BUDGET_EXCEEDED',
+          message: expect.stringContaining('hourly budget') as unknown,
+        });
+        await cog.close();
+      });
+
+      it('records every model call of a run as it is answered', async () => {
+        const cog = new Cogitator({ costRouting: { enabled: true, trackCosts: true } });
+        const midRun: number[] = [];
+        const look = tool({
+          name: 'step',
+          description: 'Do one step',
+          parameters: z.object({}),
+          execute: async (_args, context) => {
+            midRun.push(cog.getCostRouter()?.getRunCost(context.runId) ?? -1);
+            return { done: true };
+          },
+        });
+        mockBackendHelper.setResponses([call('a', 0.2), answer(0.3)]);
+
+        const result = await cog.run(createTestAgent({ tools: [look] }), {
+          input: 'Take a step',
+        });
+
+        expect(midRun).toHaveLength(1);
+        expect(midRun[0]).toBeCloseTo(0.2);
+        expect(cog.getCostRouter()?.getRunCost(result.runId)).toBeCloseTo(0.5);
+        expect(cog.getCostSummary()?.runCount).toBe(1);
+        expect(cog.getCostSummary()?.totalInputTokens).toBe(200);
+        await cog.close();
+      });
+
+      it('keeps the records a budget needs even with trackCosts off', async () => {
+        const cog = new Cogitator({
+          costRouting: { enabled: true, trackCosts: false, budget: { maxCostPerDay: 5 } },
+        });
+        mockBackendHelper.setResponses([answer(0.4)]);
+
+        await cog.run(createTestAgent(), { input: 'Hi' });
+
+        expect(cog.getCostRouter()?.getDailyCost()).toBeCloseTo(0.4);
+        await cog.close();
+      });
+    });
+
     describe('audio inputs', () => {
       const originalFetch = globalThis.fetch;
       const originalKey = process.env.OPENAI_API_KEY;

@@ -442,6 +442,7 @@ export class Cogitator {
       let cacheWriteTokens = checkpoint?.usage.cacheWriteTokens ?? 0;
       let reasoningTokens = checkpoint?.usage.reasoningTokens ?? 0;
       const costMeter = new RunCostMeter(checkpoint?.usage.cost, checkpoint?.usage);
+      const costModel = effectiveModel;
       const reasoningParts: string[] = [...(checkpoint?.reasoning ?? [])];
       let reasoning = options.reasoning ?? active.config.reasoning;
       const promptCache = this.config.llm?.promptCache ?? {};
@@ -752,6 +753,7 @@ export class Cogitator {
       while (!pausedTurn && (iterations < maxIterations || limit.closingTurn)) {
         throwIfAborted(abortController.signal);
         this.assertTokenBudget(totalInputTokens + totalOutputTokens);
+        this.assertCostBudget(costMeter.total(costModel));
 
         if (this.state.contextManager?.shouldCompress(messages, effectiveModel)) {
           const compressionResult = await this.state.contextManager.compress(
@@ -839,7 +841,17 @@ export class Cogitator {
         cachedInputTokens += response.usage.cachedInputTokens ?? 0;
         cacheWriteTokens += response.usage.cacheWriteTokens ?? 0;
         reasoningTokens += response.usage.reasoningTokens ?? 0;
-        costMeter.add(response.usage);
+        const spentBefore = costMeter.total(costModel);
+        costMeter.add(response.usage, effectiveModel);
+        this.state.costRouter?.recordCost({
+          runId,
+          agentId: agent.id,
+          threadId,
+          model: effectiveModel,
+          inputTokens: response.usage.inputTokens,
+          outputTokens: response.usage.outputTokens,
+          cost: costMeter.total(costModel) - spentBefore,
+        });
         if (response.reasoning) reasoningParts.push(response.reasoning);
 
         if (
@@ -966,7 +978,7 @@ export class Cogitator {
             inputTokens: totalInputTokens,
             outputTokens: totalOutputTokens,
             totalTokens: totalInputTokens + totalOutputTokens,
-            cost: costMeter.total(effectiveModel),
+            cost: costMeter.total(costModel),
             duration: Date.now() - startTime,
           },
           ...(reasoningParts.length > 0 && { reasoning: reasoningParts.join('\n\n') }),
@@ -1029,19 +1041,7 @@ export class Cogitator {
       );
       spans.unshift(rootSpan);
 
-      const runCost = costMeter.total(effectiveModel);
-
-      if (this.state.costRouter) {
-        this.state.costRouter.recordCost({
-          runId,
-          agentId: agent.id,
-          threadId,
-          model: effectiveModel,
-          inputTokens: totalInputTokens,
-          outputTokens: totalOutputTokens,
-          cost: runCost,
-        });
-      }
+      const runCost = costMeter.total(costModel);
 
       const result: RunResult = {
         output: finalOutput,
@@ -1296,6 +1296,17 @@ export class Cogitator {
     if (max === undefined) return undefined;
     this.runLimiter ??= new RunLimiter(max);
     return this.runLimiter.acquire(signal);
+  }
+
+  /** Stops a run whose real spending reached a cost-routing budget, before its next model call. */
+  private assertCostBudget(runCost: number): void {
+    const check = this.state.costRouter?.checkSpent(runCost);
+    if (!check || check.allowed) return;
+    throw new CogitatorError({
+      message: `Budget exceeded: ${check.reason}`,
+      code: ErrorCode.BUDGET_EXCEEDED,
+      details: { runCost },
+    });
   }
 
   private assertTokenBudget(used: number): void {
