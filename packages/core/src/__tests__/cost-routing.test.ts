@@ -234,6 +234,48 @@ describe('BudgetEnforcer', () => {
     tracker = new CostTracker();
   });
 
+  it('lets a run go on until what it really spent reaches a limit', () => {
+    const exceeded = vi.fn();
+    const warned = vi.fn();
+    const enforcer = new BudgetEnforcer(
+      {
+        maxCostPerRun: 1,
+        maxCostPerHour: 2,
+        maxCostPerDay: 3,
+        warningThreshold: 0.5,
+        onBudgetWarning: warned,
+        onBudgetExceeded: exceeded,
+      },
+      tracker
+    );
+    const spend = (cost: number) =>
+      tracker.record({
+        runId: 'r',
+        agentId: 'a',
+        model: 'm',
+        inputTokens: 1,
+        outputTokens: 1,
+        cost,
+      });
+
+    expect(enforcer.checkSpent(0.99).allowed).toBe(true);
+    expect(enforcer.checkSpent(1)).toMatchObject({
+      allowed: false,
+      reason: expect.stringContaining('per-run limit') as unknown,
+    });
+
+    spend(1.2);
+    expect(enforcer.checkSpent(0).allowed).toBe(true);
+    expect(warned).toHaveBeenCalledWith(1.2, 2);
+
+    spend(0.8);
+    expect(enforcer.checkSpent(0)).toMatchObject({
+      allowed: false,
+      reason: expect.stringContaining('hourly budget') as unknown,
+    });
+    expect(exceeded).toHaveBeenLastCalledWith(2, 2);
+  });
+
   it('allows within budget', () => {
     const config: BudgetConfig = {
       maxCostPerRun: 0.1,

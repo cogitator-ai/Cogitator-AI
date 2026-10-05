@@ -752,6 +752,7 @@ export class Cogitator {
       while (!pausedTurn && (iterations < maxIterations || limit.closingTurn)) {
         throwIfAborted(abortController.signal);
         this.assertTokenBudget(totalInputTokens + totalOutputTokens);
+        this.assertCostBudget(costMeter.total(effectiveModel));
 
         if (this.state.contextManager?.shouldCompress(messages, effectiveModel)) {
           const compressionResult = await this.state.contextManager.compress(
@@ -839,7 +840,17 @@ export class Cogitator {
         cachedInputTokens += response.usage.cachedInputTokens ?? 0;
         cacheWriteTokens += response.usage.cacheWriteTokens ?? 0;
         reasoningTokens += response.usage.reasoningTokens ?? 0;
+        const spentBefore = costMeter.total(effectiveModel);
         costMeter.add(response.usage);
+        this.state.costRouter?.recordCost({
+          runId,
+          agentId: agent.id,
+          threadId,
+          model: effectiveModel,
+          inputTokens: response.usage.inputTokens,
+          outputTokens: response.usage.outputTokens,
+          cost: costMeter.total(effectiveModel) - spentBefore,
+        });
         if (response.reasoning) reasoningParts.push(response.reasoning);
 
         if (
@@ -1030,18 +1041,6 @@ export class Cogitator {
       spans.unshift(rootSpan);
 
       const runCost = costMeter.total(effectiveModel);
-
-      if (this.state.costRouter) {
-        this.state.costRouter.recordCost({
-          runId,
-          agentId: agent.id,
-          threadId,
-          model: effectiveModel,
-          inputTokens: totalInputTokens,
-          outputTokens: totalOutputTokens,
-          cost: runCost,
-        });
-      }
 
       const result: RunResult = {
         output: finalOutput,
@@ -1296,6 +1295,17 @@ export class Cogitator {
     if (max === undefined) return undefined;
     this.runLimiter ??= new RunLimiter(max);
     return this.runLimiter.acquire(signal);
+  }
+
+  /** Stops a run whose real spending reached a cost-routing budget, before its next model call. */
+  private assertCostBudget(runCost: number): void {
+    const check = this.state.costRouter?.checkSpent(runCost);
+    if (!check || check.allowed) return;
+    throw new CogitatorError({
+      message: `Budget exceeded: ${check.reason}`,
+      code: ErrorCode.BUDGET_EXCEEDED,
+      details: { runCost },
+    });
   }
 
   private assertTokenBudget(used: number): void {

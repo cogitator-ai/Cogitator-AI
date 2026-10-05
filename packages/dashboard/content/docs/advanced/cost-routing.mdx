@@ -32,7 +32,9 @@ cog.getCostSummary(); // totals by model and agent
 cog.getCostRouter()?.getBudgetStatus();
 ```
 
-With `enabled: true`, every run's cost is recorded (unless `trackCosts: false`) and the `budget` is checked before every run. A run over budget fails before any model call with a `CogitatorError` whose code is `BUDGET_EXCEEDED` (`statusCode` 429) and whose message is `Budget exceeded: <reason>`.
+With `enabled: true`, the `budget` is checked twice. Before a run starts, its estimated cost is checked, so a run that would clearly go over never makes a call. Then, before **every model call**, what has really been spent is checked: the run's own cost against `maxCostPerRun`, and every run's spending over the last hour and day against `maxCostPerHour` and `maxCostPerDay`. A run that reaches a limit stops before its next call with a `CogitatorError` whose code is `BUDGET_EXCEEDED` (`statusCode` 429) and whose message is `Budget exceeded: <reason>`. A call already in flight can take spending past a limit by its own cost, never further.
+
+The cost of each model call is recorded as soon as it is answered, from the cost the provider reports or, when it reports none, from the model's price. So a run that fails or is cancelled still counts toward the hourly and daily budget, and runs side by side see each other's spending at once. Costs are recorded unless `trackCosts: false`; a `budget` keeps its records either way, since its limits are read from them.
 
 With `autoSelectModel: true`, the router analyzes the input and picks a model from the [model registry](/docs/core/model-registry), considering only providers the runtime can call: a backend in `llm.backends`, a registered plugin, `llm.defaultProvider`, the provider of the agent's own model, or a built-in provider configured in `llm.providers` with its credentials. The budget is then checked against that model's estimated cost. When no callable provider has a fitting model, the run keeps the agent's model. `preferLocal` (on by default) favours local models such as Ollama's.
 
@@ -170,6 +172,8 @@ Three budget levels are enforced independently:
 | Daily   | `maxCostPerDay`  | Rolling 24-hour window limit              |
 
 When tracked spending reaches `warningThreshold` (default 0.8) of the hourly or daily limit, `onBudgetWarning` fires once (until `clearCostHistory()`). When a limit would be exceeded, `onBudgetExceeded` fires and the check returns `allowed: false`.
+
+`checkSpent(runCost)` is the check the runtime makes before every model call: `runCost` is what the run has really spent so far, and the hourly and daily limits are checked against the recorded spending. It refuses once a limit is reached, where `checkBudget` refuses an estimate that would go over one.
 
 ```typescript
 const status = router.getBudgetStatus(); // undefined without a budget
