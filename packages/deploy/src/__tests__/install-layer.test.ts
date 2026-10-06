@@ -135,7 +135,7 @@ describe('install layer of the generated Dockerfile', () => {
     expect(dockerfile).not.toContain('node:22');
     expect(dockerfile).toContain('bun install --frozen-lockfile');
     expect(dockerfile).toContain('CMD ["bun","run","start"]');
-    expect(dockerfile).toContain('http://localhost:3000/health');
+    expect(dockerfile).toContain('http://127.0.0.1:3000/health');
   });
 
   it('detects Bun from the packageManager field without a lockfile', () => {

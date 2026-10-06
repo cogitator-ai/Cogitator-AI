@@ -127,11 +127,11 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/cogitator/health || exit 1
+  CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/cogitator/health || exit 1
 CMD ["node", "dist/index.js"]
 ```
 
-The server adapters expose `GET /health` and `GET /ready` under their base path (`/cogitator` by default) — point the health check at whatever path you mounted them on.
+The server adapters expose `GET /health` and `GET /ready` under their base path (`/cogitator` by default), so point the health check at whatever path you mounted them on. Probe `127.0.0.1` rather than `localhost`: in Alpine images `localhost` resolves to the IPv6 `::1` first, which a server listening on `0.0.0.0` refuses.
 
 ## GPU and CPU-Only Mode
 

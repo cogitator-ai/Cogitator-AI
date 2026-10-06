@@ -100,12 +100,17 @@ function installSteps(options: DockerfileOptions, pm: DockerfilePackageManager):
   }
 }
 
+/**
+ * The image's HEALTHCHECK. It probes 127.0.0.1 rather than `localhost`: inside an Alpine image
+ * `localhost` resolves to `::1` first, which a server bound to `0.0.0.0` (IPv4 only) refuses,
+ * while a dual-stack server answers on 127.0.0.1 too.
+ */
 function healthcheck(config: DeployConfig, port: number): string | undefined {
   const path = healthPath(config);
   if (!path) return undefined;
   const interval = config.health?.interval ?? '30s';
   const timeout = config.health?.timeout ?? '5s';
-  return `HEALTHCHECK --interval=${interval} --timeout=${timeout} CMD wget -q --spider http://localhost:${port}${path} || exit 1`;
+  return `HEALTHCHECK --interval=${interval} --timeout=${timeout} CMD wget -q --spider http://127.0.0.1:${port}${path} || exit 1`;
 }
 
 function lines(...entries: (string | undefined | false)[]): string {

@@ -98,7 +98,7 @@ describe('what a project deploys as', () => {
       expect(result.deployConfig.kind).toBe('server');
       expect(result.deployConfig.port).toBe(3000);
       expect(check(result, 'Project kind')?.passed).toBe(true);
-      expect(artifact(result, 'Dockerfile')).toContain('http://localhost:3000/ready');
+      expect(artifact(result, 'Dockerfile')).toContain('http://127.0.0.1:3000/ready');
     });
 
     it('detects servers from the Cogitator adapters, Tetsu and Next.js', () => {

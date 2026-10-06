@@ -108,7 +108,7 @@ describe('Deployer.deploy', () => {
       (f) => f.path === 'fly.toml'
     )?.content;
 
-    expect(dockerfile).toContain('http://localhost:3000/api/health');
+    expect(dockerfile).toContain('http://127.0.0.1:3000/api/health');
     expect(flyToml).toContain('path = "/api/health"');
   });
 
