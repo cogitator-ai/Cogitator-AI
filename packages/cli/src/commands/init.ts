@@ -39,7 +39,12 @@ export interface ScaffoldOptions {
   dependencyVersions: Record<string, string>;
   /** When `pnpm`, a pnpm-workspace.yaml allowing the native dependency builds is generated */
   packageManager?: PackageManager;
+  /** `name@version` written to the `packageManager` field, e.g. `pnpm@10.26.0` */
+  packageManagerSpec?: string;
 }
+
+/** Port the WebChat channel listens on. */
+export const WEBCHAT_PORT = 18789;
 
 /**
  * pnpm 10.26+ skips dependency build scripts unless they are allowed, and pnpm 11 fails the
@@ -95,6 +100,19 @@ export function detectPackageManager(
   return 'pnpm';
 }
 
+/**
+ * The `packageManager` field for the pnpm, Yarn or Bun that runs the
+ * scaffolder, e.g. `pnpm@10.26.0`, so corepack and the deploy image install
+ * with the same version instead of the latest one. Undefined for npm, which
+ * corepack leaves alone, and when the version is unknown.
+ */
+export function detectPackageManagerSpec(
+  userAgent = process.env.npm_config_user_agent
+): string | undefined {
+  const match = /^(pnpm|yarn|bun)\/(\d+\.\d+\.\d+[^\s]*)/.exec(userAgent?.trim() ?? '');
+  return match ? `${match[1]}@${match[2]}` : undefined;
+}
+
 function runScript(pm: PackageManager, script: string): string {
   return pm === 'npm' ? `npm run ${script}` : `${pm} ${script}`;
 }
@@ -123,6 +141,7 @@ export function buildPackageJson(answers: InitAnswers, options: ScaffoldOptions)
         version: '0.1.0',
         private: true,
         type: 'module',
+        ...(options.packageManagerSpec ? { packageManager: options.packageManagerSpec } : {}),
         engines: { node: '>=22.12.0' },
         scripts: {
           dev: 'tsx watch src/agent.ts',
@@ -167,7 +186,8 @@ function memorySetup(memory: InitMemory): { importName: string; code: string } {
     case 'sqlite':
       return {
         importName: 'SQLiteAdapter',
-        code: `const memory = new SQLiteAdapter({ provider: 'sqlite', path: './data/memory.db' });`,
+        code: `mkdirSync('./data', { recursive: true });
+const memory = new SQLiteAdapter({ provider: 'sqlite', path: './data/memory.db' });`,
       };
     case 'postgres':
       return {
@@ -209,7 +229,7 @@ export function buildGatewayFile(answers: InitAnswers): string {
         break;
       case 'webchat':
         channelImports.push('webchatChannel');
-        channelSetup.push(`    webchatChannel({ port: 18789 }),`);
+        channelSetup.push(`    webchatChannel({ port: ${WEBCHAT_PORT} }),`);
         break;
     }
   }
@@ -221,7 +241,9 @@ export function buildGatewayFile(answers: InitAnswers): string {
 
   const memory = memorySetup(answers.memory);
 
-  return `import { existsSync } from 'node:fs';
+  const fsImports = answers.memory === 'sqlite' ? 'existsSync, mkdirSync' : 'existsSync';
+
+  return `import { ${fsImports} } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { Cogitator, Agent } from '@cogitator-ai/core';
 import { Gateway, ${channelImports.join(', ')} } from '@cogitator-ai/channels';
@@ -279,7 +301,7 @@ ${channelSetup.join('\n')}
 
 export function buildAgentFile(answers: InitAnswers): string {
   const webchatLine = answers.channels.includes('webchat')
-    ? `  console.log('WebChat: ws://localhost:18789/ws');\n`
+    ? `  console.log('WebChat: ws://localhost:${WEBCHAT_PORT}/ws');\n`
     : '';
 
   return `import { gateway } from './gateway.js';
@@ -310,6 +332,70 @@ export function buildGitignore(answers: InitAnswers): string {
   return lines.join('\n') + '\n';
 }
 
+/** Variables the generated gateway reads, in the order it reads them. */
+function channelSecrets(answers: InitAnswers): string[] {
+  const secrets: string[] = [];
+  if (answers.channels.includes('telegram')) secrets.push('TELEGRAM_BOT_TOKEN');
+  if (answers.channels.includes('discord')) secrets.push('DISCORD_BOT_TOKEN');
+  if (answers.channels.includes('slack')) {
+    secrets.push('SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET');
+    if (answers.slackAppToken) secrets.push('SLACK_APP_TOKEN');
+  }
+  return secrets;
+}
+
+function memoryYml(memory: InitMemory): string[] {
+  switch (memory) {
+    case 'sqlite':
+      return ['memory:', '  adapter: sqlite', '  sqlite:', '    path: ./data/memory.db'];
+    case 'postgres':
+      return [
+        'memory:',
+        '  adapter: postgres',
+        '  postgres:',
+        '    connectionString: ${DATABASE_URL}',
+      ];
+    case 'memory':
+      return ['memory:', '  adapter: memory'];
+  }
+}
+
+/**
+ * `cogitator.yml` in the shape `@cogitator-ai/config` loads, read by
+ * `cogitator run` and `cogitator deploy`: the provider and model, the memory
+ * the gateway uses, and how the project deploys. It runs as a worker (the
+ * gateway serves no HTTP health check), publishes the WebChat port, keeps
+ * the SQLite database on a volume and needs the API key and channel tokens.
+ */
+export function buildCogitatorYml(answers: InitAnswers): string {
+  const secrets = [
+    ...(answers.provider === 'ollama' ? [] : [API_KEY_ENV[answers.provider]]),
+    ...channelSecrets(answers),
+  ];
+  const lines = [
+    '# Read by `cogitator run` and `cogitator deploy`. src/gateway.ts configures the',
+    '# assistant itself, so change the provider, model or memory in both places.',
+    '',
+    'llm:',
+    `  defaultProvider: ${answers.provider}`,
+    `  defaultModel: ${JSON.stringify(answers.model)}`,
+    ...(answers.provider === 'ollama'
+      ? ['  providers:', '    ollama:', `      baseUrl: \${OLLAMA_URL:-${DEFAULT_OLLAMA_URL}}`]
+      : []),
+    '',
+    ...memoryYml(answers.memory),
+    '',
+    'deploy:',
+    '  kind: worker',
+    ...(answers.channels.includes('webchat') ? [`  port: ${WEBCHAT_PORT}`] : []),
+    ...(secrets.length > 0
+      ? ['  secrets:', ...secrets.map((name) => `    - ${name}`)]
+      : ['  secrets: []']),
+    '',
+  ];
+  return lines.join('\n');
+}
+
 export const TSCONFIG = {
   compilerOptions: {
     target: 'ES2022',
@@ -333,6 +419,7 @@ export function buildProjectFiles(
     'tsconfig.json': JSON.stringify(TSCONFIG, null, 2) + '\n',
     'src/gateway.ts': buildGatewayFile(answers),
     'src/agent.ts': buildAgentFile(answers),
+    'cogitator.yml': buildCogitatorYml(answers),
     '.gitignore': buildGitignore(answers),
   };
   const env = buildEnvFile(answers);
@@ -516,6 +603,7 @@ export const initCommand = new Command('init')
     const files = buildProjectFiles(answers, {
       dependencyVersions: resolveDependencyVersions(),
       packageManager: pm,
+      packageManagerSpec: detectPackageManagerSpec(),
     });
     let installed = false;
 

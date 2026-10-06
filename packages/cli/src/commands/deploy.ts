@@ -3,12 +3,12 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { loadConfig } from '@cogitator-ai/config';
+import { findConfigFile, loadConfig, loadEnvConfig } from '@cogitator-ai/config';
 import { Deployer, type DeployPlan } from '@cogitator-ai/deploy';
 import { log } from '../utils/logger.js';
 import type { DeployConfig, DeployResult, DeployStatus, DeployTarget } from '@cogitator-ai/types';
 
-interface DeployFlags {
+export interface DeployFlags {
   target?: string;
   config?: string;
   registry?: string;
@@ -21,12 +21,8 @@ function isDeployTarget(value: string, available: readonly string[]): value is D
   return available.includes(value);
 }
 
-function resolveTarget(
-  flag: string | undefined,
-  configTarget: DeployTarget | undefined,
-  available: readonly string[]
-): DeployTarget {
-  const raw = flag ?? configTarget ?? 'docker';
+function resolveTarget(requested: string | undefined, available: readonly string[]): DeployTarget {
+  const raw = requested ?? 'docker';
   if (!isDeployTarget(raw, available)) {
     log.error(`Unsupported deploy target: "${raw}"`);
     log.dim(`Available targets: ${available.join(', ')}`);
@@ -35,48 +31,64 @@ function resolveTarget(
   return raw;
 }
 
-function loadDeployConfig(projectDir: string, configPath?: string): DeployConfig | undefined {
-  if (configPath && !existsSync(resolve(projectDir, configPath))) {
-    log.error(`Config file not found: ${resolve(projectDir, configPath)}`);
-    process.exit(1);
+/** What `cogitator deploy` hands the deployer: the config file, the target's name and the settings over the file. */
+export interface DeployInputs {
+  /** The `-c` file, else the project's own config file (`findConfigFile`) */
+  configPath?: string;
+  /** `--target`, else `deploy.target` from the environment or the config file */
+  target?: string;
+  /** `COGITATOR_DEPLOY_*` variables and flags, applied over the config file's deploy section */
+  overrides: Partial<DeployConfig>;
+}
+
+/**
+ * Resolves the config file and the settings of a deploy. The config file is
+ * the one passed with `-c` (an error when it does not exist), else the
+ * project's own, found like `loadConfig` finds it. The analyzer reads the
+ * model, memory and deploy section from that same file.
+ */
+export function resolveDeployInputs(
+  projectDir: string,
+  flags: Pick<DeployFlags, 'config' | 'target' | 'registry' | 'region'>
+): DeployInputs {
+  const configPath = flags.config ? resolve(projectDir, flags.config) : findConfigFile(projectDir);
+  if (flags.config && configPath && !existsSync(configPath)) {
+    throw new Error(`Config file not found: ${configPath}`);
   }
+
+  const fileDeploy = configPath ? loadConfig({ configPath, skipEnv: true }).deploy : undefined;
+  const envDeploy = loadEnvConfig().deploy ?? {};
+  const overrides: Partial<DeployConfig> = {
+    ...(envDeploy.target ? { target: envDeploy.target } : {}),
+    ...(envDeploy.port ? { port: envDeploy.port } : {}),
+    ...(envDeploy.registry ? { registry: envDeploy.registry } : {}),
+    ...(flags.registry ? { registry: flags.registry } : {}),
+    ...(flags.region ? { region: flags.region } : {}),
+  };
+
+  return {
+    configPath,
+    target: flags.target ?? overrides.target ?? fileDeploy?.target,
+    overrides,
+  };
+}
+
+function loadDeployInputs(projectDir: string, flags: DeployFlags): DeployInputs {
   try {
-    const config = loadConfig(configPath ? { configPath: resolve(projectDir, configPath) } : {});
-    return config.deploy;
+    return resolveDeployInputs(projectDir, flags);
   } catch (error) {
     log.error(`Failed to load config: ${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);
   }
 }
 
-function buildConfigOverrides(
-  flags: DeployFlags,
-  fileConfig: DeployConfig | undefined
-): Partial<DeployConfig> {
-  const overrides: Partial<DeployConfig> = {};
-
-  if (fileConfig) {
-    Object.assign(overrides, fileConfig);
-  }
-
-  if (flags.registry) {
-    overrides.registry = flags.registry;
-  }
-
-  if (flags.region) {
-    overrides.region = flags.region;
-  }
-
-  return overrides;
-}
-
 async function runDeploy(flags: DeployFlags): Promise<void> {
   const projectDir = resolve(process.cwd());
 
   const deployer = new Deployer();
-  const fileConfig = loadDeployConfig(projectDir, flags.config);
-  const target = resolveTarget(flags.target, fileConfig?.target, deployer.availableTargets());
-  const configOverrides = buildConfigOverrides(flags, fileConfig);
+  const inputs = loadDeployInputs(projectDir, flags);
+  const target = resolveTarget(inputs.target, deployer.availableTargets());
+  const configOverrides = inputs.overrides;
 
   const spinner = ora('Analyzing project...').start();
   let plan: DeployPlan;
@@ -87,6 +99,7 @@ async function runDeploy(flags: DeployFlags): Promise<void> {
       dryRun: flags.dryRun,
       noPush: !flags.push,
       configOverrides,
+      configPath: inputs.configPath,
     });
   } catch (error) {
     spinner.fail('Failed to plan deployment');
@@ -102,7 +115,9 @@ async function runDeploy(flags: DeployFlags): Promise<void> {
   const { config, preflight } = plan;
 
   console.log(chalk.dim('  Configuration:'));
+  if (inputs.configPath) console.log(`    Config:   ${chalk.cyan(inputs.configPath)}`);
   console.log(`    Target:   ${chalk.cyan(target)}`);
+  if (config.kind) console.log(`    Kind:     ${chalk.cyan(config.kind)}`);
   if (config.server) console.log(`    Server:   ${chalk.cyan(config.server)}`);
   if (config.port) console.log(`    Port:     ${chalk.cyan(String(config.port))}`);
   if (config.region) console.log(`    Region:   ${chalk.cyan(config.region)}`);
@@ -120,9 +135,21 @@ async function runDeploy(flags: DeployFlags): Promise<void> {
   }
 
   if (config.services?.redis || config.services?.postgres) {
+    const provisioned = target === 'docker';
+    const icon = provisioned ? chalk.green('●') : chalk.yellow('○');
+    const note = (variable: string) =>
+      provisioned ? '' : chalk.dim(` (not provisioned on ${target}, set ${variable})`);
     console.log(chalk.dim('  Services:'));
-    if (config.services.redis) console.log(`    ${chalk.green('●')} Redis`);
-    if (config.services.postgres) console.log(`    ${chalk.green('●')} PostgreSQL`);
+    if (config.services.redis) console.log(`    ${icon} Redis${note('REDIS_URL')}`);
+    if (config.services.postgres) console.log(`    ${icon} PostgreSQL${note('DATABASE_URL')}`);
+    console.log();
+  }
+
+  if (config.volumes && config.volumes.length > 0) {
+    console.log(chalk.dim('  Volumes:'));
+    for (const volume of config.volumes) {
+      console.log(`    ${chalk.green('●')} ${volume.path}`);
+    }
     console.log();
   }
 
@@ -168,6 +195,7 @@ async function runDeploy(flags: DeployFlags): Promise<void> {
       dryRun: false,
       noPush: !flags.push,
       configOverrides,
+      configPath: inputs.configPath,
     });
   } catch (error) {
     deploySpinner.fail('Deploy failed');
@@ -210,16 +238,17 @@ async function runDeploy(flags: DeployFlags): Promise<void> {
 async function runDeployStatus(flags: DeployFlags): Promise<void> {
   const projectDir = resolve(process.cwd());
   const deployer = new Deployer();
-  const fileConfig = loadDeployConfig(projectDir, flags.config);
-  const target = resolveTarget(flags.target, fileConfig?.target, deployer.availableTargets());
-  const configOverrides = buildConfigOverrides(flags, fileConfig);
+  const inputs = loadDeployInputs(projectDir, flags);
+  const target = resolveTarget(inputs.target, deployer.availableTargets());
 
   const spinner = ora('Checking deployment status...').start();
 
-  const deployConfig: DeployConfig = { ...configOverrides, target };
+  const deployConfig: DeployConfig = { ...inputs.overrides, target };
   let status: DeployStatus;
   try {
-    status = await deployer.status(target, deployConfig, projectDir);
+    status = await deployer.status(target, deployConfig, projectDir, {
+      configPath: inputs.configPath,
+    });
   } catch (error) {
     spinner.fail('Failed to check status');
     log.error(error instanceof Error ? error.message : String(error));
@@ -245,16 +274,15 @@ async function runDeployStatus(flags: DeployFlags): Promise<void> {
 async function runDeployDestroy(flags: DeployFlags): Promise<void> {
   const projectDir = resolve(process.cwd());
   const deployer = new Deployer();
-  const fileConfig = loadDeployConfig(projectDir, flags.config);
-  const target = resolveTarget(flags.target, fileConfig?.target, deployer.availableTargets());
-  const configOverrides = buildConfigOverrides(flags, fileConfig);
+  const inputs = loadDeployInputs(projectDir, flags);
+  const target = resolveTarget(inputs.target, deployer.availableTargets());
 
   const spinner = ora(`Destroying ${target} deployment...`).start();
 
-  const deployConfig: DeployConfig = { ...configOverrides, target };
+  const deployConfig: DeployConfig = { ...inputs.overrides, target };
 
   try {
-    await deployer.destroy(target, deployConfig, projectDir);
+    await deployer.destroy(target, deployConfig, projectDir, { configPath: inputs.configPath });
     spinner.succeed('Deployment destroyed');
   } catch (err) {
     spinner.fail('Failed to destroy deployment');
