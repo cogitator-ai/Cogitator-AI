@@ -283,6 +283,8 @@ registry.register(httpRequest);
 const restored = Agent.deserialize(snapshot, { toolRegistry: registry });
 ```
 
+To run an agent in another process (queue jobs, workflow jobs, distributed swarm turns), send it in the agent wire format instead: `toAgentWire(agent)` keeps every setting (stop sequences, timeout, handoffs, the response schema as JSON Schema, ...) and `fromAgentWire(payload, { cogitator, tools })` rebuilds it, refusing unknown keys and routing the model exactly as the sender would. `toAgentWireRunResult` / `fromAgentWireRunResult` do the same for a run's outcome, cost included.
+
 See [Agents](https://cogitator.app/docs/core/agents).
 
 ### Structured Output
@@ -1877,6 +1879,8 @@ const registry = new ToolRegistry();
 registry.register(httpRequest);
 const restored = Agent.deserialize(snapshot, { toolRegistry: registry });
 ```
+
+To run an agent in another process (queue jobs, workflow jobs, distributed swarm turns), send it in the agent wire format instead: `toAgentWire(agent)` keeps every setting (stop sequences, timeout, handoffs, the response schema as JSON Schema, ...) and `fromAgentWire(payload, { cogitator, tools })` rebuilds it, refusing unknown keys and routing the model exactly as the sender would. `toAgentWireRunResult` / `fromAgentWireRunResult` do the same for a run's outcome, cost included.
 
 See [Agents](https://cogitator.app/docs/core/agents).
 

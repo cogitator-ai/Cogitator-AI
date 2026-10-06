@@ -44,11 +44,11 @@ const job = await queue.addAgentJob(
 console.log('State:', await queue.getJobState(job.id!));
 ```
 
-The worker routes `model` like the same agent in-process: a prefix naming a built-in provider, a backend in the worker Cogitator's `llm.backends` or a registered plugin picks that provider, so `openrouter/deepseek/deepseek-v4-pro` runs on an `openrouter` backend whatever `provider` says. The optional `provider` (any provider the worker routes to, custom backends and plugins included) is prepended only to a model whose prefix names none, such as `meta-llama/llama-4-scout` with `provider: 'openrouter'`. Without it such a model runs on the worker's `llm.defaultProvider`, and a `provider` the worker cannot route to fails the job.
+The worker routes `model` like the same agent in-process: a prefix naming a built-in provider, a backend in the worker Cogitator's `llm.backends` or a registered plugin picks that provider, so `openrouter/deepseek/deepseek-v4-pro` runs on an `openrouter` backend whatever `provider` says. The optional `provider` (any provider the worker routes to, custom backends and plugins included) is prepended only to a model whose prefix names none, such as `meta-llama/llama-4-scout` with `provider: 'openrouter'`. Without it such a model runs on the worker's `llm.defaultProvider`, and a `provider` the worker cannot route to fails the job. `serializeAgent` sends an agent with an explicit `provider` as `<provider>/<model>`, so `{ model: 'openai/gpt-5', provider: 'openrouter' }` runs on `openrouter` on the worker as it does in-process.
 
 ### Queueing an agent you already have
 
-`serializeAgent` turns an `Agent` into a job: its model, instructions, sampling, reasoning effort, tool schemas and response format, with a Zod response schema turned into JSON Schema. The worker turns the schema back into a Zod schema, so a queued run validates and repairs its structured answer like an in-process run, and the job result carries it:
+`serializeAgent` turns an `Agent` into a job in the agent wire format of `@cogitator-ai/core` (`toAgentWire`), the one workflow jobs and distributed swarms use too: its whole configuration (model and provider, instructions, sampling, stop sequences, reasoning, response format, iteration limit, timeout), its tool schemas and the agents it can hand over to. A Zod response schema travels as JSON Schema and the worker turns it back into a Zod schema, so a queued run validates and repairs its structured answer like an in-process run, and the job result carries it. The worker refuses a config with a key it does not know (a producer newer than the worker) instead of running the agent without that setting:
 
 ```typescript
 import { serializeAgent, type AgentJobResult } from '@cogitator-ai/worker';
@@ -57,7 +57,8 @@ const job = await queue.addAgentJob(serializeAgent(chiefEditor), 'Pitches: ...')
 // once the job completes
 const result = (await queue.getJob(job.id!))?.returnvalue as AgentJobResult;
 result.structured; // the validated answer of a json_schema agent, when it fits
-result.usage; // { inputTokens, outputTokens, totalTokens, cost, reasoningTokens? }
+result.usage; // { inputTokens, outputTokens, totalTokens, cost, duration, reasoningTokens?, ... }
+result.truncated; // also blocked, iterationLimitReached, structuredError, toolCalls with outputs
 ```
 
 The redis config also takes a `url` (`redis://user:password@host:port/db`, or `rediss://` for TLS); explicit `host`, `port`, `username`, `password`, `db` and `tls` fields override what it says.
@@ -76,7 +77,7 @@ await queue.addSwarmJob(
 );
 ```
 
-Workflow jobs execute a serialized DAG (`agent`, `transform`, `condition` and `parallel` nodes over a shared state object); swarm topologies map to strategies (`sequential` → pipeline, `hierarchical` → hierarchical with the coordinator as supervisor, `collaborative` → round-robin, `debate` → debate, `voting` → consensus). See the package README for the full workflow node reference.
+Workflow jobs execute a serialized DAG (`agent`, `transform`, `condition` and `parallel` nodes over a shared state object). An agent node takes the same `serializeAgent` config, and writes its validated structured answer to the state when its agent has a JSON schema response format (its text otherwise), so later nodes read fields like `{{decision.verdict}}`; swarm topologies map to strategies (`sequential` → pipeline, `hierarchical` → hierarchical with the coordinator as supervisor, `collaborative` → round-robin, `debate` → debate, `voting` → consensus). See the package README for the full workflow node reference.
 
 ## WorkerPool
 

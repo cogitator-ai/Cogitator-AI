@@ -55,7 +55,9 @@ interface DeserializeOptions {
 }
 ```
 
-`AgentSnapshot` (`{ version, id, name, config: SerializedAgentConfig, metadata? }`) is the JSON form `agent.serialize()` produces; tools are kept by name.
+`AgentSnapshot` (`{ version, id, name, config: SerializedAgentConfig, metadata? }`) is the JSON form `agent.serialize()` produces, tools are kept by name.
+
+`AgentWireConfig` is how an agent travels to another process (`toAgentWire` / `fromAgentWire` in `@cogitator-ai/core`): every `AgentConfig` field, tools as `ToolSchema`s, the response schema as JSON Schema (`AgentWireResponseFormat`), handoffs as `AgentWireHandoff`s naming agents carried in `handoffAgents`. `AgentWireRunResult` is a run's outcome on the wire: `output`, `structured`, `structuredError`, `reasoning`, `usage` (`AgentWireUsage`: tokens, `cost`, `duration`, reasoning and cache tokens), `toolCalls` (`AgentWireToolCall`: `name`, `input`, `output`), `truncated`, `blocked`, `iterationLimitReached`, `modelUsed`, `handoffs`, `finalAgent`, `runId` and `threadId`.
 
 ## Run Types
 

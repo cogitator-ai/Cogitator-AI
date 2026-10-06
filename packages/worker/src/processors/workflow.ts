@@ -8,6 +8,7 @@
  */
 
 import { z } from 'zod';
+import { agentWireSchema, parseAgentWire } from '@cogitator-ai/core';
 import type {
   ConditionNodeConfig,
   SerializedWorkflow,
@@ -21,30 +22,8 @@ import { createAgentFromConfig, resolveRuntime, type ResolvedRuntime } from './s
 
 type WorkflowState = Record<string, unknown>;
 
-const serializedAgentSchema = z.object({
-  name: z.string().min(1),
-  instructions: z.string(),
-  model: z.string().min(1),
-  provider: z.string().min(1).optional(),
-  temperature: z.number().optional(),
-  maxTokens: z.number().int().positive().optional(),
-  maxIterations: z.number().int().positive().optional(),
-  onIterationLimit: z.enum(['answer', 'stop']).optional(),
-  tools: z.array(
-    z.object({
-      name: z.string(),
-      description: z.string(),
-      parameters: z.object({
-        type: z.literal('object'),
-        properties: z.record(z.string(), z.unknown()),
-        required: z.array(z.string()).optional(),
-      }),
-    })
-  ),
-});
-
 const agentNodeSchema = z.object({
-  agentConfig: serializedAgentSchema,
+  agentConfig: agentWireSchema,
   prompt: z.string().optional(),
   outputKey: z.string().min(1).optional(),
 });
@@ -136,9 +115,18 @@ export function validateWorkflow(workflow: SerializedWorkflow): void {
 
   for (const node of workflow.nodes) {
     switch (node.type) {
-      case 'agent':
-        parseNodeConfig(node, agentNodeSchema);
+      case 'agent': {
+        const config = parseNodeConfig(node, agentNodeSchema);
+        try {
+          parseAgentWire(config.agentConfig);
+        } catch (error) {
+          throw new Error(
+            `Invalid config for agent node '${node.id}': ${error instanceof Error ? error.message : String(error)}`,
+            { cause: error }
+          );
+        }
         break;
+      }
       case 'transform': {
         const config = parseNodeConfig(node, transformNodeSchema);
         if (config.transform === 'template' && config.template === undefined) {
@@ -310,7 +298,11 @@ class WorkflowRun {
           ? renderTemplate(config.prompt, this.state)
           : JSON.stringify(this.state);
         const result = await this.runtime.cogitator.run(agent, { input: prompt });
-        return this.store(node.id, config.outputKey, result.output);
+        const answer =
+          agent.config.responseFormat?.type === 'json_schema' && result.structured !== undefined
+            ? result.structured
+            : result.output;
+        return this.store(node.id, config.outputKey, answer);
       }
 
       case 'transform': {

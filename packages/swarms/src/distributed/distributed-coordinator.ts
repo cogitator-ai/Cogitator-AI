@@ -2,14 +2,16 @@ import { nanoid } from 'nanoid';
 import Redis from 'ioredis';
 import type {
   Agent,
-  LLMBackendProvider,
+  AgentWireConfig,
+  AgentWireRunResult,
+  AgentWireUsage,
   SwarmConfig,
   SwarmAgent,
   RunResult,
   Tool,
-  ToolSchema,
   DistributedSwarmConfig,
 } from '@cogitator-ai/types';
+import { fromAgentWireRunResult, toAgentWire } from '@cogitator-ai/core';
 import { RedisMessageBus } from '../communication/redis-message-bus.js';
 import { RedisBlackboard } from '../communication/redis-blackboard.js';
 import { RedisSwarmEventEmitter } from '../communication/redis-event-emitter.js';
@@ -28,37 +30,19 @@ export interface DistributedCoordinatorOptions {
 }
 
 /**
- * Agent configuration as it travels to worker nodes. Tools travel as schemas and are
- * resolved by name against the worker's own tool registry.
+ * Agent configuration as it travels to worker nodes: the agent wire format of
+ * `@cogitator-ai/core` (`toAgentWire`), the same one worker queue jobs use.
+ *
+ * @deprecated Use `AgentWireConfig` from `@cogitator-ai/types`
  */
-export interface SerializedSwarmAgentConfig {
-  name: string;
-  instructions: string;
-  /**
-   * Model string the worker runs, routed like the agent in-process: the agent's model,
-   * prefixed with the agent's own `provider` when it sets one (an explicit provider gets
-   * the model string unchanged, so `{ model: 'openai/gpt-4o', provider: 'openrouter' }`
-   * travels as `'openrouter/openai/gpt-4o'`)
-   */
-  model: string;
-  /**
-   * The agent's own `provider`, if any. Workers prepend it to a model whose prefix names
-   * no provider they route to, and refuse it when they cannot route to it either. Without
-   * it such a model runs on the worker's `llm.defaultProvider`
-   */
-  provider?: LLMBackendProvider;
-  temperature?: number;
-  maxTokens?: number;
-  maxIterations?: number;
-  tools: ToolSchema[];
-}
+export type SerializedSwarmAgentConfig = AgentWireConfig;
 
 export interface SwarmAgentJobPayload {
   type: 'swarm-agent';
   jobId: string;
   swarmId: string;
   agentName: string;
-  agentConfig: SerializedSwarmAgentConfig;
+  agentConfig: AgentWireConfig;
   input: string;
   context?: Record<string, unknown>;
   runOptions?: {
@@ -74,13 +58,17 @@ export interface SwarmAgentJobPayload {
   };
 }
 
-export interface SwarmAgentJobResult {
+/**
+ * Outcome of one agent turn, published by the worker: the run result wire format of
+ * `@cogitator-ai/core` (`toAgentWireRunResult`) tagged with the job, or an `error`.
+ */
+export interface SwarmAgentJobResult extends Omit<AgentWireRunResult, 'usage'> {
   jobId: string;
   swarmId: string;
   agentName: string;
-  output: string;
-  structured?: unknown;
-  toolCalls: { name: string; input: unknown; output: unknown }[];
+  /** Usage with cost and duration; absent in results of workers that only report `tokenUsage` */
+  usage?: AgentWireUsage;
+  /** @deprecated Use `usage`, which also carries cost, duration and reasoning tokens */
   tokenUsage: { prompt: number; completion: number; total: number };
   error?: string;
 }
@@ -225,7 +213,7 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
 
   protected async executeRun(request: AgentRunRequest): Promise<RunResult> {
     const jobResult = await this.dispatchWithRetry(request);
-    return this.toRunResult(request.swarmAgent, jobResult);
+    return this.toRunResult(request.swarmAgent, jobResult, request);
   }
 
   /**
@@ -255,24 +243,13 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
 
   private createJobPayload(request: AgentRunRequest): SwarmAgentJobPayload {
     const { agent, input, context } = request;
-    const model = this.resolveAgentModel(agent);
-    const provider = agent.config.provider;
 
     return {
       type: 'swarm-agent',
       jobId: `job_${nanoid(12)}`,
       swarmId: this.swarmId,
       agentName: request.swarmAgent.agent.name,
-      agentConfig: {
-        name: agent.name,
-        instructions: agent.instructions,
-        model: provider ? `${provider}/${model}` : model,
-        ...(provider && { provider }),
-        temperature: agent.config.temperature,
-        maxTokens: agent.config.maxTokens,
-        maxIterations: agent.config.maxIterations,
-        tools: agent.tools.map((t) => t.toJSON()),
-      },
+      agentConfig: toAgentWire(agent, { resolveModel: this.resolveAgentModel }),
       input,
       context,
       runOptions: {
@@ -338,28 +315,29 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
     });
   }
 
-  private toRunResult(swarmAgent: SwarmAgent, jobResult: SwarmAgentJobResult): RunResult {
-    return {
-      output: jobResult.output,
-      structured: jobResult.structured,
-      runId: `run_${nanoid(8)}`,
-      agentId: swarmAgent.agent.id,
-      threadId: '',
-      usage: {
-        inputTokens: jobResult.tokenUsage.prompt,
-        outputTokens: jobResult.tokenUsage.completion,
-        totalTokens: jobResult.tokenUsage.total,
-        cost: 0,
-        duration: 0,
+  /**
+   * The turn's result as a `RunResult`, with the usage and cost the worker reported, so resource
+   * limits and strategies see the turn like a local one. A worker that only reports `tokenUsage`
+   * gives the tokens without cost or duration.
+   */
+  private toRunResult(
+    swarmAgent: SwarmAgent,
+    jobResult: SwarmAgentJobResult,
+    request: AgentRunRequest
+  ): RunResult {
+    const { usage, tokenUsage } = jobResult;
+    return fromAgentWireRunResult(
+      {
+        ...jobResult,
+        usage: usage ?? {
+          inputTokens: tokenUsage.prompt,
+          outputTokens: tokenUsage.completion,
+          totalTokens: tokenUsage.total,
+          cost: 0,
+        },
       },
-      toolCalls: jobResult.toolCalls.map((tc) => ({
-        id: nanoid(8),
-        name: tc.name,
-        arguments: isRecord(tc.input) ? tc.input : {},
-      })),
-      messages: [],
-      trace: { traceId: `trace_${nanoid(12)}`, spans: [] },
-    };
+      { agentId: swarmAgent.agent.id, threadId: request.threadId }
+    );
   }
 
   async reset(): Promise<void> {
@@ -433,10 +411,6 @@ function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
     }, ms);
     signal.addEventListener('abort', onAbort, { once: true });
   });
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 async function closeRedis(client: Redis): Promise<void> {

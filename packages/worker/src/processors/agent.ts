@@ -1,11 +1,14 @@
 /**
  * Agent job processor
  *
- * Recreates an Agent from serialized config and executes it.
+ * Recreates an Agent from its wire form and executes it.
  */
 
+import { toAgentWireRunResult } from '@cogitator-ai/core';
 import type { AgentJobPayload, AgentJobResult, WorkerRuntime } from '../types';
 import { createAgentFromConfig, resolveRuntime } from './shared.js';
+
+export { findToolOutput } from '@cogitator-ai/core';
 
 export async function processAgentJob(
   payload: AgentJobPayload,
@@ -23,50 +26,11 @@ export async function processAgentJob(
 
   return {
     type: 'agent',
-    output: result.output,
-    ...(result.structured !== undefined && { structured: result.structured }),
-    ...(result.reasoning && { reasoning: result.reasoning }),
-    usage: {
-      inputTokens: result.usage.inputTokens,
-      outputTokens: result.usage.outputTokens,
-      totalTokens: result.usage.totalTokens,
-      cost: result.usage.cost,
-      ...(result.usage.reasoningTokens !== undefined && {
-        reasoningTokens: result.usage.reasoningTokens,
-      }),
-      ...(result.usage.cachedInputTokens !== undefined && {
-        cachedInputTokens: result.usage.cachedInputTokens,
-      }),
-    },
-    toolCalls: result.toolCalls.map((tc) => ({
-      name: tc.name,
-      input: tc.arguments,
-      output: findToolOutput(result.messages, tc.id),
-    })),
+    ...toAgentWireRunResult(result),
     tokenUsage: {
       prompt: result.usage.inputTokens,
       completion: result.usage.outputTokens,
       total: result.usage.totalTokens,
     },
   };
-}
-
-interface ToolMessageLike {
-  role: string;
-  toolCallId?: string;
-  content: unknown;
-}
-
-/**
- * Tool results are recorded as `tool` messages; recover the output for a tool call.
- */
-export function findToolOutput(messages: readonly ToolMessageLike[], toolCallId: string): unknown {
-  const message = messages.find((m) => m.role === 'tool' && m.toolCallId === toolCallId);
-  if (!message) return undefined;
-  if (typeof message.content !== 'string') return message.content;
-  try {
-    return JSON.parse(message.content) as unknown;
-  } catch {
-    return message.content;
-  }
 }

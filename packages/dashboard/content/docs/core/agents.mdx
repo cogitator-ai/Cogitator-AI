@@ -185,6 +185,22 @@ Tools are stored by name in the snapshot. During deserialization, each tool name
 
 A snapshot keeps the model, instructions, sampling parameters, `reasoning`, `maxIterations`, `onIterationLimit` and `timeout`, but not `handoffs` or `skills` (their tools are kept by name). A `json_schema` response format is saved by name only, so pass the Zod schema back as `overrides.responseFormat`. `Agent.validateSnapshot(value)` checks a parsed snapshot; it rejects snapshots without a `model`, so give agents you serialize an explicit model.
 
+### Sending an agent to another process
+
+`agent.serialize()` is for storage. To run an agent in another process (a queue job, a workflow job, a distributed swarm turn), use the agent wire format, which keeps every setting:
+
+```typescript
+import { toAgentWire, fromAgentWire } from '@cogitator-ai/core';
+
+const wire = toAgentWire(agent); // plain JSON
+// in the process that runs it
+const received = fromAgentWire(JSON.parse(payload), { cogitator, tools: [searchWeb, readUrl] });
+```
+
+`toAgentWire` carries the whole configuration: model and provider, instructions, sampling, `stopSequences`, `reasoning`, `responseFormat` (a Zod schema as JSON Schema, turned back into one on arrival), `maxIterations`, `onIterationLimit`, `timeout`, the tool schemas and every agent the agent can hand over to (handoff graphs with cycles included). Skills arrive merged into the tools and instructions. An explicit `provider` also prefixes the model, so the agent runs on the same route wherever it lands. Pass `resolveModel` for an agent without a model, e.g. `toAgentWire(agent, { resolveModel: (a) => cogitator.resolveModel(a) })`.
+
+`fromAgentWire` validates the payload (`agentWireSchema`, or `parseAgentWire` alone), refuses keys it does not know instead of dropping them, resolves the tools by name from `tools` and throws `AgentWireError` for a missing tool or a provider the receiving Cogitator cannot route to. `toAgentWireRunResult(result)` and `fromAgentWireRunResult(wire, { agentId })` carry a run's outcome the same way: answer, structured output, usage with cost and duration, tool calls with their outputs, and the `truncated`, `blocked` and `iterationLimitReached` flags. `@cogitator-ai/worker` and distributed swarms use both.
+
 ## Skills
 
 A skill bundles tools with the instructions for using them. `skills` on an agent adds each skill's tools (unless the agent already has a tool of that name) and appends its instructions to the agent's:

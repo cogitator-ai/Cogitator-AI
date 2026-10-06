@@ -6,9 +6,9 @@
  * an `error` field instead of being thrown.
  */
 
+import { toAgentWireRunResult } from '@cogitator-ai/core';
 import type { SwarmAgentJobPayload, SwarmAgentJobResult, WorkerRuntime } from '../types';
 import { createAgentFromConfig, resolveRuntime, toErrorMessage } from './shared.js';
-import { findToolOutput } from './agent.js';
 
 export async function executeSwarmAgentJob(
   payload: SwarmAgentJobPayload,
@@ -33,13 +33,7 @@ export async function executeSwarmAgentJob(
       jobId,
       swarmId,
       agentName,
-      output: result.output,
-      structured: result.structured,
-      toolCalls: result.toolCalls.map((tc) => ({
-        name: tc.name,
-        input: tc.arguments,
-        output: findToolOutput(result.messages, tc.id),
-      })),
+      ...toAgentWireRunResult(result),
       tokenUsage: {
         prompt: result.usage.inputTokens,
         completion: result.usage.outputTokens,

@@ -6,6 +6,21 @@
 
 export { Cogitator } from './runtime';
 export { Agent, AgentDeserializationError } from './agent';
+export {
+  toAgentWire,
+  fromAgentWire,
+  parseAgentWire,
+  agentWireSchema,
+  routeAgentWireModel,
+  toAgentWireResponseFormat,
+  fromAgentWireResponseFormat,
+  toAgentWireRunResult,
+  fromAgentWireRunResult,
+  findToolOutput,
+  AgentWireError,
+  AGENT_CONFIG_WIRE_FIELDS,
+} from './agent-wire';
+export type { ToAgentWireOptions, AgentWireRuntime } from './agent-wire';
 export { tool, toolset, toolToSchema } from './tool';
 export { defineSkill, validateSkill, mergeSkillsIntoAgent } from './skill';
 export { agentAsTool } from './agent-tool';

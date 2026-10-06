@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { z } from 'zod';
+import { Agent } from '@cogitator-ai/core';
 import type { DistributedSwarmConfig } from '@cogitator-ai/types';
 import { DistributedSwarmCoordinator } from '../../distributed/distributed-coordinator';
 import type { SwarmAgentJobPayload } from '../../distributed/distributed-coordinator';
@@ -218,5 +220,82 @@ describe('DistributedSwarmCoordinator jobs', () => {
 
     const eventsKey = `swarm:${coord.getSwarmId()}:events`;
     expect(redisState.expirations.get(eventsKey)).toBe(3600000);
+  });
+});
+
+describe('DistributedSwarmCoordinator agent transport', () => {
+  beforeEach(() => {
+    redisState.keys.clear();
+    redisState.expirations.clear();
+    redisState.jobs.length = 0;
+    redisState.channels.clear();
+    redisState.handler = undefined;
+  });
+
+  it('sends the whole agent configuration to the worker', async () => {
+    onJobs(() => ({}));
+    const Verdict = z.object({ verdict: z.enum(['run', 'hold']) });
+    const chief = new Agent({
+      name: 'chief',
+      model: 'openai/gpt-6.1-sol',
+      instructions: 'Decide.',
+      topP: 0.7,
+      stopSequences: ['END'],
+      reasoning: { effort: 'high' },
+      responseFormat: { type: 'json_schema', schema: Verdict },
+      onIterationLimit: 'stop',
+      timeout: 600000,
+    });
+    const coord = new DistributedSwarmCoordinator({
+      config: { name: 'remote', strategy: 'round-robin', agents: [chief] },
+      distributed: { enabled: true },
+    });
+
+    await coord.runAgent('chief', 'go');
+    await coord.close();
+
+    const [job] = redisState.jobs as SwarmAgentJobPayload[];
+    expect(job.agentConfig).toMatchObject({
+      topP: 0.7,
+      stopSequences: ['END'],
+      reasoning: { effort: 'high' },
+      responseFormat: { type: 'json_schema', schema: { type: 'object' } },
+      onIterationLimit: 'stop',
+      timeout: 600000,
+    });
+  });
+
+  it('reports the cost, duration and flags the worker measured', async () => {
+    redisState.handler = (raw) => {
+      const job = raw as SwarmAgentJobPayload;
+      const result = {
+        jobId: job.jobId,
+        swarmId: job.swarmId,
+        agentName: job.agentName,
+        output: 'cut',
+        toolCalls: [],
+        usage: {
+          inputTokens: 100,
+          outputTokens: 40,
+          totalTokens: 140,
+          cost: 0.25,
+          duration: 900,
+          reasoningTokens: 30,
+        },
+        truncated: true,
+        tokenUsage: { prompt: 100, completion: 40, total: 140 },
+      };
+      for (const listener of redisState.channels.get(job.stateKeys.results) ?? []) {
+        listener(job.stateKeys.results, JSON.stringify(result));
+      }
+    };
+    const coord = coordinator();
+
+    const result = await coord.runAgent('worker', 'go');
+
+    expect(result.usage).toMatchObject({ cost: 0.25, duration: 900, reasoningTokens: 30 });
+    expect(result.truncated).toBe(true);
+    expect(coord.getResourceUsage().totalCost).toBeCloseTo(0.25);
+    await coord.close();
   });
 });

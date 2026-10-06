@@ -1,48 +1,24 @@
-import type { Agent, ResponseFormat } from '@cogitator-ai/types';
-import { z } from 'zod';
-import type { SerializedAgent, SerializedResponseFormat } from './types';
+import type { Agent } from '@cogitator-ai/types';
+import { toAgentWire, toAgentWireResponseFormat } from '@cogitator-ai/core';
+import type { SerializedAgent } from './types';
 
 /**
  * An agent's response format in its queue form: a Zod schema becomes JSON Schema, which the
  * worker turns back into a schema to validate the run's structured output.
  */
-export function serializeResponseFormat(
-  format: ResponseFormat | undefined
-): SerializedResponseFormat | undefined {
-  if (format?.type !== 'json_schema') return format;
-  const schema = z.toJSONSchema(format.schema, { unrepresentable: 'any' }) as Record<
-    string,
-    unknown
-  >;
-  delete schema.$schema;
-  return { type: 'json_schema', schema };
-}
+export const serializeResponseFormat = toAgentWireResponseFormat;
 
 /**
- * An agent as a queue job carries it: its model, instructions, sampling, reasoning, response
- * format and the schemas of its tools (the worker resolves tools by name from its own registry).
+ * An agent as a queue job carries it, in the agent wire format shared with workflow jobs and
+ * distributed swarms (`toAgentWire` from `@cogitator-ai/core`): its whole configuration
+ * (model and provider, instructions, sampling, stop sequences, reasoning, response format,
+ * iteration limit, timeout), the schemas of its tools (the worker resolves tools by name from its
+ * own registry) and every agent it can hand over to. An explicit `provider` also prefixes the
+ * model, so the job runs on the route the agent takes in-process.
  *
- * @throws Error when the agent has no model: a queued job cannot fall back to the
+ * @throws AgentWireError when the agent has no model: a queued job cannot fall back to the
  *   submitting process's default model
  */
 export function serializeAgent(agent: Agent): SerializedAgent {
-  const { config } = agent;
-  if (!config.model) {
-    throw new Error(`Agent "${agent.name}" has no model; set one before queueing it`);
-  }
-  const responseFormat = serializeResponseFormat(config.responseFormat);
-  return {
-    name: agent.name,
-    instructions: config.instructions,
-    model: config.model,
-    ...(config.provider !== undefined && { provider: config.provider }),
-    ...(config.temperature !== undefined && { temperature: config.temperature }),
-    ...(config.topP !== undefined && { topP: config.topP }),
-    ...(config.maxTokens !== undefined && { maxTokens: config.maxTokens }),
-    ...(config.maxIterations !== undefined && { maxIterations: config.maxIterations }),
-    ...(config.onIterationLimit !== undefined && { onIterationLimit: config.onIterationLimit }),
-    ...(config.reasoning !== undefined && { reasoning: config.reasoning }),
-    ...(responseFormat && { responseFormat }),
-    tools: agent.tools.map((tool) => tool.toJSON()),
-  };
+  return toAgentWire(agent);
 }

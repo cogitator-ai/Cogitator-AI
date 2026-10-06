@@ -3,7 +3,13 @@
  */
 
 import type { Cogitator } from '@cogitator-ai/core';
-import type { LLMBackendProvider, ReasoningConfig, Tool, ToolSchema } from '@cogitator-ai/types';
+import type {
+  AgentWireConfig,
+  AgentWireResponseFormat,
+  AgentWireRunResult,
+  AgentWireUsage,
+  Tool,
+} from '@cogitator-ai/types';
 import type {
   SwarmAgentJobPayload as SwarmAgentJobContract,
   SwarmAgentJobResult as SwarmAgentJobResultContract,
@@ -14,42 +20,16 @@ import type {
  * JSON Schema (see `serializeAgent`), and the worker turns it back into a schema to validate the
  * run's structured output.
  */
-export type SerializedResponseFormat =
-  { type: 'text' } | { type: 'json' } | { type: 'json_schema'; schema: Record<string, unknown> };
+export type SerializedResponseFormat = AgentWireResponseFormat;
 
 /**
- * Serialized agent configuration for queue transport
- * Tools are stored as schemas, recreated on worker side
+ * An agent as a job carries it: the agent wire format of `@cogitator-ai/core`, shared by agent,
+ * workflow and swarm jobs and by distributed swarm turns. Build it with `serializeAgent`, or
+ * write it by hand. Tools travel as schemas and are resolved by name from the worker's tool
+ * registry. A config with a key the worker does not know is refused, so a newer producer never
+ * runs an agent without a setting it asked for.
  */
-export interface SerializedAgent {
-  name: string;
-  instructions: string;
-  /**
-   * Model string, routed on the worker like the same agent in-process: a prefix naming a
-   * built-in provider, a backend in the worker Cogitator's `llm.backends` or a registered
-   * plugin picks that provider (e.g. 'openai/gpt-6.1-sol', 'openrouter/deepseek/deepseek-v4-pro')
-   */
-  model: string;
-  /**
-   * Provider for a model whose prefix names none the worker routes to (e.g. 'gpt-6.1-sol'
-   * or 'meta-llama/llama-4-scout' with `provider: 'openrouter'`). Any provider the worker
-   * Cogitator routes to, custom backends and plugins included. Without it such a model runs
-   * on the worker's `llm.defaultProvider`
-   */
-  provider?: LLMBackendProvider;
-  temperature?: number;
-  topP?: number;
-  maxTokens?: number;
-  maxIterations?: number;
-  /** What happens when tool calls use up `maxIterations`, as in `AgentConfig.onIterationLimit` */
-  onIterationLimit?: 'answer' | 'stop';
-  /** Structured output: the job result carries `structured` when the run's answer fits */
-  responseFormat?: SerializedResponseFormat;
-  /** Reasoning effort and summaries, as in `AgentConfig.reasoning` */
-  reasoning?: ReasoningConfig;
-  /** Tool schemas; tools are resolved by name from the worker's tool registry */
-  tools: ToolSchema[];
-}
+export type SerializedAgent = AgentWireConfig;
 
 /**
  * Serialized workflow configuration
@@ -85,7 +65,11 @@ export interface AgentNodeConfig {
   agentConfig: SerializedAgent;
   /** Prompt template; `{{path}}` placeholders read from workflow state. Defaults to the state as JSON */
   prompt?: string;
-  /** State key that receives the agent output (default: node id) */
+  /**
+   * State key that receives the agent's answer (default: node id): its validated structured
+   * answer when the agent has a JSON schema response format and the answer fits, its text
+   * otherwise
+   */
   outputKey?: string;
 }
 
@@ -159,29 +143,15 @@ export type JobPayload =
   AgentJobPayload | WorkflowJobPayload | SwarmJobPayload | SwarmAgentJobPayload;
 
 /** What an agent run used and cost, as `RunResult.usage` reports it. */
-export interface AgentJobUsage {
-  inputTokens: number;
-  outputTokens: number;
-  totalTokens: number;
-  /** USD: what the provider reported, else the model registry's price, else 0 */
-  cost: number;
-  reasoningTokens?: number;
-  cachedInputTokens?: number;
-}
+export type AgentJobUsage = AgentWireUsage;
 
-export interface AgentJobResult {
+/**
+ * The outcome of an agent job, in the run result wire format: the answer, the structured output,
+ * usage with cost, tool calls with their outputs, and the flags that say the answer was cut off
+ * (`truncated`), withheld (`blocked`) or given at the iteration limit.
+ */
+export interface AgentJobResult extends AgentWireRunResult {
   type: 'agent';
-  output: string;
-  /** The validated answer of an agent with a JSON schema response format, when it fits */
-  structured?: unknown;
-  /** The model's reasoning summary, when the agent asked for one */
-  reasoning?: string;
-  usage: AgentJobUsage;
-  toolCalls: {
-    name: string;
-    input: unknown;
-    output: unknown;
-  }[];
   /** @deprecated Use `usage`, which also carries the cost */
   tokenUsage?: {
     prompt: number;

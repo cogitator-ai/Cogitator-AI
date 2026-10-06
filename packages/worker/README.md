@@ -133,7 +133,7 @@ interface QueueConfig {
 
 **Agent Jobs:**
 
-The simplest way is to serialize an agent you already have. `serializeAgent` keeps its model, instructions, sampling, reasoning effort, response format and tool schemas, and turns a Zod response schema into JSON Schema, so the worker validates the structured answer the same way an in-process run does:
+The simplest way is to serialize an agent you already have. `serializeAgent` writes it in the agent wire format of `@cogitator-ai/core` (`toAgentWire`), shared by agent, workflow and swarm jobs and by distributed swarm turns. It keeps the whole configuration (model and provider, instructions, sampling, stop sequences, reasoning effort, response format, iteration limit, timeout), the tool schemas and every agent it can hand over to, and turns a Zod response schema into JSON Schema, so the worker validates the structured answer the same way an in-process run does. A config with a key the worker does not know is refused rather than run without that setting:
 
 ```typescript
 import { Agent } from '@cogitator-ai/core';
@@ -184,7 +184,7 @@ const job = await queue.addAgentJob(agentConfig, 'Research quantum computing', {
 });
 ```
 
-The worker routes `model` exactly like the same agent in-process: a prefix that names a built-in provider, a backend in the worker Cogitator's `llm.backends` or a registered plugin picks that provider, so `'openrouter/deepseek/deepseek-v4-pro'` runs on an `openrouter` backend whatever `provider` says. `provider` (optional, any provider the worker routes to, custom backends and plugins included) is prepended only to a model whose prefix names none, such as `'meta-llama/llama-4-scout'` with `provider: 'openrouter'`. Without `provider` such a model runs on the worker's `llm.defaultProvider`, and a `provider` the worker cannot route to fails the job.
+The worker routes `model` exactly like the same agent in-process: a prefix that names a built-in provider, a backend in the worker Cogitator's `llm.backends` or a registered plugin picks that provider, so `'openrouter/deepseek/deepseek-v4-pro'` runs on an `openrouter` backend whatever `provider` says. `provider` (optional, any provider the worker routes to, custom backends and plugins included) is prepended only to a model whose prefix names none, such as `'meta-llama/llama-4-scout'` with `provider: 'openrouter'`. Without `provider` such a model runs on the worker's `llm.defaultProvider`, and a `provider` the worker cannot route to fails the job. `serializeAgent` sends an agent with an explicit `provider` as `<provider>/<model>`, so it takes the same route on the worker as in-process.
 
 **Workflow Jobs:**
 
@@ -199,7 +199,7 @@ const workflowConfig: SerializedWorkflow = {
       id: 'classify',
       type: 'agent',
       config: {
-        agentConfig: classifierAgent, // SerializedAgent
+        agentConfig: classifierAgent, // SerializedAgent; a json_schema agent writes its structured answer
         prompt: 'Classify this ticket as BUG or QUESTION: {{ticket}}',
         outputKey: 'category',
       },
@@ -643,18 +643,33 @@ Jobs use serialized configurations that can be stored in Redis.
 
 ### SerializedAgent
 
+`SerializedAgent` is `AgentWireConfig` from `@cogitator-ai/types`:
+
 ```typescript
 interface SerializedAgent {
+  id?: string;
   name: string;
+  description?: string;
   instructions: string;
   model: string; // routed like in-process: a known provider prefix picks the provider
-  provider?: LLMBackendProvider; // prepended when model names no provider the worker routes to
+  provider?: LLMBackendProvider; // used when model names no provider the worker routes to
   temperature?: number;
+  topP?: number;
   maxTokens?: number;
+  stopSequences?: string[];
+  responseFormat?:
+    { type: 'text' } | { type: 'json' } | { type: 'json_schema'; schema: JSONSchema };
+  reasoning?: ReasoningConfig;
   maxIterations?: number;
+  onIterationLimit?: 'answer' | 'stop';
+  timeout?: number;
   tools: ToolSchema[]; // resolved by name against the worker's tools
+  handoffs?: { agent: string; toolName?: string; description?: string }[];
+  handoffAgents?: Record<string, Omit<SerializedAgent, 'handoffAgents'>>; // handoff targets by name
 }
 ```
+
+Unknown keys are refused. Agent job results (`AgentJobResult`) carry `output`, `structured`, `structuredError`, `reasoning`, `usage` (tokens, `cost`, `duration`, reasoning and cache tokens), `toolCalls` with their outputs, and `truncated`, `blocked` and `iterationLimitReached`.
 
 ### SerializedWorkflow
 
