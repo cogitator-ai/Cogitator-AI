@@ -67,6 +67,7 @@ interface ResumePoint {
   workflowId: string;
   skipNodes: Set<string>;
   nodeResults: Record<string, unknown>;
+  nodeVisits?: Record<string, number>;
 }
 
 interface RunLaunch<S extends WorkflowState> {
@@ -366,6 +367,7 @@ export class DefaultWorkflowManager implements IWorkflowManager {
               workflowId: checkpoint.workflowId,
               skipNodes: new Set(checkpoint.completedNodes),
               nodeResults: checkpoint.nodeResults,
+              ...(checkpoint.nodeVisits && { nodeVisits: checkpoint.nodeVisits }),
             },
           }
         : { input: run.input as Partial<WorkflowState> | undefined }),

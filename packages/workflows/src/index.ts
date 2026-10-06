@@ -169,6 +169,8 @@ export type {
 } from './timers/index';
 
 export {
+  MapItemSkippedError,
+  MapItemTimeoutError,
   executeMap,
   executeReduce,
   executeMapReduce,
@@ -196,6 +198,8 @@ export type {
   ReduceNodeConfig,
   MapReduceResult,
   MapReduceNodeConfig,
+  MapItemContext,
+  MapExecutionOptions,
 } from './patterns/index';
 
 export {

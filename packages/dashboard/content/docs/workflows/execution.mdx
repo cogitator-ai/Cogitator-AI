@@ -332,7 +332,7 @@ const result = await executor.execute(workflow, input, {
 });
 ```
 
-A node that still fails after its retries is written to the `deadLetterQueue`. The circuit breaker is kept per node name and shared by every run of the same executor that passes the same config object; while it is open the node fails at once with `CircuitBreakerOpenError`. With an `idempotencyStore`, a node that already completed for the same `workflowId` and step returns its stored result instead of running again.
+A node that still fails after its retries is written to the `deadLetterQueue`. A node the run interrupted is not: when the run is paused, cancelled or times out, the node in flight gets the abort signal and is neither dead-lettered, counted as a failed node execution nor reported to `onNodeError`, since resuming the run runs it again. The circuit breaker is kept per node name and shared by every run of the same executor that passes the same config object, and while it is open the node fails at once with `CircuitBreakerOpenError`. With an `idempotencyStore`, a node that already completed for the same `workflowId` and visit returns its stored result instead of running again. The key is `workflow:<workflowId>:node:<name>:visit:<n>`, where `n` counts the runs of that node (a node in a loop has one visit per pass). Checkpoints record the visit counts (`nodeVisits`), so a run resumed from a checkpoint taken before a node finished finds the result that node already stored, even when its side effect happened after the checkpoint.
 
 `NodeConfig` also takes `compensation`, a rollback the executor runs when a later node fails. For more sophisticated error handling (retry policies, circuit breakers, compensation), see [Sagas & Compensation](/docs/workflows/sagas).
 

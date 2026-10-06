@@ -17,21 +17,74 @@ export interface MapProgressEvent<T> {
   running: number;
 }
 
+/**
+ * What a mapper gets besides the item: the signal to stop on and which attempt this is.
+ */
+export interface MapItemContext {
+  /**
+   * Aborted when this attempt times out, another item fails the map (without
+   * `continueOnError`), or the workflow run is cancelled or paused. Pass it on to agent runs,
+   * fetches and tools so their work stops too
+   */
+  signal: AbortSignal;
+  /** 1 for the first attempt, 2 for the first retry, ... */
+  attempt: number;
+}
+
 export interface MapNodeConfig<S, T> {
   name: string;
   items: (state: S) => unknown[];
-  mapper: (item: unknown, index: number, state: S) => Promise<T> | T;
+  mapper: (item: unknown, index: number, state: S, ctx: MapItemContext) => Promise<T> | T;
   concurrency?: number;
+  /**
+   * Keep mapping when an item fails: failed items appear in the results with `success: false`.
+   * Without it the first failure stops the map: no further item starts, items in flight are
+   * aborted, and the map rejects with that failure
+   */
   continueOnError?: boolean;
   onProgress?: (progress: MapProgressEvent<T>) => void;
   filter?: (item: unknown, index: number, state: S) => boolean;
   transform?: (item: unknown, index: number, state: S) => unknown;
+  /** Time limit of one attempt in ms: a late attempt is aborted (`ctx.signal`) and fails */
   timeout?: number;
   retry?: {
     maxAttempts: number;
     delay?: number;
     backoff?: 'linear' | 'exponential';
   };
+}
+
+/** Options of a map run. */
+export interface MapExecutionOptions {
+  /** Cancels the map: no further item starts and the items in flight are aborted */
+  signal?: AbortSignal;
+}
+
+/**
+ * Result error of an item that never ran because the map stopped first: another item failed
+ * or the run was cancelled. `cause` is what stopped the map.
+ */
+export class MapItemSkippedError extends Error {
+  readonly index: number;
+
+  constructor(index: number, cause: Error) {
+    super(`Item ${index} was not mapped: ${cause.message}`, { cause });
+    this.name = 'MapItemSkippedError';
+    this.index = index;
+  }
+}
+
+/** An attempt of an item that ran past the map's `timeout`. */
+export class MapItemTimeoutError extends Error {
+  readonly index: number;
+  readonly timeoutMs: number;
+
+  constructor(index: number, timeoutMs: number) {
+    super(`Item ${index} timed out after ${timeoutMs}ms`);
+    this.name = 'MapItemTimeoutError';
+    this.index = index;
+    this.timeoutMs = timeoutMs;
+  }
 }
 
 export interface ReduceNodeConfig<S, T, R> {
@@ -61,94 +114,112 @@ export interface MapReduceNodeConfig<S, T, R> {
   reduce: Omit<ReduceNodeConfig<S, T, R>, 'name'>;
 }
 
-async function executeWithConcurrency<T>(
-  items: unknown[],
-  mapper: (item: unknown, index: number) => Promise<MapItemResult<T>>,
-  concurrency: number,
-  onComplete?: (result: MapItemResult<T>) => void
-): Promise<MapItemResult<T>[]> {
-  const results: MapItemResult<T>[] = new Array(items.length);
-  const pending: Promise<void>[] = [];
-  let nextIndex = 0;
+function toError(value: unknown, fallback: string): Error {
+  return value instanceof Error ? value : new Error(value === undefined ? fallback : String(value));
+}
 
-  const executeNext = async (): Promise<void> => {
-    const index = nextIndex++;
-    if (index >= items.length) return;
+/** Resolve after `ms`, or reject with the signal's reason once it aborts. */
+function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(toError(signal.reason, 'Map aborted'));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(toError(signal.reason, 'Map aborted'));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
 
-    const result = await mapper(items[index], index);
-    results[index] = result;
-    onComplete?.(result);
+/**
+ * Settle with `work`, or reject as soon as `signal` aborts. A mapper that ignores its signal
+ * keeps running detached, but the map does not wait for it.
+ */
+function raceWithSignal<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(toError(signal.reason, 'Map aborted'));
+    if (signal.aborted) {
+      onAbort();
+    } else {
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+    work.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(toError(error, 'Map item failed'));
+      }
+    );
+  });
+}
 
-    await executeNext();
-  };
+async function runAttempt<S, T>(
+  item: unknown,
+  index: number,
+  state: S,
+  config: MapNodeConfig<S, T>,
+  attempt: number,
+  mapSignal: AbortSignal
+): Promise<T> {
+  const controller = new AbortController();
+  const forward = () => controller.abort(mapSignal.reason);
+  mapSignal.addEventListener('abort', forward, { once: true });
+  const timer =
+    config.timeout !== undefined && config.timeout > 0
+      ? setTimeout(
+          () => controller.abort(new MapItemTimeoutError(index, config.timeout!)),
+          config.timeout
+        )
+      : undefined;
 
-  const initialBatch = Math.min(concurrency, items.length);
-  for (let i = 0; i < initialBatch; i++) {
-    pending.push(executeNext());
+  try {
+    const work = Promise.resolve().then(() => {
+      const processed = config.transform ? config.transform(item, index, state) : item;
+      return config.mapper(processed, index, state, { signal: controller.signal, attempt });
+    });
+    return await raceWithSignal(work, controller.signal);
+  } finally {
+    if (timer) clearTimeout(timer);
+    mapSignal.removeEventListener('abort', forward);
   }
-
-  await Promise.all(pending);
-  return results;
 }
 
 async function executeItem<S, T>(
   item: unknown,
   index: number,
   state: S,
-  config: MapNodeConfig<S, T>
+  config: MapNodeConfig<S, T>,
+  mapSignal: AbortSignal
 ): Promise<MapItemResult<T>> {
   const startTime = Date.now();
   let lastError: Error | undefined;
-  const maxAttempts = config.retry?.maxAttempts ?? 1;
+  const maxAttempts = Math.max(1, config.retry?.maxAttempts ?? 1);
 
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+  for (let attempt = 1; attempt <= maxAttempts && !mapSignal.aborted; attempt++) {
     try {
-      let processedItem = item;
-
-      if (config.transform) {
-        processedItem = config.transform(item, index, state);
-      }
-
-      let resultPromise = Promise.resolve(config.mapper(processedItem, index, state));
-
-      if (config.timeout) {
-        let timer: ReturnType<typeof setTimeout>;
-        const timeoutPromise = new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error('Item timeout exceeded')), config.timeout);
-        });
-        try {
-          const result = await Promise.race([resultPromise, timeoutPromise]);
-          return {
-            index,
-            item,
-            result,
-            success: true,
-            duration: Date.now() - startTime,
-          };
-        } finally {
-          clearTimeout(timer!);
-        }
-      }
-
-      const result = await resultPromise;
-
-      return {
-        index,
-        item,
-        result,
-        success: true,
-        duration: Date.now() - startTime,
-      };
+      const result = await runAttempt(item, index, state, config, attempt, mapSignal);
+      return { index, item, result, success: true, duration: Date.now() - startTime };
     } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
+      lastError = toError(error, 'Map item failed');
+    }
 
-      if (attempt < maxAttempts - 1 && config.retry) {
-        const delay = config.retry.delay ?? 1000;
-        const actualDelay =
-          config.retry.backoff === 'exponential'
-            ? delay * Math.pow(2, attempt)
-            : delay * (attempt + 1);
-        await new Promise((resolve) => setTimeout(resolve, actualDelay));
+    if (attempt < maxAttempts && config.retry && !mapSignal.aborted) {
+      const delay = config.retry.delay ?? 1000;
+      const wait =
+        config.retry.backoff === 'exponential' ? delay * Math.pow(2, attempt - 1) : delay * attempt;
+      try {
+        await abortableDelay(wait, mapSignal);
+      } catch {
+        break;
       }
     }
   }
@@ -158,78 +229,101 @@ async function executeItem<S, T>(
     item,
     result: undefined as T,
     success: false,
-    error: lastError,
+    error: lastError ?? toError(mapSignal.reason, 'Map aborted'),
     duration: Date.now() - startTime,
   };
 }
 
+/**
+ * Map the items of `state` with `config.mapper`, at most `concurrency` at a time. Without
+ * `continueOnError` the first failed item stops the map: no further item starts, the items in
+ * flight are aborted, and the map rejects with that item's error. Aborting `options.signal`
+ * stops it the same way. The rejection carries `partialResults`, one entry per item: what it
+ * returned, why it failed, or a `MapItemSkippedError` for an item that never ran.
+ */
 export async function executeMap<S, T>(
   state: S,
-  config: MapNodeConfig<S, T>
+  config: MapNodeConfig<S, T>,
+  options: MapExecutionOptions = {}
 ): Promise<MapItemResult<T>[]> {
-  let items = config.items(state);
+  const runSignal = options.signal;
+  if (runSignal?.aborted) throw toError(runSignal.reason, 'Map aborted');
 
+  let items = config.items(state);
   if (config.filter) {
     items = items.filter((item, index) => config.filter!(item, index, state));
   }
 
-  const concurrency = config.concurrency ?? Infinity;
+  const controller = new AbortController();
+  const forwardRunAbort = () => controller.abort(runSignal?.reason);
+  runSignal?.addEventListener('abort', forwardRunAbort, { once: true });
+
+  const results: (MapItemResult<T> | undefined)[] = new Array<MapItemResult<T> | undefined>(
+    items.length
+  );
+  const concurrency = Math.max(1, config.concurrency ?? Infinity);
+  let nextIndex = 0;
+  let running = 0;
   let completed = 0;
   let successful = 0;
   let failed = 0;
-  let started = false;
+  let failure: Error | undefined;
 
   const emitProgress = (current?: MapItemResult<T>) => {
-    if (config.onProgress) {
-      config.onProgress({
-        total: items.length,
-        completed,
-        successful,
-        failed,
-        currentItem: current,
-        pending: items.length - completed,
-        running: started ? Math.min(concurrency, items.length - completed) : 0,
-      });
+    config.onProgress?.({
+      total: items.length,
+      completed,
+      successful,
+      failed,
+      currentItem: current,
+      pending: items.length - completed,
+      running,
+    });
+  };
+
+  const worker = async (): Promise<void> => {
+    while (!controller.signal.aborted && nextIndex < items.length) {
+      const index = nextIndex++;
+      running++;
+      const result = await executeItem(items[index], index, state, config, controller.signal);
+      running--;
+      results[index] = result;
+      completed++;
+      if (result.success) {
+        successful++;
+      } else {
+        failed++;
+        if (!config.continueOnError && !controller.signal.aborted) {
+          failure = result.error ?? new Error(`Item ${index} failed`);
+          controller.abort(failure);
+        }
+      }
+      emitProgress(result);
     }
   };
 
   emitProgress();
-
-  const mapper = async (item: unknown, index: number): Promise<MapItemResult<T>> => {
-    started = true;
-    const result = await executeItem(item, index, state, config);
-
-    completed++;
-    if (result.success) {
-      successful++;
-    } else {
-      failed++;
-      if (!config.continueOnError) {
-        throw result.error ?? new Error(`Item ${index} failed`);
-      }
-    }
-
-    emitProgress(result);
-    return result;
-  };
-
   try {
-    return await executeWithConcurrency(items, mapper, concurrency);
-  } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    const partialResults: MapItemResult<T>[] = [];
-    for (let i = 0; i < items.length; i++) {
-      partialResults.push({
-        index: i,
-        item: items[i],
+    await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+  } finally {
+    runSignal?.removeEventListener('abort', forwardRunAbort);
+  }
+
+  if (!controller.signal.aborted) return results as MapItemResult<T>[];
+
+  const reason = failure ?? toError(controller.signal.reason, 'Map aborted');
+  const partialResults = items.map(
+    (item, index): MapItemResult<T> =>
+      results[index] ?? {
+        index,
+        item,
         result: undefined as T,
         success: false,
-        error: err,
+        error: new MapItemSkippedError(index, reason),
         duration: 0,
-      });
-    }
-    throw Object.assign(err, { partialResults });
-  }
+      }
+  );
+  throw Object.assign(reason, { partialResults });
 }
 
 export function executeReduce<S, T, R>(
@@ -255,7 +349,8 @@ export function executeReduce<S, T, R>(
 
 export async function executeMapReduce<S, T, R>(
   state: S,
-  config: MapReduceNodeConfig<S, T, R>
+  config: MapReduceNodeConfig<S, T, R>,
+  options: MapExecutionOptions = {}
 ): Promise<MapReduceResult<T, R>> {
   const startTime = Date.now();
 
@@ -300,7 +395,7 @@ export async function executeMapReduce<S, T, R>(
     };
   }
 
-  const results = await executeMap(state, mapConfig);
+  const results = await executeMap(state, mapConfig, options);
 
   const reduceConfig: ReduceNodeConfig<S, T, R> = {
     name: `${config.name}:reduce`,
@@ -358,56 +453,74 @@ export function mapReduceNode<S, T, R>(
 export async function parallelMap<S, T>(
   state: S,
   items: (state: S) => unknown[],
-  mapper: (item: unknown, index: number, state: S) => Promise<T> | T,
+  mapper: (item: unknown, index: number, state: S, ctx: MapItemContext) => Promise<T> | T,
   options: {
     continueOnError?: boolean;
     onProgress?: (progress: MapProgressEvent<T>) => void;
+    signal?: AbortSignal;
   } = {}
 ): Promise<MapItemResult<T>[]> {
-  return executeMap(state, {
-    name: 'parallelMap',
-    items,
-    mapper,
-    concurrency: Infinity,
-    ...options,
-  });
+  const { signal, ...mapOptions } = options;
+  return executeMap(
+    state,
+    {
+      name: 'parallelMap',
+      items,
+      mapper,
+      concurrency: Infinity,
+      ...mapOptions,
+    },
+    { signal }
+  );
 }
 
 export async function sequentialMap<S, T>(
   state: S,
   items: (state: S) => unknown[],
-  mapper: (item: unknown, index: number, state: S) => Promise<T> | T,
+  mapper: (item: unknown, index: number, state: S, ctx: MapItemContext) => Promise<T> | T,
   options: {
     continueOnError?: boolean;
     onProgress?: (progress: MapProgressEvent<T>) => void;
+    signal?: AbortSignal;
   } = {}
 ): Promise<MapItemResult<T>[]> {
-  return executeMap(state, {
-    name: 'sequentialMap',
-    items,
-    mapper,
-    concurrency: 1,
-    ...options,
-  });
+  const { signal, ...mapOptions } = options;
+  return executeMap(
+    state,
+    {
+      name: 'sequentialMap',
+      items,
+      mapper,
+      concurrency: 1,
+      ...mapOptions,
+    },
+    { signal }
+  );
 }
 
 export async function batchedMap<S, T>(
   state: S,
   items: (state: S) => unknown[],
-  mapper: (item: unknown, index: number, state: S) => Promise<T> | T,
+  mapper: (item: unknown, index: number, state: S, ctx: MapItemContext) => Promise<T> | T,
   batchSize: number,
   options: {
     continueOnError?: boolean;
     onProgress?: (progress: MapProgressEvent<T>) => void;
+    signal?: AbortSignal;
   } = {}
 ): Promise<MapItemResult<T>[]> {
-  return executeMap(state, {
-    name: 'batchedMap',
-    items,
-    mapper,
-    concurrency: batchSize,
-    ...options,
-  });
+  const { signal, ...mapOptions } = options;
+  return executeMap(
+    state,
+    {
+      name: 'batchedMap',
+      items,
+      mapper,
+      concurrency: batchSize,
+      ...mapOptions,
+    },
+    { signal }
+  );
 }
 
 export function collect<T>(): Omit<ReduceNodeConfig<unknown, T, T[]>, 'name'> {

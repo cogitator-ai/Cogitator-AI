@@ -120,7 +120,7 @@ await executor.execute(workflow, input, {
   defaultRetry: { maxRetries: 3, backoff: 'exponential', initialDelay: 500 }, // nodes without config.retries
   defaultCircuitBreaker: breakerConfig, // per-node breaker, shared across runs of this executor
   deadLetterQueue: createInMemoryDLQ(), // entry for every node that finally failed
-  idempotencyStore, // reuse results of nodes that already completed for this workflowId
+  idempotencyStore, // reuse results of nodes that already completed for this workflowId and visit, across resumes
   approvalStore, // default store for humanWorkflowNode
   timerStore, // default store for persisted timers
   tracer,
@@ -600,6 +600,8 @@ builder.addNode(
   )
 );
 ```
+
+The mapper's fourth argument is `{ signal, attempt }`: the signal aborts when the attempt times out, another item fails the map (without `continueOnError`) or the run is cancelled or paused, so pass it to the work the mapper starts. The first failure stops the map: no further item starts and the error's `partialResults` hold what each item really did.
 
 `mapNode` + `mapWorkflowNode`, `parallelMap`, `batchedMap` and the reducer presets `collect`, `sum`, `count`, `groupBy`, `partition`, `flatMap` and `stats` cover other shapes.
 
