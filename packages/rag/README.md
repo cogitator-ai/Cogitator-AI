@@ -476,6 +476,28 @@ const agent = new Agent({
 
 ---
 
+## Re-ingest, Removal and Scoping
+
+Ingesting a source again replaces what the pipeline stored for it: once the new chunks are embedded, the old chunks of that `source` are deleted, so no duplicates or stale text are left. Document ids come from the source (plus the row, item or page within it) and chunk ids from the document id and position, so they stay the same across re-ingests. `removeSource(source)` deletes a source, using the `source` results carry (the resolved path for files).
+
+```typescript
+await pipeline.ingest('./docs/handbook.md'); // again after an edit: replaced, not duplicated
+await pipeline.removeSource('/srv/app/docs/handbook.md');
+```
+
+Every query is scoped to `sourceType: 'document'`, so a store shared with agent memory (for example a Postgres memory store) never returns messages or facts, private ones included, as RAG results. `namespace` in the config keeps several pipelines apart in one store, and `retrieval.filter` (or the `filter` query option) narrows a search further:
+
+```typescript
+const pipeline = new RAGPipelineBuilder()
+  // ...
+  .withConfig({ chunking, retrieval: { strategy: 'similarity', topK: 5 }, namespace: 'handbook' })
+  .build();
+
+await pipeline.query('vacation policy', { filter: { metadata: { lang: 'en' } } });
+```
+
+Replacing and removing need an embedding store with `deleteByFilter`, which every built-in store has. With a custom store without it, chunks of a re-ingested source are appended (with a warning) and `removeSource` throws. A retriever with its own index (`ChunkIndexer`) is told about replaced chunks through `removeChunks()`, as `HybridRetriever` is.
+
 ## Pipeline Stats
 
 ```typescript

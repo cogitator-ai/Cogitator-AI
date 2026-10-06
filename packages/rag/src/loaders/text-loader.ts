@@ -1,7 +1,7 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { nanoid } from 'nanoid';
 import type { DocumentLoader, RAGDocument } from '@cogitator-ai/types';
+import { documentId } from './document-id.js';
 
 const TEXT_EXTENSIONS = new Set(['txt', 'text']);
 
@@ -22,7 +22,7 @@ export class TextLoader implements DocumentLoader {
   private async loadFile(filePath: string): Promise<RAGDocument> {
     const content = await readFile(filePath, 'utf-8');
     return {
-      id: nanoid(),
+      id: documentId(filePath),
       content,
       source: filePath,
       sourceType: 'text',

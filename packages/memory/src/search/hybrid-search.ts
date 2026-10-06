@@ -9,6 +9,7 @@ import type {
   SearchResult,
 } from '@cogitator-ai/types';
 import { BM25Index } from './bm25';
+import { matchesSearchFilter } from './filter';
 import { fuseSearchResults } from './rrf';
 
 const DEFAULT_WEIGHTS: HybridSearchWeights = { bm25: 0.4, vector: 0.6 };
@@ -20,6 +21,7 @@ export class HybridSearch {
   private embeddingService: EmbeddingService;
   private keywordAdapter?: KeywordSearchAdapter;
   private localBM25: BM25Index;
+  private localMetadata = new Map<string, Record<string, unknown>>();
   private defaultWeights: HybridSearchWeights;
 
   constructor(config: HybridSearchConfig) {
@@ -48,16 +50,24 @@ export class HybridSearch {
     }
   }
 
-  indexDocument(id: string, content: string): void {
+  /**
+   * Adds a document to the local keyword index used without a `keywordAdapter`. Its `metadata`
+   * lets search filters apply to it; local documents count as `sourceType: 'document'`.
+   */
+  indexDocument(id: string, content: string, metadata?: Record<string, unknown>): void {
     this.localBM25.addDocument({ id, content });
+    if (metadata) this.localMetadata.set(id, metadata);
+    else this.localMetadata.delete(id);
   }
 
   removeDocument(id: string): void {
     this.localBM25.removeDocument(id);
+    this.localMetadata.delete(id);
   }
 
   clearIndex(): void {
     this.localBM25.clear();
+    this.localMetadata.clear();
   }
 
   get indexSize(): number {
@@ -105,30 +115,32 @@ export class HybridSearch {
       });
     }
 
-    if (options.filter) {
-      console.warn(
-        'HybridSearch: filter is provided but no keywordAdapter is configured; ' +
-          'falling back to local BM25 which does not support filtering'
-      );
-    }
-
-    return this.localBM25Search(options.query, limit);
+    return this.localBM25Search(options, limit);
   }
 
-  private localBM25Search(query: string, limit: number): MemoryResult<SearchResult[]> {
-    const results = this.localBM25.search(query, limit);
+  /** Keyword search over the local index, filtered by the metadata the documents were indexed with. */
+  private localBM25Search(options: SearchOptions, limit: number): MemoryResult<SearchResult[]> {
+    const candidates = this.localBM25.search(
+      options.query,
+      options.filter ? this.localBM25.size : limit
+    );
 
-    return {
-      success: true,
-      data: results.map((r) => ({
+    const data: SearchResult[] = [];
+    for (const r of candidates) {
+      const metadata = this.localMetadata.get(r.id);
+      if (!matchesSearchFilter({ sourceType: 'document', metadata }, options.filter)) continue;
+      data.push({
         id: r.id,
         sourceId: r.id,
-        sourceType: 'document' as const,
+        sourceType: 'document',
         content: r.content,
         score: r.score,
         keywordScore: r.score,
-      })),
-    };
+        ...(metadata && { metadata }),
+      });
+      if (data.length >= limit) break;
+    }
+    return { success: true, data };
   }
 
   private async hybridSearch(

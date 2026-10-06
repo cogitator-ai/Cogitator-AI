@@ -171,4 +171,39 @@ describe('PostgresAdapter vector store', () => {
       expect(thread).toEqual({ success: false, error: 'Not connected' });
     });
   });
+
+  describe('metadata filters', () => {
+    it('matches metadata by JSONB containment in searches and deletes', async () => {
+      const store = adapter(2);
+      await store.connect();
+      pool.query.mockClear();
+
+      await store.keywordSearch({ query: 'x', filter: { metadata: { namespace: 'docs' } } });
+      const deleted = await store.deleteByFilter({
+        sourceType: 'document',
+        metadata: { source: '/a.md', namespace: 'docs' },
+      });
+
+      expect(deleted.success).toBe(true);
+      const [searchSql, searchParams] = pool.query.mock.calls[0];
+      expect(searchSql).toContain('metadata @> $2::jsonb');
+      expect(searchParams?.[1]).toBe('{"namespace":"docs"}');
+      const [deleteSql, deleteParams] = pool.query.mock.calls[1];
+      expect(deleteSql.replace(/\s+/g, ' ')).toBe(
+        'DELETE FROM cogitator.embeddings WHERE TRUE AND source_type = $1 AND metadata @> $2::jsonb'
+      );
+      expect(deleteParams).toEqual(['document', '{"source":"/a.md","namespace":"docs"}']);
+    });
+
+    it('refuses a delete filter without conditions', async () => {
+      const store = adapter(2);
+      await store.connect();
+      pool.query.mockClear();
+
+      const deleted = await store.deleteByFilter({});
+
+      expect(deleted.success).toBe(false);
+      expect(pool.query).not.toHaveBeenCalled();
+    });
+  });
 });

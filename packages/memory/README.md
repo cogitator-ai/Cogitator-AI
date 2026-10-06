@@ -381,6 +381,8 @@ console.log(context.facts);
 console.log(context.semanticResults);
 ```
 
+Embedding stores also accept `filter.metadata` (exact metadata values) in `search`/`keywordSearch`, and `deleteByFilter({ sourceType?, agentId?, threadId?, metadata? })` deletes every matching embedding (a filter without conditions is refused). RAG re-ingest uses it to replace a source's chunks.
+
 Semantic context is scoped by embedding metadata: entries with `metadata.agentId` set are only visible to that agent, entries without an `agentId` (shared documents, knowledge bases) are visible to everyone. Adapters filter `search`/`keywordSearch` by `filter.agentId` and `filter.threadId` through the same metadata fields.
 
 ### Built Context

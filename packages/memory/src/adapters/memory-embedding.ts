@@ -4,12 +4,17 @@ import type {
   KeywordSearchAdapter,
   KeywordSearchOptions,
   MemoryResult,
-  SearchFilter,
+  EmbeddingDeleteFilter,
   SearchResult,
   SemanticSearchOptions,
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 import { BM25Index } from '../search/bm25';
+import {
+  EMPTY_DELETE_FILTER_ERROR,
+  hasDeleteCondition,
+  matchesSearchFilter,
+} from '../search/filter';
 
 function cosineSimilarity(a: number[], b: number[]): number {
   if (a.length !== b.length) return 0;
@@ -26,22 +31,6 @@ function cosineSimilarity(a: number[], b: number[]): number {
 
   const magnitude = Math.sqrt(normA) * Math.sqrt(normB);
   return magnitude === 0 ? 0 : dotProduct / magnitude;
-}
-
-/**
- * Embeddings are scoped by `metadata.agentId` / `metadata.threadId`; a user
- * filter also lets through embeddings of no user (`metadata.userId` unset).
- */
-function matchesFilter(embedding: Embedding, filter: SearchFilter | undefined): boolean {
-  if (!filter) return true;
-  if (filter.sourceType && embedding.sourceType !== filter.sourceType) return false;
-  if (filter.agentId && embedding.metadata?.agentId !== filter.agentId) return false;
-  if (filter.threadId && embedding.metadata?.threadId !== filter.threadId) return false;
-  if (filter.userId) {
-    const owner = embedding.metadata?.userId;
-    if (owner !== undefined && owner !== null && owner !== filter.userId) return false;
-  }
-  return true;
 }
 
 export class InMemoryEmbeddingAdapter implements EmbeddingAdapter, KeywordSearchAdapter {
@@ -73,7 +62,7 @@ export class InMemoryEmbeddingAdapter implements EmbeddingAdapter, KeywordSearch
     const results: (Embedding & { score: number })[] = [];
 
     for (const emb of this.embeddings.values()) {
-      if (!matchesFilter(emb, options.filter)) {
+      if (!matchesSearchFilter(emb, options.filter)) {
         continue;
       }
 
@@ -98,7 +87,7 @@ export class InMemoryEmbeddingAdapter implements EmbeddingAdapter, KeywordSearch
       const emb = this.embeddings.get(r.id);
       if (!emb) continue;
 
-      if (!matchesFilter(emb, options.filter)) {
+      if (!matchesSearchFilter(emb, options.filter)) {
         continue;
       }
 
@@ -125,6 +114,17 @@ export class InMemoryEmbeddingAdapter implements EmbeddingAdapter, KeywordSearch
   async deleteBySource(sourceId: string): Promise<MemoryResult<void>> {
     for (const [id, emb] of this.embeddings) {
       if (emb.sourceId === sourceId) {
+        this.embeddings.delete(id);
+        this.bm25Index.removeDocument(id);
+      }
+    }
+    return { success: true, data: undefined };
+  }
+
+  async deleteByFilter(filter: EmbeddingDeleteFilter): Promise<MemoryResult<void>> {
+    if (!hasDeleteCondition(filter)) return { success: false, error: EMPTY_DELETE_FILTER_ERROR };
+    for (const [id, emb] of this.embeddings) {
+      if (matchesSearchFilter(emb, filter)) {
         this.embeddings.delete(id);
         this.bm25Index.removeDocument(id);
       }

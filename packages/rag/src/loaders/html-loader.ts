@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { nanoid } from 'nanoid';
 import type { DocumentLoader, RAGDocument } from '@cogitator-ai/types';
+import { documentId } from './document-id.js';
 
 async function loadCheerio() {
   try {
@@ -71,7 +71,7 @@ export class HTMLLoader implements DocumentLoader {
     if (title) metadata.title = title;
 
     return {
-      id: nanoid(),
+      id: documentId(source),
       content,
       source,
       sourceType,

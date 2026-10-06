@@ -163,13 +163,7 @@ export interface SemanticSearchOptions {
   vector?: number[];
   limit?: number;
   threshold?: number;
-  filter?: {
-    sourceType?: Embedding['sourceType'];
-    threadId?: string;
-    agentId?: string;
-    /** Only embeddings of this user (`metadata.userId`) and those of no user */
-    userId?: string;
-  };
+  filter?: SearchFilter;
 }
 
 /**
@@ -219,6 +213,11 @@ export interface EmbeddingAdapter {
   search(options: SemanticSearchOptions): Promise<MemoryResult<(Embedding & { score: number })[]>>;
   deleteEmbedding(embeddingId: string): Promise<MemoryResult<void>>;
   deleteBySource(sourceId: string): Promise<MemoryResult<void>>;
+  /**
+   * Deletes every embedding the filter matches; a filter without any condition is rejected.
+   * Built-in stores implement it, RAG re-ingest needs it to replace a source's chunks.
+   */
+  deleteByFilter?(filter: EmbeddingDeleteFilter): Promise<MemoryResult<void>>;
 }
 
 export interface EmbeddingService {
@@ -327,7 +326,15 @@ export interface SearchFilter {
   agentId?: string;
   /** Only embeddings of this user (`metadata.userId`) and those of no user */
   userId?: string;
+  /** Only embeddings whose metadata holds each of these values */
+  metadata?: Record<string, string | number | boolean>;
 }
+
+/**
+ * What `deleteByFilter` deletes. It has no `userId`, whose search meaning also takes in
+ * embeddings of no user: delete a user's embeddings with `metadata: { userId }`.
+ */
+export type EmbeddingDeleteFilter = Omit<SearchFilter, 'userId'>;
 
 export interface SearchOptions {
   query: string;

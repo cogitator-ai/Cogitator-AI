@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { nanoid } from 'nanoid';
 import type { DocumentLoader, RAGDocument } from '@cogitator-ai/types';
+import { documentId } from './document-id.js';
 
 type Papa = typeof import('papaparse');
 
@@ -60,7 +60,7 @@ export class CSVLoader implements DocumentLoader {
       const metadata = { ...this.extractMetadata(row), row: index + 1 };
 
       return {
-        id: nanoid(),
+        id: documentId(filePath, `row-${index + 1}`),
         content,
         source: filePath,
         sourceType: 'csv' as const,

@@ -38,7 +38,15 @@ export class HybridRetriever implements Retriever, ChunkIndexer {
 
   indexChunk(chunk: IndexedChunk): void {
     this.indexed.set(chunk.embeddingId, chunk);
-    this.hybridSearch.indexDocument(chunk.embeddingId, chunk.content);
+    this.hybridSearch.indexDocument(chunk.embeddingId, chunk.content, chunk.metadata);
+  }
+
+  removeChunks(match: (chunk: IndexedChunk) => boolean): void {
+    for (const [embeddingId, chunk] of this.indexed) {
+      if (!match(chunk)) continue;
+      this.indexed.delete(embeddingId);
+      this.hybridSearch.removeDocument(embeddingId);
+    }
   }
 
   async retrieve(query: string, options?: Partial<RetrievalConfig>): Promise<RetrievalResult[]> {
@@ -48,6 +56,7 @@ export class HybridRetriever implements Retriever, ChunkIndexer {
       weights: this.defaultWeights,
       limit: options?.topK ?? this.defaultTopK,
       threshold: options?.threshold ?? this.defaultThreshold,
+      ...(options?.filter && { filter: options.filter }),
     });
 
     if (!result.success) {

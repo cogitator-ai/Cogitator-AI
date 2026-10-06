@@ -100,7 +100,9 @@ The built pipeline exposes two main methods:
 
 ### `ingest(source)`
 
-Loads documents from `source`, chunks them, embeds each document's chunks with one `embedBatch()` call, and stores the embeddings (at most 16 concurrent writes). A failed write throws with the adapter's error. Each stored chunk keeps the loader's document metadata (frontmatter, page numbers, CSV columns, page title/URL…) plus `documentId`, `source`, `sourceType`, `order`, `startOffset` and `endOffset`. Whitespace-only chunks are skipped.
+Loads documents from `source`, chunks them, embeds each document's chunks with one `embedBatch()` call, and stores the embeddings (at most 16 concurrent writes). A failed write throws with the adapter's error. Each stored chunk keeps the loader's document metadata (frontmatter, page numbers, CSV columns, page title/URL…) plus `documentId`, `source`, `sourceType`, `order`, `startOffset` and `endOffset` (and `namespace` when configured). Whitespace-only chunks are skipped.
+
+Ingesting a source again replaces it: once the new chunks of a source are embedded, the chunks stored for it before (same `source`, same namespace) are deleted, so a re-ingested README or a folder synced by a cron job leaves no duplicates and no stale text. Document ids are derived from the source (and the row, item or page within it) and chunk ids from the document id and the chunk position, so results cite the same ids after a re-ingest. Replacing needs an embedding store with `deleteByFilter` (every built-in store has it), a custom store without it gets the chunks appended next to the old ones, with a warning.
 
 ```typescript
 const { documents, chunks } = await pipeline.ingest('./data/knowledge-base/');
@@ -109,13 +111,21 @@ console.log(`Ingested ${documents} documents (${chunks} chunks)`);
 
 ### `query(text, options?)`
 
-Retrieves relevant chunks for the given query. Options (`topK`, `threshold`, `mmrLambda`, `multiQueryCount`) override the configured retrieval defaults; options left `undefined` keep the configured values. Each `RetrievalResult` has `chunkId`, `documentId`, `content`, `score`, `source` (the document path or URL) and `metadata`. If a reranker is configured and `reranking.enabled` is true in the config, results are reranked (keeping `reranking.topN`) before returning.
+Retrieves relevant chunks for the given query. Options (`topK`, `threshold`, `mmrLambda`, `multiQueryCount`, `filter`) override the configured retrieval defaults, options left `undefined` keep the configured values. Every search is scoped to `sourceType: 'document'` and to the pipeline's `namespace`, so when the embedding store is shared with agent memory (a Postgres memory store, say), messages and facts, including those of other users, never come back as RAG results. `filter` narrows further, for example `{ metadata: { lang: 'en' } }`. Each `RetrievalResult` has `chunkId`, `documentId`, `content`, `score`, `source` (the document path or URL) and `metadata`. If a reranker is configured and `reranking.enabled` is true in the config, results are reranked (keeping `reranking.topN`) before returning.
 
 ```typescript
 const results = await pipeline.query('What is the agent lifecycle?', {
   topK: 5,
   threshold: 0.7,
 });
+```
+
+### `removeSource(source)`
+
+Deletes every chunk the pipeline stored for `source`, the value results carry in `source` (for files, the resolved path the loader read). Throws when the embedding store has no `deleteByFilter`.
+
+```typescript
+await pipeline.removeSource('/srv/kb/old-handbook.md');
 ```
 
 ### `getStats()`
@@ -152,6 +162,7 @@ const config: RAGPipelineConfigInput = {
     enabled: true,
     topN: 5,
   },
+  namespace: 'handbook', // optional: keeps this pipeline apart from others in one store
 };
 ```
 
@@ -163,6 +174,8 @@ const config: RAGPipelineConfigInput = {
 | `retrieval.threshold`   | `0`       | Between 0 and 1                                                           |
 | `reranking.enabled`     | `false`   | The reranker only runs when `true`                                        |
 | `reranking.topN`        | all       | How many results the reranker keeps                                       |
+| `retrieval.filter`      | none      | Extra search filter: `sourceType`, `agentId`, `threadId`, `metadata`      |
+| `namespace`             | none      | Stored as `metadata.namespace`, scopes queries, re-ingest and removal     |
 
 ## Agent Tools
 

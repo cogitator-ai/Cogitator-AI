@@ -176,7 +176,7 @@ const results = unwrap(
 );
 ```
 
-`search()` needs a `vector` — embed the query with an [embedding service](/docs/memory/embeddings) first. `limit` defaults to 10 and `threshold` (cosine similarity) to 0.7. `filter.agentId` and `filter.threadId` match `metadata.agentId` / `metadata.threadId`; `filter.userId` matches `metadata.userId` and also lets through embeddings without a user. Remove embeddings with `deleteEmbedding(id)` or `deleteBySource(sourceId)`.
+`search()` needs a `vector` — embed the query with an [embedding service](/docs/memory/embeddings) first. `limit` defaults to 10 and `threshold` (cosine similarity) to 0.7. `filter.agentId` and `filter.threadId` match `metadata.agentId` / `metadata.threadId`; `filter.userId` matches `metadata.userId` and also lets through embeddings without a user, and `filter.metadata` matches metadata values exactly (`{ metadata: { namespace: 'docs' } }`, a JSONB containment on Postgres). Remove embeddings with `deleteEmbedding(id)`, `deleteBySource(sourceId)` or `deleteByFilter(filter)`, which deletes every embedding matching `sourceType`, `agentId`, `threadId` and `metadata` (it has no `userId`, delete a user's embeddings with `metadata: { userId }`) and refuses a filter without any condition. `deleteByFilter` is optional in the `EmbeddingAdapter` interface, every built-in store implements it.
 
 ### Keyword Search (KeywordSearchAdapter)
 

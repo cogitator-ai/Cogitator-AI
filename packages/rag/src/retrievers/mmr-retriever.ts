@@ -64,6 +64,7 @@ export class MMRRetriever implements Retriever {
       query,
       limit: topK * CANDIDATE_MULTIPLIER,
       threshold,
+      ...(options?.filter && { filter: options.filter }),
     });
 
     if (!result.success) {

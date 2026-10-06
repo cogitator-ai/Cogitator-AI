@@ -24,8 +24,10 @@ import type {
   SearchFilter,
   SearchResult,
   NewMemoryEntry,
+  EmbeddingDeleteFilter,
 } from '@cogitator-ai/types';
 import { BaseMemoryAdapter } from './base';
+import { EMPTY_DELETE_FILTER_ERROR, hasDeleteCondition } from '../search/filter';
 import {
   detectVectorSearchTuning,
   ensureHnswCosineIndex,
@@ -806,6 +808,25 @@ export class PostgresAdapter
     }
   }
 
+  async deleteByFilter(filter: EmbeddingDeleteFilter): Promise<MemoryResult<void>> {
+    if (!hasDeleteCondition(filter)) return this.failure(EMPTY_DELETE_FILTER_ERROR);
+    if (!this.pool) return this.failure('Not connected');
+    const unavailable = this.embeddingTableUnavailable();
+    if (unavailable) return unavailable;
+
+    const params: unknown[] = [];
+    const conditions = this.embeddingFilterClause(filter, params, 1);
+    try {
+      await this.pool.query(
+        `DELETE FROM ${this.schema}.embeddings WHERE TRUE${conditions.sql}`,
+        params
+      );
+      return this.success(undefined);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
   async keywordSearch(options: KeywordSearchOptions): Promise<MemoryResult<SearchResult[]>> {
     if (!this.pool) return this.failure('Not connected');
     const unavailable = this.embeddingTableUnavailable();
@@ -852,7 +873,8 @@ export class PostgresAdapter
 
   /**
    * SQL conditions for a search filter; agent and thread scoping use `metadata.agentId` /
-   * `metadata.threadId`, and a user filter also lets through embeddings of no user.
+   * `metadata.threadId`, a user filter also lets through embeddings of no user, and `metadata`
+   * conditions are matched by JSONB containment.
    */
   private embeddingFilterClause(
     filter: SearchFilter | undefined,
@@ -876,6 +898,10 @@ export class PostgresAdapter
     if (filter?.userId) {
       sql += ` AND (metadata->>'userId' = $${index++} OR metadata->>'userId' IS NULL)`;
       params.push(filter.userId);
+    }
+    if (filter?.metadata && Object.keys(filter.metadata).length > 0) {
+      sql += ` AND metadata @> $${index++}::jsonb`;
+      params.push(toJsonb(filter.metadata));
     }
     return { sql, nextIndex: index };
   }
