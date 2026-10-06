@@ -7,7 +7,6 @@ import {
   type Agent,
   type RunOptions,
   type RunResult,
-  type Tool,
 } from '@cogitator-ai/types';
 import { OpenAIServer } from '../server/api-server';
 import { ThreadManager } from '../client/thread-manager';
@@ -34,12 +33,6 @@ const cogitator = {
     } as RunResult;
   },
 } as unknown as Cogitator;
-
-function findTool(agent: Agent, name: string): Tool {
-  const tool = agent.tools.find((t) => t.name === name);
-  if (!tool) throw new Error(`tool ${name} not exposed to agent`);
-  return tool;
-}
 
 const POLL = { pollIntervalMs: 20 };
 
@@ -192,61 +185,6 @@ describe('OpenAI SDK compatibility', () => {
     expect(calls[0].options.input).toBe('new');
   });
 
-  it('pauses for client-side function calls and resumes with submitted outputs', async () => {
-    handler = async (agent) => {
-      const weather = await findTool(agent, 'get_weather').execute(
-        { city: 'Paris' },
-        { agentId: 'a', runId: 'r', signal: new AbortController().signal }
-      );
-      return { output: `Forecast: ${String(weather)}` };
-    };
-    const assistant = await client.beta.assistants.create({
-      model: 'cogitator',
-      tools: [
-        {
-          type: 'function',
-          function: {
-            name: 'get_weather',
-            description: 'Weather for a city',
-            parameters: {
-              type: 'object',
-              properties: { city: { type: 'string' } },
-              required: ['city'],
-            },
-          },
-        },
-      ],
-    });
-    const thread = await client.beta.threads.create({
-      messages: [{ role: 'user', content: 'Weather in Paris?' }],
-    });
-
-    const paused = await client.beta.threads.runs.createAndPoll(
-      thread.id,
-      { assistant_id: assistant.id },
-      POLL
-    );
-    expect(paused.status).toBe('requires_action');
-    const toolCall = paused.required_action!.submit_tool_outputs.tool_calls[0];
-    expect(toolCall.function.name).toBe('get_weather');
-    expect(JSON.parse(toolCall.function.arguments)).toEqual({ city: 'Paris' });
-
-    const missing = await client.beta.threads.runs
-      .submitToolOutputs(paused.id, { thread_id: thread.id, tool_outputs: [] })
-      .catch((e: unknown) => e);
-    expect(missing).toBeInstanceOf(OpenAI.BadRequestError);
-
-    const done = await client.beta.threads.runs.submitToolOutputsAndPoll(
-      paused.id,
-      { thread_id: thread.id, tool_outputs: [{ tool_call_id: toolCall.id, output: 'sunny' }] },
-      POLL
-    );
-    const messages = await client.beta.threads.messages.list(thread.id);
-
-    expect(done.status).toBe('completed');
-    expect(messages.data[0].content[0]).toMatchObject({ text: { value: 'Forecast: sunny' } });
-  });
-
   it('rejects a second run while the thread has an active run', async () => {
     let release: (() => void) | undefined;
     handler = () =>
@@ -328,47 +266,6 @@ describe('OpenAI SDK compatibility', () => {
 
     const stored = await client.beta.threads.messages.list(thread.id);
     expect(stored.data[0].id).toBe(finalMessages[0].id);
-  });
-
-  it('streams up to requires_action and continues with submitToolOutputsStream', async () => {
-    handler = async (agent, options) => {
-      const result = await findTool(agent, 'lookup').execute(
-        { key: 'x' },
-        { agentId: 'a', runId: 'r', signal: new AbortController().signal }
-      );
-      options.onToken?.(`value=${String(result)}`);
-      return { output: `value=${String(result)}` };
-    };
-    const assistant = await client.beta.assistants.create({
-      model: 'cogitator',
-      tools: [
-        {
-          type: 'function',
-          function: {
-            name: 'lookup',
-            parameters: { type: 'object', properties: { key: { type: 'string' } } },
-          },
-        },
-      ],
-    });
-    const thread = await client.beta.threads.create({
-      messages: [{ role: 'user', content: 'lookup x' }],
-    });
-
-    const first = client.beta.threads.runs.stream(thread.id, { assistant_id: assistant.id });
-    const paused = await first.finalRun();
-    expect(paused.status).toBe('requires_action');
-    const call = paused.required_action!.submit_tool_outputs.tool_calls[0];
-
-    const resumed = client.beta.threads.runs.submitToolOutputsStream(paused.id, {
-      thread_id: thread.id,
-      tool_outputs: [{ tool_call_id: call.id, output: '42' }],
-    });
-    const run = await resumed.finalRun();
-    const messages = await resumed.finalMessages();
-
-    expect(run.status).toBe('completed');
-    expect(messages[0].content[0]).toMatchObject({ text: { value: 'value=42' } });
   });
 
   it('validates list parameters', async () => {

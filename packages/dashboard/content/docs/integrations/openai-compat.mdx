@@ -184,6 +184,8 @@ if (run.status === 'requires_action') {
 }
 ```
 
+Server-side tools that need approval (`requiresApproval`, or the guardrails) come to the client the same way, as calls of functions it never declared: the run waits in `requires_action` instead of completing without them. The output decides the call: `{"approved": true}` (or `approve`) runs it, `{"approved": false, "reason": "..."}` declines it with the reason, and any other text declines it with that text, so nothing ambiguous runs a server tool. A configured `guardrails.onToolApproval` decides server tools itself and they never reach the client. While the run waits it is paused rather than running, so the run timeout (`limits.defaultTimeout`, 120 s by default) does not count the client's time: only `expires_at` (10 minutes per wait) does.
+
 ### Streaming Runs
 
 Pass `stream: true` to stream OpenAI-style events (`thread.run.*`, `thread.message.created|delta|completed`, `done`). With the SDK use `runs.stream(...)` / `submitToolOutputsStream(...)`. In-process, iterate the run's event log:

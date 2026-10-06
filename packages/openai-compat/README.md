@@ -282,6 +282,8 @@ Runs live in the adapter's memory, unlike assistants, threads, messages and file
 
 Server-side `tools` run inside Cogitator. Assistant tools of type `function` are executed by the API client: when the model calls one, the run moves to `requires_action` with the pending calls, and continues after all outputs are submitted (runs waiting longer than 10 minutes expire). Outputs must cover every pending call; missing or unknown `tool_call_id`s are rejected. With the OpenAI SDK use `submitToolOutputsAndPoll` / `submitToolOutputsStream`.
 
+Server-side tools that need approval (`requiresApproval`, or the guardrails) come to the client the same way, as calls of functions it never declared: the run waits in `requires_action` instead of completing without them. The output decides the call: `{"approved": true}` (or `approve`) runs it, `{"approved": false, "reason": "..."}` declines it with the reason, and any other text declines it with that text, so nothing ambiguous runs a server tool. A configured `guardrails.onToolApproval` decides server tools itself and they never reach the client. While the run waits it is paused rather than running, so the run timeout (`limits.defaultTimeout`, 120 s by default) does not count the client's time: only `expires_at` (10 minutes per wait) does.
+
 ```typescript
 const run = adapter.getRun(thread.id, runId);
 

@@ -4,12 +4,15 @@
  * Implements the OpenAI Assistants API semantics on top of Cogitator.
  */
 
-import { type Cogitator, Agent } from '@cogitator-ai/core';
+import { type Cogitator, Agent, isPausedRun } from '@cogitator-ai/core';
 import {
   CogitatorError,
   type ImageInput,
   type ResponseFormat as AgentResponseFormat,
+  type RunOptions,
   type Tool,
+  type ToolApprovalDecision,
+  type ToolApprovalRequest,
 } from '@cogitator-ai/types';
 import { EventEmitter } from 'events';
 import { nanoid } from 'nanoid';
@@ -100,9 +103,10 @@ const RUN_TTL_SECONDS = 600;
 const CHARS_PER_TOKEN = 4;
 const TRANSCRIPT_HEADER = 'Conversation so far:\n\n';
 
-interface PendingToolCall {
-  call: ToolCall;
-  resolve: (output: string) => void;
+/** The tool calls a run waits on in `requires_action`, and how the outputs reach it. */
+interface PendingToolOutputs {
+  calls: ToolCall[];
+  resolve: (outputs: Map<string, string>) => void;
   reject: (error: Error) => void;
 }
 
@@ -112,8 +116,9 @@ interface RunState {
   emitter: EventEmitter<StreamEmitterEvents>;
   events: RunStreamEvent[];
   ended: boolean;
-  pendingCalls: PendingToolCall[];
-  flushScheduled: boolean;
+  pending?: PendingToolOutputs;
+  /** Outputs the client submitted for its function calls, by tool call id */
+  clientOutputs: Map<string, string>;
   expiryTimer?: ReturnType<typeof setTimeout>;
 }
 
@@ -197,6 +202,44 @@ function fitPromptBudget(
 
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value > 0;
+}
+
+const APPROVING_OUTPUTS = new Set(['approve', 'approved', 'yes', 'true']);
+
+/**
+ * The decision a client gives as the output of a server tool call that needs approval:
+ * `{"approved": true}` or `approve` lets it run, `{"approved": false, "reason": "..."}` declines it
+ * with the reason, and any other output declines it with that output as the reason, so nothing
+ * ambiguous ever runs the tool.
+ */
+export function toolOutputToDecision(output: string): ToolApprovalDecision {
+  const text = output.trim();
+  if (APPROVING_OUTPUTS.has(text.toLowerCase())) return { approved: true };
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (parsed === true) return { approved: true };
+    if (typeof parsed === 'string' && APPROVING_OUTPUTS.has(parsed.trim().toLowerCase())) {
+      return { approved: true };
+    }
+    if (typeof parsed === 'object' && parsed !== null && 'approved' in parsed) {
+      const { approved, reason } = parsed as { approved: unknown; reason?: unknown };
+      if (approved === true) return { approved: true };
+      if (approved === false) {
+        return { approved: false, ...(typeof reason === 'string' && reason && { reason }) };
+      }
+    }
+  } catch {
+    return { approved: false, reason: text || 'Declined by the client' };
+  }
+  return { approved: false, reason: text || 'Declined by the client' };
+}
+
+function toFunctionCall(request: ToolApprovalRequest): ToolCall {
+  return {
+    id: request.toolCallId,
+    type: 'function',
+    function: { name: request.toolName, arguments: JSON.stringify(request.arguments) },
+  };
 }
 
 /**
@@ -405,8 +448,7 @@ export class OpenAIAdapter {
       emitter: new EventEmitter<StreamEmitterEvents>(),
       events: [],
       ended: false,
-      pendingCalls: [],
-      flushScheduled: false,
+      clientOutputs: new Map(),
     };
     this.runs.set(runId, state);
     this.activeRunByThread.set(threadId, runId);
@@ -470,8 +512,9 @@ export class OpenAIAdapter {
   }
 
   /**
-   * Submit outputs for the tool calls of a run that requires action.
-   * Outputs for every pending tool call must be provided.
+   * Submit outputs for the tool calls of a run that requires action. Outputs for every pending
+   * tool call must be provided: the result of a client-side function, or the decision on a
+   * server tool that needs approval (see `toolOutputToDecision`).
    */
   async submitToolOutputs(
     threadId: string,
@@ -483,7 +526,8 @@ export class OpenAIAdapter {
       return undefined;
     }
 
-    if (state.run.status !== 'requires_action') {
+    const pending = state.pending;
+    if (state.run.status !== 'requires_action' || !pending) {
       throw new InvalidRequestError(
         `Run is not waiting for tool outputs (status: '${state.run.status}').`
       );
@@ -492,30 +536,27 @@ export class OpenAIAdapter {
     const outputs = new Map(
       (request.tool_outputs ?? []).map((output) => [output.tool_call_id, output.output])
     );
-    const missing = state.pendingCalls.filter((pending) => !outputs.has(pending.call.id));
+    const missing = pending.calls.filter((call) => !outputs.has(call.id));
     if (missing.length > 0) {
       throw new InvalidRequestError(
-        `Missing tool outputs for tool calls: ${missing.map((p) => p.call.id).join(', ')}`,
+        `Missing tool outputs for tool calls: ${missing.map((call) => call.id).join(', ')}`,
         'tool_outputs'
       );
     }
     const unknown = [...outputs.keys()].filter(
-      (id) => !state.pendingCalls.some((pending) => pending.call.id === id)
+      (id) => !pending.calls.some((call) => call.id === id)
     );
     if (unknown.length > 0) {
       throw new InvalidRequestError(`Unknown tool call ids: ${unknown.join(', ')}`, 'tool_outputs');
     }
 
-    const pending = state.pendingCalls;
-    state.pendingCalls = [];
+    state.pending = undefined;
     this.clearExpiry(state);
     state.run.status = 'in_progress';
     state.run.required_action = null;
     this.emit(state, 'thread.run.in_progress', state.run);
 
-    for (const call of pending) {
-      call.resolve(outputs.get(call.call.id) ?? '');
-    }
+    pending.resolve(outputs);
 
     return structuredClone(state.run);
   }
@@ -602,9 +643,9 @@ export class OpenAIAdapter {
 
   private terminate(state: RunState, reason: RunTerminatedError): void {
     this.clearExpiry(state);
-    const pending = state.pendingCalls;
-    state.pendingCalls = [];
-    for (const call of pending) call.reject(reason);
+    const pending = state.pending;
+    state.pending = undefined;
+    pending?.reject(reason);
     state.abortController.abort(reason);
   }
 
@@ -641,8 +682,11 @@ export class OpenAIAdapter {
   }
 
   /**
-   * Turn assistant `function` tools into Cogitator tools whose execution is
-   * delegated to the API client through `requires_action`.
+   * Turn assistant `function` tools into Cogitator tools the API client executes. Each one needs
+   * approval, so the run pauses before calling it and the call reaches the client through
+   * `requires_action`; the run resumes once the client submitted its output, which the tool then
+   * returns. While the client works the run is paused, not running, so its timeout does not run
+   * against the client's time (the run's `expires_at` bounds that).
    */
   private createClientTools(state: RunState, definitions: FunctionDefinition[]): Tool[] {
     return definitions.map((definition) => {
@@ -651,23 +695,19 @@ export class OpenAIAdapter {
         name: definition.name,
         description: definition.description ?? definition.name,
         parameters,
-        execute: (args: unknown) =>
-          new Promise<string>((resolve, reject) => {
-            if (state.abortController.signal.aborted) {
-              reject(new RunTerminatedError('cancelled'));
-              return;
-            }
-            state.pendingCalls.push({
-              call: {
-                id: `call_${nanoid()}`,
-                type: 'function',
-                function: { name: definition.name, arguments: JSON.stringify(args ?? {}) },
-              },
-              resolve,
-              reject,
-            });
-            this.scheduleRequiresAction(state);
-          }),
+        requiresApproval: true,
+        execute: async (_args: unknown, context) => {
+          const output =
+            context.toolCallId !== undefined
+              ? state.clientOutputs.get(context.toolCallId)
+              : undefined;
+          if (output === undefined) {
+            throw new Error(
+              `Function "${definition.name}" runs on the API client, which submitted no output for this call`
+            );
+          }
+          return output;
+        },
         toJSON: () => {
           const schema = (definition.parameters ?? {}) as {
             properties?: Record<string, unknown>;
@@ -687,17 +727,20 @@ export class OpenAIAdapter {
     });
   }
 
-  private scheduleRequiresAction(state: RunState): void {
-    if (state.flushScheduled) return;
-    state.flushScheduled = true;
-    setImmediate(() => {
-      state.flushScheduled = false;
-      if (state.pendingCalls.length === 0 || state.abortController.signal.aborted) return;
-
+  /**
+   * Put the run in `requires_action` with `calls` and wait for the client's outputs, or for the
+   * run to be cancelled or to expire (`RUN_TTL_SECONDS`).
+   */
+  private awaitToolOutputs(state: RunState, calls: ToolCall[]): Promise<Map<string, string>> {
+    if (state.abortController.signal.aborted) {
+      return Promise.reject(new RunTerminatedError('cancelled'));
+    }
+    return new Promise<Map<string, string>>((resolve, reject) => {
+      state.pending = { calls, resolve, reject };
       state.run.status = 'requires_action';
       state.run.required_action = {
         type: 'submit_tool_outputs',
-        submit_tool_outputs: { tool_calls: state.pendingCalls.map((pending) => pending.call) },
+        submit_tool_outputs: { tool_calls: calls },
       };
       state.run.expires_at = nowSeconds() + RUN_TTL_SECONDS;
       this.emit(state, 'thread.run.requires_action', state.run);
@@ -708,6 +751,29 @@ export class OpenAIAdapter {
         this.terminate(state, new RunTerminatedError('expired'));
       }, RUN_TTL_SECONDS * 1000);
     });
+  }
+
+  /**
+   * The decisions that resume a paused run: a client function runs (it returns the output the
+   * client submitted), a server tool that needs approval runs or not as the client's output says.
+   */
+  private toDecisions(
+    state: RunState,
+    pending: readonly ToolApprovalRequest[],
+    outputs: Map<string, string>,
+    clientTools: ReadonlySet<string>
+  ): Record<string, ToolApprovalDecision> {
+    const decisions: Record<string, ToolApprovalDecision> = {};
+    for (const request of pending) {
+      const output = outputs.get(request.toolCallId) ?? '';
+      if (clientTools.has(request.toolName)) {
+        state.clientOutputs.set(request.toolCallId, output);
+        decisions[request.toolCallId] = { approved: true };
+      } else {
+        decisions[request.toolCallId] = toolOutputToDecision(output);
+      }
+    }
+    return decisions;
   }
 
   /**
@@ -792,6 +858,7 @@ export class OpenAIAdapter {
       const functionDefinitions = run.tools.flatMap((t) =>
         t.type === 'function' && !serverToolNames.has(t.function.name) ? [t.function] : []
       );
+      const clientToolNames = new Set(functionDefinitions.map((definition) => definition.name));
       let tools: Tool[] = [...this.tools, ...this.createClientTools(state, functionDefinitions)];
       const toolChoice = run.tool_choice;
       if (toolChoice === 'none') {
@@ -836,14 +903,10 @@ export class OpenAIAdapter {
       };
 
       let accumulated = '';
-      const result = await this.cogitator.run(agent, {
-        input,
-        images,
-        threadId,
+      const turnOptions = {
         signal,
         stream: !!request.stream,
         parallelToolCalls: run.parallel_tool_calls,
-        ...(hasHistory && { loadHistory: false }),
         onToken: (token: string) => {
           if (signal.aborted) return;
           announceMessage();
@@ -855,7 +918,31 @@ export class OpenAIAdapter {
           };
           this.emit(state, 'thread.message.delta', delta);
         },
+        onApproval: (approval: ToolApprovalRequest) =>
+          clientToolNames.has(approval.toolName) ? 'pause' : undefined,
+      } satisfies Partial<RunOptions>;
+
+      let result = await this.cogitator.run(agent, {
+        ...turnOptions,
+        input,
+        images,
+        threadId,
+        ...(hasHistory && { loadHistory: false }),
       });
+
+      while (isPausedRun(result)) {
+        if (!result.checkpoint) {
+          throw new Error(`Run ${run.id} paused without a checkpoint to resume from`);
+        }
+        const outputs = await this.awaitToolOutputs(
+          state,
+          result.pendingApprovals.map(toFunctionCall)
+        );
+        result = await this.cogitator.resume(agent, result.checkpoint, {
+          ...turnOptions,
+          decisions: this.toDecisions(state, result.pendingApprovals, outputs, clientToolNames),
+        });
+      }
 
       if (signal.aborted) {
         throw signal.reason instanceof Error ? signal.reason : new RunTerminatedError('cancelled');
