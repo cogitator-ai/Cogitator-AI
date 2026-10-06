@@ -239,6 +239,11 @@ export default function RootLayout({
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: jsonLd(structuredData) }}
         />
+        <script
+          defer
+          src="https://analytics.el1fe.com/script.js"
+          data-website-id="407d4d4f-12de-4347-9c90-d3c9e1491d2d"
+        />
       </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} ${screenMono.variable} ${imperial.variable} antialiased`}
