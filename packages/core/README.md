@@ -217,6 +217,8 @@ try {
 }
 ```
 
+`error.message` always carries what the provider said (`[openai] Bad request: Unsupported parameter: ...`). `LLM_CONTEXT_LENGTH_EXCEEDED` is reported only for the providers' own context overflow errors, not for any bad request that mentions tokens, and Bedrock errors are classified by their AWS exception name and HTTP status.
+
 `llmUnavailable`, `llmTimeout`, `llmInvalidResponse`, `llmConfigError` and `wrapSDKError` build these errors in your own backends, and `providerErrorIn` reads the error a router such as OpenRouter puts in the body of a successful response; `withLLMRetry(backend, options)` / `RetryingBackend` add retries with `Retry-After` support to any backend.
 
 ---
@@ -1808,6 +1810,8 @@ try {
   }
 }
 ```
+
+`error.message` always carries what the provider said (`[openai] Bad request: Unsupported parameter: ...`). `LLM_CONTEXT_LENGTH_EXCEEDED` is reported only for the providers' own context overflow errors, not for any bad request that mentions tokens, and Bedrock errors are classified by their AWS exception name and HTTP status.
 
 `llmUnavailable`, `llmTimeout`, `llmInvalidResponse`, `llmConfigError` and `wrapSDKError` build these errors in your own backends, and `providerErrorIn` reads the error a router such as OpenRouter puts in the body of a successful response; `withLLMRetry(backend, options)` / `RetryingBackend` add retries with `Retry-After` support to any backend.
 

@@ -920,4 +920,88 @@ describe('BedrockBackend', () => {
       expect(response.toolCalls).toBeUndefined();
     });
   });
+
+  describe('error classification', () => {
+    function awsError(name: string, message: string, httpStatusCode?: number) {
+      const error = new Error(message) as Error & { $metadata?: { httpStatusCode?: number } };
+      error.name = name;
+      if (httpStatusCode !== undefined) error.$metadata = { httpStatusCode };
+      return error;
+    }
+    const fail = async (error: Error) => {
+      mockSend.mockRejectedValueOnce(error);
+      return backend
+        .chat({
+          model: 'anthropic.claude-3-sonnet-20240229-v1:0',
+          messages: [{ role: 'user', content: 'x' }],
+        })
+        .catch((e: unknown) => e);
+    };
+
+    it('reports an input that is too long as context length exceeded, not retryable', async () => {
+      const error = await fail(
+        awsError('ValidationException', 'Input is too long for requested model.', 400)
+      );
+
+      expect(error).toMatchObject({ code: 'LLM_CONTEXT_LENGTH_EXCEEDED', retryable: false });
+    });
+
+    it('keeps a validation error whose text contains "rate" a client error', async () => {
+      const error = await fail(
+        awsError('ValidationException', 'Messages must separate user and assistant turns.', 400)
+      );
+
+      expect(error).toMatchObject({ code: 'VALIDATION_ERROR', retryable: false });
+      expect((error as Error).message).toContain('separate user and assistant');
+    });
+
+    it('does not retry a denied access', async () => {
+      const error = await fail(
+        awsError(
+          'AccessDeniedException',
+          "You don't have access to the model with the specified model ID.",
+          403
+        )
+      );
+
+      expect(error).toMatchObject({ code: 'LLM_UNAVAILABLE', retryable: false });
+    });
+
+    it('retries throttling as a rate limit', async () => {
+      const error = await fail(awsError('ThrottlingException', 'Too many requests.', 429));
+
+      expect(error).toMatchObject({ code: 'LLM_RATE_LIMITED', retryable: true });
+    });
+
+    it('retries a model timeout', async () => {
+      const error = await fail(awsError('ModelTimeoutException', 'Model timed out.', 408));
+
+      expect(error).toMatchObject({ retryable: true });
+    });
+
+    it('classifies an unknown error by its HTTP status', async () => {
+      const error = await fail(awsError('SomethingNew', 'Not available right now.', 503));
+
+      expect(error).toMatchObject({ code: 'LLM_UNAVAILABLE', retryable: true });
+    });
+
+    it('classifies an error raised while reading the stream by its name', async () => {
+      async function* failing() {
+        yield { contentBlockDelta: { contentBlockIndex: 0, delta: { text: 'Hi' } } };
+        throw awsError('ValidationException', 'Input is too long for requested model.');
+      }
+      mockSend.mockResolvedValueOnce({ stream: failing() });
+
+      const error = await (async () => {
+        for await (const _ of backend.chatStream({
+          model: 'anthropic.claude-3-sonnet-20240229-v1:0',
+          messages: [{ role: 'user', content: 'x' }],
+        })) {
+          /* consume stream */
+        }
+      })().catch((e: unknown) => e);
+
+      expect(error).toMatchObject({ code: 'LLM_CONTEXT_LENGTH_EXCEEDED', retryable: false });
+    });
+  });
 });

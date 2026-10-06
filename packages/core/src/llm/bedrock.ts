@@ -18,6 +18,7 @@ import type {
   ToolSchema,
 } from '@cogitator-ai/types';
 import { BaseLLMBackend } from './base';
+import { ErrorCode } from '@cogitator-ai/types';
 import {
   LLMError,
   createLLMError,
@@ -737,32 +738,60 @@ export class BedrockBackend extends BaseLLMBackend {
     });
   }
 
+  /**
+   * An AWS SDK error as an `LLMError`, classified by the exception's name, then by its HTTP
+   * status, and only for errors with neither by whole words of its message.
+   */
   private wrapBedrockError(error: unknown, ctx: LLMErrorContext): never {
-    if (error instanceof Error) {
-      const message = error.message.toLowerCase();
+    if (!(error instanceof Error)) throw llmUnavailable(ctx, String(error));
 
-      if (message.includes('throttl') || message.includes('rate')) {
-        throw createLLMError({ ...ctx, statusCode: 429 }, 429, error.message);
-      }
-      if (
-        message.includes('access denied') ||
-        message.includes('unauthorized') ||
-        message.includes('credentials')
-      ) {
-        throw createLLMError({ ...ctx, statusCode: 403 }, 403, error.message);
-      }
-      if (message.includes('not found') || message.includes('does not exist')) {
-        throw createLLMError({ ...ctx, statusCode: 404 }, 404, error.message);
-      }
-      if (message.includes('validation') || message.includes('invalid')) {
-        throw createLLMError({ ...ctx, statusCode: 400 }, 400, error.message);
-      }
-
-      throw llmUnavailable(ctx, error.message, error);
+    if (error.name === 'ModelTimeoutException') {
+      throw new LLMError(error.message, ErrorCode.LLM_TIMEOUT, ctx, {
+        cause: error,
+        retryable: true,
+      });
     }
-
-    throw llmUnavailable(ctx, String(error));
+    const status =
+      BEDROCK_EXCEPTION_STATUS[error.name] ??
+      (error as AWSServiceError).$metadata?.httpStatusCode ??
+      statusFromMessage(error.message);
+    if (status !== undefined) {
+      throw createLLMError({ ...ctx, statusCode: status }, status, error.message, {
+        cause: error,
+      });
+    }
+    throw llmUnavailable(ctx, error.message, error);
   }
+}
+
+/** The HTTP status each Bedrock Runtime exception stands for, as the runtime should treat it. */
+const BEDROCK_EXCEPTION_STATUS: Record<string, number> = {
+  ValidationException: 400,
+  UnrecognizedClientException: 401,
+  ExpiredTokenException: 401,
+  AccessDeniedException: 403,
+  ResourceNotFoundException: 404,
+  ThrottlingException: 429,
+  ServiceQuotaExceededException: 429,
+  InternalServerException: 500,
+  ModelErrorException: 502,
+  ModelStreamErrorException: 502,
+  ServiceUnavailableException: 503,
+  ModelNotReadyException: 503,
+};
+
+interface AWSServiceError extends Error {
+  $metadata?: { httpStatusCode?: number };
+}
+
+/** A status for an error that carries neither an exception name nor an HTTP status. */
+function statusFromMessage(message: string): number | undefined {
+  const lower = message.toLowerCase();
+  if (/\bthrottl|\brate limit|\btoo many requests\b/.test(lower)) return 429;
+  if (/\baccess denied\b|\bnot authorized\b|\bunauthorized\b|\bsecurity token\b/.test(lower)) {
+    return 403;
+  }
+  return undefined;
 }
 
 interface StreamState {

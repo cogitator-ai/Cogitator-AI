@@ -374,3 +374,5 @@ try {
 ```
 
 Error codes include `LLM_UNAVAILABLE`, `LLM_RATE_LIMITED`, `LLM_TIMEOUT`, `LLM_INVALID_RESPONSE`, `LLM_CONTEXT_LENGTH_EXCEEDED` and `LLM_CONTENT_FILTERED`; `e.details` carries the provider, model, status code and request id. Rate limit, server and connection errors are marked as retryable, and `retryAfter` holds the wait the provider asked for, when it named one.
+
+The message always ends with what the provider said, for example `[openai] Bad request: Unsupported parameter: 'max_tokens' is not supported with this model`, and `e.details.responseBody` keeps the raw body. `LLM_CONTEXT_LENGTH_EXCEEDED` is reported only for the providers' own context overflow errors (`context_length_exceeded`, `maximum context length`, `prompt is too long`, `input is too long` and the like), so a request rejected for a parameter that merely mentions tokens stays a `VALIDATION_ERROR`. Bedrock errors are classified by the AWS exception (`ThrottlingException` is a retryable rate limit, `ValidationException` and `AccessDeniedException` are not retried, `ModelTimeoutException` is a retryable `LLM_TIMEOUT`), then by the HTTP status the SDK reports.
