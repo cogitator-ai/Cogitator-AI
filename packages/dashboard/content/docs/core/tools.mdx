@@ -126,6 +126,29 @@ const renderChart = tool({
 
 Each backend places the image where its API allows: inside the tool result for Anthropic, Bedrock and the OpenAI Responses API, after the function responses of the turn for Google, in the tool message's `images` for Ollama, and in a user message right after the turn's tool messages for Chat Completions (`api: 'chat-completions'`, OpenAI-compatible `baseUrl`, Azure), whose tool messages take only text. Results of the image-generation tool (`imageBase64`) and the browser screenshot tools (`image`) take this path.
 
+### Media Results with toolContent
+
+For results made of several parts, or with media other than images, return `toolContent()`. Text and images reach the model as the tool message's content. File parts (audio, PDFs and other binary data) stay with the result for your application, in `onToolResult` and `RunResult.toolCalls`, and the model sees only a one-line description such as `[audio/mpeg file "speech.mp3", 46.9 KB, delivered to the application, not shown here]`, so the bytes never fill the context:
+
+```typescript
+import { tool, toolContent } from '@cogitator-ai/core';
+
+const screenshotPage = tool({
+  name: 'screenshot_page',
+  description: 'Screenshot a page',
+  parameters: z.object({ url: z.string().url() }),
+  execute: async ({ url }) => {
+    const png = await capture(url);
+    return toolContent(
+      { type: 'text', text: `Screenshot of ${url}` },
+      { type: 'image', data: png.toString('base64'), mediaType: 'image/png' }
+    );
+  },
+});
+```
+
+Images in formats the providers do not take (anything but PNG, JPEG, GIF and WebP) are described like files. Guardrails that filter tool results read the text and the descriptions, never the base64 data. MCP tools that return image or audio content and AI SDK tools come through as the same parts.
+
 ## Typed Tool Sets
 
 A function that returns several tools as `Tool[]` loses each tool's own parameter types. `toolset()` keeps them as a tuple, which is still an array an agent accepts:

@@ -400,6 +400,18 @@ const screenshot = tool({
 });
 ```
 
+For results with several parts or other media, return `toolContent(...)`: text and images reach the model as content, file parts (audio, PDFs) stay with the result for the application (`onToolResult`, `RunResult.toolCalls`) and the model sees only a one-line description of each:
+
+```typescript
+import { toolContent } from '@cogitator-ai/core';
+
+execute: async ({ text }) =>
+  toolContent(
+    { type: 'text', text: 'Speech synthesized' },
+    { type: 'file', data: mp3.toString('base64'), mediaType: 'audio/mpeg', filename: 'speech.mp3' }
+  );
+```
+
 Tool parameter schemas reach every provider self-contained: definitions recursive `z.lazy()` schemas refer to travel in `parameters.$defs`, other refs are inlined (`toToolParameters` does this for any JSON Schema).
 
 See [Tools](https://cogitator.app/docs/core/tools) and [Custom Tools](https://cogitator.app/docs/tools/custom-tools).
@@ -2001,6 +2013,18 @@ const screenshot = tool({
   parameters: z.object({}),
   execute: async () => ({ page: 'dashboard', image: (await capture()).toString('base64') }),
 });
+```
+
+For results with several parts or other media, return `toolContent(...)`: text and images reach the model as content, file parts (audio, PDFs) stay with the result for the application (`onToolResult`, `RunResult.toolCalls`) and the model sees only a one-line description of each:
+
+```typescript
+import { toolContent } from '@cogitator-ai/core';
+
+execute: async ({ text }) =>
+  toolContent(
+    { type: 'text', text: 'Speech synthesized' },
+    { type: 'file', data: mp3.toString('base64'), mediaType: 'audio/mpeg', filename: 'speech.mp3' }
+  );
 ```
 
 Tool parameter schemas reach every provider self-contained: definitions recursive `z.lazy()` schemas refer to travel in `parameters.$defs`, other refs are inlined (`toToolParameters` does this for any JSON Schema).

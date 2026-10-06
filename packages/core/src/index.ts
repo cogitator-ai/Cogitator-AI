@@ -25,6 +25,13 @@ export { isPausedRun, AgentRunPausedError, findAgentRunPausedError } from './run
 export type { PausableRun, PausedRun, PausedRunInfo } from './run-pause';
 export { tool, toolset, toolToSchema } from './tool';
 export { toToolParameters } from './tool-schema';
+export {
+  toolContent,
+  isToolContentResult,
+  toolResultParts,
+  toolPartsToMessageContent,
+  toolPartsToText,
+} from './tool-content';
 export { defineSkill, validateSkill, mergeSkillsIntoAgent } from './skill';
 export { agentAsTool } from './agent-tool';
 export type { AgentAsToolOptions, AgentToolResult } from './agent-tool';
