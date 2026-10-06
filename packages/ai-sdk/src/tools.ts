@@ -1,5 +1,5 @@
 import { toolToSchema } from '@cogitator-ai/core';
-import type { Tool, ToolContext, ToolSchema } from '@cogitator-ai/types';
+import type { ApprovalCheck, Tool, ToolContext, ToolSchema } from '@cogitator-ai/types';
 import { isRecord } from './json.js';
 import type {
   AISDKJSONSchemaConverterOptions,
@@ -189,10 +189,46 @@ function resolveDescription(aiTool: AISDKToolLike): string {
 }
 
 /**
+ * The AI SDK tool's `needsApproval` as a Cogitator `requiresApproval`. Cogitator decides
+ * synchronously whether a call needs approval, so a check that answers with a promise (or
+ * throws) counts as "needs approval": a call is never run unasked.
+ */
+function requiresApprovalOf(aiTool: AISDKToolLike): Tool['requiresApproval'] {
+  const needs = aiTool.needsApproval;
+  if (needs === undefined || typeof needs === 'boolean') return needs;
+  const check: ApprovalCheck = (args) => {
+    const answer = needs(args, { toolCallId: '', messages: [] });
+    if (typeof answer === 'boolean') return answer;
+    if (isThenable(answer)) Promise.resolve(answer).catch(() => undefined);
+    return true;
+  };
+  return check;
+}
+
+/**
+ * A Cogitator tool's `requiresApproval` as an AI SDK `needsApproval`; a check that throws counts
+ * as "needs approval", as in a Cogitator run.
+ */
+function needsApprovalOf<TParams>(
+  cogTool: Tool<TParams>
+): AISDKTool<TParams>['needsApproval'] | undefined {
+  const requires = cogTool.requiresApproval;
+  if (requires === undefined || typeof requires === 'boolean') return requires;
+  return (input) => {
+    try {
+      return requires(isRecord(input) ? input : {});
+    } catch {
+      return true;
+    }
+  };
+}
+
+/**
  * Convert an AI SDK tool (ai@4 – ai@7) into a Cogitator tool.
  *
  * Reads `inputSchema` (ai@5+) or `parameters` (ai@4). Zod 4 schemas are kept as-is; other
- * schemas are converted to JSON Schema and validated before `execute` runs.
+ * schemas are converted to JSON Schema and validated before `execute` runs. `needsApproval`
+ * becomes `requiresApproval`, so a Cogitator run pauses before the tool runs.
  */
 export function fromAISDKTool<TParams = unknown, TResult = unknown>(
   aiTool: AISDKToolLike,
@@ -233,11 +269,13 @@ export function fromAISDKTool<TParams = unknown, TResult = unknown>(
     return (await lastValue(aiTool.execute(input, options))) as TResult;
   };
 
+  const requiresApproval = requiresApprovalOf(aiTool);
   const cogTool: Tool<TParams, TResult> = {
     name,
     description: resolveDescription(aiTool),
     parameters: (zodSchema ?? objectSchema) as Tool<TParams, TResult>['parameters'],
     execute,
+    ...(requiresApproval !== undefined && { requiresApproval }),
     toJSON(): ToolSchema {
       if (objectSchema) {
         return {
@@ -337,12 +375,14 @@ function cogitatorContext(options: AISDKToolExecutionOptions): ToolContext {
  *
  * The tool exposes the same schema as `inputSchema` (ai@5+) and `parameters` (ai@4). String
  * fields of the AI SDK tool context (`agentId`, `runId`, `threadId`, `userId`, `channelType`,
- * `channelId`) are forwarded to the Cogitator `ToolContext`.
+ * `channelId`) are forwarded to the Cogitator `ToolContext`. A tool with `requiresApproval` gets
+ * the same `needsApproval`, so ai@6 and ai@7 ask before they run it.
  */
 export function toAISDKTool<TParams = unknown, TResult = unknown>(
   cogTool: Tool<TParams, TResult>
 ): AISDKTool<TParams, TResult> {
   const schema = createAISDKSchema(cogTool);
+  const needsApproval = needsApprovalOf(cogTool);
   return {
     description: cogTool.description,
     inputSchema: isZod4Schema(cogTool.parameters)
@@ -350,6 +390,7 @@ export function toAISDKTool<TParams = unknown, TResult = unknown>(
       : (schema as unknown as Tool<TParams, TResult>['parameters']),
     parameters: schema,
     execute: (input, options) => cogTool.execute(input, cogitatorContext(options)),
+    ...(needsApproval !== undefined && { needsApproval }),
   };
 }
 

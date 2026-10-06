@@ -2,6 +2,7 @@ import type { Agent, Cogitator } from '@cogitator-ai/core';
 import type { ToolResult } from '@cogitator-ai/types';
 import {
   AgentRunner,
+  PAUSE_WARNING,
   runMetadata,
   type AgentCall,
   type CallWarning,
@@ -154,7 +155,7 @@ export class AgentLanguageModelV1 implements LanguageModelV1 {
             },
           ]
         : undefined,
-      finishReason: 'stop',
+      finishReason: result.status === 'paused' ? 'other' : 'stop',
       usage: {
         promptTokens: result.usage.inputTokens,
         completionTokens: result.usage.outputTokens,
@@ -165,7 +166,10 @@ export class AgentLanguageModelV1 implements LanguageModelV1 {
         timestamp: new Date(),
         modelId: result.modelUsed ?? prepared.model,
       },
-      warnings: this.warnings(prepared, options),
+      warnings: [
+        ...this.warnings(prepared, options),
+        ...(result.status === 'paused' ? [{ type: 'other' as const, message: PAUSE_WARNING }] : []),
+      ],
       providerMetadata: runMetadata(result, prepared.model, results),
     };
   }
@@ -237,7 +241,7 @@ export class AgentLanguageModelV1 implements LanguageModelV1 {
               }
               emit({
                 type: 'finish',
-                finishReason: 'stop',
+                finishReason: result.status === 'paused' ? 'other' : 'stop',
                 usage: {
                   promptTokens: result.usage.inputTokens,
                   completionTokens: result.usage.outputTokens,

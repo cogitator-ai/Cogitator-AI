@@ -85,7 +85,7 @@ With **ai@4** the same call returns a `LanguageModelV1`; `{ specificationVersion
 
 #### How the agent maps to a model
 
-- The agent runs its whole loop — LLM calls **and its own tool calls** — inside one model call. The result's `finishReason` is `'stop'`.
+- The agent runs its whole loop — LLM calls **and its own tool calls** — inside one model call. The result's `finishReason` is `'stop'`, unless the run waits for tool approvals (below).
 - The agent's tool calls are reported as **provider-executed** tool calls with their results (`result.toolCalls` / `result.toolResults`, `tool-call` / `tool-result` stream parts). The AI SDK never executes them again.
   - With `v3` / `v4` models they are always reported.
   - With `v2` models they are reported only for tools you also pass in `tools` (ai@5 cannot handle provider-executed calls of undeclared tools).
@@ -95,6 +95,33 @@ With **ai@4** the same call returns a `LanguageModelV1`; `{ specificationVersion
 - The `reasoning` call option of `v4` models (ai@7) overrides the effort of the agent's `reasoning` for the call. An agent with `reasoning: { summary: true }` returns its summary as `reasoning` content (`reasoning-start` / `reasoning-delta` / `reasoning-end` stream parts, `reasoning` text on ai@4), and usage carries its reasoning and cached input tokens.
 - JSON response formats (`generateObject`, `Output.object`, ai@4 `object-json` / `object-tool` modes) switch the agent to JSON mode and append the schema to the input.
 - AI SDK `tools` the agent does not own cannot be called by the agent; the model reports a warning for each of them.
+- When the agent calls a tool that needs approval (`requiresApproval`), its run pauses and the call never passes for an answer. `v3` and `v4` models (ai@6, ai@7) end the turn with `finishReason: 'tool-calls'` and a `tool-approval-request` for each waiting call (a provider-executed `tool-call` comes with it). Answer with a `tool-approval-response` (`providerExecuted: true`, which `convertToModelMessages` sets for UI messages) as the last message of the next prompt and the run resumes: approved calls run, denied ones are declined with your `reason`. `v1` and `v2` models cannot ask, so they finish with `finishReason: 'other'` and a warning, and `providerMetadata.cogitator` holds `status: 'paused'`, the `threadId` and `pendingApprovals` to resume with `cogitator.resume(agent, threadId, { decisions })`.
+
+```typescript
+const paused = await generateText({ model: cogitatorModel(cog, agent), prompt: 'Refund A-1' });
+const request = paused.content.find((part) => part.type === 'tool-approval-request');
+
+if (request?.type === 'tool-approval-request') {
+  const done = await generateText({
+    model: cogitatorModel(cog, agent),
+    messages: [
+      { role: 'user', content: 'Refund A-1' },
+      ...paused.response.messages,
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-approval-response',
+            approvalId: request.approvalId,
+            approved: true,
+            providerExecuted: true,
+          },
+        ],
+      },
+    ],
+  });
+}
+```
 
 ### Named Agents
 
@@ -187,6 +214,8 @@ const aiTools = convertToolsToAISDK([cogCalculator]);
 - `parameters` (read by ai@4) — an AI SDK `Schema` with draft-07 JSON Schema and synchronous validation; it is also a Standard JSON Schema
 
 `execute(input, options)` maps the AI SDK options to a Cogitator `ToolContext`: `toolCallId` becomes `runId`, `abortSignal` becomes `signal`, and string fields `agentId`, `runId`, `threadId`, `userId`, `channelType`, `channelId` of the tool context (`context` on ai@7, `experimental_context` on ai@5 / ai@6) are copied over.
+
+Approval flags survive both ways: `toAISDKTool()` sets `needsApproval` from `requiresApproval`, so ai@6 and ai@7 ask before running the tool, and `fromAISDKTool()` sets `requiresApproval` from `needsApproval`, so a Cogitator run pauses (a `needsApproval` function that answers with a promise counts as "needs approval").
 
 `fromAISDKTool()` accepts zod 4 schemas, Standard JSON Schemas, `jsonSchema()` / `zodSchema()` schemas from any AI SDK major and plain JSON Schema objects. Non-zod schemas are converted to JSON Schema and validated before the AI SDK `execute` runs. It also resolves ai@7 dynamic descriptions and the final value of streaming (`async function*`) `execute` functions, and passes the Cogitator context to the AI SDK tool as `context` / `experimental_context`. Zod 3 schemas cannot be converted to JSON Schema here — wrap them with `zodSchema()` from `ai`.
 

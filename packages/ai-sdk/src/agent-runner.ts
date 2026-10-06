@@ -3,6 +3,7 @@ import type {
   AgentConfig,
   ReasoningEffort,
   RunResult,
+  ToolApprovalDecision,
   ToolCall,
   ToolResult,
 } from '@cogitator-ai/types';
@@ -12,6 +13,14 @@ import type { CogitatorProviderOptions } from './types.js';
 export interface PromptPartLike {
   readonly type: string;
   readonly text?: string;
+  /** `tool-call` parts: the call */
+  readonly toolCallId?: string;
+  readonly toolName?: string;
+  readonly input?: unknown;
+  /** `tool-approval-response` parts: the decision on an approval request */
+  readonly approvalId?: string;
+  readonly approved?: boolean;
+  readonly reason?: string;
 }
 
 export interface PromptMessageLike {
@@ -41,6 +50,14 @@ export type CallWarning =
   | { type: 'tool'; toolName: string; details?: string }
   | { type: 'other'; message: string };
 
+/** A paused run the prompt answers with `tool-approval-response` parts. */
+export interface AgentCallResume {
+  threadId: string;
+  decisions: Record<string, ToolApprovalDecision>;
+  /** The tool calls of earlier responses in the prompt, by id, as `tool-call` content had them */
+  priorToolCalls: ReadonlyMap<string, { toolName: string; input: string }>;
+}
+
 export interface PreparedAgentCall {
   agent: Agent;
   /** The model the run uses: the agent's own, or the Cogitator's `llm.defaultModel`. */
@@ -48,6 +65,81 @@ export interface PreparedAgentCall {
   input: string;
   warnings: CallWarning[];
   abortSignal?: AbortSignal;
+  /** Set when the call continues a paused run instead of starting one */
+  resume?: AgentCallResume;
+}
+
+/** The warning of a model that cannot ask for the tool approvals its agent's run waits on. */
+export const PAUSE_WARNING =
+  'The agent run paused for tool approvals, which this AI SDK version cannot ask for. ' +
+  'providerMetadata.cogitator has the threadId and pendingApprovals: resume the run with ' +
+  'cogitator.resume(agent, threadId, { decisions }).';
+
+const APPROVAL_ID_PREFIX = 'cogitator:';
+
+/**
+ * The `approvalId` of a `tool-approval-request` for a call a paused run waits on. It names the
+ * run's thread, so the `tool-approval-response` that comes back in the next prompt resumes it.
+ */
+export function approvalIdFor(threadId: string, toolCallId: string): string {
+  return `${APPROVAL_ID_PREFIX}${encodeURIComponent(threadId)}:${encodeURIComponent(toolCallId)}`;
+}
+
+/** The thread and tool call an approval id stands for, or undefined for a foreign id. */
+export function parseApprovalId(
+  approvalId: string
+): { threadId: string; toolCallId: string } | undefined {
+  if (!approvalId.startsWith(APPROVAL_ID_PREFIX)) return undefined;
+  const parts = approvalId.slice(APPROVAL_ID_PREFIX.length).split(':');
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return undefined;
+  try {
+    return { threadId: decodeURIComponent(parts[0]), toolCallId: decodeURIComponent(parts[1]) };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The paused run a prompt answers: its last message is a tool message with
+ * `tool-approval-response` parts for Cogitator approval requests.
+ *
+ * @throws Error when the responses answer runs of several threads
+ */
+function findResume(prompt: ReadonlyArray<PromptMessageLike>): AgentCallResume | undefined {
+  const last = prompt.at(-1);
+  if (last?.role !== 'tool' || typeof last.content === 'string') return undefined;
+
+  const decisions: Record<string, ToolApprovalDecision> = {};
+  const threads = new Set<string>();
+  for (const part of last.content) {
+    if (part.type !== 'tool-approval-response' || typeof part.approvalId !== 'string') continue;
+    const target = parseApprovalId(part.approvalId);
+    if (!target) continue;
+    threads.add(target.threadId);
+    decisions[target.toolCallId] =
+      part.approved === true
+        ? { approved: true }
+        : { approved: false, ...(part.reason && { reason: part.reason }) };
+  }
+  if (threads.size === 0) return undefined;
+  if (threads.size > 1) {
+    throw new Error(
+      `The tool approval responses answer ${threads.size} paused Cogitator runs; answer one at a time`
+    );
+  }
+
+  const priorToolCalls = new Map<string, { toolName: string; input: string }>();
+  for (const message of prompt) {
+    if (message.role !== 'assistant' || typeof message.content === 'string') continue;
+    for (const part of message.content) {
+      if (part.type !== 'tool-call' || !part.toolCallId || !part.toolName) continue;
+      priorToolCalls.set(part.toolCallId, {
+        toolName: part.toolName,
+        input: typeof part.input === 'string' ? part.input : JSON.stringify(part.input ?? {}),
+      });
+    }
+  }
+  return { threadId: [...threads][0], decisions, priorToolCalls };
 }
 
 export interface AgentRunListener {
@@ -106,29 +198,64 @@ export class AgentRunner {
     }
 
     const agent = Object.keys(overrides).length > 0 ? this.agent.clone(overrides) : this.agent;
+    const resume = findResume(call.prompt);
     return {
       agent,
       model: this.cogitator.resolveModel(agent),
       input: finalInput,
       warnings,
       abortSignal: call.abortSignal,
+      ...(resume && { resume }),
     };
   }
 
+  /**
+   * Run the agent, or resume the run the prompt's tool approval responses answer. A resumed run
+   * reports the calls it continues with before their results, as the AI SDK needs a `tool-call`
+   * for every `tool-result` of a step; a call the user declined reports no result, since the AI
+   * SDK records the denial itself.
+   */
   run(
     prepared: PreparedAgentCall,
     listener: AgentRunListener,
     options: { stream: boolean; signal?: AbortSignal }
   ): Promise<RunResult> {
-    return this.cogitator.run(prepared.agent, {
-      input: prepared.input,
+    const callbacks = {
       stream: options.stream,
       signal: options.signal ?? prepared.abortSignal,
-      onRunStart: listener.onRunStart && ((data) => listener.onRunStart?.(data.runId)),
+      onRunStart:
+        listener.onRunStart && ((data: { runId: string }) => listener.onRunStart?.(data.runId)),
       onToken: options.stream ? listener.onTextDelta : undefined,
       onReasoning: options.stream ? listener.onReasoningDelta : undefined,
       onToolCall: listener.onToolCall,
       onToolResult: listener.onToolResult,
+    };
+    const resume = prepared.resume;
+    if (!resume) {
+      return this.cogitator.run(prepared.agent, { ...callbacks, input: prepared.input });
+    }
+
+    const reported = new Set<string>();
+    return this.cogitator.resume(prepared.agent, resume.threadId, {
+      ...callbacks,
+      decisions: resume.decisions,
+      onToolCall: (call) => {
+        reported.add(call.id);
+        listener.onToolCall?.(call);
+      },
+      onToolResult: (result) => {
+        if (resume.decisions[result.callId]?.approved === false) return;
+        if (!reported.has(result.callId)) {
+          reported.add(result.callId);
+          const prior = resume.priorToolCalls.get(result.callId);
+          listener.onToolCall?.({
+            id: result.callId,
+            name: prior?.toolName ?? result.name,
+            arguments: parseArguments(prior?.input),
+          });
+        }
+        listener.onToolResult?.(result);
+      },
     });
   }
 }
@@ -177,6 +304,18 @@ function buildAgentInput(prompt: ReadonlyArray<PromptMessageLike>): {
   return { input, warnings };
 }
 
+function parseArguments(input: string | undefined): Record<string, unknown> {
+  if (input === undefined) return {};
+  try {
+    const parsed: unknown = JSON.parse(input);
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
 function textOf(content: string | ReadonlyArray<PromptPartLike>): string {
   if (typeof content === 'string') return content;
   return content
@@ -219,6 +358,10 @@ export function runMetadata(
     cost: result.usage.cost,
     duration: result.usage.duration,
   };
+  if (result.status === 'paused') {
+    metadata.status = 'paused';
+    metadata.pendingApprovals = toJSONValue(result.pendingApprovals ?? []) ?? [];
+  }
   if (result.toolCalls.length > 0) {
     metadata.toolCalls = toolCallSummaries(result.toolCalls, toolResults);
   }
