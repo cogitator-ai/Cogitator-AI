@@ -378,7 +378,7 @@ export async function executeMapReduce<S, T, R>(
       streamingQueue.sort((a, b) => a.index - b.index);
       while (streamingQueue.length > 0 && streamingQueue[0].index === nextExpectedIndex) {
         const item = streamingQueue.shift()!;
-        if (item.success && reduceConfig.successOnly !== false) {
+        if (item.success || reduceConfig.successOnly === false) {
           streamingAccumulator = reduceConfig.reducer(streamingAccumulator!, item, state);
         }
         nextExpectedIndex++;

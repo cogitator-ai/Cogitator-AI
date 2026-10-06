@@ -290,6 +290,41 @@ describe('Map-Reduce Pattern', () => {
 
       expect(result.reduced).toBe(12);
     });
+
+    it.each([
+      [false, [1, 2, 3]],
+      [undefined, [1, 3]],
+    ])(
+      'streams every item into the reducer when successOnly is %s, else the successful ones',
+      async (successOnly, expected) => {
+        const state: TestState = { items: [1, 2, 3] };
+        const reduced: number[] = [];
+
+        await executeMapReduce(state, {
+          name: 'streaming-with-failures',
+          map: {
+            items: (s) => s.items,
+            mapper: async (item: unknown) => {
+              if (item === 2) throw new Error('two fails');
+              return item as number;
+            },
+            concurrency: 1,
+            continueOnError: true,
+          },
+          reduce: {
+            initial: 0,
+            reducer: (acc, item) => {
+              reduced.push(item.item as number);
+              return acc + 1;
+            },
+            streaming: true,
+            ...(successOnly !== undefined && { successOnly }),
+          },
+        });
+
+        expect(reduced).toEqual(expected);
+      }
+    );
   });
 
   describe('Mapper Helpers', () => {
