@@ -1,15 +1,26 @@
-export const VERSION = '0.1.0';
+import { createRequire } from 'node:module';
+
+const packageJson = createRequire(import.meta.url)('../package.json') as { version: string };
+
+export const VERSION: string = packageJson.version;
 
 export { EvalSuite, isLLMMetric } from './eval-suite';
 export type {
   EvalTarget,
+  EvalTargetContext,
   EvalProgress,
   EvalRunOptions,
   EvalSuiteOptions,
   EvalSuiteResult,
+  EvalSuiteStats,
 } from './eval-suite';
 export { EvalComparison } from './eval-comparison';
-export type { EvalComparisonOptions, MetricComparison, ComparisonResult } from './eval-comparison';
+export type {
+  EvalComparisonOptions,
+  EvalComparisonRunOptions,
+  MetricComparison,
+  ComparisonResult,
+} from './eval-comparison';
 export { EvalBuilder } from './eval-builder';
 
 export { Dataset } from './datasets';
@@ -31,6 +42,8 @@ export { metric } from './metrics/custom';
 export type {
   MetricFn,
   MetricScore,
+  MetricUsage,
+  MetricOptions,
   EvalCaseResult,
   StatisticalMetricFn,
   StatisticalScore,
@@ -40,7 +53,7 @@ export type { CustomMetricConfig } from './metrics/custom';
 export { threshold } from './assertions';
 export { noRegression } from './assertions';
 export { assertion } from './assertions';
-export type { AssertionFn, AssertionResult, AggregatedMetric } from './assertions';
+export type { AssertionFn, AssertionResult, AggregatedMetric, EvalStats } from './assertions';
 
 export { report } from './reporters';
 export type { ReporterType, ReporterOptions } from './reporters';

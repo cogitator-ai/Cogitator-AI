@@ -4,17 +4,32 @@ import type { EvalCase } from './schema';
 import { EvalSuiteConfigSchema, JudgeConfigSchema } from './schema';
 import type { JudgeCogitator, JudgeConfigInput } from './schema';
 import type { MetricFn, MetricScore, EvalCaseResult, StatisticalMetricFn } from './metrics/types';
+import { nonFiniteScoreError } from './metrics/types';
 import type { LLMMetricFn } from './metrics/llm-judge';
 import { bindJudgeContext, judgeContextFor } from './metrics/llm-judge';
-import type { AssertionFn, AssertionResult, AggregatedMetric } from './assertions';
+import type { AssertionFn, AssertionResult, AggregatedMetric, EvalStats } from './assertions';
 import { aggregate } from './stats';
 import { report } from './reporters';
 import type { ReporterType, ReporterOptions } from './reporters';
 
+/** What a function target gets besides the input */
+export interface EvalTargetContext {
+  /**
+   * Aborted when the attempt times out or the suite run is cancelled. Pass it on to the model
+   * call (`cogitator.run(agent, { input, signal })`, `fetch(url, { signal })`) so an abandoned
+   * attempt stops instead of running, and paying, in the background.
+   */
+  signal: AbortSignal;
+  /** The case being run */
+  case: EvalCase;
+  /** 0 for the first attempt, then 1, 2 and so on for retries */
+  attempt: number;
+}
+
 export interface EvalTarget {
   agent?: unknown;
   cogitator?: unknown;
-  fn?: (input: string) => Promise<string>;
+  fn?: (input: string, context: EvalTargetContext) => Promise<string>;
 }
 
 export interface EvalProgress {
@@ -33,25 +48,103 @@ export interface EvalSuiteOptions {
   concurrency?: number;
   timeout?: number;
   retries?: number;
+  /** Called after each case. A callback that throws is reported as a process warning */
   onProgress?: (progress: EvalProgress) => void;
 }
 
 export interface EvalRunOptions {
   /** Run only the first `maxCases` cases of the dataset (a positive integer) */
   maxCases?: number;
+  /**
+   * Cancels the run: the attempts in flight are aborted, no further case starts, and `run()`
+   * rejects with the signal's reason
+   */
+  signal?: AbortSignal;
 }
+
+/** The run-wide figures of a finished suite run, every field filled in */
+export type EvalSuiteStats = Required<EvalStats>;
 
 export interface EvalSuiteResult {
   results: Array<EvalCaseResult & { scores: MetricScore[] }>;
   aggregated: Record<string, AggregatedMetric>;
   assertions: AssertionResult[];
-  stats: { total: number; duration: number; cost: number };
+  stats: EvalSuiteStats;
   report: (type: ReporterType | ReporterType[], options?: ReporterOptions) => void;
+  /** Writes the mean of each metric as JSON; throws when a mean is not a finite number */
   saveBaseline: (path: string) => void;
 }
 
+type TargetUsage = NonNullable<EvalCaseResult['usage']>;
+
+type AttemptOutcome =
+  { ok: true; result: EvalCaseResult } | { ok: false; error: unknown; usage?: TargetUsage };
+
+type Settled = { ok: true; result: EvalCaseResult } | { ok: false; error: unknown };
+
 export function isLLMMetric(m: MetricFn): m is LLMMetricFn {
   return 'requiresJudge' in m && (m as LLMMetricFn).requiresJudge === true;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function finite(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function targetUsageOf(value: unknown): TargetUsage | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const usage = value as Record<string, unknown>;
+  if (typeof usage.cost !== 'number' || !Number.isFinite(usage.cost)) return undefined;
+  return {
+    inputTokens: finite(usage.inputTokens),
+    outputTokens: finite(usage.outputTokens),
+    totalTokens: finite(usage.totalTokens),
+    cost: usage.cost,
+    duration: finite(usage.duration),
+  };
+}
+
+function addUsage(total: TargetUsage | undefined, more: TargetUsage | undefined) {
+  if (!more) return total;
+  if (!total) return more;
+  return {
+    inputTokens: total.inputTokens + more.inputTokens,
+    outputTokens: total.outputTokens + more.outputTokens,
+    totalTokens: total.totalTokens + more.totalTokens,
+    cost: total.cost + more.cost,
+    duration: total.duration + more.duration,
+  };
+}
+
+/** Resolves when `signal` aborts; `cancel` drops the listener */
+function whenAborted(signal: AbortSignal): { aborted: Promise<'aborted'>; cancel: () => void } {
+  let cancel = () => {};
+  const aborted = new Promise<'aborted'>((resolve) => {
+    if (signal.aborted) {
+      resolve('aborted');
+      return;
+    }
+    const onAbort = () => resolve('aborted');
+    signal.addEventListener('abort', onAbort, { once: true });
+    cancel = () => signal.removeEventListener('abort', onAbort);
+  });
+  return { aborted, cancel };
+}
+
+/** Waits for `promise` at most `ms` milliseconds; undefined when it did not settle in time */
+async function waitAtMost<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), ms);
+  });
+  try {
+    return await Promise.race([promise, expired]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export class EvalSuite {
@@ -84,6 +177,7 @@ export class EvalSuite {
     this.validateTarget();
 
     const rawMetrics = opts.metrics ?? [];
+    this.validateMetricNames(rawMetrics);
     const hasLLMMetrics = rawMetrics.some(isLLMMetric);
 
     if (hasLLMMetrics && !opts.judge) {
@@ -129,56 +223,49 @@ export class EvalSuite {
     }
   }
 
+  /** Two metrics with one name would be aggregated, compared and reported as one */
+  private validateMetricNames(metrics: MetricFn[]): void {
+    const seen = new Set<string>();
+    for (const m of [...metrics, ...this.statisticalMetrics]) {
+      const name = m.metricName;
+      if (name === undefined) continue;
+      if (seen.has(name)) {
+        throw new Error(
+          `Two metrics are named '${name}': give each its own name, such as regex(pattern, { name: 'hasDate' })`
+        );
+      }
+      seen.add(name);
+    }
+  }
+
   async run(options: EvalRunOptions = {}): Promise<EvalSuiteResult> {
-    const { maxCases } = options;
+    const { maxCases, signal } = options;
     if (maxCases !== undefined && (!Number.isInteger(maxCases) || maxCases < 1)) {
       throw new Error(`maxCases must be a positive integer, got ${maxCases}`);
     }
+    signal?.throwIfAborted();
 
     const suiteStart = Date.now();
     const cases = this.dataset.cases.slice(0, maxCases);
     const total = cases.length;
-    let completed = 0;
 
     type ScoredResult = EvalCaseResult & { scores: MetricScore[] };
-    const indexed: Array<{ idx: number; result: ScoredResult }> = [];
-
-    let active = 0;
+    const orderedResults = new Array<ScoredResult>(total);
     let nextIdx = 0;
+    let completed = 0;
 
-    if (total > 0) {
-      await new Promise<void>((resolve) => {
-        const drain = () => {
-          while (active < this.concurrency && nextIdx < total) {
-            const i = nextIdx++;
-            const evalCase = cases[i];
-            active++;
+    const worker = async () => {
+      while (nextIdx < total && !signal?.aborted) {
+        const i = nextIdx++;
+        const evalCase = cases[i];
+        orderedResults[i] = await this.runCase(evalCase, signal);
+        completed++;
+        this.reportProgress({ completed, total, currentCase: evalCase });
+      }
+    };
 
-            void this.executeCase(evalCase)
-              .then((caseResult) =>
-                this.evaluateCaseMetrics(caseResult).then((scores) => ({ ...caseResult, scores }))
-              )
-              .then((scored) => {
-                indexed.push({ idx: i, result: scored });
-                completed++;
-                this.onProgress?.({ completed, total, currentCase: evalCase });
-              })
-              .finally(() => {
-                active--;
-                if (nextIdx >= total && active === 0) {
-                  resolve();
-                } else {
-                  drain();
-                }
-              });
-          }
-        };
-        drain();
-      });
-    }
-
-    indexed.sort((a, b) => a.idx - b.idx);
-    const orderedResults = indexed.map((e) => e.result);
+    await Promise.all(Array.from({ length: Math.min(this.concurrency, total) }, worker));
+    signal?.throwIfAborted();
 
     const aggregated = this.aggregateScores(orderedResults);
 
@@ -191,9 +278,23 @@ export class EvalSuite {
       };
     }
 
-    const totalCost = orderedResults.reduce((sum, r) => sum + (r.usage?.cost ?? 0), 0);
-    const suiteDuration = Date.now() - suiteStart;
-    const stats = { total, duration: suiteDuration, cost: totalCost };
+    const targetCost = orderedResults.reduce((sum, r) => sum + (r.usage?.cost ?? 0), 0);
+    const judgeCost = orderedResults.reduce(
+      (sum, r) => sum + r.scores.reduce((s, score) => s + (score.usage?.cost ?? 0), 0),
+      0
+    );
+    const stats: EvalSuiteStats = {
+      total,
+      errors: orderedResults.filter((r) => r.error !== undefined).length,
+      metricErrors: orderedResults.reduce(
+        (n, r) => n + r.scores.filter((s) => s.error !== undefined).length,
+        0
+      ),
+      duration: Date.now() - suiteStart,
+      cost: targetCost + judgeCost,
+      targetCost,
+      judgeCost,
+    };
 
     const assertionResults = this.assertionFns.map((fn) => fn(aggregated, stats));
 
@@ -209,6 +310,7 @@ export class EvalSuite {
               case: { input: r.case.input, expected: r.case.expected },
               output: r.output,
               duration: r.duration,
+              ...(r.error !== undefined && { error: r.error }),
               scores: r.scores,
             })),
             aggregated,
@@ -221,8 +323,15 @@ export class EvalSuite {
       },
       saveBaseline: (path) => {
         const baseline: Record<string, number> = {};
+        const invalid: string[] = [];
         for (const [name, agg] of Object.entries(aggregated)) {
-          baseline[name] = agg.mean;
+          if (Number.isFinite(agg.mean)) baseline[name] = agg.mean;
+          else invalid.push(`${name} = ${agg.mean}`);
+        }
+        if (invalid.length > 0) {
+          throw new Error(
+            `Cannot save a baseline with values that are not finite numbers: ${invalid.join(', ')}`
+          );
         }
         writeFileSync(path, JSON.stringify(baseline, null, 2));
       },
@@ -231,62 +340,124 @@ export class EvalSuite {
     return suiteResult;
   }
 
-  private async executeCase(evalCase: EvalCase): Promise<EvalCaseResult> {
+  private reportProgress(progress: EvalProgress): void {
+    if (!this.onProgress) return;
+    const warn = (error: unknown) =>
+      process.emitWarning(`EvalSuite onProgress threw: ${errorMessage(error)}`, {
+        code: 'COGITATOR_EVALS_ON_PROGRESS',
+      });
+    try {
+      const returned: unknown = this.onProgress(progress);
+      if (returned instanceof Promise) returned.catch(warn);
+    } catch (error) {
+      warn(error);
+    }
+  }
+
+  private async runCase(
+    evalCase: EvalCase,
+    signal: AbortSignal | undefined
+  ): Promise<EvalCaseResult & { scores: MetricScore[] }> {
+    const caseResult = await this.executeCase(evalCase, signal);
+    if (signal?.aborted) return { ...caseResult, scores: [] };
+    return { ...caseResult, scores: await this.evaluateCaseMetrics(caseResult) };
+  }
+
+  private async executeCase(
+    evalCase: EvalCase,
+    signal: AbortSignal | undefined
+  ): Promise<EvalCaseResult> {
     const start = Date.now();
     let lastError: unknown;
-    for (let attempt = 0; attempt <= this.retries; attempt++) {
-      try {
-        return await this.executeCaseAttempt(evalCase);
-      } catch (err) {
-        lastError = err;
+    let usage: TargetUsage | undefined;
+    let attempts = 0;
+
+    for (let attempt = 0; attempt <= this.retries && !signal?.aborted; attempt++) {
+      attempts++;
+      const outcome = await this.executeCaseAttempt(evalCase, attempt, signal);
+      if (outcome.ok) {
+        const total = addUsage(usage, outcome.result.usage);
+        return { ...outcome.result, attempts, ...(total && { usage: total }) };
       }
+      usage = addUsage(usage, outcome.usage);
+      lastError = outcome.error;
     }
 
     return {
       case: evalCase,
       output: '',
       duration: Date.now() - start,
-      error: lastError instanceof Error ? lastError.message : String(lastError),
+      error: errorMessage(signal?.aborted ? signal.reason : lastError),
+      attempts,
+      ...(usage && { usage }),
     };
   }
 
-  private async executeCaseAttempt(evalCase: EvalCase): Promise<EvalCaseResult> {
-    const work = this.target.fn
-      ? this.executeFnTarget(evalCase)
-      : this.executeAgentTarget(evalCase);
+  /**
+   * One attempt, aborted through its signal after `timeout`. An aborted attempt gets as long
+   * again to stop before the case moves on, so a target that honors the signal never overlaps
+   * its retry and the concurrency limit holds. Usage of an attempt that still finished counts.
+   */
+  private async executeCaseAttempt(
+    evalCase: EvalCase,
+    attempt: number,
+    suiteSignal: AbortSignal | undefined
+  ): Promise<AttemptOutcome> {
+    const controller = new AbortController();
+    const signal = suiteSignal
+      ? AbortSignal.any([suiteSignal, controller.signal])
+      : controller.signal;
+    const timer = setTimeout(
+      () => controller.abort(new Error(`Timed out after ${this.timeout}ms`)),
+      this.timeout
+    );
 
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      timer = setTimeout(
-        () => reject(new Error(`Timed out after ${this.timeout}ms`)),
-        this.timeout
-      );
-    });
+    const settled: Promise<Settled> = (async () =>
+      this.target.fn
+        ? this.executeFnTarget(evalCase, { signal, case: evalCase, attempt })
+        : this.executeAgentTarget(evalCase, signal))().then(
+      (result): Settled => ({ ok: true, result }),
+      (error: unknown): Settled => ({ ok: false, error })
+    );
+    const abort = whenAborted(signal);
 
     try {
-      return await Promise.race([work, timeoutPromise]);
+      const first = await Promise.race([settled, abort.aborted]);
+      if (first !== 'aborted' && (first.ok || !signal.aborted)) return first;
+
+      const late = await waitAtMost(settled, this.timeout);
+      const usage = late?.ok ? late.result.usage : undefined;
+      return { ok: false, error: signal.reason, ...(usage && { usage }) };
     } finally {
       clearTimeout(timer);
+      abort.cancel();
     }
   }
 
-  private async executeFnTarget(evalCase: EvalCase): Promise<EvalCaseResult> {
+  private async executeFnTarget(
+    evalCase: EvalCase,
+    context: EvalTargetContext
+  ): Promise<EvalCaseResult> {
     const start = Date.now();
-    const output = await this.target.fn!(evalCase.input);
+    const output = await this.target.fn!(evalCase.input, context);
     return { case: evalCase, output, duration: Date.now() - start };
   }
 
-  private async executeAgentTarget(evalCase: EvalCase): Promise<EvalCaseResult> {
+  private async executeAgentTarget(
+    evalCase: EvalCase,
+    signal: AbortSignal
+  ): Promise<EvalCaseResult> {
     const start = Date.now();
     const cogitator = this.target.cogitator as {
       run: (
         agent: unknown,
-        opts: { input: string; context?: Record<string, unknown> }
+        opts: { input: string; context?: Record<string, unknown>; signal?: AbortSignal }
       ) => Promise<Record<string, unknown>>;
     };
     const runResult = await cogitator.run(this.target.agent, {
       input: evalCase.input,
       context: evalCase.context,
+      signal,
     });
     const duration = Date.now() - start;
 
@@ -296,8 +467,9 @@ export class EvalSuite {
       duration,
     };
 
-    if (runResult.usage) {
-      result.usage = runResult.usage as EvalCaseResult['usage'];
+    const usage = targetUsageOf(runResult.usage);
+    if (usage) {
+      result.usage = usage;
     }
 
     if (runResult.toolCalls) {
@@ -309,7 +481,35 @@ export class EvalSuite {
 
   private async evaluateCaseMetrics(result: EvalCaseResult): Promise<MetricScore[]> {
     if (this.boundMetrics.length === 0) return [];
-    return Promise.all(this.boundMetrics.map((m) => m(result)));
+    return Promise.all(this.boundMetrics.map((m) => this.scoreMetric(m, result)));
+  }
+
+  /**
+   * A metric's score for one case. A metric that throws, or whose score is not a finite number,
+   * scores 0 with the reason in `error`, so one bad metric neither drops the case nor poisons
+   * the aggregate with NaN.
+   */
+  private async scoreMetric(metric: MetricFn, result: EvalCaseResult): Promise<MetricScore> {
+    try {
+      const score: unknown = await metric(result);
+      if (typeof score !== 'object' || score === null) {
+        const error = `metric returned ${String(score)} instead of a score`;
+        return { name: metric.metricName, score: 0, details: `metric error: ${error}`, error };
+      }
+      const scored = score as MetricScore;
+      const invalid = nonFiniteScoreError(scored.score);
+      if (!invalid) return scored;
+      return {
+        ...scored,
+        name: scored.name ?? metric.metricName,
+        score: 0,
+        details: `metric error: ${invalid}`,
+        error: invalid,
+      };
+    } catch (err) {
+      const error = errorMessage(err);
+      return { name: metric.metricName, score: 0, details: `metric error: ${error}`, error };
+    }
   }
 
   private aggregateScores(

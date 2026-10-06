@@ -1,11 +1,8 @@
-import type { AssertionFn, AggregatedMetric } from './index';
+import type { AssertionFn, AggregatedMetric, EvalStats } from './index';
 
 export function assertion(opts: {
   name: string;
-  check: (
-    aggregated: Record<string, AggregatedMetric>,
-    stats: { total: number; duration: number; cost: number }
-  ) => boolean;
+  check: (aggregated: Record<string, AggregatedMetric>, stats: EvalStats) => boolean;
   message?: string;
 }): AssertionFn {
   return (aggregated, stats) => {

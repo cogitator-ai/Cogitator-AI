@@ -45,7 +45,15 @@ function mockSuiteResult(overrides?: Partial<EvalSuiteResult>): EvalSuiteResult 
       },
     },
     assertions: [{ name: 'accuracy >= 0.8', passed: true, message: 'ok' }],
-    stats: { total: 3, duration: 500, cost: 0.0035 },
+    stats: {
+      total: 3,
+      errors: 0,
+      metricErrors: 0,
+      duration: 500,
+      cost: 0.0035,
+      targetCost: 0.0035,
+      judgeCost: 0,
+    },
     report: vi.fn(),
     saveBaseline: vi.fn(),
     ...overrides,
@@ -170,7 +178,15 @@ describe('createRunEvalTool', () => {
       results: [],
       aggregated: {},
       assertions: [],
-      stats: { total: 0, duration: 10, cost: 0 },
+      stats: {
+        total: 0,
+        errors: 0,
+        metricErrors: 0,
+        duration: 10,
+        cost: 0,
+        targetCost: 0,
+        judgeCost: 0,
+      },
     });
     suite = mockSuite(emptyResult);
 

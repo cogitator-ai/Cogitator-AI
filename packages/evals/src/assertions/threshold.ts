@@ -30,6 +30,16 @@ export function threshold(metricName: string, value: number): AssertionFn {
       };
     }
 
+    if (!Number.isFinite(actual)) {
+      return {
+        name: `threshold(${metricName})`,
+        passed: false,
+        message: `${metricName} = ${actual} is not a finite number`,
+        actual,
+        expected: value,
+      };
+    }
+
     const lowerBetter = isLowerBetter(metricName);
     const passed = lowerBetter ? actual <= value : actual >= value;
     const direction = lowerBetter ? '<=' : '>=';

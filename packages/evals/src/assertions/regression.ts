@@ -4,10 +4,14 @@ import { isLowerBetter } from './direction';
 
 export function noRegression(baselinePath: string, opts?: { tolerance?: number }): AssertionFn {
   return (aggregated, _stats) => {
-    let baseline: Record<string, number>;
+    let baseline: Record<string, unknown>;
     try {
       const raw = fs.readFileSync(baselinePath, 'utf-8');
-      baseline = JSON.parse(raw);
+      const parsed: unknown = JSON.parse(raw);
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        throw new Error('not an object');
+      }
+      baseline = parsed as Record<string, unknown>;
     } catch {
       return {
         name: 'noRegression',
@@ -25,6 +29,25 @@ export function noRegression(baselinePath: string, opts?: { tolerance?: number }
 
       validated++;
       const actual = agg.mean;
+
+      if (typeof baselineValue !== 'number' || !Number.isFinite(baselineValue)) {
+        return {
+          name: 'noRegression',
+          passed: false,
+          message: `Baseline value of '${metric}' is ${JSON.stringify(baselineValue)}, not a finite number: save a new baseline`,
+          actual,
+        };
+      }
+
+      if (!Number.isFinite(actual)) {
+        return {
+          name: 'noRegression',
+          passed: false,
+          message: `'${metric}' = ${actual} is not a finite number (baseline ${baselineValue})`,
+          actual,
+          expected: baselineValue,
+        };
+      }
       const lowerBetter = isLowerBetter(metric);
 
       if (lowerBetter) {

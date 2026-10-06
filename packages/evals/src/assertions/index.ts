@@ -20,9 +20,27 @@ export interface AssertionResult {
   expected?: number;
 }
 
+/** Run-wide figures of a suite run */
+export interface EvalStats {
+  /** Cases run */
+  total: number;
+  /** Cases whose every attempt failed or timed out (`error` set on the result) */
+  errors?: number;
+  /** Metric scores that failed (`error` set on the score) and count as 0 */
+  metricErrors?: number;
+  /** Wall time of the run, in milliseconds */
+  duration: number;
+  /** USD spent: `targetCost` plus `judgeCost` */
+  cost: number;
+  /** USD the target spent, over every attempt that reported usage */
+  targetCost?: number;
+  /** USD the LLM judge spent */
+  judgeCost?: number;
+}
+
 export type AssertionFn = (
   aggregated: Record<string, AggregatedMetric>,
-  stats: { total: number; duration: number; cost: number }
+  stats: EvalStats
 ) => AssertionResult;
 
 export { threshold } from './threshold';

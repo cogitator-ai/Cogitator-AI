@@ -124,7 +124,7 @@ export function pairedTTest(samplesA: number[], samplesB: number[]): TTestResult
 
   if (sdD === 0) {
     return {
-      tStatistic: meanD === 0 ? 0 : Infinity,
+      tStatistic: meanD === 0 ? 0 : Math.sign(meanD) * Infinity,
       degreesOfFreedom: df,
       pValue: meanD === 0 ? 1 : 0,
       significant: meanD !== 0,

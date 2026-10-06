@@ -4,6 +4,7 @@ import { consoleReport } from './console';
 import { jsonReport } from './json';
 import { csvReport } from './csv';
 import { ciReport } from './ci';
+import type { EvalStats } from '../assertions';
 
 export interface AggregatedMetric {
   name: string;
@@ -32,11 +33,13 @@ export interface EvalSuiteResult {
     case: { input: string; expected?: string };
     output: string;
     duration: number;
-    scores: Array<{ name: string; score: number; details?: string }>;
+    /** Why the case has no output: every attempt failed or timed out */
+    error?: string;
+    scores: Array<{ name: string; score: number; details?: string; error?: string }>;
   }>;
   aggregated: Record<string, AggregatedMetric>;
   assertions: AssertionResult[];
-  stats: { total: number; duration: number; cost: number };
+  stats: EvalStats;
 }
 
 export type ReporterType = 'console' | 'json' | 'csv' | 'ci';

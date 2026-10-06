@@ -13,12 +13,15 @@ export const EvalSuiteConfigSchema = z.object({
   retries: z.number().int().min(0).max(10).default(0),
 });
 
-/** The part of a Cogitator runtime the judge needs: running an agent. */
+/**
+ * The part of a Cogitator runtime the judge needs: running an agent. The judge's `usage`, when
+ * the run reports it, counts toward the suite's `stats.judgeCost`.
+ */
 export interface JudgeCogitator {
   run(
     agent: unknown,
     options: { input: string; useMemory?: boolean }
-  ): Promise<{ output: string; structured?: unknown }>;
+  ): Promise<{ output: string; structured?: unknown; usage?: { cost: number } }>;
 }
 
 function isJudgeCogitator(value: unknown): value is JudgeCogitator {

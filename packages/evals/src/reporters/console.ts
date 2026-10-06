@@ -54,7 +54,10 @@ export function consoleReport(result: EvalSuiteResult): void {
   const passed = result.assertions.filter((a) => a.passed).length;
   const failed = result.assertions.filter((a) => !a.passed).length;
 
+  const errors = result.stats.errors ?? 0;
+  const errorPart = errors > 0 ? ` | ${RED}${errors} errored${RESET}` : '';
+
   console.log(
-    `\n${BOLD}Summary${RESET}: ${result.stats.total} cases | ${result.stats.duration}ms | $${result.stats.cost} | ${GREEN}${passed} passed${RESET} ${failed > 0 ? `${RED}${failed} failed${RESET}` : ''}`
+    `\n${BOLD}Summary${RESET}: ${result.stats.total} cases${errorPart} | ${result.stats.duration}ms | $${result.stats.cost} | ${GREEN}${passed} passed${RESET} ${failed > 0 ? `${RED}${failed} failed${RESET}` : ''}`
   );
 }

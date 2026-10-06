@@ -1,5 +1,7 @@
 export type {
   MetricScore,
+  MetricUsage,
+  MetricOptions,
   EvalCaseResult,
   MetricFn,
   StatisticalMetricFn,
