@@ -13,7 +13,7 @@ import type { SandboxManager } from './initializers';
 import type { ConstitutionalAI } from '../constitutional/index';
 import { createLinkedAbortController } from '../utils/abort';
 
-type ExtraToolContext = {
+type ExtraToolContext = Record<string, unknown> & {
   threadId?: string;
   userId?: string;
   channelType?: string;

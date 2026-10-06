@@ -419,7 +419,9 @@ export function findToolOutput(messages: readonly ToolMessageLike[], toolCallId:
 /**
  * A run's outcome in the wire format: what the caller acts on (answer, structured output,
  * usage with cost, tool calls and the flags that say the answer is cut off, withheld or past the
- * iteration limit) as plain JSON.
+ * iteration limit) as plain JSON. A run paused for tool approvals keeps `status: 'paused'`, the
+ * calls it waits on and the checkpoint to resume it from, so the receiving side can tell it from
+ * an answer (see `isPausedRun`) and continue it on any process.
  */
 export function toAgentWireRunResult(result: RunResult): AgentWireRunResult {
   const { usage } = result;
@@ -451,6 +453,11 @@ export function toAgentWireRunResult(result: RunResult): AgentWireRunResult {
     ...(result.iterationLimitReached !== undefined && {
       iterationLimitReached: result.iterationLimitReached,
     }),
+    ...(result.status !== undefined && { status: result.status }),
+    ...(result.pendingApprovals !== undefined && {
+      pendingApprovals: result.pendingApprovals.map((approval) => ({ ...approval })),
+    }),
+    ...(result.checkpoint !== undefined && { checkpoint: result.checkpoint }),
     ...(result.modelUsed !== undefined && { modelUsed: result.modelUsed }),
     ...(result.handoffs !== undefined && { handoffs: [...result.handoffs] }),
     ...(result.finalAgent !== undefined && { finalAgent: result.finalAgent }),
@@ -502,6 +509,9 @@ export function fromAgentWireRunResult(
     ...(wire.iterationLimitReached !== undefined && {
       iterationLimitReached: wire.iterationLimitReached,
     }),
+    ...(wire.status !== undefined && { status: wire.status }),
+    ...(wire.pendingApprovals !== undefined && { pendingApprovals: wire.pendingApprovals }),
+    ...(wire.checkpoint !== undefined && { checkpoint: wire.checkpoint }),
     ...(wire.handoffs !== undefined && { handoffs: wire.handoffs }),
     ...(wire.finalAgent !== undefined && { finalAgent: wire.finalAgent }),
     toolCalls: wire.toolCalls.map((call) => ({

@@ -3,6 +3,7 @@
  */
 
 import type { Message, ToolCall, ToolResult } from './message';
+import type { Tool } from './tool';
 import type {
   LLMBackend,
   LLMProvider,
@@ -202,6 +203,55 @@ export interface ToolApprovalRequest {
 }
 
 export type ToolApprovalDecision = { approved: true } | { approved: false; reason?: string };
+
+/** Options of one tool call made outside an agent run, see `ToolInvoker`. */
+export interface ToolInvocationOptions {
+  /** Id of the call, reported back as `callId` (default: a fresh id) */
+  toolCallId?: string;
+  /** Run and agent the call is made for, as the tool's context reports them */
+  runId?: string;
+  agentId?: string;
+  /** Cancels the call */
+  signal?: AbortSignal;
+  threadId?: string;
+  /** The user the call acts for */
+  userId?: string;
+  channelType?: string;
+  channelId?: string;
+  /**
+   * More fields for the tool's context, e.g. an MCP server's `elicit`. They cannot replace
+   * `agentId`, `runId` or `signal`
+   */
+  context?: Record<string, unknown>;
+  /**
+   * Decides a call that needs approval (`requiresApproval`, or the guardrails), as
+   * `RunOptions.onApproval` does in a run. Without it `guardrails.onToolApproval` decides. A call
+   * nobody decides, or one answered with `'pause'`, is refused: there is no run to pause, so the
+   * result carries the request in `pendingApproval`
+   */
+  onApproval?: RunOptions['onApproval'];
+}
+
+/** What a tool call made outside a run returned, see `ToolInvoker`. */
+export interface ToolInvocationResult extends ToolResult {
+  /** The call needed approval that nobody gave, so the tool did not run */
+  pendingApproval?: ToolApprovalRequest;
+}
+
+/**
+ * Runs single tool calls the way an agent run does: arguments validated against the tool's
+ * schema, approval asked for calls that need it, the guardrails applied, the sandbox used for
+ * sandboxed tools, and `tool.timeout` kept. A `Cogitator` is one, so code that runs tools
+ * outside a run (an MCP server, a self-modifying agent) takes it to honor all of that.
+ */
+export interface ToolInvoker {
+  /** Never throws for a failing tool: the error is in the result's `error` */
+  invokeTool(
+    tool: Tool,
+    args: unknown,
+    options?: ToolInvocationOptions
+  ): Promise<ToolInvocationResult>;
+}
 
 /**
  * Everything needed to continue a paused run, as plain JSON: keep it on your

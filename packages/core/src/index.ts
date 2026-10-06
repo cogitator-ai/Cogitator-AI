@@ -21,6 +21,8 @@ export {
   AGENT_CONFIG_WIRE_FIELDS,
 } from './agent-wire';
 export type { ToAgentWireOptions, AgentWireRuntime } from './agent-wire';
+export { isPausedRun, AgentRunPausedError, findAgentRunPausedError } from './run-pause';
+export type { PausableRun, PausedRun, PausedRunInfo } from './run-pause';
 export { tool, toolset, toolToSchema } from './tool';
 export { defineSkill, validateSkill, mergeSkillsIntoAgent } from './skill';
 export { agentAsTool } from './agent-tool';

@@ -441,6 +441,10 @@ Nothing of the paused turn runs until every call in it is decided. Paused runs l
 
 `cog.resume()` takes the thread id or the returned `result.checkpoint`; `defaultDecision` answers every call `decisions` leaves out. To decide while the run waits, pass `onApproval: (request) => ({ approved: true })` (or return `'pause'`) to `cog.run()`. See [Tool Approvals](https://cogitator.app/docs/tools/approvals).
 
+A paused run's `output` is not the agent's answer. `isPausedRun(result)` tells the two apart, the run result wire format (`toAgentWireRunResult`) keeps `status`, `pendingApprovals` and `checkpoint` across processes, and `AgentRunPausedError` (code `RUN_PAUSED`) reports a pause where the caller cannot wait for a decision.
+
+To run a single tool call outside a run with the same checks (schema, approval, guardrails, sandbox, `tool.timeout`), use `cog.invokeTool(tool, args, { onApproval })`. A call nobody approves is refused with `pendingApproval` set, since there is no run to pause.
+
 ### PII Masking
 
 `security.pii` replaces emails, phones, card numbers (Luhn-checked), IBANs, SSNs, IP addresses, API keys and your own patterns with placeholders before every LLM request, so the provider never sees them:
@@ -2037,6 +2041,10 @@ if (result.status === 'paused') {
 Nothing of the paused turn runs until every call in it is decided. Paused runs live in the thread's memory (or process memory, or your `runCheckpoints` store), so a resume can come after a restart; a new message on the thread instead declines the waiting calls.
 
 `cog.resume()` takes the thread id or the returned `result.checkpoint`; `defaultDecision` answers every call `decisions` leaves out. To decide while the run waits, pass `onApproval: (request) => ({ approved: true })` (or return `'pause'`) to `cog.run()`. See [Tool Approvals](https://cogitator.app/docs/tools/approvals).
+
+A paused run's `output` is not the agent's answer. `isPausedRun(result)` tells the two apart, the run result wire format (`toAgentWireRunResult`) keeps `status`, `pendingApprovals` and `checkpoint` across processes, and `AgentRunPausedError` (code `RUN_PAUSED`) reports a pause where the caller cannot wait for a decision.
+
+To run a single tool call outside a run with the same checks (schema, approval, guardrails, sandbox, `tool.timeout`), use `cog.invokeTool(tool, args, { onApproval })`. A call nobody approves is refused with `pendingApproval` set, since there is no run to pause.
 
 ### PII Masking
 

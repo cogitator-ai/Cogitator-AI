@@ -6,7 +6,7 @@
 
 import type { LLMBackendProvider, ReasoningConfig } from './llm';
 import type { ToolSchema } from './tool';
-import type { HandoffEvent, RunBlockReason } from './runtime';
+import type { HandoffEvent, RunBlockReason, RunCheckpoint, ToolApprovalRequest } from './runtime';
 
 /**
  * An agent's response format on the wire: a Zod schema travels as JSON Schema, and the
@@ -125,6 +125,19 @@ export interface AgentWireRunResult {
   blocked?: RunBlockReason;
   /** Tool calls used up `maxIterations`, see `RunResult.iterationLimitReached` */
   iterationLimitReached?: boolean;
+  /**
+   * `paused` when tool calls wait for approval, see `RunResult.status`: then `output` is not the
+   * agent's answer, and `pendingApprovals` and `checkpoint` say what waits and how to go on.
+   * Results of senders that predate the field leave it out for a completed run
+   */
+  status?: 'completed' | 'paused';
+  /** The tool calls a paused run waits on, see `RunResult.pendingApprovals` */
+  pendingApprovals?: ToolApprovalRequest[];
+  /**
+   * What a paused run continues from with `cogitator.resume()`, see `RunResult.checkpoint`. It
+   * holds the conversation, so it belongs on your servers, not with end users
+   */
+  checkpoint?: RunCheckpoint;
   /** The model the run used, when cost routing picked another one */
   modelUsed?: string;
   /** Handoffs during the run, in order */

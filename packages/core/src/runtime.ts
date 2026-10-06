@@ -27,6 +27,9 @@ import type {
   Tool,
   ToolApprovalDecision,
   ToolApprovalRequest,
+  ToolInvocationOptions,
+  ToolInvocationResult,
+  ToolInvoker,
 } from '@cogitator-ai/types';
 import { type Agent } from './agent';
 import { ToolRegistry } from './registry';
@@ -152,7 +155,7 @@ function isEmptyAnswer(response: ChatResponse): boolean {
  * });
  * ```
  */
-export class Cogitator {
+export class Cogitator implements ToolInvoker {
   private config: CogitatorConfig;
   private backends = new Map<string, LLMBackend>();
   private processCheckpoints?: InMemoryRunCheckpointStore;
@@ -272,6 +275,97 @@ export class Cogitator {
         ...(defaultDecision && { defaultDecision }),
         checkUser: typeof target === 'string' || userId !== undefined,
       }
+    );
+  }
+
+  /**
+   * Run one tool call outside an agent run, the way a run executes it: the arguments validated
+   * against the tool's schema, approval asked for a call that needs it (`options.onApproval`,
+   * else `guardrails.onToolApproval`), the guardrails applied, sandboxed tools run in this
+   * runtime's sandbox and `tool.timeout` kept. A call that needs approval nobody gives does not
+   * run: there is no run to pause, so it is refused with the request in `pendingApproval`.
+   *
+   * @example
+   * ```ts
+   * const result = await cog.invokeTool(exec, { command: 'ls' }, {
+   *   onApproval: async (request) => ((await askUser(request)) ? { approved: true } : { approved: false }),
+   * });
+   * if (result.error) console.error(result.error);
+   * ```
+   */
+  async invokeTool(
+    tool: Tool,
+    args: unknown,
+    options: ToolInvocationOptions = {}
+  ): Promise<ToolInvocationResult> {
+    const toolCall: ToolCall = {
+      id: options.toolCallId ?? `call_${nanoid(12)}`,
+      name: tool.name,
+      arguments: isArgumentRecord(args) ? args : {},
+    };
+    this.ensureGuardrails();
+    const constitutionalAI = this.state.constitutionalAI;
+
+    let approvedByUser = false;
+    if (
+      needsApproval(tool, toolCall.arguments) ||
+      constitutionalAI?.toolNeedsApproval(tool, toolCall.arguments)
+    ) {
+      const request: ToolApprovalRequest = {
+        toolCallId: toolCall.id,
+        toolName: tool.name,
+        arguments: toolCall.arguments,
+        description: tool.description,
+        ...(tool.sideEffects && { sideEffects: [...tool.sideEffects] }),
+      };
+      const decision = await this.decideApproval(request, options.onApproval);
+      if (decision === 'pause') {
+        return {
+          callId: toolCall.id,
+          name: tool.name,
+          result: null,
+          error: `Tool "${tool.name}" needs approval, and nobody approved this call`,
+          pendingApproval: request,
+        };
+      }
+      if (!decision.approved) {
+        return {
+          callId: toolCall.id,
+          name: tool.name,
+          result: null,
+          error: `The user declined this tool call${decision.reason ? `: ${decision.reason}` : ''}`,
+        };
+      }
+      approvedByUser = true;
+    }
+
+    const registry = new ToolRegistry();
+    registry.register(tool);
+    const {
+      agentId: _agentId,
+      runId: _runId,
+      signal: _signal,
+      ...extraContext
+    } = options.context ?? {};
+    return executeTool(
+      registry,
+      toolCall,
+      options.runId ?? `run_${nanoid(12)}`,
+      options.agentId ?? 'tool-invoker',
+      this.state.sandboxManager,
+      constitutionalAI,
+      constitutionalAI?.config.filterToolCalls ?? false,
+      () => initializeSandbox(this.config, this.state),
+      options.signal,
+      {
+        ...extraContext,
+        ...(options.threadId !== undefined && { threadId: options.threadId }),
+        ...(options.userId !== undefined && { userId: options.userId }),
+        ...(options.channelType !== undefined && { channelType: options.channelType }),
+        ...(options.channelId !== undefined && { channelId: options.channelId }),
+      },
+      approvedByUser,
+      this.config.sandbox?.allowNativeFallback !== false
     );
   }
 
@@ -590,7 +684,8 @@ export class Cogitator {
             description: tool.description,
             ...(tool.sideEffects && { sideEffects: [...tool.sideEffects] }),
           };
-          const decision = resumed?.fallback ?? (await this.decideApproval(request, options));
+          const decision =
+            resumed?.fallback ?? (await this.decideApproval(request, options.onApproval));
           if (decision === 'pause') pending.push(request);
           else decisions.set(toolCall.id, decision);
         }
@@ -1307,9 +1402,9 @@ export class Cogitator {
    */
   private async decideApproval(
     request: ToolApprovalRequest,
-    options: RunOptions
+    onApproval: RunOptions['onApproval']
   ): Promise<ToolApprovalDecision | 'pause'> {
-    if (options.onApproval) return options.onApproval(request);
+    if (onApproval) return onApproval(request);
     const legacy = this.config.guardrails?.onToolApproval;
     if (legacy) {
       const approved = await legacy(request.toolName, request.arguments, request.sideEffects ?? []);
@@ -1737,6 +1832,10 @@ interface PausedTurn {
   toolCalls: ToolCall[];
   decisions: Record<string, ToolApprovalDecision>;
   pending: ToolApprovalRequest[];
+}
+
+function isArgumentRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /** Whether a call to `tool` with `args` needs approval; a check that throws counts as yes. */

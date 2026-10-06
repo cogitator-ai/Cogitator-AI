@@ -84,3 +84,32 @@ The checkpoint holds the whole conversation, so it stays on the server. You can 
 
 - **Server adapters** answer a paused run with `status: 'paused'` and `pendingApprovals`, stream an `approval-required` event, and take decisions on `POST /agents/:name/resume` (`{ threadId, decisions?, defaultDecision? }`).
 - **Channels** ask in the chat ("reply approve or deny") and resume when the user answers — see [Gateway approvals](/docs/channels/gateway#approvals).
+
+## A Pause Is Never an Answer
+
+A paused run's `output` is whatever the model said before it asked for the tools, not its answer. Everything that hands a run on keeps the pause visible, and `isPausedRun(result)` from `@cogitator-ai/core` tells the two apart in your own code:
+
+```typescript
+import { isPausedRun, AgentRunPausedError } from '@cogitator-ai/core';
+
+if (isPausedRun(result)) {
+  await approvals.ask(result.pendingApprovals, result.checkpoint);
+}
+```
+
+Where a caller has no way to wait for a decision, the pause becomes an `AgentRunPausedError` (code `RUN_PAUSED`, HTTP 409) with `agentName`, `threadId`, `pendingApprovals` and the `checkpoint` to resume from. `findAgentRunPausedError(error)` finds it behind errors that wrap it.
+
+The run result wire format (`toAgentWireRunResult`, used by queue jobs and distributed swarm turns) carries `status`, `pendingApprovals` and `checkpoint`, so a run that paused on one process resumes on any other: `cog.resume(agent, wire.checkpoint, { decisions })`.
+
+## Tool Calls Outside a Run
+
+Code that runs tools without an agent run, like an MCP server or a self-modifying agent, uses `cogitator.invokeTool()` to treat them the way a run does: the arguments are validated against the schema, a call that needs approval is decided by `onApproval` (else `guardrails.onToolApproval`), the guardrails apply, sandboxed tools run in the runtime's sandbox and `tool.timeout` holds. There is no run to pause, so a call nobody approves does not run: the result's `error` says so and `pendingApproval` holds the request.
+
+```typescript
+const result = await cog.invokeTool(exec, { command: 'ls -la' }, {
+  onApproval: async (call) => ((await confirm(call)) ? { approved: true } : { approved: false }),
+});
+```
+
+A `Cogitator` is a `ToolInvoker` (`invokeTool(tool, args, options)`), the interface those packages take.
+
