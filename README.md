@@ -70,8 +70,10 @@ That's it. The agent reads your question, decides to call `get_weather`, gets th
 
 ```bash
 npx create-cogitator-app my-agents
-cd my-agents && pnpm dev
+cd my-agents && npm run dev
 ```
+
+It prints what the first run needs: `ollama pull` for the local model, or `cp .env.example .env` and the key for a cloud provider.
 
 Choose from 6 templates: basic agent, agent with memory, multi-agent swarm, DAG workflow, REST API server, or Next.js chat app.
 

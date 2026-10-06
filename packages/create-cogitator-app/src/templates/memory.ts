@@ -1,17 +1,28 @@
 import type { ProjectOptions, TemplateGenerator } from '../types.js';
-import { defaultModels, providerConfig } from '../utils/providers.js';
-import { ZOD_VERSION } from './versions.js';
+import { modelFor, providerConfig } from '../utils/providers.js';
+import { cogitatorVersion, ZOD_VERSION } from './versions.js';
+import {
+  envHelperFiles,
+  envHelperImport,
+  RUN_MAIN,
+  scriptTemplateDevDependencies,
+  scriptTemplateScripts,
+  tsString,
+} from './shared.js';
 
 export const memoryTemplate: TemplateGenerator = {
+  memoryAdapter: 'redis',
+
   files(options: ProjectOptions) {
-    const model = defaultModels[options.provider];
+    const model = modelFor(options);
 
     const indexTs = [
       `import { Cogitator, Agent } from '@cogitator-ai/core'`,
       `import { searchTool, noteTool } from './tools.js'`,
+      ...envHelperImport(options.provider),
       ``,
       `const cogitator = new Cogitator({`,
-      providerConfig(options.provider),
+      providerConfig(options.provider, 'requireEnv'),
       `  memory: {`,
       `    adapter: 'redis',`,
       `    redis: { url: process.env.REDIS_URL || 'redis://localhost:6379' },`,
@@ -19,8 +30,8 @@ export const memoryTemplate: TemplateGenerator = {
       `})`,
       ``,
       `const agent = new Agent({`,
-      `  name: '${options.name}-agent',`,
-      `  model: '${model}',`,
+      `  name: ${tsString(`${options.name}-agent`)},`,
+      `  model: ${tsString(model)},`,
       `  instructions: [`,
       `    'You are an AI assistant with persistent memory.',`,
       `    'You remember past conversations and user preferences.',`,
@@ -33,25 +44,26 @@ export const memoryTemplate: TemplateGenerator = {
       `async function main() {`,
       `  const threadId = 'demo-thread'`,
       ``,
-      `  const result1 = await cogitator.run(agent, {`,
-      `    input: 'My name is Alex and I prefer TypeScript.',`,
-      `    threadId,`,
-      `    useMemory: true,`,
-      `  })`,
-      `  console.log('Response 1:', result1.output)`,
+      `  try {`,
+      `    const result1 = await cogitator.run(agent, {`,
+      `      input: 'My name is Alex and I prefer TypeScript.',`,
+      `      threadId,`,
+      `      useMemory: true,`,
+      `    })`,
+      `    console.log('Response 1:', result1.output)`,
       ``,
-      `  const result2 = await cogitator.run(agent, {`,
-      `    input: 'What is my name and preferred language?',`,
-      `    threadId,`,
-      `    useMemory: true,`,
-      `  })`,
-      `  console.log('Response 2:', result2.output)`,
-      ``,
-      `  await cogitator.close()`,
+      `    const result2 = await cogitator.run(agent, {`,
+      `      input: 'What is my name and preferred language?',`,
+      `      threadId,`,
+      `      useMemory: true,`,
+      `    })`,
+      `    console.log('Response 2:', result2.output)`,
+      `  } finally {`,
+      `    await cogitator.close()`,
+      `  }`,
       `}`,
       ``,
-      `main().catch(console.error)`,
-      ``,
+      ...RUN_MAIN,
     ].join('\n');
 
     const toolsTs = [
@@ -86,32 +98,24 @@ export const memoryTemplate: TemplateGenerator = {
     return [
       { path: 'src/index.ts', content: indexTs },
       { path: 'src/tools.ts', content: toolsTs },
+      ...envHelperFiles(options.provider),
     ];
   },
 
   dependencies() {
     return {
-      '@cogitator-ai/core': 'latest',
-      '@cogitator-ai/memory': 'latest',
-      '@cogitator-ai/redis': 'latest',
+      '@cogitator-ai/core': cogitatorVersion('@cogitator-ai/core'),
+      '@cogitator-ai/memory': cogitatorVersion('@cogitator-ai/memory'),
+      '@cogitator-ai/redis': cogitatorVersion('@cogitator-ai/redis'),
       zod: ZOD_VERSION,
     };
   },
 
   devDependencies() {
-    return {
-      typescript: '^5.8.0',
-      tsx: '^4.19.0',
-      '@types/node': '^22.0.0',
-    };
+    return scriptTemplateDevDependencies();
   },
 
   scripts() {
-    return {
-      dev: 'tsx watch src/index.ts',
-      start: 'tsx src/index.ts',
-      build: 'tsc',
-      typecheck: 'tsc --noEmit',
-    };
+    return scriptTemplateScripts();
   },
 };

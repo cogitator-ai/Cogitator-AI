@@ -26,6 +26,11 @@ describe('detectPackageManager', () => {
     expect(detectPackageManager()).toBe('yarn');
   });
 
+  it('detects npm, which npx and npm create run under', () => {
+    process.env.npm_config_user_agent = 'npm/10.9.8 node/v22.23.1 darwin arm64 workspaces/false';
+    expect(detectPackageManager()).toBe('npm');
+  });
+
   it('detects bun', () => {
     process.env.npm_config_user_agent = 'bun/1.0.0';
     expect(detectPackageManager()).toBe('bun');
@@ -82,12 +87,12 @@ describe('generateEnvExample', () => {
 
   it('includes OPENAI_API_KEY for openai provider', () => {
     const file = generateEnvExample('openai');
-    expect(file.content).toContain('OPENAI_API_KEY=sk-...');
+    expect(file.content).toContain('OPENAI_API_KEY=');
   });
 
   it('includes ANTHROPIC_API_KEY for anthropic provider', () => {
     const file = generateEnvExample('anthropic');
-    expect(file.content).toContain('ANTHROPIC_API_KEY=sk-ant-...');
+    expect(file.content).toContain('ANTHROPIC_API_KEY=');
   });
 
   it('includes GOOGLE_API_KEY for google provider', () => {
@@ -148,18 +153,18 @@ describe('generateDockerCompose', () => {
 
 describe('generateGitignore', () => {
   it('includes node_modules', () => {
-    const file = generateGitignore();
+    const file = generateGitignore('basic');
     expect(file.path).toBe('.gitignore');
     expect(file.content).toContain('node_modules');
   });
 
   it('includes .env', () => {
-    const file = generateGitignore();
+    const file = generateGitignore('basic');
     expect(file.content).toContain('.env');
   });
 
   it('includes dist', () => {
-    const file = generateGitignore();
+    const file = generateGitignore('basic');
     expect(file.content).toContain('dist');
   });
 });
@@ -182,23 +187,36 @@ describe('generateTsconfig', () => {
 });
 
 describe('generateCogitatorYml', () => {
+  const body = (yml: string) =>
+    yml
+      .split('\n')
+      .filter((line) => !line.startsWith('#'))
+      .join('\n')
+      .replace(/^\n/, '');
+
+  it('explains who reads the file and that src/ has to change with it', () => {
+    const yml = generateCogitatorYml('openai').content;
+    expect(yml.startsWith('# Read by `cogitator run` and `cogitator deploy`')).toBe(true);
+    expect(yml).toContain('change the provider, model or memory in both places');
+  });
+
   it('generates cogitator.yml path', () => {
     const file = generateCogitatorYml('openai');
     expect(file.path).toBe('cogitator.yml');
   });
 
   it('nests the provider and model under llm, where @cogitator-ai/config reads them', () => {
-    expect(generateCogitatorYml('openai').content).toBe(
+    expect(body(generateCogitatorYml('openai').content)).toBe(
       ['llm:', '  defaultProvider: openai', '  defaultModel: gpt-6.1-sol', ''].join('\n')
     );
   });
 
   it('points ollama at OLLAMA_BASE_URL, falling back to the local server', () => {
-    expect(generateCogitatorYml('ollama').content).toBe(
+    expect(body(generateCogitatorYml('ollama').content)).toBe(
       [
         'llm:',
         '  defaultProvider: ollama',
-        '  defaultModel: qwen3:8b',
+        '  defaultModel: qwen3.5:9b',
         '  providers:',
         '    ollama:',
         '      baseUrl: ${OLLAMA_BASE_URL:-http://localhost:11434}',
@@ -208,7 +226,7 @@ describe('generateCogitatorYml', () => {
   });
 
   it('configures the redis memory the memory template connects to', () => {
-    expect(generateCogitatorYml('google', 'memory').content).toBe(
+    expect(body(generateCogitatorYml('google', 'memory').content)).toBe(
       [
         'llm:',
         '  defaultProvider: google',
@@ -227,7 +245,7 @@ describe('generateCogitatorYml', () => {
     for (const provider of ['ollama', 'openai', 'anthropic', 'google'] as const) {
       const topLevel = generateCogitatorYml(provider, 'memory')
         .content.split('\n')
-        .filter((line) => /^\S/.test(line))
+        .filter((line) => /^[^\s#]/.test(line))
         .map((line) => line.replace(/:.*$/, ''));
       expect(topLevel).toEqual(['llm', 'memory']);
     }

@@ -1,15 +1,29 @@
 import type { ProjectOptions, TemplateGenerator } from '../types.js';
-import { defaultModels, providerConfig } from '../utils/providers.js';
-import { ZOD_VERSION } from './versions.js';
+import { modelFor, providerConfig } from '../utils/providers.js';
+import { cogitatorVersion, ZOD_VERSION } from './versions.js';
+import {
+  envHelperFiles,
+  envHelperImport,
+  RUN_MAIN,
+  scriptTemplateDevDependencies,
+  scriptTemplateScripts,
+  tsString,
+} from './shared.js';
 
 /** Where the generated server mounts the Cogitator routes. */
 const BASE_PATH = '/api';
 
+/** Routes under BASE_PATH that answer without API_TOKEN: health probes and the API docs. */
+const PUBLIC_PATHS = ['/health', '/ready', '/docs', '/openapi.json'];
+
 export const apiServerTemplate: TemplateGenerator = {
+  memoryAdapter: 'memory',
+  secrets: ['API_TOKEN'],
+
   healthPath: `${BASE_PATH}/health`,
 
   files(options: ProjectOptions) {
-    const model = defaultModels[options.provider];
+    const model = modelFor(options);
 
     const agentsTs = [
       `import { Agent, tool } from '@cogitator-ai/core'`,
@@ -28,7 +42,7 @@ export const apiServerTemplate: TemplateGenerator = {
       ``,
       `export const assistant = new Agent({`,
       `  name: 'assistant',`,
-      `  model: '${model}',`,
+      `  model: ${tsString(model)},`,
       `  instructions: 'You are a helpful API assistant. Answer questions clearly and concisely.',`,
       `  tools: [searchTool],`,
       `  temperature: 0.7,`,
@@ -36,7 +50,7 @@ export const apiServerTemplate: TemplateGenerator = {
       ``,
       `export const coder = new Agent({`,
       `  name: 'coder',`,
-      `  model: '${model}',`,
+      `  model: ${tsString(model)},`,
       `  instructions: 'You are an expert programmer. Write clean, well-structured code.',`,
       `  temperature: 0.3,`,
       `})`,
@@ -44,16 +58,38 @@ export const apiServerTemplate: TemplateGenerator = {
     ].join('\n');
 
     const indexTs = [
-      `import express from 'express'`,
+      `import { timingSafeEqual } from 'node:crypto'`,
+      `import express, { type Request } from 'express'`,
       `import { Cogitator } from '@cogitator-ai/core'`,
       `import { CogitatorServer } from '@cogitator-ai/express'`,
       `import { assistant, coder } from './agents.js'`,
+      ...envHelperImport(options.provider),
+      ``,
+      `const production = process.env.NODE_ENV === 'production'`,
+      `const port = Number(process.env.PORT ?? 3000)`,
+      `const host = process.env.HOST ?? (production ? '0.0.0.0' : '127.0.0.1')`,
+      `const apiToken = process.env.API_TOKEN`,
+      `const corsOrigin = process.env.CORS_ORIGIN`,
+      `const publicPaths = new Set([${PUBLIC_PATHS.map(tsString).join(', ')}])`,
+      ``,
+      `function hasToken(header: string | undefined): boolean {`,
+      `  if (!apiToken || !header) return false`,
+      `  const expected = Buffer.from(\`Bearer \${apiToken}\`)`,
+      `  const given = Buffer.from(header)`,
+      `  return given.length === expected.length && timingSafeEqual(given, expected)`,
+      `}`,
+      ``,
+      `function authenticate(req: Request) {`,
+      `  if (!apiToken || publicPaths.has(req.path)) return undefined`,
+      `  if (!hasToken(req.get('authorization'))) throw new Error('Unauthorized')`,
+      `  return { userId: 'api-token' }`,
+      `}`,
       ``,
       `const app = express()`,
-      `const port = process.env.PORT || 3000`,
       ``,
       `const cogitator = new Cogitator({`,
-      providerConfig(options.provider),
+      providerConfig(options.provider, 'requireEnv'),
+      `  memory: { adapter: 'memory' },`,
       `})`,
       ``,
       `const server = new CogitatorServer({`,
@@ -63,37 +99,43 @@ export const apiServerTemplate: TemplateGenerator = {
       `  config: {`,
       `    basePath: '${BASE_PATH}',`,
       `    enableSwagger: true,`,
-      `    cors: { origin: '*' },`,
+      `    auth: authenticate,`,
+      `    ...(corsOrigin ? { cors: { origin: corsOrigin.split(',').map((o) => o.trim()) } } : {}),`,
       `    swagger: {`,
-      `      title: '${options.name} API',`,
+      `      title: ${tsString(`${options.name} API`)},`,
       `      version: '1.0.0',`,
       `    },`,
       `  },`,
       `})`,
       ``,
       `async function main() {`,
+      `  if (production && !apiToken) {`,
+      `    throw new Error('Set API_TOKEN in production: it guards every route except health and docs')`,
+      `  }`,
+      ``,
       `  await server.init()`,
       ``,
-      `  app.listen(port, () => {`,
-      `    console.log(\`Server running at http://localhost:\${port}\`)`,
-      `    console.log(\`Swagger docs at http://localhost:\${port}${BASE_PATH}/docs\`)`,
+      `  app.listen(port, host, () => {`,
+      `    console.log(\`Server running at http://\${host}:\${port}\`)`,
+      `    console.log(\`Swagger docs at http://\${host}:\${port}${BASE_PATH}/docs\`)`,
+      `    if (!apiToken) console.log('API_TOKEN is not set, so the API is open to anyone who can reach it')`,
       `  })`,
       `}`,
       ``,
-      `main().catch(console.error)`,
-      ``,
+      ...RUN_MAIN,
     ].join('\n');
 
     return [
       { path: 'src/index.ts', content: indexTs },
       { path: 'src/agents.ts', content: agentsTs },
+      ...envHelperFiles(options.provider),
     ];
   },
 
   dependencies() {
     return {
-      '@cogitator-ai/core': 'latest',
-      '@cogitator-ai/express': 'latest',
+      '@cogitator-ai/core': cogitatorVersion('@cogitator-ai/core'),
+      '@cogitator-ai/express': cogitatorVersion('@cogitator-ai/express'),
       express: '^5.2.1',
       zod: ZOD_VERSION,
     };
@@ -101,19 +143,12 @@ export const apiServerTemplate: TemplateGenerator = {
 
   devDependencies() {
     return {
-      typescript: '^5.8.0',
-      tsx: '^4.19.0',
-      '@types/node': '^22.0.0',
+      ...scriptTemplateDevDependencies(),
       '@types/express': '^5.0.6',
     };
   },
 
   scripts() {
-    return {
-      dev: 'tsx watch src/index.ts',
-      start: 'tsx src/index.ts',
-      build: 'tsc',
-      typecheck: 'tsc --noEmit',
-    };
+    return scriptTemplateScripts();
   },
 };

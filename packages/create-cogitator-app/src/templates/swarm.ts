@@ -1,10 +1,18 @@
 import type { ProjectOptions, TemplateGenerator } from '../types.js';
-import { defaultModels, providerConfig } from '../utils/providers.js';
-import { ZOD_VERSION } from './versions.js';
+import { modelFor, providerConfig } from '../utils/providers.js';
+import { cogitatorVersion, ZOD_VERSION } from './versions.js';
+import {
+  envHelperFiles,
+  envHelperImport,
+  RUN_MAIN,
+  scriptTemplateDevDependencies,
+  scriptTemplateScripts,
+  tsString,
+} from './shared.js';
 
 export const swarmTemplate: TemplateGenerator = {
   files(options: ProjectOptions) {
-    const model = defaultModels[options.provider];
+    const model = modelFor(options);
 
     const researcherTs = [
       `import { Agent } from '@cogitator-ai/core'`,
@@ -12,7 +20,7 @@ export const swarmTemplate: TemplateGenerator = {
       ``,
       `export const researcher = new Agent({`,
       `  name: 'researcher',`,
-      `  model: '${model}',`,
+      `  model: ${tsString(model)},`,
       `  instructions: [`,
       `    'You are a research specialist.',`,
       `    'Use the search tool to find information.',`,
@@ -29,7 +37,7 @@ export const swarmTemplate: TemplateGenerator = {
       ``,
       `export const writer = new Agent({`,
       `  name: 'writer',`,
-      `  model: '${model}',`,
+      `  model: ${tsString(model)},`,
       `  instructions: [`,
       `    'You are a skilled content writer.',`,
       `    'Take research findings and craft well-structured, engaging content.',`,
@@ -45,7 +53,7 @@ export const swarmTemplate: TemplateGenerator = {
       ``,
       `export const reviewer = new Agent({`,
       `  name: 'reviewer',`,
-      `  model: '${model}',`,
+      `  model: ${tsString(model)},`,
       `  instructions: [`,
       `    'You are a meticulous content reviewer.',`,
       `    'Check for accuracy, grammar, and overall quality.',`,
@@ -79,13 +87,14 @@ export const swarmTemplate: TemplateGenerator = {
       `import { researcher } from './agents/researcher.js'`,
       `import { writer } from './agents/writer.js'`,
       `import { reviewer } from './agents/reviewer.js'`,
+      ...envHelperImport(options.provider),
       ``,
       `const cogitator = new Cogitator({`,
-      providerConfig(options.provider),
+      providerConfig(options.provider, 'requireEnv'),
       `})`,
       ``,
       `const team = new Swarm(cogitator, {`,
-      `  name: '${options.name}-team',`,
+      `  name: ${tsString(`${options.name}-team`)},`,
       `  strategy: 'hierarchical',`,
       `  supervisor: reviewer,`,
       `  workers: [researcher, writer],`,
@@ -102,18 +111,19 @@ export const swarmTemplate: TemplateGenerator = {
       `async function main() {`,
       `  console.log('Starting swarm...')`,
       ``,
-      `  const result = await team.run({`,
-      `    input: 'Write a comprehensive article about AI agent orchestration.',`,
-      `  })`,
+      `  try {`,
+      `    const result = await team.run({`,
+      `      input: 'Write a comprehensive article about AI agent orchestration.',`,
+      `    })`,
       ``,
-      `  console.log('Result:', result.output)`,
-      `  console.log('Strategy:', team.strategyType)`,
-      ``,
-      `  await team.close()`,
+      `    console.log('Result:', result.output)`,
+      `    console.log('Strategy:', team.strategyType)`,
+      `  } finally {`,
+      `    await team.close()`,
+      `  }`,
       `}`,
       ``,
-      `main().catch(console.error)`,
-      ``,
+      ...RUN_MAIN,
     ].join('\n');
 
     return [
@@ -122,31 +132,23 @@ export const swarmTemplate: TemplateGenerator = {
       { path: 'src/agents/researcher.ts', content: researcherTs },
       { path: 'src/agents/writer.ts', content: writerTs },
       { path: 'src/agents/reviewer.ts', content: reviewerTs },
+      ...envHelperFiles(options.provider),
     ];
   },
 
   dependencies() {
     return {
-      '@cogitator-ai/core': 'latest',
-      '@cogitator-ai/swarms': 'latest',
+      '@cogitator-ai/core': cogitatorVersion('@cogitator-ai/core'),
+      '@cogitator-ai/swarms': cogitatorVersion('@cogitator-ai/swarms'),
       zod: ZOD_VERSION,
     };
   },
 
   devDependencies() {
-    return {
-      typescript: '^5.8.0',
-      tsx: '^4.19.0',
-      '@types/node': '^22.0.0',
-    };
+    return scriptTemplateDevDependencies();
   },
 
   scripts() {
-    return {
-      dev: 'tsx watch src/index.ts',
-      start: 'tsx src/index.ts',
-      build: 'tsc',
-      typecheck: 'tsc --noEmit',
-    };
+    return scriptTemplateScripts();
   },
 };

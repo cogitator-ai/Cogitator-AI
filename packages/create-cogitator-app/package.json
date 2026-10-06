@@ -42,6 +42,13 @@
     "picocolors": "^1.1.0"
   },
   "devDependencies": {
+    "@cogitator-ai/core": "workspace:^",
+    "@cogitator-ai/express": "workspace:^",
+    "@cogitator-ai/memory": "workspace:^",
+    "@cogitator-ai/next": "workspace:^",
+    "@cogitator-ai/redis": "workspace:^",
+    "@cogitator-ai/swarms": "workspace:^",
+    "@cogitator-ai/workflows": "workspace:^",
     "@types/node": "^22.20.4",
     "tsup": "^8.4.0",
     "typescript": "^6.0.3",

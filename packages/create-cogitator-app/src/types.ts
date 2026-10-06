@@ -9,6 +9,11 @@ export interface ProjectOptions {
   path: string;
   template: Template;
   provider: LLMProvider;
+  /**
+   * The model the agents use, without the provider prefix (`qwen3.5:9b`, `gpt-6.1-sol`).
+   * Defaults to the provider's entry in `defaultModels`.
+   */
+  model?: string;
   packageManager: PackageManager;
   docker: boolean;
   git: boolean;
@@ -42,6 +47,16 @@ export interface TemplateGenerator {
    * Absent for templates that run as scripts rather than servers.
    */
   healthPath?: string;
+  /**
+   * The memory adapter the generated code configures, written to cogitator.yml so
+   * `cogitator deploy` provisions the services it needs. Absent when it keeps none.
+   */
+  memoryAdapter?: 'memory' | 'redis';
+  /**
+   * Environment variables the deployed app needs besides the provider key, written
+   * to cogitator.yml as `deploy.secrets` together with that key.
+   */
+  secrets?: string[];
   files(options: ProjectOptions): TemplateFile[];
   dependencies(): Record<string, string>;
   devDependencies(): Record<string, string>;

@@ -550,6 +550,27 @@ importers:
         specifier: ^1.1.0
         version: 1.1.1
     devDependencies:
+      '@cogitator-ai/core':
+        specifier: workspace:^
+        version: link:../core
+      '@cogitator-ai/express':
+        specifier: workspace:^
+        version: link:../express
+      '@cogitator-ai/memory':
+        specifier: workspace:^
+        version: link:../memory
+      '@cogitator-ai/next':
+        specifier: workspace:^
+        version: link:../next
+      '@cogitator-ai/redis':
+        specifier: workspace:^
+        version: link:../redis
+      '@cogitator-ai/swarms':
+        specifier: workspace:^
+        version: link:../swarms
+      '@cogitator-ai/workflows':
+        specifier: workspace:^
+        version: link:../workflows
       '@types/node':
         specifier: ^22.20.4
         version: 22.20.4

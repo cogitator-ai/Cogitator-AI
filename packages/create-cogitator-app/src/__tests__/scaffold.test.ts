@@ -63,6 +63,13 @@ describe('scaffold', () => {
     expect(existsSync(join(options.path, 'package.json'))).toBe(true);
   });
 
+  it('refuses a name that is not a valid package name before writing anything', async () => {
+    await expect(scaffold({ ...options, name: "bob's agents", install: false })).rejects.toThrow(
+      /Invalid project name/
+    );
+    expect(existsSync(options.path)).toBe(false);
+  });
+
   it('reports git as skipped when it is turned off', async () => {
     const result = await scaffold({ ...options, install: false });
 
