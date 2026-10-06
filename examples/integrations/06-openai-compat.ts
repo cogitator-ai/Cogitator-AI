@@ -33,23 +33,23 @@ async function main() {
   console.log();
   console.log('Test with curl:');
   console.log();
-  console.log(`  curl http://localhost:${PORT}/health`);
-  console.log(`  curl http://localhost:${PORT}/v1/models`);
+  console.log(`  curl ${server.getUrl()}/health`);
+  console.log(`  curl ${server.getBaseUrl()}/models`);
   console.log();
   console.log('Or use the OpenAI SDK (demo below):');
   console.log();
 
   try {
-    await demoOpenAIClient();
+    await demoOpenAIClient(server.getBaseUrl());
   } finally {
     await server.stop();
     await cog.close();
   }
 }
 
-async function demoOpenAIClient() {
+async function demoOpenAIClient(baseURL: string) {
   const client = new OpenAI({
-    baseURL: `http://localhost:${PORT}/v1`,
+    baseURL,
     apiKey: 'not-needed',
   });
 

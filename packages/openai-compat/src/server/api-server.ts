@@ -8,6 +8,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyCors from '@fastify/cors';
 import type { Cogitator } from '@cogitator-ai/core';
 import type { Tool } from '@cogitator-ai/types';
+import { resolveSseHeartbeatMs } from '@cogitator-ai/server-shared';
 import type { ThreadStorage } from '../client/storage';
 import { OpenAIAdapter, COGITATOR_MODEL_ID } from '../client/openai-adapter';
 import { createAuthMiddleware, type AuthConfig } from './middleware/auth';
@@ -21,11 +22,32 @@ export interface OpenAIServerConfig {
   /** Port to listen on */
   port?: number;
 
-  /** Host to bind to */
+  /**
+   * Host to bind to. Default: `127.0.0.1`, reachable from this machine only. Binding a
+   * public interface (`0.0.0.0`, `::` or an external address) needs `apiKeys`, or
+   * `allowUnauthenticatedPublicAccess`.
+   */
   host?: string;
 
-  /** API keys for authentication. Empty array disables auth. */
+  /**
+   * API keys for authentication. Without keys every caller may create assistants with any
+   * instructions and run the server's tools, so `start()` refuses a public `host` unless
+   * `allowUnauthenticatedPublicAccess` is set.
+   */
   apiKeys?: string[];
+
+  /**
+   * Serve a public `host` without `apiKeys`, for a server behind a gateway that
+   * authenticates callers itself. Default: `false`.
+   */
+  allowUnauthenticatedPublicAccess?: boolean;
+
+  /**
+   * How often a run stream writes an SSE comment while the run is silent, in milliseconds,
+   * so a proxy or load balancer does not cut a run that waits on a slow tool. Default: 5000.
+   * `0` turns heartbeats off.
+   */
+  sseHeartbeatMs?: number;
 
   /** Tools to make available */
   tools?: Tool[];
@@ -45,11 +67,21 @@ export interface OpenAIServerConfig {
   /** Enable request logging */
   logging?: boolean;
 
-  /** CORS configuration */
+  /**
+   * CORS for browsers on other origins. Default: none, so a web page on another origin
+   * cannot call the server from a visitor's browser. Set `origin` to the origins that may.
+   */
   cors?: {
     origin?: string | string[] | boolean;
     methods?: string[];
   };
+}
+
+const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(['localhost', '::1', '[::1]']);
+
+/** True for a host only this machine can reach: `localhost`, `::1` or `127.0.0.0/8` */
+export function isLoopbackHost(host: string): boolean {
+  return LOOPBACK_HOSTS.has(host.toLowerCase()) || /^127(?:\.\d{1,3}){3}$/.test(host);
 }
 
 /**
@@ -74,8 +106,8 @@ export interface OpenAIServerConfig {
  */
 export class OpenAIServer {
   private fastify: FastifyInstance;
-  private config: Required<Omit<OpenAIServerConfig, 'defaultModel' | 'storage'>> &
-    Pick<OpenAIServerConfig, 'defaultModel' | 'storage'>;
+  private config: Required<Omit<OpenAIServerConfig, 'defaultModel' | 'storage' | 'cors'>> &
+    Pick<OpenAIServerConfig, 'defaultModel' | 'storage' | 'cors'>;
   private adapter: OpenAIAdapter;
   private started = false;
   private ready: Promise<void>;
@@ -84,14 +116,16 @@ export class OpenAIServer {
   constructor(cogitator: Cogitator, config: OpenAIServerConfig = {}) {
     this.config = {
       port: config.port ?? 8080,
-      host: config.host ?? '0.0.0.0',
+      host: config.host ?? '127.0.0.1',
       apiKeys: config.apiKeys ?? [],
+      allowUnauthenticatedPublicAccess: config.allowUnauthenticatedPublicAccess ?? false,
+      sseHeartbeatMs: resolveSseHeartbeatMs(config.sseHeartbeatMs),
       tools: config.tools ?? [],
       defaultModel: config.defaultModel,
       storage: config.storage,
       maxFileSize: config.maxFileSize ?? 512 * 1024 * 1024,
       logging: config.logging ?? false,
-      cors: config.cors ?? { origin: true },
+      cors: config.cors,
     };
 
     this.adapter = new OpenAIAdapter(cogitator, {
@@ -112,10 +146,12 @@ export class OpenAIServer {
    * Set up the Fastify server
    */
   private async setupServer(): Promise<void> {
-    await this.fastify.register(fastifyCors, {
-      origin: this.config.cors.origin,
-      methods: this.config.cors.methods ?? ['GET', 'POST', 'DELETE', 'OPTIONS'],
-    });
+    if (this.config.cors) {
+      await this.fastify.register(fastifyCors, {
+        origin: this.config.cors.origin ?? false,
+        methods: this.config.cors.methods ?? ['GET', 'POST', 'DELETE', 'OPTIONS'],
+      });
+    }
 
     await this.fastify.register(import('@fastify/multipart'), {
       limits: {
@@ -151,7 +187,7 @@ export class OpenAIServer {
 
     registerAssistantRoutes(this.fastify, this.adapter);
     registerThreadRoutes(this.fastify, this.adapter);
-    registerRunRoutes(this.fastify, this.adapter);
+    registerRunRoutes(this.fastify, this.adapter, { heartbeatMs: this.config.sseHeartbeatMs });
     registerFileRoutes(this.fastify, this.adapter);
   }
 
@@ -161,6 +197,17 @@ export class OpenAIServer {
   async start(): Promise<void> {
     if (this.started) {
       throw new Error('Server already started');
+    }
+    if (
+      this.config.apiKeys.length === 0 &&
+      !this.config.allowUnauthenticatedPublicAccess &&
+      !isLoopbackHost(this.config.host)
+    ) {
+      throw new Error(
+        `Refusing to serve ${this.config.host} without apiKeys: anyone who can reach it could ` +
+          'create assistants and run the server tools. Set apiKeys, bind a loopback host such as ' +
+          '127.0.0.1, or set allowUnauthenticatedPublicAccess when a gateway authenticates callers.'
+      );
     }
 
     await this.ready;

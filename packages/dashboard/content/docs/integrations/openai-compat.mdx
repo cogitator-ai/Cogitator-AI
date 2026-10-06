@@ -83,17 +83,21 @@ await server.stop();
 
 ### OpenAIServerConfig
 
-| Option         | Type                  | Default            | Description                                 |
-| -------------- | --------------------- | ------------------ | ------------------------------------------- |
-| `port`         | `number`              | `8080`             | Port to listen on                           |
-| `host`         | `string`              | `'0.0.0.0'`        | Host to bind to                             |
-| `apiKeys`      | `string[]`            | `[]`               | API keys for auth (empty = no auth)         |
-| `tools`        | `Tool[]`              | `[]`               | Cogitator tools available to all assistants |
-| `defaultModel` | `string`              | —                  | Model used for the `cogitator` model id     |
-| `storage`      | `ThreadStorage`       | in-memory          | Persistence backend (connect it first)      |
-| `maxFileSize`  | `number`              | 512 MB             | Upload limit for `POST /v1/files`           |
-| `logging`      | `boolean`             | `false`            | Enable request logging via pino (JSON)      |
-| `cors`         | `{ origin, methods }` | `{ origin: true }` | CORS configuration                          |
+| Option                             | Type                  | Default       | Description                                                                |
+| ---------------------------------- | --------------------- | ------------- | -------------------------------------------------------------------------- |
+| `port`                             | `number`              | `8080`        | Port to listen on                                                          |
+| `host`                             | `string`              | `'127.0.0.1'` | Host to bind to, a public host needs `apiKeys`                             |
+| `apiKeys`                          | `string[]`            | `[]`          | API keys for auth (empty = no auth)                                        |
+| `allowUnauthenticatedPublicAccess` | `boolean`             | `false`       | Serve a public host without `apiKeys`, behind a gateway that authenticates |
+| `sseHeartbeatMs`                   | `number`              | `5000`        | Heartbeat comment interval on run streams, `0` turns it off                |
+| `tools`                            | `Tool[]`              | `[]`          | Cogitator tools available to all assistants                                |
+| `defaultModel`                     | `string`              | —             | Model used for the `cogitator` model id                                    |
+| `storage`                          | `ThreadStorage`       | in-memory     | Persistence backend (connect it first)                                     |
+| `maxFileSize`                      | `number`              | 512 MB        | Upload limit for `POST /v1/files`                                          |
+| `logging`                          | `boolean`             | `false`       | Enable request logging via pino (JSON)                                     |
+| `cors`                             | `{ origin, methods }` | none          | Origins browsers may call from, without it no cross-origin page can        |
+
+The server binds `127.0.0.1` unless told otherwise. Without `apiKeys` anyone who reaches it can create assistants and run the server's tools, so `start()` refuses a public host (`0.0.0.0`, `::`, an external address) unless `apiKeys` are set or `allowUnauthenticatedPublicAccess: true` says a gateway authenticates callers. CORS is off until `cors.origin` names the origins that may call from a browser.
 
 `start()` waits for plugin registration, so it can be called right after construction. With `port: 0` the OS picks a port and `getUrl()` / `getBaseUrl()` report the bound one. `/health` stays public when `apiKeys` are set.
 

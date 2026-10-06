@@ -4,6 +4,11 @@
  * Implements OpenAI Runs API endpoints.
  */
 
+import {
+  encodeHeartbeat,
+  resolveSseHeartbeatMs,
+  startHeartbeat,
+} from '@cogitator-ai/server-shared';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { OpenAIAdapter } from '../../client/openai-adapter';
 import { InvalidRequestError } from '../../client/errors';
@@ -16,7 +21,17 @@ import type {
 } from '../../types/openai-types';
 import { paginate, parseLimit, parseOrder, sendInvalidRequest, sendNotFound } from './shared';
 
-export function registerRunRoutes(fastify: FastifyInstance, adapter: OpenAIAdapter) {
+export interface RunRouteOptions {
+  /** How often an open run stream writes a heartbeat comment; `0` for never. Default: 5000 */
+  heartbeatMs?: number;
+}
+
+export function registerRunRoutes(
+  fastify: FastifyInstance,
+  adapter: OpenAIAdapter,
+  options: RunRouteOptions = {}
+) {
+  const heartbeatMs = resolveSseHeartbeatMs(options.heartbeatMs);
   fastify.post<{ Params: { thread_id: string }; Body: CreateRunRequest }>(
     '/v1/threads/:thread_id/runs',
     async (request, reply) => {
@@ -36,7 +51,7 @@ export function registerRunRoutes(fastify: FastifyInstance, adapter: OpenAIAdapt
       }
 
       if (request.body.stream) {
-        return streamRun(reply, adapter, run.id, 0);
+        return streamRun(reply, adapter, run.id, 0, heartbeatMs);
       }
       return reply.status(201).send(run);
     }
@@ -68,7 +83,7 @@ export function registerRunRoutes(fastify: FastifyInstance, adapter: OpenAIAdapt
     }
 
     if (request.body.stream) {
-      return streamRun(reply, adapter, run.id, 0);
+      return streamRun(reply, adapter, run.id, 0, heartbeatMs);
     }
     return reply.status(201).send(run);
   });
@@ -149,7 +164,7 @@ export function registerRunRoutes(fastify: FastifyInstance, adapter: OpenAIAdapt
     }
 
     if (request.body?.stream) {
-      return streamRun(reply, adapter, run.id, cursor);
+      return streamRun(reply, adapter, run.id, cursor, heartbeatMs);
     }
     return reply.send(run);
   });
@@ -168,13 +183,15 @@ function sendRequestError(reply: FastifyReply, error: unknown): FastifyReply {
 
 /**
  * Stream run events as OpenAI-style server-sent events until the run
- * finishes or pauses for tool outputs.
+ * finishes or pauses for tool outputs, with a heartbeat comment while the
+ * run is silent so idle timeouts of proxies do not cut it.
  */
 async function streamRun(
   reply: FastifyReply,
   adapter: OpenAIAdapter,
   runId: string,
-  fromIndex: number
+  fromIndex: number,
+  heartbeatMs: number
 ): Promise<FastifyReply> {
   reply.hijack();
   const raw = reply.raw;
@@ -190,6 +207,11 @@ async function streamRun(
     closed = true;
   });
 
+  const stopHeartbeat = startHeartbeat(() => {
+    if (closed || raw.writableEnded) return false;
+    raw.write(encodeHeartbeat());
+    return true;
+  }, heartbeatMs);
   const events = adapter.streamRunEvents(runId, fromIndex);
   try {
     for await (const { event, data } of events) {
@@ -198,6 +220,7 @@ async function streamRun(
       raw.write(`event: ${event}\ndata: ${payload}\n\n`);
     }
   } finally {
+    stopHeartbeat();
     await events.return(undefined);
     if (!raw.writableEnded) raw.end();
   }

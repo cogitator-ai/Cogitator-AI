@@ -133,18 +133,24 @@ const server = new OpenAIServer(cogitator, {
 
 ### Configuration Options
 
-| Option         | Type                            | Default                                | Description                                      |
-| -------------- | ------------------------------- | -------------------------------------- | ------------------------------------------------ |
-| `port`         | `number`                        | `8080`                                 | Port to listen on (`0` picks a free port)        |
-| `host`         | `string`                        | `'0.0.0.0'`                            | Host to bind to                                  |
-| `apiKeys`      | `string[]`                      | `[]`                                   | API keys for authentication. Empty disables auth |
-| `tools`        | `Tool[]`                        | `[]`                                   | Server-side tools available to every run         |
-| `defaultModel` | `string`                        | —                                      | Model used for the `cogitator` model id          |
-| `storage`      | `ThreadStorage`                 | in-memory                              | Persistence backend (connect before passing)     |
-| `maxFileSize`  | `number`                        | `512 MB`                               | Upload limit for `POST /v1/files`, in bytes      |
-| `logging`      | `boolean`                       | `false`                                | Enable Fastify request logging (JSON logs)       |
-| `cors.origin`  | `string \| string[] \| boolean` | `true`                                 | CORS origin configuration                        |
-| `cors.methods` | `string[]`                      | `['GET', 'POST', 'DELETE', 'OPTIONS']` | Allowed HTTP methods                             |
+| Option                             | Type                            | Default                                | Description                                                                 |
+| ---------------------------------- | ------------------------------- | -------------------------------------- | --------------------------------------------------------------------------- |
+| `port`                             | `number`                        | `8080`                                 | Port to listen on (`0` picks a free port)                                   |
+| `host`                             | `string`                        | `'127.0.0.1'`                          | Host to bind to. A public host needs `apiKeys`                              |
+| `apiKeys`                          | `string[]`                      | `[]`                                   | API keys for authentication. Empty disables auth                            |
+| `allowUnauthenticatedPublicAccess` | `boolean`                       | `false`                                | Serve a public host without `apiKeys` (behind a gateway that authenticates) |
+| `sseHeartbeatMs`                   | `number`                        | `5000`                                 | Heartbeat comment interval on run streams, `0` turns it off                 |
+| `tools`                            | `Tool[]`                        | `[]`                                   | Server-side tools available to every run                                    |
+| `defaultModel`                     | `string`                        | —                                      | Model used for the `cogitator` model id                                     |
+| `storage`                          | `ThreadStorage`                 | in-memory                              | Persistence backend (connect before passing)                                |
+| `maxFileSize`                      | `number`                        | `512 MB`                               | Upload limit for `POST /v1/files`, in bytes                                 |
+| `logging`                          | `boolean`                       | `false`                                | Enable Fastify request logging (JSON logs)                                  |
+| `cors.origin`                      | `string \| string[] \| boolean` | no CORS                                | Origins browsers may call from. Without `cors` no cross-origin page can     |
+| `cors.methods`                     | `string[]`                      | `['GET', 'POST', 'DELETE', 'OPTIONS']` | Allowed HTTP methods                                                        |
+
+### Exposure
+
+The server binds `127.0.0.1` by default, so only this machine reaches it. Without `apiKeys` anyone who reaches it can create assistants with any instructions and run the server's tools, so `start()` refuses a public host (`0.0.0.0`, `::` or an external address) unless `apiKeys` are set or `allowUnauthenticatedPublicAccess: true` says a gateway in front authenticates callers. CORS is off unless `cors.origin` names the origins browsers may call from, so a web page on another origin cannot drive the server from a visitor's browser. Run streams write a heartbeat comment every `sseHeartbeatMs` while a run is silent, so proxies do not cut a run that waits on a slow tool.
 
 ### Server Lifecycle
 

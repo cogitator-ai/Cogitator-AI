@@ -473,6 +473,93 @@ describe('OpenAI SDK compatibility', () => {
   });
 });
 
+describe('OpenAIServer exposure', () => {
+  it('listens on loopback by default', async () => {
+    const server = new OpenAIServer(cogitator, { port: 0 });
+    await server.start();
+    try {
+      expect(server.getUrl()).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it.each(['0.0.0.0', '::', '192.168.1.20'])(
+    'refuses to serve %s without API keys',
+    async (host) => {
+      const server = new OpenAIServer(cogitator, { port: 0, host });
+      await expect(server.start()).rejects.toThrow(/without apiKeys/);
+    }
+  );
+
+  it('serves a public host with API keys, or when told a gateway authenticates', async () => {
+    for (const config of [{ apiKeys: ['sk-test'] }, { allowUnauthenticatedPublicAccess: true }]) {
+      const server = new OpenAIServer(cogitator, { port: 0, host: '0.0.0.0', ...config });
+      await expect(server.start()).resolves.toBeUndefined();
+      await server.stop();
+    }
+  });
+
+  it('answers no cross-origin request unless CORS origins are configured', async () => {
+    const closed = new OpenAIServer(cogitator, { port: 0 });
+    const open = new OpenAIServer(cogitator, {
+      port: 0,
+      cors: { origin: ['https://app.example'] },
+    });
+    await closed.start();
+    await open.start();
+    try {
+      const headers = { Origin: 'https://evil.example' };
+      const refused = await fetch(`${closed.getBaseUrl()}/models`, { headers });
+      const allowed = await fetch(`${open.getBaseUrl()}/models`, {
+        headers: { Origin: 'https://app.example' },
+      });
+
+      expect(refused.headers.get('access-control-allow-origin')).toBeNull();
+      expect(allowed.headers.get('access-control-allow-origin')).toBe('https://app.example');
+    } finally {
+      await closed.stop();
+      await open.stop();
+    }
+  });
+});
+
+describe('OpenAIServer run stream heartbeat', () => {
+  it('writes comments while a run is silent, so proxies do not cut the stream', async () => {
+    const server = new OpenAIServer(cogitator, {
+      port: 0,
+      defaultModel: 'ollama/test-model',
+      sseHeartbeatMs: 20,
+    });
+    await server.start();
+    try {
+      handler = () => new Promise((resolve) => setTimeout(() => resolve({ output: 'late' }), 150));
+      const base = server.getBaseUrl();
+      const post = (path: string, body: unknown) =>
+        fetch(`${base}${path}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        }).then((res) => res.json() as Promise<{ id: string }>);
+      const assistant = await post('/assistants', { model: 'cogitator' });
+      const thread = await post('/threads', { messages: [{ role: 'user', content: 'hi' }] });
+
+      const res = await fetch(`${base}/threads/${thread.id}/runs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assistant_id: assistant.id, stream: true }),
+      });
+      const text = await res.text();
+
+      expect(text.match(/^: keep-alive$/gm)?.length).toBeGreaterThanOrEqual(3);
+      expect(text).toContain('event: done');
+    } finally {
+      handler = async () => ({ output: 'ok' });
+      await server.stop();
+    }
+  });
+});
+
 describe('OpenAIServer configuration', () => {
   it('keeps /health public when API keys are configured', async () => {
     const server = new OpenAIServer(cogitator, {
