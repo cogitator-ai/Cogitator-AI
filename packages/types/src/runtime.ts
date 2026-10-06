@@ -118,12 +118,17 @@ export interface RunOptions {
    * Decides tool calls that need approval (`requiresApproval`) while the run
    * waits. Return `{ approved }` to go on, or `'pause'` to pause the run: it
    * returns with `status: 'paused'`, the calls in `pendingApprovals` and a
-   * `checkpoint` to continue from with `cogitator.resume()`. Without it (and
-   * without `guardrails.onToolApproval`) such calls always pause the run.
+   * `checkpoint` to continue from with `cogitator.resume()`. Return `undefined`
+   * to leave a call to `guardrails.onToolApproval`, as if there were no
+   * `onApproval`. Without either, such calls always pause the run.
    */
   onApproval?: (
     request: ToolApprovalRequest
-  ) => ToolApprovalDecision | 'pause' | Promise<ToolApprovalDecision | 'pause'>;
+  ) =>
+    | ToolApprovalDecision
+    | 'pause'
+    | undefined
+    | Promise<ToolApprovalDecision | 'pause' | undefined>;
   onToolCall?: (call: ToolCall) => void;
   onToolResult?: (result: ToolResult) => void;
 

@@ -130,10 +130,11 @@ async function executeNatively(
   const timeoutMs = tool.timeout && tool.timeout > 0 ? tool.timeout : undefined;
   const abort = timeoutMs ? createLinkedAbortController(signal, timeoutMs) : undefined;
   const context: ToolContext = {
+    ...extraContext,
     agentId,
     runId,
     signal: abort?.signal ?? signal ?? new AbortController().signal,
-    ...extraContext,
+    toolCallId: toolCall.id,
   };
 
   try {

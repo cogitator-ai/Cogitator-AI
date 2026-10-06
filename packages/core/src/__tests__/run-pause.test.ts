@@ -292,3 +292,49 @@ describe('Cogitator.invokeTool', () => {
     await cog.close();
   });
 });
+
+describe('onApproval leaving a call to the default', () => {
+  it('lets guardrails.onToolApproval decide when it returns undefined', async () => {
+    refundImpl.mockClear();
+    const onToolApproval = vi.fn(async () => true);
+    const cog = new Cogitator({
+      llm: { backends: { mock: scriptedBackend() } },
+      guardrails: { enabled: false, onToolApproval },
+    });
+
+    const result = await cog.run(agent, { input: 'Refund A-1', onApproval: () => undefined });
+
+    expect(onToolApproval).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe('completed');
+    expect(refundImpl).toHaveBeenCalledTimes(1);
+    await cog.close();
+  });
+
+  it('pauses when nothing else decides', async () => {
+    const cog = newCogitator();
+
+    const result = await cog.run(agent, { input: 'Refund A-1', onApproval: () => undefined });
+
+    expect(result.status).toBe('paused');
+    await cog.close();
+  });
+
+  it('gives the tool the id of its call', async () => {
+    let seen: string | undefined;
+    const probe = tool({
+      name: 'probe',
+      description: 'Records its call id',
+      parameters: z.object({}),
+      execute: async (_args, context) => {
+        seen = context.toolCallId;
+        return 'ok';
+      },
+    });
+    const cog = newCogitator();
+
+    await cog.invokeTool(probe, {}, { toolCallId: 'call-7' });
+
+    expect(seen).toBe('call-7');
+    await cog.close();
+  });
+});

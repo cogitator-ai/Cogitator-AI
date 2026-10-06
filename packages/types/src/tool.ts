@@ -52,6 +52,8 @@ export interface ToolContext {
   agentId: string;
   runId: string;
   signal: AbortSignal;
+  /** Id of the tool call being executed, when the runtime runs it (a run or `invokeTool`) */
+  toolCallId?: string;
   threadId?: string;
   userId?: string;
   channelType?: string;

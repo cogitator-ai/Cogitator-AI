@@ -341,12 +341,6 @@ export class Cogitator implements ToolInvoker {
 
     const registry = new ToolRegistry();
     registry.register(tool);
-    const {
-      agentId: _agentId,
-      runId: _runId,
-      signal: _signal,
-      ...extraContext
-    } = options.context ?? {};
     return executeTool(
       registry,
       toolCall,
@@ -358,7 +352,7 @@ export class Cogitator implements ToolInvoker {
       () => initializeSandbox(this.config, this.state),
       options.signal,
       {
-        ...extraContext,
+        ...options.context,
         ...(options.threadId !== undefined && { threadId: options.threadId }),
         ...(options.userId !== undefined && { userId: options.userId }),
         ...(options.channelType !== undefined && { channelType: options.channelType }),
@@ -1404,7 +1398,8 @@ export class Cogitator implements ToolInvoker {
     request: ToolApprovalRequest,
     onApproval: RunOptions['onApproval']
   ): Promise<ToolApprovalDecision | 'pause'> {
-    if (onApproval) return onApproval(request);
+    const decided = await onApproval?.(request);
+    if (decided !== undefined) return decided;
     const legacy = this.config.guardrails?.onToolApproval;
     if (legacy) {
       const approved = await legacy(request.toolName, request.arguments, request.sideEffects ?? []);

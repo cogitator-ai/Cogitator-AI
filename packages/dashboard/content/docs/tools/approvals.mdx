@@ -66,7 +66,7 @@ await cog.run(agent, {
 });
 ```
 
-Without `onApproval`, `guardrails.onToolApproval` (`(toolName, args, sideEffects) => Promise<boolean>`) decides when it is set; otherwise the run pauses. With [guardrails](/docs/advanced/constitutional-ai) `strictMode`, every call of a tool with `sideEffects` goes through the same flow, as if the tool had `requiresApproval`. `onApproval` is a run option, so it also works for `cog.resume()`, where it decides calls the model makes after resuming.
+Without `onApproval`, or when it returns `undefined` for a call, `guardrails.onToolApproval` (`(toolName, args, sideEffects) => Promise<boolean>`) decides when it is set; otherwise the run pauses. With [guardrails](/docs/advanced/constitutional-ai) `strictMode`, every call of a tool with `sideEffects` goes through the same flow, as if the tool had `requiresApproval`. `onApproval` is a run option, so it also works for `cog.resume()`, where it decides calls the model makes after resuming.
 
 Agents wrapped with [`agentAsTool()`](/docs/tools/agent-as-tool) cannot pause: unless you pass `onApproval` to `agentAsTool`, their calls that need approval are declined (as they are when that `onApproval` returns `'pause'`) and the inner agent is told why.
 
