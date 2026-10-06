@@ -112,7 +112,9 @@ export async function initializeMemory(
       ...memory.contextBuilder,
       maxTokens: memory.contextBuilder.maxTokens ?? 4000,
       strategy: memory.contextBuilder.strategy ?? 'recent',
+      includeSystemPrompt: true,
     } as const;
+    warnAboutMissingContextParts(memory.contextBuilder, deps);
     state.contextBuilder = new ContextBuilder(contextConfig, deps);
   } else if (memory.qdrant) {
     getLogger().warn(
@@ -121,6 +123,46 @@ export async function initializeMemory(
   }
 
   state.memoryInitialized = true;
+}
+
+/**
+ * Warns about `memory.contextBuilder` options that would silently add
+ * nothing: the runtime always sends the agent's instructions, facts need a
+ * fact store, semantic context needs an embedding model and store, and the
+ * runtime builds no knowledge graph.
+ */
+function warnAboutMissingContextParts(
+  options: NonNullable<MemoryConfig['contextBuilder']>,
+  deps: ContextBuilderDeps
+): void {
+  const logger = getLogger();
+  if (options.includeSystemPrompt === false) {
+    logger.warn(
+      'memory.contextBuilder.includeSystemPrompt: false is ignored: runs always send the ' +
+        "agent's instructions and count them in the context budget"
+    );
+  }
+  if (options.includeFacts && !deps.factAdapter) {
+    logger.warn(
+      'memory.contextBuilder.includeFacts adds nothing: facts are stored only by the ' +
+        "postgres memory adapter, and memory.adapter is '" +
+        deps.memoryAdapter.provider +
+        "'"
+    );
+  }
+  if (options.includeSemanticContext && (!deps.embeddingService || !deps.embeddingAdapter)) {
+    logger.warn(
+      'memory.contextBuilder.includeSemanticContext adds nothing: it needs memory.embedding ' +
+        'and an embedding store (the postgres adapter with pgvector, or memory.qdrant)',
+      { embedding: !!deps.embeddingService, store: !!deps.embeddingAdapter }
+    );
+  }
+  if (options.includeGraphContext) {
+    logger.warn(
+      'memory.contextBuilder.includeGraphContext adds nothing: the runtime does not build a ' +
+        'knowledge graph. Use ContextBuilder from @cogitator-ai/memory with a graphContextBuilder'
+    );
+  }
 }
 
 /**

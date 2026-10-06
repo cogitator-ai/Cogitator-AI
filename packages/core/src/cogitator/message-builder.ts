@@ -117,7 +117,22 @@ export async function buildInitialMessages(
       systemPrompt: agent.instructions,
       currentInput: options.input,
     });
-    return [...sanitizeToolHistory(ctx.messages), { role: 'user', content: userContent }];
+    for (const warning of ctx.warnings ?? []) {
+      getLogger().warn(warning, { agent: agent.name, threadId });
+    }
+    for (const { source, error } of ctx.errors ?? []) {
+      reportMemoryError(
+        new Error(`Memory context (${source}) could not be loaded: ${error.message}`, {
+          cause: error,
+        }),
+        'load',
+        options.onMemoryError
+      );
+    }
+    return [
+      ...withInstructions(sanitizeToolHistory(ctx.messages), agent.instructions),
+      { role: 'user', content: userContent },
+    ];
   }
 
   if (options.loadHistory !== false) {
@@ -143,14 +158,31 @@ export async function buildInitialMessages(
 }
 
 /**
- * Creates thread `threadId`, owned by `userId`, unless it exists. A thread
- * that cannot be read is left alone: creating it would overwrite its owner.
+ * `messages` opening with a system message that starts with the agent's
+ * instructions, which the rest of a run (run context, insights, handoffs)
+ * builds on. A context without them gets them put in front of its own
+ * system message, or as a new one.
  */
+function withInstructions(messages: Message[], instructions: string): Message[] {
+  const [first, ...rest] = messages;
+  if (first?.role !== 'system') return [{ role: 'system', content: instructions }, ...messages];
+  if (typeof first.content === 'string') {
+    if (first.content.startsWith(instructions)) return messages;
+    return [{ ...first, content: `${instructions}\n\n${first.content}` }, ...rest];
+  }
+  return [{ ...first, content: [{ type: 'text', text: instructions }, ...first.content] }, ...rest];
+}
+
 /** The value of a memory operation, or an error naming the operation that failed. */
 function unwrap<T>(result: MemoryResult<T>, operation: string): T {
   if (!result.success) throw new Error(`Memory ${operation} failed: ${result.error}`);
   return result.data;
 }
+
+/**
+ * Creates thread `threadId`, owned by `userId`, unless it exists. A thread
+ * that cannot be read is left alone: creating it would overwrite its owner.
+ */
 
 async function createThreadIfMissing(
   memoryAdapter: MemoryAdapter,

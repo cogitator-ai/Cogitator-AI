@@ -320,6 +320,8 @@ Strategies:
 - `relevant` - messages ranked by embedding similarity to `currentInput` (requires `embeddingService`; falls back to `recent` without input), returned in chronological order
 - `hybrid` - always keeps the latest messages and fills the remaining budget with the most relevant older ones
 
+The system prompt is always kept and counted: history gets what it leaves of `maxTokens - reserveTokens`, and a prompt larger than that is still sent whole, with a note in `warnings`. Entries are counted by their text, tool call arguments and images rather than only by their saved `tokenCount`. `relevant` and `hybrid` score the newest 200 entries and embed each entry once per builder (vectors are cached by entry id).
+
 ### Basic Usage
 
 ```typescript
@@ -387,6 +389,8 @@ interface BuiltContext {
   graphContext?: GraphContext; // with includeGraphContext and a graph adapter
   tokenCount: number;
   truncated: boolean;
+  errors?: ContextBuildError[]; // parts that failed to load and were left out
+  warnings?: string[]; // budget problems, such as a system prompt over budget
   metadata: {
     originalMessageCount: number;
     includedMessageCount: number;
@@ -394,7 +398,14 @@ interface BuiltContext {
     semanticResultsIncluded: number;
   };
 }
+
+interface ContextBuildError {
+  source: 'history' | 'facts' | 'semantic' | 'graph' | 'relevance';
+  error: Error;
+}
 ```
+
+`build()` does not throw when a part of the context fails to load (an unreachable store, an embedding API answering 429, a vector size mismatch): the part is left out and reported in `errors`. A failed relevance scoring falls back to the `recent` strategy.
 
 ---
 
@@ -478,6 +489,8 @@ import {
   countTokens,
   countMessageTokens,
   countMessagesTokens,
+  countToolCallsTokens,
+  countEntryTokens,
   truncateToTokens,
 } from '@cogitator-ai/memory';
 
@@ -492,6 +505,8 @@ const totalTokens = countMessagesTokens([
 
 const truncated = truncateToTokens('Very long text...', 100);
 ```
+
+`countMessageTokens` counts text, the names and JSON arguments of an assistant message's `toolCalls`, and images (85 tokens for `detail: 'low'`, otherwise an upper estimate of 1600, since the pixel size is unknown). `countEntryTokens` recounts a stored entry, including `entry.toolCalls`, and keeps the saved `tokenCount` when it is larger.
 
 ---
 

@@ -258,6 +258,17 @@ export interface ContextBuilderConfig {
   graphContextOptions?: GraphContextOptions;
 }
 
+/**
+ * A part of the context that could not be loaded. The context is built without it:
+ * `history` (the thread's entries), `facts`, `semantic` (the `Relevant context:` search),
+ * `graph`, or `relevance` (scoring entries for the `relevant`/`hybrid` strategies, which then
+ * fall back to the most recent entries).
+ */
+export interface ContextBuildError {
+  source: 'history' | 'facts' | 'semantic' | 'graph' | 'relevance';
+  error: Error;
+}
+
 export interface BuiltContext {
   messages: Message[];
   facts: Fact[];
@@ -265,6 +276,10 @@ export interface BuiltContext {
   graphContext?: GraphContext;
   tokenCount: number;
   truncated: boolean;
+  /** Parts of the context that failed to load and were left out */
+  errors?: ContextBuildError[];
+  /** Budget problems, such as a system prompt that alone exceeds `maxTokens - reserveTokens` */
+  warnings?: string[];
   metadata: {
     originalMessageCount: number;
     includedMessageCount: number;

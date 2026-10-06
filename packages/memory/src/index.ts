@@ -45,6 +45,8 @@ export {
   countTokens,
   countMessageTokens,
   countMessagesTokens,
+  countToolCallsTokens,
+  countEntryTokens,
   truncateToTokens,
 } from './token-counter';
 

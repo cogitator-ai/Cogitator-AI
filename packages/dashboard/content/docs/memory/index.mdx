@@ -165,6 +165,7 @@ const context = await builder.build({
 });
 
 console.log(context.messages, context.tokenCount, context.truncated);
+console.log(context.errors, context.warnings);
 ```
 
 | Option                   | Default                      | Description                                                                                                                                                                                                |
@@ -172,13 +173,15 @@ console.log(context.messages, context.tokenCount, context.truncated);
 | `maxTokens`              | —                            | Total token budget                                                                                                                                                                                         |
 | `reserveTokens`          | 10% of `maxTokens` (min 100) | Tokens kept free for the model's reply                                                                                                                                                                     |
 | `strategy`               | —                            | `recent`, `relevant` or `hybrid`                                                                                                                                                                           |
-| `includeSystemPrompt`    | `true`                       | Put `systemPrompt` first                                                                                                                                                                                   |
+| `includeSystemPrompt`    | `true`                       | Put `systemPrompt` first. It is always kept and counted: history only gets what it leaves of the budget                                                                                                   |
 | `includeFacts`           | `false`                      | Add a `Known facts:` block (needs `factAdapter`, up to 10% of the budget)                                                                                                                                  |
 | `includeSemanticContext` | `false`                      | Add a `Relevant context:` block from the top 5 embeddings scoring ≥ 0.7 (needs `embeddingAdapter` + `embeddingService` and a `currentInput`, up to 10% of the budget)                                      |
 | `includeGraphContext`    | `false`                      | Add knowledge graph context (needs `graphContextBuilder` and a `currentInput`, up to 15% of the budget) — see [Knowledge Graphs](/docs/memory/knowledge-graphs#using-graph-context-in-the-context-builder) |
 | `graphContextOptions`    | `{}`                         | `maxNodes`, `maxEdges`, `maxDepth`, `includeInferred`, `entityTypes`                                                                                                                                       |
 
-Facts, semantic and graph context are merged into the system message. The remaining budget is filled with conversation entries by the strategy:
+Facts, semantic and graph context are merged into the system message, each within its share of the budget and of what the system prompt leaves. A system prompt larger than `maxTokens - reserveTokens` is still sent whole: no history fits then, and `warnings` says so.
+
+The remaining budget is filled with conversation entries by the strategy. Entries are counted by their text, tool call names and JSON arguments, and images (85 tokens for `detail: 'low'`, otherwise an upper estimate of 1600), not only by the `tokenCount` they were saved with:
 
 | Strategy   | Behavior                                                                                                                       |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------ |
@@ -186,7 +189,9 @@ Facts, semantic and graph context are merged into the system message. The remain
 | `relevant` | Selects entries by semantic similarity to the current input                                                                    |
 | `hybrid`   | Spends up to 30% of the budget on older entries (outside the last 10) scoring above 0.6 similarity, the rest on recent entries |
 
-`relevant` and `hybrid` need an `embeddingService` and a `currentInput`; without them (or, for `hybrid`, with 10 entries or fewer) they fall back to `recent`. Selected messages are always returned in chronological order.
+`relevant` and `hybrid` need an `embeddingService` and a `currentInput`, without them (or, for `hybrid`, with 10 entries or fewer) they fall back to `recent`. They score the newest 200 user and assistant entries, and each entry is embedded once per builder (its vector is cached by entry id), so a turn embeds only the input and the entries added since the previous build. Selected messages are always returned in chronological order.
+
+A part that fails to load (the history, facts, the semantic search, the knowledge graph, or relevance scoring) is left out and listed in `errors` as `{ source, error }` instead of failing the build. When relevance scoring fails, the strategy falls back to `recent`.
 
 Semantic context is scoped per agent: embeddings whose `metadata.agentId` belongs to another agent are never injected, while embeddings without an `agentId` (shared documents) are visible to every agent.
 
@@ -224,7 +229,7 @@ await cog.run(agent, { input: 'What is my name?', threadId: 'thread-alice' });
 ```
 
 - `memory.adapter` names the thread store and takes its settings from the key of the same name: `'memory'` (`inMemory`), `'redis'` (`redis.url`, `redis.host` + `redis.port`, or `redis.cluster`), `'postgres'` (`postgres.connectionString`), `'sqlite'` (`sqlite.path`) or `'mongodb'` (`mongodb.uri`). When the required setting is missing or the connection fails, the run goes on without memory and logs a warning. An adapter you connect yourself can be assigned with `cog.memory = adapter`; such runs load the last 20 entries, since the context builder is only created from the `memory` config.
-- With `contextBuilder` set, each run builds its context as described above (`maxTokens` defaults to 4000, `strategy` to `'recent'`). A Postgres store is also the fact adapter, and the embedding adapter unless `memory.qdrant` is set. The runtime creates the Postgres `embeddings` table with the vector size of `memory.embedding` (768 without one). Without `contextBuilder`, a run loads the last 20 entries of the thread.
+- With `contextBuilder` set, each run builds its context as described above (`maxTokens` defaults to 4000, `strategy` to `'recent'`). The agent's instructions are always sent and counted in the budget (`includeSystemPrompt: false` is ignored with a warning), and a run with instructions larger than the budget logs a warning. Parts that fail to load are passed to `onMemoryError` with the `'load'` operation, and the run goes on without them. Options the runtime cannot serve log a warning at connect: `includeFacts` needs the Postgres store, `includeSemanticContext` needs `memory.embedding` and an embedding store, and `includeGraphContext` has no effect, since the runtime builds no knowledge graph. A Postgres store is also the fact adapter, and the embedding adapter unless `memory.qdrant` is set. The runtime creates the Postgres `embeddings` table with the vector size of `memory.embedding` (768 without one). Without `contextBuilder`, a run loads the last 20 entries of the thread.
 - `'qdrant'` is not a thread store. For semantic context from Qdrant, keep a thread store as `adapter` and add `memory.qdrant` (`url`, `apiKey`, `collection`, `dimensions` matching the embedding model) together with `memory.embedding` and `contextBuilder: { includeSemanticContext: true }`. The runtime searches the collection but does not write to it; add embeddings with your own `QdrantAdapter`. See [Configuration](/docs/getting-started/configuration#memory) for a YAML example.
 - Per run, `useMemory: false` disables memory, `loadHistory: false` / `saveHistory: false` skip loading or saving, and `onMemoryError` is called when a load or save fails.
 - `await cog.getMemory()` connects and returns the adapter before any run — see [Cogitator](/docs/core/cogitator).

@@ -865,7 +865,7 @@ const cog = new Cogitator({
 });
 ```
 
-`adapter` also accepts `'sqlite'` (`sqlite.path`), `'mongodb'` (`mongodb.uri`) and `'redis'` (`redis.url`, or `redis.host` + `redis.port`, or `redis.cluster`). Qdrant stores embeddings, not threads: configure it in `memory.qdrant` next to a thread adapter, together with `memory.embedding` and `memory.contextBuilder.includeSemanticContext`, and semantic context is retrieved from it. The Postgres adapter sizes its vector column to the `memory.embedding` model. Runs with a `threadId` load history from and save messages to the adapter.
+`adapter` also accepts `'sqlite'` (`sqlite.path`), `'mongodb'` (`mongodb.uri`) and `'redis'` (`redis.url`, or `redis.host` + `redis.port`, or `redis.cluster`). Qdrant stores embeddings, not threads: configure it in `memory.qdrant` next to a thread adapter, together with `memory.embedding` and `memory.contextBuilder.includeSemanticContext`, and semantic context is retrieved from it. The Postgres adapter sizes its vector column to the `memory.embedding` model. Runs with a `threadId` load history from and save messages to the adapter. With `contextBuilder`, the agent's instructions are always sent and counted in the budget, and a part of the context that fails to load (history, facts, semantic search) is passed to `onMemoryError` as a `'load'` failure while the run goes on.
 
 The adapter connects on the first run. To read threads before that (for example in an API route), use `getMemory()`, which connects it on first use; `cog.memory` stays `undefined` until something connected it:
 
@@ -2466,7 +2466,7 @@ const cog = new Cogitator({
 });
 ```
 
-`adapter` also accepts `'sqlite'` (`sqlite.path`), `'mongodb'` (`mongodb.uri`) and `'redis'` (`redis.url`, or `redis.host` + `redis.port`, or `redis.cluster`). Qdrant stores embeddings, not threads: configure it in `memory.qdrant` next to a thread adapter, together with `memory.embedding` and `memory.contextBuilder.includeSemanticContext`, and semantic context is retrieved from it. The Postgres adapter sizes its vector column to the `memory.embedding` model. Runs with a `threadId` load history from and save messages to the adapter.
+`adapter` also accepts `'sqlite'` (`sqlite.path`), `'mongodb'` (`mongodb.uri`) and `'redis'` (`redis.url`, or `redis.host` + `redis.port`, or `redis.cluster`). Qdrant stores embeddings, not threads: configure it in `memory.qdrant` next to a thread adapter, together with `memory.embedding` and `memory.contextBuilder.includeSemanticContext`, and semantic context is retrieved from it. The Postgres adapter sizes its vector column to the `memory.embedding` model. Runs with a `threadId` load history from and save messages to the adapter. With `contextBuilder`, the agent's instructions are always sent and counted in the budget, and a part of the context that fails to load (history, facts, semantic search) is passed to `onMemoryError` as a `'load'` failure while the run goes on.
 
 The adapter connects on the first run. To read threads before that (for example in an API route), use `getMemory()`, which connects it on first use; `cog.memory` stays `undefined` until something connected it:
 
