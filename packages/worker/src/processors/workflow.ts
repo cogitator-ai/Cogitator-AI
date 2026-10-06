@@ -8,7 +8,12 @@
  */
 
 import { z } from 'zod';
-import { agentWireSchema, parseAgentWire } from '@cogitator-ai/core';
+import {
+  AgentRunPausedError,
+  agentWireSchema,
+  isPausedRun,
+  parseAgentWire,
+} from '@cogitator-ai/core';
 import type {
   ConditionNodeConfig,
   SerializedWorkflow,
@@ -329,6 +334,13 @@ class WorkflowRun {
           input: prompt,
           signal: this.controller.signal,
         });
+        if (isPausedRun(result)) {
+          throw new AgentRunPausedError(
+            result,
+            agent.name,
+            `workflow "${this.workflow.name}", node "${node.id}"`
+          );
+        }
         const answer =
           agent.config.responseFormat?.type === 'json_schema' && result.structured !== undefined
             ? result.structured

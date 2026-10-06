@@ -6,7 +6,7 @@
  */
 
 import { UnrecoverableError, Worker, type Job } from 'bullmq';
-import { Cogitator } from '@cogitator-ai/core';
+import { Cogitator, findAgentRunPausedError } from '@cogitator-ai/core';
 import type { WorkerConfig, JobPayload, JobResult, QueueMetrics, WorkerRuntime } from './types';
 import { processAgentJob } from './processors/agent.js';
 import { processWorkflowJob } from './processors/workflow.js';
@@ -102,7 +102,9 @@ export class WorkerPool {
    * Process a job based on its type. `signal` is the one BullMQ gives the job: it aborts on
    * `cancelJob()` and when a shutdown runs out of time, and reaches every agent run of the job.
    * A job cancelled while the pool runs fails without retries. One stopped by a shutdown is left
-   * to BullMQ, which hands it to another worker once its lock expires.
+   * to BullMQ, which hands it to another worker once its lock expires. A workflow or swarm job
+   * whose agent run paused for tool approvals fails without retries too: another attempt would
+   * only pause again.
    */
   private async processJob(job: Job<JobPayload>, signal?: AbortSignal): Promise<JobResult> {
     this.events.onJobStarted?.(job.id ?? job.data.jobId, job.data.type);
@@ -113,6 +115,8 @@ export class WorkerPool {
       if (signal?.aborted && this.isRunning) {
         throw new UnrecoverableError(`Job cancelled: ${abortMessage(signal)}`);
       }
+      const paused = findAgentRunPausedError(error);
+      if (paused) throw new UnrecoverableError(paused.message);
       throw error;
     }
   }

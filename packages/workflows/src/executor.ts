@@ -22,7 +22,7 @@ import type {
   ApprovalNotifier,
   TimerStore,
 } from '@cogitator-ai/types';
-import type { Cogitator } from '@cogitator-ai/core';
+import { findAgentRunPausedError, type Cogitator } from '@cogitator-ai/core';
 import { nanoid } from 'nanoid';
 import { WorkflowScheduler } from './scheduler';
 import { InMemoryCheckpointStore, createCheckpointId } from './checkpoint';
@@ -194,7 +194,8 @@ function retryDelay(policy: NodeRunPolicy, attempt: number): number {
 /**
  * Run a node honouring its `NodeConfig` (timeout per attempt, `retries` extra attempts
  * separated by `retryDelay` ms), falling back to the run's default retry policy and
- * circuit breaker. Returns the result and the number of retries used.
+ * circuit breaker. An agent run that paused for tool approvals is not retried: another attempt
+ * would only pause again. Returns the result and the number of retries used.
  */
 async function runNodeWithPolicy<S extends WorkflowState>(
   node: WorkflowNode<S>,
@@ -223,6 +224,7 @@ async function runNodeWithPolicy<S extends WorkflowState>(
       lastError = error;
       const err = error instanceof Error ? error : new Error(String(error));
       if (err.name === 'CircuitBreakerOpenError') break;
+      if (findAgentRunPausedError(err)) break;
       if (isRetryable && !isRetryable(err)) break;
     }
   }

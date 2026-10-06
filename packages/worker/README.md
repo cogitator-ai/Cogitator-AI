@@ -269,6 +269,8 @@ const state: JobState = await queue.getJobState('job-id');
 // 'waiting' | 'prioritized' | 'delayed' | 'active' | 'completed' | 'failed'
 // | 'waiting-children' | 'unknown'
 
+await queue.resumeAgentJob(agentConfig, pausedResult, { decisions }); // see Job Results
+
 const metrics = await queue.getMetrics();
 // { waiting, active, completed, failed, delayed, depth, workerCount }
 
@@ -474,6 +476,10 @@ interface AgentJobResult {
     input: unknown;
     output: unknown;
   }[];
+  /** 'paused' when tool calls wait for approval: output is then not the answer */
+  status?: 'completed' | 'paused';
+  pendingApprovals?: ToolApprovalRequest[]; // the calls a paused run waits on
+  checkpoint?: RunCheckpoint; // what a paused run continues from, see resumeAgentJob
   /** @deprecated use usage */
   tokenUsage?: {
     prompt: number;
@@ -482,6 +488,18 @@ interface AgentJobResult {
   };
 }
 ```
+
+A run that paused for tool approvals completes its job with `status: 'paused'`. Continue it with the decisions as a new job, on any worker:
+
+```typescript
+if (result.status === 'paused') {
+  await queue.resumeAgentJob(agentConfig, result, {
+    decisions: { [result.pendingApprovals![0].toolCallId]: { approved: true } },
+  });
+}
+```
+
+Workflow and swarm jobs cannot wait for a decision: when one of their agents pauses, the job fails without retries with an `AgentRunPausedError`.
 
 ### Workflow Job Result
 

@@ -61,6 +61,22 @@ result.usage; // { inputTokens, outputTokens, totalTokens, cost, duration, reaso
 result.truncated; // also blocked, iterationLimitReached, structuredError, toolCalls with outputs
 ```
 
+### Agent jobs that wait for approval
+
+An agent whose tool needs approval (`requiresApproval`) pauses its run, and the job completes with `status: 'paused'`: `output` is then not the answer, `pendingApprovals` lists the calls that wait, and `checkpoint` holds what the run continues from. Resume it with the decisions as a new job, on any worker, since the checkpoint travels with it:
+
+```typescript
+const result = (await queue.getJob(job.id!))?.returnvalue as AgentJobResult;
+if (result.status === 'paused') {
+  await queue.resumeAgentJob(serializeAgent(support), result, {
+    decisions: { [result.pendingApprovals![0].toolCallId]: { approved: true } },
+    // or defaultDecision: { approved: false, reason: 'not eligible' }
+  });
+}
+```
+
+Calls left without a decision pause the run again, and the new job's result says so the same way. A result without its checkpoint is resumed by thread from the worker's `runCheckpoints` store, which the workers then have to share (a memory adapter or your own store). A workflow or swarm job cannot wait for a decision: when one of its agents pauses, the job fails without retries with an `AgentRunPausedError` naming the agent, the node or swarm and the calls.
+
 The redis config also takes a `url` (`redis://user:password@host:port/db`, or `rediss://` for TLS); explicit `host`, `port`, `username`, `password`, `db` and `tls` fields override what it says.
 
 `getJobState(id)` returns `'waiting'`, `'prioritized'` (added with a `priority`), `'delayed'`, `'active'`, `'completed'`, `'failed'`, `'waiting-children'` (the parent of a BullMQ flow) or `'unknown'` (the `JobState` type).

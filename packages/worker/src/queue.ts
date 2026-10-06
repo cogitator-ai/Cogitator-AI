@@ -10,12 +10,14 @@
 
 import { Queue, type Job } from 'bullmq';
 import { nanoid } from 'nanoid';
+import type { ToolApprovalDecision } from '@cogitator-ai/types';
 import type {
   JobState,
   QueueConfig,
   QueueMetrics,
   JobPayload,
   AgentJobPayload,
+  AgentJobResult,
   WorkflowJobPayload,
   SwarmJobPayload,
   SwarmAgentJobPayload,
@@ -75,6 +77,71 @@ export class JobQueue {
       input,
       threadId,
       ...(options?.userId !== undefined && { userId: options.userId }),
+      metadata: options?.metadata,
+    };
+
+    return this.queue.add('agent', payload, {
+      jobId,
+      priority: options?.priority,
+      delay: options?.delay,
+    }) as Promise<Job<AgentJobPayload>>;
+  }
+
+  /**
+   * Continue an agent job whose run paused for tool approvals (its result has
+   * `status: 'paused'`) with the decisions for the waiting calls. The paused result's checkpoint
+   * travels with the new job, so any worker can run it; a result without one is resumed from the
+   * worker's `runCheckpoints` store by its thread. Calls without a decision pause the run again,
+   * and the new job's result says so the same way.
+   *
+   * @example
+   * ```ts
+   * const paused = (await job.waitUntilFinished(events)) as AgentJobResult;
+   * if (paused.status === 'paused') {
+   *   const next = await queue.resumeAgentJob(agentConfig, paused, {
+   *     decisions: { [paused.pendingApprovals![0].toolCallId]: { approved: true } },
+   *   });
+   * }
+   * ```
+   *
+   * @throws Error when the result is not a paused run, or names no thread to resume
+   */
+  async resumeAgentJob(
+    agentConfig: SerializedAgent,
+    paused: Pick<AgentJobResult, 'status' | 'threadId' | 'checkpoint'>,
+    options?: {
+      /** Decisions for the waiting calls, by tool call id */
+      decisions?: Record<string, ToolApprovalDecision>;
+      /** Decision for every waiting call `decisions` leaves out */
+      defaultDecision?: ToolApprovalDecision;
+      /** Who resumes the run; when set it must be the user the run belongs to */
+      userId?: string;
+      priority?: number;
+      delay?: number;
+      metadata?: Record<string, unknown>;
+    }
+  ): Promise<Job<AgentJobPayload>> {
+    if (paused.status !== undefined && paused.status !== 'paused') {
+      throw new Error(`Cannot resume an agent job whose run is ${paused.status}, not paused`);
+    }
+    const threadId = paused.checkpoint?.threadId ?? paused.threadId;
+    if (!threadId) {
+      throw new Error('Cannot resume an agent job without the checkpoint or thread of its run');
+    }
+    const jobId = nanoid();
+
+    const payload: AgentJobPayload = {
+      type: 'agent',
+      jobId,
+      agentConfig,
+      input: '',
+      threadId,
+      ...(options?.userId !== undefined && { userId: options.userId }),
+      resume: {
+        ...(paused.checkpoint && { checkpoint: paused.checkpoint }),
+        ...(options?.decisions && { decisions: options.decisions }),
+        ...(options?.defaultDecision && { defaultDecision: options.defaultDecision }),
+      },
       metadata: options?.metadata,
     };
 

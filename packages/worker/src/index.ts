@@ -48,6 +48,7 @@ export type {
   SwarmTopology,
   JobPayload,
   AgentJobPayload,
+  AgentJobResume,
   WorkflowJobPayload,
   SwarmJobPayload,
   SwarmAgentJobPayload,

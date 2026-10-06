@@ -116,6 +116,8 @@ const team = swarm('team')
   .build(cogitator);
 ```
 
+A swarm turn cannot wait for a person: when an agent calls a tool that needs approval (`requiresApproval`) and its run pauses, the turn fails with an `AgentRunPausedError` (from `@cogitator-ai/core`) that names the agent and the calls and carries the checkpoint, instead of passing the model's text before the tool call on as the agent's answer. It is not retried, skipped or failed over, since another attempt would only pause again, and it does not count against the circuit breaker. Give swarm agents an `onApproval` policy, or tools without approval, when the swarm must finish on its own. Distributed turns behave the same way.
+
 ## Events
 
 Every swarm emits structured events you can subscribe to:

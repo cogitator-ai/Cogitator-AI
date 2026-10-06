@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { nanoid } from 'nanoid';
-import { getLogger } from '@cogitator-ai/core';
+import { AgentRunPausedError, getLogger, isPausedRun } from '@cogitator-ai/core';
 import type {
   Agent,
   AgentConfig,
@@ -285,7 +285,11 @@ export abstract class BaseSwarmCoordinator<
     try {
       return await this.executeAgent(swarmAgent, input, context, options);
     } catch (error) {
-      if (!this.config.errorHandling || this.isCancelled()) {
+      if (
+        !this.config.errorHandling ||
+        this.isCancelled() ||
+        error instanceof AgentRunPausedError
+      ) {
         throw error;
       }
       return this.handleAgentError(
@@ -377,6 +381,12 @@ export abstract class BaseSwarmCoordinator<
         },
       });
 
+      if (isPausedRun(result)) {
+        swarmAgent.tokenCount += result.usage.totalTokens;
+        this.resourceTracker.trackAgentRun(agentName, result);
+        throw new AgentRunPausedError(result, agentName, `swarm "${this.config.name}"`);
+      }
+
       this.setAgentState(agentName, 'completed');
       this.logTrace(agentName, result);
       swarmAgent.lastResult = result;
@@ -389,7 +399,7 @@ export abstract class BaseSwarmCoordinator<
       return result;
     } catch (error) {
       this.setAgentState(agentName, 'failed');
-      this.circuitBreaker?.recordFailure();
+      if (!(error instanceof AgentRunPausedError)) this.circuitBreaker?.recordFailure();
       this.events.emit('agent:error', { agentName, error }, agentName);
       throw error;
     }
@@ -563,7 +573,7 @@ export abstract class BaseSwarmCoordinator<
         return await this.executeAgent(swarmAgent, input, context, options);
       } catch (error) {
         lastError = toError(error);
-        if (this.isCancelled()) throw lastError;
+        if (this.isCancelled() || error instanceof AgentRunPausedError) throw lastError;
       }
     }
 

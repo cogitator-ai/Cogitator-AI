@@ -290,6 +290,8 @@ const usage = swarm.getResourceUsage();
 
 `CircuitBreaker` and `ResourceTracker` are exported for standalone use.
 
+A turn whose agent run pauses for tool approvals (`requiresApproval`) fails with an `AgentRunPausedError` from `@cogitator-ai/core`, carrying the waiting calls and the checkpoint, instead of passing the pre-tool text on as the answer. It is never retried, skipped or failed over, and does not trip the circuit breaker.
+
 ---
 
 ## Agent Communication

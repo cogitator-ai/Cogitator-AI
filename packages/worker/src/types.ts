@@ -8,7 +8,9 @@ import type {
   AgentWireResponseFormat,
   AgentWireRunResult,
   AgentWireUsage,
+  RunCheckpoint,
   Tool,
+  ToolApprovalDecision,
 } from '@cogitator-ai/types';
 import type {
   SwarmAgentJobPayload as SwarmAgentJobContract,
@@ -118,14 +120,33 @@ export interface SerializedSwarm {
   consensusThreshold?: number;
 }
 
+/**
+ * How an agent job continues a run that paused for tool approvals, see `JobQueue.resumeAgentJob`.
+ */
+export interface AgentJobResume {
+  /**
+   * The paused run's checkpoint, as the paused job's result carries it. Without it the worker
+   * looks the run up by the job's `threadId` in its Cogitator's `runCheckpoints` store, which
+   * then has to be shared by the workers (a memory adapter or your own store)
+   */
+  checkpoint?: RunCheckpoint;
+  /** Decisions for the waiting calls, by tool call id; calls left out pause the run again */
+  decisions?: Record<string, ToolApprovalDecision>;
+  /** Decision for every waiting call `decisions` leaves out, e.g. one "approve all" answer */
+  defaultDecision?: ToolApprovalDecision;
+}
+
 export interface AgentJobPayload {
   type: 'agent';
   jobId: string;
   agentConfig: SerializedAgent;
+  /** The task; unused when the job resumes a paused run */
   input: string;
   threadId: string;
   /** User the run acts for: owns the thread, see `RunOptions.userId` */
   userId?: string;
+  /** Continue a paused run with these decisions instead of starting a new one */
+  resume?: AgentJobResume;
   metadata?: Record<string, unknown>;
 }
 
@@ -160,7 +181,10 @@ export type AgentJobUsage = AgentWireUsage;
 /**
  * The outcome of an agent job, in the run result wire format: the answer, the structured output,
  * usage with cost, tool calls with their outputs, and the flags that say the answer was cut off
- * (`truncated`), withheld (`blocked`) or given at the iteration limit.
+ * (`truncated`), withheld (`blocked`) or given at the iteration limit. A run that paused for tool
+ * approvals completes the job with `status: 'paused'`, the calls in `pendingApprovals` and the
+ * `checkpoint`: its `output` is not the answer, and `JobQueue.resumeAgentJob` continues it once
+ * the calls are decided.
  */
 export interface AgentJobResult extends AgentWireRunResult {
   type: 'agent';

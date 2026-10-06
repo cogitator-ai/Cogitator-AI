@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { z } from 'zod';
-import { Agent } from '@cogitator-ai/core';
+import { Agent, AgentRunPausedError } from '@cogitator-ai/core';
 import type { DistributedSwarmConfig } from '@cogitator-ai/types';
 import { DistributedSwarmCoordinator } from '../../distributed/distributed-coordinator';
 import type { SwarmAgentJobPayload } from '../../distributed/distributed-coordinator';
@@ -330,6 +330,45 @@ describe('DistributedSwarmCoordinator agent transport', () => {
     expect(result.usage).toMatchObject({ cost: 0.25, duration: 900, reasoningTokens: 30 });
     expect(result.truncated).toBe(true);
     expect(coord.getResourceUsage().totalCost).toBeCloseTo(0.25);
+    await coord.close();
+  });
+});
+
+describe('DistributedSwarmCoordinator paused turns', () => {
+  beforeEach(() => {
+    redisState.channels.clear();
+    redisState.handler = undefined;
+  });
+
+  it('fails a turn the worker reports as paused for approval', async () => {
+    redisState.handler = (raw) => {
+      const job = raw as SwarmAgentJobPayload;
+      const result = {
+        jobId: job.jobId,
+        swarmId: job.swarmId,
+        agentName: job.agentName,
+        output: 'Let me refund that.',
+        toolCalls: [],
+        status: 'paused',
+        pendingApprovals: [
+          { toolCallId: 'c1', toolName: 'refund', arguments: {}, description: 'Refund' },
+        ],
+        threadId: 'thread-9',
+        tokenUsage: { prompt: 1, completion: 1, total: 2 },
+      };
+      for (const listener of redisState.channels.get(job.stateKeys.results) ?? []) {
+        listener(job.stateKeys.results, JSON.stringify(result));
+      }
+    };
+    const coord = coordinator();
+
+    const error = await coord.runAgent('worker', 'go').catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(AgentRunPausedError);
+    expect((error as AgentRunPausedError).threadId).toBe('thread-9');
+    expect((error as AgentRunPausedError).pendingApprovals.map((p) => p.toolName)).toEqual([
+      'refund',
+    ]);
     await coord.close();
   });
 });
