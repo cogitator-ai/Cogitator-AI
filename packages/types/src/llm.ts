@@ -246,10 +246,20 @@ export interface AzureProviderConfig {
   model?: string;
 }
 
+/**
+ * Bedrock settings. Leave the credentials unset to let the AWS SDK resolve them
+ * (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`,
+ * `AWS_PROFILE`, SSO, instance roles). Static credentials apply only when both
+ * `accessKeyId` and `secretAccessKey` are set.
+ */
 export interface BedrockProviderConfig {
   region?: string;
   accessKeyId?: string;
   secretAccessKey?: string;
+  /** Session token of temporary credentials (STS, SSO, CI roles), sent with the static keys */
+  sessionToken?: string;
+  /** Named profile from the shared AWS config files, used when no static keys are set */
+  profile?: string;
 }
 
 export interface VLLMProviderConfig {

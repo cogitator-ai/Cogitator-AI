@@ -170,7 +170,7 @@ providers: {
 }
 ```
 
-Bedrock needs the optional `@aws-sdk/client-bedrock-runtime` package. Without explicit credentials it uses the AWS credential chain.
+Bedrock needs the optional `@aws-sdk/client-bedrock-runtime` package. Without explicit credentials it uses the AWS credential chain (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_PROFILE`, SSO, instance roles). Temporary credentials passed explicitly need their `sessionToken` too, and `profile` picks a named profile from the shared AWS config files.
 
 ```typescript
 model: 'bedrock/global.anthropic.claude-sonnet-5-5';

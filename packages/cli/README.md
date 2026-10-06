@@ -246,7 +246,7 @@ cogitator models --pull qwen2.5:0.5b   # pull with progress
 cogitator models --url http://gpu-box:11434
 ```
 
-The Ollama URL defaults to `OLLAMA_URL`, then `OLLAMA_HOST`, then `http://localhost:11434`; `OLLAMA_API_KEY` is sent as a bearer token. Pull errors reported by Ollama (e.g. unknown model) fail the command.
+The Ollama URL defaults to `OLLAMA_BASE_URL`, then `OLLAMA_URL`, then `OLLAMA_HOST` (read like Ollama reads it: port 11434 when none is given, `0.0.0.0` as `localhost`), then `http://localhost:11434`; `OLLAMA_API_KEY` is sent as a bearer token. Pull errors reported by Ollama (e.g. unknown model) fail the command.
 
 ---
 

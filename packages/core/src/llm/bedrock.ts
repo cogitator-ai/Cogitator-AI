@@ -201,6 +201,10 @@ interface BedrockConfig {
   region?: string;
   accessKeyId?: string;
   secretAccessKey?: string;
+  /** Session token of temporary credentials, sent with the static keys */
+  sessionToken?: string;
+  /** Named profile from the shared AWS config files */
+  profile?: string;
   /** Retries the provider's SDK makes on its own; leave unset for the SDK default. The runtime passes 0 and retries itself. */
   maxRetries?: number;
 }
@@ -228,10 +232,14 @@ export class BedrockBackend extends BaseLLMBackend {
           if (this.config.region) {
             clientConfig.region = this.config.region;
           }
+          if (this.config.profile) {
+            clientConfig.profile = this.config.profile;
+          }
           if (this.config.accessKeyId && this.config.secretAccessKey) {
             clientConfig.credentials = {
               accessKeyId: this.config.accessKeyId,
               secretAccessKey: this.config.secretAccessKey,
+              ...(this.config.sessionToken ? { sessionToken: this.config.sessionToken } : {}),
             };
           }
 

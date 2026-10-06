@@ -48,6 +48,8 @@ export const ProvidersConfigSchema = z.object({
       region: z.string().optional(),
       accessKeyId: z.string().optional(),
       secretAccessKey: z.string().optional(),
+      sessionToken: z.string().optional(),
+      profile: z.string().optional(),
     })
     .optional(),
   vllm: z.object({ baseUrl: z.string() }).optional(),

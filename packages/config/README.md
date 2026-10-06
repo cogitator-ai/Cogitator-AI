@@ -444,6 +444,8 @@ Supported provider, limits, and deploy settings can be set via environment varia
 | `COGITATOR_BEDROCK_REGION`             | AWS Bedrock region    |
 | `COGITATOR_BEDROCK_ACCESS_KEY_ID`      | AWS access key ID     |
 | `COGITATOR_BEDROCK_SECRET_ACCESS_KEY`  | AWS secret access key |
+| `COGITATOR_BEDROCK_SESSION_TOKEN`      | AWS session token     |
+| `COGITATOR_BEDROCK_PROFILE`            | AWS named profile     |
 | `COGITATOR_MISTRAL_API_KEY`            | Mistral API key       |
 | `COGITATOR_GROQ_API_KEY`               | Groq API key          |
 | `COGITATOR_TOGETHER_API_KEY`           | Together API key      |
@@ -461,14 +463,12 @@ Standard provider env vars are also supported:
 OPENAI_API_KEY=sk-xxx
 ANTHROPIC_API_KEY=sk-ant-xxx
 GOOGLE_API_KEY=xxx            # or GEMINI_API_KEY
-OLLAMA_URL=http://localhost:11434   # or OLLAMA_HOST (scheme optional, e.g. 127.0.0.1:11434)
+OLLAMA_URL=http://localhost:11434   # or OLLAMA_BASE_URL / OLLAMA_HOST, see below
 OLLAMA_API_KEY=xxx            # Ollama Cloud / authenticated Ollama
 AZURE_OPENAI_API_KEY=xxx
 AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
 AZURE_OPENAI_DEPLOYMENT=gpt-6.1-sol
-AWS_REGION=us-east-1
-AWS_ACCESS_KEY_ID=xxx
-AWS_SECRET_ACCESS_KEY=xxx
+AWS_REGION=us-east-1          # Bedrock region, credentials come from the AWS SDK chain
 MISTRAL_API_KEY=xxx
 GROQ_API_KEY=xxx
 TOGETHER_API_KEY=xxx
@@ -476,6 +476,14 @@ DEEPSEEK_API_KEY=xxx
 ```
 
 When `OLLAMA_API_KEY` is set without any Ollama URL (from env or YAML), the Ollama base URL defaults to `https://ollama.com`; otherwise it defaults to `http://localhost:11434`. An API key in the environment never replaces a `baseUrl` configured in YAML.
+
+`OLLAMA_BASE_URL`, `OLLAMA_URL` and `OLLAMA_HOST` (first one set wins) are read the way Ollama reads `OLLAMA_HOST`: `gpu-box` and `0.0.0.0` mean port 11434, a wildcard address such as `0.0.0.0` is reached as `localhost`, and `http://` or `https://` keep the scheme's own port. Other tools set these variables too (`OLLAMA_HOST=0.0.0.0` makes `ollama serve` listen on every interface), so they only apply when cogitator.yml has no `llm.providers.ollama.baseUrl`. `COGITATOR_OLLAMA_BASE_URL` overrides the YAML value like every `COGITATOR_` variable. `loadEnvDefaults()` returns this layer and `resolveOllamaHost(value)` parses a single value.
+
+Bedrock credentials stay with the AWS SDK: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_PROFILE`, SSO and instance roles all work as the SDK resolves them, so temporary credentials keep their session token. Static credentials only come from `COGITATOR_BEDROCK_*` or `llm.providers.bedrock` in YAML (`accessKeyId`, `secretAccessKey`, `sessionToken`, `profile`).
+
+`PROVIDER_ENV` lists every variable of every built-in provider (what `loadConfig` reads, what the provider SDK reads and what a provider cannot run without). `cogitator deploy` uses the same table to decide which secrets a deployment needs.
+
+Without `configPath`, `loadConfig` reads the first of `cogitator.yml`, `cogitator.yaml`, `.cogitator.yml` and `.cogitator.yaml` in the working directory. `findConfigFile(dir)` finds it the same way.
 
 ### `${VAR}` References in YAML
 

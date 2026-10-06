@@ -52,7 +52,7 @@ import {
   initializeContextManager,
   cleanupState,
 } from './cogitator/initializers';
-import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
+import { CogitatorError, ErrorCode, resolveModelRoute } from '@cogitator-ai/types';
 import {
   buildInitialMessages,
   buildInputWithAudio,
@@ -1540,14 +1540,10 @@ export class Cogitator implements ToolInvoker {
     explicitProvider?: string
   ): { provider: string; model: string } {
     if (explicitProvider) return { provider: explicitProvider, model: modelString };
-    const slash = modelString.indexOf('/');
-    if (slash > 0) {
-      const prefix = modelString.slice(0, slash);
-      if (this.knowsProvider(prefix)) {
-        return { provider: prefix, model: modelString.slice(slash + 1) };
-      }
-    }
-    return { provider: this.config.llm?.defaultProvider ?? 'ollama', model: modelString };
+    return resolveModelRoute(modelString, {
+      defaultProvider: this.config.llm?.defaultProvider,
+      knowsProvider: (name) => this.knowsProvider(name),
+    });
   }
 
   /**
