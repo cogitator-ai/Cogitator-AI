@@ -53,8 +53,9 @@ export class LLMError extends CogitatorError {
 
 /**
  * Phrases providers use when the prompt does not fit the model's context window, matched in
- * lower case: OpenAI, Azure, DeepSeek, Groq and vLLM, Anthropic, Gemini, Bedrock, Mistral.
- * A bare mention of tokens or length is not enough: a rejected `max_tokens` value says that too.
+ * lower case: OpenAI, Azure, DeepSeek, Groq and vLLM, Anthropic, Gemini, Bedrock, Mistral,
+ * Ollama and llama.cpp. A bare mention of tokens or length is not enough: a rejected
+ * `max_tokens` value says that too.
  */
 const CONTEXT_OVERFLOW_PATTERNS: readonly RegExp[] = [
   /context_length_exceeded/,
@@ -66,6 +67,8 @@ const CONTEXT_OVERFLOW_PATTERNS: readonly RegExp[] = [
   /input token count.*exceeds/,
   /too large for model with \d+ maximum context length/,
   /reduce the length of the messages/,
+  /exceeds (the )?(maximum |available )?context (length|size)/,
+  /context (length|size|window) exceeded/,
 ];
 
 function isContextOverflow(text: string): boolean {

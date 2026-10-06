@@ -27,6 +27,21 @@ describe('createLLMError for a 400', () => {
       'Mistral',
       'Prompt contains 40000 tokens and 0 draft tokens, too large for model with 32768 maximum context length',
     ],
+    ['Ollama', JSON.stringify({ error: 'input length exceeds the context length' })],
+    [
+      'llama.cpp',
+      JSON.stringify({
+        error: {
+          code: 400,
+          message: 'the request exceeds the available context size, try increasing it',
+          type: 'exceed_context_size_error',
+        },
+      }),
+    ],
+    [
+      'an OpenAI-compatible proxy',
+      JSON.stringify({ error: 'context length exceeded, max 4096 tokens' }),
+    ],
   ])('reads the %s context overflow as context length exceeded', (_provider, body) => {
     const error = createLLMError(ctx, 400, body);
 
