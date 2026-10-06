@@ -1,4 +1,5 @@
 import { toRunUsage } from './usage.js';
+import type { AgentRunOutcome } from './response.js';
 
 /**
  * Token usage of a finished agent run, the same in the JSON run response and in the
@@ -39,6 +40,11 @@ export type StreamEvent =
 export interface StartEvent {
   type: 'start';
   messageId: string;
+  /**
+   * The memory thread of an agent run: the one the request named, or the one the server
+   * opened for it. Send it as `threadId` with the next message to continue the conversation.
+   */
+  threadId?: string;
 }
 
 export interface TextStartEvent {
@@ -120,10 +126,21 @@ export interface ErrorEvent {
   code?: string;
 }
 
-export interface FinishEvent {
+/**
+ * The last event of a stream. For an agent run it also says how the run ended, with the
+ * same fields as the JSON run response (`status`, `truncated`, `blocked` and the others).
+ */
+export interface FinishEvent extends Partial<AgentRunOutcome> {
   type: 'finish';
   messageId: string;
   usage?: Usage;
+  /** The memory thread of an agent run, as in the `start` event */
+  threadId?: string;
+}
+
+/** What the `finish` event of an agent run adds: its thread and how it ended */
+export interface FinishDetails extends Partial<AgentRunOutcome> {
+  threadId?: string;
 }
 
 export interface WorkflowEvent {
@@ -138,8 +155,8 @@ export interface SwarmEvent {
   data: unknown;
 }
 
-export function createStartEvent(messageId: string): StartEvent {
-  return { type: 'start', messageId };
+export function createStartEvent(messageId: string, threadId?: string): StartEvent {
+  return { type: 'start', messageId, ...(threadId !== undefined && { threadId }) };
 }
 
 export function createTextStartEvent(id: string): TextStartEvent {
@@ -201,8 +218,12 @@ export function createErrorEvent(message: string, code?: string): ErrorEvent {
  * The last event of a stream. `usage` goes through `toRunUsage`, so a run's `RunResult.usage`
  * can be passed as is: the event carries exactly the counts of the JSON run response.
  */
-export function createFinishEvent(messageId: string, usage?: Readonly<Usage>): FinishEvent {
-  return { type: 'finish', messageId, usage: usage && toRunUsage(usage) };
+export function createFinishEvent(
+  messageId: string,
+  usage?: Readonly<Usage>,
+  details: FinishDetails = {}
+): FinishEvent {
+  return { type: 'finish', messageId, usage: usage && toRunUsage(usage), ...details };
 }
 
 export function createWorkflowEvent(event: string, data: unknown): WorkflowEvent {

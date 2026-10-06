@@ -32,7 +32,12 @@ describe('parseRunRequest', () => {
   });
 
   it('keeps the input as sent, surrounding whitespace included', () => {
-    expect(parseRunRequest({ input: '  hi  ', context: { a: 1 }, threadId: 't-1' })).toEqual({
+    expect(
+      parseRunRequest(
+        { input: '  hi  ', context: { a: 1 }, threadId: 't-1' },
+        { acceptContext: ['a'] }
+      )
+    ).toEqual({
       ok: true,
       value: { input: '  hi  ', context: { a: 1 }, threadId: 't-1' },
     });

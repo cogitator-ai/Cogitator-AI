@@ -57,6 +57,7 @@
   },
   "dependencies": {
     "@cogitator-ai/types": "workspace:*",
+    "@cogitator-ai/server-shared": "workspace:*",
     "zod": "^4.6.5"
   },
   "devDependencies": {

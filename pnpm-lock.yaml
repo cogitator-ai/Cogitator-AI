@@ -250,6 +250,9 @@ importers:
       '@cogitator-ai/core':
         specifier: workspace:>=0.33.0
         version: link:../core
+      '@cogitator-ai/server-shared':
+        specifier: workspace:*
+        version: link:../server-shared
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
@@ -1341,6 +1344,9 @@ importers:
       '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
+      '@cogitator-ai/server-shared':
+        specifier: workspace:*
+        version: link:../server-shared
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
@@ -1369,6 +1375,9 @@ importers:
       '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
+      '@cogitator-ai/server-shared':
+        specifier: workspace:*
+        version: link:../server-shared
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
@@ -1509,6 +1518,10 @@ importers:
         version: 5.0.3(@opentelemetry/api@1.9.0)(@types/node@22.20.4)(@vitest/coverage-v8@5.0.3)(vite@8.3.2(@types/node@22.20.4)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
 
   packages/server-shared:
+    dependencies:
+      '@cogitator-ai/types':
+        specifier: workspace:*
+        version: link:../types
     devDependencies:
       typescript:
         specifier: ^6.0.3

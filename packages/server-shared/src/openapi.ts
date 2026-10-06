@@ -1,5 +1,13 @@
 import type { OpenAPIContext, SwaggerConfig, OpenAPISpec } from './openapi-types.js';
-import { MAX_RUN_TIMEOUT_MS, RUN_INPUT_SCHEMA } from './validation.js';
+import { MAX_RUN_TIMEOUT_MS, NON_BLANK_PATTERN, RUN_INPUT_SCHEMA } from './validation.js';
+
+const THREAD_ID_SCHEMA = { type: 'string', minLength: 1, pattern: NON_BLANK_PATTERN } as const;
+
+const CONTEXT_SCHEMA = {
+  type: 'object',
+  description:
+    'Values the run adds to the system prompt as data. Refused unless the server accepts the keys (`acceptContext`)',
+} as const;
 
 export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig): OpenAPISpec {
   const spec: OpenAPISpec = {
@@ -76,6 +84,15 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
   const threadForbidden = {
     description: 'The thread belongs to another user (THREAD_ACCESS_DENIED)',
   };
+  const refusals = {
+    400: {
+      description: 'The body breaks the request schema (INVALID_INPUT)',
+      content: {
+        'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } },
+      },
+    },
+    415: { description: 'The body is not JSON (UNSUPPORTED_MEDIA_TYPE)' },
+  };
 
   for (const [name] of Object.entries(ctx.agents)) {
     spec.paths[`/agents/${name}/run`] = {
@@ -95,6 +112,7 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
               'application/json': { schema: { $ref: '#/components/schemas/AgentRunResponse' } },
             },
           },
+          ...refusals,
           403: threadForbidden,
           404: { description: 'Agent not found' },
         },
@@ -118,6 +136,7 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
               'application/json': { schema: { $ref: '#/components/schemas/AgentRunResponse' } },
             },
           },
+          ...refusals,
           403: threadForbidden,
           404: { description: 'Agent not found' },
           409: { description: 'The thread has no paused run (RUN_NOT_PAUSED)' },
@@ -138,9 +157,10 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
         responses: {
           200: {
             description:
-              'SSE stream of protocol events. It ends with a finish event (StreamFinishEvent) whose usage matches the JSON run response',
+              'SSE stream of protocol events. The start event (StreamStartEvent) names the thread of the run, and the finish event (StreamFinishEvent) repeats it with the usage and the outcome of the JSON run response',
             content: { 'text/event-stream': {} },
           },
+          ...refusals,
         },
       },
     };
@@ -183,6 +203,7 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
       },
       responses: {
         201: { description: 'Message added; a missing thread is created for the caller' },
+        ...refusals,
         403: threadForbidden,
       },
     },
@@ -235,6 +256,7 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
               'application/json': { schema: { $ref: '#/components/schemas/WorkflowRunResponse' } },
             },
           },
+          ...refusals,
         },
       },
     };
@@ -281,6 +303,7 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
               'application/json': { schema: { $ref: '#/components/schemas/SwarmRunResponse' } },
             },
           },
+          ...refusals,
         },
       },
     };
@@ -372,6 +395,37 @@ export function generateSwaggerHTML(spec: OpenAPISpec): string {
 </html>`;
 }
 
+const RUN_OUTCOME_PROPERTIES = {
+  status: {
+    type: 'string',
+    enum: ['completed', 'paused'],
+    description: '`paused` when tool calls wait for approval; resume with the thread id to go on',
+  },
+  pendingApprovals: {
+    type: 'array',
+    items: { $ref: '#/components/schemas/PendingApproval' },
+    description: 'The tool calls a paused run waits on',
+  },
+  structured: { description: "The answer parsed against the agent's responseFormat" },
+  structuredError: {
+    type: 'string',
+    description: "Why the answer does not match the agent's responseFormat",
+  },
+  truncated: {
+    type: 'boolean',
+    description: 'The answer stopped at the output token limit and may be cut off',
+  },
+  blocked: {
+    type: 'string',
+    enum: ['content_filter', 'refusal'],
+    description: 'The provider withheld the answer',
+  },
+  iterationLimitReached: {
+    type: 'boolean',
+    description: "Tool calls used up the agent's maxIterations before the model answered",
+  },
+} as const;
+
 function generateSchemas(): Record<string, unknown> {
   return {
     HealthResponse: {
@@ -403,8 +457,8 @@ function generateSchemas(): Record<string, unknown> {
       required: ['input'],
       properties: {
         input: { ...RUN_INPUT_SCHEMA },
-        context: { type: 'object' },
-        threadId: { type: 'string', minLength: 1 },
+        context: CONTEXT_SCHEMA,
+        threadId: THREAD_ID_SCHEMA,
       },
     },
     PendingApproval: {
@@ -427,7 +481,7 @@ function generateSchemas(): Record<string, unknown> {
       type: 'object',
       required: ['threadId'],
       properties: {
-        threadId: { type: 'string' },
+        threadId: THREAD_ID_SCHEMA,
         decisions: {
           type: 'object',
           additionalProperties: { $ref: '#/components/schemas/ToolApprovalDecision' },
@@ -458,29 +512,55 @@ function generateSchemas(): Record<string, unknown> {
         },
       },
     },
+    StreamStartEvent: {
+      type: 'object',
+      description: 'The first event of a stream',
+      required: ['type', 'messageId'],
+      properties: {
+        type: { type: 'string', enum: ['start'] },
+        messageId: { type: 'string' },
+        threadId: {
+          type: 'string',
+          description:
+            'The thread of an agent run: the one the request named, or a new one. Send it with the next message to continue the conversation',
+        },
+      },
+    },
     StreamFinishEvent: {
       type: 'object',
-      description: 'The last event of a stream, sent before `data: [DONE]`',
+      description:
+        'The last event of a stream, sent before `data: [DONE]`. For an agent run it carries the thread and the outcome fields of AgentRunResponse',
       required: ['type', 'messageId'],
       properties: {
         type: { type: 'string', enum: ['finish'] },
         messageId: { type: 'string' },
         usage: { $ref: '#/components/schemas/RunUsage' },
+        threadId: { type: 'string' },
+        ...RUN_OUTCOME_PROPERTIES,
+      },
+    },
+    AgentToolCall: {
+      type: 'object',
+      required: ['id', 'name', 'arguments'],
+      properties: {
+        id: { type: 'string' },
+        name: { type: 'string' },
+        arguments: { type: 'object' },
       },
     },
     AgentRunResponse: {
       type: 'object',
+      description:
+        'The answer of a run. It never carries the system prompt, the history, trace spans or the checkpoint of a paused run',
+      required: ['output', 'threadId', 'usage', 'toolCalls', 'status', 'traceId'],
       properties: {
         output: { type: 'string' },
         threadId: { type: 'string' },
         usage: { $ref: '#/components/schemas/RunUsage' },
-        toolCalls: { type: 'array' },
+        toolCalls: { type: 'array', items: { $ref: '#/components/schemas/AgentToolCall' } },
         reasoning: { type: 'string' },
-        status: { type: 'string', enum: ['completed', 'paused'] },
-        pendingApprovals: {
-          type: 'array',
-          items: { $ref: '#/components/schemas/PendingApproval' },
-        },
+        ...RUN_OUTCOME_PROPERTIES,
+        traceId: { type: 'string', description: 'Links the answer to the server traces' },
       },
     },
     ThreadResponse: {
@@ -496,8 +576,13 @@ function generateSchemas(): Record<string, unknown> {
       type: 'object',
       required: ['role', 'content'],
       properties: {
-        role: { type: 'string', enum: ['user', 'assistant', 'system'] },
-        content: { type: 'string' },
+        role: {
+          type: 'string',
+          enum: ['user', 'assistant', 'system'],
+          description:
+            '`system` is refused unless the server accepts it (`threadMessageRoles`), since the model reads it as operator instructions',
+        },
+        content: { type: 'string', minLength: 1, pattern: NON_BLANK_PATTERN },
         metadata: { type: 'object' },
       },
     },
@@ -537,7 +622,18 @@ function generateSchemas(): Record<string, unknown> {
       type: 'object',
       properties: {
         input: { type: 'object' },
-        options: { type: 'object' },
+        options: {
+          type: 'object',
+          properties: {
+            maxConcurrency: { type: 'integer', minimum: 1 },
+            maxIterations: { type: 'integer', minimum: 1 },
+            checkpoint: {
+              type: 'boolean',
+              enum: [false],
+              description: 'Only `false`: the server keeps no checkpoint store',
+            },
+          },
+        },
       },
     },
     WorkflowRunResponse: {
@@ -571,8 +667,8 @@ function generateSchemas(): Record<string, unknown> {
       required: ['input'],
       properties: {
         input: { ...RUN_INPUT_SCHEMA },
-        context: { type: 'object' },
-        threadId: { type: 'string', minLength: 1 },
+        context: CONTEXT_SCHEMA,
+        threadId: THREAD_ID_SCHEMA,
         timeout: { type: 'number', exclusiveMinimum: 0, maximum: MAX_RUN_TIMEOUT_MS },
       },
     },
