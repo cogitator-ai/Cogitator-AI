@@ -115,13 +115,13 @@ interface RedisStandaloneConfig {
   mode?: 'standalone';
 
   // Connection
-  url?: string; // Redis URL (e.g., redis://localhost:6379)
-  host?: string; // Host (alternative to url)
-  port?: number; // Port (alternative to url)
-  db?: number; // Database number
+  url?: string; // Redis URL (e.g., redis://user:password@localhost:6379/0)
+  host?: string; // Host (alternative to url, overrides its host)
+  port?: number; // Port (alternative to url, overrides its port)
+  db?: number; // Database number (overrides the url's /db)
 
   // Authentication
-  password?: string; // Redis password
+  password?: string; // Redis password (overrides the url's password)
 
   // Options
   keyPrefix?: string; // Prefix for all keys

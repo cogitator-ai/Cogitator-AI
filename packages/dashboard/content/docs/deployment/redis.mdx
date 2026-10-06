@@ -46,19 +46,19 @@ const redis = await createRedisClient({
 
 ## Options
 
-| Option                 | Mode       | Description                                                     |
-| ---------------------- | ---------- | --------------------------------------------------------------- |
-| `url`                  | standalone | Connection URL; otherwise built from `host` / `port`            |
-| `host`, `port`         | standalone | Default `localhost:6379`                                        |
-| `db`                   | standalone | Database number                                                 |
-| `nodes`                | cluster    | Seed nodes (at least one, otherwise `createRedisClient` throws) |
-| `scaleReads`           | cluster    | `'master'` (default), `'slave'` or `'all'`                      |
-| `natMap`               | cluster    | Map internal node addresses to reachable ones                   |
-| `keyPrefix`            | both       | Prepended to every key; use a `{hashtag}` in cluster mode       |
-| `password`             | both       | Authentication password                                         |
-| `tls`                  | both       | Connect over TLS                                                |
-| `maxRetriesPerRequest` | both       | Default `3`                                                     |
-| `lazyConnect`          | both       | Delay connecting until the first command (default `false`)      |
+| Option                 | Mode       | Description                                                                                                              |
+| ---------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `url`                  | standalone | Connection URL; otherwise built from `host` / `port`. Explicit `host`, `port`, `password` and `db` override what it says |
+| `host`, `port`         | standalone | Default `localhost:6379`                                                                                                 |
+| `db`                   | standalone | Database number                                                                                                          |
+| `nodes`                | cluster    | Seed nodes (at least one, otherwise `createRedisClient` throws)                                                          |
+| `scaleReads`           | cluster    | `'master'` (default), `'slave'` or `'all'`                                                                               |
+| `natMap`               | cluster    | Map internal node addresses to reachable ones                                                                            |
+| `keyPrefix`            | both       | Prepended to every key; use a `{hashtag}` in cluster mode                                                                |
+| `password`             | both       | Authentication password                                                                                                  |
+| `tls`                  | both       | Connect over TLS                                                                                                         |
+| `maxRetriesPerRequest` | both       | Default `3`                                                                                                              |
+| `lazyConnect`          | both       | Delay connecting until the first command (default `false`)                                                               |
 
 A config is treated as cluster when it has `mode: 'cluster'` or a `nodes` array (`isClusterConfig(config)`). Reconnects back off up to 2 seconds.
 
@@ -77,7 +77,7 @@ const redis = await createRedisClient(config);
 
 | Variable              | Description                                                                                                                    |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `REDIS_URL`           | Redis connection URL (takes precedence over host/port)                                                                         |
+| `REDIS_URL`           | Redis connection URL (takes precedence over `REDIS_HOST` / `REDIS_PORT`; `REDIS_PASSWORD` overrides its password)              |
 | `REDIS_HOST`          | Redis host (default: `localhost`)                                                                                              |
 | `REDIS_PORT`          | Redis port (default: `6379`)                                                                                                   |
 | `REDIS_PASSWORD`      | Authentication password                                                                                                        |
