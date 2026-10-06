@@ -92,6 +92,8 @@ const memory = new RedisAdapter({
 
 Each write refreshes the TTL of the thread and its entry index, so active conversations do not expire mid-way; expired entries are pruned from the index on read. In cluster mode a custom `keyPrefix` without a hash tag is wrapped automatically (`'myapp:'` → `'{myapp}:'`) so all keys of the adapter map to one slot.
 
+`getEntries({ limit })` reads only the newest `limit` entries of the thread instead of the whole thread. When `connect()` fails, the client is closed again, so an unreachable Redis does not leave a client reconnecting in the background and keeping the process alive, and the error names the connection problem (`connect ECONNREFUSED ...`).
+
 **Requires:** `pnpm add ioredis`
 
 **When to use:** Ephemeral conversations that should auto-expire, high-throughput scenarios, or when you already run Redis.
@@ -113,19 +115,22 @@ memory.setVectorDimensions(1536); // before connect(); default 768
 unwrap(await memory.connect());
 ```
 
-On `connect()` the adapter creates the schema, the `threads`, `entries`, `facts` and `embeddings` tables, the pgvector extension, an HNSW cosine index on the vectors and a generated English `tsvector` column for keyword search. If the extension or an index cannot be created, it logs a warning and carries on.
+On `connect()` the adapter creates the schema, the `threads`, `entries`, `facts` and `embeddings` tables, the pgvector extension, an HNSW cosine index on the vectors and a generated English `tsvector` column for keyword search. If an index cannot be created, it logs a warning and carries on.
+
+pgvector is only needed for embeddings. On a database without it (a managed Postgres without the extension, or a role not allowed to run `CREATE EXTENSION`), `connect()` still succeeds and threads, entries and facts work: the `embeddings` table is not created, a warning names the reason, and `addEmbedding`, `search`, `keywordSearch`, `deleteEmbedding` and `deleteBySource` return a failed result with it. `memory.vectorStatus()` returns `{ available: true, dimensions }` or `{ available: false, reason }`, and the `Cogitator` runtime does not use such a store for semantic context.
 
 HNSW needs no training data, so the index built on the empty table finds every row as the table fills up. Earlier versions built an `ivfflat` index there instead, which missed rows for small limits. The first `connect()` after upgrading replaces that index with HNSW, which on a large table takes a while. To avoid the wait, build the index ahead of the deploy with `CREATE INDEX CONCURRENTLY idx_embeddings_vector_new ON <schema>.embeddings USING hnsw (vector vector_cosine_ops)`, then drop the old index and rename the new one to `idx_embeddings_vector`. An existing HNSW index is kept as it is.
 
 `search()` sizes each query for the index: it raises `hnsw.ef_search` to the requested `limit` (up to 1000) and, on pgvector 0.8 or later, turns on iterative scans, so a large limit or a filter on agent, thread or user still gets every matching row. Equally similar rows are ordered by id, so the result does not depend on the query plan.
 
-The `embeddings.vector` column is created with the dimension set at that moment, so call `setVectorDimensions(n)` **before** `connect()` — it throws once connected. An existing table keeps its original dimension.
+The `embeddings.vector` column is created with the vector size set at that moment, so pass `dimensions` in the config or call `setVectorDimensions(n)` **before** `connect()` (it throws once connected). `connect()` reads the size of an existing table: without a configured size the adapter adopts it, and with another configured size (say after switching the embedding model) the table is left as it is, a warning explains the mismatch, and storing or searching embeddings fails with that message until the table is migrated. Deleting embeddings and keyword search keep working. Before, each search failed with a Postgres error.
 
 | Option             | Type   | Default     | Description                                        |
 | ------------------ | ------ | ----------- | -------------------------------------------------- |
 | `connectionString` | string | —           | Postgres connection URL                            |
 | `schema`           | string | `cogitator` | Schema name (letters, digits and underscores only) |
 | `poolSize`         | number | 10          | Connection pool size                               |
+| `dimensions`       | number | 768         | Vector size of the embedding model                 |
 
 ### Facts (FactAdapter)
 

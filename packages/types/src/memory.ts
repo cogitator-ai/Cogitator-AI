@@ -106,6 +106,12 @@ export interface PostgresAdapterConfig extends MemoryAdapterConfig {
   connectionString: string;
   schema?: string;
   poolSize?: number;
+  /**
+   * Vector size of the embedding model (default 768). The `embeddings` table is created with
+   * it, and an existing table of another size is reported instead of failing each search. When
+   * not set, an existing table keeps its own size.
+   */
+  dimensions?: number;
 }
 
 export interface SQLiteAdapterConfig extends MemoryAdapterConfig {

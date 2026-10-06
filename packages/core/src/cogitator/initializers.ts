@@ -93,6 +93,7 @@ export async function initializeMemory(
   const result = await adapter.connect();
   if (!result.success) {
     getLogger().warn('Memory adapter connection failed', { error: result.error });
+    await releaseAdapter(adapter);
     return;
   }
 
@@ -100,8 +101,7 @@ export async function initializeMemory(
 
   if (memory.contextBuilder) {
     const embeddingAdapter =
-      (await connectEmbeddingStore(memory, embeddingService, state)) ??
-      (isEmbeddingAdapter(adapter) ? adapter : undefined);
+      (await connectEmbeddingStore(memory, embeddingService, state)) ?? embeddingStoreOf(adapter);
     const deps: ContextBuilderDeps = {
       memoryAdapter: adapter,
       ...(isFactAdapter(adapter) && { factAdapter: adapter }),
@@ -195,7 +195,19 @@ function createConfiguredAdapter(
         return undefined;
       }
       const adapter = new PostgresAdapter({ provider: 'postgres', ...postgres });
-      if (embeddingService) adapter.setVectorDimensions(embeddingService.dimensions);
+      if (embeddingService) {
+        if (
+          postgres.dimensions !== undefined &&
+          postgres.dimensions !== embeddingService.dimensions
+        ) {
+          logger.warn('memory.postgres.dimensions does not match the embedding model', {
+            postgres: postgres.dimensions,
+            embedding: embeddingService.dimensions,
+            model: embeddingService.model,
+          });
+        }
+        adapter.setVectorDimensions(embeddingService.dimensions);
+      }
       return adapter;
     }
 
@@ -253,6 +265,7 @@ async function connectEmbeddingStore(
     getLogger().warn('Qdrant connection failed; semantic retrieval is off', {
       error: result.error,
     });
+    await releaseAdapter(store);
     return undefined;
   }
   state.embeddingStore = store;
@@ -400,6 +413,33 @@ export async function cleanupState(state: InitializerState): Promise<void> {
 function isFactAdapter(adapter: MemoryAdapter): adapter is MemoryAdapter & FactAdapter {
   const candidate = adapter as Partial<FactAdapter>;
   return typeof candidate.getFacts === 'function' && typeof candidate.addFact === 'function';
+}
+
+/**
+ * The thread store as the store semantic context searches, when it is one: a
+ * Postgres store only when pgvector is usable (its reason is logged otherwise).
+ */
+function embeddingStoreOf(adapter: MemoryAdapter): EmbeddingAdapter | undefined {
+  if (!isEmbeddingAdapter(adapter)) return undefined;
+  if (adapter instanceof PostgresAdapter) {
+    const status = adapter.vectorStatus();
+    if (!status.available) {
+      getLogger().warn(`Postgres memory has no semantic search: ${status.reason}`);
+      return undefined;
+    }
+  }
+  return adapter;
+}
+
+/** Closes what a failed `connect()` may have left open, such as a reconnecting client. */
+async function releaseAdapter(adapter: { disconnect(): Promise<unknown> }): Promise<void> {
+  try {
+    await adapter.disconnect();
+  } catch (err) {
+    getLogger().warn('Could not release a memory adapter that failed to connect', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 function isEmbeddingAdapter(adapter: MemoryAdapter): adapter is MemoryAdapter & EmbeddingAdapter {

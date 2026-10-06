@@ -15,7 +15,7 @@ export {
 } from './adapters/index';
 
 export { RedisAdapter } from './adapters/redis';
-export { PostgresAdapter } from './adapters/postgres';
+export { PostgresAdapter, type VectorStoreState } from './adapters/postgres';
 export { SQLiteAdapter } from './adapters/sqlite';
 export { MongoDBAdapter } from './adapters/mongodb';
 export { QdrantAdapter } from './adapters/qdrant';

@@ -39,6 +39,7 @@ export const PostgresConfigSchema = z.object({
   connectionString: z.string(),
   schema: z.string().optional(),
   poolSize: z.number().positive().optional(),
+  dimensions: z.number().int().positive().optional(),
 });
 
 export const SQLiteConfigSchema = z.object({

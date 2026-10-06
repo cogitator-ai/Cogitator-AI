@@ -42,15 +42,16 @@ export class SQLiteAdapter extends BaseMemoryAdapter {
       return this.failure('better-sqlite3 not installed. Run: pnpm add better-sqlite3');
     }
 
+    let db: InstanceType<typeof Database> | undefined;
     try {
-      this.db = new Database(this.path);
+      db = new Database(this.path);
 
-      this.db.pragma('foreign_keys = ON');
+      db.pragma('foreign_keys = ON');
       if (this.walMode && this.path !== ':memory:') {
-        this.db.pragma('journal_mode = WAL');
+        db.pragma('journal_mode = WAL');
       }
 
-      this.db.exec(`
+      db.exec(`
         CREATE TABLE IF NOT EXISTS threads (
           id TEXT PRIMARY KEY,
           agent_id TEXT NOT NULL,
@@ -76,8 +77,10 @@ export class SQLiteAdapter extends BaseMemoryAdapter {
         CREATE INDEX IF NOT EXISTS idx_threads_agent ON threads(agent_id);
       `);
 
+      this.db = db;
       return this.success(undefined);
     } catch (err) {
+      if (db?.open) db.close();
       return this.failure((err as Error).message);
     }
   }

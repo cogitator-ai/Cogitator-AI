@@ -14,6 +14,7 @@ const { mockRedisClient, mockCreateRedisClient } = vi.hoisted(() => {
     zrem: vi.fn().mockResolvedValue(1),
     mget: vi.fn().mockResolvedValue([]),
     expire: vi.fn().mockResolvedValue(1),
+    on: vi.fn(),
   };
   const mockCreateRedisClient = vi.fn().mockResolvedValue(mockRedisClient);
   return { mockRedisClient, mockCreateRedisClient };
@@ -353,5 +354,90 @@ describe('RedisAdapter hardening', () => {
     });
 
     expect(mockRedisClient.expire).toHaveBeenCalledWith('cogitator:thread:t1', 60);
+  });
+
+  it('releases the client when the connection fails', async () => {
+    mockRedisClient.ping.mockRejectedValueOnce(
+      new Error('Reached the max retries per request limit (which is 3)')
+    );
+    mockRedisClient.on.mockImplementationOnce((_event: string, listener: (e: Error) => void) => {
+      listener(new Error('connect ECONNREFUSED 127.0.0.1:6379'));
+    });
+    const failing = new RedisAdapter({ provider: 'redis', host: 'localhost' });
+
+    const result = await failing.connect();
+
+    expect(result).toEqual({
+      success: false,
+      error: 'Redis connection failed: connect ECONNREFUSED 127.0.0.1:6379',
+    });
+    expect(mockRedisClient.quit).toHaveBeenCalledTimes(1);
+    expect(await failing.getThread('t1')).toEqual({ success: false, error: 'Not connected' });
+  });
+
+  it('reads only the newest entries a limit asks for', async () => {
+    const adapter = new RedisAdapter({ provider: 'redis', host: 'localhost' });
+    await adapter.connect();
+    const live = (id: string) =>
+      JSON.stringify({
+        id,
+        threadId: 't1',
+        message: { role: 'user', content: id },
+        tokenCount: 1,
+        createdAt: new Date(),
+      });
+    mockRedisClient.zrange.mockImplementation(async (_key: string, start: number, stop: number) => {
+      const keys = Array.from({ length: 1000 }, (_, i) => `k${i}`);
+      return start < 0 ? keys.slice(start, stop === -1 ? undefined : stop + 1) : keys;
+    });
+    mockRedisClient.mget.mockImplementation(async (...keys: string[]) =>
+      keys.map((key) => live(key.replace('k', 'e')))
+    );
+
+    const result = await adapter.getEntries({ threadId: 't1', limit: 20 });
+
+    expect(mockRedisClient.mget).toHaveBeenCalledTimes(1);
+    expect(mockRedisClient.mget.mock.calls[0]).toHaveLength(20);
+    expect(result.success && result.data.map((e) => e.id)).toEqual(
+      Array.from({ length: 20 }, (_, i) => `e${980 + i}`)
+    );
+    mockRedisClient.zrange.mockReset();
+    mockRedisClient.zrange.mockResolvedValue([]);
+    mockRedisClient.mget.mockReset();
+    mockRedisClient.mget.mockResolvedValue([]);
+  });
+
+  it('fills a limit from older entries when the newest have expired', async () => {
+    const adapter = new RedisAdapter({ provider: 'redis', host: 'localhost' });
+    await adapter.connect();
+    const members = ['k1', 'k2', 'k3', 'k4'];
+    const live = (id: string) =>
+      JSON.stringify({
+        id,
+        threadId: 't1',
+        message: { role: 'user', content: id },
+        tokenCount: 1,
+        createdAt: new Date(),
+      });
+    mockRedisClient.zrange.mockImplementation(async (_key: string, start: number) =>
+      members.slice(start)
+    );
+    mockRedisClient.zrem.mockImplementation(async (_key: string, ...removed: string[]) => {
+      for (const key of removed) members.splice(members.indexOf(key), 1);
+      return removed.length;
+    });
+    mockRedisClient.mget.mockImplementation(async (...keys: string[]) =>
+      keys.map((key) => (key === 'k4' ? null : live(key.replace('k', 'e'))))
+    );
+
+    const result = await adapter.getEntries({ threadId: 't1', limit: 2 });
+
+    expect(result.success && result.data.map((e) => e.id)).toEqual(['e2', 'e3']);
+    mockRedisClient.zrange.mockReset();
+    mockRedisClient.zrange.mockResolvedValue([]);
+    mockRedisClient.zrem.mockReset();
+    mockRedisClient.zrem.mockResolvedValue(1);
+    mockRedisClient.mget.mockReset();
+    mockRedisClient.mget.mockResolvedValue([]);
   });
 });

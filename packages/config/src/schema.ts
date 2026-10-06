@@ -177,6 +177,7 @@ export const MemoryConfigSchema = z.object({
       connectionString: z.string(),
       schema: z.string().optional(),
       poolSize: z.number().positive().optional(),
+      dimensions: z.number().int().positive().optional(),
     })
     .optional(),
   sqlite: z

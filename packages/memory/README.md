@@ -103,7 +103,7 @@ await memory.connect();
 
 ### Redis Adapter
 
-Persistent short-term memory with TTL support. Every write refreshes the TTL of the thread and its entry index, so active conversations do not expire mid-way; expired entries are pruned from the index on read.
+Persistent short-term memory with TTL support. Every write refreshes the TTL of the thread and its entry index, so active conversations do not expire mid-way; expired entries are pruned from the index on read. `getEntries({ limit })` reads only the newest `limit` entries. A failed `connect()` closes its client again, so an unreachable Redis does not keep the process alive.
 
 ```typescript
 import { RedisAdapter } from '@cogitator-ai/memory';
@@ -132,12 +132,16 @@ const memory = new PostgresAdapter({
   connectionString: 'postgresql://localhost:5432/cogitator',
   schema: 'public',
   poolSize: 10,
+  dimensions: 1536, // vector size of the embedding model, default 768
 });
 
 await memory.connect();
+memory.vectorStatus(); // { available: true, dimensions: 1536 } or { available: false, reason }
 ```
 
 On `connect()` the adapter creates its tables and an HNSW cosine index on the embeddings, which works from the first row on (no training data needed). An `ivfflat` index left by an earlier version is replaced on the first connect after upgrading, see the [adapters docs](https://cogitator.app/docs/memory/adapters) for building the new index ahead of time on a large table. `search()` raises `hnsw.ef_search` to the requested limit and, on pgvector 0.8+, uses iterative scans, so large limits and filters still get every matching row. Messages, tool calls, tool results and metadata are stored as `jsonb`.
+
+pgvector is only needed for embeddings. Without it, `connect()` still succeeds and threads, entries and facts work, while embedding operations return a failed result naming the reason (also logged at connect). An existing `embeddings` table keeps its vector size: an adapter without `dimensions` adopts it, one configured for another size reports the mismatch through `vectorStatus()` and the failed results instead of failing each search with a Postgres error.
 
 ### SQLite Adapter
 
