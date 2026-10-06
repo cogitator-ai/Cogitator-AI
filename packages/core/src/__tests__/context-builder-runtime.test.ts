@@ -50,7 +50,7 @@ describe('runs with memory.contextBuilder', () => {
 
     const system = systemText(requests[0].messages);
     expect(system.startsWith(instructions)).toBe(true);
-    expect(system).toContain('plan: "gold"');
+    expect(system).toContain('"plan": "gold"');
     expect(warn.mock.calls.some(([message]) => /system prompt/i.test(String(message)))).toBe(true);
     await cog.close();
   });
@@ -71,7 +71,7 @@ describe('runs with memory.contextBuilder', () => {
 
     const system = systemText(requests[0].messages);
     expect(system.startsWith('Be brief.')).toBe(true);
-    expect(system).toContain('tier: "pro"');
+    expect(system).toContain('"tier": "pro"');
     await cog.close();
   });
 

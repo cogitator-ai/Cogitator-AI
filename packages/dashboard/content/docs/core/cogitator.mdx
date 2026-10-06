@@ -126,7 +126,7 @@ const result = await cog.run(agent, {
 | `threadId`                 | `string`                                              | Conversation to continue; a new one is created when omitted                                              |
 | `userId`                   | `string`                                              | The user the run acts for: owns new threads, scopes memory, reaches tools as `context.userId`            |
 | `threadAccess`             | `'owner' \| 'shared'`                                 | `'owner'` (default): only the thread's creator may continue it ([Multi-User](/docs/advanced/multi-user)) |
-| `context`                  | `Record<string, unknown>`                             | Additional context injected into the system prompt                                                       |
+| `context`                  | `Record<string, unknown>`                             | System prompt values, as one JSON data block, adapters accept client keys via `acceptContext`            |
 | `stream`                   | `boolean`                                             | Enable token streaming                                                                                   |
 | `signal`                   | `AbortSignal`                                         | Cancel the run and linked provider/tool work                                                             |
 | `timeout`                  | `number`                                              | Override the agent timeout (ms)                                                                          |
