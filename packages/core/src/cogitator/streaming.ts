@@ -20,6 +20,7 @@ export interface StreamChatResult {
   content: string;
   toolCalls?: ToolCall[];
   finishReason: FinishReason;
+  finishMessage?: string;
   usage: ChatUsage;
   reasoning?: string;
 }
@@ -53,6 +54,7 @@ export async function streamChat(
   let streamUsage: ChatUsage | undefined;
   let toolCalls: ToolCall[] | undefined;
   let finishReason: FinishReason = 'stop';
+  let finishMessage: string | undefined;
   let inputTokens = 0;
   let outputTokens = 0;
   let hasUsageFromStream = false;
@@ -121,6 +123,9 @@ export async function streamChat(
     if (chunk.finishReason) {
       finishReason = chunk.finishReason;
     }
+    if (chunk.finishMessage) {
+      finishMessage = chunk.finishMessage;
+    }
     if (chunk.usage) {
       inputTokens = chunk.usage.inputTokens;
       outputTokens = chunk.usage.outputTokens;
@@ -139,6 +144,7 @@ export async function streamChat(
     content,
     toolCalls,
     finishReason,
+    ...(finishMessage && { finishMessage }),
     usage: {
       ...streamUsage,
       inputTokens,

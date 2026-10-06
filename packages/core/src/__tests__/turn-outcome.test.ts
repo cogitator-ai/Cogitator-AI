@@ -24,6 +24,7 @@ function scripted(turns: ChatResponse[]): LLMBackend {
         id: next.id,
         delta: { toolCalls: next.toolCalls },
         finishReason: next.finishReason,
+        ...(next.finishMessage && { finishMessage: next.finishMessage }),
         usage: next.usage,
       };
     }),
@@ -105,6 +106,34 @@ describe('the outcome of a turn in a run', () => {
       expect(result.toolCalls).toEqual([]);
       const last = result.messages[result.messages.length - 1] as { toolCalls?: ToolCall[] };
       expect(last.toolCalls).toBeUndefined();
+      await cog.close();
+    }
+  );
+
+  it.each([false, true])(
+    'fails the run with the provider message when a turn ends in an error (stream: %s)',
+    async (stream) => {
+      const purged: Array<Record<string, unknown>> = [];
+      const backend = scripted([
+        turn({
+          toolCalls: [{ id: 'c1', name: 'purge', arguments: {} }],
+          finishReason: 'error',
+          finishMessage: 'Malformed function call: purge{olderThanDays: ',
+        }),
+        turn({ content: 'second try' }),
+      ]);
+      const cog = new Cogitator({ llm: { backends: { scripted: backend } } });
+
+      const run = cog.run(purgeAgent(purged), {
+        input: 'clean up',
+        ...(stream && { stream: true, onToken: () => undefined }),
+      });
+
+      await expect(run).rejects.toMatchObject({
+        code: 'LLM_INVALID_RESPONSE',
+        message: expect.stringContaining('Malformed function call: purge{olderThanDays: '),
+      });
+      expect(purged).toEqual([]);
       await cog.close();
     }
   );

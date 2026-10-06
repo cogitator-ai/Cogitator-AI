@@ -110,6 +110,8 @@ interface GeminiCandidate {
   content: GeminiContent;
   /** `STOP`, `MAX_TOKENS`, `SAFETY`, `RECITATION`, `MALFORMED_FUNCTION_CALL` and others */
   finishReason?: string;
+  /** Why the turn ended, for some finish reasons such as `MALFORMED_FUNCTION_CALL` */
+  finishMessage?: string;
   safetyRatings?: unknown[];
 }
 
@@ -286,6 +288,7 @@ export class GoogleBackend extends BaseLLMBackend {
             id,
             delta: { toolCalls: end.toolCalls },
             finishReason: end.finishReason,
+            ...(candidate.finishMessage && { finishMessage: candidate.finishMessage }),
           };
 
           if (chunk.usageMetadata) {
@@ -648,6 +651,7 @@ export class GoogleBackend extends BaseLLMBackend {
       content,
       toolCalls,
       finishReason: this.mapFinishReason(candidate.finishReason),
+      ...(candidate.finishMessage && { finishMessage: candidate.finishMessage }),
       usage: data.usageMetadata
         ? toChatUsage(data.usageMetadata)
         : { inputTokens: 0, outputTokens: 0, totalTokens: 0 },

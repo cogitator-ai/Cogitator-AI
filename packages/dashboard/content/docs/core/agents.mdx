@@ -104,6 +104,8 @@ When tool calls use up `maxIterations` before the model answers, the run gets on
 
 `result.blocked` is set when the provider withheld the model's last answer instead of finishing it: `'content_filter'` when its safety system filtered the answer (OpenAI and Azure content filters, Gemini `SAFETY` and similar, Bedrock guardrails), `'refusal'` when the model declined (OpenAI and Anthropic refusals). The run still completes, with `output` holding what the model said before it stopped, the explanation of a refusal or often nothing. The run does not ask again for a blocked answer, and does not ask a blocked structured answer to be corrected.
 
+A turn the provider ends in an error fails the run with `LLM_INVALID_RESPONSE` instead of passing for an empty answer, with the provider's explanation when it gives one (`ChatResponse.finishMessage`). Gemini, for instance, reports a function call it could not complete, often one cut by `maxTokens`, as `MALFORMED_FUNCTION_CALL`: the run fails with that message, and the cut call never runs. Anthropic and Bedrock `malformed_tool_use` and a failed Responses API answer end the same way.
+
 ```typescript
 const result = await cog.run(agent, { input });
 if (result.blocked) {

@@ -128,6 +128,11 @@ export interface ChatResponse {
   content: string;
   toolCalls?: ToolCall[];
   finishReason: FinishReason;
+  /**
+   * The provider's own explanation of how the turn ended, when it gives one, such as Gemini's
+   * `finishMessage` for a malformed function call. A run that ends in an `error` turn reports it
+   */
+  finishMessage?: string;
   usage: ChatUsage;
   /** Readable summary of the model's reasoning, when the provider returned one */
   reasoning?: string;
@@ -165,6 +170,8 @@ export interface ChatStreamChunk {
   };
   /** Set on the chunk that ends the turn */
   finishReason?: FinishReason;
+  /** The provider's explanation of how the turn ended, see `ChatResponse.finishMessage` */
+  finishMessage?: string;
   /** Usage data, typically included only in the final chunk */
   usage?: ChatUsage;
 }

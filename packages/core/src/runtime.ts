@@ -34,6 +34,7 @@ import type {
 import { type Agent } from './agent';
 import { ToolRegistry } from './registry';
 import { createLLMBackend } from './llm/index';
+import { llmInvalidResponse } from './llm/errors';
 import { isLLMProvider } from './llm/providers';
 import { createLLMBackendFromPlugin, hasLLMPlugin } from './llm/plugin';
 import { withLLMRetry } from './llm/retry';
@@ -959,6 +960,13 @@ export class Cogitator implements ToolInvoker {
           cost: costMeter.total(costModel) - spentBefore,
         });
         if (response.reasoning) reasoningParts.push(response.reasoning);
+
+        if (response.finishReason === 'error') {
+          throw llmInvalidResponse(
+            { provider: backend.provider, model },
+            `The model ended its turn with an error${response.finishMessage ? `: ${response.finishMessage}` : ''}`
+          );
+        }
 
         if (
           isEmptyAnswer(response) &&

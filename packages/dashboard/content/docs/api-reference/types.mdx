@@ -344,6 +344,7 @@ interface ChatResponse {
   content: string;
   toolCalls?: ToolCall[];
   finishReason: FinishReason; // only 'tool_calls' runs tools
+  finishMessage?: string; // the provider's explanation, e.g. of an 'error' turn
   usage: ChatUsage;
   reasoning?: string; // readable reasoning summary, when returned
 }
@@ -365,6 +366,7 @@ interface ChatStreamChunk {
     toolCalls?: Partial<ToolCall>[];
   };
   finishReason?: FinishReason; // on the chunk that ends the turn
+  finishMessage?: string;
   usage?: ChatUsage; // typically only on the final chunk
 }
 

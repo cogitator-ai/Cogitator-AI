@@ -44,14 +44,23 @@ describeGoogle('Core: a turn cut at the token limit', () => {
         maxTokens: 24,
       });
 
-      const result = await cogitator.run(agent, {
-        input: 'Write and save a report on the history of the printing press.',
-        ...(stream && { stream: true, onToken: () => undefined }),
-      });
+      const outcome = await cogitator
+        .run(agent, {
+          input: 'Write and save a report on the history of the printing press.',
+          ...(stream && { stream: true, onToken: () => undefined }),
+        })
+        .then(
+          (result) => ({ result }),
+          (error: unknown) => ({ error })
+        );
 
-      expect(result.truncated).toBe(true);
       expect(saved).toEqual([]);
-      expect(result.toolCalls).toEqual([]);
+      if ('error' in outcome) {
+        expect(outcome.error).toMatchObject({ code: 'LLM_INVALID_RESPONSE' });
+      } else {
+        expect(outcome.result.truncated).toBe(true);
+        expect(outcome.result.toolCalls).toEqual([]);
+      }
     });
   }
 });

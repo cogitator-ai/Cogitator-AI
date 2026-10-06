@@ -837,6 +837,8 @@ All fields are `readonly`. The run timeout comes from the run, the agent, `limit
 
 A run whose last answer the provider withheld still completes, with `blocked` saying why: `content_filter` when its safety system filtered the answer (OpenAI and Azure `content_filter`, Gemini `SAFETY` and the like, Bedrock guardrails), `refusal` when the model declined (OpenAI `refusal`, Anthropic `refusal`). `output` holds what the model said before it stopped, the explanation of a refusal or often nothing, and the run does not ask again.
 
+A turn the provider ends in an error fails the run with `LLM_INVALID_RESPONSE` instead of passing for an empty answer, with the provider's explanation when it gives one (`ChatResponse.finishMessage`). Gemini, for instance, reports a function call it could not complete, often one cut by `maxTokens`, as `MALFORMED_FUNCTION_CALL`: the run fails with that message, and the cut call never runs. Anthropic and Bedrock `malformed_tool_use` and a failed Responses API answer end the same way.
+
 ---
 
 ## Memory Integration
@@ -2451,6 +2453,8 @@ interface RunResult {
 All fields are `readonly`. The run timeout comes from the run, the agent, `limits.defaultTimeout`, or 120 s.
 
 A run whose last answer the provider withheld still completes, with `blocked` saying why: `content_filter` when its safety system filtered the answer (OpenAI and Azure `content_filter`, Gemini `SAFETY` and the like, Bedrock guardrails), `refusal` when the model declined (OpenAI `refusal`, Anthropic `refusal`). `output` holds what the model said before it stopped, the explanation of a refusal or often nothing, and the run does not ask again.
+
+A turn the provider ends in an error fails the run with `LLM_INVALID_RESPONSE` instead of passing for an empty answer, with the provider's explanation when it gives one (`ChatResponse.finishMessage`). Gemini, for instance, reports a function call it could not complete, often one cut by `maxTokens`, as `MALFORMED_FUNCTION_CALL`: the run fails with that message, and the cut call never runs. Anthropic and Bedrock `malformed_tool_use` and a failed Responses API answer end the same way.
 
 ---
 

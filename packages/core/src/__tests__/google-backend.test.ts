@@ -953,6 +953,50 @@ describe('GoogleBackend', () => {
       }
     );
 
+    it('passes on the explanation of a malformed function call', async () => {
+      const finishMessage = 'Malformed function call: call:default_api:purge{olderThanDays: 3';
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          candidates: [
+            {
+              content: { role: 'model', parts: [{ text: '' }] },
+              finishReason: 'MALFORMED_FUNCTION_CALL',
+              finishMessage,
+            },
+          ],
+          usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+        }),
+      });
+
+      const response = await backend.chat({
+        model: 'gemini-2.5-flash',
+        messages: [{ role: 'user', content: 'x' }],
+      });
+
+      expect(response.finishReason).toBe('error');
+      expect(response.finishMessage).toBe(finishMessage);
+    });
+
+    it('streams the explanation of a malformed function call', async () => {
+      const finishMessage = 'Malformed function call: call:default_api:purge{';
+      mockFetch.mockResolvedValueOnce(
+        sse([
+          `data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text: '' }] }, finishReason: 'MALFORMED_FUNCTION_CALL', finishMessage }] })}\n\n`,
+        ])
+      );
+
+      const ends: unknown[] = [];
+      for await (const chunk of backend.chatStream({
+        model: 'gemini-2.5-flash',
+        messages: [{ role: 'user', content: 'x' }],
+      })) {
+        if (chunk.finishReason) ends.push([chunk.finishReason, chunk.finishMessage]);
+      }
+
+      expect(ends).toEqual([['error', finishMessage]]);
+    });
+
     it('does not run the tool calls of a turn cut at MAX_TOKENS', async () => {
       mockFetch.mockResolvedValueOnce(answer([call], 'MAX_TOKENS'));
 
