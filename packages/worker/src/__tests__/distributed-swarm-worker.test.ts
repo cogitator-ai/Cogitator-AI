@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { SwarmAgentJobPayload, SwarmAgentJobResult } from '../types';
 
 const queues = new Map<string, string[]>();
+const sets = new Map<string, Set<string>>();
 const published: { channel: string; message: string }[] = [];
 const executeSwarmAgentJob = vi.fn();
 
@@ -21,6 +22,8 @@ class MockRedis {
     published.push({ channel, message });
     return 1;
   });
+
+  sismember = vi.fn(async (key: string, member: string) => (sets.get(key)?.has(member) ? 1 : 0));
 
   async blpop(key: string, timeout: number): Promise<[string, string] | null> {
     const deadline = Date.now() + timeout * 1000;
@@ -51,7 +54,12 @@ function job(id: string): SwarmAgentJobPayload {
       tools: [],
     },
     input: 'go',
-    stateKeys: { blackboard: 'b', messages: 'm', results: 'swarm:s1:results' },
+    stateKeys: {
+      blackboard: 'b',
+      messages: 'm',
+      results: 'swarm:s1:results',
+      cancelled: 'swarm:s1:cancelled',
+    },
   };
 }
 
@@ -79,6 +87,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void
 describe('DistributedSwarmWorker', () => {
   beforeEach(() => {
     queues.clear();
+    sets.clear();
     published.length = 0;
     executeSwarmAgentJob.mockReset();
   });
@@ -170,5 +179,50 @@ describe('DistributedSwarmWorker', () => {
 
     await worker.stop();
     expect(published).toHaveLength(1);
+  });
+
+  it('skips a turn the coordinator already cancelled', async () => {
+    const { DistributedSwarmWorker } = await import('../distributed-swarm-worker');
+    executeSwarmAgentJob.mockImplementation(async (payload: SwarmAgentJobPayload) =>
+      result(payload)
+    );
+    const onJobCancelled = vi.fn();
+    const worker = new DistributedSwarmWorker({ pollTimeout: 0.1 }, { onJobCancelled });
+
+    sets.set('swarm:s1:cancelled', new Set(['gone']));
+    await worker.start();
+    queues.set('swarm:jobs:swarm-agent-jobs', [JSON.stringify(job('gone'))]);
+
+    await waitFor(() => onJobCancelled.mock.calls.length === 1);
+    expect(executeSwarmAgentJob).not.toHaveBeenCalled();
+    expect(published).toHaveLength(0);
+    await worker.stop();
+  });
+
+  it('aborts a running turn once the coordinator cancels it', async () => {
+    const { DistributedSwarmWorker } = await import('../distributed-swarm-worker');
+    let seen: AbortSignal | undefined;
+    executeSwarmAgentJob.mockImplementation(
+      (payload: SwarmAgentJobPayload, _runtime: unknown, execution: { signal?: AbortSignal }) =>
+        new Promise((resolve) => {
+          seen = execution.signal;
+          execution.signal?.addEventListener('abort', () => resolve(result(payload, 'aborted')));
+        })
+    );
+    const onJobCancelled = vi.fn();
+    const worker = new DistributedSwarmWorker(
+      { pollTimeout: 0.1, cancelCheckInterval: 10 },
+      { onJobCancelled }
+    );
+
+    await worker.start();
+    queues.set('swarm:jobs:swarm-agent-jobs', [JSON.stringify(job('late'))]);
+    await waitFor(() => seen !== undefined);
+    sets.set('swarm:s1:cancelled', new Set(['late']));
+
+    await waitFor(() => onJobCancelled.mock.calls.length === 1);
+    expect(seen?.aborted).toBe(true);
+    expect(published).toHaveLength(0);
+    await worker.stop();
   });
 });

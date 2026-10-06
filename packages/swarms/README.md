@@ -421,7 +421,7 @@ const result = await new WorkflowExecutor(cogitator).execute(workflow, {
 });
 ```
 
-`conditionalSwarmNode(swarm, condition, options)` and `parallelSwarmsNode([{ swarm, key }], merge)` are also available. Pass a `SwarmConfig` instead of a `Swarm` to create (and close) a fresh swarm per execution.
+`conditionalSwarmNode(swarm, condition, options)` and `parallelSwarmsNode([{ swarm, key }], merge)` are also available. Pass a `SwarmConfig` instead of a `Swarm` to create (and close) a fresh swarm per execution. The nodes pass the workflow run's abort signal to the swarm, so a node timeout, pause or cancel stops it and its agent turns. Outside workflows, `swarm.run({ input, signal })` takes a signal the same way.
 
 ---
 

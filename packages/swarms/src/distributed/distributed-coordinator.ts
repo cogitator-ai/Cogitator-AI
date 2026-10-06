@@ -55,6 +55,12 @@ export interface SwarmAgentJobPayload {
     blackboard: string;
     messages: string;
     results: string;
+    /**
+     * Redis set of the job ids the coordinator gave up on (the run was aborted or timed out, the
+     * swarm closed, or another attempt of the turn already answered). A worker skips such a job
+     * and aborts it when it shows up while the turn runs
+     */
+    cancelled?: string;
   };
 }
 
@@ -87,8 +93,24 @@ function isJobResult(value: unknown): value is SwarmAgentJobResult {
 }
 
 interface PendingJob {
+  /** The payload as queued: LREM needs the exact string */
+  raw: string;
   resolve: (result: SwarmAgentJobResult) => void;
   reject: (error: Error) => void;
+}
+
+/**
+ * A dispatched turn timed out without the worker's answer. `withdrawn` tells whether the job was
+ * still queued (and is now off the queue) or a worker may still be running it.
+ */
+class UnansweredJobError extends Error {
+  constructor(
+    message: string,
+    readonly withdrawn: boolean
+  ) {
+    super(message);
+    this.name = 'UnansweredJobError';
+  }
 }
 
 export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
@@ -218,25 +240,38 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
 
   /**
    * Dispatch the agent turn as a job, re-dispatching it per `distributed.retry` when it fails
-   * on a worker or times out. Cancellation is never retried.
+   * on a worker or times out. Cancellation is never retried. Every attempt carries the same job
+   * id and payload, a timed-out attempt is taken off the queue before the next one is pushed,
+   * and once the turn settles any copy a worker may still hold is cancelled, so an abandoned
+   * turn never runs on its own later.
    */
   private async dispatchWithRetry(request: AgentRunRequest): Promise<SwarmAgentJobResult> {
     const retry = this.distributed.retry;
     const maxRetries = retry ? Math.max(0, retry.maxRetries ?? 3) : 0;
+    const payload = this.createJobPayload(request);
+    const raw = JSON.stringify(payload);
+    let abandoned = false;
 
-    for (let attempt = 0; ; attempt++) {
-      try {
-        return await this.dispatchJobAndWait(this.createJobPayload(request), request);
-      } catch (error) {
-        if (attempt >= maxRetries || request.signal.aborted || this.closed) throw error;
+    try {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await this.dispatchJobAndWait(payload, raw, request);
+        } catch (error) {
+          if (error instanceof UnansweredJobError && !error.withdrawn) abandoned = true;
+          if (attempt >= maxRetries || request.signal.aborted || this.closed) throw error;
 
-        const delay = computeBackoffDelay(
-          retry?.backoff ?? 'exponential',
-          attempt + 1,
-          retry?.initialDelay ?? 1000,
-          retry?.maxDelay ?? 30000
-        );
-        await abortableDelay(delay, request.signal);
+          const delay = computeBackoffDelay(
+            retry?.backoff ?? 'exponential',
+            attempt + 1,
+            retry?.initialDelay ?? 1000,
+            retry?.maxDelay ?? 30000
+          );
+          await abortableDelay(delay, request.signal);
+        }
+      }
+    } finally {
+      if (!this.closed && (abandoned || request.signal.aborted)) {
+        await this.cancelJob(payload.jobId, raw);
       }
     }
   }
@@ -262,16 +297,58 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
         blackboard: `${this.keyPrefix}:${this.swarmId}:blackboard`,
         messages: `${this.keyPrefix}:${this.swarmId}:messages`,
         results: this.resultsChannel(),
+        cancelled: this.cancelledKey(),
       },
     };
   }
 
+  private queueKey(): string {
+    return swarmJobQueueKey(this.keyPrefix, this.distributed.queue);
+  }
+
+  private cancelledKey(): string {
+    return `${this.keyPrefix}:${this.swarmId}:cancelled`;
+  }
+
+  /** Take a queued copy of the job off the queue; resolves to whether one was there. */
+  private async withdrawJob(raw: string): Promise<boolean> {
+    if (this.redis.status !== 'ready') return false;
+    try {
+      return (await this.redis.lrem(this.queueKey(), 0, raw)) > 0;
+    } catch (error) {
+      console.warn('[DistributedSwarmCoordinator] Failed to withdraw a job:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Make sure no copy of the job runs any more: take it off the queue and add its id to the
+   * cancelled set that workers check before and while running a turn.
+   */
+  private async cancelJob(jobId: string, raw: string): Promise<void> {
+    if (this.redis.status !== 'ready') return;
+    const ttl = Math.max(
+      this.distributed.timeout ?? 300000,
+      this.distributed.cleanupAfter ?? 3600000
+    );
+    try {
+      await this.redis
+        .pipeline()
+        .lrem(this.queueKey(), 0, raw)
+        .sadd(this.cancelledKey(), jobId)
+        .pexpire(this.cancelledKey(), ttl)
+        .exec();
+    } catch (error) {
+      console.warn('[DistributedSwarmCoordinator] Failed to cancel a job:', error);
+    }
+  }
+
   private dispatchJobAndWait(
     payload: SwarmAgentJobPayload,
+    raw: string,
     request: AgentRunRequest
   ): Promise<SwarmAgentJobResult> {
     const timeout = this.distributed.timeout ?? 300000;
-    const queueKey = swarmJobQueueKey(this.keyPrefix, this.distributed.queue);
 
     return new Promise<SwarmAgentJobResult>((resolve, reject) => {
       const cleanup = () => {
@@ -288,7 +365,14 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
 
       const timeoutId = setTimeout(() => {
         cleanup();
-        reject(new Error(`Job timeout for agent '${payload.agentName}' after ${timeout}ms`));
+        void this.withdrawJob(raw).then((withdrawn) => {
+          reject(
+            new UnansweredJobError(
+              `Job timeout for agent '${payload.agentName}' after ${timeout}ms`,
+              withdrawn
+            )
+          );
+        });
       }, timeout);
 
       if (request.signal.aborted) {
@@ -298,6 +382,7 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
       request.signal.addEventListener('abort', onAbort, { once: true });
 
       this.pendingJobs.set(payload.jobId, {
+        raw,
         resolve: (result) => {
           cleanup();
           resolve(result);
@@ -308,7 +393,7 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
         },
       });
 
-      this.redis.rpush(queueKey, JSON.stringify(payload)).catch((error: unknown) => {
+      this.redis.rpush(this.queueKey(), raw).catch((error: unknown) => {
         cleanup();
         reject(error instanceof Error ? error : new Error(String(error)));
       });
@@ -347,6 +432,8 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
 
   async close(): Promise<void> {
     if (this.closed) return;
+    const pending = Array.from(this.pendingJobs, ([jobId, job]) => ({ jobId, raw: job.raw }));
+    await Promise.all(pending.map(({ jobId, raw }) => this.cancelJob(jobId, raw)));
     this.closed = true;
 
     this.rejectPendingJobs(new Error('Distributed swarm coordinator closed'));

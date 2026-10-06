@@ -5,14 +5,15 @@
  */
 
 import { toAgentWireRunResult } from '@cogitator-ai/core';
-import type { AgentJobPayload, AgentJobResult, WorkerRuntime } from '../types';
+import type { AgentJobPayload, AgentJobResult, JobExecutionOptions, WorkerRuntime } from '../types';
 import { createAgentFromConfig, resolveRuntime } from './shared.js';
 
 export { findToolOutput } from '@cogitator-ai/core';
 
 export async function processAgentJob(
   payload: AgentJobPayload,
-  runtime: WorkerRuntime = {}
+  runtime: WorkerRuntime = {},
+  execution: JobExecutionOptions = {}
 ): Promise<AgentJobResult> {
   const { agentConfig, input, threadId, userId } = payload;
 
@@ -22,6 +23,7 @@ export async function processAgentJob(
     input,
     threadId,
     ...(userId !== undefined && { userId }),
+    ...(execution.signal && { signal: execution.signal }),
   });
 
   return {

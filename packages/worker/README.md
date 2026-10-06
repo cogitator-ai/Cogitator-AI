@@ -368,12 +368,18 @@ const metrics = await pool.getMetrics(await queue.getMetrics());
 // Job duration histogram and per-type counters
 pool.metrics.format(await pool.getMetrics(await queue.getMetrics()));
 
-// Graceful shutdown (waits up to 30s for active jobs, then force-closes)
+// Cancel a job this pool is running: its agent runs stop and the job fails without retries
+pool.cancelJob(jobId, 'No longer needed');
+
+// Graceful shutdown (waits up to 30s for active jobs, then aborts them and force-closes;
+// BullMQ hands the aborted jobs to another worker once their locks expire)
 await pool.stop(30000);
 
-// Force shutdown
+// Force shutdown (aborts the jobs still running)
 await pool.forceStop();
 ```
+
+Every job gets the abort signal BullMQ gives it, down to each agent run, workflow node and swarm turn of the job. The processors take it too: `processAgentJob(payload, runtime, { signal })`, and the same third argument for `processWorkflowJob`, `processSwarmJob` and `executeSwarmAgentJob` (`processSwarmAgentJob` reads `signal` from its options).
 
 ---
 
@@ -430,6 +436,7 @@ const worker = new DistributedSwarmWorker(
   {
     onJobCompleted: (job) => console.log('done', job.agentName),
     onJobFailed: (job, error) => console.error(job.agentName, error.message),
+    onJobCancelled: (job) => console.log('the swarm gave up on', job.jobId),
     onError: (error) => console.error(error),
   }
 );
@@ -438,7 +445,7 @@ await worker.start();
 process.on('SIGTERM', () => void worker.stop()); // waits for in-flight turns
 ```
 
-Failed turns are reported back to the swarm as errors, so the swarm's own `errorHandling` (retry, failover, skip) applies. Each turn runs on the model its agent would use in-process, routed by the worker's `cogitator`, so give the worker the same `llm.backends`, plugins and provider keys as the process that runs the swarm.
+Failed turns are reported back to the swarm as errors, so the swarm's own `errorHandling` (retry, failover, skip) applies. A turn the swarm gave up on (its run aborted or timed out, the swarm closed, another attempt answered) is skipped, or aborted while it runs (checked every `cancelCheckInterval` ms, default 1000), and reported to `onJobCancelled` instead of being published. Each turn runs on the model its agent would use in-process, routed by the worker's `cogitator`, so give the worker the same `llm.backends`, plugins and provider keys as the process that runs the swarm.
 
 ---
 

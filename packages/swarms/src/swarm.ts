@@ -157,9 +157,13 @@ export class Swarm {
         `Swarm '${this.config.name}' is already running; create a separate Swarm instance for concurrent runs`
       );
     }
+    const callerSignal = options.signal;
+    if (callerSignal?.aborted) throw abortReason(callerSignal);
     this.running = true;
 
     const runController = new AbortController();
+    const forwardCallerAbort = () => runController.abort(abortReason(callerSignal!));
+    callerSignal?.addEventListener('abort', forwardCallerAbort, { once: true });
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     let detachCallbacks: (() => void) | undefined;
 
@@ -227,6 +231,7 @@ export class Swarm {
       throw failure;
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
+      callerSignal?.removeEventListener('abort', forwardCallerAbort);
       detachCallbacks?.();
       this.coordinator.endRun();
       this.running = false;

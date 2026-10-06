@@ -9,6 +9,7 @@ const clusterInstances: MockCluster[] = [];
 class MockWorker {
   handlers = new Map<string, (...args: unknown[]) => void>();
   close = vi.fn<(force?: boolean) => Promise<void>>().mockResolvedValue(undefined);
+  cancelAllJobs = vi.fn();
 
   constructor(
     readonly name: string,
@@ -45,7 +46,7 @@ class MockRedis {
   constructor(readonly options: Record<string, unknown>) {}
 }
 
-vi.mock('bullmq', () => ({ Worker: MockWorker }));
+vi.mock('bullmq', () => ({ Worker: MockWorker, UnrecoverableError: Error }));
 vi.mock('ioredis', () => ({ Cluster: MockCluster, Redis: MockRedis }));
 vi.mock('../processors/swarm-agent.js', () => ({ processSwarmAgentJob }));
 

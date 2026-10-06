@@ -221,6 +221,18 @@ export interface QueueConfig {
 }
 
 /**
+ * How one job runs on this worker.
+ */
+export interface JobExecutionOptions {
+  /**
+   * Cancels the job: agent runs, workflow nodes and swarm turns in flight are aborted and no
+   * further one starts. `WorkerPool` passes the signal BullMQ gives each job, so
+   * `WorkerPool.cancelJob()` and a shutdown that runs out of time stop the work
+   */
+  signal?: AbortSignal;
+}
+
+/**
  * Runtime dependencies used to execute jobs on a worker
  */
 export interface WorkerRuntime {

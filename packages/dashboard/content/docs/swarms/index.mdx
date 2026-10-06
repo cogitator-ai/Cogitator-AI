@@ -175,7 +175,7 @@ const workflow = new WorkflowBuilder<ReviewState>('review')
   .build();
 ```
 
-The swarm sees the node's step and the workflow state as `workflowContext` in its run context. `parallelSwarmsNode([{ swarm, key, options }, ...], merge)` runs several swarms at once and fails only when all of them fail; its output maps each `key` to its `StrategyResult`.
+The swarm sees the node's step and the workflow state as `workflowContext` in its run context. The node passes the workflow run's abort signal to `swarm.run()`, so a node `timeout`, a pause or a cancel aborts the swarm and its agent turns in flight, and a retry of the node can run the same `Swarm` again. `parallelSwarmsNode([{ swarm, key, options }, ...], merge)` runs several swarms at once and fails only when all of them fail; its output maps each `key` to its `StrategyResult`.
 
 ## Next Steps
 

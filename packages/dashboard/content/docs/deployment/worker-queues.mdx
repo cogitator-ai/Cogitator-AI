@@ -114,7 +114,7 @@ process.on('SIGTERM', async () => {
 });
 ```
 
-`lockDuration` and `stalledInterval` are passed to BullMQ. `forceStop()` closes workers without waiting; `getWorkerCount()` and `isPoolRunning()` report pool state.
+`lockDuration` and `stalledInterval` are passed to BullMQ. Each job gets the abort signal BullMQ gives it, down to every agent run, workflow node and swarm turn of the job: `pool.cancelJob(jobId, reason?)` stops a running job (it fails without retries), and `stop(timeout)` aborts the jobs still running when the timeout runs out before force-closing the workers, so BullMQ hands them to another worker once their locks expire instead of a stalled run going on unlocked. `forceStop()` aborts running jobs and closes workers without waiting, `getWorkerCount()` and `isPoolRunning()` report pool state.
 
 Serialized agents carry tool **schemas** only. The pool resolves tools by name from its `tools` option; jobs that need tools the worker does not provide fail with a clear error instead of running with stubs.
 

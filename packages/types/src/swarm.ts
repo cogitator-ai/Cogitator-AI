@@ -480,6 +480,12 @@ export interface SwarmRunOptions {
   timeout?: number;
   /** Whether to save run history to memory (default: true) */
   saveHistory?: boolean;
+  /**
+   * Cancels the run: the swarm rejects with the signal's reason, its agent turns in flight are
+   * aborted and no further turn starts. `swarmNode` passes the workflow run's signal, so a node
+   * timeout, pause or cancel stops the swarm
+   */
+  signal?: AbortSignal;
 
   onAgentStart?: (agentName: string) => void;
   onAgentComplete?: (agentName: string, result: RunResult) => void;

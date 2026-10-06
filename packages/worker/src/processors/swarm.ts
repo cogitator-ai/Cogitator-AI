@@ -13,6 +13,7 @@ import type {
   SwarmJobPayload,
   SwarmJobResult,
   WorkerRuntime,
+  JobExecutionOptions,
 } from '../types';
 import { createAgentFromConfig, resolveRuntime } from './shared.js';
 
@@ -94,14 +95,18 @@ function countRounds(config: SwarmConfig, votes: Map<string, unknown> | undefine
 
 export async function processSwarmJob(
   payload: SwarmJobPayload,
-  runtime: WorkerRuntime = {}
+  runtime: WorkerRuntime = {},
+  execution: JobExecutionOptions = {}
 ): Promise<SwarmJobResult> {
   const resolved = resolveRuntime(runtime);
   const config = buildSwarmConfig(payload.swarmConfig, resolved, `worker-swarm-${payload.jobId}`);
   const swarm = new Swarm(resolved.cogitator, config);
 
   try {
-    const result = await swarm.run({ input: payload.input });
+    const result = await swarm.run({
+      input: payload.input,
+      ...(execution.signal && { signal: execution.signal }),
+    });
 
     return {
       type: 'swarm',

@@ -82,6 +82,7 @@ interface SwarmRunOptions {
   userId?: string; // every agent run acts for this user
   timeout?: number;
   saveHistory?: boolean; // default: true
+  signal?: AbortSignal; // cancels the run and aborts its agent turns in flight
   onAgentStart?: (agentName: string) => void;
   onAgentComplete?: (agentName: string, result: RunResult) => void;
   onAgentError?: (agentName: string, error: Error) => void;
