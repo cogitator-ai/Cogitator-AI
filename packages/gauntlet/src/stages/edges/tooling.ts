@@ -656,13 +656,19 @@ const deployDocker: StageDefinition = {
 
     const port = await ctx.freePort();
     const container = await ctx.check('the container serves the agent API', async (evidence) => {
+      const secrets = plan.config.secrets ?? [];
+      evidence('secrets', secrets);
+      if (!secrets.includes('OPENAI_API_KEY') || !secrets.includes('API_TOKEN')) {
+        throw new Error(
+          `The deploy plan does not ask for the API key and token: ${secrets.join(', ')}`
+        );
+      }
       const run = await docker([
         'run',
         '-d',
         '-p',
         `127.0.0.1:${port}:3000`,
-        '-e',
-        'OPENAI_API_KEY=gauntlet-placeholder',
+        ...secrets.flatMap((secret) => ['-e', `${secret}=gauntlet-placeholder`]),
         image,
       ]);
       const id = run.stdout.trim();

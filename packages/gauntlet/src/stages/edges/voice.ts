@@ -37,8 +37,26 @@ const ORDER = 'A-7731';
 const CARRIER = 'Kestrel Freight';
 const SPOKEN_QUESTION = 'Where is my order A 7731, and which carrier has it?';
 
-const SpokenAudio = z.object({ audioBase64: z.string(), format: z.string() });
+const SpokenAudio = z.object({
+  type: z.literal('tool-content'),
+  content: z.array(
+    z.discriminatedUnion('type', [
+      z.object({ type: z.literal('text'), text: z.string() }),
+      z.object({ type: z.literal('file'), data: z.string(), mediaType: z.string() }),
+    ])
+  ),
+});
 const Transcript = z.object({ text: z.string() });
+
+/** The audio and the description the model sees, from a `speak_text` result. */
+function spokenParts(result: unknown): { audio: string; mediaType: string; description: string } {
+  const spoken = SpokenAudio.parse(result);
+  const audio = spoken.content.find((part) => part.type === 'file');
+  const description = spoken.content.find((part) => part.type === 'text');
+  if (!audio || audio.data.length === 0) throw new Error('speak_text returned no audio part');
+  if (!description) throw new Error('speak_text returned no description for the model');
+  return { audio: audio.data, mediaType: audio.mediaType, description: description.text };
+}
 
 /** A sine tone (or silence at amplitude 0) as float samples. */
 function tone(ms: number, amplitude: number, rate = RATE, hz = 440): Float32Array {
@@ -316,20 +334,24 @@ const voicePipeline: StageDefinition = {
       const speak = tool(speakVoice);
       const schema = toolToSchema(speak);
       const context = { agentId: 'voice-desk', runId: 'gauntlet-voice-tools', signal: ctx.signal };
-      const spoken = SpokenAudio.parse(
+      const spoken = spokenParts(
         await speak.execute({ text: 'Your parcel is out for delivery.', format: 'pcm16' }, context)
       );
       const heard = Transcript.parse(
-        await transcribe.execute({ audioBase64: spoken.audioBase64 }, context)
+        await transcribe.execute({ audioBase64: spoken.audio }, context)
       );
       evidence('speakParameters', Object.keys(schema.parameters.properties));
-      evidence('audioBytes', Buffer.from(spoken.audioBase64, 'base64').length);
+      evidence('audioBytes', Buffer.from(spoken.audio, 'base64').length);
+      evidence('modelSees', spoken.description);
       evidence('transcript', heard.text);
       if (!('text' in schema.parameters.properties)) {
         throw new Error('speak_text lost its text parameter');
       }
-      if (spoken.format !== 'pcm16' || spoken.audioBase64.length === 0) {
-        throw new Error('speak_text returned no PCM');
+      if (spoken.mediaType !== 'audio/L16') {
+        throw new Error(`speak_text returned ${spoken.mediaType} instead of PCM`);
+      }
+      if (spoken.description.includes(spoken.audio.slice(0, 32))) {
+        throw new Error('The text part the model sees should describe the audio, not carry it');
       }
       if (tts.spoken.at(-1) !== 'Your parcel is out for delivery.') {
         throw new Error('speak_text did not reach the synthesizer');
@@ -373,10 +395,10 @@ const voiceOpenAI: StageDefinition = {
       'speech round-trips through speak_text and transcribe_audio',
       async (evidence) => {
         const spoken = speak.parameters.parse({ text: SPOKEN_QUESTION, format: 'wav' });
-        const audio = SpokenAudio.parse(await speak.execute(spoken));
-        const wav = Buffer.from(audio.audioBase64, 'base64');
+        const audio = spokenParts(await speak.execute(spoken));
+        const wav = Buffer.from(audio.audio, 'base64');
         const heard = Transcript.parse(
-          await transcribe.execute(transcribe.parameters.parse({ audioBase64: audio.audioBase64 }))
+          await transcribe.execute(transcribe.parameters.parse({ audioBase64: audio.audio }))
         );
         evidence('format', detectAudioFormat(wav));
         evidence('bytes', wav.length);
