@@ -48,11 +48,35 @@ describe('voice tools', () => {
       expect(tool.name).toBe('speak_text');
     });
 
-    it('synthesizes text to base64 audio', async () => {
+    it('returns the audio as a file part the model only sees described', async () => {
       const tool = speakTool(mockTTS);
-      const result = await tool.execute({ text: 'Hello' });
-      expect(result).toHaveProperty('audioBase64');
-      expect(result).toHaveProperty('format', 'mp3');
+      const result = await tool.execute({ text: 'Hello', format: 'wav' });
+
+      expect(result).toEqual({
+        type: 'tool-content',
+        content: [
+          {
+            type: 'text',
+            text: 'Synthesized speech: 10 bytes of wav audio, delivered to the application.',
+          },
+          {
+            type: 'file',
+            data: Buffer.from('audio-data').toString('base64'),
+            mediaType: 'audio/wav',
+            filename: 'speech.wav',
+          },
+        ],
+      });
+    });
+
+    it('defaults to mp3', async () => {
+      const result = await speakTool(mockTTS).execute({ text: 'Hello' });
+      expect(result).toMatchObject({
+        content: [
+          { type: 'text' },
+          { type: 'file', mediaType: 'audio/mpeg', filename: 'speech.mp3' },
+        ],
+      });
     });
 
     it('passes voice option', async () => {

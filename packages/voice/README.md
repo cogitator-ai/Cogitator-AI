@@ -528,7 +528,19 @@ const agent = new Agent({
 });
 ```
 
-`VoiceTool` objects carry Zod parameter schemas, so they can be passed to `tool()` as-is. `transcribeTool(stt)` and `speakTool(tts)` create the tools one at a time. `transcribe_audio` takes `audioBase64` (+ optional `language`); `speak_text` takes `text`, `voice`, `format` and returns `{ audioBase64, format }`.
+`VoiceTool` objects carry Zod parameter schemas, so they can be passed to `tool()` as-is. `transcribeTool(stt)` and `speakTool(tts)` create the tools one at a time. `transcribe_audio` takes `audioBase64` (+ optional `language`); `speak_text` takes `text`, `voice`, `format` and returns a `ToolContentResult` (see `toolContent` in `@cogitator-ai/core`): a line of text for the model and a `file` part with the base64 audio (`mediaType` such as `audio/mpeg`, `filename` such as `speech.mp3`). The model sees only the description, so the audio never fills its context, and your application reads it from the result:
+
+```typescript
+await cogitator.run(agent, {
+  input: 'Say good morning',
+  onToolResult: ({ result }) => {
+    const audio = isToolContentResult(result)
+      ? result.content.find((part) => part.type === 'file')
+      : undefined;
+    if (audio) play(Buffer.from(audio.data, 'base64'), audio.mediaType);
+  },
+});
+```
 
 ---
 
