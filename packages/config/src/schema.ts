@@ -40,6 +40,7 @@ export const ProvidersConfigSchema = z.object({
       endpoint: z.string(),
       apiVersion: z.string().optional(),
       deployment: z.string().optional(),
+      model: z.string().optional(),
     })
     .optional(),
   bedrock: z

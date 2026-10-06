@@ -12,6 +12,7 @@ import type { LLMErrorContext } from './errors';
 import {
   DEFAULT_OPENAI_MODEL,
   buildResponsesParams,
+  isOpenAIReasoningModel,
   parseResponsesResponse,
   readResponsesStream,
 } from './openai-responses';
@@ -63,6 +64,11 @@ export class OpenAIBackend extends OpenAICompatibleBackend {
 
   protected override supportsResponseFormatWithTools(): boolean {
     return this.official;
+  }
+
+  /** OpenAI itself, or a proxy in front of it, serves OpenAI's reasoning models under their names. */
+  protected override isReasoningModel(model: string): boolean {
+    return this.provider === 'openai' && isOpenAIReasoningModel(model);
   }
 
   protected override resolveModel(request: ChatRequest): string {

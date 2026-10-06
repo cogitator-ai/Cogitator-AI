@@ -114,6 +114,7 @@ export function createLLMBackend(
         apiKey: providers.azure.apiKey,
         apiVersion: providers.azure.apiVersion,
         deployment: providers.azure.deployment,
+        model: providers.azure.model,
         maxRetries: 0,
       });
 

@@ -99,8 +99,9 @@ llm:
     azure:
       apiKey: xxx
       endpoint: https://xxx.openai.azure.com
-      apiVersion: 2024-02-15-preview # optional
+      apiVersion: 2025-04-01-preview # optional, the default
       deployment: gpt-6.1-sol # optional
+      model: gpt-5 # optional: the model the deployments serve, when their names do not say
     bedrock:
       region: us-east-1 # optional, can use AWS config chain
       accessKeyId: xxx # optional, uses AWS credentials chain

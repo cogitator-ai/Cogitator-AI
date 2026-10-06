@@ -86,14 +86,14 @@ model: 'openai/gpt-6-astra';
 
 The official OpenAI backend talks to the **Responses API**. GPT-6 models only support tool calling there, and GPT-5.x/GPT-6 reject non-default sampling parameters on Chat Completions. Requests are stateless (`store: false`); encrypted reasoning items are kept on `ToolCall.replay` and sent back with the call on the next turn, so reasoning models keep their chain of thought across tool calls (also after a memory round-trip).
 
-| Behaviour          | Details                                                                                                                                                                    |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Wire API selection | `responses` for the official endpoint (no `baseUrl`, or a `baseUrl` on `api.openai.com`); `chat-completions` when `baseUrl` points anywhere else. `api` forces either path |
-| Stop sequences     | The Responses API has no stop parameter, so a request with `stop` sequences is sent through Chat Completions                                                               |
-| Sampling params    | Reasoning models (o-series, GPT-5 and later) get no `temperature` / `top_p`; `gpt-4o` / `gpt-4.1` and `-chat` variants keep them                                           |
-| `maxTokens`        | Sent as `max_output_tokens` on the Responses API; on Chat Completions as `max_completion_tokens` for the official endpoint and `max_tokens` otherwise                      |
-| Structured output  | `responseFormat` maps to `text.format` (`json_object` / `json_schema`); images are sent as `input_image`                                                                   |
-| Usage              | `usage.cachedInputTokens` and `usage.reasoningTokens` are reported when OpenAI returns them (both already included in `inputTokens` / `outputTokens`)                      |
+| Behaviour          | Details                                                                                                                                                                                                                 |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Wire API selection | `responses` for the official endpoint (no `baseUrl`, or a `baseUrl` on `api.openai.com`); `chat-completions` when `baseUrl` points anywhere else. `api` forces either path                                              |
+| Stop sequences     | The Responses API has no stop parameter, so a request with `stop` sequences is sent through Chat Completions                                                                                                            |
+| Sampling params    | Reasoning models (o-series, GPT-5 and later) get no `temperature` / `top_p`, on the Responses API and on Chat Completions alike, including the agent default `0.7`; `gpt-4o` / `gpt-4.1` and `-chat` variants keep them |
+| `maxTokens`        | Sent as `max_output_tokens` on the Responses API; on Chat Completions as `max_completion_tokens` for the official endpoint and for reasoning models, `max_tokens` otherwise                                             |
+| Structured output  | `responseFormat` maps to `text.format` (`json_object` / `json_schema`); images are sent as `input_image`                                                                                                                |
+| Usage              | `usage.cachedInputTokens` and `usage.reasoningTokens` are reported when OpenAI returns them (both already included in `inputTokens` / `outputTokens`)                                                                   |
 
 OpenAI-compatible providers (Azure, Mistral, Groq, Together, DeepSeek, vLLM, any custom `baseUrl`) stay on Chat Completions unchanged. `DEFAULT_OPENAI_MODEL` and `isOpenAIReasoningModel(model)` are exported from `@cogitator-ai/core`.
 
@@ -149,11 +149,14 @@ providers: {
   azure: {
     endpoint: 'https://your-resource.openai.azure.com',
     apiKey: process.env.AZURE_OPENAI_API_KEY!,
-    apiVersion: '2024-02-01',  // optional
-    deployment: 'gpt-6.1-sol',      // optional default deployment
+    apiVersion: '2025-04-01-preview', // optional, the default
+    deployment: 'prod-chat', // optional default deployment
+    model: 'gpt-5', // optional: the model the deployments serve, when their names do not say
   },
 }
 ```
+
+A deployment that serves a reasoning model (o-series, GPT-5 and later) gets no `temperature` / `top_p` and its token limit as `max_completion_tokens`, as Azure requires. The backend tells by the deployment name (`azure/gpt-5`) or, when the name is your own, by `model`. Other deployments keep sampling parameters and `max_tokens`.
 
 ### AWS Bedrock
 

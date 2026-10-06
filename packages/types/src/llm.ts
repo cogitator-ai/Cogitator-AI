@@ -236,8 +236,14 @@ export interface GoogleProviderConfig {
 export interface AzureProviderConfig {
   endpoint: string;
   apiKey: string;
+  /** Defaults to `2025-04-01-preview`, the first version that serves GPT-5 and o-series models */
   apiVersion?: string;
   deployment?: string;
+  /**
+   * The model the deployments serve, e.g. `gpt-5`, when their names do not say. Reasoning models
+   * (o-series, GPT-5 and later) get no sampling parameters and `max_completion_tokens`.
+   */
+  model?: string;
 }
 
 export interface BedrockProviderConfig {

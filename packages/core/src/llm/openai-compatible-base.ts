@@ -31,12 +31,43 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
    */
   protected readonly maxTokensField: 'max_tokens' | 'max_completion_tokens' = 'max_tokens';
 
-  private maxTokensParams(
-    maxTokens: number | undefined
-  ): { max_tokens?: number } | { max_completion_tokens?: number } {
-    return this.maxTokensField === 'max_completion_tokens'
-      ? { max_completion_tokens: maxTokens }
-      : { max_tokens: maxTokens };
+  /**
+   * Whether `model` is an OpenAI reasoning model (o-series, GPT-5 and later), which rejects
+   * `temperature` and `top_p` and takes only `max_completion_tokens`. OpenAI-compatible servers
+   * host other models, so the base answers no.
+   */
+  protected isReasoningModel(_model: string): boolean {
+    return false;
+  }
+
+  /**
+   * The parameters `chat` and `chatStream` share. Reasoning models get no sampling parameters,
+   * whatever the agent sets (its default `temperature` included), and `max_completion_tokens`.
+   */
+  private requestParams(request: ChatRequest, model: string) {
+    const reasoning = this.isReasoningModel(model);
+    const maxTokensField = reasoning ? 'max_completion_tokens' : this.maxTokensField;
+    return {
+      model,
+      ...this.structuredOutput(request),
+      tools: request.tools
+        ? request.tools.map((t) => ({
+            type: 'function' as const,
+            function: {
+              name: t.name,
+              description: t.description,
+              parameters: t.parameters,
+            },
+          }))
+        : undefined,
+      tool_choice: this.convertToolChoice(request.toolChoice),
+      ...(!reasoning && { temperature: request.temperature, top_p: request.topP }),
+      ...(maxTokensField === 'max_completion_tokens'
+        ? { max_completion_tokens: request.maxTokens }
+        : { max_tokens: request.maxTokens }),
+      stop: request.stop,
+      ...(request.reasoning?.effort && { reasoning_effort: request.reasoning.effort }),
+    };
   }
 
   protected resolveModel(request: ChatRequest): string {
@@ -89,26 +120,7 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
 
     let response: OpenAI.Chat.ChatCompletion;
     try {
-      const params = {
-        model,
-        ...this.structuredOutput(request),
-        tools: request.tools
-          ? request.tools.map((t) => ({
-              type: 'function' as const,
-              function: {
-                name: t.name,
-                description: t.description,
-                parameters: t.parameters,
-              },
-            }))
-          : undefined,
-        tool_choice: this.convertToolChoice(request.toolChoice),
-        temperature: request.temperature,
-        top_p: request.topP,
-        ...this.maxTokensParams(request.maxTokens),
-        stop: request.stop,
-        ...(request.reasoning?.effort && { reasoning_effort: request.reasoning.effort }),
-      };
+      const params = this.requestParams(request, model);
 
       response = request.signal
         ? await this.client.chat.completions.create(params, { signal: request.signal })
@@ -159,26 +171,9 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
     let stream: AsyncIterable<OpenAI.Chat.ChatCompletionChunk>;
     try {
       const params = {
-        model,
-        ...this.structuredOutput(request),
-        tools: request.tools
-          ? request.tools.map((t) => ({
-              type: 'function' as const,
-              function: {
-                name: t.name,
-                description: t.description,
-                parameters: t.parameters,
-              },
-            }))
-          : undefined,
-        tool_choice: this.convertToolChoice(request.toolChoice),
-        temperature: request.temperature,
-        top_p: request.topP,
-        ...this.maxTokensParams(request.maxTokens),
-        stop: request.stop,
+        ...this.requestParams(request, model),
         stream: true as const,
         stream_options: { include_usage: true },
-        ...(request.reasoning?.effort && { reasoning_effort: request.reasoning.effort }),
       };
 
       stream = request.signal

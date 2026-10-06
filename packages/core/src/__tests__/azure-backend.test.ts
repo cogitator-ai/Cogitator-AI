@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { AzureOpenAIBackend } from '../llm/azure';
 
 const mockCreate = vi.fn();
+const azureOptions: Array<Record<string, unknown>> = [];
 
 vi.mock('openai', () => {
   class APIError extends Error {
@@ -15,6 +16,9 @@ vi.mock('openai', () => {
   }
 
   class MockAzureOpenAI {
+    constructor(options: Record<string, unknown>) {
+      azureOptions.push(options);
+    }
     chat = {
       completions: {
         create: mockCreate,
@@ -265,6 +269,62 @@ describe('AzureOpenAIBackend', () => {
       });
 
       expect(response.finishReason).toBe('tool_calls');
+    });
+  });
+
+  describe('reasoning deployments', () => {
+    const answer = {
+      id: 'chatcmpl-1',
+      choices: [{ message: { role: 'assistant', content: 'OK' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    };
+    const sent = () => mockCreate.mock.calls[0][0] as Record<string, unknown>;
+    const request = {
+      messages: [{ role: 'user' as const, content: 'x' }],
+      temperature: 0.7,
+      topP: 0.9,
+      maxTokens: 500,
+    };
+
+    it('sends a deployment named after a reasoning model no sampling and max_completion_tokens', async () => {
+      mockCreate.mockResolvedValueOnce(answer);
+
+      await backend.chat({ model: 'gpt-5', ...request });
+
+      expect(sent()).toMatchObject({ max_completion_tokens: 500 });
+      expect(sent()).not.toHaveProperty('max_tokens');
+      expect(sent()).not.toHaveProperty('temperature');
+      expect(sent()).not.toHaveProperty('top_p');
+    });
+
+    it('reads the model family from the model hint when the deployment name does not say', async () => {
+      const hinted = new AzureOpenAIBackend({
+        endpoint: 'https://my-resource.openai.azure.com',
+        apiKey: 'k',
+        deployment: 'prod-chat',
+        model: 'o4-mini',
+      });
+      mockCreate.mockResolvedValueOnce(answer);
+
+      await hinted.chat({ model: '', ...request });
+
+      expect(sent()).toMatchObject({ model: 'prod-chat', max_completion_tokens: 500 });
+      expect(sent()).not.toHaveProperty('temperature');
+    });
+
+    it('keeps sampling and max_tokens for other deployments', async () => {
+      mockCreate.mockResolvedValueOnce(answer);
+
+      await backend.chat({ model: 'gpt-4o', ...request });
+
+      expect(sent()).toMatchObject({ temperature: 0.7, top_p: 0.9, max_tokens: 500 });
+    });
+
+    it('defaults to an API version that serves reasoning models', () => {
+      azureOptions.length = 0;
+      new AzureOpenAIBackend({ endpoint: 'https://my-resource.openai.azure.com', apiKey: 'k' });
+
+      expect(azureOptions[0]).toMatchObject({ apiVersion: '2025-04-01-preview' });
     });
   });
 });

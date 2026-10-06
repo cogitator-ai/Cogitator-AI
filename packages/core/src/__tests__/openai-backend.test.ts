@@ -336,6 +336,49 @@ describe('OpenAIBackend (Chat Completions wire API)', () => {
       expect(mockCreate.mock.calls[0][0]).not.toHaveProperty('max_tokens');
     });
 
+    it('sends a reasoning model no sampling parameters on Chat Completions', async () => {
+      mockCreate.mockResolvedValueOnce({
+        id: 'chatcmpl-123',
+        choices: [{ message: { role: 'assistant', content: 'OK' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 },
+      });
+
+      await backend.chat({
+        model: 'gpt-5',
+        messages: [{ role: 'user', content: 'Test' }],
+        temperature: 0.7,
+        topP: 0.9,
+        maxTokens: 500,
+        stop: ['END'],
+      });
+
+      const params = mockCreate.mock.calls[0][0] as Record<string, unknown>;
+      expect(params).toMatchObject({ max_completion_tokens: 500, stop: ['END'] });
+      expect(params).not.toHaveProperty('temperature');
+      expect(params).not.toHaveProperty('top_p');
+    });
+
+    it('sends a reasoning model max_completion_tokens behind an OpenAI proxy too', async () => {
+      const proxied = new OpenAIBackend({ apiKey: 'k', baseUrl: 'https://proxy.example/v1' });
+      mockCreate.mockResolvedValueOnce({
+        id: 'chatcmpl-123',
+        choices: [{ message: { role: 'assistant', content: 'OK' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 },
+      });
+
+      await proxied.chat({
+        model: 'o4-mini',
+        messages: [{ role: 'user', content: 'Test' }],
+        temperature: 0.7,
+        maxTokens: 500,
+      });
+
+      const params = mockCreate.mock.calls[0][0] as Record<string, unknown>;
+      expect(params).toMatchObject({ max_completion_tokens: 500 });
+      expect(params).not.toHaveProperty('max_tokens');
+      expect(params).not.toHaveProperty('temperature');
+    });
+
     it('uses max_tokens for OpenAI-compatible endpoints', async () => {
       const compatible = new OpenAIBackend({
         apiKey: 'test-api-key',

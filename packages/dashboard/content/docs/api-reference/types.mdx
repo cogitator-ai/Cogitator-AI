@@ -423,8 +423,9 @@ interface GoogleProviderConfig {
 interface AzureProviderConfig {
   endpoint: string;
   apiKey: string;
-  apiVersion?: string;
+  apiVersion?: string; // default '2025-04-01-preview'
   deployment?: string;
+  model?: string; // the model the deployments serve, e.g. 'gpt-5', when their names do not say
 }
 interface BedrockProviderConfig {
   region?: string;
