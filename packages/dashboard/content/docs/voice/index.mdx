@@ -129,7 +129,7 @@ import {
 
 ## Voice Tools
 
-`voiceTools({ stt, tts })` returns two tools for text agents that handle audio as data: `transcribe_audio` (`{ audioBase64, language? }` → `{ text, language, duration }`) and `speak_text` (`{ text, voice?, format? }` → a [`toolContent`](/docs/core/tools#media-results-with-toolcontent) result with a short text for the model and the audio as a `file` part, which reaches your application in `onToolResult` and never the model's context). They are plain `{ name, description, parameters, execute }` objects with Zod parameters — wrap them with `tool()` from `@cogitator-ai/core`:
+`voiceTools({ stt, tts })` returns two tools for text agents that handle audio as data: `transcribe_audio` (`{ audioBase64, language? }` → `{ text, language, duration }`) and `speak_text` (`{ text, voice?, format? }` → a [`toolContent`](/docs/core/tools#media-results-with-toolcontent) result with a short text for the model and the audio as a `file` part, which reaches your application in `onToolResult` and never the model's context). They are plain `{ name, description, parameters, execute }` objects with Zod parameters. Wrap them with `tool()` from `@cogitator-ai/core`:
 
 ```typescript
 import { Agent, tool } from '@cogitator-ai/core';

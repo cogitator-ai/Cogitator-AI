@@ -457,7 +457,7 @@ export class MCPClient {
    * or binary resources. Throws {@link MCPToolError} when the server reports `isError: true`.
    *
    * A call is sent once. Only with `idempotent: true` (a read-only or idempotent tool) is it sent
-   * again after a timeout or a lost connection; otherwise those throw
+   * again after a timeout or a lost connection, otherwise those throw
    * {@link MCPToolInterruptedError}, since the server may have run the call. A connection that was
    * already lost is restored before the call is sent.
    */

@@ -151,7 +151,7 @@ Tool calls are only retried when sending them twice is harmless. After a timeout
 
 ### Tool Results and Errors
 
-`callTool` returns `structuredContent` when the server provides it, otherwise the unwrapped content (text blocks are JSON-parsed when possible, a single block is returned on its own, an empty result is `null`). Content with images, audio or binary resources comes back as a [`toolContent()`](/docs/core/tools#media-results-with-toolcontent) result, so the model sees a screenshot as an image and audio stays out of the context. A tool result with `isError: true` throws `MCPToolError`, so MCP failures show up as ordinary tool errors inside agent runs. Pass an `AbortSignal` to cancel a call; tools created by `getTools()` forward the run's signal automatically.
+`callTool` returns `structuredContent` when the server provides it, otherwise the unwrapped content (text blocks are JSON-parsed when possible, a single block is returned on its own, an empty result is `null`). Content with images, audio or binary resources comes back as a [`toolContent()`](/docs/core/tools#media-results-with-toolcontent) result, so the model sees a screenshot as an image and audio stays out of the context. A tool result with `isError: true` throws `MCPToolError`, so MCP failures show up as ordinary tool errors inside agent runs. Pass an `AbortSignal` to cancel a call, and tools created by `getTools()` forward the run's signal automatically.
 
 ```typescript
 import { MCPToolError } from '@cogitator-ai/mcp';

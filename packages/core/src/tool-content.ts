@@ -23,7 +23,7 @@ const DATA_URL_PREFIX = /^data:[^,]*;base64,/i;
  * Text and images reach the model as the tool message's content (an image as an image part, so
  * a vision model sees it). Files, such as synthesized audio, stay with the result for the
  * application and reach the model only as a short description. Base64 data may be given as a
- * `data:` URL; the prefix is removed.
+ * `data:` URL, whose prefix is removed.
  *
  * @example
  * ```ts

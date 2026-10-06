@@ -417,7 +417,7 @@ export function mcpToCogitator(
 /**
  * Wrap all tools from an MCP client as Cogitator tools
  *
- * Names are normalized for LLM providers and kept distinct; give each server its own
+ * Names are normalized for LLM providers and kept distinct. Give each server its own
  * `namePrefix` when an agent uses several servers whose tools could share names.
  *
  * @example

@@ -353,7 +353,7 @@ const gateway = new Gateway({
 - **parallel** — default, all messages processed immediately
 - **sequential** — FIFO per thread, wait for current to finish
 - **interrupt** — abort the current run (its signal is passed to `cogitator.run`), start the new message
-- **collect** — buffer during processing, merge per chat and topic on idle
+- **collect** - buffer during processing, merge per chat and topic on idle
 
 ## Formatting Pipeline
 
