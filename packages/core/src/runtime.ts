@@ -6,6 +6,7 @@ import type {
   RunBlockReason,
   Message,
   ToolCall,
+  ToolChoice,
   ToolResult,
   LLMBackend,
   ChatResponse,
@@ -97,6 +98,23 @@ function blockReasonOf(
   reason: ChatResponse['finishReason'] | undefined
 ): RunBlockReason | undefined {
   return reason === 'content_filter' || reason === 'refusal' ? reason : undefined;
+}
+
+/**
+ * The tool choice of the next turn for a run asked to use `choice`: `'none'` holds for every turn,
+ * a forced choice (`'required'` or a named function) holds until the run made a tool call, so
+ * the model can then answer, and a named function the turn's tools lack is not forced.
+ */
+function toolChoiceForTurn(
+  choice: ToolChoice | undefined,
+  madeToolCall: boolean,
+  registry: ToolRegistry
+): ToolChoice | undefined {
+  if (choice === undefined || choice === 'auto') return undefined;
+  if (choice === 'none') return 'none';
+  if (madeToolCall) return undefined;
+  if (typeof choice === 'object' && !registry.get(choice.function.name)) return undefined;
+  return choice;
 }
 
 /** A finished turn with no text and no tool calls: nothing a caller could use as an answer. */
@@ -480,6 +498,16 @@ export class Cogitator implements ToolInvoker {
         return { registry: ownerRegistry, targets: handoff.targets };
       };
       let { registry, targets: handoffTargets } = buildRegistry(active);
+      const requestedToolChoice = options.toolChoice;
+      if (
+        typeof requestedToolChoice === 'object' &&
+        !registry.get(requestedToolChoice.function.name)
+      ) {
+        throw new CogitatorError({
+          message: `toolChoice names "${requestedToolChoice.function.name}", which agent "${active.name}" does not have`,
+          code: ErrorCode.VALIDATION_ERROR,
+        });
+      }
 
       let effectiveModel = agentModel;
       let routeProvider = agent.config.provider;
@@ -871,6 +899,9 @@ export class Cogitator implements ToolInvoker {
         agentContext.previousActions = [...allActions];
 
         const llmSpanStart = Date.now();
+        const turnToolChoice = limit.closingTurn
+          ? 'none'
+          : toolChoiceForTurn(requestedToolChoice, allToolCalls.length > 0, registry);
 
         let response: ChatResponse;
         if (streaming) {
@@ -888,7 +919,7 @@ export class Cogitator implements ToolInvoker {
                 reasoning,
                 cache: promptCache,
                 onReasoning: options.onReasoning,
-                ...(limit.closingTurn && { toolChoice: 'none' as const }),
+                ...(turnToolChoice && { toolChoice: turnToolChoice }),
               }
             ),
             abortController.signal
@@ -899,7 +930,7 @@ export class Cogitator implements ToolInvoker {
               model,
               messages,
               tools: registry.getSchemas(),
-              ...(limit.closingTurn && { toolChoice: 'none' as const }),
+              ...(turnToolChoice && { toolChoice: turnToolChoice }),
               temperature: active.config.temperature,
               topP: active.config.topP,
               maxTokens: active.config.maxTokens,

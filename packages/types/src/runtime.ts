@@ -11,6 +11,7 @@ import type {
   LLMRetryConfig,
   PromptCacheConfig,
   ReasoningConfig,
+  ToolChoice,
 } from './llm';
 import type { MemoryConfig } from './memory';
 import type { SandboxManagerConfig } from './sandbox';
@@ -114,6 +115,14 @@ export interface RunOptions {
   onHandoff?: (handoff: HandoffEvent) => void;
   /** Overrides the agent's `reasoning` for this run */
   reasoning?: ReasoningConfig;
+  /**
+   * Which tools the model may or must call. `'none'` keeps it from calling any on every turn.
+   * `'required'` or a named function forces a call on each turn until the model makes one,
+   * then the run goes back to `'auto'` so the model can answer from the results (forcing it on
+   * every turn would loop until `maxIterations`). A named function the agent does not have
+   * fails the run with `VALIDATION_ERROR`.
+   */
+  toolChoice?: ToolChoice;
   /**
    * Decides tool calls that need approval (`requiresApproval`) while the run
    * waits. Return `{ approved }` to go on, or `'pause'` to pause the run: it

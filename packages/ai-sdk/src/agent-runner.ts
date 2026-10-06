@@ -6,6 +6,7 @@ import type {
   RunResult,
   ToolApprovalDecision,
   ToolCall,
+  ToolChoice,
   ToolResult,
 } from '@cogitator-ai/types';
 import { isRecord, toJSONValue, type JSONObject, type JSONValue } from './json.js';
@@ -87,6 +88,8 @@ export interface PreparedAgentCall {
   jsonMode: boolean;
   /** Set when the call continues a paused run instead of starting one */
   resume?: AgentCallResume;
+  /** The run's `toolChoice` when the call forces a tool: `'required'` or one of the agent's */
+  toolChoice?: ToolChoice;
 }
 
 /** The warning of a model that cannot ask for the tool approvals its agent's run waits on. */
@@ -176,8 +179,8 @@ const SYSTEM_PROMPT_WARNING =
 const FOREIGN_TOOL_DETAILS =
   'Cogitator agents only call their own tools; register the tool on the agent instead.';
 
-const FORCED_TOOL_CHOICE_DETAILS =
-  'The agent decides which of its tools to call; a call cannot force one.';
+const FOREIGN_TOOL_CHOICE_DETAILS =
+  'Only a tool of the agent can be forced, so the agent decides which of its tools to call.';
 
 const RESUME_TOOL_CHOICE_DETAILS =
   'toolChoice "none" does not apply to a paused run the prompt resumes: it continues with its tools.';
@@ -229,12 +232,20 @@ export class AgentRunner {
 
     const resume = findResume(call.prompt);
     const toolChoice = call.toolChoice?.type;
-    if (toolChoice === 'required' || toolChoice === 'tool') {
-      warnings.push({
-        type: 'setting',
-        setting: 'toolChoice',
-        details: `toolChoice "${toolChoice}" is not supported. ${FORCED_TOOL_CHOICE_DETAILS}`,
-      });
+    let forcedToolChoice: ToolChoice | undefined;
+    if (toolChoice === 'required') {
+      forcedToolChoice = 'required';
+    } else if (toolChoice === 'tool') {
+      const toolName = call.toolChoice?.toolName;
+      if (toolName && agentToolNames.has(toolName)) {
+        forcedToolChoice = { type: 'function', function: { name: toolName } };
+      } else {
+        warnings.push({
+          type: 'setting',
+          setting: 'toolChoice',
+          details: `toolChoice names "${toolName ?? ''}", which the agent does not have. ${FOREIGN_TOOL_CHOICE_DETAILS}`,
+        });
+      }
     } else if (toolChoice === 'none' && resume) {
       warnings.push({
         type: 'setting',
@@ -258,6 +269,7 @@ export class AgentRunner {
       abortSignal: call.abortSignal,
       jsonMode,
       ...(resume && { resume }),
+      ...(forcedToolChoice && { toolChoice: forcedToolChoice }),
     };
   }
 
@@ -284,7 +296,11 @@ export class AgentRunner {
     };
     const resume = prepared.resume;
     if (!resume) {
-      return this.cogitator.run(prepared.agent, { ...callbacks, input: prepared.input });
+      return this.cogitator.run(prepared.agent, {
+        ...callbacks,
+        input: prepared.input,
+        ...(prepared.toolChoice && { toolChoice: prepared.toolChoice }),
+      });
     }
 
     const reported = new Set<string>();

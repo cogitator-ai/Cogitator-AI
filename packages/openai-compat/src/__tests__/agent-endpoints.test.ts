@@ -402,6 +402,43 @@ describe('OpenAI endpoints over registered agents, through the official SDK', ()
       await vi.waitFor(() => expect(runSignal?.aborted).toBe(true));
     });
 
+    it('passes a mandatory tool_choice on to the run instead of only narrowing the tools', async () => {
+      const tools: OpenAI.ChatCompletionTool[] = [
+        {
+          type: 'function',
+          function: { name: 'get_weather', parameters: { type: 'object', properties: {} } },
+        },
+        {
+          type: 'function',
+          function: { name: 'get_time', parameters: { type: 'object', properties: {} } },
+        },
+      ];
+      const messages: OpenAI.ChatCompletionMessageParam[] = [{ role: 'user', content: 'Hi' }];
+
+      await client.chat.completions.create({
+        model: 'support',
+        messages,
+        tools,
+        tool_choice: 'required',
+      });
+      await client.chat.completions.create({
+        model: 'support',
+        messages,
+        tools,
+        tool_choice: { type: 'function', function: { name: 'get_time' } },
+      });
+      await client.chat.completions.create({ model: 'support', messages, tools });
+
+      expect(runs.map((run) => run.options.toolChoice)).toEqual([
+        'required',
+        { type: 'function', function: { name: 'get_time' } },
+        undefined,
+      ]);
+      expect(runs[1].agent.tools.map((tool) => tool.name)).toEqual(
+        expect.arrayContaining(['get_weather', 'get_time'])
+      );
+    });
+
     it('refuses a tool_choice that names no tool before any output', async () => {
       const response = await fetch(`${server.getBaseUrl()}/chat/completions`, {
         method: 'POST',
@@ -599,6 +636,30 @@ describe('OpenAI endpoints over registered agents, through the official SDK', ()
       expect(text).toContain('"status":"failed"');
       expect(text).not.toContain('10.0.0.5');
       consoleError.mockRestore();
+    });
+
+    it('passes a mandatory tool_choice on to the run', async () => {
+      const tools: OpenAI.Responses.FunctionTool[] = [
+        { type: 'function', name: 'lookup_order', parameters: null, strict: false },
+      ];
+
+      await client.responses.create({
+        model: 'support',
+        input: 'Hi',
+        tools,
+        tool_choice: 'required',
+      });
+      await client.responses.create({
+        model: 'support',
+        input: 'Hi',
+        tools,
+        tool_choice: { type: 'function', name: 'lookup_order' },
+      });
+
+      expect(runs.map((run) => run.options.toolChoice)).toEqual([
+        'required',
+        { type: 'function', function: { name: 'lookup_order' } },
+      ]);
     });
 
     it('refuses tools other than functions', async () => {

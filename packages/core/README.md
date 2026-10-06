@@ -781,6 +781,7 @@ const result = await cog.run(agent, {
   loadHistory: true,
   saveHistory: true,
   parallelToolCalls: false, // default: tool calls of one turn run one after another
+  toolChoice: 'required', // force a tool call until the model makes one, then 'auto'
 
   onApproval: (request) => ({ approved: request.toolName !== 'delete_account' }),
   onHandoff: (handoff) => console.log(`${handoff.from} -> ${handoff.to}`),
@@ -793,6 +794,8 @@ const result = await cog.run(agent, {
   onMemoryError: (error, op) => console.warn(`Memory ${op} failed`),
 });
 ```
+
+`toolChoice` sets which tools the model may or must call. `'none'` keeps it from calling any on every turn. `'required'` or a named function (`{ type: 'function', function: { name: 'weather' } }`) forces a call on each turn until the model makes one, then the run goes back to `'auto'`, so the model can answer from the results instead of calling tools until `maxIterations`. A named function the agent does not have fails the run with `VALIDATION_ERROR`.
 
 `audio` inputs are transcribed with OpenAI `gpt-transcribe` (`llm.providers.openai.apiKey` or `OPENAI_API_KEY`) and prepended to `input` before guardrails and prompt-injection checks run. History loaded from memory is repaired before it is sent: tool results without their assistant call and tool calls without results are dropped, so a truncated window never produces an invalid provider request.
 

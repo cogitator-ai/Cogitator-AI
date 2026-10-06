@@ -9,6 +9,7 @@ import type {
   Tool,
   ToolApprovalDecision,
   ToolApprovalRequest,
+  ToolChoice,
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 import { toZodParameters } from '../../client/openai-adapter';
@@ -172,6 +173,17 @@ export function renderConversation(items: readonly ConversationItem[]): {
  * Refuses a `tool_choice` that names neither a tool of the agent nor a function of the client,
  * so the request fails before any output is sent.
  */
+/**
+ * The run's `toolChoice` for a request's `tool_choice`, when it obliges the model to call a
+ * function: `'required'` or one function by name. The run forces it until the model makes a
+ * call. `'none'` and `'auto'` need none, the tools the turn offers already say it.
+ */
+function mandatoryToolChoice(choice: TurnToolChoice): ToolChoice | undefined {
+  if (choice === 'required') return 'required';
+  if (typeof choice === 'object') return { type: 'function', function: { name: choice.name } };
+  return undefined;
+}
+
 export function assertToolChoice(
   agent: Agent,
   functions: readonly ClientFunction[],
@@ -217,6 +229,7 @@ export class AgentTurnRunner {
     const outputs = new Map<string, string>();
     const { agent, clientFunctions } = this.turnAgent(request, outputs);
     const { input, images, hasHistory } = renderConversation(request.items);
+    const toolChoice = mandatoryToolChoice(request.toolChoice);
     const result = await this.cogitator.run(agent, {
       input,
       ...(images.length > 0 && { images }),
@@ -230,6 +243,7 @@ export class AgentTurnRunner {
       }),
       onApproval: (approval) => this.decideApproval(approval, clientFunctions),
       ...(hasHistory && { loadHistory: false }),
+      ...(toolChoice && { toolChoice }),
     });
     return this.settle(agent, result, outputs, clientFunctions, request, emptyUsage());
   }
@@ -365,10 +379,8 @@ export class AgentTurnRunner {
     let tools: Tool[] = [...base.tools, ...functions.map((fn) => this.clientTool(fn, outputs))];
     if (request.toolChoice === 'none') {
       tools = [];
-    } else if (typeof request.toolChoice === 'object') {
+    } else {
       assertToolChoice(request.agent, request.functions, request.toolChoice);
-      const name = request.toolChoice.name;
-      tools = tools.filter((tool) => tool.name === name);
     }
 
     const clientInstructions = request.items

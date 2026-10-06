@@ -101,7 +101,7 @@ When the model calls a function the client declared, the turn ends with the call
 
 Agent tools that need an approval (`requiresApproval`) are not run when nothing approves them (`guardrails.onToolApproval`): the model is told the tool was not run.
 
-`tool_choice: 'none'` runs the agent without any tool, and `{ type: 'function', ... }` with only the named tool. `required` is treated as `auto`.
+`tool_choice: 'none'` runs the agent without any tool. `required` and `{ type: 'function', ... }` become the run's `toolChoice`: the model must call a tool (or the named one) before it answers, and the run goes back to `auto` once it has.
 
 ## Chat Completions
 

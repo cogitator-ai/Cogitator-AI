@@ -201,13 +201,28 @@ describe('toolChoice', () => {
     expect(result.warnings).toEqual([]);
   });
 
-  it('warns that a forced tool choice is not supported', async () => {
-    const { model } = modelWith('There are 3.');
+  it.each([
+    [{ type: 'required' } as const, 'required'],
+    [
+      { type: 'tool', toolName: 'lookup' } as const,
+      { type: 'function', function: { name: 'lookup' } },
+    ],
+  ])('forces %j on the model until it calls a tool', async (toolChoice, expected) => {
+    const { model, requests } = modelWith('There are 3.');
+    const result = await model.doGenerate({ prompt, toolChoice });
+
+    expect(requests[0].toolChoice).toEqual(expected);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('warns that a tool the agent does not have cannot be forced', async () => {
+    const { model, requests } = modelWith('There are 3.');
     const result = await model.doGenerate({
       prompt,
-      toolChoice: { type: 'tool', toolName: 'lookup' },
+      toolChoice: { type: 'tool', toolName: 'weather' },
     });
 
+    expect(requests[0].toolChoice).toBeUndefined();
     expect(result.warnings).toContainEqual(
       expect.objectContaining({ type: 'unsupported', feature: 'toolChoice' })
     );
