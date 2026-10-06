@@ -237,6 +237,23 @@ vi.mock('@cogitator-ai/core', () => {
   };
 });
 
+const mcpServerTools = vi.hoisted(() => new Map<string, string[]>());
+
+vi.mock('@cogitator-ai/mcp', () => ({
+  MCPClient: {
+    connect: vi.fn(async (config: { command: string }) => ({
+      getTools: async (options?: { namePrefix?: string }) =>
+        (mcpServerTools.get(config.command) ?? []).map((name) => ({
+          name: `${options?.namePrefix ?? ''}${name}`,
+          description: `${name} on ${config.command}`,
+          parameters: {},
+          execute: vi.fn(),
+        })),
+      close: vi.fn(async () => undefined),
+    })),
+  },
+}));
+
 const minimalConfig = {
   name: 'test-bot',
   personality: 'Helpful assistant',
@@ -680,6 +697,34 @@ describe('RuntimeBuilder', () => {
       expect.objectContaining({ approveWords: ['ok'] })
     );
     expect(sentTexts).toEqual(['approve 1 with ok']);
+    await built.cleanup();
+  });
+
+  it('keeps same-named tools of several MCP servers apart and names them to the model', async () => {
+    mcpServerTools.set('github-mcp', ['search', 'create_issue']);
+    mcpServerTools.set('gitlab-mcp', ['search']);
+    const builder = new RuntimeBuilder(
+      {
+        ...minimalConfig,
+        mcpServers: {
+          github: { command: 'github-mcp', args: [] },
+          gitlab: { command: 'gitlab-mcp', args: [] },
+        },
+      },
+      { GOOGLE_API_KEY: 'test-key' }
+    );
+    const built = await builder.build();
+
+    const toolNames = built.agent.tools.map((t: { name: string }) => t.name);
+    expect(toolNames).toEqual(
+      expect.arrayContaining(['mcp_github_search', 'mcp_github_create_issue', 'mcp_gitlab_search'])
+    );
+    expect(new Set(toolNames).size).toBe(toolNames.length);
+    expect(built.agent.instructions).toContain(
+      '- github: mcp_github_search, mcp_github_create_issue\n- gitlab: mcp_gitlab_search'
+    );
+    expect(built.agent.instructions).not.toContain('look for tools with mcp_ prefix');
+
     await built.cleanup();
   });
 

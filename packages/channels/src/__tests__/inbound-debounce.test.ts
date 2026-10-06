@@ -132,4 +132,42 @@ describe('InboundDebouncer', () => {
 
     debouncer.dispose();
   });
+
+  it('keeps messages of different topics in separate buffers', async () => {
+    const debouncer = new InboundDebouncer({ delayMs: 500 }, onFlush);
+    debouncer.enqueue(makeMsg({ text: 'a', topicId: '7' }));
+    debouncer.enqueue(makeMsg({ text: 'b', topicId: '9' }));
+    debouncer.enqueue(makeMsg({ text: 'c', topicId: '7' }));
+
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(onFlush.mock.calls.map(([m]) => [m.text, m.topicId])).toEqual([
+      ['b', '9'],
+      ['a\nc', '7'],
+    ]);
+  });
+
+  it('keeps topicId and replyTo when it merges', async () => {
+    const debouncer = new InboundDebouncer({ delayMs: 500 }, onFlush);
+    debouncer.enqueue(makeMsg({ text: 'see this', topicId: '7', replyTo: '41' }));
+    debouncer.enqueue(makeMsg({ text: 'and this', topicId: '7' }));
+
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(onFlush.mock.calls[0][0]).toMatchObject({
+      text: 'see this\nand this',
+      topicId: '7',
+      replyTo: '41',
+    });
+  });
+
+  it('passes a single message on unchanged', async () => {
+    const debouncer = new InboundDebouncer({ delayMs: 500 }, onFlush);
+    const msg = makeMsg({ text: 'solo', topicId: '7', replyTo: '41' });
+    debouncer.enqueue(msg);
+
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(onFlush.mock.calls[0][0]).toBe(msg);
+  });
 });

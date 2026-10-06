@@ -1,4 +1,5 @@
 import type { ChannelMessage, QueueMode } from '@cogitator-ai/types';
+import { mergeByDestination } from './merge-messages';
 
 interface ThreadState {
   processing: boolean;
@@ -111,30 +112,13 @@ export class MessageQueue {
 
     while (state.queue.length > 0) {
       const batch = state.queue.splice(0, state.queue.length);
-      const merged = this.mergeMessages(batch);
-      try {
-        await this.processor(merged);
-      } catch {}
+      for (const merged of mergeByDestination(batch)) {
+        try {
+          await this.processor(merged);
+        } catch {}
+      }
     }
 
     this.release(threadId, state);
-  }
-
-  private mergeMessages(msgs: ChannelMessage[]): ChannelMessage {
-    if (msgs.length === 1) return msgs[0];
-    const first = msgs[0];
-    const joined: ChannelMessage = {
-      id: first.id,
-      channelType: first.channelType,
-      channelId: first.channelId,
-      userId: first.userId,
-      userName: first.userName,
-      groupId: first.groupId,
-      text: msgs.map((m) => m.text).join('\n'),
-      raw: msgs[msgs.length - 1].raw,
-    };
-    const allAttachments = msgs.flatMap((m) => m.attachments ?? []);
-    if (allAttachments.length > 0) joined.attachments = allAttachments;
-    return joined;
   }
 }
