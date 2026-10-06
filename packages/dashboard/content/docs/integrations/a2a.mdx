@@ -260,7 +260,10 @@ When the agent calls a tool that needs approval (`requiresApproval`), its run pa
 ```typescript
 import { readToolApprovalRequest } from '@cogitator-ai/a2a';
 
-const task = await client.sendMessage({ role: 'user', parts: [{ type: 'text', text: 'Refund A-1' }] });
+const task = await client.sendMessage({
+  role: 'user',
+  parts: [{ type: 'text', text: 'Refund A-1' }],
+});
 
 const waiting = readToolApprovalRequest(task);
 if (waiting) {
@@ -499,6 +502,8 @@ The Agent Card advertises this capability via `capabilities.extendedAgentCard: t
 
 ## Framework Adapters
 
+While a `message/stream` response is open, every adapter writes a `: keep-alive` comment every `sseHeartbeatMs` (an `A2AServer` option, 5 seconds by default, `0` turns it off), so a proxy (nginx closes after 60 s) or Bun (after 10 s) does not cut a run that waits on a slow tool.
+
 All adapters stream only for `message/stream` (an `Accept: text/event-stream` header alone does not switch `message/send` to SSE) and answer JSON-RPC notifications with HTTP `204` and no body. Structurally invalid JSON-RPC requests get `-32600 Invalid Request`; only unparseable JSON gets `-32700 Parse error`.
 
 Errors that are neither A2A errors nor `CogitatorError`s (in parsing, authentication, routing, streams or agent runs) are logged on the server and answered as `-32603 Internal error`, without their text; a `CogitatorError` is answered as `-32603 Internal error: <message>`. A task that fails that way gets the status message `Internal error`, and so does the `failed` status event of a stream.
@@ -624,11 +629,11 @@ const client = new A2AClient('https://remote-agent.example.com', {
 
 ## Task States
 
-| State            | Description                |
-| ---------------- | -------------------------- |
-| `working`        | Agent is processing        |
-| `completed`      | Task finished successfully |
-| `failed`         | Task encountered an error  |
+| State            | Description                                       |
+| ---------------- | ------------------------------------------------- |
+| `working`        | Agent is processing                               |
+| `completed`      | Task finished successfully                        |
+| `failed`         | Task encountered an error                         |
 | `input-required` | Agent needs more input, or approval of tool calls |
-| `canceled`       | Task was canceled          |
-| `rejected`       | Server rejected the task   |
+| `canceled`       | Task was canceled                                 |
+| `rejected`       | Server rejected the task                          |

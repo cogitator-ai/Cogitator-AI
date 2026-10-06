@@ -413,6 +413,32 @@ describe('framework adapters', () => {
     expect(((await allowed.json()) as { error?: unknown }).error).toBeUndefined();
   });
 
+  it('hono adapter writes heartbeats while a streamed run is silent', async () => {
+    const app = a2aHono(
+      new A2AServer({
+        agents: { helper: mockAgent() },
+        cogitator: {
+          run: () => new Promise((resolve) => setTimeout(() => resolve(runResult('late')), 120)),
+        },
+        sseHeartbeatMs: 20,
+      })
+    );
+    const response = await app.request('/a2a', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'message/stream',
+        params: { message: { role: 'user', parts: [{ type: 'text', text: 'hi' }] } },
+        id: 1,
+      }),
+    });
+    const text = await response.text();
+
+    expect(text.match(/^: keep-alive$/gm)?.length).toBeGreaterThanOrEqual(3);
+    expect(text.trimEnd().endsWith('data: [DONE]')).toBe(true);
+  });
+
   it('hono adapter answers notifications with 204', async () => {
     const app = a2aHono(
       new A2AServer({

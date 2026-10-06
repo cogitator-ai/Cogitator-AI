@@ -1,3 +1,4 @@
+import { resolveSseHeartbeatMs } from '@cogitator-ai/server-shared';
 import type { Agent as IAgent } from '@cogitator-ai/types';
 import type {
   A2AServerConfig,
@@ -76,6 +77,8 @@ export class A2AServer {
   private agentCards: Map<string, AgentCard>;
   /** The path the framework adapters serve JSON-RPC on, and the cards advertise without `cardUrl`. */
   readonly basePath: string;
+  /** How often the framework adapters write a heartbeat on an open stream; `0` for never */
+  readonly sseHeartbeatMs: number;
   private cardUrl: string;
   private pushNotificationStore: PushNotificationStore;
   private pushSender: PushNotificationSender;
@@ -98,6 +101,7 @@ export class A2AServer {
         `A2AServer basePath must be a path starting with "/", got "${this.basePath}"`
       );
     }
+    this.sseHeartbeatMs = resolveSseHeartbeatMs(config.sseHeartbeatMs);
     this.cardUrl = config.cardUrl ?? '';
     this.cardSigning = config.cardSigning;
     this.extendedCardGenerator = config.extendedCardGenerator;

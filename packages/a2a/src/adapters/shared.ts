@@ -1,3 +1,4 @@
+import { encodeHeartbeat, startHeartbeat } from '@cogitator-ai/server-shared';
 import type { A2AServer } from '../server.js';
 import type { A2AStreamEvent } from '../types.js';
 import { buildSseErrorEvent } from './sse-error-event.js';
@@ -36,7 +37,9 @@ export const SSE_HEADERS: Record<string, string> = {
 /**
  * Drive a JSON-RPC stream and write SSE frames until it ends, the client
  * disconnects (signal aborted) or a write fails. Errors are reported as a
- * final failed status-update frame.
+ * final failed status-update frame. While the stream is open a heartbeat
+ * comment goes out every `server.sseHeartbeatMs`, so a run that waits on a
+ * slow tool is not cut off by an idle timeout.
  */
 export async function pipeJsonRpcStream(
   server: A2AServer,
@@ -45,6 +48,13 @@ export async function pipeJsonRpcStream(
   signal: AbortSignal,
   write: (frame: string) => void | Promise<void>
 ): Promise<void> {
+  const stopHeartbeat = startHeartbeat(() => {
+    if (signal.aborted) return false;
+    void Promise.resolve()
+      .then(() => write(encodeHeartbeat()))
+      .catch(() => undefined);
+    return true;
+  }, server.sseHeartbeatMs);
   try {
     for await (const event of server.handleJsonRpcStream(body, authToken, signal)) {
       if (signal.aborted) return;
@@ -58,5 +68,7 @@ export async function pipeJsonRpcStream(
     } catch {
       return;
     }
+  } finally {
+    stopHeartbeat();
   }
 }

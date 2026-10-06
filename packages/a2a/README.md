@@ -442,7 +442,7 @@ import { a2aNext } from '@cogitator-ai/a2a/next';
 export const { GET, POST } = a2aNext(server);
 ```
 
-All adapters stream only for `message/stream` (an `Accept: text/event-stream` header alone does not switch `message/send` to SSE), answer JSON-RPC notifications with `204`, and pass the request credentials to the server. Structurally invalid JSON-RPC requests get `-32600 Invalid Request`; only unparseable JSON gets `-32700 Parse error`.
+All adapters stream only for `message/stream` (an `Accept: text/event-stream` header alone does not switch `message/send` to SSE), answer JSON-RPC notifications with `204`, and pass the request credentials to the server. While a stream is open they write a `: keep-alive` comment every `sseHeartbeatMs` (an `A2AServer` option, 5 seconds by default, `0` turns it off), so a proxy or Bun's idle timeout does not cut a run that waits on a slow tool. Structurally invalid JSON-RPC requests get `-32600 Invalid Request`; only unparseable JSON gets `-32700 Parse error`.
 
 Errors that are neither A2A errors nor `CogitatorError`s (in parsing, authentication, routing, streams or agent runs) are logged on the server and answered as `-32603 Internal error`, without their text; a `CogitatorError` is answered as `-32603 Internal error: <message>`. A task that fails that way gets the status message `Internal error`, and so does the `failed` status event of a stream.
 

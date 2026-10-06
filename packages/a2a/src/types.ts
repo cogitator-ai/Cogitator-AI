@@ -262,6 +262,13 @@ export interface A2AServerConfig {
   cardSigning?: { algorithm?: 'hmac-sha256'; secret: string };
   extendedCardGenerator?: (agentName: string) => ExtendedAgentCard;
   allowPrivateUrls?: boolean;
+  /**
+   * How often the framework adapters write an SSE comment on a `message/stream` response
+   * while the run is silent, in milliseconds, so a proxy (nginx closes after 60 s) or the
+   * runtime (Bun after 10 s) does not cut a run that waits on a slow tool. Default: 5000.
+   * `0` turns heartbeats off.
+   */
+  sseHeartbeatMs?: number;
 }
 
 export interface PushNotificationConfig {

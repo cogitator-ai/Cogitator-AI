@@ -3,8 +3,7 @@ import { streamSSE } from 'hono/streaming';
 import type { A2AServer } from '../server.js';
 import { createErrorResponse } from '../json-rpc.js';
 import * as errors from '../errors.js';
-import { buildSseErrorEvent } from './sse-error-event.js';
-import { isStreamRequest } from './shared.js';
+import { isStreamRequest, pipeJsonRpcStream } from './shared.js';
 
 export function a2aHono(server: A2AServer): Hono {
   const app = new Hono();
@@ -34,24 +33,9 @@ export function a2aHono(server: A2AServer): Hono {
       return streamSSE(c, async (stream) => {
         const controller = new AbortController();
         stream.onAbort(() => controller.abort());
-        try {
-          for await (const event of server.handleJsonRpcStream(
-            body,
-            authToken,
-            controller.signal
-          )) {
-            if (controller.signal.aborted) return;
-            await stream.writeSSE({ data: JSON.stringify(event) });
-          }
-          if (!controller.signal.aborted) await stream.writeSSE({ data: '[DONE]' });
-        } catch (error) {
-          if (controller.signal.aborted) return;
-          try {
-            await stream.writeSSE({ data: JSON.stringify(buildSseErrorEvent(error)) });
-          } catch {
-            return;
-          }
-        }
+        await pipeJsonRpcStream(server, body, authToken, controller.signal, async (frame) => {
+          await stream.write(frame);
+        });
       });
     }
 
