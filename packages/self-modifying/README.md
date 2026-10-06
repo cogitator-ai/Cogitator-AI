@@ -45,13 +45,15 @@ A provider prefix that matches the backend (`ollama/` for `OllamaBackend`) is st
 
 ### Agent Options
 
-| Option                    | Description                                                                                       |
-| ------------------------- | ------------------------------------------------------------------------------------------------- |
-| `agent`                   | The agent to run (model, instructions, tools, `temperature`, `maxTokens`, `maxIterations`)        |
-| `llm`                     | LLM backend used for the agent and for every self-modification step                               |
-| `config`                  | Partial `SelfModifyingConfig`; `enabled: false` turns the wrapper into a plain tool-calling agent |
-| `modificationConstraints` | Extra safety / capability / resource / custom constraints merged with the defaults                |
-| `availableModels`         | Models architecture evolution may switch to; without it the model is never changed                |
+| Option                    | Description                                                                                        |
+| ------------------------- | -------------------------------------------------------------------------------------------------- |
+| `agent`                   | The agent to run (model, instructions, tools, `temperature`, `maxTokens`, `maxIterations`)         |
+| `llm`                     | LLM backend used for the agent and for every self-modification step                                |
+| `config`                  | Partial `SelfModifyingConfig`; `enabled: false` turns the wrapper into a plain tool-calling agent  |
+| `modificationConstraints` | Extra safety / capability / resource / custom constraints merged with the defaults                 |
+| `availableModels`         | Models architecture evolution may switch to; without it the model is never changed                 |
+| `toolInvoker`             | Runs tool calls like a Cogitator run (approval, guardrails, sandbox, timeout), e.g. your Cogitator |
+| `onApproval`              | Decides tool calls that need approval; a call nobody approves is refused                           |
 
 `config.maxInternalTokens` bounds the output tokens of every internal LLM call (gap analysis, tool generation and review, architecture evolution). Unset leaves the backend default. It keeps reasoning models from spending minutes on those steps. Meta-reasoning has its own bound, `metaReasoning.maxMetaTokens`. Used on their own, `GapAnalyzer`, `ToolGenerator`, `ToolValidator`, `CapabilityAnalyzer` and `ParameterOptimizer` take the same bound as `maxTokens`.
 
@@ -59,7 +61,7 @@ A provider prefix that matches the backend (`ollama/` for `OllamaBackend`) is st
 
 - Runs are serialized: concurrent `run()` calls on one instance execute one after another.
 - The agent's own `temperature` and `maxTokens` form the baseline configuration.
-- Tool calls are validated against each tool's Zod schema before execution; `toolStrategy: 'parallel'` (or `'adaptive'` with distinct tools) runs them concurrently.
+- Tool calls run through `toolInvoker` (default: a Cogitator of the agent's own, released by `close()`), so arguments are validated against the tool's Zod or JSON schema, `requiresApproval` is asked through `onApproval` (else the invoker's `guardrails.onToolApproval`, else the call is refused, since a self-modifying run cannot pause), the guardrails apply, sandboxed tools run in the sandbox and `tool.timeout` holds. `toolStrategy: 'parallel'` (or `'adaptive'` with distinct tools) runs them concurrently.
 - `reflectionDepth > 0` adds self-review passes over the final answer.
 - A step is complete when the model returns a non-empty answer that was not truncated. Meta-reasoning only intervenes (and the step is retried, up to `maxAdaptations` times) when a step is incomplete.
 

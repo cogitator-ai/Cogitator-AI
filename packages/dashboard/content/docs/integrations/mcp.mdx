@@ -211,6 +211,12 @@ server.registerTools([calculator]);
 await server.start();
 ```
 
+Tool calls run the way an agent run executes them, through a `ToolInvoker` (`cogitator.invokeTool()`): the arguments are validated, a tool with `requiresApproval` (or one the guardrails flag) is asked from the person at the client through MCP elicitation, the guardrails apply, sandboxed tools run in the sandbox and `tool.timeout` holds. Pass your `Cogitator` as `toolInvoker` so its sandbox and guardrails are the ones used, otherwise the server uses a Cogitator of its own without configuration. A call that needs approval when nobody can be asked (a client without elicitation, or HTTP without `sessions: true`) does not run: it comes back as an `isError` result that says so, unless the invoker's `guardrails.onToolApproval` decides it.
+
+```typescript
+const server = new MCPServer({ name: 'ops', version: '1.0.0', transport: 'stdio', toolInvoker: cog });
+```
+
 `serveMCPTools(tools, config)` does the same in one call and returns the started server. Tools, resources and prompts can be added one by one (`registerTool`, `registerResource`, `registerPrompt`) or in batches (`registerTools`, `registerResources`, `registerPrompts`), removed with the matching `unregister*` methods and listed with `getRegisteredTools()` / `getRegisteredResources()` / `getRegisteredPrompts()`.
 
 ### HTTP Transport

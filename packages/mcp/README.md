@@ -343,10 +343,14 @@ interface MCPServerConfig {
   sessions?: boolean; // Session per client (needed for elicitation); default: off
 
   logging?: boolean; // Diagnostic logging to stderr (stdout stays clean for stdio JSON-RPC)
+
+  toolInvoker?: ToolInvoker; // Runs tool calls, e.g. your Cogitator; default: one of its own
 }
 ```
 
-Tool arguments are validated by the MCP SDK against the tool's full Zod schema (including refinements, transforms and object modifiers such as `z.looseObject`). Invalid arguments and thrown errors are returned to the client as `isError` tool results. Errors thrown by resource `read` and prompt `get` handlers are returned as JSON-RPC errors.
+Tool calls run the way an agent run executes them, through a `ToolInvoker` (`cogitator.invokeTool()`): the arguments are validated, a tool with `requiresApproval` (or one the guardrails flag) is asked from the person at the client through MCP elicitation, the guardrails apply, sandboxed tools run in the sandbox and `tool.timeout` holds. Pass your `Cogitator` as `toolInvoker` so its sandbox and guardrails are the ones used, otherwise the server uses a Cogitator of its own without configuration. A call that needs approval when nobody can be asked (a client without elicitation, or HTTP without `sessions: true`) does not run: it comes back as an `isError` result that says so, unless the invoker's `guardrails.onToolApproval` decides it.
+
+Tool arguments are validated once, by the MCP SDK against the tool's full Zod schema (including refinements, transforms and object modifiers such as `z.looseObject`). Invalid arguments and thrown errors are returned to the client as `isError` tool results. Errors thrown by resource `read` and prompt `get` handlers are returned as JSON-RPC errors.
 
 ### Server Methods
 
@@ -638,12 +642,13 @@ Create a script that Claude Desktop can execute:
 ```typescript
 // serve-tools.ts
 import { serveMCPTools } from '@cogitator-ai/mcp';
-import { builtinTools } from '@cogitator-ai/core';
+import { Cogitator, calculator, datetime, webSearch } from '@cogitator-ai/core';
 
-await serveMCPTools([...builtinTools], {
+await serveMCPTools([calculator, datetime, webSearch], {
   name: 'cogitator-tools',
   version: '1.0.0',
   transport: 'stdio',
+  toolInvoker: new Cogitator({ sandbox: { allowNativeFallback: false } }),
 });
 ```
 

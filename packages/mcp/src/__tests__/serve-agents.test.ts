@@ -181,6 +181,29 @@ describe('serveAgents', () => {
     });
   });
 
+  it('runs its tool calls through the host when the host is a tool invoker', async () => {
+    const { host } = approvingHost();
+    const invokeTool = vi.fn<NonNullable<AgentHost['invokeTool']>>(async (tool, args, options) => ({
+      callId: options?.toolCallId ?? 'call',
+      name: tool.name,
+      result: await tool.execute(args, {
+        agentId: 'mcp-server',
+        runId: 'r',
+        signal: new AbortController().signal,
+      }),
+    }));
+    const url = await serveHttp({ ...host, invokeTool }, [fakeAgent('support')]);
+    const client = await connectClient(url);
+
+    await client.callTool('support', { task: 'hello' });
+
+    expect(invokeTool).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'support' }),
+      { task: 'hello' },
+      expect.objectContaining({ agentId: 'mcp-server' })
+    );
+  });
+
   it('asks the user at the client through elicitation', async () => {
     const { host, decisions } = approvingHost();
     const url = await serveHttp(host, [fakeAgent('support', { tools: [refundTool] })]);

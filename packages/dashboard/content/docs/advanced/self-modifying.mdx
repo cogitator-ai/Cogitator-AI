@@ -47,6 +47,8 @@ console.log('Adaptations:', result.adaptationsMade.length);
 
 The backend's provider prefix (`openai/` here) is stripped from the agent model, the agent's `temperature` and `maxTokens` form the baseline configuration, and concurrent `run()` calls on one instance are serialized. Set `config.enabled: false` to run as a plain tool-calling agent. Pass `modificationConstraints` to add constraints and `availableModels` to let architecture evolution switch models.
 
+The agent's tool calls run the way a Cogitator run executes them, through a `ToolInvoker` (`cogitator.invokeTool()`): arguments validated against the tool's schema (Zod or JSON Schema), approval asked for calls that need it, the guardrails applied, sandboxed tools run in the sandbox and `tool.timeout` kept. Pass your Cogitator as `toolInvoker` so its sandbox and guardrails apply, and `onApproval` to decide tools with `requiresApproval`. A self-modifying run cannot pause, so a call nobody approves is refused and the model is told why. Without `toolInvoker` the agent uses a Cogitator of its own, which `close()` releases.
+
 `config.maxInternalTokens` bounds the output tokens of every internal LLM call (gap analysis, tool generation and review, architecture evolution), which keeps reasoning models from spending minutes on those steps. Unset leaves the backend default. Meta-reasoning has its own bound, `metaReasoning.maxMetaTokens`. The components used on their own (`GapAnalyzer`, `ToolGenerator`, `ToolValidator`, `CapabilityAnalyzer`, `ParameterOptimizer`) take it as `maxTokens`.
 
 ## Tool Self-Generation

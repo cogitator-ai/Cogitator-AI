@@ -11,14 +11,19 @@ import type {
   Tool,
   ToolApprovalDecision,
   ToolApprovalRequest,
+  ToolInvoker,
   ToolSchema,
 } from '@cogitator-ai/types';
 import { z } from 'zod';
 import type { MCPServerConfig, MCPToolContext } from '../types';
 import { MCPServer } from './mcp-server';
+import { elicitApproval } from './approval';
 
-/** What serving agents needs from a Cogitator: running them and resuming paused runs. */
-export interface AgentHost {
+/**
+ * What serving agents needs from a Cogitator: running them and resuming paused runs. A host that
+ * is also a `ToolInvoker` (a `Cogitator` is) runs the server's tool calls too.
+ */
+export interface AgentHost extends Partial<ToolInvoker> {
   run(agent: Agent, options: RunOptions): Promise<RunResult>;
   resume(agent: Agent, target: RunCheckpoint | string, options?: ResumeOptions): Promise<RunResult>;
 }
@@ -123,11 +128,13 @@ export async function serveAgents(
 ): Promise<MCPServer> {
   const list = Array.isArray(agents) ? agents : [agents as Agent];
   const { toolNames, ...serverConfig } = config;
+  const invokeTool = host.invokeTool?.bind(host);
   const server = new MCPServer({
     name: 'cogitator-agents',
     version: '1.0.0',
     transport: 'stdio',
     sessions: true,
+    ...(invokeTool && { toolInvoker: { invokeTool } }),
     ...serverConfig,
   });
   server.registerTools(agentTools(host, list, toolNames));
@@ -140,26 +147,8 @@ function runContext(context: MCPToolContext) {
   return {
     signal: context.signal,
     ...(context.userId !== undefined && { userId: context.userId }),
-    onApproval: async (request: ToolApprovalRequest): Promise<ToolApprovalDecision | 'pause'> => {
-      if (!elicit) return 'pause';
-      const reply = await elicit({
-        message: `The agent wants to run ${request.toolName} (${request.description}) with ${JSON.stringify(request.arguments)}. Approve?`,
-        schema: {
-          type: 'object',
-          properties: {
-            approve: { type: 'boolean', title: 'Approve', default: false },
-            reason: { type: 'string', title: 'Reason (if you decline)' },
-          },
-          required: ['approve'],
-        },
-      });
-      if (!reply) return 'pause';
-      if (reply.action !== 'accept') return { approved: false, reason: 'The user declined' };
-      const reason = typeof reply.content.reason === 'string' ? reply.content.reason : undefined;
-      return reply.content.approve === true
-        ? { approved: true }
-        : { approved: false, ...(reason && { reason }) };
-    },
+    onApproval: async (request: ToolApprovalRequest): Promise<ToolApprovalDecision | 'pause'> =>
+      (await elicitApproval(elicit, request)) ?? 'pause',
   };
 }
 

@@ -1202,6 +1202,9 @@ importers:
 
   packages/mcp:
     dependencies:
+      '@cogitator-ai/core':
+        specifier: workspace:*
+        version: link:../core
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
@@ -1473,6 +1476,9 @@ importers:
 
   packages/self-modifying:
     dependencies:
+      '@cogitator-ai/core':
+        specifier: workspace:*
+        version: link:../core
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types

@@ -3,7 +3,7 @@
  */
 
 import type { IncomingMessage } from 'node:http';
-import type { ToolContext } from '@cogitator-ai/types';
+import type { ToolContext, ToolInvoker } from '@cogitator-ai/types';
 
 export type MCPTransportType = 'stdio' | 'http' | 'sse';
 
@@ -232,6 +232,14 @@ export interface MCPServerConfig {
 
   /** Enable logging */
   logging?: boolean;
+
+  /**
+   * Runs the server's tool calls the way an agent run executes them: schema validation,
+   * approval, the guardrails, the sandbox for sandboxed tools and `tool.timeout`. Pass your
+   * `Cogitator` so its sandbox and guardrails apply. Default: a Cogitator of the server's own
+   * without configuration, closed by `stop()`
+   */
+  toolInvoker?: ToolInvoker;
 }
 
 export interface MCPToolDefinition {
