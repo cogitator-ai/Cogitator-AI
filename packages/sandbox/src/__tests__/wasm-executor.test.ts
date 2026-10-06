@@ -229,6 +229,21 @@ describe('WasmSandboxExecutor', () => {
       }
     });
 
+    it('marks output cut at the output limit as truncated', async () => {
+      await executor.connect();
+
+      const { mockCall } = await getMocks();
+      mockCall.mockResolvedValueOnce(new TextEncoder().encode('x'.repeat(60_000)));
+      mockCall.mockResolvedValueOnce(new TextEncoder().encode('short'));
+
+      const long = await executor.execute({ command: ['test'] }, defaultConfig);
+      const short = await executor.execute({ command: ['test'] }, defaultConfig);
+
+      expect(long.success && long.data.truncated).toBe(true);
+      expect(long.success && long.data.stdout.length).toBe(50_000);
+      expect(short.success && short.data.truncated).toBeUndefined();
+    });
+
     it('handles plugin call error', async () => {
       await executor.connect();
 

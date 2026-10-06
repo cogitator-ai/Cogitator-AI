@@ -330,3 +330,94 @@ describe('executeTool', () => {
     expect(result.error).toBe('Run aborted by user');
   });
 });
+
+describe('executeTool in the WASM sandbox', () => {
+  const wasmTool = () =>
+    tool({
+      name: 'calculate',
+      description: 'Calculate',
+      parameters: z.object({ expression: z.string() }),
+      sandbox: { type: 'wasm', wasmModule: 'calc.wasm' },
+      execute: async () => ({ native: true }),
+    });
+
+  const runWith = async (data: {
+    stdout: string;
+    stderr: string;
+    exitCode: number;
+    timedOut: boolean;
+    duration: number;
+    truncated?: boolean;
+  }) => {
+    const registry = new ToolRegistry();
+    registry.register(wasmTool());
+    const manager: SandboxManager = {
+      initialize: async () => undefined,
+      execute: async () => ({ success: true, data }),
+      isDockerAvailable: async () => false,
+      shutdown: async () => undefined,
+    };
+    return executeTool(
+      registry,
+      { id: 'tc_1', name: 'calculate', arguments: { expression: '1/0' } },
+      'run_1',
+      'agent_1',
+      manager,
+      undefined,
+      false,
+      async () => manager
+    );
+  };
+
+  it('reports a trap or panic as an error with its stderr', async () => {
+    const result = await runWith({
+      stdout: '',
+      stderr: 'wasm trap: unreachable',
+      exitCode: 1,
+      timedOut: false,
+      duration: 3,
+    });
+
+    expect(result.result).toBeNull();
+    expect(result.error).toBe(
+      'Tool "calculate" failed in the WASM sandbox (exit code 1): wasm trap: unreachable'
+    );
+  });
+
+  it('reports a timeout as an error', async () => {
+    const result = await runWith({
+      stdout: '',
+      stderr: 'Execution timed out',
+      exitCode: 124,
+      timedOut: true,
+      duration: 5000,
+    });
+
+    expect(result.error).toBe('Tool "calculate" timed out in the WASM sandbox after 5000ms');
+  });
+
+  it('reports output cut at the sandbox limit as an error', async () => {
+    const result = await runWith({
+      stdout: '{"result": "' + 'x'.repeat(100),
+      stderr: '',
+      exitCode: 0,
+      timedOut: false,
+      duration: 3,
+      truncated: true,
+    });
+
+    expect(result.error).toMatch(/wrote more output than the WASM sandbox keeps/);
+  });
+
+  it('parses the JSON a successful run writes', async () => {
+    const result = await runWith({
+      stdout: '{"result":4}',
+      stderr: '',
+      exitCode: 0,
+      timedOut: false,
+      duration: 3,
+    });
+
+    expect(result).toEqual({ callId: 'tc_1', name: 'calculate', result: { result: 4 } });
+  });
+});

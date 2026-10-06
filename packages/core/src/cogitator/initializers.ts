@@ -52,6 +52,7 @@ export type SandboxManager = {
       exitCode: number;
       timedOut: boolean;
       duration: number;
+      truncated?: boolean;
     };
     error?: string;
   }>;

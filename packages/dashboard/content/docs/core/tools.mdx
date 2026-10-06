@@ -271,7 +271,7 @@ Recursive schemas work too. A `z.lazy()` schema (a tree, a nested comment thread
 Tools that run untrusted commands can declare a sandbox. A sandboxed tool does not run its `execute` function: the runtime executes the call in the sandbox instead (install `@cogitator-ai/sandbox`):
 
 - `type: 'docker'` runs the `command` argument with `sh -c` in a container of `image`, with optional `cwd` and `env` arguments, and returns `{ stdout, stderr, exitCode, timedOut, duration, command }`.
-- `type: 'wasm'` passes the arguments as JSON on stdin to `wasmModule` and returns its stdout, parsed as JSON when possible.
+- `type: 'wasm'` passes the arguments as JSON on stdin to `wasmModule` and returns its stdout, parsed as JSON when possible. A run that traps or panics, times out, or writes more than the sandbox keeps comes back to the model as a tool error, never as an empty result.
 
 ```typescript
 const runPython = tool({

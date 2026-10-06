@@ -9,6 +9,8 @@ import type {
 import { ToolRegistry } from '../registry';
 import { getLogger } from '../logger';
 import type { SandboxManager } from './initializers';
+
+type SandboxRunOutput = NonNullable<Awaited<ReturnType<SandboxManager['execute']>>['data']>;
 import type { ConstitutionalAI } from '../constitutional/index';
 import { createLinkedAbortController } from '../utils/abort';
 import { toolPartsToMessageContent, toolPartsToText, toolResultParts } from '../tool-content';
@@ -271,6 +273,10 @@ async function executeInSandbox(
   }
 
   if (isWasm) {
+    const failure = wasmFailure(tool, result.data);
+    if (failure) {
+      return { callId: toolCall.id, name: toolCall.name, result: null, error: failure };
+    }
     try {
       const parsed = JSON.parse(result.data.stdout);
       return {
@@ -299,6 +305,24 @@ async function executeInSandbox(
       command: args.command,
     },
   };
+}
+
+/**
+ * Why a WASM tool's run produced no usable result: it timed out, exited with an error (a panic
+ * or a trap), or wrote more than the sandbox keeps, which leaves its JSON cut off.
+ */
+function wasmFailure(tool: Tool, data: SandboxRunOutput): string | undefined {
+  const stderr = data.stderr.trim();
+  if (data.timedOut) {
+    return `Tool "${tool.name}" timed out in the WASM sandbox after ${data.duration}ms`;
+  }
+  if (data.exitCode !== 0) {
+    return `Tool "${tool.name}" failed in the WASM sandbox (exit code ${data.exitCode})${stderr ? `: ${stderr}` : ''}`;
+  }
+  if (data.truncated) {
+    return `Tool "${tool.name}" wrote more output than the WASM sandbox keeps (${data.stdout.length} characters), so its result was cut off`;
+  }
+  return undefined;
 }
 
 /**
