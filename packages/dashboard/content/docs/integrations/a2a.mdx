@@ -226,7 +226,7 @@ const result = await cogitator.run(orchestrator, {
 
 The orchestrator agent calls the remote researcher via A2A protocol transparently -- it looks like a regular tool call with a single `task` string parameter. `asToolFromCard` names and describes the tool from the card unless you override them; `client.asTool({ name?, description?, timeout? })` does the same without a card (default name `a2a_remote_agent`). The tool is marked with the `external` side effect and forwards the run's abort signal.
 
-The tool result is `{ output, success, error?, taskId?, state? }`; when the remote agent asks a question (`state: 'input-required'`), `output` holds the question and `taskId` lets you continue the task.
+The tool result is `{ output, success, error?, taskId?, state?, pendingApprovals? }`; when the remote agent asks a question (`state: 'input-required'`), `output` holds the question and `taskId` lets you continue the task. When it waits for [tool approvals](#tool-approvals), `pendingApprovals` lists the calls.
 
 ## Multi-Turn Conversations
 
@@ -252,6 +252,26 @@ console.log(task.contextId === followUp.contextId); // true
 ### Server-Side
 
 On the server, multi-turn is handled automatically. When a message includes a `taskId`, the server appends the new message to the existing task history and re-runs the agent with the task transcript as context, so follow-ups work even without a memory adapter. Runs are threaded by `contextId`, artifacts accumulate across turns, and a task that is still running cannot be continued concurrently.
+
+## Tool Approvals
+
+When the agent calls a tool that needs approval (`requiresApproval`), its run pauses and the task waits in `input-required`, never `completed`. The agent's message carries the waiting calls in a data part (`{ kind: 'tool-approval-request', approvals: [{ toolCallId, toolName, arguments, description }] }`) and `status.message` says `Waiting for approval of <tools>`. The client answers with a `tool-approval-response` data part in the message that continues the task, and the server resumes the run with those decisions:
+
+```typescript
+import { readToolApprovalRequest } from '@cogitator-ai/a2a';
+
+const task = await client.sendMessage({ role: 'user', parts: [{ type: 'text', text: 'Refund A-1' }] });
+
+const waiting = readToolApprovalRequest(task);
+if (waiting) {
+  const done = await client.answerApprovals(task.id, {
+    decisions: { [waiting[0].toolCallId]: { approved: true } },
+    // or defaultDecision: { approved: false, reason: 'not eligible' }
+  });
+}
+```
+
+`toolApprovalResponsePart({ decisions?, defaultDecision? })` builds the part for a hand-written message. Calls left without a decision keep the task waiting. A text reply instead of decisions moves on: the waiting calls are declined and the agent answers the new message. The server resumes through `cogitator.resume()` by the task's `contextId`, so the paused run has to be where the server Cogitator keeps paused runs (its memory, or `runCheckpoints` shared by every server instance). `asTool()` reports such a remote task with `success: false`, the `taskId` and the calls in `pendingApprovals`.
 
 ## Listing Tasks
 
@@ -609,6 +629,6 @@ const client = new A2AClient('https://remote-agent.example.com', {
 | `working`        | Agent is processing        |
 | `completed`      | Task finished successfully |
 | `failed`         | Task encountered an error  |
-| `input-required` | Agent needs more input     |
+| `input-required` | Agent needs more input, or approval of tool calls |
 | `canceled`       | Task was canceled          |
 | `rejected`       | Server rejected the task   |

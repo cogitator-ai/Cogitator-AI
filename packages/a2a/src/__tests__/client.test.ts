@@ -274,6 +274,35 @@ describe('A2AClient', () => {
       expect(result).toHaveProperty('success', false);
     });
 
+    it('reports the calls a remote task waits on for approval', async () => {
+      const waiting = createMockTask('task_wait', 'input-required', 'Let me refund that.');
+      waiting.history[1].parts.push({
+        type: 'data',
+        mimeType: 'application/json',
+        data: {
+          kind: 'tool-approval-request',
+          approvals: [
+            { toolCallId: 'c1', toolName: 'refund', arguments: { order: 'A-1' }, description: 'R' },
+          ],
+        },
+      });
+      mockSendResult = waiting;
+      const client = new A2AClient(baseUrl);
+      const result = await client
+        .asTool()
+        .execute(
+          { task: 'Refund A-1' },
+          { agentId: 'test', runId: 'run_1', signal: new AbortController().signal }
+        );
+
+      expect(result.success).toBe(false);
+      expect(result.taskId).toBe('task_wait');
+      expect(result.error).toBe(
+        'Remote agent waits for approval of refund before it continues this task'
+      );
+      expect(result.pendingApprovals?.map((p) => p.toolCallId)).toEqual(['c1']);
+    });
+
     it('should use default name and description', () => {
       const client = new A2AClient(baseUrl);
       const tool = client.asTool();

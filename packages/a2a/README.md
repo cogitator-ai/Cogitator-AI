@@ -114,7 +114,7 @@ const result = await cogitator.run(orchestrator, {
 });
 ```
 
-The tool returns `{ output, success, error?, taskId?, state? }`. `output` is the remote agent's latest answer. When the remote task needs more input (`state: 'input-required'`), `success` is `false`, `output` carries the remote agent's question and `taskId` lets you continue the task with `client.continueTask()`. The run's abort signal and the tool timeout are forwarded to the HTTP request.
+The tool returns `{ output, success, error?, taskId?, state?, pendingApprovals? }`. `output` is the remote agent's latest answer. When the remote task needs more input (`state: 'input-required'`), `success` is `false`, `output` carries the remote agent's question and `taskId` lets you continue the task with `client.continueTask()`. A remote task waiting for [tool approvals](#tool-approvals) lists the calls in `pendingApprovals`. The run's abort signal and the tool timeout are forwarded to the HTTP request.
 
 ## Authentication
 
@@ -212,6 +212,29 @@ console.log(task.contextId === updated.contextId); // true
 ```
 
 On the server side, multi-turn is handled automatically. When a message includes a `taskId`, the server calls `continueTask` which appends to the existing task history and re-runs the agent with the task transcript as context, so follow-ups work even without a memory adapter. Runs are threaded by `contextId` (`threadId`), and artifacts accumulate across turns. A task that is still running cannot be continued concurrently.
+
+## Tool Approvals
+
+When the agent calls a tool that needs approval (`requiresApproval`), its run pauses and the task waits in `input-required`, never `completed`. The agent's message carries the waiting calls in a data part (`{ kind: 'tool-approval-request', approvals: [{ toolCallId, toolName, arguments, description }] }`) and `status.message` says `Waiting for approval of <tools>`. The client answers with a `tool-approval-response` data part in the message that continues the task, and the server resumes the run with those decisions:
+
+```typescript
+import { readToolApprovalRequest } from '@cogitator-ai/a2a';
+
+const task = await client.sendMessage({
+  role: 'user',
+  parts: [{ type: 'text', text: 'Refund A-1' }],
+});
+
+const waiting = readToolApprovalRequest(task);
+if (waiting) {
+  const done = await client.answerApprovals(task.id, {
+    decisions: { [waiting[0].toolCallId]: { approved: true } },
+    // or defaultDecision: { approved: false, reason: 'not eligible' }
+  });
+}
+```
+
+`toolApprovalResponsePart({ decisions?, defaultDecision? })` builds the part for a hand-written message. Calls left without a decision keep the task waiting. A text reply instead of decisions moves on: the waiting calls are declined and the agent answers the new message. The server resumes through `cogitator.resume()` by the task's `contextId`, so the paused run has to be where the server Cogitator keeps paused runs (its memory, or `runCheckpoints` shared by every server instance). `asTool()` reports such a remote task with `success: false`, the `taskId` and the calls in `pendingApprovals`.
 
 ## Listing Tasks
 

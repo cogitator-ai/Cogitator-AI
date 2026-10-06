@@ -1,4 +1,4 @@
-import type { Agent } from '@cogitator-ai/types';
+import type { Agent, ToolApprovalDecision, ToolApprovalRequest } from '@cogitator-ai/types';
 
 export type TaskState =
   'working' | 'input-required' | 'completed' | 'failed' | 'canceled' | 'rejected';
@@ -176,6 +176,12 @@ export interface AgentRunResult {
   output: string;
   structured?: unknown;
   requiresInput?: boolean;
+  /**
+   * `paused` when tool calls wait for approval: the task goes to `input-required` with the calls
+   * in a tool approval request data part, and the decisions resume the run
+   */
+  status?: 'completed' | 'paused';
+  pendingApprovals?: readonly ToolApprovalRequest[];
   runId: string;
   agentId: string;
   threadId: string;
@@ -201,6 +207,23 @@ export interface CogitatorLike {
       timeout?: number;
       loadHistory?: boolean;
       /** The caller the run acts for, so thread and memory access is scoped to them */
+      userId?: string;
+    }
+  ): Promise<AgentRunResult>;
+  /**
+   * Continue the run a thread paused for tool approvals, with the client's decisions. Without
+   * it a task waiting for approvals fails when the client answers
+   */
+  resume?(
+    agent: unknown,
+    threadId: string,
+    options: {
+      decisions?: Record<string, ToolApprovalDecision>;
+      defaultDecision?: ToolApprovalDecision;
+      signal?: AbortSignal;
+      stream?: boolean;
+      onToken?: (token: string) => void;
+      timeout?: number;
       userId?: string;
     }
   ): Promise<AgentRunResult>;

@@ -12,6 +12,16 @@ export type { InMemoryTaskStoreConfig } from './task-store.js';
 export { RedisTaskStore } from './redis-task-store.js';
 export type { RedisClientLike, RedisTaskStoreConfig } from './redis-task-store.js';
 
+export {
+  TOOL_APPROVAL_REQUEST_KIND,
+  TOOL_APPROVAL_RESPONSE_KIND,
+  toolApprovalRequestPart,
+  toolApprovalResponsePart,
+  readToolApprovalRequest,
+  readToolApprovalResponse,
+} from './approvals.js';
+export type { ToolApprovalResponse } from './approvals.js';
+
 export { TaskManager } from './task-manager.js';
 export type { TaskManagerConfig, ExecuteTaskOptions } from './task-manager.js';
 

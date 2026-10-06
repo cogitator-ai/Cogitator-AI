@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
+import type { ToolApprovalRequest } from '@cogitator-ai/types';
 import type {
   A2ATask,
   A2AMessage,
@@ -17,6 +18,12 @@ import { isTerminalState } from './types.js';
 import { A2AError } from './errors.js';
 import * as errors from './errors.js';
 import { TASK_OWNER_KEY } from './ownership.js';
+import {
+  TASK_PENDING_APPROVALS_KEY,
+  readToolApprovalResponse,
+  taskPendingApprovals,
+  toolApprovalRequestPart,
+} from './approvals.js';
 
 export interface TaskManagerConfig {
   taskStore?: TaskStore;
@@ -74,17 +81,41 @@ export class TaskManager extends EventEmitter {
     this.activeTasks.set(task.id, abortController);
 
     try {
-      const priorHistory = this.historyBefore(task.history, message);
-      const result = await cogitator.run(agent, {
-        input: this.buildInput(priorHistory, message),
-        signal: abortController.signal,
-        stream: !!options.onToken,
-        onToken: options.onToken,
-        threadId: task.contextId,
-        timeout: options.timeout,
-        ...(options.userId !== undefined && { userId: options.userId }),
-        ...(priorHistory.length > 0 && { loadHistory: false }),
-      });
+      const decisions = taskPendingApprovals(task) && readToolApprovalResponse(message);
+      let result: AgentRunResult;
+      if (decisions) {
+        if (!cogitator.resume) {
+          throw new A2AError(
+            errors.unsupportedOperation(
+              'resuming a run paused for tool approvals (the server Cogitator has no resume)'
+            )
+          );
+        }
+        result = await cogitator.resume(agent, task.contextId, {
+          ...decisions,
+          signal: abortController.signal,
+          stream: !!options.onToken,
+          onToken: options.onToken,
+          timeout: options.timeout,
+          ...(options.userId !== undefined && { userId: options.userId }),
+        });
+      } else {
+        const priorHistory = this.historyBefore(task.history, message);
+        result = await cogitator.run(agent, {
+          input: this.buildInput(priorHistory, message),
+          signal: abortController.signal,
+          stream: !!options.onToken,
+          onToken: options.onToken,
+          threadId: task.contextId,
+          timeout: options.timeout,
+          ...(options.userId !== undefined && { userId: options.userId }),
+          ...(priorHistory.length > 0 && { loadHistory: false }),
+        });
+      }
+
+      if (result.status === 'paused') {
+        return await this.requestApproval(task.id, result);
+      }
 
       if (result.requiresInput) {
         return await this.requestInput(task.id, result);
@@ -302,6 +333,53 @@ export class TaskManager extends EventEmitter {
     return artifacts;
   }
 
+  /**
+   * A run that paused for tool approvals: the task waits in `input-required`, its agent message
+   * carries the calls in a tool approval request data part, and the client's decisions (a tool
+   * approval response data part in the message that continues the task) resume the run.
+   */
+  private async requestApproval(taskId: string, result: AgentRunResult): Promise<A2ATask> {
+    const existing = await this.store.get(taskId);
+    if (!existing) throw new A2AError(errors.taskNotFound(taskId));
+
+    const pending = result.pendingApprovals ?? [];
+    const calls = pending.map((approval) => approval.toolName).join(', ') || 'tool calls';
+    const agentMessage: A2AMessage = {
+      role: 'agent',
+      parts: [
+        ...(result.output ? [{ type: 'text' as const, text: result.output }] : []),
+        toolApprovalRequestPart(pending),
+      ],
+      taskId,
+    };
+    const status: TaskStatus = {
+      state: 'input-required',
+      timestamp: new Date().toISOString(),
+      message: `Waiting for approval of ${calls}`,
+    };
+
+    return this.finishTurn(existing, status, agentMessage, [], pending);
+  }
+
+  /**
+   * The metadata update that records the calls a task waits on, or drops the record once the
+   * task stopped waiting; nothing when there is nothing to change.
+   */
+  private withPendingApprovals(
+    task: A2ATask,
+    pending: readonly ToolApprovalRequest[] | undefined
+  ): Pick<A2ATask, 'metadata'> | Record<string, never> {
+    const metadata = { ...task.metadata };
+    if (pending && pending.length > 0) {
+      metadata[TASK_PENDING_APPROVALS_KEY] = pending.map((approval) => ({ ...approval }));
+    } else if (TASK_PENDING_APPROVALS_KEY in metadata) {
+      delete metadata[TASK_PENDING_APPROVALS_KEY];
+    } else {
+      return {};
+    }
+    return { metadata };
+  }
+
   private async requestInput(taskId: string, result: AgentRunResult): Promise<A2ATask> {
     const existing = await this.store.get(taskId);
     if (!existing) throw new A2AError(errors.taskNotFound(taskId));
@@ -331,12 +409,14 @@ export class TaskManager extends EventEmitter {
     existing: A2ATask,
     status: TaskStatus,
     agentMessage: A2AMessage,
-    newArtifacts: Artifact[]
+    newArtifacts: Artifact[],
+    pendingApprovals?: readonly ToolApprovalRequest[]
   ): Promise<A2ATask> {
     await this.store.update(existing.id, {
       status,
       artifacts: [...(existing.artifacts ?? []), ...newArtifacts],
       history: [...existing.history, agentMessage],
+      ...this.withPendingApprovals(existing, pendingApprovals),
     });
 
     const updatedTask = await this.store.get(existing.id);

@@ -1,4 +1,4 @@
-import type { Tool, ToolContext, ToolSchema } from '@cogitator-ai/types';
+import type { Tool, ToolApprovalRequest, ToolContext, ToolSchema } from '@cogitator-ai/types';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type {
@@ -18,6 +18,11 @@ import type { JsonRpcResponse } from './json-rpc.js';
 import { A2AError } from './errors.js';
 import * as errors from './errors.js';
 import { verifyAgentCardSignature } from './agent-card.js';
+import {
+  readToolApprovalRequest,
+  toolApprovalResponsePart,
+  type ToolApprovalResponse,
+} from './approvals.js';
 
 export interface A2AToolOptions {
   name?: string;
@@ -33,6 +38,11 @@ export interface A2AToolResult {
   taskId?: string;
   /** Final state of the remote task */
   state?: TaskState;
+  /**
+   * The tool calls the remote agent waits on, when the task is `input-required` for approvals:
+   * answer with `toolApprovalResponsePart` in a message that continues `taskId`
+   */
+  pendingApprovals?: ToolApprovalRequest[];
 }
 
 export interface A2ARequestOptions {
@@ -205,6 +215,29 @@ export class A2AClient {
     );
   }
 
+  /**
+   * Answer a task that waits in `input-required` for tool approvals (see
+   * `readToolApprovalRequest`): the remote run goes on with these decisions.
+   *
+   * @example
+   * ```ts
+   * const waiting = readToolApprovalRequest(task);
+   * if (waiting) await client.answerApprovals(task.id, { defaultDecision: { approved: true } });
+   * ```
+   */
+  async answerApprovals(
+    taskId: string,
+    response: ToolApprovalResponse,
+    config?: SendMessageConfiguration,
+    options?: A2ARequestOptions
+  ): Promise<A2ATask> {
+    return this.sendMessage(
+      { role: 'user', parts: [toolApprovalResponsePart(response)], taskId },
+      config,
+      options
+    );
+  }
+
   async listTasks(filter?: TaskFilter): Promise<A2ATask[]> {
     const result = (await this.rpc('tasks/list', filter ?? {})) as { tasks: A2ATask[] };
     return result.tasks;
@@ -245,12 +278,16 @@ export class A2AClient {
           }
 
           if (state === 'input-required') {
+            const pendingApprovals = readToolApprovalRequest(task);
             return {
               output,
               success: false,
-              error: 'Remote agent requires more input to continue this task',
+              error: pendingApprovals
+                ? `Remote agent waits for approval of ${pendingApprovals.map((p) => p.toolName).join(', ')} before it continues this task`
+                : 'Remote agent requires more input to continue this task',
               taskId: task.id,
               state,
+              ...(pendingApprovals && { pendingApprovals }),
             };
           }
 
