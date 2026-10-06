@@ -19,27 +19,33 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     },
     "./express": {
       "types": "./dist/adapters/express.d.ts",
-      "import": "./dist/adapters/express.js"
+      "import": "./dist/adapters/express.js",
+      "default": "./dist/adapters/express.js"
     },
     "./hono": {
       "types": "./dist/adapters/hono.d.ts",
-      "import": "./dist/adapters/hono.js"
+      "import": "./dist/adapters/hono.js",
+      "default": "./dist/adapters/hono.js"
     },
     "./fastify": {
       "types": "./dist/adapters/fastify.d.ts",
-      "import": "./dist/adapters/fastify.js"
+      "import": "./dist/adapters/fastify.js",
+      "default": "./dist/adapters/fastify.js"
     },
     "./koa": {
       "types": "./dist/adapters/koa.d.ts",
-      "import": "./dist/adapters/koa.js"
+      "import": "./dist/adapters/koa.js",
+      "default": "./dist/adapters/koa.js"
     },
     "./next": {
       "types": "./dist/adapters/next.d.ts",
-      "import": "./dist/adapters/next.js"
+      "import": "./dist/adapters/next.js",
+      "default": "./dist/adapters/next.js"
     }
   },
   "files": [
