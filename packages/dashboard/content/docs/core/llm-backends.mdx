@@ -122,7 +122,7 @@ The backend adapts each request to what the target Claude model accepts (model i
 | Claude 4.5+, Fable                 | `json_schema` response format uses native structured outputs (`output_config`) instead of a forced tool                                                        |
 | Claude Opus 5.5, Sonnet 5.5, Fable | Forced tool choice (`'required'` or a named function) falls back to `auto` with a system-prompt instruction naming the tool, plus a one-time warning per model |
 
-The stop reasons `model_context_window_exceeded` and `pause_turn` are reported as `finishReason: 'length'`, and `refusal` as `'error'`.
+The stop reasons `model_context_window_exceeded` and `pause_turn` are reported as `finishReason: 'length'`, and `refusal` as `'refusal'`.
 
 ### Google (Gemini)
 
@@ -201,6 +201,17 @@ model: 'vllm/mistral-7b';
 ### Message Conversion
 
 All backends receive the same `Message[]`. Every `system` message (the agent instructions plus any later ones, such as reflection hints or context summaries) is combined into the provider's system prompt for Anthropic, Gemini and Bedrock, and consecutive tool results are sent together in a single turn, as those APIs expect for parallel tool calls. Images in tool results are placed where each API accepts them (see [Images in Tool Results](/docs/core/tools#images-in-tool-results)).
+
+### Turn Outcomes
+
+Every backend reports why a turn ended with the same `finishReason`: `stop`, `tool_calls`, `length`, `content_filter`, `refusal` or `error`. The rules are the same everywhere:
+
+- Only a `tool_calls` turn runs tools. A finished turn with complete tool calls is one even when the provider reported `stop`, as vLLM, LM Studio and other OpenAI-compatible servers do for a forced tool.
+- A turn cut at the token limit (`length`), filtered, refused or failed carries no tool calls, so a call cut off in the middle of its arguments never runs with partial or empty ones.
+- A finished turn whose tool arguments are not valid JSON fails with `LLM_INVALID_RESPONSE`, streamed or not.
+- `content_filter` covers OpenAI and Azure `content_filter`, Gemini `SAFETY`, `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT` and `SPII`, and Bedrock or Anthropic `guardrail_intervened` and `content_filtered`. `refusal` covers the OpenAI `refusal` message (its text becomes the content) and the Anthropic `refusal` stop reason.
+
+A run reports a filtered or refused last answer as `result.blocked` and a cut-off one as `result.truncated` (see [Agents](/docs/core/agents)). The built-in backends settle each turn with `normalizeTurn()` from `@cogitator-ai/core`, and the runtime applies it to every turn, so a backend of your own only has to report the provider's reason and the complete tool calls.
 
 ## Custom Backends
 

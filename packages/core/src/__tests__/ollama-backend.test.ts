@@ -772,4 +772,67 @@ describe('OllamaBackend', () => {
       expect(body.messages[2]).toMatchObject({ role: 'tool', tool_name: 'now' });
     });
   });
+
+  describe('turn outcome', () => {
+    const toolCalls = [{ function: { name: 'purge', arguments: { olderThanDays: 3 } } }];
+
+    it('does not run the tool calls of a turn cut at the token limit', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          model: 'm',
+          message: { role: 'assistant', content: '', tool_calls: toolCalls },
+          done: true,
+          done_reason: 'length',
+        }),
+      });
+
+      const response = await backend.chat({
+        model: 'm',
+        messages: [{ role: 'user', content: 'x' }],
+      });
+
+      expect(response.finishReason).toBe('length');
+      expect(response.toolCalls).toBeUndefined();
+    });
+
+    it('streams a turn cut at the token limit as truncated even after its tool calls', async () => {
+      const encoder = new TextEncoder();
+      const lines = [
+        {
+          model: 'm',
+          message: { role: 'assistant', content: '', tool_calls: toolCalls },
+          done: false,
+        },
+        {
+          model: 'm',
+          message: { role: 'assistant', content: '' },
+          done: true,
+          done_reason: 'length',
+        },
+      ];
+      let index = 0;
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        body: {
+          getReader: () => ({
+            read: async () =>
+              index < lines.length
+                ? { done: false, value: encoder.encode(JSON.stringify(lines[index++]) + '\n') }
+                : { done: true, value: undefined },
+          }),
+        },
+      });
+
+      const finishReasons: string[] = [];
+      for await (const chunk of backend.chatStream({
+        model: 'm',
+        messages: [{ role: 'user', content: 'x' }],
+      })) {
+        if (chunk.finishReason) finishReasons.push(chunk.finishReason);
+      }
+
+      expect(finishReasons).toEqual(['length']);
+    });
+  });
 });

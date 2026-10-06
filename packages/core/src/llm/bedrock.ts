@@ -18,7 +18,14 @@ import type {
   ToolSchema,
 } from '@cogitator-ai/types';
 import { BaseLLMBackend } from './base';
-import { createLLMError, llmUnavailable, llmConfigError, type LLMErrorContext } from './errors';
+import {
+  LLMError,
+  createLLMError,
+  llmUnavailable,
+  llmConfigError,
+  type LLMErrorContext,
+} from './errors';
+import { finishRunsTools, normalizeTurn, parseToolCallArguments } from './turn';
 import {
   createWarnOnce,
   forcedToolChoiceInstruction,
@@ -36,7 +43,6 @@ import {
   type ClaudeThinkingParams,
 } from './anthropic-thinking';
 import { fetchImageAsBase64 } from '../utils/image-fetch';
-import { getLogger } from '../logger';
 
 type DocumentType =
   null | boolean | number | string | DocumentType[] | { [key: string]: DocumentType };
@@ -294,7 +300,7 @@ export class BedrockBackend extends BaseLLMBackend {
 
     const id = this.generateId();
     const state: StreamState = {
-      toolCalls: [],
+      toolUses: [],
       toolCallInputs: new Map(),
       reasoning: new Map(),
       thinking: [],
@@ -306,9 +312,10 @@ export class BedrockBackend extends BaseLLMBackend {
 
     try {
       for await (const event of response.stream) {
-        yield* this.processStreamEvent(event, id, state);
+        yield* this.processStreamEvent(event, id, state, ctx);
       }
     } catch (e) {
+      if (e instanceof LLMError) throw e;
       throw this.wrapBedrockError(e, ctx);
     }
   }
@@ -316,9 +323,10 @@ export class BedrockBackend extends BaseLLMBackend {
   private *processStreamEvent(
     event: StreamEvent,
     id: string,
-    state: StreamState
+    state: StreamState,
+    ctx: LLMErrorContext
   ): Generator<ChatStreamChunk> {
-    const { toolCalls, toolCallInputs } = state;
+    const { toolUses, toolCallInputs } = state;
     if (event.contentBlockStart?.start?.toolUse) {
       const idx = event.contentBlockStart.contentBlockIndex ?? 0;
       toolCallInputs.set(idx, {
@@ -372,25 +380,24 @@ export class BedrockBackend extends BaseLLMBackend {
         const item = toThinkingItem(reasoning);
         if (item) state.thinking.push(item);
       } else if (toolCall) {
-        toolCalls.push({
-          id: toolCall.id,
-          name: toolCall.name,
-          arguments: this.tryParseJson(toolCall.input),
-          ...(state.thinking.length > 0 && { replay: { precedingItems: state.thinking } }),
-        });
+        toolUses.push({ ...toolCall, thinking: state.thinking });
+        toolCallInputs.delete(idx);
         state.thinking = [];
       }
     }
 
     if (event.messageStop) {
       const finishReason = mapClaudeStopReason(event.messageStop.stopReason);
-      yield {
-        id,
-        delta: {
-          toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-        },
-        finishReason,
-      };
+      const toolCalls = finishRunsTools(finishReason)
+        ? toolUses.map((use) => ({
+            id: use.id,
+            name: use.name,
+            arguments: parseToolCallArguments(use.input, ctx),
+            ...(use.thinking.length > 0 && { replay: { precedingItems: use.thinking } }),
+          }))
+        : [];
+      const end = normalizeTurn({ finishReason, toolCalls });
+      yield { id, delta: { toolCalls: end.toolCalls }, finishReason: end.finishReason };
     }
 
     if (event.metadata?.usage) {
@@ -720,32 +727,14 @@ export class BedrockBackend extends BaseLLMBackend {
       }
     }
 
-    return {
+    return normalizeTurn({
       id: this.generateId(),
       content,
-      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+      toolCalls,
       finishReason: mapClaudeStopReason(response.stopReason),
       usage: toChatUsage(response.usage ?? {}),
       ...(reasoning && { reasoning }),
-    };
-  }
-
-  private tryParseJson(str: string): Record<string, unknown> {
-    if (!str.trim()) {
-      return {};
-    }
-    try {
-      const parsed = JSON.parse(str) as unknown;
-      return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
-        ? (parsed as Record<string, unknown>)
-        : {};
-    } catch (e) {
-      getLogger().warn('Failed to parse tool call JSON in Bedrock stream', {
-        input: str.slice(0, 200),
-        error: e instanceof Error ? e.message : String(e),
-      });
-      return {};
-    }
+    });
   }
 
   private wrapBedrockError(error: unknown, ctx: LLMErrorContext): never {
@@ -777,7 +766,8 @@ export class BedrockBackend extends BaseLLMBackend {
 }
 
 interface StreamState {
-  toolCalls: ToolCall[];
+  /** Finished `toolUse` blocks, kept as raw JSON until the turn's stop reason is known */
+  toolUses: Array<{ id: string; name: string; input: string; thinking: Record<string, unknown>[] }>;
   toolCallInputs: Map<number, { id: string; name: string; input: string }>;
   reasoning: Map<number, ReasoningContentBlock>;
   thinking: Record<string, unknown>[];

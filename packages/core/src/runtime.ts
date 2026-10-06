@@ -3,6 +3,7 @@ import type {
   CogitatorConfig,
   RunOptions,
   RunResult,
+  RunBlockReason,
   Message,
   ToolCall,
   ToolResult,
@@ -33,6 +34,7 @@ import { createLLMBackend } from './llm/index';
 import { isLLMProvider } from './llm/providers';
 import { createLLMBackendFromPlugin, hasLLMPlugin } from './llm/plugin';
 import { withLLMRetry } from './llm/retry';
+import { normalizeTurn } from './llm/turn';
 import { PiiMasker, withPiiMasking } from './security/pii';
 import { createLoggerFromConfig, getLogger, setLogger } from './logger';
 import { RunCostMeter } from './cogitator/run-cost';
@@ -85,6 +87,13 @@ const MAX_EMPTY_ANSWER_RETRIES = 2;
 
 const ITERATION_LIMIT_PROMPT =
   'You have used every step this run allows. Do not call any more tools. Give your final answer now, from what you have.';
+
+/** The reason a turn's answer was withheld, when it was. */
+function blockReasonOf(
+  reason: ChatResponse['finishReason'] | undefined
+): RunBlockReason | undefined {
+  return reason === 'content_filter' || reason === 'refusal' ? reason : undefined;
+}
 
 /** A finished turn with no text and no tool calls: nothing a caller could use as an answer. */
 function isEmptyAnswer(response: ChatResponse): boolean {
@@ -771,7 +780,7 @@ export class Cogitator {
 
         const llmSpanStart = Date.now();
 
-        let response;
+        let response: ChatResponse;
         if (streaming) {
           response = await waitForAbortable(
             streamChat(
@@ -811,6 +820,7 @@ export class Cogitator {
             abortController.signal
           );
         }
+        response = normalizeTurn(response);
 
         const llmSpan = createSpan(
           'llm.chat',
@@ -900,9 +910,13 @@ export class Cogitator {
           : ({ role: 'assistant', content: outputContent } as Message);
         messages.push(assistantMessage);
 
-        const finalAnswer = !(requestsTools && response.finishReason === 'tool_calls');
+        const finalAnswer = !requestsTools;
         const structuredProblem =
-          finalAnswer && !streaming && !structuredRepaired && iterations < maxIterations
+          finalAnswer &&
+          !streaming &&
+          !structuredRepaired &&
+          !blockReasonOf(response.finishReason) &&
+          iterations < maxIterations
             ? structuredOutputProblem(active.config.responseFormat, outputContent)
             : undefined;
 
@@ -932,7 +946,7 @@ export class Cogitator {
           );
         }
 
-        if (finalAnswer || !response.toolCalls) break;
+        if (!requestsTools || !response.toolCalls) break;
         pausedTurn = await handleToolTurn(response.toolCalls);
         if (pausedTurn) break;
         if (reachedLimit()) break;
@@ -1048,6 +1062,7 @@ export class Cogitator {
       spans.unshift(rootSpan);
 
       const runCost = costMeter.total(costModel);
+      const blocked = blockReasonOf(lastFinishReason);
 
       const result: RunResult = {
         output: finalOutput,
@@ -1073,6 +1088,7 @@ export class Cogitator {
         },
         ...(reasoningParts.length > 0 && { reasoning: reasoningParts.join('\n\n') }),
         ...(lastFinishReason === 'length' && { truncated: true }),
+        ...(blocked && { blocked }),
         toolCalls: allToolCalls,
         messages,
         trace: {

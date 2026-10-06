@@ -111,6 +111,8 @@ interface RunResult {
     readonly cacheWriteTokens?: number;
   };
   readonly reasoning?: string;
+  readonly truncated?: boolean; // the last answer stopped at maxTokens
+  readonly blocked?: 'content_filter' | 'refusal'; // the last answer was filtered or refused
   readonly prompt?: RunPrompt; // the instruction version or A/B variant used
   readonly handoffs?: readonly HandoffEvent[];
   readonly finalAgent?: string;
@@ -333,11 +335,13 @@ interface ChatRequest {
   signal?: AbortSignal;
 }
 
+type FinishReason = 'stop' | 'tool_calls' | 'length' | 'content_filter' | 'refusal' | 'error';
+
 interface ChatResponse {
   id: string;
   content: string;
   toolCalls?: ToolCall[];
-  finishReason: 'stop' | 'tool_calls' | 'length' | 'error';
+  finishReason: FinishReason; // only 'tool_calls' runs tools
   usage: ChatUsage;
   reasoning?: string; // readable reasoning summary, when returned
 }
@@ -358,7 +362,7 @@ interface ChatStreamChunk {
     reasoning?: string;
     toolCalls?: Partial<ToolCall>[];
   };
-  finishReason?: 'stop' | 'tool_calls' | 'length' | 'error';
+  finishReason?: FinishReason; // on the chunk that ends the turn
   usage?: ChatUsage; // typically only on the final chunk
 }
 

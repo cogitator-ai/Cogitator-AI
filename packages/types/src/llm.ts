@@ -106,11 +106,28 @@ export interface ChatRequest {
   signal?: AbortSignal;
 }
 
+/**
+ * Why a model turn ended, the same for every provider:
+ * - `stop`: the model finished its answer
+ * - `tool_calls`: the model asked for the calls in `toolCalls`, all of them complete
+ * - `length`: the output hit the token limit, so the answer is cut off; a turn cut inside a tool
+ *   call carries no tool calls, since they may be incomplete
+ * - `content_filter`: the provider's safety system withheld or cut the answer
+ * - `refusal`: the model declined to answer; `content` holds its explanation when it gave one
+ * - `error`: the provider ended the turn abnormally, e.g. with malformed output
+ *
+ * Only `tool_calls` runs tools. Backends report the provider's own reason and the runtime settles
+ * the turn with `normalizeTurn` from `@cogitator-ai/core`, so a turn with complete tool calls is a
+ * tool turn even when the provider reported `stop` for it.
+ */
+export type FinishReason =
+  'stop' | 'tool_calls' | 'length' | 'content_filter' | 'refusal' | 'error';
+
 export interface ChatResponse {
   id: string;
   content: string;
   toolCalls?: ToolCall[];
-  finishReason: 'stop' | 'tool_calls' | 'length' | 'error';
+  finishReason: FinishReason;
   usage: ChatUsage;
   /** Readable summary of the model's reasoning, when the provider returned one */
   reasoning?: string;
@@ -141,7 +158,8 @@ export interface ChatStreamChunk {
     reasoning?: string;
     toolCalls?: Partial<ToolCall>[];
   };
-  finishReason?: 'stop' | 'tool_calls' | 'length' | 'error';
+  /** Set on the chunk that ends the turn */
+  finishReason?: FinishReason;
   /** Usage data, typically included only in the final chunk */
   usage?: ChatUsage;
 }

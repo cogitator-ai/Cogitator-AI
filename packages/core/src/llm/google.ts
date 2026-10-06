@@ -13,6 +13,7 @@ import type {
   ChatResponse,
   ChatStreamChunk,
   ChatUsage,
+  FinishReason,
   ReasoningConfig,
   ReasoningEffort,
   ToolCall,
@@ -34,6 +35,7 @@ import {
 } from './errors';
 import { getLogger } from '../logger';
 import { jsonInstruction } from './json-instruction';
+import { normalizeTurn } from './turn';
 
 interface GoogleConfig {
   apiKey: string;
@@ -104,7 +106,8 @@ interface GeminiRequest {
 
 interface GeminiCandidate {
   content: GeminiContent;
-  finishReason: 'STOP' | 'MAX_TOKENS' | 'SAFETY' | 'RECITATION' | 'OTHER';
+  /** `STOP`, `MAX_TOKENS`, `SAFETY`, `RECITATION`, `MALFORMED_FUNCTION_CALL` and others */
+  finishReason?: string;
   safetyRatings?: unknown[];
 }
 
@@ -273,16 +276,14 @@ export class GoogleBackend extends BaseLLMBackend {
         }
 
         if (candidate.finishReason) {
-          const finishReason =
-            accumulatedToolCalls.length > 0
-              ? ('tool_calls' as const)
-              : mapFinish(candidate.finishReason);
+          const end = normalizeTurn({
+            finishReason: mapFinish(candidate.finishReason),
+            toolCalls: accumulatedToolCalls,
+          });
           const streamChunk: ChatStreamChunk = {
             id,
-            delta: {
-              toolCalls: accumulatedToolCalls.length > 0 ? accumulatedToolCalls : undefined,
-            },
-            finishReason,
+            delta: { toolCalls: end.toolCalls },
+            finishReason: end.finishReason,
           };
 
           if (chunk.usageMetadata) {
@@ -628,17 +629,16 @@ export class GoogleBackend extends BaseLLMBackend {
       }
     }
 
-    return {
+    return normalizeTurn({
       id: this.generateId(),
       content,
-      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-      finishReason:
-        toolCalls.length > 0 ? 'tool_calls' : this.mapFinishReason(candidate.finishReason),
+      toolCalls,
+      finishReason: this.mapFinishReason(candidate.finishReason),
       usage: data.usageMetadata
         ? toChatUsage(data.usageMetadata)
         : { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
       ...(reasoning && { reasoning }),
-    };
+    });
   }
 
   private promptBlockedError(ctx: LLMErrorContext, feedback: GeminiPromptFeedback) {
@@ -646,15 +646,30 @@ export class GoogleBackend extends BaseLLMBackend {
     return llmInvalidResponse(ctx, `Gemini blocked the prompt: ${reason}`);
   }
 
-  private mapFinishReason(reason: string): 'stop' | 'tool_calls' | 'length' | 'error' {
+  /**
+   * Gemini's finish reason as a Cogitator one. Whether the turn runs tools is settled by
+   * `normalizeTurn` from its function calls.
+   */
+  private mapFinishReason(reason: string | undefined): FinishReason {
     switch (reason) {
-      case 'STOP':
-        return 'stop';
       case 'MAX_TOKENS':
         return 'length';
       case 'SAFETY':
       case 'RECITATION':
+      case 'BLOCKLIST':
+      case 'PROHIBITED_CONTENT':
+      case 'SPII':
+      case 'IMAGE_SAFETY':
+      case 'IMAGE_PROHIBITED_CONTENT':
+      case 'IMAGE_RECITATION':
+        return 'content_filter';
       case 'OTHER':
+      case 'LANGUAGE':
+      case 'MALFORMED_FUNCTION_CALL':
+      case 'UNEXPECTED_TOOL_CALL':
+      case 'TOO_MANY_TOOL_CALLS':
+      case 'NO_IMAGE':
+      case 'IMAGE_OTHER':
         return 'error';
       default:
         return 'stop';

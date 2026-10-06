@@ -11,7 +11,6 @@ import type {
   MessageContent,
   ContentPart,
 } from '@cogitator-ai/types';
-import { ErrorCode } from '@cogitator-ai/types';
 import { BaseLLMBackend } from './base';
 import {
   LLMError,
@@ -21,6 +20,7 @@ import {
   type LLMErrorContext,
 } from './errors';
 import { jsonInstruction, withSystemInstruction } from './json-instruction';
+import { finishRunsTools, normalizeTurn, parseToolCallArguments, type TurnEnd } from './turn';
 
 export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
   protected abstract client: OpenAI;
@@ -124,24 +124,28 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
       throw llmInvalidResponse(ctx, `No choices in ${this.provider} response`);
     }
     const message = choice.message;
+    const refusal = refusalOf(message);
+    const finishReason = refusal ? 'refusal' : this.mapFinishReason(choice.finish_reason);
 
-    const toolCalls: ToolCall[] | undefined = message.tool_calls
-      ?.filter((tc): tc is typeof tc & { type: 'function' } => tc.type === 'function')
-      .map((tc) => ({
-        id: tc.id,
-        name: tc.function.name,
-        arguments: this.tryParseJson(tc.function.arguments, ctx),
-      }));
+    const toolCalls: ToolCall[] | undefined = finishRunsTools(finishReason)
+      ? message.tool_calls
+          ?.filter((tc): tc is typeof tc & { type: 'function' } => tc.type === 'function')
+          .map((tc) => ({
+            id: tc.id,
+            name: tc.function.name,
+            arguments: this.tryParseJson(tc.function.arguments, ctx),
+          }))
+      : undefined;
 
     const reasoning = reasoningTextOf(message);
-    return {
+    return normalizeTurn({
       id: response.id,
-      content: message.content ?? '',
+      content: message.content || refusal || '',
       toolCalls,
-      finishReason: this.mapFinishReason(choice.finish_reason),
+      finishReason,
       usage: toChatUsage(response.usage),
       ...(reasoning && { reasoning }),
-    };
+    });
   }
 
   async *chatStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk> {
@@ -186,6 +190,7 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
 
     const toolCallsAccum = new Map<number, { id?: string; name?: string }>();
     const toolCallArgsAccum = new Map<number, string>();
+    let refused = false;
 
     for await (const chunk of this.readStream(stream, ctx)) {
       const failure = providerErrorIn(chunk, ctx);
@@ -202,6 +207,8 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
       const delta = choice.delta;
       const usage = chunk.usage ? toChatUsage(chunk.usage) : undefined;
       const reasoningDelta = reasoningTextOf(delta);
+      const refusalDelta = refusalOf(delta);
+      if (refusalDelta) refused = true;
 
       if (delta.tool_calls) {
         for (const tc of delta.tool_calls) {
@@ -218,38 +225,47 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
         }
       }
 
-      let finalToolCalls: ToolCall[] | undefined;
-      if (choice.finish_reason === 'tool_calls') {
-        finalToolCalls = Array.from(toolCallsAccum.entries()).map(([index, partial]) => ({
-          id: partial.id ?? '',
-          name: partial.name ?? '',
-          arguments: this.tryParseJson(toolCallArgsAccum.get(index) ?? '{}', ctx),
-        }));
-      }
-
-      if (!finalToolCalls && choice.finish_reason && toolCallsAccum.size > 0) {
-        finalToolCalls = Array.from(toolCallsAccum.entries()).map(([index, partial]) => ({
-          id: partial.id ?? '',
-          name: partial.name ?? '',
-          arguments: this.tryParseJson(toolCallArgsAccum.get(index) ?? '{}', ctx),
-        }));
-      }
+      const content = (delta.content ?? '') + (refusalDelta ?? '');
+      const end = choice.finish_reason
+        ? this.streamEnd(
+            refused ? 'refusal' : this.mapFinishReason(choice.finish_reason),
+            toolCallsAccum,
+            toolCallArgsAccum,
+            ctx
+          )
+        : undefined;
 
       yield {
         id: chunk.id,
         delta: {
-          content: delta.content ?? undefined,
+          content: content || undefined,
           ...(reasoningDelta && { reasoning: reasoningDelta }),
-          toolCalls: finalToolCalls,
+          toolCalls: end?.toolCalls,
         },
-        finishReason: choice.finish_reason
-          ? finalToolCalls
-            ? 'tool_calls'
-            : this.mapFinishReason(choice.finish_reason)
-          : undefined,
+        finishReason: end?.finishReason,
         ...(usage ? { usage } : {}),
       };
     }
+  }
+
+  /**
+   * The end of a streamed turn: the calls assembled from the deltas, their arguments parsed only
+   * when the turn may run tools, so a call cut off at the token limit is dropped, not misread.
+   */
+  private streamEnd(
+    reason: ChatResponse['finishReason'],
+    calls: Map<number, { id?: string; name?: string }>,
+    args: Map<number, string>,
+    ctx: LLMErrorContext
+  ): TurnEnd {
+    const toolCalls = finishRunsTools(reason)
+      ? Array.from(calls.entries()).map(([index, partial]) => ({
+          id: partial.id ?? '',
+          name: partial.name ?? '',
+          arguments: this.tryParseJson(args.get(index) ?? '', ctx),
+        }))
+      : [];
+    return normalizeTurn({ finishReason: reason, toolCalls });
   }
 
   /**
@@ -378,14 +394,19 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
       .join(' ');
   }
 
+  /**
+   * The provider's `finish_reason` as a Cogitator one. Whether the turn runs tools is settled by
+   * `normalizeTurn` from the calls themselves, since servers differ in what they report for them.
+   */
   protected mapFinishReason(reason: string | null): ChatResponse['finishReason'] {
     switch (reason) {
-      case 'stop':
-        return 'stop';
       case 'tool_calls':
+      case 'function_call':
         return 'tool_calls';
       case 'length':
         return 'length';
+      case 'content_filter':
+        return 'content_filter';
       default:
         return 'stop';
     }
@@ -438,37 +459,7 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
   }
 }
 
-/**
- * Parse the JSON arguments string of an OpenAI-style function call into an object.
- * Empty strings and `null` become `{}`; anything that is not a JSON object is rejected.
- */
-export function parseToolCallArguments(str: string, ctx: LLMErrorContext): Record<string, unknown> {
-  if (!str.trim()) {
-    return {};
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(str);
-  } catch (e) {
-    throw new LLMError(
-      `Failed to parse tool call arguments: ${str.slice(0, 100)}`,
-      ErrorCode.LLM_INVALID_RESPONSE,
-      ctx,
-      { cause: e instanceof Error ? e : undefined }
-    );
-  }
-  if (parsed === null) {
-    return {};
-  }
-  if (typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new LLMError(
-      `Tool call arguments must be a JSON object: ${str.slice(0, 100)}`,
-      ErrorCode.LLM_INVALID_RESPONSE,
-      ctx
-    );
-  }
-  return parsed as Record<string, unknown>;
-}
+export { parseToolCallArguments };
 
 function toChatUsage(usage: OpenAI.CompletionUsage | null | undefined): ChatUsage {
   const cached = usage?.prompt_tokens_details?.cached_tokens;
@@ -488,6 +479,12 @@ function toChatUsage(usage: OpenAI.CompletionUsage | null | undefined): ChatUsag
 function reportedCost(usage: OpenAI.CompletionUsage | null | undefined): number | undefined {
   const cost = (usage as { cost?: unknown } | null | undefined)?.cost;
   return typeof cost === 'number' && Number.isFinite(cost) && cost >= 0 ? cost : undefined;
+}
+
+/** The refusal OpenAI attaches to a message or delta in place of content, when the model declines. */
+function refusalOf(message: object): string | undefined {
+  const { refusal } = message as { refusal?: unknown };
+  return typeof refusal === 'string' && refusal.length > 0 ? refusal : undefined;
 }
 
 /**

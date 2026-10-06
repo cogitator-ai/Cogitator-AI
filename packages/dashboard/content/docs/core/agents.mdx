@@ -100,7 +100,16 @@ The agent loops up to `maxIterations` times. Each iteration the LLM may call too
 
 When tool calls use up `maxIterations` before the model answers, the run gets one more turn with `toolChoice: 'none'` and an instruction to answer from what it has, so it still ends with an answer and `structured` output can be parsed. Tools the model asks for on that turn are not run. `result.iterationLimitReached` is `true` either way, and `onIterationLimit: 'stop'` ends the run at the last tool turn instead, without an answer.
 
-`result.truncated` is `true` when the model's last answer stopped at the output token limit (`maxTokens`): the output may be cut off, or empty when a reasoning model spent the whole limit thinking. Every provider reports it, so it is the way to tell a cut-off answer from a short one.
+`result.truncated` is `true` when the model's last answer stopped at the output token limit (`maxTokens`): the output may be cut off, or empty when a reasoning model spent the whole limit thinking. Every provider reports it, so it is the way to tell a cut-off answer from a short one. Tool calls in a turn cut off at the limit never run, since their arguments may be incomplete: the run ends truncated instead.
+
+`result.blocked` is set when the provider withheld the model's last answer instead of finishing it: `'content_filter'` when its safety system filtered the answer (OpenAI and Azure content filters, Gemini `SAFETY` and similar, Bedrock guardrails), `'refusal'` when the model declined (OpenAI and Anthropic refusals). The run still completes, with `output` holding what the model said before it stopped, the explanation of a refusal or often nothing. The run does not ask again for a blocked answer, and does not ask a blocked structured answer to be corrected.
+
+```typescript
+const result = await cog.run(agent, { input });
+if (result.blocked) {
+  console.warn(`The answer was withheld (${result.blocked}): ${result.output || 'no text'}`);
+}
+```
 
 ## Agent with Structured Output
 

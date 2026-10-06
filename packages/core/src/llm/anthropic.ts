@@ -15,7 +15,8 @@ import type {
   ContentPart,
 } from '@cogitator-ai/types';
 import { BaseLLMBackend } from './base';
-import { type LLMError, wrapSDKError, type LLMErrorContext } from './errors';
+import { LLMError, wrapSDKError, type LLMErrorContext } from './errors';
+import { finishRunsTools, normalizeTurn, parseToolCallArguments } from './turn';
 import {
   createWarnOnce,
   forcedToolChoiceInstruction,
@@ -32,7 +33,6 @@ import {
   thinkingBlocksOf,
   toThinkingItem,
 } from './anthropic-thinking';
-import { getLogger } from '../logger';
 
 interface AnthropicConfig {
   apiKey: string;
@@ -121,17 +121,14 @@ export class AnthropicBackend extends BaseLLMBackend {
       content = JSON.stringify(jsonSchemaResponse);
     }
 
-    return {
+    return normalizeTurn({
       id: response.id,
       content,
-      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-      finishReason:
-        jsonSchemaResponse && toolCalls.length === 0
-          ? 'stop'
-          : mapClaudeStopReason(response.stop_reason),
+      toolCalls,
+      finishReason: mapClaudeStopReason(response.stop_reason),
       usage: toChatUsage(response.usage, response.usage.output_tokens),
       ...(reasoning && { reasoning }),
-    };
+    });
   }
 
   async *chatStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk> {
@@ -149,15 +146,12 @@ export class AnthropicBackend extends BaseLLMBackend {
     }
 
     const id = this.generateId();
-    const toolCalls: ToolCall[] = [];
-    let currentToolCall: Partial<ToolCall> | null = null;
-    let currentToolName = '';
+    const toolUses: StreamedToolUse[] = [];
+    let currentToolUse: StreamedToolUse | null = null;
     let currentThinking: { thinking: string; signature: string } | null = null;
     let thinking: Record<string, unknown>[] = [];
-    let inputJson = '';
     let startUsage: Anthropic.Usage | null = null;
     let outputTokens = 0;
-    let jsonSchemaContent = '';
     let streamStopReason: string | null = null;
 
     try {
@@ -167,15 +161,8 @@ export class AnthropicBackend extends BaseLLMBackend {
         } else if (event.type === 'content_block_start') {
           const block = event.content_block;
           if (block.type === 'tool_use') {
-            currentToolCall = {
-              id: block.id,
-              name: block.name,
-              arguments: {},
-              ...(thinking.length > 0 && { replay: { precedingItems: thinking } }),
-            };
+            currentToolUse = { id: block.id, name: block.name, inputJson: '', thinking };
             thinking = [];
-            currentToolName = block.name;
-            inputJson = '';
           } else if (block.type === 'thinking') {
             currentThinking = { thinking: block.thinking, signature: block.signature };
           } else if (block.type === 'redacted_thinking') {
@@ -185,8 +172,8 @@ export class AnthropicBackend extends BaseLLMBackend {
           const delta = event.delta;
           if (delta.type === 'text_delta') {
             yield { id, delta: { content: delta.text } };
-          } else if (delta.type === 'input_json_delta') {
-            inputJson += delta.partial_json;
+          } else if (delta.type === 'input_json_delta' && currentToolUse) {
+            currentToolUse.inputJson += delta.partial_json;
           } else if (delta.type === 'thinking_delta' && currentThinking) {
             currentThinking.thinking += delta.thinking;
             if (delta.thinking) yield { id, delta: { reasoning: delta.thinking } };
@@ -197,16 +184,9 @@ export class AnthropicBackend extends BaseLLMBackend {
           if (currentThinking) {
             thinking.push({ type: 'thinking', ...currentThinking });
             currentThinking = null;
-          } else if (currentToolCall) {
-            currentToolCall.arguments = this.parseToolInput(inputJson, currentToolName);
-
-            if (currentToolName === JSON_RESPONSE_TOOL) {
-              jsonSchemaContent = JSON.stringify(currentToolCall.arguments);
-            } else {
-              toolCalls.push(currentToolCall as ToolCall);
-            }
-            currentToolCall = null;
-            currentToolName = '';
+          } else if (currentToolUse) {
+            toolUses.push(currentToolUse);
+            currentToolUse = null;
           }
         } else if (event.type === 'message_delta') {
           outputTokens = event.usage.output_tokens;
@@ -216,21 +196,26 @@ export class AnthropicBackend extends BaseLLMBackend {
             streamStopReason = stopReason;
           }
         } else if (event.type === 'message_stop') {
-          if (jsonSchemaContent) {
-            yield { id, delta: { content: jsonSchemaContent } };
+          const finishReason = mapClaudeStopReason(streamStopReason);
+          const runsTools = finishRunsTools(finishReason);
+          const jsonResponse = toolUses.find((use) => use.name === JSON_RESPONSE_TOOL);
+          if (jsonResponse) {
+            const content = runsTools
+              ? JSON.stringify(parseToolCallArguments(jsonResponse.inputJson, ctx))
+              : jsonResponse.inputJson;
+            if (content) yield { id, delta: { content } };
           }
 
+          const toolCalls = runsTools
+            ? toolUses
+                .filter((use) => use.name !== JSON_RESPONSE_TOOL)
+                .map((use) => toToolCall(use, parseToolCallArguments(use.inputJson, ctx)))
+            : [];
+          const end = normalizeTurn({ finishReason, toolCalls });
           yield {
             id,
-            delta: {
-              toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-            },
-            finishReason:
-              toolCalls.length > 0
-                ? 'tool_calls'
-                : jsonSchemaContent
-                  ? 'stop'
-                  : mapClaudeStopReason(streamStopReason),
+            delta: { toolCalls: end.toolCalls },
+            finishReason: end.finishReason,
             usage: startUsage
               ? toChatUsage(startUsage, outputTokens)
               : { inputTokens: 0, outputTokens, totalTokens: outputTokens },
@@ -238,7 +223,7 @@ export class AnthropicBackend extends BaseLLMBackend {
         }
       }
     } catch (e) {
-      throw this.wrapAnthropicError(e, ctx);
+      throw e instanceof LLMError ? e : this.wrapAnthropicError(e, ctx);
     }
   }
 
@@ -298,25 +283,6 @@ export class AnthropicBackend extends BaseLLMBackend {
         },
       }),
     };
-  }
-
-  private parseToolInput(inputJson: string, toolName: string): Record<string, unknown> {
-    if (!inputJson.trim()) {
-      return {};
-    }
-    try {
-      const parsed = JSON.parse(inputJson) as unknown;
-      return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
-        ? (parsed as Record<string, unknown>)
-        : {};
-    } catch (e) {
-      getLogger().warn('Failed to parse tool call arguments in Anthropic stream', {
-        toolName,
-        inputJson: inputJson.slice(0, 200),
-        error: e instanceof Error ? e.message : String(e),
-      });
-      return {};
-    }
   }
 
   private buildSystemPrompt(system: string, suffix: string): string | undefined {
@@ -582,6 +548,23 @@ export class AnthropicBackend extends BaseLLMBackend {
   private wrapAnthropicError(error: unknown, ctx: LLMErrorContext): LLMError {
     return wrapSDKError(error, ctx);
   }
+}
+
+/** A `tool_use` block of a stream, kept as raw JSON until the turn's stop reason is known. */
+interface StreamedToolUse {
+  id: string;
+  name: string;
+  inputJson: string;
+  thinking: Record<string, unknown>[];
+}
+
+function toToolCall(use: StreamedToolUse, args: Record<string, unknown>): ToolCall {
+  return {
+    id: use.id,
+    name: use.name,
+    arguments: args,
+    ...(use.thinking.length > 0 && { replay: { precedingItems: use.thinking } }),
+  };
 }
 
 /**

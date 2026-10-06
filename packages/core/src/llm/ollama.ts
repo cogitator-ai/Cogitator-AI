@@ -24,6 +24,7 @@ import {
   llmInvalidResponse,
   type LLMErrorContext,
 } from './errors';
+import { normalizeTurn, turnFinishReason } from './turn';
 import { fetchImageAsBase64 } from '../utils/image-fetch';
 import { getLogger } from '../logger';
 
@@ -230,16 +231,9 @@ export class OllamaBackend extends BaseLLMBackend {
             sawToolCalls = true;
           }
 
-          let finishReason: ChatStreamChunk['finishReason'];
-          if (data.done) {
-            if (sawToolCalls) {
-              finishReason = 'tool_calls';
-            } else if (data.done_reason === 'length') {
-              finishReason = 'length';
-            } else {
-              finishReason = 'stop';
-            }
-          }
+          const finishReason = data.done
+            ? turnFinishReason(data.done_reason === 'length' ? 'length' : 'stop', sawToolCalls)
+            : undefined;
 
           const chunk: ChatStreamChunk = {
             id,
@@ -363,27 +357,18 @@ export class OllamaBackend extends BaseLLMBackend {
       arguments: tc.function.arguments,
     }));
 
-    let finishReason: ChatResponse['finishReason'];
-    if (toolCalls?.length) {
-      finishReason = 'tool_calls';
-    } else if (data.done_reason === 'length') {
-      finishReason = 'length';
-    } else {
-      finishReason = 'stop';
-    }
-
-    return {
+    return normalizeTurn({
       id: this.generateId(),
       content: message.content ?? '',
       ...(message.thinking && { reasoning: message.thinking }),
-      toolCalls: toolCalls?.length ? toolCalls : undefined,
-      finishReason,
+      toolCalls,
+      finishReason: data.done_reason === 'length' ? 'length' : 'stop',
       usage: {
         inputTokens: data.prompt_eval_count ?? 0,
         outputTokens: data.eval_count ?? 0,
         totalTokens: (data.prompt_eval_count ?? 0) + (data.eval_count ?? 0),
       },
-    };
+    });
   }
 
   private convertResponseFormat(

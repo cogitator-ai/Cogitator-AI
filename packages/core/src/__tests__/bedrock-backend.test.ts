@@ -425,13 +425,13 @@ describe('BedrockBackend', () => {
     it('maps stop reasons correctly', async () => {
       const cases = [
         { stopReason: 'end_turn', expected: 'stop' },
-        { stopReason: 'tool_use', expected: 'tool_calls' },
+        { stopReason: 'tool_use', expected: 'stop' },
         { stopReason: 'max_tokens', expected: 'length' },
         { stopReason: 'stop_sequence', expected: 'stop' },
         { stopReason: 'model_context_window_exceeded', expected: 'length' },
-        { stopReason: 'guardrail_intervened', expected: 'error' },
-        { stopReason: 'content_filtered', expected: 'error' },
-        { stopReason: 'refusal', expected: 'error' },
+        { stopReason: 'guardrail_intervened', expected: 'content_filter' },
+        { stopReason: 'content_filtered', expected: 'content_filter' },
+        { stopReason: 'refusal', expected: 'refusal' },
         { stopReason: 'something_else', expected: 'stop' },
       ];
 
@@ -856,6 +856,68 @@ describe('BedrockBackend', () => {
         });
         expect(content).toBe('{"name":"J"}');
       });
+    });
+  });
+
+  describe('turn outcome', () => {
+    function toolStream(input: string, stopReason: string) {
+      return (async function* () {
+        yield {
+          contentBlockStart: {
+            contentBlockIndex: 0,
+            start: { toolUse: { toolUseId: 't1', name: 'purge' } },
+          },
+        };
+        yield { contentBlockDelta: { contentBlockIndex: 0, delta: { toolUse: { input } } } };
+        yield { contentBlockStop: { contentBlockIndex: 0 } };
+        yield { messageStop: { stopReason } };
+        yield { metadata: { usage: { inputTokens: 1, outputTokens: 1 } } };
+      })();
+    }
+    const collect = async () => {
+      const finishReasons: unknown[] = [];
+      const toolCalls: unknown[] = [];
+      for await (const chunk of backend.chatStream({
+        model: 'anthropic.claude-3-sonnet-20240229-v1:0',
+        messages: [{ role: 'user', content: 'Clean up' }],
+      })) {
+        if (chunk.finishReason) finishReasons.push(chunk.finishReason);
+        if (chunk.delta.toolCalls) toolCalls.push(...chunk.delta.toolCalls);
+      }
+      return { finishReasons, toolCalls };
+    };
+
+    it('streams a turn cut at max_tokens inside a tool call as truncated, without the call', async () => {
+      mockSend.mockResolvedValueOnce({ stream: toolStream('{"olderThanDays": 3', 'max_tokens') });
+
+      const { finishReasons, toolCalls } = await collect();
+
+      expect(finishReasons).toEqual(['length']);
+      expect(toolCalls).toEqual([]);
+    });
+
+    it('fails a finished turn whose streamed tool input is not valid JSON', async () => {
+      mockSend.mockResolvedValueOnce({ stream: toolStream('{"olderThanDays": 3', 'tool_use') });
+
+      await expect(collect()).rejects.toMatchObject({ code: 'LLM_INVALID_RESPONSE' });
+    });
+
+    it('drops the tool call of a turn cut at max_tokens', async () => {
+      mockSend.mockResolvedValueOnce({
+        output: {
+          message: { content: [{ toolUse: { toolUseId: 't1', name: 'purge', input: {} } }] },
+        },
+        stopReason: 'max_tokens',
+        usage: {},
+      });
+
+      const response = await backend.chat({
+        model: 'anthropic.claude-3-sonnet-20240229-v1:0',
+        messages: [{ role: 'user', content: 'Clean up' }],
+      });
+
+      expect(response.finishReason).toBe('length');
+      expect(response.toolCalls).toBeUndefined();
     });
   });
 });

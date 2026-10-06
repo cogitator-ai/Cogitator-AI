@@ -12,6 +12,13 @@ export { GoogleBackend } from './google';
 export { AzureOpenAIBackend } from './azure';
 export { BedrockBackend } from './bedrock';
 export {
+  normalizeTurn,
+  finishRunsTools,
+  turnFinishReason,
+  parseToolCallArguments,
+  type TurnEnd,
+} from './turn';
+export {
   LLMError,
   createLLMError,
   wrapSDKError,

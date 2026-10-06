@@ -96,7 +96,7 @@ describe('streamChat', () => {
     const backend = createMockBackend(chunks);
     const result = await streamChat(backend, 'gpt-4', messages, registry, agent, onToken);
 
-    expect(result.toolCalls).toEqual([]);
+    expect(result.toolCalls).toBeUndefined();
   });
 
   it('does not add incomplete tool calls missing name', async () => {
@@ -118,7 +118,7 @@ describe('streamChat', () => {
     const backend = createMockBackend(chunks);
     const result = await streamChat(backend, 'gpt-4', messages, registry, agent, onToken);
 
-    expect(result.toolCalls).toEqual([]);
+    expect(result.toolCalls).toBeUndefined();
   });
 
   it('merges multiple distinct tool calls from separate chunks', async () => {
@@ -315,7 +315,7 @@ describe('streamChat', () => {
     const backend = createMockBackend(chunks);
     const result = await streamChat(backend, 'gpt-4', messages, registry, agent, onToken);
 
-    expect(result.toolCalls).toEqual([]);
+    expect(result.toolCalls).toBeUndefined();
   });
 
   it('defaults arguments to empty object when chunk has no arguments', async () => {

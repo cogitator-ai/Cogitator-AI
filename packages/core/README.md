@@ -160,6 +160,8 @@ const response = await backend.chat({
 });
 ```
 
+`response.finishReason` is the same for every provider: `stop`, `tool_calls`, `length`, `content_filter`, `refusal` or `error`. Only a `tool_calls` turn runs tools: a finished turn with complete tool calls is one even when the provider reported `stop` (vLLM, LM Studio and other OpenAI-compatible servers do for forced tools), and a turn cut at the token limit, filtered or refused carries no tool calls, so a call cut off mid-arguments never runs with partial or empty ones. A finished turn whose streamed tool arguments are not valid JSON fails with `LLM_INVALID_RESPONSE`. The built-in backends settle each turn with `normalizeTurn()`, and the runtime applies it to every turn, backends of your own included.
+
 ### LLM Plugin System
 
 Register custom LLM backends:
@@ -792,6 +794,8 @@ interface RunResult {
     cacheWriteTokens?: number;
   };
   reasoning?: string; // reasoning summary, with reasoning.summary
+  truncated?: boolean; // the last answer stopped at maxTokens
+  blocked?: 'content_filter' | 'refusal'; // the last answer was filtered or refused
   prompt?: RunPrompt; // versioned instructions / A/B variant used
   handoffs?: HandoffEvent[];
   finalAgent?: string;
@@ -807,6 +811,8 @@ interface RunResult {
 ```
 
 All fields are `readonly`. The run timeout comes from the run, the agent, `limits.defaultTimeout`, or 120 s.
+
+A run whose last answer the provider withheld still completes, with `blocked` saying why: `content_filter` when its safety system filtered the answer (OpenAI and Azure `content_filter`, Gemini `SAFETY` and the like, Bedrock guardrails), `refusal` when the model declined (OpenAI `refusal`, Anthropic `refusal`). `output` holds what the model said before it stopped, the explanation of a refusal or often nothing, and the run does not ask again.
 
 ---
 
@@ -1746,6 +1752,8 @@ const response = await backend.chat({
 });
 ```
 
+`response.finishReason` is the same for every provider: `stop`, `tool_calls`, `length`, `content_filter`, `refusal` or `error`. Only a `tool_calls` turn runs tools: a finished turn with complete tool calls is one even when the provider reported `stop` (vLLM, LM Studio and other OpenAI-compatible servers do for forced tools), and a turn cut at the token limit, filtered or refused carries no tool calls, so a call cut off mid-arguments never runs with partial or empty ones. A finished turn whose streamed tool arguments are not valid JSON fails with `LLM_INVALID_RESPONSE`. The built-in backends settle each turn with `normalizeTurn()`, and the runtime applies it to every turn, backends of your own included.
+
 ### LLM Plugin System
 
 Register custom LLM backends:
@@ -2378,6 +2386,8 @@ interface RunResult {
     cacheWriteTokens?: number;
   };
   reasoning?: string; // reasoning summary, with reasoning.summary
+  truncated?: boolean; // the last answer stopped at maxTokens
+  blocked?: 'content_filter' | 'refusal'; // the last answer was filtered or refused
   prompt?: RunPrompt; // versioned instructions / A/B variant used
   handoffs?: HandoffEvent[];
   finalAgent?: string;
@@ -2393,6 +2403,8 @@ interface RunResult {
 ```
 
 All fields are `readonly`. The run timeout comes from the run, the agent, `limits.defaultTimeout`, or 120 s.
+
+A run whose last answer the provider withheld still completes, with `blocked` saying why: `content_filter` when its safety system filtered the answer (OpenAI and Azure `content_filter`, Gemini `SAFETY` and the like, Bedrock guardrails), `refusal` when the model declined (OpenAI `refusal`, Anthropic `refusal`). `output` holds what the model said before it stopped, the explanation of a refusal or often nothing, and the run does not ask again.
 
 ---
 

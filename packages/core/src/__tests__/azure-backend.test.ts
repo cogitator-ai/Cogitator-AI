@@ -224,4 +224,47 @@ describe('AzureOpenAIBackend', () => {
       }).rejects.toThrow('Rate limit exceeded');
     });
   });
+
+  describe('turn outcome', () => {
+    it('reports an answer stopped by the Azure content filter as content_filter', async () => {
+      mockCreate.mockResolvedValueOnce({
+        id: 'chatcmpl-1',
+        choices: [{ message: { role: 'assistant', content: '' }, finish_reason: 'content_filter' }],
+        usage: { prompt_tokens: 1, completion_tokens: 0, total_tokens: 1 },
+      });
+
+      const response = await backend.chat({
+        model: '',
+        messages: [{ role: 'user', content: 'x' }],
+      });
+
+      expect(response.finishReason).toBe('content_filter');
+    });
+
+    it('reports tool calls answered with finish_reason stop as a tool turn', async () => {
+      mockCreate.mockResolvedValueOnce({
+        id: 'chatcmpl-1',
+        choices: [
+          {
+            message: {
+              role: 'assistant',
+              content: null,
+              tool_calls: [
+                { id: 'c1', type: 'function', function: { name: 'purge', arguments: '{}' } },
+              ],
+            },
+            finish_reason: 'stop',
+          },
+        ],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      });
+
+      const response = await backend.chat({
+        model: '',
+        messages: [{ role: 'user', content: 'x' }],
+      });
+
+      expect(response.finishReason).toBe('tool_calls');
+    });
+  });
 });

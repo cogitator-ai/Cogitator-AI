@@ -33,7 +33,7 @@ import type {
   ToolSchema,
 } from '@cogitator-ai/types';
 import { createLLMError, llmInvalidResponse, type LLMError, type LLMErrorContext } from './errors';
-import { parseToolCallArguments } from './openai-compatible-base';
+import { finishRunsTools, normalizeTurn, parseToolCallArguments } from './turn';
 
 export const DEFAULT_OPENAI_MODEL = 'gpt-6.1-sol';
 
@@ -85,16 +85,21 @@ export function parseResponsesResponse(response: Response, ctx: LLMErrorContext)
     throw toResponsesError(response.error, ctx);
   }
 
-  const { content, toolCalls, reasoning } = parseOutput(response.output, ctx);
+  const finishReason = toFinishReason(response);
+  const { content, toolCalls, reasoning, refused } = parseOutput(
+    response.output,
+    ctx,
+    finishRunsTools(finishReason)
+  );
 
-  return {
+  return normalizeTurn({
     id: response.id,
     content,
-    toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-    finishReason: toFinishReason(response, toolCalls.length > 0),
+    toolCalls,
+    finishReason: refused ? 'refusal' : finishReason,
     usage: toUsage(response.usage),
     ...(reasoning && { reasoning }),
-  };
+  });
 }
 
 /**
@@ -156,11 +161,16 @@ export async function* readResponsesStream(
           response.output.length > 0
             ? response.output
             : [...items.entries()].sort(([a], [b]) => a - b).map(([, item]) => item);
-        const { toolCalls } = parseOutput(output, ctx);
+        const finishReason = toFinishReason(response);
+        const { toolCalls, refused } = parseOutput(output, ctx, finishRunsTools(finishReason));
+        const end = normalizeTurn({
+          finishReason: refused ? 'refusal' : finishReason,
+          toolCalls,
+        });
         yield {
           id: response.id || responseId,
-          delta: toolCalls.length > 0 ? { toolCalls } : {},
-          finishReason: toFinishReason(response, toolCalls.length > 0),
+          delta: end.toolCalls ? { toolCalls: end.toolCalls } : {},
+          finishReason: end.finishReason,
           usage: toUsage(response.usage),
         };
         return;
@@ -323,11 +333,17 @@ function captureMessage(item: ResponseOutputMessage): Record<string, unknown> {
   };
 }
 
+/**
+ * The text, tool calls and reasoning summary of a response's output. Tool call arguments are
+ * parsed only when `withToolCalls` is set, so the calls of a cut-off response are never read.
+ */
 function parseOutput(
   output: ResponseOutputItem[],
-  ctx: LLMErrorContext
-): { content: string; toolCalls: ToolCall[]; reasoning: string } {
+  ctx: LLMErrorContext,
+  withToolCalls: boolean
+): { content: string; toolCalls: ToolCall[]; reasoning: string; refused: boolean } {
   let content = '';
+  let refused = false;
   const toolCalls: ToolCall[] = [];
   const summaries: string[] = [];
   let preceding: Record<string, unknown>[] = [];
@@ -344,10 +360,11 @@ function parseOutput(
         content += item.content
           .map((part) => (part.type === 'output_text' ? part.text : part.refusal))
           .join('');
+        refused ||= item.content.some((part) => part.type === 'refusal');
         preceding.push(captureMessage(item));
         break;
       case 'function_call': {
-        if (item.status === 'incomplete') break;
+        if (!withToolCalls || item.status === 'incomplete') break;
         const toolCall: ToolCall = {
           id: item.call_id,
           name: item.name,
@@ -362,7 +379,7 @@ function parseOutput(
     }
   }
 
-  return { content, toolCalls, reasoning: summaries.join('\n\n') };
+  return { content, toolCalls, reasoning: summaries.join('\n\n'), refused };
 }
 
 function toReplayState(
@@ -377,17 +394,16 @@ function toReplayState(
 }
 
 function toFinishReason(
-  response: Pick<Response, 'status' | 'incomplete_details'>,
-  hasToolCalls: boolean
+  response: Pick<Response, 'status' | 'incomplete_details'>
 ): ChatResponse['finishReason'] {
   switch (response.status) {
     case 'incomplete':
-      return response.incomplete_details?.reason === 'content_filter' ? 'error' : 'length';
+      return response.incomplete_details?.reason === 'content_filter' ? 'content_filter' : 'length';
     case 'failed':
     case 'cancelled':
       return 'error';
     default:
-      return hasToolCalls ? 'tool_calls' : 'stop';
+      return 'stop';
   }
 }
 

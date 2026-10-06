@@ -295,6 +295,9 @@ export interface ResumeOptions extends Omit<
   defaultDecision?: ToolApprovalDecision;
 }
 
+/** Why the model's last answer in a run was withheld; see `RunResult.blocked`. */
+export type RunBlockReason = 'content_filter' | 'refusal';
+
 export interface RunResult {
   readonly output: string;
   readonly structured?: unknown;
@@ -329,6 +332,13 @@ export interface RunResult {
    * output may be cut off, or empty when a reasoning model spent the whole limit thinking
    */
   readonly truncated?: boolean;
+  /**
+   * Set when the model's last answer was withheld instead of finished: `content_filter` when the
+   * provider's safety system filtered it, `refusal` when the model declined to answer. The run
+   * still completes, with `output` holding what the model said before it stopped: the explanation
+   * of a refusal, often nothing for a filter. The runtime does not ask again for such an answer.
+   */
+  readonly blocked?: RunBlockReason;
   /** The versioned instructions or A/B variant the run used */
   readonly prompt?: RunPrompt;
   /** Handoffs during the run, in order */
