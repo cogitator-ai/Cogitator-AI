@@ -1,5 +1,6 @@
 import type { Cogitator, Agent } from '@cogitator-ai/core';
 import type { ChatHandlerOptions, ChatInput, ChatMessage } from '../types.js';
+import { isNonBlankString, parseRunRequest, type ContextPolicy } from '@cogitator-ai/server-shared';
 import { generateId } from '../streaming/encoder.js';
 import {
   exceedsDeclaredSize,
@@ -18,7 +19,7 @@ function isChatRole(role: unknown): role is ChatMessage['role'] {
 
 type ParseResult = { ok: true; input: ChatInput } | { ok: false; error: string };
 
-function parseDefaultInput(body: unknown): ParseResult {
+function parseDefaultInput(body: unknown, acceptContext: ContextPolicy | undefined): ParseResult {
   if (!isPlainObject(body)) {
     return { ok: false, error: 'Request body must be a JSON object' };
   }
@@ -27,12 +28,21 @@ function parseDefaultInput(body: unknown): ParseResult {
     return { ok: false, error: 'messages must be an array' };
   }
 
-  if (body.threadId !== undefined && body.threadId !== null && typeof body.threadId !== 'string') {
-    return { ok: false, error: 'threadId must be a string' };
+  if (body.threadId !== undefined && body.threadId !== null && !isNonBlankString(body.threadId)) {
+    return { ok: false, error: 'threadId must be a non-empty string' };
   }
 
   if (body.metadata !== undefined && body.metadata !== null && !isPlainObject(body.metadata)) {
     return { ok: false, error: 'metadata must be an object' };
+  }
+
+  if (isPlainObject(body.metadata)) {
+    const context = parseRunRequest(
+      { input: 'metadata', context: body.metadata },
+      { acceptContext }
+    );
+    if (!context.ok)
+      return { ok: false, error: context.message.replace('"context"', '"metadata"') };
   }
 
   const messages: ChatMessage[] = [];
@@ -89,8 +99,8 @@ export function createChatHandler(
     } else {
       const body = await readJsonBody(req);
       if (!body.ok) return body.response;
-      const parsed = parseDefaultInput(body.body);
-      if (!parsed.ok) return jsonError(parsed.error, 400);
+      const parsed = parseDefaultInput(body.body, options?.acceptContext);
+      if (!parsed.ok) return jsonError(parsed.error, 400, 'INVALID_INPUT');
       input = parsed.input;
     }
 
@@ -112,15 +122,17 @@ export function createChatHandler(
     return streamAgentRun({
       req,
       runContext,
-      start: (callbacks) =>
+      threadId: input.threadId,
+      start: (callbacks, threadId) =>
         cogitator.run(agent, {
           input: userMessage,
-          threadId: input.threadId,
+          threadId,
           context: input.metadata,
           ...runContext,
           ...callbacks,
         }),
       afterRun: options?.afterRun,
+      heartbeatMs: options?.sseHeartbeatMs,
     });
   };
 }

@@ -1,12 +1,11 @@
 import Router from '@koa/router';
 import type { CogitatorState, WorkflowListResponse } from '../types.js';
 import { KoaStreamWriter, setupSSEHeaders } from '../streaming/index.js';
-import { generateId } from '@cogitator-ai/server-shared';
+import { generateId, parseWorkflowRunRequest } from '@cogitator-ai/server-shared';
 import { getOwn } from '../utils/lookup.js';
 import { isModuleNotFoundError, resolveError } from '../utils/errors.js';
 import { getRequestBody, onClientDisconnect } from '../utils/request.js';
 import { toWorkflowRunResponse } from '../utils/results.js';
-import { parseWorkflowRunRequest } from '../utils/validation.js';
 
 export function createWorkflowRoutes(): Router<CogitatorState> {
   const router = new Router<CogitatorState>();

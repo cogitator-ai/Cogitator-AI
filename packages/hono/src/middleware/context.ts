@@ -1,5 +1,9 @@
 import { createMiddleware } from 'hono/factory';
-import { generateId, resolveSseHeartbeatMs } from '@cogitator-ai/server-shared';
+import {
+  DEFAULT_THREAD_MESSAGE_ROLES,
+  generateId,
+  resolveSseHeartbeatMs,
+} from '@cogitator-ai/server-shared';
 import type { HonoEnv, CogitatorAppOptions } from '../types.js';
 
 export function createContextMiddleware(opts: CogitatorAppOptions) {
@@ -11,6 +15,8 @@ export function createContextMiddleware(opts: CogitatorAppOptions) {
       workflows: opts.workflows ?? {},
       swarms: opts.swarms ?? {},
       sseHeartbeatMs,
+      acceptContext: opts.acceptContext ?? false,
+      threadMessageRoles: opts.threadMessageRoles ?? DEFAULT_THREAD_MESSAGE_ROLES,
     });
     c.set('cogitatorRequestId', generateId('req'));
     c.set('cogitatorStartTime', Date.now());

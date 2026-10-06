@@ -1,21 +1,33 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { cogitatorApp } from '../app.js';
 import { createClientState, handleWebSocketMessage } from '../websocket/handler.js';
 import type { CogitatorAppOptions, CogitatorContext } from '../types.js';
+
+const swarms = vi.hoisted(() => ({
+  instances: [] as Array<{ close: () => Promise<void> }>,
+  fail: false,
+}));
 
 vi.mock('@cogitator-ai/swarms', () => ({
   Swarm: class {
     id = 'swarm_1';
     name = 'team';
     strategyType = 'round-robin';
-    run = vi.fn().mockResolvedValue({ output: 'swarm-out', agentResults: new Map() });
+    run = vi.fn(async () => {
+      if (swarms.fail) throw new Error('swarm failed');
+      return { output: 'swarm-out', agentResults: new Map() };
+    });
     abort = vi.fn();
+    close = vi.fn(async () => undefined);
     getResourceUsage = () => ({
       totalTokens: 0,
       totalCost: 0,
       elapsedTime: 0,
       agentUsage: new Map(),
     });
+    constructor() {
+      swarms.instances.push(this);
+    }
   },
 }));
 
@@ -25,6 +37,7 @@ function runResult(usage: Record<string, number> = {}) {
     threadId: 'thread-1',
     usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3, cost: 0, duration: 1, ...usage },
     toolCalls: [],
+    trace: { traceId: 'trace-1', spans: [] },
   };
 }
 
@@ -85,7 +98,7 @@ describe('blank input', () => {
       createClientState()
     );
     expect(sent.map((message) => JSON.parse(message).error)).toEqual([
-      'Invalid run payload: "input" is required',
+      'Invalid run payload: Field "input" must not be blank',
     ]);
     expect(run).not.toHaveBeenCalled();
   });
@@ -135,6 +148,8 @@ describe('run usage', () => {
       type: 'finish',
       messageId: expect.any(String),
       usage: detailedUsage,
+      threadId: 'thread-1',
+      status: 'completed',
     });
   });
 });
@@ -200,5 +215,31 @@ describe('Bun idle timeout', () => {
       outgoing: {},
     });
     expect(res.status).toBe(200);
+  });
+});
+
+describe('swarm resources', () => {
+  beforeEach(() => {
+    swarms.instances.length = 0;
+    swarms.fail = false;
+  });
+
+  it.each(['/swarms/team/run', '/swarms/team/stream'])(
+    'closes the swarm a request built once %s is done',
+    async (path) => {
+      const { app } = buildApp();
+      await (await app.request(path, post({ input: 'go' }))).text();
+      expect(swarms.instances).toHaveLength(1);
+      expect(swarms.instances[0].close).toHaveBeenCalledOnce();
+    }
+  );
+
+  it('closes the swarm of a run that fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    swarms.fail = true;
+    const { app } = buildApp();
+    const res = await app.request('/swarms/team/run', post({ input: 'go' }));
+    expect(res.status).toBe(500);
+    expect(swarms.instances[0].close).toHaveBeenCalledOnce();
   });
 });

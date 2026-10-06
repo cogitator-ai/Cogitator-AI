@@ -2,13 +2,17 @@ import type { FastifyPluginAsync } from 'fastify';
 import type { WorkflowListResponse, WorkflowRunRequest, WorkflowRunResponse } from '../types.js';
 import { WorkflowRunRequestSchema } from '../types.js';
 import { FastifyStreamWriter, generateId } from '../streaming/index.js';
+import { parseWorkflowRunRequest } from '@cogitator-ai/server-shared';
 import {
   isModuleNotFound,
   onClientDisconnect,
   resolveError,
   sendError,
   sendRouteError,
+  validateBody,
 } from './utils.js';
+
+const workflowBody = validateBody(parseWorkflowRunRequest);
 
 interface WorkflowParams {
   name: string;
@@ -27,7 +31,6 @@ function executorOptions(body: WorkflowRunRequest | undefined) {
   return {
     maxConcurrency: options.maxConcurrency,
     maxIterations: options.maxIterations,
-    checkpoint: options.checkpoint,
   };
 }
 
@@ -50,7 +53,10 @@ export const workflowRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.post<{ Params: WorkflowParams; Body: WorkflowRunRequest }>(
     '/workflows/:name/run',
-    { schema: { params: paramsSchema, body: WorkflowRunRequestSchema } },
+    {
+      schema: { params: paramsSchema, body: WorkflowRunRequestSchema },
+      preValidation: workflowBody,
+    },
     async (request, reply) => {
       const { name } = request.params;
       const workflow = findWorkflow(name);
@@ -100,7 +106,10 @@ export const workflowRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.post<{ Params: WorkflowParams; Body: WorkflowRunRequest }>(
     '/workflows/:name/stream',
-    { schema: { params: paramsSchema, body: WorkflowRunRequestSchema } },
+    {
+      schema: { params: paramsSchema, body: WorkflowRunRequestSchema },
+      preValidation: workflowBody,
+    },
     async (request, reply) => {
       const { name } = request.params;
       const workflow = findWorkflow(name);

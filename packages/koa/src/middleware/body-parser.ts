@@ -1,3 +1,4 @@
+import { refuseNonJsonBody } from '@cogitator-ai/server-shared';
 import type { Context, Next } from 'koa';
 
 export const DEFAULT_BODY_LIMIT = 1024 * 1024;
@@ -12,6 +13,13 @@ export function createBodyParser(options: BodyParserOptions = {}) {
   const limit = options.limit ?? DEFAULT_BODY_LIMIT;
 
   return async (ctx: Context, next: Next) => {
+    const refusal = refuseNonJsonBody(ctx.method, ctx.headers);
+    if (refusal) {
+      await discardBody(ctx);
+      ctx.status = refusal.status;
+      ctx.body = { error: { message: refusal.message, code: refusal.code } };
+      return;
+    }
     if (BODY_METHODS.has(ctx.method) && ctx.is('application/json') && !isBodyConsumed(ctx)) {
       const declaredLength = Number(ctx.get('content-length'));
       if (Number.isFinite(declaredLength) && declaredLength > limit) {

@@ -224,7 +224,7 @@ Install only what you need. Everything is a separate npm package.
 [`ai-sdk`](https://www.npmjs.com/package/@cogitator-ai/ai-sdk) ·
 [`openai-compat`](https://www.npmjs.com/package/@cogitator-ai/openai-compat)
 
-All with Swagger docs, SSE streaming, and WebSocket support, built on the shared streaming protocol in [`server-shared`](https://www.npmjs.com/package/@cogitator-ai/server-shared). See [integration examples](./examples/integrations/).
+All with Swagger docs, SSE streaming, and WebSocket support, built on the shared protocol in [`server-shared`](https://www.npmjs.com/package/@cogitator-ai/server-shared): one request validator, one response shape and one stream session for every adapter, checked by a shared conformance suite. Clients cannot set system-prompt `context` or add `system` thread messages unless the server allows it (`acceptContext`, `threadMessageRoles`), and non-JSON bodies are refused with `415`. See [integration examples](./examples/integrations/).
 
 ---
 
@@ -407,7 +407,7 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
 | [@cogitator-ai/tetsu](https://www.npmjs.com/package/@cogitator-ai/tetsu)                   | Tetsu controller on Bun (SSE, WebSocket, OpenAPI)            | [![npm](https://img.shields.io/npm/v/@cogitator-ai/tetsu.svg)](https://www.npmjs.com/package/@cogitator-ai/tetsu)                   |
 | [@cogitator-ai/deploy](https://www.npmjs.com/package/@cogitator-ai/deploy)                 | Deployment engine (Docker, Fly.io)                           | [![npm](https://img.shields.io/npm/v/@cogitator-ai/deploy.svg)](https://www.npmjs.com/package/@cogitator-ai/deploy)                 |
 | [@cogitator-ai/channels](https://www.npmjs.com/package/@cogitator-ai/channels)             | Messaging channels (Telegram, Discord, Slack, WhatsApp, Web) | [![npm](https://img.shields.io/npm/v/@cogitator-ai/channels.svg)](https://www.npmjs.com/package/@cogitator-ai/channels)             |
-| [@cogitator-ai/server-shared](https://www.npmjs.com/package/@cogitator-ai/server-shared)   | Shared streaming protocol and OpenAPI for server adapters    | [![npm](https://img.shields.io/npm/v/@cogitator-ai/server-shared.svg)](https://www.npmjs.com/package/@cogitator-ai/server-shared)   |
+| [@cogitator-ai/server-shared](https://www.npmjs.com/package/@cogitator-ai/server-shared)   | Shared protocol, validation, conformance for server adapters | [![npm](https://img.shields.io/npm/v/@cogitator-ai/server-shared.svg)](https://www.npmjs.com/package/@cogitator-ai/server-shared)   |
 | [@cogitator-ai/test-utils](https://www.npmjs.com/package/@cogitator-ai/test-utils)         | Testing utilities: mock backends, fixtures, helpers          | [![npm](https://img.shields.io/npm/v/@cogitator-ai/test-utils.svg)](https://www.npmjs.com/package/@cogitator-ai/test-utils)         |
 
 Not published to npm: [`packages/dashboard`](./packages/dashboard) (the [cogitator.app](https://cogitator.app) website: landing, docs, cookbook), [`packages/e2e`](./packages/e2e) (end-to-end test suite) and [`packages/gauntlet`](./packages/gauntlet) (integration proving ground that runs every package together on real models).

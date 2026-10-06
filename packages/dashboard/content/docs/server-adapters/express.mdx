@@ -85,6 +85,8 @@ interface CogitatorServerConfig {
     swagger?: SwaggerConfig;
     websocket?: WebSocketConfig; // { path?, pingInterval? (ms, default 30000), maxPayloadSize? (bytes, default 1 MiB) }
     sseHeartbeatMs?: number; // SSE heartbeat interval in ms, default 5000, 0 turns it off
+    acceptContext?: boolean | string[]; // context keys clients may send: none by default, a list, or true for any
+    threadMessageRoles?: ('user' | 'assistant' | 'system')[]; // roles of POST /threads/:id/messages, default user and assistant
   };
 }
 ```

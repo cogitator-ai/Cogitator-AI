@@ -1,13 +1,15 @@
 import Router from '@koa/router';
 import type { CogitatorState, AgentListResponse } from '../types.js';
 import { KoaStreamWriter, setupSSEHeaders } from '../streaming/index.js';
-import { generateId } from '@cogitator-ai/server-shared';
-import type { ToolCall, ToolResult } from '@cogitator-ai/types';
+import {
+  AgentStreamSession,
+  parseResumeRequest,
+  parseRunRequest,
+  toAgentRunResponse,
+} from '@cogitator-ai/server-shared';
 import { getOwn } from '../utils/lookup.js';
 import { resolveError } from '../utils/errors.js';
 import { getRequestBody, onClientDisconnect } from '../utils/request.js';
-import { toAgentRunResponse } from '../utils/results.js';
-import { parseAgentResumeRequest, parseAgentRunRequest } from '../utils/validation.js';
 
 export function createAgentRoutes(): Router<CogitatorState> {
   const router = new Router<CogitatorState>();
@@ -35,7 +37,9 @@ export function createAgentRoutes(): Router<CogitatorState> {
       return;
     }
 
-    const parsed = parseAgentRunRequest(getRequestBody(ctx));
+    const parsed = parseRunRequest(getRequestBody(ctx), {
+      acceptContext: ctx.state.cogitator.acceptContext,
+    });
     if (!parsed.ok) {
       ctx.status = 400;
       ctx.body = { error: { message: parsed.message, code: 'INVALID_INPUT' } };
@@ -72,7 +76,7 @@ export function createAgentRoutes(): Router<CogitatorState> {
       return;
     }
 
-    const parsed = parseAgentResumeRequest(getRequestBody(ctx));
+    const parsed = parseResumeRequest(getRequestBody(ctx));
     if (!parsed.ok) {
       ctx.status = 400;
       ctx.body = { error: { message: parsed.message, code: 'INVALID_INPUT' } };
@@ -111,7 +115,9 @@ export function createAgentRoutes(): Router<CogitatorState> {
       return;
     }
 
-    const parsed = parseAgentRunRequest(getRequestBody(ctx));
+    const parsed = parseRunRequest(getRequestBody(ctx), {
+      acceptContext: ctx.state.cogitator.acceptContext,
+    });
     if (!parsed.ok) {
       ctx.status = 400;
       ctx.body = { error: { message: parsed.message, code: 'INVALID_INPUT' } };
@@ -122,7 +128,9 @@ export function createAgentRoutes(): Router<CogitatorState> {
     const writer = new KoaStreamWriter(ctx, {
       heartbeatMs: ctx.state.cogitator.sseHeartbeatMs,
     });
-    const messageId = generateId('msg');
+    const session = new AgentStreamSession((event) => writer.send(event), {
+      threadId: parsed.value.threadId,
+    });
     const abortController = new AbortController();
 
     onClientDisconnect(ctx, () => {
@@ -130,82 +138,22 @@ export function createAgentRoutes(): Router<CogitatorState> {
       abortController.abort();
     });
 
-    let textId: string | null = null;
-    let reasoningId: string | null = null;
-    let streamedText = false;
-
-    const endText = () => {
-      if (textId === null) return;
-      writer.textEnd(textId);
-      textId = null;
-    };
-
-    const endReasoning = () => {
-      if (reasoningId === null) return;
-      writer.reasoningEnd(reasoningId);
-      reasoningId = null;
-    };
-
-    const endParts = () => {
-      endReasoning();
-      endText();
-    };
-
-    const writeText = (delta: string) => {
-      if (!delta) return;
-      if (textId === null) {
-        endReasoning();
-        textId = generateId('txt');
-        writer.textStart(textId);
-      }
-      writer.textDelta(textId, delta);
-    };
-
-    const writeReasoning = (delta: string) => {
-      if (!delta) return;
-      if (reasoningId === null) {
-        endText();
-        reasoningId = generateId('rsn');
-        writer.reasoningStart(reasoningId);
-      }
-      writer.reasoningDelta(reasoningId, delta);
-    };
-
-    writer.start(messageId);
+    session.start();
 
     try {
       const result = await runtime.run(agent, {
         ...parsed.value,
+        threadId: session.threadId,
         userId: ctx.state.auth?.userId,
         stream: true,
         signal: abortController.signal,
-        onToken: (token: string) => {
-          if (token) streamedText = true;
-          writeText(token);
-        },
-        onReasoning: writeReasoning,
-        onToolCall: (toolCall: ToolCall) => {
-          endParts();
-          writer.toolCallStart(toolCall.id, toolCall.name);
-          writer.toolCallDelta(toolCall.id, JSON.stringify(toolCall.arguments));
-          writer.toolCallEnd(toolCall.id);
-        },
-        onToolResult: (toolResult: ToolResult) => {
-          writer.toolResult(generateId('res'), toolResult.callId, toolResult.result);
-        },
+        ...session.callbacks,
       });
-
-      if (!streamedText) writeText(result.output);
-      endParts();
-      if (result.status === 'paused' && result.pendingApprovals) {
-        writer.approvalRequired(result.threadId, result.pendingApprovals);
-      }
-      writer.finish(messageId, result.usage);
+      session.complete(result);
     } catch (error) {
       if (!abortController.signal.aborted) {
-        endParts();
         const { body } = resolveError(error, 'Agent stream error');
-        writer.error(body.error.message, body.error.code);
+        session.fail(body.error.message, body.error.code);
       }
     } finally {
       writer.close();

@@ -1,44 +1,15 @@
 import type { Cogitator, Agent } from '@cogitator-ai/core';
 import type { AgentHandlerOptions, AgentInput } from '../types.js';
+import { parseRunRequest } from '@cogitator-ai/server-shared';
 import {
   exceedsDeclaredSize,
   hookErrorResponse,
-  isPlainObject,
   jsonError,
   jsonResponse,
   readJsonBody,
   runErrorResponse,
 } from './http.js';
 import { toAgentResponse } from './result.js';
-
-type ParseResult = { ok: true; input: AgentInput } | { ok: false; error: string };
-
-function parseDefaultInput(body: unknown): ParseResult {
-  if (!isPlainObject(body)) {
-    return { ok: false, error: 'Request body must be a JSON object' };
-  }
-
-  if (typeof body.input !== 'string' || body.input.trim() === '') {
-    return { ok: false, error: 'input must be a non-empty string' };
-  }
-
-  if (body.context !== undefined && !isPlainObject(body.context)) {
-    return { ok: false, error: 'context must be an object' };
-  }
-
-  if (body.threadId !== undefined && typeof body.threadId !== 'string') {
-    return { ok: false, error: 'threadId must be a string' };
-  }
-
-  return {
-    ok: true,
-    input: {
-      input: body.input,
-      context: body.context,
-      threadId: body.threadId,
-    },
-  };
-}
 
 export function createAgentHandler(
   cogitator: Cogitator,
@@ -60,9 +31,9 @@ export function createAgentHandler(
     } else {
       const body = await readJsonBody(req);
       if (!body.ok) return body.response;
-      const parsed = parseDefaultInput(body.body);
-      if (!parsed.ok) return jsonError(parsed.error, 400);
-      input = parsed.input;
+      const parsed = parseRunRequest(body.body, { acceptContext: options?.acceptContext });
+      if (!parsed.ok) return jsonError(parsed.message, 400, 'INVALID_INPUT');
+      input = parsed.value;
     }
 
     let runContext: Record<string, unknown> = {};

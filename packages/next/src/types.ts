@@ -5,7 +5,8 @@ import type {
   RunResult,
   ToolApprovalDecision,
 } from '@cogitator-ai/types';
-import type { PendingApproval, Usage } from './streaming/protocol.js';
+import type { AgentRunResponse, ContextPolicy } from '@cogitator-ai/server-shared';
+import type { PendingApproval } from './streaming/protocol.js';
 
 export type { Message, ToolCall, ToolResult, RunResult, ToolApprovalDecision, PendingApproval };
 
@@ -36,12 +37,32 @@ export interface ChatHandlerOptions {
   parseInput?: (req: Request) => Promise<ChatInput>;
   beforeRun?: (req: Request, input: ChatInput) => Promise<Record<string, unknown> | void>;
   afterRun?: (result: RunResult) => Promise<void>;
+  /**
+   * Keys of the request's `metadata` that clients may set. The run adds them to the system prompt, so
+   * by default (\`false\`) a request that sends any is refused with \`400\`. List the keys clients
+   * may send, or pass \`true\` only for clients trusted like the server itself. A \`parseInput\`
+   * of your own decides for itself.
+   */
+  acceptContext?: ContextPolicy;
+  /**
+   * How often a comment is written while the stream is open, in milliseconds, so a proxy or
+   * the platform's idle timeout does not cut a run that waits on a slow tool. Default: 5000.
+   * \`0\` turns heartbeats off.
+   */
+  sseHeartbeatMs?: number;
 }
 
 export interface AgentHandlerOptions {
   parseInput?: (req: Request) => Promise<AgentInput>;
   beforeRun?: (req: Request, input: AgentInput) => Promise<Record<string, unknown> | void>;
   afterRun?: (result: RunResult) => Promise<void>;
+  /**
+   * Keys of the request's `context` that clients may set. The run adds them to the system prompt, so
+   * by default (\`false\`) a request that sends any is refused with \`400\`. List the keys clients
+   * may send, or pass \`true\` only for clients trusted like the server itself. A \`parseInput\`
+   * of your own decides for itself.
+   */
+  acceptContext?: ContextPolicy;
 }
 
 /** The decisions for the tool calls a paused run waits on */
@@ -68,24 +89,22 @@ export interface ResumeHandlerOptions {
    * like `createAgentHandler`.
    */
   stream?: boolean;
+  /**
+   * How often a comment is written while the stream is open, in milliseconds, so a proxy or
+   * the platform's idle timeout does not cut a run that waits on a slow tool. Default: 5000.
+   * \`0\` turns heartbeats off.
+   */
+  sseHeartbeatMs?: number;
 }
 
-export interface AgentResponse {
-  output: string;
-  threadId: string;
-  usage: Usage;
-  toolCalls: ToolCall[];
-  trace?: {
-    traceId: string;
-    spans: unknown[];
-  };
-  /** The model's reasoning summary, when the agent asks for one (`reasoning.summary`) */
-  reasoning?: string;
-  /** `paused` when tool calls wait for approval; resume the run to go on */
-  status?: 'completed' | 'paused';
-  /** The tool calls a paused run waits on */
-  pendingApprovals?: PendingApproval[];
-}
+/**
+ * The JSON answer of \`createAgentHandler\` and \`createResumeHandler\`, the same as every
+ * Cogitator adapter's: the output, thread, usage, tool calls and how the run ended
+ * (\`status\`, \`truncated\`, \`blocked\`, \`structured\` and the others), never the system
+ * prompt, the history or trace spans. \`traceId\` links it to the server's traces; read the
+ * whole \`RunResult\` in \`afterRun\`.
+ */
+export type AgentResponse = AgentRunResponse;
 
 export interface RetryConfig {
   maxRetries?: number;

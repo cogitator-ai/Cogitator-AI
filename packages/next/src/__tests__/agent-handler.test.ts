@@ -81,6 +81,7 @@ describe('createAgentHandler', () => {
     const handler = createAgentHandler(mockCogitator(), mockAgent());
     const req = new Request('http://localhost/api/agent', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: 'not json',
     });
 
@@ -88,8 +89,27 @@ describe('createAgentHandler', () => {
     expect(res.status).toBe(400);
 
     const data = await res.json();
-    expect(data.error).toBe('Invalid JSON');
+    expect(data).toEqual({ error: 'Invalid JSON body', code: 'INVALID_INPUT' });
   });
+
+  it.each(['text/plain', 'application/x-www-form-urlencoded'])(
+    'refuses a %s body that a cross-origin page can send without a preflight',
+    async (type) => {
+      const cog = mockCogitator();
+      const handler = createAgentHandler(cog, mockAgent());
+      const res = await handler(
+        new Request('http://localhost/api/agent', {
+          method: 'POST',
+          headers: { 'Content-Type': type },
+          body: JSON.stringify({ input: 'hi' }),
+        })
+      );
+
+      expect(res.status).toBe(415);
+      expect((await res.json()).code).toBe('UNSUPPORTED_MEDIA_TYPE');
+      expect(cog.run).not.toHaveBeenCalled();
+    }
+  );
 
   it('uses custom parseInput', async () => {
     const cog = mockCogitator();
@@ -172,7 +192,7 @@ describe('createAgentHandler', () => {
 
     const res = await handler(jsonRequest({ input: 123 }));
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe('input must be a non-empty string');
+    expect((await res.json()).error).toBe('Field "input" must be a string');
     expect(cog.run).not.toHaveBeenCalled();
   });
 });

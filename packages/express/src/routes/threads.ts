@@ -1,24 +1,9 @@
 import { Router } from 'express';
 import type { Response } from 'express';
 import { assertThreadAccess, ensureThreadAccess } from '@cogitator-ai/core';
-import type {
-  RouteContext,
-  CogitatorRequest,
-  ThreadResponse,
-  AddMessageRequest,
-} from '../types.js';
-import { handleRouteError, isPlainObject, sendError } from './utils.js';
-
-const MESSAGE_ROLES: ReadonlySet<string> = new Set(['user', 'assistant', 'system']);
-
-function parseMessageBody(body: unknown): AddMessageRequest | null {
-  if (!isPlainObject(body)) return null;
-  const { role, content, metadata } = body;
-  if (typeof role !== 'string' || !MESSAGE_ROLES.has(role)) return null;
-  if (typeof content !== 'string' || content === '') return null;
-  if (metadata !== undefined && !isPlainObject(metadata)) return null;
-  return { role: role as AddMessageRequest['role'], content, metadata };
-}
+import { parseAddMessageRequest } from '@cogitator-ai/server-shared';
+import type { RouteContext, CogitatorRequest, ThreadResponse } from '../types.js';
+import { handleRouteError, sendError } from './utils.js';
 
 export function createThreadRoutes(ctx: RouteContext): Router {
   const router = Router();
@@ -70,17 +55,12 @@ export function createThreadRoutes(ctx: RouteContext): Router {
       }
 
       const { id } = req.params;
-      const body = parseMessageBody(req.body);
-
-      if (!body) {
-        sendError(
-          res,
-          400,
-          'Invalid message: role must be user, assistant or system and content a non-empty string',
-          'INVALID_INPUT'
-        );
+      const parsed = parseAddMessageRequest(req.body, { roles: ctx.config.threadMessageRoles });
+      if (!parsed.ok) {
+        sendError(res, 400, parsed.message, 'INVALID_INPUT');
         return;
       }
+      const body = parsed.value;
 
       const userId = req.cogitator?.auth?.userId;
 

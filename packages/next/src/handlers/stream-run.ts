@@ -1,8 +1,7 @@
+import { AgentStreamSession } from '@cogitator-ai/server-shared';
 import type { RunOptions, RunResult } from '@cogitator-ai/types';
 import { StreamWriter } from '../streaming/stream-writer.js';
-import { generateId } from '../streaming/encoder.js';
 import { describeRunError } from './http.js';
-import { toPendingApprovals } from './result.js';
 
 const SSE_HEADERS = {
   'Content-Type': 'text/event-stream',
@@ -20,20 +19,31 @@ export interface StreamRunOptions {
   req: Request;
   /** What `beforeRun` returned; an `AbortSignal` under `signal` also aborts the run */
   runContext: Record<string, unknown>;
-  /** Starts or resumes the run with the callbacks of the stream */
-  start: (callbacks: StreamCallbacks) => Promise<RunResult>;
+  /** The thread the request named; without one the stream opens a new thread */
+  threadId?: string;
+  /** Starts or resumes the run on `threadId` with the callbacks of the stream */
+  start: (callbacks: StreamCallbacks, threadId: string) => Promise<RunResult>;
   afterRun?: (result: RunResult) => Promise<void>;
+  /** How often a heartbeat comment is written while the stream is open; `0` turns it off */
+  heartbeatMs?: number;
 }
 
 /**
- * Answers with the run streamed in the chat protocol: text and reasoning parts,
- * tool calls and results, `approval-required` when it pauses, then `finish`, or
- * `error` when it fails.
+ * Answers with the run streamed in the chat protocol, the same as every Cogitator adapter:
+ * `start` naming the thread, text and reasoning parts, tool calls and results,
+ * `approval-required` when it pauses, then `finish` with the thread and how the run ended,
+ * or `error` when it fails. Heartbeat comments keep the stream open while the run is silent.
  */
-export function streamAgentRun({ req, runContext, start, afterRun }: StreamRunOptions): Response {
+export function streamAgentRun({
+  req,
+  runContext,
+  threadId,
+  start,
+  afterRun,
+  heartbeatMs,
+}: StreamRunOptions): Response {
   const { readable, writable } = new TransformStream<Uint8Array>();
-  const sw = new StreamWriter(writable.getWriter());
-  const messageId = generateId('msg');
+  const sw = new StreamWriter(writable.getWriter(), { heartbeatMs });
 
   const abortController = new AbortController();
   const abortRun = () => {
@@ -53,99 +63,30 @@ export function streamAgentRun({ req, runContext, start, afterRun }: StreamRunOp
   }
 
   let queue: Promise<void> = Promise.resolve();
-  const emit = (write: () => Promise<void>): Promise<void> => {
-    queue = queue.then(write).catch(abortRun);
-    return queue;
-  };
-
-  let openPart: { kind: 'text' | 'reasoning'; id: string } | null = null;
-  let streamedText = false;
-  let streamedReasoning = false;
-
-  const endPart = async () => {
-    if (openPart === null) return;
-    const { kind, id } = openPart;
-    openPart = null;
-    await (kind === 'text' ? sw.textEnd(id) : sw.reasoningEnd(id));
-  };
-
-  const writeText = async (delta: string) => {
-    if (openPart?.kind !== 'text') {
-      await endPart();
-      openPart = { kind: 'text', id: generateId('txt') };
-      await sw.textStart(openPart.id);
-    }
-    await sw.textDelta(openPart.id, delta);
-  };
-
-  const writeReasoning = async (delta: string) => {
-    if (openPart?.kind !== 'reasoning') {
-      await endPart();
-      openPart = { kind: 'reasoning', id: generateId('rsn') };
-      await sw.reasoningStart(openPart.id);
-    }
-    await sw.reasoningDelta(openPart.id, delta);
-  };
+  const session = new AgentStreamSession(
+    (event) => {
+      queue = queue.then(() => sw.send(event)).catch(abortRun);
+    },
+    { threadId }
+  );
 
   const runStream = async () => {
     try {
-      await emit(() => sw.start(messageId));
-
-      const result = await start({
-        stream: true,
-        signal: abortController.signal,
-        onToken: (token: string) => {
-          if (!token) return;
-          streamedText = true;
-          void emit(() => writeText(token));
-        },
-        onReasoning: (delta: string) => {
-          if (!delta) return;
-          streamedReasoning = true;
-          void emit(() => writeReasoning(delta));
-        },
-        onToolCall: (tc) => {
-          void emit(async () => {
-            await endPart();
-            await sw.toolCallStart(tc.id, tc.name);
-            await sw.toolCallDelta(tc.id, JSON.stringify(tc.arguments));
-            await sw.toolCallEnd(tc.id);
-          });
-        },
-        onToolResult: (tr) => {
-          void emit(() => sw.toolResult(generateId('tr'), tr.callId, tr.result));
-        },
-      });
-
+      session.start();
+      const result = await start(
+        { stream: true, signal: abortController.signal, ...session.callbacks },
+        session.threadId
+      );
       await queue;
-
-      const { reasoning } = result;
-      if (!streamedReasoning && reasoning) {
-        await emit(() => writeReasoning(reasoning));
-      }
-      if (!streamedText && result.output) {
-        await emit(() => writeText(result.output));
-      }
-      await emit(endPart);
-
-      if (result.status === 'paused') {
-        const approvals = toPendingApprovals(result.pendingApprovals ?? []);
-        await emit(() => sw.approvalRequired(result.threadId, approvals));
-      }
-
-      if (afterRun) {
-        await afterRun(result);
-      }
-
-      await emit(() => sw.finish(messageId, result.usage, result.threadId));
+      if (afterRun) await afterRun(result);
+      session.complete(result);
+      await queue;
     } catch (err) {
       await queue;
       if (!sw.isClosed) {
         const { message, code } = describeRunError(err);
-        await emit(async () => {
-          await endPart();
-          await sw.error(message, code);
-        });
+        session.fail(message, code);
+        await queue;
       }
     } finally {
       for (const signal of parentSignals()) {

@@ -6,6 +6,7 @@ import { createRequire } from 'module';
 import type { WebSocket as WebSocketClient } from 'ws';
 import { WorkflowBuilder } from '@cogitator-ai/workflows';
 import { CogitatorError, ErrorCode, type RunOptions } from '@cogitator-ai/types';
+import { conformancePausedResult, toAgentRunResponse } from '@cogitator-ai/server-shared';
 import { cogitatorPlugin } from '../plugin.js';
 import type { CogitatorPluginOptions, WebSocketResponse } from '../types.js';
 
@@ -48,7 +49,10 @@ async function start(
   memory: unknown = null,
   setup?: (instance: FastifyInstance) => void
 ) {
-  const run = vi.fn((_agent: Agent, options: RunOptions) => impl(options));
+  const run = vi.fn(async (_agent: Agent, options: RunOptions) => ({
+    ...runResult(),
+    ...((await impl(options)) as object),
+  }));
   app = Fastify({ logger: false });
   setup?.(app);
   await app.register(cogitatorPlugin, {
@@ -441,6 +445,35 @@ describe('plugin WebSocket', () => {
     await vi.waitFor(() =>
       expect(client.messages.at(-1)).toMatchObject({ id: 'r1', payload: { type: 'cancelled' } })
     );
+  });
+
+  it('completes a run with the client-facing answer, never the prompt, history or trace', async () => {
+    const result = conformancePausedResult('thread-1');
+    const { ws } = await start(async () => result, { enableWebSocket: true });
+    const client = await connect(ws);
+    client.send(runMessage('r1'));
+
+    await vi.waitFor(() => expect(client.messages).toHaveLength(1));
+    const [complete] = client.messages;
+    expect(complete.payload).toEqual({ type: 'complete', result: toAgentRunResponse(result) });
+    const text = JSON.stringify(complete);
+    expect(text).not.toContain('SECRET OPERATOR INSTRUCTIONS');
+    expect(text).not.toContain('postgres://');
+    expect(text).not.toContain('checkpoint');
+  });
+
+  it('refuses a socket run whose context the server does not accept', async () => {
+    const { ws, run } = await start(async () => ({ output: 'ok' }), { enableWebSocket: true });
+    const client = await connect(ws);
+    client.send({
+      type: 'run',
+      id: 'r1',
+      payload: { type: 'agent', name: 'bot', input: 'hi', context: { policy: 'x' } },
+    });
+
+    await vi.waitFor(() => expect(client.messages).toHaveLength(1));
+    expect(client.messages[0]).toMatchObject({ type: 'error', id: 'r1' });
+    expect(run).not.toHaveBeenCalled();
   });
 
   it('streams reasoning deltas as reasoning events', async () => {

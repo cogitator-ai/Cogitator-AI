@@ -12,11 +12,19 @@ import type {
   WebSocketRunPayload,
 } from '../types.js';
 import type { RunOptions, ToolCall, ToolResult } from '@cogitator-ai/types';
-import { generateId, isNonBlankString } from '@cogitator-ai/server-shared';
+import {
+  generateId,
+  isJsonObject,
+  parseResumeRequest,
+  parseRunRequest,
+  toAgentRunResponse,
+  toAgentToolCall,
+  withSwarm,
+  type ContextPolicy,
+} from '@cogitator-ai/server-shared';
 import { getOwn } from '../utils/lookup.js';
 import { isModuleNotFoundError, resolveError } from '../utils/errors.js';
-import { toSwarmRunResponse, toWorkflowRunResponse, withoutCheckpoint } from '../utils/results.js';
-import { isRecord, parseAgentResumeRequest } from '../utils/validation.js';
+import { toSwarmRunResponse, toWorkflowRunResponse } from '../utils/results.js';
 
 type ParsedMessage =
   | { type: 'ping'; id?: string }
@@ -143,7 +151,7 @@ function parseMessage(
     return { ok: false, error: 'Invalid JSON message' };
   }
 
-  if (!isRecord(raw)) return { ok: false, error: 'Message must be a JSON object' };
+  if (!isJsonObject(raw)) return { ok: false, error: 'Message must be a JSON object' };
   if (raw.id !== undefined && typeof raw.id !== 'string') {
     return { ok: false, error: 'Message "id" must be a string' };
   }
@@ -165,34 +173,25 @@ function isRunType(value: unknown): value is WebSocketRunPayload['type'] {
   return RUN_TYPES.some((runType) => runType === value);
 }
 
-function parseRunPayload(payload: unknown): WebSocketRunPayload | string {
-  if (!isRecord(payload)) return 'Invalid run payload';
-  const { type, name, input, context, threadId } = payload;
+function parseRunPayload(
+  payload: unknown,
+  acceptContext: ContextPolicy
+): WebSocketRunPayload | string {
+  if (!isJsonObject(payload)) return 'Invalid run payload';
+  const { type, name } = payload;
 
   if (!isRunType(type)) return `Unsupported run type: ${String(type)}`;
   if (typeof name !== 'string' || !name) return 'Invalid run payload: "name" is required';
-  if (!isNonBlankString(input)) return 'Invalid run payload: "input" is required';
-  if (context !== undefined && !isRecord(context)) {
-    return 'Invalid run payload: "context" must be an object';
-  }
-  if (threadId !== undefined && (typeof threadId !== 'string' || !threadId)) {
-    return 'Invalid run payload: "threadId" must be a non-empty string';
-  }
-
-  return {
-    type,
-    name,
-    input,
-    ...(context !== undefined && { context }),
-    ...(threadId !== undefined && { threadId }),
-  };
+  const parsed = parseRunRequest(payload, { acceptContext });
+  if (!parsed.ok) return `Invalid run payload: ${parsed.message}`;
+  return { type, name, ...parsed.value };
 }
 
 function parseResumePayload(payload: unknown): WebSocketResumePayload | string {
-  if (!isRecord(payload)) return 'Invalid resume payload';
+  if (!isJsonObject(payload)) return 'Invalid resume payload';
   const { name } = payload;
   if (typeof name !== 'string' || !name) return 'Invalid resume payload: "name" is required';
-  const parsed = parseAgentResumeRequest(payload);
+  const parsed = parseResumeRequest(payload);
   if (!parsed.ok) return `Invalid resume payload: ${parsed.message}`;
   return { name, ...parsed.value };
 }
@@ -204,7 +203,7 @@ async function handleRun(
   ctx: CogitatorContext,
   state: WebSocketClientState
 ): Promise<void> {
-  const payload = parseRunPayload(rawPayload);
+  const payload = parseRunPayload(rawPayload, ctx.acceptContext ?? false);
   if (typeof payload === 'string') {
     sendResponse(socket, { type: 'error', id, error: payload });
     return;
@@ -280,7 +279,7 @@ function agentStreamCallbacks(
   return {
     onToken: (token: string) => emit({ type: 'token', delta: token }),
     onReasoning: (delta: string) => emit({ type: 'reasoning', delta }),
-    onToolCall: (toolCall: ToolCall) => emit({ type: 'tool-call', ...toolCall }),
+    onToolCall: (toolCall: ToolCall) => emit({ type: 'tool-call', ...toAgentToolCall(toolCall) }),
     onToolResult: (toolResult: ToolResult) => emit({ type: 'tool-result', ...toolResult }),
   };
 }
@@ -303,7 +302,7 @@ async function executeResume(
     signal,
     ...agentStreamCallbacks(emit),
   });
-  return withoutCheckpoint(result);
+  return toAgentRunResponse(result);
 }
 
 async function executeRun(
@@ -327,7 +326,7 @@ async function executeRun(
         signal,
         ...agentStreamCallbacks(emit),
       });
-      return withoutCheckpoint(result);
+      return toAgentRunResponse(result);
     }
 
     case 'workflow': {
@@ -349,20 +348,21 @@ async function executeRun(
       if (!swarmConfig) throw new ClientFacingError(`Swarm '${payload.name}' not found`);
 
       const { Swarm } = await importOptional(() => import('@cogitator-ai/swarms'), 'Swarms');
-      const swarm = new Swarm(ctx.runtime, swarmConfig);
-      const onAbort = () => swarm.abort();
-      signal.addEventListener('abort', onAbort, { once: true });
-      try {
-        const result = await swarm.run({
-          input: payload.input,
-          context: payload.context,
-          threadId: payload.threadId,
-          userId,
-        });
-        return toSwarmRunResponse(swarm, result);
-      } finally {
-        signal.removeEventListener('abort', onAbort);
-      }
+      return withSwarm(new Swarm(ctx.runtime, swarmConfig), async (swarm) => {
+        const onAbort = () => swarm.abort();
+        signal.addEventListener('abort', onAbort, { once: true });
+        try {
+          const result = await swarm.run({
+            input: payload.input,
+            context: payload.context,
+            threadId: payload.threadId,
+            userId,
+          });
+          return toSwarmRunResponse(swarm, result);
+        } finally {
+          signal.removeEventListener('abort', onAbort);
+        }
+      });
     }
   }
 }

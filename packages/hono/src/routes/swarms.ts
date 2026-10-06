@@ -1,6 +1,11 @@
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import { generateId } from '@cogitator-ai/server-shared';
+import {
+  generateId,
+  parseSwarmRunRequest,
+  swarmAgentNames,
+  withSwarm,
+} from '@cogitator-ai/server-shared';
 import { HonoStreamWriter } from '../streaming/hono-stream-writer.js';
 import type { HonoEnv, SwarmListResponse, BlackboardResponse } from '../types.js';
 import type { RunResult, SwarmMessage, SwarmEvent } from '@cogitator-ai/types';
@@ -11,12 +16,11 @@ import {
   holdConnectionOpen,
   errorResponse,
   invalidInput,
-  invalidJson,
+  bodyRefused,
   readJsonBody,
   requestAborted,
 } from '../utils/request.js';
 import { serializeSwarmUsage, toSwarmRunResponse } from '../utils/results.js';
-import { parseSwarmRunRequest } from '../utils/validation.js';
 
 export function createSwarmRoutes(): Hono<HonoEnv> {
   const app = new Hono<HonoEnv>();
@@ -24,11 +28,7 @@ export function createSwarmRoutes(): Hono<HonoEnv> {
   app.get('/swarms', (c) => {
     const ctx = c.get('cogitator');
     const swarmList = Object.entries(ctx.swarms).map(([name, config]) => {
-      const agents: string[] = [];
-      if (config.supervisor) agents.push(config.supervisor.name);
-      if (config.workers) agents.push(...config.workers.map((w) => w.name));
-      if (config.agents) agents.push(...config.agents.map((a) => a.name));
-      if (config.moderator) agents.push(config.moderator.name);
+      const agents = swarmAgentNames(config);
 
       return { name, strategy: config.strategy, agents };
     });
@@ -47,8 +47,8 @@ export function createSwarmRoutes(): Hono<HonoEnv> {
     }
 
     const body = await readJsonBody(c);
-    if (!body.ok) return invalidJson(c);
-    const parsed = parseSwarmRunRequest(body.value);
+    if (!body.ok) return bodyRefused(c, body.refusal);
+    const parsed = parseSwarmRunRequest(body.value, { acceptContext: ctx.acceptContext });
     if (!parsed.ok) return invalidInput(c, parsed.message);
 
     holdConnectionOpen(c);
@@ -56,17 +56,18 @@ export function createSwarmRoutes(): Hono<HonoEnv> {
 
     try {
       const { Swarm } = await import('@cogitator-ai/swarms');
-      const swarm = new Swarm(ctx.runtime, swarmConfig);
       if (abortController.signal.aborted) return requestAborted(c);
-      abortController.signal.addEventListener('abort', () => swarm.abort(), { once: true });
-
-      const result = await swarm.run({
-        ...parsed.value,
-        userId: c.get('cogitatorAuth')?.userId,
+      const response = await withSwarm(new Swarm(ctx.runtime, swarmConfig), async (swarm) => {
+        abortController.signal.addEventListener('abort', () => swarm.abort(), { once: true });
+        const result = await swarm.run({
+          ...parsed.value,
+          userId: c.get('cogitatorAuth')?.userId,
+        });
+        return toSwarmRunResponse(swarm, result);
       });
       if (abortController.signal.aborted) return requestAborted(c);
 
-      return c.json(toSwarmRunResponse(swarm, result));
+      return c.json(response);
     } catch (error) {
       if (abortController.signal.aborted) return requestAborted(c);
       if (isModuleNotFoundError(error)) {
@@ -89,8 +90,8 @@ export function createSwarmRoutes(): Hono<HonoEnv> {
     }
 
     const body = await readJsonBody(c);
-    if (!body.ok) return invalidJson(c);
-    const parsed = parseSwarmRunRequest(body.value);
+    if (!body.ok) return bodyRefused(c, body.refusal);
+    const parsed = parseSwarmRunRequest(body.value, { acceptContext: ctx.acceptContext });
     if (!parsed.ok) return invalidInput(c, parsed.message);
 
     const abortController = createRequestAbortController(c);
@@ -106,47 +107,48 @@ export function createSwarmRoutes(): Hono<HonoEnv> {
 
       try {
         const { Swarm } = await import('@cogitator-ai/swarms');
-        const swarm = new Swarm(ctx.runtime, swarmConfig);
         if (abortController.signal.aborted) return;
-        abortController.signal.addEventListener('abort', () => swarm.abort(), { once: true });
+        await withSwarm(new Swarm(ctx.runtime, swarmConfig), async (swarm) => {
+          abortController.signal.addEventListener('abort', () => swarm.abort(), { once: true });
 
-        await writer.start(messageId);
+          await writer.start(messageId);
 
-        const result = await swarm.run({
-          ...parsed.value,
-          userId: c.get('cogitatorAuth')?.userId,
-          onAgentStart: (agentName: string) => {
-            void writer.swarmEvent('agent_start', { agentName, timestamp: Date.now() });
-          },
-          onAgentComplete: (agentName: string, agentResult: RunResult) => {
-            void writer.swarmEvent('agent_complete', {
-              agentName,
-              output: agentResult.output,
-              timestamp: Date.now(),
-            });
-          },
-          onAgentError: (agentName: string, error: Error) => {
-            void writer.swarmEvent('agent_error', {
-              agentName,
-              error: resolveError(error, `Swarm agent ${agentName} error`).body.error.message,
-            });
-          },
-          onMessage: (message: SwarmMessage) => {
-            void writer.swarmEvent('message', message);
-          },
-          onEvent: (event: SwarmEvent) => {
-            void writer.swarmEvent(event.type, event.data);
-          },
+          const result = await swarm.run({
+            ...parsed.value,
+            userId: c.get('cogitatorAuth')?.userId,
+            onAgentStart: (agentName: string) => {
+              void writer.swarmEvent('agent_start', { agentName, timestamp: Date.now() });
+            },
+            onAgentComplete: (agentName: string, agentResult: RunResult) => {
+              void writer.swarmEvent('agent_complete', {
+                agentName,
+                output: agentResult.output,
+                timestamp: Date.now(),
+              });
+            },
+            onAgentError: (agentName: string, error: Error) => {
+              void writer.swarmEvent('agent_error', {
+                agentName,
+                error: resolveError(error, `Swarm agent ${agentName} error`).body.error.message,
+              });
+            },
+            onMessage: (message: SwarmMessage) => {
+              void writer.swarmEvent('message', message);
+            },
+            onEvent: (event: SwarmEvent) => {
+              void writer.swarmEvent(event.type, event.data);
+            },
+          });
+
+          if (abortController.signal.aborted) return;
+
+          await writer.swarmEvent('swarm_completed', {
+            swarmId: swarm.id,
+            output: result.output,
+            usage: serializeSwarmUsage(swarm.getResourceUsage()),
+          });
+          await writer.finish(messageId);
         });
-
-        if (abortController.signal.aborted) return;
-
-        await writer.swarmEvent('swarm_completed', {
-          swarmId: swarm.id,
-          output: result.output,
-          usage: serializeSwarmUsage(swarm.getResourceUsage()),
-        });
-        await writer.finish(messageId);
       } catch (error) {
         if (abortController.signal.aborted) return;
         if (isModuleNotFoundError(error)) {

@@ -24,6 +24,7 @@ import {
   createWorkflowEvent,
   createSwarmEvent,
   type PendingApproval,
+  type StreamEvent,
   type Usage,
 } from './protocol.js';
 
@@ -87,10 +88,19 @@ export class FastifyStreamWriter {
     this.stopHeartbeat = startHeartbeat(() => this.heartbeat(), this.heartbeatMs);
   }
 
-  start(messageId: string): void {
+  /**
+   * Sends one protocol event, opening the stream first when nothing was sent yet; `finish`,
+   * the last one, is followed by `data: [DONE]`
+   */
+  send(event: StreamEvent): void {
     if (!this.writable) return;
-    this.setupHeaders();
-    this.write(createStartEvent(messageId));
+    if (!this.started) this.setupHeaders();
+    this.write(event);
+    if (event.type === 'finish') this.reply.raw.write(encodeDone());
+  }
+
+  start(messageId: string, threadId?: string): void {
+    this.send(createStartEvent(messageId, threadId));
   }
 
   textStart(id: string): void {
@@ -153,9 +163,7 @@ export class FastifyStreamWriter {
   }
 
   finish(messageId: string, usage?: Usage): void {
-    if (!this.writable) return;
-    this.write(createFinishEvent(messageId, usage));
-    this.reply.raw.write(encodeDone());
+    this.send(createFinishEvent(messageId, usage));
   }
 
   close(): void {

@@ -34,6 +34,7 @@ function mockRuntime(runResult?: object, memoryResult?: object) {
     threadId: 'thread-1',
     usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
     toolCalls: [],
+    trace: { traceId: 'trace-1', spans: [] },
   };
   return {
     run: vi.fn().mockResolvedValue(runResult ?? defaultRun),
@@ -141,6 +142,7 @@ describe('agentRoutes', () => {
       threadId: 'thread-42',
       usage: { inputTokens: 5, outputTokens: 10, totalTokens: 15 },
       toolCalls: [],
+      trace: { traceId: 'trace-42', spans: [] },
     };
     const runtime = mockRuntime(runResult);
     const server = await buildServer({

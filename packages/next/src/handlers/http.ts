@@ -1,3 +1,4 @@
+import { readJsonRequestBody } from '@cogitator-ai/server-shared';
 import { CogitatorError, ERROR_STATUS_CODES, ErrorCode } from '@cogitator-ai/types';
 
 export const MAX_BODY_SIZE = 1024 * 1024;
@@ -9,8 +10,8 @@ export function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-export function jsonError(message: string, status: number): Response {
-  return jsonResponse({ error: message }, status);
+export function jsonError(message: string, status: number, code?: string): Response {
+  return jsonResponse(code === undefined ? { error: message } : { error: message, code }, status);
 }
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -26,45 +27,24 @@ export function exceedsDeclaredSize(req: Request, maxSize: number = MAX_BODY_SIZ
 
 export type BodyResult = { ok: true; body: unknown } | { ok: false; response: Response };
 
+/**
+ * Reads a JSON body of at most `maxSize` bytes. Only JSON media types are read: browsers send
+ * `text/plain` and form bodies across origins without a CORS preflight, so reading those as
+ * JSON would let any page start a run. A refused body answers `415`, `413` or `400`.
+ */
 export async function readJsonBody(
   req: Request,
   maxSize: number = MAX_BODY_SIZE
 ): Promise<BodyResult> {
-  if (!req.body) {
-    return { ok: false, response: jsonError('Invalid JSON', 400) };
+  const read = await readJsonRequestBody(req, maxSize);
+  if (!read.ok) {
+    const { message, status, code } = read.refusal;
+    return { ok: false, response: jsonError(message, status, code) };
   }
-
-  const reader = req.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > maxSize) {
-        await reader.cancel().catch(() => {});
-        return { ok: false, response: jsonError('Payload too large', 413) };
-      }
-      chunks.push(value);
-    }
-  } catch {
-    return { ok: false, response: jsonError('Failed to read request body', 400) };
+  if (read.value === undefined) {
+    return { ok: false, response: jsonError('Invalid JSON', 400, 'INVALID_INPUT') };
   }
-
-  const bytes = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-
-  try {
-    return { ok: true, body: JSON.parse(new TextDecoder().decode(bytes)) };
-  } catch {
-    return { ok: false, response: jsonError('Invalid JSON', 400) };
-  }
+  return { ok: true, body: read.value };
 }
 
 function readErrorStatus(err: unknown): number | undefined {

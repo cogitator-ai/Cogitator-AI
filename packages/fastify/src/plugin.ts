@@ -1,5 +1,9 @@
 import fp from 'fastify-plugin';
-import { resolveSseHeartbeatMs } from '@cogitator-ai/server-shared';
+import {
+  DEFAULT_THREAD_MESSAGE_ROLES,
+  refuseNonJsonBody,
+  resolveSseHeartbeatMs,
+} from '@cogitator-ai/server-shared';
 import type { FastifyPluginAsync, FastifyError } from 'fastify';
 import type { CogitatorPluginOptions, CogitatorContext } from './types.js';
 import { createAuthHook, errorHandler } from './hooks/index.js';
@@ -20,6 +24,8 @@ const cogitatorPluginImpl: FastifyPluginAsync<CogitatorPluginOptions> = async (f
     workflows: opts.workflows ?? {},
     swarms: opts.swarms ?? {},
     sseHeartbeatMs: resolveSseHeartbeatMs(opts.sseHeartbeatMs),
+    acceptContext: opts.acceptContext ?? false,
+    threadMessageRoles: opts.threadMessageRoles ?? DEFAULT_THREAD_MESSAGE_ROLES,
   };
 
   fastify.decorate('cogitator', context);
@@ -47,6 +53,13 @@ const cogitatorPluginImpl: FastifyPluginAsync<CogitatorPluginOptions> = async (f
         }
       }
 
+      instance.addHook('onRequest', async (request, reply) => {
+        const refusal = refuseNonJsonBody(request.method, request.headers);
+        if (!refusal) return;
+        return reply
+          .status(refusal.status)
+          .send({ error: { message: refusal.message, code: refusal.code } });
+      });
       instance.addHook('onRequest', createAuthHook(opts.auth));
 
       if (opts.rateLimit) {

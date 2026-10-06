@@ -6,7 +6,7 @@ import { countMessageTokens } from '@cogitator-ai/memory';
 import type { Message } from '@cogitator-ai/types';
 import { resolveError } from '../utils/errors.js';
 import { getRequestBody } from '../utils/request.js';
-import { parseAddMessageRequest } from '../utils/validation.js';
+import { parseAddMessageRequest } from '@cogitator-ai/server-shared';
 
 function respondWithError(ctx: Context, error: unknown, label: string): void {
   const { status, body } = resolveError(error, label);
@@ -62,7 +62,9 @@ export function createThreadRoutes(): Router<CogitatorState> {
     }
 
     const { id } = ctx.params;
-    const parsed = parseAddMessageRequest(getRequestBody(ctx));
+    const parsed = parseAddMessageRequest(getRequestBody(ctx), {
+      roles: ctx.state.cogitator.threadMessageRoles,
+    });
     if (!parsed.ok) {
       ctx.status = 400;
       ctx.body = { error: { message: parsed.message, code: 'INVALID_INPUT' } };

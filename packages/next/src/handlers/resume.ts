@@ -1,10 +1,9 @@
 import type { Cogitator, Agent } from '@cogitator-ai/core';
-import type { ToolApprovalDecision } from '@cogitator-ai/types';
+import { parseResumeRequest } from '@cogitator-ai/server-shared';
 import type { ResumeDecisions, ResumeHandlerOptions, ResumeInput } from '../types.js';
 import {
   exceedsDeclaredSize,
   hookErrorResponse,
-  isPlainObject,
   jsonError,
   jsonResponse,
   readJsonBody,
@@ -12,56 +11,6 @@ import {
 } from './http.js';
 import { toAgentResponse } from './result.js';
 import { streamAgentRun } from './stream-run.js';
-
-type Parsed<T> = { ok: true; value: T } | { ok: false; error: string };
-
-function parseDecision(value: unknown, field: string): Parsed<ToolApprovalDecision> {
-  if (!isPlainObject(value) || typeof value.approved !== 'boolean') {
-    return { ok: false, error: `${field} must be an object with a boolean approved` };
-  }
-  if (value.reason !== undefined && typeof value.reason !== 'string') {
-    return { ok: false, error: `${field}.reason must be a string` };
-  }
-  if (value.approved) return { ok: true, value: { approved: true } };
-  return {
-    ok: true,
-    value:
-      value.reason === undefined ? { approved: false } : { approved: false, reason: value.reason },
-  };
-}
-
-function parseDefaultInput(body: unknown): Parsed<ResumeInput> {
-  if (!isPlainObject(body)) {
-    return { ok: false, error: 'Request body must be a JSON object' };
-  }
-
-  if (typeof body.threadId !== 'string' || body.threadId === '') {
-    return { ok: false, error: 'threadId must be a non-empty string' };
-  }
-
-  const input: ResumeInput = { threadId: body.threadId };
-
-  if (body.decisions !== undefined) {
-    if (!isPlainObject(body.decisions)) {
-      return { ok: false, error: 'decisions must be an object keyed by tool call id' };
-    }
-    const decisions: Record<string, ToolApprovalDecision> = {};
-    for (const [toolCallId, value] of Object.entries(body.decisions)) {
-      const decision = parseDecision(value, `decisions.${toolCallId}`);
-      if (!decision.ok) return decision;
-      decisions[toolCallId] = decision.value;
-    }
-    input.decisions = decisions;
-  }
-
-  if (body.defaultDecision !== undefined) {
-    const decision = parseDecision(body.defaultDecision, 'defaultDecision');
-    if (!decision.ok) return decision;
-    input.defaultDecision = decision.value;
-  }
-
-  return { ok: true, value: input };
-}
 
 function decisionsOf(input: ResumeInput): ResumeDecisions {
   return {
@@ -109,8 +58,8 @@ export function createResumeHandler(
     } else {
       const body = await readJsonBody(req);
       if (!body.ok) return body.response;
-      const parsed = parseDefaultInput(body.body);
-      if (!parsed.ok) return jsonError(parsed.error, 400);
+      const parsed = parseResumeRequest(body.body);
+      if (!parsed.ok) return jsonError(parsed.message, 400, 'INVALID_INPUT');
       input = parsed.value;
     }
 
@@ -130,9 +79,11 @@ export function createResumeHandler(
       return streamAgentRun({
         req,
         runContext,
+        threadId: input.threadId,
         start: (callbacks) =>
           cogitator.resume(agent, input.threadId, { ...decisions, ...runContext, ...callbacks }),
         afterRun: options.afterRun,
+        heartbeatMs: options.sseHeartbeatMs,
       });
     }
 

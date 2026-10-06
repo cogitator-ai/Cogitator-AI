@@ -9,6 +9,7 @@ import type { CogitatorContext } from '../types.js';
 const workflowExecute = vi.fn();
 const swarmRun = vi.fn();
 const swarmAbort = vi.fn();
+const swarmClose = vi.fn(async () => undefined);
 
 vi.mock('@cogitator-ai/workflows', () => ({
   WorkflowExecutor: class {
@@ -23,6 +24,7 @@ vi.mock('@cogitator-ai/swarms', () => ({
     strategyType = 'round-robin';
     run = swarmRun;
     abort = swarmAbort;
+    close = swarmClose;
     getResourceUsage = () => ({
       totalTokens: 42,
       totalCost: 0.01,
@@ -159,7 +161,14 @@ describe('handleWebSocketMessage', () => {
       const onToken = opts.onToken as (t: string) => void;
       onToken('Hello');
       onToken(' world');
-      return Promise.resolve({ output: 'Hello world', usage: { totalTokens: 5 } });
+      return Promise.resolve({
+        output: 'Hello world',
+        threadId: 'thread-1',
+        usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 },
+        toolCalls: [],
+        messages: [{ role: 'system', content: 'secret instructions' }],
+        trace: { traceId: 'trace-1', spans: [] },
+      });
     });
 
     ctx = mockContext({
@@ -196,7 +205,17 @@ describe('handleWebSocketMessage', () => {
     expect(responses[2]).toEqual({
       type: 'event',
       id: 'r3',
-      payload: { type: 'complete', result: { output: 'Hello world', usage: { totalTokens: 5 } } },
+      payload: {
+        type: 'complete',
+        result: {
+          output: 'Hello world',
+          threadId: 'thread-1',
+          usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 },
+          toolCalls: [],
+          status: 'completed',
+          traceId: 'trace-1',
+        },
+      },
     });
   });
 
@@ -374,6 +393,7 @@ describe('handleWebSocketMessage', () => {
   });
 
   it('runs swarm successfully', async () => {
+    swarmClose.mockClear();
     ctx = mockContext({
       swarms: { team: { strategy: 'round-robin' } as never },
     });
@@ -404,6 +424,7 @@ describe('handleWebSocketMessage', () => {
       agentResults: { a1: { output: 'part', usage: { totalTokens: 5 } } },
       usage: { totalTokens: 42, totalCost: 0.01, elapsedTime: 100 },
     });
+    expect(swarmClose).toHaveBeenCalledOnce();
   });
 
   it('rejects concurrent runs', async () => {

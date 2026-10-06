@@ -227,27 +227,27 @@ describe('createResumeHandler', () => {
   });
 
   it.each([
-    [{}, 'threadId must be a non-empty string'],
-    [{ threadId: '' }, 'threadId must be a non-empty string'],
-    [{ threadId: 't', decisions: [] }, 'decisions must be an object keyed by tool call id'],
+    [{}, 'Missing required field: threadId'],
+    [{ threadId: '' }, 'Field "threadId" must be a non-empty string'],
+    [{ threadId: 't', decisions: [] }, 'Field "decisions" must be an object'],
     [
       { threadId: 't', decisions: { call_1: { approved: 'yes' } } },
-      'decisions.call_1 must be an object with a boolean approved',
+      'Each entry of "decisions" must be { approved: boolean, reason?: string }',
     ],
     [
       { threadId: 't', decisions: { call_1: { approved: false, reason: 5 } } },
-      'decisions.call_1.reason must be a string',
+      'Each entry of "decisions" must be { approved: boolean, reason?: string }',
     ],
     [
       { threadId: 't', defaultDecision: true },
-      'defaultDecision must be an object with a boolean approved',
+      'Field "defaultDecision" must be { approved: boolean, reason?: string }',
     ],
   ])('refuses %j with 400 without resuming', async (body, error) => {
     const { cogitator, resume } = fakeCogitator();
     const res = await createResumeHandler(cogitator, fakeAgent)(post('/api/resume', body));
 
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error });
+    expect(await res.json()).toEqual({ error, code: 'INVALID_INPUT' });
     expect(resume).not.toHaveBeenCalled();
   });
 
@@ -259,7 +259,7 @@ describe('createResumeHandler', () => {
     )(post('/api/resume', '{"threadId":'));
 
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Invalid JSON' });
+    expect(await res.json()).toEqual({ error: 'Invalid JSON body', code: 'INVALID_INPUT' });
     expect(resume).not.toHaveBeenCalled();
   });
 

@@ -12,6 +12,7 @@ function createMockCogitator() {
       threadId: 'thread-1',
       usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
       toolCalls: [],
+      trace: { traceId: 'trace-1', spans: [] },
     }),
     memory: null,
     getMemory: async () => null,

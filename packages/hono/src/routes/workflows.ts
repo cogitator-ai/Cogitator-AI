@@ -10,12 +10,12 @@ import {
   holdConnectionOpen,
   errorResponse,
   invalidInput,
-  invalidJson,
+  bodyRefused,
   readJsonBody,
   requestAborted,
 } from '../utils/request.js';
 import { toWorkflowRunResponse } from '../utils/results.js';
-import { parseWorkflowRunRequest } from '../utils/validation.js';
+import { parseWorkflowRunRequest } from '@cogitator-ai/server-shared';
 
 export function createWorkflowRoutes(): Hono<HonoEnv> {
   const app = new Hono<HonoEnv>();
@@ -42,7 +42,7 @@ export function createWorkflowRoutes(): Hono<HonoEnv> {
     }
 
     const body = await readJsonBody(c);
-    if (!body.ok) return invalidJson(c);
+    if (!body.ok) return bodyRefused(c, body.refusal);
     const parsed = parseWorkflowRunRequest(body.value);
     if (!parsed.ok) return invalidInput(c, parsed.message);
 
@@ -83,7 +83,7 @@ export function createWorkflowRoutes(): Hono<HonoEnv> {
     }
 
     const body = await readJsonBody(c);
-    if (!body.ok) return invalidJson(c);
+    if (!body.ok) return bodyRefused(c, body.refusal);
     const parsed = parseWorkflowRunRequest(body.value);
     if (!parsed.ok) return invalidInput(c, parsed.message);
 
