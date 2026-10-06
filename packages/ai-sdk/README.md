@@ -85,7 +85,7 @@ With **ai@4** the same call returns a `LanguageModelV1`; `{ specificationVersion
 
 #### How the agent maps to a model
 
-- The agent runs its whole loop — LLM calls **and its own tool calls** — inside one model call. The result's `finishReason` is `'stop'`, unless the run waits for tool approvals (below).
+- The agent runs its whole loop (LLM calls **and its own tool calls**) inside one model call. The result's `finishReason` is `'stop'`, unless the run waits for tool approvals (below).
 - The agent's tool calls are reported as **provider-executed** tool calls with their results (`result.toolCalls` / `result.toolResults`, `tool-call` / `tool-result` stream parts). The AI SDK never executes them again.
   - With `v3` / `v4` models they are always reported.
   - With `v2` models they are reported only for tools you also pass in `tools` (ai@5 cannot handle provider-executed calls of undeclared tools).
