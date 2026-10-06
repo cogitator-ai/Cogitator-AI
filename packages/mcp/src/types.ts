@@ -245,11 +245,31 @@ export interface MCPServerConfig {
 export interface MCPToolDefinition {
   name: string;
   description: string;
+  /** JSON Schema of the arguments, with any `$defs` / `definitions` its refs point to */
   inputSchema: {
     type: 'object';
     properties: Record<string, unknown>;
     required?: string[];
+    [keyword: string]: unknown;
   };
+  /** Hints the server gives about the tool's behavior */
+  annotations?: MCPToolAnnotations;
+}
+
+/**
+ * Hints an MCP server gives about a tool (MCP `ToolAnnotations`). They are not guarantees, but
+ * a tool marked `readOnlyHint` or `idempotentHint` can safely be called again after a timeout.
+ */
+export interface MCPToolAnnotations {
+  title?: string;
+  /** The tool does not modify its environment */
+  readOnlyHint?: boolean;
+  /** The tool may perform destructive updates */
+  destructiveHint?: boolean;
+  /** Calling the tool again with the same arguments has no additional effect */
+  idempotentHint?: boolean;
+  /** The tool interacts with an open world of external entities */
+  openWorldHint?: boolean;
 }
 
 export interface MCPToolCallResult {
@@ -269,10 +289,21 @@ export interface MCPCallToolOptions {
 
   /** Per-call request timeout in ms (defaults to the MCP SDK timeout) */
   timeout?: number;
+
+  /**
+   * Whether calling the tool twice is harmless (a read-only or idempotent tool). Only such calls
+   * are sent again after a timeout or a lost connection, since the server may still be running
+   * (or may have finished) the first one. Default: false, the failure is reported instead.
+   * Tools from `getTools()` / `wrapMCPTools()` set it from the server's tool annotations.
+   */
+  idempotent?: boolean;
 }
 
 export interface ToolAdapterOptions {
-  /** Prefix to add to converted tool names */
+  /**
+   * Prefix to add to converted tool names, such as `github_` to tell the tools of several servers
+   * apart. The prefixed name is normalized like any other (see `normalizeMCPToolName`).
+   */
   namePrefix?: string;
 
   /** Transform tool description */

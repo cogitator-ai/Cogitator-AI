@@ -147,9 +147,11 @@ const client = await MCPClient.connect({
 
 Only transient failures are retried (connection loss, request timeouts, network errors). Protocol errors returned by the server, tool failures and aborted calls fail immediately, and concurrent calls that lose the connection share a single reconnect.
 
+Tool calls are only retried when sending them twice is harmless. After a timeout or a lost connection the server may still be running the call, or may have finished it, so `callTool` throws `MCPToolInterruptedError` (`reason: 'timeout' | 'connection-lost'`) instead of deploying twice or sending a second email. Tools from `getTools()` / `wrapMCPTools()` are retried like reads when the server marks them `readOnlyHint` or `idempotentHint` in their annotations. Pass `{ idempotent: true }` to `callTool` to retry a call yourself. A connection an earlier call lost is restored before the next call is sent.
+
 ### Tool Results and Errors
 
-`callTool` returns `structuredContent` when the server provides it, otherwise the unwrapped content (text blocks are JSON-parsed when possible, a single block is returned on its own, an empty result is `null`). A tool result with `isError: true` throws `MCPToolError`, so MCP failures show up as ordinary tool errors inside agent runs. Pass an `AbortSignal` to cancel a call; tools created by `getTools()` forward the run's signal automatically.
+`callTool` returns `structuredContent` when the server provides it, otherwise the unwrapped content (text blocks are JSON-parsed when possible, a single block is returned on its own, an empty result is `null`). Content with images, audio or binary resources comes back as a [`toolContent()`](/docs/core/tools#media-results-with-toolcontent) result, so the model sees a screenshot as an image and audio stays out of the context. A tool result with `isError: true` throws `MCPToolError`, so MCP failures show up as ordinary tool errors inside agent runs. Pass an `AbortSignal` to cancel a call; tools created by `getTools()` forward the run's signal automatically.
 
 ```typescript
 import { MCPToolError } from '@cogitator-ai/mcp';
@@ -214,7 +216,12 @@ await server.start();
 Tool calls run the way an agent run executes them, through a `ToolInvoker` (`cogitator.invokeTool()`): the arguments are validated, a tool with `requiresApproval` (or one the guardrails flag) is asked from the person at the client through MCP elicitation, the guardrails apply, sandboxed tools run in the sandbox and `tool.timeout` holds. Pass your `Cogitator` as `toolInvoker` so its sandbox and guardrails are the ones used, otherwise the server uses a Cogitator of its own without configuration. A call that needs approval when nobody can be asked (a client without elicitation, or HTTP without `sessions: true`) does not run: it comes back as an `isError` result that says so, unless the invoker's `guardrails.onToolApproval` decides it.
 
 ```typescript
-const server = new MCPServer({ name: 'ops', version: '1.0.0', transport: 'stdio', toolInvoker: cog });
+const server = new MCPServer({
+  name: 'ops',
+  version: '1.0.0',
+  transport: 'stdio',
+  toolInvoker: cog,
+});
 ```
 
 `serveMCPTools(tools, config)` does the same in one call and returns the started server. Tools, resources and prompts can be added one by one (`registerTool`, `registerResource`, `registerPrompt`) or in batches (`registerTools`, `registerResources`, `registerPrompts`), removed with the matching `unregister*` methods and listed with `getRegisteredTools()` / `getRegisteredResources()` / `getRegisteredPrompts()`.
@@ -413,6 +420,8 @@ const cogTool = mcpToCogitator(mcpToolDefinition, client, {
 
 const allTools = await wrapMCPTools(client, { namePrefix: 'fs_' });
 ```
+
+Tool names are normalized to what every LLM provider accepts (letters, digits, `_` and `-`, at most 64 characters), while calls still go to the server under the original name: `admin.list_users` becomes `admin_list_users`, a longer name is cut and ends with a hash, and names of one server that would collide get a hash on the changed one (`normalizeMCPToolName` shows the result). Give each server its own `namePrefix` when an agent uses several, as two servers can both have a `search` tool. Input schemas with `$ref` keep their `$defs`, so the model sees nested models (such as FastMCP's Pydantic ones) in full.
 
 ### Schema Conversion
 

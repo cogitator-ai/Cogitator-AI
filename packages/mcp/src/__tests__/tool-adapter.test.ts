@@ -415,7 +415,7 @@ describe('mcpToCogitator', () => {
     expect(mockClient.callTool).toHaveBeenCalledWith(
       'get_weather',
       { city: 'Tokyo' },
-      { signal: context.signal }
+      { signal: context.signal, idempotent: false }
     );
     expect(result).toEqual({ temperature: 25 });
   });
@@ -670,8 +670,11 @@ describe('resultToMCPContent content detection', () => {
 });
 
 describe('mcpContentToResult single blocks', () => {
-  it('unwraps a single non-text block', () => {
+  it('turns a single image block into a media result', () => {
     const image = { type: 'image' as const, data: 'AAAA', mimeType: 'image/png' };
-    expect(mcpContentToResult([image])).toEqual(image);
+    expect(mcpContentToResult([image])).toEqual({
+      type: 'tool-content',
+      content: [{ type: 'image', data: 'AAAA', mediaType: 'image/png' }],
+    });
   });
 });
