@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { A2AServer } from '../server';
-import type { ExtendedAgentCard, CogitatorLike, AgentRunResult } from '../types';
+import type { AgentCard, CogitatorLike, AgentRunResult } from '../types';
 import type { Agent, AgentConfig } from '@cogitator-ai/types';
 import { expectResponse } from './helpers';
 
@@ -35,193 +35,123 @@ function createMockCogitator(): CogitatorLike {
   return { run: vi.fn().mockResolvedValue(result) };
 }
 
-describe('Extended Agent Card', () => {
-  describe('server returns extended card', () => {
-    it('should return extended card via agent/extendedCard method', async () => {
-      const extendedCard: ExtendedAgentCard = {
-        name: 'researcher',
-        url: '/a2a',
-        version: '0.3',
-        capabilities: { streaming: true, pushNotifications: false },
-        skills: [],
-        defaultInputModes: ['text/plain'],
-        defaultOutputModes: ['text/plain'],
-        extendedSkills: [
-          {
-            id: 'deep-analysis',
-            name: 'Deep Analysis',
-            description: 'Performs deep analysis',
-            inputModes: ['text/plain'],
-            outputModes: ['application/json'],
-          },
-        ],
-        rateLimit: { requestsPerMinute: 100 },
-        pricing: { model: 'pay-per-use', details: '$0.01 per request' },
-        metadata: { tier: 'premium' },
-      };
+function cardOf(name: string, extra: Partial<AgentCard> = {}): AgentCard {
+  return {
+    protocolVersion: '0.3.0',
+    name,
+    description: `${name} with every skill`,
+    url: 'https://agents.example.com/a2a',
+    version: '1.0.0',
+    capabilities: { streaming: true, pushNotifications: true },
+    skills: [],
+    defaultInputModes: ['text/plain'],
+    defaultOutputModes: ['text/plain'],
+    ...extra,
+  };
+}
 
-      const server = new A2AServer({
-        agents: { researcher: createMockAgent('researcher') },
-        cogitator: createMockCogitator(),
-        extendedCardGenerator: (agentName) => {
-          expect(agentName).toBe('researcher');
-          return extendedCard;
+function extendedCardRequest(params?: unknown) {
+  return {
+    jsonrpc: '2.0',
+    method: 'agent/getAuthenticatedExtendedCard',
+    ...(params !== undefined && { params }),
+    id: 1,
+  };
+}
+
+describe('Authenticated extended Agent Card', () => {
+  it('is returned by agent/getAuthenticatedExtendedCard', async () => {
+    const extended = cardOf('researcher', {
+      skills: [
+        {
+          id: 'deep-analysis',
+          name: 'Deep Analysis',
+          description: 'Performs deep analysis',
+          tags: ['analysis'],
         },
-      });
-
-      const response = expectResponse(
-        await server.handleJsonRpc({
-          jsonrpc: '2.0',
-          method: 'agent/extendedCard',
-          params: {},
-          id: 1,
-        })
-      );
-
-      expect(response.error).toBeUndefined();
-      const result = response.result as ExtendedAgentCard;
-      expect(result.name).toBe('researcher');
-      expect(result.extendedSkills).toHaveLength(1);
-      expect(result.rateLimit?.requestsPerMinute).toBe(100);
-      expect(result.pricing?.model).toBe('pay-per-use');
-      expect(result.metadata?.tier).toBe('premium');
+      ],
+    });
+    const server = new A2AServer({
+      agents: { researcher: createMockAgent('researcher') },
+      cogitator: createMockCogitator(),
+      extendedCardGenerator: (agentName) => {
+        expect(agentName).toBe('researcher');
+        return extended;
+      },
     });
 
-    it('should use specified agentName parameter', async () => {
-      const generatorSpy = vi.fn().mockReturnValue({
-        name: 'writer',
-        url: '/a2a',
-        version: '0.3',
-        capabilities: { streaming: true, pushNotifications: false },
-        skills: [],
-        defaultInputModes: ['text/plain'],
-        defaultOutputModes: ['text/plain'],
-      });
+    const response = expectResponse(await server.handleJsonRpc(extendedCardRequest()));
 
-      const server = new A2AServer({
-        agents: {
-          researcher: createMockAgent('researcher'),
-          writer: createMockAgent('writer'),
-        },
-        cogitator: createMockCogitator(),
-        extendedCardGenerator: generatorSpy,
-      });
-
-      await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'agent/extendedCard',
-        params: { agentName: 'writer' },
-        id: 1,
-      });
-
-      expect(generatorSpy).toHaveBeenCalledWith('writer');
-    });
-
-    it('should default to first agent when agentName not provided', async () => {
-      const generatorSpy = vi.fn().mockReturnValue({
-        name: 'researcher',
-        url: '/a2a',
-        version: '0.3',
-        capabilities: { streaming: true, pushNotifications: false },
-        skills: [],
-        defaultInputModes: ['text/plain'],
-        defaultOutputModes: ['text/plain'],
-      });
-
-      const server = new A2AServer({
-        agents: { researcher: createMockAgent('researcher') },
-        cogitator: createMockCogitator(),
-        extendedCardGenerator: generatorSpy,
-      });
-
-      await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'agent/extendedCard',
-        params: {},
-        id: 1,
-      });
-
-      expect(generatorSpy).toHaveBeenCalledWith('researcher');
-    });
+    expect(response.error).toBeUndefined();
+    expect(response.result).toEqual(extended);
   });
 
-  describe('server rejects extended card when not configured', () => {
-    it('should return error when extendedCardGenerator is not set', async () => {
-      const server = new A2AServer({
-        agents: { researcher: createMockAgent('researcher') },
-        cogitator: createMockCogitator(),
-      });
-
-      const response = expectResponse(
-        await server.handleJsonRpc({
-          jsonrpc: '2.0',
-          method: 'agent/extendedCard',
-          params: {},
-          id: 1,
-        })
-      );
-
-      expect(response.error).toBeDefined();
-      expect(response.error!.code).toBe(-32004);
+  it('is the card of the agent the endpoint addresses, or of agentName', async () => {
+    const generator = vi.fn((name: string) => cardOf(name));
+    const server = new A2AServer({
+      agents: { researcher: createMockAgent('researcher'), writer: createMockAgent('writer') },
+      cogitator: createMockCogitator(),
+      extendedCardGenerator: generator,
     });
 
-    it('should return error for unknown agent name', async () => {
-      const server = new A2AServer({
-        agents: { researcher: createMockAgent('researcher') },
-        cogitator: createMockCogitator(),
-        extendedCardGenerator: () => ({
-          name: 'test',
-          url: '/a2a',
-          version: '0.3',
-          capabilities: { streaming: true, pushNotifications: false },
-          skills: [],
-          defaultInputModes: ['text/plain'],
-          defaultOutputModes: ['text/plain'],
-        }),
-      });
+    await server.handleJsonRpc(extendedCardRequest(), undefined, { agentName: 'writer' });
+    expect(generator).toHaveBeenLastCalledWith('writer');
 
-      const response = expectResponse(
-        await server.handleJsonRpc({
-          jsonrpc: '2.0',
-          method: 'agent/extendedCard',
-          params: { agentName: 'nonexistent' },
-          id: 1,
-        })
-      );
+    await server.handleJsonRpc(extendedCardRequest({ agentName: 'writer' }));
+    expect(generator).toHaveBeenLastCalledWith('writer');
 
-      expect(response.error).toBeDefined();
-      expect(response.error!.code).toBe(-32007);
-    });
+    await server.handleJsonRpc(extendedCardRequest());
+    expect(generator).toHaveBeenLastCalledWith('researcher');
   });
 
-  describe('extendedAgentCard capability flag', () => {
-    it('should set extendedAgentCard capability when generator is provided', () => {
-      const server = new A2AServer({
-        agents: { researcher: createMockAgent('researcher') },
-        cogitator: createMockCogitator(),
-        extendedCardGenerator: () => ({
-          name: 'test',
-          url: '/a2a',
-          version: '0.3',
-          capabilities: { streaming: true, pushNotifications: false },
-          skills: [],
-          defaultInputModes: ['text/plain'],
-          defaultOutputModes: ['text/plain'],
-        }),
-      });
+  it('is signed like the public card', async () => {
+    const server = new A2AServer({
+      agents: { researcher: createMockAgent('researcher') },
+      cogitator: createMockCogitator(),
+      extendedCardGenerator: (name) => cardOf(name),
+      cardSigning: { secret: 's' },
+    });
+    const response = expectResponse(await server.handleJsonRpc(extendedCardRequest()));
+    expect((response.result as AgentCard).signatures).toHaveLength(1);
+  });
 
-      const card = server.getAgentCard();
-      expect(card.capabilities.extendedAgentCard).toBe(true);
+  it('reports AuthenticatedExtendedCardNotConfiguredError without a generator', async () => {
+    const server = new A2AServer({
+      agents: { researcher: createMockAgent('researcher') },
+      cogitator: createMockCogitator(),
     });
 
-    it('should not set extendedAgentCard capability when generator is absent', () => {
-      const server = new A2AServer({
-        agents: { researcher: createMockAgent('researcher') },
-        cogitator: createMockCogitator(),
-      });
+    const response = expectResponse(await server.handleJsonRpc(extendedCardRequest()));
 
-      const card = server.getAgentCard();
-      expect(card.capabilities.extendedAgentCard).toBe(false);
+    expect(response.error?.code).toBe(-32007);
+  });
+
+  it('reports an unknown agent name as invalid params', async () => {
+    const server = new A2AServer({
+      agents: { researcher: createMockAgent('researcher') },
+      cogitator: createMockCogitator(),
+      extendedCardGenerator: (name) => cardOf(name),
     });
+
+    const response = expectResponse(
+      await server.handleJsonRpc(extendedCardRequest({ agentName: 'nonexistent' }))
+    );
+
+    expect(response.error?.code).toBe(-32602);
+  });
+
+  it('is announced by supportsAuthenticatedExtendedCard only with a generator', () => {
+    const withGenerator = new A2AServer({
+      agents: { researcher: createMockAgent('researcher') },
+      cogitator: createMockCogitator(),
+      extendedCardGenerator: (name) => cardOf(name),
+    });
+    expect(withGenerator.getAgentCard().supportsAuthenticatedExtendedCard).toBe(true);
+
+    const without = new A2AServer({
+      agents: { researcher: createMockAgent('researcher') },
+      cogitator: createMockCogitator(),
+    });
+    expect(without.getAgentCard().supportsAuthenticatedExtendedCard).toBeUndefined();
   });
 });

@@ -39,6 +39,8 @@ const {
 } = await import('../push-notifications');
 type AgentRunResult = import('../types').AgentRunResult;
 type A2AStreamEvent = import('../types').A2AStreamEvent;
+type A2ATask = import('../types').A2ATask;
+const { userMessage } = await import('./helpers');
 type CogitatorLike = import('../types').CogitatorLike;
 
 function mockAgent(name = 'helper'): Agent {
@@ -154,21 +156,21 @@ describe('SSRF protection', () => {
       await close(webhook);
     });
 
-    const event: A2AStreamEvent = {
-      type: 'status-update',
-      taskId: 't1',
+    const event: A2ATask = {
+      kind: 'task',
+      id: 't1',
+      contextId: 'c1',
       status: { state: 'completed', timestamp: new Date().toISOString() },
-      timestamp: new Date().toISOString(),
     };
 
     it('refuses hostnames that resolve to private addresses at connect time', async () => {
       dnsOverrides.set('rebind.example.com', '127.0.0.1');
       const store = new InMemoryPushNotificationStore();
-      await store.create('t1', { webhookUrl: `http://rebind.example.com:${port}/hook` });
+      await store.create('t1', { url: `http://rebind.example.com:${port}/hook` });
       const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
       received = 0;
 
-      await new PushNotificationSender(store, false).notify('t1', event);
+      await new PushNotificationSender(store, false).notify(event);
 
       expect(received).toBe(0);
       expect(stderr.mock.calls.some(([line]) => String(line).includes('private/internal'))).toBe(
@@ -179,25 +181,25 @@ describe('SSRF protection', () => {
 
     it('does not follow redirects', async () => {
       const store = new InMemoryPushNotificationStore();
-      await store.create('t1', { webhookUrl: `http://127.0.0.1:${port}/redirect` });
+      await store.create('t1', { url: `http://127.0.0.1:${port}/redirect` });
       const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
       received = 0;
 
-      await new PushNotificationSender(store, true).notify('t1', event);
+      await new PushNotificationSender(store, true).notify(event);
 
       expect(received).toBe(1);
       expect(stderr.mock.calls.some(([line]) => String(line).includes('HTTP 302'))).toBe(true);
       stderr.mockRestore();
     });
 
-    it('sends oauth2 access tokens as bearer credentials', async () => {
+    it('sends bearer credentials from the authentication info', async () => {
       const store = new InMemoryPushNotificationStore();
       await store.create('t1', {
-        webhookUrl: `http://127.0.0.1:${port}/hook`,
-        authenticationInfo: { scheme: 'oauth2', credentials: { accessToken: 'at-123' } },
+        url: `http://127.0.0.1:${port}/hook`,
+        authentication: { schemes: ['OAuth2', 'Bearer'], credentials: 'at-123' },
       });
 
-      await new PushNotificationSender(store, true).notify('t1', event);
+      await new PushNotificationSender(store, true).notify(event);
 
       expect(lastAuthorization).toBe('Bearer at-123');
     });
@@ -220,11 +222,29 @@ describe('A2AClient transport', () => {
 
   const status = (state: string) =>
     JSON.stringify({
-      type: 'status-update',
-      taskId: 't1',
-      status: { state, timestamp: '2026-01-01T00:00:00Z' },
-      timestamp: '2026-01-01T00:00:00Z',
+      jsonrpc: '2.0',
+      id: 1,
+      result: {
+        kind: 'status-update',
+        taskId: 't1',
+        contextId: 'c1',
+        status: { state, timestamp: '2026-01-01T00:00:00Z' },
+        final: state === 'completed',
+      },
     });
+  const chunk = JSON.stringify({
+    jsonrpc: '2.0',
+    id: 1,
+    result: {
+      kind: 'artifact-update',
+      taskId: 't1',
+      contextId: 'c1',
+      artifact: { artifactId: 'a1', parts: [{ kind: 'text', text: 'x' }] },
+      append: true,
+    },
+  });
+  const client = (config: ConstructorParameters<typeof A2AClient>[1] = {}) =>
+    new A2AClient(baseUrl, { rpcPath: '/a2a', ...config });
 
   it('parses CRLF-delimited SSE frames split across chunks', async () => {
     handler = (_req, res) => {
@@ -236,13 +256,12 @@ describe('A2AClient transport', () => {
       }, 20);
     };
 
-    const client = new A2AClient(baseUrl);
     const events: A2AStreamEvent[] = [];
-    for await (const event of client.sendMessageStream({ role: 'user', parts: [] })) {
+    for await (const event of client().sendMessageStream({ role: 'user', parts: [] })) {
       events.push(event);
     }
 
-    expect(events.map((e) => (e.type === 'status-update' ? e.status.state : e.type))).toEqual([
+    expect(events.map((e) => (e.kind === 'status-update' ? e.status.state : e.kind))).toEqual([
       'working',
       'completed',
     ]);
@@ -255,9 +274,7 @@ describe('A2AClient transport', () => {
       const interval = setInterval(() => {
         sent++;
         if (sent < 6) {
-          res.write(
-            `data: ${JSON.stringify({ type: 'token', taskId: 't1', token: 'x', timestamp: '' })}\n\n`
-          );
+          res.write(`data: ${chunk}\n\n`);
           return;
         }
         clearInterval(interval);
@@ -265,14 +282,16 @@ describe('A2AClient transport', () => {
       }, 60);
     };
 
-    const client = new A2AClient(baseUrl, { timeout: 200 });
     const events: A2AStreamEvent[] = [];
-    for await (const event of client.sendMessageStream({ role: 'user', parts: [] })) {
+    for await (const event of client({ timeout: 200 }).sendMessageStream({
+      role: 'user',
+      parts: [],
+    })) {
       events.push(event);
     }
 
-    expect(events.at(-1)?.type).toBe('status-update');
-    expect(events.filter((e) => e.type === 'token')).toHaveLength(5);
+    expect(events.at(-1)?.kind).toBe('status-update');
+    expect(events.filter((e) => e.kind === 'artifact-update')).toHaveLength(5);
   });
 
   it('fails when the stream stays idle longer than the timeout', async () => {
@@ -281,9 +300,11 @@ describe('A2AClient transport', () => {
       res.write(`data: ${status('working')}\n\n`);
     };
 
-    const client = new A2AClient(baseUrl, { timeout: 150 });
     const consume = async () => {
-      for await (const _event of client.sendMessageStream({ role: 'user', parts: [] })) {
+      for await (const _event of client({ timeout: 150 }).sendMessageStream({
+        role: 'user',
+        parts: [],
+      })) {
         void _event;
       }
     };
@@ -299,7 +320,9 @@ describe('A2AClient transport', () => {
       );
     };
 
-    const error = await new A2AClient(baseUrl).getTask('t1').catch((e: unknown) => e);
+    const error = await client()
+      .getTask('t1')
+      .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(A2AError);
     expect((error as InstanceType<typeof A2AError>).code).toBe(-32000);
   });
@@ -312,12 +335,23 @@ describe('A2AClient transport', () => {
           jsonrpc: '2.0',
           id: 1,
           result: {
+            kind: 'task',
             id: 'task_9',
             contextId: 'c',
             status: { state: 'input-required', timestamp: '' },
             history: [
-              { role: 'user', parts: [{ type: 'text', text: 'Book a flight' }] },
-              { role: 'agent', parts: [{ type: 'text', text: 'Which date?' }] },
+              {
+                kind: 'message',
+                messageId: 'm1',
+                role: 'user',
+                parts: [{ kind: 'text', text: 'Book a flight' }],
+              },
+              {
+                kind: 'message',
+                messageId: 'm2',
+                role: 'agent',
+                parts: [{ kind: 'text', text: 'Which date?' }],
+              },
             ],
             artifacts: [],
           },
@@ -325,7 +359,7 @@ describe('A2AClient transport', () => {
       );
     };
 
-    const tool = new A2AClient(baseUrl).asTool();
+    const tool = client().asTool();
     const result = await tool.execute(
       { task: 'Book a flight' },
       { agentId: 'a', runId: 'r', signal: new AbortController().signal }
@@ -347,23 +381,34 @@ describe('A2AClient transport', () => {
           jsonrpc: '2.0',
           id: 1,
           result: {
+            kind: 'task',
             id: 'task_9',
             contextId: 'c',
             status: { state: 'completed', timestamp: '' },
             history: [
-              { role: 'agent', parts: [{ type: 'text', text: 'old answer' }] },
-              { role: 'agent', parts: [{ type: 'text', text: 'new answer' }] },
+              {
+                kind: 'message',
+                messageId: 'm1',
+                role: 'agent',
+                parts: [{ kind: 'text', text: 'old answer' }],
+              },
+              {
+                kind: 'message',
+                messageId: 'm2',
+                role: 'agent',
+                parts: [{ kind: 'text', text: 'new answer' }],
+              },
             ],
             artifacts: [
-              { id: 'a1', parts: [{ type: 'text', text: 'old answer' }] },
-              { id: 'a2', parts: [{ type: 'text', text: 'new answer' }] },
+              { artifactId: 'a1', parts: [{ kind: 'text', text: 'old answer' }] },
+              { artifactId: 'a2', parts: [{ kind: 'text', text: 'new answer' }] },
             ],
           },
         })
       );
     };
 
-    const tool = new A2AClient(baseUrl).asTool();
+    const tool = client().asTool();
     const result = await tool.execute(
       { task: 'x' },
       { agentId: 'a', runId: 'r', signal: new AbortController().signal }
@@ -374,7 +419,7 @@ describe('A2AClient transport', () => {
   it('asTool cancels the request when the run is aborted', async () => {
     handler = () => {};
     const controller = new AbortController();
-    const tool = new A2AClient(baseUrl, { timeout: 10_000 }).asTool();
+    const tool = client({ timeout: 10_000 }).asTool();
 
     const pending = tool.execute(
       { task: 'x' },
@@ -409,6 +454,8 @@ describe('framework adapters', () => {
       body,
     });
 
+    expect(denied.status).toBe(401);
+    expect(denied.headers.get('www-authenticate')).toMatch(/^Bearer/);
     expect(((await denied.json()) as { error?: { code: number } }).error?.code).toBe(-32000);
     expect(((await allowed.json()) as { error?: unknown }).error).toBeUndefined();
   });
@@ -429,14 +476,15 @@ describe('framework adapters', () => {
       body: JSON.stringify({
         jsonrpc: '2.0',
         method: 'message/stream',
-        params: { message: { role: 'user', parts: [{ type: 'text', text: 'hi' }] } },
+        params: { message: userMessage('hi') },
         id: 1,
       }),
     });
     const text = await response.text();
 
     expect(text.match(/^: keep-alive$/gm)?.length).toBeGreaterThanOrEqual(3);
-    expect(text.trimEnd().endsWith('data: [DONE]')).toBe(true);
+    expect(text).not.toContain('[DONE]');
+    expect(text.trimEnd().split('\n').at(-1)).toContain('"final":true');
   });
 
   it('hono adapter answers notifications with 204', async () => {
@@ -470,7 +518,7 @@ describe('framework adapters', () => {
       body: JSON.stringify({
         jsonrpc: '2.0',
         method: 'message/send',
-        params: { message: { role: 'user', parts: [{ type: 'text', text: 'hi' }] } },
+        params: { message: userMessage('hi') },
         id: 1,
       }),
     });
@@ -501,26 +549,25 @@ describe('framework adapters', () => {
 
     try {
       const unauthorized = new A2AClient(url);
-      const deniedEvents: A2AStreamEvent[] = [];
-      for await (const event of unauthorized.sendMessageStream({
-        role: 'user',
-        parts: [{ type: 'text', text: 'hi' }],
-      })) {
-        deniedEvents.push(event);
-      }
-      expect(deniedEvents[0].type === 'status-update' && deniedEvents[0].status.message).toContain(
-        'Unauthorized'
-      );
+      const denied = async () => {
+        for await (const _event of unauthorized.sendMessageStream({
+          role: 'user',
+          parts: [{ kind: 'text', text: 'hi' }],
+        })) {
+          void _event;
+        }
+      };
+      await expect(denied()).rejects.toThrow('Unauthorized');
 
       const client = new A2AClient(url, { headers: { Authorization: 'Bearer secret' } });
       const controller = new AbortController();
       const stream = client.sendMessageStream(
-        { role: 'user', parts: [{ type: 'text', text: 'slow' }] },
+        { role: 'user', parts: [{ kind: 'text', text: 'slow' }] },
         undefined,
         { signal: controller.signal }
       );
       const first = await stream.next();
-      expect(first.value?.type).toBe('status-update');
+      expect(first.value?.kind).toBe('task');
       await vi.waitFor(() => expect(started).toHaveBeenCalled());
 
       controller.abort();

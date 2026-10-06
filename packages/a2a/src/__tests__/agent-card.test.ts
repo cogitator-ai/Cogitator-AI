@@ -42,16 +42,35 @@ describe('generateAgentCard', () => {
     expect(card.url).toBe('https://example.com/a2a');
   });
 
-  it('should set version to 0.3', () => {
+  it('should declare protocol v0.3.0 over JSON-RPC and the agent version apart', () => {
     const agent = createMockAgent({ name: 'test' });
     const card = generateAgentCard(agent, { url: 'https://example.com' });
-    expect(card.version).toBe('0.3');
+    expect(card.protocolVersion).toBe('0.3.0');
+    expect(card.preferredTransport).toBe('JSONRPC');
+    expect(card.additionalInterfaces).toEqual([
+      { transport: 'JSONRPC', url: 'https://example.com' },
+    ]);
+    expect(card.version).toBe('1.0.0');
+    expect(generateAgentCard(agent, { url: 'https://example.com', version: '2.1.0' }).version).toBe(
+      '2.1.0'
+    );
+  });
+
+  it('should fall back to the agent name for the required description, never the instructions', () => {
+    const agent = createMockAgent({ name: 'test', instructions: 'secret prompt' });
+    const card = generateAgentCard(agent, { url: 'https://example.com' });
+    expect(card.description).toBe('test');
+    expect(JSON.stringify(card)).not.toContain('secret prompt');
   });
 
   it('should have default capabilities', () => {
     const agent = createMockAgent({ name: 'test' });
     const card = generateAgentCard(agent, { url: 'https://example.com' });
-    expect(card.capabilities).toEqual({ streaming: true, pushNotifications: false });
+    expect(card.capabilities).toEqual({
+      streaming: true,
+      pushNotifications: false,
+      stateTransitionHistory: false,
+    });
   });
 
   it('should override capabilities', () => {
@@ -75,6 +94,7 @@ describe('generateAgentCard', () => {
     expect(card.skills[0].id).toBe('web_search');
     expect(card.skills[0].name).toBe('web_search');
     expect(card.skills[0].description).toBe('Search the web');
+    expect(card.skills[0].tags).toEqual(['tool']);
     expect(card.skills[1].id).toBe('calculator');
   });
 
@@ -88,9 +108,9 @@ describe('generateAgentCard', () => {
     const agent = createMockAgent({ name: 'test' });
     const card = generateAgentCard(agent, {
       url: 'https://example.com',
-      provider: { name: 'Cogitator', url: 'https://cogitator.ai' },
+      provider: { organization: 'Cogitator', url: 'https://cogitator.ai' },
     });
-    expect(card.provider).toEqual({ name: 'Cogitator', url: 'https://cogitator.ai' });
+    expect(card.provider).toEqual({ organization: 'Cogitator', url: 'https://cogitator.ai' });
   });
 
   it('should not include provider when not specified', () => {
@@ -102,7 +122,7 @@ describe('generateAgentCard', () => {
   it('should set default input/output modes', () => {
     const agent = createMockAgent({ name: 'test' });
     const card = generateAgentCard(agent, { url: 'https://example.com' });
-    expect(card.defaultInputModes).toEqual(['text/plain']);
+    expect(card.defaultInputModes).toEqual(['text/plain', 'application/json']);
     expect(card.defaultOutputModes).toEqual(['text/plain', 'application/json']);
   });
 

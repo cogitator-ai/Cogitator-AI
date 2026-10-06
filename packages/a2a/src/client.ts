@@ -3,17 +3,18 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type {
   AgentCard,
-  ExtendedAgentCard,
-  A2AMessage,
+  A2AMessageInput,
   A2ATask,
   A2AStreamEvent,
   A2AClientConfig,
-  SendMessageConfiguration,
-  TaskFilter,
+  MessageSendConfiguration,
   PushNotificationConfig,
+  SendMessageResult,
+  TaskFilter,
+  TaskPushNotificationConfig,
   TaskState,
 } from './types.js';
-import { isStreamFinalState } from './types.js';
+import { AGENT_CARD_PATH, LEGACY_AGENT_CARD_PATH } from './types.js';
 import type { JsonRpcResponse } from './json-rpc.js';
 import { A2AError } from './errors.js';
 import * as errors from './errors.js';
@@ -23,6 +24,7 @@ import {
   toolApprovalResponsePart,
   type ToolApprovalResponse,
 } from './approvals.js';
+import { artifactText, messageText, textPart, toMessage } from './protocol.js';
 
 export interface A2AToolOptions {
   name?: string;
@@ -40,7 +42,7 @@ export interface A2AToolResult {
   state?: TaskState;
   /**
    * The tool calls the remote agent waits on, when the task is `input-required` for approvals:
-   * answer with `toolApprovalResponsePart` in a message that continues `taskId`
+   * answer with `answerApprovals` (or a `toolApprovalResponsePart` in a message that continues `taskId`)
    */
   pendingApprovals?: ToolApprovalRequest[];
 }
@@ -67,122 +69,115 @@ function combineSignals(a: AbortSignal, b: AbortSignal): AbortSignal {
   return controller.signal;
 }
 
+function isFinalEvent(event: A2AStreamEvent): boolean {
+  return event.kind === 'message' || (event.kind === 'status-update' && event.final);
+}
+
+/**
+ * The text a task answered with: its status message, else the last agent message, else the text
+ * of its artifacts.
+ */
+function taskOutput(task: A2ATask): string {
+  const status = messageText(task.status.message);
+  if (status) return status;
+  const history = task.history ?? [];
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].role === 'agent') {
+      const text = messageText(history[i]);
+      if (text) return text;
+    }
+  }
+  return (task.artifacts ?? []).map(artifactText).filter(Boolean).join('\n');
+}
+
+/**
+ * A2A v0.3 client over JSON-RPC. It reads the Agent Card at the base URL and sends requests to
+ * the endpoint the card names, so it talks to any A2A v0.3 server.
+ */
 export class A2AClient {
   private baseUrl: string;
   private headers: Record<string, string>;
   private timeout: number;
-  private agentCardPath: string;
-  private rpcPath: string;
+  private agentCardPath?: string;
+  private rpcPath?: string;
   private agentName?: string;
   private cachedCard: AgentCard | null = null;
+  private cachedCardUrl: string | null = null;
 
   constructor(baseUrl: string, config?: A2AClientConfig) {
-    this.baseUrl = baseUrl.replace(/\/$/, '');
+    this.baseUrl = baseUrl.replace(/\/+$/, '');
     this.headers = config?.headers ?? {};
     this.timeout = config?.timeout ?? 30000;
-    this.agentCardPath = config?.agentCardPath ?? '/.well-known/agent.json';
-    this.rpcPath = config?.rpcPath ?? '/a2a';
+    this.agentCardPath = config?.agentCardPath;
+    this.rpcPath = config?.rpcPath;
     this.agentName = config?.agentName;
   }
 
+  /**
+   * The Agent Card: from `/.well-known/agent-card.json` at the base URL (or the pre-v0.3
+   * `/.well-known/agent.json` when the server has no v0.3 card), or `agentCardPath`. With
+   * `agentName` it is the card of that agent on a Cogitator server hosting several.
+   */
   async agentCard(): Promise<AgentCard> {
     if (this.cachedCard) return this.cachedCard;
 
-    const response = await this.httpGet(this.agentCardPath);
-    const data = (await response.json()) as AgentCard | AgentCard[];
-    const cards = Array.isArray(data) ? data : [data];
-    if (cards.length === 0) {
-      throw new A2AError(errors.internalError('Agent card response is empty array'));
+    const { card, url } = await this.fetchDefaultCard();
+    if (!this.agentName || card.name === this.agentName) {
+      return this.cacheCard(card, url);
     }
-    const card = this.agentName
-      ? cards.find((candidate) => candidate.name === this.agentName)
-      : cards[0];
-    if (!card) {
-      throw new A2AError(errors.agentNotFound(this.agentName ?? ''));
+
+    const agentUrl = `${this.resolveUrl(card.url, url).replace(/\/+$/, '')}/${encodeURIComponent(this.agentName)}${AGENT_CARD_PATH}`;
+    const response = await this.fetchCard(agentUrl);
+    if (response.status === 404) {
+      throw new A2AError(errors.agentNotFound(this.agentName));
     }
-    this.cachedCard = card;
-    return card;
+    if (!response.ok) await this.throwHttpError(response);
+    return this.cacheCard((await response.json()) as AgentCard, agentUrl);
   }
 
   async refreshAgentCard(): Promise<AgentCard> {
     this.cachedCard = null;
+    this.cachedCardUrl = null;
     return this.agentCard();
   }
 
+  /** Send a message; the server answers with the task it started or continued, or a direct reply. */
   async sendMessage(
-    message: A2AMessage,
-    config?: SendMessageConfiguration,
+    message: A2AMessageInput,
+    config?: MessageSendConfiguration,
     options?: A2ARequestOptions
-  ): Promise<A2ATask> {
+  ): Promise<SendMessageResult> {
     const result = await this.rpc(
       'message/send',
-      this.withAgent({ message, configuration: config }),
+      { message: toMessage(message), ...(config && { configuration: config }) },
       options
     );
-    return result as A2ATask;
+    return result as SendMessageResult;
   }
 
   /**
-   * Stream a message. The client timeout applies to the wait for the response
+   * Stream a message: the task, then its status and artifact updates, until the final status
+   * update (or a direct reply message). The client timeout applies to the wait for the response
    * and to the idle time between events, not to the total stream duration.
    */
   async *sendMessageStream(
-    message: A2AMessage,
-    config?: SendMessageConfiguration,
+    message: A2AMessageInput,
+    config?: MessageSendConfiguration,
     options?: A2ARequestOptions
   ): AsyncGenerator<A2AStreamEvent> {
-    const body = JSON.stringify({
-      jsonrpc: '2.0',
-      method: 'message/stream',
-      params: this.withAgent({ message, configuration: config }),
-      id: this.generateRequestId(),
-    });
+    yield* this.stream(
+      'message/stream',
+      { message: toMessage(message), ...(config && { configuration: config }) },
+      options
+    );
+  }
 
-    const idleTimeout = options?.timeout ?? this.timeout;
-    const controller = new AbortController();
-    let timedOut = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const armTimer = () => {
-      if (timer !== undefined) clearTimeout(timer);
-      timer = setTimeout(() => {
-        timedOut = true;
-        controller.abort(new DOMException('A2A stream timed out', 'TimeoutError'));
-      }, idleTimeout);
-    };
-    const onExternalAbort = () => controller.abort(options?.signal?.reason);
-    if (options?.signal?.aborted) onExternalAbort();
-    options?.signal?.addEventListener('abort', onExternalAbort, { once: true });
-
-    try {
-      armTimer();
-      const response = await fetch(`${this.baseUrl}${this.rpcPath}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'text/event-stream',
-          ...this.headers,
-        },
-        body,
-        signal: controller.signal,
-      });
-
-      if (!response.ok) {
-        await this.throwHttpError(response);
-      }
-
-      if (!response.body) return;
-
-      yield* this.parseSSEStream(response.body, armTimer);
-    } catch (error) {
-      if (timedOut) {
-        throw new A2AError(errors.internalError(`Stream idle for more than ${idleTimeout}ms`));
-      }
-      throw error;
-    } finally {
-      if (timer !== undefined) clearTimeout(timer);
-      options?.signal?.removeEventListener('abort', onExternalAbort);
-      controller.abort();
-    }
+  /** Reconnect to the stream of a task: the task as it is now, then its updates until the final one. */
+  async *resubscribeTask(
+    taskId: string,
+    options?: A2ARequestOptions
+  ): AsyncGenerator<A2AStreamEvent> {
+    yield* this.stream('tasks/resubscribe', { id: taskId }, options);
   }
 
   async getTask(taskId: string, historyLength?: number): Promise<A2ATask> {
@@ -198,21 +193,14 @@ export class A2AClient {
     return result as A2ATask;
   }
 
+  /** Answer a task that waits on the client (`input-required`) with text. */
   async continueTask(
     taskId: string,
     text: string,
-    config?: SendMessageConfiguration,
+    config?: MessageSendConfiguration,
     options?: A2ARequestOptions
-  ): Promise<A2ATask> {
-    return this.sendMessage(
-      {
-        role: 'user',
-        parts: [{ type: 'text', text }],
-        taskId,
-      },
-      config,
-      options
-    );
+  ): Promise<SendMessageResult> {
+    return this.sendMessage({ role: 'user', parts: [textPart(text)], taskId }, config, options);
   }
 
   /**
@@ -228,9 +216,9 @@ export class A2AClient {
   async answerApprovals(
     taskId: string,
     response: ToolApprovalResponse,
-    config?: SendMessageConfiguration,
+    config?: MessageSendConfiguration,
     options?: A2ARequestOptions
-  ): Promise<A2ATask> {
+  ): Promise<SendMessageResult> {
     return this.sendMessage(
       { role: 'user', parts: [toolApprovalResponsePart(response)], taskId },
       config,
@@ -238,7 +226,8 @@ export class A2AClient {
     );
   }
 
-  async listTasks(filter?: TaskFilter): Promise<A2ATask[]> {
+  /** The caller's tasks on a Cogitator server (the `tasks/list` extension method). */
+  async listTasks(filter?: Omit<TaskFilter, 'visibleTo'>): Promise<A2ATask[]> {
     const result = (await this.rpc('tasks/list', filter ?? {})) as { tasks: A2ATask[] };
     return result.tasks;
   }
@@ -261,30 +250,33 @@ export class A2AClient {
 
       execute: async (params: { task: string }, context: ToolContext): Promise<A2AToolResult> => {
         try {
-          const message: A2AMessage = {
-            role: 'user',
-            parts: [{ type: 'text', text: params.task }],
-          };
+          const result = await this.sendMessage(
+            { role: 'user', parts: [textPart(params.task)] },
+            undefined,
+            { signal: context?.signal, timeout: toolTimeout }
+          );
+          if (result.kind === 'message') {
+            return { output: messageText(result), success: true };
+          }
 
-          const task = await this.sendMessage(message, undefined, {
-            signal: context?.signal,
-            timeout: toolTimeout,
-          });
+          const task = result;
           const state = task.status.state;
-          const output = this.extractOutputFromTask(task);
+          const output = taskOutput(task);
 
           if (state === 'completed') {
             return { output, success: true, state };
           }
 
-          if (state === 'input-required') {
+          if (state === 'input-required' || state === 'auth-required') {
             const pendingApprovals = readToolApprovalRequest(task);
             return {
               output,
               success: false,
               error: pendingApprovals
                 ? `Remote agent waits for approval of ${pendingApprovals.map((p) => p.toolName).join(', ')} before it continues this task`
-                : 'Remote agent requires more input to continue this task',
+                : state === 'auth-required'
+                  ? 'Remote agent requires authentication to continue this task'
+                  : 'Remote agent requires more input to continue this task',
               taskId: task.id,
               state,
               ...(pendingApprovals && { pendingApprovals }),
@@ -294,7 +286,7 @@ export class A2AClient {
           return {
             output,
             success: false,
-            error: task.status.message ?? `Remote task ended in state: ${state}`,
+            error: output || `Remote task ended in state: ${state}`,
             taskId: task.id,
             state,
           };
@@ -323,39 +315,50 @@ export class A2AClient {
     };
   }
 
-  async createPushNotification(
+  /** Register a webhook the server POSTs the task to on every status change. */
+  async setPushNotificationConfig(
     taskId: string,
     config: PushNotificationConfig
-  ): Promise<PushNotificationConfig> {
-    const result = await this.rpc('tasks/pushNotification/create', { taskId, config });
-    return result as PushNotificationConfig;
+  ): Promise<TaskPushNotificationConfig> {
+    const result = await this.rpc('tasks/pushNotificationConfig/set', {
+      taskId,
+      pushNotificationConfig: config,
+    });
+    return result as TaskPushNotificationConfig;
   }
 
-  async getPushNotification(
+  async getPushNotificationConfig(
     taskId: string,
-    configId: string
-  ): Promise<PushNotificationConfig | null> {
-    const result = await this.rpc('tasks/pushNotification/get', { taskId, configId });
-    return result as PushNotificationConfig | null;
+    configId?: string
+  ): Promise<TaskPushNotificationConfig> {
+    const result = await this.rpc(
+      'tasks/pushNotificationConfig/get',
+      configId === undefined ? { id: taskId } : { id: taskId, pushNotificationConfigId: configId }
+    );
+    return result as TaskPushNotificationConfig;
   }
 
-  async listPushNotifications(taskId: string): Promise<PushNotificationConfig[]> {
-    const result = await this.rpc('tasks/pushNotification/list', { taskId });
-    return result as PushNotificationConfig[];
+  async listPushNotificationConfigs(taskId: string): Promise<TaskPushNotificationConfig[]> {
+    const result = await this.rpc('tasks/pushNotificationConfig/list', { id: taskId });
+    return result as TaskPushNotificationConfig[];
   }
 
-  async deletePushNotification(taskId: string, configId: string): Promise<void> {
-    await this.rpc('tasks/pushNotification/delete', { taskId, configId });
+  async deletePushNotificationConfig(taskId: string, configId: string): Promise<void> {
+    await this.rpc('tasks/pushNotificationConfig/delete', {
+      id: taskId,
+      pushNotificationConfigId: configId,
+    });
   }
 
+  /** Whether the Agent Card carries an HS256 signature made with this shared secret. */
   async verifyAgentCard(secret: string): Promise<boolean> {
-    const card = await this.agentCard();
-    return verifyAgentCardSignature(card as AgentCard & { signature?: string }, secret);
+    return verifyAgentCardSignature(await this.agentCard(), secret);
   }
 
-  async extendedAgentCard(): Promise<ExtendedAgentCard> {
-    const result = await this.rpc('agent/extendedCard', this.withAgent({}));
-    return result as ExtendedAgentCard;
+  /** The authenticated extended Agent Card (`agent/getAuthenticatedExtendedCard`). */
+  async extendedAgentCard(): Promise<AgentCard> {
+    const result = await this.rpc('agent/getAuthenticatedExtendedCard', undefined);
+    return result as AgentCard;
   }
 
   asToolFromCard(card: AgentCard, options?: A2AToolOptions): Tool<{ task: string }, A2AToolResult> {
@@ -366,26 +369,83 @@ export class A2AClient {
     });
   }
 
+  private cacheCard(card: AgentCard, url: string): AgentCard {
+    this.cachedCard = card;
+    this.cachedCardUrl = url;
+    return card;
+  }
+
+  private async fetchDefaultCard(): Promise<{ card: AgentCard; url: string }> {
+    const paths = this.agentCardPath
+      ? [this.agentCardPath]
+      : [AGENT_CARD_PATH, LEGACY_AGENT_CARD_PATH];
+    let lastResponse: Response | undefined;
+    for (const path of paths) {
+      const url = `${this.baseUrl}${path.startsWith('/') ? path : `/${path}`}`;
+      const response = await this.fetchCard(url);
+      if (response.ok) {
+        return { card: this.pickCard(await response.json()), url };
+      }
+      lastResponse = response;
+      if (response.status !== 404) break;
+    }
+    return this.throwHttpError(lastResponse!);
+  }
+
+  /** The card a response holds; a pre-v0.3 Cogitator server lists several agents in an array. */
+  private pickCard(data: unknown): AgentCard {
+    const cards = (Array.isArray(data) ? data : [data]) as AgentCard[];
+    if (cards.length === 0) {
+      throw new A2AError(errors.internalError('Agent card response is empty array'));
+    }
+    if (!this.agentName) return cards[0];
+    return cards.find((candidate) => candidate.name === this.agentName) ?? cards[0];
+  }
+
+  private fetchCard(url: string): Promise<Response> {
+    return fetch(url, {
+      headers: { Accept: 'application/json', ...this.headers },
+      signal: AbortSignal.timeout(this.timeout),
+    });
+  }
+
+  private resolveUrl(url: string, relativeTo: string): string {
+    return new URL(url, relativeTo).toString();
+  }
+
+  /** The JSON-RPC endpoint: `rpcPath` at the base URL, or the `url` of the Agent Card. */
+  private async endpoint(): Promise<string> {
+    if (this.rpcPath !== undefined) {
+      return `${this.baseUrl}${this.rpcPath.startsWith('/') ? this.rpcPath : `/${this.rpcPath}`}`;
+    }
+    const card = await this.agentCard();
+    if (!card.url) {
+      throw new A2AError(errors.internalError('Agent card has no url for its JSON-RPC endpoint'));
+    }
+    return this.resolveUrl(card.url, this.cachedCardUrl ?? `${this.baseUrl}/`);
+  }
+
   private async rpc(
     method: string,
     params: unknown,
     options?: A2ARequestOptions
   ): Promise<unknown> {
-    const body = JSON.stringify({
-      jsonrpc: '2.0',
-      method,
-      params,
-      id: this.generateRequestId(),
-    });
-
+    const endpoint = await this.endpoint();
+    const id = this.generateRequestId();
     const timeoutSignal = AbortSignal.timeout(options?.timeout ?? this.timeout);
-    const response = await fetch(`${this.baseUrl}${this.rpcPath}`, {
+    const response = await fetch(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        Accept: 'application/json',
         ...this.headers,
       },
-      body,
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method,
+        ...(params !== undefined && { params }),
+        id,
+      }),
       signal: options?.signal ? combineSignals(options.signal, timeoutSignal) : timeoutSignal,
     });
 
@@ -394,12 +454,71 @@ export class A2AClient {
     }
 
     const json = (await response.json()) as JsonRpcResponse;
-
     if (json.error) {
       throw new A2AError(json.error);
     }
-
     return json.result;
+  }
+
+  private async *stream(
+    method: string,
+    params: unknown,
+    options?: A2ARequestOptions
+  ): AsyncGenerator<A2AStreamEvent> {
+    const endpoint = await this.endpoint();
+    const idleTimeout = options?.timeout ?? this.timeout;
+    const controller = new AbortController();
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const armTimer = () => {
+      if (timer !== undefined) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort(new DOMException('A2A stream timed out', 'TimeoutError'));
+      }, idleTimeout);
+    };
+    const onExternalAbort = () => controller.abort(options?.signal?.reason);
+    if (options?.signal?.aborted) onExternalAbort();
+    options?.signal?.addEventListener('abort', onExternalAbort, { once: true });
+
+    try {
+      armTimer();
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+          ...this.headers,
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', method, params, id: this.generateRequestId() }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        await this.throwHttpError(response);
+      }
+
+      const contentType = response.headers.get('content-type') ?? '';
+      if (!contentType.startsWith('text/event-stream')) {
+        const json = (await response.json()) as JsonRpcResponse;
+        if (json.error) throw new A2AError(json.error);
+        if (json.result !== undefined) yield json.result as A2AStreamEvent;
+        return;
+      }
+
+      if (!response.body) return;
+
+      yield* this.parseSSEStream(response.body, armTimer);
+    } catch (error) {
+      if (timedOut) {
+        throw new A2AError(errors.internalError(`Stream idle for more than ${idleTimeout}ms`));
+      }
+      throw error;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      options?.signal?.removeEventListener('abort', onExternalAbort);
+      controller.abort();
+    }
   }
 
   /**
@@ -416,19 +535,6 @@ export class A2AClient {
       if (error instanceof A2AError) throw error;
     }
     throw new A2AError(errors.internalError(`HTTP ${response.status}: ${response.statusText}`));
-  }
-
-  private async httpGet(path: string): Promise<Response> {
-    const response = await fetch(`${this.baseUrl}${path}`, {
-      headers: this.headers,
-      signal: AbortSignal.timeout(this.timeout),
-    });
-
-    if (!response.ok) {
-      await this.throwHttpError(response);
-    }
-
-    return response;
   }
 
   private async *parseSSEStream(
@@ -459,19 +565,19 @@ export class A2AClient {
           const data = this.extractSseData(frame);
           if (!data || data === '[DONE]') continue;
 
-          let event: A2AStreamEvent;
+          let response: JsonRpcResponse;
           try {
-            event = JSON.parse(data) as A2AStreamEvent;
+            response = JSON.parse(data) as JsonRpcResponse;
           } catch {
             process.stderr.write(`[a2a] Failed to parse SSE event: ${data.slice(0, 200)}\n`);
             continue;
           }
 
+          if (response.error) throw new A2AError(response.error);
+          if (response.result === undefined || response.result === null) continue;
+          const event = response.result as A2AStreamEvent;
           yield event;
-
-          if (event.type === 'status-update' && isStreamFinalState(event.status.state)) {
-            return;
-          }
+          if (isFinalEvent(event)) return;
         }
       }
     } finally {
@@ -488,29 +594,6 @@ export class A2AClient {
       }
     }
     return dataLines.join('\n');
-  }
-
-  private extractOutputFromTask(task: A2ATask): string {
-    const history = task.history ?? [];
-    for (let i = history.length - 1; i >= 0; i--) {
-      const msg = history[i];
-      if (msg.role === 'agent') {
-        const text = msg.parts.find((part) => part.type === 'text');
-        if (text) return text.text;
-      }
-    }
-
-    const artifacts = task.artifacts ?? [];
-    for (let i = artifacts.length - 1; i >= 0; i--) {
-      const text = artifacts[i].parts.find((part) => part.type === 'text');
-      if (text) return text.text;
-    }
-
-    return task.status.message ?? '';
-  }
-
-  private withAgent<T extends object>(params: T): T & { agentName?: string } {
-    return this.agentName === undefined ? params : { ...params, agentName: this.agentName };
   }
 
   private generateRequestId(): string {

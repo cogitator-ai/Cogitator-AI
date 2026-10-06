@@ -1,29 +1,23 @@
-import { resolveSseHeartbeatMs } from '@cogitator-ai/server-shared';
+import { MAX_RUN_TIMEOUT_MS, resolveSseHeartbeatMs } from '@cogitator-ai/server-shared';
 import type { Agent as IAgent } from '@cogitator-ai/types';
 import type {
   A2AServerConfig,
   AgentCard,
-  ExtendedAgentCard,
-  A2AMessage,
+  AgentProvider,
   A2ATask,
-  A2AStreamEvent,
-  TokenStreamEvent,
-  SendMessageConfiguration,
+  MessageSendConfiguration,
+  MessageSendParams,
   TaskFilter,
   CogitatorLike,
-  PushNotificationConfig,
   PushNotificationStore,
+  TaskPushNotificationConfig,
   A2AAuthConfig,
   A2ACaller,
+  Part,
 } from './types.js';
 import type { JsonRpcRequest, JsonRpcResponse } from './json-rpc.js';
-import {
-  parseJsonRpcRequest,
-  createSuccessResponse,
-  createErrorResponse,
-  JsonRpcParseError,
-} from './json-rpc.js';
-import { TaskManager } from './task-manager.js';
+import { parseJsonRpcRequest, createSuccessResponse, createErrorResponse } from './json-rpc.js';
+import { TaskManager, type TaskEvent } from './task-manager.js';
 import { generateAgentCard, signAgentCard } from './agent-card.js';
 import type { AgentCardSigningOptions } from './agent-card.js';
 import { A2AError } from './errors.js';
@@ -36,54 +30,120 @@ import {
 } from './push-notifications.js';
 import { isStreamFinalState } from './types.js';
 import { isTaskVisibleTo, publicTask } from './ownership.js';
+import {
+  parseDeletePushNotificationConfigParams,
+  parseGetPushNotificationConfigParams,
+  parseListTasksParams,
+  parseMessageSendParams,
+  parseTaskIdParams,
+  parseTaskPushNotificationConfig,
+  parseTaskQueryParams,
+} from './protocol.js';
 
 type HeaderGetter = (name: string) => string | null | undefined;
 
 const MAX_LIST_LIMIT = 1000;
 
-interface SendMessageParams {
-  message: A2AMessage;
-  configuration?: SendMessageConfiguration;
+/** The run time limit a client may ask for when neither the agent nor the server sets one: the Cogitator run default. */
+const DEFAULT_MAX_RUN_TIMEOUT_MS = 120_000;
+
+/** JSON-RPC methods answered with a stream of events (A2A v0.3, sections 7.2 and 7.9). */
+export const STREAMING_METHODS: readonly string[] = ['message/stream', 'tasks/resubscribe'];
+
+/** Options of one request, set by the framework adapters. */
+export interface A2AHandleOptions {
+  /** The agent the request is addressed to by its endpoint; it wins over an `agentName` param */
   agentName?: string;
 }
 
-function failedStatusEvent(message: string, taskId = ''): A2AStreamEvent {
-  const timestamp = new Date().toISOString();
-  return {
-    type: 'status-update',
-    taskId,
-    status: { state: 'failed', timestamp, message },
-    timestamp,
+/** Options for building an Agent Card. */
+export interface AgentCardRequestOptions {
+  /**
+   * Absolute URL the framework adapter is mounted at (origin plus mount path). The card's `url`
+   * is derived from it when the server has no `cardUrl`.
+   */
+  baseUrl?: string;
+}
+
+type RequestId = string | number | null;
+
+function requestIdOf(body: unknown): RequestId {
+  if (body && typeof body === 'object' && !Array.isArray(body)) {
+    const id = (body as { id?: unknown }).id;
+    if (typeof id === 'string' || typeof id === 'number') return id;
+  }
+  return null;
+}
+
+/** The MIME type a part is delivered as, for `acceptedOutputModes`. */
+function partMimeType(part: Part): string {
+  switch (part.kind) {
+    case 'text':
+      return 'text/plain';
+    case 'data':
+      return 'application/json';
+    case 'file':
+      return part.file.mimeType ?? 'application/octet-stream';
+  }
+}
+
+/** The events of one task, queued until the stream that relays them takes them. */
+class TaskEventQueue {
+  private queue: TaskEvent[] = [];
+  private wake: (() => void) | null = null;
+  private readonly listener = (event: TaskEvent) => {
+    if (this.taskId !== null && event.taskId === this.taskId) {
+      this.queue.push(event);
+      this.notify();
+    }
   };
-}
 
-function isValidMessage(message: unknown): message is A2AMessage {
-  if (!message || typeof message !== 'object') return false;
-  const m = message as Partial<A2AMessage>;
-  return (m.role === 'user' || m.role === 'agent') && Array.isArray(m.parts);
-}
+  constructor(
+    private readonly manager: TaskManager,
+    public taskId: string | null
+  ) {
+    manager.on('event', this.listener);
+  }
 
-function assertOptionalNonNegativeInt(value: unknown, name: string): void {
-  if (value === undefined) return;
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
-    throw new A2AError(errors.invalidParams(`${name} must be a non-negative integer`));
+  notify(): void {
+    const wake = this.wake;
+    this.wake = null;
+    wake?.();
+  }
+
+  shift(): TaskEvent | undefined {
+    return this.queue.shift();
+  }
+
+  wait(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      this.wake = resolve;
+    });
+  }
+
+  close(): void {
+    this.manager.removeListener('event', this.listener);
+    this.notify();
   }
 }
 
 export class A2AServer {
   private agents: Record<string, IAgent>;
+  private defaultAgentName: string;
   private cogitator: CogitatorLike;
   private taskManager: TaskManager;
-  private agentCards: Map<string, AgentCard>;
   /** The path the framework adapters serve JSON-RPC on, and the cards advertise without `cardUrl`. */
   readonly basePath: string;
   /** How often the framework adapters write a heartbeat on an open stream; `0` for never */
   readonly sseHeartbeatMs: number;
-  private cardUrl: string;
+  private cardUrl?: string;
+  private agentVersion?: string;
+  private provider?: AgentProvider;
+  private maxRunTimeoutMs: number;
   private pushNotificationStore: PushNotificationStore;
   private pushSender: PushNotificationSender;
   private cardSigning?: AgentCardSigningOptions;
-  private extendedCardGenerator?: (agentName: string) => ExtendedAgentCard;
+  private extendedCardGenerator?: (agentName: string) => AgentCard;
   private allowPrivateUrls: boolean;
   private auth?: A2AAuthConfig;
 
@@ -94,6 +154,7 @@ export class A2AServer {
     }
 
     this.agents = config.agents;
+    this.defaultAgentName = agentNames[0];
     this.cogitator = config.cogitator;
     this.basePath = config.basePath ?? '/a2a';
     if (!this.basePath.startsWith('/')) {
@@ -101,8 +162,21 @@ export class A2AServer {
         `A2AServer basePath must be a path starting with "/", got "${this.basePath}"`
       );
     }
+    const maxRunTimeoutMs = config.maxRunTimeoutMs ?? DEFAULT_MAX_RUN_TIMEOUT_MS;
+    if (
+      !Number.isInteger(maxRunTimeoutMs) ||
+      maxRunTimeoutMs <= 0 ||
+      maxRunTimeoutMs > MAX_RUN_TIMEOUT_MS
+    ) {
+      throw new Error(
+        `A2AServer maxRunTimeoutMs must be a positive integer of at most ${MAX_RUN_TIMEOUT_MS}, got ${maxRunTimeoutMs}`
+      );
+    }
+    this.maxRunTimeoutMs = maxRunTimeoutMs;
     this.sseHeartbeatMs = resolveSseHeartbeatMs(config.sseHeartbeatMs);
-    this.cardUrl = config.cardUrl ?? '';
+    this.cardUrl = config.cardUrl ? config.cardUrl.replace(/\/+$/, '') : undefined;
+    this.agentVersion = config.agentVersion;
+    this.provider = config.provider;
     this.cardSigning = config.cardSigning;
     this.extendedCardGenerator = config.extendedCardGenerator;
     this.allowPrivateUrls = config.allowPrivateUrls ?? false;
@@ -116,41 +190,13 @@ export class A2AServer {
       taskStore: config.taskStore ?? new InMemoryTaskStore(),
     });
 
-    this.taskManager.on('event', (event: A2AStreamEvent) => {
-      if (event.type === 'status-update' || event.type === 'artifact-update') {
-        this.pushSender.notify(event.taskId, event).catch(() => {});
-      }
+    this.taskManager.on('event', (event: TaskEvent) => {
+      if (event.kind !== 'status-update') return;
+      this.taskManager
+        .getTask(event.taskId)
+        .then((task) => this.pushSender.notify(publicTask(task)))
+        .catch(() => {});
     });
-
-    const hasPushNotifications = !!config.pushNotificationStore;
-    const hasExtendedCard = !!config.extendedCardGenerator;
-
-    this.agentCards = new Map();
-    for (const [name, agent] of Object.entries(this.agents)) {
-      const card = generateAgentCard(agent, {
-        url: this.cardUrl || this.basePath,
-        capabilities: {
-          streaming: true,
-          pushNotifications: hasPushNotifications,
-          extendedAgentCard: hasExtendedCard,
-        },
-      });
-      if (this.auth) {
-        const schemeName = this.auth.type === 'bearer' ? 'bearer' : 'apiKey';
-        card.securitySchemes = {
-          [schemeName]:
-            this.auth.type === 'bearer'
-              ? { type: 'http', scheme: 'bearer' }
-              : {
-                  type: 'apiKey',
-                  location: 'header',
-                  parameterName: this.auth.headerName ?? 'x-api-key',
-                },
-        };
-        card.security = [{ [schemeName]: [] }];
-      }
-      this.agentCards.set(name, card);
-    }
   }
 
   /**
@@ -169,45 +215,74 @@ export class A2AServer {
     return key ? key.trim() || undefined : undefined;
   }
 
-  getAgentCard(agentName?: string): AgentCard {
-    let card: AgentCard;
-    if (agentName) {
-      const found = this.agentCards.get(agentName);
-      if (!found) throw new A2AError(errors.agentNotFound(agentName));
-      card = found;
-    } else {
-      card = this.agentCards.values().next().value!;
-    }
-    if (this.cardSigning) {
-      return signAgentCard(card, this.cardSigning);
-    }
-    return card;
+  /** The `WWW-Authenticate` challenge of a 401 response, when the auth scheme has one. */
+  get authChallenge(): string | undefined {
+    return this.auth?.type === 'bearer' ? 'Bearer realm="a2a"' : undefined;
   }
 
-  getAgentCards(): AgentCard[] {
-    const cards = Array.from(this.agentCards.values());
-    if (this.cardSigning) {
-      return cards.map((c) => signAgentCard(c, this.cardSigning!));
-    }
-    return cards;
+  /** Whether the server hosts an agent under this name. */
+  hasAgent(agentName: string): boolean {
+    return Object.hasOwn(this.agents, agentName);
   }
 
-  async handleJsonRpc(body: unknown, authToken?: string): Promise<JsonRpcResponse | null> {
+  /**
+   * The Agent Card of an agent (the first one by default). Its `url` is the agent's JSON-RPC
+   * endpoint: `cardUrl`, or `baseUrl` plus `basePath`, and `/<agent name>` after it for every
+   * agent but the first.
+   */
+  getAgentCard(agentName?: string, options?: AgentCardRequestOptions): AgentCard {
+    const name = agentName ?? this.defaultAgentName;
+    if (!this.hasAgent(name)) throw new A2AError(errors.agentNotFound(name));
+    const card = generateAgentCard(this.agents[name], {
+      url: this.agentEndpoint(name, options?.baseUrl),
+      version: this.agentVersion,
+      provider: this.provider,
+      capabilities: { streaming: true, pushNotifications: true },
+      supportsAuthenticatedExtendedCard: !!this.extendedCardGenerator,
+    });
+    if (this.auth) {
+      const schemeName = this.auth.type === 'bearer' ? 'bearer' : 'apiKey';
+      card.securitySchemes = {
+        [schemeName]:
+          this.auth.type === 'bearer'
+            ? { type: 'http', scheme: 'bearer' }
+            : { type: 'apiKey', in: 'header', name: this.auth.headerName ?? 'x-api-key' },
+      };
+      card.security = [{ [schemeName]: [] }];
+    }
+    return this.signed(card);
+  }
+
+  /** The cards of every agent, in the order they were registered. */
+  getAgentCards(options?: AgentCardRequestOptions): AgentCard[] {
+    return Object.keys(this.agents).map((name) => this.getAgentCard(name, options));
+  }
+
+  private agentEndpoint(agentName: string, baseUrl?: string): string {
+    const shared = this.cardUrl ?? `${(baseUrl ?? '').replace(/\/+$/, '')}${this.basePath}`;
+    return agentName === this.defaultAgentName
+      ? shared
+      : `${shared.replace(/\/+$/, '')}/${encodeURIComponent(agentName)}`;
+  }
+
+  private signed(card: AgentCard): AgentCard {
+    return this.cardSigning ? signAgentCard(card, this.cardSigning) : card;
+  }
+
+  /**
+   * Answer a JSON-RPC request that is not streamed. Returns null for a notification (a request
+   * without `id`).
+   */
+  async handleJsonRpc(
+    body: unknown,
+    authToken?: string,
+    options?: A2AHandleOptions
+  ): Promise<JsonRpcResponse | null> {
     let request: JsonRpcRequest;
     try {
-      const parsed = parseJsonRpcRequest(body);
-      if (Array.isArray(parsed)) {
-        return createErrorResponse(null, errors.invalidRequest('Batch requests are not supported'));
-      }
-      request = parsed;
+      request = this.parseRequest(body);
     } catch (e) {
-      if (e instanceof JsonRpcParseError) {
-        return createErrorResponse(
-          null,
-          e.code === -32600 ? errors.invalidRequest(e.message) : errors.parseError(e.message)
-        );
-      }
-      return createErrorResponse(null, errors.clientJsonRpcError(e, 'JSON-RPC parse error'));
+      return createErrorResponse(requestIdOf(body), errors.clientJsonRpcError(e, 'parse'));
     }
 
     let caller: A2ACaller | undefined;
@@ -219,7 +294,7 @@ export class A2AServer {
     }
 
     try {
-      const result = await this.routeMethod(request.method, request.params, caller);
+      const result = await this.routeMethod(request.method, request.params, caller, options);
       if (request.id === undefined) return null;
       return createSuccessResponse(request.id, result);
     } catch (e) {
@@ -231,178 +306,169 @@ export class A2AServer {
     }
   }
 
+  /**
+   * Answer a JSON-RPC request with a stream of JSON-RPC responses, each the data of one SSE
+   * event: for `message/stream` and `tasks/resubscribe` the task, then its status and artifact
+   * updates until the `final` one; a failure ends the stream with an error response. Any other
+   * method yields its single response.
+   */
   async *handleJsonRpcStream(
     body: unknown,
     authToken?: string,
-    signal?: AbortSignal
-  ): AsyncGenerator<A2AStreamEvent> {
+    signal?: AbortSignal,
+    options?: A2AHandleOptions
+  ): AsyncGenerator<JsonRpcResponse> {
     let request: JsonRpcRequest;
     try {
-      const parsed = parseJsonRpcRequest(body);
-      if (Array.isArray(parsed)) {
-        yield failedStatusEvent('Batch requests are not supported');
-        return;
-      }
-      request = parsed;
+      request = this.parseRequest(body);
     } catch (e) {
-      yield failedStatusEvent(errors.clientErrorMessage(e, 'JSON-RPC parse error'));
+      yield createErrorResponse(requestIdOf(body), errors.clientJsonRpcError(e, 'parse'));
       return;
     }
+    const id: RequestId = request.id ?? null;
 
     let caller: A2ACaller | undefined;
     try {
       caller = await this.authenticate(authToken);
     } catch (e) {
-      yield failedStatusEvent(errors.clientErrorMessage(e, 'Authentication error'));
+      yield createErrorResponse(id, errors.clientJsonRpcError(e, 'Authentication error'));
       return;
     }
 
-    if (request.method !== 'message/stream') {
-      yield failedStatusEvent(`Unsupported method for streaming: ${request.method}`);
+    if (!STREAMING_METHODS.includes(request.method)) {
+      const response = await this.handleJsonRpc(body, authToken, options);
+      if (response) yield response;
       return;
     }
-
-    const params = request.params as Partial<SendMessageParams> | undefined;
-    if (!params || !isValidMessage(params.message)) {
-      yield failedStatusEvent('Missing required parameter: message with role and parts');
-      return;
-    }
-    const message = params.message;
-
-    const agentName = params.agentName ?? Object.keys(this.agents)[0];
-    const agent = this.agents[agentName];
-    if (!agent) {
-      yield failedStatusEvent(`Agent not found: ${agentName}`);
-      return;
-    }
-
-    if (signal?.aborted) return;
-
-    const eventQueue: A2AStreamEvent[] = [];
-    let wake: (() => void) | null = null;
-    const notify = () => {
-      if (wake) {
-        wake();
-        wake = null;
-      }
-    };
-    let taskId: string | null = message.taskId ?? null;
-
-    const onEvent = (event: A2AStreamEvent) => {
-      if (taskId && event.taskId === taskId) {
-        eventQueue.push(event);
-        notify();
-      }
-    };
-    let executingTaskId: string | null = null;
-    const onAbort = () => {
-      if (executingTaskId) this.taskManager.abortExecution(executingTaskId);
-      notify();
-    };
-
-    this.taskManager.on('event', onEvent);
-    signal?.addEventListener('abort', onAbort, { once: true });
-
-    let executionPromise: Promise<unknown> | null = null;
 
     try {
-      let task: A2ATask;
-      const isContinued = !!message.taskId;
-      try {
-        this.validateInitialPushConfig(params.configuration);
-        if (isContinued) {
-          await this.visibleTask(message.taskId!, caller);
-          task = await this.taskManager.continueTask(message.taskId!, message);
-        } else {
-          await this.assertContextAvailable(message.contextId, caller);
-          task = await this.taskManager.createTask(message, message.contextId, caller?.userId);
-          taskId = task.id;
-          await this.registerInitialPushConfig(task.id, params.configuration);
-        }
-      } catch (error) {
-        yield failedStatusEvent(
-          errors.clientErrorMessage(error, 'message/stream failed'),
-          taskId ?? ''
-        );
-        return;
+      const events =
+        request.method === 'message/stream'
+          ? this.streamMessage(request.params, caller, options, signal)
+          : this.resubscribe(request.params, caller, signal);
+      for await (const event of events) {
+        yield createSuccessResponse(id, event);
       }
+    } catch (e) {
+      if (signal?.aborted) return;
+      yield createErrorResponse(id, errors.clientJsonRpcError(e, `${request.method} failed`));
+    }
+  }
 
-      const currentTaskId = task.id;
-      const onToken = (token: string) => {
-        const event: TokenStreamEvent = {
-          type: 'token',
-          taskId: currentTaskId,
-          token,
-          timestamp: new Date().toISOString(),
-        };
-        eventQueue.push(event);
-        notify();
-      };
+  private parseRequest(body: unknown): JsonRpcRequest {
+    const parsed = parseJsonRpcRequest(body);
+    if (Array.isArray(parsed)) {
+      throw new A2AError(errors.invalidRequest('Batch requests are not supported'));
+    }
+    return parsed;
+  }
+
+  /**
+   * The events of `message/stream`: the task as it starts, then its updates until the final
+   * status update.
+   */
+  private async *streamMessage(
+    rawParams: unknown,
+    caller: A2ACaller | undefined,
+    options: A2AHandleOptions | undefined,
+    signal: AbortSignal | undefined
+  ): AsyncGenerator<A2ATask | TaskEvent> {
+    const params = parseMessageSendParams(rawParams);
+    const { agentName, agent } = this.resolveAgent(params, options);
+    const { message, configuration } = params;
+    this.validateInitialPushConfig(configuration);
+    if (signal?.aborted) return;
+
+    const queue = new TaskEventQueue(this.taskManager, message.taskId ?? null);
+    let executingTaskId: string | null = null;
+    let executionPromise: Promise<unknown> | null = null;
+    const onAbort = () => {
+      if (executingTaskId) this.taskManager.abortExecution(executingTaskId);
+      queue.notify();
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+
+    try {
+      const task = await this.startTask(params, caller);
+      queue.taskId = task.id;
 
       let executionDone = false;
       let executionError: unknown;
       executingTaskId = task.id;
       executionPromise = this.taskManager
         .executeTask(task, this.cogitator, agent, message, {
-          onToken,
-          timeout: params.configuration?.timeout,
+          stream: true,
+          timeout: this.runTimeout(agent, configuration?.timeout),
           ...(caller && { userId: caller.userId }),
         })
         .then(
           () => {
             executionDone = true;
-            notify();
+            queue.notify();
           },
           (error: unknown) => {
             executionError = error;
             executionDone = true;
-            notify();
+            queue.notify();
           }
         );
 
-      if (!isContinued) {
-        yield {
-          type: 'status-update',
-          taskId: task.id,
-          status: task.status,
-          timestamp: new Date().toISOString(),
-        };
-      }
+      yield this.shapeTask(task, configuration);
 
       while (!signal?.aborted) {
-        const event = eventQueue.shift();
+        const event = queue.shift();
         if (event) {
           yield event;
-          if (event.type === 'status-update' && isStreamFinalState(event.status.state)) {
-            return;
-          }
+          if (event.kind === 'status-update' && event.final) return;
           continue;
         }
-
         if (executionDone) {
-          if (executionError !== undefined) {
-            yield failedStatusEvent(
-              errors.clientErrorMessage(executionError, `Task ${task.id} failed`),
-              task.id
-            );
-            return;
-          }
-          const finalTask = await this.taskManager.getTask(task.id);
-          if (!isStreamFinalState(finalTask.status.state)) {
-            yield failedStatusEvent('Execution ended without reaching a terminal state', task.id);
-          }
-          return;
+          if (executionError !== undefined) throw executionError;
+          throw new A2AError(
+            errors.internalError(`Task ${task.id} of ${agentName} ended without a final status`)
+          );
         }
-
-        await new Promise<void>((r) => {
-          wake = r;
-        });
+        await queue.wait();
       }
     } finally {
-      this.taskManager.removeListener('event', onEvent);
+      queue.close();
       signal?.removeEventListener('abort', onAbort);
       if (executingTaskId) this.taskManager.abortExecution(executingTaskId);
       if (executionPromise) await executionPromise;
+    }
+  }
+
+  /**
+   * The events of `tasks/resubscribe`: the task as it is now, then, while it still runs in this
+   * process, its updates until the final status update.
+   */
+  private async *resubscribe(
+    rawParams: unknown,
+    caller: A2ACaller | undefined,
+    signal: AbortSignal | undefined
+  ): AsyncGenerator<A2ATask | TaskEvent> {
+    const { id } = parseTaskIdParams(rawParams);
+    const queue = new TaskEventQueue(this.taskManager, id);
+    const onAbort = () => queue.notify();
+    signal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      const task = await this.visibleTask(id, caller);
+      yield this.shapeTask(task);
+      if (isStreamFinalState(task.status.state)) return;
+
+      while (!signal?.aborted) {
+        const event = queue.shift();
+        if (event) {
+          yield event;
+          if (event.kind === 'status-update' && event.final) return;
+          continue;
+        }
+        if (!this.taskManager.isExecuting(id)) return;
+        await queue.wait();
+      }
+    } finally {
+      queue.close();
+      signal?.removeEventListener('abort', onAbort);
     }
   }
 
@@ -443,67 +509,99 @@ export class A2AServer {
     }
   }
 
+  private resolveAgent(
+    params: Pick<MessageSendParams, 'agentName'>,
+    options?: A2AHandleOptions
+  ): { agentName: string; agent: IAgent } {
+    const agentName = options?.agentName ?? params.agentName ?? this.defaultAgentName;
+    if (!this.hasAgent(agentName)) throw new A2AError(errors.agentNotFound(agentName));
+    return { agentName, agent: this.agents[agentName] };
+  }
+
+  /**
+   * The run time limit for a task: none of its own unless the client asks for one, and what the
+   * client asks for never beyond the agent's `timeout`, or `maxRunTimeoutMs` for an agent
+   * without one. A client can shorten a run, never lift or remove the operator's limit.
+   */
+  private runTimeout(agent: IAgent, requested: number | undefined): number | undefined {
+    if (requested === undefined) return undefined;
+    const agentTimeout = agent.config?.timeout;
+    const ceiling =
+      agentTimeout !== undefined && agentTimeout > 0
+        ? Math.min(agentTimeout, MAX_RUN_TIMEOUT_MS)
+        : this.maxRunTimeoutMs;
+    return Math.min(requested, ceiling);
+  }
+
+  /** A new task for the message, or the task it continues, ready to execute. */
+  private async startTask(
+    params: MessageSendParams,
+    caller: A2ACaller | undefined
+  ): Promise<A2ATask> {
+    const { message, configuration } = params;
+    if (message.taskId) {
+      const existing = await this.visibleTask(message.taskId, caller);
+      if (message.contextId && message.contextId !== existing.contextId) {
+        throw new A2AError(
+          errors.invalidParams(`contextId does not match the context of task ${existing.id}`)
+        );
+      }
+      return this.taskManager.continueTask(message.taskId, message);
+    }
+    await this.assertContextAvailable(message.contextId, caller);
+    const task = await this.taskManager.createTask(message, message.contextId, caller?.userId);
+    await this.registerInitialPushConfig(task.id, configuration);
+    return task;
+  }
+
   private async routeMethod(
     method: string,
     params: unknown,
-    caller: A2ACaller | undefined
+    caller: A2ACaller | undefined,
+    options: A2AHandleOptions | undefined
   ): Promise<unknown> {
     switch (method) {
       case 'message/send':
-        return this.handleSendMessage(params, caller);
+        return this.handleSendMessage(params, caller, options);
       case 'message/stream':
-        throw new A2AError(errors.unsupportedOperation('Use handleJsonRpcStream for streaming'));
+      case 'tasks/resubscribe':
+        throw new A2AError(
+          errors.unsupportedOperation(`${method} streams: use handleJsonRpcStream`)
+        );
       case 'tasks/get':
         return this.handleGetTask(params, caller);
       case 'tasks/cancel':
         return this.handleCancelTask(params, caller);
       case 'tasks/list':
         return this.handleListTasks(params, caller);
-      case 'tasks/pushNotification/create':
-        return this.handleCreatePushNotification(params, caller);
-      case 'tasks/pushNotification/get':
-        return this.handleGetPushNotification(params, caller);
-      case 'tasks/pushNotification/list':
-        return this.handleListPushNotifications(params, caller);
-      case 'tasks/pushNotification/delete':
-        return this.handleDeletePushNotification(params, caller);
-      case 'agent/extendedCard':
-        return this.handleExtendedCard(params);
+      case 'tasks/pushNotificationConfig/set':
+        return this.handleSetPushNotificationConfig(params, caller);
+      case 'tasks/pushNotificationConfig/get':
+        return this.handleGetPushNotificationConfig(params, caller);
+      case 'tasks/pushNotificationConfig/list':
+        return this.handleListPushNotificationConfigs(params, caller);
+      case 'tasks/pushNotificationConfig/delete':
+        return this.handleDeletePushNotificationConfig(params, caller);
+      case 'agent/getAuthenticatedExtendedCard':
+        return this.handleExtendedCard(params, options);
       default:
         throw new A2AError(errors.methodNotFound(method));
     }
   }
 
   private async handleSendMessage(
-    params: unknown,
-    caller: A2ACaller | undefined
+    rawParams: unknown,
+    caller: A2ACaller | undefined,
+    options: A2AHandleOptions | undefined
   ): Promise<A2ATask> {
-    const { message, agentName, configuration } = (params ?? {}) as Partial<SendMessageParams>;
-
-    if (!isValidMessage(message)) {
-      throw new A2AError(errors.invalidParams('message is required with role and parts'));
-    }
-    assertOptionalNonNegativeInt(configuration?.historyLength, 'configuration.historyLength');
-    assertOptionalNonNegativeInt(configuration?.timeout, 'configuration.timeout');
-
-    const resolvedAgentName = agentName ?? Object.keys(this.agents)[0];
-    const agent = this.agents[resolvedAgentName];
-    if (!agent) throw new A2AError(errors.agentNotFound(resolvedAgentName));
-
+    const params = parseMessageSendParams(rawParams);
+    const { agent } = this.resolveAgent(params, options);
+    const { message, configuration } = params;
     this.validateInitialPushConfig(configuration);
 
-    let task: A2ATask;
-    if (message.taskId) {
-      await this.visibleTask(message.taskId, caller);
-      task = await this.taskManager.continueTask(message.taskId, message);
-    } else {
-      await this.assertContextAvailable(message.contextId, caller);
-      task = await this.taskManager.createTask(message, message.contextId, caller?.userId);
-      await this.registerInitialPushConfig(task.id, configuration);
-    }
-
+    const task = await this.startTask(params, caller);
     const execution = this.taskManager.executeTask(task, this.cogitator, agent, message, {
-      timeout: configuration?.timeout,
+      timeout: this.runTimeout(agent, configuration?.timeout),
       ...(caller && { userId: caller.userId }),
     });
 
@@ -517,18 +615,14 @@ export class A2AServer {
     return this.shapeTask(await execution, configuration);
   }
 
-  private validateInitialPushConfig(configuration?: SendMessageConfiguration): void {
+  private validateInitialPushConfig(configuration?: MessageSendConfiguration): void {
     const pushConfig = configuration?.pushNotificationConfig;
-    if (!pushConfig) return;
-    if (!pushConfig.webhookUrl) {
-      throw new A2AError(errors.invalidParams('pushNotificationConfig.webhookUrl is required'));
-    }
-    this.assertWebhookAllowed(pushConfig.webhookUrl);
+    if (pushConfig) this.assertWebhookAllowed(pushConfig.url);
   }
 
   private async registerInitialPushConfig(
     taskId: string,
-    configuration?: SendMessageConfiguration
+    configuration?: MessageSendConfiguration
   ): Promise<void> {
     const pushConfig = configuration?.pushNotificationConfig;
     if (!pushConfig) return;
@@ -550,51 +644,47 @@ export class A2AServer {
   }
 
   /**
-   * Apply historyLength / acceptedOutputModes from the request configuration
+   * The task as the client receives it, with `historyLength` and `acceptedOutputModes` applied.
    */
   private shapeTask(
     task: A2ATask,
-    configuration?: Pick<SendMessageConfiguration, 'historyLength' | 'acceptedOutputModes'>
+    configuration?: Pick<MessageSendConfiguration, 'historyLength' | 'acceptedOutputModes'>
   ): A2ATask {
     let shaped = publicTask(task);
     const historyLength = configuration?.historyLength;
     if (historyLength !== undefined) {
-      shaped = {
-        ...shaped,
-        history: historyLength === 0 ? [] : shaped.history.slice(-historyLength),
-      };
+      const history = shaped.history ?? [];
+      shaped = { ...shaped, history: historyLength === 0 ? [] : history.slice(-historyLength) };
     }
     const accepted = configuration?.acceptedOutputModes;
     if (accepted && accepted.length > 0) {
       shaped = {
         ...shaped,
-        artifacts: shaped.artifacts.filter((a) => !a.mimeType || accepted.includes(a.mimeType)),
+        artifacts: (shaped.artifacts ?? []).filter((artifact) =>
+          artifact.parts.some((part) => accepted.includes(partMimeType(part)))
+        ),
       };
     }
     return shaped;
   }
 
   private async handleGetTask(params: unknown, caller: A2ACaller | undefined): Promise<A2ATask> {
-    const { id, historyLength } = (params ?? {}) as { id?: string; historyLength?: number };
-    if (!id) throw new A2AError(errors.invalidParams('id is required'));
-    assertOptionalNonNegativeInt(historyLength, 'historyLength');
+    const { id, historyLength } = parseTaskQueryParams(params);
     return this.shapeTask(await this.visibleTask(id, caller), { historyLength });
   }
 
   private async handleCancelTask(params: unknown, caller: A2ACaller | undefined): Promise<A2ATask> {
-    const { id } = (params ?? {}) as { id?: string };
-    if (!id) throw new A2AError(errors.invalidParams('id is required'));
+    const { id } = parseTaskIdParams(params);
     await this.visibleTask(id, caller);
     return publicTask(await this.taskManager.cancelTask(id));
   }
 
+  /** Cogitator extension `tasks/list`: the caller's tasks, newest first. */
   private async handleListTasks(
     params: unknown,
     caller: A2ACaller | undefined
   ): Promise<{ tasks: A2ATask[] }> {
-    const raw = (params ?? {}) as TaskFilter;
-    assertOptionalNonNegativeInt(raw.limit, 'limit');
-    assertOptionalNonNegativeInt(raw.offset, 'offset');
+    const raw = parseListTasksParams(params);
     const filter: TaskFilter = {
       contextId: raw.contextId,
       state: raw.state,
@@ -606,64 +696,66 @@ export class A2AServer {
     return { tasks: tasks.map(publicTask) };
   }
 
-  private async handleCreatePushNotification(
+  private async handleSetPushNotificationConfig(
     params: unknown,
     caller: A2ACaller | undefined
-  ): Promise<PushNotificationConfig> {
-    const { taskId, config } = (params ?? {}) as {
-      taskId?: string;
-      config?: PushNotificationConfig;
-    };
-    if (!taskId) throw new A2AError(errors.invalidParams('taskId is required'));
-    if (!config?.webhookUrl)
-      throw new A2AError(errors.invalidParams('config.webhookUrl is required'));
-    this.assertWebhookAllowed(config.webhookUrl);
+  ): Promise<TaskPushNotificationConfig> {
+    const { taskId, pushNotificationConfig } = parseTaskPushNotificationConfig(params);
+    this.assertWebhookAllowed(pushNotificationConfig.url);
     await this.visibleTask(taskId, caller);
-    return this.pushNotificationStore.create(taskId, config);
+    const stored = await this.pushNotificationStore.create(taskId, pushNotificationConfig);
+    return { taskId, pushNotificationConfig: stored };
   }
 
-  private async handleGetPushNotification(
+  private async handleGetPushNotificationConfig(
     params: unknown,
     caller: A2ACaller | undefined
-  ): Promise<PushNotificationConfig | null> {
-    const { taskId, configId } = (params ?? {}) as { taskId?: string; configId?: string };
-    if (!taskId || !configId) {
-      throw new A2AError(errors.invalidParams('taskId and configId are required'));
+  ): Promise<TaskPushNotificationConfig> {
+    const { id, pushNotificationConfigId } = parseGetPushNotificationConfigParams(params);
+    await this.visibleTask(id, caller);
+    const config = pushNotificationConfigId
+      ? await this.pushNotificationStore.get(id, pushNotificationConfigId)
+      : ((await this.pushNotificationStore.list(id))[0] ?? null);
+    if (!config) {
+      throw new A2AError(errors.pushNotificationConfigNotFound(id, pushNotificationConfigId ?? id));
     }
-    await this.visibleTask(taskId, caller);
-    return this.pushNotificationStore.get(taskId, configId);
+    return { taskId: id, pushNotificationConfig: config };
   }
 
-  private async handleListPushNotifications(
+  private async handleListPushNotificationConfigs(
     params: unknown,
     caller: A2ACaller | undefined
-  ): Promise<PushNotificationConfig[]> {
-    const { taskId } = (params ?? {}) as { taskId?: string };
-    if (!taskId) throw new A2AError(errors.invalidParams('taskId is required'));
-    await this.visibleTask(taskId, caller);
-    return this.pushNotificationStore.list(taskId);
+  ): Promise<TaskPushNotificationConfig[]> {
+    const { id } = parseTaskIdParams(params);
+    await this.visibleTask(id, caller);
+    const configs = await this.pushNotificationStore.list(id);
+    return configs.map((pushNotificationConfig) => ({ taskId: id, pushNotificationConfig }));
   }
 
-  private async handleDeletePushNotification(
+  private async handleDeletePushNotificationConfig(
     params: unknown,
     caller: A2ACaller | undefined
-  ): Promise<{ success: boolean }> {
-    const { taskId, configId } = (params ?? {}) as { taskId?: string; configId?: string };
-    if (!taskId || !configId) {
-      throw new A2AError(errors.invalidParams('taskId and configId are required'));
-    }
-    await this.visibleTask(taskId, caller);
-    await this.pushNotificationStore.delete(taskId, configId);
-    return { success: true };
+  ): Promise<null> {
+    const { id, pushNotificationConfigId } = parseDeletePushNotificationConfigParams(params);
+    await this.visibleTask(id, caller);
+    await this.pushNotificationStore.delete(id, pushNotificationConfigId);
+    return null;
   }
 
-  private async handleExtendedCard(params: unknown): Promise<ExtendedAgentCard> {
+  private async handleExtendedCard(
+    params: unknown,
+    options: A2AHandleOptions | undefined
+  ): Promise<AgentCard> {
     if (!this.extendedCardGenerator) {
-      throw new A2AError(errors.unsupportedOperation('Extended agent card is not configured'));
+      throw new A2AError(errors.authenticatedExtendedCardNotConfigured());
     }
-    const { agentName } = (params ?? {}) as { agentName?: string };
-    const name = agentName ?? Object.keys(this.agents)[0];
-    if (!this.agents[name]) throw new A2AError(errors.agentNotFound(name));
-    return this.extendedCardGenerator(name);
+    const requested =
+      params && typeof params === 'object' && !Array.isArray(params)
+        ? (params as { agentName?: unknown }).agentName
+        : undefined;
+    const name =
+      options?.agentName ?? (typeof requested === 'string' ? requested : this.defaultAgentName);
+    if (!this.hasAgent(name)) throw new A2AError(errors.agentNotFound(name));
+    return this.signed(this.extendedCardGenerator(name));
   }
 }

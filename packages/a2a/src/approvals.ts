@@ -45,8 +45,7 @@ const requestSchema = z.object({
 /** The data part an agent's message carries when its run waits for tool approvals. */
 export function toolApprovalRequestPart(approvals: readonly ToolApprovalRequest[]): DataPart {
   return {
-    type: 'data',
-    mimeType: 'application/json',
+    kind: 'data',
     data: {
       kind: TOOL_APPROVAL_REQUEST_KIND,
       approvals: approvals.map((approval) => ({ ...approval })),
@@ -65,6 +64,7 @@ export function toolApprovalRequestPart(approvals: readonly ToolApprovalRequest[
  *   await client.sendMessage({
  *     role: 'user',
  *     taskId: task.id,
+ *     contextId: task.contextId,
  *     parts: [toolApprovalResponsePart({ defaultDecision: { approved: true } })],
  *   });
  * }
@@ -72,8 +72,7 @@ export function toolApprovalRequestPart(approvals: readonly ToolApprovalRequest[
  */
 export function toolApprovalResponsePart(response: ToolApprovalResponse): DataPart {
   return {
-    type: 'data',
-    mimeType: 'application/json',
+    kind: 'data',
     data: {
       kind: TOOL_APPROVAL_RESPONSE_KIND,
       ...(response.decisions && { decisions: response.decisions }),
@@ -83,14 +82,17 @@ export function toolApprovalResponsePart(response: ToolApprovalResponse): DataPa
 }
 
 /**
- * The tool calls an `input-required` task waits on, read from its last agent message, or
- * undefined when the task does not wait for approvals.
+ * The tool calls an `input-required` task waits on, read from its status message (or, when a
+ * server leaves that out, its last agent message), or undefined when the task does not wait for
+ * approvals.
  */
 export function readToolApprovalRequest(task: A2ATask): ToolApprovalRequest[] | undefined {
   if (task.status.state !== 'input-required') return undefined;
-  const last = [...task.history].reverse().find((message) => message.role === 'agent');
+  const last =
+    task.status.message ??
+    [...(task.history ?? [])].reverse().find((message) => message.role === 'agent');
   for (const part of last?.parts ?? []) {
-    if (part.type !== 'data') continue;
+    if (part.kind !== 'data') continue;
     const parsed = requestSchema.safeParse(part.data);
     if (parsed.success) return parsed.data.approvals;
   }
@@ -100,7 +102,7 @@ export function readToolApprovalRequest(task: A2ATask): ToolApprovalRequest[] | 
 /** The decisions a message carries in a tool approval response data part, if any. */
 export function readToolApprovalResponse(message: A2AMessage): ToolApprovalResponse | undefined {
   for (const part of message.parts) {
-    if (part.type !== 'data') continue;
+    if (part.kind !== 'data') continue;
     const parsed = responseSchema.safeParse(part.data);
     if (!parsed.success) continue;
     const { decisions, defaultDecision } = parsed.data;

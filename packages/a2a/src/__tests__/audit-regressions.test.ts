@@ -4,19 +4,19 @@ import { A2AServer } from '../server';
 import { TaskManager } from '../task-manager';
 import { InMemoryTaskStore } from '../task-store';
 import { RedisTaskStore, type RedisClientLike } from '../redis-task-store';
-import type {
-  A2AMessage,
-  A2AStreamEvent,
-  A2ATask,
-  AgentRunResult,
-  CogitatorLike,
-  TaskStore,
-} from '../types';
+import type { A2AMessage, A2ATask, AgentRunResult, CogitatorLike, TaskStore } from '../types';
+import { collect, collectEvents } from './helpers';
 
 type RunOptions = Parameters<CogitatorLike['run']>[1];
 
 function userMessage(text: string, extra?: Partial<A2AMessage>): A2AMessage {
-  return { role: 'user', parts: [{ type: 'text', text }], ...extra };
+  return {
+    kind: 'message',
+    messageId: crypto.randomUUID(),
+    role: 'user',
+    parts: [{ kind: 'text', text }],
+    ...extra,
+  };
 }
 
 function runResult(output: string, extra?: Partial<AgentRunResult>): AgentRunResult {
@@ -49,12 +49,6 @@ function rpc(method: string, params: unknown, id = 1) {
   return { jsonrpc: '2.0' as const, method, params, id };
 }
 
-async function collect(stream: AsyncGenerator<A2AStreamEvent>): Promise<A2AStreamEvent[]> {
-  const events: A2AStreamEvent[] = [];
-  for await (const event of stream) events.push(event);
-  return events;
-}
-
 function taskManagerOf(server: A2AServer): TaskManager {
   return Reflect.get(server, 'taskManager') as TaskManager;
 }
@@ -66,12 +60,12 @@ describe('streaming', () => {
       cogitator: { run: async () => runResult('answer', { structured: { ok: true } }) },
     });
 
-    const events = await collect(
+    const events = await collectEvents(
       server.handleJsonRpcStream(rpc('message/stream', { message: userMessage('hi') }))
     );
 
-    const types = events.map((e) => (e.type === 'status-update' ? e.status.state : e.type));
-    expect(types).toEqual(['working', 'artifact-update', 'artifact-update', 'completed']);
+    const kinds = events.map((e) => (e.kind === 'status-update' ? e.status.state : e.kind));
+    expect(kinds).toEqual(['task', 'working', 'artifact-update', 'artifact-update', 'completed']);
   });
 
   it('closes the stream on input-required without a spurious failure', async () => {
@@ -80,15 +74,15 @@ describe('streaming', () => {
       cogitator: { run: async () => runResult('Which city?', { requiresInput: true }) },
     });
 
-    const events = await collect(
+    const events = await collectEvents(
       server.handleJsonRpcStream(rpc('message/stream', { message: userMessage('weather') }))
     );
-    const statuses = events.flatMap((e) => (e.type === 'status-update' ? [e.status.state] : []));
+    const statuses = events.flatMap((e) => (e.kind === 'status-update' ? [e.status.state] : []));
 
     expect(statuses).toEqual(['working', 'input-required']);
   });
 
-  it('reports continuation errors as a failed event and leaks no listeners', async () => {
+  it('reports continuation errors as an error response and leaks no listeners', async () => {
     const server = new A2AServer({
       agents: { helper: mockAgent() },
       cogitator: { run: async () => runResult('x') },
@@ -103,7 +97,7 @@ describe('streaming', () => {
     );
 
     expect(events).toHaveLength(1);
-    expect(events[0].type === 'status-update' && events[0].status.state).toBe('failed');
+    expect(events[0].error?.code).toBe(-32001);
     expect(manager.listenerCount('event')).toBe(baseline);
   });
 
@@ -132,8 +126,7 @@ describe('streaming', () => {
     );
     const last = events.at(-1);
 
-    expect(last?.type === 'status-update' && last.status.state).toBe('failed');
-    expect(last?.type === 'status-update' && last.status.message).toBe('Internal error');
+    expect(last?.error).toEqual({ code: -32603, message: 'Internal error' });
     expect(String(consoleError.mock.calls.at(-1)?.[2])).toContain('store unavailable');
     consoleError.mockRestore();
   });
@@ -160,12 +153,12 @@ describe('streaming', () => {
     const first = await stream.next();
     expect(first.done).toBe(false);
 
-    const pending = stream.next();
+    await vi.waitFor(() => expect(runSignal).toBeDefined());
     controller.abort();
-    const result = await pending;
+    const rest = await collect(stream);
 
-    expect(result.done).toBe(true);
     expect(runSignal?.aborted).toBe(true);
+    expect(JSON.stringify(rest)).not.toContain('completed');
   });
 
   it('does not abort a running task when a concurrent continuation is rejected', async () => {
@@ -176,7 +169,9 @@ describe('streaming', () => {
       cogitator: {
         run: (_agent, options) => {
           if (options.signal) runs.push(options.signal);
-          if (runs.length === 1) return Promise.resolve(runResult('first'));
+          if (runs.length === 1) {
+            return Promise.resolve(runResult('Which one?', { requiresInput: true }));
+          }
           return new Promise<AgentRunResult>((resolve) => {
             release = () => resolve(runResult('second'));
           });
@@ -196,13 +191,13 @@ describe('streaming', () => {
     const rejected = await collect(
       server.handleJsonRpcStream(rpc('message/stream', { message: userMessage('c', { taskId }) }))
     );
-    expect(rejected[0].type === 'status-update' && rejected[0].status.state).toBe('failed');
+    expect(rejected[0].error?.code).toBe(-32600);
     expect(runs[1].aborted).toBe(false);
 
     release!();
     const rest = await collect(running);
-    const last = rest.at(-1);
-    expect(last?.type === 'status-update' && last.status.state).toBe('completed');
+    const last = rest.at(-1)?.result as { kind: string; status?: { state: string } };
+    expect(last.kind === 'status-update' && last.status?.state).toBe('completed');
   });
 });
 
@@ -212,7 +207,9 @@ describe('multi-turn execution', () => {
     const cogitator: CogitatorLike = {
       run: async (_agent, options) => {
         calls.push(options);
-        return runResult(calls.length === 1 ? 'Paris is the capital.' : 'About 2 million.');
+        return calls.length === 1
+          ? runResult('Paris is the capital. Which detail next?', { requiresInput: true })
+          : runResult('About 2 million.');
       },
     };
     const server = new A2AServer({ agents: { helper: mockAgent() }, cogitator });
@@ -230,7 +227,7 @@ describe('multi-turn execution', () => {
     expect(calls[0].loadHistory).toBeUndefined();
 
     expect(calls[1].input).toContain('User: Capital of France?');
-    expect(calls[1].input).toContain('Agent: Paris is the capital.');
+    expect(calls[1].input).toContain('Agent: Paris is the capital. Which detail next?');
     expect(calls[1].input).toContain('User: Its population?');
     expect(calls[1].threadId).toBe(task.contextId);
     expect(calls[1].loadHistory).toBe(false);
@@ -240,7 +237,9 @@ describe('multi-turn execution', () => {
     let turn = 0;
     const server = new A2AServer({
       agents: { helper: mockAgent() },
-      cogitator: { run: async () => runResult(`answer ${++turn}`) },
+      cogitator: {
+        run: async () => runResult(`answer ${++turn}`, { requiresInput: turn === 1 }),
+      },
     });
 
     const first = await server.handleJsonRpc(rpc('message/send', { message: userMessage('1') }));
@@ -250,9 +249,9 @@ describe('multi-turn execution', () => {
     );
     const task = second!.result as A2ATask;
 
-    expect(task.artifacts.map((a) => a.parts[0])).toEqual([
-      { type: 'text', text: 'answer 1' },
-      { type: 'text', text: 'answer 2' },
+    expect(task.artifacts!.map((a) => a.parts[0])).toEqual([
+      { kind: 'text', text: 'answer 1' },
+      { kind: 'text', text: 'answer 2' },
     ]);
   });
 
@@ -260,11 +259,17 @@ describe('multi-turn execution', () => {
     const inputs: string[] = [];
     const manager = new TaskManager();
     const message: A2AMessage = {
+      kind: 'message',
+      messageId: 'm1',
       role: 'user',
       parts: [
-        { type: 'text', text: 'Summarize' },
-        { type: 'data', mimeType: 'application/json', data: { total: 3 } },
-        { type: 'file', uri: 'https://x.test/a.pdf', mimeType: 'application/pdf', name: 'a.pdf' },
+        { kind: 'text', text: 'Summarize' },
+        { kind: 'data', data: { total: 3 } },
+        {
+          kind: 'file',
+          file: { uri: 'https://x.test/a.pdf', mimeType: 'application/pdf', name: 'a.pdf' },
+        },
+        { kind: 'file', file: { bytes: 'aGVsbG8=', name: 'b.txt' } },
       ],
     };
     const task = await manager.createTask(message);
@@ -284,13 +289,19 @@ describe('multi-turn execution', () => {
     expect(inputs[0]).toContain('Summarize');
     expect(inputs[0]).toContain('"total": 3');
     expect(inputs[0]).toContain('[file a.pdf (application/pdf): https://x.test/a.pdf]');
+    expect(inputs[0]).toContain('[file b.txt (application/octet-stream): 6 bytes inline]');
   });
 
   it('rejects a second concurrent continuation of the same task', async () => {
     const manager = new TaskManager();
     const msg = userMessage('start');
     const task = await manager.createTask(msg);
-    await manager.executeTask(task, { run: async () => runResult('done') }, {}, msg);
+    await manager.executeTask(
+      task,
+      { run: async () => runResult('Which?', { requiresInput: true }) },
+      {},
+      msg
+    );
 
     const results = await Promise.allSettled([
       manager.continueTask(task.id, userMessage('a')),
@@ -330,7 +341,7 @@ describe('message/send configuration', () => {
       rpc('message/send', { message: userMessage('go'), configuration: { blocking: false } })
     );
     const task = response!.result as A2ATask;
-    expect(task.status.state).toBe('working');
+    expect(['submitted', 'working']).toContain(task.status.state);
 
     await vi.waitFor(() => expect(release).toBeDefined());
     release!();
@@ -355,8 +366,8 @@ describe('message/send configuration', () => {
     const task = response!.result as A2ATask;
 
     expect(task.history).toHaveLength(1);
-    expect(task.history[0].role).toBe('agent');
-    expect(task.artifacts.map((a) => a.mimeType)).toEqual(['application/json']);
+    expect(task.history![0].role).toBe('agent');
+    expect(task.artifacts!.map((a) => a.parts[0].kind)).toEqual(['data']);
 
     const fetched = await server.handleJsonRpc(rpc('tasks/get', { id: task.id, historyLength: 0 }));
     expect((fetched!.result as A2ATask).history).toEqual([]);
@@ -393,7 +404,7 @@ describe('message/send configuration', () => {
     const response = await server.handleJsonRpc(
       rpc('message/send', {
         message: userMessage('q'),
-        configuration: { pushNotificationConfig: { webhookUrl: 'https://hooks.example.com/a' } },
+        configuration: { pushNotificationConfig: { url: 'https://hooks.example.com/a' } },
       })
     );
 
@@ -409,7 +420,7 @@ describe('message/send configuration', () => {
     const response = await server.handleJsonRpc(
       rpc('message/send', {
         message: userMessage('q'),
-        configuration: { pushNotificationConfig: { webhookUrl: 'http://127.0.0.2/hook' } },
+        configuration: { pushNotificationConfig: { url: 'http://127.0.0.2/hook' } },
       })
     );
     const listed = await server.handleJsonRpc(rpc('tasks/list', {}));
@@ -501,6 +512,7 @@ describe('task stores', () => {
     };
     const store = new RedisTaskStore({ client });
     const task: A2ATask = {
+      kind: 'task',
       id: 't1',
       contextId: 'c1',
       status: { state: 'working', timestamp: new Date().toISOString() },
@@ -519,6 +531,7 @@ describe('task stores', () => {
   it('evicts finished tasks before active ones', async () => {
     const store = new InMemoryTaskStore({ maxSize: 2 });
     const at = (iso: string, state: A2ATask['status']['state'], id: string): A2ATask => ({
+      kind: 'task',
       id,
       contextId: 'c',
       status: { state, timestamp: iso },

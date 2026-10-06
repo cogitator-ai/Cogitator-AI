@@ -8,7 +8,7 @@ import {
   isOllamaRunning,
 } from '../../helpers/setup';
 import { expectJudge, setJudge } from '../../helpers/assertions';
-import { startTestA2AServer, type TestA2AServer } from '../../helpers/a2a-server';
+import { asTask, startTestA2AServer, type TestA2AServer } from '../../helpers/a2a-server';
 import type { Cogitator } from '@cogitator-ai/core';
 
 const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
@@ -38,18 +38,21 @@ describeE2E('A2A: Server-Client Flow', () => {
   });
 
   it('sends message and receives completed task', async () => {
-    const task = await client.sendMessage({
-      role: 'user',
-      parts: [{ type: 'text', text: 'What is 2 + 2? Reply with just the number.' }],
-    });
+    const task = asTask(
+      await client.sendMessage({
+        role: 'user',
+        parts: [{ kind: 'text', text: 'What is 2 + 2? Reply with just the number.' }],
+      })
+    );
 
     expect(task.id).toBeDefined();
     expect(task.status.state).toBe('completed');
     expect(task.artifacts).toBeDefined();
 
-    if (task.artifacts.length > 0) {
-      const textPart = task.artifacts[0].parts.find((p) => p.type === 'text');
-      if (textPart?.type === 'text') {
+    const artifacts = task.artifacts ?? [];
+    if (artifacts.length > 0) {
+      const textPart = artifacts[0].parts.find((p) => p.kind === 'text');
+      if (textPart?.kind === 'text') {
         await expectJudge(textPart.text, {
           question: 'What is 2 + 2?',
           criteria: 'Answer contains 4',
@@ -73,15 +76,17 @@ describeE2E('A2A: Server-Client Flow', () => {
     const toolClient = new A2AClient(toolServer.url);
 
     try {
-      const task = await toolClient.sendMessage({
-        role: 'user',
-        parts: [{ type: 'text', text: 'What is 6 times 7? Use the multiply tool.' }],
-      });
+      const task = asTask(
+        await toolClient.sendMessage({
+          role: 'user',
+          parts: [{ kind: 'text', text: 'What is 6 times 7? Use the multiply tool.' }],
+        })
+      );
 
       expect(task.status.state).toBe('completed');
 
-      const textPart = task.artifacts?.[0]?.parts.find((p) => p.type === 'text');
-      if (textPart?.type === 'text') {
+      const textPart = task.artifacts?.[0]?.parts.find((p) => p.kind === 'text');
+      if (textPart?.kind === 'text') {
         await expectJudge(textPart.text, {
           question: 'What is 6 times 7?',
           criteria: 'Answer contains 42',
@@ -93,10 +98,12 @@ describeE2E('A2A: Server-Client Flow', () => {
   });
 
   it('returns task for empty message parts', async () => {
-    const task = await client.sendMessage({
-      role: 'user',
-      parts: [],
-    });
+    const task = asTask(
+      await client.sendMessage({
+        role: 'user',
+        parts: [],
+      })
+    );
 
     expect(task.status.state).toBe('completed');
   });
@@ -105,11 +112,11 @@ describeE2E('A2A: Server-Client Flow', () => {
     const promises = Array.from({ length: 3 }, (_, i) =>
       client.sendMessage({
         role: 'user',
-        parts: [{ type: 'text', text: `Say the number ${i + 1}.` }],
+        parts: [{ kind: 'text', text: `Say the number ${i + 1}.` }],
       })
     );
 
-    const tasks = await Promise.all(promises);
+    const tasks = (await Promise.all(promises)).map(asTask);
     expect(tasks).toHaveLength(3);
 
     const ids = new Set(tasks.map((t) => t.id));

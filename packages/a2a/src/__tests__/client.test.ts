@@ -1,55 +1,64 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import http from 'node:http';
 import { A2AClient } from '../client';
-import type { A2ATask, A2AMessage, AgentCard, A2AStreamEvent } from '../types';
+import type { A2ATask, AgentCard, A2AStreamEvent, SendMessageResult, TaskState } from '../types';
 import { A2AError } from '../errors';
 
 let mockServer: http.Server;
 let baseUrl: string;
 
 let mockAgentCard: AgentCard;
-let mockSendResult: A2ATask;
+let mockSendResult: SendMessageResult;
 let mockError: { code: number; message: string } | null = null;
+let lastRequest: { method: string; params: Record<string, unknown> } | null = null;
+let serveLegacyCardOnly = false;
 
 function createMockTask(
   id: string,
-  state: string = 'completed',
-  output: string = 'Test output'
+  state: TaskState = 'completed',
+  output = 'Test output'
 ): A2ATask {
   return {
+    kind: 'task',
     id,
     contextId: 'ctx_1',
-    status: { state: state as A2ATask['status']['state'], timestamp: new Date().toISOString() },
+    status: { state, timestamp: new Date().toISOString() },
     history: [
-      { role: 'user', parts: [{ type: 'text', text: 'test input' }] },
-      { role: 'agent', parts: [{ type: 'text', text: output }] },
+      {
+        kind: 'message',
+        messageId: 'm1',
+        role: 'user',
+        parts: [{ kind: 'text', text: 'test input' }],
+      },
+      { kind: 'message', messageId: 'm2', role: 'agent', parts: [{ kind: 'text', text: output }] },
     ],
-    artifacts: [{ id: 'art_1', parts: [{ type: 'text', text: output }], mimeType: 'text/plain' }],
+    artifacts: [{ artifactId: 'art_1', parts: [{ kind: 'text', text: output }] }],
   };
+}
+
+function sse(id: unknown, result: A2AStreamEvent): string {
+  return `data: ${JSON.stringify({ jsonrpc: '2.0', id, result })}\n\n`;
 }
 
 beforeAll(async () => {
   mockAgentCard = {
+    protocolVersion: '0.3.0',
     name: 'test-agent',
-    url: 'http://localhost/a2a',
-    version: '0.3',
+    url: '/a2a',
+    preferredTransport: 'JSONRPC',
+    version: '1.0.0',
     description: 'A test agent',
     capabilities: { streaming: true, pushNotifications: false },
-    skills: [
-      {
-        id: 'search',
-        name: 'search',
-        inputModes: ['text/plain'],
-        outputModes: ['text/plain'],
-      },
-    ],
+    skills: [{ id: 'search', name: 'search', description: 'Search', tags: ['search'] }],
     defaultInputModes: ['text/plain'],
     defaultOutputModes: ['text/plain'],
   };
-  mockSendResult = createMockTask('task_1');
 
   mockServer = http.createServer((req, res) => {
-    if (req.url === '/.well-known/agent.json' && req.method === 'GET') {
+    const cardPath = serveLegacyCardOnly
+      ? '/.well-known/agent.json'
+      : '/.well-known/agent-card.json';
+    if (req.url === cardPath && req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(mockAgentCard));
       return;
@@ -62,6 +71,7 @@ beforeAll(async () => {
       });
       req.on('end', () => {
         const request = JSON.parse(body);
+        lastRequest = { method: request.method, params: request.params };
 
         if (request.method === 'message/stream') {
           res.writeHead(200, {
@@ -69,23 +79,40 @@ beforeAll(async () => {
             'Cache-Control': 'no-cache',
             Connection: 'keep-alive',
           });
-
-          const workingEvent: A2AStreamEvent = {
-            type: 'status-update',
-            taskId: 'task_stream',
-            status: { state: 'working', timestamp: new Date().toISOString() },
-            timestamp: new Date().toISOString(),
-          };
-          res.write(`data: ${JSON.stringify(workingEvent)}\n\n`);
-
-          const completedEvent: A2AStreamEvent = {
-            type: 'status-update',
-            taskId: 'task_stream',
-            status: { state: 'completed', timestamp: new Date().toISOString() },
-            timestamp: new Date().toISOString(),
-          };
-          res.write(`data: ${JSON.stringify(completedEvent)}\n\n`);
-          res.write('data: [DONE]\n\n');
+          const base = { taskId: 'task_stream', contextId: 'ctx_1' };
+          res.write(': heartbeat\n\n');
+          res.write(
+            sse(request.id, {
+              kind: 'status-update',
+              ...base,
+              status: { state: 'working' },
+              final: false,
+            })
+          );
+          res.write(
+            sse(request.id, {
+              kind: 'artifact-update',
+              ...base,
+              artifact: { artifactId: 'a', parts: [{ kind: 'text', text: 'hi' }] },
+              lastChunk: true,
+            })
+          );
+          res.write(
+            sse(request.id, {
+              kind: 'status-update',
+              ...base,
+              status: { state: 'completed' },
+              final: true,
+            })
+          );
+          res.write(
+            sse(request.id, {
+              kind: 'status-update',
+              ...base,
+              status: { state: 'failed' },
+              final: true,
+            })
+          );
           res.end();
           return;
         }
@@ -97,14 +124,11 @@ beforeAll(async () => {
         }
 
         let result: unknown;
-
-        if (request.method === 'message/send') {
-          result = mockSendResult;
-        } else if (request.method === 'tasks/get') {
+        if (request.method === 'message/send' || request.method === 'tasks/get') {
           result = mockSendResult;
         } else if (request.method === 'tasks/cancel') {
           result = {
-            ...mockSendResult,
+            ...(mockSendResult as A2ATask),
             status: { state: 'canceled', timestamp: new Date().toISOString() },
           };
         } else {
@@ -144,16 +168,30 @@ afterAll(() => {
 
 beforeEach(() => {
   mockError = null;
+  lastRequest = null;
+  serveLegacyCardOnly = false;
   mockSendResult = createMockTask('task_1');
+});
+
+const toolContext = () => ({
+  agentId: 'test',
+  runId: 'run_1',
+  signal: new AbortController().signal,
 });
 
 describe('A2AClient', () => {
   describe('agentCard', () => {
-    it('should fetch agent card', async () => {
+    it('should fetch the agent card from the well-known agent-card.json', async () => {
       const client = new A2AClient(baseUrl);
       const card = await client.agentCard();
       expect(card.name).toBe('test-agent');
-      expect(card.version).toBe('0.3');
+      expect(card.protocolVersion).toBe('0.3.0');
+    });
+
+    it('should fall back to the pre-v0.3 agent.json', async () => {
+      serveLegacyCardOnly = true;
+      const card = await new A2AClient(baseUrl).agentCard();
+      expect(card.name).toBe('test-agent');
     });
 
     it('should cache agent card', async () => {
@@ -165,52 +203,71 @@ describe('A2AClient', () => {
   });
 
   describe('sendMessage', () => {
-    it('should send message and return task', async () => {
+    it('should send a v0.3 message to the endpoint the card names and return the task', async () => {
       const client = new A2AClient(baseUrl);
-      const msg: A2AMessage = { role: 'user', parts: [{ type: 'text', text: 'Hello' }] };
-      const task = await client.sendMessage(msg);
-      expect(task.id).toBe('task_1');
-      expect(task.status.state).toBe('completed');
+      const result = await client.sendMessage({
+        role: 'user',
+        parts: [{ kind: 'text', text: 'Hello' }],
+      });
+      expect(result.kind).toBe('task');
+      expect(result.kind === 'task' && result.status.state).toBe('completed');
+
+      const message = lastRequest?.params.message as Record<string, unknown>;
+      expect(lastRequest?.method).toBe('message/send');
+      expect(message.kind).toBe('message');
+      expect(message.messageId).toEqual(expect.any(String));
+      expect(message.parts).toEqual([{ kind: 'text', text: 'Hello' }]);
+    });
+
+    it('should keep a messageId the caller sets', async () => {
+      await new A2AClient(baseUrl).sendMessage({
+        role: 'user',
+        messageId: 'my-id',
+        parts: [{ kind: 'text', text: 'Hello' }],
+      });
+      expect((lastRequest?.params.message as { messageId: string }).messageId).toBe('my-id');
+    });
+
+    it('should return a direct reply message', async () => {
+      mockSendResult = {
+        kind: 'message',
+        messageId: 'reply',
+        role: 'agent',
+        parts: [{ kind: 'text', text: 'direct' }],
+      };
+      const result = await new A2AClient(baseUrl).sendMessage({
+        role: 'user',
+        parts: [{ kind: 'text', text: 'Hello' }],
+      });
+      expect(result.kind).toBe('message');
     });
 
     it('should throw A2AError on JSON-RPC error', async () => {
       mockError = { code: -32001, message: 'Task not found' };
       const client = new A2AClient(baseUrl);
       await expect(
-        client.sendMessage({ role: 'user', parts: [{ type: 'text', text: 'fail' }] })
+        client.sendMessage({ role: 'user', parts: [{ kind: 'text', text: 'fail' }] })
       ).rejects.toThrow(A2AError);
     });
   });
 
   describe('sendMessageStream', () => {
-    it('should yield streaming events', async () => {
+    it('should unwrap JSON-RPC responses and stop at the final status update', async () => {
       const client = new A2AClient(baseUrl);
       const events: A2AStreamEvent[] = [];
       for await (const event of client.sendMessageStream({
         role: 'user',
-        parts: [{ type: 'text', text: 'Stream' }],
+        parts: [{ kind: 'text', text: 'Stream' }],
       })) {
         events.push(event);
       }
-      expect(events.length).toBeGreaterThanOrEqual(1);
-      const statusEvents = events.filter((e) => e.type === 'status-update');
-      expect(statusEvents.length).toBeGreaterThanOrEqual(1);
-    });
-
-    it('should terminate on completed state', async () => {
-      const client = new A2AClient(baseUrl);
-      const events: A2AStreamEvent[] = [];
-      for await (const event of client.sendMessageStream({
-        role: 'user',
-        parts: [{ type: 'text', text: 'Done' }],
-      })) {
-        events.push(event);
-      }
-      const lastStatus = [...events].reverse().find((e) => e.type === 'status-update');
-      expect(lastStatus).toBeDefined();
-      if (lastStatus?.type === 'status-update') {
-        expect(lastStatus.status.state).toBe('completed');
-      }
+      expect(events.map((e) => e.kind)).toEqual([
+        'status-update',
+        'artifact-update',
+        'status-update',
+      ]);
+      const last = events.at(-1);
+      expect(last?.kind === 'status-update' && last.status.state).toBe('completed');
     });
   });
 
@@ -240,45 +297,55 @@ describe('A2AClient', () => {
     });
 
     it('should execute tool and return success', async () => {
-      const client = new A2AClient(baseUrl);
-      const tool = client.asTool();
-      const result = await tool.execute(
-        { task: 'Do something' },
-        { agentId: 'test', runId: 'run_1', signal: new AbortController().signal }
-      );
-      expect(result).toHaveProperty('success', true);
-      expect(result).toHaveProperty('output');
-      expect(result.output.length).toBeGreaterThan(0);
+      const result = await new A2AClient(baseUrl)
+        .asTool()
+        .execute({ task: 'Do something' }, toolContext());
+      expect(result).toMatchObject({ success: true, output: 'Test output' });
+    });
+
+    it('should prefer the status message for the output', async () => {
+      const task = createMockTask('task_1');
+      task.status.message = {
+        kind: 'message',
+        messageId: 's',
+        role: 'agent',
+        parts: [{ kind: 'text', text: 'final answer' }],
+      };
+      mockSendResult = task;
+      const result = await new A2AClient(baseUrl).asTool().execute({ task: 'x' }, toolContext());
+      expect(result.output).toBe('final answer');
+    });
+
+    it('should return the text of a direct reply message', async () => {
+      mockSendResult = {
+        kind: 'message',
+        messageId: 'reply',
+        role: 'agent',
+        parts: [{ kind: 'text', text: 'direct' }],
+      };
+      const result = await new A2AClient(baseUrl).asTool().execute({ task: 'x' }, toolContext());
+      expect(result).toEqual({ output: 'direct', success: true });
     });
 
     it('should return failure on error', async () => {
       mockError = { code: -32001, message: 'Task not found' };
-      const client = new A2AClient(baseUrl);
-      const tool = client.asTool();
-      const result = await tool.execute(
-        { task: 'Fail' },
-        { agentId: 'test', runId: 'run_1', signal: new AbortController().signal }
-      );
+      const result = await new A2AClient(baseUrl).asTool().execute({ task: 'Fail' }, toolContext());
       expect(result).toHaveProperty('success', false);
       expect(result).toHaveProperty('error');
     });
 
     it('should return failure for failed task state', async () => {
       mockSendResult = createMockTask('task_fail', 'failed', '');
-      const client = new A2AClient(baseUrl);
-      const tool = client.asTool();
-      const result = await tool.execute(
-        { task: 'Fail task' },
-        { agentId: 'test', runId: 'run_1', signal: new AbortController().signal }
-      );
+      const result = await new A2AClient(baseUrl)
+        .asTool()
+        .execute({ task: 'Fail task' }, toolContext());
       expect(result).toHaveProperty('success', false);
     });
 
     it('reports the calls a remote task waits on for approval', async () => {
       const waiting = createMockTask('task_wait', 'input-required', 'Let me refund that.');
-      waiting.history[1].parts.push({
-        type: 'data',
-        mimeType: 'application/json',
+      waiting.history![1].parts.push({
+        kind: 'data',
         data: {
           kind: 'tool-approval-request',
           approvals: [
@@ -287,13 +354,9 @@ describe('A2AClient', () => {
         },
       });
       mockSendResult = waiting;
-      const client = new A2AClient(baseUrl);
-      const result = await client
+      const result = await new A2AClient(baseUrl)
         .asTool()
-        .execute(
-          { task: 'Refund A-1' },
-          { agentId: 'test', runId: 'run_1', signal: new AbortController().signal }
-        );
+        .execute({ task: 'Refund A-1' }, toolContext());
 
       expect(result.success).toBe(false);
       expect(result.taskId).toBe('task_wait');
@@ -304,16 +367,13 @@ describe('A2AClient', () => {
     });
 
     it('should use default name and description', () => {
-      const client = new A2AClient(baseUrl);
-      const tool = client.asTool();
+      const tool = new A2AClient(baseUrl).asTool();
       expect(tool.name).toBe('a2a_remote_agent');
       expect(tool.description).toBe('Remote A2A agent');
     });
 
     it('should include sideEffects as external', () => {
-      const client = new A2AClient(baseUrl);
-      const tool = client.asTool();
-      expect(tool.sideEffects).toEqual(['external']);
+      expect(new A2AClient(baseUrl).asTool().sideEffects).toEqual(['external']);
     });
   });
 
@@ -327,38 +387,41 @@ describe('A2AClient', () => {
     });
   });
 
-  describe('extractOutputFromTask edge cases', () => {
+  describe('task output edge cases', () => {
     it('should handle task with no artifacts and no history', async () => {
       mockSendResult = {
+        kind: 'task',
         id: 'task_empty',
         contextId: 'ctx_1',
         status: { state: 'completed', timestamp: new Date().toISOString() },
         history: [],
         artifacts: [],
       };
-      const client = new A2AClient(baseUrl);
-      const tool = client.asTool();
-      const result = await tool.execute(
-        { task: 'Empty result' },
-        { agentId: 'test', runId: 'run_1', signal: new AbortController().signal }
-      );
+      const result = await new A2AClient(baseUrl)
+        .asTool()
+        .execute({ task: 'Empty result' }, toolContext());
       expect(result.success).toBe(true);
       expect(result.output).toBe('');
     });
 
     it('should handle task with undefined artifacts', async () => {
       mockSendResult = {
+        kind: 'task',
         id: 'task_noart',
         contextId: 'ctx_1',
         status: { state: 'completed', timestamp: new Date().toISOString() },
-        history: [{ role: 'agent', parts: [{ type: 'text', text: 'from history' }] }],
-      } as A2ATask;
-      const client = new A2AClient(baseUrl);
-      const tool = client.asTool();
-      const result = await tool.execute(
-        { task: 'No artifacts' },
-        { agentId: 'test', runId: 'run_1', signal: new AbortController().signal }
-      );
+        history: [
+          {
+            kind: 'message',
+            messageId: 'm',
+            role: 'agent',
+            parts: [{ kind: 'text', text: 'from history' }],
+          },
+        ],
+      };
+      const result = await new A2AClient(baseUrl)
+        .asTool()
+        .execute({ task: 'No artifacts' }, toolContext());
       expect(result.success).toBe(true);
       expect(result.output).toBe('from history');
     });
@@ -394,9 +457,18 @@ describe('A2AClient', () => {
       expect(card.name).toBe('test-agent');
     });
 
-    it('should use custom paths', async () => {
+    it('should use a custom card path without falling back', async () => {
       const client = new A2AClient(baseUrl, { agentCardPath: '/custom/card' });
       await expect(client.agentCard()).rejects.toThrow();
+    });
+
+    it('should send to rpcPath without reading the card', async () => {
+      const client = new A2AClient(baseUrl, {
+        rpcPath: '/a2a',
+        agentCardPath: '/missing',
+      });
+      const task = await client.getTask('task_1');
+      expect(task.id).toBe('task_1');
     });
 
     it('should strip trailing slash from base URL', async () => {

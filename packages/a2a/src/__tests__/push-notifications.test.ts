@@ -8,13 +8,13 @@ import {
 import { A2AServer } from '../server';
 import type { Agent, AgentConfig } from '@cogitator-ai/types';
 import type {
-  A2AMessage,
-  A2AStreamEvent,
+  A2ATask,
   PushNotificationConfig,
+  TaskPushNotificationConfig,
   CogitatorLike,
   AgentRunResult,
 } from '../types';
-import { expectResponse } from './helpers';
+import { expectResponse, userMessage } from './helpers';
 
 function createMockAgent(name: string): Agent {
   const config: AgentConfig = {
@@ -47,8 +47,13 @@ function createMockCogitator(output: string = 'test output'): CogitatorLike {
   return { run: vi.fn().mockResolvedValue(result) };
 }
 
-function userMessage(text: string): A2AMessage {
-  return { role: 'user', parts: [{ type: 'text', text }] };
+function taskOf(id: string, state: A2ATask['status']['state'] = 'completed'): A2ATask {
+  return {
+    kind: 'task',
+    id,
+    contextId: 'ctx_1',
+    status: { state, timestamp: new Date().toISOString() },
+  };
 }
 
 describe('InMemoryPushNotificationStore', () => {
@@ -59,76 +64,56 @@ describe('InMemoryPushNotificationStore', () => {
   });
 
   it('should create a push notification config with generated id', async () => {
-    const config: PushNotificationConfig = { webhookUrl: 'https://example.com/webhook' };
+    const config: PushNotificationConfig = { url: 'https://example.com/webhook' };
     const created = await store.create('task_1', config);
     expect(created.id).toMatch(/^pnc_/);
-    expect(created.webhookUrl).toBe('https://example.com/webhook');
-    expect(created.createdAt).toBeDefined();
+    expect(created).toEqual({ url: 'https://example.com/webhook', id: created.id });
   });
 
   it('should preserve provided id', async () => {
-    const config: PushNotificationConfig = {
-      webhookUrl: 'https://example.com/webhook',
+    const created = await store.create('task_1', {
+      url: 'https://example.com/webhook',
       id: 'custom_id',
-    };
-    const created = await store.create('task_1', config);
+    });
     expect(created.id).toBe('custom_id');
   });
 
   it('should get a config by taskId and configId', async () => {
-    const config: PushNotificationConfig = { webhookUrl: 'https://example.com/hook' };
-    const created = await store.create('task_1', config);
+    const created = await store.create('task_1', { url: 'https://example.com/hook' });
     const retrieved = await store.get('task_1', created.id!);
     expect(retrieved).toEqual(created);
   });
 
   it('should return null for non-existent config', async () => {
-    const result = await store.get('task_1', 'nonexistent');
-    expect(result).toBeNull();
-  });
-
-  it('should return null for non-existent task', async () => {
-    const result = await store.get('nonexistent_task', 'nonexistent');
-    expect(result).toBeNull();
+    expect(await store.get('task_1', 'nonexistent')).toBeNull();
+    expect(await store.get('nonexistent_task', 'nonexistent')).toBeNull();
   });
 
   it('should list all configs for a task', async () => {
-    await store.create('task_1', { webhookUrl: 'https://example.com/hook1' });
-    await store.create('task_1', { webhookUrl: 'https://example.com/hook2' });
-    await store.create('task_2', { webhookUrl: 'https://example.com/hook3' });
+    await store.create('task_1', { url: 'https://example.com/hook1' });
+    await store.create('task_1', { url: 'https://example.com/hook2' });
+    await store.create('task_2', { url: 'https://example.com/hook3' });
 
-    const configs = await store.list('task_1');
-    expect(configs).toHaveLength(2);
-  });
-
-  it('should return empty array for task with no configs', async () => {
-    const configs = await store.list('nonexistent_task');
-    expect(configs).toEqual([]);
+    expect(await store.list('task_1')).toHaveLength(2);
+    expect(await store.list('nonexistent_task')).toEqual([]);
   });
 
   it('should delete a config', async () => {
-    const created = await store.create('task_1', { webhookUrl: 'https://example.com/hook' });
+    const created = await store.create('task_1', { url: 'https://example.com/hook' });
     await store.delete('task_1', created.id!);
-    const result = await store.get('task_1', created.id!);
-    expect(result).toBeNull();
-  });
-
-  it('should silently handle deleting non-existent config', async () => {
+    expect(await store.get('task_1', created.id!)).toBeNull();
     await expect(store.delete('task_1', 'nonexistent')).resolves.not.toThrow();
   });
 
-  it('should store authentication info', async () => {
-    const config: PushNotificationConfig = {
-      webhookUrl: 'https://example.com/hook',
-      authenticationInfo: {
-        scheme: 'bearer',
-        credentials: { token: 'secret-token' },
-      },
-    };
-    const created = await store.create('task_1', config);
+  it('should store the token and authentication info', async () => {
+    const created = await store.create('task_1', {
+      url: 'https://example.com/hook',
+      token: 'tok',
+      authentication: { schemes: ['Bearer'], credentials: 'secret-token' },
+    });
     const retrieved = await store.get('task_1', created.id!);
-    expect(retrieved?.authenticationInfo?.scheme).toBe('bearer');
-    expect(retrieved?.authenticationInfo?.credentials.token).toBe('secret-token');
+    expect(retrieved?.token).toBe('tok');
+    expect(retrieved?.authentication).toEqual({ schemes: ['Bearer'], credentials: 'secret-token' });
   });
 });
 
@@ -166,119 +151,81 @@ describe('PushNotificationSender', () => {
     receivedRequests = [];
   });
 
-  it('should send webhook POST to registered urls', async () => {
+  it('should POST the task to the registered url', async () => {
     const store = new InMemoryPushNotificationStore();
-    await store.create('task_1', { webhookUrl });
+    await store.create('task_1', { url: webhookUrl });
     const sender = new PushNotificationSender(store, true);
 
-    const event: A2AStreamEvent = {
-      type: 'status-update',
-      taskId: 'task_1',
-      status: { state: 'completed', timestamp: new Date().toISOString() },
-      timestamp: new Date().toISOString(),
-    };
-
-    await sender.notify('task_1', event);
+    await sender.notify(taskOf('task_1'));
     expect(receivedRequests).toHaveLength(1);
 
     const parsed = JSON.parse(receivedRequests[0].body);
-    expect(parsed.type).toBe('status-update');
-    expect(parsed.taskId).toBe('task_1');
+    expect(parsed).toMatchObject({ kind: 'task', id: 'task_1', status: { state: 'completed' } });
   });
 
   it('should send to multiple webhooks', async () => {
     const store = new InMemoryPushNotificationStore();
-    await store.create('task_1', { webhookUrl: `${webhookUrl}/hook1` });
-    await store.create('task_1', { webhookUrl: `${webhookUrl}/hook2` });
+    await store.create('task_1', { url: `${webhookUrl}/hook1` });
+    await store.create('task_1', { url: `${webhookUrl}/hook2` });
     const sender = new PushNotificationSender(store, true);
 
-    const event: A2AStreamEvent = {
-      type: 'status-update',
-      taskId: 'task_1',
-      status: { state: 'working', timestamp: new Date().toISOString() },
-      timestamp: new Date().toISOString(),
-    };
-
-    await sender.notify('task_1', event);
+    await sender.notify(taskOf('task_1', 'working'));
     expect(receivedRequests).toHaveLength(2);
   });
 
-  it('should include bearer auth header', async () => {
+  it('should send the token in X-A2A-Notification-Token', async () => {
+    const store = new InMemoryPushNotificationStore();
+    await store.create('task_1', { url: webhookUrl, token: 'client-token' });
+    const sender = new PushNotificationSender(store, true);
+
+    await sender.notify(taskOf('task_1'));
+
+    expect(receivedRequests[0].headers['x-a2a-notification-token']).toBe('client-token');
+  });
+
+  it('should send bearer credentials', async () => {
     const store = new InMemoryPushNotificationStore();
     await store.create('task_1', {
-      webhookUrl,
-      authenticationInfo: {
-        scheme: 'bearer',
-        credentials: { token: 'my-secret-token' },
-      },
+      url: webhookUrl,
+      authentication: { schemes: ['Bearer'], credentials: 'my-secret-token' },
     });
     const sender = new PushNotificationSender(store, true);
 
-    await sender.notify('task_1', {
-      type: 'status-update',
-      taskId: 'task_1',
-      status: { state: 'completed', timestamp: new Date().toISOString() },
-      timestamp: new Date().toISOString(),
-    });
+    await sender.notify(taskOf('task_1'));
 
-    expect(receivedRequests).toHaveLength(1);
     expect(receivedRequests[0].headers.authorization).toBe('Bearer my-secret-token');
   });
 
-  it('should include apiKey auth header', async () => {
+  it('should send basic credentials', async () => {
     const store = new InMemoryPushNotificationStore();
+    const credentials = Buffer.from('user:pass').toString('base64');
     await store.create('task_1', {
-      webhookUrl,
-      authenticationInfo: {
-        scheme: 'apiKey',
-        credentials: { key: 'api-key-value' },
-      },
+      url: webhookUrl,
+      authentication: { schemes: ['Basic'], credentials },
     });
     const sender = new PushNotificationSender(store, true);
 
-    await sender.notify('task_1', {
-      type: 'status-update',
-      taskId: 'task_1',
-      status: { state: 'completed', timestamp: new Date().toISOString() },
-      timestamp: new Date().toISOString(),
-    });
+    await sender.notify(taskOf('task_1'));
 
-    expect(receivedRequests).toHaveLength(1);
-    expect(receivedRequests[0].headers['x-api-key']).toBe('api-key-value');
+    expect(receivedRequests[0].headers.authorization).toBe(`Basic ${credentials}`);
   });
 
   it('should not throw when webhook fails', async () => {
     const store = new InMemoryPushNotificationStore();
-    await store.create('task_1', { webhookUrl: 'http://localhost:1' });
+    await store.create('task_1', { url: 'http://localhost:1' });
     const sender = new PushNotificationSender(store, true);
 
-    await expect(
-      sender.notify('task_1', {
-        type: 'status-update',
-        taskId: 'task_1',
-        status: { state: 'completed', timestamp: new Date().toISOString() },
-        timestamp: new Date().toISOString(),
-      })
-    ).resolves.not.toThrow();
+    await expect(sender.notify(taskOf('task_1'))).resolves.not.toThrow();
   });
 
   it('should do nothing when no configs exist', async () => {
-    const store = new InMemoryPushNotificationStore();
-    const sender = new PushNotificationSender(store, true);
-
-    await expect(
-      sender.notify('task_1', {
-        type: 'status-update',
-        taskId: 'task_1',
-        status: { state: 'completed', timestamp: new Date().toISOString() },
-        timestamp: new Date().toISOString(),
-      })
-    ).resolves.not.toThrow();
+    const sender = new PushNotificationSender(new InMemoryPushNotificationStore(), true);
+    await expect(sender.notify(taskOf('task_1'))).resolves.not.toThrow();
     expect(receivedRequests).toHaveLength(0);
   });
 });
 
-describe('A2AServer push notification methods', () => {
+describe('A2AServer push notification config methods', () => {
   let server: A2AServer;
   let pushStore: InMemoryPushNotificationStore;
 
@@ -303,134 +250,102 @@ describe('A2AServer push notification methods', () => {
     return (sent.result as { id: string }).id;
   }
 
-  it('should create a push notification config via JSON-RPC', async () => {
-    const sent = await server.handleJsonRpc({
-      jsonrpc: '2.0',
-      method: 'message/send',
-      params: { message: userMessage('Hello') },
-      id: 0,
-    });
-    const taskId = (sent!.result as { id: string }).id;
+  async function call(method: string, params: unknown) {
+    return expectResponse(await server.handleJsonRpc({ jsonrpc: '2.0', method, params, id: 1 }));
+  }
 
-    const response = expectResponse(
-      await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'tasks/pushNotification/create',
-        params: {
-          taskId,
-          config: { webhookUrl: 'https://example.com/webhook' },
-        },
-        id: 1,
-      })
-    );
-
-    expect(response.error).toBeUndefined();
-    const result = response.result as PushNotificationConfig;
-    expect(result.id).toMatch(/^pnc_/);
-    expect(result.webhookUrl).toBe('https://example.com/webhook');
-  });
-
-  it('should get a push notification config via JSON-RPC', async () => {
+  it('should set a config with tasks/pushNotificationConfig/set', async () => {
     const taskId = await sendTask();
-    const created = await pushStore.create(taskId, {
-      webhookUrl: 'https://example.com/webhook',
+    const response = await call('tasks/pushNotificationConfig/set', {
+      taskId,
+      pushNotificationConfig: { url: 'https://example.com/webhook', token: 't' },
     });
 
-    const response = expectResponse(
-      await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'tasks/pushNotification/get',
-        params: { taskId, configId: created.id },
-        id: 1,
-      })
-    );
-
     expect(response.error).toBeUndefined();
-    const result = response.result as PushNotificationConfig;
-    expect(result.webhookUrl).toBe('https://example.com/webhook');
+    const result = response.result as TaskPushNotificationConfig;
+    expect(result.taskId).toBe(taskId);
+    expect(result.pushNotificationConfig.id).toMatch(/^pnc_/);
+    expect(result.pushNotificationConfig.url).toBe('https://example.com/webhook');
+    expect(await pushStore.list(taskId)).toHaveLength(1);
   });
 
-  it('should list push notification configs via JSON-RPC', async () => {
+  it('should get a config by id, or the first one without an id', async () => {
     const taskId = await sendTask();
-    await pushStore.create(taskId, { webhookUrl: 'https://example.com/hook1' });
-    await pushStore.create(taskId, { webhookUrl: 'https://example.com/hook2' });
+    const created = await pushStore.create(taskId, { url: 'https://example.com/webhook' });
 
-    const response = expectResponse(
-      await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'tasks/pushNotification/list',
-        params: { taskId },
-        id: 1,
-      })
-    );
+    const byId = await call('tasks/pushNotificationConfig/get', {
+      id: taskId,
+      pushNotificationConfigId: created.id,
+    });
+    expect(byId.result).toEqual({ taskId, pushNotificationConfig: created });
 
-    expect(response.error).toBeUndefined();
-    const result = response.result as PushNotificationConfig[];
+    const first = await call('tasks/pushNotificationConfig/get', { id: taskId });
+    expect(first.result).toEqual({ taskId, pushNotificationConfig: created });
+
+    const missing = await call('tasks/pushNotificationConfig/get', {
+      id: taskId,
+      pushNotificationConfigId: 'nope',
+    });
+    expect(missing.error?.code).toBe(-32602);
+  });
+
+  it('should list configs', async () => {
+    const taskId = await sendTask();
+    await pushStore.create(taskId, { url: 'https://example.com/hook1' });
+    await pushStore.create(taskId, { url: 'https://example.com/hook2' });
+
+    const response = await call('tasks/pushNotificationConfig/list', { id: taskId });
+
+    const result = response.result as TaskPushNotificationConfig[];
     expect(result).toHaveLength(2);
+    expect(result.every((entry) => entry.taskId === taskId)).toBe(true);
   });
 
-  it('should delete a push notification config via JSON-RPC', async () => {
+  it('should delete a config and answer null', async () => {
     const taskId = await sendTask();
-    const created = await pushStore.create(taskId, {
-      webhookUrl: 'https://example.com/hook',
+    const created = await pushStore.create(taskId, { url: 'https://example.com/hook' });
+
+    const response = await call('tasks/pushNotificationConfig/delete', {
+      id: taskId,
+      pushNotificationConfigId: created.id,
     });
 
-    const response = expectResponse(
-      await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'tasks/pushNotification/delete',
-        params: { taskId, configId: created.id },
-        id: 1,
-      })
-    );
-
     expect(response.error).toBeUndefined();
-    const remaining = await pushStore.list(taskId);
-    expect(remaining).toHaveLength(0);
+    expect(response.result).toBeNull();
+    expect(await pushStore.list(taskId)).toHaveLength(0);
   });
 
-  it('should reject push configs for unknown tasks', async () => {
-    const response = expectResponse(
-      await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'tasks/pushNotification/create',
-        params: { taskId: 'task_missing', config: { webhookUrl: 'https://example.com/webhook' } },
-        id: 1,
-      })
-    );
-
-    expect(response!.error!.code).toBe(-32001);
+  it('should reject configs for unknown tasks', async () => {
+    const response = await call('tasks/pushNotificationConfig/set', {
+      taskId: 'task_missing',
+      pushNotificationConfig: { url: 'https://example.com/webhook' },
+    });
+    expect(response.error!.code).toBe(-32001);
   });
 
-  it('should return error when taskId is missing for create', async () => {
-    const response = expectResponse(
-      await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'tasks/pushNotification/create',
-        params: { config: { webhookUrl: 'https://example.com' } },
-        id: 1,
-      })
-    );
-    expect(response.error).toBeDefined();
-    expect(response.error!.code).toBe(-32602);
+  it('should reject a config without taskId or url as invalid params', async () => {
+    const noTask = await call('tasks/pushNotificationConfig/set', {
+      pushNotificationConfig: { url: 'https://example.com' },
+    });
+    expect(noTask.error!.code).toBe(-32602);
+
+    const noUrl = await call('tasks/pushNotificationConfig/set', {
+      taskId: 'task_1',
+      pushNotificationConfig: {},
+    });
+    expect(noUrl.error!.code).toBe(-32602);
   });
 
-  it('should return error when webhookUrl is missing for create', async () => {
-    const response = expectResponse(
-      await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'tasks/pushNotification/create',
-        params: { taskId: 'task_1', config: {} },
-        id: 1,
-      })
-    );
-    expect(response.error).toBeDefined();
-    expect(response.error!.code).toBe(-32602);
+  it('should no longer answer the pre-v0.3 method names', async () => {
+    const response = await call('tasks/pushNotification/create', {
+      taskId: 'task_1',
+      config: { webhookUrl: 'https://example.com' },
+    });
+    expect(response.error!.code).toBe(-32601);
   });
 
-  it('should set pushNotifications capability to true when store provided', () => {
-    const card = server.getAgentCard();
-    expect(card.capabilities.pushNotifications).toBe(true);
+  it('should announce push notifications on the card', () => {
+    expect(server.getAgentCard().capabilities.pushNotifications).toBe(true);
   });
 });
 
@@ -489,9 +404,9 @@ describe('validateWebhookUrl', () => {
 describe('InMemoryPushNotificationStore.cleanup', () => {
   it('should remove all configs for a task', async () => {
     const store = new InMemoryPushNotificationStore();
-    await store.create('task_1', { webhookUrl: 'https://example.com/a' });
-    await store.create('task_1', { webhookUrl: 'https://example.com/b' });
-    await store.create('task_2', { webhookUrl: 'https://example.com/c' });
+    await store.create('task_1', { url: 'https://example.com/a' });
+    await store.create('task_1', { url: 'https://example.com/b' });
+    await store.create('task_2', { url: 'https://example.com/c' });
 
     store.cleanup('task_1');
 
@@ -505,18 +420,21 @@ describe('InMemoryPushNotificationStore.cleanup', () => {
   });
 });
 
-describe('Webhook receives events on task completion', () => {
+describe('Webhook receives the task on every status change', () => {
   let webhookServer: http.Server;
   let webhookUrl: string;
-  let receivedEvents: A2AStreamEvent[];
+  let received: { task: A2ATask; token: string | undefined }[];
 
   beforeAll(async () => {
-    receivedEvents = [];
+    received = [];
     webhookServer = http.createServer((req, res) => {
       let body = '';
       req.on('data', (chunk) => (body += chunk));
       req.on('end', () => {
-        receivedEvents.push(JSON.parse(body));
+        received.push({
+          task: JSON.parse(body) as A2ATask,
+          token: req.headers['x-a2a-notification-token'] as string | undefined,
+        });
         res.writeHead(200);
         res.end();
       });
@@ -536,15 +454,13 @@ describe('Webhook receives events on task completion', () => {
   });
 
   beforeEach(() => {
-    receivedEvents = [];
+    received = [];
   });
 
-  it('should deliver webhook when task completes', async () => {
-    const pushStore = new InMemoryPushNotificationStore();
+  it('should deliver the completed task to a webhook registered with the message', async () => {
     const server = new A2AServer({
       agents: { helper: createMockAgent('helper') },
       cogitator: createMockCogitator('done'),
-      pushNotificationStore: pushStore,
       allowPrivateUrls: true,
     });
 
@@ -552,28 +468,23 @@ describe('Webhook receives events on task completion', () => {
       await server.handleJsonRpc({
         jsonrpc: '2.0',
         method: 'message/send',
-        params: { message: userMessage('Hello') },
+        params: {
+          message: userMessage('Hello'),
+          configuration: { pushNotificationConfig: { url: webhookUrl, token: 'tok' } },
+        },
         id: 1,
       })
     );
     const taskId = (sendResponse.result as { id: string }).id;
 
-    await pushStore.create(taskId, { webhookUrl });
-
-    const secondResponse = expectResponse(
-      await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'message/send',
-        params: { message: { ...userMessage('Continue'), taskId } },
-        id: 2,
-      })
-    );
-    expect(secondResponse.error).toBeUndefined();
-
     await vi.waitFor(
       () => {
-        const statusUpdates = receivedEvents.filter((e) => e.type === 'status-update');
-        expect(statusUpdates.length).toBeGreaterThan(0);
+        const completed = received.find(
+          (r) => r.task.id === taskId && r.task.status.state === 'completed'
+        );
+        expect(completed?.task.kind).toBe('task');
+        expect(completed?.token).toBe('tok');
+        expect(completed?.task.metadata).toBeUndefined();
       },
       { timeout: 5000, interval: 20 }
     );

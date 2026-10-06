@@ -11,6 +11,7 @@ import { a2aExpress } from '../adapters/express';
 import { a2aFastify } from '../adapters/fastify';
 import { a2aHono } from '../adapters/hono';
 import { a2aKoa } from '../adapters/koa';
+import { a2aNext } from '../adapters/next';
 import type { A2AStreamEvent, AgentRunResult, CogitatorLike } from '../types';
 
 function mockAgent(name: string): Agent {
@@ -173,7 +174,7 @@ describe('A2AClient agentName', () => {
       cogitator: answeringAgent,
       extendedCardGenerator: (agentName) => ({
         ...server.getAgentCard(agentName),
-        metadata: { agentName },
+        description: `extended ${agentName}`,
       }),
     });
     const app = express();
@@ -185,7 +186,7 @@ describe('A2AClient agentName', () => {
     const { url, close } = await multiAgentServer();
     try {
       const client = new A2AClient(url, { agentName: 'writer' });
-      const message = { role: 'user' as const, parts: [{ type: 'text' as const, text: 'hi' }] };
+      const message = { role: 'user' as const, parts: [{ kind: 'text' as const, text: 'hi' }] };
 
       const task = await client.sendMessage(message);
       const events: A2AStreamEvent[] = [];
@@ -193,10 +194,13 @@ describe('A2AClient agentName', () => {
       const card = await client.agentCard();
       const extended = await client.extendedAgentCard();
 
-      expect(task.history.at(-1)?.parts[0]).toEqual({ type: 'text', text: 'answered by writer' });
+      expect(task.kind === 'task' && task.history?.at(-1)?.parts[0]).toEqual({
+        kind: 'text',
+        text: 'answered by writer',
+      });
       expect(JSON.stringify(events)).toContain('answered by writer');
       expect(card.name).toBe('writer');
-      expect(extended.metadata).toEqual({ agentName: 'writer' });
+      expect(extended.description).toBe('extended writer');
     } finally {
       await close();
     }
@@ -208,11 +212,11 @@ describe('A2AClient agentName', () => {
       const client = new A2AClient(url);
       const task = await client.sendMessage({
         role: 'user',
-        parts: [{ type: 'text', text: 'hi' }],
+        parts: [{ kind: 'text', text: 'hi' }],
       });
 
-      expect(task.history.at(-1)?.parts[0]).toEqual({
-        type: 'text',
+      expect(task.kind === 'task' && task.history?.at(-1)?.parts[0]).toEqual({
+        kind: 'text',
         text: 'answered by researcher',
       });
       expect((await client.agentCard()).name).toBe('researcher');
@@ -230,5 +234,104 @@ describe('A2AClient agentName', () => {
     } finally {
       await close();
     }
+  });
+});
+
+describe('per-agent endpoints and cards in every adapter', () => {
+  const server = new A2AServer({
+    agents: { researcher: mockAgent('researcher'), writer: mockAgent('writer') },
+    cogitator: answeringAgent,
+  });
+  const send = JSON.stringify({
+    jsonrpc: '2.0',
+    method: 'message/send',
+    params: {
+      message: {
+        kind: 'message',
+        messageId: 'm1',
+        role: 'user',
+        parts: [{ kind: 'text', text: 'hi' }],
+      },
+    },
+    id: 1,
+  });
+  const json = { 'content-type': 'application/json' };
+
+  function answeredBy(body: unknown): string | undefined {
+    const result = (body as { result?: { status?: { message?: { parts: { text?: string }[] } } } })
+      .result;
+    return result?.status?.message?.parts[0]?.text;
+  }
+
+  it('hono serves the cards with absolute urls and routes by agent path', async () => {
+    const app = a2aHono(server);
+    const card = await (
+      await app.request('http://agents.test/a2a/writer/.well-known/agent-card.json')
+    ).json();
+    const root = await (await app.request('http://agents.test/.well-known/agent-card.json')).json();
+    const sent = await app.request('/a2a/writer', { method: 'POST', headers: json, body: send });
+    const unknown = await app.request('/a2a/editor', { method: 'POST', headers: json, body: send });
+
+    expect(card).toMatchObject({ name: 'writer', url: 'http://agents.test/a2a/writer' });
+    expect(root).toMatchObject({ name: 'researcher', url: 'http://agents.test/a2a' });
+    expect(answeredBy(await sent.json())).toBe('answered by writer');
+    expect(unknown.status).toBe(404);
+  });
+
+  it('fastify routes by agent path', async () => {
+    const app = Fastify();
+    await app.register(a2aFastify(server));
+    try {
+      const card = await app.inject({
+        method: 'GET',
+        url: '/a2a/writer/.well-known/agent-card.json',
+      });
+      const sent = await app.inject({
+        method: 'POST',
+        url: '/a2a/writer',
+        headers: json,
+        payload: send,
+      });
+      expect(card.json()).toMatchObject({ name: 'writer' });
+      expect(String(card.json().url)).toMatch(/\/a2a\/writer$/);
+      expect(answeredBy(sent.json())).toBe('answered by writer');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('koa routes by agent path', async () => {
+    const app = new Koa();
+    app.use(async (ctx, next) => {
+      if (ctx.method === 'POST') Reflect.set(ctx.request, 'body', JSON.parse(send));
+      await next();
+    });
+    app.use(a2aKoa(server));
+    const { url, close } = await listen(app.callback());
+    try {
+      const card = await (await fetch(`${url}/a2a/writer/.well-known/agent-card.json`)).json();
+      const sent = await fetch(`${url}/a2a/writer`, { method: 'POST', headers: json, body: send });
+      expect(card).toMatchObject({ name: 'writer', url: `${url}/a2a/writer` });
+      expect(answeredBy(await sent.json())).toBe('answered by writer');
+    } finally {
+      await close();
+    }
+  });
+
+  it('next serves the agent of a dynamic [agent] segment', async () => {
+    const { GET, POST } = a2aNext(server);
+    const params = Promise.resolve({ agent: 'writer' });
+    const card = await (await GET(new Request('http://agents.test/x'), { params })).json();
+    const sent = await POST(
+      new Request('http://agents.test/a2a/writer', { method: 'POST', headers: json, body: send }),
+      { params }
+    );
+    const shared = await POST(
+      new Request('http://agents.test/a2a', { method: 'POST', headers: json, body: send })
+    );
+
+    expect(card).toMatchObject({ name: 'writer', url: 'http://agents.test/a2a/writer' });
+    expect(answeredBy(await sent.json())).toBe('answered by writer');
+    expect(answeredBy(await shared.json())).toBe('answered by researcher');
   });
 });

@@ -8,7 +8,7 @@ import {
   isOllamaRunning,
 } from '../../helpers/setup';
 import { expectJudge, setJudge } from '../../helpers/assertions';
-import { startTestA2AServer, type TestA2AServer } from '../../helpers/a2a-server';
+import { asTask, startTestA2AServer, type TestA2AServer } from '../../helpers/a2a-server';
 import type { Cogitator } from '@cogitator-ai/core';
 
 const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
@@ -44,17 +44,20 @@ describeE2E('Cross-Package: Cogitator via A2A', () => {
   });
 
   it('executes agent task through full A2A stack', async () => {
-    const task = await client.sendMessage({
-      role: 'user',
-      parts: [{ type: 'text', text: 'What is 8 times 12? Use the multiply tool.' }],
-    });
+    const task = asTask(
+      await client.sendMessage({
+        role: 'user',
+        parts: [{ kind: 'text', text: 'What is 8 times 12? Use the multiply tool.' }],
+      })
+    );
 
     expect(task.status.state).toBe('completed');
     expect(task.artifacts).toBeDefined();
 
-    if (task.artifacts.length > 0) {
-      const textPart = task.artifacts[0].parts.find((p) => p.type === 'text');
-      if (textPart?.type === 'text') {
+    const artifacts = task.artifacts ?? [];
+    if (artifacts.length > 0) {
+      const textPart = artifacts[0].parts.find((p) => p.kind === 'text');
+      if (textPart?.kind === 'text') {
         await expectJudge(textPart.text, {
           question: 'What is 8 times 12?',
           criteria: 'Answer contains 96',
@@ -68,19 +71,21 @@ describeE2E('Cross-Package: Cogitator via A2A', () => {
 
     for await (const event of client.sendMessageStream({
       role: 'user',
-      parts: [{ type: 'text', text: 'What is 3 times 5?' }],
+      parts: [{ kind: 'text', text: 'What is 3 times 5?' }],
     })) {
       events.push(event);
     }
 
     expect(events.length).toBeGreaterThan(0);
+    expect(events[0].kind).toBe('task');
 
-    const statusEvents = events.filter((e) => e.type === 'status-update');
+    const statusEvents = events.filter((e) => e.kind === 'status-update');
     expect(statusEvents.length).toBeGreaterThanOrEqual(1);
 
     const lastStatus = [...statusEvents].pop();
-    if (lastStatus?.type === 'status-update') {
+    if (lastStatus?.kind === 'status-update') {
       expect(['completed', 'failed']).toContain(lastStatus.status.state);
+      expect(lastStatus.final).toBe(true);
     }
   });
 
@@ -106,17 +111,21 @@ describeE2E('Cross-Package: Cogitator via A2A', () => {
     const failClient = new A2AClient(failServer.url);
 
     try {
-      const task = await failClient.sendMessage({
-        role: 'user',
-        parts: [{ type: 'text', text: 'Divide 1 by 0 using the divide tool.' }],
-      });
+      const task = asTask(
+        await failClient.sendMessage({
+          role: 'user',
+          parts: [{ kind: 'text', text: 'Divide 1 by 0 using the divide tool.' }],
+        })
+      );
 
       expect(['completed', 'failed']).toContain(task.status.state);
 
-      const checkTask = await failClient.sendMessage({
-        role: 'user',
-        parts: [{ type: 'text', text: 'Say hello.' }],
-      });
+      const checkTask = asTask(
+        await failClient.sendMessage({
+          role: 'user',
+          parts: [{ kind: 'text', text: 'Say hello.' }],
+        })
+      );
       expect(checkTask.status.state).toBe('completed');
     } finally {
       await failServer.close();

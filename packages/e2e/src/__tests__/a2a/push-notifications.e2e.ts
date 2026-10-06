@@ -1,9 +1,19 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import http from 'node:http';
-import { A2AClient, A2AError, InMemoryPushNotificationStore } from '@cogitator-ai/a2a';
-import type { AgentRunResult, A2AStreamEvent, CogitatorLike } from '@cogitator-ai/a2a';
+import {
+  A2AClient,
+  A2AError,
+  InMemoryPushNotificationStore,
+  NOTIFICATION_TOKEN_HEADER,
+} from '@cogitator-ai/a2a';
+import type { AgentRunResult, A2ATask, CogitatorLike } from '@cogitator-ai/a2a';
 import type { Agent, AgentConfig } from '@cogitator-ai/types';
-import { createStubAgent, startTestA2AServer, type TestA2AServer } from '../../helpers/a2a-server';
+import {
+  asTask,
+  createStubAgent,
+  startTestA2AServer,
+  type TestA2AServer,
+} from '../../helpers/a2a-server';
 
 function createMockAgent(name: string): Agent {
   const config: AgentConfig = {
@@ -56,84 +66,73 @@ describe('A2A: Push Notifications', () => {
     await testServer?.close();
   });
 
+  async function send(text: string): Promise<A2ATask> {
+    return asTask(await client.sendMessage({ role: 'user', parts: [{ kind: 'text', text }] }));
+  }
+
   describe('CRUD', () => {
-    it('creates push notification config for a task', async () => {
-      const task = await client.sendMessage({
-        role: 'user',
-        parts: [{ type: 'text', text: 'Hello' }],
+    it('sets a push notification config for a task', async () => {
+      const task = await send('Hello');
+
+      const result = await client.setPushNotificationConfig(task.id, {
+        url: 'https://example.com/webhook',
       });
 
-      const config = await client.createPushNotification(task.id, {
-        webhookUrl: 'https://example.com/webhook',
-      });
-
-      expect(config.id).toBeDefined();
-      expect(config.id).toMatch(/^pnc_/);
-      expect(config.webhookUrl).toBe('https://example.com/webhook');
-      expect(config.createdAt).toBeDefined();
+      expect(result.taskId).toBe(task.id);
+      expect(result.pushNotificationConfig.id).toBeDefined();
+      expect(result.pushNotificationConfig.id).toMatch(/^pnc_/);
+      expect(result.pushNotificationConfig.url).toBe('https://example.com/webhook');
     });
 
-    it('gets push notification by id', async () => {
-      const task = await client.sendMessage({
-        role: 'user',
-        parts: [{ type: 'text', text: 'Hello' }],
-      });
+    it('gets a push notification config by id', async () => {
+      const task = await send('Hello');
 
-      const created = await client.createPushNotification(task.id, {
-        webhookUrl: 'https://example.com/hook-get',
-        authenticationInfo: {
-          scheme: 'bearer',
-          credentials: { token: 'secret' },
-        },
+      const created = await client.setPushNotificationConfig(task.id, {
+        url: 'https://example.com/hook-get',
+        token: 'verify-me',
+        authentication: { schemes: ['Bearer'], credentials: 'secret' },
       });
+      const configId = created.pushNotificationConfig.id;
+      expect(configId).toBeDefined();
 
-      const retrieved = await client.getPushNotification(task.id, created.id!);
-      expect(retrieved).not.toBeNull();
-      expect(retrieved!.id).toBe(created.id);
-      expect(retrieved!.webhookUrl).toBe('https://example.com/hook-get');
-      expect(retrieved!.authenticationInfo?.scheme).toBe('bearer');
+      const retrieved = await client.getPushNotificationConfig(task.id, configId);
+      expect(retrieved.taskId).toBe(task.id);
+      expect(retrieved.pushNotificationConfig.id).toBe(configId);
+      expect(retrieved.pushNotificationConfig.url).toBe('https://example.com/hook-get');
+      expect(retrieved.pushNotificationConfig.token).toBe('verify-me');
+      expect(retrieved.pushNotificationConfig.authentication?.schemes).toEqual(['Bearer']);
     });
 
-    it('lists push notifications for a task', async () => {
-      const task = await client.sendMessage({
-        role: 'user',
-        parts: [{ type: 'text', text: 'Hello' }],
-      });
+    it('lists push notification configs for a task', async () => {
+      const task = await send('Hello');
 
-      await client.createPushNotification(task.id, {
-        webhookUrl: 'https://example.com/hook-a',
-      });
-      await client.createPushNotification(task.id, {
-        webhookUrl: 'https://example.com/hook-b',
-      });
+      await client.setPushNotificationConfig(task.id, { url: 'https://example.com/hook-a' });
+      await client.setPushNotificationConfig(task.id, { url: 'https://example.com/hook-b' });
 
-      const configs = await client.listPushNotifications(task.id);
+      const configs = await client.listPushNotificationConfigs(task.id);
       expect(configs).toHaveLength(2);
 
-      const urls = configs.map((c) => c.webhookUrl);
+      const urls = configs.map((c) => c.pushNotificationConfig.url);
       expect(urls).toContain('https://example.com/hook-a');
       expect(urls).toContain('https://example.com/hook-b');
     });
 
-    it('deletes push notification', async () => {
-      const task = await client.sendMessage({
-        role: 'user',
-        parts: [{ type: 'text', text: 'Hello' }],
+    it('deletes a push notification config', async () => {
+      const task = await send('Hello');
+
+      const created = await client.setPushNotificationConfig(task.id, {
+        url: 'https://example.com/hook-del',
       });
 
-      const created = await client.createPushNotification(task.id, {
-        webhookUrl: 'https://example.com/hook-del',
-      });
+      await client.deletePushNotificationConfig(task.id, created.pushNotificationConfig.id ?? '');
 
-      await client.deletePushNotification(task.id, created.id!);
-
-      const remaining = await client.listPushNotifications(task.id);
+      const remaining = await client.listPushNotificationConfigs(task.id);
       expect(remaining).toHaveLength(0);
     });
 
     it('rejects push notification configs for unknown tasks (TaskNotFound)', async () => {
       const error = await client
-        .createPushNotification('nonexistent_task_xyz', { webhookUrl: 'https://example.com/hook' })
+        .setPushNotificationConfig('nonexistent_task_xyz', { url: 'https://example.com/hook' })
         .catch((e: unknown) => e);
       expect(error).toBeInstanceOf(A2AError);
       expect((error as A2AError).code).toBe(-32001);
@@ -143,15 +142,19 @@ describe('A2A: Push Notifications', () => {
   describe('webhook delivery', () => {
     let webhookServer: http.Server;
     let webhookUrl: string;
-    let receivedEvents: A2AStreamEvent[];
+    let received: { task: A2ATask; token: string | undefined }[];
 
     beforeAll(async () => {
-      receivedEvents = [];
+      received = [];
       webhookServer = http.createServer((req, res) => {
         let body = '';
         req.on('data', (chunk: Buffer) => (body += chunk.toString()));
         req.on('end', () => {
-          receivedEvents.push(JSON.parse(body));
+          const token = req.headers[NOTIFICATION_TOKEN_HEADER.toLowerCase()];
+          received.push({
+            task: JSON.parse(body) as A2ATask,
+            token: Array.isArray(token) ? token[0] : token,
+          });
           res.writeHead(200);
           res.end();
         });
@@ -170,22 +173,27 @@ describe('A2A: Push Notifications', () => {
       webhookServer.close();
     });
 
-    it('webhook receives events when task completes', async () => {
-      const task = await client.sendMessage({
-        role: 'user',
-        parts: [{ type: 'text', text: 'First message' }],
-      });
+    it('webhook receives the task as it changes until it completes', async () => {
+      const task = asTask(
+        await client.sendMessage(
+          { role: 'user', parts: [{ kind: 'text', text: 'First message' }] },
+          { pushNotificationConfig: { url: webhookUrl, token: 'webhook-token' } }
+        )
+      );
+      expect(task.status.state).toBe('completed');
 
-      await client.createPushNotification(task.id, { webhookUrl });
+      for (let i = 0; i < 50; i++) {
+        if (received.some((e) => e.task.id === task.id && e.task.status.state === 'completed')) {
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 20));
+      }
 
-      await client.continueTask(task.id, 'Follow-up message');
-
-      await new Promise((r) => setTimeout(r, 200));
-
-      expect(receivedEvents.length).toBeGreaterThan(0);
-      const statusUpdates = receivedEvents.filter((e) => e.type === 'status-update');
-      expect(statusUpdates.length).toBeGreaterThan(0);
-      expect(statusUpdates.some((e) => e.taskId === task.id)).toBe(true);
+      const forTask = received.filter((e) => e.task.id === task.id);
+      expect(forTask.length).toBeGreaterThan(0);
+      expect(forTask.every((e) => e.task.kind === 'task')).toBe(true);
+      expect(forTask.every((e) => e.token === 'webhook-token')).toBe(true);
+      expect(forTask.some((e) => e.task.status.state === 'completed')).toBe(true);
     });
   });
 });

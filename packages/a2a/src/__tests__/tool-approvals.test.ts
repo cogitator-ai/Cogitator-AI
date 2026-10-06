@@ -16,6 +16,7 @@ import {
   toolApprovalResponsePart,
 } from '../approvals';
 import { expectResponse } from './helpers';
+import { messageText, toMessage } from '../protocol';
 
 const refundImpl = vi.fn(async ({ order }: { order: string }) => ({ refunded: order }));
 const refund = tool({
@@ -84,6 +85,8 @@ async function send(message: A2AMessage, id = 1): Promise<A2ATask> {
 }
 
 const ask = (parts: Part[], taskId?: string): A2AMessage => ({
+  kind: 'message',
+  messageId: crypto.randomUUID(),
   role: 'user',
   parts,
   ...(taskId && { taskId }),
@@ -91,10 +94,10 @@ const ask = (parts: Part[], taskId?: string): A2AMessage => ({
 
 describe('A2A tasks whose run pauses for tool approvals', () => {
   it('wait in input-required with the calls in a data part, never completed', async () => {
-    const task = await send(ask([{ type: 'text', text: 'Refund A-1' }]));
+    const task = await send(ask([{ kind: 'text', text: 'Refund A-1' }]));
 
     expect(task.status.state).toBe('input-required');
-    expect(task.status.message).toBe('Waiting for approval of refund');
+    expect(messageText(task.status.message)).toBe('Waiting for approval of refund');
     expect(readToolApprovalRequest(task)).toEqual([
       expect.objectContaining({
         toolCallId: 'c1',
@@ -108,7 +111,7 @@ describe('A2A tasks whose run pauses for tool approvals', () => {
   });
 
   it('resume with the decisions the client sends back, then complete', async () => {
-    const paused = await send(ask([{ type: 'text', text: 'Refund A-1' }]));
+    const paused = await send(ask([{ kind: 'text', text: 'Refund A-1' }]));
 
     const done = await send(
       ask([toolApprovalResponsePart({ decisions: { c1: { approved: true } } })], paused.id),
@@ -117,12 +120,12 @@ describe('A2A tasks whose run pauses for tool approvals', () => {
 
     expect(done.status.state).toBe('completed');
     expect(refundImpl).toHaveBeenCalledTimes(1);
-    const answer = done.history.at(-1)?.parts[0];
-    expect(answer).toEqual({ type: 'text', text: expect.stringContaining('"refunded":"A-1"') });
+    const answer = done.history!.at(-1)?.parts[0];
+    expect(answer).toEqual({ kind: 'text', text: expect.stringContaining('"refunded":"A-1"') });
   });
 
   it('decline with the reason the client gives', async () => {
-    const paused = await send(ask([{ type: 'text', text: 'Refund A-1' }]));
+    const paused = await send(ask([{ kind: 'text', text: 'Refund A-1' }]));
 
     const done = await send(
       ask(
@@ -134,13 +137,13 @@ describe('A2A tasks whose run pauses for tool approvals', () => {
 
     expect(done.status.state).toBe('completed');
     expect(refundImpl).not.toHaveBeenCalled();
-    expect(JSON.stringify(done.history.at(-1))).toContain('fraud');
+    expect(JSON.stringify(done.history!.at(-1))).toContain('fraud');
   });
 
   it('treat a text reply as moving on: the waiting calls are declined, a new run answers', async () => {
-    const paused = await send(ask([{ type: 'text', text: 'Refund A-1' }]));
+    const paused = await send(ask([{ kind: 'text', text: 'Refund A-1' }]));
 
-    const next = await send(ask([{ type: 'text', text: 'Never mind' }], paused.id), 2);
+    const next = await send(ask([{ kind: 'text', text: 'Never mind' }], paused.id), 2);
 
     expect(refundImpl).not.toHaveBeenCalled();
     expect(next.status.state).toBe('input-required');
@@ -155,7 +158,7 @@ describe('A2A tasks whose run pauses for tool approvals', () => {
       await runOnly.handleJsonRpc({
         jsonrpc: '2.0',
         method: 'message/send',
-        params: { message: ask([{ type: 'text', text: 'Refund A-1' }]) },
+        params: { message: ask([{ kind: 'text', text: 'Refund A-1' }]) },
         id: 1,
       })
     ).result as A2ATask;
@@ -175,7 +178,7 @@ describe('A2A tasks whose run pauses for tool approvals', () => {
     ).result as A2ATask;
 
     expect(second.status.state).toBe('failed');
-    expect(second.status.message).toContain('Unsupported operation');
+    expect(messageText(second.status.message)).toContain('Unsupported operation');
     expect(refundImpl).not.toHaveBeenCalled();
   });
 });
@@ -191,14 +194,13 @@ describe('tool approval data parts', () => {
       readToolApprovalResponse(
         ask([
           {
-            type: 'data',
-            mimeType: 'application/json',
+            kind: 'data',
             data: { kind: 'tool-approval-response', decisions: { c1: { approved: 'yes' } } },
           },
         ])
       )
     ).toBeUndefined();
-    expect(readToolApprovalResponse(ask([{ type: 'text', text: 'approve' }]))).toBeUndefined();
+    expect(readToolApprovalResponse(ask([{ kind: 'text', text: 'approve' }]))).toBeUndefined();
   });
 });
 
@@ -212,6 +214,8 @@ describe('A2AClient.answerApprovals', () => {
 
     const [message] = sendMessage.mock.calls[0];
     expect(message.taskId).toBe('task_1');
-    expect(readToolApprovalResponse(message)).toEqual({ decisions: { c1: { approved: true } } });
+    expect(readToolApprovalResponse(toMessage(message))).toEqual({
+      decisions: { c1: { approved: true } },
+    });
   });
 });

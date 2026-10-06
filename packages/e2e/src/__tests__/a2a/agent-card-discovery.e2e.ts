@@ -39,25 +39,40 @@ describeE2E('A2A: Agent Card Discovery', () => {
   });
 
   it('serves agent card at well-known URL', async () => {
-    const response = await fetch(`${testServer.url}/.well-known/agent.json`);
+    const response = await fetch(`${testServer.url}/.well-known/agent-card.json`);
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('application/json');
 
     const card = await response.json();
     expect(card.name).toBe('discoverable-agent');
+    expect(card.protocolVersion).toBe('0.3.0');
+    expect(card.preferredTransport).toBe('JSONRPC');
+    expect(card.url).toBe(`${testServer.url}/a2a`);
     expect(card.version).toBeDefined();
+    expect(card.description).toBeDefined();
     expect(card.capabilities).toBeDefined();
     expect(card.skills).toBeDefined();
   });
 
-  it('card reflects agent tools as skills', async () => {
+  it('still serves the card at the pre-v0.3 well-known URL', async () => {
     const response = await fetch(`${testServer.url}/.well-known/agent.json`);
+    expect(response.status).toBe(200);
+
+    const card = await response.json();
+    expect(card.name).toBe('discoverable-agent');
+  });
+
+  it('card reflects agent tools as skills', async () => {
+    const response = await fetch(`${testServer.url}/.well-known/agent-card.json`);
     const card = await response.json();
 
     expect(card.skills.length).toBeGreaterThanOrEqual(2);
     const skillNames = card.skills.map((s: { name: string }) => s.name);
     expect(skillNames).toContain('multiply');
     expect(skillNames).toContain('add');
+    for (const skill of card.skills as { tags: unknown }[]) {
+      expect(Array.isArray(skill.tags)).toBe(true);
+    }
   });
 
   it('client fetches and caches agent card', async () => {

@@ -3,10 +3,17 @@ import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import { TaskManager } from '../task-manager';
 import type { CogitatorLike, AgentRunResult } from '../types';
 import { A2AError } from '../errors';
-import type { A2AMessage, A2AStreamEvent } from '../types';
+import type { A2AMessage } from '../types';
+import type { TaskEvent } from '../task-manager';
+import { messageText } from '../protocol';
 
 function createUserMessage(text: string): A2AMessage {
-  return { role: 'user', parts: [{ type: 'text', text }] };
+  return {
+    kind: 'message',
+    messageId: crypto.randomUUID(),
+    role: 'user',
+    parts: [{ kind: 'text', text }],
+  };
 }
 
 function createMockRunResult(output: string, structured?: unknown): AgentRunResult {
@@ -33,14 +40,15 @@ describe('TaskManager', () => {
   });
 
   describe('createTask', () => {
-    it('should create a task with working state', async () => {
+    it('should create a submitted task', async () => {
       const msg = createUserMessage('Hello');
       const task = await manager.createTask(msg);
       expect(task.id).toMatch(/^task_/);
       expect(task.contextId).toMatch(/^ctx_/);
-      expect(task.status.state).toBe('working');
+      expect(task.status.state).toBe('submitted');
+      expect(task.kind).toBe('task');
       expect(task.history).toHaveLength(1);
-      expect(task.history[0]).toEqual(msg);
+      expect(task.history![0]).toEqual({ ...msg, taskId: task.id, contextId: task.contextId });
     });
 
     it('should use provided contextId', async () => {
@@ -49,11 +57,11 @@ describe('TaskManager', () => {
     });
 
     it('should emit status-update event on create', async () => {
-      const events: A2AStreamEvent[] = [];
+      const events: TaskEvent[] = [];
       manager.on('event', (e) => events.push(e));
       await manager.createTask(createUserMessage('Hi'));
       expect(events).toHaveLength(1);
-      expect(events[0].type).toBe('status-update');
+      expect(events[0].kind).toBe('status-update');
     });
   });
 
@@ -66,7 +74,7 @@ describe('TaskManager', () => {
 
       const completed = await manager.executeTask(task, cogitator, {}, msg);
       expect(completed.status.state).toBe('completed');
-      expect(completed.artifacts.length).toBeGreaterThan(0);
+      expect(completed.artifacts!.length).toBeGreaterThan(0);
     });
 
     it('should call cogitator.run with correct input', async () => {
@@ -95,7 +103,7 @@ describe('TaskManager', () => {
 
       const failed = await manager.executeTask(task, cogitator, {}, msg);
       expect(failed.status.state).toBe('failed');
-      expect(failed.status.message).toBe('LLM failure');
+      expect(messageText(failed.status.message)).toBe('LLM failure');
     });
 
     it('should fail task without the text of an internal error, logging it instead', async () => {
@@ -107,8 +115,7 @@ describe('TaskManager', () => {
 
       const failed = await manager.executeTask(task, cogitator, {}, msg);
       expect(failed.status.state).toBe('failed');
-      expect(failed.status.message).toBe('Internal error');
-      expect(failed.status.errorDetails?.message).toBe('Internal error');
+      expect(messageText(failed.status.message)).toBe('Internal error');
       expect(consoleError).toHaveBeenCalledWith('[a2a] %s:', `Task ${task.id} failed`, internal);
       consoleError.mockRestore();
     });
@@ -120,7 +127,7 @@ describe('TaskManager', () => {
       const cogitator = createMockCogitator(result);
 
       const completed = await manager.executeTask(task, cogitator, {}, msg);
-      const jsonArtifact = completed.artifacts.find((a) => a.mimeType === 'application/json');
+      const jsonArtifact = completed.artifacts!.find((a) => a.parts.some((p) => p.kind === 'data'));
       expect(jsonArtifact).toBeDefined();
     });
   });
@@ -163,7 +170,7 @@ describe('TaskManager', () => {
 
   describe('events', () => {
     it('should emit events during task lifecycle', async () => {
-      const events: A2AStreamEvent[] = [];
+      const events: TaskEvent[] = [];
       manager.on('event', (e) => events.push(e));
 
       const msg = createUserMessage('Work');
@@ -172,9 +179,11 @@ describe('TaskManager', () => {
       await manager.executeTask(task, cogitator, {}, msg);
 
       expect(events.length).toBeGreaterThanOrEqual(2);
-      expect(events[0].type).toBe('status-update');
-      const statusEvents = events.filter((e) => e.type === 'status-update');
-      expect(statusEvents[0]).toHaveProperty('status.state', 'working');
+      expect(events[0].kind).toBe('status-update');
+      const statusEvents = events.filter((e) => e.kind === 'status-update');
+      expect(statusEvents[0]).toHaveProperty('status.state', 'submitted');
+      expect(statusEvents[1]).toHaveProperty('status.state', 'working');
+      expect(statusEvents.at(-1)).toMatchObject({ final: true, status: { state: 'completed' } });
     });
   });
 });

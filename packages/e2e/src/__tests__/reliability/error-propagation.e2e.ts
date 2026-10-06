@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import http from 'node:http';
 import { OllamaBackend, Agent, CogitatorError, ErrorCode } from '@cogitator-ai/core';
-import { A2AServer } from '@cogitator-ai/a2a';
+import { A2AServer, messageText } from '@cogitator-ai/a2a';
 import { a2aExpress } from '@cogitator-ai/a2a/express';
-import type { CogitatorLike } from '@cogitator-ai/a2a';
-import express from 'express';
+import type { A2AStreamEvent, A2ATask, CogitatorLike, JsonRpcResponse } from '@cogitator-ai/a2a';
+import express, { type Router } from 'express';
 
 let currentHandler: (req: http.IncomingMessage, res: http.ServerResponse) => void;
 let mockServer: http.Server;
@@ -185,16 +185,20 @@ describe('Reliability: Error Propagation', () => {
       method: 'message/send',
       params: {
         message: {
+          kind: 'message',
+          messageId: 'msg_failing_agent',
           role: 'user',
-          parts: [{ type: 'text', text: 'do something' }],
+          parts: [{ kind: 'text', text: 'do something' }],
         },
       },
     });
 
-    const result = response as { result?: { status?: { state: string; message?: string } } };
-    expect(result.result?.status?.state).toBe('failed');
-    expect(result.result?.status?.message).toBe('Internal error');
-    expect(result.result?.status?.message).not.toContain('Agent exploded');
+    expect(response?.error).toBeUndefined();
+    const task = response?.result as A2ATask | undefined;
+    expect(task?.status.state).toBe('failed');
+    expect(task?.status.message?.role).toBe('agent');
+    expect(messageText(task?.status.message)).toBe('Internal error');
+    expect(messageText(task?.status.message)).not.toContain('Agent exploded');
   });
 
   it('SSE stream yields failed event when agent throws', async () => {
@@ -216,7 +220,7 @@ describe('Reliability: Error Propagation', () => {
     });
 
     const app = express();
-    app.use(a2aExpress(a2aServer) as any);
+    app.use(a2aExpress(a2aServer) as unknown as Router);
 
     const httpServer = await new Promise<http.Server>((resolve) => {
       const srv = app.listen(0, () => resolve(srv));
@@ -237,36 +241,34 @@ describe('Reliability: Error Propagation', () => {
           method: 'message/stream',
           params: {
             message: {
+              kind: 'message',
+              messageId: 'msg_sse_fail',
               role: 'user',
-              parts: [{ type: 'text', text: 'fail now' }],
+              parts: [{ kind: 'text', text: 'fail now' }],
             },
           },
         }),
       });
 
+      expect(res.headers.get('content-type')).toContain('text/event-stream');
       const body = await res.text();
-      const events = body
+      const responses = body
         .split('\n\n')
-        .filter((b) => b.trim())
-        .map((block) => {
-          const dataLine = block.split('\n').find((l) => l.startsWith('data: '));
-          if (!dataLine) return null;
-          const raw = dataLine.slice(6);
-          if (raw === '[DONE]') return { done: true };
-          try {
-            return JSON.parse(raw);
-          } catch {
-            return raw;
-          }
-        })
-        .filter(Boolean);
+        .map((block) => block.split('\n').find((line) => line.startsWith('data: ')))
+        .filter((line): line is string => line !== undefined)
+        .map((line) => JSON.parse(line.slice(6)) as JsonRpcResponse);
 
+      expect(responses.every((r) => r.jsonrpc === '2.0' && r.id === 1)).toBe(true);
+      const events = responses.map((r) => r.result as A2AStreamEvent);
       const failedEvent = events.find(
-        (e: any) => e.type === 'status-update' && e.status?.state === 'failed'
+        (e) => e.kind === 'status-update' && e.status.state === 'failed'
       );
-      expect(failedEvent).toBeDefined();
-      expect((failedEvent as any).status.message).toBe('Internal error');
-      expect((failedEvent as any).status.message).not.toContain('stream boom');
+      expect(failedEvent?.kind).toBe('status-update');
+      if (failedEvent?.kind === 'status-update') {
+        expect(failedEvent.final).toBe(true);
+        expect(messageText(failedEvent.status.message)).toBe('Internal error');
+        expect(messageText(failedEvent.status.message)).not.toContain('stream boom');
+      }
     } finally {
       await new Promise<void>((resolve) => httpServer.close(() => resolve()));
     }

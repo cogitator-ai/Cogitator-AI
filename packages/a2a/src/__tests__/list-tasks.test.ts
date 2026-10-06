@@ -8,7 +8,12 @@ import type { Agent, AgentConfig } from '@cogitator-ai/types';
 import { expectResponse } from './helpers';
 
 function createUserMessage(text: string): A2AMessage {
-  return { role: 'user', parts: [{ type: 'text', text }] };
+  return {
+    kind: 'message',
+    messageId: crypto.randomUUID(),
+    role: 'user',
+    parts: [{ kind: 'text', text }],
+  };
 }
 
 function createMockRunResult(output: string): AgentRunResult {
@@ -78,15 +83,15 @@ describe('ListTasks', () => {
       const cogitator = createMockCogitator('Done');
       await manager.executeTask(task1, cogitator, {}, msg1);
 
-      await manager.createTask(createUserMessage('Still working'));
+      await manager.createTask(createUserMessage('Still submitted'));
 
       const completed = await manager.listTasks({ state: 'completed' });
       expect(completed).toHaveLength(1);
       expect(completed[0].status.state).toBe('completed');
 
-      const working = await manager.listTasks({ state: 'working' });
-      expect(working).toHaveLength(1);
-      expect(working[0].status.state).toBe('working');
+      const submitted = await manager.listTasks({ state: 'submitted' });
+      expect(submitted).toHaveLength(1);
+      expect(submitted[0].status.state).toBe('submitted');
     });
 
     it('should support pagination with limit/offset', async () => {
@@ -115,6 +120,7 @@ describe('ListTasks', () => {
       const store = new InMemoryTaskStore();
 
       const older: A2ATask = {
+        kind: 'task',
         id: 'task_old',
         contextId: 'ctx',
         status: { state: 'completed', timestamp: '2025-01-01T00:00:00.000Z' },
@@ -122,6 +128,7 @@ describe('ListTasks', () => {
         artifacts: [],
       };
       const newer: A2ATask = {
+        kind: 'task',
         id: 'task_new',
         contextId: 'ctx',
         status: { state: 'completed', timestamp: '2025-06-01T00:00:00.000Z' },
@@ -129,6 +136,7 @@ describe('ListTasks', () => {
         artifacts: [],
       };
       const middle: A2ATask = {
+        kind: 'task',
         id: 'task_mid',
         contextId: 'ctx',
         status: { state: 'completed', timestamp: '2025-03-15T00:00:00.000Z' },
@@ -192,7 +200,7 @@ describe('ListTasks', () => {
       await server.handleJsonRpc({
         jsonrpc: '2.0',
         method: 'message/send',
-        params: { message: { role: 'user', parts: [{ type: 'text', text: 'A' }], contextId: ctx } },
+        params: { message: { ...createUserMessage('A'), contextId: ctx } },
         id: 1,
       });
       await server.handleJsonRpc({

@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { A2AClient, type A2AStreamEvent, type CogitatorLike } from '@cogitator-ai/a2a';
+import {
+  A2AClient,
+  artifactText,
+  type A2AStreamEvent,
+  type CogitatorLike,
+  type TaskArtifactUpdateEvent,
+} from '@cogitator-ai/a2a';
 import type { AgentRunResult } from '@cogitator-ai/a2a';
 import type { Agent, AgentConfig } from '@cogitator-ai/types';
 import { createStubAgent, startTestA2AServer, type TestA2AServer } from '../../helpers/a2a-server';
@@ -25,6 +31,10 @@ function createMockRunResult(output: string): AgentRunResult {
     usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30, cost: 0, duration: 50 },
     toolCalls: [],
   };
+}
+
+function artifactChunks(events: A2AStreamEvent[]): TaskArtifactUpdateEvent[] {
+  return events.filter((e): e is TaskArtifactUpdateEvent => e.kind === 'artifact-update');
 }
 
 function createStreamingCogitator(tokens: string[] = TOKENS): CogitatorLike {
@@ -58,47 +68,56 @@ describe('A2A v2: Token Streaming', () => {
     await testServer?.close();
   });
 
-  it('token events appear in stream', async () => {
+  it('tokens stream as chunks of one artifact', async () => {
     const events: A2AStreamEvent[] = [];
 
     for await (const event of client.sendMessageStream({
       role: 'user',
-      parts: [{ type: 'text', text: 'Say hello world' }],
+      parts: [{ kind: 'text', text: 'Say hello world' }],
     })) {
       events.push(event);
     }
 
-    const tokenEvents = events.filter((e) => e.type === 'token');
-    expect(tokenEvents.length).toBe(TOKENS.length);
+    const chunks = artifactChunks(events);
+    expect(chunks.length).toBe(TOKENS.length);
+    expect(chunks.map((chunk) => artifactText(chunk.artifact))).toEqual(TOKENS);
 
-    const receivedTokens = tokenEvents.map((e) => {
-      if (e.type === 'token') return e.token;
-      return '';
-    });
-    expect(receivedTokens).toEqual(TOKENS);
+    expect(new Set(chunks.map((chunk) => chunk.artifact.artifactId)).size).toBe(1);
+    expect(chunks[0].append).toBeFalsy();
+    expect(chunks.slice(1).every((chunk) => chunk.append === true)).toBe(true);
+    expect(chunks.slice(0, -1).every((chunk) => chunk.lastChunk === false)).toBe(true);
+    expect(chunks.at(-1)?.lastChunk).toBe(true);
   });
 
-  it('status transitions from working to completed', async () => {
+  it('status transitions from submitted through working to completed', async () => {
     const events: A2AStreamEvent[] = [];
 
     for await (const event of client.sendMessageStream({
       role: 'user',
-      parts: [{ type: 'text', text: 'Check status transitions' }],
+      parts: [{ kind: 'text', text: 'Check status transitions' }],
     })) {
       events.push(event);
     }
 
-    const statusEvents = events.filter((e) => e.type === 'status-update');
+    const snapshot = events[0];
+    expect(snapshot.kind).toBe('task');
+    if (snapshot.kind === 'task') {
+      expect(snapshot.status.state).toBe('submitted');
+    }
+
+    const statusEvents = events.filter((e) => e.kind === 'status-update');
     expect(statusEvents.length).toBeGreaterThanOrEqual(2);
 
     const first = statusEvents[0];
-    if (first.type === 'status-update') {
+    if (first.kind === 'status-update') {
       expect(first.status.state).toBe('working');
+      expect(first.final).toBe(false);
     }
 
     const last = statusEvents[statusEvents.length - 1];
-    if (last.type === 'status-update') {
+    if (last.kind === 'status-update') {
       expect(last.status.state).toBe('completed');
+      expect(last.final).toBe(true);
     }
   });
 
@@ -107,9 +126,9 @@ describe('A2A v2: Token Streaming', () => {
 
     for await (const event of client.sendMessageStream({
       role: 'user',
-      parts: [{ type: 'text', text: 'Produce artifact' }],
+      parts: [{ kind: 'text', text: 'Produce artifact' }],
     })) {
-      if (event.type === 'status-update') {
+      if (event.kind === 'status-update') {
         taskId = event.taskId;
       }
     }
@@ -117,11 +136,12 @@ describe('A2A v2: Token Streaming', () => {
     expect(taskId).toBeTruthy();
     const task = await client.getTask(taskId);
     expect(task.status.state).toBe('completed');
-    expect(task.artifacts.length).toBeGreaterThanOrEqual(1);
+    const artifacts = task.artifacts ?? [];
+    expect(artifacts.length).toBeGreaterThanOrEqual(1);
 
-    const textPart = task.artifacts[0].parts.find((p) => p.type === 'text');
+    const textPart = artifacts[0].parts.find((p) => p.kind === 'text');
     expect(textPart).toBeDefined();
-    if (textPart?.type === 'text') {
+    if (textPart?.kind === 'text') {
       expect(textPart.text).toBe(TOKENS.join(''));
     }
   });
@@ -131,7 +151,7 @@ describe('A2A v2: Token Streaming', () => {
 
     for await (const event of client.sendMessageStream({
       role: 'user',
-      parts: [{ type: 'text', text: 'Should terminate' }],
+      parts: [{ kind: 'text', text: 'Should terminate' }],
     })) {
       events.push(event);
     }
@@ -139,12 +159,11 @@ describe('A2A v2: Token Streaming', () => {
     expect(events.length).toBeGreaterThan(0);
 
     const lastEvent = events[events.length - 1];
-    expect(['status-update', 'artifact-update']).toContain(lastEvent.type);
-
-    const terminalStatus = events
-      .filter((e) => e.type === 'status-update')
-      .find((e) => e.type === 'status-update' && ['completed', 'failed'].includes(e.status.state));
-    expect(terminalStatus).toBeDefined();
+    expect(lastEvent.kind).toBe('status-update');
+    if (lastEvent.kind === 'status-update') {
+      expect(lastEvent.final).toBe(true);
+      expect(['completed', 'failed']).toContain(lastEvent.status.state);
+    }
   });
 
   it('concurrent streams do not interfere', async () => {
@@ -178,37 +197,29 @@ describe('A2A v2: Token Streaming', () => {
         collectStream(
           clientA.sendMessageStream({
             role: 'user',
-            parts: [{ type: 'text', text: 'Stream A' }],
+            parts: [{ kind: 'text', text: 'Stream A' }],
           })
         ),
         collectStream(
           clientB.sendMessageStream({
             role: 'user',
-            parts: [{ type: 'text', text: 'Stream B' }],
+            parts: [{ kind: 'text', text: 'Stream B' }],
           })
         ),
       ]);
 
-      const tokA = eventsA
-        .filter((e) => e.type === 'token')
-        .map((e) => (e.type === 'token' ? e.token : ''));
-      const tokB = eventsB
-        .filter((e) => e.type === 'token')
-        .map((e) => (e.type === 'token' ? e.token : ''));
+      const tokA = artifactChunks(eventsA).map((chunk) => artifactText(chunk.artifact));
+      const tokB = artifactChunks(eventsB).map((chunk) => artifactText(chunk.artifact));
 
       expect(tokA).toEqual(tokensA);
       expect(tokB).toEqual(tokensB);
 
-      const taskIdsA = new Set(
-        eventsA
-          .filter((e) => 'taskId' in e && e.taskId)
-          .map((e) => (e as { taskId: string }).taskId)
-      );
-      const taskIdsB = new Set(
-        eventsB
-          .filter((e) => 'taskId' in e && e.taskId)
-          .map((e) => (e as { taskId: string }).taskId)
-      );
+      const taskIdOf = (e: A2AStreamEvent): string | undefined =>
+        e.kind === 'task' ? e.id : e.taskId;
+      const taskIdsA = new Set(eventsA.map(taskIdOf).filter(Boolean));
+      const taskIdsB = new Set(eventsB.map(taskIdOf).filter(Boolean));
+      expect(taskIdsA.size).toBe(1);
+      expect(taskIdsB.size).toBe(1);
 
       for (const id of taskIdsA) {
         expect(taskIdsB.has(id)).toBe(false);

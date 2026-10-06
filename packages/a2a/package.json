@@ -62,14 +62,16 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@cogitator-ai/types": "workspace:*",
     "@cogitator-ai/server-shared": "workspace:*",
+    "@cogitator-ai/types": "workspace:*",
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@a2a-js/sdk": "0.3.14",
     "@types/express": "^5.0.6",
     "@types/koa": "^3.0.3",
     "@types/node": "^22.20.4",
+    "ajv": "^8.18.0",
     "typescript": "^6.0.3",
     "vitest": "^5.0.3"
   },
