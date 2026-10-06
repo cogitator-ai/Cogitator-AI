@@ -95,6 +95,13 @@ describe('resolveOllamaHost', () => {
     expect(resolveOllamaHost('  ')).toBeUndefined();
     expect(resolveOllamaHost(undefined)).toBeUndefined();
   });
+
+  it('reads a path with a long run of slashes in linear time', () => {
+    const path = `/${'/'.repeat(50_000)}a`;
+    const started = performance.now();
+    expect(resolveOllamaHost(`http://gpu-box${path}`)).toBe(`http://gpu-box${path}`);
+    expect(performance.now() - started).toBeLessThan(100);
+  });
 });
 
 describe('Ollama base URL precedence', () => {

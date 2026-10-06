@@ -39,6 +39,7 @@ import {
   parseTaskPushNotificationConfig,
   parseTaskQueryParams,
 } from './protocol.js';
+import { trimTrailingSlashes } from './url.js';
 
 type HeaderGetter = (name: string) => string | null | undefined;
 
@@ -174,7 +175,7 @@ export class A2AServer {
     }
     this.maxRunTimeoutMs = maxRunTimeoutMs;
     this.sseHeartbeatMs = resolveSseHeartbeatMs(config.sseHeartbeatMs);
-    this.cardUrl = config.cardUrl ? config.cardUrl.replace(/\/+$/, '') : undefined;
+    this.cardUrl = config.cardUrl ? trimTrailingSlashes(config.cardUrl) : undefined;
     this.agentVersion = config.agentVersion;
     this.provider = config.provider;
     this.cardSigning = config.cardSigning;
@@ -259,10 +260,10 @@ export class A2AServer {
   }
 
   private agentEndpoint(agentName: string, baseUrl?: string): string {
-    const shared = this.cardUrl ?? `${(baseUrl ?? '').replace(/\/+$/, '')}${this.basePath}`;
+    const shared = this.cardUrl ?? `${trimTrailingSlashes(baseUrl ?? '')}${this.basePath}`;
     return agentName === this.defaultAgentName
       ? shared
-      : `${shared.replace(/\/+$/, '')}/${encodeURIComponent(agentName)}`;
+      : `${trimTrailingSlashes(shared)}/${encodeURIComponent(agentName)}`;
   }
 
   private signed(card: AgentCard): AgentCard {

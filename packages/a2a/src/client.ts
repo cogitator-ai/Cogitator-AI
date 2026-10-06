@@ -25,6 +25,7 @@ import {
   type ToolApprovalResponse,
 } from './approvals.js';
 import { artifactText, messageText, textPart, toMessage } from './protocol.js';
+import { trimTrailingSlashes } from './url.js';
 
 export interface A2AToolOptions {
   name?: string;
@@ -105,7 +106,7 @@ export class A2AClient {
   private cachedCardUrl: string | null = null;
 
   constructor(baseUrl: string, config?: A2AClientConfig) {
-    this.baseUrl = baseUrl.replace(/\/+$/, '');
+    this.baseUrl = trimTrailingSlashes(baseUrl);
     this.headers = config?.headers ?? {};
     this.timeout = config?.timeout ?? 30000;
     this.agentCardPath = config?.agentCardPath;

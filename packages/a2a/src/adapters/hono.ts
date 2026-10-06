@@ -5,6 +5,7 @@ import { createErrorResponse } from '../json-rpc.js';
 import * as errors from '../errors.js';
 import { AGENT_CARD_PATH, LEGACY_AGENT_CARD_PATH } from '../types.js';
 import { handleA2AHttp, mountUrlOf } from './shared.js';
+import { trimTrailingSlashes } from '../url.js';
 
 /**
  * Hono app serving an A2A server: the Agent Card at `/.well-known/agent-card.json` (and the
@@ -49,7 +50,7 @@ export function a2aHono(server: A2AServer): Hono {
     }
   };
 
-  const base = server.basePath.replace(/\/+$/, '');
+  const base = trimTrailingSlashes(server.basePath);
   const agentPath = (c: Context) => `${base}/${encodeURIComponent(c.req.param('agent') ?? '')}`;
 
   app.get(AGENT_CARD_PATH, (c) => serve(c, AGENT_CARD_PATH));

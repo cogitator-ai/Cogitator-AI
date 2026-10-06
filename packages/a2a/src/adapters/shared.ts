@@ -4,6 +4,7 @@ import { STREAMING_METHODS } from '../server.js';
 import { createErrorResponse, type JsonRpcResponse } from '../json-rpc.js';
 import * as errors from '../errors.js';
 import { AGENT_CARD_PATH, LEGACY_AGENT_CARD_PATH } from '../types.js';
+import { trimTrailingSlashes } from '../url.js';
 
 export type HeaderValue = string | string[] | null | undefined;
 
@@ -79,7 +80,7 @@ function agentNameFrom(segment: string): string | null {
  * `<basePath>/<agent name>`.
  */
 function matchRoute(server: A2AServer, method: string, path: string): Route | null {
-  const basePath = server.basePath.replace(/\/+$/, '') || '';
+  const basePath = trimTrailingSlashes(server.basePath) || '';
   if (method === 'GET') {
     if (path === AGENT_CARD_PATH) return { kind: 'card' };
     if (path === LEGACY_AGENT_CARD_PATH) return { kind: 'legacy-card' };

@@ -9,6 +9,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** `value` without the slashes it ends with, in linear time, unlike `replace(/\/+$/, '')`. */
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === '/') end--;
+  return value.slice(0, end);
+}
+
 /**
  * The Ollama server the generated code talks to: `OLLAMA_BASE_URL`, which it
  * reads, then `OLLAMA_HOST`, which the Ollama CLI reads, then the local default.
@@ -17,7 +24,7 @@ export function resolveOllamaUrl(env: Record<string, string | undefined> = proce
   const raw = env.OLLAMA_BASE_URL?.trim() || env.OLLAMA_HOST?.trim();
   if (!raw) return DEFAULT_OLLAMA_URL;
   const withScheme = /^https?:\/\//i.test(raw) ? raw : `http://${raw}`;
-  return withScheme.replace(/\/+$/, '');
+  return trimTrailingSlashes(withScheme);
 }
 
 /** The models installed in the Ollama at `baseUrl`, or `undefined` when it does not answer. */

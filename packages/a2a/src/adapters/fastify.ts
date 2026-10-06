@@ -4,6 +4,7 @@ import { createErrorResponse } from '../json-rpc.js';
 import * as errors from '../errors.js';
 import { AGENT_CARD_PATH, LEGACY_AGENT_CARD_PATH } from '../types.js';
 import { firstHeader, handleA2AHttp, mountUrlOf } from './shared.js';
+import { trimTrailingSlashes } from '../url.js';
 
 /**
  * Fastify plugin serving an A2A server: the Agent Card at `/.well-known/agent-card.json` (and the
@@ -74,7 +75,7 @@ export function a2aFastify(server: A2AServer): FastifyPluginAsync {
       }
     };
 
-    const base = server.basePath.replace(/\/+$/, '');
+    const base = trimTrailingSlashes(server.basePath);
     const agentPath = (request: FastifyRequest) =>
       `${base}/${encodeURIComponent((request.params as { agent?: string }).agent ?? '')}`;
 

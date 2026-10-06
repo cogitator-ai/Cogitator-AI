@@ -33,6 +33,13 @@ describe('resolveOllamaUrl', () => {
     expect(resolveOllamaUrl({ OLLAMA_HOST: '0.0.0.0:11500' })).toBe('http://0.0.0.0:11500');
     expect(resolveOllamaUrl({})).toBe('http://localhost:11434');
   });
+
+  it('reads a URL with a long run of slashes in linear time', () => {
+    const url = `http://gpu${'/'.repeat(50_000)}a`;
+    const started = performance.now();
+    expect(resolveOllamaUrl({ OLLAMA_BASE_URL: `${url}//` })).toBe(url);
+    expect(performance.now() - started).toBeLessThan(100);
+  });
 });
 
 describe('listOllamaModels', () => {

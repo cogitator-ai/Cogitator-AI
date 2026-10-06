@@ -21,6 +21,16 @@ function splitHostPort(authority: string): { host: string; port?: string } {
 }
 
 /**
+ * `value` without the slashes it ends with. A loop rather than `replace(/\/+$/, '')`, which
+ * backtracks in quadratic time over a long run of slashes followed by anything else.
+ */
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === '/') end--;
+  return value.slice(0, end);
+}
+
+/**
  * The URL a client reaches Ollama at, read from an `OLLAMA_HOST`-style value
  * the way Ollama itself reads it: `gpu-box`, `gpu-box:8080`, `:11434`,
  * `0.0.0.0` or a full URL. Without a scheme the port defaults to 11434, with
@@ -38,7 +48,7 @@ export function resolveOllamaHost(value: string | undefined): string | undefined
 
   const slash = rest.indexOf('/');
   const authority = slash === -1 ? rest : rest.slice(0, slash);
-  const path = slash === -1 ? '' : rest.slice(slash).replace(/\/+$/, '');
+  const path = slash === -1 ? '' : trimTrailingSlashes(rest.slice(slash));
 
   const split = splitHostPort(authority);
   const host = WILDCARD_HOSTS.has(split.host) ? 'localhost' : split.host;

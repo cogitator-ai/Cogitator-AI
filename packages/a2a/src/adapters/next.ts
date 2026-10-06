@@ -3,6 +3,7 @@ import { createErrorResponse } from '../json-rpc.js';
 import * as errors from '../errors.js';
 import { AGENT_CARD_PATH } from '../types.js';
 import { handleA2AHttp, type A2AHttpResponse } from './shared.js';
+import { trimTrailingSlashes } from '../url.js';
 
 type RouteParams = Record<string, string | string[] | undefined>;
 
@@ -55,7 +56,7 @@ function toResponse(response: A2AHttpResponse, abort: AbortController): Response
  * `[agent]` route they serve that agent's own card and endpoint.
  */
 export function a2aNext(server: A2AServer) {
-  const base = server.basePath.replace(/\/+$/, '');
+  const base = trimTrailingSlashes(server.basePath);
 
   const serve = async (
     request: Request,

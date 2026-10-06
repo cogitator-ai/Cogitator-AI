@@ -1,6 +1,7 @@
 import type { DeployConfig } from '@cogitator-ai/types';
 import { volumeMountPath, volumeName } from '../volumes.js';
 import { servesHttp } from './health.js';
+import { trimTrailing } from '../utils/text.js';
 
 export const COMPOSE_DATABASE_URL = 'postgresql://cogitator:cogitator@postgres:5432/cogitator';
 export const COMPOSE_REDIS_URL = 'redis://redis:6379';
@@ -9,16 +10,10 @@ function yamlString(value: string): string {
   return JSON.stringify(value);
 }
 
-function stripTrailingSlashes(value: string): string {
-  let end = value.length;
-  while (end > 0 && value[end - 1] === '/') end--;
-  return value.slice(0, end);
-}
-
 export function imageTag(config: DeployConfig): string {
   const image = config.image ?? 'cogitator-app';
   return config.registry
-    ? `${stripTrailingSlashes(config.registry)}/${image}:latest`
+    ? `${trimTrailing(config.registry, '/')}/${image}:latest`
     : `${image}:latest`;
 }
 

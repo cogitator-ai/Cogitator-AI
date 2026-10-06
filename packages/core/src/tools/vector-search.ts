@@ -163,11 +163,18 @@ function configuredOllamaUrl(): string | undefined {
   return undefined;
 }
 
+/** `value` without the slashes it ends with, in linear time, unlike `replace(/\/+$/, '')`. */
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === '/') end--;
+  return value.slice(0, end);
+}
+
 function resolveOllamaBaseUrl(): string {
   const configured = configuredOllamaUrl();
   if (!configured) return 'http://localhost:11434';
   const withScheme = /^https?:\/\//i.test(configured) ? configured : `http://${configured}`;
-  return withScheme.replace(/\/+$/, '');
+  return trimTrailingSlashes(withScheme);
 }
 
 function detectEmbeddingProvider(): 'openai' | 'ollama' | 'google' | null {
