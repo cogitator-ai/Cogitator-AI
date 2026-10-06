@@ -98,6 +98,8 @@ if (!outputResult.allowed && outputResult.suggestedRevision) {
 
 Outputs get a pattern scan for destructive commands (`rm -rf /`, `format c:`, `sudo rm -rf`) and an LLM rating against the output principles. When `enableCritiqueRevision` is true and the output fails, the critique-revise loop rewrites it; the result stays `allowed: false` and carries the rewrite in `suggestedRevision`.
 
+Inside a `Cogitator` run with `filterOutput` on, a streamed run (`stream: true` with `onToken`) holds the tokens of each model turn back until the filter has checked the turn. `onToken` then gets the checked text in one chunk: the answer as the model wrote it when it passes, the revision when the critique-revise loop rewrote it, and nothing when it is blocked without a revision (the run fails with `LLM_CONTENT_FILTERED`). Every server adapter streams through `onToken`, so no blocked text reaches a client. Reasoning summaries (`onReasoning`) still stream as they arrive. Turn `filterOutput` off when token-by-token streaming matters more than the output check.
+
 ## Critique-Revise Loop
 
 The `CritiqueReviser` iteratively improves unsafe outputs:

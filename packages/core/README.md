@@ -3421,7 +3421,7 @@ const cog = new Cogitator({
 });
 ```
 
-Fields left out take `DEFAULT_GUARDRAIL_CONFIG` (input, output and tool-call filtering plus critique-revision on). `InputFilter`, `OutputFilter`, `ToolGuard` and `CritiqueReviser` are the layers `ConstitutionalAI` uses; each takes `{ config, constitution }` plus `llm` for the LLM-backed ones. `cog.getGuardrails()` and `cog.setConstitution()` work before the first run when `guardrails.model` or `llm.defaultModel` names the judge model; a constitution set earlier applies once the guardrails are built.
+Fields left out take `DEFAULT_GUARDRAIL_CONFIG` (input, output and tool-call filtering plus critique-revision on). `InputFilter`, `OutputFilter`, `ToolGuard` and `CritiqueReviser` are the layers `ConstitutionalAI` uses; each takes `{ config, constitution }` plus `llm` for the LLM-backed ones. `cog.getGuardrails()` and `cog.setConstitution()` work before the first run when `guardrails.model` or `llm.defaultModel` names the judge model; a constitution set earlier applies once the guardrails are built. With `filterOutput` on, a streamed run hands `onToken` each turn in one chunk after the output check (the answer, its revision, or nothing when it is blocked), so blocked text never streams.
 
 With `strictMode`, every call of a tool with `sideEffects` needs approval and goes through the run's [approval flow](#approvals) like a `requiresApproval` tool: `onApproval`, then `guardrails.onToolApproval`, else the run pauses. `ToolGuard` fails closed: a call that needs approval and was not approved by that flow or by `onToolApproval` is denied. See [Constitutional AI](https://cogitator.app/docs/advanced/constitutional-ai).
 

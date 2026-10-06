@@ -846,6 +846,8 @@ export class Cogitator implements ToolInvoker {
       let lastFinishReason: ChatResponse['finishReason'] | undefined;
       const streaming = Boolean(options.stream && (options.onToken ?? options.onReasoning));
       const onToken = options.onToken ?? (() => undefined);
+      const holdsTokensForOutputFilter = streaming && this.filtersOutput();
+      const turnTokens = holdsTokensForOutputFilter ? () => undefined : onToken;
       let structuredRepaired = false;
       let emptyAnswerRetries = 0;
 
@@ -878,7 +880,7 @@ export class Cogitator implements ToolInvoker {
               messages,
               registry,
               active,
-              onToken,
+              turnTokens,
               abortController.signal,
               responseFormat,
               {
@@ -991,6 +993,7 @@ export class Cogitator implements ToolInvoker {
             }
           }
         }
+        if (holdsTokensForOutputFilter && outputContent) onToken(outputContent);
 
         const requestsTools = !limit.closingTurn && Boolean(response.toolCalls?.length);
         const assistantMessage = requestsTools
@@ -1497,6 +1500,16 @@ export class Cogitator implements ToolInvoker {
       (target) => this.route(target),
       this.constitution
     );
+  }
+
+  /**
+   * True when the guardrails check every answer before it is used. A streamed run then holds
+   * the tokens of each turn back and hands `onToken` the checked text (or its revision) in one
+   * chunk, so nothing the filter blocks reaches a listener.
+   */
+  private filtersOutput(): boolean {
+    const config = this.state.constitutionalAI?.config;
+    return Boolean(config?.enabled && config.filterOutput);
   }
 
   private ensureCostRouting(): void {
