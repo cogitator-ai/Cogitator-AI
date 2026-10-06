@@ -50,7 +50,8 @@
     "chalk": "^6.0.1",
     "commander": "^15.0.0",
     "ora": "^9.4.1",
-    "yaml": "^2.9.1"
+    "yaml": "^2.9.1",
+    "better-sqlite3": "^13.0.3"
   },
   "devDependencies": {
     "@types/node": "^22.20.4",

@@ -235,6 +235,12 @@ importers:
       '@types/ws':
         specifier: ^8.18.2
         version: 8.18.2
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
+      pg:
+        specifier: ^8.23.1
+        version: 8.23.1
       tsx:
         specifier: ^4.23.15
         version: 4.23.15
@@ -398,6 +404,9 @@ importers:
       '@whiskeysockets/baileys':
         specifier: 7.0.0-rc14
         version: 7.0.0-rc14(sharp@0.35.5(@types/node@22.20.4))(supports-color@10.2.2)
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -434,6 +443,9 @@ importers:
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
       chalk:
         specifier: ^6.0.1
         version: 6.0.1
@@ -493,9 +505,6 @@ importers:
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
-      better-sqlite3:
-        specifier: ^11.0.0 || ^12.0.0 || ^13.0.0
-        version: 13.0.3
       langfuse:
         specifier: ^3.0.0
         version: 3.38.6
@@ -530,16 +539,18 @@ importers:
       '@types/pg':
         specifier: ^8.23.1
         version: 8.23.1
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
+      pg:
+        specifier: ^8.23.1
+        version: 8.23.1
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
       vitest:
         specifier: ^5.0.3
         version: 5.0.3(@opentelemetry/api@1.9.0)(@types/node@22.20.4)(@vitest/coverage-v8@5.0.3)(vite@8.3.2(@types/node@22.20.4)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
-    optionalDependencies:
-      pg:
-        specifier: ^8.23.1
-        version: 8.23.1
 
   packages/create-cogitator-app:
     dependencies:
@@ -1240,6 +1251,9 @@ importers:
         specifier: ^4.6.5
         version: 4.6.5
     devDependencies:
+      '@qdrant/js-client-rest':
+        specifier: ^1.19.0
+        version: 1.19.0(typescript@6.0.3)
       '@types/better-sqlite3':
         specifier: ^9.6.0
         version: 9.6.0
@@ -1249,16 +1263,6 @@ importers:
       '@types/pg':
         specifier: ^8.23.1
         version: 8.23.1
-      typescript:
-        specifier: ^6.0.3
-        version: 6.0.3
-      vitest:
-        specifier: ^5.0.3
-        version: 5.0.3(@opentelemetry/api@1.9.0)(@types/node@22.20.4)(@vitest/coverage-v8@5.0.3)(vite@8.3.2(@types/node@22.20.4)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
-    optionalDependencies:
-      '@qdrant/js-client-rest':
-        specifier: ^1.19.0
-        version: 1.19.0(typescript@6.0.3)
       better-sqlite3:
         specifier: ^13.0.3
         version: 13.0.3
@@ -1271,6 +1275,12 @@ importers:
       pg:
         specifier: ^8.23.1
         version: 8.23.1
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^5.0.3
+        version: 5.0.3(@opentelemetry/api@1.9.0)(@types/node@22.20.4)(@vitest/coverage-v8@5.0.3)(vite@8.3.2(@types/node@22.20.4)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
 
   packages/models:
     dependencies:

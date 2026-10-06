@@ -91,9 +91,15 @@ export class PostgresAdapter
   async connect(): Promise<MemoryResult<void>> {
     if (this.pool) return this.success(undefined);
 
+    let pg: typeof import('pg');
+    try {
+      pg = await import('pg');
+    } catch {
+      return this.failure('PostgresAdapter needs the "pg" package. Install it: pnpm add pg');
+    }
+
     let pool: Pool | undefined;
     try {
-      const pg = await import('pg');
       const { Pool } = pg.default ?? pg;
 
       pool = new Pool({

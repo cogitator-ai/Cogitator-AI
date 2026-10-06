@@ -314,15 +314,15 @@ All with Swagger docs, SSE streaming, and WebSocket support, built on the shared
 
 ## Why Cogitator?
 
-|                   | Cogitator     | LangChain      | OpenAI Assistants |
-| ----------------- | ------------- | -------------- | ----------------- |
-| **Language**      | TypeScript    | Python         | REST API          |
-| **Self-hosted**   | Yes           | Yes            | No                |
-| **Any LLM**       | Yes           | Yes            | OpenAI only       |
-| **Multi-agent**   | 7 strategies  | Limited        | No                |
-| **A2A Protocol**  | Yes           | No             | No                |
-| **Observability** | OpenTelemetry | Requires setup | Dashboard only    |
-| **Dependencies**  | 7 (core)      | 150+           | N/A               |
+|                   | Cogitator                         | LangChain      | OpenAI Assistants |
+| ----------------- | --------------------------------- | -------------- | ----------------- |
+| **Language**      | TypeScript                        | Python         | REST API          |
+| **Self-hosted**   | Yes                               | Yes            | No                |
+| **Any LLM**       | Yes                               | Yes            | OpenAI only       |
+| **Multi-agent**   | 7 strategies                      | Limited        | No                |
+| **A2A Protocol**  | Yes                               | No             | No                |
+| **Observability** | OpenTelemetry                     | Requires setup | Dashboard only    |
+| **Dependencies**  | 7 (core), database drivers opt-in | 150+           | N/A               |
 
 ---
 

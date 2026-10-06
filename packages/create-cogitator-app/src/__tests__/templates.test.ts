@@ -109,6 +109,7 @@ describe('memory template', () => {
     const deps = template.dependencies();
     expect(deps).toHaveProperty('@cogitator-ai/memory');
     expect(deps).toHaveProperty('@cogitator-ai/redis');
+    expect(deps).toHaveProperty('ioredis');
   });
 
   it('uses threadId for memory', () => {

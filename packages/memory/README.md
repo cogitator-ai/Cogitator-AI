@@ -7,13 +7,15 @@ Memory adapters for Cogitator AI agents. Supports in-memory, Redis (short-term),
 ```bash
 pnpm add @cogitator-ai/memory
 
-# Optional peer dependencies
+# Install the driver of the store you use (optional peer dependencies)
 pnpm add ioredis  # For Redis adapter
-pnpm add pg       # For PostgreSQL adapter
-pnpm add better-sqlite3  # For SQLite adapter and CoreFactsStore
+pnpm add pg       # For PostgreSQL adapter and graph adapter
+pnpm add better-sqlite3  # For SQLite adapter, SQLite graph adapter and CoreFactsStore
 pnpm add mongodb  # For MongoDB adapter
 pnpm add @qdrant/js-client-rest  # For Qdrant embedding adapter
 ```
+
+Database drivers are not installed with the package (nor with `@cogitator-ai/core`): add the one your adapter needs. An adapter whose driver is missing fails `connect()` with the command to install it. The in-memory adapters need no driver.
 
 With `@cogitator-ai/core` you usually configure memory on the runtime (`new Cogitator({ memory: { adapter: 'postgres', postgres: { ... } } })`) and read it with `await cog.getMemory()`; the adapters below are for direct use. Website docs: [Memory](https://cogitator.app/docs/memory), [Adapters](https://cogitator.app/docs/memory/adapters), [Embeddings](https://cogitator.app/docs/memory/embeddings), [Hybrid Search](https://cogitator.app/docs/memory/hybrid-search), [Knowledge Graphs](https://cogitator.app/docs/memory/knowledge-graphs).
 

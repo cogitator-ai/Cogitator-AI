@@ -1,6 +1,6 @@
 import type { ProjectOptions, TemplateGenerator } from '../types.js';
 import { modelFor, providerConfig } from '../utils/providers.js';
-import { cogitatorVersion, ZOD_VERSION } from './versions.js';
+import { cogitatorVersion, IOREDIS_VERSION, ZOD_VERSION } from './versions.js';
 import {
   envHelperFiles,
   envHelperImport,
@@ -107,6 +107,7 @@ export const memoryTemplate: TemplateGenerator = {
       '@cogitator-ai/core': cogitatorVersion('@cogitator-ai/core'),
       '@cogitator-ai/memory': cogitatorVersion('@cogitator-ai/memory'),
       '@cogitator-ai/redis': cogitatorVersion('@cogitator-ai/redis'),
+      ioredis: IOREDIS_VERSION,
       zod: ZOD_VERSION,
     };
   },

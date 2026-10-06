@@ -16,6 +16,8 @@ unwrap(await memory.connect());
 
 `createMemoryAdapter` handles `memory`, `redis`, `postgres`, `sqlite` and `mongodb` and returns the common `MemoryAdapter` interface. For Qdrant use `createEmbeddingAdapter({ provider: 'qdrant', dimensions })`, which returns a `ConnectableEmbeddingAdapter` (an `EmbeddingAdapter` with `connect()` and `disconnect()`) to connect before use. Construct the class directly (e.g. `new PostgresAdapter(...)`) when you need its extra capabilities — facts, vector or keyword search.
 
+Database drivers are optional peer dependencies, installed by you and not with `@cogitator-ai/memory` or `@cogitator-ai/core`: each section below names the one its adapter needs, and an adapter whose driver is missing fails `connect()` with the install command.
+
 All conversation adapters share the same `MemoryAdapter` interface: `createThread`, `getThread`, `updateThread`, `deleteThread`, `addEntry`, `getEntries`, `getEntry`, `deleteEntry`, `clearThread`, `connect` and `disconnect`. Some adapters add `FactAdapter`, `EmbeddingAdapter` or `KeywordSearchAdapter`.
 
 Every method — `connect()` included — returns a `MemoryResult` instead of throwing, so a failed connection goes unnoticed unless you check it. Wrap calls in `unwrap()` (throws on failure) or check `result.success`; see [Results and `unwrap()`](/docs/memory#results-and-unwrap).

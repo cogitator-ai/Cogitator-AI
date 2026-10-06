@@ -5,6 +5,9 @@ import { fileURLToPath } from 'node:url';
 /** The zod range generated projects depend on: the one `@cogitator-ai/core` depends on, so tool schemas and core share one zod. */
 export const ZOD_VERSION = '^4.6.5';
 
+/** The Redis driver the memory template's store loads: memory and redis take it as an optional peer, not as a dependency. */
+export const IOREDIS_VERSION = '^6.0.0';
+
 const OWN_NAME = 'create-cogitator-app';
 const SCOPE = '@cogitator-ai/';
 
