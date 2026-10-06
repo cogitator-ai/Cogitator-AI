@@ -82,7 +82,7 @@ const node = agentNode<ResearchState>(researcher, {
 | `inputMapper` | `(state, input?) => string`         | Build the agent input. Without it: `ctx.input` if it is a string, otherwise `JSON.stringify(ctx.input)`, or `JSON.stringify(state)` when the node has no input |
 | `stateMapper` | `(result: RunResult) => Partial<S>` | Map agent output to state updates                                                                                                                              |
 | `runOptions`  | `Partial<RunOptions>`               | Extra run options (`timeout`, `threadId`, `context`, `onToken`, ...). Sampling settings such as `temperature` belong on the `Agent`                            |
-| `approvals`   | `AgentNodeApprovalOptions \| false` | Where tool calls that need approval are asked, see [Tool approvals](#tool-approvals). `false` fails the node instead                                          |
+| `approvals`   | `NodeApprovalOptions \| false`      | Where tool calls that need approval are asked, see [Tool approvals](#tool-approvals). `false` fails the node instead                                           |
 
 ### Behavior
 
@@ -122,7 +122,7 @@ builder.addNode(
 
 ## toolNode
 
-Runs a single `Tool` directly without an agent wrapper.
+Runs a single `Tool` without an agent, the way an agent run calls it: through the node context's `cogitator.invokeTool`, so the mapped arguments are validated against the tool's schema, a call that needs approval is asked for, the guardrails apply, a sandboxed tool runs in the runtime's sandbox and `tool.timeout` is kept.
 
 ```typescript
 import { tool } from '@cogitator-ai/core';
@@ -147,18 +147,20 @@ const node = toolNode(fetchUrl, {
 
 ### ToolNodeOptions
 
-| Option        | Type                       | Required | Description                                             |
-| ------------- | -------------------------- | -------- | ------------------------------------------------------- |
-| `argsMapper`  | `(state, input?) => TArgs` | Yes      | Map state to tool arguments                             |
-| `stateMapper` | `(result) => Partial<S>`   | No       | Map tool result to state updates                        |
-| `signal`      | `AbortSignal`              | No       | Signal passed to the tool; defaults to the run's signal |
+| Option        | Type                           | Required | Description                                                                                                      |
+| ------------- | ------------------------------ | -------- | ---------------------------------------------------------------------------------------------------------------- |
+| `argsMapper`  | `(state, input?) => TArgs`     | Yes      | Map state to tool arguments                                                                                      |
+| `stateMapper` | `(result) => Partial<S>`       | No       | Map tool result to state updates                                                                                 |
+| `signal`      | `AbortSignal`                  | No       | Signal passed to the tool, defaults to the run's signal                                                          |
+| `approvals`   | `NodeApprovalOptions \| false` | No       | Where a call that needs approval is asked, as for [agent nodes](#tool-approvals). `false` fails the node instead |
 
 ### Behavior
 
 1. `argsMapper` builds typed arguments from state
-2. The tool's `execute` function runs with those arguments and a `ToolContext` whose `agentId` is `workflow:<workflowId>:<nodeId>` and `runId` is the workflow id
+2. `cogitator.invokeTool` runs the tool with those arguments and a `ToolContext` whose `agentId` is `workflow:<workflowId>:<nodeId>` and `runId` is the workflow id
 3. `stateMapper` extracts state updates from the result
-4. The raw tool result is passed downstream
+
+Arguments that do not match the tool's schema, a failing tool or a call over `tool.timeout` fail the node with an error naming the tool, workflow and node. A tool with `requiresApproval` asks the approval store like an agent node does, titled `Allow workflow node "<node>" to call <tool>?`, and runs once the call is approved. A declined call, or one with no approval store to ask (or `approvals: false`), fails the node without running the tool. The node needs the `Cogitator` the executor puts in its context. 4. The raw tool result is passed downstream
 
 ---
 

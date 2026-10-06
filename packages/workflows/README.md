@@ -184,7 +184,9 @@ builder
   );
 ```
 
-When an `agentNode` agent calls a tool that needs approval, its paused run never passes for an answer. With an `approvalStore` (execute option, or `approvals.approvalStore`) each waiting call becomes an approve/reject request in the human-in-the-loop store and the run resumes once it is answered; `approvals: { assignee, timeout, timeoutAction, ... }` shapes the requests. Without a store, or with `approvals: false`, the node fails with an `AgentRunPausedError` carrying the checkpoint, and is not retried.
+When an `agentNode` agent calls a tool that needs approval, its paused run never passes for an answer. With an `approvalStore` (execute option, or `approvals.approvalStore`) each waiting call becomes an approve/reject request in the human-in-the-loop store and the run resumes once it is answered, `approvals: { assignee, timeout, timeoutAction, ... }` shapes the requests. Without a store, or with `approvals: false`, the node fails with an `AgentRunPausedError` carrying the checkpoint, and is not retried.
+
+A `toolNode` runs its tool through `cogitator.invokeTool`, the way an agent run calls it: arguments validated against the tool's schema, the guardrails, the sandbox and `tool.timeout` apply, and a tool with `requiresApproval` asks the same approval store before it runs. A declined call, or one with nobody to ask, fails the node without running the tool.
 
 Agent and tool nodes use the run's abort signal, so cancelling the workflow cancels in-flight LLM and tool calls.
 

@@ -40,6 +40,7 @@ export {
 export type { AgentNodeOptions } from './nodes/agent';
 
 export type { ToolNodeOptions } from './nodes/tool';
+export type { NodeApprovalOptions } from './nodes/approvals';
 
 export type { SimpleNodeFn, FullNodeFn, FunctionNodeOptions } from './nodes/function';
 
