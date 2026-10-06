@@ -5,7 +5,7 @@
 [0.000, "o", "\u001b]697;ShellPath=/bin/zsh\u0007\u001b]697;PID=62996\u0007\u001b]697;ExitCode=0\u0007\u001b]697;TTY=/dev/ttys012\u0007\u001b]697;Log=\u0007\u001b]697;ZshAutosuggestionColor=\u0007\u001b]697;FigAutosuggestionColor=\u0007\u001b]697;User=mac\u0007"]
 [0.040, "o", "\r\u001b[0m\u001b[27m\u001b[24m\u001b[J\u001b]697;StartPrompt\u0007\r\n\u001b[1;36mCogitator\u001b[0m on \u001b[1;35m main\u001b[0m \u001b[1;31m[?⇡]\u001b[0m via \u001b[1;34m🐳 orbstack\u001b[0m via \u001b[1;32m v22.11.0 \u001b[0m\r\n\u001b[1;32m❯\u001b[0m \u001b]697;EndPrompt\u0007\u001b]697;NewCmd=dd22572ba8114a7e9f48a5d6be34eaec\u0007\u001b[K\u001b[159C\u001b]697;StartPrompt\u0007\u001b]697;EndPrompt\u0007\u001b[159D"]
 [0.000, "o", "\u001b[?2004h"]
-[4.809, "o", "npx tsx examples/basic-agent.ts"]
+[4.809, "o", "npx tsx examples/core/01-basic-agent.ts"]
 [0.427, "o", "\u001b[?2004l\r\r\n"]
 [0.001, "o", "\u001b]697;OSCLock=dd22572ba8114a7e9f48a5d6be34eaec\u0007"]
 [0.000, "o", "\u001b]697;PreExec\u0007"]
