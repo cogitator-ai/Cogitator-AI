@@ -434,7 +434,7 @@ export class RuntimeBuilder {
         ? {
             compaction: {
               strategy: 'summary',
-              threshold: this.config.memory.compaction.threshold,
+              messageThreshold: this.config.memory.compaction.threshold,
               keepRecent: 10,
             },
           }

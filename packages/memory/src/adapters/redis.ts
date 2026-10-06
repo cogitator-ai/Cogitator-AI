@@ -13,6 +13,7 @@ import type {
   MemoryResult,
   RedisAdapterConfig,
   MemoryProvider,
+  NewMemoryEntry,
 } from '@cogitator-ai/types';
 import { createRedisClient, type RedisClient } from '@cogitator-ai/redis';
 import { BaseMemoryAdapter } from './base';
@@ -173,12 +174,12 @@ export class RedisAdapter extends BaseMemoryAdapter {
     });
   }
 
-  async addEntry(entry: Omit<MemoryEntry, 'id' | 'createdAt'>): Promise<MemoryResult<MemoryEntry>> {
+  async addEntry(entry: NewMemoryEntry): Promise<MemoryResult<MemoryEntry>> {
     return this.run(async (client) => {
       const full: MemoryEntry = {
         ...entry,
         id: this.generateId('entry'),
-        createdAt: this.nextEntryTimestamp(entry.threadId),
+        createdAt: this.entryTimestamp(entry),
       };
 
       const key = this.key('entry', full.id);

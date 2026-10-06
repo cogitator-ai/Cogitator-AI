@@ -294,7 +294,9 @@ const active = await sessions.list({ status: 'active', limit: 20 });
 await sessions.archive(session.id);
 ```
 
-**`CompactionService`** shrinks a thread once its stored tokens reach `threshold`, keeping the `keepRecent` latest entries:
+`list()` reads the sessions from an index thread. Using a session (`getOrCreate`) adds it back to the index if the index lost it and rewrites the index at most once per `indexRefreshInterval` (one minute by default), so in a store whose threads expire, like Redis with a `ttl`, the index lives as long as any session is active. Keep the interval well below the TTL.
+
+**`CompactionService`** shrinks a thread once its stored entries reach `threshold` tokens or `messageThreshold` entries, whichever comes first (set at least one), keeping the `keepRecent` latest entries:
 
 ```typescript
 const result = await compaction.compact(session.id, {
@@ -313,7 +315,9 @@ const result = await compaction.compact(session.id, {
 | `sliding-window` | Deletes older entries                                                                              |
 | `hybrid`         | `sliding-window` when 5 or fewer entries would be removed, otherwise `summary`                     |
 
-`summarize` is your function — call any LLM in it. It receives the messages being replaced and, as a second argument, `SummarizeOptions` `{ model, prompt }` taken from the `summaryModel` / `summaryPrompt` of the `compact()` config (either may be `undefined`). `sessions.compact()` throws unless the manager was created with `{ compaction }`.
+The summary entry is dated a millisecond before the first kept entry, and kept entries are left untouched, so a reply saved while the summary was being written stays after the messages it answers. Compactions of the same thread in one process run one after another. An adapter that ignores the `createdAt` of `addEntry` gets the kept entries re-added after the summary instead.
+
+`summarize` is your function, call any LLM in it. It receives the messages being replaced and, as a second argument, `SummarizeOptions` `{ model, prompt }` taken from the `summaryModel` / `summaryPrompt` of the `compact()` config (either may be `undefined`). `sessions.compact()` throws unless the manager was created with `{ compaction }`.
 
 **`CoreFactsStore`** is a small SQLite key–value store (requires `better-sqlite3`) for always-on facts about the user, with a history of every value:
 

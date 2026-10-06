@@ -5,6 +5,7 @@ import type {
   MemoryResult,
   SQLiteAdapterConfig,
   MemoryProvider,
+  NewMemoryEntry,
 } from '@cogitator-ai/types';
 import { BaseMemoryAdapter } from './base';
 import type { SqliteDatabase } from './sqlite-driver';
@@ -180,13 +181,13 @@ export class SQLiteAdapter extends BaseMemoryAdapter {
     }
   }
 
-  async addEntry(entry: Omit<MemoryEntry, 'id' | 'createdAt'>): Promise<MemoryResult<MemoryEntry>> {
+  async addEntry(entry: NewMemoryEntry): Promise<MemoryResult<MemoryEntry>> {
     if (!this.db) return this.failure('Not connected');
 
     const full: MemoryEntry = {
       ...entry,
       id: this.generateId('entry'),
-      createdAt: this.nextEntryTimestamp(entry.threadId),
+      createdAt: this.entryTimestamp(entry),
     };
 
     try {

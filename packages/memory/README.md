@@ -460,7 +460,11 @@ await sessions.compact(session.id, {
 });
 ```
 
-`list()` works with or without a `userId` filter (sessions are tracked in an index thread). `compact()` requires the `compaction` option; without it use `CompactionService` directly. The summarizer (`SummarizeFn`) is called as `summarize(messages, options)`, where `options` is a `SummarizeOptions` `{ model?, prompt? }` filled from the `summaryModel` / `summaryPrompt` of the compaction config.
+`list()` works with or without a `userId` filter (sessions are tracked in an index thread). Using a session puts it back into the index if the index lost it and rewrites the index at most once per `indexRefreshInterval` (default one minute), so with Redis and a `ttl` the index lives as long as any session is active.
+
+A thread is compacted once its entries hold `threshold` tokens or `messageThreshold` entries, whichever comes first (set at least one). The summary entry is dated just before the first kept entry and the kept entries are not rewritten, so a reply saved while the summary was being written keeps its place after its question. `addEntry` accepts an optional `createdAt` for this (`NewMemoryEntry`).
+
+`compact()` requires the `compaction` option; without it use `CompactionService` directly. The summarizer (`SummarizeFn`) is called as `summarize(messages, options)`, where `options` is a `SummarizeOptions` `{ model?, prompt? }` filled from the `summaryModel` / `summaryPrompt` of the compaction config.
 
 ---
 

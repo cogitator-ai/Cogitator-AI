@@ -23,6 +23,7 @@ import type {
   KeywordSearchOptions,
   SearchFilter,
   SearchResult,
+  NewMemoryEntry,
 } from '@cogitator-ai/types';
 import { BaseMemoryAdapter } from './base';
 import {
@@ -385,11 +386,11 @@ export class PostgresAdapter
     }
   }
 
-  async addEntry(entry: Omit<MemoryEntry, 'id' | 'createdAt'>): Promise<MemoryResult<MemoryEntry>> {
+  async addEntry(entry: NewMemoryEntry): Promise<MemoryResult<MemoryEntry>> {
     if (!this.pool) return this.failure('Not connected');
 
     const id = this.generateId('entry');
-    const now = this.nextEntryTimestamp(entry.threadId);
+    const now = this.entryTimestamp(entry);
 
     try {
       await this.pool.query(

@@ -36,6 +36,12 @@ export interface MemoryEntry {
 }
 
 /**
+ * An entry to add to a thread. `createdAt` places it at that time instead of now: compaction
+ * uses it to put a summary before the entries it keeps without rewriting them.
+ */
+export type NewMemoryEntry = Omit<MemoryEntry, 'id' | 'createdAt'> & { createdAt?: Date };
+
+/**
  * A fact is a long-term memory (user preference, learned info).
  *
  * A fact with `metadata.userId` belongs to that user and is only put into
@@ -181,7 +187,7 @@ export interface MemoryAdapter {
   updateThread(threadId: string, metadata: Record<string, unknown>): Promise<MemoryResult<Thread>>;
   deleteThread(threadId: string): Promise<MemoryResult<void>>;
 
-  addEntry(entry: Omit<MemoryEntry, 'id' | 'createdAt'>): Promise<MemoryResult<MemoryEntry>>;
+  addEntry(entry: NewMemoryEntry): Promise<MemoryResult<MemoryEntry>>;
   getEntries(options: MemoryQueryOptions): Promise<MemoryResult<MemoryEntry[]>>;
   getEntry(entryId: string): Promise<MemoryResult<MemoryEntry | null>>;
   deleteEntry(entryId: string): Promise<MemoryResult<void>>;

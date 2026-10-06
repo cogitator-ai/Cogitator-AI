@@ -100,9 +100,10 @@ See [Embeddings](/docs/memory/embeddings).
 | Export                                      | Signature                                                                                             | Purpose                                                                   |
 | ------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
 | `ContextBuilder`                            | `new ContextBuilder(config: ContextBuilderConfig, deps: ContextBuilderDeps)`                          | Assemble history, facts, semantic and graph context within a token budget |
-| `builder.build`                             | `build(options: { threadId; agentId; userId?; systemPrompt?; currentInput? }): Promise<BuiltContext>` | Messages plus metadata                                                    |
+| `builder.build`                             | `build(options: { threadId; agentId; userId?; systemPrompt?; currentInput? }): Promise<BuiltContext>` | Messages plus metadata, `errors` and `warnings`                           |
 | `countTokens`                               | `countTokens(text: string): number`                                                                   | Token estimate                                                            |
-| `countMessageTokens`, `countMessagesTokens` | `(message: Message)`, `(messages: Message[])`                                                         | Token estimates for messages                                              |
+| `countMessageTokens`, `countMessagesTokens` | `(message: Message)`, `(messages: Message[])`                                                         | Token estimates for messages, with tool calls and images                  |
+| `countEntryTokens`, `countToolCallsTokens`  | `(entry: MemoryEntry)`, `(toolCalls: ToolCall[])`                                                     | Recount a stored entry, estimate tool calls                               |
 | `truncateToTokens`                          | `truncateToTokens(text: string, maxTokens: number): string`                                           | Cut text to a token budget                                                |
 
 `ContextBuilderConfig` is `{ maxTokens, strategy: 'recent' | 'relevant' | 'hybrid', reserveTokens?, includeSystemPrompt?, includeFacts?, includeSemanticContext?, includeGraphContext?, graphContextOptions? }`; `ContextBuilderDeps` is `{ memoryAdapter, factAdapter?, embeddingAdapter?, embeddingService?, graphContextBuilder? }`.
@@ -112,10 +113,10 @@ See [Embeddings](/docs/memory/embeddings).
 | Export              | Signature                                                                                                                                                                                    | Purpose                                              |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
 | `CoreFactsStore`    | `new CoreFactsStore(config: { path: string } \| { db })` — `initialize`, `set`, `get`, `getAll`, `delete`, `getHistory`, `formatForPrompt`, `close`                                          | Key-value facts about a user in SQLite, with history |
-| `SessionManager`    | `new SessionManager(adapter: MemoryAdapter, options?: { compaction?: CompactionService })` — `getOrCreate`, `get`, `update`, `archive`, `list`, `delete`, `incrementMessageCount`, `compact` | Channel sessions per user and channel                |
+| `SessionManager`    | `new SessionManager(adapter: MemoryAdapter, options?: { compaction?: CompactionService; indexRefreshInterval?: number })` — `getOrCreate`, `get`, `update`, `archive`, `list`, `delete`, `incrementMessageCount`, `compact` | Channel sessions per user and channel                |
 | `CompactionService` | `new CompactionService(config: { adapter: MemoryAdapter; summarize: SummarizeFn })` — `compact(sessionId, config)`, `applySummary(…)`                                                        | Replace old entries with a summary                   |
 
-`SummarizeFn` is `(messages: Message[], options?: SummarizeOptions) => Promise<string>`, where `SummarizeOptions` is `{ model?: string; prompt?: string }`, filled from `summaryModel` / `summaryPrompt` of the `CompactionConfig` passed to `compact()`.
+`CompactionConfig` is `{ strategy, keepRecent, threshold?, messageThreshold?, summaryModel?, summaryPrompt? }`: a thread is compacted once it holds `threshold` tokens or `messageThreshold` entries (at least one is required). `SummarizeFn` is `(messages: Message[], options?: SummarizeOptions) => Promise<string>`, where `SummarizeOptions` is `{ model?: string; prompt?: string }`, filled from `summaryModel` / `summaryPrompt` of the `CompactionConfig` passed to `compact()`.
 
 ## Knowledge Graphs
 

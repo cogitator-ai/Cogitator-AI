@@ -267,7 +267,7 @@ ${channelSetup.join('\n')}
   ],
   memory,
   session: {
-    compaction: { strategy: 'hybrid', threshold: 50, keepRecent: 10 },
+    compaction: { strategy: 'hybrid', messageThreshold: 50, keepRecent: 10 },
   },
   stream: { flushInterval: 500, minChunkSize: 20 },
   onError: (err, msg) => {

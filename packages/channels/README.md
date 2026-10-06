@@ -224,8 +224,8 @@ const gateway = new Gateway({
   memory, // MemoryAdapter — enables sessions and history
   session: {
     threadKey: (msg) => `${msg.channelType}:${msg.userId}`,
-    // compact once a conversation holds 50 messages, keep the last 10 verbatim
-    compaction: { strategy: 'summary', threshold: 50, keepRecent: 10 },
+    // compact once a conversation holds 50 messages (or `threshold` tokens), keep the last 10 verbatim
+    compaction: { strategy: 'summary', messageThreshold: 50, keepRecent: 10 },
   },
   runTimeout: 120_000,
 });
