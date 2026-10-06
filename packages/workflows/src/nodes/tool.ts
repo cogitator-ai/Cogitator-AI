@@ -38,6 +38,7 @@ export function toolNode<S extends WorkflowState = WorkflowState, TArgs = unknow
       const args = options.argsMapper(ctx.state, ctx.input);
       const signal = options.signal ?? extCtx.signal;
       const invocation = await cogitator.invokeTool(tool as Tool, args, {
+        toolCallId: `${ctx.nodeId}:visit:${extCtx.visit ?? 1}`,
         agentId: `workflow:${ctx.workflowId}:${ctx.nodeId}`,
         runId: ctx.workflowId,
         ...(signal && { signal }),

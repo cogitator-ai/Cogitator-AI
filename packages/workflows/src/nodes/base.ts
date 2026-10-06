@@ -20,6 +20,11 @@ export interface ExtendedNodeContext<S = WorkflowState> extends NodeContext<S> {
   signal?: AbortSignal;
   /** Subworkflow nesting depth (0 for top-level runs) */
   depth?: number;
+  /**
+   * How many times the node has run in this workflow run, this time included. A resumed run
+   * counts on from its checkpoint, so it names the same visit as before the restart
+   */
+  visit?: number;
   /** Run-level defaults for human-in-the-loop and timer nodes */
   approvalStore?: ApprovalStore;
   approvalNotifier?: ApprovalNotifier;

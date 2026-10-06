@@ -37,8 +37,10 @@ function declineReason(result: HumanNodeResult<WorkflowState>): string {
 
 /**
  * Asks the approval store whether `caller` may make the tool call in `request`, and waits for the
- * answer. Undefined when there is nobody to ask: `approvals` is `false`, or neither it nor the
- * run has an approval store.
+ * answer. The request is identified by the call's id, so two identical calls of one turn get a
+ * request each, and a node that runs again after a restart finds the request of the same call.
+ * Undefined when there is nobody to ask: `approvals` is `false`, or neither it nor the run has
+ * an approval store.
  */
 export async function askToolApproval<S extends WorkflowState>(
   request: ToolApprovalRequest,
@@ -53,6 +55,7 @@ export async function askToolApproval<S extends WorkflowState>(
   const result = await executeHumanNode<WorkflowState>(
     {
       caller,
+      toolCallId: request.toolCallId,
       tool: request.toolName,
       arguments: request.arguments,
       ...(request.sideEffects && { sideEffects: request.sideEffects }),

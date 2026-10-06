@@ -384,6 +384,7 @@ export class WorkflowExecutor {
             cogitator: this.cogitator,
             signal: options?.signal,
             depth: options?.depth ?? 0,
+            visit,
             approvalStore: options?.approvalStore,
             approvalNotifier: options?.approvalNotifier,
             timerStore: options?.timerStore,

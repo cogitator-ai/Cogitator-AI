@@ -79,6 +79,7 @@ describe('toolNode runs its tool the way an agent run does', () => {
     expect(result.error).toBeUndefined();
     expect(requests).toHaveLength(1);
     expect(requests[0].title).toContain('refund');
+    expect(requests[0].metadata?.state).toMatchObject({ toolCallId: 'refund:visit:1' });
     expect(refundImpl).toHaveBeenCalledTimes(1);
     expect(result.state.receipt).toBe('refunded A-1');
   });

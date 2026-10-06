@@ -201,3 +201,71 @@ describe('agentNode with tool approvals', () => {
     expect(result.state.answer).toContain('policy');
   });
 });
+
+describe('agentNode asks for each paused call on its own', () => {
+  it('opens one request per call when a turn makes two identical calls', async () => {
+    const twice: ToolCall[] = [
+      { id: 'c1', name: 'refund', arguments: { order: 'A-1' } },
+      { id: 'c2', name: 'refund', arguments: { order: 'A-1' } },
+    ];
+    const chat = vi.fn(async (request: ChatRequest): Promise<ChatResponse> => {
+      const results = request.messages.filter((m) => m.role === 'tool');
+      return results.length === 0
+        ? {
+            id: 'r1',
+            content: 'Refunding twice.',
+            toolCalls: twice,
+            finishReason: 'tool_calls',
+            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+          }
+        : {
+            id: 'r2',
+            content: 'Done.',
+            finishReason: 'stop',
+            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+          };
+    });
+    await cogitator.close();
+    cogitator = new Cogitator({
+      llm: {
+        backends: {
+          mock: {
+            provider: 'openai',
+            chat,
+            chatStream: vi.fn(async function* (): AsyncGenerator<ChatStreamChunk> {
+              yield { id: 's', delta: {}, finishReason: 'stop' };
+            }),
+          },
+        },
+      },
+    });
+    const store = new InMemoryApprovalStore();
+    const running = new WorkflowExecutor(cogitator).execute(refundWorkflow(), undefined, {
+      approvalStore: store,
+    });
+
+    const pending = await vi.waitFor(async () => {
+      const requests = await store.getPendingRequests();
+      if (requests.length < 2) throw new Error('waiting for both requests');
+      return requests;
+    });
+    expect(new Set(pending.map((request) => request.id)).size).toBe(2);
+    await store.submitResponse({
+      requestId: pending[0].id,
+      decision: true,
+      respondedBy: 'manager',
+      respondedAt: Date.now(),
+    });
+    await store.submitResponse({
+      requestId: pending[1].id,
+      decision: false,
+      comment: 'only once',
+      respondedBy: 'manager',
+      respondedAt: Date.now(),
+    });
+    const result = await running;
+
+    expect(result.error).toBeUndefined();
+    expect(refundImpl).toHaveBeenCalledTimes(1);
+  });
+});
