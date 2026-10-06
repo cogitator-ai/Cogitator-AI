@@ -1,0 +1,5 @@
+---
+'@cogitator-ai/tetsu': minor
+---
+
+The controller speaks the shared server protocol. `acceptContext` and `threadMessageRoles` refuse `context` keys and `system` thread messages from clients unless allowed, with `422 VALIDATION_FAILED`, and a body that is not JSON answers `415` before it is read. The schemas refuse a blank `threadId` and a swarm `timeout` above `2147483647` ms, and `options.checkpoint: true` on workflows. An `auth` function that throws or rejects answers `401` instead of `500`. Agent streams name the run's thread in `start` and `finish`, close the text part before a tool call, and send an answer given in one piece. The JSON answer carries `structuredError`, `truncated`, `blocked`, `iterationLimitReached` and `traceId` like every other adapter. Swarm routes close the swarm they build, `GET /swarms` lists a router and pipeline stages, and the OpenAPI document declares the `200` of the stream routes. The README and docs now list the in-stream `THREAD_ACCESS_DENIED`, the swarm's own stream events and the `400 MALFORMED_JSON`, `413 BODY_TOO_LARGE` and `415` answers.

@@ -1,6 +1,6 @@
 import { httpError } from '@tetsujs/core';
 import type { Agent } from '@cogitator-ai/core';
-import { toRunUsage, type PendingApproval } from '@cogitator-ai/server-shared';
+import { swarmAgentNames, withSwarm } from '@cogitator-ai/server-shared';
 import type {
   ResumeOptions,
   RunOptions,
@@ -10,7 +10,6 @@ import type {
   SwarmResourceUsage,
   SwarmRunOptions,
   ToolApprovalDecision,
-  ToolApprovalRequest,
   Workflow,
   WorkflowExecuteOptions,
   WorkflowResult,
@@ -21,7 +20,6 @@ import { importOptional } from './errors.js';
 import type { ResumeBody } from './schemas.js';
 import type {
   AgentListResponseBody,
-  AgentRunResponseBody,
   AuthContext,
   CogitatorDeps,
   SwarmListResponseBody,
@@ -105,44 +103,9 @@ export function listSwarms(deps: CogitatorDeps): SwarmListResponseBody {
     swarms: Object.entries(deps.swarms ?? {}).map(([name, config]) => ({
       name,
       strategy: config.strategy,
-      agents: [
-        ...(config.supervisor ? [config.supervisor.name] : []),
-        ...(config.workers ?? []).map((agent) => agent.name),
-        ...(config.agents ?? []).map((agent) => agent.name),
-        ...(config.moderator ? [config.moderator.name] : []),
-      ],
+      agents: swarmAgentNames(config),
     })),
   };
-}
-
-export function toAgentRunResponse(result: RunResult): AgentRunResponseBody {
-  return {
-    output: result.output,
-    ...(result.structured !== undefined && { structured: result.structured }),
-    threadId: result.threadId,
-    usage: toRunUsage(result.usage),
-    toolCalls: result.toolCalls.map((call) => ({
-      id: call.id,
-      name: call.name,
-      arguments: call.arguments,
-    })),
-    ...(result.reasoning !== undefined && { reasoning: result.reasoning }),
-    ...(result.status !== undefined && { status: result.status }),
-    ...(result.pendingApprovals !== undefined && {
-      pendingApprovals: toPendingApprovals(result.pendingApprovals),
-    }),
-  };
-}
-
-/** The tool calls a paused run waits on, as clients see them. */
-export function toPendingApprovals(requests: readonly ToolApprovalRequest[]): PendingApproval[] {
-  return requests.map((request) => ({
-    toolCallId: request.toolCallId,
-    toolName: request.toolName,
-    arguments: request.arguments,
-    description: request.description,
-    ...(request.sideEffects !== undefined && { sideEffects: [...request.sideEffects] }),
-  }));
 }
 
 function toDecision(decision: { approved: boolean; reason?: string }): ToolApprovalDecision {
@@ -187,7 +150,7 @@ export function serializeSwarmUsage(usage: SwarmResourceUsage) {
   };
 }
 
-interface SwarmHandle {
+export interface SwarmHandle {
   readonly id: string;
   readonly name: string;
   readonly strategyType: string;
@@ -266,30 +229,35 @@ export async function executeWorkflow(
   return result;
 }
 
-export async function executeSwarm(
+/**
+ * Runs a swarm built for this request and answers with what `finish` makes of it, then
+ * closes the swarm, whether the run succeeded, failed or was aborted: a distributed swarm
+ * holds two Redis connections and keeps its state without expiry until it is closed.
+ */
+export async function executeSwarm<T>(
   deps: CogitatorDeps,
   config: SwarmConfig,
   options: SwarmRunOptions,
   auth: AuthContext | undefined,
   signal: AbortSignal,
-  onStart?: (swarm: SwarmHandle) => void
-): Promise<{ swarm: SwarmHandle; result: StrategyResult }> {
+  finish: (swarm: SwarmHandle, result: StrategyResult) => T
+): Promise<T> {
   const { Swarm } = await importOptional(
     () => import('@cogitator-ai/swarms'),
     '@cogitator-ai/swarms'
   );
   signal.throwIfAborted();
-  const swarm = new Swarm(deps.cogitator, config);
-  const abort = () => swarm.abort();
-  signal.addEventListener('abort', abort, { once: true });
-  try {
-    onStart?.(swarm);
-    const result = await swarm.run({
-      ...options,
-      ...(auth?.userId !== undefined && { userId: auth.userId }),
-    });
-    return { swarm, result };
-  } finally {
-    signal.removeEventListener('abort', abort);
-  }
+  return withSwarm(new Swarm(deps.cogitator, config), async (swarm) => {
+    const abort = () => swarm.abort();
+    signal.addEventListener('abort', abort, { once: true });
+    try {
+      const result = await swarm.run({
+        ...options,
+        ...(auth?.userId !== undefined && { userId: auth.userId }),
+      });
+      return finish(swarm, result);
+    } finally {
+      signal.removeEventListener('abort', abort);
+    }
+  });
 }

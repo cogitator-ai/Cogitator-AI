@@ -52,17 +52,19 @@ A run that waits on a slow tool or model can stay silent for longer than the `id
 
 A Tetsu controller named `Cogitator`: `operationId`s in the OpenAPI document are `cogitatorRunAgent`, `cogitatorGetThread` and so on.
 
-| Option            | Type                                        | Description                                                                      |
-| ----------------- | ------------------------------------------- | -------------------------------------------------------------------------------- |
-| `cogitator`       | `Cogitator`                                 | **Required.** The runtime                                                        |
-| `agents`          | `Record<string, Agent>`                     | Agents by name                                                                   |
-| `workflows`       | `Record<string, Workflow>`                  | Workflows by name                                                                |
-| `swarms`          | `Record<string, SwarmConfig>`               | Swarms by name                                                                   |
-| `auth`            | `(ctx) => AuthContext \| undefined` or hook | Establishes the caller; see [Authentication](#authentication)                    |
-| `authorizeThread` | `(auth, threadId) => boolean`               | Decides who may use a memory thread; see [Users and threads](#users-and-threads) |
-| `websocket`       | `boolean \| { path?: string }`              | Serve the WebSocket endpoint (default path `/ws`)                                |
-| `until`           | `AbortSignal \| (() => AbortSignal)`        | Ends open streams and sockets, such as `draining` from `@tetsujs/lifecycle`      |
-| `sseHeartbeatMs`  | `number`                                    | Heartbeat comment interval of SSE streams (default `5000`, `0` turns it off)     |
+| Option               | Type                                        | Description                                                                                                           |
+| -------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `cogitator`          | `Cogitator`                                 | **Required.** The runtime                                                                                             |
+| `agents`             | `Record<string, Agent>`                     | Agents by name                                                                                                        |
+| `workflows`          | `Record<string, Workflow>`                  | Workflows by name                                                                                                     |
+| `swarms`             | `Record<string, SwarmConfig>`               | Swarms by name                                                                                                        |
+| `auth`               | `(ctx) => AuthContext \| undefined` or hook | Establishes the caller; see [Authentication](#authentication)                                                         |
+| `authorizeThread`    | `(auth, threadId) => boolean`               | Decides who may use a memory thread; see [Users and threads](#users-and-threads)                                      |
+| `websocket`          | `boolean \| { path?: string }`              | Serve the WebSocket endpoint (default path `/ws`)                                                                     |
+| `until`              | `AbortSignal \| (() => AbortSignal)`        | Ends open streams and sockets, such as `draining` from `@tetsujs/lifecycle`                                           |
+| `sseHeartbeatMs`     | `number`                                    | Heartbeat comment interval of SSE streams (default `5000`, `0` turns it off)                                          |
+| `acceptContext`      | `boolean \| string[]`                       | Keys of a run `context` clients may send: none by default, a list, or `true` for any (it goes into the system prompt) |
+| `threadMessageRoles` | `ThreadMessageRole[]`                       | Roles `POST /threads/:id/messages` accepts (default `user` and `assistant`)                                           |
 
 ## Endpoints
 
@@ -91,7 +93,7 @@ Request bodies:
 
 ```typescript
 // POST /agents/:name/run, /agents/:name/stream
-{ input: string; context?: Record<string, unknown>; threadId?: string } // input must contain more than whitespace
+{ input: string; context?: Record<string, unknown>; threadId?: string } // input and threadId must contain more than whitespace
 
 // POST /agents/:name/resume, /agents/:name/resume/stream
 {
@@ -101,14 +103,18 @@ Request bodies:
 }
 
 // POST /swarms/:name/run, /swarms/:name/stream
-{ input: string; context?: Record<string, unknown>; threadId?: string; timeout?: number }
+{ input: string; context?: Record<string, unknown>; threadId?: string; timeout?: number } // timeout at most 2147483647 ms
 
 // POST /workflows/:name/run, /workflows/:name/stream
-{ input?: Record<string, unknown>; options?: { maxConcurrency?: number; maxIterations?: number; checkpoint?: boolean } }
+{ input?: Record<string, unknown>; options?: { maxConcurrency?: number; maxIterations?: number; checkpoint?: false } }
 
 // POST /threads/:id/messages
-{ role: 'user' | 'assistant' | 'system'; content: string; metadata?: Record<string, unknown> }
+{ role: 'user' | 'assistant' | 'system'; content: string; metadata?: Record<string, unknown> } // system only with threadMessageRoles
 ```
+
+The schemas are refined with the validators every Cogitator adapter shares (`@cogitator-ai/server-shared`), so Tetsu refuses the same bodies as Express, Fastify, Hono, Koa and Next, under its own `VALIDATION_FAILED` envelope. A run puts `context` into the system prompt and the model reads a `system` thread message as operator instructions, so both are refused unless the controller accepts them: `acceptContext` lists the `context` keys clients may send (or `true` for any), and `threadMessageRoles` the roles they may add (`user` and `assistant` by default). A body that is not JSON (`text/plain`, a form) is refused with `415 UNSUPPORTED_MEDIA_TYPE` before it is read, since browsers send those across origins without a CORS preflight. `options.checkpoint: true` is refused: the controller runs each workflow on a fresh executor and keeps no checkpoint store to resume from.
+
+`POST /agents/:name/run` and `/resume` answer `{ output, threadId, usage, toolCalls, status, traceId }` plus, when they apply, `reasoning`, `pendingApprovals`, `structured`, `structuredError`, `truncated`, `blocked` and `iterationLimitReached`: the same object as every other adapter, built by `toAgentRunResponse()` of `@cogitator-ai/server-shared`. It never carries the system prompt, the history, trace spans or the checkpoint of a paused run. Swarm routes close the swarm they build once the run ends, so a distributed swarm leaves no Redis connections behind, and `GET /swarms` lists every agent, a router and pipeline stages included.
 
 ## Errors
 
@@ -118,20 +124,23 @@ Every error is answered in Tetsu's envelope:
 { "status": 404, "message": "Agent 'ghost' not found", "error": "AGENT_NOT_FOUND" }
 ```
 
-| Status  | `error`                                                    | When                                                                 |
-| ------- | ---------------------------------------------------------- | -------------------------------------------------------------------- |
-| 401     | `UNAUTHORIZED`                                             | `auth` returned `undefined`                                          |
-| 403     | `THREAD_ACCESS_DENIED`                                     | The thread belongs to another user                                   |
-| 403     | `THREAD_FORBIDDEN`                                         | `authorizeThread` refused the thread                                 |
-| 404     | `AGENT_NOT_FOUND`, `WORKFLOW_NOT_FOUND`, `SWARM_NOT_FOUND` | No such name                                                         |
-| 409     | `BLACKBOARD_DISABLED`                                      | The swarm has no blackboard                                          |
-| 409     | `RUN_NOT_PAUSED`                                           | A resume named a thread without a paused run                         |
-| 499     | `CLIENT_CLOSED_REQUEST`                                    | The client left before a `/run` or `/resume` answer was ready        |
-| 422     | `VALIDATION_FAILED`                                        | The body or the path failed its schema; `issues` lists every problem |
-| 501     | `PACKAGE_NOT_INSTALLED`                                    | `@cogitator-ai/workflows` or `@cogitator-ai/swarms` is missing       |
-| 503     | `MEMORY_NOT_CONFIGURED`                                    | A thread endpoint was called on a runtime with no `memory` config    |
-| 4xx/5xx | the `CogitatorError` code                                  | The run failed, e.g. `429 LLM_RATE_LIMITED` with `Retry-After`       |
-| 500     | `INTERNAL_SERVER_ERROR`                                    | Anything else; the detail goes to `reportError`, never to the client |
+| Status  | `error`                                                    | When                                                                                                                                          |
+| ------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| 400     | `MALFORMED_JSON`                                           | The body is not valid JSON                                                                                                                    |
+| 401     | `UNAUTHORIZED`                                             | `auth` returned `undefined`, or threw something other than an `HttpError` (an expired token)                                                  |
+| 403     | `THREAD_ACCESS_DENIED`                                     | The thread belongs to another user                                                                                                            |
+| 403     | `THREAD_FORBIDDEN`                                         | `authorizeThread` refused the thread                                                                                                          |
+| 404     | `AGENT_NOT_FOUND`, `WORKFLOW_NOT_FOUND`, `SWARM_NOT_FOUND` | No such name                                                                                                                                  |
+| 409     | `BLACKBOARD_DISABLED`                                      | The swarm has no blackboard                                                                                                                   |
+| 409     | `RUN_NOT_PAUSED`                                           | A resume named a thread without a paused run                                                                                                  |
+| 413     | `BODY_TOO_LARGE`                                           | The body is over the application's body limit                                                                                                 |
+| 415     | `UNSUPPORTED_MEDIA_TYPE`                                   | The body is not JSON (`text/plain`, a form)                                                                                                   |
+| 499     | `CLIENT_CLOSED_REQUEST`                                    | The client left before a `/run` or `/resume` answer was ready                                                                                 |
+| 422     | `VALIDATION_FAILED`                                        | The body or the path failed its schema, a `context` key or a thread message role the controller does not accept, `issues` lists every problem |
+| 501     | `PACKAGE_NOT_INSTALLED`                                    | `@cogitator-ai/workflows` or `@cogitator-ai/swarms` is missing                                                                                |
+| 503     | `MEMORY_NOT_CONFIGURED`                                    | A thread endpoint was called on a runtime with no `memory` config                                                                             |
+| 4xx/5xx | the `CogitatorError` code                                  | The run failed, e.g. `429 LLM_RATE_LIMITED` with `Retry-After`                                                                                |
+| 500     | `INTERNAL_SERVER_ERROR`                                    | Anything else; the detail goes to `reportError`, never to the client                                                                          |
 
 Only a `CogitatorError` keeps its message and code. Any other error reaches the client only as a generic internal error: `500 INTERNAL_SERVER_ERROR` in JSON, and `Internal server error` in stream `error` events, WebSocket errors and the `error` field of workflow `node_error` and swarm `agent_error` events. Its text, which can carry connection strings or file paths, never leaves the server.
 
@@ -145,7 +154,7 @@ createApp({ hooks: { onError: [cogitatorErrors()] }, routes });
 
 ## Authentication
 
-`auth` runs as a `beforeParse` hook, so a refused request costs no body parsing. It receives the Tetsu context and returns the caller, or `undefined` to answer `401`. Throw an `HttpError` to answer with another status. `/health` and `/ready` stay open for probes.
+`auth` runs as a `beforeParse` hook, so a refused request costs no body parsing. It receives the Tetsu context and returns the caller, or `undefined` to answer `401`. Any other error it throws or rejects with, such as a token that fails to verify, answers `401` too, never a `500`. Throw an `HttpError` to answer with another status. `/health` and `/ready` stay open for probes.
 
 ```typescript
 cogitatorController({
@@ -257,23 +266,28 @@ Approved calls run, declined ones answer the model with the `reason`, and calls 
 `/stream` endpoints answer with `text/event-stream` through `@tetsujs/sse`: keep-alive comments every `sseHeartbeatMs` (5 seconds by default, under the 10 second `idleTimeout` of `Bun.serve`), backpressure, and the run is aborted when the client goes away. Events follow the Cogitator stream protocol shared with the other adapters, one JSON object per `data:` line, ending with `data: [DONE]`:
 
 ```
-data: {"type":"start","messageId":"msg_…"}
-data: {"type":"text-start","id":"txt_…"}
-data: {"type":"text-delta","id":"txt_…","delta":"Hel"}
+data: {"type":"start","messageId":"msg_…","threadId":"thread_…"}
+data: {"type":"text-start","id":"txt_1"}
+data: {"type":"text-delta","id":"txt_1","delta":"Let me check."}
+data: {"type":"text-end","id":"txt_1"}
 data: {"type":"tool-call-start","id":"call_1","toolName":"get_weather"}
 data: {"type":"tool-call-delta","id":"call_1","argsTextDelta":"{\"city\":\"Paris\"}"}
 data: {"type":"tool-call-end","id":"call_1"}
 data: {"type":"tool-result","id":"res_…","toolCallId":"call_1","result":"Sunny"}
-data: {"type":"text-end","id":"txt_…"}
-data: {"type":"finish","messageId":"msg_…","usage":{"inputTokens":12,"outputTokens":30,"totalTokens":42}}
+data: {"type":"text-start","id":"txt_2"}
+data: {"type":"text-delta","id":"txt_2","delta":"Sunny in Paris."}
+data: {"type":"text-end","id":"txt_2"}
+data: {"type":"finish","messageId":"msg_…","usage":{"inputTokens":12,"outputTokens":30,"totalTokens":42},"threadId":"thread_…","status":"completed"}
 data: [DONE]
 ```
 
-An agent with `reasoning: { summary: true }` also streams its reasoning summary as `reasoning-start`, `reasoning-delta` and `reasoning-end` events. A text or reasoning part opens with its first delta and is closed before a part of the other kind, a tool call or `finish`, so parts never overlap. `POST /agents/:name/run` returns the summary as `reasoning`, and `usage` gains `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the provider reports them. The `finish` event of an agent stream carries the same `usage` as the JSON answer, these counts included.
+`start` names the run's thread: the `threadId` of the request, or the thread the controller opened for it, so a client that sent none continues the conversation with this one even if the stream breaks. `finish` repeats it with `status` and the other outcome fields of the JSON answer.
 
-A run that fails ends with `{"type":"error","message":"…","code":"…"}` instead of `finish`. A `CogitatorError` keeps its message and code; anything else is sent as `"message":"Internal server error","code":"INTERNAL_SERVER_ERROR"` and reported to the application's `reportError` with `source: "stream"`. Workflow streams send `workflow` events (`node_started`, `node_completed`, `node_error`, `node_progress`, `workflow_completed`), swarm streams send `swarm` events (`agent_start`, `agent_complete`, `agent_error`, `message`, `swarm_completed`).
+An agent with `reasoning: { summary: true }` also streams its reasoning summary as `reasoning-start`, `reasoning-delta` and `reasoning-end` events. A text or reasoning part opens with its first delta and is closed before a part of the other kind, a tool call or `finish`, so parts never overlap and text after a tool call starts a new part. An answer the model gave in one piece arrives as one text part before `finish`, and a resumed run that pauses again sends `approval-required` before `finish`. `POST /agents/:name/run` returns the summary as `reasoning`, and `usage` gains `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the provider reports them. The `finish` event of an agent stream carries the same `usage` as the JSON answer, these counts included.
 
-Validation, `401`, `403` and `404` are answered as JSON before the stream opens.
+A run that fails ends with `{"type":"error","message":"…","code":"…"}` instead of `finish`. A `CogitatorError` keeps its message and code; anything else is sent as `"message":"Internal server error","code":"INTERNAL_SERVER_ERROR"` and reported to the application's `reportError` with `source: "stream"`. Workflow streams send `workflow` events (`node_started`, `node_completed`, `node_error`, `node_progress`, `workflow_completed`), swarm streams send `swarm` events (`agent_start`, `agent_complete`, `agent_error`, `message`, every event the swarm itself emits under its own name, such as `swarm:start` or `agent:message`, and `swarm_completed`).
+
+Validation (`415`, `422`), `401`, `404` and the `403 THREAD_FORBIDDEN` of `authorizeThread` are answered as JSON before the stream opens. Whether the thread belongs to the caller is checked by the run itself, so another user's thread ends an open stream with an `error` event, `"code":"THREAD_ACCESS_DENIED"`, instead of `finish`.
 
 ## WebSocket
 
@@ -283,12 +297,12 @@ cogitatorController({ cogitator, agents, auth, websocket: true });
 
 The handshake runs `auth` like any route. Each socket runs one agent, workflow or swarm at a time; a `run` or `resume` sent while one is in progress gets an error with `code: 'RUN_IN_PROGRESS'`.
 
-| Client sends                                                                                                  | Server answers                                                                                                    |
-| ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `{ type: 'run', id?, payload: { type: 'agent' \| 'workflow' \| 'swarm', name, input, context?, threadId? } }` | `event` frames: `token`, `reasoning`, `tool-call`, `tool-result`, then `complete` with the result, or `cancelled` |
-| `{ type: 'resume', id?, payload: { name, threadId, decisions?, defaultDecision? } }`                          | the same frames for an agent run paused for [approvals](#approvals)                                               |
-| `{ type: 'stop' }`                                                                                            | cancels the current run                                                                                           |
-| `{ type: 'ping', id? }`                                                                                       | `{ type: 'pong', id }`                                                                                            |
+| Client sends                                                                                                  | Server answers                                                                                                                                              |
+| ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `{ type: 'run', id?, payload: { type: 'agent' \| 'workflow' \| 'swarm', name, input, context?, threadId? } }` | `event` frames: `token`, `reasoning`, `tool-call`, `tool-result`, then `complete` with the result (for an agent, the JSON answer of `/run`), or `cancelled` |
+| `{ type: 'resume', id?, payload: { name, threadId, decisions?, defaultDecision? } }`                          | the same frames for an agent run paused for [approvals](#approvals)                                                                                         |
+| `{ type: 'stop' }`                                                                                            | cancels the current run                                                                                                                                     |
+| `{ type: 'ping', id? }`                                                                                       | `{ type: 'pong', id }`                                                                                                                                      |
 
 Errors arrive as `{ type: 'error', id, error, code }` and leave the socket open; an invalid frame gets `code: 'INVALID_MESSAGE'`, and an error that is not a `CogitatorError` is sent as `Internal server error` with `code: 'INTERNAL_SERVER_ERROR'`. Closing the socket cancels its run. Bun's server-level options such as `maxPayloadLength` are set where the app is served:
 

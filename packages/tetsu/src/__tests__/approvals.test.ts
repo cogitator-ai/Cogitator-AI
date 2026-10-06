@@ -57,6 +57,7 @@ describe('a run paused for approvals', () => {
       toolCalls: [],
       status: 'paused',
       pendingApprovals: [refundApproval],
+      traceId: 'trace-1',
     });
   });
 
@@ -276,7 +277,16 @@ describe('resume stream', () => {
       await request('/cogitator/agents/chat/resume/stream', json({ threadId: 't-1' }))
     );
 
-    expect(events.map((event) => event.type)).toEqual(['start', 'approval-required', 'finish']);
+    expect(events.map((event) => event.type)).toEqual([
+      'start',
+      'text-start',
+      'text-delta',
+      'text-end',
+      'approval-required',
+      'finish',
+    ]);
+    expect(events[0]).toMatchObject({ threadId: 't-1' });
+    expect(events.at(-1)).toMatchObject({ threadId: 'thread-1', status: 'paused' });
   });
 
   test('ends with an error event when the thread has no paused run', async () => {

@@ -1,4 +1,5 @@
-import { hook } from '@tetsujs/core';
+import { hook, httpError } from '@tetsujs/core';
+import { refuseNonJsonBody } from '@cogitator-ai/server-shared';
 
 /**
  * The `beforeHandle` hook of the routes that answer a run with JSON: lifts the idle
@@ -12,4 +13,17 @@ import { hook } from '@tetsujs/core';
  */
 export const holdConnection = hook.beforeHandle((ctx) => {
   ctx.server.timeout(ctx.req, 0);
+});
+
+/**
+ * The `beforeParse` hook of every route with a JSON body: a body that is not JSON is refused
+ * with `415 UNSUPPORTED_MEDIA_TYPE` before it is read.
+ *
+ * Tetsu parses a body as the route declares it, whatever the `content-type` says. Browsers
+ * send `text/plain` and form bodies across origins without a CORS preflight, so without this
+ * hook any web page could start a run on a server without auth, or with cookies.
+ */
+export const jsonBody = hook.beforeParse((ctx) => {
+  const refusal = refuseNonJsonBody(ctx.req.method, ctx.req.headers);
+  if (refusal) throw httpError(refusal.status, refusal.code, refusal.message);
 });

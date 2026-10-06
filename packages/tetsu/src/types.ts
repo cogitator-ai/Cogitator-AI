@@ -3,6 +3,7 @@ import type { CallerHook } from './auth.js';
 import type { z } from 'zod';
 import type { Agent, Cogitator } from '@cogitator-ai/core';
 import type { SwarmConfig, Workflow, WorkflowState } from '@cogitator-ai/types';
+import type { ContextPolicy, ThreadMessageRole } from '@cogitator-ai/server-shared';
 import type {
   AddMessageBody,
   AgentListResponse,
@@ -41,8 +42,9 @@ export interface AuthContext {
  * Establishes the caller before the request body is read.
  *
  * Return the caller to let the request through, or `undefined` to refuse it
- * with `401 UNAUTHORIZED`. Throw an `HttpError` to answer with another status.
- * Return an empty object to accept anonymous callers.
+ * with `401 UNAUTHORIZED`; any other error it throws or rejects with (an expired
+ * token, say) refuses it with `401` too. Throw an `HttpError` to answer with
+ * another status. Return an empty object to accept anonymous callers.
  */
 export type Authenticate = (
   ctx: BaseCtx
@@ -95,6 +97,18 @@ export interface CogitatorDeps {
    * heartbeats off.
    */
   sseHeartbeatMs?: number;
+  /**
+   * Keys of a run's `context` that clients may set. The run adds `context` to the system
+   * prompt, so by default (`false`) a request with `context` is refused with
+   * `400 VALIDATION_FAILED`. List the keys clients may send, or pass `true` only for clients
+   * trusted like the server itself.
+   */
+  acceptContext?: ContextPolicy;
+  /**
+   * Roles clients may add with `POST /threads/:id/messages`. Default: `user` and
+   * `assistant`. A `system` message is read by the model as operator instructions.
+   */
+  threadMessageRoles?: readonly ThreadMessageRole[];
 }
 
 export type AgentRunRequest = z.input<typeof RunBody>;
