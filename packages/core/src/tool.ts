@@ -1,5 +1,6 @@
 import type { Tool, ToolConfig, ToolSchema, ApprovalCheck } from '@cogitator-ai/types';
 import { z, type ZodType } from 'zod';
+import { toToolParameters } from './tool-schema';
 
 /**
  * Create a type-safe tool for agent use.
@@ -68,8 +69,9 @@ export function tool<TParams, TResult>(
 /**
  * Convert a tool to JSON Schema format for LLM function calling.
  *
- * Transforms Zod schema to OpenAPI 3.0 compatible JSON Schema
- * that can be sent to LLM providers for function calling.
+ * A Zod schema is converted to OpenAPI 3.0 compatible JSON Schema, a JSON Schema is taken as is.
+ * Either way the result is made self-contained by `toToolParameters`: definitions that
+ * recursive schemas (`z.lazy`) refer to travel along in `$defs`, other refs are inlined.
  *
  * @typeParam TParams - Type of tool parameters
  * @typeParam TResult - Type of tool result
@@ -80,14 +82,10 @@ export function toolToSchema<TParams, TResult>(t: Tool<TParams, TResult>): ToolS
   const params = t.parameters as unknown as Record<string, unknown>;
   const isZodType = params && typeof params === 'object' && '_zod' in params;
 
-  let properties: Record<string, unknown>;
-  let required: string[] | undefined;
-
+  let jsonSchema: Record<string, unknown>;
   if (!isZodType && params?.type === 'object') {
-    properties = (params.properties ?? {}) as Record<string, unknown>;
-    required = params.required as string[] | undefined;
+    jsonSchema = params;
   } else {
-    let jsonSchema: Record<string, unknown>;
     try {
       jsonSchema = z.toJSONSchema(t.parameters as ZodType, {
         target: 'openapi-3.0',
@@ -101,18 +99,12 @@ export function toolToSchema<TParams, TResult>(t: Tool<TParams, TResult>): ToolS
       );
       jsonSchema = { type: 'object', properties: {} };
     }
-    properties = (jsonSchema.properties ?? {}) as Record<string, unknown>;
-    required = jsonSchema.required as string[] | undefined;
   }
 
   return {
     name: t.name,
     description: t.description,
-    parameters: {
-      type: 'object',
-      properties,
-      required,
-    },
+    parameters: toToolParameters(jsonSchema),
   };
 }
 

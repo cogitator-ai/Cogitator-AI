@@ -220,6 +220,33 @@ describe('defineWasmTool', () => {
   });
 });
 
+describe('defineWasmTool schemas', () => {
+  it('keeps the definitions a recursive parameter schema refers to', () => {
+    interface Expr {
+      op: string;
+      args: Expr[];
+    }
+    const ExprSchema: z.ZodType<Expr> = z.lazy(() =>
+      z.object({ op: z.string(), args: z.array(ExprSchema) })
+    );
+    const tool = defineWasmTool({
+      name: 'evaluate',
+      description: 'Evaluate an expression tree',
+      wasmModule: '/path.wasm',
+      parameters: z.object({ expr: ExprSchema }),
+    });
+
+    const { parameters } = tool.toJSON();
+    const ref = (parameters.properties.expr as { $ref: string }).$ref;
+    const [, container, name] = ref.split('/');
+
+    expect(parameters).not.toHaveProperty('$schema');
+    expect((parameters[container] as Record<string, unknown>)[name]).toMatchObject({
+      type: 'object',
+    });
+  });
+});
+
 describe('getWasmPath', () => {
   it('returns path ending with .wasm', () => {
     const path = getWasmPath('calc');

@@ -67,11 +67,13 @@ interface GeminiFunctionResponse {
 interface GeminiFunctionDeclaration {
   name: string;
   description: string;
-  parameters: {
+  parameters?: {
     type: 'object';
     properties: Record<string, unknown>;
     required?: string[];
   };
+  /** JSON Schema form of the parameters, which unlike `parameters` can hold `$ref` and `$defs` */
+  parametersJsonSchema?: Record<string, unknown>;
 }
 
 interface GeminiTool {
@@ -548,7 +550,19 @@ export class GoogleBackend extends BaseLLMBackend {
     }
   }
 
+  /**
+   * A tool for Gemini. Parameters go in the OpenAPI subset of `parameters`, unless the schema is
+   * recursive: then they go in `parametersJsonSchema`, the JSON Schema form that keeps `$defs`
+   * and `$ref`, since `parameters` has no way to refer to a definition.
+   */
   private convertTool(tool: ToolSchema): GeminiFunctionDeclaration {
+    if (tool.parameters.$defs !== undefined || hasRef(tool.parameters)) {
+      return {
+        name: tool.name,
+        description: tool.description,
+        parametersJsonSchema: cleanJsonSchemaForGemini(tool.parameters),
+      };
+    }
     return {
       name: tool.name,
       description: tool.description,
@@ -863,4 +877,72 @@ function nullableForGemini(schema: Record<string, unknown>): Record<string, unkn
   }
 
   return schema;
+}
+
+const GEMINI_JSON_SCHEMA_KEYS = new Set([
+  '$id',
+  '$defs',
+  '$ref',
+  '$anchor',
+  'type',
+  'format',
+  'title',
+  'description',
+  'enum',
+  'items',
+  'prefixItems',
+  'minItems',
+  'maxItems',
+  'minimum',
+  'maximum',
+  'anyOf',
+  'oneOf',
+  'properties',
+  'additionalProperties',
+  'required',
+]);
+
+const GEMINI_SCHEMA_MAPS = new Set(['properties', '$defs']);
+
+/** A JSON Schema reduced to the keywords Gemini's `parametersJsonSchema` accepts. */
+function cleanJsonSchemaForGemini(schema: Record<string, unknown>): Record<string, unknown> {
+  const cleaned: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(withJsonSchemaNull(schema))) {
+    if (!GEMINI_JSON_SCHEMA_KEYS.has(key)) continue;
+    if (GEMINI_SCHEMA_MAPS.has(key) && isJsonObject(value)) {
+      cleaned[key] = Object.fromEntries(
+        Object.entries(value).map(([name, child]) => [
+          name,
+          isJsonObject(child) ? cleanJsonSchemaForGemini(child) : child,
+        ])
+      );
+    } else if (Array.isArray(value)) {
+      cleaned[key] = value.map((item) =>
+        isJsonObject(item) ? cleanJsonSchemaForGemini(item) : item
+      );
+    } else if (isJsonObject(value)) {
+      cleaned[key] = cleanJsonSchemaForGemini(value);
+    } else {
+      cleaned[key] = value;
+    }
+  }
+  return cleaned;
+}
+
+/** OpenAPI's `nullable: true` written as JSON Schema: `null` among the types. */
+function withJsonSchemaNull(schema: Record<string, unknown>): Record<string, unknown> {
+  if (schema.nullable !== true) return schema;
+  const { nullable: _nullable, ...rest } = schema;
+  if (typeof rest.type === 'string') return { ...rest, type: [rest.type, 'null'] };
+  if (Array.isArray(rest.type)) {
+    return rest.type.includes('null') ? rest : { ...rest, type: [...rest.type, 'null'] };
+  }
+  return { anyOf: [rest, { type: 'null' }] };
+}
+
+function hasRef(node: unknown): boolean {
+  if (Array.isArray(node)) return node.some(hasRef);
+  if (!isJsonObject(node)) return false;
+  if (typeof node.$ref === 'string') return true;
+  return Object.values(node).some(hasRef);
 }

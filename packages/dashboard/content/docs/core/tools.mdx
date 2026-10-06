@@ -241,6 +241,8 @@ const schema = toolToSchema(getWeather);
 
 The conversion uses the schema's input type, so fields with a `.default()` are optional for the model; the default is applied when the arguments are parsed. `tool.toJSON()` returns the same schema.
 
+Recursive schemas work too. A `z.lazy()` schema (a tree, a nested comment thread) refers to its definition with `$ref`: the definitions such refs point to travel along in `parameters.$defs`, and refs to definitions that are not recursive (a schema reused with `.meta({ id })`) are inlined, so every provider gets a self-contained schema. Google receives recursive schemas as `parametersJsonSchema`, the form of its API that can hold `$ref`. `toToolParameters(jsonSchema)` applies the same rules to a JSON Schema of your own, and the registry applies them to every tool's `toJSON()` before a request.
+
 ## Sandboxed Execution
 
 Tools that run untrusted commands can declare a sandbox. A sandboxed tool does not run its `execute` function: the runtime executes the call in the sandbox instead (install `@cogitator-ai/sandbox`):

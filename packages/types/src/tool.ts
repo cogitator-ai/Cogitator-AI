@@ -63,9 +63,18 @@ export interface ToolContext {
 export interface ToolSchema {
   name: string;
   description: string;
-  parameters: {
-    type: 'object';
-    properties: Record<string, unknown>;
-    required?: string[];
-  };
+  parameters: ToolParametersSchema;
+}
+
+/**
+ * The JSON Schema of a tool's parameters: an object schema, self-contained. Definitions that
+ * recursive `$ref`s point to travel in `$defs` (refs as `#/$defs/<name>`), other refs are inlined.
+ * Other JSON Schema keywords of the object (`additionalProperties`, `description`...) are kept.
+ */
+export interface ToolParametersSchema {
+  type: 'object';
+  properties: Record<string, unknown>;
+  required?: string[];
+  $defs?: Record<string, unknown>;
+  [keyword: string]: unknown;
 }

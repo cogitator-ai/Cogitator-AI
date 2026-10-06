@@ -128,7 +128,7 @@ function wasmToolToSchema<TParams>(t: Tool<TParams, unknown>) {
     io: 'input',
   });
 
-  const schema = jsonSchema as Record<string, unknown>;
+  const { $schema: _schema, ...schema } = jsonSchema as Record<string, unknown>;
   const properties = (schema.properties ?? {}) as Record<string, unknown>;
   const required = schema.required as string[] | undefined;
 
@@ -136,6 +136,7 @@ function wasmToolToSchema<TParams>(t: Tool<TParams, unknown>) {
     name: t.name,
     description: t.description,
     parameters: {
+      ...schema,
       type: 'object' as const,
       properties,
       required,

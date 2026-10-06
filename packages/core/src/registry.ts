@@ -1,5 +1,7 @@
 import type { Tool, ToolSchema } from '@cogitator-ai/types';
 import { toolToSchema } from './tool';
+import { toToolParameters } from './tool-schema';
+import { getLogger } from './logger';
 
 /**
  * Registry for managing and organizing tools available to agents.
@@ -39,12 +41,23 @@ export class ToolRegistry {
   }
 
   /**
-   * Register multiple tools at once.
+   * Register multiple tools at once. When two different tools in the list share a name, the
+   * later one wins, as with `register`, and a warning names the clash: the model could only
+   * ever call one of them.
    *
    * @param tools - Array of tools to register
    */
   registerMany(tools: Tool[]): void {
+    const seen = new Map<string, Tool>();
     for (const tool of tools) {
+      const earlier = seen.get(tool.name);
+      if (earlier && earlier !== tool) {
+        getLogger().warn(
+          `Two tools are named "${tool.name}"; only the later one is available to the model. Give them distinct names (for MCP tools, a namePrefix per server).`,
+          { tool: tool.name }
+        );
+      }
+      seen.set(tool.name, tool);
       this.register(tool);
     }
   }
@@ -79,12 +92,18 @@ export class ToolRegistry {
   }
 
   /**
-   * Get JSON schemas for all tools (for LLM function calling).
+   * Get JSON schemas for all tools (for LLM function calling): each tool's own `toJSON()`, so
+   * tools that carry a JSON Schema of their own (MCP, AI SDK) keep it, made self-contained by
+   * `toToolParameters`.
    *
    * @returns Array of tool schemas in OpenAPI format
    */
   getSchemas(): ToolSchema[] {
-    return this.getAll().map(toolToSchema);
+    return this.getAll().map((tool) => {
+      if (typeof tool.toJSON !== 'function') return toolToSchema(tool);
+      const schema = tool.toJSON();
+      return { ...schema, parameters: toToolParameters(schema.parameters) };
+    });
   }
 
   /**

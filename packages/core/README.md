@@ -400,6 +400,8 @@ const screenshot = tool({
 });
 ```
 
+Tool parameter schemas reach every provider self-contained: definitions recursive `z.lazy()` schemas refer to travel in `parameters.$defs`, other refs are inlined (`toToolParameters` does this for any JSON Schema).
+
 See [Tools](https://cogitator.app/docs/core/tools) and [Custom Tools](https://cogitator.app/docs/tools/custom-tools).
 
 ### Handoffs
@@ -2000,6 +2002,8 @@ const screenshot = tool({
   execute: async () => ({ page: 'dashboard', image: (await capture()).toString('base64') }),
 });
 ```
+
+Tool parameter schemas reach every provider self-contained: definitions recursive `z.lazy()` schemas refer to travel in `parameters.$defs`, other refs are inlined (`toToolParameters` does this for any JSON Schema).
 
 See [Tools](https://cogitator.app/docs/core/tools) and [Custom Tools](https://cogitator.app/docs/tools/custom-tools).
 
