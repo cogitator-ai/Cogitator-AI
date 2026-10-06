@@ -1,9 +1,11 @@
 import type { Agent, Cogitator } from '@cogitator-ai/core';
-import type { ToolResult } from '@cogitator-ai/types';
+import type { RunResult, ToolResult } from '@cogitator-ai/types';
 import {
   AgentRunner,
   PAUSE_WARNING,
+  runFinish,
   runMetadata,
+  toolCallPreambles,
   type AgentCall,
   type CallWarning,
   type PreparedAgentCall,
@@ -13,6 +15,7 @@ import type {
   LanguageModelV1,
   LanguageModelV1CallOptions,
   LanguageModelV1CallWarning,
+  LanguageModelV1FinishReason,
   LanguageModelV1FunctionTool,
   LanguageModelV1GenerateResult,
   LanguageModelV1StreamPart,
@@ -50,7 +53,11 @@ function toV1Call(options: LanguageModelV1CallOptions): V1Call {
   switch (options.mode.type) {
     case 'regular':
       return {
-        call: { ...base, toolNames: (options.mode.tools ?? []).map((tool) => tool.name) },
+        call: {
+          ...base,
+          toolNames: (options.mode.tools ?? []).map((tool) => tool.name),
+          ...(options.mode.toolChoice && { toolChoice: options.mode.toolChoice }),
+        },
       };
     case 'object-json':
       return {
@@ -78,6 +85,18 @@ function toV1Call(options: LanguageModelV1CallOptions): V1Call {
         objectTool: options.mode.tool,
       };
   }
+}
+
+/** Why the turn ended; a run waiting for tool approvals ends with `other` and a warning. */
+function v1FinishReason(result: RunResult): LanguageModelV1FinishReason {
+  const { unified } = runFinish(result);
+  return unified === 'tool-calls' ? 'other' : unified;
+}
+
+/** The text of a response: in text mode what the agent wrote before its tool calls, then its answer. */
+function v1Text(result: RunResult, prepared: PreparedAgentCall): string {
+  if (prepared.jsonMode || prepared.resume) return result.output;
+  return [...toolCallPreambles(result).values(), result.output].join('');
 }
 
 function toV1Warning(
@@ -143,7 +162,7 @@ export class AgentLanguageModelV1 implements LanguageModelV1 {
     );
 
     return {
-      text: objectTool ? undefined : result.output,
+      text: objectTool ? undefined : v1Text(result, prepared),
       reasoning: result.reasoning,
       toolCalls: objectTool
         ? [
@@ -155,7 +174,7 @@ export class AgentLanguageModelV1 implements LanguageModelV1 {
             },
           ]
         : undefined,
-      finishReason: result.status === 'paused' ? 'other' : 'stop',
+      finishReason: v1FinishReason(result),
       usage: {
         promptTokens: result.usage.inputTokens,
         completionTokens: result.usage.outputTokens,
@@ -187,7 +206,6 @@ export class AgentLanguageModelV1 implements LanguageModelV1 {
     const stream = new ReadableStream<LanguageModelV1StreamPart>({
       start: (controller) => {
         const results = new Map<string, ToolResult>();
-        let output = '';
 
         const emit = (part: LanguageModelV1StreamPart) => {
           if (!closed) controller.enqueue(part);
@@ -207,19 +225,8 @@ export class AgentLanguageModelV1 implements LanguageModelV1 {
                 });
               },
               onTextDelta: (delta) => {
-                if (!delta) return;
-                output += delta;
-                emit(
-                  objectTool
-                    ? {
-                        type: 'tool-call-delta',
-                        toolCallType: 'function',
-                        toolCallId: runId,
-                        toolName: objectTool.name,
-                        argsTextDelta: delta,
-                      }
-                    : { type: 'text-delta', textDelta: delta }
-                );
+                if (!delta || prepared.jsonMode) return;
+                emit({ type: 'text-delta', textDelta: delta });
               },
               onReasoningDelta: (delta) => {
                 if (delta) emit({ type: 'reasoning', textDelta: delta });
@@ -232,16 +239,25 @@ export class AgentLanguageModelV1 implements LanguageModelV1 {
             (result) => {
               if (objectTool) {
                 emit({
+                  type: 'tool-call-delta',
+                  toolCallType: 'function',
+                  toolCallId: runId,
+                  toolName: objectTool.name,
+                  argsTextDelta: result.output,
+                });
+                emit({
                   type: 'tool-call',
                   toolCallType: 'function',
                   toolCallId: runId,
                   toolName: objectTool.name,
-                  args: output || result.output,
+                  args: result.output,
                 });
+              } else if (prepared.jsonMode && result.output) {
+                emit({ type: 'text-delta', textDelta: result.output });
               }
               emit({
                 type: 'finish',
-                finishReason: result.status === 'paused' ? 'other' : 'stop',
+                finishReason: v1FinishReason(result),
                 usage: {
                   promptTokens: result.usage.inputTokens,
                   completionTokens: result.usage.outputTokens,

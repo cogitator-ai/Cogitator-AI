@@ -79,16 +79,18 @@ The first model uses the auto-detected spec; the second overrides it. On **ai@4*
 
 ### How an Agent Behaves as a Model
 
-- One model call runs the whole agent loop, including the agent's own tool calls, and finishes with `finishReason: 'stop'` (see below for a run that waits for tool approvals).
+- One model call runs the whole agent loop, including the agent's own tool calls. Its `finishReason` says how the run ended: `stop` for an answer, `length` for an answer cut at the token limit, `content-filter` for a withheld answer (raw `content_filter` or `refusal`), `other` with raw `iteration-limit` when tool calls used up `maxIterations`, and `tool-calls` for a run that waits for tool approvals (below). `providerMetadata.cogitator` carries `truncated`, `blocked` and `iterationLimitReached` as well.
+- `generateText` and `streamText` get the same text: what the agent writes before a tool call comes before the call in both. With structured output only the final answer is text, so a preamble never breaks the parsed object.
 - The agent's tool calls are reported as **provider-executed** tool calls with results, so the AI SDK never runs them a second time:
   - `v3` / `v4` models always report them in `toolCalls` / `toolResults` and as `tool-call` / `tool-result` stream parts.
   - `v2` models report them only for tools that you also pass in `tools`, because ai@5 cannot handle provider-executed calls of undeclared tools.
   - All models list them in `providerMetadata.cogitator.toolCalls` next to `runId`, `threadId`, `agentId`, `model`, `cost` and `duration`.
-- The text of user and assistant messages becomes the agent input; multi-turn prompts are sent as a `User:` / `Assistant:` transcript. System messages, images and files are not forwarded (the agent `instructions` are the system prompt) and produce a warning.
+- The text of user and assistant messages becomes the agent input, and multi-turn prompts are sent as a `User:` / `Assistant:` / `Tool:` transcript that includes the tool calls and tool results of earlier turns, so the agent knows what its tools returned. System messages, images and files are not forwarded (the agent `instructions` are the system prompt) and produce a warning.
 - `temperature`, `topP`, `maxOutputTokens` (`maxTokens` on ai@4) and `stopSequences` override the agent configuration for that call. `abortSignal` and cancelling a stream abort the run.
 - The `reasoning` option of `v4` models overrides the effort of the agent's `reasoning`. With `reasoning: { summary: true }` the agent's summary comes back as `reasoning` content and `reasoning-*` stream parts.
 - Structured output (`Output.object`, `generateObject`, ai@4 object modes) switches the agent to JSON mode and adds the JSON schema to the input.
 - AI SDK `tools` that the agent does not own cannot be called by the agent and produce a warning.
+- `toolChoice: 'none'` runs the agent without its tools. `required` or a named tool cannot be forced on an agent and produce an unsupported-setting warning.
 - When the agent calls a tool that needs approval (`requiresApproval`), its run pauses and the call never passes for an answer. `v3` and `v4` models (ai@6, ai@7) end the turn with `finishReason: 'tool-calls'` and a `tool-approval-request` for each waiting call (a provider-executed `tool-call` comes with it). Answer with a `tool-approval-response` (`providerExecuted: true`, which `convertToModelMessages` sets for UI messages) as the last message of the next prompt and the run resumes: approved calls run, denied ones are declined with your `reason`. `v1` and `v2` models cannot ask, so they finish with `finishReason: 'other'` and a warning, and `providerMetadata.cogitator` holds `status: 'paused'`, the `threadId` and `pendingApprovals` to resume with `cogitator.resume(agent, threadId, { decisions })`.
 
 ```typescript
@@ -104,7 +106,12 @@ if (request?.type === 'tool-approval-request') {
       {
         role: 'tool',
         content: [
-          { type: 'tool-approval-response', approvalId: request.approvalId, approved: true, providerExecuted: true },
+          {
+            type: 'tool-approval-response',
+            approvalId: request.approvalId,
+            approved: true,
+            providerExecuted: true,
+          },
         ],
       },
     ],
@@ -192,7 +199,8 @@ The backend branches on the model's `specificationVersion` and converts:
 - `tools`, `toolChoice`, `responseFormat`, `temperature`, `topP`, `maxTokens`, `stop` and the abort signal
 - `reasoning.effort` -- the `reasoning` call option of `v4` models (`max` becomes `xhigh`); for older specifications, set reasoning on the AI SDK provider model
 - responses -- text, reasoning (`ChatResponse.reasoning`, `delta.reasoning`), client tool calls (provider-executed calls are skipped), finish reasons and usage including cached, cache-write and reasoning tokens
-- Gemini thought signatures on tool calls, which are replayed on the next turn
+- Gemini thought signatures, reasoning before a tool call with its provider metadata (Anthropic thinking signatures) and each tool call's provider metadata, which are replayed on the next turn
+- tool results with images as `content` outputs with the image, and failed tool calls as `error-text`
 
 ### Running Agents on an AI SDK Model
 
@@ -241,7 +249,8 @@ Converted tools work with the `tools` option of every AI SDK major:
 
 - `inputSchema` (ai@5 – ai@7) is the Cogitator tool's zod schema.
 - `parameters` (ai@4) is an AI SDK `Schema` with draft-07 JSON Schema and validation.
-- `execute(input, options)` builds a Cogitator `ToolContext`: `toolCallId` becomes `runId`, `abortSignal` becomes `signal`, and the string fields `agentId`, `runId`, `threadId`, `userId`, `channelType` and `channelId` of the AI SDK tool context (`context` on ai@7, `experimental_context` on ai@5 / ai@6) are copied.
+- `execute(input, options)` builds a Cogitator `ToolContext`: `toolCallId` becomes `toolCallId` (and `runId` when the context names none), `abortSignal` becomes `signal`, and the string fields `agentId`, `runId`, `threadId`, `userId`, `channelType` and `channelId` of the AI SDK tool context (`context` on ai@7, `experimental_context` on ai@5 / ai@6) are copied.
+- `toModelOutput` shows the model a [media result](/docs/core/tools#media-results-with-toolcontent) as an image instead of base64 JSON.
 - `needsApproval` mirrors the tool's `requiresApproval` (`true`, or a function of the input where a throw counts as yes), so ai@6 and ai@7 ask for approval before they run it.
 
 ### AI SDK to Cogitator

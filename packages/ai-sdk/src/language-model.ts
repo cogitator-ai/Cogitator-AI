@@ -12,10 +12,13 @@ import {
   AgentRunner,
   PAUSE_WARNING,
   approvalIdFor,
+  runFinish,
   runMetadata,
+  toolCallPreambles,
   serializeToolInput,
   toolResultValue,
   type AgentCallResponseFormat,
+  type AgentCallToolChoice,
   type CallWarning,
   type PreparedAgentCall,
   type PromptMessageLike,
@@ -52,6 +55,7 @@ interface ModernCallOptions {
   stopSequences?: string[];
   responseFormat?: AgentCallResponseFormat;
   tools?: ReadonlyArray<{ name: string }>;
+  toolChoice?: AgentCallToolChoice;
   abortSignal?: AbortSignal;
 }
 
@@ -111,20 +115,15 @@ abstract class AgentLanguageModel<
 
   protected abstract toWarning(warning: CallWarning): TWarning;
   protected abstract toUsage(result: RunResult): TUsage;
-  protected abstract stopReason(): TFinishReason;
-  /** Why the turn ended when the agent's run paused for tool approvals */
-  protected abstract pausedReason(): TFinishReason;
+  /** Why the turn ended, from how the agent's run ended (see `runFinish`) */
+  protected abstract finishReason(result: RunResult): TFinishReason;
 
   /**
    * The approval requests of a paused run, for specifications that can ask for them; the others
-   * report the pause with a warning and `pausedReason()`.
+   * report the pause with a warning and their finish reason for it.
    */
   protected approvalRequests(_result: RunResult): TApproval[] {
     return [];
-  }
-
-  private finishReason(result: RunResult): TFinishReason {
-    return result.status === 'paused' ? this.pausedReason() : this.stopReason();
   }
 
   protected exposesToolCall(_toolName: string, _options: TCallOptions): boolean {
@@ -146,6 +145,7 @@ abstract class AgentLanguageModel<
   > {
     const prepared = this.prepare(options);
     const content: (CogitatorContent | TApproval)[] = [];
+    const events: ({ call: ToolCall } | { result: ToolResult })[] = [];
 
     const toolResults = new Map<string, ToolResult>();
 
@@ -153,17 +153,27 @@ abstract class AgentLanguageModel<
       prepared,
       {
         onToolCall: (call) => {
-          if (this.exposesToolCall(call.name, options)) content.push(toolCallContent(call));
+          if (this.exposesToolCall(call.name, options)) events.push({ call });
         },
         onToolResult: (toolResult) => {
           toolResults.set(toolResult.callId, toolResult);
-          if (this.exposesToolCall(toolResult.name, options)) {
-            content.push(toolResultContent(toolResult));
-          }
+          if (this.exposesToolCall(toolResult.name, options)) events.push({ result: toolResult });
         },
       },
       { stream: false }
     );
+
+    const preambles =
+      prepared.jsonMode || prepared.resume ? new Map<string, string>() : toolCallPreambles(result);
+    for (const event of events) {
+      if ('call' in event) {
+        const preamble = preambles.get(event.call.id);
+        if (preamble) content.push({ type: 'text', text: preamble });
+        content.push(toolCallContent(event.call));
+      } else {
+        content.push(toolResultContent(event.result));
+      }
+    }
 
     if (result.reasoning) content.push({ type: 'reasoning', text: result.reasoning });
     if (result.output) content.push({ type: 'text', text: result.output });
@@ -240,7 +250,7 @@ abstract class AgentLanguageModel<
                   modelId: prepared.model,
                 }),
               onTextDelta: (delta) => {
-                if (!delta) return;
+                if (!delta || prepared.jsonMode) return;
                 emit({ type: 'text-delta', id: openPartOf('text'), delta });
               },
               onReasoningDelta: (delta) => {
@@ -273,6 +283,9 @@ abstract class AgentLanguageModel<
           )
           .then(
             (result) => {
+              if (prepared.jsonMode && result.output) {
+                emit({ type: 'text-delta', id: openPartOf('text'), delta: result.output });
+              }
               closePart();
               for (const approval of this.approvalRequests(result)) emit(approval);
               emit({
@@ -311,6 +324,7 @@ abstract class AgentLanguageModel<
       stopSequences: options.stopSequences,
       responseFormat: options.responseFormat,
       toolNames: (options.tools ?? []).map((tool) => tool.name),
+      toolChoice: options.toolChoice,
       unsupportedSettings: this.unsupportedSettings(options),
       reasoningEffort: this.reasoningEffort(options),
       abortSignal: options.abortSignal,
@@ -353,9 +367,6 @@ function v3Warning(warning: CallWarning): CogitatorWarningV3 {
       return warning;
   }
 }
-
-const V3_STOP: CogitatorFinishReasonV3 = { unified: 'stop', raw: 'stop' };
-const V3_PAUSED: CogitatorFinishReasonV3 = { unified: 'tool-calls', raw: 'paused' };
 
 /** The `tool-approval-request` parts of a paused run, one per waiting call. */
 function v3ApprovalRequests(result: RunResult): CogitatorToolApprovalRequestContent[] {
@@ -410,12 +421,9 @@ export class AgentLanguageModelV2
     };
   }
 
-  protected stopReason(): CogitatorFinishReasonV2 {
-    return 'stop';
-  }
-
-  protected pausedReason(): CogitatorFinishReasonV2 {
-    return 'other';
+  protected finishReason(result: RunResult): CogitatorFinishReasonV2 {
+    const { unified } = runFinish(result);
+    return unified === 'tool-calls' ? 'other' : unified;
   }
 }
 
@@ -439,12 +447,8 @@ export class AgentLanguageModelV3
     return v3Usage(result);
   }
 
-  protected stopReason(): CogitatorFinishReasonV3 {
-    return V3_STOP;
-  }
-
-  protected pausedReason(): CogitatorFinishReasonV3 {
-    return V3_PAUSED;
+  protected finishReason(result: RunResult): CogitatorFinishReasonV3 {
+    return runFinish(result);
   }
 
   protected approvalRequests(result: RunResult): CogitatorToolApprovalRequestContent[] {
@@ -476,12 +480,8 @@ export class AgentLanguageModelV4
     return v3Usage(result);
   }
 
-  protected stopReason(): CogitatorFinishReasonV3 {
-    return V3_STOP;
-  }
-
-  protected pausedReason(): CogitatorFinishReasonV3 {
-    return V3_PAUSED;
+  protected finishReason(result: RunResult): CogitatorFinishReasonV3 {
+    return runFinish(result);
   }
 
   protected approvalRequests(result: RunResult): CogitatorToolApprovalRequestContent[] {

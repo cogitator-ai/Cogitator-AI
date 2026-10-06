@@ -1,6 +1,12 @@
-import { toolToSchema } from '@cogitator-ai/core';
+import {
+  toToolParameters,
+  toolPartsToText,
+  toolResultParts,
+  toolToSchema,
+} from '@cogitator-ai/core';
+import { defaultSpecificationVersion } from './ai-version.js';
 import type { ApprovalCheck, Tool, ToolContext, ToolSchema } from '@cogitator-ai/types';
-import { isRecord } from './json.js';
+import { isRecord, toJSONValue } from './json.js';
 import type {
   AISDKJSONSchemaConverterOptions,
   AISDKSchema,
@@ -260,7 +266,7 @@ export function fromAISDKTool<TParams = unknown, TResult = unknown>(
 
     const toolContext = aiSDKContext(context);
     const options: AISDKToolExecutionOptions = {
-      toolCallId: context.runId,
+      toolCallId: context.toolCallId ?? `${context.runId}:${crypto.randomUUID()}`,
       messages: [],
       abortSignal: context.signal,
       context: toolContext,
@@ -281,11 +287,7 @@ export function fromAISDKTool<TParams = unknown, TResult = unknown>(
         return {
           name: this.name,
           description: this.description,
-          parameters: {
-            type: 'object',
-            properties: objectSchema.properties,
-            required: objectSchema.required,
-          },
+          parameters: toToolParameters(objectSchema),
         };
       }
       return toolToSchema(this);
@@ -362,12 +364,63 @@ function cogitatorContext(options: AISDKToolExecutionOptions): ToolContext {
   return {
     agentId: pick('agentId') ?? 'ai-sdk',
     runId: pick('runId') ?? options.toolCallId,
+    toolCallId: options.toolCallId,
     signal: options.abortSignal ?? new AbortController().signal,
     threadId: pick('threadId'),
     userId: pick('userId'),
     channelType: pick('channelType'),
     channelId: pick('channelId'),
   };
+}
+
+type ModelOutputPart =
+  | { type: 'text'; text: string }
+  | { type: 'media'; data: string; mediaType: string }
+  | { type: 'file'; data: { type: 'data'; data: string }; mediaType: string };
+
+/**
+ * What the model sees of a tool's output (`toModelOutput`): a result with media (`toolContent()`,
+ * a screenshot object) as a `content` output with its images, files only described, anything
+ * else as text or JSON, as the AI SDK sends it by default. ai@5 passes the output, ai@6 and ai@7
+ * an object holding it, and ai@7 takes images as `file` parts.
+ */
+function toModelOutput(arg: unknown) {
+  const output =
+    isRecord(arg) && 'output' in arg && 'toolCallId' in arg
+      ? (arg as { output: unknown }).output
+      : arg;
+  const parts = toolResultParts(output);
+  if (!parts) {
+    return typeof output === 'string'
+      ? { type: 'text' as const, value: output }
+      : { type: 'json' as const, value: toJSONValue(output) };
+  }
+  const fileParts = defaultSpecificationVersion() === 'v4';
+  const value = parts.map((part): ModelOutputPart => {
+    if (part.type !== 'image') return { type: 'text', text: toolPartsToText([part]) };
+    return fileParts
+      ? { type: 'file', data: { type: 'data', data: part.data }, mediaType: part.mediaType }
+      : { type: 'media', data: part.data, mediaType: part.mediaType };
+  });
+  return { type: 'content' as const, value };
+}
+
+/** ai@4's `experimental_toToolResultContent`: the same as `toModelOutput` in ai@4's form. */
+function toToolResultContent(output: unknown) {
+  const parts = toolResultParts(output);
+  if (!parts) {
+    return [
+      {
+        type: 'text' as const,
+        text: typeof output === 'string' ? output : JSON.stringify(toJSONValue(output)),
+      },
+    ];
+  }
+  return parts.map((part) =>
+    part.type === 'image'
+      ? { type: 'image' as const, data: part.data, mimeType: part.mediaType }
+      : { type: 'text' as const, text: toolPartsToText([part]) }
+  );
 }
 
 /**
@@ -383,7 +436,7 @@ export function toAISDKTool<TParams = unknown, TResult = unknown>(
 ): AISDKTool<TParams, TResult> {
   const schema = createAISDKSchema(cogTool);
   const needsApproval = needsApprovalOf(cogTool);
-  return {
+  const aiTool: AISDKTool<TParams, TResult> = {
     description: cogTool.description,
     inputSchema: isZod4Schema(cogTool.parameters)
       ? cogTool.parameters
@@ -392,6 +445,10 @@ export function toAISDKTool<TParams = unknown, TResult = unknown>(
     execute: (input, options) => cogTool.execute(input, cogitatorContext(options)),
     ...(needsApproval !== undefined && { needsApproval }),
   };
+  return Object.assign(aiTool, {
+    toModelOutput,
+    experimental_toToolResultContent: toToolResultContent,
+  });
 }
 
 export function convertToolsFromAISDK(aiTools: Record<string, AISDKToolLike>): Tool[] {

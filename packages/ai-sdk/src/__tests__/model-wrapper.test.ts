@@ -437,7 +437,14 @@ describe('AISDKBackend', () => {
         id: 'resp_v2',
         content: 'Hello world',
         reasoning: 'thinking',
-        toolCalls: [{ id: 'tc1', name: 'search', arguments: {} }],
+        toolCalls: [
+          {
+            id: 'tc1',
+            name: 'search',
+            arguments: {},
+            replay: { precedingItems: [{ type: 'ai-sdk-reasoning', text: 'thinking' }] },
+          },
+        ],
         finishReason: 'tool_calls',
         usage: {
           inputTokens: 5,
@@ -531,7 +538,13 @@ describe('AISDKBackend', () => {
       expect(response.content).toBe('v3 response');
       expect(response.finishReason).toBe('tool_calls');
       expect(response.toolCalls).toEqual([
-        { id: 'tc1', name: 'search', arguments: { q: 'x' }, thoughtSignature: 'sig-1' },
+        {
+          id: 'tc1',
+          name: 'search',
+          arguments: { q: 'x' },
+          thoughtSignature: 'sig-1',
+          replay: { providerMetadata: { google: { thoughtSignature: 'sig-1' } } },
+        },
       ]);
       expect(response.usage).toEqual({
         inputTokens: 5,

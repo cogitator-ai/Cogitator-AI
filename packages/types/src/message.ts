@@ -79,6 +79,11 @@ export interface ToolCallReplayState {
    * verbatim immediately ahead of the call.
    */
   precedingItems?: Record<string, unknown>[];
+  /**
+   * Provider metadata of the call itself (an AI SDK tool call's `providerMetadata`), sent back
+   * unchanged as the call's provider options.
+   */
+  providerMetadata?: Record<string, unknown>;
 }
 
 export interface ToolResult {
