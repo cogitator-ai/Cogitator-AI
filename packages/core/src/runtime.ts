@@ -855,6 +855,9 @@ export class Cogitator {
         lastFinishReason = response.finishReason;
         const spentBefore = costMeter.total(costModel);
         costMeter.add(response.usage, effectiveModel);
+        if (response.usage.cost === undefined) {
+          this.state.costRouter?.noteUnreportedCost(effectiveModel);
+        }
         this.state.costRouter?.recordCost({
           runId,
           agentId: agent.id,

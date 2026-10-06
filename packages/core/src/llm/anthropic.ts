@@ -574,6 +574,7 @@ function toToolCall(use: StreamedToolUse, args: Record<string, unknown>): ToolCa
 function toChatUsage(usage: Anthropic.Usage, outputTokens: number): ChatUsage {
   const cacheRead = usage.cache_read_input_tokens ?? 0;
   const cacheWrite = usage.cache_creation_input_tokens ?? 0;
+  const cacheWrite1h = Math.min(usage.cache_creation?.ephemeral_1h_input_tokens ?? 0, cacheWrite);
   const inputTokens = usage.input_tokens + cacheRead + cacheWrite;
   return {
     inputTokens,
@@ -581,5 +582,6 @@ function toChatUsage(usage: Anthropic.Usage, outputTokens: number): ChatUsage {
     totalTokens: inputTokens + outputTokens,
     ...(cacheRead > 0 && { cachedInputTokens: cacheRead }),
     ...(cacheWrite > 0 && { cacheWriteTokens: cacheWrite }),
+    ...(cacheWrite1h > 0 && { cacheWrite1hTokens: cacheWrite1h }),
   };
 }

@@ -1,9 +1,10 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { calculateCost } from '@cogitator-ai/models';
 import type { ChatRequest, ChatResponse, ChatStreamChunk, LLMBackend } from '@cogitator-ai/types';
 import { Agent } from '../agent';
 import { Cogitator } from '../cogitator';
 import { RunCostMeter } from '../cogitator/run-cost';
+import { getLogger } from '../logger';
 
 const PRICED = 'openai/gpt-4o-mini';
 const tokens = (inputTokens: number, outputTokens: number) => ({
@@ -95,6 +96,84 @@ describe('RunCostMeter', () => {
       0.001 + registryPrice(1000, 100) + priceOn(EXPENSIVE, 1000, 100),
       10
     );
+  });
+});
+
+describe('1-hour cache writes', () => {
+  it('prices them at their own rate', () => {
+    const meter = new RunCostMeter();
+    meter.add(
+      { ...tokens(1_000_000, 0), cacheWriteTokens: 1_000_000, cacheWrite1hTokens: 400_000 },
+      'anthropic/claude-opus-5-5'
+    );
+
+    expect(meter.total('anthropic/claude-opus-5-5')).toBeCloseTo(
+      (600_000 * 5 + 400_000 * 8) / 1e6,
+      10
+    );
+    expect(new RunCostMeter(meter.state()).total('anthropic/claude-opus-5-5')).toBeCloseTo(
+      (600_000 * 5 + 400_000 * 8) / 1e6,
+      10
+    );
+  });
+});
+
+describe('a budget on a model without a price', () => {
+  const unpriced = (cost?: number): LLMBackend => ({
+    provider: 'local',
+    chat: vi.fn(async (): Promise<ChatResponse> => ({
+      id: 'r',
+      content: 'done',
+      finishReason: 'stop',
+      usage: { ...tokens(100, 10), ...(cost !== undefined && { cost }) },
+    })),
+    chatStream: vi.fn(async function* (): AsyncGenerator<ChatStreamChunk> {
+      yield { id: 's', delta: { content: 'done' }, finishReason: 'stop' };
+    }),
+  });
+  const agent = new Agent({ name: 'local', model: 'local/my-finetune', instructions: 'Answer.' });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('warns once that its calls cannot be counted', async () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const cog = new Cogitator({
+      llm: { backends: { local: unpriced() } },
+      costRouting: { enabled: true, budget: { maxCostPerRun: 1 } },
+    });
+
+    await cog.run(agent, { input: 'hi' });
+    await cog.run(agent, { input: 'again' });
+
+    const warnings = warn.mock.calls.filter(([message]) => message.includes('local/my-finetune'));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0][0]).toContain('initializeModels');
+    await cog.close();
+  });
+
+  it('stays quiet when the provider reports the cost', async () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const cog = new Cogitator({
+      llm: { backends: { local: unpriced(0.001) } },
+      costRouting: { enabled: true, budget: { maxCostPerRun: 1 } },
+    });
+
+    await cog.run(agent, { input: 'hi' });
+
+    expect(warn.mock.calls.filter(([m]) => m.includes('local/my-finetune'))).toHaveLength(0);
+    await cog.close();
+  });
+
+  it('stays quiet without a budget', async () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const cog = new Cogitator({ llm: { backends: { local: unpriced() } } });
+
+    await cog.run(agent, { input: 'hi' });
+
+    expect(warn.mock.calls.filter(([m]) => m.includes('local/my-finetune'))).toHaveLength(0);
+    await cog.close();
   });
 });
 

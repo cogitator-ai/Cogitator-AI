@@ -46,6 +46,9 @@ export class RunCostMeter {
     tokens.outputTokens += usage.outputTokens;
     tokens.cachedInputTokens += usage.cachedInputTokens ?? 0;
     tokens.cacheWriteTokens += usage.cacheWriteTokens ?? 0;
+    if (usage.cacheWrite1hTokens) {
+      tokens.cacheWrite1hTokens = (tokens.cacheWrite1hTokens ?? 0) + usage.cacheWrite1hTokens;
+    }
     this.byModel.set(model, tokens);
   }
 

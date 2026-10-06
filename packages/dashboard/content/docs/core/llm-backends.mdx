@@ -323,10 +323,10 @@ Agent runs cache their prompt by default. Anthropic and Bedrock cache only what 
 ```typescript
 const result = await cog.run(agent, { input });
 result.usage.cachedInputTokens; // read from the cache (about a tenth of the input price on Claude)
-result.usage.cacheWriteTokens; // written to it (Anthropic: 1.25× the input price)
+result.usage.cacheWriteTokens; // written to it (Anthropic: 1.25× the input price, 2× with the 1-hour TTL)
 ```
 
-In an agent loop every iteration resends the previous one's prompt, so after the first call most of the input is a cache read. `llm.promptCache: { ttl: '1h' }` keeps Anthropic's cache for an hour instead of five minutes; `llm.promptCache: false` turns marking off. A single `ChatRequest` takes the same setting as `cache`.
+In an agent loop every iteration resends the previous one's prompt, so after the first call most of the input is a cache read. `llm.promptCache: { ttl: '1h' }` keeps Anthropic's cache for an hour instead of five minutes, and the run's cost prices those writes at the 1-hour rate (`ChatUsage.cacheWrite1hTokens`); `llm.promptCache: false` turns marking off. A single `ChatRequest` takes the same setting as `cache`.
 
 ## Retries
 

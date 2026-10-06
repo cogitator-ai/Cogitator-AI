@@ -226,6 +226,8 @@ export interface RunCostTokens {
   outputTokens: number;
   cachedInputTokens: number;
   cacheWriteTokens: number;
+  /** Part of `cacheWriteTokens` written with the 1-hour TTL; missing in checkpoints saved before it existed */
+  cacheWrite1hTokens?: number;
 }
 
 export interface RunCheckpoint {

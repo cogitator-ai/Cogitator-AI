@@ -16,8 +16,10 @@ export const ModelPricingSchema = z.object({
   output: z.number(),
   /** Input served from the provider's prompt cache */
   inputCached: z.number().optional(),
-  /** Input written to the prompt cache (Anthropic charges extra for it) */
+  /** Input written to the prompt cache (Anthropic charges extra for it), with the default 5-minute TTL */
   inputCacheWrite: z.number().optional(),
+  /** Input written to the prompt cache with the 1-hour TTL (Anthropic charges twice the input price) */
+  inputCacheWrite1h: z.number().optional(),
   outputCached: z.number().optional(),
 });
 
@@ -84,6 +86,7 @@ export interface LiteLLMModelEntry {
   output_cost_per_character?: number;
   cache_read_input_token_cost?: number;
   cache_creation_input_token_cost?: number;
+  cache_creation_input_token_cost_above_1hr?: number;
   litellm_provider?: string;
   mode?: string;
   supports_function_calling?: boolean;

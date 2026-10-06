@@ -1498,6 +1498,56 @@ describe('AnthropicBackend', () => {
     });
   });
 
+  describe('prompt cache usage', () => {
+    it('reports the cache writes made with the 1-hour TTL', async () => {
+      mockCreate.mockResolvedValueOnce({
+        id: 'msg_1',
+        content: [{ type: 'text', text: 'OK' }],
+        stop_reason: 'end_turn',
+        usage: {
+          input_tokens: 10,
+          output_tokens: 2,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 500,
+          cache_creation: { ephemeral_5m_input_tokens: 100, ephemeral_1h_input_tokens: 400 },
+        },
+      });
+
+      const response = await backend.chat({
+        model: 'claude-sonnet-5-5',
+        messages: [{ role: 'user', content: 'x' }],
+        cache: { ttl: '1h' },
+      });
+
+      expect(response.usage).toMatchObject({
+        inputTokens: 510,
+        cacheWriteTokens: 500,
+        cacheWrite1hTokens: 400,
+      });
+    });
+
+    it('leaves the 1-hour count out when nothing was written for an hour', async () => {
+      mockCreate.mockResolvedValueOnce({
+        id: 'msg_1',
+        content: [{ type: 'text', text: 'OK' }],
+        stop_reason: 'end_turn',
+        usage: {
+          input_tokens: 10,
+          output_tokens: 2,
+          cache_creation_input_tokens: 100,
+          cache_creation: { ephemeral_5m_input_tokens: 100, ephemeral_1h_input_tokens: 0 },
+        },
+      });
+
+      const response = await backend.chat({
+        model: 'claude-sonnet-5-5',
+        messages: [{ role: 'user', content: 'x' }],
+      });
+
+      expect(response.usage).not.toHaveProperty('cacheWrite1hTokens');
+    });
+  });
+
   describe('turn outcome', () => {
     const purge = {
       name: 'purge',

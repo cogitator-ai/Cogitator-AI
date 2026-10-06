@@ -141,6 +141,11 @@ export interface ChatUsage {
   cachedInputTokens?: number;
   /** Input tokens written to the provider prompt cache; already counted in `inputTokens`. */
   cacheWriteTokens?: number;
+  /**
+   * The part of `cacheWriteTokens` written with the 1-hour TTL, which Anthropic bills at twice
+   * the input price instead of the 5-minute write price.
+   */
+  cacheWrite1hTokens?: number;
   /** Hidden reasoning tokens; already counted in `outputTokens`. */
   reasoningTokens?: number;
   /**

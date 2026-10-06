@@ -5,7 +5,8 @@ import type {
   CostRecord,
   CostSummary,
 } from '@cogitator-ai/types';
-import { calculateCost } from '@cogitator-ai/models';
+import { calculateCost, getPricing } from '@cogitator-ai/models';
+import { getLogger } from '../logger';
 import { TaskAnalyzer } from './task-analyzer';
 import { ModelSelector, TASK_TOKEN_ESTIMATES } from './model-selector';
 import { CostTracker } from './cost-tracker';
@@ -29,6 +30,7 @@ export class CostAwareRouter {
   private costTracker: CostTracker;
   private budgetEnforcer?: BudgetEnforcer;
   private config: CostRoutingConfig;
+  private readonly unpricedModels = new Set<string>();
 
   constructor(options: CostAwareRouterOptions = {}) {
     this.config = { ...DEFAULT_CONFIG, ...options.config };
@@ -103,6 +105,21 @@ export class CostAwareRouter {
     if (this.config.trackCosts || this.budgetEnforcer) {
       this.costTracker.record(record);
     }
+  }
+
+  /**
+   * Warns once per model that a budget is set but calls to `model` cannot be counted against it:
+   * the provider reported no cost and the model registry has no price for it, so they count as $0.
+   * The runtime calls it for each such call.
+   */
+  noteUnreportedCost(model: string): void {
+    if (!this.budgetEnforcer || this.unpricedModels.has(model)) return;
+    this.unpricedModels.add(model);
+    if (getPricing(model)) return;
+    getLogger().warn(
+      `No price is known for ${model}, so the cost-routing budget counts its calls as $0. Load the full model catalogue with initializeModels() from @cogitator-ai/models at startup, or use a provider that reports its cost.`,
+      { model }
+    );
   }
 
   getRunCost(runId: string): number {

@@ -5,7 +5,13 @@ export const ANTHROPIC_MODELS: ModelInfo[] = [
     id: 'claude-fable-5-1',
     provider: 'anthropic',
     displayName: 'Claude Fable 5.1',
-    pricing: { input: 10, output: 50, inputCached: 0.25, inputCacheWrite: 12.5 },
+    pricing: {
+      input: 10,
+      output: 50,
+      inputCached: 0.25,
+      inputCacheWrite: 12.5,
+      inputCacheWrite1h: 20,
+    },
     contextWindow: 1000000,
     maxOutputTokens: 128000,
     capabilities: {
@@ -21,7 +27,7 @@ export const ANTHROPIC_MODELS: ModelInfo[] = [
     id: 'claude-opus-5-5',
     provider: 'anthropic',
     displayName: 'Claude Opus 5.5',
-    pricing: { input: 4, output: 20, inputCached: 0.2, inputCacheWrite: 5 },
+    pricing: { input: 4, output: 20, inputCached: 0.2, inputCacheWrite: 5, inputCacheWrite1h: 8 },
     contextWindow: 1000000,
     maxOutputTokens: 128000,
     capabilities: {
@@ -37,7 +43,7 @@ export const ANTHROPIC_MODELS: ModelInfo[] = [
     id: 'claude-sonnet-5-5',
     provider: 'anthropic',
     displayName: 'Claude Sonnet 5.5',
-    pricing: { input: 2, output: 10, inputCached: 0.2, inputCacheWrite: 2.5 },
+    pricing: { input: 2, output: 10, inputCached: 0.2, inputCacheWrite: 2.5, inputCacheWrite1h: 4 },
     contextWindow: 1000000,
     maxOutputTokens: 128000,
     capabilities: {
@@ -53,7 +59,13 @@ export const ANTHROPIC_MODELS: ModelInfo[] = [
     id: 'claude-opus-5',
     provider: 'anthropic',
     displayName: 'Claude Opus 5',
-    pricing: { input: 5, output: 25, inputCached: 0.5, inputCacheWrite: 6.25 },
+    pricing: {
+      input: 5,
+      output: 25,
+      inputCached: 0.5,
+      inputCacheWrite: 6.25,
+      inputCacheWrite1h: 10,
+    },
     contextWindow: 1000000,
     maxOutputTokens: 128000,
     capabilities: {
@@ -68,7 +80,7 @@ export const ANTHROPIC_MODELS: ModelInfo[] = [
     id: 'claude-sonnet-5',
     provider: 'anthropic',
     displayName: 'Claude Sonnet 5',
-    pricing: { input: 2, output: 10, inputCached: 0.2, inputCacheWrite: 2.5 },
+    pricing: { input: 2, output: 10, inputCached: 0.2, inputCacheWrite: 2.5, inputCacheWrite1h: 4 },
     contextWindow: 1000000,
     maxOutputTokens: 128000,
     capabilities: {
@@ -83,7 +95,13 @@ export const ANTHROPIC_MODELS: ModelInfo[] = [
     id: 'claude-fable-5',
     provider: 'anthropic',
     displayName: 'Claude Fable 5',
-    pricing: { input: 10, output: 50, inputCached: 1, inputCacheWrite: 12.5 },
+    pricing: {
+      input: 10,
+      output: 50,
+      inputCached: 1,
+      inputCacheWrite: 12.5,
+      inputCacheWrite1h: 20,
+    },
     contextWindow: 1000000,
     maxOutputTokens: 128000,
     capabilities: {
@@ -98,7 +116,13 @@ export const ANTHROPIC_MODELS: ModelInfo[] = [
     id: 'claude-opus-4-8',
     provider: 'anthropic',
     displayName: 'Claude Opus 4.8',
-    pricing: { input: 5, output: 25, inputCached: 0.5, inputCacheWrite: 6.25 },
+    pricing: {
+      input: 5,
+      output: 25,
+      inputCached: 0.5,
+      inputCacheWrite: 6.25,
+      inputCacheWrite1h: 10,
+    },
     contextWindow: 1000000,
     maxOutputTokens: 128000,
     capabilities: {
@@ -114,7 +138,13 @@ export const ANTHROPIC_MODELS: ModelInfo[] = [
     id: 'claude-opus-4-7',
     provider: 'anthropic',
     displayName: 'Claude Opus 4.7',
-    pricing: { input: 5, output: 25, inputCached: 0.5, inputCacheWrite: 6.25 },
+    pricing: {
+      input: 5,
+      output: 25,
+      inputCached: 0.5,
+      inputCacheWrite: 6.25,
+      inputCacheWrite1h: 10,
+    },
     contextWindow: 1000000,
     maxOutputTokens: 128000,
     capabilities: {
@@ -130,7 +160,13 @@ export const ANTHROPIC_MODELS: ModelInfo[] = [
     id: 'claude-opus-4-6',
     provider: 'anthropic',
     displayName: 'Claude Opus 4.6',
-    pricing: { input: 5, output: 25, inputCached: 0.5, inputCacheWrite: 6.25 },
+    pricing: {
+      input: 5,
+      output: 25,
+      inputCached: 0.5,
+      inputCacheWrite: 6.25,
+      inputCacheWrite1h: 10,
+    },
     contextWindow: 1000000,
     maxOutputTokens: 128000,
     capabilities: {
@@ -146,7 +182,13 @@ export const ANTHROPIC_MODELS: ModelInfo[] = [
     id: 'claude-sonnet-4-6',
     provider: 'anthropic',
     displayName: 'Claude Sonnet 4.6',
-    pricing: { input: 3, output: 15, inputCached: 0.3, inputCacheWrite: 3.75 },
+    pricing: {
+      input: 3,
+      output: 15,
+      inputCached: 0.3,
+      inputCacheWrite: 3.75,
+      inputCacheWrite1h: 6,
+    },
     contextWindow: 1000000,
     maxOutputTokens: 128000,
     capabilities: {
@@ -162,7 +204,13 @@ export const ANTHROPIC_MODELS: ModelInfo[] = [
     id: 'claude-opus-4-5-20251101',
     provider: 'anthropic',
     displayName: 'Claude Opus 4.5',
-    pricing: { input: 5, output: 25, inputCached: 0.5, inputCacheWrite: 6.25 },
+    pricing: {
+      input: 5,
+      output: 25,
+      inputCached: 0.5,
+      inputCacheWrite: 6.25,
+      inputCacheWrite1h: 10,
+    },
     contextWindow: 200000,
     maxOutputTokens: 64000,
     capabilities: {
@@ -178,7 +226,13 @@ export const ANTHROPIC_MODELS: ModelInfo[] = [
     id: 'claude-sonnet-4-5-20250929',
     provider: 'anthropic',
     displayName: 'Claude Sonnet 4.5',
-    pricing: { input: 3, output: 15, inputCached: 0.3, inputCacheWrite: 3.75 },
+    pricing: {
+      input: 3,
+      output: 15,
+      inputCached: 0.3,
+      inputCacheWrite: 3.75,
+      inputCacheWrite1h: 6,
+    },
     contextWindow: 200000,
     maxOutputTokens: 64000,
     capabilities: {
@@ -194,7 +248,7 @@ export const ANTHROPIC_MODELS: ModelInfo[] = [
     id: 'claude-haiku-4-5-20251001',
     provider: 'anthropic',
     displayName: 'Claude Haiku 4.5',
-    pricing: { input: 1, output: 5, inputCached: 0.1, inputCacheWrite: 1.25 },
+    pricing: { input: 1, output: 5, inputCached: 0.1, inputCacheWrite: 1.25, inputCacheWrite1h: 2 },
     contextWindow: 200000,
     maxOutputTokens: 64000,
     capabilities: {
@@ -210,7 +264,13 @@ export const ANTHROPIC_MODELS: ModelInfo[] = [
     id: 'claude-opus-4-1-20250805',
     provider: 'anthropic',
     displayName: 'Claude Opus 4.1',
-    pricing: { input: 15, output: 75, inputCached: 1.5, inputCacheWrite: 18.75 },
+    pricing: {
+      input: 15,
+      output: 75,
+      inputCached: 1.5,
+      inputCacheWrite: 18.75,
+      inputCacheWrite1h: 30,
+    },
     contextWindow: 200000,
     maxOutputTokens: 32000,
     capabilities: {
@@ -227,7 +287,13 @@ export const ANTHROPIC_MODELS: ModelInfo[] = [
     id: 'claude-sonnet-4-20250514',
     provider: 'anthropic',
     displayName: 'Claude Sonnet 4',
-    pricing: { input: 3, output: 15, inputCached: 0.3, inputCacheWrite: 3.75 },
+    pricing: {
+      input: 3,
+      output: 15,
+      inputCached: 0.3,
+      inputCacheWrite: 3.75,
+      inputCacheWrite1h: 6,
+    },
     contextWindow: 200000,
     maxOutputTokens: 64000,
     capabilities: {
@@ -244,7 +310,13 @@ export const ANTHROPIC_MODELS: ModelInfo[] = [
     id: 'claude-opus-4-20250514',
     provider: 'anthropic',
     displayName: 'Claude Opus 4',
-    pricing: { input: 15, output: 75, inputCached: 1.5, inputCacheWrite: 18.75 },
+    pricing: {
+      input: 15,
+      output: 75,
+      inputCached: 1.5,
+      inputCacheWrite: 18.75,
+      inputCacheWrite1h: 30,
+    },
     contextWindow: 200000,
     maxOutputTokens: 32000,
     capabilities: {
@@ -261,7 +333,13 @@ export const ANTHROPIC_MODELS: ModelInfo[] = [
     id: 'claude-3-7-sonnet-20250219',
     provider: 'anthropic',
     displayName: 'Claude 3.7 Sonnet',
-    pricing: { input: 3, output: 15, inputCached: 0.3, inputCacheWrite: 3.75 },
+    pricing: {
+      input: 3,
+      output: 15,
+      inputCached: 0.3,
+      inputCacheWrite: 3.75,
+      inputCacheWrite1h: 6,
+    },
     contextWindow: 200000,
     maxOutputTokens: 64000,
     capabilities: {
@@ -278,7 +356,13 @@ export const ANTHROPIC_MODELS: ModelInfo[] = [
     id: 'claude-3-5-sonnet-20241022',
     provider: 'anthropic',
     displayName: 'Claude 3.5 Sonnet',
-    pricing: { input: 3, output: 15, inputCached: 0.3, inputCacheWrite: 3.75 },
+    pricing: {
+      input: 3,
+      output: 15,
+      inputCached: 0.3,
+      inputCacheWrite: 3.75,
+      inputCacheWrite1h: 6,
+    },
     contextWindow: 200000,
     maxOutputTokens: 8192,
     capabilities: {
@@ -295,7 +379,13 @@ export const ANTHROPIC_MODELS: ModelInfo[] = [
     id: 'claude-3-5-haiku-20241022',
     provider: 'anthropic',
     displayName: 'Claude 3.5 Haiku',
-    pricing: { input: 0.8, output: 4, inputCached: 0.08, inputCacheWrite: 1 },
+    pricing: {
+      input: 0.8,
+      output: 4,
+      inputCached: 0.08,
+      inputCacheWrite: 1,
+      inputCacheWrite1h: 1.6,
+    },
     contextWindow: 200000,
     maxOutputTokens: 8192,
     capabilities: {
@@ -312,7 +402,13 @@ export const ANTHROPIC_MODELS: ModelInfo[] = [
     id: 'claude-3-opus-20240229',
     provider: 'anthropic',
     displayName: 'Claude 3 Opus',
-    pricing: { input: 15, output: 75, inputCached: 1.5, inputCacheWrite: 18.75 },
+    pricing: {
+      input: 15,
+      output: 75,
+      inputCached: 1.5,
+      inputCacheWrite: 18.75,
+      inputCacheWrite1h: 30,
+    },
     contextWindow: 200000,
     maxOutputTokens: 4096,
     capabilities: {
@@ -328,7 +424,13 @@ export const ANTHROPIC_MODELS: ModelInfo[] = [
     id: 'claude-3-haiku-20240307',
     provider: 'anthropic',
     displayName: 'Claude 3 Haiku',
-    pricing: { input: 0.25, output: 1.25, inputCached: 0.025, inputCacheWrite: 0.3125 },
+    pricing: {
+      input: 0.25,
+      output: 1.25,
+      inputCached: 0.025,
+      inputCacheWrite: 0.3125,
+      inputCacheWrite1h: 0.5,
+    },
     contextWindow: 200000,
     maxOutputTokens: 4096,
     capabilities: {

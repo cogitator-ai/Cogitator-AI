@@ -53,7 +53,7 @@ Prices are USD per million tokens. `getPrice()` returns only `input` and `output
 import { getPricing, calculateCost } from '@cogitator-ai/models';
 
 getPricing('claude-sonnet-5-5');
-// { input: 2, output: 10, inputCached: 0.2, inputCacheWrite: 2.5 }
+// { input: 2, output: 10, inputCached: 0.2, inputCacheWrite: 2.5, inputCacheWrite1h: 4 }
 
 const cost = calculateCost('claude-sonnet-5-5', {
   inputTokens: 10_000,
@@ -64,7 +64,7 @@ const cost = calculateCost('claude-sonnet-5-5', {
 // 0.0156 (USD), or null when the model's price is unknown
 ```
 
-Cache reads and writes are charged at `inputCached` / `inputCacheWrite` where the model has them, and at the input price otherwise. `RunResult.usage.cost` adds up the cost of each model call. When the provider reports what a call cost (OpenRouter does, in `usage.cost`), the runtime takes that price, which also reflects which upstream served the call. Other calls are priced with `calculateCost()` on the shared registry, using the full model string the agent runs on, so a model the registry does not know and whose provider reports nothing costs `0`. Call `initializeModels()` at startup to price more than the built-in models.
+Cache reads and writes are charged at `inputCached` / `inputCacheWrite` where the model has them, and at the input price otherwise. Writes made with Anthropic's 1-hour TTL (`cacheWrite1hTokens`, a part of `cacheWriteTokens`) are charged at `inputCacheWrite1h`, twice the input price, instead of the 5-minute write price. `RunResult.usage.cost` adds up the cost of each model call. When the provider reports what a call cost (OpenRouter does, in `usage.cost`), the runtime takes that price, which also reflects which upstream served the call. Other calls are priced with `calculateCost()` on the shared registry, using the full model string the agent runs on, so a model the registry does not know and whose provider reports nothing costs `0`. Call `initializeModels()` at startup to price more than the built-in models: lookups made before it use the built-in models without counting as initialization, so it still loads the full catalogue whenever it runs. With a cost-routing `budget`, the runtime warns once per model whose calls it cannot price.
 
 ## ModelRegistry
 
@@ -100,7 +100,7 @@ await registry.initialize();
 
 ### Methods
 
-`initialize()` loads a fresh cache if there is one (and refreshes it in the background), otherwise fetches LiteLLM data; on failure it falls back to built-in models (or throws when `fallbackToBuiltin` is `false`). Lookups before `initialize()` load the built-in models.
+`initialize()` loads a fresh cache if there is one (and refreshes it in the background), otherwise fetches LiteLLM data; on failure it falls back to built-in models (or throws when `fallbackToBuiltin` is `false`). Lookups before `initialize()` use the built-in models without counting as initialization, so a later `initialize()` still loads the full catalogue. Overlapping `initialize()` calls share one load.
 
 ```typescript
 registry.getModel('gpt-6.1-sol');
