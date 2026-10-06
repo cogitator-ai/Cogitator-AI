@@ -247,9 +247,6 @@ importers:
 
   packages/a2a:
     dependencies:
-      '@cogitator-ai/core':
-        specifier: workspace:>=0.33.0
-        version: link:../core
       '@cogitator-ai/server-shared':
         specifier: workspace:*
         version: link:../server-shared
@@ -278,6 +275,9 @@ importers:
       '@a2a-js/sdk':
         specifier: 0.3.14
         version: 0.3.14(@grpc/grpc-js@1.14.5)(express@5.2.1(supports-color@10.2.2))
+      '@cogitator-ai/core':
+        specifier: workspace:*
+        version: link:../core
       '@types/express':
         specifier: ^5.0.6
         version: 5.0.6

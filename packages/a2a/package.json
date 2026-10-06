@@ -68,6 +68,7 @@
   },
   "devDependencies": {
     "@a2a-js/sdk": "0.3.14",
+    "@cogitator-ai/core": "workspace:*",
     "@types/express": "^5.0.6",
     "@types/koa": "^3.0.3",
     "@types/node": "^22.20.4",

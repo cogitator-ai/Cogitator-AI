@@ -335,13 +335,17 @@ describe('Models: Registry lifecycle', () => {
     globalThis.fetch = originalFetch;
   });
 
-  it('lazy-initializes on first access if not explicitly initialized', () => {
+  it('serves the built-in models before initialize() without counting as initialized', async () => {
     const lazy = new ModelRegistry({ fallbackToBuiltin: true });
     expect(lazy.isInitialized()).toBe(false);
 
     const models = lazy.listModels();
-    expect(lazy.isInitialized()).toBe(true);
     expect(models.length).toBeGreaterThan(0);
+    expect(lazy.isInitialized()).toBe(false);
+
+    await lazy.initialize();
+    expect(lazy.isInitialized()).toBe(true);
+    expect(lazy.listModels().length).toBeGreaterThanOrEqual(models.length);
 
     lazy.shutdown();
   });
