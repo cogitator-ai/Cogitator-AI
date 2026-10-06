@@ -1,8 +1,10 @@
 # @cogitator-ai/openai-compat
 
-OpenAI Assistants API compatibility layer for Cogitator. Point the official OpenAI SDK (or any Assistants API client) at a Cogitator server, or drive the same assistants/threads/runs model in-process.
+OpenAI-compatible server for Cogitator agents. Register your agents and every client that speaks the OpenAI API (the official SDKs, Open WebUI, LibreChat, LangChain, Vercel AI SDK and the like) talks to them through `POST /v1/chat/completions` or `POST /v1/responses`, with the agent's name as the `model`. The Assistants API is served too, for existing integrations.
 
 Full guide: [cogitator.app/docs/integrations/openai-compat](https://cogitator.app/docs/integrations/openai-compat)
+
+> **The Assistants API is deprecated.** OpenAI sunset it on 2026-08-26 and current clients use Chat Completions or Responses. The `/v1/assistants`, `/v1/threads` and run endpoints keep working, but new integrations should use [Chat Completions](#chat-completions) or [Responses](#responses).
 
 ## Installation
 
@@ -17,54 +19,162 @@ pnpm add openai
 
 ## Features
 
-- **OpenAI Server** - Expose Cogitator as an OpenAI Assistants API (Fastify)
-- **OpenAI Adapter** - In-process access to the same assistants/threads/runs API
-- **Thread Manager** - Threads, messages, assistants and files over pluggable storage
-- **Persistent Storage** - In-memory, Redis or PostgreSQL backends
-- **SSE Streaming** - Token streaming with OpenAI-compatible stream events
-- **Files** - Upload, list, download and delete files (`multipart/form-data`)
-- **Function Calling** - Assistant `function` tools pause the run with `requires_action` until the client submits outputs
-- **Server-side tools** - Cogitator tools passed to the server run inside Cogitator for every run
-- **Vision & JSON output** - `image_url` / image `image_file` parts reach the model; `response_format` supports `json_object` and `json_schema`
+- **Chat Completions** - `POST /v1/chat/completions`, streaming and not, with tool calls, usage and images
+- **Responses** - `POST /v1/responses` with the streaming events of the API, `previous_response_id`, function calls, and `GET` / `DELETE` of stored responses
+- **Agents as models** - `model` names a registered agent, which answers with its own instructions, model and tools. `GET /v1/models` lists them
+- **Client functions** - Functions a client declares come back as tool calls, and the outputs it sends resume the same run
+- **Assistants API (deprecated)** - Assistants, threads, messages, runs and files over pluggable storage (in-memory, Redis, PostgreSQL)
+- **OpenAI errors** - Every error in the OpenAI error format, with the parameter at fault
 - **Authentication** - Optional API keys (constant-time check, `/health` stays public)
+- **Abort on disconnect** - A client that goes away stops the agent run
 - **CORS** - Configurable cross-origin requests
 
-The package implements the Assistants API surface (models, assistants, threads, messages, runs, files). There is no `/v1/chat/completions`, run steps, or vector stores endpoint; `code_interpreter` and `file_search` assistant tools are stored but not executed.
+There are no run steps or vector stores, and `code_interpreter` and `file_search` assistant tools are stored but not executed.
 
 ---
 
 ## Quick Start
 
-### Server Mode
-
 ```typescript
 import { createOpenAIServer } from '@cogitator-ai/openai-compat';
-import { Cogitator, tool } from '@cogitator-ai/core';
+import { Agent, Cogitator, tool } from '@cogitator-ai/core';
 import { z } from 'zod';
 
-const add = tool({
-  name: 'add',
-  description: 'Add two numbers',
-  parameters: z.object({ a: z.number(), b: z.number() }),
-  execute: async ({ a, b }) => ({ sum: a + b }),
+const lookupOrder = tool({
+  name: 'lookup_order',
+  description: 'Find an order by id',
+  parameters: z.object({ id: z.string() }),
+  execute: async ({ id }) => ({ id, status: 'shipped' }),
 });
 
-const cogitator = new Cogitator({
-  llm: { defaultModel: 'openai/gpt-6-luna' },
+const support = new Agent({
+  name: 'support',
+  model: 'openai/gpt-6-luna',
+  instructions: 'You are the support agent of an online shop.',
+  tools: [lookupOrder],
 });
 
-const server = createOpenAIServer(cogitator, {
+const server = createOpenAIServer(new Cogitator(), {
   port: 8080,
-  tools: [add],
+  agents: { support },
   apiKeys: ['sk-my-secret-key'],
-  defaultModel: 'openai/gpt-6-luna', // used for the advertised `cogitator` model id
 });
 
 await server.start();
 console.log(server.getBaseUrl()); // http://localhost:8080/v1
 ```
 
-### Client Mode
+```typescript
+import OpenAI from 'openai';
+
+const openai = new OpenAI({ baseURL: 'http://localhost:8080/v1', apiKey: 'sk-my-secret-key' });
+
+const completion = await openai.chat.completions.create({
+  model: 'support',
+  messages: [{ role: 'user', content: 'Where is order A-1?' }],
+});
+console.log(completion.choices[0].message.content);
+
+const response = await openai.responses.create({ model: 'support', input: 'Where is order A-1?' });
+console.log(response.output_text);
+```
+
+Point Open WebUI, LibreChat or any other OpenAI client at `http://localhost:8080/v1` with the API key, and pick the agent from the model list.
+
+---
+
+## Agents as models
+
+`agents` maps model ids to Cogitator agents. A request whose `model` is not one of them answers `404` with code `model_not_found`. `GET /v1/models` lists the agents, and the `cogitator` model of the Assistants API.
+
+For each request the server runs the agent with:
+
+- its own instructions first, then the client's `system` / `developer` messages (or the Responses `instructions`) after them,
+- the request's `temperature`, `top_p`, token limit, `stop` and response format,
+- its own tools, plus the functions the client declares in `tools` (a client function with the name of an agent tool is left out).
+
+The conversation the client sends is replayed to the agent: the last user message is the input and the turns before it come as a transcript, so the APIs stay stateless and nothing is written to the agent's memory. Only the images of the last user message reach the model.
+
+### Client functions
+
+When the model calls a function the client declared, the turn ends with the call (`finish_reason: 'tool_calls'`, or a `function_call` output item) and the run waits. When the client sends the outputs back for every call (a `tool` message, or a `function_call_output` item), the same run goes on from where it stopped, with the outputs as the function results. The call ids the client gets are generated by the server, so only the client that got them can answer. A run waits 10 minutes, or until 1000 newer runs wait, and outputs for a run that no longer waits are replayed to the agent as part of the conversation instead.
+
+Agent tools that need an approval (`requiresApproval`) are not run when nothing approves them (`guardrails.onToolApproval`): the model is told the tool was not run.
+
+`tool_choice: 'none'` runs the agent without any tool, and `{ type: 'function', ... }` with only the named tool. `required` is treated as `auto`.
+
+## Chat Completions
+
+```typescript
+const stream = await openai.chat.completions.create({
+  model: 'support',
+  messages: [
+    { role: 'system', content: 'Answer in one sentence.' },
+    { role: 'user', content: 'Where is order A-1?' },
+  ],
+  stream: true,
+  stream_options: { include_usage: true },
+});
+
+for await (const chunk of stream) {
+  process.stdout.write(chunk.choices[0]?.delta.content ?? '');
+}
+```
+
+| Parameter                                     | Support                                                                                                  |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `model`                                       | A registered agent                                                                                       |
+| `messages`                                    | `system`, `developer`, `user` (text and `image_url` parts), `assistant` (text and `tool_calls`), `tool`  |
+| `stream`, `stream_options.include_usage`      | Chunks with `delta.content` and `delta.tool_calls`, the finish reason, then the usage chunk and `[DONE]` |
+| `tools`, `tool_choice`, `parallel_tool_calls` | Function tools, see [Client functions](#client-functions)                                                |
+| `temperature`, `top_p`                        | Passed to the agent                                                                                      |
+| `max_completion_tokens` (`max_tokens`)        | The agent's output token limit                                                                           |
+| `stop`                                        | Stop sequences                                                                                           |
+| `response_format`                             | `text`, `json_object`, `json_schema`                                                                     |
+| `n`                                           | Only `1`                                                                                                 |
+
+`finish_reason` is `stop`, `tool_calls`, `length` when the answer hit the token limit, or `content_filter` when the provider withheld it. A refusal comes back in `message.refusal`. `usage` carries `prompt_tokens_details.cached_tokens` and `completion_tokens_details.reasoning_tokens`. Other parameters are ignored.
+
+## Responses
+
+```typescript
+const first = await openai.responses.create({
+  model: 'support',
+  instructions: 'Answer in one sentence.',
+  input: 'Where is order A-1?',
+});
+
+const next = await openai.responses.create({
+  model: 'support',
+  previous_response_id: first.id,
+  input: 'And order B-2?',
+});
+
+const stream = openai.responses.stream({ model: 'support', input: 'Summarize our talk' });
+stream.on('response.output_text.delta', (event) => process.stdout.write(event.delta));
+const final = await stream.finalResponse();
+```
+
+| Parameter                                     | Support                                                                                                                                    |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `model`                                       | A registered agent                                                                                                                         |
+| `input`                                       | A string, or message items (`input_text`, `input_image` with `image_url`, `output_text`), `function_call` and `function_call_output` items |
+| `instructions`                                | After the agent's own instructions, for this response only                                                                                 |
+| `previous_response_id`                        | Continues the conversation of a stored response                                                                                            |
+| `tools`, `tool_choice`, `parallel_tool_calls` | Function tools only                                                                                                                        |
+| `temperature`, `top_p`, `max_output_tokens`   | Passed to the agent                                                                                                                        |
+| `text.format`                                 | `text`, `json_object`, `json_schema`                                                                                                       |
+| `store`                                       | Keep the response (default `true`)                                                                                                         |
+| `stream`                                      | The Responses streaming events                                                                                                             |
+| `metadata`                                    | Returned with the response                                                                                                                 |
+
+A streamed response sends `response.created`, `response.in_progress`, the output items (`response.output_item.added`, `response.content_part.added`, `response.output_text.delta`, `response.output_text.done`, `response.content_part.done`, `response.output_item.done`, and `response.function_call_arguments.delta` / `.done` for function calls), then `response.completed`, `response.incomplete` or `response.failed`, every event with its `sequence_number`. A response cut by `max_output_tokens` is `incomplete` with `incomplete_details.reason: 'max_output_tokens'` (`content_filter` when the provider withheld it).
+
+Stored responses live in memory (`maxStoredResponses`, default 1000, the oldest dropped first): `GET /v1/responses/{id}`, `GET /v1/responses/{id}/input_items` and `DELETE /v1/responses/{id}`. `previous_response_id` carries the conversation, not the earlier `instructions`. Built-in tools (web search, file search, computer use), `background` and file inputs are not supported.
+
+---
+
+## Assistants API (deprecated)
 
 ```typescript
 import OpenAI from 'openai';
@@ -101,13 +211,13 @@ const stream = openai.beta.threads.runs
 await stream.finalRun();
 ```
 
-Assistant `model` values are Cogitator model strings (`openai/gpt-6.1-sol`, `ollama/llama3.2:latest`, ...). `GET /v1/models` lists a single model, `cogitator`, which maps to the server's `defaultModel`; runs that use it fail when no `defaultModel` is configured.
+The Assistants API runs assistants the client creates, not the registered agents. Assistant `model` values are Cogitator model strings (`openai/gpt-6.1-sol`, `ollama/llama3.2:latest`, ...). The `cogitator` model listed by `GET /v1/models` maps to the server's `defaultModel`, and runs that use it fail when no `defaultModel` is configured. Server-side `tools` are available to every run.
 
 ---
 
 ## OpenAI Server
 
-The `OpenAIServer` exposes Cogitator as an OpenAI-compatible REST API.
+The `OpenAIServer` exposes Cogitator agents as an OpenAI-compatible REST API.
 
 ### Configuration
 
@@ -119,6 +229,8 @@ const server = new OpenAIServer(cogitator, {
   host: '0.0.0.0',
 
   apiKeys: ['sk-key1', 'sk-key2'],
+
+  agents: { support, researcher },
 
   tools: [calculator, datetime, webSearch],
 
@@ -139,9 +251,12 @@ const server = new OpenAIServer(cogitator, {
 | `host`                             | `string`                        | `'127.0.0.1'`                          | Host to bind to. A public host needs `apiKeys`                              |
 | `apiKeys`                          | `string[]`                      | `[]`                                   | API keys for authentication. Empty disables auth                            |
 | `allowUnauthenticatedPublicAccess` | `boolean`                       | `false`                                | Serve a public host without `apiKeys` (behind a gateway that authenticates) |
-| `sseHeartbeatMs`                   | `number`                        | `5000`                                 | Heartbeat comment interval on run streams, `0` turns it off                 |
-| `tools`                            | `Tool[]`                        | `[]`                                   | Server-side tools available to every run                                    |
-| `defaultModel`                     | `string`                        | —                                      | Model used for the `cogitator` model id                                     |
+| `sseHeartbeatMs`                   | `number`                        | `5000`                                 | Heartbeat comment interval on streams, `0` turns it off                     |
+| `agents`                           | `Record<string, Agent>`         | `{}`                                   | Agents served by Chat Completions and Responses, by model id                |
+| `maxRequestBodyBytes`              | `number`                        | `20 MB`                                | Body limit of `/v1/chat/completions` and `/v1/responses`                    |
+| `maxStoredResponses`               | `number`                        | `1000`                                 | Responses kept in memory for `previous_response_id` and `GET`               |
+| `tools`                            | `Tool[]`                        | `[]`                                   | Server-side tools available to every Assistants API run                     |
+| `defaultModel`                     | `string`                        | -                                      | Model the Assistants API uses for the `cogitator` model id                  |
 | `storage`                          | `ThreadStorage`                 | in-memory                              | Persistence backend (connect before passing)                                |
 | `maxFileSize`                      | `number`                        | `512 MB`                               | Upload limit for `POST /v1/files`, in bytes                                 |
 | `logging`                          | `boolean`                       | `false`                                | Enable Fastify request logging (JSON logs)                                  |
@@ -183,7 +298,7 @@ curl http://localhost:8080/health
 
 ---
 
-## OpenAI Adapter
+## OpenAI Adapter (Assistants API, deprecated)
 
 The `OpenAIAdapter` provides in-process access without running a server. The server uses one internally (`server.getAdapter()`).
 
@@ -576,10 +691,23 @@ All endpoints except `/health` live under `/v1`. List endpoints for assistants, 
 
 ### Models
 
-| Method | Endpoint     | Description                        |
-| ------ | ------------ | ---------------------------------- |
-| GET    | `/v1/models` | Lists the single `cogitator` model |
-| GET    | `/health`    | Health check (public, no auth)     |
+| Method | Endpoint         | Description                                           |
+| ------ | ---------------- | ----------------------------------------------------- |
+| GET    | `/v1/models`     | Lists the registered agents and the `cogitator` model |
+| GET    | `/v1/models/:id` | Gets one model                                        |
+| GET    | `/health`        | Health check (public, no auth)                        |
+
+### Chat Completions and Responses
+
+| Method | Endpoint                        | Description                                 |
+| ------ | ------------------------------- | ------------------------------------------- |
+| POST   | `/v1/chat/completions`          | Chat completion (SSE with `stream: true`)   |
+| POST   | `/v1/responses`                 | Create a response (SSE with `stream: true`) |
+| GET    | `/v1/responses/:id`             | Get a stored response                       |
+| GET    | `/v1/responses/:id/input_items` | List the input items of a response          |
+| DELETE | `/v1/responses/:id`             | Delete a stored response                    |
+
+The Assistants API endpoints below are deprecated.
 
 ### Assistants
 
@@ -708,12 +836,12 @@ queued → in_progress → completed
                      → failed
                      → requires_action → in_progress → ...
                                        → expired (no outputs within 10 minutes)
-                     → incomplete (last message exceeds max_prompt_tokens)
+                     → incomplete (last message exceeds max_prompt_tokens, or the answer hit max_completion_tokens)
 
 queued / in_progress / requires_action → cancelling → cancelled
 ```
 
-`incomplete` is produced only by `max_prompt_tokens` (see [Run Execution](#run-execution)).
+A run is `incomplete` with `incomplete_details.reason: 'max_prompt_tokens'` when the last message alone does not fit in `max_prompt_tokens` (see [Run Execution](#run-execution)), and with `'max_completion_tokens'` when the answer stopped at the output token limit (`max_completion_tokens`, or the model's own). The answer is then kept as a message with `status: 'incomplete'` and `incomplete_details.reason: 'max_tokens'`, and the stream sends `thread.message.incomplete` and `thread.run.incomplete` instead of the `completed` events. An answer the provider's content filter withheld is an `incomplete` message with reason `content_filter` in a `completed` run.
 
 ### Polling for Completion
 
@@ -802,6 +930,7 @@ type EmittedEvent =
   | { event: 'thread.message.in_progress'; data: Message }
   | { event: 'thread.message.delta'; data: MessageDelta }
   | { event: 'thread.message.completed'; data: Message }
+  | { event: 'thread.message.incomplete'; data: Message }
   | { event: 'done'; data: '[DONE]' };
 ```
 

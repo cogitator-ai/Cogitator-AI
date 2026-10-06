@@ -432,13 +432,13 @@ console.log('Listening on http://localhost:3104 (API docs at /docs)');`,
       difficulty: 'medium',
       time: '10 min',
       problem:
-        'Existing code uses the OpenAI SDK (Assistants API). You want it to run on Cogitator without rewriting it.',
+        'Existing code uses the OpenAI SDK, or a chat UI such as Open WebUI. You want it to talk to your Cogitator agent without rewriting it.',
       points: [
-        'Start `createOpenAIServer()` with your tools',
-        'Point the official `openai` client at it and use assistants, threads and runs',
+        'Register the agent with `createOpenAIServer({ agents })`: its name becomes the `model`',
+        'Point the official `openai` client at it and use Chat Completions or Responses',
       ],
       file: 'openai-compat.ts',
-      code: `import { Cogitator, tool } from '@cogitator-ai/core';
+      code: `import { Agent, Cogitator, tool } from '@cogitator-ai/core';
 import { createOpenAIServer } from '@cogitator-ai/openai-compat';
 import OpenAI from 'openai';
 import { z } from 'zod';
@@ -453,32 +453,28 @@ const multiply = tool({
   execute: async ({ a, b }) => ({ product: a * b }),
 });
 
-const cog = new Cogitator({ llm: { providers: { google: { apiKey } } } });
-const server = createOpenAIServer(cog, {
-  port: 8080,
+const mathHelper = new Agent({
+  name: 'math-helper',
+  model: 'google/gemini-3.5-flash-lite',
+  instructions: 'You are a math helper. Use the multiply tool for products. Be concise.',
   tools: [multiply],
-  defaultModel: 'google/gemini-3.5-flash-lite',
-  logging: false,
 });
+
+const cog = new Cogitator({ llm: { providers: { google: { apiKey } } } });
+const server = createOpenAIServer(cog, { port: 8080, agents: { 'math-helper': mathHelper } });
 await server.start();
 
 const openai = new OpenAI({ baseURL: 'http://localhost:8080/v1', apiKey: 'not-needed' });
 
 try {
-  const assistant = await openai.beta.assistants.create({
-    name: 'math-helper',
-    model: 'cogitator',
-    instructions: 'You are a math helper. Use the multiply tool for products. Be concise.',
+  const completion = await openai.chat.completions.create({
+    model: 'math-helper',
+    messages: [{ role: 'user', content: 'What is 42 * 17?' }],
   });
-  const thread = await openai.beta.threads.create();
+  console.log(completion.choices[0].message.content);
 
-  await openai.beta.threads.messages.create(thread.id, { role: 'user', content: 'What is 42 * 17?' });
-  const run = await openai.beta.threads.runs.createAndPoll(thread.id, { assistant_id: assistant.id });
-  console.log('Run status:', run.status);
-
-  const messages = await openai.beta.threads.messages.list(thread.id);
-  const reply = messages.data[0]?.content[0];
-  if (reply?.type === 'text') console.log(reply.text.value);
+  const response = await openai.responses.create({ model: 'math-helper', input: 'And 12 * 12?' });
+  console.log(response.output_text);
 } finally {
   await server.stop();
   await cog.close();

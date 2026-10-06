@@ -42,7 +42,7 @@ export async function RunsAnywhereSection() {
             Drop it into the stack <span className="text-l-muted">you already run.</span>
           </>
         }
-        description="One adapter call turns your agents into an HTTP API with SSE streaming, memory threads, approvals and a WebSocket — on Express, Fastify, Hono, Koa, Next.js, Tetsu on Bun, Deno or Cloudflare Workers. Or keep your client: speak OpenAI's Assistants API, or hand an agent to the Vercel AI SDK as a model."
+        description="One adapter call turns your agents into an HTTP API with SSE streaming, memory threads, approvals and a WebSocket — on Express, Fastify, Hono, Koa, Next.js, Tetsu on Bun, Deno or Cloudflare Workers. Or keep your client: speak OpenAI's Chat Completions and Responses APIs, or hand an agent to the Vercel AI SDK as a model."
       />
 
       <div className="mt-12 sm:mt-14">

@@ -108,6 +108,10 @@ export interface CreateThreadRequest {
   tool_resources?: ToolResources;
 }
 
+/** Why an assistant message ended before the model finished it. */
+export type MessageIncompleteReason =
+  'content_filter' | 'max_tokens' | 'run_cancelled' | 'run_expired' | 'run_failed';
+
 export interface Message {
   id: string;
   object: 'thread.message';
@@ -115,7 +119,7 @@ export interface Message {
   thread_id: string;
   status: 'in_progress' | 'incomplete' | 'completed';
   incomplete_details?: {
-    reason: string;
+    reason: MessageIncompleteReason;
   };
   completed_at: number | null;
   incomplete_at: number | null;

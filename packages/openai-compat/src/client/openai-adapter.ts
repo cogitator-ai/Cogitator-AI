@@ -30,6 +30,7 @@ import type {
   RunStep,
   Message,
   MessageDelta,
+  MessageIncompleteReason,
   CreateRunRequest,
   ResponseFormat,
   SubmitToolOutputsRequest,
@@ -54,6 +55,7 @@ export type StreamEventType =
   | 'thread.message.in_progress'
   | 'thread.message.delta'
   | 'thread.message.completed'
+  | 'thread.message.incomplete'
   | 'done'
   | 'error';
 
@@ -144,7 +146,8 @@ function isActive(status: RunStatus): boolean {
   return ACTIVE_STATUSES.includes(status);
 }
 
-function toAgentResponseFormat(format: ResponseFormat | undefined): {
+/** The agent response format and extra instructions for an OpenAI `response_format`. */
+export function toAgentResponseFormat(format: ResponseFormat | undefined): {
   responseFormat?: AgentResponseFormat;
   instructions?: string;
 } {
@@ -156,7 +159,8 @@ function toAgentResponseFormat(format: ResponseFormat | undefined): {
   };
 }
 
-function toZodParameters(schema: Record<string, unknown> | undefined): z.ZodType {
+/** A Zod schema from the JSON Schema of a function, accepting any object when it cannot be converted. */
+export function toZodParameters(schema: Record<string, unknown> | undefined): z.ZodType {
   try {
     return z.fromJSONSchema(schema ?? { type: 'object', properties: {} });
   } catch {
@@ -949,22 +953,30 @@ export class OpenAIAdapter {
       }
 
       const finalContent = result.output || accumulated;
-      if (finalContent) {
+      const incompleteReason: MessageIncompleteReason | undefined = result.truncated
+        ? 'max_tokens'
+        : result.blocked === 'content_filter'
+          ? 'content_filter'
+          : undefined;
+      if (finalContent || incompleteReason) {
         announceMessage();
         const message = await this.threadManager.addAssistantMessage(
           threadId,
           finalContent,
           assistant.id,
           run.id,
-          messageId
+          messageId,
+          incompleteReason
         );
         if (message) {
-          this.emit(state, 'thread.message.completed', message);
+          this.emit(
+            state,
+            incompleteReason ? 'thread.message.incomplete' : 'thread.message.completed',
+            message
+          );
         }
       }
 
-      run.status = 'completed';
-      run.completed_at = nowSeconds();
       run.usage = result.usage
         ? {
             prompt_tokens: result.usage.inputTokens,
@@ -972,7 +984,15 @@ export class OpenAIAdapter {
             total_tokens: result.usage.totalTokens,
           }
         : null;
-      this.emit(state, 'thread.run.completed', run);
+      if (result.truncated) {
+        run.status = 'incomplete';
+        run.incomplete_details = { reason: 'max_completion_tokens' };
+        this.emit(state, 'thread.run.incomplete', run);
+      } else {
+        run.status = 'completed';
+        run.completed_at = nowSeconds();
+        this.emit(state, 'thread.run.completed', run);
+      }
     } catch (error) {
       const reason = signal.aborted ? signal.reason : error;
       if (reason instanceof RunTerminatedError) {

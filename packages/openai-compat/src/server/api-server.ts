@@ -1,22 +1,28 @@
 /**
  * OpenAI-Compatible REST API Server
  *
- * Exposes Cogitator as an OpenAI Assistants API compatible server.
+ * Exposes registered Cogitator agents over the Chat Completions and Responses APIs, and the
+ * deprecated Assistants API.
  */
 
 import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyCors from '@fastify/cors';
 import type { Cogitator } from '@cogitator-ai/core';
-import type { Tool } from '@cogitator-ai/types';
+import type { Agent, Tool } from '@cogitator-ai/types';
 import { resolveSseHeartbeatMs } from '@cogitator-ai/server-shared';
 import type { ThreadStorage } from '../client/storage';
-import { OpenAIAdapter, COGITATOR_MODEL_ID } from '../client/openai-adapter';
+import { OpenAIAdapter } from '../client/openai-adapter';
 import { createAuthMiddleware, type AuthConfig } from './middleware/auth';
 import { errorHandler, notFoundHandler } from './middleware/error-handler';
 import { registerAssistantRoutes } from './routes/assistants';
 import { registerThreadRoutes } from './routes/threads';
 import { registerRunRoutes } from './routes/runs';
 import { registerFileRoutes } from './routes/files';
+import { registerChatCompletionRoutes } from './routes/chat-completions';
+import { registerResponseRoutes, ResponseStore } from './routes/responses';
+import { registerModelRoutes } from './routes/models';
+import { AgentTurnRunner } from './agents/agent-turn';
+import { AgentDirectory } from './agents/shared';
 
 export interface OpenAIServerConfig {
   /** Port to listen on */
@@ -49,7 +55,20 @@ export interface OpenAIServerConfig {
    */
   sseHeartbeatMs?: number;
 
-  /** Tools to make available */
+  /**
+   * Agents served by `POST /v1/chat/completions` and `POST /v1/responses`, by the model id
+   * clients send (and `GET /v1/models` lists). Each answers with its own instructions, model and
+   * tools, and functions a client declares in `tools` come back to it as tool calls.
+   */
+  agents?: Record<string, Agent>;
+
+  /** Largest request body `POST /v1/chat/completions` and `POST /v1/responses` accept, in bytes (default: 20 MB) */
+  maxRequestBodyBytes?: number;
+
+  /** How many responses `POST /v1/responses` keeps in memory for `previous_response_id` and `GET` (default: 1000) */
+  maxStoredResponses?: number;
+
+  /** Tools every Assistants API run can use */
   tools?: Tool[];
 
   /**
@@ -95,13 +114,15 @@ export function isLoopbackHost(host: string): boolean {
  * const cogitator = new Cogitator({ ... });
  * const server = createOpenAIServer(cogitator, {
  *   port: 8080,
- *   tools: [calculator, datetime],
+ *   agents: { support: supportAgent },
  * });
  *
  * await server.start();
- * // Server is now available at http://localhost:8080
- * // Use with OpenAI SDK:
- * // const openai = new OpenAI({ baseURL: 'http://localhost:8080/v1' });
+ * const openai = new OpenAI({ baseURL: server.getBaseUrl(), apiKey: 'unused' });
+ * const completion = await openai.chat.completions.create({
+ *   model: 'support',
+ *   messages: [{ role: 'user', content: 'Hi' }],
+ * });
  * ```
  */
 export class OpenAIServer {
@@ -109,6 +130,9 @@ export class OpenAIServer {
   private config: Required<Omit<OpenAIServerConfig, 'defaultModel' | 'storage' | 'cors'>> &
     Pick<OpenAIServerConfig, 'defaultModel' | 'storage' | 'cors'>;
   private adapter: OpenAIAdapter;
+  private agentRunner: AgentTurnRunner;
+  private directory: AgentDirectory;
+  private responses: ResponseStore;
   private started = false;
   private ready: Promise<void>;
   private boundPort?: number;
@@ -120,6 +144,9 @@ export class OpenAIServer {
       apiKeys: config.apiKeys ?? [],
       allowUnauthenticatedPublicAccess: config.allowUnauthenticatedPublicAccess ?? false,
       sseHeartbeatMs: resolveSseHeartbeatMs(config.sseHeartbeatMs),
+      agents: config.agents ?? {},
+      maxRequestBodyBytes: config.maxRequestBodyBytes ?? 20 * 1024 * 1024,
+      maxStoredResponses: config.maxStoredResponses ?? 1000,
       tools: config.tools ?? [],
       defaultModel: config.defaultModel,
       storage: config.storage,
@@ -133,6 +160,9 @@ export class OpenAIServer {
       defaultModel: this.config.defaultModel,
       storage: this.config.storage,
     });
+    this.directory = new AgentDirectory(this.config.agents);
+    this.agentRunner = new AgentTurnRunner(cogitator);
+    this.responses = new ResponseStore(this.config.maxStoredResponses);
 
     this.fastify = Fastify({
       logger: this.config.logging ? { level: 'info' } : false,
@@ -173,17 +203,20 @@ export class OpenAIServer {
 
     this.fastify.get('/health', async () => ({ status: 'ok' }));
 
-    this.fastify.get('/v1/models', async () => ({
-      object: 'list',
-      data: [
-        {
-          id: COGITATOR_MODEL_ID,
-          object: 'model',
-          created: Math.floor(Date.now() / 1000),
-          owned_by: 'cogitator',
-        },
-      ],
-    }));
+    registerModelRoutes(this.fastify, this.directory);
+    registerChatCompletionRoutes(this.fastify, {
+      directory: this.directory,
+      runner: this.agentRunner,
+      heartbeatMs: this.config.sseHeartbeatMs,
+      bodyLimit: this.config.maxRequestBodyBytes,
+    });
+    registerResponseRoutes(this.fastify, {
+      directory: this.directory,
+      runner: this.agentRunner,
+      store: this.responses,
+      heartbeatMs: this.config.sseHeartbeatMs,
+      bodyLimit: this.config.maxRequestBodyBytes,
+    });
 
     registerAssistantRoutes(this.fastify, this.adapter);
     registerThreadRoutes(this.fastify, this.adapter);

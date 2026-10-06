@@ -428,6 +428,51 @@ describe('OpenAI SDK compatibility', () => {
     expect(calls).toHaveLength(0);
   });
 
+  it('ends a run cut by max_completion_tokens incomplete, with the message incomplete', async () => {
+    handler = async () => ({ output: '{"answer": "the quick brown', truncated: true });
+    const thread = await client.beta.threads.create({
+      messages: [{ role: 'user', content: 'Answer in JSON' }],
+    });
+
+    const run = await client.beta.threads.runs.createAndPoll(
+      thread.id,
+      { assistant_id: assistantId, max_completion_tokens: 8 },
+      POLL
+    );
+    const messages = await client.beta.threads.messages.list(thread.id);
+
+    expect(run.status).toBe('incomplete');
+    expect(run.incomplete_details).toEqual({ reason: 'max_completion_tokens' });
+    expect(run.completed_at).toBeNull();
+    expect(run.usage?.total_tokens).toBe(8);
+    expect(messages.data[0]).toMatchObject({
+      role: 'assistant',
+      status: 'incomplete',
+      incomplete_details: { reason: 'max_tokens' },
+      completed_at: null,
+    });
+    expect(messages.data[0].incomplete_at).toEqual(expect.any(Number));
+    expect(messages.data[0].content[0]).toMatchObject({
+      text: { value: '{"answer": "the quick brown' },
+    });
+  });
+
+  it('streams thread.message.incomplete and thread.run.incomplete for a truncated run', async () => {
+    handler = async () => ({ output: 'cut off', truncated: true });
+    const thread = await client.beta.threads.create({
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+
+    const events: string[] = [];
+    const stream = client.beta.threads.runs.stream(thread.id, { assistant_id: assistantId });
+    for await (const event of stream) events.push(event.event);
+
+    expect(events).toContain('thread.message.incomplete');
+    expect(events).not.toContain('thread.message.completed');
+    expect(events).toContain('thread.run.incomplete');
+    expect(events).not.toContain('thread.run.completed');
+  });
+
   it('rejects a max_prompt_tokens that is not a positive integer', async () => {
     const thread = await client.beta.threads.create({
       messages: [{ role: 'user', content: 'hi' }],
