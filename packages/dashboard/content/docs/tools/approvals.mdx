@@ -66,7 +66,7 @@ await cog.run(agent, {
 });
 ```
 
-Without `onApproval`, or when it returns `undefined` for a call, `guardrails.onToolApproval` (`(toolName, args, sideEffects) => Promise<boolean>`) decides when it is set; otherwise the run pauses. With [guardrails](/docs/advanced/constitutional-ai) `strictMode`, every call of a tool with `sideEffects` goes through the same flow, as if the tool had `requiresApproval`. `onApproval` is a run option, so it also works for `cog.resume()`, where it decides calls the model makes after resuming.
+Without `onApproval`, or when it returns `undefined` for a call, `guardrails.onToolApproval` (`(toolName, args, sideEffects) => Promise<boolean>`) decides when it is set, otherwise the run pauses. With [guardrails](/docs/advanced/constitutional-ai) `strictMode`, every call of a tool with `sideEffects` goes through the same flow, as if the tool had `requiresApproval`. `onApproval` is a run option, so it also works for `cog.resume()`, where it decides calls the model makes after resuming.
 
 Agents wrapped with [`agentAsTool()`](/docs/tools/agent-as-tool) cannot pause: unless you pass `onApproval` to `agentAsTool`, their calls that need approval are declined (as they are when that `onApproval` returns `'pause'`) and the inner agent is told why.
 
@@ -106,10 +106,13 @@ The run result wire format (`toAgentWireRunResult`, used by queue jobs and distr
 Code that runs tools without an agent run, like an MCP server or a self-modifying agent, uses `cogitator.invokeTool()` to treat them the way a run does: the arguments are validated against the schema, a call that needs approval is decided by `onApproval` (else `guardrails.onToolApproval`), the guardrails apply, sandboxed tools run in the runtime's sandbox and `tool.timeout` holds. There is no run to pause, so a call nobody approves does not run: the result's `error` says so and `pendingApproval` holds the request.
 
 ```typescript
-const result = await cog.invokeTool(exec, { command: 'ls -la' }, {
-  onApproval: async (call) => ((await confirm(call)) ? { approved: true } : { approved: false }),
-});
+const result = await cog.invokeTool(
+  exec,
+  { command: 'ls -la' },
+  {
+    onApproval: async (call) => ((await confirm(call)) ? { approved: true } : { approved: false }),
+  }
+);
 ```
 
 A `Cogitator` is a `ToolInvoker` (`invokeTool(tool, args, options)`), the interface those packages take.
-

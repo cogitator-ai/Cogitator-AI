@@ -51,7 +51,7 @@ Creates a Koa Router with all Cogitator endpoints.
 | `agents`             | `Record<string, Agent>`       | Named agents to expose                                                                                                |
 | `workflows`          | `Record<string, Workflow>`    | Named workflows                                                                                                       |
 | `swarms`             | `Record<string, SwarmConfig>` | Named swarms                                                                                                          |
-| `auth`               | `AuthFunction`                | `(ctx) => AuthContext \| undefined` (sync or async), receives the Koa Context; throw to answer `401 UNAUTHORIZED`     |
+| `auth`               | `AuthFunction`                | `(ctx) => AuthContext \| undefined` (sync or async), receives the Koa Context, throw to answer `401 UNAUTHORIZED`     |
 | `enableSwagger`      | `boolean`                     | Serve `/openapi.json` and Swagger UI at `/docs`                                                                       |
 | `swagger`            | `SwaggerConfig`               | Swagger configuration                                                                                                 |
 | `bodyLimit`          | `number`                      | Max JSON body size in bytes (default 1 MiB)                                                                           |

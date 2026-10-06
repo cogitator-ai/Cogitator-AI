@@ -263,7 +263,7 @@ await client.close();
 
 ### Tool Results and Errors
 
-`callTool` returns the server's `structuredContent` when present; otherwise text blocks are unwrapped: JSON-parsed when possible, a single block's value on its own, several as an array, and an empty result is `null`. Content with images, audio or binary resources comes back as a `toolContent()` result of `@cogitator-ai/core` (images as `image` parts, audio and blobs as `file` parts), so an agent's model sees a screenshot as an image instead of base64 text, and audio stays out of the context. A link to a resource becomes a line of text.
+`callTool` returns the server's `structuredContent` when present, otherwise text blocks are unwrapped: JSON-parsed when possible, a single block's value on its own, several as an array, and an empty result is `null`. Content with images, audio or binary resources comes back as a `toolContent()` result of `@cogitator-ai/core` (images as `image` parts, audio and blobs as `file` parts), so an agent's model sees a screenshot as an image instead of base64 text, and audio stays out of the context. A link to a resource becomes a line of text.
 
 When the server reports a tool failure (`isError: true`), `callTool` throws an `MCPToolError` carrying the tool name and the original content blocks. Tools produced by `getTools()` / `wrapMCPTools()` therefore surface MCP tool failures as regular Cogitator tool errors, and they forward the run's abort signal to the server.
 
@@ -1080,7 +1080,7 @@ const textResult = resultToMCPContent('Hello world');
 // [{ type: 'text', text: 'Hello world' }]
 ```
 
-A tool result that is already an array of MCP content blocks (text, image, audio, resource) is passed through unchanged, so a served tool can return images or embedded resources; `null`/`undefined` becomes an empty text block. A `toolContent()` result, and an object with a base64 `image` such as a browser screenshot, becomes text and image blocks, with `file` parts as audio blocks (`audio/*`) or embedded resource blobs.
+A tool result that is already an array of MCP content blocks (text, image, audio, resource) is passed through unchanged, so a served tool can return images or embedded resources, `null`/`undefined` becomes an empty text block. A `toolContent()` result, and an object with a base64 `image` such as a browser screenshot, becomes text and image blocks, with `file` parts as audio blocks (`audio/*`) or embedded resource blobs.
 
 ---
 

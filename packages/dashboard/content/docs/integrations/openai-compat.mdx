@@ -91,7 +91,7 @@ await server.stop();
 | `allowUnauthenticatedPublicAccess` | `boolean`             | `false`       | Serve a public host without `apiKeys`, behind a gateway that authenticates |
 | `sseHeartbeatMs`                   | `number`              | `5000`        | Heartbeat comment interval on run streams, `0` turns it off                |
 | `tools`                            | `Tool[]`              | `[]`          | Cogitator tools available to all assistants                                |
-| `defaultModel`                     | `string`              | —             | Model used for the `cogitator` model id                                    |
+| `defaultModel`                     | `string`              | -             | Model used for the `cogitator` model id                                    |
 | `storage`                          | `ThreadStorage`       | in-memory     | Persistence backend (connect it first)                                     |
 | `maxFileSize`                      | `number`              | 512 MB        | Upload limit for `POST /v1/files`                                          |
 | `logging`                          | `boolean`             | `false`       | Enable request logging via pino (JSON)                                     |

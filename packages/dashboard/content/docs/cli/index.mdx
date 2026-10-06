@@ -89,7 +89,7 @@ my-assistant/
 | Memory choice | Generated adapter | Extra dependency | Notes                                                            |
 | ------------- | ----------------- | ---------------- | ---------------------------------------------------------------- |
 | SQLite        | `SQLiteAdapter`   | `better-sqlite3` | Stored in `./data/memory.db` (the directory is created at start) |
-| In-memory     | `InMemoryAdapter` | —                | Lost on restart                                                  |
+| In-memory     | `InMemoryAdapter` | -                | Lost on restart                                                  |
 | PostgreSQL    | `PostgresAdapter` | `pg`             | Connection string in `DATABASE_URL`                              |
 
 `src/gateway.ts` loads `.env` itself (`process.loadEnvFile`, Node ≥ 20.12), so it works with `pnpm dev`, `cogitator assistant`, `cogitator build` and the daemon alike.
@@ -250,7 +250,7 @@ cogitator models --pull qwen2.5:0.5b   # pull with progress
 cogitator models --url http://gpu-box:11434
 ```
 
-The Ollama URL defaults to `OLLAMA_BASE_URL`, then `OLLAMA_URL`, then `OLLAMA_HOST` (read like Ollama reads it: port 11434 when none is given, `0.0.0.0` as `localhost`), then `http://localhost:11434`; `OLLAMA_API_KEY` is sent as a bearer token. Pull errors reported by Ollama (e.g. unknown model) fail the command.
+The Ollama URL defaults to `OLLAMA_BASE_URL`, then `OLLAMA_URL`, then `OLLAMA_HOST` (read like Ollama reads it: port 11434 when none is given, `0.0.0.0` as `localhost`), then `http://localhost:11434`, `OLLAMA_API_KEY` is sent as a bearer token. Pull errors reported by Ollama (e.g. unknown model) fail the command.
 
 ---
 

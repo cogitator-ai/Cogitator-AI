@@ -74,7 +74,7 @@ POST   /api/threads/:id/messages      - Add message to thread
 DELETE /api/threads/:id               - Delete thread
 ```
 
-The routes use `cogitator.getMemory()`, which connects the configured memory adapter on first use, so threads can be read on a fresh server before any agent has run. Only a `Cogitator` without `memory` configured answers `503 UNAVAILABLE`. New messages need `role` (`user` or `assistant`, more with `threadMessageRoles`) and a non-empty string `content`; optional `metadata` is stored on the memory entry.
+The routes use `cogitator.getMemory()`, which connects the configured memory adapter on first use, so threads can be read on a fresh server before any agent has run. Only a `Cogitator` without `memory` configured answers `503 UNAVAILABLE`. New messages need `role` (`user` or `assistant`, more with `threadMessageRoles`) and a non-empty string `content`, optional `metadata` is stored on the memory entry.
 
 ### Workflows
 

@@ -88,11 +88,11 @@ The official OpenAI backend talks to the **Responses API**. GPT-6 models only su
 
 | Behaviour          | Details                                                                                                                                                                                                                 |
 | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Wire API selection | `responses` for the official endpoint (no `baseUrl`, or a `baseUrl` on `api.openai.com`); `chat-completions` when `baseUrl` points anywhere else. `api` forces either path                                              |
+| Wire API selection | `responses` for the official endpoint (no `baseUrl`, or a `baseUrl` on `api.openai.com`), `chat-completions` when `baseUrl` points anywhere else. `api` forces either path                                              |
 | Stop sequences     | The Responses API has no stop parameter, so a request with `stop` sequences is sent through Chat Completions                                                                                                            |
-| Sampling params    | Reasoning models (o-series, GPT-5 and later) get no `temperature` / `top_p`, on the Responses API and on Chat Completions alike, including the agent default `0.7`; `gpt-4o` / `gpt-4.1` and `-chat` variants keep them |
-| `maxTokens`        | Sent as `max_output_tokens` on the Responses API; on Chat Completions as `max_completion_tokens` for the official endpoint and for reasoning models, `max_tokens` otherwise                                             |
-| Structured output  | `responseFormat` maps to `text.format` (`json_object` / `json_schema`); images are sent as `input_image`                                                                                                                |
+| Sampling params    | Reasoning models (o-series, GPT-5 and later) get no `temperature` / `top_p`, on the Responses API and on Chat Completions alike, including the agent default `0.7`, `gpt-4o` / `gpt-4.1` and `-chat` variants keep them |
+| `maxTokens`        | Sent as `max_output_tokens` on the Responses API, on Chat Completions as `max_completion_tokens` for the official endpoint and for reasoning models, `max_tokens` otherwise                                             |
+| Structured output  | `responseFormat` maps to `text.format` (`json_object` / `json_schema`), images are sent as `input_image`                                                                                                                |
 | Usage              | `usage.cachedInputTokens` and `usage.reasoningTokens` are reported when OpenAI returns them (both already included in `inputTokens` / `outputTokens`)                                                                   |
 
 OpenAI-compatible providers (Azure, Mistral, Groq, Together, DeepSeek, vLLM, any custom `baseUrl`) stay on Chat Completions unchanged. `DEFAULT_OPENAI_MODEL` and `isOpenAIReasoningModel(model)` are exported from `@cogitator-ai/core`.
@@ -329,7 +329,7 @@ result.usage.cachedInputTokens; // read from the cache (about a tenth of the inp
 result.usage.cacheWriteTokens; // written to it (Anthropic: 1.25× the input price, 2× with the 1-hour TTL)
 ```
 
-In an agent loop every iteration resends the previous one's prompt, so after the first call most of the input is a cache read. `llm.promptCache: { ttl: '1h' }` keeps Anthropic's cache for an hour instead of five minutes, and the run's cost prices those writes at the 1-hour rate (`ChatUsage.cacheWrite1hTokens`); `llm.promptCache: false` turns marking off. A single `ChatRequest` takes the same setting as `cache`.
+In an agent loop every iteration resends the previous one's prompt, so after the first call most of the input is a cache read. `llm.promptCache: { ttl: '1h' }` keeps Anthropic's cache for an hour instead of five minutes, and the run's cost prices those writes at the 1-hour rate (`ChatUsage.cacheWrite1hTokens`), `llm.promptCache: false` turns marking off. A single `ChatRequest` takes the same setting as `cache`.
 
 ## Retries
 

@@ -226,7 +226,7 @@ const result = await cogitator.run(orchestrator, {
 
 The orchestrator agent calls the remote researcher via A2A protocol transparently -- it looks like a regular tool call with a single `task` string parameter. `asToolFromCard` names and describes the tool from the card unless you override them; `client.asTool({ name?, description?, timeout? })` does the same without a card (default name `a2a_remote_agent`). The tool is marked with the `external` side effect and forwards the run's abort signal.
 
-The tool result is `{ output, success, error?, taskId?, state?, pendingApprovals? }`; when the remote agent asks a question (`state: 'input-required'`), `output` holds the question and `taskId` lets you continue the task. When it waits for [tool approvals](#tool-approvals), `pendingApprovals` lists the calls.
+The tool result is `{ output, success, error?, taskId?, state?, pendingApprovals? }`, when the remote agent asks a question (`state: 'input-required'`), `output` holds the question and `taskId` lets you continue the task. When it waits for [tool approvals](#tool-approvals), `pendingApprovals` lists the calls.
 
 ## Multi-Turn Conversations
 

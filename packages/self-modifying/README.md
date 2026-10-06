@@ -49,11 +49,11 @@ A provider prefix that matches the backend (`ollama/` for `OllamaBackend`) is st
 | ------------------------- | -------------------------------------------------------------------------------------------------- |
 | `agent`                   | The agent to run (model, instructions, tools, `temperature`, `maxTokens`, `maxIterations`)         |
 | `llm`                     | LLM backend used for the agent and for every self-modification step                                |
-| `config`                  | Partial `SelfModifyingConfig`; `enabled: false` turns the wrapper into a plain tool-calling agent  |
+| `config`                  | Partial `SelfModifyingConfig`, `enabled: false` turns the wrapper into a plain tool-calling agent  |
 | `modificationConstraints` | Extra safety / capability / resource / custom constraints merged with the defaults                 |
-| `availableModels`         | Models architecture evolution may switch to; without it the model is never changed                 |
+| `availableModels`         | Models architecture evolution may switch to, without it the model is never changed                 |
 | `toolInvoker`             | Runs tool calls like a Cogitator run (approval, guardrails, sandbox, timeout), e.g. your Cogitator |
-| `onApproval`              | Decides tool calls that need approval; a call nobody approves is refused                           |
+| `onApproval`              | Decides tool calls that need approval, a call nobody approves is refused                           |
 
 `config.maxInternalTokens` bounds the output tokens of every internal LLM call (gap analysis, tool generation and review, architecture evolution). Unset leaves the backend default. It keeps reasoning models from spending minutes on those steps. Meta-reasoning has its own bound, `metaReasoning.maxMetaTokens`. Used on their own, `GapAnalyzer`, `ToolGenerator`, `ToolValidator`, `CapabilityAnalyzer` and `ParameterOptimizer` take the same bound as `maxTokens`.
 

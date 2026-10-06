@@ -100,7 +100,7 @@ await registry.initialize();
 
 ### Methods
 
-`initialize()` loads a fresh cache if there is one (and refreshes it in the background), otherwise fetches LiteLLM data; on failure it falls back to built-in models (or throws when `fallbackToBuiltin` is `false`). Lookups before `initialize()` use the built-in models without counting as initialization, so a later `initialize()` still loads the full catalogue. Overlapping `initialize()` calls share one load.
+`initialize()` loads a fresh cache if there is one (and refreshes it in the background), otherwise fetches LiteLLM data, on failure it falls back to built-in models (or throws when `fallbackToBuiltin` is `false`). Lookups before `initialize()` use the built-in models without counting as initialization, so a later `initialize()` still loads the full catalogue. Overlapping `initialize()` calls share one load.
 
 ```typescript
 registry.getModel('gpt-6.1-sol');

@@ -93,7 +93,7 @@ await queue.addSwarmJob(
 );
 ```
 
-Workflow jobs execute a serialized DAG (`agent`, `transform`, `condition` and `parallel` nodes over a shared state object). An agent node takes the same `serializeAgent` config, and writes its validated structured answer to the state when its agent has a JSON schema response format (its text otherwise), so later nodes read fields like `{{decision.verdict}}`; swarm topologies map to strategies (`sequential` → pipeline, `hierarchical` → hierarchical with the coordinator as supervisor, `collaborative` → a pipeline in which every agent contributes in each of `maxRounds` rounds (default 3) seeing all contributions so far, the coordinator (if any) combining them, `debate` → debate, `voting` → consensus). See the package README for the full workflow node reference.
+Workflow jobs execute a serialized DAG (`agent`, `transform`, `condition` and `parallel` nodes over a shared state object). An agent node takes the same `serializeAgent` config, and writes its validated structured answer to the state when its agent has a JSON schema response format (its text otherwise), so later nodes read fields like `{{decision.verdict}}`, swarm topologies map to strategies (`sequential` → pipeline, `hierarchical` → hierarchical with the coordinator as supervisor, `collaborative` → a pipeline in which every agent contributes in each of `maxRounds` rounds (default 3) seeing all contributions so far, the coordinator (if any) combining them, `debate` → debate, `voting` → consensus). See the package README for the full workflow node reference.
 
 ## WorkerPool
 

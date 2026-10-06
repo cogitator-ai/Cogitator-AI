@@ -17,7 +17,7 @@ pnpm add @cogitator-ai/next @cogitator-ai/core
 
 The default body is `{ messages, threadId?, metadata? }`.
 
-- The **last user message** is the run input; history lives in the thread (configure `memory` on `Cogitator`). Without a `threadId` the handler opens a new thread and names it in `start`, `finish` repeats it, and `useCogitatorChat` adopts it automatically.
+- The **last user message** is the run input, history lives in the thread (configure `memory` on `Cogitator`). Without a `threadId` the handler opens a new thread and names it in `start`, `finish` repeats it, and `useCogitatorChat` adopts it automatically.
 - Request `metadata` is passed to the run as `context`, but only the keys `acceptContext` allows: the run puts `context` into the system prompt, so by default a request with `metadata` is refused with `400`. Pass `acceptContext: ['plan']` for those keys, or `true` for clients you trust like your own code.
 - While the run is silent the stream writes a `: keep-alive` comment every `sseHeartbeatMs` (5 s by default, `0` turns it off), so a proxy or the platform's idle timeout does not cut it.
 - The run is aborted when the client disconnects.

@@ -94,7 +94,7 @@ Errors are JSON: `{ "error": { "message": "...", "code": "..." } }` on Express, 
 
 - A `CogitatorError` keeps its message, its code and the status mapped to that code — for example `429 LLM_RATE_LIMITED` or `403 THREAD_ACCESS_DENIED`.
 - Any other error is logged on the server and answered as `500` with the message `Internal server error`, so internals never reach the client.
-- Unknown agents, workflows and swarms answer `404`; invalid bodies answer `400 INVALID_INPUT` (`422 VALIDATION_FAILED` on Tetsu, or the validation status the Tetsu app sets), and a body that is not JSON answers `415 UNSUPPORTED_MEDIA_TYPE`.
+- Unknown agents, workflows and swarms answer `404`, invalid bodies answer `400 INVALID_INPUT` (`422 VALIDATION_FAILED` on Tetsu, or the validation status the Tetsu app sets), and a body that is not JSON answers `415 UNSUPPORTED_MEDIA_TYPE`.
 - Workflow and swarm routes need `@cogitator-ai/workflows` and `@cogitator-ai/swarms`; without them they answer `501`.
 
 In a stream, the same errors end the stream with an `error` event instead of `finish`.
@@ -147,7 +147,7 @@ The `start` event of an agent stream names the run's thread: the one the request
 
 The `finish` event of an agent stream (and of a resumed one) carries the run's `usage`, the same object as in the JSON answer of `POST /agents/:name/run`: `inputTokens`, `outputTokens`, `totalTokens`, and `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the model reported them. Workflow and swarm streams finish without `usage`. `createFinishEvent` builds it with `toRunUsage`, the converter of the JSON answer, so a run's `RunResult.usage` can be passed as is.
 
-Text and reasoning blocks are closed before a tool call starts. An answer the model gave in one piece, without tokens, arrives as one text part before `finish`. With the Constitutional AI output filter on, tokens are held back until the filter checked the turn, so each turn arrives as one text part (see [Constitutional AI](/docs/advanced/constitutional-ai)). Agents with `reasoning: { summary: true }` stream their reasoning as its own part before the text it leads to. A run that pauses for approval sends `approval-required` with the pending calls (`toolCallId`, `toolName`, `arguments`, `description`, `sideEffects?`) right before `finish`; resume it with `POST /agents/:name/resume`.
+Text and reasoning blocks are closed before a tool call starts. An answer the model gave in one piece, without tokens, arrives as one text part before `finish`. With the Constitutional AI output filter on, tokens are held back until the filter checked the turn, so each turn arrives as one text part (see [Constitutional AI](/docs/advanced/constitutional-ai)). Agents with `reasoning: { summary: true }` stream their reasoning as its own part before the text it leads to. A run that pauses for approval sends `approval-required` with the pending calls (`toolCallId`, `toolName`, `arguments`, `description`, `sideEffects?`) right before `finish`, resume it with `POST /agents/:name/resume`.
 
 Every stream also writes a heartbeat comment, `: keep-alive`, every 5 seconds while it is open (`sseHeartbeatMs` on each adapter, on `createChatHandler` and `createResumeHandler` of `@cogitator-ai/next`, on `A2AServer` and on the openai-compat server, `0` turns it off). SSE clients skip comments, and the heartbeat keeps a stream that waits on a slow tool or model from being closed by an idle timeout: `Bun.serve` closes a connection silent for 10 seconds, nginx one silent for 60.
 

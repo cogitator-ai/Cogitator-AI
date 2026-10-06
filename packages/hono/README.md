@@ -50,7 +50,7 @@ Creates a Hono sub-application with all Cogitator endpoints.
 | `agents`             | `Record<string, Agent>`       | Named agents to expose                                                                                                |
 | `workflows`          | `Record<string, Workflow>`    | Named workflows                                                                                                       |
 | `swarms`             | `Record<string, SwarmConfig>` | Named swarms                                                                                                          |
-| `auth`               | `AuthFunction`                | `(c) => AuthContext \| undefined` (sync or async), receives the Hono Context; throw to answer `401 UNAUTHORIZED`      |
+| `auth`               | `AuthFunction`                | `(c) => AuthContext \| undefined` (sync or async), receives the Hono Context, throw to answer `401 UNAUTHORIZED`      |
 | `enableSwagger`      | `boolean`                     | Serve `/openapi.json` and Swagger UI at `/docs`                                                                       |
 | `swagger`            | `SwaggerConfig`               | Swagger configuration                                                                                                 |
 | `enableWebSocket`    | `boolean`                     | Enable the WebSocket endpoint                                                                                         |

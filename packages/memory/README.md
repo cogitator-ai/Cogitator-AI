@@ -105,7 +105,7 @@ await memory.connect();
 
 ### Redis Adapter
 
-Persistent short-term memory with TTL support. Every write refreshes the TTL of the thread and its entry index, so active conversations do not expire mid-way; expired entries are pruned from the index on read. `getEntries({ limit })` reads only the newest `limit` entries. A failed `connect()` closes its client again, so an unreachable Redis does not keep the process alive.
+Persistent short-term memory with TTL support. Every write refreshes the TTL of the thread and its entry index, so active conversations do not expire mid-way, expired entries are pruned from the index on read. `getEntries({ limit })` reads only the newest `limit` entries. A failed `connect()` closes its client again, so an unreachable Redis does not keep the process alive.
 
 ```typescript
 import { RedisAdapter } from '@cogitator-ai/memory';
@@ -468,7 +468,7 @@ await sessions.compact(session.id, {
 
 A thread is compacted once its entries hold `threshold` tokens or `messageThreshold` entries, whichever comes first (set at least one). The summary entry is dated just before the first kept entry and the kept entries are not rewritten, so a reply saved while the summary was being written keeps its place after its question. `addEntry` accepts an optional `createdAt` for this (`NewMemoryEntry`).
 
-`compact()` requires the `compaction` option; without it use `CompactionService` directly. The summarizer (`SummarizeFn`) is called as `summarize(messages, options)`, where `options` is a `SummarizeOptions` `{ model?, prompt? }` filled from the `summaryModel` / `summaryPrompt` of the compaction config.
+`compact()` requires the `compaction` option, without it use `CompactionService` directly. The summarizer (`SummarizeFn`) is called as `summarize(messages, options)`, where `options` is a `SummarizeOptions` `{ model?, prompt? }` filled from the `summaryModel` / `summaryPrompt` of the compaction config.
 
 ---
 

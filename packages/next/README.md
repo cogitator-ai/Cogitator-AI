@@ -92,7 +92,7 @@ export function Chat() {
 Creates a streaming chat handler. The handler:
 
 - runs the agent with token streaming enabled and forwards `text-*`, `tool-*` and `finish` events as they happen
-- uses the **last user message** as the run input; conversation history is carried by `threadId` (configure `memory` on the `Cogitator` instance). Without one the handler opens a new thread and names it in the `start` event, and the `finish` event repeats it, and `useCogitatorChat` adopts it automatically
+- uses the **last user message** as the run input, conversation history is carried by `threadId` (configure `memory` on the `Cogitator` instance). Without one the handler opens a new thread and names it in the `start` event, and the `finish` event repeats it, and `useCogitatorChat` adopts it automatically
 - passes request `metadata` to the run as `context`, only the keys `acceptContext` allows: the run puts `context` into the system prompt, so by default a request with `metadata` is refused with `400`
 - writes a `: keep-alive` comment every `sseHeartbeatMs` (5 s by default, `0` turns it off) while the run is silent, so a proxy or the platform does not close a stream that waits on a slow tool
 - aborts the run when the client disconnects (`req.signal`)
