@@ -252,13 +252,13 @@ await queue.addSwarmJob(swarmConfig, 'Write an article about AI', {
 });
 ```
 
-| Topology        | Swarm strategy | Notes                                                        |
-| --------------- | -------------- | ------------------------------------------------------------ |
-| `sequential`    | `pipeline`     | One stage per agent, in order                                |
-| `hierarchical`  | `hierarchical` | `coordinator` is required and becomes the supervisor         |
-| `collaborative` | `round-robin`  |                                                              |
-| `debate`        | `debate`       | `maxRounds` rounds, `coordinator` moderates                  |
-| `voting`        | `consensus`    | `consensusThreshold`, `maxRounds`; `coordinator` breaks ties |
+| Topology        | Swarm strategy | Notes                                                                                                                                                                          |
+| --------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `sequential`    | `pipeline`     | One stage per agent, in order                                                                                                                                                  |
+| `hierarchical`  | `hierarchical` | `coordinator` is required and becomes the supervisor                                                                                                                           |
+| `collaborative` | `pipeline`     | Every agent contributes in each of `maxRounds` rounds (default 3), seeing all contributions so far; `coordinator` combines them, otherwise the last contribution is the answer |
+| `debate`        | `debate`       | `maxRounds` rounds, `coordinator` moderates                                                                                                                                    |
+| `voting`        | `consensus`    | `consensusThreshold`, `maxRounds`; `coordinator` breaks ties                                                                                                                   |
 
 ### Queue Methods
 

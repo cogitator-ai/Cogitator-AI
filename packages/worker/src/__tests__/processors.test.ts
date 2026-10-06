@@ -199,7 +199,7 @@ describe('processors/swarm', () => {
       buildSwarmConfig({ topology: 'voting', agents, consensusThreshold: 0.8 }, {})
     ).toMatchObject({ strategy: 'consensus', consensus: { threshold: 0.8 } });
     expect(buildSwarmConfig({ topology: 'collaborative', agents }, {})).toMatchObject({
-      strategy: 'round-robin',
+      strategy: 'pipeline',
     });
   });
 
@@ -227,6 +227,64 @@ describe('processors/swarm', () => {
 
     expect(result.output).toBe('b out');
     expect(result.agentOutputs.map((o) => o.agent)).toEqual(['a', 'b']);
+  });
+});
+
+describe('processors/swarm collaborative topology', () => {
+  it('has every agent contribute in every round, each building on the others', async () => {
+    runMock.mockReset();
+    runMock.mockImplementation(async (agent: { name: string }, options: RunOptions) =>
+      runResult(`${agent.name}#${(options.input.match(/\[/g) ?? []).length}`)
+    );
+    const { processSwarmJob } = await import('../processors/swarm');
+
+    const result = await processSwarmJob({
+      type: 'swarm',
+      jobId: 'collab',
+      swarmConfig: {
+        topology: 'collaborative',
+        agents: [
+          agentConfig({ name: 'researcher' }),
+          agentConfig({ name: 'writer' }),
+          agentConfig({ name: 'editor' }),
+        ],
+        maxRounds: 2,
+      },
+      input: 'Write about tides',
+    });
+
+    const order = runMock.mock.calls.map(([agent]) => (agent as { name: string }).name);
+    expect(order).toEqual(['researcher', 'writer', 'editor', 'researcher', 'writer', 'editor']);
+    const lastInput = (runMock.mock.calls.at(-1)![1] as RunOptions).input;
+    expect(lastInput).toContain('Write about tides');
+    expect(lastInput).toContain('researcher#0');
+    expect(lastInput).toContain('writer#4');
+    expect(result.rounds).toBe(2);
+    expect(result.output).toBe('editor#5');
+    expect(result.agentOutputs.map((o) => o.agent)).toEqual(order);
+  });
+
+  it('ends with the coordinator combining the contributions', async () => {
+    runMock.mockReset();
+    runMock.mockImplementation(async (agent: { name: string }) => runResult(`${agent.name} says`));
+    const { processSwarmJob } = await import('../processors/swarm');
+
+    const result = await processSwarmJob({
+      type: 'swarm',
+      jobId: 'collab-lead',
+      swarmConfig: {
+        topology: 'collaborative',
+        agents: [agentConfig({ name: 'a' }), agentConfig({ name: 'b' })],
+        coordinator: agentConfig({ name: 'lead' }),
+        maxRounds: 1,
+      },
+      input: 'Plan the launch',
+    });
+
+    const order = runMock.mock.calls.map(([agent]) => (agent as { name: string }).name);
+    expect(order).toEqual(['a', 'b', 'lead']);
+    expect((runMock.mock.calls[2][1] as RunOptions).input).toContain('b says');
+    expect(result.output).toBe('lead says');
   });
 });
 

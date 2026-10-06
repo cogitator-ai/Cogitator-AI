@@ -45,6 +45,7 @@ export type {
   ConditionNodeConfig,
   ConditionOperator,
   SerializedSwarm,
+  SwarmTopology,
   JobPayload,
   AgentJobPayload,
   WorkflowJobPayload,

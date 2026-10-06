@@ -96,10 +96,22 @@ export interface ConditionNodeConfig {
 }
 
 /**
+ * How a swarm job's agents work together:
+ * - `sequential`: a pipeline, each agent working on the previous agent's output
+ * - `hierarchical`: the coordinator supervises the agents and delegates to them
+ * - `collaborative`: in each of `maxRounds` rounds every agent contributes in turn, seeing the
+ *   task and all contributions so far; the coordinator, if any, combines them into the answer,
+ *   otherwise the last contribution is the answer
+ * - `debate`: the agents debate for `maxRounds` rounds, the coordinator moderates
+ * - `voting`: the agents vote until `consensusThreshold` is reached, the coordinator breaks ties
+ */
+export type SwarmTopology = 'sequential' | 'hierarchical' | 'collaborative' | 'debate' | 'voting';
+
+/**
  * Serialized swarm configuration
  */
 export interface SerializedSwarm {
-  topology: 'sequential' | 'hierarchical' | 'collaborative' | 'debate' | 'voting';
+  topology: SwarmTopology;
   agents: SerializedAgent[];
   coordinator?: SerializedAgent;
   maxRounds?: number;

@@ -147,8 +147,10 @@ export class JobQueue {
   }
 
   /**
-   * Add a distributed swarm agent job to the queue
-   * Used by DistributedSwarmCoordinator for per-agent job dispatch
+   * Queue one agent turn of a swarm as a BullMQ job. A `WorkerPool` runs it and publishes the
+   * result to `stateKeys.results` (by default `${keyPrefix}:${swarmId}:results`). Swarms with
+   * `distributed.enabled` do not use this queue: `DistributedSwarmCoordinator` pushes its turns
+   * to a Redis list that `DistributedSwarmWorker` consumes, so run that worker for them.
    */
   async addSwarmAgentJob(
     swarmId: string,

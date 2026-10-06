@@ -77,11 +77,11 @@ await queue.addSwarmJob(
 );
 ```
 
-Workflow jobs execute a serialized DAG (`agent`, `transform`, `condition` and `parallel` nodes over a shared state object). An agent node takes the same `serializeAgent` config, and writes its validated structured answer to the state when its agent has a JSON schema response format (its text otherwise), so later nodes read fields like `{{decision.verdict}}`; swarm topologies map to strategies (`sequential` → pipeline, `hierarchical` → hierarchical with the coordinator as supervisor, `collaborative` → round-robin, `debate` → debate, `voting` → consensus). See the package README for the full workflow node reference.
+Workflow jobs execute a serialized DAG (`agent`, `transform`, `condition` and `parallel` nodes over a shared state object). An agent node takes the same `serializeAgent` config, and writes its validated structured answer to the state when its agent has a JSON schema response format (its text otherwise), so later nodes read fields like `{{decision.verdict}}`; swarm topologies map to strategies (`sequential` → pipeline, `hierarchical` → hierarchical with the coordinator as supervisor, `collaborative` → a pipeline in which every agent contributes in each of `maxRounds` rounds (default 3) seeing all contributions so far, the coordinator (if any) combining them, `debate` → debate, `voting` → consensus). See the package README for the full workflow node reference.
 
 ## WorkerPool
 
-`WorkerPool` spawns BullMQ workers that consume jobs from the queue. Built-in processors handle agent, workflow, swarm, and distributed swarm-agent job types. Without a `cogitator`, the pool runs agents with `new Cogitator()` (provider keys from the environment).
+`WorkerPool` spawns BullMQ workers that consume jobs from the queue. Built-in processors handle agent, workflow, swarm, and swarm-agent job types (`queue.addSwarmAgentJob`, one turn of a swarm queued by your own code). Distributed swarms (`distributed.enabled`) do not use this queue: their turns go to a Redis list that `DistributedSwarmWorker` consumes, see below. Without a `cogitator`, the pool runs agents with `new Cogitator()` (provider keys from the environment).
 
 ```typescript
 import { Cogitator } from '@cogitator-ai/core';
