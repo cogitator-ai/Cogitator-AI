@@ -1,6 +1,25 @@
 export type DeployTarget = 'docker' | 'fly';
 
-export type DeployServer = 'express' | 'fastify' | 'hono' | 'koa';
+/** The Cogitator server adapter a project serves HTTP with. */
+export type DeployServer = 'express' | 'fastify' | 'hono' | 'koa' | 'tetsu' | 'next';
+
+/**
+ * What a deployed project is:
+ * - `server` answers HTTP on `port` and its health check path
+ * - `worker` runs without serving HTTP (a channel gateway, a queue worker),
+ *   gets no health check and publishes `port` only when one is set
+ */
+export type DeployKind = 'server' | 'worker';
+
+/** A directory that outlives the container, such as the one a SQLite database lives in. */
+export interface DeployVolume {
+  /** Directory in the container, relative to the app directory or absolute */
+  path: string;
+  /** Volume name, derived from `path` when unset */
+  name?: string;
+  /** Size in GB of a Fly volume created for it, 1 by default */
+  size?: number;
+}
 
 export interface DeployServicesConfig {
   redis?: boolean;
@@ -20,6 +39,8 @@ export interface DeployResourcesConfig {
 
 export interface DeployConfig {
   target?: DeployTarget;
+  /** Detected from the project's dependencies when unset */
+  kind?: DeployKind;
   server?: DeployServer;
   port?: number;
   registry?: string;
@@ -31,6 +52,13 @@ export interface DeployConfig {
   secrets?: string[];
   health?: DeployHealthConfig;
   resources?: DeployResourcesConfig;
+  /** Directories kept across deploys (Docker named volumes, Fly volumes) */
+  volumes?: DeployVolume[];
+  /**
+   * Let the container reach services on the Docker host as `host.docker.internal`,
+   * such as a local Ollama. Docker target only.
+   */
+  hostGateway?: boolean;
 }
 
 export interface PreflightCheck {

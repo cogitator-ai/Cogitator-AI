@@ -27,7 +27,8 @@ export function writeArtifacts(projectDir: string, artifacts: GeneratedArtifacts
 
   const rootIgnore = join(projectDir, '.dockerignore');
   if (!existsSync(rootIgnore)) {
-    writeFileSync(rootIgnore, DOCKERIGNORE);
+    const generated = artifacts.files.find((file) => file.path === '.dockerignore');
+    writeFileSync(rootIgnore, generated?.content ?? DOCKERIGNORE);
   }
 
   return outputDir;

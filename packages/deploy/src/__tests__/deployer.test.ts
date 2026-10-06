@@ -60,6 +60,10 @@ describe('Deployer.deploy', () => {
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   it("deploys the artifacts the target's provider generates", async () => {
+    writeFileSync(
+      join(dir, 'package.json'),
+      JSON.stringify({ name: 'api', dependencies: { '@cogitator-ai/express': 'latest' } })
+    );
     const artifacts: GeneratedArtifacts = {
       files: [{ path: 'Procfile', content: 'web: node server.js' }],
       outputDir: '.cogitator',

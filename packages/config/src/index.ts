@@ -54,6 +54,8 @@ export {
   CompressionStrategySchema,
   DeployTargetSchema,
   DeployServerSchema,
+  DeployKindSchema,
+  DeployVolumeSchema,
   DeployConfigSchema,
   PromptsConfigSchema,
   type CogitatorConfigInput,

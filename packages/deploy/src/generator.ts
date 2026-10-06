@@ -2,6 +2,7 @@ import type { DeployConfig, GeneratedArtifact, GeneratedArtifacts } from '@cogit
 import { generateDockerfile, type DockerfilePackageManager } from './templates/dockerfile.js';
 import { generateDockerCompose } from './templates/docker-compose.js';
 import { generateFlyToml } from './templates/fly-toml.js';
+import { projectVolumePaths } from './volumes.js';
 
 export interface GeneratorOptions {
   hasTypeScript: boolean;
@@ -9,6 +10,10 @@ export interface GeneratorOptions {
   hasLockfile?: boolean;
   hasBuildScript?: boolean;
   startCommand?: string[];
+  /** Project files the install step reads, directories with a trailing slash */
+  installFiles?: string[];
+  /** Version from the `packageManager` field of package.json */
+  packageManagerVersion?: string;
 }
 
 export const ARTIFACTS_DIR = '.cogitator';
@@ -23,18 +28,25 @@ dist
 .cogitator
 `;
 
+/** The `.dockerignore` of `config`: the defaults, and the volume directories, whose local data must not ship in the image. */
+export function dockerignoreFor(config: DeployConfig): string {
+  const volumes = projectVolumePaths(config.volumes);
+  return volumes.length > 0 ? `${DOCKERIGNORE}${volumes.join('\n')}\n` : DOCKERIGNORE;
+}
+
 export class ArtifactGenerator {
   generate(config: DeployConfig, options: GeneratorOptions): GeneratedArtifacts {
     const files: GeneratedArtifact[] = [];
     const target = config.target ?? 'docker';
+    const dockerignore = dockerignoreFor(config);
 
     files.push({
       path: 'Dockerfile',
       content: generateDockerfile({ config, ...options }),
     });
 
-    files.push({ path: '.dockerignore', content: DOCKERIGNORE });
-    files.push({ path: 'Dockerfile.dockerignore', content: DOCKERIGNORE });
+    files.push({ path: '.dockerignore', content: dockerignore });
+    files.push({ path: 'Dockerfile.dockerignore', content: dockerignore });
 
     if (target === 'docker') {
       files.push({

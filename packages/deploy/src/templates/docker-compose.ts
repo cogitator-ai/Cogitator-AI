@@ -1,4 +1,6 @@
 import type { DeployConfig } from '@cogitator-ai/types';
+import { volumeMountPath, volumeName } from '../volumes.js';
+import { servesHttp } from './health.js';
 
 export const COMPOSE_DATABASE_URL = 'postgresql://cogitator:cogitator@postgres:5432/cogitator';
 export const COMPOSE_REDIS_URL = 'redis://redis:6379';
@@ -21,6 +23,7 @@ export function imageTag(config: DeployConfig): string {
 }
 
 export function generateDockerCompose(config: DeployConfig): string {
+  const http = servesHttp(config);
   const port = config.port ?? 3000;
   const lines: string[] = ['services:'];
 
@@ -28,10 +31,8 @@ export function generateDockerCompose(config: DeployConfig): string {
   if (config.services?.redis) serviceUrls.set('REDIS_URL', COMPOSE_REDIS_URL);
   if (config.services?.postgres) serviceUrls.set('DATABASE_URL', COMPOSE_DATABASE_URL);
 
-  const environment = new Map<string, string>([
-    ['NODE_ENV', yamlString('production')],
-    ['PORT', yamlString(String(port))],
-  ]);
+  const environment = new Map<string, string>([['NODE_ENV', yamlString('production')]]);
+  if (http) environment.set('PORT', yamlString(String(port)));
   for (const [key, url] of serviceUrls) environment.set(key, yamlString(url));
   for (const [key, value] of Object.entries(config.env ?? {})) {
     environment.set(key, yamlString(value.replace(/\$/g, '$$$$')));
@@ -48,15 +49,29 @@ export function generateDockerCompose(config: DeployConfig): string {
     dependsOn.push('      postgres:', '        condition: service_healthy');
   }
 
+  const appVolumes = (config.volumes ?? []).map(
+    (volume) => `      - ${volumeName(volume)}:${volumeMountPath(volume)}`
+  );
+
   lines.push('  app:');
   lines.push('    build:');
   lines.push('      context: ..');
   lines.push('      dockerfile: .cogitator/Dockerfile');
   lines.push(`    image: ${yamlString(imageTag(config))}`);
-  lines.push('    ports:');
-  lines.push(`      - "${port}:${port}"`);
+  if (http) {
+    lines.push('    ports:');
+    lines.push(`      - "${port}:${port}"`);
+  }
+  if (config.hostGateway) {
+    lines.push('    extra_hosts:');
+    lines.push('      - "host.docker.internal:host-gateway"');
+  }
   lines.push('    environment:');
   for (const [key, value] of environment) lines.push(`      ${key}: ${value}`);
+  if (appVolumes.length > 0) {
+    lines.push('    volumes:');
+    lines.push(...appVolumes);
+  }
   lines.push('    restart: unless-stopped');
   if (dependsOn.length > 0) {
     lines.push('    depends_on:');
@@ -95,14 +110,14 @@ export function generateDockerCompose(config: DeployConfig): string {
     lines.push('      retries: 3');
   }
 
-  const volumes: string[] = [];
+  const volumes = (config.volumes ?? []).map((volume) => `  ${volumeName(volume)}:`);
   if (config.services?.redis) volumes.push('  redis-data:');
   if (config.services?.postgres) volumes.push('  postgres-data:');
 
   if (volumes.length > 0) {
     lines.push('');
     lines.push('volumes:');
-    lines.push(...volumes);
+    lines.push(...new Set(volumes));
   }
 
   return lines.join('\n') + '\n';

@@ -8,7 +8,7 @@ import type {
 import type { DeployProvider } from './providers/base.js';
 import { DockerProvider } from './providers/docker.js';
 import { FlyProvider } from './providers/fly.js';
-import { ProjectAnalyzer, type AnalyzerResult } from './analyzer.js';
+import { ProjectAnalyzer, type AnalyzeOptions, type AnalyzerResult } from './analyzer.js';
 
 /** A built-in target, or the name of a provider registered via `registerProvider`. */
 export type DeployTargetName = DeployTarget | (string & {});
@@ -25,6 +25,15 @@ export interface DeployOptions {
   dryRun?: boolean;
   noPush?: boolean;
   configOverrides?: Partial<DeployConfig>;
+  /** Config file to read the model, memory and deploy section from, `findConfigFile(projectDir)` by default */
+  configPath?: string;
+  /** Environment the deployment takes its secrets from, the project's `.env` under the process environment by default */
+  env?: NodeJS.ProcessEnv;
+}
+
+/** Where `status` and `destroy` read the project config from. */
+export interface DeployLookupOptions {
+  configPath?: string;
 }
 
 export interface DeployPlan {
@@ -66,26 +75,38 @@ export class Deployer {
   private resolveConfig(
     projectDir: string,
     target: DeployTargetName,
-    overrides: Partial<DeployConfig> | undefined
+    overrides: Partial<DeployConfig> | undefined,
+    options: AnalyzeOptions = {}
   ): { config: DeployConfig; analysis: AnalyzerResult } {
     const builtin = isBuiltinTarget(target) ? { target } : {};
-    const analysis = this.analyzer.analyze(projectDir, { ...overrides, ...builtin });
+    const analysis = this.analyzer.analyze(projectDir, { ...overrides, ...builtin }, options);
     return { config: { ...analysis.deployConfig, ...builtin }, analysis };
   }
 
+  /**
+   * What deploying would do: the resolved config, and a preflight made of
+   * the project checks (package.json, project kind, start script, secrets)
+   * followed by the target provider's own.
+   */
   async plan(options: DeployOptions): Promise<DeployPlan> {
     const provider = this.getProvider(options.target);
     const { config, analysis } = this.resolveConfig(
       options.projectDir,
       options.target,
-      options.configOverrides
+      options.configOverrides,
+      { configPath: options.configPath, env: options.env }
     );
 
     if (options.noPush) {
       delete config.registry;
     }
 
-    const preflight = await provider.preflight(config, options.projectDir);
+    const providerPreflight = await provider.preflight(config, options.projectDir);
+    const checks = [...analysis.checks, ...providerPreflight.checks];
+    const preflight: PreflightResult = {
+      checks,
+      passed: providerPreflight.passed && checks.every((c) => c.passed),
+    };
 
     return { config, preflight, provider, warnings: analysis.warnings, analysis };
   }
@@ -113,16 +134,22 @@ export class Deployer {
   async status(
     target: DeployTargetName,
     config: DeployConfig,
-    projectDir: string
+    projectDir: string,
+    options: DeployLookupOptions = {}
   ): Promise<DeployStatus> {
     const provider = this.getProvider(target);
-    const resolved = this.resolveConfig(projectDir, target, config).config;
+    const resolved = this.resolveConfig(projectDir, target, config, options).config;
     return provider.status(resolved, projectDir);
   }
 
-  async destroy(target: DeployTargetName, config: DeployConfig, projectDir: string): Promise<void> {
+  async destroy(
+    target: DeployTargetName,
+    config: DeployConfig,
+    projectDir: string,
+    options: DeployLookupOptions = {}
+  ): Promise<void> {
     const provider = this.getProvider(target);
-    const resolved = this.resolveConfig(projectDir, target, config).config;
+    const resolved = this.resolveConfig(projectDir, target, config, options).config;
     return provider.destroy(resolved, projectDir);
   }
 }
