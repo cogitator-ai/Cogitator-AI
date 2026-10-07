@@ -24,6 +24,27 @@ import type { ContextManagerConfig } from './context';
 import type { LoggingConfig } from './logging';
 import type { ABTestStore, ABTestVariant, InstructionVersionStore } from './prompt-optimization';
 
+/**
+ * Sees every run of a `Cogitator`, next to the callbacks a single run passes.
+ * An observer that throws is logged and never fails the run.
+ */
+export interface RunObserver {
+  onRunStart?(event: {
+    runId: string;
+    agentId: string;
+    agentName: string;
+    input: string;
+    threadId: string;
+    model?: string;
+  }): void;
+  /** A finished span of the run, with the id of the run it belongs to. */
+  onSpan?(span: Span, run: { runId: string }): void;
+  onRunComplete?(result: RunResult): void;
+  onRunError?(error: Error, runId: string): void;
+  /** Called by `cogitator.close()`: send what is still buffered and release resources. */
+  close?(): Promise<void> | void;
+}
+
 export interface CogitatorConfig {
   llm?: {
     defaultProvider?: LLMProvider;
@@ -53,6 +74,12 @@ export interface CogitatorConfig {
    * pauses last as long as the memory does), or to process memory without one.
    */
   runCheckpoints?: RunCheckpointStore;
+  /**
+   * Watch every run of this runtime, whoever starts it: a script, a server
+   * adapter, a workflow node or a swarm. Exporters such as `OTLPExporter` and
+   * `LangfuseExporter` give one with `observer()`.
+   */
+  observers?: RunObserver[];
   /**
    * Versioned instructions and A/B tests. Runs of an agent with a deployed
    * version use its instructions; while an A/B test runs, each thread gets

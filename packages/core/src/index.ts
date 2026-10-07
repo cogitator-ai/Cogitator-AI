@@ -350,6 +350,7 @@ export type {
   FinishReason,
   CogitatorConfig,
   RunOptions,
+  RunObserver,
   RunResult,
   RunBlockReason,
   RunCheckpoint,

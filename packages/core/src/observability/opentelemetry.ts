@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { Span as CogitatorSpan, RunResult } from '@cogitator-ai/types';
+import type { Span as CogitatorSpan, RunObserver, RunResult } from '@cogitator-ai/types';
 
 export interface OTLPExporterConfig {
   endpoint: string;
@@ -98,6 +98,7 @@ export class OTLPExporter {
     this.flushTimer = setInterval(() => {
       void this.flush();
     }, 5000);
+    this.flushTimer.unref?.();
   }
 
   stop(): void {
@@ -127,6 +128,17 @@ export class OTLPExporter {
    * Queues a span for export. `runId` is recorded as the `cogitator.run_id`
    * attribute; the trace comes from `span.traceId`.
    */
+  /** Exports every span of every run of a runtime: pass it in `observers` of the Cogitator config. */
+  observer(): RunObserver {
+    return {
+      onSpan: (span, run) => this.exportSpan(run.runId, span),
+      close: async () => {
+        this.stop();
+        await this.flush();
+      },
+    };
+  }
+
   exportSpan(runId: string, span: CogitatorSpan): void {
     if (!this.config.enabled) return;
 
