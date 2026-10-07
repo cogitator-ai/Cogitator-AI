@@ -116,6 +116,22 @@ export function firstRunNotice(env: NodeJS.ProcessEnv = process.env): string | u
   return `Cogitator sends one anonymous event per scaffolded project (version, preset, provider, memory, add-ons, package manager, Node major, OS). Turn it off with --no-telemetry or COGITATOR_TELEMETRY_DISABLED=1: ${TELEMETRY_DOCS}`;
 }
 
+/** How browsers name each platform, which is what Umami reads the OS from. */
+const UA_PLATFORMS: Record<string, string> = {
+  darwin: 'Macintosh; Intel Mac OS X 10_15_7',
+  linux: 'X11; Linux x86_64',
+  win32: 'Windows NT 10.0; Win64; x64',
+};
+
+/**
+ * The User-Agent of an event. Umami silently drops requests its bot filter
+ * (`isbot`) recognizes, and a `Node/` token is one of them, so the Node version
+ * travels in the payload only.
+ */
+export function telemetryUserAgent(payload: Pick<TelemetryPayload, 'os' | 'version'>): string {
+  return `Mozilla/5.0 (${UA_PLATFORMS[payload.os] ?? payload.os}) create-cogitator-app/${payload.version}`;
+}
+
 /**
  * Sends the event to Umami. It never throws and never takes longer than its
  * timeout: a slow or failing network changes nothing for the scaffolder.
@@ -141,7 +157,7 @@ export async function sendTelemetry(
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'user-agent': `Mozilla/5.0 (${payload.os}) create-cogitator-app/${payload.version} Node/${payload.node}`,
+        'user-agent': telemetryUserAgent(payload),
       },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(options.timeoutMs ?? SEND_TIMEOUT_MS),
