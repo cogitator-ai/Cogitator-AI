@@ -110,10 +110,7 @@ function installSteps(options: DockerfileOptions, pm: DockerfilePackageManager):
         copy,
         install: cached(pm, `bun install${frozen}`),
         installProd: cached(pm, `bun install${frozen} --production`),
-        prune: cached(
-          pm,
-          `rm -rf node_modules && bun install${frozen} --production --ignore-scripts`
-        ),
+        prune: cached(pm, `rm -rf node_modules && bun install${frozen} --production`),
         build: 'RUN bun run build',
       };
     }
@@ -150,15 +147,18 @@ function lines(...entries: (string | undefined | false)[]): string {
  * package manager's cache kept between builds, TypeScript built in a builder
  * stage that then drops its dev dependencies, and a runtime stage that runs as
  * the image's unprivileged user under tini, so signals reach the app and child
- * processes (MCP servers, sandboxes) are reaped.
+ * processes (MCP servers, sandboxes) are reaped. The image follows what runs
+ * the app: Bun's image for `bun` start commands, Node's otherwise, with Bun
+ * and node-gyp added for a Node app whose package manager is Bun.
  */
 export function generateDockerfile(options: DockerfileOptions): string {
   const { config, hasTypeScript } = options;
   const pm = options.packageManager ?? 'pnpm';
-  const bun = pm === 'bun';
+  const bun = options.startCommand ? options.startCommand[0] === 'bun' : pm === 'bun';
   const image = bun ? BUN_IMAGE : NODE_IMAGE;
   const user = bun ? 'bun' : 'node';
   const runtime = bun ? 'bun' : 'node';
+  const bunOnNode = pm === 'bun' && !bun;
   const steps = installSteps(options, pm);
   const startCommand = options.startCommand ?? [
     runtime,
@@ -179,6 +179,7 @@ export function generateDockerfile(options: DockerfileOptions): string {
     `FROM ${image} AS base`,
     'WORKDIR /app',
     corepack ? 'RUN corepack enable' : undefined,
+    bunOnNode ? `COPY --from=${BUN_IMAGE} /usr/local/bin/bun /usr/local/bin/bun` : undefined,
   ];
   const runtimeStage = (copy: string[]) => [
     'FROM base AS runtime',
@@ -213,7 +214,9 @@ export function generateDockerfile(options: DockerfileOptions): string {
     ...base,
     '',
     'FROM base AS builder',
-    'RUN apk add --no-cache python3 make g++',
+    bunOnNode
+      ? 'RUN apk add --no-cache python3 make g++ && npm install -g node-gyp'
+      : 'RUN apk add --no-cache python3 make g++',
     ...steps.copy,
     steps.install,
     'COPY . .',

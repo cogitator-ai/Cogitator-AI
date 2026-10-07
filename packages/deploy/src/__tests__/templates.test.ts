@@ -75,6 +75,24 @@ describe('generateDockerfile', () => {
     expect(bun).toContain('USER bun');
   });
 
+  it('runs a Node app managed by Bun on Node, with Bun and node-gyp for native builds', () => {
+    const dockerfile = generateDockerfile({
+      config: { port: 3000 },
+      hasTypeScript: true,
+      packageManager: 'bun',
+      hasLockfile: true,
+      startCommand: ['node', 'dist/index.js'],
+    });
+    expect(dockerfile).toContain('FROM node:24-alpine AS base');
+    expect(dockerfile).toContain(
+      'COPY --from=oven/bun:1-alpine /usr/local/bin/bun /usr/local/bin/bun'
+    );
+    expect(dockerfile).toContain('npm install -g node-gyp');
+    expect(dockerfile).toContain('USER node');
+    expect(dockerfile).toContain('CMD ["node","dist/index.js"]');
+    expect(dockerfile).not.toContain('--ignore-scripts');
+  });
+
   it('keeps the package manager cache between builds', () => {
     const df = generateDockerfile({ config: {}, hasTypeScript: true, packageManager: 'pnpm' });
     expect(df.startsWith('# syntax=docker/dockerfile:1\n')).toBe(true);
