@@ -118,7 +118,7 @@ const SCRIPT_DESCRIPTIONS: Record<string, string> = {
   lint: 'Lint and check formatting with Biome',
   format: 'Format and fix lint issues',
   eval: 'Score the assistant on the eval dataset',
-  studio: 'Open Cogitator Studio: chat, traces, costs, approvals and run forks',
+  'dev:studio': 'Open Cogitator Studio: chat, traces, costs, approvals, workflows and forks',
   doctor: 'Check keys, services and models',
   ingest: 'Index the files in docs/ for RAG',
   'mcp:serve': 'Serve the agents as an MCP server over stdio',

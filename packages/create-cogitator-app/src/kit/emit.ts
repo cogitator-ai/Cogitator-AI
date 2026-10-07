@@ -15,7 +15,7 @@ const SCRIPT_ORDER = [
   'lint',
   'format',
   'eval',
-  'studio',
+  'dev:studio',
   'doctor',
 ];
 

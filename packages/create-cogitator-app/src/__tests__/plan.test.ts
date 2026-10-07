@@ -185,6 +185,19 @@ describe('AGENTS.md', () => {
   });
 });
 
+describe('Cogitator Studio', () => {
+  it.each(PRESETS.map((preset) => preset.id))(
+    '%s opens with dev:studio and loads with tsx',
+    (presetId) => {
+      const plan = planProject(specFor(presetId, 'openai'));
+      expect(plan.scripts['dev:studio']).toBe('cogitator dev');
+      expect(plan.devDependencies.tsx).toBeDefined();
+      expect(file(plan, 'README.md')).toContain('## Cogitator Studio');
+      expect(file(plan, 'AGENTS.md')).toContain('dev:studio');
+    }
+  );
+});
+
 describe('coding agents', () => {
   it('configures the cogitator MCP server and skill where each agent looks', () => {
     const plan = planProject(

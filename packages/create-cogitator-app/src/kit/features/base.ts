@@ -230,6 +230,7 @@ export const baseFeature: FeatureModule = {
       .devDependency('@cogitator-ai/cli', cogitatorVersion('@cogitator-ai/cli'))
       .devDependency('@cogitator-ai/test-utils', cogitatorVersion('@cogitator-ai/test-utils'))
       .devDependency('@biomejs/biome', VERSIONS.biome)
+      .devDependency('tsx', VERSIONS.tsx)
       .devDependency('vitest', VERSIONS.vitest);
 
     if (bun) {
@@ -269,7 +270,7 @@ export const baseFeature: FeatureModule = {
       .script('lint', 'biome check .')
       .script('format', 'biome check --write .')
       .script('doctor', 'cogitator doctor')
-      .script('studio', 'cogitator dev')
+      .script('dev:studio', 'cogitator dev')
       .ignore('node_modules/', 'dist/', '.env', '.env.*', '!.env.example', '*.log', '*.tsbuildinfo')
       .ignore('.DS_Store', 'coverage/', '.cogitator/studio/', '.cogitator/checkpoints/');
 
@@ -297,9 +298,15 @@ export const baseFeature: FeatureModule = {
         - \`${runScript(spec.packageManager, 'dev')}\`: run with reload on change
         - \`${runScript(spec.packageManager, 'test')}\`: offline tests, the model is mocked with \`mockCogitator\` from \`tests/helpers.ts\`
         - \`${runScript(spec.packageManager, 'typecheck')}\` and \`${runScript(spec.packageManager, 'lint')}\`: run both before you call a change done
-        - \`${runScript(spec.packageManager, 'studio')}\`: the local studio to chat with agents, read traces and costs, approve tool calls and fork runs
+        - \`${runScript(spec.packageManager, 'dev:studio')}\`: Cogitator Studio, to chat with the agents, read traces and costs, approve tool calls, run workflows and fork runs
         - \`${runScript(spec.packageManager, 'doctor')}\`: checks keys, services and models when something does not start
         - \`${execCommand(spec.packageManager, 'cogitator add')} <feature>\`: adds rag, mcp, workflows, evals and the other generated features to this project, \`--dry-run\` shows the diff first
+      `
+    );
+    project.readmeSection(
+      'Cogitator Studio',
+      code`
+        \`${runScript(spec.packageManager, 'dev:studio')}\` opens a local studio for this project at http://localhost:4321: chat with every agent of \`src/cogitator.ts\` with streamed answers and tool calls, approve the calls that need it, read the trace of each run with its model calls, tool calls, nested agents, tokens and cost, run the workflows, and fork a run from any step with a changed input or tool result to compare both branches. It reloads when you save, and keeps the history in \`.cogitator/studio/\`.
       `
     );
   },
