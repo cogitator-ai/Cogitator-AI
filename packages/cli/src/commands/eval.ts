@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { join, relative } from 'node:path';
 import { loadConfig } from '@cogitator-ai/config';
+import { CommandError, examplesHelp, reportFailure, UsageError } from '../utils/cli.js';
 import { loadProjectEnv } from '../utils/doctor.js';
 import {
   isEvalSuite,
@@ -23,7 +24,7 @@ function positiveInteger(value: string | undefined): number | undefined {
   if (value === undefined) return undefined;
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1)
-    throw new Error('--max-cases takes a positive integer');
+    throw new UsageError('--max-cases takes a positive integer');
   return parsed;
 }
 
@@ -47,7 +48,7 @@ export async function runEvals(files: readonly string[], flags: EvalFlags): Prom
 
   const paths = resolveEvalFiles(projectDir, files);
   if (paths.length === 0) {
-    throw new Error(
+    throw new CommandError(
       'No eval files found: add evals/<name>.eval.ts exporting an EvalSuite as default'
     );
   }
@@ -57,7 +58,7 @@ export async function runEvals(files: readonly string[], flags: EvalFlags): Prom
     const module = await importUserModule(path, projectDir);
     const suite = module.default;
     if (!isEvalSuite(suite)) {
-      throw new Error(`${path} must export an EvalSuite as its default export`);
+      throw new CommandError(`${path} must export an EvalSuite as its default export`);
     }
     print(chalk.bold(`\n${relative(projectDir, path)}`));
     const result = await suite.run({ maxCases: positiveInteger(flags.maxCases) });
@@ -98,15 +99,20 @@ export const evalCommand = new Command('eval')
     '--skip-without-key',
     'exit 0 without running when the model has no API key, for CI on forks'
   )
+  .addHelpText(
+    'after',
+    examplesHelp([
+      ['cogitator eval', 'run every evals/*.eval.ts'],
+      ['cogitator eval evals/answers.eval.ts --max-cases 5', 'a quick subset'],
+      ['cogitator eval --json --report eval-report.json', 'results for CI'],
+    ])
+  )
   .action(async (files: string[], flags: EvalFlags) => {
     let code: number;
     try {
       code = await runEvals(files, flags);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (flags.json) console.log(JSON.stringify({ ok: false, error: message }));
-      else console.error(chalk.red(message));
-      code = 1;
+      code = reportFailure(error, { json: flags.json === true });
     }
     process.exit(code);
   });

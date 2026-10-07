@@ -11,6 +11,7 @@ import {
   type ScaffoldLogger,
 } from 'create-cogitator-app';
 import { printBanner } from '../utils/logger.js';
+import { errorMessage, EXIT, examplesHelp } from '../utils/cli.js';
 import { resolveOllamaUrl } from '../utils/ollama.js';
 import {
   API_KEY_ENV,
@@ -235,6 +236,13 @@ export const initCommand = new Command('init')
   .argument('[name]', 'Project name')
   .option('--no-install', 'Skip dependency installation')
   .option('--no-git', 'Skip creating a git repository')
+  .addHelpText(
+    'after',
+    examplesHelp([
+      ['cogitator init my-bot', 'a messaging assistant, asked step by step'],
+      ['cogitator init my-bot --no-install', 'write the files, install later'],
+    ])
+  )
   .action(async (nameArg: string | undefined, options: { install: boolean; git: boolean }) => {
     printBanner();
     p.intro(chalk.bgCyan(chalk.black(' cogitator init ')));
@@ -243,7 +251,8 @@ export const initCommand = new Command('init')
       const error = validateProjectName(nameArg);
       if (error) {
         p.cancel(`Invalid project name "${nameArg}": ${error}`);
-        process.exit(1);
+        process.exitCode = EXIT.usage;
+        return;
       }
     }
 
@@ -262,8 +271,9 @@ export const initCommand = new Command('init')
         log: clackLogger(),
       });
     } catch (error) {
-      p.cancel(error instanceof Error ? error.message : String(error));
-      process.exit(1);
+      p.cancel(errorMessage(error));
+      process.exitCode = EXIT.failed;
+      return;
     }
 
     const steps = result.plan.nextSteps({

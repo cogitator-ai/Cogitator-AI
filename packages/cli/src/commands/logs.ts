@@ -5,7 +5,7 @@
 import { Command, InvalidArgumentError } from 'commander';
 import { spawn } from 'node:child_process';
 import { dirname } from 'node:path';
-import { log } from '../utils/logger.js';
+import { CommandError, exitWithFailure, examplesHelp } from '../utils/cli.js';
 import { findDockerCompose } from '../utils/docker.js';
 
 interface LogsOptions {
@@ -25,13 +25,20 @@ export const logsCommand = new Command('logs')
   .option('-f, --follow', 'Follow log output', false)
   .option('-n, --tail <lines>', 'Number of lines to show (or "all")', parseTailOption, '100')
   .option('-t, --timestamps', 'Show timestamps', false)
+  .addHelpText(
+    'after',
+    examplesHelp([
+      ['cogitator logs', 'the last 100 lines of every service'],
+      ['cogitator logs postgres -f', 'follow one service'],
+    ])
+  )
   .action((service: string | undefined, options: LogsOptions) => {
     const composePath = findDockerCompose();
 
     if (!composePath) {
-      log.error('No docker-compose.yml found');
-      log.dim('Run "cogitator init <name>" to create a project');
-      process.exit(1);
+      throw new CommandError('No docker-compose.yml found', {
+        hints: ['Run "cogitator init <name>" to create a project'],
+      });
     }
 
     const composeDir = dirname(composePath);
@@ -51,8 +58,7 @@ export const logsCommand = new Command('logs')
     });
 
     proc.on('error', (err) => {
-      log.error(`Failed to run docker compose logs: ${err.message}`);
-      process.exit(1);
+      exitWithFailure(new CommandError(`Failed to run docker compose logs: ${err.message}`));
     });
 
     proc.on('exit', (code) => {

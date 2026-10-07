@@ -29,6 +29,7 @@ import { upCommand, findAssistantConfig, loadAssistantConfig } from '../commands
 import { detectConfigKind } from '../utils/project-config.js';
 import { resolveDaemonLaunch } from '../utils/daemon.js';
 import { log } from '../utils/logger.js';
+import { CommandError } from '../utils/cli.js';
 
 const SCAFFOLDED_RUNTIME_CONFIG = [
   'llm:',
@@ -121,10 +122,13 @@ describe('cogitator up with a runtime cogitator.yml (create-cogitator-app)', () 
   });
 
   it('explains what the file is when there are no services to start', async () => {
-    await expect(upCommand.parseAsync([], { from: 'user' })).rejects.toThrow('process.exit(1)');
-
-    expect(errors).toHaveLength(1);
-    expect(errors[0]).toMatch(/runtime config for @cogitator-ai\/config/);
+    const failure = upCommand.parseAsync([], { from: 'user' });
+    await expect(failure).rejects.toBeInstanceOf(CommandError);
+    await expect(failure).rejects.toThrow(/runtime config for @cogitator-ai\/config/);
+    await expect(failure).rejects.toMatchObject({
+      exitCode: 1,
+      hints: ['No docker-compose.yml found either, so there are no services to start'],
+    });
     expect(spawnMock).not.toHaveBeenCalled();
     expect(execFileSyncMock).not.toHaveBeenCalled();
   });
@@ -132,9 +136,7 @@ describe('cogitator up with a runtime cogitator.yml (create-cogitator-app)', () 
   it('refuses it as an explicit assistant config with the same explanation', async () => {
     await expect(
       upCommand.parseAsync(['--config', join(dir, 'cogitator.yml')], { from: 'user' })
-    ).rejects.toThrow('process.exit(1)');
-
-    expect(errors[0]).toMatch(/runtime config for @cogitator-ai\/config/);
+    ).rejects.toThrow(/runtime config for @cogitator-ai\/config/);
     expect(spawnMock).not.toHaveBeenCalled();
   });
 

@@ -15,6 +15,7 @@ import { resolve, basename, relative } from 'node:path';
 import { validateSkill } from '@cogitator-ai/core';
 import type { Skill, Tool } from '@cogitator-ai/types';
 import { log } from '../utils/logger.js';
+import { CommandError, EXIT, examplesHelp } from '../utils/cli.js';
 import { importUserModule } from '../utils/module-loader.js';
 
 const SKILL_NAME = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
@@ -169,7 +170,14 @@ export function findMissingDependencies(
   });
 }
 
-export const skillCommand = new Command('skill').description('Manage agent skills');
+export const skillCommand = new Command('skill').description('Manage agent skills').addHelpText(
+  'after',
+  examplesHelp([
+    ['cogitator skill list', 'installed skills'],
+    ['cogitator skill create weather --template api', 'scaffold a skill'],
+    ['cogitator skill validate', 'check the skill in this directory'],
+  ])
+);
 
 skillCommand
   .command('list')
@@ -207,28 +215,25 @@ skillCommand
     const sourcePath = resolve(process.cwd(), source);
 
     if (!existsSync(sourcePath) || !statSync(sourcePath).isDirectory()) {
-      log.error(`Source is not a directory: ${sourcePath}`);
-      process.exit(1);
+      throw new CommandError(`Source is not a directory: ${sourcePath}`);
     }
 
     if (!findSkillFile(sourcePath)) {
-      log.error(`No ${SKILL_FILES.join(' / ')} found in ${sourcePath}`);
-      process.exit(1);
+      throw new CommandError(`No ${SKILL_FILES.join(' / ')} found in ${sourcePath}`);
     }
 
     const name = basename(sourcePath);
     if (!isSafeSkillDirName(name)) {
-      log.error(`Invalid skill directory name "${name}"`);
-      process.exit(1);
+      throw new CommandError(`Invalid skill directory name "${name}"`);
     }
 
     const targetDir = options.global ? globalSkillsDir() : localSkillsDir();
     const targetPath = resolve(targetDir, name);
 
     if (existsSync(targetPath)) {
-      log.error(`Skill "${name}" already exists at ${targetPath}`);
-      log.dim('Remove it first: cogitator skill remove ' + name);
-      process.exit(1);
+      throw new CommandError(`Skill "${name}" already exists at ${targetPath}`, {
+        hints: ['Remove it first: cogitator skill remove ' + name],
+      });
     }
 
     mkdirSync(targetDir, { recursive: true });
@@ -258,9 +263,9 @@ skillCommand
       }
     }
 
-    log.error(`Skill "${name}" not found`);
-    log.dim('Run "cogitator skill list" to see installed skills');
-    process.exit(1);
+    throw new CommandError(`Skill "${name}" not found`, {
+      hints: ['Run "cogitator skill list" to see installed skills'],
+    });
   });
 
 skillCommand
@@ -274,8 +279,7 @@ skillCommand
     const skillDir = resolve(targetDir, name);
 
     if (existsSync(skillDir)) {
-      log.error(`Skill "${name}" already exists at ${skillDir}`);
-      process.exit(1);
+      throw new CommandError(`Skill "${name}" already exists at ${skillDir}`);
     }
 
     mkdirSync(resolve(skillDir, 'tools'), { recursive: true });
@@ -306,9 +310,9 @@ skillCommand
     const skillFile = findSkillFile(skillPath);
 
     if (!skillFile) {
-      log.error(`No ${SKILL_FILES.join(' / ')} found`);
-      log.dim(`Searched in: ${skillPath}`);
-      process.exit(1);
+      throw new CommandError(`No ${SKILL_FILES.join(' / ')} found`, {
+        hints: [`Searched in: ${skillPath}`],
+      });
     }
 
     log.step(`Validating ${chalk.dim(skillFile)}`);
@@ -318,13 +322,13 @@ skillCommand
       const mod = await importUserModule(skillFile, process.cwd());
       exported = mod.default ?? mod.skill;
     } catch (err) {
-      log.error(`Failed to load skill: ${err instanceof Error ? err.message : String(err)}`);
-      process.exit(1);
+      throw new CommandError(
+        `Failed to load skill: ${err instanceof Error ? err.message : String(err)}`
+      );
     }
 
     if (exported === undefined) {
-      log.error('Skill file must export a default or named "skill" export');
-      process.exit(1);
+      throw new CommandError('Skill file must export a default or named "skill" export');
     }
 
     const { skill, issues } = toSkill(exported);
@@ -349,7 +353,8 @@ skillCommand
       for (const issue of issues) {
         console.log(`  ${chalk.red('✗')} ${issue}`);
       }
-      process.exit(1);
+      process.exitCode = EXIT.failed;
+      return;
     }
 
     log.success('Skill is valid');

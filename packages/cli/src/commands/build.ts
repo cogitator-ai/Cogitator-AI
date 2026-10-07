@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import { existsSync, mkdirSync, statSync } from 'node:fs';
 import { dirname, resolve, relative } from 'node:path';
 import { log, printBanner } from '../utils/logger.js';
+import { CommandError, errorMessage, examplesHelp } from '../utils/cli.js';
 import { importOptionalPackage } from '../utils/module-loader.js';
 import { BUNDLE_MARKER } from '../utils/daemon.js';
 
@@ -120,6 +121,13 @@ export const buildCommand = new Command('build')
   .option('--no-sourcemap', 'Disable sourcemap')
   .option('--minify', 'Minify output')
   .option('-q, --quiet', 'Minimal output')
+  .addHelpText(
+    'after',
+    examplesHelp([
+      ['cogitator build', 'bundle src/gateway.ts into dist/cogitator.mjs'],
+      ['cogitator build --minify --no-sourcemap', 'the smallest bundle'],
+    ])
+  )
   .action(
     async (options: {
       config: string;
@@ -136,16 +144,16 @@ export const buildCommand = new Command('build')
       const outfile = resolve(cwd, options.outfile);
 
       if (!existsSync(configPath)) {
-        log.error(`Config not found: ${configPath}`);
-        log.dim('Run "cogitator init" to create a project first');
-        process.exit(1);
+        throw new CommandError(`Config not found: ${configPath}`, {
+          hints: ['Run "cogitator init" to create a project first'],
+        });
       }
 
       const esbuild = await loadEsbuild(cwd);
       if (!esbuild) {
-        log.error('esbuild is required for building. Install it:');
-        log.dim('  pnpm add -D esbuild');
-        process.exit(1);
+        throw new CommandError('esbuild is required for building. Install it:', {
+          hints: ['  pnpm add -D esbuild'],
+        });
       }
 
       mkdirSync(dirname(outfile), { recursive: true });
@@ -166,9 +174,7 @@ export const buildCommand = new Command('build')
           })
         );
       } catch (error) {
-        log.error('Build failed');
-        if (error instanceof Error) log.dim(error.message);
-        process.exit(1);
+        throw new CommandError('Build failed', { hints: [errorMessage(error)] });
       }
 
       const elapsed = ((performance.now() - startTime) / 1000).toFixed(2);

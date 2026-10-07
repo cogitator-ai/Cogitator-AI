@@ -6,6 +6,7 @@ import chalk from 'chalk';
 import { stringify, parse as parseYaml } from 'yaml';
 import { AssistantConfigSchema, type AssistantConfigOutput } from '@cogitator-ai/channels';
 import { printBanner } from '../utils/logger.js';
+import { examplesHelp } from '../utils/cli.js';
 import { mergeEnvContent, parseDotenv } from '../utils/env.js';
 import { DEFAULT_OLLAMA_URL, resolveOllamaUrl } from '../utils/ollama.js';
 import {
@@ -165,6 +166,13 @@ async function askSecret(opts: {
 export const wizardCommand = new Command('wizard')
   .description('Interactive assistant setup — generates cogitator.yml + .env')
   .option('--edit', 'Edit existing cogitator.yml')
+  .addHelpText(
+    'after',
+    examplesHelp([
+      ['cogitator wizard', 'write cogitator.yml and .env step by step'],
+      ['cogitator wizard --edit', 'change the existing cogitator.yml'],
+    ])
+  )
   .action(async (options: { edit?: boolean }) => {
     printBanner();
 

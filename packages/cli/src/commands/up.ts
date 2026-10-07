@@ -13,6 +13,7 @@ import {
   type BuiltRuntime,
 } from '@cogitator-ai/channels';
 import { log } from '../utils/logger.js';
+import { CommandError, exitWithFailure, examplesHelp } from '../utils/cli.js';
 import { findDockerCompose, checkDocker, composePs, type ComposeService } from '../utils/docker.js';
 import { loadDotenvInto } from '../utils/env.js';
 import {
@@ -154,8 +155,7 @@ function startWithAutoRestart(configPath: string): void {
     );
 
     child.on('error', (error) => {
-      log.error(`Failed to start assistant process: ${error.message}`);
-      process.exit(1);
+      exitWithFailure(new CommandError(`Failed to start assistant process: ${error.message}`));
     });
 
     child.on('exit', (code, signal) => {
@@ -181,8 +181,7 @@ async function startAssistant(configPath: string, restartLoop: boolean): Promise
     loadAssistantConfig(configPath);
     startWithAutoRestart(configPath);
   } catch (error) {
-    log.error(error instanceof Error ? error.message : String(error));
-    process.exit(1);
+    throw new CommandError(error instanceof Error ? error.message : String(error));
   }
 }
 
@@ -214,13 +213,13 @@ async function startComposeServices(
   const composePath = findDockerCompose();
   if (!composePath) {
     if (runtimeConfig) {
-      log.error(runtimeConfigMessage(runtimeConfig));
-      log.dim('No docker-compose.yml found either, so there are no services to start');
-    } else {
-      log.error('No cogitator.yml or docker-compose.yml found');
-      log.dim('Run "cogitator wizard" to create an assistant config');
+      throw new CommandError(runtimeConfigMessage(runtimeConfig), {
+        hints: ['No docker-compose.yml found either, so there are no services to start'],
+      });
     }
-    process.exit(1);
+    throw new CommandError('No cogitator.yml or docker-compose.yml found', {
+      hints: ['Run "cogitator wizard" to create an assistant config'],
+    });
   }
 
   if (runtimeConfig) {
@@ -231,9 +230,9 @@ async function startComposeServices(
   log.info('Starting Cogitator services...');
 
   if (!checkDocker()) {
-    log.error('Docker is not installed or not running');
-    log.dim('Install Docker: https://docs.docker.com/get-docker/');
-    process.exit(1);
+    throw new CommandError('Docker is not installed or not running', {
+      hints: ['Install Docker: https://docs.docker.com/get-docker/'],
+    });
   }
 
   const composeDir = dirname(composePath);
@@ -253,8 +252,7 @@ async function startComposeServices(
   if (!options.detach) {
     const proc = spawn('docker', ['compose', 'up'], { cwd: composeDir, stdio: 'inherit' });
     proc.on('error', (error) => {
-      log.error(`Failed to run docker compose up: ${error.message}`);
-      process.exit(1);
+      exitWithFailure(new CommandError(`Failed to run docker compose up: ${error.message}`));
     });
     proc.on('exit', (code, signal) => process.exit(exitCodeFor(code, signal)));
     return;
@@ -266,8 +264,7 @@ async function startComposeServices(
     spinner.succeed('Services started');
   } catch (error) {
     spinner.fail('Failed to start services');
-    log.error(error instanceof Error ? error.message : String(error));
-    process.exit(1);
+    throw new CommandError(error instanceof Error ? error.message : String(error));
   }
 
   printComposeServices(composeDir);
@@ -290,13 +287,20 @@ export const upCommand = new Command('up')
     '--no-restart-loop',
     'Do not supervise the assistant for restarts (/restart, self-config updates)'
   )
+  .addHelpText(
+    'after',
+    examplesHelp([
+      ['cogitator up', 'start the assistant of cogitator.yml, or the compose services'],
+      ['cogitator up --no-detach', 'keep the services in the foreground'],
+      ['cogitator up --pull', 'pull newer images first'],
+    ])
+  )
   .action(
     async (options: { config?: string; detach: boolean; pull?: boolean; restartLoop: boolean }) => {
       if (options.config) {
         const explicit = resolvePath(process.cwd(), options.config);
         if (!existsSync(explicit)) {
-          log.error(`Config not found: ${explicit}`);
-          process.exit(1);
+          throw new CommandError(`Config not found: ${explicit}`);
         }
         await startAssistant(explicit, options.restartLoop);
         return;
@@ -315,11 +319,17 @@ export const upCommand = new Command('up')
 export const downCommand = new Command('down')
   .description('Stop Docker services')
   .option('-v, --volumes', 'Remove volumes (deletes data)')
+  .addHelpText(
+    'after',
+    examplesHelp([
+      ['cogitator down', 'stop the services'],
+      ['cogitator down --volumes', 'stop them and delete their data'],
+    ])
+  )
   .action((options: { volumes?: boolean }) => {
     const composePath = findDockerCompose();
     if (!composePath) {
-      log.error('No docker-compose.yml found');
-      process.exit(1);
+      throw new CommandError('No docker-compose.yml found');
     }
 
     const composeDir = dirname(composePath);
@@ -332,7 +342,6 @@ export const downCommand = new Command('down')
       spinner.succeed('Services stopped');
     } catch (error) {
       spinner.fail('Failed to stop services');
-      log.error(error instanceof Error ? error.message : String(error));
-      process.exit(1);
+      throw new CommandError(error instanceof Error ? error.message : String(error));
     }
   });

@@ -6,6 +6,14 @@ import { resolve } from 'node:path';
 import { findConfigFile, loadConfig, loadEnvConfig } from '@cogitator-ai/config';
 import { Deployer, type DeployPlan } from '@cogitator-ai/deploy';
 import { log } from '../utils/logger.js';
+import {
+  CommandError,
+  UsageError,
+  errorMessage,
+  EXIT,
+  examplesHelp,
+  printJson,
+} from '../utils/cli.js';
 import type { DeployConfig, DeployResult, DeployStatus, DeployTarget } from '@cogitator-ai/types';
 
 export interface DeployFlags {
@@ -15,6 +23,7 @@ export interface DeployFlags {
   push: boolean;
   dryRun?: boolean;
   region?: string;
+  json?: boolean;
 }
 
 function isDeployTarget(value: string, available: readonly string[]): value is DeployTarget {
@@ -24,9 +33,9 @@ function isDeployTarget(value: string, available: readonly string[]): value is D
 function resolveTarget(requested: string | undefined, available: readonly string[]): DeployTarget {
   const raw = requested ?? 'docker';
   if (!isDeployTarget(raw, available)) {
-    log.error(`Unsupported deploy target: "${raw}"`);
-    log.dim(`Available targets: ${available.join(', ')}`);
-    process.exit(1);
+    throw new UsageError(`Unsupported deploy target: "${raw}"`, [
+      `Available targets: ${available.join(', ')}`,
+    ]);
   }
   return raw;
 }
@@ -77,9 +86,106 @@ function loadDeployInputs(projectDir: string, flags: DeployFlags): DeployInputs 
   try {
     return resolveDeployInputs(projectDir, flags);
   } catch (error) {
-    log.error(`Failed to load config: ${error instanceof Error ? error.message : String(error)}`);
-    process.exit(1);
+    throw new CommandError(
+      `Failed to load config: ${error instanceof Error ? error.message : String(error)}`
+    );
   }
+}
+
+function spin(text: string, flags: DeployFlags) {
+  return ora({ text, isSilent: flags.json === true }).start();
+}
+
+/** A deploy plan as data: what `--json` prints and what the terminal view shows. */
+export function describePlan(plan: DeployPlan, target: DeployTarget, configPath?: string) {
+  const { config, preflight } = plan;
+  return {
+    target,
+    ...(configPath && { configPath }),
+    config: {
+      ...(config.kind && { kind: config.kind }),
+      ...(config.server && { server: config.server }),
+      ...(config.port && { port: config.port }),
+      ...(config.region && { region: config.region }),
+      ...(config.registry && { registry: config.registry }),
+      ...(config.image && { image: config.image }),
+      ...(config.instances && { instances: config.instances }),
+    },
+    services: {
+      redis: Boolean(config.services?.redis),
+      postgres: Boolean(config.services?.postgres),
+      provisioned: target === 'docker',
+    },
+    volumes: (config.volumes ?? []).map((volume) => volume.path),
+    secrets: config.secrets ?? [],
+    warnings: plan.warnings,
+    preflight: {
+      passed: preflight.passed,
+      checks: preflight.checks.map(({ name, passed, message, fix }) => ({
+        name,
+        passed,
+        message,
+        ...(fix && { fix }),
+      })),
+    },
+  };
+}
+
+export type PlanSummary = ReturnType<typeof describePlan>;
+
+function printPlan(summary: PlanSummary): void {
+  const { config, target } = summary;
+  console.log();
+  log.info(`Deploy plan for ${chalk.bold(target)}`);
+  console.log();
+
+  console.log(chalk.dim('  Configuration:'));
+  if (summary.configPath) console.log(`    Config:   ${chalk.cyan(summary.configPath)}`);
+  console.log(`    Target:   ${chalk.cyan(target)}`);
+  if (config.kind) console.log(`    Kind:     ${chalk.cyan(config.kind)}`);
+  if (config.server) console.log(`    Server:   ${chalk.cyan(config.server)}`);
+  if (config.port) console.log(`    Port:     ${chalk.cyan(String(config.port))}`);
+  if (config.region) console.log(`    Region:   ${chalk.cyan(config.region)}`);
+  if (config.registry) console.log(`    Registry: ${chalk.cyan(config.registry)}`);
+  if (config.image) console.log(`    App:      ${chalk.cyan(config.image)}`);
+  if (config.instances) console.log(`    Instances: ${chalk.cyan(String(config.instances))}`);
+  console.log();
+
+  if (summary.warnings.length > 0) {
+    console.log(chalk.dim('  Warnings:'));
+    for (const warning of summary.warnings) console.log(`    ${chalk.yellow('!')} ${warning}`);
+    console.log();
+  }
+
+  const { services } = summary;
+  if (services.redis || services.postgres) {
+    const icon = services.provisioned ? chalk.green('●') : chalk.yellow('○');
+    const note = (variable: string) =>
+      services.provisioned ? '' : chalk.dim(` (not provisioned on ${target}, set ${variable})`);
+    console.log(chalk.dim('  Services:'));
+    if (services.redis) console.log(`    ${icon} Redis${note('REDIS_URL')}`);
+    if (services.postgres) console.log(`    ${icon} PostgreSQL${note('DATABASE_URL')}`);
+    console.log();
+  }
+
+  if (summary.volumes.length > 0) {
+    console.log(chalk.dim('  Volumes:'));
+    for (const volume of summary.volumes) console.log(`    ${chalk.green('●')} ${volume}`);
+    console.log();
+  }
+
+  if (summary.secrets.length > 0) {
+    console.log(chalk.dim('  Required secrets:'));
+    for (const secret of summary.secrets) console.log(`    ${chalk.yellow('○')} ${secret}`);
+    console.log();
+  }
+
+  console.log(chalk.dim('  Preflight checks:'));
+  for (const check of summary.preflight.checks) {
+    const icon = check.passed ? chalk.green('✓') : chalk.red('✗');
+    console.log(`    ${icon} ${check.message}`);
+  }
+  console.log();
 }
 
 async function runDeploy(flags: DeployFlags): Promise<void> {
@@ -90,7 +196,7 @@ async function runDeploy(flags: DeployFlags): Promise<void> {
   const target = resolveTarget(inputs.target, deployer.availableTargets());
   const configOverrides = inputs.overrides;
 
-  const spinner = ora('Analyzing project...').start();
+  const spinner = spin('Analyzing project...', flags);
   let plan: DeployPlan;
   try {
     plan = await deployer.plan({
@@ -103,89 +209,31 @@ async function runDeploy(flags: DeployFlags): Promise<void> {
     });
   } catch (error) {
     spinner.fail('Failed to plan deployment');
-    log.error(error instanceof Error ? error.message : String(error));
-    process.exit(1);
+    throw new CommandError(errorMessage(error));
   }
   spinner.stop();
 
-  console.log();
-  log.info(`Deploy plan for ${chalk.bold(target)}`);
-  console.log();
-
-  const { config, preflight } = plan;
-
-  console.log(chalk.dim('  Configuration:'));
-  if (inputs.configPath) console.log(`    Config:   ${chalk.cyan(inputs.configPath)}`);
-  console.log(`    Target:   ${chalk.cyan(target)}`);
-  if (config.kind) console.log(`    Kind:     ${chalk.cyan(config.kind)}`);
-  if (config.server) console.log(`    Server:   ${chalk.cyan(config.server)}`);
-  if (config.port) console.log(`    Port:     ${chalk.cyan(String(config.port))}`);
-  if (config.region) console.log(`    Region:   ${chalk.cyan(config.region)}`);
-  if (config.registry) console.log(`    Registry: ${chalk.cyan(config.registry)}`);
-  if (config.image) console.log(`    App:      ${chalk.cyan(config.image)}`);
-  if (config.instances) console.log(`    Instances: ${chalk.cyan(String(config.instances))}`);
-  console.log();
-
-  if (plan.warnings.length > 0) {
-    console.log(chalk.dim('  Warnings:'));
-    for (const warning of plan.warnings) {
-      console.log(`    ${chalk.yellow('!')} ${warning}`);
-    }
-    console.log();
+  const summary = describePlan(plan, target, inputs.configPath);
+  const passed = summary.preflight.passed;
+  if (flags.json && (flags.dryRun || !passed)) {
+    printJson({ ok: passed, dryRun: flags.dryRun === true, ...summary });
+    if (!passed) process.exitCode = EXIT.failed;
+    return;
   }
+  if (!flags.json) printPlan(summary);
 
-  if (config.services?.redis || config.services?.postgres) {
-    const provisioned = target === 'docker';
-    const icon = provisioned ? chalk.green('●') : chalk.yellow('○');
-    const note = (variable: string) =>
-      provisioned ? '' : chalk.dim(` (not provisioned on ${target}, set ${variable})`);
-    console.log(chalk.dim('  Services:'));
-    if (config.services.redis) console.log(`    ${icon} Redis${note('REDIS_URL')}`);
-    if (config.services.postgres) console.log(`    ${icon} PostgreSQL${note('DATABASE_URL')}`);
-    console.log();
-  }
-
-  if (config.volumes && config.volumes.length > 0) {
-    console.log(chalk.dim('  Volumes:'));
-    for (const volume of config.volumes) {
-      console.log(`    ${chalk.green('●')} ${volume.path}`);
-    }
-    console.log();
-  }
-
-  if (config.secrets && config.secrets.length > 0) {
-    console.log(chalk.dim('  Required secrets:'));
-    for (const secret of config.secrets) {
-      console.log(`    ${chalk.yellow('○')} ${secret}`);
-    }
-    console.log();
-  }
-
-  console.log(chalk.dim('  Preflight checks:'));
-  for (const check of preflight.checks) {
-    const icon = check.passed ? chalk.green('✓') : chalk.red('✗');
-    console.log(`    ${icon} ${check.message}`);
-  }
-  console.log();
-
-  if (!preflight.passed) {
-    log.error('Preflight checks failed');
-    console.log();
-    const failures = preflight.checks.filter((c) => !c.passed);
-    for (const failure of failures) {
-      if (failure.fix) {
-        log.dim(`  Fix: ${failure.fix}`);
-      }
-    }
-    process.exit(1);
+  if (!passed) {
+    throw new CommandError('Preflight checks failed', {
+      hints: summary.preflight.checks.flatMap((check) => (check.fix ? [`Fix: ${check.fix}`] : [])),
+    });
   }
 
   if (flags.dryRun) {
-    log.success('Dry run completed — no changes made');
+    log.success('Dry run completed, no changes made');
     return;
   }
 
-  const deploySpinner = ora('Deploying...').start();
+  const deploySpinner = spin('Deploying...', flags);
 
   let result: DeployResult;
   try {
@@ -199,14 +247,24 @@ async function runDeploy(flags: DeployFlags): Promise<void> {
     });
   } catch (error) {
     deploySpinner.fail('Deploy failed');
-    log.error(error instanceof Error ? error.message : String(error));
-    process.exit(1);
+    throw new CommandError(errorMessage(error));
   }
 
   if (!result.success) {
     deploySpinner.fail('Deploy failed');
-    log.error(result.error ?? 'Unknown error');
-    process.exit(1);
+    throw new CommandError(result.error ?? 'Unknown error');
+  }
+
+  if (flags.json) {
+    deploySpinner.stop();
+    printJson({
+      ok: true,
+      dryRun: false,
+      ...summary,
+      ...(result.url && { url: result.url }),
+      ...(result.endpoints && { endpoints: result.endpoints }),
+    });
+    return;
   }
 
   deploySpinner.succeed('Deployed successfully');
@@ -230,8 +288,8 @@ async function runDeploy(flags: DeployFlags): Promise<void> {
 
   console.log();
   log.dim('Commands:');
-  console.log(`  cogitator deploy status   — check deployment status`);
-  console.log(`  cogitator deploy destroy  — tear down deployment`);
+  console.log(`  cogitator deploy status   check deployment status`);
+  console.log(`  cogitator deploy destroy  tear down deployment`);
   console.log();
 }
 
@@ -241,7 +299,7 @@ async function runDeployStatus(flags: DeployFlags): Promise<void> {
   const inputs = loadDeployInputs(projectDir, flags);
   const target = resolveTarget(inputs.target, deployer.availableTargets());
 
-  const spinner = ora('Checking deployment status...').start();
+  const spinner = spin('Checking deployment status...', flags);
 
   const deployConfig: DeployConfig = { ...inputs.overrides, target };
   let status: DeployStatus;
@@ -251,11 +309,14 @@ async function runDeployStatus(flags: DeployFlags): Promise<void> {
     });
   } catch (error) {
     spinner.fail('Failed to check status');
-    log.error(error instanceof Error ? error.message : String(error));
-    process.exit(1);
+    throw new CommandError(errorMessage(error));
   }
 
   spinner.stop();
+  if (flags.json) {
+    printJson({ ok: true, target, ...status });
+    return;
+  }
   console.log();
 
   if (status.running) {
@@ -277,17 +338,17 @@ async function runDeployDestroy(flags: DeployFlags): Promise<void> {
   const inputs = loadDeployInputs(projectDir, flags);
   const target = resolveTarget(inputs.target, deployer.availableTargets());
 
-  const spinner = ora(`Destroying ${target} deployment...`).start();
+  const spinner = spin(`Destroying ${target} deployment...`, flags);
 
   const deployConfig: DeployConfig = { ...inputs.overrides, target };
 
   try {
     await deployer.destroy(target, deployConfig, projectDir, { configPath: inputs.configPath });
     spinner.succeed('Deployment destroyed');
+    if (flags.json) printJson({ ok: true, target, destroyed: true });
   } catch (err) {
     spinner.fail('Failed to destroy deployment');
-    log.error(err instanceof Error ? err.message : String(err));
-    process.exit(1);
+    throw new CommandError(errorMessage(err));
   }
 }
 
@@ -300,6 +361,17 @@ export const deployCommand = new Command('deploy')
   .option('--no-push', 'Skip pushing image to registry')
   .option('--dry-run', 'Show deploy plan without executing')
   .option('--region <region>', 'Deploy region')
+  .option('--json', 'print the plan, the result or the status as JSON')
+  .addHelpText(
+    'after',
+    examplesHelp([
+      ['cogitator deploy --dry-run', 'check the plan: secrets, services, preflight'],
+      ['cogitator deploy --dry-run --json', 'the same plan for scripts and CI'],
+      ['cogitator deploy --target fly', 'build and deploy to Fly.io'],
+      ['cogitator deploy status', 'is the deployment running?'],
+      ['cogitator deploy destroy', 'tear the deployment down'],
+    ])
+  )
   .action(async (action: string | undefined, flags: DeployFlags) => {
     switch (action) {
       case 'status':
@@ -312,8 +384,6 @@ export const deployCommand = new Command('deploy')
         await runDeploy(flags);
         break;
       default:
-        log.error(`Unknown action: "${action}"`);
-        log.dim('Available actions: status, destroy');
-        process.exit(1);
+        throw new UsageError(`Unknown action: "${action}"`, ['Available actions: status, destroy']);
     }
   });

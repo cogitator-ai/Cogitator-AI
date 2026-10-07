@@ -15,6 +15,7 @@ import {
 } from '../utils/docs.js';
 import { runDoctor } from '../utils/doctor.js';
 import { inspectRegistry } from '../utils/registry.js';
+import { examplesHelp } from '../utils/cli.js';
 
 /** The `cogitator` field create-cogitator-app writes to package.json, when the project has one. */
 function scaffoldManifest(projectDir: string): unknown {
@@ -150,15 +151,17 @@ export const mcpCommand = new Command('mcp')
   .description('Serve the Cogitator docs and this project to a coding agent over MCP (stdio)')
   .addHelpText(
     'after',
-    `
-Coding agents start it themselves. Projects created with --agent claude, cursor
-or codex already have it in .mcp.json, .cursor/mcp.json or .codex/config.toml:
-
-  { "mcpServers": { "cogitator": { "command": "npx", "args": ["cogitator", "mcp"] } } }
-
-Tools: search_docs, read_doc, inspect_project, check_project.`
+    [
+      examplesHelp([
+        ['cogitator mcp', 'serve the project in this directory over stdio'],
+        ['cogitator mcp --project ~/code/bot', 'serve another project'],
+      ]),
+      '',
+      'Coding agents start it themselves: projects created with --agent claude, cursor',
+      'or codex have it in .mcp.json, .cursor/mcp.json or .codex/config.toml.',
+      'Tools: search_docs, read_doc, inspect_project, check_project.',
+    ].join('\n')
   )
-  .option('--project <dir>', 'the project to serve, found from the current directory by default')
   .action(async (options: { project?: string }) => {
     const manifest = JSON.parse(
       readFileSync(new URL('../../package.json', import.meta.url), 'utf-8')

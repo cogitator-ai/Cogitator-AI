@@ -6,6 +6,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
 import { log } from '../utils/logger.js';
+import { CommandError, errorMessage, examplesHelp, printJson } from '../utils/cli.js';
 import {
   listOllamaModels,
   pullOllamaModel,
@@ -40,21 +41,41 @@ export function formatDate(isoDate: string, now: Date = new Date()): string {
   return plural(Math.floor(days / 365), 'year');
 }
 
-async function listModels(baseUrl: string, apiKey: string | undefined): Promise<void> {
-  const spinner = ora(`Fetching models from Ollama (${baseUrl})...`).start();
+async function listModels(
+  baseUrl: string,
+  apiKey: string | undefined,
+  json: boolean
+): Promise<void> {
+  const spinner = ora({
+    text: `Fetching models from Ollama (${baseUrl})...`,
+    isSilent: json,
+  }).start();
 
   let models: OllamaModelInfo[];
   try {
     models = await listOllamaModels(baseUrl, { apiKey });
   } catch (error) {
     spinner.fail('Cannot connect to Ollama');
-    log.dim(error instanceof Error ? error.message : String(error));
-    log.dim('Start Ollama with: ollama serve (or set OLLAMA_URL)');
-    log.dim('Or install from: https://ollama.com');
-    process.exit(1);
+    throw new CommandError(`Cannot connect to Ollama at ${baseUrl}: ${errorMessage(error)}`, {
+      hints: [
+        'Start Ollama with: ollama serve (or set OLLAMA_URL)',
+        'Or install from: https://ollama.com',
+      ],
+    });
   }
 
   spinner.stop();
+
+  if (json) {
+    printJson({
+      ok: true,
+      url: baseUrl,
+      models: [...models]
+        .sort((a, b) => b.size - a.size)
+        .map((model) => ({ name: model.name, size: model.size, modifiedAt: model.modified_at })),
+    });
+    return;
+  }
 
   if (models.length === 0) {
     log.warn('No models installed');
@@ -82,9 +103,16 @@ async function listModels(baseUrl: string, apiKey: string | undefined): Promise<
   log.dim('Use with: cogitator run -m ollama/<model> "message"');
 }
 
-async function pullModel(baseUrl: string, model: string, apiKey: string | undefined) {
-  log.info(`Pulling model: ${model}`);
-  console.log();
+async function pullModel(
+  baseUrl: string,
+  model: string,
+  apiKey: string | undefined,
+  json: boolean
+) {
+  if (!json) {
+    log.info(`Pulling model: ${model}`);
+    console.log();
+  }
 
   let lastLine = '';
   try {
@@ -97,7 +125,7 @@ async function pullModel(baseUrl: string, model: string, apiKey: string | undefi
             ? ` ${Math.round((progress.completed / progress.total) * 100)}%`
             : '';
         const line = `  ${progress.status}${pct}`;
-        if (line === lastLine) return;
+        if (json || line === lastLine) return;
         lastLine = line;
         if (process.stdout.isTTY) {
           process.stdout.write(`\r${line.padEnd(60)}`);
@@ -109,11 +137,15 @@ async function pullModel(baseUrl: string, model: string, apiKey: string | undefi
     );
   } catch (error) {
     if (process.stdout.isTTY && lastLine) console.log();
-    log.error(error instanceof Error ? error.message : String(error));
-    log.dim(`Make sure Ollama is reachable at ${baseUrl}`);
-    process.exit(1);
+    throw new CommandError(error instanceof Error ? error.message : String(error), {
+      hints: [`Make sure Ollama is reachable at ${baseUrl}`],
+    });
   }
 
+  if (json) {
+    printJson({ ok: true, url: baseUrl, model, pulled: true });
+    return;
+  }
   if (process.stdout.isTTY) console.log();
   console.log();
   log.success(`Model ${model} pulled successfully`);
@@ -123,14 +155,23 @@ export const modelsCommand = new Command('models')
   .description('List available Ollama models')
   .option('--pull <model>', 'Pull a model from Ollama registry')
   .option('--url <url>', 'Ollama base URL (default: $OLLAMA_URL or http://localhost:11434)')
-  .action(async (options: { pull?: string; url?: string }) => {
+  .option('--json', 'print the models, or the pulled model, as JSON')
+  .addHelpText(
+    'after',
+    examplesHelp([
+      ['cogitator models', 'the models your Ollama has'],
+      ['cogitator models --pull qwen3.5:4b', 'download a model'],
+      ['cogitator models --json', 'the same list for scripts'],
+    ])
+  )
+  .action(async (options: { pull?: string; url?: string; json?: boolean }) => {
     const baseUrl = resolveOllamaUrl(process.env, options.url);
     const apiKey = process.env.OLLAMA_API_KEY;
 
     if (options.pull) {
-      await pullModel(baseUrl, options.pull, apiKey);
+      await pullModel(baseUrl, options.pull, apiKey, options.json === true);
       return;
     }
 
-    await listModels(baseUrl, apiKey);
+    await listModels(baseUrl, apiKey, options.json === true);
   });

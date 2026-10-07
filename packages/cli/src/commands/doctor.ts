@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
+import { examplesHelp } from '../utils/cli.js';
 import { loadProjectEnv, runDoctor, type DoctorCheck } from '../utils/doctor.js';
 
 const ICONS: Record<DoctorCheck['status'], string> = {
@@ -29,6 +30,14 @@ export const doctorCommand = new Command('doctor')
   .description('Check that a project can run: Node, packages, config, keys, models and services')
   .option('--json', 'print the checks as JSON')
   .option('--offline', 'skip checks that call the model provider or connect to services')
+  .addHelpText(
+    'after',
+    examplesHelp([
+      ['cogitator doctor', 'check what the project needs to run'],
+      ['cogitator doctor --offline', 'skip the provider and service probes'],
+      ['cogitator doctor --json', 'the checks for CI'],
+    ])
+  )
   .action(async (options: { json?: boolean; offline?: boolean }) => {
     const projectDir = process.cwd();
     loadProjectEnv(projectDir);

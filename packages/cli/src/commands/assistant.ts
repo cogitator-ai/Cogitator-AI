@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { log, printBanner } from '../utils/logger.js';
+import { CommandError, exitWithFailure, examplesHelp } from '../utils/cli.js';
 import { importUserModule } from '../utils/module-loader.js';
 import { loadDotenvInto } from '../utils/env.js';
 
@@ -36,6 +37,13 @@ export const assistantCommand = new Command('assistant')
   .description('Start AI assistant with live dashboard')
   .option('-c, --config <path>', 'Path to gateway config file', 'src/gateway.ts')
   .option('-q, --quiet', 'Minimal output (no banner, live status or hotkeys)')
+  .addHelpText(
+    'after',
+    examplesHelp([
+      ['cogitator assistant', 'start src/gateway.ts with the live dashboard'],
+      ['cogitator assistant -c src/bot.ts -q', 'another config, plain output'],
+    ])
+  )
   .action(async (options: { config: string; quiet?: boolean }) => {
     const quiet = options.quiet ?? false;
     if (!quiet) printBanner();
@@ -43,9 +51,9 @@ export const assistantCommand = new Command('assistant')
     const configPath = resolve(process.cwd(), options.config);
 
     if (!existsSync(configPath)) {
-      log.error(`Config not found: ${configPath}`);
-      log.dim('Run "cogitator init" to create a project first');
-      process.exit(1);
+      throw new CommandError(`Config not found: ${configPath}`, {
+        hints: ['Run "cogitator init" to create a project first'],
+      });
     }
 
     log.info(`Loading config from ${chalk.dim(options.config)}`);
@@ -56,22 +64,24 @@ export const assistantCommand = new Command('assistant')
       const mod = await importUserModule(configPath, process.cwd());
       gatewayExport = mod.gateway;
     } catch (err) {
-      log.error(`Failed to load config: ${err instanceof Error ? err.message : String(err)}`);
-      process.exit(1);
+      throw new CommandError(
+        `Failed to load config: ${err instanceof Error ? err.message : String(err)}`
+      );
     }
 
     if (!isGatewayLike(gatewayExport)) {
-      log.error('Config file must export a "gateway" instance');
-      log.dim('Example: export const gateway = new Gateway({ ... })');
-      process.exit(1);
+      throw new CommandError('Config file must export a "gateway" instance', {
+        hints: ['Example: export const gateway = new Gateway({ ... })'],
+      });
     }
     const gateway = gatewayExport;
 
     try {
       await gateway.start();
     } catch (err) {
-      log.error(`Failed to start: ${err instanceof Error ? err.message : String(err)}`);
-      process.exit(1);
+      throw new CommandError(
+        `Failed to start: ${err instanceof Error ? err.message : String(err)}`
+      );
     }
 
     printDashboard(gateway, quiet);
@@ -90,8 +100,9 @@ export const assistantCommand = new Command('assistant')
         log.success('All channels stopped');
         process.exit(0);
       } catch (err) {
-        log.error(`Shutdown failed: ${err instanceof Error ? err.message : String(err)}`);
-        process.exit(1);
+        exitWithFailure(
+          new CommandError(`Shutdown failed: ${err instanceof Error ? err.message : String(err)}`)
+        );
       }
     };
 
