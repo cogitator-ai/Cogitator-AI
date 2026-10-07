@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { stripVTControlCharacters } from 'node:util';
 import { run } from '../cli/main.js';
 
 interface Captured {
@@ -19,8 +20,8 @@ async function cli(
   const code = await run(
     argv,
     {
-      stdout: (text) => (stdout += text),
-      stderr: (text) => (stderr += text),
+      stdout: (text) => (stdout += stripVTControlCharacters(text)),
+      stderr: (text) => (stderr += stripVTControlCharacters(text)),
     },
     { fetch: fetcher }
   );
