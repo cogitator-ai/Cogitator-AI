@@ -1,3 +1,5 @@
+import type { AgentInfo, RegistryInfo } from '../protocol';
+
 /** USD as the studio shows it; `priced: false` means no model of the run has a known price. */
 export function formatCost(usd: number | undefined, priced = true): string {
   if (usd === undefined || (!priced && usd === 0)) return 'unpriced';
@@ -42,4 +44,29 @@ export function pretty(value: unknown): string {
 export function excerpt(text: string | undefined, length = 90): string {
   const flat = (text ?? '').replace(/\s+/g, ' ').trim();
   return flat.length > length ? `${flat.slice(0, length - 1)}…` : flat;
+}
+
+export function formatCount(count: number): string {
+  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
+  if (count >= 10_000) return `${(count / 1000).toFixed(1)}k`;
+  return count.toLocaleString('en-US');
+}
+
+export function formatDay(at: number): string {
+  return new Date(at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+export function formatTime(at: number): string {
+  return new Date(at).toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
+/** The model an agent runs on: its own, or the runtime's default. */
+export function agentModel(agent: AgentInfo, registry: RegistryInfo): string {
+  return agent.model ?? registry.defaultModel ?? 'default model';
 }
