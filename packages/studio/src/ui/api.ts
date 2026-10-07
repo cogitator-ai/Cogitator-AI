@@ -1,4 +1,11 @@
-import type { ForkRequest, HostStatus, RunRecord, StudioEvent, ThreadRecord } from '../protocol';
+import type {
+  ForkRequest,
+  HostStatus,
+  RunRecord,
+  StudioEvent,
+  StudioStats,
+  ThreadRecord,
+} from '../protocol';
 
 export interface StateResponse {
   host: HostStatus;
@@ -28,6 +35,7 @@ async function request<T>(path: string, init?: { method?: string; body?: unknown
 
 export const api = {
   state: () => request<StateResponse>('/api/state'),
+  stats: () => request<StudioStats>('/api/stats'),
   runs: (query: { target?: string; kind?: string; q?: string }) => {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(query)) if (value) params.set(key, value);

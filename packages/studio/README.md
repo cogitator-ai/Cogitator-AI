@@ -17,12 +17,15 @@ It opens http://localhost:4321 (the next free port when it is taken). The studio
 
 ## What it does
 
-- **Chat** with any agent: streamed tokens, reasoning, tool calls with their arguments and results, errors, stop, and threads with their history. A project without memory gets one from the studio, so threads keep their conversation, also after a restart.
+- **Overview**: the project at a glance, with its runs, success rate, spend in tokens and dollars, p50 and p95 latency, activity over the last two weeks, and every agent and workflow with the model it runs on and how often it ran.
+- **Chat** with any agent: streamed answers rendered as Markdown with highlighted code, reasoning, tool calls as one line each that opens to its arguments and result, errors, stop, and threads grouped by day. A project without memory gets one from the studio, so threads keep their conversation, also after a restart.
 - **Approvals**: a tool call with `requiresApproval` waits in the chat with its arguments until you approve it, or reject it with a reason the model sees.
-- **Traces**: every run as a waterfall of model calls, tool calls and the runs agent tools start, nested under the call that started them, with the time, the tokens and the cost of each model call (priced from the model registry, `unpriced` for unknown models) and the total.
-- **Workflows**: run one with an input state, watch the status of each node on its graph, read what each node returned, and rerun from a node, keeping what the nodes before it produced.
+- **Traces**: every run as a waterfall of model calls, tool calls and the runs agent tools start, nested under the call that started them, with the time, the tokens and the cost of each model call (priced from the model registry, `unpriced` for unknown models) and the total, counted live while the run goes. Click a span for its details: cached and reasoning tokens, the finish reason, the arguments and the result of a tool call.
+- **Workflows**: run one with an input state, watch the status and time of each node on its graph, read what each node returned (text an agent wrote is rendered as Markdown, the raw JSON is a click away), and rerun from a node, keeping what the nodes before it produced.
 - **Time-travel forks**: pick a step of a finished run (before each tool call), change the input, add context or replace a tool result, and run on from there. The original and the fork are shown side by side, with the tool calls that differ highlighted.
 - **History**: runs and threads are kept in `.cogitator/studio/` as JSON files, searchable by input, output and error and filtered by agent, workflow or kind. Runs a stopped studio left behind are marked failed.
+- **Keyboard**: `⌘K` (`Ctrl+K`) opens a command palette over agents, workflows, the whole run history and actions, `/` searches the page, `G O` and `G R` go to the overview and the runs, `J` and `K` walk the run list and the trace, `N` starts a thread, and `?` lists every shortcut.
+- **Themes**: light and dark, following the system until you pick one, which the browser remembers.
 
 ## How it works
 
@@ -64,7 +67,7 @@ await studio.close();
 | `log`        |                        | Receives the project's output                         |
 | `price`      | model registry         | Prices a model call from its model and tokens         |
 
-The HTTP API the UI uses is open to scripts as well: `GET /api/state`, `GET /api/runs?target=&kind=&q=`, `GET /api/runs/:id`, `GET /api/threads/:id`, `POST /api/chat`, `POST /api/runs/:id/stop`, `POST /api/approvals/:id`, `POST /api/runs/:id/fork`, `POST /api/workflows/:key/run`, `POST /api/runs/:id/rerun`, and `GET /api/events` for the event stream. The shapes are the types exported from the package (`RunRecord`, `ThreadRecord`, `StudioEvent` and the rest).
+The HTTP API the UI uses is open to scripts as well: `GET /api/state`, `GET /api/runs?target=&kind=&q=`, `GET /api/runs/:id`, `GET /api/threads/:id`, `POST /api/chat`, `POST /api/runs/:id/stop`, `POST /api/approvals/:id`, `POST /api/runs/:id/fork`, `POST /api/workflows/:key/run`, `POST /api/runs/:id/rerun`, `GET /api/stats` for the totals of the overview, and `GET /api/events` for the event stream. The shapes are the types exported from the package (`RunRecord`, `ThreadRecord`, `StudioStats`, `StudioEvent` and the rest).
 
 ## License
 

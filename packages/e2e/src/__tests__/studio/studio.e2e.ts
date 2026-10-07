@@ -18,7 +18,8 @@ import {
  * Cogitator Studio on a project create-cogitator-app generated, installed
  * from the workspace tarballs, with a scripted Ollama standing in for the
  * model. A browser chats with the assistant, approves a file write, opens
- * the trace and forks a run with a changed tool result.
+ * the trace and a span in it, forks a run with a changed tool result, and
+ * finds its way back through the overview, the command palette and the theme.
  */
 const root = mkdtempSync(join(tmpdir(), 'studio-e2e-'));
 const dir = join(root, 'studio-e2e');
@@ -117,7 +118,7 @@ describe('Cogitator Studio on a generated project', () => {
       .poll(() => turn.getAttribute('data-status'), { timeout: 30_000 })
       .toBe('completed');
     expect(await turn.getByTestId('answer').innerText()).toContain('Hello: hi there');
-    expect(await turn.innerText()).toContain('reasoning');
+    expect(await turn.getByTestId('reasoning').count()).toBe(1);
   });
 
   it('waits for approval of a file write and writes it once approved', async () => {
@@ -146,9 +147,16 @@ describe('Cogitator Studio on a generated project', () => {
 
     await turn.getByTestId('trace-link').click();
     await page.getByTestId('waterfall').waitFor();
-    const rows = await page.locator('.waterfall-row').allInnerTexts();
-    expect(rows.some((row) => row.includes('tool calculator'))).toBe(true);
-    expect(rows.filter((row) => row.includes('model')).length).toBe(2);
+    const trace = (kind: string) => page.locator(`[data-testid="trace-row"][data-kind="${kind}"]`);
+    expect(await trace('tool').allInnerTexts()).toEqual([expect.stringContaining('calculator')]);
+    expect(await trace('llm').count()).toBe(2);
+
+    await trace('tool').click();
+    const inspector = page.getByTestId('inspector');
+    await inspector.waitFor();
+    expect(await inspector.innerText()).toContain('6 * 7');
+    await page.keyboard.press('Escape');
+    await inspector.waitFor({ state: 'detached' });
 
     await page.getByTestId('step-0').click();
     await page.getByTestId('fork-result-calculator').fill('41');
@@ -171,5 +179,36 @@ describe('Cogitator Studio on a generated project', () => {
       .toBeGreaterThanOrEqual(4);
     await page.getByTestId('search').fill('calculate');
     await expect.poll(() => page.getByTestId('run-row').count(), { timeout: 10_000 }).toBe(2);
+  });
+
+  it('sums up the project on the overview', async () => {
+    await page.goto(url);
+    const stats = page.getByTestId('stats');
+    await stats.waitFor();
+    await expect.poll(() => stats.innerText(), { timeout: 10_000 }).toContain('Runs\n4');
+    expect(await stats.innerText()).toContain('100%');
+  });
+
+  it('goes anywhere from the command palette', async () => {
+    await page.keyboard.press('ControlOrMeta+k');
+    await page.getByTestId('command-palette').waitFor();
+    await page.getByTestId('palette-input').fill('calculate');
+    await page
+      .getByRole('option', { name: /calculate the answer/ })
+      .first()
+      .waitFor();
+    await page.keyboard.press('Enter');
+    await page.getByTestId('run-view').waitFor();
+    expect(await page.getByTestId('run-view').innerText()).toContain('calculate the answer');
+  });
+
+  it('remembers the theme picked in the studio', async () => {
+    await page.getByRole('button', { name: 'Dark theme' }).click();
+    expect(await page.evaluate(() => document.documentElement.dataset.theme)).toBe('dark');
+    await page.reload();
+    await page.getByTestId('run-view').waitFor();
+    expect(await page.evaluate(() => document.documentElement.dataset.theme)).toBe('dark');
+    await page.getByRole('button', { name: 'System theme' }).click();
+    expect(await page.evaluate(() => document.documentElement.dataset.theme)).toBeUndefined();
   });
 });

@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import type { HostStatus, RunRecord, StudioEvent, ThreadRecord } from '../protocol';
+import type { HostStatus, RunRecord, StudioEvent, StudioStats, ThreadRecord } from '../protocol';
 import { api, subscribe, type RunTree } from './api';
 
 export interface UiState {
@@ -9,6 +9,8 @@ export interface UiState {
   host: HostStatus;
   runs: Record<string, RunRecord>;
   threads: Record<string, ThreadRecord>;
+  /** Aggregates of the whole history, refreshed shortly after runs change. */
+  stats?: StudioStats;
 }
 
 let state: UiState = {
@@ -33,6 +35,22 @@ function upsertRuns(runs: readonly RunRecord[]): void {
   set({ runs: next });
 }
 
+let statsTimer: ReturnType<typeof setTimeout> | undefined;
+
+async function loadStats(): Promise<void> {
+  try {
+    set({ stats: await api.stats() });
+  } catch {
+    return;
+  }
+}
+
+/** Refreshes the aggregates once a burst of run events settles. */
+function scheduleStats(): void {
+  clearTimeout(statsTimer);
+  statsTimer = setTimeout(() => void loadStats(), 600);
+}
+
 function apply(event: StudioEvent): void {
   switch (event.type) {
     case 'host':
@@ -40,6 +58,7 @@ function apply(event: StudioEvent): void {
       break;
     case 'run':
       upsertRuns([event.run]);
+      scheduleStats();
       break;
     case 'thread':
       set({ threads: { ...state.threads, [event.thread.id]: event.thread } });
@@ -73,6 +92,7 @@ export async function refresh(): Promise<void> {
     threads: Object.fromEntries(response.threads.map((thread) => [thread.id, thread])),
   });
   upsertRuns(response.runs);
+  await loadStats();
 }
 
 /** Loads a run with everything it started and its forks into the state. */

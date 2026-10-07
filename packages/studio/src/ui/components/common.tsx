@@ -1,85 +1,232 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  Check,
+  ChevronRight,
+  CircleCheck,
+  CircleDashed,
+  CirclePause,
+  CircleSlash,
+  CircleStop,
+  CircleX,
+  Copy,
+  LoaderCircle,
+  type LucideIcon,
+} from 'lucide-react';
 import type { RunStatus } from '../../protocol';
 import { pretty } from '../format';
+import { href } from '../router';
 
-export function StatusBadge({ status }: { status: RunStatus | 'pending' | 'skipped' }) {
+export type AnyStatus = RunStatus | 'pending' | 'skipped';
+
+const STATUS_LABEL: Record<AnyStatus, string> = {
+  running: 'Running',
+  waiting: 'Needs approval',
+  completed: 'Completed',
+  failed: 'Failed',
+  stopped: 'Stopped',
+  pending: 'Pending',
+  skipped: 'Skipped',
+};
+
+const STATUS_ICON: Record<AnyStatus, LucideIcon> = {
+  running: LoaderCircle,
+  waiting: CirclePause,
+  completed: CircleCheck,
+  failed: CircleX,
+  stopped: CircleStop,
+  pending: CircleDashed,
+  skipped: CircleSlash,
+};
+
+export function StatusBadge({ status }: { status: AnyStatus }) {
   return (
-    <span className={`badge badge-${status}`} data-status={status}>
-      {status === 'waiting' ? 'needs approval' : status}
+    <span className="status" data-status={status}>
+      {STATUS_LABEL[status]}
     </span>
   );
 }
 
-export function JsonBlock({ value, label }: { value: unknown; label?: string }) {
+export function StatusIcon({ status, size = 15 }: { status: AnyStatus; size?: number }) {
+  const Icon = STATUS_ICON[status];
   return (
-    <div className="json">
-      {label && <div className="json-label">{label}</div>}
-      <pre>{pretty(value)}</pre>
-    </div>
+    <span className="status-icon" data-status={status} data-tip={STATUS_LABEL[status]}>
+      <Icon
+        size={size}
+        strokeWidth={2}
+        style={status === 'running' ? { animation: 'spin 1s linear infinite' } : undefined}
+      />
+    </span>
   );
 }
 
-export function Collapsible({
-  title,
-  children,
-  open = false,
-}: {
-  title: ReactNode;
-  children: ReactNode;
-  open?: boolean;
-}) {
-  const [expanded, setExpanded] = useState(open);
+async function writeClipboard(text: string): Promise<void> {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.setAttribute('readonly', '');
+  area.style.position = 'fixed';
+  area.style.opacity = '0';
+  document.body.append(area);
+  area.select();
+  document.execCommand('copy');
+  area.remove();
+}
+
+export function CopyButton({ value, label = 'Copy' }: { value: string; label?: string }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const copy = async () => {
+    await writeClipboard(value);
+    setCopied(true);
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => setCopied(false), 1400);
+  };
   return (
-    <div className={`collapsible ${expanded ? 'open' : ''}`}>
-      <button
-        type="button"
-        className="collapsible-title"
-        onClick={() => setExpanded(!expanded)}
-        aria-expanded={expanded}
-      >
-        <span className="chevron">{expanded ? '▾' : '▸'}</span> {title}
-      </button>
-      {expanded && <div className="collapsible-body">{children}</div>}
-    </div>
+    <button
+      type="button"
+      className="btn btn-ghost btn-icon btn-sm"
+      onClick={() => void copy()}
+      aria-label={label}
+      data-tip={copied ? 'Copied' : label}
+    >
+      {copied ? <Check size={13} /> : <Copy size={13} />}
+    </button>
   );
 }
 
-export function Empty({ children }: { children: ReactNode }) {
-  return <div className="empty">{children}</div>;
-}
+const JSON_TOKEN =
+  /("(?:\\.|[^"\\])*")(\s*:)?|\b(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\b|\b(true|false|null)\b/g;
 
-/** Assistant text with fenced code kept as code and the rest as paragraphs. */
-export function RichText({ text }: { text: string }) {
-  const parts = text.split(/```(\w*)\n?([\s\S]*?)(?:```|$)/g);
+/** JSON with keys, strings, numbers and literals told apart. */
+function highlightJson(text: string): ReactNode[] {
   const nodes: ReactNode[] = [];
-  for (let i = 0; i < parts.length; i += 3) {
-    const prose = parts[i];
-    if (prose) {
-      for (const [j, paragraph] of prose.split(/\n{2,}/).entries()) {
-        if (paragraph.trim()) {
-          nodes.push(
-            <p key={`p${i}-${j}`}>
-              {paragraph
-                .split(/(`[^`]+`)/g)
-                .map((piece, k) =>
-                  piece.startsWith('`') && piece.endsWith('`') && piece.length > 1 ? (
-                    <code key={k}>{piece.slice(1, -1)}</code>
-                  ) : (
-                    <span key={k}>{piece}</span>
-                  )
-                )}
-            </p>
-          );
-        }
-      }
-    }
-    if (i + 2 < parts.length) {
+  let last = 0;
+  for (const match of text.matchAll(JSON_TOKEN)) {
+    const index = match.index;
+    if (index > last) nodes.push(text.slice(last, index));
+    const [whole, string, colon, number, literal] = match;
+    if (string !== undefined) {
       nodes.push(
-        <pre key={`c${i}`} className="code" data-lang={parts[i + 1] || undefined}>
-          {parts[i + 2]}
-        </pre>
+        <span key={index} className={colon ? 'j-key' : 'j-string'}>
+          {string}
+        </span>
+      );
+      if (colon) nodes.push(colon);
+    } else if (number !== undefined) {
+      nodes.push(
+        <span key={index} className="j-number">
+          {number}
+        </span>
+      );
+    } else if (literal !== undefined) {
+      nodes.push(
+        <span key={index} className="j-literal">
+          {literal}
+        </span>
       );
     }
+    last = index + whole.length;
   }
-  return <div className="rich-text">{nodes}</div>;
+  if (last < text.length) nodes.push(text.slice(last));
+  return nodes;
+}
+
+export function JsonBlock({ value, label }: { value: unknown; label?: string }) {
+  const text = pretty(value);
+  const structured = typeof value !== 'string';
+  return (
+    <div className="json">
+      <div className="json-head">
+        <span>{label ?? 'value'}</span>
+        <CopyButton value={text} label={`Copy ${label ?? 'value'}`} />
+      </div>
+      <pre>{structured ? highlightJson(text) : text}</pre>
+    </div>
+  );
+}
+
+export function Empty({
+  icon: Icon,
+  title,
+  children,
+  action,
+}: {
+  icon?: LucideIcon;
+  title?: string;
+  children?: ReactNode;
+  action?: ReactNode;
+}) {
+  return (
+    <div className="empty">
+      {Icon && (
+        <div className="empty-icon">
+          <Icon size={18} />
+        </div>
+      )}
+      {title && <div className="empty-title">{title}</div>}
+      {children && <div className="empty-text">{children}</div>}
+      {action}
+    </div>
+  );
+}
+
+export function Kbd({ keys }: { keys: string[] }) {
+  return (
+    <span className="kbds">
+      {keys.map((key) => (
+        <kbd key={key} className="kbd">
+          {key}
+        </kbd>
+      ))}
+    </span>
+  );
+}
+
+export interface Crumb {
+  label: ReactNode;
+  to?: string[];
+}
+
+/** The bar above every page: where you are, and what you can do there. */
+export function Topbar({ crumbs, actions }: { crumbs: Crumb[]; actions?: ReactNode }) {
+  return (
+    <header className="topbar">
+      <nav className="crumbs" aria-label="Breadcrumb">
+        {crumbs.map((crumb, i) => {
+          const last = i === crumbs.length - 1;
+          return (
+            <span key={i} style={{ display: 'contents' }}>
+              {i > 0 && <ChevronRight size={14} />}
+              {crumb.to && !last ? (
+                <a href={href(...crumb.to)} className="truncate">
+                  {crumb.label}
+                </a>
+              ) : (
+                <span className={`truncate ${last ? 'crumb-current' : ''}`}>{crumb.label}</span>
+              )}
+            </span>
+          );
+        })}
+      </nav>
+      {actions && <div className="topbar-actions">{actions}</div>}
+    </header>
+  );
+}
+
+export function ErrorText({ children }: { children: ReactNode }) {
+  return (
+    <div className="error-text" role="alert">
+      <CircleX size={14} />
+      <span>{children}</span>
+    </div>
+  );
+}
+
+/** The message of a caught value, whatever was thrown. */
+export function messageOf(failure: unknown): string {
+  return failure instanceof Error ? failure.message : String(failure);
 }
