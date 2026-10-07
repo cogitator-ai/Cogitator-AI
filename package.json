@@ -48,7 +48,7 @@
     "@changesets/changelog-github": "^1.0.1",
     "@changesets/cli": "^3.0.3",
     "@eslint/js": "^10.0.1",
-    "@types/node": "^22.20.4",
+    "@types/node": "^26.6.4",
     "@types/supertest": "^7.2.1",
     "@vitest/coverage-v8": "^5.0.3",
     "concurrently": "^10.0.5",

@@ -60,7 +60,7 @@
     "@types/bun": "^1.4.2",
     "@types/express": "^5.0.6",
     "@types/koa": "^3.0.3",
-    "@types/node": "^22.20.4",
+    "@types/node": "^26.6.4",
     "@types/pg": "^8.23.1",
     "@types/ws": "^8.18.2",
     "ioredis": "^6.0.0",
