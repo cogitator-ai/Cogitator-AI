@@ -24,25 +24,35 @@ cd my-agent
 npm run dev
 ```
 
-`create-cogitator-app` supports 6 templates:
+`create-cogitator-app` asks what to build, or takes it from flags. It starts from one of 16 presets:
 
-| Template     | Description                                   |
-| ------------ | --------------------------------------------- |
-| `basic`      | Single agent with tools                       |
-| `memory`     | Agent with persistent memory in Redis         |
-| `swarm`      | Team of agents with hierarchical coordination |
-| `workflow`   | Multi-step DAG pipeline of agents             |
-| `api-server` | Express server exposing agents over HTTP      |
-| `nextjs`     | Next.js chat app with streaming               |
+| Preset             | What you get                                                            |
+| ------------------ | ----------------------------------------------------------------------- |
+| `basic`            | One agent with real tools in your terminal                              |
+| `assistant`        | Workspace files with approvals, long-term memory, a scheduler and evals |
+| `memory`           | Conversations that survive restarts, in SQLite                          |
+| `api-server`       | Express with Swagger UI, token auth and persistent threads              |
+| `hono`             | Agents behind a small, fast HTTP API                                    |
+| `tetsu`            | Bun-native controller with OpenAPI and WebSocket                        |
+| `nextjs`           | Streaming chat with tool calls, approvals and saved threads             |
+| `channels`         | One assistant on Telegram, Discord, Slack or WebChat                    |
+| `rag`              | Answers grounded in the files of `docs/`                                |
+| `mcp`              | Tools from an MCP server, your agents served over MCP                   |
+| `swarm`            | A researcher and a writer under a reviewing supervisor                  |
+| `workflow`         | A multi-step pipeline of agents                                         |
+| `durable-workflow` | A saga with compensation, an approval step and crash recovery           |
+| `a2a`              | An agent other frameworks call over the Agent-to-Agent protocol         |
+| `voice-realtime`   | Speech in, speech out over WebSocket                                    |
+| `evals`            | Measure an agent on a dataset and gate CI on the score                  |
 
-Pass flags to skip the prompts:
+Pass flags to skip the prompts, or pick the stack yourself:
 
 ```bash
-npx create-cogitator-app my-agent \
-  --template swarm \
-  --provider openai \
-  --pm pnpm
+npx create-cogitator-app my-agent --preset swarm --provider openai --pm pnpm
+npx create-cogitator-app my-api --app server --server fastify --memory postgres --features rag,evals --yes
 ```
+
+Then `npm run dev:studio` opens [Cogitator Studio](/docs/getting-started/studio) to chat with the agents and read their traces, and `npx cogitator add <feature>` adds more later.
 
 See [Project Scaffolding](/docs/getting-started/scaffolding) for every flag. For a config-driven personal assistant with Telegram, Discord or Slack, use the [CLI](/docs/cli) (`cogitator wizard` or `cogitator init`) instead.
 

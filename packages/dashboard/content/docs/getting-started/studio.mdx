@@ -1,0 +1,68 @@
+---
+title: Cogitator Studio
+description: "A local debugger for agent projects: chat, approvals, traces and costs, workflow runs and time-travel forks."
+---
+
+Cogitator Studio: a local debugger for Cogitator agent projects. Chat with every agent of a project, approve the tool calls that need it, read the trace and the cost of each run, run workflows and rerun them from a node, and fork a run from any step to see what a different input or tool result changes.
+
+## Start it
+
+In a project created by `create-cogitator-app` or `cogitator init`:
+
+```bash
+pnpm dev:studio          # the script every generated project has
+npx cogitator dev        # the same, from @cogitator-ai/cli
+```
+
+It opens http://localhost:4321 (the next free port when it is taken). The studio finds the agents, workflows and swarms in `src/cogitator.ts`, the registry generated projects have: export the runtime as `cogitator` and the rest as `agents`, `workflows` and `swarms`.
+
+## What it does
+
+- **Chat** with any agent: streamed tokens, reasoning, tool calls with their arguments and results, errors, stop, and threads with their history. A project without memory gets one from the studio, so threads keep their conversation, also after a restart.
+- **Approvals**: a tool call with `requiresApproval` waits in the chat with its arguments until you approve it, or reject it with a reason the model sees.
+- **Traces**: every run as a waterfall of model calls, tool calls and the runs agent tools start, nested under the call that started them, with the time, the tokens and the cost of each model call (priced from the model registry, `unpriced` for unknown models) and the total.
+- **Workflows**: run one with an input state, watch the status of each node on its graph, read what each node returned, and rerun from a node, keeping what the nodes before it produced.
+- **Time-travel forks**: pick a step of a finished run (before each tool call), change the input, add context or replace a tool result, and run on from there. The original and the fork are shown side by side, with the tool calls that differ highlighted.
+- **History**: runs and threads are kept in `.cogitator/studio/` as JSON files, searchable by input, output and error and filtered by agent, workflow or kind. Runs a stopped studio left behind are marked failed.
+
+## How it works
+
+```
+browser  ──HTTP, SSE──▶  studio server (cogitator dev)  ──IPC──▶  runtime host (child process)
+  React UI                 run store in .cogitator/studio           your project, loaded with tsx
+                           file watcher                             cogitator.observe(), TimeTravel,
+                                                                    WorkflowManager
+```
+
+- The **runtime host** is a child process that loads `.env` and `src/cogitator.ts` with tsx and runs the project with its own runtime, memory and tools. It watches every run through `cogitator.observe()`, so runs that agent tools start on the same runtime are seen too, and links them to the request that started them with `AsyncLocalStorage`. Forks use the project's `TimeTravel` with checkpoints kept on disk; workflows run on a `WorkflowManager` with file checkpoints, which is what reruns from a node start from.
+- The **server** keeps the runs and threads, prices model calls, puts nested runs under the tool call whose span was open when they started, and pushes every change to the browser over server-sent events.
+- When a file under `src/`, `cogitator.yml`, `.env`, `package.json` or `tsconfig.json` changes, the host is started again with the new code: the server and the browser stay, runs that were going are marked failed with the reason.
+
+## Security
+
+The server listens on `127.0.0.1` and answers only requests for `localhost`, so another site cannot reach it through DNS rebinding, and refuses cross-site posts. `--host 0.0.0.0` (or any other address) opens it to the network and requires the random token printed in its URL; the token is kept in an `HttpOnly`, `SameSite=Strict` cookie after the first visit.
+
+## API
+
+```ts
+import { startStudio } from '@cogitator-ai/studio';
+
+const studio = await startStudio({ projectDir: process.cwd(), port: 4321 });
+console.log(studio.url);
+await studio.ready();
+// ...
+await studio.close();
+```
+
+| Option        | Default               | What it does                                                    |
+| ------------- | --------------------- | --------------------------------------------------------------- |
+| `projectDir`  | required              | The project to run                                              |
+| `host`        | `127.0.0.1`           | Interface to listen on; anything else needs the token           |
+| `port`        | `4321`                | Port, the next free one unless `strictPort`                     |
+| `token`       | random beyond loopback| Token requests must carry                                       |
+| `watch`       | `true`                | Reload the project when its files change                        |
+| `studioDir`   | `.cogitator/studio`   | Where the history lives                                         |
+| `log`         |                       | Receives the project's output                                   |
+| `price`       | model registry        | Prices a model call from its model and tokens                   |
+
+The HTTP API the UI uses is open to scripts as well: `GET /api/state`, `GET /api/runs?target=&kind=&q=`, `GET /api/runs/:id`, `GET /api/threads/:id`, `POST /api/chat`, `POST /api/runs/:id/stop`, `POST /api/approvals/:id`, `POST /api/runs/:id/fork`, `POST /api/workflows/:key/run`, `POST /api/runs/:id/rerun`, and `GET /api/events` for the event stream. The shapes are the types exported from the package (`RunRecord`, `ThreadRecord`, `StudioEvent` and the rest).

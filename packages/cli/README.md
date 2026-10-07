@@ -1,6 +1,6 @@
 # @cogitator-ai/cli
 
-Command-line interface for the Cogitator AI agent runtime. Scaffold assistant projects, run them in the foreground or as a background service, chat with agents from the terminal, manage Ollama models and Docker services, and deploy.
+Command-line interface for the Cogitator AI agent runtime. Scaffold projects and grow them with `cogitator add`, debug them in Cogitator Studio, give coding agents the docs over MCP, check that a project can run, score it with evals, run assistants in the foreground or as a background service, chat with agents from the terminal, manage Ollama models and Docker services, and deploy.
 
 ## Installation
 
@@ -26,9 +26,10 @@ cogitator wizard        # answers → cogitator.yml + .env
 cogitator up            # run it
 
 # B) Code-first project
-cogitator init my-assistant
+npx create-cogitator-app my-assistant   # or: cogitator init my-assistant for a messaging bot
 cd my-assistant
-pnpm dev                # or: cogitator assistant
+pnpm dev
+cogitator dev           # Cogitator Studio: chat, traces, approvals, workflows, forks
 ```
 
 Quick one-off chat with any model:
@@ -41,59 +42,111 @@ cogitator run -m ollama/llama3.1:8b "What is the capital of France?"
 
 ## Commands
 
-| Command                  | Description                                                                                                     |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------- |
-| `cogitator init [name]`  | Scaffold a code-first assistant project                                                                         |
-| `cogitator wizard`       | Interactive setup that writes `cogitator.yml` + `.env`                                                          |
-| `cogitator up`           | Run the assistant from `cogitator.yml`, or start Docker services                                                |
-| `cogitator down`         | Stop Docker Compose services                                                                                    |
-| `cogitator assistant`    | Run a gateway module (`src/gateway.ts`) with a live dashboard                                                   |
-| `cogitator run [msg]`    | Chat with an agent (one-shot or interactive REPL)                                                               |
-| `cogitator build`        | Bundle a gateway into a self-starting `dist/cogitator.mjs`                                                      |
-| `cogitator daemon <cmd>` | Run in the background / install as a launchd or systemd service                                                 |
-| `cogitator skill <cmd>`  | Create, validate, install and remove skills                                                                     |
-| `cogitator models`       | List or pull Ollama models                                                                                      |
-| `cogitator status`       | Show Docker Compose and Ollama status (alias: `ps`)                                                             |
-| `cogitator logs`         | View Docker Compose service logs                                                                                |
-| `cogitator deploy`       | Deploy with Docker or Fly.io (see [`@cogitator-ai/deploy`](https://www.npmjs.com/package/@cogitator-ai/deploy)) |
+| Command                    | Description                                                                                                     |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `cogitator init [name]`    | Scaffold a messaging assistant project (the `channels` preset of create-cogitator-app)                          |
+| `cogitator add [features]` | Add rag, mcp, workflows, evals, memory, deploy and the other generated features to a project                    |
+| `cogitator dev`            | Open Cogitator Studio for the project                                                                           |
+| `cogitator mcp`            | Serve the Cogitator docs and the project to coding agents over MCP (stdio)                                      |
+| `cogitator doctor`         | Check that a project can run: Node, packages, config, keys, models and services                                 |
+| `cogitator eval [files]`   | Run the eval suites and fail when an assertion fails                                                            |
+| `cogitator wizard`         | Interactive setup that writes `cogitator.yml` + `.env`                                                          |
+| `cogitator up`             | Run the assistant from `cogitator.yml`, or start Docker services                                                |
+| `cogitator down`           | Stop Docker Compose services                                                                                    |
+| `cogitator assistant`      | Run a gateway module (`src/gateway.ts`) with a live dashboard                                                   |
+| `cogitator run [msg]`      | Chat with an agent (one-shot or interactive REPL)                                                               |
+| `cogitator build`          | Bundle a gateway into a self-starting `dist/cogitator.mjs`                                                      |
+| `cogitator daemon <cmd>`   | Run in the background / install as a launchd or systemd service                                                 |
+| `cogitator skill <cmd>`    | Create, validate, install and remove skills                                                                     |
+| `cogitator models`         | List or pull Ollama models                                                                                      |
+| `cogitator status`         | Show Docker Compose and Ollama status (alias: `ps`)                                                             |
+| `cogitator logs`           | View Docker Compose service logs                                                                                |
+| `cogitator deploy`         | Deploy with Docker or Fly.io (see [`@cogitator-ai/deploy`](https://www.npmjs.com/package/@cogitator-ai/deploy)) |
 
-Set `COGITATOR_DEBUG=1` to print stack traces for unexpected errors.
+Every command ends with examples in its `--help`.
+
+### Output and exit codes
+
+Every command exits with `0` when it did what was asked, `1` when it could not (a failed check, deploy or install, a missing service) and `2` when the command line is wrong (an unknown option, command or value, with the closest valid name). Failures print the message and what to do about it on stderr; `COGITATOR_DEBUG=1` adds the stack trace. With `--json` (`add`, `doctor`, `eval`, `models`, `status`, `deploy`) the result goes to stdout as JSON, and a failure as `{ "ok": false, "error": { "message", "exitCode", "hints" } }`.
 
 ---
 
 ### cogitator init
 
-Creates a TypeScript project with a [`Gateway`](https://www.npmjs.com/package/@cogitator-ai/channels) wired to your chosen LLM provider, channels and memory adapter.
+Creates a messaging assistant project: the `channels` preset of [create-cogitator-app](https://www.npmjs.com/package/create-cogitator-app), generated by the same engine, with the provider, model, channels and memory you choose.
 
 ```bash
 cogitator init my-assistant            # prompts for provider, model, channels, memory
-cogitator init my-assistant --no-install
+cogitator init my-assistant --no-install --no-git --no-telemetry
 ```
 
-The prompts cover the LLM provider (Anthropic, OpenAI, Google or Ollama) and model, channels (Telegram, Discord, Slack, WebChat) with their tokens, and the memory adapter. The project name must be a valid npm package name (lowercase, `-`, `_`, `.`). The package manager used for installation is detected from how you invoked the CLI (`pnpm`, `npm`, `yarn` or `bun`).
+The prompts cover the LLM provider (Anthropic, OpenAI, Google or Ollama) and model, channels (Telegram, Discord, Slack, WebChat) with their tokens, and the memory adapter (SQLite, in-memory or Postgres). Tokens and keys go to `.env` (mode 600). The project is the same as `npx create-cogitator-app my-assistant --preset channels`: the registry in `src/cogitator.ts`, tests on a mocked model, `cogitator.yml`, `AGENTS.md`, Cogitator Studio and the rest.
 
+---
+
+### cogitator add
+
+```bash
+cogitator add rag                       # answers grounded in docs/
+cogitator add workflows evals           # two features at once
+cogitator add --memory postgres         # switch the memory adapter
+cogitator add --deploy docker --dry-run # every diff, nothing written
+cogitator add --agent claude            # MCP config and skill for Claude Code
 ```
-my-assistant/
-├── package.json         # @cogitator-ai/* pinned to the versions this CLI ships with
-├── tsconfig.json
-├── .env                 # API keys, channel tokens, DATABASE_URL (mode 0600, only when needed)
-├── .gitignore
-├── cogitator.yml        # provider, model, memory and deploy settings for `cogitator run` / `cogitator deploy`
-├── pnpm-workspace.yaml  # pnpm only: allows the better-sqlite3 / esbuild / sharp builds
-└── src/
-    ├── gateway.ts       # exports `gateway` — agent, channels, memory adapter
-    └── agent.ts         # starts the gateway (pnpm dev / pnpm start)
+
+Grows a project created by create-cogitator-app or `cogitator init` with the same feature modules that generated it: the project and its extended spec are both planned, and what the addition changes between them is merged into the files on disk. Files still as generated (by the hashes in `.cogitator/scaffold.json`) take the change; `package.json`, `cogitator.yml`, `docker-compose.yml` and `pnpm-workspace.yaml` merge key by key, keeping your values and comments; the managed block of `AGENTS.md` is rewritten and the rest kept; `.gitignore` gains missing lines; an edited README is left with a note. Any other file you edited that the addition changes is a conflict: nothing is written, and the change is printed as a diff. Adding what the project has is a no-op. New dependencies are installed (`--no-install` skips it), the written files formatted, and the new spec and command recorded in `package.json`.
+
+---
+
+### cogitator dev
+
+```bash
+cogitator dev                         # http://localhost:4321, opens the browser
+cogitator dev --port 4400 --no-open
+cogitator dev --host 0.0.0.0          # reachable from your network, with a token in the URL
 ```
 
-| Memory choice | Generated adapter | Extra dependency | Notes                                                            |
-| ------------- | ----------------- | ---------------- | ---------------------------------------------------------------- |
-| SQLite        | `SQLiteAdapter`   | `better-sqlite3` | Stored in `./data/memory.db` (the directory is created at start) |
-| In-memory     | `InMemoryAdapter` | -                | Lost on restart                                                  |
-| PostgreSQL    | `PostgresAdapter` | `pg`             | Connection string in `DATABASE_URL`                              |
+Opens [Cogitator Studio](https://www.npmjs.com/package/@cogitator-ai/studio) for the project in the current directory: chat with every agent of `src/cogitator.ts` (streamed answers, reasoning, tool calls, stop, threads), approve tool calls that need it, read the waterfall trace of each run with nested agents, tokens and cost per model call, run workflows with live node statuses and rerun them from a node, and fork a run from any step with a changed input or tool result. The project runs in a child process that reloads when you save (`--no-watch` turns it off). History lives in `.cogitator/studio/`.
 
-`src/gateway.ts` loads `.env` itself (`process.loadEnvFile`, Node ≥ 20.12), so it works with `pnpm dev`, `cogitator assistant`, `cogitator build` and the daemon alike.
+---
 
-`package.json` pins the package manager that ran `init` in its `packageManager` field (pnpm, Yarn or Bun), so corepack and the deploy image install with the same version. `cogitator.yml` makes the project deployable as it is: `cogitator deploy` runs the gateway as a worker (no HTTP health check, the WebChat port published when WebChat is on), keeps the SQLite database on a volume and passes the API key and channel tokens as secrets. The code in `src/` configures the gateway itself, so change the provider, model or memory in both places.
+### cogitator mcp
+
+A stdio MCP server for Claude Code, Cursor and Codex, configured by `create-cogitator-app --agent` or `cogitator add --agent`:
+
+| Tool              | What it does                                                                               |
+| ----------------- | ------------------------------------------------------------------------------------------ |
+| `search_docs`     | Searches the docs bundled with the installed `@cogitator-ai/core`, best passages first     |
+| `read_doc`        | Reads a page, or one section with `path#section`                                           |
+| `inspect_project` | The agents (model, instructions, tool schemas), workflows and swarms of `src/cogitator.ts` |
+| `check_project`   | Runs `cogitator doctor`, offline unless asked                                              |
+
+The registry loads in a child process, so the agent always sees the current code and the project's own output never reaches the MCP stream. The server finds the project from a subdirectory, or takes `--project <dir>`.
+
+---
+
+### cogitator doctor
+
+```bash
+cogitator doctor            # Node, packages, cogitator.yml, keys, services, models
+cogitator doctor --offline  # no provider or service probes
+cogitator doctor --json
+```
+
+Checks the Node version against `engines`, the installed `@cogitator-ai/*` packages, `cogitator.yml`, the variables `src/env.ts` requires, the provider key (with a cheap call), Redis, Postgres and the other services the config uses, and the Ollama models. Each problem comes with the fix; it exits `1` when one fails.
+
+---
+
+### cogitator eval
+
+```bash
+cogitator eval                                   # every evals/*.eval.ts
+cogitator eval evals/answers.eval.ts --max-cases 5
+cogitator eval --json --report eval-report.json  # for CI
+cogitator eval --skip-without-key                # exit 0 on forks without the key
+```
+
+Runs eval suites (files exporting an `EvalSuite` from `@cogitator-ai/evals` as default) and exits `1` when an assertion fails or every case errored.
 
 ---
 
@@ -247,6 +300,7 @@ Local skills live in `./skills`, global ones in `~/.cogitator/skills`. Skill nam
 cogitator models                       # list installed models
 cogitator models --pull qwen2.5:0.5b   # pull with progress
 cogitator models --url http://gpu-box:11434
+cogitator models --json                # name, size and date of each model
 ```
 
 The Ollama URL defaults to `OLLAMA_BASE_URL`, then `OLLAMA_URL`, then `OLLAMA_HOST` (read like Ollama reads it: port 11434 when none is given, `0.0.0.0` as `localhost`), then `http://localhost:11434`, `OLLAMA_API_KEY` is sent as a bearer token. Pull errors reported by Ollama (e.g. unknown model) fail the command.
@@ -257,6 +311,7 @@ The Ollama URL defaults to `OLLAMA_BASE_URL`, then `OLLAMA_URL`, then `OLLAMA_HO
 
 ```bash
 cogitator status          # compose services (state, health) + Ollama reachability
+cogitator status --json
 cogitator logs ollama -f -t -n 50
 cogitator logs -n all
 ```
@@ -276,6 +331,7 @@ cogitator logs -n all
 
 ```bash
 cogitator deploy --dry-run          # analyze + preflight only
+cogitator deploy --dry-run --json   # the plan for scripts and CI: secrets, services, warnings, checks
 cogitator deploy                    # docker: build image, start compose stack
 cogitator deploy --target fly --region ord
 cogitator deploy --registry ghcr.io/acme   # build + push (use --no-push to skip)
@@ -291,6 +347,7 @@ cogitator deploy destroy
 | `--no-push`             | Skip pushing even when a registry is set |
 | `--dry-run`             | Show the plan without executing          |
 | `--region <region>`     | Deploy region (Fly.io)                   |
+| `--json`                | The plan, result or status as JSON       |
 
 The model, memory and `deploy:` section all come from one config file: the `-c` file, else the first of `cogitator.yml`, `cogitator.yaml`, `.cogitator.yml`, `.cogitator.yaml`. The plan lists the kind (server or worker), detected services (marked as not provisioned on Fly, where `REDIS_URL` / `DATABASE_URL` are required instead), volumes, required secrets (read from the environment or the project's `.env`), warnings and preflight checks. On Docker the deploy only succeeds when the app container keeps running after it starts, otherwise its last log lines are shown. See [`@cogitator-ai/deploy`](https://www.npmjs.com/package/@cogitator-ai/deploy) and the [deploy guide](https://cogitator.app/docs/deployment/deploy-package) for details.
 
@@ -306,6 +363,7 @@ The model, memory and `deploy:` section all come from one config file: the `-c` 
 | `OLLAMA_API_KEY`                                        | `run`, `models`, `wizard` | Ollama Cloud / authenticated Ollama |
 | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` | `run`, `init`, `wizard`   | Provider keys                       |
 | `COGITATOR_DEBUG`                                       | all                       | Print stack traces                  |
+| `COGITATOR_TELEMETRY_DISABLED`, `DO_NOT_TRACK`          | `init`                    | Send no anonymous usage event       |
 
 See [`@cogitator-ai/config`](https://www.npmjs.com/package/@cogitator-ai/config) and the [configuration guide](https://cogitator.app/docs/getting-started/configuration) for every `COGITATOR_*` variable.
 

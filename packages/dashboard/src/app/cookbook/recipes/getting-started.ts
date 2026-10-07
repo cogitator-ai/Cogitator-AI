@@ -226,33 +226,36 @@ await cog.close();`,
       difficulty: 'easy',
       time: '5 min',
       problem:
-        'You want a ready-to-run project — package.json, tsconfig, an agent and a tool — generated from code, e.g. inside your own tooling.',
+        'You want a ready-to-run project (package.json, tsconfig, a registry of agents, tools and tests) generated from code, e.g. inside your own tooling.',
       points: [
-        'Call `scaffold()` from `create-cogitator-app` with a template, provider and package manager',
+        'Describe the project as a spec: preset, app, memory, provider, model and package manager',
+        '`planProject()` shows the files without writing, `scaffold()` writes, installs, formats and commits',
       ],
       file: 'scaffold-project.ts',
-      code: `import { scaffold } from 'create-cogitator-app';
-import { readFileSync, readdirSync } from 'node:fs';
+      code: `import { planProject, scaffold } from 'create-cogitator-app';
 import { join } from 'node:path';
 
-const projectDir = join(process.cwd(), 'my-agent');
-
-await scaffold({
+const spec = {
   name: 'my-agent',
-  path: projectDir,
-  template: 'basic',
+  preset: 'basic',
+  app: 'script',
+  memory: 'sqlite',
   provider: 'ollama',
+  model: 'qwen3.5:4b',
   packageManager: 'pnpm',
-  docker: false,
+} as const;
+
+const plan = planProject(spec);
+console.log(\`\${plan.files.length} files, recreate with:\\n  \${plan.command}\`);
+
+const result = await scaffold(spec, {
+  directory: join(process.cwd(), 'my-agent'),
+  install: false,
   git: false,
 });
 
-console.log(readdirSync(projectDir).sort());
-
-const pkg = JSON.parse(readFileSync(join(projectDir, 'package.json'), 'utf-8')) as {
-  dependencies: Record<string, string>;
-};
-console.log('Dependencies:', Object.keys(pkg.dependencies).join(', '));`,
+console.log(result.files.join('\\n'));
+console.log('Dependencies:', Object.keys(result.plan.dependencies).join(', '));`,
       install: 'pnpm add create-cogitator-app',
       env: [],
       run: 'npx tsx scaffold-project.ts',
@@ -260,7 +263,7 @@ console.log('Dependencies:', Object.keys(pkg.dependencies).join(', '));`,
       notes: [
         {
           type: 'tip',
-          text: 'From a terminal the same thing is `npx create-cogitator-app my-agent`, which asks for the options interactively.',
+          text: 'From a terminal the same thing is `npx create-cogitator-app my-agent --preset basic --memory sqlite`; without flags it asks for the options interactively.',
         },
       ],
       example: 'create-cogitator-app/scaffold-programmatic.ts',

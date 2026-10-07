@@ -9,7 +9,7 @@ const DURATIONS = [2000, 600, 700, 1800, 800, 900, 1100, 1500, 3200];
 const DEPLOYED_STEP = 7;
 const DONE_STEP = 8;
 
-const SCAFFOLD = 'npx create-cogitator-app support-bot -t api-server -p anthropic -y';
+const SCAFFOLD = 'npx create-cogitator-app support-bot -t api-server -p anthropic --deploy fly -y';
 const DEPLOY = 'cd support-bot && cogitator deploy --target fly --region fra';
 
 function Line({
@@ -60,8 +60,8 @@ export function ShipDemo() {
           <FileCode2 className="size-3 text-l-brass" />
           {step >= 6 ? (
             <>
-              <Chip tone="brass">.cogitator/Dockerfile</Chip>
-              <Chip tone="brass">.cogitator/fly.toml</Chip>
+              <Chip tone="brass">Dockerfile</Chip>
+              <Chip tone="brass">fly.toml</Chip>
               <Chip tone="brass">.dockerignore</Chip>
             </>
           ) : (
@@ -89,13 +89,14 @@ export function ShipDemo() {
           <span className="text-l-faint"> · server express · app support-bot</span>
         </Line>
         <Line show={step >= 5} className="text-l-faint">
-          {'  '}Required secrets: <span className="text-l-warn">○</span> ANTHROPIC_API_KEY
+          {'  '}Required secrets: <span className="text-l-warn">○</span> ANTHROPIC_API_KEY{' '}
+          <span className="text-l-warn">○</span> API_TOKEN
         </Line>
         <Line show={step >= 6} className="text-l-muted">
           {'  '}
           <span className="text-l-accent">✓</span> flyctl is available{'  '}
           <span className="text-l-accent">✓</span> Logged in as you@acme.dev{'  '}
-          <span className="text-l-accent">✓</span> ANTHROPIC_API_KEY is set
+          <span className="text-l-accent">✓</span> secrets are set
         </Line>
         <Line show={step >= DEPLOYED_STEP} className="text-l-text">
           <span className="text-l-accent">✓</span> Deployed successfully
@@ -107,7 +108,7 @@ export function ShipDemo() {
           </span>
         </Line>
         <Line show={step >= DONE_STEP} className="text-l-faint">
-          {'  A2A: https://support-bot.fly.dev/.well-known/agent.json'}
+          {'  Health: https://support-bot.fly.dev/api/health'}
         </Line>
         <Line show={step >= DONE_STEP} className="pt-1">
           <Vox>agent deployed</Vox>
