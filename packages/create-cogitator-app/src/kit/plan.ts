@@ -14,6 +14,7 @@ import {
   emitToolsIndex,
 } from './emit.js';
 import { emitAssistant } from './features/base.js';
+import { emitDeployArtifacts } from './features/deploy.js';
 import { FEATURE_MODULES } from './features/index.js';
 import { emitReadme, nextSteps, reproducibleCommand, type SetupState } from './guide.js';
 import { ProjectBuilder, type EnvVar, type GeneratedFile, type NextStep } from './project.js';
@@ -91,6 +92,7 @@ export function planProject(input: unknown, options: PlanOptions = {}): ProjectP
     packageManagerSpec: options.packageManagerSpec,
     cogitator: { ...manifest },
   });
+  emitDeployArtifacts(project);
 
   const files = [...project.files.values()].sort((a, b) => a.path.localeCompare(b.path));
   return {

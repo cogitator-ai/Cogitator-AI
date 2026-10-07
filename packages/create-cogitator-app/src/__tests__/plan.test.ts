@@ -202,3 +202,39 @@ describe('preset file trees', () => {
     }
   });
 });
+
+describe('deploy', () => {
+  it('writes no deploy artifacts without a target', () => {
+    const paths = planProject(specFor('hono', 'openai')).files.map((f) => f.path);
+    expect(paths).not.toContain('Dockerfile');
+  });
+
+  it('generates the production image with @cogitator-ai/deploy for Docker', () => {
+    const plan = planProject(specFor('hono', 'openai', { deploy: 'docker' }));
+    const dockerfile = file(plan, 'Dockerfile');
+    expect(dockerfile).toContain('FROM base AS runtime');
+    expect(dockerfile).toContain('USER node');
+    expect(dockerfile).toContain('pnpm install --frozen-lockfile');
+    expect(dockerfile).toContain('CMD ["node","dist/index.js"]');
+    expect(dockerfile).toContain('http://127.0.0.1:3000/api/health');
+    expect(file(plan, '.dockerignore')).toContain('.env');
+    expect(plan.scripts['deploy:plan']).toBe('cogitator deploy --dry-run');
+  });
+
+  it('adds fly.toml with a volume for SQLite on Fly.io', () => {
+    const plan = planProject(specFor('hono', 'openai', { deploy: 'fly' }));
+    const fly = file(plan, 'fly.toml');
+    expect(fly).toContain('[mounts]');
+    expect(fly).toContain('path = "/api/health"');
+    expect(file(plan, 'cogitator.yml')).toContain('target: fly');
+  });
+
+  it('runs a Tetsu image on Bun', () => {
+    const dockerfile = file(
+      planProject(specFor('tetsu', 'openai', { deploy: 'docker' })),
+      'Dockerfile'
+    );
+    expect(dockerfile).toContain('FROM oven/bun:1-alpine AS base');
+    expect(dockerfile).toContain('USER bun');
+  });
+});
