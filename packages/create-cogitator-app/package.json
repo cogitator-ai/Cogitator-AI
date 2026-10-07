@@ -39,6 +39,7 @@
   },
   "dependencies": {
     "@clack/prompts": "^1.8.1",
+    "@cogitator-ai/deploy": "workspace:^",
     "@cogitator-ai/models": "workspace:^",
     "picocolors": "^1.1.0",
     "zod": "^4.6.5"
