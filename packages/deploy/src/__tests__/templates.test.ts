@@ -23,7 +23,7 @@ describe('generateDockerfile', () => {
       hasLockfile: true,
       startCommand: ['npm', 'start'],
     });
-    expect(df).toContain('RUN npm ci');
+    expect(df).toContain('target=/root/.npm npm ci');
     expect(df).toContain('RUN npm run build');
     expect(df).toContain('CMD ["npm","start"]');
     expect(df).not.toContain('pnpm');
@@ -47,7 +47,47 @@ describe('generateDockerfile', () => {
 
   it('copies the full builder output so non-dist start commands work', () => {
     const df = generateDockerfile({ config: {}, hasTypeScript: true });
-    expect(df).toContain('COPY --from=builder /app ./');
+    expect(df).toContain('COPY --from=builder --chown=node:node /app ./');
+  });
+
+  it('drops the dev dependencies of the build before the runtime copies it', () => {
+    const pnpm = generateDockerfile({ config: {}, hasTypeScript: true, packageManager: 'pnpm' });
+    expect(pnpm.indexOf('pnpm prune --prod')).toBeGreaterThan(pnpm.indexOf('RUN pnpm run build'));
+    expect(pnpm.indexOf('pnpm prune --prod')).toBeLessThan(pnpm.indexOf('FROM base AS runtime'));
+
+    const npm = generateDockerfile({ config: {}, hasTypeScript: true, packageManager: 'npm' });
+    expect(npm).toContain('npm prune --omit=dev');
+  });
+
+  it('runs as the unprivileged user of the image under tini', () => {
+    const node = generateDockerfile({
+      config: {},
+      hasTypeScript: true,
+      startCommand: ['node', 'dist/index.js'],
+    });
+    expect(node).toContain('USER node');
+    expect(node).toContain('ENTRYPOINT ["/sbin/tini", "--"]');
+    expect(node).toContain('CMD ["node","dist/index.js"]');
+    expect(node.indexOf('USER node')).toBeGreaterThan(node.indexOf('FROM base AS runtime'));
+
+    const bun = generateDockerfile({ config: {}, hasTypeScript: true, packageManager: 'bun' });
+    expect(bun).toContain('FROM oven/bun:1-alpine AS base');
+    expect(bun).toContain('USER bun');
+  });
+
+  it('keeps the package manager cache between builds', () => {
+    const df = generateDockerfile({ config: {}, hasTypeScript: true, packageManager: 'pnpm' });
+    expect(df.startsWith('# syntax=docker/dockerfile:1\n')).toBe(true);
+    expect(df).toContain(
+      'RUN --mount=type=cache,id=pnpm,target=/root/.local/share/pnpm/store pnpm install --frozen-lockfile'
+    );
+  });
+
+  it('installs only production dependencies for a JavaScript project', () => {
+    const df = generateDockerfile({ config: {}, hasTypeScript: false, packageManager: 'npm' });
+    expect(df).toContain('npm ci --omit=dev');
+    expect(df).not.toContain('AS builder');
+    expect(df).toContain('COPY --chown=node:node . .');
   });
 
   it('honours health check settings', () => {

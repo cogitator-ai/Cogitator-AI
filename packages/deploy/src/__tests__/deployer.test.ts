@@ -123,7 +123,7 @@ describe('Deployer.deploy', () => {
     const artifacts = await new DockerProvider().generate({ port: 3000 }, dir);
     const dockerfile = artifacts.files.find((f) => f.path === 'Dockerfile')?.content;
 
-    expect(dockerfile).toContain('RUN npm ci');
+    expect(dockerfile).toContain('target=/root/.npm npm ci');
     expect(dockerfile).toContain('CMD ["node","dist/main.js"]');
   });
 });

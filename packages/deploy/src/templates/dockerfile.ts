@@ -20,7 +20,7 @@ export interface DockerfileOptions {
   packageManagerVersion?: string;
 }
 
-export const NODE_IMAGE = 'node:22-alpine';
+export const NODE_IMAGE = 'node:24-alpine';
 export const BUN_IMAGE = 'oven/bun:1-alpine';
 
 const DEFAULT_INSTALL_FILES: Record<DockerfilePackageManager, readonly string[]> = {
@@ -31,12 +31,24 @@ const DEFAULT_INSTALL_FILES: Record<DockerfilePackageManager, readonly string[]>
   bun: ['bun.lock*'],
 };
 
+/** Where each package manager keeps its download cache, mounted as a BuildKit cache across builds. */
+const CACHE_DIRS: Record<DockerfilePackageManager, string> = {
+  pnpm: '/root/.local/share/pnpm/store',
+  npm: '/root/.npm',
+  yarn: '/usr/local/share/.cache/yarn',
+  'yarn-berry': '/root/.yarn/berry/cache',
+  bun: '/root/.bun/install/cache',
+};
+
 interface InstallSteps {
   copy: string[];
+  /** Every dependency, for the build. */
   install: string;
+  /** Production dependencies only, for an image that does not build. */
   installProd: string;
+  /** Drops the dev dependencies the build needed from an installed tree, in place. */
+  prune?: string;
   build: string;
-  runtimeSetup?: string;
 }
 
 function copyInstallFiles(
@@ -52,49 +64,65 @@ function copyInstallFiles(
   ];
 }
 
+function cached(pm: DockerfilePackageManager, command: string): string {
+  return `RUN --mount=type=cache,id=${pm},target=${CACHE_DIRS[pm]} ${command}`;
+}
+
 function installSteps(options: DockerfileOptions, pm: DockerfilePackageManager): InstallSteps {
   const locked = options.hasLockfile ?? true;
   const copy = copyInstallFiles(pm, options.installFiles);
   switch (pm) {
-    case 'pnpm':
+    case 'pnpm': {
+      const frozen = locked ? ' --frozen-lockfile' : '';
       return {
         copy,
-        install: `RUN corepack enable && pnpm install${locked ? ' --frozen-lockfile' : ''}`,
-        installProd: `RUN corepack enable && pnpm install${locked ? ' --frozen-lockfile' : ''} --prod`,
+        install: cached(pm, `pnpm install${frozen}`),
+        installProd: cached(pm, `pnpm install${frozen} --prod`),
+        prune: cached(pm, 'pnpm prune --prod --ignore-scripts'),
         build: 'RUN pnpm run build',
       };
-    case 'yarn':
+    }
+    case 'yarn': {
+      const frozen = locked ? ' --frozen-lockfile' : '';
       return {
         copy,
-        install: `RUN corepack enable && yarn install${locked ? ' --frozen-lockfile' : ''}`,
-        installProd: `RUN corepack enable && yarn install${locked ? ' --frozen-lockfile' : ''} --production`,
+        install: cached(pm, `yarn install${frozen}`),
+        installProd: cached(pm, `yarn install${frozen} --production`),
+        prune: cached(pm, `yarn install${frozen} --production --ignore-scripts --prefer-offline`),
         build: 'RUN yarn run build',
       };
+    }
     case 'yarn-berry': {
-      const install = `RUN corepack enable && yarn install${locked ? ' --immutable' : ''}`;
+      const install = cached(pm, `yarn install${locked ? ' --immutable' : ''}`);
       const focusable = Number.parseInt(options.packageManagerVersion ?? '', 10) >= 4;
+      const focus = cached(pm, 'yarn workspaces focus --all --production');
       return {
         copy,
         install,
-        installProd: focusable
-          ? 'RUN corepack enable && yarn workspaces focus --all --production'
-          : install,
+        installProd: focusable ? focus : install,
+        ...(focusable && { prune: focus }),
         build: 'RUN yarn run build',
-        runtimeSetup: 'RUN corepack enable',
       };
     }
-    case 'bun':
+    case 'bun': {
+      const frozen = locked ? ' --frozen-lockfile' : '';
       return {
         copy,
-        install: `RUN bun install${locked ? ' --frozen-lockfile' : ''}`,
-        installProd: `RUN bun install${locked ? ' --frozen-lockfile' : ''} --production`,
+        install: cached(pm, `bun install${frozen}`),
+        installProd: cached(pm, `bun install${frozen} --production`),
+        prune: cached(
+          pm,
+          `rm -rf node_modules && bun install${frozen} --production --ignore-scripts`
+        ),
         build: 'RUN bun run build',
       };
+    }
     case 'npm':
       return {
         copy,
-        install: locked ? 'RUN npm ci' : 'RUN npm install',
-        installProd: locked ? 'RUN npm ci --omit=dev' : 'RUN npm install --omit=dev',
+        install: cached(pm, locked ? 'npm ci' : 'npm install'),
+        installProd: cached(pm, locked ? 'npm ci --omit=dev' : 'npm install --omit=dev'),
+        prune: cached(pm, 'npm prune --omit=dev'),
         build: 'RUN npm run build',
       };
   }
@@ -117,11 +145,20 @@ function lines(...entries: (string | undefined | false)[]): string {
   return entries.filter((entry): entry is string => typeof entry === 'string').join('\n') + '\n';
 }
 
+/**
+ * A production image: dependencies installed from the lockfile with the
+ * package manager's cache kept between builds, TypeScript built in a builder
+ * stage that then drops its dev dependencies, and a runtime stage that runs as
+ * the image's unprivileged user under tini, so signals reach the app and child
+ * processes (MCP servers, sandboxes) are reaped.
+ */
 export function generateDockerfile(options: DockerfileOptions): string {
   const { config, hasTypeScript } = options;
   const pm = options.packageManager ?? 'pnpm';
-  const image = pm === 'bun' ? BUN_IMAGE : NODE_IMAGE;
-  const runtime = pm === 'bun' ? 'bun' : 'node';
+  const bun = pm === 'bun';
+  const image = bun ? BUN_IMAGE : NODE_IMAGE;
+  const user = bun ? 'bun' : 'node';
+  const runtime = bun ? 'bun' : 'node';
   const steps = installSteps(options, pm);
   const startCommand = options.startCommand ?? [
     runtime,
@@ -136,36 +173,53 @@ export function generateDockerfile(options: DockerfileOptions): string {
   ]
     .filter((entry) => entry !== undefined)
     .join(' ');
-  const runtimeTail = [
+  const corepack = pm === 'pnpm' || pm === 'yarn' || pm === 'yarn-berry';
+
+  const base = [
+    `FROM ${image} AS base`,
+    'WORKDIR /app',
+    corepack ? 'RUN corepack enable' : undefined,
+  ];
+  const runtimeStage = (copy: string[]) => [
+    'FROM base AS runtime',
+    'RUN apk add --no-cache tini && chown ' + user + ':' + user + ' /app',
     env,
+    ...copy,
+    `USER ${user}`,
     http ? `EXPOSE ${port}` : undefined,
     http ? healthcheck(config, port) : undefined,
+    'ENTRYPOINT ["/sbin/tini", "--"]',
     `CMD ${JSON.stringify(startCommand)}`,
   ];
 
   if (!hasTypeScript) {
     return lines(
-      `FROM ${image}`,
-      'WORKDIR /app',
+      '# syntax=docker/dockerfile:1',
+      ...base,
+      '',
+      'FROM base AS deps',
       ...steps.copy,
       steps.installProd,
-      'COPY . .',
-      ...runtimeTail
+      '',
+      ...runtimeStage([
+        `COPY --from=deps --chown=${user}:${user} /app/node_modules ./node_modules`,
+        `COPY --chown=${user}:${user} . .`,
+      ])
     );
   }
 
   return lines(
-    `FROM ${image} AS builder`,
-    'WORKDIR /app',
+    '# syntax=docker/dockerfile:1',
+    ...base,
+    '',
+    'FROM base AS builder',
+    'RUN apk add --no-cache python3 make g++',
     ...steps.copy,
     steps.install,
     'COPY . .',
     options.hasBuildScript === false ? undefined : steps.build,
+    steps.prune,
     '',
-    `FROM ${image} AS runtime`,
-    'WORKDIR /app',
-    steps.runtimeSetup,
-    'COPY --from=builder /app ./',
-    ...runtimeTail
+    ...runtimeStage([`COPY --from=builder --chown=${user}:${user} /app ./`])
   );
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ProjectAnalyzer } from '../analyzer';
@@ -196,6 +196,28 @@ describe('ProjectAnalyzer.analyze', () => {
       'lib/main.js',
     ]);
     expect(analyzer.detectStartCommand({}, true)).toEqual(['node', 'dist/server.js']);
+    expect(
+      analyzer.detectStartCommand(
+        { scripts: { start: 'node --env-file-if-exists=.env dist/index.js' } },
+        true
+      )
+    ).toEqual(['node', 'dist/index.js']);
+    expect(
+      analyzer.detectStartCommand(
+        { scripts: { start: 'node --enable-source-maps dist/index.js' } },
+        true
+      )
+    ).toEqual(['node', '--enable-source-maps', 'dist/index.js']);
+    expect(
+      analyzer.detectStartCommand({ scripts: { start: 'bun src/index.ts' } }, true, 'bun')
+    ).toEqual(['bun', 'src/index.ts']);
+    expect(
+      analyzer.detectStartCommand({ scripts: { start: 'node dist/index.js && echo done' } }, true)
+    ).toEqual(['npm', 'start']);
+    expect(analyzer.detectStartCommand({ scripts: { start: 'node $ENTRY' } }, true)).toEqual([
+      'npm',
+      'start',
+    ]);
   });
 
   it('warns when instances > 1 is requested for docker', () => {
@@ -230,6 +252,37 @@ describe('ProjectAnalyzer.analyze', () => {
         startCommand: ['node', 'dist/server.js'],
         installFiles: ['pnpm-lock.yaml'],
       });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('local dependencies', () => {
+  it('copies vendored packages and local links before the install', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deploy-local-deps-'));
+    try {
+      mkdirSync(join(dir, 'vendor'));
+      mkdirSync(join(dir, 'libs'));
+      writeFileSync(join(dir, 'vendor', 'tool.tgz'), '');
+      writeFileSync(join(dir, 'pnpm-lock.yaml'), '');
+      writeFileSync(
+        join(dir, 'pnpm-workspace.yaml'),
+        "overrides:\n  '@acme/core': 'file:vendor/core.tgz'\n"
+      );
+      writeFileSync(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          dependencies: { tool: 'file:vendor/tool.tgz', shared: 'link:libs/shared', zod: '^4.0.0' },
+          devDependencies: { outside: 'file:../elsewhere' },
+        })
+      );
+
+      const build = new ProjectAnalyzer().detectBuild(dir);
+      expect(build.installFiles).toEqual(
+        expect.arrayContaining(['pnpm-lock.yaml', 'pnpm-workspace.yaml', 'vendor/', 'libs/'])
+      );
+      expect(build.installFiles.some((file) => file.includes('..'))).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
