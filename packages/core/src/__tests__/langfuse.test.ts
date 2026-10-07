@@ -31,6 +31,7 @@ function createMockTrace() {
     id: `trace_${Math.random().toString(36).slice(2, 8)}`,
     span: vi.fn(() => mockSpan),
     generation: vi.fn(() => mockGeneration),
+    event: vi.fn(),
     update: vi.fn(),
     _mockSpan: mockSpan,
     _mockGeneration: mockGeneration,
@@ -192,6 +193,65 @@ describe('LangfuseExporter', () => {
       expect(internals.activeGenerations.has(generationId)).toBe(false);
       expect(internals.spanRunIds.has('span-1')).toBe(false);
       expect(internals.generationRunIds.has(generationId)).toBe(false);
+    });
+  });
+
+  describe('onRunError', () => {
+    it('marks the trace failed, ends what is open as ERROR and drops the run', () => {
+      exporter.onRunStart({ runId: 'run-1', agentId: 'agent-1', agentName: 'Test', input: 'Hi' });
+      exporter.onToolCall('run-1', { id: 'call-1', name: 'search', arguments: {} });
+      const generationId = exporter.onLLMCall({ runId: 'run-1', model: 'gpt-4', messages: [] });
+
+      exporter.onRunError(new Error('model unavailable'), 'run-1');
+
+      const trace = mockClient._mockTrace;
+      expect(trace.event).toHaveBeenCalledWith({
+        name: 'run-error',
+        level: 'ERROR',
+        statusMessage: 'model unavailable',
+      });
+      expect(trace.update).toHaveBeenCalledWith({
+        output: { error: { name: 'Error', message: 'model unavailable' } },
+        metadata: { status: 'error', error: { name: 'Error', message: 'model unavailable' } },
+      });
+      expect(trace._mockSpan.end).toHaveBeenCalledWith({
+        level: 'ERROR',
+        statusMessage: 'model unavailable',
+      });
+      expect(trace._mockGeneration.end).toHaveBeenCalledWith({
+        level: 'ERROR',
+        statusMessage: 'model unavailable',
+      });
+
+      const internals = exporter as unknown as {
+        activeTraces: Map<string, unknown>;
+        activeSpans: Map<string, unknown>;
+        activeGenerations: Map<string, unknown>;
+      };
+      expect(internals.activeTraces.size).toBe(0);
+      expect(internals.activeSpans.size).toBe(0);
+      expect(internals.activeGenerations.has(generationId)).toBe(false);
+    });
+
+    it('is what the run observer reports failures to', () => {
+      const observer = exporter.observer();
+      observer.onRunStart?.({
+        runId: 'run-2',
+        agentId: 'agent-1',
+        agentName: 'Test',
+        input: 'Hi',
+        threadId: 'thread-1',
+      });
+      observer.onRunError?.(new Error('boom'), 'run-2');
+      expect(mockClient._mockTrace.event).toHaveBeenCalledOnce();
+      expect(
+        (exporter as unknown as { activeTraces: Map<string, unknown> }).activeTraces.size
+      ).toBe(0);
+    });
+
+    it('ignores an unknown run', () => {
+      exporter.onRunError(new Error('boom'), 'missing');
+      expect(mockClient._mockTrace.event).not.toHaveBeenCalled();
     });
   });
 

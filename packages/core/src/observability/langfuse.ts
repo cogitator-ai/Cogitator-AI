@@ -102,6 +102,33 @@ export class LangfuseExporter {
   }
 
   /**
+   * Marks the run's trace as failed: an ERROR event with the message, the
+   * error as its output, and every span and generation still open ended as
+   * ERROR. The run's state is dropped, as on completion.
+   */
+  onRunError(error: Error, runId: string): void {
+    const trace = this.activeTraces.get(runId);
+    if (!trace) return;
+
+    const failure = { name: error.name, message: error.message };
+    trace.event({ name: 'run-error', level: 'ERROR', statusMessage: error.message });
+    trace.update({ output: { error: failure }, metadata: { status: 'error', error: failure } });
+
+    for (const [spanId, ownerRunId] of this.spanRunIds) {
+      if (ownerRunId === runId)
+        this.activeSpans.get(spanId)?.end({ level: 'ERROR', statusMessage: error.message });
+    }
+    for (const [generationId, ownerRunId] of this.generationRunIds) {
+      if (ownerRunId === runId)
+        this.activeGenerations
+          .get(generationId)
+          ?.end({ level: 'ERROR', statusMessage: error.message });
+    }
+
+    this.cleanupRun(runId);
+  }
+
+  /**
    * Traces every run of a runtime: pass it in `observers` of the Cogitator
    * config, after `await init()`. Spans arrive finished, so each is opened and
    * closed at once under its run's trace.
@@ -114,6 +141,7 @@ export class LangfuseExporter {
         this.onSpanEnd(span);
       },
       onRunComplete: (result) => this.onRunComplete(result),
+      onRunError: (error, runId) => this.onRunError(error, runId),
       close: () => this.shutdown(),
     };
   }
