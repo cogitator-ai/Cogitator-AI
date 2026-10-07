@@ -44,15 +44,16 @@
     "@cogitator-ai/channels": "workspace:*",
     "@cogitator-ai/config": "workspace:*",
     "@cogitator-ai/core": "workspace:*",
-    "@cogitator-ai/models": "workspace:*",
     "@cogitator-ai/deploy": "workspace:*",
     "@cogitator-ai/memory": "workspace:*",
+    "@cogitator-ai/models": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
+    "better-sqlite3": "^13.0.3",
     "chalk": "^6.0.1",
     "commander": "^15.0.0",
+    "create-cogitator-app": "workspace:^",
     "ora": "^9.4.1",
-    "yaml": "^2.9.1",
-    "better-sqlite3": "^13.0.3"
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@types/node": "^22.20.4",
