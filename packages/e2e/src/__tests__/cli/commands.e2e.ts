@@ -131,8 +131,8 @@ describe('CLI binary', () => {
   describe('deploy', () => {
     it('rejects targets without a provider', () => {
       const result = cli(['deploy', '--target', 'k8s', '--dry-run'], workDir);
-      expect(result.status).toBe(1);
-      expect(result.stdout).toContain('Available targets: docker, fly');
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain('Available targets: docker, fly');
     });
 
     it('shows a plan with detected secrets for a dry run', () => {
@@ -149,7 +149,7 @@ describe('CLI binary', () => {
     it('fails clearly when an explicit config file is missing', () => {
       const result = cli(['deploy', '--dry-run', '-c', 'missing.yml'], workDir);
       expect(result.status).toBe(1);
-      expect(result.stdout).toContain('Config file not found');
+      expect(result.stderr).toContain('Config file not found');
     });
   });
 
@@ -157,7 +157,7 @@ describe('CLI binary', () => {
     it('fails clearly when an explicit config file is missing', () => {
       const result = cli(['run', '-c', 'missing.yml', 'hi'], workDir);
       expect(result.status).toBe(1);
-      expect(result.stdout).toContain('Config file not found');
+      expect(result.stderr).toContain('Config file not found');
     });
   });
 

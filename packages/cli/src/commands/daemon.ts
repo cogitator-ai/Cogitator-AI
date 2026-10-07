@@ -13,6 +13,7 @@ import { homedir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { log } from '../utils/logger.js';
+import { CommandError, exitWithFailure, examplesHelp } from '../utils/cli.js';
 import {
   DAEMON_LABEL,
   SYSTEMD_UNIT,
@@ -65,9 +66,9 @@ function resolveLaunch(config: string | undefined): DaemonLaunch {
       config,
     });
   } catch (error) {
-    log.error(error instanceof Error ? error.message : String(error));
-    log.dim('Run "cogitator init" or "cogitator wizard" to create a project first');
-    process.exit(1);
+    throw new CommandError(error instanceof Error ? error.message : String(error), {
+      hints: ['Run "cogitator init" or "cogitator wizard" to create a project first'],
+    });
   }
 }
 
@@ -134,8 +135,7 @@ function startDaemon(config: string | undefined): void {
   }
 
   if (!pid) {
-    log.error('Failed to start daemon');
-    process.exit(1);
+    throw new CommandError('Failed to start daemon');
   }
 
   writeFileSync(pidFile(), serializePidRecord({ pid, script: launch.args[0] }));
@@ -167,7 +167,16 @@ function psField(pid: number, field: 'etime' | 'rss'): string | null {
   }
 }
 
-export const daemonCommand = new Command('daemon').description('Manage background daemon process');
+export const daemonCommand = new Command('daemon')
+  .description('Manage background daemon process')
+  .addHelpText(
+    'after',
+    examplesHelp([
+      ['cogitator daemon install', 'run the assistant at login (launchd or systemd)'],
+      ['cogitator daemon start', 'start it in the background now'],
+      ['cogitator daemon logs -f', 'follow its output'],
+    ])
+  );
 
 daemonCommand
   .command('start')
@@ -274,8 +283,7 @@ daemonCommand
 
     const tail = spawn('tail', args, { stdio: 'inherit' });
     tail.on('error', (error) => {
-      log.error(`Failed to run tail: ${error.message}`);
-      process.exit(1);
+      exitWithFailure(new CommandError(`Failed to run tail: ${error.message}`));
     });
     tail.on('exit', (code) => process.exit(code ?? 0));
   });
@@ -289,9 +297,9 @@ daemonCommand
   )
   .action((options: { config?: string }) => {
     if (process.platform !== 'darwin' && process.platform !== 'linux') {
-      log.error(`Unsupported platform: ${process.platform}`);
-      log.dim('Manual setup required for Windows');
-      process.exit(1);
+      throw new CommandError(`Unsupported platform: ${process.platform}`, {
+        hints: ['Manual setup required for Windows'],
+      });
     }
 
     const launch = resolveLaunch(options.config);
@@ -319,8 +327,7 @@ daemonCommand
     } else if (process.platform === 'linux') {
       uninstallSystemd();
     } else {
-      log.error(`Unsupported platform: ${process.platform}`);
-      process.exit(1);
+      throw new CommandError(`Unsupported platform: ${process.platform}`);
     }
   });
 

@@ -12,6 +12,7 @@ import {
   type AddResult,
   type FileChange,
 } from 'create-cogitator-app';
+import { UsageError } from './cli.js';
 
 export interface AddFlags {
   memory?: string;
@@ -25,7 +26,7 @@ function oneOf<T extends string>(what: string, value: string, allowed: readonly 
   const found = allowed.find((candidate) => candidate === value);
   if (found) return found;
   const match = closest(value, allowed);
-  throw new Error(
+  throw new UsageError(
     `Unknown ${what} "${value}".${match ? ` Did you mean "${match}"?` : ''} Use one of: ${allowed.join(', ')}.`
   );
 }
@@ -58,7 +59,7 @@ export function addChangesFrom(features: readonly string[], flags: AddFlags): Ad
     !changes.vectorStore &&
     !changes.deploy;
   if (empty) {
-    throw new Error(
+    throw new UsageError(
       `Name what to add: a feature (${FEATURES.join(', ')}), or --memory, --vector-store, --deploy, --channel, --agent`
     );
   }

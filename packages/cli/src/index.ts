@@ -3,60 +3,13 @@
  * Cogitator CLI
  */
 
-import { Command } from 'commander';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { initCommand } from './commands/init.js';
-import { addCommand } from './commands/add.js';
-import { mcpCommand } from './commands/mcp.js';
-import { doctorCommand } from './commands/doctor.js';
-import { evalCommand } from './commands/eval.js';
-import { upCommand, downCommand } from './commands/up.js';
-import { runCommand } from './commands/run.js';
-import { statusCommand } from './commands/status.js';
-import { logsCommand } from './commands/logs.js';
-import { modelsCommand } from './commands/models.js';
-import { deployCommand } from './commands/deploy.js';
-import { assistantCommand } from './commands/assistant.js';
-import { buildCommand } from './commands/build.js';
-import { daemonCommand } from './commands/daemon.js';
-import { skillCommand } from './commands/skill.js';
-import { wizardCommand } from './commands/wizard.js';
-import { log } from './utils/logger.js';
+import { CommanderError } from 'commander';
+import { createProgram } from './program.js';
+import { exitCodeOf, reportFailure } from './utils/cli.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const pkg = JSON.parse(readFileSync(join(__dirname, '../package.json'), 'utf-8')) as {
-  version: string;
-};
-
-const program = new Command()
-  .name('cogitator')
-  .description('Cogitator AI Agent Runtime CLI')
-  .version(pkg.version);
-
-program.addCommand(initCommand);
-program.addCommand(addCommand);
-program.addCommand(doctorCommand);
-program.addCommand(evalCommand);
-program.addCommand(mcpCommand);
-program.addCommand(upCommand);
-program.addCommand(downCommand);
-program.addCommand(runCommand);
-program.addCommand(statusCommand);
-program.addCommand(logsCommand);
-program.addCommand(modelsCommand);
-program.addCommand(deployCommand);
-program.addCommand(assistantCommand);
-program.addCommand(buildCommand);
-program.addCommand(daemonCommand);
-program.addCommand(skillCommand);
-program.addCommand(wizardCommand);
-
-program.parseAsync().catch((error: unknown) => {
-  log.error(error instanceof Error ? error.message : String(error));
-  if (process.env.COGITATOR_DEBUG && error instanceof Error && error.stack) {
-    console.error(error.stack);
-  }
-  process.exit(1);
-});
+createProgram()
+  .parseAsync()
+  .catch((error: unknown) => {
+    if (error instanceof CommanderError) process.exit(exitCodeOf(error));
+    process.exit(reportFailure(error, { json: process.argv.includes('--json') }));
+  });

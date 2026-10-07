@@ -9,6 +9,7 @@ import { createInterface } from 'node:readline';
 import chalk from 'chalk';
 import { parse as parseYaml } from 'yaml';
 import { log, printBanner } from '../utils/logger.js';
+import { CommandError, examplesHelp } from '../utils/cli.js';
 import { Cogitator, Agent } from '@cogitator-ai/core';
 import { CONFIG_FILE_NAMES, loadConfig } from '@cogitator-ai/config';
 import type { CogitatorConfig } from '@cogitator-ai/types';
@@ -264,23 +265,32 @@ export const runCommand = new Command('run')
   .option('-i, --interactive', 'Interactive mode')
   .option('-s, --stream', 'Stream response tokens', true)
   .option('--no-stream', 'Disable streaming')
+  .addHelpText(
+    'after',
+    examplesHelp([
+      ['cogitator run "What is RAG?"', 'one answer from the default model'],
+      ['cogitator run -m ollama/qwen3.5:4b -i', 'chat with a local model'],
+      ['cogitator run -c cogitator.yml --no-stream "Hi"', 'print the whole answer at once'],
+    ])
+  )
   .action(async (message: string | undefined, options: RunOptions) => {
     const configPath = findConfig(options.config);
     if (options.config && !configPath) {
-      log.error(`Config file not found: ${resolve(options.config)}`);
-      process.exit(1);
+      throw new CommandError(`Config file not found: ${resolve(options.config)}`);
     }
     if (!options.config && process.env.COGITATOR_CONFIG && !configPath) {
-      log.error(`COGITATOR_CONFIG points to a missing file: ${process.env.COGITATOR_CONFIG}`);
-      process.exit(1);
+      throw new CommandError(
+        `COGITATOR_CONFIG points to a missing file: ${process.env.COGITATOR_CONFIG}`
+      );
     }
 
     let loaded: RunConfig;
     try {
       loaded = loadRunConfig(configPath);
     } catch (error) {
-      log.error(`Failed to load config: ${error instanceof Error ? error.message : error}`);
-      process.exit(1);
+      throw new CommandError(
+        `Failed to load config: ${error instanceof Error ? error.message : error}`
+      );
     }
     const { config } = loaded;
     if (configPath && loaded.kind === 'assistant') {
@@ -300,11 +310,13 @@ export const runCommand = new Command('run')
         (await detectOllamaModel(baseUrl, ollama?.apiKey ?? process.env.OLLAMA_API_KEY)) ??
         undefined;
       if (!model) {
-        log.error('No model specified and no Ollama models found');
-        log.dim('Use -m to specify a model, e.g.: cogitator run -m ollama/qwen3:8b "Hello"');
-        log.dim('Or set COGITATOR_MODEL / llm.defaultModel in cogitator.yml');
-        log.dim('Or start Ollama and pull a model: ollama pull qwen3:8b');
-        process.exit(1);
+        throw new CommandError('No model specified and no Ollama models found', {
+          hints: [
+            'Use -m to specify a model, e.g.: cogitator run -m ollama/qwen3:8b "Hello"',
+            'Or set COGITATOR_MODEL / llm.defaultModel in cogitator.yml',
+            'Or start Ollama and pull a model: ollama pull qwen3:8b',
+          ],
+        });
       }
       log.dim(`Auto-detected model: ${model}`);
     }

@@ -15,6 +15,7 @@ import {
   formatConflicts,
   type AddFlags,
 } from '../utils/add.js';
+import { examplesHelp } from '../utils/cli.js';
 import { log } from '../utils/logger.js';
 
 export interface AddCommandFlags extends AddFlags {
@@ -92,17 +93,19 @@ export const addCommand = new Command('add')
   .option('--no-install', 'do not install new dependencies')
   .addHelpText(
     'after',
-    `
-Examples:
-  $ cogitator add rag                 answers grounded in docs/
-  $ cogitator add workflows evals     two features at once
-  $ cogitator add --memory postgres   switch memory to Postgres
-  $ cogitator add --deploy docker --dry-run
-
-Files you edited are merged where they can be (package.json, cogitator.yml,
-docker-compose.yml, the managed block of AGENTS.md, .gitignore). When the
-addition needs to change a file you edited in another way, nothing is written
-and the change is printed as a diff. Adding what the project has is a no-op.`
+    [
+      examplesHelp([
+        ['cogitator add rag', 'answers grounded in docs/'],
+        ['cogitator add workflows evals', 'two features at once'],
+        ['cogitator add --memory postgres', 'switch memory to Postgres'],
+        ['cogitator add --deploy docker --dry-run', 'see every diff first'],
+      ]),
+      '',
+      'Files you edited are merged where they can be (package.json, cogitator.yml,',
+      'docker-compose.yml, the managed block of AGENTS.md, .gitignore). When the',
+      'addition needs to change a file you edited in another way, nothing is written',
+      'and the change is printed as a diff. Adding what the project has is a no-op.',
+    ].join('\n')
   )
   .action(async (features: string[], flags: AddCommandFlags) => {
     process.exitCode = await runAdd(process.cwd(), features, flags);
