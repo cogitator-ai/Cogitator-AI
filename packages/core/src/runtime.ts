@@ -177,6 +177,7 @@ function isEmptyAnswer(response: ChatResponse): boolean {
  */
 export class Cogitator implements ToolInvoker {
   private config: CogitatorConfig;
+  private observers: RunObserver[];
   private backends = new Map<string, LLMBackend>();
   private processCheckpoints?: InMemoryRunCheckpointStore;
   private promptRegistry?: PromptRegistry;
@@ -215,6 +216,7 @@ export class Cogitator implements ToolInvoker {
    */
   constructor(config: CogitatorConfig = {}) {
     this.config = config;
+    this.observers = [...(config.observers ?? [])];
     if (config.logging) setLogger(createLoggerFromConfig(config.logging));
   }
 
@@ -383,10 +385,24 @@ export class Cogitator implements ToolInvoker {
     );
   }
 
+  /**
+   * Watches every run that starts from now on, next to `config.observers`, until
+   * the returned function is called. Tools such as a local studio attach to a
+   * runtime a project already built this way, and see the runs of agents its
+   * tools start too. `close()` closes it like the configured observers.
+   */
+  observe(observer: RunObserver): () => void {
+    this.observers.push(observer);
+    return () => {
+      const index = this.observers.indexOf(observer);
+      if (index !== -1) this.observers.splice(index, 1);
+    };
+  }
+
   /** Lets every observer send what it buffered; one that fails is logged, the others still close. */
   private async closeObservers(): Promise<void> {
     const results = await Promise.allSettled(
-      (this.config.observers ?? []).map(async (observer) => observer.close?.())
+      this.observers.map(async (observer) => observer.close?.())
     );
     for (const result of results) {
       if (result.status === 'rejected') {
@@ -398,13 +414,13 @@ export class Cogitator implements ToolInvoker {
   }
 
   /**
-   * `options` with its run callbacks also reporting to `config.observers`. The
-   * run's own callback goes first; an observer that throws is logged and the
-   * run goes on.
+   * `options` with its run callbacks also reporting to the observers watching
+   * when the run starts. The run's own callback goes first; an observer that
+   * throws is logged and the run goes on.
    */
   private withObservers(options: RunOptions, agent: Agent, runId: () => string): RunOptions {
-    const observers = this.config.observers;
-    if (!observers || observers.length === 0) return options;
+    const observers = [...this.observers];
+    if (observers.length === 0) return options;
 
     const notify = (hook: keyof RunObserver, call: (observer: RunObserver) => void) => {
       for (const observer of observers) {

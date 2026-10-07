@@ -100,6 +100,30 @@ describe('run observers', () => {
   });
 });
 
+describe('observers attached later', () => {
+  it('see the runs that start after observe() until they unsubscribe', async () => {
+    const cog = runtime([]);
+    const seen: string[] = [];
+    const stop = cog.observe({ onRunComplete: (result) => seen.push(result.output) });
+
+    await cog.run(agent, { input: 'first' });
+    stop();
+    await cog.run(agent, { input: 'second' });
+
+    expect(seen).toEqual(['hi']);
+  });
+
+  it('are closed with the runtime', async () => {
+    const closed = vi.fn();
+    const cog = new Cogitator({ llm: { backends: { test: backend('hi') } } });
+    cog.observe({ close: closed });
+
+    await cog.close();
+
+    expect(closed).toHaveBeenCalledOnce();
+  });
+});
+
 describe('closing observers', () => {
   it('lets every observer flush on close, even when one fails', async () => {
     const closed = vi.fn();
