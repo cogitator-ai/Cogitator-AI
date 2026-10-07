@@ -44,9 +44,14 @@ export interface NodeResult<S = WorkflowState> {
 
 export type NodeFn<S = WorkflowState> = (ctx: NodeContext<S>) => Promise<NodeResult<S>>;
 
+/**
+ * A step of a workflow. `fn` and the compensation hooks are declared as
+ * methods, so a `Workflow<MyState>` is a `Workflow` too: registries, servers
+ * and the studio hold workflows of different state types side by side.
+ */
 export interface WorkflowNode<S = WorkflowState> {
   name: string;
-  fn: NodeFn<S>;
+  fn(ctx: NodeContext<S>): Promise<NodeResult<S>>;
   config?: NodeConfig<S>;
 }
 
@@ -307,8 +312,8 @@ export interface CircuitBreakerStatus {
 export type CompensationOrder = 'reverse' | 'forward' | 'parallel';
 
 export interface CompensationConfig<S = WorkflowState> {
-  compensate?: (state: S, originalResult: unknown) => Promise<void>;
-  compensateCondition?: (state: S, error: Error) => boolean;
+  compensate?(state: S, originalResult: unknown): Promise<void>;
+  compensateCondition?(state: S, error: Error): boolean;
   compensateOrder?: CompensationOrder;
   compensateTimeout?: number;
 }
