@@ -131,6 +131,8 @@ describe('create-cogitator-app CLI', () => {
       'openai',
       '--api-key',
       'sk-test',
+      '--pm',
+      'pnpm',
       '--no-install',
       '--no-git',
     ]);
@@ -138,6 +140,7 @@ describe('create-cogitator-app CLI', () => {
     expect(result.code).toBe(0);
     expect(existsSync(join(directory, '.env'))).toBe(true);
     expect(result.stderr).toContain('Your project is ready.');
+    expect(result.stderr).toContain('pnpm doctor');
     expect(result.stderr).not.toContain('cp .env.example .env');
     expect(result.stderr).not.toContain('sk-test');
   });

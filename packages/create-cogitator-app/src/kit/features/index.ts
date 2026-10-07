@@ -3,6 +3,7 @@ import { appScriptFeature } from './app-script.js';
 import { appServerFeature } from './app-server.js';
 import { baseFeature } from './base.js';
 import { memoryFeature } from './memory.js';
+import { durableFeature, swarmsFeature, workflowsFeature } from './orchestration.js';
 import { providerFeature } from './provider.js';
 import type { FeatureModule } from './types.js';
 
@@ -15,6 +16,9 @@ export const FEATURE_MODULES: readonly FeatureModule[] = [
   baseFeature,
   providerFeature,
   memoryFeature,
+  workflowsFeature,
+  durableFeature,
+  swarmsFeature,
   appScriptFeature,
   appServerFeature,
   appChannelsFeature,
