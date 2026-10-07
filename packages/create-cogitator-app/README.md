@@ -1,158 +1,151 @@
 # create-cogitator-app
 
-Interactive scaffolder for [Cogitator](https://cogitator.app) - creates a ready-to-run TypeScript AI agent project from one of six templates.
+Scaffolder for [Cogitator](https://cogitator.app): a working TypeScript agent project in one command, from a preset or a stack you pick, with tests on a mocked model, a registry of agents, Cogitator Studio, coding-agent setup and a production Dockerfile.
 
 Guide: [cogitator.app/docs/getting-started/scaffolding](https://cogitator.app/docs/getting-started/scaffolding)
 
 ## Usage
 
 ```bash
-# Interactive mode
+# Ask for everything
 npx create-cogitator-app
 
-# With arguments
-npx create-cogitator-app my-project --template basic --provider openai
+# A preset with a provider
+npx create-cogitator-app my-bot --preset rag --provider openai
 
-# Skip every prompt with flags
-npx create-cogitator-app my-project -t swarm -p ollama --pm pnpm --docker --no-git
+# Pick the stack yourself, ask nothing
+npx create-cogitator-app api --app server --server fastify --memory postgres --features rag,evals --yes
 
-# Accept the defaults for everything not given
-npx create-cogitator-app -y
-npx create-cogitator-app my-project -p openai --yes
+# Look before writing anything
+npx create-cogitator-app demo --preset nextjs --dry-run --json
 
-# Use a local model you already have
-npx create-cogitator-app my-project -p ollama --model llama3.2:3b -y
+# Start from an example of the repository or from a GitHub template
+npx create-cogitator-app tutor --example core/basic-agent
+npx create-cogitator-app bot --template github:acme/agent-templates/support-bot#v2
 ```
 
-Prompts are shown only for values not given on the command line: project directory, template, provider, the Ollama model (when Ollama is running), package manager, Docker Compose and git. With `-y` / `--yes` nothing is asked and the defaults fill the gaps: `my-agents`, `basic`, `ollama` with `qwen3.5:9b`, the detected package manager, Docker Compose on, git on. The target directory must be empty or not exist. After writing the files the scaffolder runs `<pm> install` (skip it with `--no-install`) and, unless disabled, creates a git repository with an initial commit. A failed install or git step is reported and left for you to run by hand.
+Anything the flags leave out is asked for at a terminal. With `--yes`, `--json`, without a TTY or with `CI` set nothing is asked and the defaults fill the gaps: the `my-agents` directory, the `basic` preset, Ollama with `qwen3.5:9b`, the package manager that runs the scaffolder, Docker Compose on, git on. A typo in a flag or a value is an error with the closest valid name, never a silent default.
 
-The last segment of the directory becomes the package name, so it has to be a valid npm package name: lowercase letters, digits, `.`, `_` and `-`, starting with a letter or digit. `.` creates the project in the current (empty) directory and names it after that directory. An invalid name stops the scaffolder before anything is written.
-
-With Ollama the scaffolder checks whether the model is pulled. At the prompt it offers to pull it right away, otherwise the next steps it prints include `ollama pull <model>`. With a cloud provider they include `cp .env.example .env` and the key to set.
+After writing the files the scaffolder installs the dependencies, formats the code with the project's Biome, writes `.cogitator/scaffold.json` (hashes of what it generated, for `cogitator add`) and commits everything to a new git repository, unless the project is inside one already. With Ollama it offers to pull a missing model, with a cloud provider it checks the key you pass with `--api-key` (written to `.env`, mode 600, never printed).
 
 Requires Node.js 22.12+.
 
-## Templates
+## Presets
 
-| Template     | Description                                                              |
-| ------------ | ------------------------------------------------------------------------ |
-| `basic`      | Single agent with tools                                                  |
-| `memory`     | Agent with Redis-backed persistent memory (`@cogitator-ai/redis`)        |
-| `swarm`      | Hierarchical swarm of researcher, writer and reviewer agents             |
-| `workflow`   | DAG workflow (`@cogitator-ai/workflows`) with sequential agent nodes     |
-| `api-server` | Express REST API with `CogitatorServer` from `@cogitator-ai/express`     |
-| `nextjs`     | Next.js App Router chat app with a streaming `/api/chat` route, Tailwind |
+| Preset             | What you get                                                            |
+| ------------------ | ----------------------------------------------------------------------- |
+| `basic`            | One agent with real tools in your terminal, the best place to start     |
+| `assistant`        | Workspace files with approvals, long-term memory, a scheduler and evals |
+| `memory`           | Conversations that survive restarts, in SQLite                          |
+| `api-server`       | Express with Swagger UI, token auth and persistent threads              |
+| `hono`             | Agents behind a small, fast HTTP API                                    |
+| `tetsu`            | Bun-native controller with OpenAPI and WebSocket                        |
+| `nextjs`           | Streaming chat with tool calls, approvals and saved threads             |
+| `channels`         | One assistant on Telegram, Discord, Slack or WebChat                    |
+| `rag`              | Answers grounded in the files of `docs/`                                |
+| `mcp`              | Tools from an MCP server, your agents served over MCP                   |
+| `swarm`            | A researcher and a writer under a reviewing supervisor                  |
+| `workflow`         | A multi-step pipeline of agents                                         |
+| `durable-workflow` | A saga with compensation, an approval step and crash recovery           |
+| `a2a`              | An agent other frameworks call over the Agent-to-Agent protocol         |
+| `voice-realtime`   | Speech in, speech out over WebSocket                                    |
+| `evals`            | Measure an agent on a dataset and gate CI on the score                  |
 
-## CLI Flags
+`--list-templates` prints them, `--template <name>` is an alias of `--preset`. A preset is only a starting point: every flag below changes it.
 
-| Flag                       | Shorthand | Description                                               |
-| -------------------------- | --------- | --------------------------------------------------------- |
-| `[name]`                   |           | Project directory (its basename becomes the package name) |
-| `--template <name>`        | `-t`      | Template to use                                           |
-| `--provider <name>`        | `-p`      | LLM provider (`ollama`, `openai`, `anthropic`, `google`)  |
-| `--model <name>`           |           | Model the agents use (default: the provider's, below)     |
-| `--pm <name>`              |           | Package manager (`pnpm`, `npm`, `yarn`, `bun`)            |
-| `--docker` / `--no-docker` |           | Include Docker Compose (Redis, Postgres, plus Ollama)     |
-| `--git` / `--no-git`       |           | Initialize git repository                                 |
-| `--no-install`             |           | Write the files without running `<pm> install`            |
-| `--yes`                    | `-y`      | Don't prompt; use the defaults for every missing value    |
+## Flags
 
-Unknown values for `--template`, `--provider` and `--pm` are ignored and asked for interactively (or replaced by the default with `--yes`). The package manager defaults to the one that invoked the scaffolder (`npm_config_user_agent`: npm under `npx` and `npm create`, pnpm under `pnpm create`, and so on), falling back to `pnpm`.
+| Flag                                  | What it does                                                                                                               |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `[directory]`                         | Where the project goes; its last segment becomes the package name                                                          |
+| `-t, --preset <name>`                 | A preset from the table above                                                                                              |
+| `--template <name\|repo>`             | A preset, or `github:owner/repo[/path][#ref]` to copy a repository                                                         |
+| `--example <name[#ref]>`              | A runnable example of the Cogitator repository, see `--list-examples`                                                      |
+| `--app <kind>`                        | `script`, `server`, `next`, `channels`, `worker`                                                                           |
+| `--server <framework>`                | `hono`, `express`, `fastify`, `koa`, `tetsu`                                                                               |
+| `--channels <list>`                   | `telegram`, `discord`, `slack`, `webchat`                                                                                  |
+| `--memory <kind>`                     | `none`, `memory`, `sqlite`, `postgres`, `redis`, `mongodb`                                                                 |
+| `--vector-store <store>`              | For RAG: `memory`, `postgres`, `qdrant`                                                                                    |
+| `--features <list>`                   | Add-ons: `harness`, `mcp`, `rag`, `workflows`, `durable`, `swarms`, `evals`, `otel`, `langfuse`, `voice`, `sandbox`, `a2a` |
+| `--deploy <target>`                   | `none`, `docker`, `fly`                                                                                                    |
+| `--[no-]docker`                       | `docker-compose.yml` for the local services (default on)                                                                   |
+| `-p, --provider <name>`               | `ollama`, `openai`, `anthropic`, `google`                                                                                  |
+| `-m, --model <id>`                    | The model at the provider, the provider's default otherwise                                                                |
+| `--api-key <key>`                     | Written to `.env` and checked against the provider                                                                         |
+| `--pm <name>`                         | `pnpm`, `npm`, `yarn`, `bun` (default: the one running the scaffolder)                                                     |
+| `--agent <list>`                      | Coding-agent setup: `claude`, `cursor`, `codex`, `none`                                                                    |
+| `--[no-]git`, `--[no-]install`        | Create the git repository, install the dependencies (both on by default)                                                   |
+| `--no-telemetry`                      | Send no anonymous usage event, see [Telemetry](https://cogitator.app/docs/getting-started/telemetry)                       |
+| `-y, --yes`                           | Ask nothing                                                                                                                |
+| `--dry-run`                           | Show the files, dependencies, services and variables without writing anything                                              |
+| `--json`                              | Machine-readable output, implies `--yes`                                                                                   |
+| `--list-templates`, `--list-examples` | List the presets or the examples                                                                                           |
 
-## Providers
+Combinations that cannot work are refused before anything is written, with how to fix them: a Tetsu server needs Bun, voice needs a provider with realtime speech, A2A needs a server or Next.js, and so on.
 
-| Provider    | Default Model       | Requires                                                                           |
-| ----------- | ------------------- | ---------------------------------------------------------------------------------- |
-| `ollama`    | `qwen3.5:9b`        | [Ollama](https://ollama.com) (`OLLAMA_BASE_URL`, default `http://localhost:11434`) |
-| `openai`    | `gpt-6.1-sol`       | `OPENAI_API_KEY`                                                                   |
-| `anthropic` | `claude-sonnet-5-5` | `ANTHROPIC_API_KEY`                                                                |
-| `google`    | `gemini-3.8-flash`  | `GOOGLE_API_KEY`                                                                   |
+## What a project contains
 
-## Generated Project Structure
+Every project, whatever the stack:
 
-Every project gets these files (shown for the `basic` template):
+- `src/cogitator.ts`, the registry: the runtime configured by `cogitator.yml` and every agent, workflow and swarm by name. The entry points, the tests, `cogitator dev` and `cogitator mcp` find them there.
+- Three working tools in `src/tools/`: `fetch_url` with an SSRF guard, `current_time`, and a `calculator` that parses instead of evaluating.
+- Tests that run offline on `mockCogitator`, a scripted model with tool calls, and a CI workflow running typecheck, lint and tests.
+- `src/env.ts`, a Zod schema of every variable the project reads, matching `.env.example`.
+- `AGENTS.md` with a managed block of rules for coding agents and `CLAUDE.md` pointing at it, and the Cogitator docs of the installed version in `node_modules/@cogitator-ai/core/docs/`.
+- Scripts: `dev`, `build`, `start`, `test`, `typecheck`, `lint`, `format`, `doctor` and `dev:studio`.
+- With `--deploy`, a production Dockerfile from `@cogitator-ai/deploy` (multi-stage, lockfile install, non-root user, only production dependencies) and `fly.toml` for Fly.io.
+- With `--agent`, the `cogitator` MCP server and a skill for Claude Code (`.mcp.json`, `.claude/skills`), Cursor (`.cursor/mcp.json`, `.cursor/skills`) or Codex (`.codex/config.toml`, `.agents/skills`).
 
+The `@cogitator-ai/*` packages are pinned with a caret to the versions released with the scaffolder, and `package.json` records the spec and the command that recreate the project under `cogitator`.
+
+## Growing a project
+
+`cogitator add` brings what the scaffolder generates into an existing project, with the same code a new project would get:
+
+```bash
+npx cogitator add rag
+npx cogitator add --memory postgres --dry-run
 ```
-my-project/
-├── src/
-│   ├── index.ts         # Main entry point
-│   └── tools.ts         # Tool definitions
-├── package.json         # dev / start / build / typecheck scripts
-├── tsconfig.json        # not for nextjs, which ships its own
-├── cogitator.yml        # provider, model, memory and deploy settings
-├── .env.example         # the provider's key (REDIS_URL for memory, API_TOKEN for api-server)
-├── .gitignore           # also .env.* and, for nextjs, .next/ and next-env.d.ts
-├── README.md
-├── pnpm-workspace.yaml  # pnpm only
-└── docker-compose.yml   # with --docker
-```
 
-Template-specific sources:
+It merges into files you changed where it can (package.json, cogitator.yml, docker-compose.yml, the managed block of AGENTS.md, .gitignore), and refuses with a diff when it cannot. See the [CLI](https://www.npmjs.com/package/@cogitator-ai/cli).
 
-| Template     | Files                                                                                                       |
-| ------------ | ----------------------------------------------------------------------------------------------------------- |
-| `basic`      | `src/index.ts`, `src/tools.ts`                                                                              |
-| `memory`     | `src/index.ts`, `src/tools.ts`                                                                              |
-| `swarm`      | `src/index.ts`, `src/tools.ts`, `src/agents/{researcher,writer,reviewer}.ts`                                |
-| `workflow`   | `src/index.ts`, `src/agents.ts`                                                                             |
-| `api-server` | `src/index.ts`, `src/agents.ts`                                                                             |
-| `nextjs`     | `src/lib/agent.ts`, `src/app/api/{chat,health}/route.ts`, `src/app/{page,layout}.tsx`, Next/Tailwind config |
+## Examples and templates
 
-With a cloud provider the script templates also get `src/env.ts`, whose `requireEnv()` stops the app at startup with the name of a missing key and a pointer to `.env.example`.
+`--example core/basic-agent` turns a runnable example of the repository into a project: the example and the files it imports are fetched at the tag of the scaffolder version (`#main` or any ref after the name picks another), with a package.json, tsconfig, `.env.example` and README around them. `--list-examples` lists them.
 
-### Environment
-
-The `dev` and `start` scripts of the script templates run `tsx --env-file-if-exists=.env`, so the variables in `.env` reach the app (Next.js loads `.env*` itself). Copy `.env.example` to `.env`, fill it in, then run `pnpm dev` (or `npm run dev`, `yarn dev`, `bun dev`). Generated projects declare Node.js 22.12+ in `engines`.
-
-### Dependency versions
-
-The `@cogitator-ai/*` packages are pinned with a caret to the versions released together with the scaffolder (for example `^0.33.0`, never `latest`), so an older cached scaffolder keeps generating projects that compile. The ranges come from the scaffolder's own manifest, where `pnpm publish` writes the versions of the packages released alongside it.
-
-### Runtime behavior
-
-- The script templates (`basic`, `memory`, `swarm`, `workflow`) set a non-zero exit code when the run fails, and `workflow` also fails on an error in the workflow result. `memory` and `swarm` close their connections either way.
-- `api-server` and `nextjs` keep conversations in in-process memory (`memory: { adapter: 'memory' }`), so a thread remembers earlier turns and the thread routes of `api-server` answer. Switch the adapter to Redis, Postgres or SQLite to keep them across restarts.
-- `api-server` listens on `127.0.0.1` in development and on `0.0.0.0` with `NODE_ENV=production` (`HOST` overrides both). With `API_TOKEN` set, every route except `/api/health`, `/api/ready`, `/api/docs` and `/api/openapi.json` needs `Authorization: Bearer <token>`, and in production the server refuses to start without it. CORS stays off unless `CORS_ORIGIN` lists the allowed origins, comma-separated.
-- `nextjs` shows run errors in the chat and offers Stop while a reply streams. Its scripts are `dev`, `build`, `start` and `typecheck`.
-
-### cogitator.yml
-
-`cogitator.yml` is read by `cogitator run` and `cogitator deploy`, not by the generated code, which configures `Cogitator` in `src/` itself, so keep the provider, model and memory in both places in sync. It holds `llm.defaultProvider` and `llm.defaultModel`, the `memory` adapter (`redis` for `memory`, `memory` for `api-server` and `nextjs`) and for the servers a `deploy` section: `health.path: /api/health`, so `cogitator deploy` produces a container that reports healthy, and for `api-server` `secrets` (the provider key and `API_TOKEN`), so deploy checks they are set.
-
-### Docker Compose
-
-`docker-compose.yml` runs Redis and Postgres, plus Ollama when it is the provider. A one-shot `ollama-pull` service pulls the project's model into the Ollama volume once the server is healthy, so the first run does not fail on a missing model.
+`--template github:owner/repo/path#ref` copies a repository or a directory of one. Only regular files are extracted, `workspace:` ranges of `@cogitator-ai/*` become the released versions, and a template that depends on its own monorepo is refused before anything is installed. `GITHUB_TOKEN` reaches private repositories.
 
 ## Programmatic API
 
 ```ts
-import { scaffold, parseArgs, collectOptions } from 'create-cogitator-app';
-import type { ProjectOptions } from 'create-cogitator-app';
+import { planProject, scaffold, type ScaffoldLogger } from 'create-cogitator-app';
 
-const options: ProjectOptions = {
+const spec = {
   name: 'my-agent',
-  path: '/path/to/my-agent',
-  template: 'basic',
+  preset: 'basic',
+  app: 'script',
+  memory: 'sqlite',
   provider: 'ollama',
-  model: 'qwen3.5:9b', // optional, default: defaultModels[provider]
+  model: 'qwen3.5:4b',
   packageManager: 'pnpm',
-  docker: false,
-  git: true,
-  install: false, // optional, default true
+} as const;
+
+const plan = planProject(spec);
+console.log(plan.files.length, plan.command);
+
+const log: ScaffoldLogger = {
+  start: (message) => console.log(`... ${message}`),
+  done: (message) => console.log(`ok  ${message}`),
+  fail: (message) => console.log(`!!  ${message}`),
+  warn: (message) => console.log(`??  ${message}`),
 };
-
-const result = await scaffold(options);
-// { files: ['package.json', 'src/index.ts', ...], install: { status: 'skipped' }, git: { status: 'done' } }
-if (result.install.status === 'failed') console.error(result.install.error);
-
-// or: parse CLI arguments and prompt for the rest
-const fromCli = await collectOptions(parseArgs(process.argv.slice(2)));
-await scaffold(fromCli);
+const result = await scaffold(spec, { directory: './my-agent', install: true, git: true, log });
+if (result.install.status === 'failed') console.error(result.install.error.message);
 ```
 
-`scaffold()` writes the files, installs dependencies with `packageManager` unless `install` is `false`, and initializes git when `git` is `true`. It throws when `name` is not a valid package name (`validateProjectName(name)` returns the reason, or `undefined`) or when `path` exists and is not empty. A failed install or git step does not throw: the returned `ScaffoldResult` lists the generated `files` and reports each step as `{ status: 'done' }`, `{ status: 'skipped' }` or `{ status: 'failed', error }`, and the project stays on disk.
+`planProject(spec)` is pure: it validates the spec, refuses combinations that cannot work (`IncompatibleSpecError` with the issues) and returns the files, dependencies, scripts, environment, services and the command that recreates the project. `scaffold(spec, options)` writes the plan, installs, formats, writes the lock and commits; the `log` option replaces the CLI's spinners, and a failed install, format or git step is reported in the result (`{ status: 'done' | 'skipped' | 'failed' }`) instead of thrown.
 
-Other exports: `getTemplate(name)` and `templateChoices` (template generators and their labels), `detectPackageManager()`, `devCommand(pm)`, `validateProjectName(name)`, `defaultModels`, `providerConfig(provider, access?)` (the generated `llm` block, reading the key through `requireEnv` or `process.env`) and `providerEnvKey(provider)`, and the types `ProjectOptions`, `ScaffoldResult`, `ScaffoldStep`, `Template`, `LLMProvider`, `PackageManager` and `TemplateFile`.
+Also exported: `planAdd` and `addToProject` behind `cogitator add`, `createFromExample` and `createFromTemplate`, the catalogs (`PRESETS`, `FEATURE_CHOICES` and the rest), `compatibilityIssues`, `checkApiKey`, the Ollama helpers and the telemetry functions.
 
 ## License
 

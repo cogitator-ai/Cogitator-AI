@@ -8,7 +8,19 @@ import { Section, SectionHeader } from '../ui';
 import { RUNTIME_TABS } from './anywhere/data';
 import type { RuntimeTab } from './anywhere/types';
 
-const TEMPLATES = ['basic', 'memory', 'swarm', 'workflow', 'api-server', 'nextjs'];
+const TEMPLATES = [
+  'basic',
+  'assistant',
+  'api-server',
+  'hono',
+  'nextjs',
+  'channels',
+  'rag',
+  'mcp',
+  'workflow',
+  'a2a',
+  'evals',
+];
 
 function BrandIcon({ icon }: { icon: SimpleIcon | null }) {
   if (!icon) return <Braces className="size-3.5" aria-hidden />;
@@ -56,11 +68,11 @@ export async function RunsAnywhereSection() {
         />
         <div className="min-w-0">
           <p className="text-sm text-l-muted text-pretty">
-            Starting from scratch? The scaffolder writes a ready-to-run project, installs it and
-            sets up Docker Compose if you want it.
+            Starting from scratch? The scaffolder writes a ready-to-run project from one of 16
+            presets, with tests, a production Dockerfile and Cogitator Studio, and installs it.
           </p>
           <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 font-mono text-[11px]">
-            <span className="uppercase tracking-[0.14em] text-l-brass">templates</span>
+            <span className="uppercase tracking-[0.14em] text-l-brass">presets</span>
             {TEMPLATES.map((template) => (
               <span key={template} className="text-l-faint">
                 {template}
