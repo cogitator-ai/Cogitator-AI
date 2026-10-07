@@ -129,7 +129,7 @@ function listOf<T extends string>(
 /** Parses `github:owner/repo`, `github:owner/repo/sub/dir` and an optional `#ref`. */
 export function parseRemoteTemplate(value: string): RemoteTemplate {
   const match =
-    /^(?:github:|https:\/\/github\.com\/)([\w.-]+)\/([\w.-]+?)(?:\.git)?(?:\/((?:[\w.-]+\/?)+))?(?:#([^\s~^:?*[\\]+))?$/.exec(
+    /^(?:github:|https:\/\/github\.com\/)([\w.-]+)\/([\w.-]+?)(?:\.git)?(?:\/((?:[\w.-]+\/)*[\w.-]+)\/?)?(?:#([^\s~^:?*[\\]+))?$/.exec(
       value
     );
   if (!match) {

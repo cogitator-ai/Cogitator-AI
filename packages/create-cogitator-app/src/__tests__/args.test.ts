@@ -138,6 +138,20 @@ describe('parseRemoteTemplate', () => {
     );
     expect(() => parseRemoteTemplate('gitlab:acme/agents')).toThrow('Invalid remote template');
     expect(() => parseRemoteTemplate('github:acme')).toThrow('Invalid remote template');
+    expect(() => parseRemoteTemplate('github:acme/agents//bots')).toThrow(
+      'Invalid remote template'
+    );
+  });
+
+  it('drops a trailing slash of the directory', () => {
+    expect(parseRemoteTemplate('github:acme/agents/bots/support/').path).toBe('bots/support');
+  });
+
+  it('rejects a hostile value in linear time', () => {
+    const hostile = `github:-/-/${'a/'.repeat(5000)}!`;
+    const started = performance.now();
+    expect(() => parseRemoteTemplate(hostile)).toThrow('Invalid remote template');
+    expect(performance.now() - started).toBeLessThan(200);
   });
 });
 

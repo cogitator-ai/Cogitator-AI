@@ -187,7 +187,7 @@ export function planExample(example: ExampleEntry, options: ExamplePlanOptions):
     name: variable,
     ...(KNOWN_ENV[variable] ?? { description: 'Read by the example' }),
   }));
-  const envExample = [
+  const envExample = `${[
     '# Copy to .env and fill in what the example needs.',
     '',
     ...env.flatMap((variable) => [
@@ -197,7 +197,7 @@ export function planExample(example: ExampleEntry, options: ExamplePlanOptions):
     ]),
   ]
     .join('\n')
-    .replace(/\n+$/, '\n');
+    .trimEnd()}\n`;
 
   const run = pm === 'npm' ? 'npm run' : pm;
   const readme = [

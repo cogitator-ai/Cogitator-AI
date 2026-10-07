@@ -106,9 +106,9 @@ describe('--example', () => {
       name: 'core/basic-agent',
       ref: 'create-cogitator-app@0.5.0',
     });
-    expect(plan.files.find((file) => file.path === '.env.example')?.content).toContain(
-      'GOOGLE_API_KEY='
-    );
+    const envExample = plan.files.find((file) => file.path === '.env.example')?.content ?? '';
+    expect(envExample).toContain('GOOGLE_API_KEY=');
+    expect(envExample).toMatch(/[^\n]\n$/);
     expect(plan.files.find((file) => file.path === 'pnpm-workspace.yaml')?.content).toContain(
       'esbuild: true'
     );
