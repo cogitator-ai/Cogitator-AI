@@ -110,6 +110,14 @@ export function compatibilityIssues(spec: ProjectSpec): CompatIssue[] {
     }
   }
 
+  if (hasFeature(spec, 'mcp') && spec.app === 'next') {
+    issues.push({
+      message:
+        'The MCP feature starts MCP servers as child processes, which a Next.js deployment cannot',
+      fix: 'use --app script, server, channels or worker for MCP',
+    });
+  }
+
   if (spec.app === 'next' && spec.server) {
     issues.push({ message: 'Next.js is its own server', fix: 'leave out --server' });
   }
