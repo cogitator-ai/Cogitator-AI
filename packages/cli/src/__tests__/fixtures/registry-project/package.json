@@ -1,0 +1,9 @@
+{
+  "name": "registry-project",
+  "private": true,
+  "type": "module",
+  "cogitator": {
+    "generator": "create-cogitator-app@0.0.0",
+    "command": "npx create-cogitator-app registry-project"
+  }
+}

@@ -45,6 +45,7 @@
     "@cogitator-ai/config": "workspace:*",
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/deploy": "workspace:*",
+    "@cogitator-ai/mcp": "workspace:*",
     "@cogitator-ai/memory": "workspace:*",
     "@cogitator-ai/models": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
@@ -53,7 +54,8 @@
     "commander": "^15.0.0",
     "create-cogitator-app": "workspace:^",
     "ora": "^9.4.1",
-    "yaml": "^2.9.1"
+    "yaml": "^2.9.1",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/node": "^22.20.4",
