@@ -9,7 +9,11 @@ import {
   pullOllamaModel,
   resolveOllamaUrl,
 } from '../kit/ollama.js';
-import { detectPackageManager, detectPackageManagerSpec } from '../kit/package-manager.js';
+import {
+  detectPackageManager,
+  detectPackageManagerSpec,
+  runScript,
+} from '../kit/package-manager.js';
 import { planProject, type ProjectPlan } from '../kit/plan.js';
 import { PRESETS } from '../kit/presets.js';
 import { providerInfo } from '../kit/providers.js';
@@ -170,6 +174,9 @@ function outro(result: ScaffoldResult, args: CliArgs, modelReady: boolean): stri
       (step) => `  ${pc.cyan(step.command)}${step.note ? pc.dim(`  # ${step.note}`) : ''}`
     ),
     '',
+    pc.dim(
+      `If something does not start, ${runScript(result.plan.spec.packageManager, 'doctor')} says what is missing.`
+    ),
     pc.dim(`Read AGENTS.md for how it fits together. Docs: ${DOCS_URL}`),
   ].join('\n');
 }
