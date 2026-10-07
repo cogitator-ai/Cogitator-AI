@@ -443,6 +443,9 @@ importers:
       '@cogitator-ai/deploy':
         specifier: workspace:*
         version: link:../deploy
+      '@cogitator-ai/mcp':
+        specifier: workspace:*
+        version: link:../mcp
       '@cogitator-ai/memory':
         specifier: workspace:*
         version: link:../memory
@@ -470,6 +473,9 @@ importers:
       yaml:
         specifier: ^2.9.1
         version: 2.9.1
+      zod:
+        specifier: ^4.6.5
+        version: 4.6.5
     devDependencies:
       '@types/node':
         specifier: ^22.20.4
