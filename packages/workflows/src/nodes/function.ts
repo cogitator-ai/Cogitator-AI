@@ -4,14 +4,15 @@ export type SimpleNodeFn<S, O = unknown> = (state: S, input?: unknown) => Promis
 
 export type FullNodeFn<S> = (ctx: NodeContext<S>) => Promise<NodeResult<S>>;
 
-export interface FunctionNodeOptions<S = WorkflowState> {
-  stateMapper?: (output: unknown) => Partial<S>;
+export interface FunctionNodeOptions<S = WorkflowState, O = unknown> {
+  /** The state update made from what the function returned. */
+  stateMapper?: (output: O) => Partial<S>;
 }
 
 export function functionNode<S extends WorkflowState = WorkflowState, O = unknown>(
   name: string,
   fn: SimpleNodeFn<S, O>,
-  options?: FunctionNodeOptions<S>
+  options?: FunctionNodeOptions<S, O>
 ): WorkflowNode<S> {
   return {
     name,
