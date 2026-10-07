@@ -23,7 +23,14 @@ import {
   type ScaffoldResult,
   type StepResult,
 } from '../kit/scaffold.js';
-import { bareModel } from '../kit/spec.js';
+import { bareModel, parseSpec, type ProjectSpec } from '../kit/spec.js';
+import {
+  firstRunNotice,
+  payloadFor,
+  sendTelemetry,
+  telemetryDisabledReason,
+  type TelemetryPayload,
+} from '../kit/telemetry.js';
 import { scaffolderVersion } from '../kit/versions.js';
 import { DOCS_URL } from '../kit/guide.js';
 import { examples, exampleTarget } from '../kit/examples.js';
@@ -190,9 +197,22 @@ function outro(result: ScaffoldResult, args: CliArgs, modelReady: boolean): stri
   ].join('\n');
 }
 
-/** What `run` reaches the network with, replaceable in tests. */
+/** What `run` reaches the network and the environment with, replaceable in tests. */
 export interface RunDeps {
   fetch?: typeof fetch;
+  env?: NodeJS.ProcessEnv;
+  /** Where telemetry goes, the release's Umami website by default. */
+  telemetry?: { websiteId?: string; host?: string; fetch?: typeof fetch };
+}
+
+/** Sends the run's one telemetry event, waiting at most its timeout. */
+async function report(enabled: boolean, deps: RunDeps, payload: TelemetryPayload): Promise<void> {
+  if (!enabled) return;
+  await sendTelemetry(payload, {
+    ...(deps.telemetry?.websiteId !== undefined && { websiteId: deps.telemetry.websiteId }),
+    ...(deps.telemetry?.host && { host: deps.telemetry.host }),
+    ...(deps.telemetry?.fetch && { fetch: deps.telemetry.fetch }),
+  });
 }
 
 /** Runs the scaffolder for `argv` and resolves with the exit code. */
@@ -233,17 +253,40 @@ export async function run(
   }
 
   const interactive = isInteractive(args);
+  const env = deps.env ?? process.env;
+  const telemetry =
+    telemetryDisabledReason({
+      flag: args.telemetry,
+      dryRun: args.dryRun,
+      env,
+      ...(deps.telemetry?.websiteId !== undefined && { websiteId: deps.telemetry.websiteId }),
+    }) === undefined;
+  if (telemetry) {
+    const notice = firstRunNotice(env);
+    if (notice) io.stderr(`${pc.dim(notice)}\n`);
+  }
+
   if (args.example !== undefined || args.remote) {
+    const kind = args.example !== undefined ? 'example' : 'template';
     try {
-      return await runStarter(args, interactive, io, deps);
+      const code = await runStarter(args, interactive, io, deps);
+      if (!args.dryRun)
+        await report(
+          telemetry,
+          deps,
+          payloadFor(undefined, code === 0 ? 'success' : 'failure', kind)
+        );
+      return code;
     } catch (error) {
       if (error instanceof CancelledError) {
         p.cancel('Cancelled, nothing was created.');
         return 1;
       }
+      await report(telemetry, deps, payloadFor(undefined, 'failure', kind));
       return reportError(error, args.json, io);
     }
   }
+  let resolvedSpec: ProjectSpec | undefined;
   try {
     if (interactive) {
       io.stderr(banner(version));
@@ -254,6 +297,7 @@ export async function run(
     const { path: directory, name } = resolveDirectory(args.directory ?? DEFAULT_DIRECTORY);
     const packageManager = args.packageManager ?? detectPackageManager();
     const spec = specFromArgs(args, { name, packageManager });
+    resolvedSpec = parseSpec(spec);
     const envKey = providerInfo(spec.provider).envKey;
     const secrets = envKey && args.apiKey ? { [envKey]: args.apiKey } : {};
     const planOptions = {
@@ -278,6 +322,12 @@ export async function run(
       git: args.git ?? true,
       log: args.json ? undefined : clackLogger(),
     });
+
+    await report(
+      telemetry,
+      deps,
+      payloadFor(result.plan.spec, result.install.status === 'failed' ? 'failure' : 'success')
+    );
 
     const modelReady =
       result.plan.spec.provider === 'ollama' ? await prepareOllama(result.plan, interactive) : true;
@@ -327,6 +377,7 @@ export async function run(
       p.cancel('Cancelled, nothing was created.');
       return 1;
     }
+    if (resolvedSpec) await report(telemetry, deps, payloadFor(resolvedSpec, 'failure'));
     return reportError(error, args.json, io);
   }
 }

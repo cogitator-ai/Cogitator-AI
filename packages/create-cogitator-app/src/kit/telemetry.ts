@@ -1,0 +1,153 @@
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import type { ProjectSpec } from './spec.js';
+import { scaffolderVersion } from './versions.js';
+
+declare const __TELEMETRY_WEBSITE_ID__: string | undefined;
+
+/** Where the events go: the Umami instance of the Cogitator project. */
+export const TELEMETRY_HOST = 'https://analytics.el1fe.com';
+export const TELEMETRY_DOCS = 'https://cogitator.app/docs/getting-started/telemetry';
+const SEND_TIMEOUT_MS = 1500;
+
+/**
+ * The Umami website the events are counted under, set when the scaffolder is
+ * built for a release (`COGITATOR_UMAMI_WEBSITE_ID`). A build without it sends
+ * nothing.
+ */
+export function telemetryWebsiteId(): string {
+  return typeof __TELEMETRY_WEBSITE_ID__ === 'undefined' ? '' : __TELEMETRY_WEBSITE_ID__;
+}
+
+/**
+ * Everything one event carries, and nothing else: no project name, path,
+ * model, key or anything a user typed.
+ */
+export interface TelemetryPayload {
+  version: string;
+  /** The preset, `custom` for a stack picked by hand, `example` or `template` for copied projects. */
+  preset: string;
+  provider: string;
+  memory: string;
+  /** The add-ons, comma-separated in catalog order. */
+  features: string;
+  packageManager: string;
+  /** The major version of Node, such as `24`. */
+  node: string;
+  /** `darwin`, `linux` or `win32`. */
+  os: string;
+  outcome: 'success' | 'failure';
+}
+
+export const PAYLOAD_FIELDS: ReadonlyArray<keyof TelemetryPayload> = [
+  'version',
+  'preset',
+  'provider',
+  'memory',
+  'features',
+  'packageManager',
+  'node',
+  'os',
+  'outcome',
+];
+
+export function payloadFor(
+  spec:
+    Pick<ProjectSpec, 'preset' | 'provider' | 'memory' | 'features' | 'packageManager'> | undefined,
+  outcome: TelemetryPayload['outcome'],
+  kind: 'generated' | 'example' | 'template' = 'generated'
+): TelemetryPayload {
+  return {
+    version: scaffolderVersion(),
+    preset: kind !== 'generated' ? kind : (spec?.preset ?? 'custom'),
+    provider: spec?.provider ?? 'none',
+    memory: spec?.memory ?? 'none',
+    features: spec?.features.join(',') ?? '',
+    packageManager: spec?.packageManager ?? 'unknown',
+    node: process.versions.node.split('.')[0],
+    os: process.platform,
+    outcome,
+  };
+}
+
+/** Why no event is sent, or `undefined` when one is. */
+export function telemetryDisabledReason(options: {
+  flag?: boolean;
+  dryRun?: boolean;
+  env?: NodeJS.ProcessEnv;
+  websiteId?: string;
+}): string | undefined {
+  const env = options.env ?? process.env;
+  const on = (value: string | undefined) => {
+    const normalized = value?.trim().toLowerCase();
+    return (
+      normalized !== undefined && normalized !== '' && normalized !== '0' && normalized !== 'false'
+    );
+  };
+  if (options.flag === false) return '--no-telemetry';
+  if (on(env.COGITATOR_TELEMETRY_DISABLED)) return 'COGITATOR_TELEMETRY_DISABLED';
+  if (on(env.DO_NOT_TRACK)) return 'DO_NOT_TRACK';
+  if (on(env.CI)) return 'CI';
+  if (options.dryRun) return '--dry-run';
+  if (!(options.websiteId ?? telemetryWebsiteId())) return 'this build has no telemetry configured';
+  return undefined;
+}
+
+function configDir(env: NodeJS.ProcessEnv): string {
+  if (process.platform === 'win32' && env.APPDATA) return join(env.APPDATA, 'cogitator');
+  return join(env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'cogitator');
+}
+
+/**
+ * The one line about telemetry shown the first time it is on, or `undefined`
+ * when it was shown before. Showing it is remembered in the user's config
+ * directory.
+ */
+export function firstRunNotice(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const marker = join(configDir(env), 'telemetry-notice');
+  if (existsSync(marker)) return undefined;
+  try {
+    mkdirSync(configDir(env), { recursive: true });
+    writeFileSync(marker, `${new Date().toISOString()}\n`);
+  } catch {
+    return undefined;
+  }
+  return `Cogitator sends one anonymous event per scaffolded project (version, preset, provider, memory, add-ons, package manager, Node major, OS). Turn it off with --no-telemetry or COGITATOR_TELEMETRY_DISABLED=1: ${TELEMETRY_DOCS}`;
+}
+
+/**
+ * Sends the event to Umami. It never throws and never takes longer than its
+ * timeout: a slow or failing network changes nothing for the scaffolder.
+ */
+export async function sendTelemetry(
+  payload: TelemetryPayload,
+  options: { fetch?: typeof fetch; websiteId?: string; host?: string; timeoutMs?: number } = {}
+): Promise<boolean> {
+  const website = options.websiteId ?? telemetryWebsiteId();
+  if (!website) return false;
+  const body = {
+    type: 'event',
+    payload: {
+      website,
+      hostname: 'create-cogitator-app',
+      url: `/scaffold/${payload.preset}`,
+      name: 'scaffold',
+      data: payload,
+    },
+  };
+  try {
+    const response = await (options.fetch ?? fetch)(`${options.host ?? TELEMETRY_HOST}/api/send`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'user-agent': `Mozilla/5.0 (${payload.os}) create-cogitator-app/${payload.version} Node/${payload.node}`,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(options.timeoutMs ?? SEND_TIMEOUT_MS),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}

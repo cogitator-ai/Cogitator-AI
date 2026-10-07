@@ -5,7 +5,12 @@ import chalk from 'chalk';
 import {
   detectPackageManager,
   detectPackageManagerSpec,
+  firstRunNotice,
+  parseSpec,
+  payloadFor,
   scaffold,
+  sendTelemetry,
+  telemetryDisabledReason,
   validateProjectName,
   type ProjectSpecInput,
   type ScaffoldLogger,
@@ -236,6 +241,7 @@ export const initCommand = new Command('init')
   .argument('[name]', 'Project name')
   .option('--no-install', 'Skip dependency installation')
   .option('--no-git', 'Skip creating a git repository')
+  .option('--no-telemetry', 'Send no anonymous usage event')
   .addHelpText(
     'after',
     examplesHelp([
@@ -243,52 +249,68 @@ export const initCommand = new Command('init')
       ['cogitator init my-bot --no-install', 'write the files, install later'],
     ])
   )
-  .action(async (nameArg: string | undefined, options: { install: boolean; git: boolean }) => {
-    printBanner();
-    p.intro(chalk.bgCyan(chalk.black(' cogitator init ')));
+  .action(
+    async (
+      nameArg: string | undefined,
+      options: { install: boolean; git: boolean; telemetry: boolean }
+    ) => {
+      printBanner();
+      p.intro(chalk.bgCyan(chalk.black(' cogitator init ')));
+      const telemetry = telemetryDisabledReason({ flag: options.telemetry }) === undefined;
+      if (telemetry) {
+        const notice = firstRunNotice();
+        if (notice) p.log.info(chalk.dim(notice));
+      }
 
-    if (nameArg !== undefined) {
-      const error = validateProjectName(nameArg);
-      if (error) {
-        p.cancel(`Invalid project name "${nameArg}": ${error}`);
-        process.exitCode = EXIT.usage;
+      if (nameArg !== undefined) {
+        const error = validateProjectName(nameArg);
+        if (error) {
+          p.cancel(`Invalid project name "${nameArg}": ${error}`);
+          process.exitCode = EXIT.usage;
+          return;
+        }
+      }
+
+      const answers = await collectAnswers(nameArg?.trim());
+      const directory = resolve(process.cwd(), answers.projectName);
+      const spec = initSpec(answers);
+
+      let result;
+      try {
+        result = await scaffold(spec, {
+          directory,
+          secrets: initSecrets(answers),
+          packageManagerSpec: detectPackageManagerSpec(detectPackageManager()),
+          install: options.install,
+          git: options.git,
+          log: clackLogger(),
+        });
+      } catch (error) {
+        if (telemetry) await sendTelemetry(payloadFor(parseSpec(spec), 'failure'));
+        p.cancel(errorMessage(error));
+        process.exitCode = EXIT.failed;
         return;
       }
-    }
+      if (telemetry) {
+        await sendTelemetry(
+          payloadFor(result.plan.spec, result.install.status === 'failed' ? 'failure' : 'success')
+        );
+      }
 
-    const answers = await collectAnswers(nameArg?.trim());
-    const directory = resolve(process.cwd(), answers.projectName);
-    const spec = initSpec(answers);
-
-    let result;
-    try {
-      result = await scaffold(spec, {
-        directory,
-        secrets: initSecrets(answers),
-        packageManagerSpec: detectPackageManagerSpec(detectPackageManager()),
-        install: options.install,
-        git: options.git,
-        log: clackLogger(),
+      const steps = result.plan.nextSteps({
+        directory: answers.projectName,
+        installed: result.install.status === 'done',
+        keyWritten: true,
+        modelReady: answers.provider !== 'ollama',
       });
-    } catch (error) {
-      p.cancel(errorMessage(error));
-      process.exitCode = EXIT.failed;
-      return;
+      p.note(
+        steps.map((step) => `${step.command}${step.note ? `  # ${step.note}` : ''}`).join('\n'),
+        'Next steps',
+        { format: (line) => chalk.dim(line) }
+      );
+
+      p.outro(
+        `${chalk.green('Your assistant is ready!')} Channels: ${chalk.cyan(answers.channels.join(', '))}`
+      );
     }
-
-    const steps = result.plan.nextSteps({
-      directory: answers.projectName,
-      installed: result.install.status === 'done',
-      keyWritten: true,
-      modelReady: answers.provider !== 'ollama',
-    });
-    p.note(
-      steps.map((step) => `${step.command}${step.note ? `  # ${step.note}` : ''}`).join('\n'),
-      'Next steps',
-      { format: (line) => chalk.dim(line) }
-    );
-
-    p.outro(
-      `${chalk.green('Your assistant is ready!')} Channels: ${chalk.cyan(answers.channels.join(', '))}`
-    );
-  });
+  );

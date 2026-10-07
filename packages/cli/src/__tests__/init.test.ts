@@ -98,3 +98,10 @@ describe('initSecrets', () => {
     expect(initSecrets(answers({ provider: 'ollama', apiKey: '' }))).toEqual({});
   });
 });
+
+describe('cogitator init telemetry', () => {
+  it('can be turned off with --no-telemetry', async () => {
+    const { initCommand } = await import('../commands/init.js');
+    expect(initCommand.options.map((option) => option.long)).toContain('--no-telemetry');
+  });
+});
