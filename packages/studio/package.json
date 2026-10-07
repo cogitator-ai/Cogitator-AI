@@ -1,0 +1,80 @@
+{
+  "name": "@cogitator-ai/studio",
+  "version": "0.1.0",
+  "description": "Cogitator Studio: a local debugger for agent projects with chat, traces, costs, approvals, workflow runs and time-travel forks",
+  "keywords": [
+    "cogitator",
+    "ai",
+    "agents",
+    "llm",
+    "studio",
+    "debugger",
+    "tracing",
+    "playground"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && tsx ../../scripts/fix-esm-imports.ts . && vite build",
+    "dev": "tsc --watch",
+    "dev:ui": "vite",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json && tsc --noEmit -p tsconfig.ui.json",
+    "clean": "rm -rf dist"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "dependencies": {
+    "@cogitator-ai/core": "workspace:*",
+    "@cogitator-ai/memory": "workspace:*",
+    "@cogitator-ai/models": "workspace:*",
+    "@cogitator-ai/types": "workspace:*"
+  },
+  "peerDependencies": {
+    "@cogitator-ai/workflows": "workspace:>=0.1.0",
+    "tsx": ">=4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@cogitator-ai/workflows": {
+      "optional": true
+    },
+    "tsx": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@cogitator-ai/workflows": "workspace:*",
+    "@types/node": "^22.20.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "tsx": "^4.23.15",
+    "typescript": "^6.0.3",
+    "vite": "^7.3.1",
+    "vitest": "^5.0.3",
+    "zod": "^4.6.5"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cogitator-ai/Cogitator-AI.git",
+    "directory": "packages/studio"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT"
+}
