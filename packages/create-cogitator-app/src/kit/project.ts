@@ -64,6 +64,7 @@ export interface DeploySettings {
 
 export interface GeneratedFile {
   path: string;
+  /** Mutable until the plan is done, so a final pass can adapt every file. */
   content: string;
   /** File mode for `chmod`, used for `.env` (0600) and executable scripts. */
   mode?: number;

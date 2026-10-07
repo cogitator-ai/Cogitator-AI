@@ -369,3 +369,18 @@ export function emitAgentsMd(project: ProjectBuilder): void {
   );
   project.file('CLAUDE.md', '@AGENTS.md\n');
 }
+
+const RELATIVE_JS_IMPORT = /(\bfrom\s+|\bimport\s*\(\s*)(['"])(\.{1,2}\/[^'"]+?)\.js\2/g;
+
+/**
+ * Next.js bundles with `moduleResolution: bundler`, which resolves relative
+ * imports without an extension and does not map `./x.js` to `./x.ts`. Generated
+ * code imports with `.js` for Node, so a Next.js app gets the extensions dropped.
+ */
+export function adaptImportsForBundler(project: ProjectBuilder): void {
+  if (project.spec.app !== 'next') return;
+  for (const file of project.files.values()) {
+    if (!/\.tsx?$/.test(file.path)) continue;
+    file.content = file.content.replace(RELATIVE_JS_IMPORT, '$1$2$3$2');
+  }
+}

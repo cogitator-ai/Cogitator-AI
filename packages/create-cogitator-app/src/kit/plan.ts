@@ -1,5 +1,6 @@
 import { assertCompatible } from './compat.js';
 import {
+  adaptImportsForBundler,
   emitAgentsMd,
   emitCogitatorYml,
   emitCompose,
@@ -85,6 +86,7 @@ export function planProject(input: unknown, options: PlanOptions = {}): ProjectP
   emitGitignore(project);
   emitAgentsMd(project);
   emitReadme(project);
+  adaptImportsForBundler(project);
   emitPackageJson(project, {
     packageManagerSpec: options.packageManagerSpec,
     cogitator: { ...manifest },

@@ -1,5 +1,6 @@
 import { a2aFeature } from './a2a.js';
 import { appChannelsFeature } from './app-channels.js';
+import { appNextFeature } from './app-next.js';
 import { appScriptFeature } from './app-script.js';
 import { appServerFeature } from './app-server.js';
 import { baseFeature } from './base.js';
@@ -34,4 +35,5 @@ export const FEATURE_MODULES: readonly FeatureModule[] = [
   appScriptFeature,
   appServerFeature,
   appChannelsFeature,
+  appNextFeature,
 ];
