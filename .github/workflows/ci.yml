@@ -92,8 +92,26 @@ jobs:
 
       - run: pnpm build
 
+      - name: Cache Playwright browsers
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('pnpm-lock.yaml') }}
+
+      # The Studio e2e skips itself without a browser, so a failed install never fails the job.
+      # Runners ship Google Chrome, so its system libraries are usually there: apt only runs
+      # when the headless shell cannot start, with short timeouts so an unreachable mirror
+      # gives way to the next one instead of hanging the job.
       - name: Install Chromium for the Studio e2e
-        run: pnpm --filter @cogitator-ai/e2e exec playwright install --with-deps --only-shell chromium
+        continue-on-error: true
+        timeout-minutes: 5
+        working-directory: packages/e2e
+        run: |
+          pnpm exec playwright install --only-shell chromium
+          if ! node -e "require('playwright').chromium.launch().then((b) => b.close())"; then
+            printf 'Acquire::http::Timeout "15";\nAcquire::Retries "2";\n' | sudo tee /etc/apt/apt.conf.d/99-ci-timeouts
+            pnpm exec playwright install-deps chromium
+          fi
 
       - run: pnpm exec turbo run test --filter='!@cogitator-ai/tetsu'
         env:
