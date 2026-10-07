@@ -1,31 +1,20 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parse } from 'yaml';
 import { loadConfig } from '@cogitator-ai/config';
 import { Deployer, ProjectAnalyzer } from '@cogitator-ai/deploy';
-import {
-  buildCogitatorYml,
-  buildProjectFiles,
-  detectPackageManagerSpec,
-  writeProjectFiles,
-  type InitAnswers,
-} from '../commands/init.js';
+import { planProject, scaffold, writeFiles } from 'create-cogitator-app';
+import { initSecrets, initSpec, type InitAnswers } from '../commands/init.js';
 import { detectConfigKind } from '../utils/project-config.js';
-
-const VERSIONS = {
-  '@cogitator-ai/core': '^0.19.4',
-  '@cogitator-ai/channels': '^0.2.5',
-  '@cogitator-ai/memory': '^0.6.22',
-};
 
 function answers(overrides: Partial<InitAnswers> = {}): InitAnswers {
   return {
     projectName: 'my-assistant',
     provider: 'anthropic',
     apiKey: 'sk-ant-test',
-    model: 'claude-sonnet-5-5',
+    model: 'anthropic/claude-sonnet-5-5',
     channels: ['telegram'],
     telegramToken: '123:abc',
     memory: 'sqlite',
@@ -33,28 +22,26 @@ function answers(overrides: Partial<InitAnswers> = {}): InitAnswers {
   };
 }
 
+function fileOf(a: InitAnswers, path: string, pm: 'pnpm' | 'npm' = 'pnpm'): string {
+  const file = planProject(initSpec(a, pm)).files.find((f) => f.path === path);
+  if (!file) throw new Error(`no ${path}`);
+  return file.content;
+}
+
 describe('cogitator.yml of an init project', () => {
   it('is a runtime config with the provider, model, memory and deploy settings', () => {
-    const doc: unknown = parse(buildCogitatorYml(answers()));
+    const doc: unknown = parse(fileOf(answers(), 'cogitator.yml'));
     expect(detectConfigKind(doc)).toBe('runtime');
     expect(doc).toEqual({
-      llm: { defaultProvider: 'anthropic', defaultModel: 'claude-sonnet-5-5' },
+      llm: { defaultProvider: 'anthropic', defaultModel: 'anthropic/claude-sonnet-5-5' },
       memory: { adapter: 'sqlite', sqlite: { path: './data/memory.db' } },
       deploy: { kind: 'worker', secrets: ['ANTHROPIC_API_KEY', 'TELEGRAM_BOT_TOKEN'] },
     });
   });
 
-  it('lists every channel secret and publishes the WebChat port', () => {
+  it('lists the channel secrets a deployment needs and publishes the WebChat port', () => {
     const doc: unknown = parse(
-      buildCogitatorYml(
-        answers({
-          channels: ['discord', 'slack', 'webchat'],
-          discordToken: 'd',
-          slackToken: 'xoxb',
-          slackSigningSecret: 's',
-          slackAppToken: 'xapp',
-        })
-      )
+      fileOf(answers({ channels: ['discord', 'slack', 'webchat'] }), 'cogitator.yml')
     );
     expect(doc).toMatchObject({
       deploy: {
@@ -65,34 +52,41 @@ describe('cogitator.yml of an init project', () => {
           'DISCORD_BOT_TOKEN',
           'SLACK_BOT_TOKEN',
           'SLACK_SIGNING_SECRET',
-          'SLACK_APP_TOKEN',
         ],
       },
     });
   });
 
-  it('points Postgres memory at DATABASE_URL and Ollama at OLLAMA_URL', () => {
+  it('points Postgres memory at DATABASE_URL and Ollama at OLLAMA_BASE_URL', () => {
     const doc: unknown = parse(
-      buildCogitatorYml(
-        answers({ provider: 'ollama', apiKey: '', model: 'qwen3.5:9b', memory: 'postgres' })
+      fileOf(
+        answers({ provider: 'ollama', apiKey: '', model: 'ollama/qwen3.5:9b', memory: 'postgres' }),
+        'cogitator.yml'
       )
     );
     expect(doc).toMatchObject({
       llm: {
         defaultProvider: 'ollama',
-        providers: { ollama: { baseUrl: '${OLLAMA_URL:-http://localhost:11434}' } },
+        defaultModel: 'ollama/qwen3.5:9b',
+        providers: { ollama: { baseUrl: '${OLLAMA_BASE_URL:-http://localhost:11434}' } },
       },
-      memory: { adapter: 'postgres', postgres: { connectionString: '${DATABASE_URL}' } },
-      deploy: { kind: 'worker', secrets: ['TELEGRAM_BOT_TOKEN'] },
+      memory: {
+        adapter: 'postgres',
+        postgres: {
+          connectionString:
+            '${DATABASE_URL:-postgresql://cogitator:cogitator@localhost:5432/cogitator}',
+        },
+      },
+      deploy: { kind: 'worker', secrets: ['DATABASE_URL', 'TELEGRAM_BOT_TOKEN'] },
     });
   });
 
-  it('loads with @cogitator-ai/config', () => {
+  it('loads with @cogitator-ai/config', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cli-init-yml-'));
     try {
-      writeProjectFiles(dir, buildProjectFiles(answers(), { dependencyVersions: VERSIONS }));
+      await writeFiles(dir, planProject(initSpec(answers(), 'pnpm')).files);
       const config = loadConfig({ configPath: join(dir, 'cogitator.yml'), skipEnv: true });
-      expect(config.llm?.defaultModel).toBe('claude-sonnet-5-5');
+      expect(config.llm?.defaultModel).toBe('anthropic/claude-sonnet-5-5');
       expect(config.deploy?.kind).toBe('worker');
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -108,11 +102,8 @@ describe('deploying an init project', () => {
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-  it('needs the API key and the bot token, runs as a worker and keeps SQLite on a volume', () => {
-    writeProjectFiles(
-      dir,
-      buildProjectFiles(answers(), { dependencyVersions: VERSIONS, packageManager: 'pnpm' })
-    );
+  it('needs the API key and the bot token, runs as a worker and keeps SQLite on a volume', async () => {
+    await writeFiles(dir, planProject(initSpec(answers(), 'pnpm')).files);
 
     const result = new ProjectAnalyzer().analyze(dir, { target: 'docker' }, { env: {} });
 
@@ -124,7 +115,10 @@ describe('deploying an init project', () => {
   });
 
   it('passes the project .env secrets to the deployment preflight', async () => {
-    writeProjectFiles(dir, buildProjectFiles(answers(), { dependencyVersions: VERSIONS }));
+    await writeFiles(
+      dir,
+      planProject(initSpec(answers(), 'pnpm'), { secrets: initSecrets(answers()) }).files
+    );
     const deployer = new Deployer();
     deployer.registerProvider({
       name: 'check',
@@ -142,48 +136,37 @@ describe('deploying an init project', () => {
   });
 });
 
-describe('SQLite memory of an init project', () => {
-  it('creates the data directory before opening the database', () => {
-    const gateway = buildProjectFiles(answers(), { dependencyVersions: VERSIONS })[
-      'src/gateway.ts'
-    ];
-    const mkdir = gateway.indexOf("mkdirSync('./data', { recursive: true });");
-    expect(mkdir).toBeGreaterThan(-1);
-    expect(mkdir).toBeLessThan(gateway.indexOf('new SQLiteAdapter'));
-    expect(gateway).toContain("import { existsSync, mkdirSync } from 'node:fs';");
-
-    const postgres = buildProjectFiles(answers({ memory: 'postgres' }), {
-      dependencyVersions: VERSIONS,
-    })['src/gateway.ts'];
-    expect(postgres).not.toContain('mkdirSync');
-  });
-});
-
-describe('packageManager field', () => {
-  it('pins the package manager and version that ran the scaffolder', () => {
-    expect(detectPackageManagerSpec('pnpm/10.26.0 npm/? node/v22.23.1 darwin arm64')).toBe(
-      'pnpm@10.26.0'
-    );
-    expect(detectPackageManagerSpec('yarn/4.5.0 npm/? node/v22.23.1')).toBe('yarn@4.5.0');
-    expect(detectPackageManagerSpec('npm/10.9.0 node/v22.23.1')).toBeUndefined();
-    expect(detectPackageManagerSpec('')).toBeUndefined();
-  });
-
-  it('is written to package.json', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cli-init-pm-'));
+describe('scaffolding an init project', () => {
+  it('writes the answers as secrets to a private .env and pins the package manager', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cli-init-scaffold-'));
     try {
-      writeProjectFiles(
-        dir,
-        buildProjectFiles(answers(), {
-          dependencyVersions: VERSIONS,
-          packageManager: 'pnpm',
-          packageManagerSpec: 'pnpm@10.26.0',
-        })
+      const directory = join(root, 'my-assistant');
+      await scaffold(initSpec(answers(), 'pnpm'), {
+        directory,
+        secrets: initSecrets(answers()),
+        packageManagerSpec: 'pnpm@10.26.0',
+        install: false,
+        git: false,
+      });
+
+      const env = readFileSync(join(directory, '.env'), 'utf-8');
+      expect(env).toContain('ANTHROPIC_API_KEY=sk-ant-test');
+      expect(env).toContain('TELEGRAM_BOT_TOKEN=123:abc');
+      expect(statSync(join(directory, '.env')).mode & 0o777).toBe(0o600);
+
+      const pkg: unknown = JSON.parse(readFileSync(join(directory, 'package.json'), 'utf-8'));
+      expect(pkg).toMatchObject({
+        packageManager: 'pnpm@10.26.0',
+        dependencies: {
+          '@cogitator-ai/channels': expect.stringMatching(/^\^\d/),
+          grammy: expect.any(String),
+        },
+      });
+      expect(readFileSync(join(directory, 'src/index.ts'), 'utf-8')).toContain(
+        'telegramChannel({ token: env.TELEGRAM_BOT_TOKEN })'
       );
-      const pkg: unknown = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8'));
-      expect(pkg).toMatchObject({ packageManager: 'pnpm@10.26.0' });
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

@@ -1,4 +1,10 @@
-import { ModelRegistry } from '@cogitator-ai/models';
+import {
+  cloudModelChoices,
+  defaultModel,
+  OLLAMA_SUGGESTED_MODELS,
+  PROVIDER_INFO,
+  type ModelChoices,
+} from 'create-cogitator-app';
 import { listOllamaModels } from './ollama.js';
 
 export type SetupProvider = 'anthropic' | 'openai' | 'google' | 'ollama';
@@ -9,35 +15,16 @@ export interface ModelOption {
   hint?: string;
 }
 
-export const API_KEY_ENV: Record<Exclude<SetupProvider, 'ollama'>, string> = {
-  anthropic: 'ANTHROPIC_API_KEY',
-  openai: 'OPENAI_API_KEY',
-  google: 'GOOGLE_API_KEY',
-};
+function envKeyOf(provider: Exclude<SetupProvider, 'ollama'>): string {
+  const key = PROVIDER_INFO[provider].envKey;
+  if (!key) throw new Error(`${provider} has no API key variable`);
+  return key;
+}
 
-export const FALLBACK_MODELS: Record<SetupProvider, ModelOption[]> = {
-  anthropic: [
-    { label: 'Claude Sonnet 5.5', value: 'anthropic/claude-sonnet-5-5' },
-    { label: 'Claude Opus 5.5', value: 'anthropic/claude-opus-5-5' },
-    { label: 'Claude Haiku 4.5', value: 'anthropic/claude-haiku-4-5' },
-  ],
-  openai: [
-    { label: 'GPT-6.1 Sol', value: 'openai/gpt-6.1-sol' },
-    { label: 'GPT-6 Astra', value: 'openai/gpt-6-astra' },
-    { label: 'GPT-6 Luna', value: 'openai/gpt-6-luna' },
-  ],
-  google: [
-    { label: 'Gemini 3.8 Flash', value: 'google/gemini-3.8-flash' },
-    { label: 'Gemini 3.1 Pro Preview', value: 'google/gemini-3.1-pro-preview' },
-    { label: 'Gemini 3.5 Flash-Lite', value: 'google/gemini-3.5-flash-lite' },
-  ],
-  ollama: [
-    { label: 'Qwen3 8B', value: 'ollama/qwen3:8b' },
-    { label: 'Qwen3.5 9B', value: 'ollama/qwen3.5:9b' },
-    { label: 'Llama 3.1 8B', value: 'ollama/llama3.1:8b' },
-    { label: 'Gemma 3 4B', value: 'ollama/gemma3:4b' },
-    { label: 'Mistral 7B', value: 'ollama/mistral:7b' },
-  ],
+export const API_KEY_ENV: Record<Exclude<SetupProvider, 'ollama'>, string> = {
+  anthropic: envKeyOf('anthropic'),
+  openai: envKeyOf('openai'),
+  google: envKeyOf('google'),
 };
 
 export function isSetupProvider(value: string): value is SetupProvider {
@@ -53,32 +40,30 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
+/**
+ * The current models of a cloud provider with their prices, from the catalogue
+ * create-cogitator-app offers too, as `provider/model` values.
+ */
 export async function fetchProviderModels(
-  provider: Exclude<SetupProvider, 'ollama'>
+  provider: Exclude<SetupProvider, 'ollama'>,
+  options: Parameters<typeof cloudModelChoices>[1] = {}
 ): Promise<ModelOption[]> {
-  try {
-    const registry = new ModelRegistry({ fallbackToBuiltin: true });
-    await registry.initialize();
+  const { choices }: ModelChoices = await cloudModelChoices(provider, options);
+  return choices.map((choice) => ({
+    label: choice.label,
+    value: withProviderPrefix(provider, choice.value),
+    ...(choice.hint && { hint: choice.hint }),
+  }));
+}
 
-    let models = registry.listModels({
-      provider,
-      supportsTools: true,
-      excludeDeprecated: true,
-    });
-
-    if (provider === 'google') {
-      models = models.filter((m) => m.id.includes('gemini'));
-    }
-
-    if (models.length === 0) return FALLBACK_MODELS[provider];
-
-    return models.map((m) => ({
-      label: m.displayName,
-      value: withProviderPrefix(provider, m.id),
-    }));
-  } catch {
-    return FALLBACK_MODELS[provider];
-  }
+/** Small models with reliable tool calling, offered when Ollama has none installed or does not answer. */
+export function suggestedOllamaModels(): ModelOption[] {
+  const recommended = defaultModel('ollama');
+  return OLLAMA_SUGGESTED_MODELS.map((name) => ({
+    label: name,
+    value: `ollama/${name}`,
+    hint: name === recommended ? 'recommended, pull it first' : 'pull it first',
+  }));
 }
 
 export async function fetchOllamaModelOptions(
@@ -87,13 +72,13 @@ export async function fetchOllamaModelOptions(
 ): Promise<ModelOption[]> {
   try {
     const models = await listOllamaModels(baseUrl, { apiKey });
-    if (models.length === 0) return FALLBACK_MODELS.ollama;
+    if (models.length === 0) return suggestedOllamaModels();
     return models.map((m) => ({
       label: m.name,
       value: `ollama/${m.name}`,
       hint: m.size > 0 ? formatBytes(m.size) : undefined,
     }));
   } catch {
-    return FALLBACK_MODELS.ollama;
+    return suggestedOllamaModels();
   }
 }
