@@ -53,7 +53,7 @@ describe('compatibilityIssues', () => {
       issues({ provider: 'anthropic', model: 'claude-sonnet-5-5', features: ['voice'] })[0]
     ).toContain('Realtime voice needs a realtime API');
     expect(issues({ app: 'next', features: ['voice'] })).toContain(
-      'The voice feature runs its own WebSocket server'
+      'The voice feature serves its own page and WebSocket as the app'
     );
   });
 
