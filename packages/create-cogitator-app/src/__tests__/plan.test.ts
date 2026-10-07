@@ -184,3 +184,21 @@ describe('AGENTS.md', () => {
     expect(agents).toContain('<!-- BEGIN:cogitator-agent-rules -->');
   });
 });
+
+describe('preset file trees', () => {
+  it.each(PRESETS.map((preset) => preset.id))('%s generates the expected files', (presetId) => {
+    const preset = PRESETS.find((p) => p.id === presetId);
+    const provider = preset?.spec.provider ?? 'openai';
+    const paths = planProject(specFor(presetId, provider)).files.map((f) => f.path);
+    expect(paths).toMatchSnapshot();
+  });
+
+  it('keeps --template working for every earlier template name', () => {
+    for (const name of ['basic', 'memory', 'swarm', 'workflow', 'api-server', 'nextjs']) {
+      expect(
+        PRESETS.some((preset) => preset.id === name),
+        name
+      ).toBe(true);
+    }
+  });
+});
