@@ -1,5 +1,12 @@
 # @cogitator-ai/sandbox
 
+## 0.5.11
+
+### Patch Changes
+
+- Updated dependencies [[`d1a874c`](https://github.com/cogitator-ai/Cogitator-AI/commit/d1a874ce75b702eea77ca2a24945f383e8b63198)]:
+  - @cogitator-ai/types@0.38.0
+
 ## 0.5.10
 
 ### Patch Changes

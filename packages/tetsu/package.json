@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/tetsu",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Tetsu server adapter for Cogitator AI runtime — a controller with agents, threads, workflows, swarms, SSE and WebSocket on Bun",
   "type": "module",
   "exports": {
