@@ -12,6 +12,7 @@ import type { ApprovalStore, ApprovalRequest, ApprovalResponse } from '@cogitato
 import { nanoid } from 'nanoid';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import { writeJsonAtomic, writeJsonExclusive } from '../json-file';
 import {
   ApprovalAlreadyAnsweredError,
   submitOrExisting,
@@ -211,7 +212,7 @@ export class FileApprovalStore implements ApprovalStore {
   async createRequest(request: ApprovalRequest): Promise<void> {
     const filePath = this.getRequestPath(request.id);
     await fs.mkdir(path.dirname(filePath), { recursive: true });
-    await fs.writeFile(filePath, JSON.stringify(request, null, 2), 'utf-8');
+    await writeJsonAtomic(filePath, request);
   }
 
   async getRequest(id: string): Promise<ApprovalRequest | null> {
@@ -284,10 +285,7 @@ export class FileApprovalStore implements ApprovalStore {
     const filePath = this.getResponsePath(response.requestId);
     await fs.mkdir(path.dirname(filePath), { recursive: true });
     try {
-      await fs.writeFile(filePath, JSON.stringify(response, null, 2), {
-        encoding: 'utf-8',
-        flag: 'wx',
-      });
+      await writeJsonExclusive(filePath, response);
     } catch (err: unknown) {
       if (!isEexist(err)) throw err;
       const existing = await this.getResponse(response.requestId);

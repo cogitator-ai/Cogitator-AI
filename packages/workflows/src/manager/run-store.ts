@@ -17,6 +17,7 @@ import type {
 } from '@cogitator-ai/types';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import { writeJsonAtomic } from '../json-file';
 
 /**
  * In-memory run store for development and testing
@@ -245,7 +246,7 @@ export class FileRunStore implements RunStore {
 
   async save(run: WorkflowRun): Promise<void> {
     await fs.mkdir(this.directory, { recursive: true });
-    await fs.writeFile(this.getRunPath(run.id), JSON.stringify(run, null, 2), 'utf-8');
+    await writeJsonAtomic(this.getRunPath(run.id), run);
 
     this.cache.set(run.id, run);
     this.cacheExpiry.set(run.id, Date.now() + this.cacheTTL);

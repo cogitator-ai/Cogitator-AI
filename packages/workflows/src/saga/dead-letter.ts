@@ -13,6 +13,7 @@ import type { DeadLetterEntry, WorkflowState } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 import { promises as fs } from 'fs';
 import { join } from 'path';
+import { writeJsonAtomic } from '../json-file';
 
 /**
  * Extended dead letter entry (alias for DeadLetterEntry, for backwards compat)
@@ -231,8 +232,7 @@ export class FileDLQ extends BaseDLQ {
       expiresAt: now + this.defaultTTL,
     };
 
-    const filePath = this.getFilePath(id);
-    await fs.writeFile(filePath, JSON.stringify(extended, null, 2));
+    await writeJsonAtomic(this.getFilePath(id), extended);
 
     return id;
   }
@@ -317,8 +317,7 @@ export class FileDLQ extends BaseDLQ {
     entry.attempts++;
     entry.lastAttempt = Date.now();
 
-    const filePath = this.getFilePath(id);
-    await fs.writeFile(filePath, JSON.stringify(entry, null, 2));
+    await writeJsonAtomic(this.getFilePath(id), entry);
 
     return true;
   }
