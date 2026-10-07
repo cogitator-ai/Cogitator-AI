@@ -93,6 +93,8 @@ export class ProjectBuilder {
   readonly nextSteps: NextStep[] = [];
   readonly warnings: string[] = [];
   readonly memoryYml: string[] = [];
+  /** Top-level sections of cogitator.yml other features add, such as `sandbox`. */
+  readonly ymlSections = new Map<string, string[]>();
   readonly deploy: DeploySettings = {};
   /** Tools the assistant gets: bindings `src/tools/index.ts` imports, `spread` for arrays of tools. */
   readonly tools: Array<{ binding: string; from: string; spread?: boolean }> = [];
@@ -198,6 +200,11 @@ export class ProjectBuilder {
 
   warn(message: string): this {
     this.warnings.push(message);
+    return this;
+  }
+
+  yml(section: string, lines: string[]): this {
+    this.ymlSections.set(section, lines);
     return this;
   }
 
