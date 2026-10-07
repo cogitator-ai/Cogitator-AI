@@ -39,8 +39,6 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - run: pnpm build
-
       - name: Check for changesets
         id: changesets
         run: |
@@ -67,6 +65,17 @@ jobs:
           git push
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build
+        # After the version bump: create-cogitator-app bakes its own version,
+        # the package versions it pins and the telemetry website id into its
+        # build, so building earlier published the previous release's numbers.
+        run: pnpm build
+        env:
+          COGITATOR_UMAMI_WEBSITE_ID: ${{ secrets.COGITATOR_UMAMI_WEBSITE_ID }}
+
+      - name: Check the scaffolder build
+        run: pnpm exec tsx scripts/check-scaffolder-build.ts
 
       - name: Publish to GitHub Packages
         # pnpm publish -r skips versions that already exist in the registry,
