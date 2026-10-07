@@ -37,7 +37,6 @@ export function knownCogitatorVersions(): Record<string, string> {
 export const VERSIONS = {
   zod: '^4.6.5',
   typescript: '^7.0.2',
-  typescriptNext: '^6.0.3',
   typesNode: '^24.19.1',
   tsx: '^4.23.15',
   vitest: '^5.0.3',

@@ -45,6 +45,7 @@ const TSCONFIG_NEXT =
         moduleResolution: 'bundler',
         resolveJsonModule: true,
         isolatedModules: true,
+        verbatimModuleSyntax: true,
         jsx: 'react-jsx',
         incremental: true,
         plugins: [{ name: 'next' }],
@@ -436,7 +437,7 @@ export const appNextFeature: FeatureModule = {
       .dependency('react', VERSIONS.react)
       .dependency('react-dom', VERSIONS.reactDom)
       .dependency('react-markdown', VERSIONS.reactMarkdown)
-      .devDependency('typescript', VERSIONS.typescriptNext)
+      .devDependency('typescript', VERSIONS.typescript)
       .devDependency('@types/react', VERSIONS.typesReact)
       .devDependency('@types/react-dom', VERSIONS.typesReactDom)
       .devDependency('tailwindcss', VERSIONS.tailwind)
