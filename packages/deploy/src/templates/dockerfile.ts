@@ -7,6 +7,12 @@ import { healthPath, servesHttp } from './health.js';
  */
 export type DockerfilePackageManager = 'pnpm' | 'npm' | 'yarn' | 'yarn-berry' | 'bun';
 
+/** How a Yarn Plug'n'Play project resolves its packages at runtime. */
+export interface PlugAndPlay {
+  /** Whether Yarn writes `.pnp.loader.mjs`, which ES modules need to resolve packages. */
+  esmLoader: boolean;
+}
+
 export interface DockerfileOptions {
   config: DeployConfig;
   hasTypeScript: boolean;
@@ -18,6 +24,12 @@ export interface DockerfileOptions {
   installFiles?: string[];
   /** Version from the `packageManager` field of package.json */
   packageManagerVersion?: string;
+  /**
+   * Yarn Plug'n'Play: the package archives are installed into the project's
+   * .yarn/cache so they ship in the image (the global cache is a build cache
+   * mount), and the app starts with the PnP resolver loaded.
+   */
+  plugAndPlay?: PlugAndPlay;
 }
 
 export const NODE_IMAGE = 'node:24-alpine';
@@ -93,14 +105,18 @@ function installSteps(options: DockerfileOptions, pm: DockerfilePackageManager):
       };
     }
     case 'yarn-berry': {
-      const install = cached(pm, `yarn install${locked ? ' --immutable' : ''}`);
+      const local = options.plugAndPlay ? 'YARN_ENABLE_GLOBAL_CACHE=false ' : '';
+      const install = cached(pm, `${local}yarn install${locked ? ' --immutable' : ''}`);
       const focusable = Number.parseInt(options.packageManagerVersion ?? '', 10) >= 4;
-      const focus = cached(pm, 'yarn workspaces focus --all --production');
+      const focus = cached(pm, `${local}yarn workspaces focus --all --production`);
+      const prune = options.plugAndPlay
+        ? cached(pm, `rm -rf .yarn/cache && ${local}yarn workspaces focus --all --production`)
+        : focus;
       return {
         copy,
         install,
         installProd: focusable ? focus : install,
-        ...(focusable && { prune: focus }),
+        ...(focusable && { prune }),
         build: 'RUN yarn run build',
       };
     }
@@ -166,10 +182,15 @@ export function generateDockerfile(options: DockerfileOptions): string {
   ];
   const http = servesHttp(config);
   const port = config.port ?? 3000;
+  const pnpResolver =
+    options.plugAndPlay && pm === 'yarn-berry' && !bun && startCommand[0] !== 'yarn'
+      ? `NODE_OPTIONS="--require /app/.pnp.cjs${options.plugAndPlay.esmLoader ? ' --experimental-loader file:///app/.pnp.loader.mjs' : ''}"`
+      : undefined;
   const env = [
     'ENV NODE_ENV=production',
     http ? `PORT=${port}` : undefined,
     startCommand[0] === 'npm' ? 'NPM_CONFIG_UPDATE_NOTIFIER=false' : undefined,
+    pnpResolver,
   ]
     .filter((entry) => entry !== undefined)
     .join(' ');
@@ -203,7 +224,7 @@ export function generateDockerfile(options: DockerfileOptions): string {
       steps.installProd,
       '',
       ...runtimeStage([
-        `COPY --from=deps --chown=${user}:${user} /app/node_modules ./node_modules`,
+        `COPY --from=deps --chown=${user}:${user} /app ./`,
         `COPY --chown=${user}:${user} . .`,
       ])
     );

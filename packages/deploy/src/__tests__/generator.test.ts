@@ -47,6 +47,9 @@ describe('ArtifactGenerator', () => {
     const ignore = artifacts.files.find((f) => f.path === '.dockerignore');
     expect(ignore).toBeDefined();
     expect(ignore!.content).toContain('node_modules');
+    for (const artifact of ['.pnp.cjs', '.pnp.loader.mjs', '.yarn/cache', '.yarn/install-state.gz'])
+      expect(ignore!.content.split('\n')).toContain(artifact);
+    expect(ignore!.content).not.toMatch(/^\.yarn\/?$/m);
   });
 
   it('includes multi-stage build for TypeScript projects', () => {

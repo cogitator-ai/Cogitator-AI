@@ -1,5 +1,9 @@
 import type { DeployConfig, GeneratedArtifact, GeneratedArtifacts } from '@cogitator-ai/types';
-import { generateDockerfile, type DockerfilePackageManager } from './templates/dockerfile.js';
+import {
+  generateDockerfile,
+  type DockerfilePackageManager,
+  type PlugAndPlay,
+} from './templates/dockerfile.js';
 import { generateDockerCompose } from './templates/docker-compose.js';
 import { generateFlyToml } from './templates/fly-toml.js';
 import { projectVolumePaths } from './volumes.js';
@@ -14,11 +18,18 @@ export interface GeneratorOptions {
   installFiles?: string[];
   /** Version from the `packageManager` field of package.json */
   packageManagerVersion?: string;
+  /** Yarn Plug'n'Play: the packages live in .yarn/cache and the app loads .pnp.cjs */
+  plugAndPlay?: PlugAndPlay;
 }
 
 export const ARTIFACTS_DIR = '.cogitator';
 
 export const DOCKERIGNORE = `node_modules
+.pnp.cjs
+.pnp.loader.mjs
+.yarn/cache
+.yarn/unplugged
+.yarn/install-state.gz
 dist
 .git
 .gitignore
