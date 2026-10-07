@@ -9,6 +9,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { initCommand } from './commands/init.js';
 import { doctorCommand } from './commands/doctor.js';
+import { evalCommand } from './commands/eval.js';
 import { upCommand, downCommand } from './commands/up.js';
 import { runCommand } from './commands/run.js';
 import { statusCommand } from './commands/status.js';
@@ -34,6 +35,7 @@ const program = new Command()
 
 program.addCommand(initCommand);
 program.addCommand(doctorCommand);
+program.addCommand(evalCommand);
 program.addCommand(upCommand);
 program.addCommand(downCommand);
 program.addCommand(runCommand);
