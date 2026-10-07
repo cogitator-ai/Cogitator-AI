@@ -33,6 +33,7 @@
     "@cogitator-ai/sandbox": "workspace:*",
     "@cogitator-ai/self-modifying": "workspace:*",
     "@cogitator-ai/server-shared": "workspace:*",
+    "@cogitator-ai/studio": "workspace:*",
     "@cogitator-ai/swarms": "workspace:*",
     "@cogitator-ai/test-utils": "workspace:*",
     "@cogitator-ai/tetsu": "workspace:*",

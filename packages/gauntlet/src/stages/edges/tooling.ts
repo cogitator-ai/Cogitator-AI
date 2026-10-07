@@ -1,78 +1,91 @@
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { readFile, readdir, writeFile, mkdir } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { loadConfig } from '@cogitator-ai/config';
 import { Deployer } from '@cogitator-ai/deploy';
+import { startStudio, type RunRecord } from '@cogitator-ai/studio';
 import type { GeneratedArtifacts } from '@cogitator-ai/types';
 import {
-  defaultModels,
+  PRESETS,
+  defaultModel,
+  planProject,
   providerEnvKey,
+  qualifiedModel,
+  scaffold,
   type LLMProvider,
-  type ProjectOptions,
-  type Template,
+  type ProjectSpecInput,
 } from 'create-cogitator-app';
 import { z } from 'zod';
 import type { StageContext, StageDefinition } from '../../runner/types.js';
 import { excerpt, plain, runProcess } from './shared.js';
-import { findInstalled, linkDependencies } from './workspace.js';
+import { findInstalled, linkDependencies, vendorWorkspacePackages } from './workspace.js';
 
 const CCA = 'create-cogitator-app';
 const CLI = '@cogitator-ai/cli';
 const DEPLOY = '@cogitator-ai/deploy';
 const CONFIG = '@cogitator-ai/config';
+const STUDIO = '@cogitator-ai/studio';
 
 declare module '../../runner/types.js' {
   interface GauntletArtifacts {
-    /** Generated projects by template name. */
-    edgesProjects: Partial<Record<Template, string>>;
+    /** Generated projects by key. */
+    edgesProjects: Record<string, string>;
   }
 }
 
-interface ProjectSpec {
-  template: Template;
+interface GauntletProject {
+  key: string;
+  preset: string;
   provider: LLMProvider;
-  docker: boolean;
+  overrides?: Partial<ProjectSpecInput>;
 }
 
-const PROJECTS: readonly ProjectSpec[] = [
-  { template: 'basic', provider: 'ollama', docker: false },
-  { template: 'memory', provider: 'anthropic', docker: true },
-  { template: 'swarm', provider: 'google', docker: false },
-  { template: 'workflow', provider: 'ollama', docker: false },
-  { template: 'api-server', provider: 'openai', docker: true },
-  { template: 'nextjs', provider: 'openai', docker: false },
+const PROJECTS: readonly GauntletProject[] = [
+  { key: 'basic', preset: 'basic', provider: 'ollama', overrides: { compose: false } },
+  { key: 'assistant', preset: 'assistant', provider: 'ollama' },
+  { key: 'memory', preset: 'memory', provider: 'anthropic', overrides: { memory: 'redis' } },
+  { key: 'swarm', preset: 'swarm', provider: 'google' },
+  { key: 'workflow', preset: 'workflow', provider: 'ollama' },
+  { key: 'api-server', preset: 'api-server', provider: 'openai', overrides: { deploy: 'docker' } },
+  { key: 'nextjs', preset: 'nextjs', provider: 'openai' },
 ];
 
-/** Templates that need packages the monorepo does not install (Next.js, React). */
-const NOT_COMPILED: ReadonlySet<Template> = new Set(['nextjs']);
+/** Projects whose packages the monorepo does not install (Next.js and React in the right versions). */
+const NOT_COMPILED: ReadonlySet<string> = new Set(['nextjs']);
 
-/** Runs `scaffold()` in a child process, so its spinner and its package install stay out of the gauntlet. */
-const SCAFFOLD_SCRIPT = `const { scaffold } = await import(process.env.GAUNTLET_CCA_LIB);
-await scaffold(JSON.parse(process.env.GAUNTLET_CCA_OPTIONS));
-`;
+/** The small local model the Ollama lane runs on, `GAUNTLET_OLLAMA_MODEL` to change it. */
+const OLLAMA_MODEL = process.env.GAUNTLET_OLLAMA_MODEL ?? 'qwen2.5:0.5b';
 
-/**
- * Stands in for the package manager `scaffold()` always runs: it records the call instead of
- * installing the published packages from npm, so the project is checked against this workspace.
- */
-const PNPM_SHIM = `#!/bin/sh
-echo "$PWD|$*" >> "$GAUNTLET_PNPM_LOG"
-exit 0
-`;
+/** The tsx loader the gauntlet runs with, for `node --import` in generated projects. */
+const TSX_LOADER = pathToFileURL(createRequire(import.meta.url).resolve('tsx')).href;
+
+function specOf(
+  project: GauntletProject,
+  model = defaultModel(project.provider)
+): ProjectSpecInput {
+  const preset = PRESETS.find((candidate) => candidate.id === project.preset);
+  if (!preset) throw new Error(`create-cogitator-app has no preset ${project.preset}`);
+  return {
+    name: `gauntlet-${project.key}`,
+    preset: preset.id,
+    ...preset.spec,
+    provider: project.provider,
+    model,
+    packageManager: 'pnpm',
+    ...project.overrides,
+  };
+}
 
 /** The environment of child processes, read when they start: the gauntlet loads its .env after import. */
 function childEnv(): NodeJS.ProcessEnv {
   return { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0', CI: '1' };
 }
 
-function projects(ctx: StageContext): Partial<Record<Template, string>> {
-  return ctx.artifacts.get('edgesProjects');
-}
-
-function projectDir(ctx: StageContext, template: Template): string {
-  const dir = projects(ctx)[template];
-  if (!dir) throw new Error(`The scaffold stage produced no ${template} project`);
+function projectDir(ctx: StageContext, key: string): string {
+  const dir = ctx.artifacts.get('edgesProjects')[key];
+  if (!dir) throw new Error(`The scaffold stage produced no ${key} project`);
   return dir;
 }
 
@@ -98,14 +111,21 @@ async function readPackageJson(dir: string): Promise<z.infer<typeof PackageJson>
   return PackageJson.parse(JSON.parse(await readFile(join(dir, 'package.json'), 'utf8')));
 }
 
-/** Relative imports in the generated sources that point at no generated file. */
+/** Relative imports of the generated sources that point at no generated file. */
 async function danglingImports(dir: string, files: readonly string[]): Promise<string[]> {
   const dangling: string[] = [];
   for (const file of files.filter((name) => /\.(ts|tsx)$/.test(name))) {
     const source = await readFile(join(dir, file), 'utf8');
     for (const match of source.matchAll(/from ['"](\.{1,2}\/[^'"]+)['"]/g)) {
       const target = resolve(dirname(join(dir, file)), match[1] ?? '');
-      const candidates = [target, target.replace(/\.js$/, '.ts'), `${target}.ts`, `${target}.tsx`];
+      const candidates = [
+        target,
+        target.replace(/\.js$/, '.ts'),
+        target.replace(/\.js$/, '.tsx'),
+        `${target}.ts`,
+        `${target}.tsx`,
+        join(target, 'index.ts'),
+      ];
       if (!candidates.some((candidate) => existsSync(candidate))) {
         dangling.push(`${file} -> ${match[1]}`);
       }
@@ -127,126 +147,96 @@ function cli(args: readonly string[], cwd: string, ctx: StageContext, timeoutMs 
   });
 }
 
-/** Proves every create-cogitator-app template scaffolds programmatically into a coherent project that compiles. */
+/**
+ * Dev tools of generated projects the monorepo pins to other majors: the compile check uses the
+ * installed ones and reports the drift, the e2e matrix installs the exact versions.
+ */
+const ANY_VERSION: ReadonlySet<string> = new Set(['@types/node', 'typescript', '@biomejs/biome']);
+
+/** Links a generated project's dependencies to the workspace packages and installed copies. */
+async function link(
+  dir: string
+): Promise<{ linked: number; missing: string[]; drifted: string[] }> {
+  const pkg = await readPackageJson(dir);
+  const { linked, missing, drifted } = await linkDependencies(
+    dir,
+    { ...pkg.dependencies, ...pkg.devDependencies },
+    { anyVersion: ANY_VERSION }
+  );
+  return { linked: linked.length, missing, drifted };
+}
+
+/** Proves create-cogitator-app generates coherent projects that compile against the workspace packages. */
 const scaffoldStage: StageDefinition = {
   id: 'scaffold',
   title: 'Project scaffolding',
   description:
-    'scaffold() from create-cogitator-app generates every template, the files agree with each other, and the TypeScript templates compile against the workspace packages.',
+    'scaffold() from create-cogitator-app generates projects from its presets, the files agree with each other and with the spec, and the TypeScript projects compile against the workspace packages.',
   packages: [CCA, CONFIG],
-  timeoutMs: 150_000,
+  timeoutMs: 180_000,
   async run(ctx) {
-    const shimDir = join(ctx.tmpDir, 'bin');
-    const installLog = join(ctx.tmpDir, 'pnpm-calls.log');
-    const script = join(ctx.tmpDir, 'scaffold.mjs');
-    await mkdir(shimDir, { recursive: true });
-    await writeFile(join(shimDir, 'pnpm'), PNPM_SHIM, { mode: 0o755 });
-    await writeFile(script, SCAFFOLD_SCRIPT);
-    const generated: Partial<Record<Template, string>> = {};
+    const generated: Record<string, string> = {};
 
-    await ctx.check('every template scaffolds through scaffold()', async (evidence) => {
-      const outcomes = await Promise.all(
-        PROJECTS.map(async (spec) => {
-          const options: ProjectOptions = {
-            name: `gauntlet-${spec.template}`,
-            path: join(ctx.tmpDir, `gauntlet-${spec.template}`),
-            template: spec.template,
-            provider: spec.provider,
-            packageManager: 'pnpm',
-            docker: spec.docker,
-            git: false,
-          };
-          const result = await runProcess(process.execPath, [script], {
-            cwd: ctx.tmpDir,
-            env: {
-              ...childEnv(),
-              PATH: `${shimDir}:${process.env.PATH ?? ''}`,
-              GAUNTLET_PNPM_LOG: installLog,
-              GAUNTLET_CCA_LIB: import.meta.resolve(CCA),
-              GAUNTLET_CCA_OPTIONS: JSON.stringify(options),
-            },
-            timeoutMs: 60_000,
-            signal: ctx.signal,
-          });
-          if (result.code !== 0) {
-            throw new Error(
-              `${spec.template}: scaffold exited ${result.code}: ${excerpt(result.stderr)}`
-            );
-          }
-          generated[spec.template] = options.path;
-          return {
-            template: spec.template,
-            files: (await listFiles(options.path)).length,
-            ms: result.durationMs,
-          };
-        })
-      );
-      const installs = existsSync(installLog)
-        ? (await readFile(installLog, 'utf8')).trim().split('\n').filter(Boolean)
-        : [];
-      evidence('projects', outcomes);
-      evidence('installCalls', installs.length);
-      if (
-        installs.length !== PROJECTS.length ||
-        !installs.every((line) => line.endsWith('|install'))
-      ) {
-        throw new Error(`Expected one "pnpm install" per project, saw ${installs.length}`);
+    await ctx.check('every preset scaffolds through scaffold()', async (evidence) => {
+      const outcomes = [];
+      for (const project of PROJECTS) {
+        const directory = join(ctx.tmpDir, `gauntlet-${project.key}`);
+        const started = Date.now();
+        const result = await scaffold(specOf(project), { directory, install: false, git: false });
+        generated[project.key] = directory;
+        outcomes.push({
+          project: project.key,
+          files: result.files.length,
+          install: result.install.status,
+          ms: Date.now() - started,
+        });
       }
+      evidence('projects', outcomes);
       ctx.artifacts.set('edgesProjects', generated);
     });
 
-    await ctx.check('generated files agree with each other', async (evidence) => {
+    await ctx.check('generated files agree with each other and the spec', async (evidence) => {
       const problems: string[] = [];
       const summary: Array<Record<string, unknown>> = [];
-      for (const spec of PROJECTS) {
-        const dir = projectDir(ctx, spec.template);
+      for (const project of PROJECTS) {
+        const spec = specOf(project);
+        const plan = planProject(spec);
+        const dir = projectDir(ctx, project.key);
         const files = await listFiles(dir);
         const pkg = await readPackageJson(dir);
-        const model = defaultModels[spec.provider];
-        const say = (problem: string) => problems.push(`${spec.template}: ${problem}`);
+        const say = (problem: string) => problems.push(`${project.key}: ${problem}`);
 
-        if (pkg.name !== `gauntlet-${spec.template}`) say(`package.json name is ${pkg.name}`);
+        if (pkg.name !== spec.name) say(`package.json name is ${pkg.name}`);
         if (!pkg.dependencies?.['@cogitator-ai/core']) say('no @cogitator-ai/core dependency');
-        if (!pkg.scripts?.dev) say('no dev script');
-        if (spec.template !== 'nextjs' && pkg.type !== 'module') {
-          say('package.json is not an ES module');
+        for (const script of ['dev', 'test', 'typecheck', 'dev:studio']) {
+          if (!pkg.scripts?.[script]) say(`no ${script} script`);
         }
-        if (spec.docker !== files.includes('docker-compose.yml')) {
-          say('docker-compose.yml does not follow the docker option');
+        if (pkg.type !== 'module') say('package.json is not an ES module');
+        if (plan.services.length > 0 !== files.includes('docker-compose.yml')) {
+          say('docker-compose.yml does not follow the services the project uses');
         }
+        if (!files.includes('src/cogitator.ts')) say('no registry in src/cogitator.ts');
+        if (!files.includes('AGENTS.md')) say('no AGENTS.md');
 
         const config = loadConfig({ configPath: join(dir, 'cogitator.yml'), skipEnv: true });
         if (config.llm?.defaultProvider !== spec.provider) {
           say(`cogitator.yml provider is ${config.llm?.defaultProvider}`);
         }
-        if (config.llm?.defaultModel !== model) {
+        const model = qualifiedModel({ provider: spec.provider, model: spec.model });
+        if (config.llm?.defaultModel !== model)
           say(`cogitator.yml model is ${config.llm?.defaultModel}`);
+        if (project.key === 'memory' && config.memory?.adapter !== 'redis') {
+          say(`memory adapter is ${config.memory?.adapter}, not redis`);
         }
-        if (spec.template === 'memory' && config.memory?.adapter !== 'redis') {
-          say('memory template does not configure redis');
-        }
-
-        const sources = await Promise.all(
-          files
-            .filter((file) => /\.(ts|tsx)$/.test(file))
-            .map((file) => readFile(join(dir, file), 'utf8'))
-        );
-        if (!sources.some((source) => source.includes(model))) {
-          say(`no source uses the configured model ${model}`);
-        }
+        const envKey = providerEnvKey(spec.provider);
         const envExample = await readFile(join(dir, '.env.example'), 'utf8');
-        if (!envExample.includes(providerEnvKey(spec.provider))) {
-          say(`.env.example lacks ${providerEnvKey(spec.provider)}`);
-        }
+        if (envKey && !envExample.includes(envKey)) say(`.env.example lacks ${envKey}`);
         const dangling = await danglingImports(dir, files);
         if (dangling.length > 0) say(`dangling imports ${dangling.join(', ')}`);
+        const missing = plan.files.map((file) => file.path).filter((path) => !files.includes(path));
+        if (missing.length > 0) say(`files of the plan not written: ${missing.join(', ')}`);
 
-        summary.push({
-          template: spec.template,
-          provider: spec.provider,
-          model,
-          files: files.length,
-        });
+        summary.push({ project: project.key, provider: spec.provider, model, files: files.length });
       }
       evidence('projects', summary);
       evidence('problems', problems);
@@ -254,38 +244,33 @@ const scaffoldStage: StageDefinition = {
     });
 
     await ctx.check(
-      'TypeScript templates compile against the workspace packages',
+      'TypeScript projects compile against the workspace packages',
       async (evidence) => {
         const compiled = await Promise.all(
-          PROJECTS.filter((spec) => !NOT_COMPILED.has(spec.template)).map(async (spec) => {
-            const dir = projectDir(ctx, spec.template);
+          PROJECTS.filter((project) => !NOT_COMPILED.has(project.key)).map(async (project) => {
+            const dir = projectDir(ctx, project.key);
             const pkg = await readPackageJson(dir);
-            const { linked, missing } = await linkDependencies(dir, {
-              ...pkg.dependencies,
-              ...pkg.devDependencies,
-            });
-            const typescript = findInstalled('typescript', pkg.devDependencies?.typescript ?? '*');
-            if (!typescript) {
-              return {
-                template: spec.template,
-                ok: false,
-                error: 'no matching typescript installed',
-              };
-            }
+            const { linked, missing, drifted } = await link(dir);
+            const typescript =
+              findInstalled('typescript', pkg.devDependencies?.typescript ?? '*') ??
+              findInstalled('typescript', '*');
+            if (!typescript)
+              return { project: project.key, ok: false, error: 'no typescript installed' };
             const result = await runProcess(
               process.execPath,
               [join(typescript.dir, 'bin', 'tsc'), '-p', 'tsconfig.json', '--noEmit'],
-              { cwd: dir, env: childEnv(), timeoutMs: 90_000, signal: ctx.signal }
+              { cwd: dir, env: childEnv(), timeoutMs: 120_000, signal: ctx.signal }
             );
             const errors = plain(result.stdout)
               .split('\n')
               .filter((line) => line.includes('error TS'));
             return {
-              template: spec.template,
+              project: project.key,
               ok: result.code === 0,
               typescript: typescript.version,
-              linked: linked.map((dep) => `${dep.name}@${dep.version}`),
+              linked,
               ...(missing.length > 0 ? { missing } : {}),
+              ...(drifted.length > 0 ? { drifted } : {}),
               ...(errors.length > 0
                 ? { errors: errors.slice(0, 3), errorCount: errors.length }
                 : {}),
@@ -295,9 +280,7 @@ const scaffoldStage: StageDefinition = {
         evidence('projects', compiled);
         const failed = compiled.filter((project) => !project.ok);
         if (failed.length > 0) {
-          throw new Error(
-            `${failed.map((project) => project.template).join(', ')} did not compile`
-          );
+          throw new Error(`${failed.map((project) => project.project).join(', ')} did not compile`);
         }
       }
     );
@@ -309,10 +292,10 @@ const cliStage: StageDefinition = {
   id: 'cli',
   title: 'CLI',
   description:
-    'The cogitator binary prints its version and help, tells a runtime config apart from an assistant config, creates and validates a skill in a project, and plans a deploy of the API project.',
+    'The cogitator binary prints its version and help, tells a runtime config apart from an assistant config, creates and validates a skill, plans an addition with cogitator add, checks a project with cogitator doctor and plans a deploy of the API project.',
   packages: [CLI],
   needs: ['scaffold'],
-  timeoutMs: 120_000,
+  timeoutMs: 180_000,
   async run(ctx) {
     const basic = projectDir(ctx, 'basic');
 
@@ -321,7 +304,21 @@ const cliStage: StageDefinition = {
       const help = await cli(['--help'], ctx.tmpDir, ctx);
       const manifest = await readPackageJson(join(dirname(cliEntry()), '..'));
       evidence('version', version.stdout.trim());
-      const commands = ['init', 'up', 'run', 'deploy', 'skill', 'daemon', 'build', 'wizard'];
+      const commands = [
+        'init',
+        'add',
+        'dev',
+        'mcp',
+        'doctor',
+        'eval',
+        'up',
+        'run',
+        'deploy',
+        'skill',
+        'daemon',
+        'build',
+        'wizard',
+      ];
       const missing = commands.filter(
         (command) => !new RegExp(`^\\s+${command}\\b`, 'm').test(help.stdout)
       );
@@ -331,9 +328,8 @@ const cliStage: StageDefinition = {
           `--version printed ${version.stdout.trim()}, package.json says ${manifest.version}`
         );
       }
-      if (help.code !== 0 || missing.length > 0) {
+      if (help.code !== 0 || missing.length > 0)
         throw new Error(`--help lacks ${missing.join(', ')}`);
-      }
     });
 
     await ctx.check('up explains a runtime config instead of running it', async (evidence) => {
@@ -341,12 +337,10 @@ const cliStage: StageDefinition = {
       const output = plain(result.stdout + result.stderr);
       evidence('exitCode', result.code);
       evidence('output', excerpt(output, 240));
-      if (result.code === 0) {
+      if (result.code === 0)
         throw new Error('up succeeded on a runtime config with nothing to start');
-      }
-      if (!/runtime config/i.test(output)) {
+      if (!/runtime config/i.test(output))
         throw new Error('up did not say the file is a runtime config');
-      }
     });
 
     await ctx.check('skill create, validate and list', async (evidence) => {
@@ -356,11 +350,9 @@ const cliStage: StageDefinition = {
         ctx
       );
       evidence('create', excerpt(created.stdout, 120));
-      if (created.code !== 0) {
+      if (created.code !== 0)
         throw new Error(`skill create exited ${created.code}: ${excerpt(created.stderr)}`);
-      }
-      const skillDir = join(basic, 'skills', 'gauntlet-probe');
-      evidence('files', await listFiles(skillDir));
+      evidence('files', await listFiles(join(basic, 'skills', 'gauntlet-probe')));
       const validated = await cli(
         ['skill', 'validate', 'skills/gauntlet-probe'],
         basic,
@@ -370,19 +362,66 @@ const cliStage: StageDefinition = {
       evidence('validate', excerpt(validated.stdout + validated.stderr, 240));
       if (validated.code !== 0) throw new Error(`skill validate exited ${validated.code}`);
       const listed = await cli(['skill', 'list'], basic, ctx);
-      if (!listed.stdout.includes('gauntlet-probe')) {
+      if (!listed.stdout.includes('gauntlet-probe'))
         throw new Error('skill list does not show the new skill');
+    });
+
+    await ctx.check('add plans RAG for the basic project without writing', async (evidence) => {
+      const result = await cli(['add', 'rag', '--dry-run', '--json'], basic, ctx);
+      const plan = JSON.parse(result.stdout) as {
+        ok: boolean;
+        added: string[];
+        changes: Array<{ path: string; kind: string }>;
+        dependencies: Record<string, string>;
+      };
+      evidence('added', plan.added);
+      evidence(
+        'changes',
+        plan.changes.map((change) => `${change.kind} ${change.path}`)
+      );
+      if (result.code !== 0 || !plan.ok) throw new Error(`add exited ${result.code}`);
+      if (!plan.changes.some((change) => change.path === 'src/rag/knowledge-base.ts')) {
+        throw new Error('the plan does not create the knowledge base');
       }
+      if (!plan.dependencies['@cogitator-ai/rag'])
+        throw new Error('the plan does not add @cogitator-ai/rag');
+      if (existsSync(join(basic, 'src', 'rag'))) throw new Error('--dry-run wrote files');
+    });
+
+    await ctx.check('doctor checks the basic project offline', async (evidence) => {
+      const result = await cli(['doctor', '--offline', '--json'], basic, ctx);
+      const report = JSON.parse(result.stdout) as {
+        ok: boolean;
+        checks: Array<{ id: string; status: string }>;
+      };
+      evidence(
+        'checks',
+        report.checks.map((check) => `${check.id}: ${check.status}`)
+      );
+      if (!report.checks.some((check) => check.id === 'node' && check.status === 'pass')) {
+        throw new Error('doctor did not check Node');
+      }
+      if ((result.code === 0) !== report.ok)
+        throw new Error('the exit code does not follow the checks');
     });
 
     await ctx.check('deploy --dry-run plans the API project', async (evidence) => {
-      const result = await cli(['deploy', '--dry-run'], projectDir(ctx, 'api-server'), ctx);
-      const output = plain(result.stdout + result.stderr);
-      evidence('exitCode', result.code);
-      evidence('output', excerpt(output, 300));
-      for (const expected of ['Deploy plan', 'express', 'OPENAI_API_KEY', 'Preflight']) {
-        if (!output.includes(expected)) throw new Error(`The plan does not mention ${expected}`);
+      const result = await cli(
+        ['deploy', '--dry-run', '--json'],
+        projectDir(ctx, 'api-server'),
+        ctx
+      );
+      const plan = JSON.parse(result.stdout) as {
+        config: { server?: string };
+        secrets: string[];
+        preflight: { checks: Array<{ name: string }> };
+      };
+      evidence('plan', { server: plan.config.server, secrets: plan.secrets });
+      if (plan.config.server !== 'express') throw new Error(`the server is ${plan.config.server}`);
+      for (const secret of ['OPENAI_API_KEY', 'API_TOKEN']) {
+        if (!plan.secrets.includes(secret)) throw new Error(`the plan does not ask for ${secret}`);
       }
+      if (plan.preflight.checks.length === 0) throw new Error('no preflight checks');
     });
   },
 };
@@ -456,7 +495,7 @@ const deployArtifacts: StageDefinition = {
   id: 'deploy-artifacts',
   title: 'Deploy artifacts',
   description:
-    'The deploy engine analyzes the generated projects (server, services, secrets, build), writes Dockerfile, compose and fly.toml for them, gates on secrets, and points the health check at a route the server serves.',
+    'The deploy engine analyzes the generated projects (server, services, secrets, build), writes a production Dockerfile, compose and fly.toml for them, gates on secrets, and points the health check at a route the server serves.',
   packages: [DEPLOY],
   needs: ['scaffold'],
   timeoutMs: 60_000,
@@ -490,11 +529,10 @@ const deployArtifacts: StageDefinition = {
           secrets: memoryPlan.config.secrets,
         });
         evidence('flyBasicWarnings', flyBasic.warnings);
-        if (plan.analysis.server !== 'express') {
+        if (plan.analysis.server !== 'express')
           throw new Error('The express server was not detected');
-        }
-        if (!plan.config.secrets?.includes('OPENAI_API_KEY')) {
-          throw new Error('OPENAI_API_KEY was not required');
+        for (const secret of ['OPENAI_API_KEY', 'API_TOKEN']) {
+          if (!plan.config.secrets?.includes(secret)) throw new Error(`${secret} was not required`);
         }
         if (!plan.analysis.hasTypeScript || !plan.analysis.hasBuildScript) {
           throw new Error('The TypeScript build was missed');
@@ -512,48 +550,58 @@ const deployArtifacts: StageDefinition = {
       }
     );
 
-    await ctx.check('Dockerfile, compose and fly.toml fit the project', async (evidence) => {
-      const docker = await apiPlan.provider.generate(apiPlan.config, api);
-      const flyPlan = await deployer.plan({ projectDir: api, target: 'fly', noPush: true });
-      const fly = await flyPlan.provider.generate(flyPlan.config, api);
-      const memoryPlan = await deployer.plan({
-        projectDir: memory,
-        target: 'docker',
-        noPush: true,
-      });
-      const memoryCompose = artifactText(
-        await memoryPlan.provider.generate(memoryPlan.config, memory),
-        'docker-compose.prod.yml'
-      );
-      const dockerfile = artifactText(docker, 'Dockerfile');
-      const compose = artifactText(docker, 'docker-compose.prod.yml');
-      const flyToml = artifactText(fly, 'fly.toml');
-      evidence('files', {
-        docker: docker.files.map((file) => file.path),
-        fly: fly.files.map((file) => file.path),
-      });
-      evidence(
-        'dockerfileCmd',
-        dockerfile.split('\n').find((line) => line.startsWith('CMD'))
-      );
-      const expectations: Array<[string, boolean]> = [
-        ['Dockerfile builds on node:22-alpine', /^FROM node:22-alpine/m.test(dockerfile)],
-        ['Dockerfile runs the build script', dockerfile.includes('npm run build')],
-        ['Dockerfile exposes the port', /^EXPOSE 3000$/m.test(dockerfile)],
-        ['Dockerfile has a HEALTHCHECK', /^HEALTHCHECK /m.test(dockerfile)],
-        ['compose maps the port', compose.includes('"3000:3000"')],
-        ['compose passes the secret through', compose.includes('OPENAI_API_KEY: ${OPENAI_API_KEY')],
-        [
-          'memory compose starts redis',
-          /^\s{2}redis:/m.test(memoryCompose) && memoryCompose.includes('REDIS_URL'),
-        ],
-        ['fly.toml names the app', flyToml.includes('app = "gauntlet-api-server"')],
-        ['fly.toml routes the port', flyToml.includes('internal_port = 3000')],
-      ];
-      const failed = expectations.filter(([, ok]) => !ok).map(([name]) => name);
-      evidence('failed', failed);
-      if (failed.length > 0) throw new Error(failed.join('; '));
-    });
+    await ctx.check(
+      'the production Dockerfile, compose and fly.toml fit the project',
+      async (evidence) => {
+        const docker = await apiPlan.provider.generate(apiPlan.config, api);
+        const flyPlan = await deployer.plan({ projectDir: api, target: 'fly', noPush: true });
+        const fly = await flyPlan.provider.generate(flyPlan.config, api);
+        const memoryPlan = await deployer.plan({
+          projectDir: memory,
+          target: 'docker',
+          noPush: true,
+        });
+        const memoryCompose = artifactText(
+          await memoryPlan.provider.generate(memoryPlan.config, memory),
+          'docker-compose.prod.yml'
+        );
+        const dockerfile = artifactText(docker, 'Dockerfile');
+        const compose = artifactText(docker, 'docker-compose.prod.yml');
+        const flyToml = artifactText(fly, 'fly.toml');
+        evidence('files', {
+          docker: docker.files.map((file) => file.path),
+          fly: fly.files.map((file) => file.path),
+        });
+        evidence(
+          'dockerfileCmd',
+          dockerfile.split('\n').find((line) => line.startsWith('CMD'))
+        );
+        const expectations: Array<[string, boolean]> = [
+          ['Dockerfile builds on node:24-alpine', /^FROM node:24-alpine/m.test(dockerfile)],
+          ['Dockerfile installs with pnpm', dockerfile.includes('pnpm install')],
+          ['Dockerfile runs the build script', dockerfile.includes('pnpm run build')],
+          ['Dockerfile prunes dev dependencies', dockerfile.includes('pnpm prune --prod')],
+          ['Dockerfile runs as the node user', /^USER node$/m.test(dockerfile)],
+          ['Dockerfile runs under tini', dockerfile.includes('/sbin/tini')],
+          ['Dockerfile exposes the port', /^EXPOSE 3000$/m.test(dockerfile)],
+          ['Dockerfile has a HEALTHCHECK', /^HEALTHCHECK /m.test(dockerfile)],
+          ['compose maps the port', compose.includes('"3000:3000"')],
+          [
+            'compose passes the secret through',
+            compose.includes('OPENAI_API_KEY: ${OPENAI_API_KEY'),
+          ],
+          [
+            'memory compose starts redis',
+            /^\s{2}redis:/m.test(memoryCompose) && memoryCompose.includes('REDIS_URL'),
+          ],
+          ['fly.toml names the app', flyToml.includes('app = "gauntlet-api-server"')],
+          ['fly.toml routes the port', flyToml.includes('internal_port = 3000')],
+        ];
+        const failed = expectations.filter(([, ok]) => !ok).map(([name]) => name);
+        evidence('failed', failed);
+        if (failed.length > 0) throw new Error(failed.join('; '));
+      }
+    );
 
     await ctx.check('preflight gates on secrets and reads them from .env', async (evidence) => {
       const options = { projectDir: memory, target: 'docker', noPush: true, dryRun: true } as const;
@@ -581,62 +629,98 @@ const deployArtifacts: StageDefinition = {
     });
 
     await ctx.check('the health check targets a route the server serves', async (evidence) => {
-      const healthPath = apiPlan.config.health?.path ?? '/cogitator/health';
+      const healthPath = apiPlan.config.health?.path ?? '';
       const source = await readFile(join(api, 'src', 'index.ts'), 'utf8');
-      const basePath = /basePath:\s*'([^']+)'/.exec(source)?.[1] ?? '/cogitator';
+      const basePath = /basePath:\s*'([^']+)'/.exec(source)?.[1] ?? '';
       const served = `${basePath}/health`;
       evidence('healthCheckPath', healthPath);
       evidence('serverHealthRoute', served);
-      if (healthPath !== served) {
+      if (!basePath || healthPath !== served) {
         throw new Error(
-          `The generated HEALTHCHECK and fly check probe ${healthPath} but the scaffolded server serves ${served}`
+          `The HEALTHCHECK probes ${healthPath} but the scaffolded server serves ${served}`
         );
       }
     });
   },
 };
 
-/** Proves the generated Docker artifacts build an image that runs the scaffolded API. */
+/** Proves the generated production image builds from the workspace packages and serves the API. */
 const deployDocker: StageDefinition = {
   id: 'deploy-docker',
   title: 'Deploy image',
   description:
-    'Docker accepts the generated compose file and Dockerfile, the image builds from the scaffolded API project, the container serves the agent API, and its own HEALTHCHECK passes.',
+    'The production Dockerfile of the scaffolded API project builds with the workspace packages vendored in, the container serves the agent API as an unprivileged user, and its own HEALTHCHECK passes.',
   packages: [DEPLOY],
   needs: ['scaffold'],
   requires: [{ kind: 'docker' }],
-  timeoutMs: 300_000,
+  timeoutMs: 600_000,
   async run(ctx) {
-    const api = projectDir(ctx, 'api-server');
-    const deployer = new Deployer();
-    const plan = await deployer.plan({ projectDir: api, target: 'docker', noPush: true });
-    const artifacts = await plan.provider.generate(plan.config, api);
-    const outputDir = join(api, artifacts.outputDir);
-    await mkdir(outputDir, { recursive: true });
-    for (const file of artifacts.files) await writeFile(join(outputDir, file.path), file.content);
+    const source = projectDir(ctx, 'api-server');
+    const api = join(ctx.tmpDir, 'image');
+    await scaffold(
+      specOf({
+        key: 'api-server',
+        preset: 'api-server',
+        provider: 'openai',
+        overrides: { deploy: 'docker' },
+      }),
+      {
+        directory: api,
+        install: false,
+        git: false,
+      }
+    );
     ctx.log(
-      'The image installs the published @cogitator-ai packages from npm, as a user build would'
+      `Built from a fresh copy of ${relative(ctx.tmpDir, source)} with the workspace packages packed into vendor/`
     );
     const docker = (args: readonly string[], timeoutMs = 60_000) =>
       runProcess('docker', args, { cwd: api, env: childEnv(), timeoutMs, signal: ctx.signal });
 
-    await ctx.check("compose and Dockerfile pass docker's own checks", async (evidence) => {
-      const compose = await docker([
-        'compose',
-        '-f',
-        join(outputDir, 'docker-compose.prod.yml'),
-        'config',
-        '--quiet',
-      ]);
-      const lint = await docker(
-        ['build', '--check', '-f', join(outputDir, 'Dockerfile'), '.'],
-        120_000
-      );
-      evidence('compose', { code: compose.code, stderr: excerpt(compose.stderr) });
-      evidence('buildCheck', { code: lint.code, output: excerpt(lint.stdout + lint.stderr, 240) });
-      if (compose.code !== 0) {
-        throw new Error(`docker compose config failed: ${excerpt(compose.stderr)}`);
+    const plan = await ctx.check(
+      'the project installs from vendored workspace packages',
+      async (evidence) => {
+        const vendored = await vendorWorkspacePackages(api, async (packageDir, destination) => {
+          const packed = await runProcess(
+            'pnpm',
+            ['pack', '--pack-destination', destination, '--json'],
+            {
+              cwd: packageDir,
+              env: childEnv(),
+              timeoutMs: 120_000,
+              signal: ctx.signal,
+            }
+          );
+          if (packed.code !== 0)
+            throw new Error(`pnpm pack failed in ${packageDir}: ${excerpt(packed.stderr)}`);
+          const parsed = JSON.parse(packed.stdout.slice(packed.stdout.indexOf('{'))) as {
+            filename: string;
+          };
+          return relative(destination, resolve(destination, parsed.filename));
+        });
+        evidence('vendored', vendored);
+        const install = await runProcess('pnpm', ['install'], {
+          cwd: api,
+          env: childEnv(),
+          timeoutMs: 300_000,
+          signal: ctx.signal,
+        });
+        if (install.code !== 0)
+          throw new Error(`pnpm install failed: ${excerpt(install.stdout + install.stderr, 300)}`);
+        const deployer = new Deployer();
+        const deployPlan = await deployer.plan({ projectDir: api, target: 'docker', noPush: true });
+        const artifacts = await deployPlan.provider.generate(deployPlan.config, api);
+        for (const file of artifacts.files) {
+          if (file.path === 'Dockerfile' || file.path === '.dockerignore') {
+            await writeFile(join(api, file.path), file.content);
+          }
+        }
+        return deployPlan;
       }
+    );
+
+    await ctx.check("the Dockerfile passes docker's own checks", async (evidence) => {
+      const lint = await docker(['build', '--check', '.'], 120_000);
+      evidence('buildCheck', { code: lint.code, output: excerpt(lint.stdout + lint.stderr, 240) });
       if (lint.code !== 0) throw new Error(`docker build --check failed: ${excerpt(lint.stderr)}`);
     });
 
@@ -645,10 +729,7 @@ const deployDocker: StageDefinition = {
       ctx.onCleanup(async () => {
         await runProcess('docker', ['rmi', '-f', image], { cwd: api, timeoutMs: 30_000 });
       });
-      const build = await docker(
-        ['build', '-q', '-t', image, '-f', join(outputDir, 'Dockerfile'), '.'],
-        240_000
-      );
+      const build = await docker(['build', '-q', '-t', image, '.'], 480_000);
       evidence('image', image);
       evidence('seconds', Math.round(build.durationMs / 1000));
       if (build.code !== 0) throw new Error(`docker build failed: ${excerpt(build.stderr, 300)}`);
@@ -658,11 +739,6 @@ const deployDocker: StageDefinition = {
     const container = await ctx.check('the container serves the agent API', async (evidence) => {
       const secrets = plan.config.secrets ?? [];
       evidence('secrets', secrets);
-      if (!secrets.includes('OPENAI_API_KEY') || !secrets.includes('API_TOKEN')) {
-        throw new Error(
-          `The deploy plan does not ask for the API key and token: ${secrets.join(', ')}`
-        );
-      }
       const run = await docker([
         'run',
         '-d',
@@ -685,14 +761,17 @@ const deployDocker: StageDefinition = {
         if (status === 200) break;
         await new Promise((resolveWait) => setTimeout(resolveWait, 500));
       }
+      const user = await docker(['exec', id, 'whoami']);
       evidence('port', port);
       evidence('apiHealth', status);
+      evidence('user', user.stdout.trim());
       if (status !== 200) {
         const logs = await docker(['logs', '--tail', '20', id]);
         throw new Error(
           `/api/health answered ${status}: ${excerpt(logs.stdout + logs.stderr, 300)}`
         );
       }
+      if (user.stdout.trim() === 'root') throw new Error('The container runs as root');
       return id;
     });
 
@@ -709,12 +788,95 @@ const deployDocker: StageDefinition = {
       const probe = await docker(['exec', container, ...command]);
       evidence('healthcheck', test.slice(1).join(' '));
       evidence('exitCode', probe.code);
-      evidence('output', excerpt(probe.stdout + probe.stderr));
-      if (probe.code !== 0) {
-        throw new Error(
-          'The HEALTHCHECK fails against the running container: Docker marks it unhealthy'
+      if (probe.code !== 0) throw new Error('The HEALTHCHECK fails against the running container');
+    });
+  },
+};
+
+async function waitForRun(base: string, runId: string, signal: AbortSignal): Promise<RunRecord> {
+  const deadline = Date.now() + 240_000;
+  while (Date.now() < deadline) {
+    const response = await fetch(`${base}/api/runs/${runId}`, { signal });
+    const tree = (await response.json()) as { run: RunRecord };
+    if (['completed', 'failed', 'stopped'].includes(tree.run.status)) return tree.run;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 500));
+  }
+  throw new Error(`Run ${runId} did not finish within 240 s`);
+}
+
+/** Proves generated projects run on a small local model, from the terminal and in Cogitator Studio. */
+const localModelStage: StageDefinition = {
+  id: 'scaffold-ollama',
+  title: 'Generated projects on a local model',
+  description: `The basic and assistant projects of create-cogitator-app answer on a small Ollama model (${OLLAMA_MODEL}) from their own entry point, and Cogitator Studio runs them with a trace of the model calls.`,
+  packages: [CCA, STUDIO, CLI],
+  requires: [{ kind: 'ollama', model: OLLAMA_MODEL }],
+  timeoutMs: 600_000,
+  async run(ctx) {
+    const projects: Record<string, string> = {};
+    await ctx.check('the projects scaffold for the local model', async (evidence) => {
+      for (const key of ['basic', 'assistant']) {
+        const directory = join(ctx.tmpDir, `local-${key}`);
+        await scaffold(specOf({ key, preset: key, provider: 'ollama' }, OLLAMA_MODEL), {
+          directory,
+          install: false,
+          git: false,
+        });
+        const linked = await link(directory);
+        const runtime = Object.keys((await readPackageJson(directory)).dependencies ?? {});
+        const missing = linked.missing.filter((spec) =>
+          runtime.some((name) => spec.startsWith(`${name}@`))
         );
+        await mkdir(join(directory, 'data'), { recursive: true });
+        projects[key] = directory;
+        evidence(key, linked);
+        if (missing.length > 0) throw new Error(`${key} misses ${missing.join(', ')}`);
       }
+    });
+
+    for (const key of ['basic', 'assistant']) {
+      await ctx.check(`the ${key} project answers from its entry point`, async (evidence) => {
+        const result = await runProcess(
+          process.execPath,
+          ['--import', TSX_LOADER, 'src/index.ts', 'What is 6 times 7? Answer with the number.'],
+          { cwd: projects[key] ?? '', env: childEnv(), timeoutMs: 240_000, signal: ctx.signal }
+        );
+        evidence('exitCode', result.code);
+        evidence('answer', excerpt(result.stdout, 200));
+        if (result.code !== 0)
+          throw new Error(`exited ${result.code}: ${excerpt(result.stderr, 300)}`);
+        if (!result.stdout.trim()) throw new Error('no answer');
+      });
+    }
+
+    await ctx.check('Cogitator Studio runs the assistant with a trace', async (evidence) => {
+      const studio = await startStudio({
+        projectDir: projects.assistant ?? '',
+        port: await ctx.freePort(),
+        strictPort: true,
+        watch: false,
+      });
+      ctx.onCleanup(() => studio.close());
+      await studio.ready();
+      const base = `http://127.0.0.1:${studio.port}`;
+      const started = await fetch(`${base}/api/chat`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ agent: 'assistant', input: 'Say hello in one short sentence.' }),
+        signal: ctx.signal,
+      });
+      if (started.status !== 202)
+        throw new Error(`/api/chat answered ${started.status}: ${await started.text()}`);
+      const { runId } = (await started.json()) as { runId: string };
+      const run = await waitForRun(base, runId, ctx.signal);
+      const llm = run.spans.filter((span) => span.kind === 'llm');
+      evidence('status', run.status);
+      evidence('output', excerpt(run.output ?? run.error ?? '', 200));
+      evidence('modelCalls', llm.length);
+      evidence('tokens', run.usage);
+      if (run.status !== 'completed') throw new Error(`the run ${run.status}: ${run.error ?? ''}`);
+      if (llm.length === 0 || (run.usage?.inputTokens ?? 0) === 0)
+        throw new Error('the trace has no model call with tokens');
     });
   },
 };
@@ -725,4 +887,5 @@ export const toolingStages: StageDefinition[] = [
   cliRunStage,
   deployArtifacts,
   deployDocker,
+  localModelStage,
 ];
