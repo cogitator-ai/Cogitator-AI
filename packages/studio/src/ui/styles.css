@@ -2016,6 +2016,22 @@ a.tr.focused {
   vertical-align: -1px;
 }
 
+.md .katex {
+  font-size: 1.08em;
+}
+
+.md .katex-display {
+  margin: 0 0 12px;
+  padding: 4px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.md .katex-error {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
 .codeblock {
   border: 1px solid var(--border);
   border-radius: var(--r-md);

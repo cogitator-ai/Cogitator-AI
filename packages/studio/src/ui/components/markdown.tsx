@@ -1,7 +1,10 @@
 import { memo, isValidElement, type ReactElement, type ReactNode } from 'react';
-import ReactMarkdown, { type Components } from 'react-markdown';
+import ReactMarkdown, { type Components, type Options } from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
+import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import 'katex/dist/katex.min.css';
 import bash from 'highlight.js/lib/languages/bash';
 import css from 'highlight.js/lib/languages/css';
 import diff from 'highlight.js/lib/languages/diff';
@@ -17,6 +20,7 @@ import sql from 'highlight.js/lib/languages/sql';
 import typescript from 'highlight.js/lib/languages/typescript';
 import xml from 'highlight.js/lib/languages/xml';
 import yaml from 'highlight.js/lib/languages/yaml';
+import { normalizeMath } from '../math';
 import { CopyButton } from './common';
 
 /** The languages agents write most, a fraction of the size of every grammar. */
@@ -73,21 +77,22 @@ const components: Components = {
   ),
 };
 
+const REMARK: Options['remarkPlugins'] = [remarkGfm, [remarkMath, { singleDollarTextMath: false }]];
+
+const REHYPE: Options['rehypePlugins'] = [
+  [rehypeKatex, { throwOnError: false, strict: 'ignore', errorColor: 'var(--error)' }],
+  [rehypeHighlight, { detect: false, languages: LANGUAGES, aliases: ALIASES, plainText: ['math'] }],
+];
+
 /**
- * Model output as GitHub-flavored Markdown with highlighted code. Raw HTML in
- * the text is never rendered.
+ * Model output as GitHub-flavored Markdown with highlighted code and LaTeX
+ * math. Raw HTML in the text is never rendered.
  */
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (
     <div className="md">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[
-          [rehypeHighlight, { detect: false, languages: LANGUAGES, aliases: ALIASES }],
-        ]}
-        components={components}
-      >
-        {text}
+      <ReactMarkdown remarkPlugins={REMARK} rehypePlugins={REHYPE} components={components}>
+        {normalizeMath(text)}
       </ReactMarkdown>
     </div>
   );
