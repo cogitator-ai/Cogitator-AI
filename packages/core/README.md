@@ -338,7 +338,7 @@ result.usage.reasoningTokens; // billed as output
 
 Reasoning that has to travel with tool calls (Claude thinking blocks, OpenAI reasoning items, Gemini thought signatures) is sent back while the agent works through a tool loop.
 
-Runs cache their prompt by default: Anthropic and Bedrock requests mark their stable prefix, OpenAI and Gemini cache on their own, and `usage.cachedInputTokens` / `cacheWriteTokens` are priced at the model's cache prices (1-hour writes, `cacheWrite1hTokens`, at their own price). `llm.promptCache: { ttl: '1h' }` or `false` changes it.
+Runs cache their prompt by default: Anthropic and Bedrock requests mark their stable prefix, and so does Claude through OpenRouter (`OpenAIBackend` with `provider: 'openrouter'`), OpenAI and Gemini cache on their own, and `usage.cachedInputTokens` / `cacheWriteTokens` are priced at the model's cache prices (1-hour writes, `cacheWrite1hTokens`, at their own price). `llm.promptCache: { ttl: '1h' }` or `false` changes it.
 
 ---
 
