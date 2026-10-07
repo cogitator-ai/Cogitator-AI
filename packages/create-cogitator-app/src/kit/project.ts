@@ -93,8 +93,8 @@ export class ProjectBuilder {
   readonly warnings: string[] = [];
   readonly memoryYml: string[] = [];
   readonly deploy: DeploySettings = {};
-  /** Tools every agent in the project gets: `name` is the binding `src/tools/index.ts` exports. */
-  readonly tools: Array<{ binding: string; from: string }> = [];
+  /** Tools the assistant gets: bindings `src/tools/index.ts` imports, `spread` for arrays of tools. */
+  readonly tools: Array<{ binding: string; from: string; spread?: boolean }> = [];
   /** Lines of the assistant agent's instructions, one per feature that shapes its behavior. */
   readonly instructions: string[] = [];
 
@@ -168,6 +168,12 @@ export class ProjectBuilder {
 
   tool(binding: string, from: string): this {
     this.tools.push({ binding, from });
+    return this;
+  }
+
+  /** Gives the assistant every tool of an exported array. */
+  toolSet(binding: string, from: string): this {
+    this.tools.push({ binding, from, spread: true });
     return this;
   }
 

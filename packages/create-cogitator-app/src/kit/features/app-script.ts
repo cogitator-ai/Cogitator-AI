@@ -6,14 +6,16 @@ import type { FeatureModule } from './types.js';
 
 /** The terminal chat over the assistant: one-shot from argv or stdin, a REPL otherwise. */
 function agentEntry(spec: ProjectSpec): string {
-  const approvals = hasFeature(spec, 'harness');
+  const harness = hasFeature(spec, 'harness');
   const persistent = spec.memory !== 'none';
   return code`
-    import { createInterface${approvals ? ', type Interface' : ''} } from 'node:readline/promises';
+    import { createInterface${harness ? ', type Interface' : ''} } from 'node:readline/promises';
     import { styleText } from 'node:util';
-    ${approvals && "import type { ToolApprovalDecision, ToolApprovalRequest } from '@cogitator-ai/core';"}
+    ${harness && "import type { ToolApprovalDecision, ToolApprovalRequest } from '@cogitator-ai/core';"}
     import { agents, cogitator } from './cogitator.js';
     import { loadEnv } from './env.js';
+    ${harness && "import { facts } from './harness/facts.js';"}
+    ${harness && "import { startScheduler } from './harness/scheduler.js';"}
 
     ${
       persistent
@@ -34,7 +36,7 @@ function agentEntry(spec: ProjectSpec): string {
     }
 
     ${
-      approvals &&
+      harness &&
       code`
         /** Asks in the terminal before a tool that changes something runs; without a terminal it is declined. */
         async function approve(request: ToolApprovalRequest, rl?: Interface): Promise<ToolApprovalDecision> {
@@ -49,12 +51,13 @@ function agentEntry(spec: ProjectSpec): string {
       `
     }
 
-    async function ask(input: string${approvals ? ', rl?: Interface' : ''}): Promise<void> {
+    async function ask(input: string${harness ? ', rl?: Interface' : ''}): Promise<void> {
       let streamed = false;
       const result = await cogitator.run(agents.assistant, {
         input,
         threadId: THREAD_ID,
         stream: true,
+        ${harness && 'context: { factsAboutTheUser: await facts.context() },'}
         onToken: (token) => {
           streamed = true;
           process.stdout.write(token);
@@ -62,7 +65,7 @@ function agentEntry(spec: ProjectSpec): string {
         onToolCall: (call) => {
           process.stderr.write(styleText('dim', \`\\n  > \${call.name} \${JSON.stringify(call.arguments)}\\n\`));
         },
-        ${approvals && 'onApproval: (request) => approve(request, rl),'}
+        ${harness && 'onApproval: (request) => approve(request, rl),'}
       });
 
       if (!streamed) process.stdout.write(result.output);
@@ -77,6 +80,25 @@ function agentEntry(spec: ProjectSpec): string {
       const rl = createInterface({ input: process.stdin, output: process.stdout });
       const closed = new Promise<null>((resolve) => rl.once('close', () => resolve(null)));
       rl.on('SIGINT', () => rl.close());
+      ${
+        harness &&
+        code`
+          let queue: Promise<void> = Promise.resolve();
+          /** Runs one turn at a time, so a scheduled task never talks over the user. */
+          const serially = (turn: () => Promise<void>) => {
+            queue = queue.then(turn).catch((error: unknown) => {
+              console.error(styleText('red', error instanceof Error ? error.message : String(error)));
+            });
+            return queue;
+          };
+          const scheduler = startScheduler((task) =>
+            serially(async () => {
+              console.log(styleText('magenta', '\\n[scheduled task]'));
+              await ask(task, rl);
+            })
+          );
+        `
+      }
 
       console.log(
         styleText('bold', 'Chat with the assistant.') + styleText('dim', ' /exit or Ctrl+C to leave.')
@@ -88,13 +110,20 @@ function agentEntry(spec: ProjectSpec): string {
           const input = line.trim();
           if (!input) continue;
           if (input === '/exit') break;
-          try {
-            await ask(input${approvals ? ', rl' : ''});
-          } catch (error) {
-            console.error(styleText('red', error instanceof Error ? error.message : String(error)));
+          ${
+            harness
+              ? 'await serially(() => ask(input, rl));'
+              : code`
+                  try {
+                    await ask(input);
+                  } catch (error) {
+                    console.error(styleText('red', error instanceof Error ? error.message : String(error)));
+                  }
+                `
           }
         }
       } finally {
+        ${harness && 'scheduler.stop();'}
         rl.close();
       }
     }
@@ -112,7 +141,10 @@ function agentEntry(spec: ProjectSpec): string {
         console.error(error instanceof Error ? error.message : error);
         process.exitCode = 1;
       })
-      .finally(() => cogitator.close());
+      .finally(async () => {
+        ${harness && 'await facts.close();'}
+        await cogitator.close();
+      });
   `;
 }
 
