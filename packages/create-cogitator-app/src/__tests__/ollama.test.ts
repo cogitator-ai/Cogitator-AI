@@ -1,20 +1,11 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import * as clack from '@clack/prompts';
 import {
   hasOllamaModel,
   listOllamaModels,
   pullOllamaModel,
   resolveOllamaUrl,
-} from '../utils/ollama.js';
-import { collectOptions } from '../prompts.js';
-
-vi.mock('@clack/prompts', () => ({
-  text: vi.fn(),
-  select: vi.fn(),
-  confirm: vi.fn(),
-  cancel: vi.fn(),
-  isCancel: (value: unknown) => typeof value === 'symbol',
-}));
+} from '../kit/ollama.js';
+import { ollamaModelChoices } from '../kit/models.js';
 
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
@@ -23,8 +14,6 @@ function jsonResponse(body: unknown): Response {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
-  vi.mocked(clack.select).mockReset();
-  vi.mocked(clack.confirm).mockReset();
 });
 
 describe('resolveOllamaUrl', () => {
@@ -112,44 +101,36 @@ describe('pullOllamaModel', () => {
   });
 });
 
-describe('choosing an Ollama model interactively', () => {
-  it('offers the recommended model and the installed ones', async () => {
+describe('ollamaModelChoices', () => {
+  it('offers the recommended model first, then the installed ones', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => jsonResponse({ models: [{ name: 'qwen2.5:0.5b', size: 397_000_000 }] }))
     );
-    vi.mocked(clack.select).mockResolvedValueOnce('qwen2.5:0.5b');
-    vi.mocked(clack.confirm).mockResolvedValue(false);
 
-    const options = await collectOptions({
-      name: 'my-agents',
-      template: 'basic',
-      provider: 'ollama',
-      packageManager: 'pnpm',
-    });
+    const { choices, source } = await ollamaModelChoices('http://localhost:11434');
 
-    const modelPrompt = vi.mocked(clack.select).mock.calls[0][0];
-    expect(modelPrompt.options.map((o) => o.value)).toEqual(['qwen3.5:9b', 'qwen2.5:0.5b']);
-    expect(options.model).toBe('qwen2.5:0.5b');
+    expect(source).toBe('ollama');
+    expect(choices.map((c) => c.value)).toEqual(['qwen3.5:9b', 'qwen2.5:0.5b']);
+    expect(choices[0].hint).toBe('recommended, not installed yet');
+    expect(choices[1].hint).toBe('0.4 GB');
   });
 
-  it('does not ask when Ollama is not running', async () => {
+  it('suggests small tool-calling models when Ollama is not running', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => {
         throw new TypeError('fetch failed');
       })
     );
-    vi.mocked(clack.confirm).mockResolvedValue(false);
 
-    const options = await collectOptions({
-      name: 'my-agents',
-      template: 'basic',
-      provider: 'ollama',
-      packageManager: 'pnpm',
+    const { choices, source } = await ollamaModelChoices('http://localhost:11434');
+
+    expect(source).toBe('suggested');
+    expect(choices[0]).toMatchObject({
+      value: 'qwen3.5:9b',
+      hint: 'recommended, Ollama is not running',
     });
-
-    expect(clack.select).not.toHaveBeenCalled();
-    expect(options.model).toBeUndefined();
+    expect(choices.length).toBeGreaterThan(1);
   });
 });
