@@ -310,7 +310,7 @@ export function emitToolsIndex(project: ProjectBuilder): void {
       ${imports.join('\n')}
 
       /** The tools the assistant can call. Add a tool here to give it to the assistant. */
-      export const tools = [${project.tools.map((tool) => tool.binding).join(', ')}];
+      export const tools = [${project.tools.map((tool) => (tool.spread ? `...${tool.binding}` : tool.binding)).join(', ')}];
     `
   );
 }

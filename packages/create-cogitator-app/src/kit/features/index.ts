@@ -2,6 +2,7 @@ import { appChannelsFeature } from './app-channels.js';
 import { appScriptFeature } from './app-script.js';
 import { appServerFeature } from './app-server.js';
 import { baseFeature } from './base.js';
+import { harnessFeature } from './harness.js';
 import { memoryFeature } from './memory.js';
 import { durableFeature, swarmsFeature, workflowsFeature } from './orchestration.js';
 import { providerFeature } from './provider.js';
@@ -16,6 +17,7 @@ export const FEATURE_MODULES: readonly FeatureModule[] = [
   baseFeature,
   providerFeature,
   memoryFeature,
+  harnessFeature,
   workflowsFeature,
   durableFeature,
   swarmsFeature,
