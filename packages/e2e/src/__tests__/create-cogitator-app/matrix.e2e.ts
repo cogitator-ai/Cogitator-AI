@@ -140,9 +140,16 @@ function killGroup(pid: number, signal: NodeJS.Signals): boolean {
   }
 }
 
-/** Starts the project's `start` script and stops the whole process group afterwards. */
-function startProject(dir: string, pm: PackageManager, env: NodeJS.ProcessEnv) {
-  const [command, args] = runArgs(pm, 'start');
+/**
+ * Starts the project's `start` script, or another command, and stops the
+ * whole process group afterwards.
+ */
+function startProject(
+  dir: string,
+  pm: PackageManager,
+  env: NodeJS.ProcessEnv,
+  [command, args]: [string, string[]] = runArgs(pm, 'start')
+) {
   const child = spawn(command, args, {
     cwd: dir,
     env: { ...process.env, ...env },
@@ -169,6 +176,21 @@ function startProject(dir: string, pm: PackageManager, env: NodeJS.ProcessEnv) {
       });
     },
   };
+}
+
+/** Waits until the WebChat channel accepts connections on the port. */
+function waitForWebChat(port: number): Promise<void> {
+  return waitFor(
+    () =>
+      new Promise<boolean>((resolve) => {
+        const socket = createConnection(port, '127.0.0.1', () => {
+          socket.end();
+          resolve(true);
+        }).on('error', () => resolve(false));
+      }),
+    60_000,
+    'WebChat'
+  );
 }
 
 const combos = PRESET_IDS.flatMap((presetId) =>
@@ -232,17 +254,7 @@ describe.each(combos)('$presetId with $pm', ({ presetId, pm }) => {
     const auth = { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' };
     try {
       if (spec.app === 'channels') {
-        await waitFor(
-          () =>
-            new Promise((resolve) => {
-              const socket = createConnection(port, '127.0.0.1', () => {
-                socket.end();
-                resolve(true);
-              }).on('error', () => resolve(false));
-            }),
-          60_000,
-          'WebChat'
-        );
+        await waitForWebChat(port);
         return;
       }
       await waitFor(async () => (await fetch(`${base}/api/health`)).ok, 90_000, 'the health check');
@@ -287,6 +299,26 @@ describe.each(combos)('$presetId with $pm', ({ presetId, pm }) => {
       await app.stop();
     }
   }, 300_000);
+
+  it('runs src/gateway.ts with cogitator assistant', async (context) => {
+    if (skipped) return context.skip(skipped);
+    if (spec.app !== 'channels') return context.skip('the preset has no gateway');
+    const port = await freePort();
+    const app = startProject(dir, pm, { WEBCHAT_PORT: String(port), OLLAMA_BASE_URL: model.url }, [
+      join(dir, 'node_modules', '.bin', 'cogitator'),
+      ['assistant', '--quiet'],
+    ]);
+    try {
+      await waitForWebChat(port);
+    } catch (error) {
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)}\n${app.output().slice(-3000)}`,
+        { cause: error }
+      );
+    } finally {
+      await app.stop();
+    }
+  }, 120_000);
 
   it('plans a deploy with its secrets, services and warnings', async (context) => {
     if (skipped) return context.skip(skipped);

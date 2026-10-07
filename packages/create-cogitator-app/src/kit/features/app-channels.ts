@@ -109,19 +109,23 @@ export const appChannelsFeature: FeatureModule = {
     const memory = spec.memory !== 'none';
 
     project.file(
-      'src/index.ts',
+      'src/gateway.ts',
       code`
         import { Gateway, ${channels.map((c) => c.factory).join(', ')} } from '@cogitator-ai/channels';
         import { agents, cogitator } from './cogitator.js';
         import { loadEnv } from './env.js';
-        import { onShutdown } from './lifecycle.js';
         ${startupImports(project)}
 
         const env = loadEnv();
         ${startupStatements(project)}
         ${memory && 'const memory = await cogitator.getMemory();'}
 
-        const gateway = new Gateway({
+        /**
+         * The assistant on its channels. \`src/index.ts\` starts it, and so do
+         * \`cogitator assistant\` (with a live dashboard), \`cogitator build\` and
+         * \`cogitator daemon\`, which look for this export.
+         */
+        export const gateway = new Gateway({
           cogitator,
           agent: agents.assistant,
           channels: [
@@ -141,10 +145,21 @@ export const appChannelsFeature: FeatureModule = {
             console.error(\`[\${message.channelType}:\${message.userId}] \${error.message}\`);
           },
         });
+      `
+    );
+
+    const webchat = spec.channels.includes('webchat');
+    project.file(
+      'src/index.ts',
+      code`
+        import { cogitator } from './cogitator.js';
+        ${webchat && "import { loadEnv } from './env.js';"}
+        import { gateway } from './gateway.js';
+        import { onShutdown } from './lifecycle.js';
 
         await gateway.start();
         console.log(\`The assistant is listening on \${gateway.stats.connectedChannels.join(', ')}\`);
-        ${spec.channels.includes('webchat') && `console.log(\`WebChat: ws://localhost:\${env.WEBCHAT_PORT ?? ${WEBCHAT_PORT}}/ws\`);`}
+        ${webchat && `console.log(\`WebChat: ws://localhost:\${loadEnv().WEBCHAT_PORT ?? ${WEBCHAT_PORT}}/ws\`);`}
 
         onShutdown(async () => {
           await gateway.stop();
@@ -157,7 +172,7 @@ export const appChannelsFeature: FeatureModule = {
     project.section(
       'Bot',
       code`
-        \`src/index.ts\` starts a \`Gateway\` from \`@cogitator-ai/channels\` that answers on ${spec.channels.join(', ')} with \`agents.assistant\`. Each chat is its own thread${memory ? ' in memory, compacted when it grows long' : ''}. Channel tokens come from \`.env\`. \`${runScript(pm, 'dev')}\` runs it with reload on change.
+        \`src/gateway.ts\` builds a \`Gateway\` from \`@cogitator-ai/channels\` that answers on ${spec.channels.join(', ')} with \`agents.assistant\`, and \`src/index.ts\` starts it. Each chat is its own thread${memory ? ' in memory, compacted when it grows long' : ''}. Channel tokens come from \`.env\`. \`${runScript(pm, 'dev')}\` runs it with reload on change, \`cogitator assistant\` with a live dashboard, \`cogitator daemon start\` in the background.
       `
     );
   },
