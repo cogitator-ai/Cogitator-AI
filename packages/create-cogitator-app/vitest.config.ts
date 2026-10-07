@@ -1,5 +1,5 @@
 import { defineConfig } from 'vitest/config';
-import { scaffolderDefines } from './build/defines.ts';
+import { scaffolderDefines } from './scripts/defines.ts';
 
 export default defineConfig({
   define: scaffolderDefines(),
