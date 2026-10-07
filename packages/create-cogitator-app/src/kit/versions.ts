@@ -54,6 +54,7 @@ export const VERSIONS = {
   typesKoaRouter: '^15.0.0',
   koaCors: '^5.0.0',
   typesKoaCors: '^5.0.1',
+  koaBodyparser: '^6.1.0',
   tetsuCore: '^0.6.3',
   tetsuSse: '^0.6.3',
   tetsuOpenapi: '^0.6.3',

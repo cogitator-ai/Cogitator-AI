@@ -1,8 +1,9 @@
 import { code, tsString } from '../code.js';
 import { runScript } from '../package-manager.js';
 import type { ProjectBuilder } from '../project.js';
-import type { ProjectSpec, ServerFramework } from '../spec.js';
+import { hasFeature, type ProjectSpec, type ServerFramework } from '../spec.js';
 import { cogitatorVersion, VERSIONS } from '../versions.js';
+import { a2aMount } from './a2a.js';
 import { LIFECYCLE_TS, startupImports, startupStatements } from './shared.js';
 import type { FeatureModule } from './types.js';
 
@@ -95,6 +96,15 @@ function listening(): string {
   `;
 }
 
+/** The A2A routes of a server, when the project has the a2a feature. */
+function a2a(project: ProjectBuilder): { imports: string | false; mount: string | false } {
+  const server = project.spec.server;
+  if (!hasFeature(project.spec, 'a2a') || !server || server === 'tetsu')
+    return { imports: false, mount: false };
+  const { imports, mount } = a2aMount(server);
+  return { imports: imports.join('\n'), mount };
+}
+
 const NODE_HTTP_CLOSE = code`
   interface Closable {
     close(callback: (error?: Error) => void): unknown;
@@ -121,12 +131,14 @@ function honoEntry(project: ProjectBuilder): string {
     import { loadEnv } from './env.js';
     import { onShutdown } from './lifecycle.js';
     ${startupImports(project)}
+    ${a2a(project).imports}
 
     ${settings(project.spec)}
     ${startupStatements(project)}
 
     const app = new Hono();
     if (corsOrigins?.length) app.use('${SERVER_BASE_PATH}/*', cors({ origin: corsOrigins }));
+    ${a2a(project).mount}
     app.route(
       '${SERVER_BASE_PATH}',
       cogitatorApp({
@@ -160,11 +172,13 @@ function expressEntry(project: ProjectBuilder): string {
     import { loadEnv } from './env.js';
     import { onShutdown } from './lifecycle.js';
     ${startupImports(project)}
+    ${a2a(project).imports}
 
     ${settings(project.spec)}
     ${startupStatements(project)}
 
     const app = express();
+    ${a2a(project).mount}
     const api = new CogitatorServer({
       app,
       ${options},
@@ -202,12 +216,14 @@ function fastifyEntry(project: ProjectBuilder): string {
     import { loadEnv } from './env.js';
     import { onShutdown } from './lifecycle.js';
     ${startupImports(project)}
+    ${a2a(project).imports}
 
     ${settings(project.spec)}
     ${startupStatements(project)}
 
     const app = Fastify({ logger: { level: production ? 'info' : 'warn' } });
     if (corsOrigins?.length) await app.register(cors, { origin: corsOrigins });
+    ${a2a(project).mount}
     await app.register(cogitatorPlugin, {
       ${options},
       prefix: '${SERVER_BASE_PATH}',
@@ -237,11 +253,13 @@ function koaEntry(project: ProjectBuilder): string {
     import { loadEnv } from './env.js';
     import { onShutdown } from './lifecycle.js';
     ${startupImports(project)}
+    ${a2a(project).imports}
 
     ${settings(project.spec)}
     ${startupStatements(project)}
 
     const app = new Koa();
+    ${a2a(project).mount}
     if (corsOrigins?.length) {
       const allowed = new Set(corsOrigins);
       app.use(cors({ origin: (ctx) => (allowed.has(ctx.get('origin')) ? ctx.get('origin') : '') }));
@@ -280,6 +298,7 @@ function tetsuEntry(project: ProjectBuilder): string {
     import { loadEnv } from './env.js';
     import { onShutdown } from './lifecycle.js';
     ${startupImports(project)}
+    ${a2a(project).imports}
 
     ${settings(project.spec)}
     ${startupStatements(project)}
