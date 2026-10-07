@@ -95,7 +95,7 @@ A failed run is rethrown as an error naming the agent, workflow and node, with t
 
 ### Tool approvals
 
-When the agent calls a tool that needs approval (`requiresApproval`), its run pauses, and the node never passes that pause on as the agent's answer. With an approval store (the run's `approvalStore` execute option, or `approvals.approvalStore`), each waiting call becomes an approve/reject request in the [human-in-the-loop](/docs/workflows/human-in-the-loop) store, titled `Allow <agent> to call <tool>?` with the arguments in its description. The node waits like an `approvalNode`, then resumes the run: approved calls run, the others are declined with the approver's comment (or a timeout notice), and the agent answers.
+When the agent calls a tool that needs approval (`requiresApproval`), its run pauses, and the node never passes that pause on as the agent's answer. With an approval store (the run's `approvalStore` execute option, or `approvals.approvalStore`), each waiting call becomes an approve/reject request in the [human-in-the-loop](/docs/workflows/nodes#human-in-the-loop-nodes) store, titled `Allow <agent> to call <tool>?` with the arguments in its description. The node waits like an `approvalNode`, then resumes the run: approved calls run, the others are declined with the approver's comment (or a timeout notice), and the agent answers.
 
 ```typescript
 const node = agentNode<RefundState>(clerk, {

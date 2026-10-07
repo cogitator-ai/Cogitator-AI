@@ -74,3 +74,6 @@ packages/dashboard/next-env.d.ts
 # Local agent instructions
 /AGENTS.md
 pnpm-publish-summary.json
+
+# Docs bundled into @cogitator-ai/core at build time
+packages/core/docs/

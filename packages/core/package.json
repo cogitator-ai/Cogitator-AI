@@ -27,10 +27,11 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "docs"
   ],
   "scripts": {
-    "build": "tsc && tsx ../../scripts/fix-esm-imports.ts .",
+    "build": "tsc && tsx ../../scripts/fix-esm-imports.ts . && tsx scripts/bundle-docs.ts",
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
