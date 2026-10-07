@@ -69,6 +69,28 @@ describe('scaffold', () => {
     expect(Object.keys(lock?.files ?? {})).not.toContain(LOCK_PATH);
   });
 
+  it('reports its steps to the logger it is given and returns them structured', async () => {
+    const lines: string[] = [];
+    const log = {
+      start: (message: string) => lines.push(`start ${message}`),
+      done: (message: string) => lines.push(`done ${message}`),
+      fail: (message: string) => lines.push(`fail ${message}`),
+      warn: (message: string) => lines.push(`warn ${message}`),
+    };
+    const result = await scaffold(spec, {
+      directory: join(tempRoot(), 'demo'),
+      install: false,
+      git: false,
+      log,
+    });
+    expect(lines).toEqual([
+      'start Writing project files',
+      `done Wrote ${result.files.length} files`,
+    ]);
+    expect(result.plan.dependencies['@cogitator-ai/core']).toMatch(/^\^/);
+    expect(result.git).toEqual({ status: 'skipped', reason: 'git was turned off' });
+  });
+
   it('records the spec and the command to recreate it in package.json', async () => {
     const directory = join(tempRoot(), 'demo');
     await scaffold(spec, { directory, install: false, git: false });
