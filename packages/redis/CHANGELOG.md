@@ -1,5 +1,15 @@
 # @cogitator-ai/redis
 
+## 0.5.2
+
+### Patch Changes
+
+- [#136](https://github.com/cogitator-ai/Cogitator-AI/pull/136) [`9593a4a`](https://github.com/cogitator-ai/Cogitator-AI/commit/9593a4a09422e082c619d991cafdfaf42bf20281) - CommonJS consumers can load the packages again. The exports maps only had an `import` condition, so `require('@cogitator-ai/core')` from NestJS, Jest in CommonJS mode or a script outside `"type": "module"` failed with `ERR_PACKAGE_PATH_NOT_EXPORTED`, although Node 22.12+ can `require()` these ES modules. Every entry now ends with a `default` condition pointing at the same file.
+
+- [#136](https://github.com/cogitator-ai/Cogitator-AI/pull/136) [`9593a4a`](https://github.com/cogitator-ai/Cogitator-AI/commit/9593a4a09422e082c619d991cafdfaf42bf20281) - Explicit `host`, `port`, `password` and `db` now win over what `url` says, as they do in `@cogitator-ai/worker`. ioredis lets the url win, so `{ url: 'redis://cache:6379/0', db: 3 }` wrote to database 0 and tenants configured apart shared one keyspace. `createConfigFromEnv` no longer adds a default `localhost` host next to `REDIS_URL`, and `REDIS_PASSWORD` overrides the password in `REDIS_URL`.
+
+- [#136](https://github.com/cogitator-ai/Cogitator-AI/pull/136) [`9593a4a`](https://github.com/cogitator-ai/Cogitator-AI/commit/9593a4a09422e082c619d991cafdfaf42bf20281) - `ioredis` is now only an optional peer dependency of `@cogitator-ai/redis`, no longer an optional dependency, so installing a package that builds on it (such as `@cogitator-ai/memory`) no longer pulls in a Redis client the app does not use. Apps that talk to Redis install it themselves with `pnpm add ioredis`, as the README already says, and `createRedisClient` throws that install hint when it is missing.
+
 ## 0.5.1
 
 ### Patch Changes

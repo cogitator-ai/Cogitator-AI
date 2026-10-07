@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/memory",
-  "version": "0.11.8",
+  "version": "0.12.0",
   "description": "Memory adapters for Cogitator AI agents",
   "keywords": [
     "cogitator",

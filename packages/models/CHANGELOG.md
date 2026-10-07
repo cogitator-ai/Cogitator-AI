@@ -1,5 +1,17 @@
 # @cogitator-ai/models
 
+## 18.3.0
+
+### Minor Changes
+
+- [#136](https://github.com/cogitator-ai/Cogitator-AI/pull/136) [`9593a4a`](https://github.com/cogitator-ai/Cogitator-AI/commit/9593a4a09422e082c619d991cafdfaf42bf20281) - Prompt-cache writes with Anthropic's 1-hour TTL are priced at their own rate. With `llm.promptCache: { ttl: '1h' }` every write was counted at the 5-minute price, 37.5% under what Anthropic bills. `ChatUsage.cacheWrite1hTokens` reports the part of `cacheWriteTokens` written for an hour, `ModelPricing.inputCacheWrite1h` holds its price (read from LiteLLM and set on the built-in Claude models), and `calculateCost()` takes `cacheWrite1hTokens`.
+
+### Patch Changes
+
+- [#136](https://github.com/cogitator-ai/Cogitator-AI/pull/136) [`9593a4a`](https://github.com/cogitator-ai/Cogitator-AI/commit/9593a4a09422e082c619d991cafdfaf42bf20281) - CommonJS consumers can load the packages again. The exports maps only had an `import` condition, so `require('@cogitator-ai/core')` from NestJS, Jest in CommonJS mode or a script outside `"type": "module"` failed with `ERR_PACKAGE_PATH_NOT_EXPORTED`, although Node 22.12+ can `require()` these ES modules. Every entry now ends with a `default` condition pointing at the same file.
+
+- [#136](https://github.com/cogitator-ai/Cogitator-AI/pull/136) [`9593a4a`](https://github.com/cogitator-ai/Cogitator-AI/commit/9593a4a09422e082c619d991cafdfaf42bf20281) - `initializeModels()` loads the full model catalogue even after a price lookup ran first. A lookup before it loaded the built-in models and marked the registry initialized, so a later `initializeModels()` did nothing, models outside the built-in list (DeepSeek, Groq, Mistral, Together, Bedrock and more) stayed unpriced, their runs reported `usage.cost: 0` and a cost-routing budget never counted them. Overlapping `initialize()` calls now share one load, and with a `budget` configured the runtime warns once per model whose calls it cannot price.
+
 ## 18.2.1
 
 ### Patch Changes

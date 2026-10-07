@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/koa",
-  "version": "0.6.11",
+  "version": "0.7.0",
   "description": "Koa server adapter for Cogitator AI runtime",
   "type": "module",
   "exports": {

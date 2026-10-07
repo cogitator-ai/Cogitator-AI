@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/models",
-  "version": "18.2.1",
+  "version": "18.3.0",
   "description": "Dynamic model registry with pricing for Cogitator",
   "keywords": [
     "cogitator",
