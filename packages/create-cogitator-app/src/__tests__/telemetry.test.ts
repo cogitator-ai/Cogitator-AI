@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isbot, isbotMatches } from 'isbot';
 import { run } from '../cli/main.js';
 import {
   firstRunNotice,
@@ -10,6 +11,7 @@ import {
   payloadFor,
   sendTelemetry,
   telemetryDisabledReason,
+  telemetryUserAgent,
 } from '../kit/telemetry.js';
 
 const roots: string[] = [];
@@ -107,8 +109,19 @@ describe('sending', () => {
       payload: { website: 'site', name: 'scaffold' },
     });
     expect(Object.keys(sent[0].body.payload.data).sort()).toEqual([...PAYLOAD_FIELDS].sort());
-    expect(sent[0].headers['user-agent']).toContain('create-cogitator-app/');
+    expect(sent[0].headers['user-agent']).toBe(telemetryUserAgent(payloadFor(spec, 'success')));
   });
+
+  it.each(['darwin', 'linux', 'win32', 'freebsd'])(
+    'sends a User-Agent from %s that Umami does not take for a bot',
+    (os) => {
+      const userAgent = telemetryUserAgent({ os, version: '0.5.2' });
+      expect(userAgent).toContain('create-cogitator-app/0.5.2');
+      expect(isbot(userAgent), `${userAgent} matches ${isbotMatches(userAgent).join(', ')}`).toBe(
+        false
+      );
+    }
+  );
 
   it('never throws and gives up at its timeout', async () => {
     const failing: typeof fetch = async () => {
