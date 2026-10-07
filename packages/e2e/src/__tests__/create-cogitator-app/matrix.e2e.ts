@@ -189,7 +189,7 @@ describe.each(combos)('$presetId with $pm', ({ presetId, pm }) => {
     }
     await scaffold(spec, { directory: dir, install: false, git: false });
     useTarballs(dir, pm, await packed(dir));
-    await mustExec(pm, installArgs(pm), { cwd: dir, timeoutMs: 900_000 });
+    await mustExec(pm, installArgs(pm), { cwd: dir, timeoutMs: 900_000, env: { CI: '1' } });
     const formatted = await formatProject(dir);
     if (formatted.status === 'failed') throw formatted.error;
     scripts = (

@@ -705,7 +705,9 @@ const deployDocker: StageDefinition = {
           signal: ctx.signal,
         });
         if (install.code !== 0)
-          throw new Error(`pnpm install failed: ${excerpt(install.stdout + install.stderr, 300)}`);
+          throw new Error(
+            `pnpm install failed: ${excerpt((install.stdout + install.stderr).slice(-600), 600)}`
+          );
         const deployer = new Deployer();
         const deployPlan = await deployer.plan({ projectDir: api, target: 'docker', noPush: true });
         const artifacts = await deployPlan.provider.generate(deployPlan.config, api);
