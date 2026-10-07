@@ -162,6 +162,11 @@ function readProject(directory: string): ProjectState {
   }
   const record = manifest as Record<string, unknown>;
   const stored = record[MANIFEST_KEY];
+  if (typeof stored === 'object' && stored !== null && 'example' in stored && !('spec' in stored)) {
+    throw new NotAScaffoldedProjectError(
+      `${directory} was created from an example, not generated from a spec, so cogitator add cannot extend it. Generate a project with the features you need instead: npx create-cogitator-app`
+    );
+  }
   if (typeof stored !== 'object' || stored === null || !('spec' in stored)) {
     throw new NotAScaffoldedProjectError(
       `${directory} was not created by create-cogitator-app: its package.json has no "${MANIFEST_KEY}" field, so cogitator add cannot tell what the project contains`

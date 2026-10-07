@@ -231,7 +231,7 @@ async function gitHasIdentity(cwd: string): Promise<boolean> {
   );
 }
 
-async function initGit(directory: string): Promise<StepResult> {
+export async function initGit(directory: string): Promise<StepResult> {
   if (!(await hasCommand('git', directory)))
     return { status: 'skipped', reason: 'git is not installed' };
   const repo = await enclosingGitRepo(directory);

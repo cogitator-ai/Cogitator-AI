@@ -51,20 +51,23 @@ export function detectCodingAgents(home: string = homedir()): CodingAgent[] {
  * Asks for everything the flags left open and returns the flags completed with
  * the answers. Anything given as a flag is not asked again.
  */
+/** Asks where the project goes. */
+export async function askDirectory(): Promise<string> {
+  return answer(
+    await p.text({
+      message: 'Where should the project go?',
+      placeholder: `./${DEFAULT_DIRECTORY}`,
+      defaultValue: DEFAULT_DIRECTORY,
+      validate: (value) =>
+        value?.trim() ? validateProjectName(projectNameFromDirectory(value)) : undefined,
+    })
+  ).trim();
+}
+
 export async function askMissing(args: CliArgs): Promise<CliArgs> {
   const next: CliArgs = { ...args };
 
-  if (next.directory === undefined) {
-    next.directory = answer(
-      await p.text({
-        message: 'Where should the project go?',
-        placeholder: `./${DEFAULT_DIRECTORY}`,
-        defaultValue: DEFAULT_DIRECTORY,
-        validate: (value) =>
-          value?.trim() ? validateProjectName(projectNameFromDirectory(value)) : undefined,
-      })
-    ).trim();
-  }
+  if (next.directory === undefined) next.directory = await askDirectory();
 
   if (next.preset === undefined && next.app === undefined) {
     const choice = answer(
