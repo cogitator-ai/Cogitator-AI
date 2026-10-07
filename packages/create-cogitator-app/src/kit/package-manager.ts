@@ -45,15 +45,21 @@ export function installCommand(pm: PackageManager): string {
   return `${pm} install`;
 }
 
-/** The install command CI runs: reproducible from the lockfile. */
-export function ciInstallCommand(pm: PackageManager): string {
+/**
+ * The install command CI runs: reproducible from the lockfile. Yarn 2 and
+ * later spell it `--immutable`, Yarn 1 `--frozen-lockfile`, which is also what
+ * corepack runs when package.json names no Yarn version.
+ */
+export function ciInstallCommand(pm: PackageManager, packageManagerSpec?: string): string {
   switch (pm) {
     case 'pnpm':
       return 'pnpm install --frozen-lockfile';
     case 'npm':
       return 'npm ci';
-    case 'yarn':
-      return 'yarn install --immutable';
+    case 'yarn': {
+      const major = Number.parseInt(/^yarn@(\d+)/.exec(packageManagerSpec ?? '')?.[1] ?? '1', 10);
+      return major >= 2 ? 'yarn install --immutable' : 'yarn install --frozen-lockfile';
+    }
     case 'bun':
       return 'bun install --frozen-lockfile';
   }

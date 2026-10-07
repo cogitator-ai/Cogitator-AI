@@ -103,8 +103,12 @@ export class ProjectBuilder {
   /** Lines of the assistant agent's instructions, one per feature that shapes its behavior. */
   readonly instructions: string[] = [];
 
-  constructor(spec: ProjectSpec) {
+  /** `name@version` of the package manager when it is known, such as `yarn@4.9.1`. */
+  readonly packageManagerSpec?: string;
+
+  constructor(spec: ProjectSpec, options: { packageManagerSpec?: string } = {}) {
     this.spec = spec;
+    this.packageManagerSpec = options.packageManagerSpec;
   }
 
   file(path: string, content: string, mode?: number): this {

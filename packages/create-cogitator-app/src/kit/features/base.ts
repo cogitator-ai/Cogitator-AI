@@ -150,7 +150,7 @@ const ASSISTANT_TEST_TS = code`
   });
 `;
 
-function ciWorkflow(spec: ProjectSpec): string {
+function ciWorkflow(spec: ProjectSpec, packageManagerSpec: string | undefined): string {
   const pm = spec.packageManager;
   const setup =
     pm === 'bun'
@@ -159,6 +159,7 @@ function ciWorkflow(spec: ProjectSpec): string {
         `
       : code`
           ${pm === 'pnpm' && '- uses: pnpm/action-setup@v6'}
+          ${pm === 'yarn' && '- run: corepack enable'}
           - uses: actions/setup-node@v7
             with:
               node-version: 24
@@ -179,7 +180,7 @@ function ciWorkflow(spec: ProjectSpec): string {
         steps:
           - uses: actions/checkout@v7
           ${setup}
-          - run: ${ciInstallCommand(pm)}
+          - run: ${ciInstallCommand(pm, packageManagerSpec)}
           - run: ${runScript(pm, 'typecheck')}
           - run: ${runScript(pm, 'lint')}
           - run: ${runScript(pm, 'test')}
@@ -264,7 +265,7 @@ export const baseFeature: FeatureModule = {
       .file('tests/assistant.test.ts', ASSISTANT_TEST_TS)
       .file('vitest.config.ts', VITEST_CONFIG_TS)
       .file('biome.json', biomeJson(spec))
-      .file('.github/workflows/ci.yml', ciWorkflow(spec))
+      .file('.github/workflows/ci.yml', ciWorkflow(spec, project.packageManagerSpec))
       .script('test', 'vitest run')
       .script('typecheck', 'tsc --noEmit')
       .script('lint', 'biome check .')

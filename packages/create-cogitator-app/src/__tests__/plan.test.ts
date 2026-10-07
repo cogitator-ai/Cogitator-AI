@@ -168,6 +168,31 @@ describe('generated configuration', () => {
   });
 });
 
+describe('CI workflow', () => {
+  const ci = (packageManagerSpec?: string) =>
+    file(
+      planProject(specFor('basic', 'openai', { packageManager: 'yarn' }), { packageManagerSpec }),
+      '.github/workflows/ci.yml'
+    );
+
+  it('installs with the frozen-lockfile flag of the Yarn the project uses', () => {
+    expect(ci('yarn@4.9.1')).toContain('- run: yarn install --immutable');
+    expect(ci('yarn@1.22.22')).toContain('- run: yarn install --frozen-lockfile');
+    expect(ci()).toContain('- run: yarn install --frozen-lockfile');
+  });
+
+  it('turns on corepack before setup-node, so the Yarn of package.json runs', () => {
+    const workflow = ci('yarn@4.9.1');
+    expect(workflow.indexOf('- run: corepack enable')).toBeGreaterThan(-1);
+    expect(workflow.indexOf('- run: corepack enable')).toBeLessThan(
+      workflow.indexOf('actions/setup-node')
+    );
+    expect(file(planProject(specFor('basic', 'openai')), '.github/workflows/ci.yml')).not.toContain(
+      'corepack'
+    );
+  });
+});
+
 describe('AGENTS.md', () => {
   it('keeps the Cogitator rules in a managed block and points CLAUDE.md at it', () => {
     const plan = planProject(specFor('basic', 'openai'));

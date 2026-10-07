@@ -62,7 +62,7 @@ export function planProject(input: unknown, options: PlanOptions = {}): ProjectP
   const spec = parseSpec(input);
   assertCompatible(spec);
 
-  const project = new ProjectBuilder(spec);
+  const project = new ProjectBuilder(spec, { packageManagerSpec: options.packageManagerSpec });
   const active = FEATURE_MODULES.filter((feature) => feature.applies(spec));
   for (const feature of active) feature.apply(project);
   for (const feature of active) feature.finalize?.(project);
