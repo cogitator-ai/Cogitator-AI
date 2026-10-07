@@ -72,20 +72,21 @@ const SKIPPED_BUILDS = ['cpu-features', 'protobufjs', 'ssh2'];
 
 /**
  * pnpm runs dependency build scripts only when they are allowed, and fails
- * the install in CI on scripts nobody decided on: the native builds the
- * project needs are allowed, the rest declined.
+ * the install in CI on scripts nobody decided on: the `pnpm-workspace.yaml`
+ * that allows the native builds a project needs and declines the rest.
  */
-export function emitPnpmWorkspace(project: ProjectBuilder): void {
-  if (project.spec.packageManager !== 'pnpm') return;
-  const allowed = new Set([...project.nativeBuilds, 'esbuild']);
+export function pnpmWorkspaceYaml(nativeBuilds: Iterable<string>): string {
+  const allowed = new Set(nativeBuilds);
   const entries = [
     ...[...allowed].map((name) => [name, true] as const),
     ...SKIPPED_BUILDS.filter((name) => !allowed.has(name)).map((name) => [name, false] as const),
   ].sort(([a], [b]) => a.localeCompare(b));
-  project.file(
-    'pnpm-workspace.yaml',
-    ['allowBuilds:', ...entries.map(([name, allow]) => `  ${name}: ${allow}`), ''].join('\n')
-  );
+  return ['allowBuilds:', ...entries.map(([name, allow]) => `  ${name}: ${allow}`), ''].join('\n');
+}
+
+export function emitPnpmWorkspace(project: ProjectBuilder): void {
+  if (project.spec.packageManager !== 'pnpm') return;
+  project.file('pnpm-workspace.yaml', pnpmWorkspaceYaml([...project.nativeBuilds, 'esbuild']));
 }
 
 function envExampleLine(variable: EnvVar): string[] {
