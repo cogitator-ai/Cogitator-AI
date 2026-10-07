@@ -228,6 +228,10 @@ export function emitCogitatorYml(project: ProjectBuilder): void {
     lines.push('', 'memory:', ...project.memoryYml.map((line) => `  ${line}`));
   }
 
+  for (const [section, body] of project.ymlSections) {
+    lines.push('', `${section}:`, ...body.map((line) => `  ${line}`));
+  }
+
   const deploy: string[] = [];
   if (spec.deploy !== 'none') deploy.push(`  target: ${spec.deploy}`);
   if (project.deploy.kind) deploy.push(`  kind: ${project.deploy.kind}`);

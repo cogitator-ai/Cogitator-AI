@@ -12,6 +12,7 @@ import { memoryFeature } from './memory.js';
 import { durableFeature, swarmsFeature, workflowsFeature } from './orchestration.js';
 import { providerFeature } from './provider.js';
 import { ragFeature } from './rag.js';
+import { sandboxFeature } from './sandbox.js';
 import { voiceFeature } from './voice.js';
 import type { FeatureModule } from './types.js';
 
@@ -31,6 +32,7 @@ export const FEATURE_MODULES: readonly FeatureModule[] = [
   a2aFeature,
   voiceFeature,
   observabilityFeature,
+  sandboxFeature,
   workflowsFeature,
   durableFeature,
   swarmsFeature,
