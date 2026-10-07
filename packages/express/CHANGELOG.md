@@ -1,5 +1,14 @@
 # @cogitator-ai/express
 
+## 0.8.1
+
+### Patch Changes
+
+- Updated dependencies [[`95d5866`](https://github.com/cogitator-ai/Cogitator-AI/commit/95d58666629772419cf200daf120542cbe9289fa), [`95d5866`](https://github.com/cogitator-ai/Cogitator-AI/commit/95d58666629772419cf200daf120542cbe9289fa)]:
+  - @cogitator-ai/core@0.35.0
+  - @cogitator-ai/types@0.37.0
+  - @cogitator-ai/server-shared@0.5.1
+
 ## 0.8.0
 
 ### Minor Changes

@@ -1,5 +1,25 @@
 # @cogitator-ai/core
 
+## 0.35.0
+
+### Minor Changes
+
+- [#139](https://github.com/cogitator-ai/Cogitator-AI/pull/139) [`95d5866`](https://github.com/cogitator-ai/Cogitator-AI/commit/95d58666629772419cf200daf120542cbe9289fa) - - `cogitator.observe(observer)` attaches a run observer to a runtime after it was built, also seeing the runs that agent tools start on it; `CogitatorConfig.observers` and the `observer()` of the OpenTelemetry and Langfuse exporters watch every run and flush on `close()`.
+  - The package ships its documentation as Markdown in `docs/`, the docs of exactly the installed version, starting at `docs/index.md`.
+  - `restrictFileTools` and `isPathAllowed` (moved from channels) confine the file tools to directories, with `base` and `requireApproval` options.
+  - The Langfuse exporter marks the trace of a failed run as an error, ends what was still open as ERROR and drops the run, which it kept forever before.
+  - A time-travel fork with both a new input and extra context applies both, it ran with the original input before.
+  - Time-travel checkpoints count only a run's own tool calls as steps: a run that continued a thread forked from the wrong turn before.
+
+  **Breaking:** a time-travel step is the index of a tool call of the run itself. Checkpoints of runs on a thread with earlier tool calls now have smaller step numbers, and a step past the last tool call forks before the final answer. Code that stored step numbers of such runs needs to read them again from `getCheckpoints()`.
+
+### Patch Changes
+
+- Updated dependencies [[`95d5866`](https://github.com/cogitator-ai/Cogitator-AI/commit/95d58666629772419cf200daf120542cbe9289fa), [`95d5866`](https://github.com/cogitator-ai/Cogitator-AI/commit/95d58666629772419cf200daf120542cbe9289fa)]:
+  - @cogitator-ai/memory@0.12.1
+  - @cogitator-ai/types@0.37.0
+  - @cogitator-ai/sandbox@0.5.10
+
 ## 0.34.0
 
 ### Minor Changes

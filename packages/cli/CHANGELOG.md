@@ -1,5 +1,31 @@
 # @cogitator-ai/cli
 
+## 0.6.0
+
+### Minor Changes
+
+- [#139](https://github.com/cogitator-ai/Cogitator-AI/pull/139) [`95d5866`](https://github.com/cogitator-ai/Cogitator-AI/commit/95d58666629772419cf200daf120542cbe9289fa) - New commands: `cogitator add` grows a scaffolded project with rag, mcp, workflows, evals, memory, deploy and the rest, merging into files you changed and refusing with a diff when it cannot; `cogitator dev` opens Cogitator Studio; `cogitator mcp` serves the bundled docs and the project's registry to Claude Code, Cursor and Codex; `cogitator doctor` checks that a project can run; `cogitator eval` runs eval suites for CI. `cogitator init` generates the `channels` preset of create-cogitator-app. Every command now exits `0`, `1` or `2` (wrong command line), reports failures with hints on stderr (stack traces with `COGITATOR_DEBUG`), prints JSON with `--json` (now also on `models`, `status` and `deploy`), and ends its help with examples.
+
+  `cogitator mcp --project <path>` serves another project, and `cogitator add` installs when an addition removes dependencies too, so the lockfile follows package.json. `cogitator doctor` finds packages installed with Yarn Plug'n'Play and packages hoisted to a parent node_modules.
+
+  **Breaking:**
+
+  - Errors and warnings go to stderr, and a wrong command line (unknown option, missing argument, invalid value) exits with `2` instead of `1`. Scripts that read errors from stdout or check for `1` need to follow.
+  - `cogitator init` generates a different project: the agent moves from `src/agent.ts` to `src/agents/assistant.ts` and the registry `src/cogitator.ts`, and `src/index.ts` starts the gateway for `dev` and `start`. `src/gateway.ts` still exports `gateway`, so `cogitator assistant`, `build` and `daemon` work as before. Existing projects are not touched.
+
+### Patch Changes
+
+- Updated dependencies [[`95d5866`](https://github.com/cogitator-ai/Cogitator-AI/commit/95d58666629772419cf200daf120542cbe9289fa), [`95d5866`](https://github.com/cogitator-ai/Cogitator-AI/commit/95d58666629772419cf200daf120542cbe9289fa), [`95d5866`](https://github.com/cogitator-ai/Cogitator-AI/commit/95d58666629772419cf200daf120542cbe9289fa), [`95d5866`](https://github.com/cogitator-ai/Cogitator-AI/commit/95d58666629772419cf200daf120542cbe9289fa), [`95d5866`](https://github.com/cogitator-ai/Cogitator-AI/commit/95d58666629772419cf200daf120542cbe9289fa), [`95d5866`](https://github.com/cogitator-ai/Cogitator-AI/commit/95d58666629772419cf200daf120542cbe9289fa)]:
+  - @cogitator-ai/core@0.35.0
+  - @cogitator-ai/deploy@0.6.0
+  - create-cogitator-app@0.5.0
+  - @cogitator-ai/memory@0.12.1
+  - @cogitator-ai/channels@0.9.1
+  - @cogitator-ai/studio@0.1.0
+  - @cogitator-ai/types@0.37.0
+  - @cogitator-ai/mcp@19.3.1
+  - @cogitator-ai/config@0.12.1
+
 ## 0.5.20
 
 ### Patch Changes

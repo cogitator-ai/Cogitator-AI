@@ -1,5 +1,13 @@
 # @cogitator-ai/self-modifying
 
+## 19.4.1
+
+### Patch Changes
+
+- Updated dependencies [[`95d5866`](https://github.com/cogitator-ai/Cogitator-AI/commit/95d58666629772419cf200daf120542cbe9289fa), [`95d5866`](https://github.com/cogitator-ai/Cogitator-AI/commit/95d58666629772419cf200daf120542cbe9289fa)]:
+  - @cogitator-ai/core@0.35.0
+  - @cogitator-ai/types@0.37.0
+
 ## 19.4.0
 
 ### Minor Changes

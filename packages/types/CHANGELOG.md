@@ -1,5 +1,11 @@
 # @cogitator-ai/types
 
+## 0.37.0
+
+### Minor Changes
+
+- [#139](https://github.com/cogitator-ai/Cogitator-AI/pull/139) [`95d5866`](https://github.com/cogitator-ai/Cogitator-AI/commit/95d58666629772419cf200daf120542cbe9289fa) - Adds `RunObserver` and `CogitatorConfig.observers`. `WorkflowNode.fn` and the compensation hooks are declared as methods, so a `Workflow<MyState>` is assignable to `Workflow` and workflows with different states share one registry, such as the `workflows` option of the server adapters.
+
 ## 0.36.0
 
 ### Minor Changes
