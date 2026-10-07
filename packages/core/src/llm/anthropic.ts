@@ -17,6 +17,7 @@ import type {
 import { BaseLLMBackend } from './base';
 import { LLMError, wrapSDKError, type LLMErrorContext } from './errors';
 import { finishRunsTools, normalizeTurn, parseToolCallArguments } from './turn';
+import { promptCacheMarks, splitSystemPrompt, type PromptCacheMarks } from './prompt-cache';
 import {
   createWarnOnce,
   forcedToolChoiceInstruction,
@@ -265,9 +266,10 @@ export class AnthropicBackend extends BaseLLMBackend {
     const config: Anthropic.OutputConfig | undefined =
       outputConfig || effort ? { ...outputConfig, ...(effort && { effort }) } : undefined;
 
+    const cacheMarks = promptCacheMarks(request);
     return {
       model,
-      system: this.buildSystemPrompt(system, systemSuffix),
+      system: this.systemParam(this.buildSystemPrompt(system, systemSuffix), cacheMarks),
       messages,
       tools: allTools.length > 0 ? allTools : undefined,
       tool_choice: toolChoice,
@@ -276,13 +278,26 @@ export class AnthropicBackend extends BaseLLMBackend {
       stop_sequences: request.stop,
       ...(thinking && { thinking }),
       ...(config && { output_config: config }),
-      ...(request.cache && {
-        cache_control: {
-          type: 'ephemeral' as const,
-          ...(request.cache.ttl && { ttl: request.cache.ttl }),
-        },
-      }),
+      ...(cacheMarks?.conversation && { cache_control: cacheMarks.control }),
     };
+  }
+
+  /**
+   * The system prompt as Anthropic takes it: plain text, or two text blocks when caching marks
+   * the end of its stable start (the agent's instructions), so runs with different input read
+   * that part from the cache while what the run added after it stays unmarked.
+   */
+  private systemParam(
+    system: string | undefined,
+    marks: PromptCacheMarks | undefined
+  ): string | Anthropic.TextBlockParam[] | undefined {
+    if (!system || !marks?.systemPrefix) return system;
+    const split = splitSystemPrompt(system, marks.systemPrefix);
+    if (!split) return system;
+    return [
+      { type: 'text', text: split.stable, cache_control: marks.control },
+      ...(split.rest.trim() ? [{ type: 'text' as const, text: split.rest }] : []),
+    ];
   }
 
   private buildSystemPrompt(system: string, suffix: string): string | undefined {

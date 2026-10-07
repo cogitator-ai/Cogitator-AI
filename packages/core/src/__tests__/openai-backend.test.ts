@@ -1430,22 +1430,81 @@ describe('OpenAIBackend (Chat Completions wire API)', () => {
         baseUrl: 'https://openrouter.ai/api/v1',
         provider,
       });
-    const messages = [{ role: 'user' as const, content: 'Hi' }];
-    const sentCacheControl = (call = 0) =>
-      (mockCreate.mock.calls[call][0] as { cache_control?: unknown }).cache_control;
+    const instructions = 'You are the copy desk. Follow the style guide.';
+    const messages = [
+      { role: 'system' as const, content: `${instructions}\n\nContext: today's dossier` },
+      { role: 'user' as const, content: 'Draft the story.' },
+    ];
+    const tools: ToolSchema[] = [
+      {
+        name: 'search',
+        description: 'Search the archive',
+        parameters: { type: 'object', properties: { q: { type: 'string' } } },
+      },
+    ];
+    type Sent = { cache_control?: unknown; messages: Array<{ role: string; content: unknown }> };
+    const sent = (call = 0) => mockCreate.mock.calls[call][0] as Sent;
 
-    it('marks a Claude request for caching, with the TTL when one is set', async () => {
-      mockCreate.mockResolvedValueOnce(answer()).mockResolvedValueOnce(answer());
+    it('marks the end of the instructions in the system prompt, leaving the run additions after it', async () => {
+      mockCreate.mockResolvedValueOnce(answer());
 
-      await openRouter().chat({ model: 'anthropic/claude-sonnet-5.5', messages, cache: {} });
       await openRouter().chat({
         model: 'anthropic/claude-sonnet-5.5',
         messages,
         cache: { ttl: '1h' },
+        cachePrefix: instructions,
       });
 
-      expect(sentCacheControl(0)).toEqual({ type: 'ephemeral' });
-      expect(sentCacheControl(1)).toEqual({ type: 'ephemeral', ttl: '1h' });
+      expect(sent().messages[0]).toEqual({
+        role: 'system',
+        content: [
+          { type: 'text', text: instructions, cache_control: { type: 'ephemeral', ttl: '1h' } },
+          { type: 'text', text: "\n\nContext: today's dossier" },
+        ],
+      });
+      expect(sent().cache_control).toBeUndefined();
+    });
+
+    it('marks the end of the conversation too when another turn is likely', async () => {
+      mockCreate.mockResolvedValue(answer());
+
+      await openRouter().chat({
+        model: 'anthropic/claude-sonnet-5.5',
+        messages,
+        tools,
+        cache: {},
+        cachePrefix: instructions,
+      });
+      await openRouter().chat({
+        model: 'anthropic/claude-sonnet-5.5',
+        messages: [
+          ...messages,
+          { role: 'assistant', content: 'Draft.' },
+          { role: 'user', content: 'Tighten it.' },
+        ],
+        cache: {},
+        cachePrefix: instructions,
+      });
+      await openRouter().chat({
+        model: 'anthropic/claude-sonnet-5.5',
+        messages,
+        cache: { conversation: true },
+        cachePrefix: instructions,
+      });
+      await openRouter().chat({
+        model: 'anthropic/claude-sonnet-5.5',
+        messages,
+        tools,
+        cache: { conversation: false },
+        cachePrefix: instructions,
+      });
+
+      expect([0, 1, 2, 3].map((call) => sent(call).cache_control)).toEqual([
+        { type: 'ephemeral' },
+        { type: 'ephemeral' },
+        { type: 'ephemeral' },
+        undefined,
+      ]);
     });
 
     it('marks a streamed Claude request too', async () => {
@@ -1460,28 +1519,46 @@ describe('OpenAIBackend (Chat Completions wire API)', () => {
         model: 'anthropic/claude-haiku-4.5',
         messages,
         cache: {},
+        cachePrefix: instructions,
       }))
         chunks.push(chunk);
 
       expect(chunks.length).toBeGreaterThan(0);
-      expect(sentCacheControl()).toEqual({ type: 'ephemeral' });
+      expect(Array.isArray(sent().messages[0].content)).toBe(true);
     });
 
-    it('sends no cache_control when caching is off, for other models, or to other servers', async () => {
-      mockCreate.mockResolvedValue(answer());
+    it('leaves the system prompt alone when it does not open with the stable prefix', async () => {
+      mockCreate.mockResolvedValueOnce(answer());
 
-      await openRouter().chat({ model: 'anthropic/claude-sonnet-5.5', messages, cache: false });
-      await openRouter().chat({ model: 'openai/gpt-6-luna', messages, cache: {} });
-      await openRouter().chat({ model: 'google/gemini-3.5-flash', messages, cache: {} });
+      await openRouter().chat({
+        model: 'anthropic/claude-sonnet-5.5',
+        messages,
+        cache: {},
+        cachePrefix: 'Some other agent',
+      });
+
+      expect(sent().messages[0].content).toBe(messages[0].content);
+    });
+
+    it('marks nothing when caching is off, for other models, or for other servers', async () => {
+      mockCreate.mockResolvedValue(answer());
+      const request = { messages, tools, cachePrefix: instructions };
+
+      await openRouter().chat({ model: 'anthropic/claude-sonnet-5.5', ...request, cache: false });
+      await openRouter().chat({ model: 'openai/gpt-6-luna', ...request, cache: {} });
+      await openRouter().chat({ model: 'google/gemini-3.5-flash', ...request, cache: {} });
       await new OpenAIBackend({
         apiKey: 'test-api-key',
         baseUrl: 'https://llm-gateway.internal/v1',
         provider: 'gateway',
-      }).chat({ model: 'anthropic/claude-sonnet-5.5', messages, cache: {} });
-      await backend.chat({ model: 'gpt-4o-mini', messages, cache: {} });
+      }).chat({ model: 'anthropic/claude-sonnet-5.5', ...request, cache: {} });
+      await backend.chat({ model: 'gpt-4o-mini', ...request, cache: {} });
 
       expect(mockCreate.mock.calls.length).toBe(5);
-      for (let call = 0; call < 5; call++) expect(sentCacheControl(call)).toBeUndefined();
+      for (let call = 0; call < 5; call++) {
+        expect(sent(call).cache_control).toBeUndefined();
+        expect(sent(call).messages[0].content).toBe(messages[0].content);
+      }
     });
 
     it('recognizes OpenRouter by its host when the provider has another name', async () => {
@@ -1491,9 +1568,10 @@ describe('OpenAIBackend (Chat Completions wire API)', () => {
         model: 'anthropic/claude-sonnet-5.5',
         messages,
         cache: {},
+        cachePrefix: instructions,
       });
 
-      expect(sentCacheControl()).toEqual({ type: 'ephemeral' });
+      expect(Array.isArray(sent().messages[0].content)).toBe(true);
     });
 
     it('reports cache reads and writes from the usage', async () => {

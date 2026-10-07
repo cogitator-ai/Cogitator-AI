@@ -994,6 +994,7 @@ export class Cogitator implements ToolInvoker {
               {
                 reasoning,
                 cache: promptCache,
+                cachePrefix: active.instructions,
                 onReasoning: options.onReasoning,
                 ...(turnToolChoice && { toolChoice: turnToolChoice }),
               }
@@ -1014,6 +1015,7 @@ export class Cogitator implements ToolInvoker {
               responseFormat,
               reasoning,
               cache: promptCache,
+              cachePrefix: active.instructions,
               signal: abortController.signal,
             }),
             abortController.signal
