@@ -165,6 +165,25 @@ describe('useCogitatorChat', () => {
     expect(calls[1].body.messages.map((m) => m.content)).toEqual(['first', 'ok', 'second']);
   });
 
+  it('starts a new conversation when the thread id is cleared', async () => {
+    const { calls } = installFetch((call) => {
+      completeStream(call.stream, `a${calls.length}`, 'ok', 'thread_srv');
+      return undefined;
+    });
+    const hook = setup();
+
+    await hook.result.current.send('first');
+    await hook.flush();
+    hook.result.current.clearMessages();
+    hook.result.current.setThreadId(undefined);
+    await hook.flush();
+    expect(hook.result.current.threadId).toBeUndefined();
+
+    await hook.result.current.send('fresh');
+    expect(calls[1].body.threadId).toBeUndefined();
+    expect(calls[1].body.messages.map((m) => m.content)).toEqual(['fresh']);
+  });
+
   it('keeps the partial assistant message when stopped', async () => {
     const { calls } = installFetch();
     const hook = setup();

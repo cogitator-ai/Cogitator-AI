@@ -15,7 +15,7 @@ export interface ChatState {
 
 export type ChatAction =
   | { type: 'SET_INPUT'; payload: string }
-  | { type: 'SET_THREAD_ID'; payload: string }
+  | { type: 'SET_THREAD_ID'; payload: string | undefined }
   | { type: 'START_LOADING' }
   | { type: 'STOP_LOADING' }
   | { type: 'SET_ERROR'; payload: Error | null }
