@@ -222,6 +222,43 @@ describe('StudioStore.stats', () => {
     ]);
   });
 
+  it('counts the spend of a workflow once, not again through its agents', () => {
+    const { store: s } = store();
+    const now = new Date(2026, 9, 7, 15).getTime();
+    s.apply({
+      type: 'run.started',
+      runId: 'w',
+      kind: 'workflow',
+      target: 'report',
+      input: '{}',
+      rootRunId: 'w',
+      startedAt: now - 1000,
+    });
+    s.apply(started('a', 'w', now - 900, 'researcher'));
+    finish(s, 'a', now - 500, 0.25);
+    s.apply(started('b', 'w', now - 400, 'writer'));
+    finish(s, 'b', now - 100, 0.5);
+    s.apply({
+      type: 'run.completed',
+      runId: 'w',
+      output: '{}',
+      usage: { inputTokens: 0, outputTokens: 0, cost: 0, duration: 900 },
+      endedAt: now,
+    });
+
+    expect(s.getRun('w')?.usage?.cost).toBe(0.75);
+    const stats = s.stats(now, 1);
+    expect(stats.runs).toBe(1);
+    expect(stats.cost).toBe(0.75);
+    expect(stats.inputTokens).toBe(20);
+    expect(stats.targets).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ target: 'report', kind: 'workflow', cost: 0.75 }),
+        expect.objectContaining({ target: 'researcher', cost: 0.25 }),
+      ])
+    );
+  });
+
   it('has no latency before a run finished', () => {
     const { store: s } = store();
     s.apply(started('r', 'r', Date.now()));

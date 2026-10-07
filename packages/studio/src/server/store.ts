@@ -177,6 +177,23 @@ export class StudioStore {
       .slice(0, query.limit ?? 200);
   }
 
+  /**
+   * Whether a workflow started the run, directly or through other runs: the
+   * workflow's usage already sums it.
+   */
+  private insideWorkflow(run: RunRecord): boolean {
+    const seen = new Set<string>();
+    let parentId = run.parentRunId;
+    while (parentId && !seen.has(parentId)) {
+      seen.add(parentId);
+      const parent = this.runs.get(parentId);
+      if (!parent) return false;
+      if (parent.kind === 'workflow') return true;
+      parentId = parent.parentRunId;
+    }
+    return false;
+  }
+
   /** Counts, spend, latency and daily activity over every run kept. */
   stats(now = Date.now(), days = 14): StudioStats {
     const startOfDay = (at: number) => {
@@ -212,10 +229,12 @@ export class StudioStore {
 
     for (const run of this.runs.values()) {
       const runPriced = run.usage !== undefined && run.usage.priced !== false;
-      cost += run.usage?.cost ?? 0;
-      priced ||= runPriced;
-      inputTokens += run.usage?.inputTokens ?? 0;
-      outputTokens += run.usage?.outputTokens ?? 0;
+      if (!this.insideWorkflow(run)) {
+        cost += run.usage?.cost ?? 0;
+        priced ||= runPriced;
+        inputTokens += run.usage?.inputTokens ?? 0;
+        outputTokens += run.usage?.outputTokens ?? 0;
+      }
 
       const kind = run.kind === 'workflow' ? 'workflow' : 'agent';
       const key = `${kind}:${run.target}`;
