@@ -77,3 +77,6 @@ pnpm-publish-summary.json
 
 # Docs bundled into @cogitator-ai/core at build time
 packages/core/docs/
+
+# Studio test projects
+packages/studio/src/__tests__/.scratch/
