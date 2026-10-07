@@ -6,6 +6,7 @@ import type { WorkflowCheckpoint, CheckpointStore } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import { writeJsonAtomic } from './json-file';
 
 /**
  * In-memory checkpoint store (for testing and short-lived workflows)
@@ -62,10 +63,7 @@ export class FileCheckpointStore implements CheckpointStore {
 
   async save(checkpoint: WorkflowCheckpoint): Promise<void> {
     await this.ensureDirectory();
-    const filePath = this.getFilePath(checkpoint.id);
-    const tmpPath = `${filePath}.tmp`;
-    await fs.writeFile(tmpPath, JSON.stringify(checkpoint, null, 2), 'utf-8');
-    await fs.rename(tmpPath, filePath);
+    await writeJsonAtomic(this.getFilePath(checkpoint.id), checkpoint);
   }
 
   async load(id: string): Promise<WorkflowCheckpoint | null> {
