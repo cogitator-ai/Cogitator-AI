@@ -26,9 +26,17 @@ import {
 import { bareModel } from '../kit/spec.js';
 import { scaffolderVersion } from '../kit/versions.js';
 import { DOCS_URL } from '../kit/guide.js';
+import { examples, exampleTarget } from '../kit/examples.js';
+import { describeTemplate } from '../kit/remote.js';
+import {
+  createFromExample,
+  createFromTemplate,
+  resolveExample,
+  type StarterResult,
+} from '../kit/starter.js';
 import { CliError, isInteractive, parseCliArgs, type CliArgs } from './args.js';
-import { helpText, presetList } from './help.js';
-import { askMissing, CancelledError } from './interactive.js';
+import { exampleList, helpText, presetList } from './help.js';
+import { askDirectory, askMissing, CancelledError } from './interactive.js';
 import { DEFAULT_DIRECTORY, resolveDirectory, specFromArgs } from './resolve.js';
 
 interface Io {
@@ -212,8 +220,29 @@ export async function run(
     io.stdout(args.json ? `${JSON.stringify(PRESETS, null, 2)}\n` : presetList());
     return 0;
   }
+  if (args.listExamples) {
+    const list = examples().map(({ name, title, entry, runtime }) => ({
+      name,
+      title,
+      entry,
+      runtime,
+    }));
+    io.stdout(args.json ? `${JSON.stringify(list, null, 2)}\n` : exampleList());
+    return 0;
+  }
 
   const interactive = isInteractive(args);
+  if (args.example !== undefined || args.remote) {
+    try {
+      return await runStarter(args, interactive, io, deps);
+    } catch (error) {
+      if (error instanceof CancelledError) {
+        p.cancel('Cancelled, nothing was created.');
+        return 1;
+      }
+      return reportError(error, args.json, io);
+    }
+  }
   try {
     if (interactive) {
       io.stderr(banner(version));
@@ -299,6 +328,139 @@ export async function run(
     }
     return reportError(error, args.json, io);
   }
+}
+
+function starterOutro(result: StarterResult): string {
+  return [
+    `${pc.green('Your project is ready.')} ${pc.dim(`From ${result.source}.`)} Next:`,
+    '',
+    ...result.nextSteps.map(
+      (step) => `  ${pc.cyan(step.command)}${step.note ? pc.dim(`  # ${step.note}`) : ''}`
+    ),
+    '',
+    pc.dim(`Docs: ${DOCS_URL}`),
+  ].join('\n');
+}
+
+/** `--example` and remote `--template`: a project copied from source instead of generated. */
+async function runStarter(
+  args: CliArgs,
+  interactive: boolean,
+  io: Io,
+  deps: RunDeps
+): Promise<number> {
+  const ignored = (
+    [
+      ['--app', args.app],
+      ['--server', args.server],
+      ['--channels', args.channels],
+      ['--memory', args.memory],
+      ['--vector-store', args.vectorStore],
+      ['--features', args.features],
+      ['--deploy', args.deploy],
+      ['--model', args.model],
+      ['--agent', args.codingAgents],
+      ['--[no-]docker', args.compose],
+    ] as const
+  )
+    .filter(([, value]) => value !== undefined)
+    .map(([flag]) => flag);
+  if (ignored.length > 0) {
+    throw new CliError(
+      `${args.example !== undefined ? '--example' : 'A github: --template'} copies a project as it is, so ${ignored.join(', ')} do not apply: leave them out.`
+    );
+  }
+  if (interactive) {
+    io.stderr(banner(scaffolderVersion()));
+    p.intro(pc.cyan("Let's build something with agents"));
+  }
+  const directoryArg = args.directory ?? (interactive ? await askDirectory() : DEFAULT_DIRECTORY);
+  const { path: directory, name } = resolveDirectory(directoryArg);
+  const packageManager = args.packageManager ?? detectPackageManager();
+  const options = {
+    directory,
+    name,
+    packageManager,
+    install: args.install ?? true,
+    git: args.git ?? true,
+    log: args.json ? undefined : clackLogger(),
+    fetch: deps.fetch,
+  };
+
+  let result: StarterResult;
+  if (args.example !== undefined) {
+    const envKey = providerInfo(args.provider ?? 'google').envKey;
+    const secrets = envKey && args.apiKey ? { [envKey]: args.apiKey } : {};
+    const plan = resolveExample(args.example, { name, packageManager, secrets });
+    if (args.dryRun) {
+      const files = [
+        ...plan.files.map((file) => file.path),
+        ...plan.remoteFiles.map(exampleTarget),
+      ].sort();
+      if (args.json) {
+        io.stdout(
+          `${JSON.stringify({ ok: true, dryRun: true, directory, example: plan.example, ref: plan.ref, command: plan.command, files }, null, 2)}\n`
+        );
+      } else {
+        io.stdout(
+          [
+            `${pc.bold('Dry run:')} nothing was written. ${directory} would get the ${plan.example.name} example from ${plan.ref}:`,
+            '',
+            fileTree(files),
+            '',
+            pc.bold('Dependencies'),
+            ...Object.entries(plan.example.dependencies).map(
+              ([dep, range]) => `  ${dep} ${pc.dim(range)}`
+            ),
+            '',
+          ].join('\n')
+        );
+      }
+      return 0;
+    }
+    result = await createFromExample(plan, options);
+  } else if (args.remote) {
+    if (args.dryRun) {
+      const message = `${directory} would get ${describeTemplate(args.remote)}`;
+      io.stdout(
+        args.json
+          ? `${JSON.stringify({ ok: true, dryRun: true, directory, template: args.remote }, null, 2)}\n`
+          : `${pc.bold('Dry run:')} nothing was written. ${message}.\n`
+      );
+      return 0;
+    }
+    result = await createFromTemplate(args.remote, {
+      ...options,
+      token: process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN,
+    });
+  } else {
+    throw new CliError('Pass --example or a github: --template');
+  }
+
+  if (args.json) {
+    io.stdout(
+      `${JSON.stringify(
+        {
+          ok: true,
+          dryRun: false,
+          directory: result.directory,
+          source: result.source,
+          files: result.files,
+          packageManager: result.packageManager,
+          steps: { install: stepJson(result.install), git: stepJson(result.git) },
+          nextSteps: result.nextSteps,
+          notes: result.notes,
+        },
+        null,
+        2
+      )}\n`
+    );
+    return 0;
+  }
+  for (const note of result.notes) p.log.info(note);
+  if (interactive) p.outro(starterOutro(result));
+  else io.stderr(`${starterOutro(result)}\n`);
+  return 0;
 }
 
 function reportError(error: unknown, json: boolean, io: Io): number {

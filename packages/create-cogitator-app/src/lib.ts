@@ -20,6 +20,25 @@ export type {
   FileChange,
 } from './kit/add.js';
 export { unifiedDiff } from './kit/diff.js';
+export {
+  examples,
+  findExample,
+  planExample,
+  fetchExampleFiles,
+  exampleRef,
+  exampleFileUrl,
+  parseExampleArgument,
+} from './kit/examples.js';
+export type { ExampleEntry, ExamplePlan, ExamplePlanOptions } from './kit/examples.js';
+export {
+  downloadTemplate,
+  prepareTemplate,
+  describeTemplate,
+  templateArchive,
+} from './kit/remote.js';
+export type { RemoteTemplate, DownloadResult, PreparedTemplate } from './kit/remote.js';
+export { createFromExample, createFromTemplate, resolveExample } from './kit/starter.js';
+export type { StarterOptions, StarterResult } from './kit/starter.js';
 export type {
   ScaffoldOptions,
   ScaffoldResult,

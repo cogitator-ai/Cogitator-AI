@@ -65,6 +65,7 @@ describe('parseCliArgs', () => {
       help: false,
       version: false,
       listTemplates: false,
+      listExamples: false,
     });
   });
 
@@ -119,7 +120,22 @@ describe('parseRemoteTemplate', () => {
     });
   });
 
+  it('reads a directory and a ref, tags with @ included', () => {
+    expect(
+      parseRemoteTemplate('github:acme/agents/bots/support#create-cogitator-app@0.4.0')
+    ).toEqual({
+      owner: 'acme',
+      repo: 'agents',
+      path: 'bots/support',
+      ref: 'create-cogitator-app@0.4.0',
+    });
+    expect(parseRemoteTemplate('github:acme/agents#feature/v2').ref).toBe('feature/v2');
+  });
+
   it('refuses anything else', () => {
+    expect(() => parseRemoteTemplate('github:acme/agents#bad ref')).toThrow(
+      'Invalid remote template'
+    );
     expect(() => parseRemoteTemplate('gitlab:acme/agents')).toThrow('Invalid remote template');
     expect(() => parseRemoteTemplate('github:acme')).toThrow('Invalid remote template');
   });

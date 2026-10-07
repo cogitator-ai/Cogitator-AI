@@ -11,6 +11,7 @@ import {
   type Choice,
 } from '../kit/catalog.js';
 import { DEFAULT_PRESET, PRESETS } from '../kit/presets.js';
+import { examples } from '../kit/examples.js';
 import { PACKAGE_MANAGERS, PROVIDERS } from '../kit/spec.js';
 
 function values(choices: readonly Choice<string>[]): string {
@@ -39,7 +40,10 @@ export function helpText(version: string): string {
       '    --template <name|repo>',
       'a preset, or github:owner/repo[/path][#ref] to copy a repository'
     ),
-    row('    --example <name>', 'start from an example of the Cogitator repository'),
+    row(
+      '    --example <name[#ref]>',
+      'a runnable example of the Cogitator repo, see --list-examples'
+    ),
     row('    --app <kind>', values(APP_CHOICES)),
     row('    --server <framework>', values(SERVER_CHOICES)),
     row('    --channels <list>', values(CHANNEL_CHOICES)),
@@ -69,6 +73,7 @@ export function helpText(version: string): string {
     row('    --dry-run', 'show the files and dependencies without writing anything'),
     row('    --json', 'print the result as JSON, implies --yes'),
     row('    --list-templates', 'list the presets'),
+    row('    --list-examples', 'list the examples --example takes'),
     row('-h, --help', 'show this help'),
     row('-v, --version', 'show the version'),
     '',
@@ -77,6 +82,8 @@ export function helpText(version: string): string {
     '  npx create-cogitator-app api --app server --server fastify --memory postgres --features rag,evals',
     '  npx create-cogitator-app . --provider anthropic --api-key "$ANTHROPIC_API_KEY" --yes',
     '  npx create-cogitator-app demo --preset nextjs --dry-run --json',
+    '  npx create-cogitator-app tutor --example core/basic-agent',
+    '  npx create-cogitator-app bot --template github:acme/agent-templates/support-bot#v2',
     '',
     'Without a TTY or with CI set, nothing is asked: flags and defaults decide everything.',
     '',
@@ -89,5 +96,15 @@ export function presetList(): string {
     PRESETS.map(
       (preset) => `  ${pc.cyan(preset.id.padEnd(width))}  ${preset.label}: ${pc.dim(preset.hint)}`
     ).join('\n') + '\n'
+  );
+}
+
+export function exampleList(): string {
+  const all = examples();
+  const width = Math.max(...all.map((example) => example.name.length));
+  return (
+    all
+      .map((example) => `  ${pc.cyan(example.name.padEnd(width))}  ${pc.dim(example.title)}`)
+      .join('\n') + '\n'
   );
 }

@@ -22,6 +22,10 @@ import {
   type ServerFramework,
   type VectorStore,
 } from '../kit/spec.js';
+import type { RemoteTemplate } from '../kit/remote.js';
+import { closest } from '../kit/suggest.js';
+
+export { closest };
 
 /** A usage mistake: shown without a stack trace, exits with code 1. */
 export class CliError extends Error {
@@ -31,13 +35,7 @@ export class CliError extends Error {
   }
 }
 
-/** A template fetched from a git repository instead of generated: `github:owner/repo[/path][#ref]`. */
-export interface RemoteTemplate {
-  owner: string;
-  repo: string;
-  path?: string;
-  ref?: string;
-}
+export type { RemoteTemplate };
 
 export interface CliArgs {
   directory?: string;
@@ -66,6 +64,7 @@ export interface CliArgs {
   help: boolean;
   version: boolean;
   listTemplates: boolean;
+  listExamples: boolean;
 }
 
 const OPTIONS = {
@@ -96,39 +95,10 @@ const OPTIONS = {
   version: { type: 'boolean', short: 'v' },
   'list-templates': { type: 'boolean' },
   'list-presets': { type: 'boolean' },
+  'list-examples': { type: 'boolean' },
 } as const satisfies NonNullable<ParseArgsConfig['options']>;
 
 const OPTION_NAMES = Object.keys(OPTIONS);
-
-function distance(a: string, b: string): number {
-  const row = Array.from({ length: b.length + 1 }, (_, i) => i);
-  for (let i = 1; i <= a.length; i++) {
-    let previous = row[0];
-    row[0] = i;
-    for (let j = 1; j <= b.length; j++) {
-      const current = row[j];
-      row[j] = Math.min(row[j] + 1, row[j - 1] + 1, previous + (a[i - 1] === b[j - 1] ? 0 : 1));
-      previous = current;
-    }
-  }
-  return row[b.length];
-}
-
-/** The candidate closest to `input`, when it is close enough to be a typo of it. */
-export function closest(input: string, candidates: readonly string[]): string | undefined {
-  let best: string | undefined;
-  let bestDistance = Infinity;
-  for (const candidate of candidates) {
-    const d = distance(input.toLowerCase(), candidate.toLowerCase());
-    if (d < bestDistance) {
-      best = candidate;
-      bestDistance = d;
-    }
-  }
-  return best !== undefined && bestDistance <= Math.max(2, Math.floor(input.length / 3))
-    ? best
-    : undefined;
-}
 
 function suggestion(input: string, candidates: readonly string[]): string {
   const match = closest(input, candidates);
@@ -159,7 +129,7 @@ function listOf<T extends string>(
 /** Parses `github:owner/repo`, `github:owner/repo/sub/dir` and an optional `#ref`. */
 export function parseRemoteTemplate(value: string): RemoteTemplate {
   const match =
-    /^(?:github:|https:\/\/github\.com\/)([\w.-]+)\/([\w.-]+?)(?:\.git)?(?:\/((?:[\w.-]+\/?)+))?(?:#([\w./-]+))?$/.exec(
+    /^(?:github:|https:\/\/github\.com\/)([\w.-]+)\/([\w.-]+?)(?:\.git)?(?:\/((?:[\w.-]+\/?)+))?(?:#([^\s~^:?*[\\]+))?$/.exec(
       value
     );
   if (!match) {
@@ -288,6 +258,7 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
     help: values.help ?? false,
     version: values.version ?? false,
     listTemplates: (values['list-templates'] ?? false) || (values['list-presets'] ?? false),
+    listExamples: values['list-examples'] ?? false,
   };
 }
 
