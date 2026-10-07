@@ -41,6 +41,17 @@ Stages run on OpenRouter, registered as a custom backend (`openrouter/<vendor>/<
 
 The model matrix stage also runs `xiaomi/mimo-v2.6-flash` and `qwen/qwen3.8-flash`. Override the three with `GAUNTLET_MODELS=vendor/model,vendor/model,...` (primary first). The cost shown is what OpenRouter reports for every call. OpenRouter spreads a model across providers whose prices differ several times over, so the catalogue price is only the fallback for a call that reports none.
 
+## Local model lane
+
+The `scaffold-ollama` stage runs generated projects on a small model of your own Ollama instead of OpenRouter: the `basic` and `assistant` presets of create-cogitator-app answer from their entry point, and Cogitator Studio runs the assistant with a trace of its model calls. It needs Ollama with the model pulled and costs nothing:
+
+```bash
+ollama pull qwen2.5:0.5b                  # or set GAUNTLET_OLLAMA_MODEL to another model
+pnpm gauntlet --only scaffold-ollama
+```
+
+Without Ollama or the model the stage is skipped with the reason. `OLLAMA_BASE_URL` points it at another server.
+
 ## What a stage is
 
 A stage proves one thing a user would do, through public package APIs only. It lists the packages it exercises, the stages it needs, and what the machine must have (a service, Docker, Bun, Deno, Playwright, an API key). A missing requirement makes the stage an honest skip with the reason, never a failure.

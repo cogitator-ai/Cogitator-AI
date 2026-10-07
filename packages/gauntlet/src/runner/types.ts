@@ -23,7 +23,9 @@ export type Requirement =
   | { kind: 'bun' }
   | { kind: 'deno' }
   | { kind: 'service'; name: ServiceName }
-  | { kind: 'playwright' };
+  | { kind: 'playwright' }
+  /** An Ollama server (OLLAMA_BASE_URL, localhost by default) that has `model` pulled. */
+  | { kind: 'ollama'; model: string };
 
 export type ServiceName = 'postgres' | 'redis' | 'qdrant' | 'mongodb';
 

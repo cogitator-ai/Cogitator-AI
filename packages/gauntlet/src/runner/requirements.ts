@@ -74,6 +74,22 @@ export class RequirementProbe {
         return (await playwrightReady())
           ? undefined
           : 'Playwright Chromium is not installed (npx playwright install chromium)';
+      case 'ollama': {
+        const base = (process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434').replace(/\/+$/, '');
+        try {
+          const response = await fetch(`${base}/api/tags`, { signal: AbortSignal.timeout(3_000) });
+          const body = (await response.json()) as { models?: Array<{ name: string }> };
+          const names = (body.models ?? []).map((model) => model.name);
+          const wanted = requirement.model.includes(':')
+            ? requirement.model
+            : `${requirement.model}:latest`;
+          return names.includes(wanted)
+            ? undefined
+            : `Ollama at ${base} does not have ${requirement.model} (ollama pull ${requirement.model})`;
+        } catch {
+          return `Ollama is not reachable at ${base} (ollama serve)`;
+        }
+      }
       case 'service':
         return (await portOpen(this.services[requirement.name]))
           ? undefined
