@@ -47,6 +47,8 @@ export interface SwarmInfo {
 }
 
 export interface RegistryInfo {
+  /** The runtime's `llm.defaultModel`, which agents without a model of their own run on. */
+  defaultModel?: string;
   agents: AgentInfo[];
   workflows: WorkflowInfo[];
   swarms: SwarmInfo[];
@@ -150,6 +152,37 @@ export interface ForkOrigin {
   input?: string;
   context?: string;
   toolResults?: Record<string, unknown>;
+}
+
+/** An agent or workflow with what its runs did, for the overview. */
+export interface TargetStats {
+  target: string;
+  kind: 'agent' | 'workflow';
+  /** Every run of it, the ones agent tools started included. */
+  runs: number;
+  failed: number;
+  cost: number;
+  priced: boolean;
+  lastRunAt: number;
+}
+
+/** Aggregates over every run the studio keeps. */
+export interface StudioStats {
+  /** Runs started from the studio, nested ones not counted. */
+  runs: number;
+  byStatus: Record<RunStatus, number>;
+  /** USD of every run, nested ones included. */
+  cost: number;
+  /** Whether any run had a known price. */
+  priced: boolean;
+  inputTokens: number;
+  outputTokens: number;
+  /** Wall time in ms of the finished runs started from the studio, `null` before the first. */
+  duration: { p50: number; p95: number } | null;
+  /** Runs started from the studio per local day, oldest first, today last. */
+  activity: Array<{ day: number; runs: number; failed: number }>;
+  /** Busiest first. */
+  targets: TargetStats[];
 }
 
 /** A conversation with an agent across runs. */
