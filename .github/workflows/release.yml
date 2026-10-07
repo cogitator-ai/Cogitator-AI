@@ -65,6 +65,8 @@ jobs:
           pnpm install --lockfile-only
           git add -A
           git commit -m "chore: version packages" || echo "No changes to commit"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build
         # After the version bump: create-cogitator-app bakes its own version,
