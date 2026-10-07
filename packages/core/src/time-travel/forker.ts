@@ -33,11 +33,12 @@ export class ExecutionForker {
     const forkedCheckpoint = this.createForkedCheckpoint(checkpoint, options);
     await this.checkpointStore.save(forkedCheckpoint);
 
+    const withInput = options.input
+      ? this.replaceInput(forkedCheckpoint.messages, options.input)
+      : undefined;
     const modifiedMessages = options.additionalContext
-      ? this.injectContext(forkedCheckpoint.messages, options.additionalContext)
-      : options.input
-        ? this.replaceInput(forkedCheckpoint.messages, options.input)
-        : undefined;
+      ? this.injectContext(withInput ?? forkedCheckpoint.messages, options.additionalContext)
+      : withInput;
 
     const result = await this.replayer.replay(cogitator, agent, {
       fromCheckpoint: forkedCheckpoint.id,

@@ -7,6 +7,8 @@ import {
   TimeTravel,
 } from '../time-travel/index';
 import { InMemoryTraceStore } from '../learning/index';
+import type { Agent } from '../agent';
+import type { Cogitator } from '../cogitator';
 import type {
   ExecutionCheckpoint,
   ExecutionTrace,
@@ -735,6 +737,36 @@ describe('regression: ExecutionForker ContentPart[] handling', () => {
     expect(systemMsg!.content).toHaveLength(2);
     expect((systemMsg!.content as Array<{ type: string }>)[0].type).toBe('text');
     expect((systemMsg!.content as Array<{ type: string }>)[1].type).toBe('image_url');
+  });
+
+  it('applies an edited input and extra context together', async () => {
+    const checkpointStore = new InMemoryCheckpointStore();
+    const replayer = new ExecutionReplayer({ checkpointStore });
+    const forker = new ExecutionForker({ checkpointStore, replayer });
+    const replay = vi
+      .spyOn(replayer, 'replay')
+      .mockResolvedValue({} as unknown as Awaited<ReturnType<ExecutionReplayer['replay']>>);
+
+    const checkpoint = createMockCheckpoint({
+      messages: [
+        { role: 'system', content: 'You help.' },
+        { role: 'user', content: 'original question' },
+      ],
+    });
+    await checkpointStore.save(checkpoint);
+
+    await forker.fork({} as unknown as Cogitator, {} as unknown as Agent, {
+      checkpointId: checkpoint.id,
+      input: 'edited question',
+      additionalContext: 'The user is on the free plan.',
+    });
+
+    const messages = replay.mock.calls[0]?.[2].modifiedMessages ?? [];
+    expect(messages.filter((message) => message.role === 'user').at(-1)?.content).toBe(
+      'edited question'
+    );
+    expect(JSON.stringify(messages)).toContain('The user is on the free plan.');
+    expect(JSON.stringify(messages)).not.toContain('original question');
   });
 
   it('should preserve ContentPart[] through injectContext', async () => {
