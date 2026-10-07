@@ -216,7 +216,8 @@ export const CALCULATOR_TS = code`
   /**
    * Evaluates \`+ - * / % ^\`, parentheses, the functions in FUNCTIONS and the
    * constants pi and e. Precedence is the usual one, \`^\` is right-associative
-   * and binds tighter than a unary minus, so \`-2^2\` is -4.
+   * and binds tighter than a unary minus, so \`-2^2\` is -4. \`%\` is the
+   * remainder of a division, never a percentage.
    */
   class Parser {
     private position = 0;
@@ -249,8 +250,14 @@ export const CALCULATOR_TS = code`
           const divisor = this.unary();
           if (divisor === 0) throw new Error('Division by zero');
           value /= divisor;
-        } else if (this.take('%')) value %= this.unary();
-        else return value;
+        } else if (this.take('%')) {
+          if (!this.startsOperand()) {
+            throw new Error(
+              \`"%" is the remainder of a division and needs a number after it. For a percentage divide by 100: \${value}% is \${value} / 100\`
+            );
+          }
+          value %= this.unary();
+        } else return value;
       }
     }
 
@@ -299,6 +306,11 @@ export const CALCULATOR_TS = code`
       );
     }
 
+    private startsOperand(): boolean {
+      this.skipSpace();
+      return /[\\d.(a-z+-]/i.test(this.source[this.position] ?? '');
+    }
+
     private rest(): string {
       return this.source.slice(this.position);
     }
@@ -328,7 +340,7 @@ export const CALCULATOR_TS = code`
   export const calculator = tool({
     name: 'calculator',
     description:
-      'Evaluate an arithmetic expression exactly. Supports + - * / % ^, parentheses, sqrt, abs, round, floor, ceil, min, max, log, ln, exp, sin, cos, tan, pi and e.',
+      'Evaluate an arithmetic expression exactly. Supports + - * / ^, % as the remainder of a division (write a percentage as x / 100, so 17.5% of 2480 is 17.5 / 100 * 2480), parentheses, sqrt, abs, round, floor, ceil, min, max, log, ln, exp, sin, cos, tan, pi and e.',
     parameters: z.object({
       expression: z.string().min(1).max(500).describe('For example "(17.5 * 4) / 3 + sqrt(2)"'),
     }),
@@ -360,6 +372,13 @@ export const TOOLS_TEST_TS = code`
       expect(() => evaluate('1 / 0')).toThrow('Division by zero');
       expect(() => evaluate('process.exit()')).toThrow();
       expect(() => evaluate('2 +')).toThrow('ends too early');
+    });
+
+    it('explains that % is a remainder, not a percentage', () => {
+      expect(evaluate('10 % 3')).toBe(1);
+      expect(evaluate('10 % -3')).toBe(1);
+      expect(() => evaluate('17.5% * 2480')).toThrow('17.5% is 17.5 / 100');
+      expect(() => evaluate('20 %')).toThrow('remainder of a division');
     });
   });
 
