@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import type { Tool } from '@cogitator-ai/types';
 import { loadDocsIndex, readDoc, searchDocs, slugOf, type DocsIndex } from '../utils/docs.js';
 import { describeRegistry, inspectRegistry } from '../utils/registry.js';
-import { findProjectRoot, projectTools } from '../commands/mcp.js';
+import { findProjectRoot, mcpCommand, projectTools } from '../commands/mcp.js';
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'registry-project');
 
@@ -180,5 +180,13 @@ describe('findProjectRoot', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('cogitator mcp', () => {
+  it('takes the project to serve as --project', () => {
+    const parsed = mcpCommand.parseOptions(['--project', '/code/bot']);
+    expect(parsed.unknown).toEqual([]);
+    expect(mcpCommand.opts<{ project?: string }>().project).toBe('/code/bot');
   });
 });
