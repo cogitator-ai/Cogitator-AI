@@ -149,6 +149,10 @@ export function createProjectMcpServer(projectDir: string, version: string): MCP
 
 export const mcpCommand = new Command('mcp')
   .description('Serve the Cogitator docs and this project to a coding agent over MCP (stdio)')
+  .option(
+    '--project <path>',
+    'the project to serve, the nearest one at or above this directory by default'
+  )
   .addHelpText(
     'after',
     [
