@@ -162,8 +162,11 @@ describe('scaffolding an init project', () => {
           grammy: expect.any(String),
         },
       });
+      const gateway = readFileSync(join(directory, 'src/gateway.ts'), 'utf-8');
+      expect(gateway).toContain('export const gateway = new Gateway({');
+      expect(gateway).toContain('telegramChannel({ token: env.TELEGRAM_BOT_TOKEN })');
       expect(readFileSync(join(directory, 'src/index.ts'), 'utf-8')).toContain(
-        'telegramChannel({ token: env.TELEGRAM_BOT_TOKEN })'
+        "import { gateway } from './gateway.js';"
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
