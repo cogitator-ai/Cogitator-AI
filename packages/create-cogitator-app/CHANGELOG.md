@@ -1,5 +1,11 @@
 # create-cogitator-app
 
+## 0.5.2
+
+### Patch Changes
+
+- [#148](https://github.com/cogitator-ai/Cogitator-AI/pull/148) [`559e443`](https://github.com/cogitator-ai/Cogitator-AI/commit/559e44375cbf18ae9f0d3d018155e5a237f85d27) - Telemetry events reach Umami. The event's User-Agent ended in `Node/<major>`, which Umami's bot filter takes for a server client, so every event was answered with 200 and dropped. The Node version stays in the event data, and the platform is written the way browsers do, so Umami also shows the OS.
+
 ## 0.5.1
 
 ### Patch Changes
