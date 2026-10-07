@@ -763,6 +763,9 @@ importers:
       '@cogitator-ai/server-shared':
         specifier: workspace:*
         version: link:../server-shared
+      '@cogitator-ai/studio':
+        specifier: workspace:*
+        version: link:../studio
       '@cogitator-ai/swarms':
         specifier: workspace:*
         version: link:../swarms
@@ -842,6 +845,9 @@ importers:
       pg:
         specifier: ^8.23.1
         version: 8.23.1
+      playwright:
+        specifier: ^1.63.0
+        version: 1.63.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
