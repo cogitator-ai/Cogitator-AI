@@ -7,8 +7,15 @@ import type {
   MemoryProvider,
   NewMemoryEntry,
 } from '@cogitator-ai/types';
+import { mkdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { BaseMemoryAdapter } from './base';
 import type { SqliteDatabase } from './sqlite-driver';
+
+/** Whether `path` names a database file on disk rather than an in-memory or temporary database. */
+function isFileDatabase(path: string): boolean {
+  return path !== '' && path !== ':memory:' && !path.startsWith('file::memory:');
+}
 
 interface ThreadRow {
   id: string;
@@ -45,6 +52,9 @@ export class SQLiteAdapter extends BaseMemoryAdapter {
 
     let db: InstanceType<typeof Database> | undefined;
     try {
+      if (isFileDatabase(this.path)) {
+        await mkdir(dirname(this.path), { recursive: true });
+      }
       db = new Database(this.path);
 
       db.pragma('foreign_keys = ON');
