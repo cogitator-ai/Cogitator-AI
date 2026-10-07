@@ -133,5 +133,16 @@ export {
   VERSIONS,
   IMAGES,
 } from './kit/versions.js';
+export {
+  telemetryDisabledReason,
+  firstRunNotice,
+  payloadFor,
+  sendTelemetry,
+  telemetryWebsiteId,
+  PAYLOAD_FIELDS,
+  TELEMETRY_DOCS,
+  TELEMETRY_HOST,
+} from './kit/telemetry.js';
+export type { TelemetryPayload } from './kit/telemetry.js';
 export { run } from './cli/main.js';
 export { closest } from './cli/args.js';

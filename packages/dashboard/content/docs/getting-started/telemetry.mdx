@@ -1,0 +1,45 @@
+---
+title: Telemetry
+description: The one anonymous event create-cogitator-app and cogitator init send, what it holds, and how to turn it off.
+---
+
+## What is sent
+
+When `create-cogitator-app` or `cogitator init` scaffolds a project, it sends **one** event to the Umami instance of the Cogitator project (`analytics.el1fe.com`). It tells us which presets, providers and add-ons people start with, and how often scaffolding fails, so we know what to improve first.
+
+The event holds exactly these fields and nothing else:
+
+| Field | Example | What it is |
+| --- | --- | --- |
+| `version` | `0.5.0` | Version of the scaffolder |
+| `preset` | `rag` | The preset, `custom` for a stack picked by hand, `example` or `template` for a copied project |
+| `provider` | `openai` | The LLM provider |
+| `memory` | `postgres` | The memory adapter |
+| `features` | `rag,evals` | The add-ons, comma-separated |
+| `packageManager` | `pnpm` | The package manager |
+| `node` | `24` | The major version of Node |
+| `os` | `darwin` | The operating system |
+| `outcome` | `success` | `success`, or `failure` when scaffolding or the install failed |
+
+It never contains the project name, a path, the model, an API key, the name of an example or a template repository, or anything else you typed. The request goes to Umami's `/api/send` endpoint, which does not store IP addresses.
+
+Sending is fire-and-forget with a 1.5 second timeout: a slow or offline network changes nothing about the project or the output.
+
+## Turning it off
+
+Any one of these turns it off:
+
+```bash
+npx create-cogitator-app my-app --no-telemetry
+cogitator init my-bot --no-telemetry
+export COGITATOR_TELEMETRY_DISABLED=1
+export DO_NOT_TRACK=1
+```
+
+It is also off when `CI` is set, on `--dry-run`, and in builds of the scaffolder made without a website id (`COGITATOR_UMAMI_WEBSITE_ID` at build time), which send nothing at all.
+
+The first time it is on, the scaffolder prints one line saying so and how to turn it off. It remembers that in `~/.config/cogitator/telemetry-notice` (`%APPDATA%\cogitator` on Windows, `$XDG_CONFIG_HOME/cogitator` when set).
+
+## The code
+
+The whole implementation is one file: [`packages/create-cogitator-app/src/kit/telemetry.ts`](https://github.com/cogitator-ai/Cogitator-AI/blob/main/packages/create-cogitator-app/src/kit/telemetry.ts). Its tests check that every way of turning it off makes no request and that the payload holds exactly the fields above.
