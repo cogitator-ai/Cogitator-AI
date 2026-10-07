@@ -67,6 +67,7 @@ interface CogitatorConfig {
   security?: { promptInjection?: Partial<PromptInjectionConfig>; pii?: PiiConfig };
   context?: ContextManagerConfig;
   logging?: LoggingConfig; // level, format and destination of the process-wide logger
+  observers?: RunObserver[]; // watch every run (see Run Observers), flushed by close()
   deploy?: DeployConfig; // read by `cogitator deploy`
 }
 ```
@@ -232,6 +233,37 @@ console.log(`Confidence: ${(estimate.confidence * 100).toFixed(0)}%`);
 
 With `costRouting` enabled, `cog.getCostSummary()` returns what runs have spent and `cog.getCostRouter()` the router itself, both before the first run as well ([Cost Routing](/docs/advanced/cost-routing)). A run over budget throws a `CogitatorError` with code `BUDGET_EXCEEDED` (HTTP 429).
 
+## Run Observers
+
+A run observer sees every run of a runtime, also the runs agent tools start on it, without touching the run options of each call:
+
+```typescript
+interface RunObserver {
+  onRunStart?(event: { runId: string; agentId: string; agentName: string; input: string; threadId: string; model?: string }): void;
+  onSpan?(span: Span, run: { runId: string }): void; // each span as it finishes
+  onRunComplete?(result: RunResult): void;
+  onRunError?(error: Error, runId: string): void;
+  close?(): Promise<void> | void; // called by cogitator.close() to flush
+}
+```
+
+Pass them in the config, or attach one to a runtime that is already built with `observe()`, which returns the function that detaches it:
+
+```typescript
+const otlp = createOTLPExporter({ endpoint: 'http://localhost:4318/v1/traces', enabled: true });
+otlp.start();
+
+const cog = new Cogitator({ observers: [otlp.observer()] });
+
+const stop = cog.observe({
+  onRunComplete: (result) => console.log(`${result.runId} cost $${result.usage.cost}`),
+});
+// ...
+stop();
+```
+
+An observer sees the runs that start after it is attached. The run's own callbacks (`onRunStart`, `onSpan` and the rest in `RunOptions`) go first, and an observer that throws is logged without failing the run. `cogitator.close()` calls `close()` of every observer, so exporters send what they buffered. The OpenTelemetry and Langfuse exporters provide one with `observer()`, see [Observability](/docs/deployment/observability).
+
 ## Global Tool Registry
 
 Cogitator exposes a shared `tools` registry. Tools registered here are available to every agent run on this instance, next to the agent's own tools (an agent tool with the same name wins):
@@ -266,4 +298,4 @@ Always call `close()` when done to release connections:
 await cog.close();
 ```
 
-This disconnects memory adapters, shuts down sandbox containers, and clears backend connections.
+This disconnects memory adapters, shuts down sandbox containers, clears backend connections, and closes the run observers so exporters flush what they buffered.

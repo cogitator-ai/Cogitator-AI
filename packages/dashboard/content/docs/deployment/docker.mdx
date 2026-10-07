@@ -109,27 +109,34 @@ const memory = new PostgresAdapter({
 
 ## Production Dockerfile
 
-`cogitator deploy` generates a Dockerfile, a Compose stack and preflight checks for you — see [Deploy Package](/docs/deployment/deploy-package). If you maintain your own, a multi-stage build looks like this:
+`cogitator deploy` generates a Dockerfile, a Compose stack and preflight checks for you, see [Deploy Package](/docs/deployment/deploy-package). Projects from `create-cogitator-app --deploy docker` have it at their root. For a pnpm project with a TypeScript server it looks like this, and a Dockerfile you maintain yourself can follow the same shape:
 
 ```dockerfile
-FROM node:22-alpine AS builder
+# syntax=docker/dockerfile:1
+FROM node:24-alpine AS base
 WORKDIR /app
-COPY package.json pnpm-lock.yaml ./
-RUN corepack enable && pnpm install --frozen-lockfile
-COPY . .
-RUN pnpm build
+RUN corepack enable
 
-FROM node:22-alpine AS runner
-WORKDIR /app
-ENV NODE_ENV=production
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package.json ./
+FROM base AS builder
+RUN apk add --no-cache python3 make g++
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN --mount=type=cache,id=pnpm,target=/root/.local/share/pnpm/store pnpm install --frozen-lockfile
+COPY . .
+RUN pnpm run build
+RUN --mount=type=cache,id=pnpm,target=/root/.local/share/pnpm/store pnpm prune --prod --ignore-scripts
+
+FROM base AS runtime
+RUN apk add --no-cache tini && chown node:node /app
+ENV NODE_ENV=production PORT=3000
+COPY --from=builder --chown=node:node /app ./
+USER node
 EXPOSE 3000
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/cogitator/health || exit 1
-CMD ["node", "dist/index.js"]
+HEALTHCHECK --interval=30s --timeout=5s CMD wget -q --spider http://127.0.0.1:3000/api/health || exit 1
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["node","dist/index.js"]
 ```
+
+The builder has the toolchain native dependencies compile with and keeps the package store in a BuildKit cache, the runtime stage keeps only production dependencies, runs as the unprivileged `node` user, and `tini` forwards signals and reaps child processes such as MCP servers.
 
 The server adapters expose `GET /health` and `GET /ready` under their base path (`/cogitator` by default), so point the health check at whatever path you mounted them on. Probe `127.0.0.1` rather than `localhost`: in Alpine images `localhost` resolves to the IPv6 `::1` first, which a server listening on `0.0.0.0` refuses.
 
