@@ -141,6 +141,7 @@ describe('create-cogitator-app CLI', () => {
     expect(existsSync(join(directory, '.env'))).toBe(true);
     expect(result.stderr).toContain('Your project is ready.');
     expect(result.stderr).toContain('pnpm doctor');
+    expect(result.stderr).toContain('pnpm dev:studio');
     expect(result.stderr).not.toContain('cp .env.example .env');
     expect(result.stderr).not.toContain('sk-test');
   });

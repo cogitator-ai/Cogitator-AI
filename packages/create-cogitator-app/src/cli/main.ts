@@ -185,6 +185,7 @@ function outro(result: ScaffoldResult, args: CliArgs, modelReady: boolean): stri
     pc.dim(
       `If something does not start, ${runScript(result.plan.spec.packageManager, 'doctor')} says what is missing.`
     ),
+    `Try the agents in Cogitator Studio: ${pc.cyan(runScript(result.plan.spec.packageManager, 'dev:studio'))}`,
     pc.dim(`Read AGENTS.md for how it fits together. Docs: ${DOCS_URL}`),
   ].join('\n');
 }
