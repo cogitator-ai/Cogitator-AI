@@ -1,4 +1,11 @@
-import type { Span, RunResult, ToolCall, ToolResult, Message } from '@cogitator-ai/types';
+import type {
+  Span,
+  RunObserver,
+  RunResult,
+  ToolCall,
+  ToolResult,
+  Message,
+} from '@cogitator-ai/types';
 import type {
   Langfuse,
   LangfuseGenerationClient,
@@ -92,6 +99,23 @@ export class LangfuseExporter {
     });
 
     this.cleanupRun(result.runId);
+  }
+
+  /**
+   * Traces every run of a runtime: pass it in `observers` of the Cogitator
+   * config, after `await init()`. Spans arrive finished, so each is opened and
+   * closed at once under its run's trace.
+   */
+  observer(): RunObserver {
+    return {
+      onRunStart: (event) => this.onRunStart(event),
+      onSpan: (span, run) => {
+        this.onSpanStart(run.runId, span);
+        this.onSpanEnd(span);
+      },
+      onRunComplete: (result) => this.onRunComplete(result),
+      close: () => this.shutdown(),
+    };
   }
 
   onSpanStart(runId: string, span: Omit<Span, 'endTime' | 'duration' | 'status'>): void {

@@ -1,6 +1,7 @@
 import { nanoid } from 'nanoid';
 import type {
   CogitatorConfig,
+  RunObserver,
   RunOptions,
   RunResult,
   RunBlockReason,
@@ -382,6 +383,64 @@ export class Cogitator implements ToolInvoker {
     );
   }
 
+  /** Lets every observer send what it buffered; one that fails is logged, the others still close. */
+  private async closeObservers(): Promise<void> {
+    const results = await Promise.allSettled(
+      (this.config.observers ?? []).map(async (observer) => observer.close?.())
+    );
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        getLogger().warn('Run observer close failed', {
+          error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+        });
+      }
+    }
+  }
+
+  /**
+   * `options` with its run callbacks also reporting to `config.observers`. The
+   * run's own callback goes first; an observer that throws is logged and the
+   * run goes on.
+   */
+  private withObservers(options: RunOptions, agent: Agent, runId: () => string): RunOptions {
+    const observers = this.config.observers;
+    if (!observers || observers.length === 0) return options;
+
+    const notify = (hook: keyof RunObserver, call: (observer: RunObserver) => void) => {
+      for (const observer of observers) {
+        try {
+          call(observer);
+        } catch (error) {
+          getLogger().warn(`Run observer ${hook} failed`, {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    };
+
+    return {
+      ...options,
+      onRunStart: (event) => {
+        options.onRunStart?.(event);
+        notify('onRunStart', (observer) =>
+          observer.onRunStart?.({ ...event, agentName: agent.name, model: agent.model })
+        );
+      },
+      onSpan: (span) => {
+        options.onSpan?.(span);
+        notify('onSpan', (observer) => observer.onSpan?.(span, { runId: runId() }));
+      },
+      onRunComplete: (result) => {
+        options.onRunComplete?.(result);
+        notify('onRunComplete', (observer) => observer.onRunComplete?.(result));
+      },
+      onRunError: (error, id) => {
+        options.onRunError?.(error, id);
+        notify('onRunError', (observer) => observer.onRunError?.(error, id));
+      },
+    };
+  }
+
   private async execute(
     agent: Agent,
     options: RunOptions,
@@ -438,6 +497,7 @@ export class Cogitator implements ToolInvoker {
 
     const rootSpanId = `span_${nanoid(12)}`;
     let releaseRunSlot: (() => void) | undefined;
+    options = this.withObservers(options, agent, () => runId);
 
     try {
       releaseRunSlot = await this.acquireRunSlot(abortController.signal);
@@ -1831,6 +1891,7 @@ export class Cogitator implements ToolInvoker {
    * ```
    */
   async close(): Promise<void> {
+    await this.closeObservers();
     await cleanupState(this.state);
     this.backends.clear();
     this.initPromise = undefined;
