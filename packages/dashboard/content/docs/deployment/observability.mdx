@@ -45,9 +45,18 @@ const langfuse = createLangfuseExporter({
 await langfuse.init(); // throws when `langfuse` is not installed
 ```
 
+### Every Run of a Runtime
+
+`langfuse.observer()` turns every run of a runtime into a trace with its spans, output and usage, and `cog.close()` shuts the exporter down after flushing:
+
+```typescript
+await langfuse.init();
+const cog = new Cogitator({ observers: [langfuse.observer()] });
+```
+
 ### Wiring a Run
 
-Each run becomes a Langfuse trace (id = run id, session = thread id, tagged `cogitator` and the agent name); tool calls become `tool:<name>` spans on it:
+To trace one run with tool calls as their own spans, wire its callbacks. Each run becomes a Langfuse trace (id = run id, session = thread id, tagged `cogitator` and the agent name), and tool calls become `tool:<name>` spans on it:
 
 ```typescript
 let currentRunId = '';
@@ -131,7 +140,13 @@ const otlp = createOTLPExporter({
 otlp.start(); // flush every 5 seconds
 ```
 
-To export every span of a run as it finishes:
+To export every span of every run of a runtime, pass the exporter's observer in the config. `cog.close()` stops the exporter and flushes what is pending:
+
+```typescript
+const cog = new Cogitator({ observers: [otlp.observer()] });
+```
+
+`cog.observe(otlp.observer())` attaches it to a runtime that is already built. For one run only, wire the run callbacks:
 
 ```typescript
 let runId = '';
@@ -190,7 +205,7 @@ Langfuse computes cost from the token usage of generations; with `onRunComplete`
 
 ## Shutdown
 
-Flush exporters before process exit to avoid losing buffered data:
+With the exporters in `observers`, `await cog.close()` flushes them. Wired by hand, flush them before the process exits to avoid losing buffered data:
 
 ```typescript
 process.on('SIGTERM', async () => {

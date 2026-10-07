@@ -190,7 +190,7 @@ Both regex tools reject texts over 1,000,000 characters and stop matching after 
 
 ## File System
 
-`file_write` and `file_delete` declare `sideEffects: ['filesystem']`. None of the file tools restricts paths — they act with the permissions of your process, so give them only to agents you trust or put the agent behind [approvals](/docs/tools/approvals).
+`file_write` and `file_delete` declare `sideEffects: ['filesystem']`. On their own the file tools act with the permissions of your process. Confine them to directories with `restrictFileTools` (below), and put writes behind [approvals](/docs/tools/approvals).
 
 ### `file_read`
 
@@ -238,6 +238,26 @@ Deletes a file or directory. Use `recursive: true` for non-empty directories.
 | ----------- | --------- | -------------------------------------------- |
 | `path`      | `string`  | Path to delete                               |
 | `recursive` | `boolean` | Delete contents recursively (default: false) |
+
+### Confining file tools to directories
+
+`restrictFileTools(tools, roots, options?)` wraps file tools so they only reach paths inside `roots`: a call whose `path` points elsewhere answers with an error instead of running. Symlinks are followed before the check, so a link inside a root that points outside of it is refused. The wrapper keeps each tool's side effects, approval and timeout.
+
+```typescript
+import { fileDelete, fileList, fileRead, fileWrite, restrictFileTools } from '@cogitator-ai/core';
+
+const workspaceTools = restrictFileTools([fileRead, fileList, fileWrite, fileDelete], ['./workspace'], {
+  base: './workspace', // relative paths resolve here, the tool gets an absolute path
+  requireApproval: (tool) => tool.sideEffects?.includes('filesystem') ?? false, // writes need approval
+});
+```
+
+| Option            | What it does                                                                                     |
+| ----------------- | ------------------------------------------------------------------------------------------------ |
+| `base`            | Directory relative paths are resolved against, the working directory otherwise                   |
+| `requireApproval` | Tools that must be approved before they run, on top of those that require approval themselves |
+
+`isPathAllowed(path, roots)` is the check itself, for your own tools.
 
 ---
 

@@ -48,6 +48,8 @@ Each checkpoint stores:
 - `pendingToolCalls` — the tool call the step is anchored on
 - `label` — for retrieval with `getByLabel()` on the store; `checkpointAll` and `checkpointEvery` label them `<prefix>_step_<i>`
 
+Only the run's own tool calls are steps. A run that continues a thread carries the earlier turns in its messages, tool results included: they stay in every checkpoint as history but are never counted, so step 0 is always the run's first tool call. A step past the run's last tool call, such as step 0 of a run that called no tool, is the moment before its final answer: the conversation up to the run's input, without the answer, which makes a run without tools forkable from its start.
+
 ## Browsing Checkpoints
 
 Retrieve checkpoints by trace, agent, or label:

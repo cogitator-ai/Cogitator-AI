@@ -71,24 +71,31 @@ worker
 
 ## Typical Project Layout
 
-A project scaffolded with `create-cogitator-app` (`basic` template) looks like this:
+A project scaffolded with `create-cogitator-app` (`basic` preset) looks like this:
 
 ```
 my-agent/
 ├── src/
-│   ├── index.ts          # entry point: Cogitator + Agent
-│   └── tools.ts          # tool definitions
-├── cogitator.yml
-├── .env.example          # variables to copy into .env, which the scripts load
-├── .gitignore
-├── docker-compose.yml    # Redis + Postgres (+ Ollama), when Docker was chosen
-├── pnpm-workspace.yaml   # when pnpm is the package manager
+│   ├── cogitator.ts          # the registry: the runtime and every agent, workflow and swarm
+│   ├── agents/assistant.ts   # the agent: instructions, model, tools
+│   ├── tools/                # fetch_url, current_time, calculator
+│   ├── env.ts                # Zod schema of the variables the project reads
+│   └── index.ts              # entry point: runs the assistant in the terminal
+├── tests/                    # tests on a mocked model, run offline
+├── .github/workflows/ci.yml  # typecheck, lint and tests
+├── cogitator.yml             # model, memory and the rest of the runtime config
+├── AGENTS.md                 # rules for coding agents, CLAUDE.md points at it
+├── .env.example              # variables to copy into .env, which the scripts load
+├── docker-compose.yml        # local services (Ollama, Postgres, Redis), when Docker was chosen
+├── biome.json
 ├── package.json
+├── pnpm-workspace.yaml       # when pnpm is the package manager
 ├── README.md
-└── tsconfig.json
+├── tsconfig.json
+└── vitest.config.ts
 ```
 
-Other templates add files such as `src/agents/*.ts` (swarm) or `src/agents.ts` (workflow, api-server); see [Project Scaffolding](/docs/getting-started/scaffolding).
+Other presets add their own files, such as `src/auth.ts` for servers, `src/gateway.ts` for channels, `src/workflows/` or `src/rag/`. See [Project Scaffolding](/docs/getting-started/scaffolding).
 
 ## Development Commands
 

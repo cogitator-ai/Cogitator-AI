@@ -19,7 +19,9 @@ Optional peer dependencies, installed only for the features that use them:
 | `nodemailer`                      | `sendEmail` over SMTP                                           |
 | `langfuse`                        | `LangfuseExporter`                                              |
 
-Full documentation: [cogitator.app/docs](https://cogitator.app/docs) — start with [Agents](https://cogitator.app/docs/core/agents) and [Cogitator](https://cogitator.app/docs/core/cogitator).
+Full documentation: [cogitator.app/docs](https://cogitator.app/docs), start with [Agents](https://cogitator.app/docs/core/agents) and [Cogitator](https://cogitator.app/docs/core/cogitator).
+
+The package also ships the documentation of its own version as Markdown in `node_modules/@cogitator-ai/core/docs/`, starting at `docs/index.md`, so a coding agent reads the API of the version you installed instead of what it remembers. `cogitator mcp` from [`@cogitator-ai/cli`](https://www.npmjs.com/package/@cogitator-ai/cli) serves it to Claude Code, Cursor and Codex.
 
 ## Quick Start
 
@@ -564,6 +566,21 @@ const schemas = registry.getSchemas();
 | `httpRequest`   | Make HTTP requests               |
 | `exec`          | Execute shell commands           |
 
+The file tools act with the permissions of your process. `restrictFileTools(tools, roots, { base, requireApproval })` confines them to directories (symlinks followed, a path outside answers with an error) and can make writes need approval, and `isPathAllowed(path, roots)` is the check itself:
+
+```typescript
+import { fileDelete, fileList, fileRead, fileWrite, restrictFileTools } from '@cogitator-ai/core';
+
+const workspaceTools = restrictFileTools(
+  [fileRead, fileList, fileWrite, fileDelete],
+  ['./workspace'],
+  {
+    base: './workspace',
+    requireApproval: (tool) => tool.sideEffects?.includes('filesystem') ?? false,
+  }
+);
+```
+
 #### Web & Search Tools
 
 | Tool        | Description                                                                                    |
@@ -841,6 +858,29 @@ All fields are `readonly`. The run timeout comes from the run, the agent, `limit
 A run whose last answer the provider withheld still completes, with `blocked` saying why: `content_filter` when its safety system filtered the answer (OpenAI and Azure `content_filter`, Gemini `SAFETY` and the like, Bedrock guardrails), `refusal` when the model declined (OpenAI `refusal`, Anthropic `refusal`). `output` holds what the model said before it stopped, the explanation of a refusal or often nothing, and the run does not ask again.
 
 A turn the provider ends in an error fails the run with `LLM_INVALID_RESPONSE` instead of passing for an empty answer, with the provider's explanation when it gives one (`ChatResponse.finishMessage`). Gemini, for instance, reports a function call it could not complete, often one cut by `maxTokens`, as `MALFORMED_FUNCTION_CALL`: the run fails with that message, and the cut call never runs. Anthropic and Bedrock `malformed_tool_use` and a failed Responses API answer end the same way.
+
+### Run Observers
+
+A run observer watches every run of a runtime, including the runs that agent tools start on it. Pass observers in the config, or attach one later with `observe()`, which returns the function that detaches it. `close()` closes them, so exporters flush:
+
+```typescript
+import { Cogitator, createOTLPExporter } from '@cogitator-ai/core';
+
+const otlp = createOTLPExporter({ endpoint: 'http://localhost:4318/v1/traces', enabled: true });
+otlp.start();
+
+const cogitator = new Cogitator({ observers: [otlp.observer()] });
+const stop = cogitator.observe({
+  onRunStart: (event) => console.log(`${event.agentName} started ${event.runId}`),
+  onSpan: (span, run) => console.log(run.runId, span.name, span.duration),
+  onRunComplete: (result) => console.log(`cost $${result.usage.cost}`),
+});
+// ...
+stop();
+await cogitator.close(); // flushes the OTLP exporter
+```
+
+An observer that throws is logged without failing the run. `createLangfuseExporter(...).observer()` traces every run in Langfuse the same way.
 
 ---
 
@@ -1263,6 +1303,8 @@ console.log('Forked result:', forkResult.result.output);
 const diff = await timeTravel.compareWithOriginal(forkResult.result);
 console.log(timeTravel.formatDiff(diff));
 ```
+
+Steps are the run's own tool calls: a run that continues a thread keeps the earlier turns as history in its checkpoints, but their tool calls are not counted. A step past the last tool call, such as step 0 of a run without tool calls, is the moment before the final answer.
 
 ### Forking Variants
 
