@@ -47,11 +47,11 @@
     "@cogitator-ai/models": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
     "nanoid": "^6.0.1",
-    "openai": "^7.25.0",
+    "openai": "^7.27.0",
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@aws-sdk/client-bedrock-runtime": "^3.1145.0",
+    "@aws-sdk/client-bedrock-runtime": "^3.1146.0",
     "@cogitator-ai/sandbox": "workspace:*",
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.20.4",
