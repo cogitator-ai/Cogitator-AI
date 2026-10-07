@@ -6,8 +6,20 @@ export {
   writeFiles,
   formatProject,
   hashContent,
+  updateLock,
   LOCK_PATH,
 } from './kit/scaffold.js';
+export { planAdd, addToProject, AddConflictError, NotAScaffoldedProjectError } from './kit/add.js';
+export type {
+  AddChanges,
+  AddPlan,
+  AddOptions,
+  AddResult,
+  AddConflict,
+  AddNote,
+  FileChange,
+} from './kit/add.js';
+export { unifiedDiff } from './kit/diff.js';
 export type {
   ScaffoldOptions,
   ScaffoldResult,
@@ -103,3 +115,4 @@ export {
   IMAGES,
 } from './kit/versions.js';
 export { run } from './cli/main.js';
+export { closest } from './cli/args.js';

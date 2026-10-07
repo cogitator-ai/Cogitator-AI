@@ -6,6 +6,7 @@ import { installCommand } from './package-manager.js';
 import { planProject, type PlanOptions, type ProjectPlan } from './plan.js';
 import { hasCommand, runCommand, tail } from './process.js';
 import type { GeneratedFile } from './project.js';
+import type { PackageManager } from './spec.js';
 import { scaffolderVersion } from './versions.js';
 
 /**
@@ -90,20 +91,47 @@ export async function writeFiles(
   }
 }
 
-export async function writeLock(directory: string, paths: readonly string[]): Promise<void> {
-  const files: Record<string, string> = {};
-  for (const path of [...paths].sort()) {
-    if (UNTRACKED.has(path) || path === LOCK_PATH) continue;
-    const full = join(directory, path);
-    if (existsSync(full)) files[path] = hashContent(await readFile(full, 'utf-8'));
-  }
+async function saveLock(directory: string, files: Record<string, string>): Promise<void> {
   const lock: ScaffoldLock = {
     version: 1,
     generator: `create-cogitator-app@${scaffolderVersion()}`,
-    files,
+    files: Object.fromEntries(Object.entries(files).sort(([a], [b]) => a.localeCompare(b))),
   };
   await mkdir(join(directory, dirname(LOCK_PATH)), { recursive: true });
   await writeFile(join(directory, LOCK_PATH), JSON.stringify(lock, null, 2) + '\n');
+}
+
+/** Hashes `paths` as they are on disk now, `undefined` for a path that does not exist. */
+async function hashFiles(
+  directory: string,
+  paths: readonly string[]
+): Promise<Map<string, string | undefined>> {
+  const hashes = new Map<string, string | undefined>();
+  for (const path of paths) {
+    if (UNTRACKED.has(path) || path === LOCK_PATH) continue;
+    const full = join(directory, path);
+    hashes.set(path, existsSync(full) ? hashContent(await readFile(full, 'utf-8')) : undefined);
+  }
+  return hashes;
+}
+
+export async function writeLock(directory: string, paths: readonly string[]): Promise<void> {
+  const files: Record<string, string> = {};
+  for (const [path, hash] of await hashFiles(directory, paths)) if (hash) files[path] = hash;
+  await saveLock(directory, files);
+}
+
+/**
+ * Re-hashes `paths` in the lock after `cogitator add` wrote or deleted them,
+ * keeping the hashes of every other file.
+ */
+export async function updateLock(directory: string, paths: readonly string[]): Promise<void> {
+  const files = { ...readLock(directory)?.files };
+  for (const [path, hash] of await hashFiles(directory, paths)) {
+    if (hash) files[path] = hash;
+    else delete files[path];
+  }
+  await saveLock(directory, files);
 }
 
 export function readLock(directory: string): ScaffoldLock | undefined {
@@ -135,11 +163,22 @@ function biomeBinary(directory: string): string | undefined {
   return existsSync(path) ? path : undefined;
 }
 
-/** Formats the generated code with the project's own Biome, so it starts clean under `lint`. */
-export async function formatProject(directory: string): Promise<StepResult> {
+/**
+ * Formats the generated code with the project's own Biome, so it starts clean
+ * under `lint`: the whole project, or only `paths` when they are given.
+ */
+export async function formatProject(
+  directory: string,
+  paths: readonly string[] = ['.']
+): Promise<StepResult> {
   const biome = biomeBinary(directory);
   if (!biome) return { status: 'skipped', reason: 'Biome is not installed' };
-  const result = await runCommand(biome, ['check', '--write', '.'], { cwd: directory });
+  if (paths.length === 0) return { status: 'skipped', reason: 'nothing to format' };
+  const result = await runCommand(
+    biome,
+    ['check', '--write', '--no-errors-on-unmatched', ...paths],
+    { cwd: directory }
+  );
   if (result.code !== 0)
     return failure(new Error(`biome check --write failed:\n${tail(result.output)}`));
   return { status: 'done' };
@@ -217,12 +256,11 @@ async function initGit(directory: string): Promise<StepResult> {
   return { status: 'done' };
 }
 
-async function installDependencies(
+export async function installDependencies(
   directory: string,
-  plan: ProjectPlan,
+  pm: PackageManager,
   inherit: boolean
 ): Promise<StepResult> {
-  const pm = plan.spec.packageManager;
   if (!(await hasCommand(pm, directory))) {
     return failure(new Error(`${pm} is not installed, install it or pick another one with --pm`));
   }
@@ -265,7 +303,11 @@ export async function scaffold(spec: unknown, options: ScaffoldOptions): Promise
   let install: StepResult = { status: 'skipped', reason: 'install was turned off' };
   if (options.install !== false) {
     log.start(`Installing dependencies with ${plan.spec.packageManager}`);
-    install = await installDependencies(directory, plan, options.inheritOutput ?? false);
+    install = await installDependencies(
+      directory,
+      plan.spec.packageManager,
+      options.inheritOutput ?? false
+    );
     if (install.status === 'done') log.done('Installed dependencies');
     else
       log.fail(
