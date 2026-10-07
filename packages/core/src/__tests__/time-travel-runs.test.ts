@@ -1,10 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { z } from 'zod';
-import type { ChatRequest, ChatResponse, ChatStreamChunk, LLMBackend } from '@cogitator-ai/types';
+import type {
+  ChatRequest,
+  ChatResponse,
+  ChatStreamChunk,
+  LLMBackend,
+  Message,
+  RunResult,
+} from '@cogitator-ai/types';
 import { Cogitator } from '../cogitator';
 import { Agent } from '../agent';
 import { tool } from '../tool';
-import { TimeTravel } from '../time-travel/index';
+import { InMemoryCheckpointStore, TimeTravel } from '../time-travel/index';
 
 vi.mock('../llm/index', async (importOriginal) => {
   const original = await importOriginal<typeof import('../llm/index')>();
@@ -296,5 +303,83 @@ describe('TimeTravel checkpoints anchored on tool calls', () => {
     expect(system?.content).toContain('Research the question.');
     expect(system?.content).toContain('Replay Context');
     expect(system?.content).toContain('searching ai');
+  });
+});
+
+describe('checkpoints of a run that continues a thread', () => {
+  const span = (name: string, callId?: string) => ({
+    id: `span_${name}`,
+    traceId: 'trace_1',
+    name,
+    kind: 'internal' as const,
+    status: 'ok' as const,
+    startTime: 0,
+    endTime: 1,
+    duration: 1,
+    attributes: callId ? { 'tool.call_id': callId } : {},
+  });
+  const result = (messages: RunResult['messages'], toolCallIds: string[]): RunResult => ({
+    output: 'final',
+    runId: 'run_2',
+    agentId: 'agent',
+    threadId: 'thread',
+    usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cost: 0, duration: 0 },
+    toolCalls: toolCallIds.map((id) => ({ id, name: 'search', arguments: {} })),
+    messages,
+    trace: {
+      traceId: 'trace_1',
+      spans: [span('agent.run'), ...toolCallIds.map((id) => span('tool.search', id))],
+    },
+  });
+
+  it('counts only the steps of the run, not the tool calls of earlier turns', () => {
+    const store = new InMemoryCheckpointStore();
+    const run = result(
+      [
+        { role: 'user', content: 'first question' },
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [{ id: 'old_1', name: 'search', arguments: {} }],
+        } as Message,
+        { role: 'tool', content: 'old result', toolCallId: 'old_1', name: 'search' },
+        { role: 'assistant', content: 'first answer' },
+        { role: 'user', content: 'second question' },
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [{ id: 'new_1', name: 'search', arguments: {} }],
+        } as Message,
+        { role: 'tool', content: 'new result', toolCallId: 'new_1', name: 'search' },
+        { role: 'assistant', content: 'final' },
+      ],
+      ['new_1']
+    );
+
+    const before = store.createFromRunResult(run, 0);
+    expect(before.messages.map((m) => m.content)).toEqual([
+      'first question',
+      '',
+      'old result',
+      'first answer',
+      'second question',
+      '',
+    ]);
+    const answer = store.createFromRunResult(run, 1);
+    expect(answer.messages.at(-1)?.content).toBe('new result');
+  });
+
+  it('starts a run without tool calls before its answer', () => {
+    const store = new InMemoryCheckpointStore();
+    const run = result(
+      [
+        { role: 'user', content: 'hello' },
+        { role: 'assistant', content: 'hi there' },
+      ],
+      []
+    );
+    expect(store.createFromRunResult(run, 0).messages).toEqual([
+      { role: 'user', content: 'hello' },
+    ]);
   });
 });
