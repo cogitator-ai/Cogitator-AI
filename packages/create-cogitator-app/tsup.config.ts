@@ -1,5 +1,5 @@
 import { defineConfig } from 'tsup';
-import { scaffolderDefines } from './build/defines.ts';
+import { scaffolderDefines } from './scripts/defines.ts';
 
 const define = scaffolderDefines();
 
