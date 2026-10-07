@@ -68,7 +68,11 @@ describe('reasoning and prompt caching in runs', () => {
     await cog.run(agent({ effort: 'high', summary: true }), { input: 'q' });
     await cog.run(agent({ effort: 'high' }), { input: 'q', reasoning: { effort: 'low' } });
 
-    expect(requests[0]).toMatchObject({ reasoning: { effort: 'high', summary: true }, cache: {} });
+    expect(requests[0]).toMatchObject({
+      reasoning: { effort: 'high', summary: true },
+      cache: {},
+      cachePrefix: 'Think.',
+    });
     expect(requests.at(-1)?.reasoning).toEqual({ effort: 'low' });
     await cog.close();
   });
@@ -96,7 +100,7 @@ describe('reasoning and prompt caching in runs', () => {
   });
 
   it('streams reasoning to onReasoning', async () => {
-    const { backend } = reasoningBackend();
+    const { backend, requests } = reasoningBackend();
     const cog = new Cogitator({ llm: { backends: { anthropic: backend } } });
     const deltas: string[] = [];
 
@@ -109,6 +113,7 @@ describe('reasoning and prompt caching in runs', () => {
 
     expect(deltas).toEqual(['I should look it up.', 'Now I can answer.']);
     expect(result.reasoning).toBe('I should look it up.\n\nNow I can answer.');
+    expect(requests.every((request) => request.cachePrefix === 'Think.')).toBe(true);
     await cog.close();
   });
 

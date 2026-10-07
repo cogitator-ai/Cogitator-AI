@@ -334,6 +334,7 @@ interface ChatRequest {
   responseFormat?: LLMResponseFormat; // text | json_object | json_schema
   reasoning?: ReasoningConfig;
   cache?: PromptCacheConfig | false;
+  cachePrefix?: string; // the stable start of the system prompt, marked for the cache
   signal?: AbortSignal;
 }
 
@@ -386,6 +387,7 @@ interface LLMRetryConfig {
 
 interface PromptCacheConfig {
   ttl?: '5m' | '1h'; // Anthropic cache lifetime, default 5m
+  conversation?: boolean; // mark the conversation end too, default when tools or earlier turns
 }
 
 interface ModelRoute {

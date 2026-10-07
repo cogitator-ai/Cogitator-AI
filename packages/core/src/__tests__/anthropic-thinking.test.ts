@@ -94,7 +94,7 @@ describe('AnthropicBackend thinking and caching', () => {
       model: 'claude-opus-5-5',
       messages: [{ role: 'user', content: 'hi' }],
       reasoning: { effort: 'xhigh', summary: true },
-      cache: { ttl: '1h' },
+      cache: { ttl: '1h', conversation: true },
       temperature: 0.3,
     });
 

@@ -92,6 +92,10 @@ describe('handoffs', () => {
     expect(requests[1].model).toBe('billing-model');
     expect(requests[1].tools?.map((t) => t.name)).toEqual(['refund']);
     expect(requests[1].messages[0]).toEqual({ role: 'system', content: 'You are billing.' });
+    expect(requests.map((request) => request.cachePrefix)).toEqual([
+      'You are triage.',
+      'You are billing.',
+    ]);
     expect(requests[1].messages.map((m) => m.role)).toEqual([
       'system',
       'user',

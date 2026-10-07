@@ -20,11 +20,12 @@ import {
   type LLMErrorContext,
 } from './errors';
 import { jsonInstruction, withSystemInstruction } from './json-instruction';
+import type { CacheControl } from './prompt-cache';
 import { finishRunsTools, normalizeTurn, parseToolCallArguments, type TurnEnd } from './turn';
 
 /** The prompt cache marking a request carries, see `OpenAICompatibleBackend.promptCacheParams`. */
 export interface PromptCacheParams {
-  cache_control?: { type: 'ephemeral'; ttl?: '5m' | '1h' };
+  cache_control?: CacheControl;
 }
 
 export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
@@ -55,15 +56,29 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
   }
 
   /**
+   * The messages with the server's prompt cache breakpoints placed in them, for servers that
+   * take them in message content (Claude through OpenRouter). The base leaves them as they are.
+   */
+  protected markPromptCache(
+    messages: OpenAI.Chat.ChatCompletionMessageParam[],
+    _request: ChatRequest,
+    _model: string
+  ): OpenAI.Chat.ChatCompletionMessageParam[] {
+    return messages;
+  }
+
+  /**
    * The parameters `chat` and `chatStream` share. Reasoning models get no sampling parameters,
    * whatever the agent sets (its default `temperature` included), and `max_completion_tokens`.
    */
   private requestParams(request: ChatRequest, model: string) {
     const reasoning = this.isReasoningModel(model);
     const maxTokensField = reasoning ? 'max_completion_tokens' : this.maxTokensField;
+    const { messages, response_format } = this.structuredOutput(request);
     return {
       model,
-      ...this.structuredOutput(request),
+      messages: this.markPromptCache(messages, request, model),
+      response_format,
       tools: request.tools
         ? request.tools.map((t) => ({
             type: 'function' as const,

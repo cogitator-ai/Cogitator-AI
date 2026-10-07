@@ -75,7 +75,10 @@ export const LLMConfigSchema = z.object({
   providers: ProvidersConfigSchema.optional(),
   retry: LLMRetryConfigSchema.optional(),
   promptCache: z
-    .union([z.literal(false), z.object({ ttl: z.enum(['5m', '1h']).optional() })])
+    .union([
+      z.literal(false),
+      z.object({ ttl: z.enum(['5m', '1h']).optional(), conversation: z.boolean().optional() }),
+    ])
     .optional(),
   plugins: z.record(z.string(), z.unknown()).optional(),
 });

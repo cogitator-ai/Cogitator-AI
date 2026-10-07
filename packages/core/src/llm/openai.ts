@@ -8,6 +8,12 @@ import type {
   OpenAIWireApi,
 } from '@cogitator-ai/types';
 import { OpenAICompatibleBackend, type PromptCacheParams } from './openai-compatible-base';
+import {
+  promptCacheMarks,
+  splitSystemPrompt,
+  type CacheControl,
+  type PromptCacheMarks,
+} from './prompt-cache';
 import type { LLMErrorContext } from './errors';
 import {
   DEFAULT_OPENAI_MODEL,
@@ -47,6 +53,11 @@ function isOfficialEndpoint(baseUrl: string | undefined): boolean {
   return !baseUrl || hostOf(baseUrl) === OFFICIAL_OPENAI_HOST;
 }
 
+/** A system text part carrying a cache breakpoint, as OpenRouter takes it for Claude. */
+type CacheMarkedTextPart = OpenAI.Chat.ChatCompletionContentPartText & {
+  cache_control?: CacheControl;
+};
+
 /** Claude as OpenRouter names it: `anthropic/claude-...`. */
 function isClaudeModel(model: string): boolean {
   return /^anthropic\//i.test(model);
@@ -84,15 +95,43 @@ export class OpenAIBackend extends OpenAICompatibleBackend {
   }
 
   /**
-   * Claude through OpenRouter caches only a prompt marked for it, with the same top-level
-   * `cache_control` as Anthropic's own API, so a long system prompt is billed in full on every
-   * turn without it. Other models there, like OpenAI's, cache on their own. Only OpenRouter gets
-   * the field: other OpenAI-compatible servers may reject what they do not know.
+   * Claude through OpenRouter caches only a prompt marked for it, the way Anthropic's own API
+   * takes the marks, so a long system prompt is billed in full on every call without them.
+   * Other models there, like OpenAI's, cache on their own. Only OpenRouter gets the marks: other
+   * OpenAI-compatible servers may reject fields they do not know.
    */
+  private claudeCacheMarks(request: ChatRequest, model: string): PromptCacheMarks | undefined {
+    return this.openRouter && isClaudeModel(model) ? promptCacheMarks(request) : undefined;
+  }
+
+  /** The end of the conversation, as Anthropic's top-level `cache_control` marks it. */
   protected override promptCacheParams(request: ChatRequest, model: string): PromptCacheParams {
-    if (!request.cache || !this.openRouter || !isClaudeModel(model)) return {};
-    const ttl = request.cache.ttl;
-    return { cache_control: { type: 'ephemeral', ...(ttl && { ttl }) } };
+    const marks = this.claudeCacheMarks(request, model);
+    return marks?.conversation ? { cache_control: marks.control } : {};
+  }
+
+  /**
+   * The end of the stable system prompt: the system message becomes text blocks, the agent's
+   * instructions marked and what the run added after them left unmarked, so runs with different
+   * input read the instructions from the cache.
+   */
+  protected override markPromptCache(
+    messages: OpenAI.Chat.ChatCompletionMessageParam[],
+    request: ChatRequest,
+    model: string
+  ): OpenAI.Chat.ChatCompletionMessageParam[] {
+    const marks = this.claudeCacheMarks(request, model);
+    if (!marks?.systemPrefix) return messages;
+    const index = messages.findIndex((message) => message.role === 'system');
+    const system = messages[index];
+    if (system?.role !== 'system' || typeof system.content !== 'string') return messages;
+    const split = splitSystemPrompt(system.content, marks.systemPrefix);
+    if (!split) return messages;
+    const content: CacheMarkedTextPart[] = [
+      { type: 'text', text: split.stable, cache_control: marks.control },
+      ...(split.rest.trim() ? [{ type: 'text' as const, text: split.rest }] : []),
+    ];
+    return messages.map((message, i) => (i === index ? { role: 'system', content } : message));
   }
 
   protected override resolveModel(request: ChatRequest): string {

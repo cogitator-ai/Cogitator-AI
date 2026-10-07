@@ -358,6 +358,7 @@ Agent runs cache their prompt by default (see [LLM Backends](/docs/core/llm-back
 llm:
   promptCache:
     ttl: 1h # Anthropic keeps the cache for an hour instead of 5 minutes
+    # conversation: true - also mark single turns for the next one (default: with tools or history)
   # promptCache: false   — turn it off
 ```
 

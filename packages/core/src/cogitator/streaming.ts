@@ -29,6 +29,7 @@ export interface StreamChatExtras {
   reasoning?: ReasoningConfig;
   toolChoice?: ToolChoice;
   cache?: PromptCacheConfig | false;
+  cachePrefix?: string;
   onReasoning?: (delta: string) => void;
 }
 
@@ -71,6 +72,7 @@ export async function streamChat(
     responseFormat,
     reasoning: extras.reasoning,
     cache: extras.cache,
+    ...(extras.cachePrefix !== undefined && { cachePrefix: extras.cachePrefix }),
     signal,
   });
 

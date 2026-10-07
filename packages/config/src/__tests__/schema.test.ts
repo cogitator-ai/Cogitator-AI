@@ -108,6 +108,10 @@ describe('CogitatorConfigSchema', () => {
       false
     );
     expect(() => CogitatorConfigSchema.parse({ llm: { promptCache: { ttl: '2h' } } })).toThrow();
+    expect(
+      CogitatorConfigSchema.parse({ llm: { promptCache: { ttl: '1h', conversation: false } } }).llm
+        ?.promptCache
+    ).toEqual({ ttl: '1h', conversation: false });
   });
 
   it('reads PII masking settings, compiling custom patterns given as strings', () => {

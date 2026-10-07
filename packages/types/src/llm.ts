@@ -86,6 +86,13 @@ export interface ReasoningConfig {
 export interface PromptCacheConfig {
   /** How long Anthropic keeps a cached prefix (default `5m`) */
   ttl?: '5m' | '1h';
+  /**
+   * Whether a request also marks the end of its conversation, so the next turn reads everything
+   * before it from the cache. By default it does when another turn is likely: the request offers
+   * tools (a tool loop may follow) or continues earlier turns. A single turn with unique input
+   * would only pay the cache write premium on it. The system prompt is marked either way.
+   */
+  conversation?: boolean;
 }
 
 export interface ChatRequest {
@@ -102,6 +109,12 @@ export interface ChatRequest {
   reasoning?: ReasoningConfig;
   /** Prompt caching; `false` turns it off where the provider allows */
   cache?: PromptCacheConfig | false;
+  /**
+   * The start of the system prompt that stays the same from run to run: the agent's
+   * instructions, before the run context and anything else a run adds. With `cache`, backends
+   * that mark their cache put a breakpoint at its end, so runs with different input share it.
+   */
+  cachePrefix?: string;
   /** Abort signal for cancelling the provider request. */
   signal?: AbortSignal;
 }

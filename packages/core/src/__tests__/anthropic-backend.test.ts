@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { ToolSchema } from '@cogitator-ai/types';
 import { toolCallMessage } from './helpers/messages';
 import { AnthropicBackend } from '../llm/anthropic';
 import { getLogger } from '../logger';
@@ -1495,6 +1496,103 @@ describe('AnthropicBackend', () => {
         expect(params.tool_choice).toEqual({ type: 'auto' });
         expect(params.system).toBe('You must respond by calling the "tool1" tool.');
       });
+    });
+  });
+
+  describe('prompt cache marks', () => {
+    const instructions = 'You are the copy desk. Follow the style guide.';
+    const messages = [
+      { role: 'system' as const, content: `${instructions}\n\nContext: today's dossier` },
+      { role: 'user' as const, content: 'Draft the story.' },
+    ];
+    const answer = {
+      id: 'msg_1',
+      content: [{ type: 'text', text: 'OK' }],
+      stop_reason: 'end_turn',
+      usage: { input_tokens: 1, output_tokens: 1 },
+    };
+    const sent = (call = 0) =>
+      mockCreate.mock.calls[call][0] as { system?: unknown; cache_control?: unknown };
+
+    it('marks the end of the instructions, not what the run added after them', async () => {
+      mockCreate.mockResolvedValueOnce(answer);
+
+      await backend.chat({
+        model: 'claude-sonnet-5-5',
+        messages,
+        cache: { ttl: '1h' },
+        cachePrefix: instructions,
+      });
+
+      expect(sent().system).toEqual([
+        { type: 'text', text: instructions, cache_control: { type: 'ephemeral', ttl: '1h' } },
+        { type: 'text', text: "\n\nContext: today's dossier" },
+      ]);
+      expect(sent().cache_control).toBeUndefined();
+    });
+
+    it('marks the conversation end only when another turn is likely, unless told', async () => {
+      mockCreate.mockResolvedValue(answer);
+      const tools: ToolSchema[] = [
+        {
+          name: 'search',
+          description: 'Search the archive',
+          parameters: { type: 'object', properties: { q: { type: 'string' } } },
+        },
+      ];
+
+      await backend.chat({
+        model: 'claude-sonnet-5-5',
+        messages,
+        cache: {},
+        cachePrefix: instructions,
+      });
+      await backend.chat({
+        model: 'claude-sonnet-5-5',
+        messages,
+        tools,
+        cache: {},
+        cachePrefix: instructions,
+      });
+      await backend.chat({
+        model: 'claude-sonnet-5-5',
+        messages: [
+          ...messages,
+          { role: 'assistant', content: 'Draft.' },
+          { role: 'user', content: 'Tighten.' },
+        ],
+        cache: {},
+        cachePrefix: instructions,
+      });
+      await backend.chat({
+        model: 'claude-sonnet-5-5',
+        messages,
+        cache: { conversation: true },
+        cachePrefix: instructions,
+      });
+
+      expect([0, 1, 2, 3].map((call) => sent(call).cache_control)).toEqual([
+        undefined,
+        { type: 'ephemeral' },
+        { type: 'ephemeral' },
+        { type: 'ephemeral' },
+      ]);
+    });
+
+    it('sends the system prompt as text without a matching prefix or with caching off', async () => {
+      mockCreate.mockResolvedValue(answer);
+
+      await backend.chat({ model: 'claude-sonnet-5-5', messages, cache: {}, cachePrefix: 'Other' });
+      await backend.chat({
+        model: 'claude-sonnet-5-5',
+        messages,
+        cache: false,
+        cachePrefix: instructions,
+      });
+
+      expect(sent(0).system).toBe(messages[0].content);
+      expect(sent(1).system).toBe(messages[0].content);
+      expect(sent(1).cache_control).toBeUndefined();
     });
   });
 
