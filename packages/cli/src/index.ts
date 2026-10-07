@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { initCommand } from './commands/init.js';
+import { addCommand } from './commands/add.js';
 import { doctorCommand } from './commands/doctor.js';
 import { evalCommand } from './commands/eval.js';
 import { upCommand, downCommand } from './commands/up.js';
@@ -34,6 +35,7 @@ const program = new Command()
   .version(pkg.version);
 
 program.addCommand(initCommand);
+program.addCommand(addCommand);
 program.addCommand(doctorCommand);
 program.addCommand(evalCommand);
 program.addCommand(upCommand);
