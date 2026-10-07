@@ -146,7 +146,8 @@ export interface UseChatReturn {
   stop: () => void;
   reload: () => Promise<void>;
   threadId: string | undefined;
-  setThreadId: (id: string) => void;
+  /** Continues the conversation of thread `id`, or starts a new one with `undefined`. */
+  setThreadId: (id: string | undefined) => void;
   appendMessage: (message: ChatMessage) => void;
   clearMessages: () => void;
   setMessages: (messages: ChatMessage[]) => void;

@@ -430,8 +430,9 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
   );
 
   const setThreadId = useCallback(
-    (id: string) => {
+    (id: string | undefined) => {
       apply({ type: 'SET_THREAD_ID', payload: id });
+      if (id === undefined) apply({ type: 'SET_PENDING_APPROVALS', payload: [] });
     },
     [apply]
   );
