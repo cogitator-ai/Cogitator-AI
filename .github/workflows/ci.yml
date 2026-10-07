@@ -92,6 +92,9 @@ jobs:
 
       - run: pnpm build
 
+      - name: Install Chromium for the Studio e2e
+        run: pnpm --filter @cogitator-ai/e2e exec playwright install --with-deps --only-shell chromium
+
       - run: pnpm exec turbo run test --filter='!@cogitator-ai/tetsu'
         env:
           NODE_OPTIONS: '--max-old-space-size=4096'

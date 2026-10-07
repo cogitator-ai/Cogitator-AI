@@ -21,8 +21,8 @@ import {
  * the trace and a span in it, forks a run with a changed tool result, and
  * finds its way back through the overview, the command palette and the theme.
  */
-const root = mkdtempSync(join(tmpdir(), 'studio-e2e-'));
-const dir = join(root, 'studio-e2e');
+let root = '';
+let dir = '';
 let model: FakeOllama;
 let studio: ChildProcess;
 let browser: Browser;
@@ -46,61 +46,6 @@ function reply(messages: FakeMessage[]) {
   return { content: `Hello: ${input}`, thinking: 'The user greets me.' };
 }
 
-beforeAll(async () => {
-  model = await startFakeOllama(reply);
-  const preset = findPreset('assistant');
-  if (!preset) throw new Error('no assistant preset');
-  await scaffold(
-    {
-      name: 'studio-e2e',
-      preset: 'assistant',
-      ...preset.spec,
-      provider: 'ollama',
-      model: 'qwen3.5:4b',
-      packageManager: 'pnpm',
-    },
-    { directory: dir, install: false, git: false }
-  );
-  useTarballs(dir, 'pnpm', await packWorkspace(cogitatorDependencies(dir)));
-  await mustExec('pnpm', installArgs('pnpm'), { cwd: dir });
-
-  studio = spawn('pnpm', ['exec', 'cogitator', 'dev', '--port', '0', '--no-open', '--no-watch'], {
-    cwd: dir,
-    env: { ...process.env, OLLAMA_BASE_URL: model.url, CI: '1', FORCE_COLOR: '0' },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  url = await new Promise<string>((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error(`the studio did not start:\n${output.join('')}`)),
-      60_000
-    );
-    const read = (chunk: Buffer) => {
-      output.push(chunk.toString());
-      const found = /(http:\/\/localhost:\d+\/)/.exec(output.join(''));
-      if (found) {
-        clearTimeout(timer);
-        resolve(found[1]);
-      }
-    };
-    studio.stdout?.on('data', read);
-    studio.stderr?.on('data', read);
-    studio.once('exit', (code) =>
-      reject(new Error(`the studio exited with ${code}:\n${output.join('')}`))
-    );
-  });
-  browser = await chromium.launch();
-  page = await browser.newPage();
-  await page.goto(url);
-  await page.getByTestId('agent-assistant').waitFor({ timeout: 60_000 });
-}, 600_000);
-
-afterAll(async () => {
-  await browser?.close();
-  studio?.kill('SIGTERM');
-  await model?.close();
-  rmSync(root, { recursive: true, force: true });
-});
-
 /** Sends a message and waits for its turn to appear. */
 async function send(text: string): Promise<void> {
   const turns = await page.getByTestId('turn').count();
@@ -109,7 +54,81 @@ async function send(text: string): Promise<void> {
   await expect.poll(() => page.getByTestId('turn').count(), { timeout: 30_000 }).toBe(turns + 1);
 }
 
-describe('Cogitator Studio on a generated project', () => {
+/** Whether Playwright's Chromium is installed here: CI installs it, a fresh checkout may not have it. */
+async function chromiumInstalled(): Promise<boolean> {
+  try {
+    await (await chromium.launch()).close();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const browserReady = await chromiumInstalled();
+if (!browserReady) {
+  console.warn(
+    'Skipping the studio e2e: no Chromium, run pnpm --filter @cogitator-ai/e2e exec playwright install chromium'
+  );
+}
+
+describe.skipIf(!browserReady)('Cogitator Studio on a generated project', () => {
+  beforeAll(async () => {
+    root = mkdtempSync(join(tmpdir(), 'studio-e2e-'));
+    dir = join(root, 'studio-e2e');
+    model = await startFakeOllama(reply);
+    const preset = findPreset('assistant');
+    if (!preset) throw new Error('no assistant preset');
+    await scaffold(
+      {
+        name: 'studio-e2e',
+        preset: 'assistant',
+        ...preset.spec,
+        provider: 'ollama',
+        model: 'qwen3.5:4b',
+        packageManager: 'pnpm',
+      },
+      { directory: dir, install: false, git: false }
+    );
+    useTarballs(dir, 'pnpm', await packWorkspace(cogitatorDependencies(dir)));
+    await mustExec('pnpm', installArgs('pnpm'), { cwd: dir });
+
+    studio = spawn('pnpm', ['exec', 'cogitator', 'dev', '--port', '0', '--no-open', '--no-watch'], {
+      cwd: dir,
+      env: { ...process.env, OLLAMA_BASE_URL: model.url, CI: '1', FORCE_COLOR: '0' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    url = await new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`the studio did not start:\n${output.join('')}`)),
+        60_000
+      );
+      const read = (chunk: Buffer) => {
+        output.push(chunk.toString());
+        const found = /(http:\/\/localhost:\d+\/)/.exec(output.join(''));
+        if (found) {
+          clearTimeout(timer);
+          resolve(found[1]);
+        }
+      };
+      studio.stdout?.on('data', read);
+      studio.stderr?.on('data', read);
+      studio.once('exit', (code) =>
+        reject(new Error(`the studio exited with ${code}:\n${output.join('')}`))
+      );
+    });
+    browser = await chromium.launch();
+    page = await browser.newPage();
+    await page.goto(url);
+    await page.getByTestId('agent-assistant').waitFor({ timeout: 60_000 });
+  }, 600_000);
+
+  afterAll(async () => {
+    await browser?.close();
+    studio?.kill('SIGTERM');
+    await model?.close();
+    if (root) rmSync(root, { recursive: true, force: true });
+  });
+
   it('chats with the assistant, streaming the answer and the reasoning', async () => {
     await page.getByTestId('agent-assistant').click();
     await send('hi there');
