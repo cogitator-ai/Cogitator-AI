@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { connect } from 'node:net';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { findConfigFile, loadConfig, parseDotenv } from '@cogitator-ai/config';
 import type { CogitatorConfig } from '@cogitator-ai/types';
 import { checkApiKey, describeKeyCheck, PROVIDER_INFO } from 'create-cogitator-app';
@@ -95,6 +96,73 @@ function nodeCheck(manifest: PackageManifest | undefined, nodeVersion: string): 
       };
 }
 
+/** The part of Yarn's Plug'n'Play API (pnpapi) the check reads. */
+interface PnpApi {
+  findPackageLocator(path: string): { name: string | null; reference: string | null } | null;
+  getPackageInformation(locator: { name: string | null; reference: string | null }): {
+    packageDependencies: Map<string, string | [string, string] | null>;
+  } | null;
+}
+
+function isPnpApi(value: unknown): value is PnpApi {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'findPackageLocator' in value &&
+    typeof value.findPackageLocator === 'function' &&
+    'getPackageInformation' in value &&
+    typeof value.getPackageInformation === 'function'
+  );
+}
+
+/** The nearest `.pnp.cjs` at or above `directory`, which a Yarn Plug'n'Play install writes. */
+function findPnpFile(directory: string): string | undefined {
+  for (let current = resolve(directory); ; current = dirname(current)) {
+    const candidate = join(current, '.pnp.cjs');
+    if (existsSync(candidate)) return candidate;
+    if (dirname(current) === current) return undefined;
+  }
+}
+
+function versionOf(manifestPath: string): string {
+  const parsed = readJson(manifestPath);
+  return typeof parsed === 'object' &&
+    parsed !== null &&
+    'version' in parsed &&
+    typeof parsed.version === 'string'
+    ? parsed.version
+    : '?';
+}
+
+/**
+ * The version of `name` the project resolves, `undefined` when it is not
+ * installed. Plug'n'Play installs are read through Yarn's own API, others the
+ * way Node looks packages up: node_modules of the project and every directory
+ * above it, so hoisted packages of a monorepo count.
+ */
+export function installedVersion(projectDir: string, name: string): string | undefined {
+  const pnpFile = findPnpFile(projectDir);
+  if (pnpFile) {
+    let api: unknown;
+    try {
+      api = createRequire(import.meta.url)(pnpFile);
+    } catch {
+      return undefined;
+    }
+    if (!isPnpApi(api)) return undefined;
+    const locator = api.findPackageLocator(`${resolve(projectDir)}/`);
+    const reference = locator && api.getPackageInformation(locator)?.packageDependencies.get(name);
+    if (!reference) return undefined;
+    const resolved = Array.isArray(reference) ? reference[1] : reference;
+    return /npm:([^#]+)$/.exec(resolved)?.[1] ?? resolved;
+  }
+  for (let current = resolve(projectDir); ; current = dirname(current)) {
+    const manifest = join(current, 'node_modules', name, 'package.json');
+    if (existsSync(manifest)) return versionOf(manifest);
+    if (dirname(current) === current) return undefined;
+  }
+}
+
 function packagesCheck(projectDir: string, manifest: PackageManifest | undefined): DoctorCheck {
   const wanted = Object.keys({ ...manifest?.dependencies, ...manifest?.devDependencies }).filter(
     (name) => name.startsWith('@cogitator-ai/')
@@ -110,20 +178,9 @@ function packagesCheck(projectDir: string, manifest: PackageManifest | undefined
   const missing: string[] = [];
   const installed: string[] = [];
   for (const name of wanted) {
-    const path = join(projectDir, 'node_modules', name, 'package.json');
-    if (!existsSync(path)) {
-      missing.push(name);
-      continue;
-    }
-    const parsed = readJson(path);
-    const version =
-      typeof parsed === 'object' &&
-      parsed !== null &&
-      'version' in parsed &&
-      typeof parsed.version === 'string'
-        ? parsed.version
-        : '?';
-    installed.push(`${name.slice('@cogitator-ai/'.length)}@${version}`);
+    const version = installedVersion(projectDir, name);
+    if (version === undefined) missing.push(name);
+    else installed.push(`${name.slice('@cogitator-ai/'.length)}@${version}`);
   }
   return missing.length > 0
     ? {

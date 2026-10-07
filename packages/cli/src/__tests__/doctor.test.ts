@@ -7,6 +7,7 @@ import { planProject, writeFiles, type ProjectSpecInput } from 'create-cogitator
 import {
   canConnect,
   endpointOf,
+  installedVersion,
   loadProjectEnv,
   requiredVariables,
   runDoctor,
@@ -189,5 +190,39 @@ describe('runDoctor', () => {
     const started = Date.now();
     expect(await canConnect('10.255.255.1', 9, 200)).toBe(false);
     expect(Date.now() - started).toBeLessThan(2_000);
+  });
+});
+
+describe('installedVersion', () => {
+  it('finds a package hoisted to a parent node_modules', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cogitator-doctor-hoist-'));
+    dirs.push(root);
+    const app = join(root, 'apps', 'bot');
+    mkdirSync(app, { recursive: true });
+    installFake(root, '@cogitator-ai/core', '0.34.0');
+    expect(installedVersion(app, '@cogitator-ai/core')).toBe('0.34.0');
+    expect(installedVersion(app, '@cogitator-ai/memory')).toBeUndefined();
+  });
+
+  it("reads a Yarn Plug'n'Play install through its API, without node_modules", () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cogitator-doctor-pnp-'));
+    dirs.push(dir);
+    writeFileSync(
+      join(dir, '.pnp.cjs'),
+      `module.exports = {
+        findPackageLocator: () => ({ name: 'bot', reference: 'workspace:.' }),
+        getPackageInformation: () => ({
+          packageDependencies: new Map([
+            ['@cogitator-ai/core', 'npm:0.34.0'],
+            ['@cogitator-ai/memory', ['@cogitator-ai/memory', 'virtual:abc123#npm:0.12.1']],
+            ['@cogitator-ai/broken', null],
+          ]),
+        }),
+      };\n`
+    );
+    expect(installedVersion(dir, '@cogitator-ai/core')).toBe('0.34.0');
+    expect(installedVersion(dir, '@cogitator-ai/memory')).toBe('0.12.1');
+    expect(installedVersion(dir, '@cogitator-ai/broken')).toBeUndefined();
+    expect(installedVersion(dir, '@cogitator-ai/channels')).toBeUndefined();
   });
 });
