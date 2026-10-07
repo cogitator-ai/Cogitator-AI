@@ -6,7 +6,7 @@ The scaffolder is rebuilt on a spec and feature modules. Pick one of 16 presets 
 
 Generated projects with pnpm 11 install in CI: the native builds a project needs are allowed and the optional ones (`cpu-features`, `protobufjs`, `ssh2`) declined in `pnpm-workspace.yaml`, so `ERR_PNPM_IGNORED_BUILDS` no longer fails the install. A channels project keeps its gateway in `src/gateway.ts`, so `cogitator assistant`, `cogitator build` and `cogitator daemon` run it as before.
 
-`planAdd()` reports `removedDependencies`, and `changesDependencies(plan)` says whether an addition needs an install in either direction.
+The CI of a Yarn project turns on corepack and installs with `--immutable` on Yarn 2 and later and `--frozen-lockfile` on Yarn 1. `planAdd()` reports `removedDependencies`, and `changesDependencies(plan)` says whether an addition needs an install in either direction.
 
 **Breaking:** the programmatic API changed.
 
