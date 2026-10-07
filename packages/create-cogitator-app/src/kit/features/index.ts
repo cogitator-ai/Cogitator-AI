@@ -3,6 +3,7 @@ import { appChannelsFeature } from './app-channels.js';
 import { appNextFeature } from './app-next.js';
 import { appScriptFeature } from './app-script.js';
 import { appServerFeature } from './app-server.js';
+import { appWorkerFeature } from './app-worker.js';
 import { baseFeature } from './base.js';
 import { evalsFeature } from './evals.js';
 import { harnessFeature } from './harness.js';
@@ -40,4 +41,5 @@ export const FEATURE_MODULES: readonly FeatureModule[] = [
   appServerFeature,
   appChannelsFeature,
   appNextFeature,
+  appWorkerFeature,
 ];
