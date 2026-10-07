@@ -61,7 +61,7 @@ function biomeJson(spec: ProjectSpec): string {
         javascript: {
           formatter: { quoteStyle: 'single', semicolons: 'always', trailingCommas: 'es5' },
         },
-        linter: { enabled: true, rules: { recommended: true } },
+        linter: { enabled: true, rules: { preset: 'recommended' } },
         assist: { actions: { source: { organizeImports: 'on' } } },
       },
       null,

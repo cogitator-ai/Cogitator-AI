@@ -1,5 +1,5 @@
 import { providerInfo } from './providers.js';
-import { hasFeature, type FeatureId, type ProjectSpec } from './spec.js';
+import { hasFeature, type ProjectSpec } from './spec.js';
 
 /** A combination the generated project could not work with, and how to fix it. */
 export interface CompatIssue {
@@ -8,9 +8,6 @@ export interface CompatIssue {
 }
 
 const A2A_SERVERS = new Set(['express', 'fastify', 'hono', 'koa']);
-
-/** Features that need agents to run inside a long-lived process with its own entry point. */
-const SCRIPT_OR_SERVER_ONLY: FeatureId[] = ['voice'];
 
 /**
  * Every reason `spec` describes a project that would not work, empty when it is
@@ -90,13 +87,11 @@ export function compatibilityIssues(spec: ProjectSpec): CompatIssue[] {
       });
     }
   }
-  for (const feature of SCRIPT_OR_SERVER_ONLY) {
-    if (hasFeature(spec, feature) && spec.app !== 'script' && spec.app !== 'server') {
-      issues.push({
-        message: `The ${feature} feature runs its own WebSocket server`,
-        fix: 'use --app script or --app server for it',
-      });
-    }
+  if (hasFeature(spec, 'voice') && spec.app !== 'script') {
+    issues.push({
+      message: 'The voice feature serves its own page and WebSocket as the app',
+      fix: 'use --app script for a voice agent',
+    });
   }
 
   if (hasFeature(spec, 'a2a')) {
