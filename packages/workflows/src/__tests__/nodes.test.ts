@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, expectTypeOf, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -65,12 +65,21 @@ describe('functionNode', () => {
 
   it('applies stateMapper when provided', async () => {
     const node = functionNode<TestState, number>('inc', async (state) => state.count + 1, {
-      stateMapper: (output) => ({ count: output as number }),
+      stateMapper: (output) => ({ count: output }),
     });
 
     const result = await node.fn(makeCtx({ state: { count: 7 } }));
     expect(result.output).toBe(8);
     expect(result.state).toEqual({ count: 8 });
+  });
+
+  it('types the stateMapper by what the function returns', () => {
+    functionNode<TestState, number>('typed', async () => 1, {
+      stateMapper: (output) => {
+        expectTypeOf(output).toEqualTypeOf<number>();
+        return { count: output };
+      },
+    });
   });
 
   it('propagates errors from the function', async () => {
