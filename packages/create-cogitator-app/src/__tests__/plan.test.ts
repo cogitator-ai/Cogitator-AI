@@ -271,6 +271,40 @@ describe('preset file trees', () => {
   });
 });
 
+describe('channels', () => {
+  it('exports the gateway from src/gateway.ts, where the CLI looks for it, and starts it in src/index.ts', () => {
+    const plan = planProject(
+      parseSpec(
+        specFor('channels', 'ollama', { channels: ['telegram', 'webchat'], memory: 'sqlite' })
+      )
+    );
+    const gateway = file(plan, 'src/gateway.ts');
+    expect(gateway).toMatch(/^export const gateway = new Gateway\(\{$/m);
+    expect(gateway).toContain('telegramChannel(');
+    expect(gateway).toContain('webchatChannel(');
+    expect(gateway).toContain('const memory = await cogitator.getMemory();');
+    expect(gateway).not.toContain('gateway.start()');
+
+    const index = file(plan, 'src/index.ts');
+    expect(index).toContain("import { gateway } from './gateway.js';");
+    expect(index).toContain('await gateway.start();');
+    expect(index).toContain('await gateway.stop();');
+    expect(index).toContain('WEBCHAT_PORT');
+  });
+
+  it('runs the startup work of add-ons before the gateway exists', () => {
+    const plan = planProject(
+      parseSpec(specFor('channels', 'ollama', { channels: ['discord'], features: ['rag'] }))
+    );
+    const gateway = file(plan, 'src/gateway.ts');
+    expect(gateway.indexOf('await knowledgeBase.ingest(DOCS_DIR);')).toBeGreaterThan(-1);
+    expect(gateway.indexOf('await knowledgeBase.ingest(DOCS_DIR);')).toBeLessThan(
+      gateway.indexOf('export const gateway')
+    );
+    expect(file(plan, 'src/index.ts')).not.toContain('loadEnv');
+  });
+});
+
 describe('deploy', () => {
   it('writes no deploy artifacts without a target', () => {
     const paths = planProject(specFor('hono', 'openai')).files.map((f) => f.path);

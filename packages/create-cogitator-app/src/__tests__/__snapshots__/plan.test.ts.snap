@@ -145,6 +145,7 @@ exports[`preset file trees > channels generates the expected files 1`] = `
   "src/agents/assistant.ts",
   "src/cogitator.ts",
   "src/env.ts",
+  "src/gateway.ts",
   "src/index.ts",
   "src/lifecycle.ts",
   "src/tools/calculator.ts",

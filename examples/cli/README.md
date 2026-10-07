@@ -23,8 +23,9 @@ cogitator wizard --edit   # change settings later
 ```bash
 cogitator init my-agent   # provider, model, channels, memory adapter
 cd my-agent
-pnpm dev                  # hot reload (src/agent.ts)
+pnpm dev                  # hot reload (src/index.ts starts src/gateway.ts)
 cogitator assistant       # or run src/gateway.ts with the live dashboard
+pnpm dev:studio           # chat with the agents in Cogitator Studio
 ```
 
 ## Run in the background

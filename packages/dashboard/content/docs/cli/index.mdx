@@ -81,7 +81,7 @@ cogitator init my-assistant            # prompts for provider, model, channels, 
 cogitator init my-assistant --no-install --no-git --no-telemetry
 ```
 
-The prompts cover the LLM provider (Anthropic, OpenAI, Google or Ollama) and model, channels (Telegram, Discord, Slack, WebChat) with their tokens, and the memory adapter (SQLite, in-memory or Postgres). Tokens and keys go to `.env` (mode 600). The project is the same as `npx create-cogitator-app my-assistant --preset channels`: the registry in `src/cogitator.ts`, tests on a mocked model, `cogitator.yml`, `AGENTS.md`, Cogitator Studio and the rest.
+The prompts cover the LLM provider (Anthropic, OpenAI, Google or Ollama) and model, channels (Telegram, Discord, Slack, WebChat) with their tokens, and the memory adapter (SQLite, in-memory or Postgres). Tokens and keys go to `.env` (mode 600). The project is the same as `npx create-cogitator-app my-assistant --preset channels`: the registry in `src/cogitator.ts`, tests on a mocked model, `cogitator.yml`, `AGENTS.md`, Cogitator Studio and the rest. The assistant is `src/gateway.ts`, the `gateway` export that `cogitator assistant`, `cogitator build` and `cogitator daemon` run, and `src/index.ts` starts it for `dev` and `start`.
 
 ---
 
