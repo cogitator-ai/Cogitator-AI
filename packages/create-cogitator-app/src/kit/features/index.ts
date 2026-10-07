@@ -4,6 +4,7 @@ import { appNextFeature } from './app-next.js';
 import { appScriptFeature } from './app-script.js';
 import { appServerFeature } from './app-server.js';
 import { appWorkerFeature } from './app-worker.js';
+import { codingAgentsFeature } from './coding-agents.js';
 import { deployFeature } from './deploy.js';
 import { baseFeature } from './base.js';
 import { evalsFeature } from './evals.js';
@@ -44,4 +45,5 @@ export const FEATURE_MODULES: readonly FeatureModule[] = [
   appChannelsFeature,
   appNextFeature,
   appWorkerFeature,
+  codingAgentsFeature,
 ];

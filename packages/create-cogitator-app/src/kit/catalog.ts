@@ -83,9 +83,9 @@ export const CHANNEL_CHOICES: Choice<ChannelKind>[] = [
 ];
 
 export const CODING_AGENT_CHOICES: Choice<CodingAgent>[] = [
-  { value: 'claude', label: 'Claude Code', hint: '.mcp.json and CLAUDE.md' },
-  { value: 'cursor', label: 'Cursor', hint: '.cursor/mcp.json and rules' },
-  { value: 'codex', label: 'Codex', hint: '.codex/config.toml' },
+  { value: 'claude', label: 'Claude Code', hint: '.mcp.json and a skill in .claude/skills' },
+  { value: 'cursor', label: 'Cursor', hint: '.cursor/mcp.json and a skill in .cursor/skills' },
+  { value: 'codex', label: 'Codex', hint: '.codex/config.toml and a skill in .agents/skills' },
 ];
 
 export function choiceLabel<T extends string>(choices: readonly Choice<T>[], value: T): string {

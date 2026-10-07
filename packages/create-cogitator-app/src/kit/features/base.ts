@@ -1,6 +1,6 @@
 import { code, tsString } from '../code.js';
 import { providerInfo } from '../providers.js';
-import { ciInstallCommand, runScript } from '../package-manager.js';
+import { ciInstallCommand, execCommand, runScript } from '../package-manager.js';
 import { runsOnBun, type ProjectSpec } from '../spec.js';
 import { cogitatorVersion, VERSIONS } from '../versions.js';
 import type { ProjectBuilder } from '../project.js';
@@ -299,6 +299,7 @@ export const baseFeature: FeatureModule = {
         - \`${runScript(spec.packageManager, 'typecheck')}\` and \`${runScript(spec.packageManager, 'lint')}\`: run both before you call a change done
         - \`${runScript(spec.packageManager, 'studio')}\`: the local studio to chat with agents, read traces and costs, approve tool calls and fork runs
         - \`${runScript(spec.packageManager, 'doctor')}\`: checks keys, services and models when something does not start
+        - \`${execCommand(spec.packageManager, 'cogitator add')} <feature>\`: adds rag, mcp, workflows, evals and the other generated features to this project, \`--dry-run\` shows the diff first
       `
     );
   },

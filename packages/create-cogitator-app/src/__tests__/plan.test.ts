@@ -185,6 +185,61 @@ describe('AGENTS.md', () => {
   });
 });
 
+describe('coding agents', () => {
+  it('configures the cogitator MCP server and skill where each agent looks', () => {
+    const plan = planProject(
+      specFor('workflow', 'openai', { codingAgents: ['claude', 'cursor', 'codex'] })
+    );
+
+    expect(JSON.parse(file(plan, '.mcp.json'))).toEqual({
+      mcpServers: {
+        cogitator: { type: 'stdio', command: 'pnpm', args: ['exec', 'cogitator', 'mcp'] },
+      },
+    });
+    expect(JSON.parse(file(plan, '.cursor/mcp.json')).mcpServers.cogitator).toEqual({
+      type: 'stdio',
+      command: 'node',
+      args: [
+        '${workspaceFolder}/node_modules/@cogitator-ai/cli/dist/index.js',
+        'mcp',
+        '--project',
+        '${workspaceFolder}',
+      ],
+    });
+    expect(file(plan, '.codex/config.toml')).toContain(
+      '[mcp_servers.cogitator]\ncommand = "pnpm"\nargs = ["exec", "cogitator", "mcp"]\n'
+    );
+
+    const skills = ['.claude/skills', '.cursor/skills', '.agents/skills'].map((dir) =>
+      file(plan, `${dir}/cogitator/SKILL.md`)
+    );
+    expect(new Set(skills).size).toBe(1);
+    expect(skills[0]).toMatch(/^---\nname: cogitator\ndescription: .+\n---\n/);
+    expect(skills[0]).toContain('### Change a workflow');
+    expect(skills[0]).not.toContain('### Change a swarm');
+    expect(skills[0]).toContain('pnpm test');
+    expect(file(plan, 'AGENTS.md')).toContain('## Coding agents');
+  });
+
+  it('starts the server with the project package manager', () => {
+    const launch = (packageManager: 'npm' | 'yarn' | 'bun') =>
+      JSON.parse(
+        file(
+          planProject(specFor('basic', 'openai', { packageManager, codingAgents: ['claude'] })),
+          '.mcp.json'
+        )
+      ).mcpServers.cogitator;
+    expect(launch('npm')).toMatchObject({ command: 'npx', args: ['--no', 'cogitator', 'mcp'] });
+    expect(launch('yarn')).toMatchObject({ command: 'yarn', args: ['cogitator', 'mcp'] });
+    expect(launch('bun')).toMatchObject({ command: 'bunx', args: ['cogitator', 'mcp'] });
+  });
+
+  it('writes nothing for coding agents without --agent', () => {
+    const paths = planProject(specFor('basic', 'openai')).files.map((f) => f.path);
+    expect(paths.filter((path) => /mcp\.json|config\.toml|SKILL\.md/.test(path))).toEqual([]);
+  });
+});
+
 describe('preset file trees', () => {
   it.each(PRESETS.map((preset) => preset.id))('%s generates the expected files', (presetId) => {
     const preset = PRESETS.find((p) => p.id === presetId);
