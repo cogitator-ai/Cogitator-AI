@@ -87,6 +87,7 @@ export const IMAGES = {
   mongodb: 'mongo:8.3',
   qdrant: 'qdrant/qdrant:v1.19.2',
   ollama: 'ollama/ollama:0.40.0',
+  jaeger: 'jaegertracing/jaeger:2.22.0',
 } as const;
 
 /** The Node.js versions generated projects support: `--env-file-if-exists` needs 22.9+. */

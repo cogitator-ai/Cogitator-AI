@@ -7,6 +7,7 @@ import { baseFeature } from './base.js';
 import { evalsFeature } from './evals.js';
 import { harnessFeature } from './harness.js';
 import { mcpFeature } from './mcp.js';
+import { observabilityFeature } from './observability.js';
 import { memoryFeature } from './memory.js';
 import { durableFeature, swarmsFeature, workflowsFeature } from './orchestration.js';
 import { providerFeature } from './provider.js';
@@ -29,6 +30,7 @@ export const FEATURE_MODULES: readonly FeatureModule[] = [
   mcpFeature,
   a2aFeature,
   voiceFeature,
+  observabilityFeature,
   workflowsFeature,
   durableFeature,
   swarmsFeature,

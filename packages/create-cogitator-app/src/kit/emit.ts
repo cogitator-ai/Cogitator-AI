@@ -265,6 +265,11 @@ export function emitRegistry(project: ProjectBuilder): void {
       ([from, bindings]) => `import { ${[...new Set(bindings)].sort().join(', ')} } from '${from}';`
     );
 
+  const observed = project.files.has('src/observability.ts');
+  if (observed) importLines.push("import { observers } from './observability.js';");
+  importLines.sort((a, b) =>
+    a.slice(a.indexOf("from '")).localeCompare(b.slice(b.indexOf("from '")))
+  );
   const agents = registryGroup(entries, 'agents');
   const workflows = registryGroup(entries, 'workflows');
   const swarms = registryGroup(entries, 'swarms');
@@ -283,7 +288,7 @@ export function emitRegistry(project: ProjectBuilder): void {
        */
       export function createCogitator(overrides: CogitatorConfig = {}): Cogitator {
         const config = loadConfig();
-        return new Cogitator({ ...config, ...overrides, llm: { ...config.llm, ...overrides.llm } });
+        return new Cogitator({ ...config, ${observed ? 'observers, ' : ''}...overrides, llm: { ...config.llm, ...overrides.llm } });
       }
 
       /** The runtime the project shares. */
