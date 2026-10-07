@@ -106,10 +106,13 @@ export function formatAddPlan(plan: AddPlan, options: { diffs: boolean }): strin
     out.push('');
   }
   const deps = Object.entries({ ...plan.dependencies, ...plan.devDependencies });
-  if (deps.length > 0) {
+  if (deps.length > 0 || plan.removedDependencies.length > 0) {
     out.push(
       chalk.bold('Dependencies'),
-      ...indentList(deps.map(([name, range]) => `${name} ${chalk.dim(range)}`)),
+      ...indentList([
+        ...deps.map(([name, range]) => `${chalk.green('+')} ${name} ${chalk.dim(range)}`),
+        ...plan.removedDependencies.map((name) => `${chalk.red('-')} ${name}`),
+      ]),
       ''
     );
   }
@@ -174,6 +177,7 @@ export function addPlanJson(
     notes: plan.notes,
     dependencies: plan.dependencies,
     devDependencies: plan.devDependencies,
+    removedDependencies: plan.removedDependencies,
     env: plan.env.map(({ name, required, secret, description }) => ({
       name,
       required,

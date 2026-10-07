@@ -9,7 +9,13 @@ export {
   updateLock,
   LOCK_PATH,
 } from './kit/scaffold.js';
-export { planAdd, addToProject, AddConflictError, NotAScaffoldedProjectError } from './kit/add.js';
+export {
+  planAdd,
+  addToProject,
+  changesDependencies,
+  AddConflictError,
+  NotAScaffoldedProjectError,
+} from './kit/add.js';
 export type {
   AddChanges,
   AddPlan,

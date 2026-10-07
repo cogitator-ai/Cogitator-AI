@@ -2,7 +2,13 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AddConflictError, addToProject, NotAScaffoldedProjectError, planAdd } from '../kit/add.js';
+import {
+  AddConflictError,
+  addToProject,
+  changesDependencies,
+  NotAScaffoldedProjectError,
+  planAdd,
+} from '../kit/add.js';
 import { IncompatibleSpecError } from '../kit/compat.js';
 import { planProject } from '../kit/plan.js';
 import { hashContent, LOCK_PATH, readLock, writeFiles, writeLock } from '../kit/scaffold.js';
@@ -192,6 +198,32 @@ describe('addToProject', () => {
     expect(result.plan.changes.find((change) => change.path === 'cogitator.yml')?.source).toBe(
       'merged'
     );
+  });
+
+  it('installs when the addition only removes dependencies', async () => {
+    const directory = await scaffolded({ memory: 'postgres' });
+    expect(manifest(directory).dependencies.pg).toBeDefined();
+
+    const plan = planAdd(directory, { memory: 'memory' });
+    expect(plan.dependencies).toEqual({});
+    expect(plan.devDependencies).toEqual({});
+    expect(plan.removedDependencies).toContain('pg');
+    expect(changesDependencies(plan)).toBe(true);
+
+    const result = await addToProject(directory, { memory: 'memory' }, { install: false });
+    expect(manifest(directory).dependencies.pg).toBeUndefined();
+    expect(result.install).toEqual({ status: 'skipped', reason: 'install was turned off' });
+  });
+
+  it('keeps a dependency the user added when the addition removes others', async () => {
+    const directory = await scaffolded({ memory: 'postgres' });
+    const pkg = JSON.parse(read(directory, 'package.json'));
+    pkg.dependencies.lodash = '^4.17.21';
+    writeFileSync(join(directory, 'package.json'), JSON.stringify(pkg, null, 2) + '\n');
+
+    const plan = planAdd(directory, { memory: 'memory' });
+    expect(plan.removedDependencies).toContain('pg');
+    expect(plan.removedDependencies).not.toContain('lodash');
   });
 
   it('refuses when the user changed a key the addition changes differently', async () => {
