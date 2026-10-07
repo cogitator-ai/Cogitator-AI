@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import {
   addToProject,
+  changesDependencies,
   FEATURES,
   installCommand,
   planAdd,
@@ -58,10 +59,7 @@ export async function runAdd(
 
   console.log(`\n${formatAddPlan(result.plan, { diffs: false })}\n`);
   const steps: string[] = [];
-  const newDependencies =
-    Object.keys(result.plan.dependencies).length + Object.keys(result.plan.devDependencies).length >
-    0;
-  if (newDependencies && result.install.status !== 'done') {
+  if (changesDependencies(result.plan) && result.install.status !== 'done') {
     steps.push(installCommand(result.plan.to.packageManager));
   }
   for (const variable of result.plan.env.filter((entry) => entry.required)) {
@@ -90,7 +88,7 @@ export const addCommand = new Command('add')
   .option('--agent <name>', 'add coding agent setup: claude, cursor, codex (repeatable)', collect)
   .option('--dry-run', 'show what would change, with diffs, without writing anything')
   .option('--json', 'print the plan or the result as JSON')
-  .option('--no-install', 'do not install new dependencies')
+  .option('--no-install', 'do not install when the dependencies change')
   .addHelpText(
     'after',
     [

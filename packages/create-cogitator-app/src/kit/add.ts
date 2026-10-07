@@ -89,6 +89,8 @@ export interface AddPlan {
   /** Dependencies the project gains or whose version changes. */
   dependencies: Record<string, string>;
   devDependencies: Record<string, string>;
+  /** Dependencies and dev dependencies the merged package.json no longer lists. */
+  removedDependencies: string[];
   /** Environment variables the project starts reading. */
   env: EnvVar[];
   /** Compose services the project starts using. */
@@ -101,7 +103,7 @@ export interface AddPlan {
 }
 
 export interface AddOptions {
-  /** Install the new dependencies (default `true`). */
+  /** Install when the dependencies change (default `true`). */
   install?: boolean;
   log?: ScaffoldLogger;
   /** Show the install's output live instead of capturing it. */
@@ -213,6 +215,31 @@ function changedEntries(
 ): Record<string, string> {
   return Object.fromEntries(
     Object.entries(after).filter(([name, value]) => before[name] !== value)
+  );
+}
+
+/** Names under `dependencies` and `devDependencies` of a package.json text. */
+function dependencyNames(text: string | undefined): Set<string> {
+  if (text === undefined) return new Set();
+  try {
+    const manifest = JSON.parse(text) as Record<string, unknown>;
+    const names = (field: unknown) =>
+      field && typeof field === 'object' && !Array.isArray(field) ? Object.keys(field) : [];
+    return new Set([...names(manifest.dependencies), ...names(manifest.devDependencies)]);
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * Whether the addition changes what the project depends on, in either
+ * direction: the lockfile and the installed tree need an install either way.
+ */
+export function changesDependencies(plan: AddPlan): boolean {
+  return (
+    Object.keys(plan.dependencies).length > 0 ||
+    Object.keys(plan.devDependencies).length > 0 ||
+    plan.removedDependencies.length > 0
   );
 }
 
@@ -466,6 +493,13 @@ export function planAdd(directory: string, changes: AddChanges): AddPlan {
     }
   }
 
+  const manifest = changesOut.find((change) => change.path === 'package.json');
+  const remaining = dependencyNames(manifest?.content);
+  const removedDependencies = manifest
+    ? [...dependencyNames(readText(root, 'package.json'))]
+        .filter((name) => !remaining.has(name))
+        .sort()
+    : [];
   const knownEnv = new Set(before.env.map((variable) => variable.name));
   return {
     directory: root,
@@ -477,6 +511,7 @@ export function planAdd(directory: string, changes: AddChanges): AddPlan {
     notes,
     dependencies: changedEntries(before.dependencies, after.dependencies),
     devDependencies: changedEntries(before.devDependencies, after.devDependencies),
+    removedDependencies,
     env: after.env.filter((variable) => !knownEnv.has(variable.name)),
     services: after.services.filter((service) => !before.services.includes(service)),
     warnings: after.warnings.filter((warning) => !before.warnings.includes(warning)),
@@ -530,20 +565,19 @@ export async function addToProject(
   }
   log.done(`Updated ${written.length + deleted.length} files`);
 
-  const newDependencies =
-    Object.keys(plan.dependencies).length + Object.keys(plan.devDependencies).length > 0;
-  let install = newDependencies
+  const dependenciesChanged = changesDependencies(plan);
+  let install = dependenciesChanged
     ? skipped('install was turned off')
-    : skipped('no new dependencies');
-  if (newDependencies && options.install !== false) {
-    log.start(`Installing new dependencies with ${plan.to.packageManager}`);
+    : skipped('the dependencies did not change');
+  if (dependenciesChanged && options.install !== false) {
+    log.start(`Installing the dependencies with ${plan.to.packageManager}`);
     install = await installDependencies(
       plan.directory,
       plan.to.packageManager,
       options.inheritOutput ?? false
     );
-    if (install.status === 'done') log.done('Installed new dependencies');
-    else log.fail('Could not install the new dependencies');
+    if (install.status === 'done') log.done('Installed the dependencies');
+    else log.fail('Could not install the dependencies');
   }
 
   const format = await formatProject(
