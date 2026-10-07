@@ -48,6 +48,7 @@
     "@cogitator-ai/mcp": "workspace:*",
     "@cogitator-ai/memory": "workspace:*",
     "@cogitator-ai/models": "workspace:*",
+    "@cogitator-ai/studio": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
     "better-sqlite3": "^13.0.3",
     "chalk": "^6.0.1",
