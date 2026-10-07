@@ -3,7 +3,7 @@ import { runScript } from '../package-manager.js';
 import type { ProjectBuilder } from '../project.js';
 import type { ProjectSpec, ServerFramework } from '../spec.js';
 import { cogitatorVersion, VERSIONS } from '../versions.js';
-import { LIFECYCLE_TS } from './shared.js';
+import { LIFECYCLE_TS, startupImports, startupStatements } from './shared.js';
 import type { FeatureModule } from './types.js';
 
 export const SERVER_BASE_PATH = '/api';
@@ -120,8 +120,10 @@ function honoEntry(project: ProjectBuilder): string {
     import { ${names.join(', ')} } from './cogitator.js';
     import { loadEnv } from './env.js';
     import { onShutdown } from './lifecycle.js';
+    ${startupImports(project)}
 
     ${settings(project.spec)}
+    ${startupStatements(project)}
 
     const app = new Hono();
     if (corsOrigins?.length) app.use('${SERVER_BASE_PATH}/*', cors({ origin: corsOrigins }));
@@ -157,8 +159,10 @@ function expressEntry(project: ProjectBuilder): string {
     import { ${names.join(', ')} } from './cogitator.js';
     import { loadEnv } from './env.js';
     import { onShutdown } from './lifecycle.js';
+    ${startupImports(project)}
 
     ${settings(project.spec)}
+    ${startupStatements(project)}
 
     const app = express();
     const api = new CogitatorServer({
@@ -197,8 +201,10 @@ function fastifyEntry(project: ProjectBuilder): string {
     import { ${names.join(', ')} } from './cogitator.js';
     import { loadEnv } from './env.js';
     import { onShutdown } from './lifecycle.js';
+    ${startupImports(project)}
 
     ${settings(project.spec)}
+    ${startupStatements(project)}
 
     const app = Fastify({ logger: { level: production ? 'info' : 'warn' } });
     if (corsOrigins?.length) await app.register(cors, { origin: corsOrigins });
@@ -230,8 +236,10 @@ function koaEntry(project: ProjectBuilder): string {
     import { ${names.join(', ')} } from './cogitator.js';
     import { loadEnv } from './env.js';
     import { onShutdown } from './lifecycle.js';
+    ${startupImports(project)}
 
     ${settings(project.spec)}
+    ${startupStatements(project)}
 
     const app = new Koa();
     if (corsOrigins?.length) {
@@ -271,8 +279,10 @@ function tetsuEntry(project: ProjectBuilder): string {
     import { ${names.join(', ')} } from './cogitator.js';
     import { loadEnv } from './env.js';
     import { onShutdown } from './lifecycle.js';
+    ${startupImports(project)}
 
     ${settings(project.spec)}
+    ${startupStatements(project)}
 
     const app = createApp({
       routes: [

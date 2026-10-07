@@ -95,6 +95,8 @@ export class ProjectBuilder {
   readonly deploy: DeploySettings = {};
   /** Tools the assistant gets: bindings `src/tools/index.ts` imports, `spread` for arrays of tools. */
   readonly tools: Array<{ binding: string; from: string; spread?: boolean }> = [];
+  /** Imports and statements every entry point runs before it starts serving, such as indexing docs. */
+  readonly startup: { imports: string[]; statements: string[] } = { imports: [], statements: [] };
   /** Lines of the assistant agent's instructions, one per feature that shapes its behavior. */
   readonly instructions: string[] = [];
 
@@ -195,6 +197,12 @@ export class ProjectBuilder {
 
   warn(message: string): this {
     this.warnings.push(message);
+    return this;
+  }
+
+  onStartup(importLine: string, statement: string): this {
+    if (!this.startup.imports.includes(importLine)) this.startup.imports.push(importLine);
+    this.startup.statements.push(statement);
     return this;
   }
 

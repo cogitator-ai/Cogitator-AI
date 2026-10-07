@@ -1,4 +1,5 @@
 import { code } from '../code.js';
+import type { ProjectBuilder } from '../project.js';
 
 /** `src/lifecycle.ts`: graceful shutdown on SIGINT and SIGTERM for long-running processes. */
 export const LIFECYCLE_TS = code`
@@ -28,3 +29,13 @@ export const LIFECYCLE_TS = code`
     process.once('SIGTERM', stop);
   }
 `;
+
+/** The import lines of the startup steps features registered, for an entry point. */
+export function startupImports(project: ProjectBuilder): string | false {
+  return project.startup.imports.length > 0 && project.startup.imports.join('\n');
+}
+
+/** The startup steps features registered, run before the entry point starts serving. */
+export function startupStatements(project: ProjectBuilder): string | false {
+  return project.startup.statements.length > 0 && project.startup.statements.join('\n');
+}

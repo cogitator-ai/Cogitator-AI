@@ -1,11 +1,14 @@
 import { code } from '../code.js';
 import { runScript } from '../package-manager.js';
-import { hasFeature, primaryTarget, type ProjectSpec } from '../spec.js';
+import type { ProjectBuilder } from '../project.js';
+import { hasFeature, primaryTarget } from '../spec.js';
 import { VERSIONS } from '../versions.js';
+import { startupImports, startupStatements } from './shared.js';
 import type { FeatureModule } from './types.js';
 
 /** The terminal chat over the assistant: one-shot from argv or stdin, a REPL otherwise. */
-function agentEntry(spec: ProjectSpec): string {
+function agentEntry(project: ProjectBuilder): string {
+  const { spec } = project;
   const harness = hasFeature(spec, 'harness');
   const persistent = spec.memory !== 'none';
   return code`
@@ -16,6 +19,7 @@ function agentEntry(spec: ProjectSpec): string {
     import { loadEnv } from './env.js';
     ${harness && "import { facts } from './harness/facts.js';"}
     ${harness && "import { startScheduler } from './harness/scheduler.js';"}
+    ${startupImports(project)}
 
     ${
       persistent
@@ -130,6 +134,7 @@ function agentEntry(spec: ProjectSpec): string {
 
     async function main(): Promise<void> {
       loadEnv();
+      ${startupStatements(project)}
       const fromArgs = process.argv.slice(2).join(' ').trim();
       const input = fromArgs || (process.stdin.isTTY ? '' : await readStdin());
       if (input) await ask(input);
@@ -166,7 +171,7 @@ export const appScriptFeature: FeatureModule = {
     const { spec } = project;
     const target = primaryTarget(spec);
     const pm = spec.packageManager;
-    if (target === 'agent') project.file('src/index.ts', agentEntry(spec));
+    if (target === 'agent') project.file('src/index.ts', agentEntry(project));
     project.section(
       'Running',
       target === 'agent'
