@@ -54,6 +54,9 @@ jobs:
           fi
 
       - name: Version packages
+        # Committed here and pushed only after the build and its checks pass:
+        # a version commit on main consumes the changesets, and a failed run
+        # cannot be rerun past it.
         if: steps.changesets.outputs.has_changesets == 'true'
         run: |
           git config user.name "github-actions[bot]"
@@ -62,9 +65,6 @@ jobs:
           pnpm install --lockfile-only
           git add -A
           git commit -m "chore: version packages" || echo "No changes to commit"
-          git push
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build
         # After the version bump: create-cogitator-app bakes its own version,
@@ -76,6 +76,12 @@ jobs:
 
       - name: Check the scaffolder build
         run: pnpm exec tsx scripts/check-scaffolder-build.ts
+
+      - name: Push the version commit
+        if: steps.changesets.outputs.has_changesets == 'true'
+        run: git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish to GitHub Packages
         # pnpm publish -r skips versions that already exist in the registry,
