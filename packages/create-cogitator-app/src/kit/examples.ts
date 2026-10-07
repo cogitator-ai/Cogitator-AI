@@ -1,3 +1,4 @@
+import { pnpmWorkspaceYaml } from './emit.js';
 import type { GeneratedFile } from './project.js';
 import type { PackageManager } from './spec.js';
 import { closest } from './suggest.js';
@@ -265,7 +266,7 @@ export function planExample(example: ExampleEntry, options: ExamplePlanOptions):
       ? [
           {
             path: 'pnpm-workspace.yaml',
-            content: ['allowBuilds:', ...native.map((dep) => `  ${dep}: true`), ''].join('\n'),
+            content: pnpmWorkspaceYaml(native),
           },
         ]
       : []),

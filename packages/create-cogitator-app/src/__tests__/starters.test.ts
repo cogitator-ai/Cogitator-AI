@@ -109,9 +109,10 @@ describe('--example', () => {
     const envExample = plan.files.find((file) => file.path === '.env.example')?.content ?? '';
     expect(envExample).toContain('GOOGLE_API_KEY=');
     expect(envExample).toMatch(/[^\n]\n$/);
-    expect(plan.files.find((file) => file.path === 'pnpm-workspace.yaml')?.content).toContain(
-      'esbuild: true'
-    );
+    const workspace = plan.files.find((file) => file.path === 'pnpm-workspace.yaml')?.content;
+    expect(workspace).toContain('esbuild: true');
+    for (const declined of ['cpu-features', 'protobufjs', 'ssh2'])
+      expect(workspace).toContain(`${declined}: false`);
   });
 
   it('runs a Bun example with Bun', () => {
