@@ -75,4 +75,52 @@ describe('restrictFileTools', () => {
     expect(guarded.name).toBe('file_read');
     expect(guarded.description).toContain(allowed);
   });
+
+  it('resolves relative paths against the base and hands the tool an absolute one', async () => {
+    const { allowed } = sandbox();
+    const original = fakeTool();
+    const [guarded] = restrictFileTools([original], [allowed], { base: allowed });
+
+    await guarded.execute({ path: 'notes/today.md' }, ctx);
+    expect(original.execute).toHaveBeenCalledWith(
+      { path: join(allowed, 'notes', 'today.md') },
+      ctx
+    );
+
+    const escaped = (await guarded.execute({ path: '../secret/key' }, ctx)) as { error?: string };
+    expect(escaped.error).toContain('Access denied: ../secret/key');
+  });
+
+  it('keeps the approval and timeout of a tool and can require approval for more', () => {
+    const { allowed } = sandbox();
+    const writer = {
+      ...fakeTool(),
+      name: 'file_write',
+      sideEffects: ['filesystem'],
+      timeout: 5_000,
+    } as Tool;
+    const reader = { ...fakeTool(), requiresApproval: true } as Tool;
+
+    const [guardedWriter, guardedReader, plain] = restrictFileTools(
+      [writer, reader, fakeTool()],
+      [allowed],
+      {
+        requireApproval: (tool) => tool.sideEffects?.includes('filesystem') ?? false,
+      }
+    );
+
+    expect(guardedWriter.requiresApproval).toBe(true);
+    expect(guardedWriter.timeout).toBe(5_000);
+    expect(guardedWriter.sideEffects).toEqual(['filesystem']);
+    expect(guardedReader.requiresApproval).toBe(true);
+    expect(plain.requiresApproval).toBeUndefined();
+  });
+
+  it('refuses a call without a path', async () => {
+    const { allowed } = sandbox();
+    const [guarded] = restrictFileTools([fakeTool()], [allowed]);
+    expect(await guarded.execute({}, ctx)).toEqual({
+      error: 'Access denied: the call has no path',
+    });
+  });
 });

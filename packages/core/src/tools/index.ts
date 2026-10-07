@@ -40,6 +40,8 @@ export { createMemoryTools, type MemoryToolsConfig, type CoreFactsLike } from '.
 
 export { createSchedulerTools, type SchedulerToolsConfig } from './scheduler-tools';
 
+export { restrictFileTools, isPathAllowed, type RestrictFileToolsOptions } from './path-guard';
+
 export { createCapabilitiesTool } from './capabilities-tool';
 
 export { createDeviceTools } from './device-tools';
