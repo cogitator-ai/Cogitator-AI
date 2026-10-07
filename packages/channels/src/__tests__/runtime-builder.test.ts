@@ -119,7 +119,8 @@ vi.mock('@cogitator-ai/memory', () => {
   };
 });
 
-vi.mock('@cogitator-ai/core', () => {
+vi.mock('@cogitator-ai/core', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@cogitator-ai/core')>();
   const makeTool = (name: string, description: string) => ({
     name,
     description,
@@ -233,6 +234,7 @@ vi.mock('@cogitator-ai/core', () => {
     createCapabilitiesTool,
     createDeviceTools,
     parseModel,
+    restrictFileTools: actual.restrictFileTools,
     tool: toolFactory,
   };
 });

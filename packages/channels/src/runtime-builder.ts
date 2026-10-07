@@ -23,6 +23,7 @@ import {
   createSelfTools,
   loadCustomTools,
   parseModel,
+  restrictFileTools,
   tool as createTool,
 } from '@cogitator-ai/core';
 import {
@@ -38,7 +39,6 @@ import {
 import type { LLMBackendMinimal, PostgresGraphAdapterConfig } from '@cogitator-ai/memory';
 import type { EmbeddingServiceConfig } from '@cogitator-ai/types';
 import { createSelfConfigTools } from './tools/self-config';
-import { restrictFileTools } from './tools/path-guard';
 import { Gateway } from './gateway';
 import { getNextCronMs } from './cron';
 import { HeartbeatScheduler } from './heartbeat';
