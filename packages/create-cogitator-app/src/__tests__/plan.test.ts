@@ -138,9 +138,9 @@ describe('generated configuration', () => {
     expect(yml).toMatch(/secrets:\n {4}- OPENAI_API_KEY\n {4}- API_TOKEN/);
   });
 
-  it('allows the native builds pnpm and Bun would otherwise skip', () => {
+  it('allows the native builds pnpm and Bun would otherwise skip, and declines the rest', () => {
     expect(file(planProject(specFor('memory', 'openai')), 'pnpm-workspace.yaml')).toBe(
-      'allowBuilds:\n  better-sqlite3: true\n  esbuild: true\n'
+      'allowBuilds:\n  better-sqlite3: true\n  cpu-features: false\n  esbuild: true\n  protobufjs: false\n  ssh2: false\n'
     );
     const bun = JSON.parse(
       file(planProject(specFor('memory', 'openai', { packageManager: 'bun' })), 'package.json')

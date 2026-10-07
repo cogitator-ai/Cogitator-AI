@@ -62,13 +62,29 @@ export function emitPackageJson(project: ProjectBuilder, extras: PackageJsonExtr
   project.file('package.json', JSON.stringify(pkg, null, 2) + '\n');
 }
 
-/** pnpm runs dependency build scripts only when they are allowed, pnpm 11 fails the install otherwise. */
+/**
+ * Packages with build scripts the project does not need: optional native
+ * speedups of the Docker client the CLI uses (ssh2, cpu-features) and a
+ * protobufjs version check. Saying no to them explicitly keeps pnpm 11 from
+ * failing the install in CI over builds nobody approved.
+ */
+const SKIPPED_BUILDS = ['cpu-features', 'protobufjs', 'ssh2'];
+
+/**
+ * pnpm runs dependency build scripts only when they are allowed, and fails
+ * the install in CI on scripts nobody decided on: the native builds the
+ * project needs are allowed, the rest declined.
+ */
 export function emitPnpmWorkspace(project: ProjectBuilder): void {
   if (project.spec.packageManager !== 'pnpm') return;
-  const native = [...project.nativeBuilds, 'esbuild'].sort();
+  const allowed = new Set([...project.nativeBuilds, 'esbuild']);
+  const entries = [
+    ...[...allowed].map((name) => [name, true] as const),
+    ...SKIPPED_BUILDS.filter((name) => !allowed.has(name)).map((name) => [name, false] as const),
+  ].sort(([a], [b]) => a.localeCompare(b));
   project.file(
     'pnpm-workspace.yaml',
-    ['allowBuilds:', ...[...new Set(native)].map((name) => `  ${name}: true`), ''].join('\n')
+    ['allowBuilds:', ...entries.map(([name, allow]) => `  ${name}: ${allow}`), ''].join('\n')
   );
 }
 
