@@ -126,7 +126,8 @@ export function humanWorkflowNode<S extends WorkflowState>(
 }
 
 /**
- * Process every item of a collection in parallel (`mapNode` config).
+ * Process every item of a collection in parallel (`mapNode` config). Cancelling or pausing the
+ * run, or the node's timeout, aborts the items in flight through the mapper's `ctx.signal`.
  */
 export function mapWorkflowNode<S extends WorkflowState, T>(
   config: MapNodeConfig<S, T>,
@@ -135,14 +136,15 @@ export function mapWorkflowNode<S extends WorkflowState, T>(
   return {
     name: config.name,
     fn: async (ctx): Promise<NodeResult<S>> => {
-      const results = await executeMap(ctx.state, config);
+      const results = await executeMap(ctx.state, config, { signal: extended(ctx).signal });
       return { output: results, state: options.stateMapper?.(results, ctx.state) };
     },
   };
 }
 
 /**
- * Map items in parallel and reduce the results (`mapReduceNode` config).
+ * Map items in parallel and reduce the results (`mapReduceNode` config). The items in flight
+ * stop with the run, as in `mapWorkflowNode`.
  */
 export function mapReduceWorkflowNode<S extends WorkflowState, T, R>(
   config: MapReduceNodeConfig<S, T, R>,
@@ -151,7 +153,7 @@ export function mapReduceWorkflowNode<S extends WorkflowState, T, R>(
   return {
     name: config.name,
     fn: async (ctx): Promise<NodeResult<S>> => {
-      const result = await executeMapReduce(ctx.state, config);
+      const result = await executeMapReduce(ctx.state, config, { signal: extended(ctx).signal });
       return { output: result.reduced, state: options.stateMapper?.(result, ctx.state) };
     },
   };

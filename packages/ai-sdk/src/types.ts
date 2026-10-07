@@ -79,7 +79,21 @@ export type CogitatorContent =
   | CogitatorToolCallContent
   | CogitatorToolResultContent;
 
-export type CogitatorStreamPart<TWarning, TUsage, TFinishReason> =
+/**
+ * A provider-executed tool call the agent's run waits to have approved (`requiresApproval`).
+ * Answer it with a `tool-approval-response` (`providerExecuted: true`) in the next prompt and the
+ * run resumes.
+ */
+export interface CogitatorToolApprovalRequestContent {
+  type: 'tool-approval-request';
+  approvalId: string;
+  toolCallId: string;
+}
+
+/** Content of the v3 and v4 models, which can ask for tool approvals. */
+export type CogitatorContentV3 = CogitatorContent | CogitatorToolApprovalRequestContent;
+
+export type CogitatorStreamPart<TWarning, TUsage, TFinishReason, TExtra = never> =
   | { type: 'stream-start'; warnings: TWarning[] }
   | { type: 'response-metadata'; id?: string; timestamp?: Date; modelId?: string }
   | { type: 'text-start'; id: string }
@@ -105,7 +119,8 @@ export type CogitatorStreamPart<TWarning, TUsage, TFinishReason> =
       finishReason: TFinishReason;
       providerMetadata: Record<string, JSONObject>;
     }
-  | { type: 'error'; error: unknown };
+  | { type: 'error'; error: unknown }
+  | TExtra;
 
 export type CogitatorWarningV2 =
   | { type: 'unsupported-setting'; setting: string; details?: string }
@@ -132,13 +147,33 @@ export interface CogitatorUsageV3 {
   outputTokens: { total: number; text: number | undefined; reasoning: number | undefined };
 }
 
-export interface CogitatorFinishReasonV3 {
-  unified: 'stop';
-  raw: 'stop';
-}
+/**
+ * Why a v3 or v4 model's turn ended: `stop` when the agent answered, `tool-calls` (raw `paused`)
+ * when its run waits for tool approvals, `content-filter` when the answer was withheld (raw
+ * `content_filter` for a provider's filter, `refusal` when the model declined), `length` when the
+ * answer stopped at the output token limit, and `other` (raw `iteration-limit`) when tool calls
+ * used up the agent's `maxIterations`.
+ */
+export type CogitatorFinishReasonV3 =
+  | { unified: 'stop'; raw: 'stop' }
+  | { unified: 'tool-calls'; raw: 'paused' }
+  | { unified: 'content-filter'; raw: 'content_filter' | 'refusal' }
+  | { unified: 'length'; raw: 'length' }
+  | { unified: 'other'; raw: 'iteration-limit' };
 
-export interface CogitatorGenerateResult<TWarning, TUsage, TFinishReason> {
-  content: CogitatorContent[];
+/**
+ * Why a v2 model's turn ended: `other` when the run waits for tool approvals or used up its
+ * iterations, `content-filter` when the answer was withheld, `length` when it was cut off.
+ */
+export type CogitatorFinishReasonV2 = 'stop' | 'other' | 'content-filter' | 'length';
+
+export interface CogitatorGenerateResult<
+  TWarning,
+  TUsage,
+  TFinishReason,
+  TContent = CogitatorContent,
+> {
+  content: TContent[];
   finishReason: TFinishReason;
   usage: TUsage;
   providerMetadata: Record<string, JSONObject>;
@@ -147,21 +182,29 @@ export interface CogitatorGenerateResult<TWarning, TUsage, TFinishReason> {
   warnings: TWarning[];
 }
 
-export interface CogitatorStreamResult<TWarning, TUsage, TFinishReason> {
-  stream: ReadableStream<CogitatorStreamPart<TWarning, TUsage, TFinishReason>>;
+export interface CogitatorStreamResult<TWarning, TUsage, TFinishReason, TExtra = never> {
+  stream: ReadableStream<CogitatorStreamPart<TWarning, TUsage, TFinishReason, TExtra>>;
   request: { body: unknown };
 }
 
-interface CogitatorModernLanguageModel<TCallOptions, TWarning, TUsage, TFinishReason> {
+interface CogitatorModernLanguageModel<
+  TCallOptions,
+  TWarning,
+  TUsage,
+  TFinishReason,
+  TContent = CogitatorContent,
+> {
   readonly provider: string;
   readonly modelId: string;
   readonly supportedUrls: Record<string, RegExp[]>;
   doGenerate(
     options: TCallOptions
-  ): PromiseLike<CogitatorGenerateResult<TWarning, TUsage, TFinishReason>>;
+  ): PromiseLike<CogitatorGenerateResult<TWarning, TUsage, TFinishReason, TContent>>;
   doStream(
     options: TCallOptions
-  ): PromiseLike<CogitatorStreamResult<TWarning, TUsage, TFinishReason>>;
+  ): PromiseLike<
+    CogitatorStreamResult<TWarning, TUsage, TFinishReason, Exclude<TContent, CogitatorContent>>
+  >;
 }
 
 /**
@@ -172,7 +215,7 @@ export interface CogitatorLanguageModelV2 extends CogitatorModernLanguageModel<
   LanguageModelV2CallOptions,
   CogitatorWarningV2,
   CogitatorUsageV2,
-  'stop'
+  CogitatorFinishReasonV2
 > {
   readonly specificationVersion: 'v2';
 }
@@ -182,7 +225,8 @@ export interface CogitatorLanguageModelV3 extends CogitatorModernLanguageModel<
   LanguageModelV3CallOptions,
   CogitatorWarningV3,
   CogitatorUsageV3,
-  CogitatorFinishReasonV3
+  CogitatorFinishReasonV3,
+  CogitatorContentV3
 > {
   readonly specificationVersion: 'v3';
 }
@@ -192,7 +236,8 @@ export interface CogitatorLanguageModelV4 extends CogitatorModernLanguageModel<
   LanguageModelV4CallOptions,
   CogitatorWarningV3,
   CogitatorUsageV3,
-  CogitatorFinishReasonV3
+  CogitatorFinishReasonV3,
+  CogitatorContentV3
 > {
   readonly specificationVersion: 'v4';
 }
@@ -243,6 +288,16 @@ type Bivariant<TArgs extends unknown[], TResult> = {
   bivarianceHack(...args: TArgs): TResult;
 }['bivarianceHack'];
 
+/** Options the AI SDK passes to a tool's `needsApproval` function (ai@6 and ai@7). */
+export interface AISDKToolApprovalOptions {
+  toolCallId: string;
+  messages: unknown[];
+  /** Tool context (ai@7). */
+  context?: unknown;
+  /** Tool context (ai@6). */
+  experimental_context?: unknown;
+}
+
 /** Options the AI SDK passes to a tool's `execute` function (union of ai@4 – ai@7 shapes). */
 export interface AISDKToolExecutionOptions {
   toolCallId: string;
@@ -269,6 +324,10 @@ export interface AISDKToolLike<TInput = unknown, TOutput = unknown> {
     [input: TInput, options: AISDKToolExecutionOptions],
     AISDKToolExecuteResult<TOutput>
   >;
+  /** Whether a call needs the user's approval before it runs (ai@6+) */
+  needsApproval?:
+    | boolean
+    | Bivariant<[input: TInput, options: AISDKToolApprovalOptions], boolean | PromiseLike<boolean>>;
 }
 
 export interface AISDKValidationIssue {
@@ -315,4 +374,9 @@ export interface AISDKTool<TInput = unknown, TOutput = unknown> {
   /** Input schema read by ai@4: an AI SDK `Schema` with JSON Schema and validation. */
   parameters: AISDKSchema<TInput>;
   execute(input: TInput, options: AISDKToolExecutionOptions): Promise<TOutput>;
+  /**
+   * The Cogitator tool's `requiresApproval`, so ai@6 and ai@7 ask for approval (a
+   * `tool-approval-request`) before they run it
+   */
+  needsApproval?: boolean | ((input: TInput) => boolean);
 }

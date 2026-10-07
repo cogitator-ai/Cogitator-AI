@@ -3,6 +3,7 @@ import type { ValidationIssue } from '@tetsujs/core';
 import type { z } from 'zod';
 import type { callerHook } from './auth.js';
 import { describeError } from './errors.js';
+import { toAgentRunResponse } from '@cogitator-ai/server-shared';
 import {
   checkThreadAccess,
   executeSwarm,
@@ -12,12 +13,11 @@ import {
   findWorkflow,
   resumeAgent,
   runAgent,
-  toAgentRunResponse,
   toResumeDecisions,
   toSwarmRunResponse,
   toWorkflowRunResponse,
 } from './operations.js';
-import { SocketMessage } from './schemas.js';
+import { requestSchemas, type SocketMessage } from './schemas.js';
 import { resolveSignal } from './streaming.js';
 import type { AgentStreamCallbacks } from './streaming.js';
 import type { AuthContext, CogitatorDeps, WebSocketServerMessage } from './types.js';
@@ -53,7 +53,7 @@ export function cogitatorSocket(
   return ws({
     path,
     hooks: { beforeParse: [caller] },
-    schema: { message: SocketMessage },
+    schema: { message: requestSchemas(deps).SocketMessage },
     docs: {
       summary: 'Run agents, workflows and swarms over a WebSocket',
       description:
@@ -195,14 +195,14 @@ async function execute(
     case 'swarm': {
       const config = findSwarm(deps, payload.name);
       await checkThreadAccess(deps, auth, payload.threadId);
-      const { swarm, result } = await executeSwarm(
+      return executeSwarm(
         deps,
         config,
         { input: payload.input, context: payload.context, threadId: payload.threadId },
         auth,
-        signal
+        signal,
+        toSwarmRunResponse
       );
-      return toSwarmRunResponse(swarm, result);
     }
   }
 }

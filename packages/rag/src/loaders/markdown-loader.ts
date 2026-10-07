@@ -1,7 +1,7 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { nanoid } from 'nanoid';
 import type { DocumentLoader, RAGDocument } from '@cogitator-ai/types';
+import { documentId } from './document-id.js';
 
 const MD_EXTENSIONS = new Set(['md', 'mdx']);
 
@@ -49,7 +49,7 @@ export class MarkdownLoader implements DocumentLoader {
     }
 
     return {
-      id: nanoid(),
+      id: documentId(filePath),
       content,
       source: filePath,
       sourceType: 'markdown',

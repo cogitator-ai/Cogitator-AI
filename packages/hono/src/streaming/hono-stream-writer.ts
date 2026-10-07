@@ -20,6 +20,7 @@ import {
   resolveSseHeartbeatMs,
   startHeartbeat,
   type PendingApproval,
+  type StreamEvent,
   type Usage,
 } from '@cogitator-ai/server-shared';
 
@@ -36,6 +37,7 @@ export interface HonoStreamWriterOptions {
 export class HonoStreamWriter {
   private stream: SSEStreamingApi;
   private closed = false;
+  private queue: Promise<void> = Promise.resolve();
   private readonly stopHeartbeat: () => void;
 
   constructor(stream: SSEStreamingApi, options: HonoStreamWriterOptions = {}) {
@@ -59,8 +61,28 @@ export class HonoStreamWriter {
     });
   }
 
-  async start(messageId: string): Promise<void> {
-    await this.write(createStartEvent(messageId));
+  /**
+   * Sends one protocol event; `finish`, the last one, is followed by `data: [DONE]`. Events
+   * are written in the order they were sent, also when nobody awaits them, so a run's
+   * callbacks can send without waiting. `flush()` waits for every event sent so far.
+   */
+  send(event: StreamEvent): Promise<void> {
+    if (this.closed) return Promise.resolve();
+    const written = this.queue.then(async () => {
+      await this.stream.writeSSE({ data: JSON.stringify(event) });
+      if (event.type === 'finish') await this.stream.writeSSE({ data: '[DONE]' });
+    });
+    this.queue = written.catch(() => undefined);
+    return written;
+  }
+
+  /** Resolves once every event sent so far is written */
+  flush(): Promise<void> {
+    return this.queue;
+  }
+
+  async start(messageId: string, threadId?: string): Promise<void> {
+    await this.write(createStartEvent(messageId, threadId));
   }
 
   async textStart(id: string): Promise<void> {
@@ -123,9 +145,7 @@ export class HonoStreamWriter {
   }
 
   async finish(messageId: string, usage?: Usage): Promise<void> {
-    if (this.closed) return;
-    await this.write(createFinishEvent(messageId, usage));
-    await this.stream.writeSSE({ data: '[DONE]' });
+    await this.send(createFinishEvent(messageId, usage));
   }
 
   close(): void {

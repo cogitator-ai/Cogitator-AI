@@ -1,22 +1,34 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { AddressInfo } from 'net';
 import { cogitatorPlugin } from '../plugin.js';
 import type { CogitatorPluginOptions } from '../types.js';
+
+const swarms = vi.hoisted(() => ({
+  instances: [] as Array<{ close: () => Promise<void> }>,
+  fail: false,
+}));
 
 vi.mock('@cogitator-ai/swarms', () => ({
   Swarm: class {
     id = 'swarm_1';
     name = 'team';
     strategyType = 'round-robin';
-    run = vi.fn().mockResolvedValue({ output: 'swarm-out', agentResults: new Map() });
+    run = vi.fn(async () => {
+      if (swarms.fail) throw new Error('swarm failed');
+      return { output: 'swarm-out', agentResults: new Map() };
+    });
     abort = vi.fn();
+    close = vi.fn(async () => undefined);
     getResourceUsage = () => ({
       totalTokens: 0,
       totalCost: 0,
       elapsedTime: 0,
       agentUsage: new Map(),
     });
+    constructor() {
+      swarms.instances.push(this);
+    }
   },
 }));
 
@@ -28,6 +40,7 @@ function runResult(usage: Record<string, number> = {}) {
     threadId: 'thread-1',
     usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3, cost: 0, duration: 1, ...usage },
     toolCalls: [],
+    trace: { traceId: 'trace-1', spans: [] },
   };
 }
 
@@ -124,6 +137,8 @@ describe('run usage', () => {
       type: 'finish',
       messageId: expect.any(String),
       usage: detailedUsage,
+      threadId: 'thread-1',
+      status: 'completed',
     });
   });
 });
@@ -148,5 +163,30 @@ describe('SSE heartbeat', () => {
 
   it('refuses an invalid interval when the plugin is registered', async () => {
     await expect(start(undefined, { sseHeartbeatMs: Number.NaN })).rejects.toThrow(RangeError);
+  });
+});
+
+describe('swarm resources', () => {
+  beforeEach(() => {
+    swarms.instances.length = 0;
+    swarms.fail = false;
+  });
+
+  it.each(['/swarms/team/run', '/swarms/team/stream'])(
+    'closes the swarm a request built once %s is done',
+    async (path) => {
+      const { base } = await start();
+      await (await post(`${base}${path}`, { input: 'go' })).text();
+      expect(swarms.instances).toHaveLength(1);
+      expect(swarms.instances[0].close).toHaveBeenCalledOnce();
+    }
+  );
+
+  it('closes the swarm of a run that fails', async () => {
+    swarms.fail = true;
+    const { base } = await start();
+    const res = await post(`${base}/swarms/team/run`, { input: 'go' });
+    expect(res.status).toBe(500);
+    expect(swarms.instances[0].close).toHaveBeenCalledOnce();
   });
 });

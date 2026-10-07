@@ -2,12 +2,12 @@ import { describe, it, expect, vi } from 'vitest';
 import { A2AServer } from '../server';
 import type { Agent, AgentConfig } from '@cogitator-ai/types';
 import type {
-  A2AMessage,
   A2AStreamEvent,
-  TokenStreamEvent,
+  TaskArtifactUpdateEvent,
   CogitatorLike,
   AgentRunResult,
 } from '../types';
+import { collectEvents, userMessage } from './helpers';
 
 function createMockAgent(name: string): Agent {
   const config: AgentConfig = {
@@ -52,188 +52,123 @@ function createStreamingCogitator(tokens: string[], finalOutput: string): Cogita
   };
 }
 
-function userMessage(text: string): A2AMessage {
-  return { role: 'user', parts: [{ type: 'text', text }] };
+async function streamWith(cogitator: CogitatorLike, text: string): Promise<A2AStreamEvent[]> {
+  const server = new A2AServer({
+    agents: { streamer: createMockAgent('streamer') },
+    cogitator,
+  });
+  return collectEvents(
+    server.handleJsonRpcStream({
+      jsonrpc: '2.0',
+      method: 'message/stream',
+      params: { message: userMessage(text) },
+      id: 1,
+    })
+  );
+}
+
+function chunks(events: A2AStreamEvent[]): TaskArtifactUpdateEvent[] {
+  return events.filter((e): e is TaskArtifactUpdateEvent => e.kind === 'artifact-update');
+}
+
+function chunkText(event: TaskArtifactUpdateEvent): string {
+  return event.artifact.parts.map((p) => (p.kind === 'text' ? p.text : '')).join('');
 }
 
 describe('Token-level Streaming', () => {
-  let server: A2AServer;
+  it('streams the tokens as chunks of one artifact, appended in order', async () => {
+    const events = await streamWith(
+      createStreamingCogitator(['Hello', ' ', 'world', '!'], 'Hello world!'),
+      'Stream tokens'
+    );
 
-  describe('handleJsonRpcStream with token events', () => {
-    it('should yield token events from onToken callback', async () => {
-      const tokens = ['Hello', ' ', 'world', '!'];
-      const cogitator = createStreamingCogitator(tokens, 'Hello world!');
-      server = new A2AServer({
-        agents: { streamer: createMockAgent('streamer') },
-        cogitator,
-      });
+    const reply = chunks(events);
+    expect(reply.map(chunkText)).toEqual(['Hello', ' ', 'world', '!']);
+    expect(new Set(reply.map((c) => c.artifact.artifactId)).size).toBe(1);
+    expect(reply[0].append).toBeUndefined();
+    expect(reply.slice(1).every((c) => c.append === true)).toBe(true);
+    expect(reply.map((c) => c.lastChunk)).toEqual([false, false, false, true]);
+  });
 
-      const events: A2AStreamEvent[] = [];
-      for await (const event of server.handleJsonRpcStream({
+  it('puts the task and context ids on every chunk', async () => {
+    const events = await streamWith(createStreamingCogitator(['a', 'b'], 'ab'), 'ids');
+    const task = events[0];
+    expect(task.kind).toBe('task');
+    if (task.kind !== 'task') return;
+    for (const chunk of chunks(events)) {
+      expect(chunk.taskId).toBe(task.id);
+      expect(chunk.contextId).toBe(task.contextId);
+    }
+  });
+
+  it('streams the chunks before the final status update', async () => {
+    const events = await streamWith(
+      createStreamingCogitator(['first', ' second', ' third'], 'first second third'),
+      'Order check'
+    );
+    const finalIndex = events.findIndex((e) => e.kind === 'status-update' && e.final);
+    const firstChunk = events.findIndex((e) => e.kind === 'artifact-update');
+    expect(firstChunk).toBeGreaterThan(-1);
+    expect(finalIndex).toBe(events.length - 1);
+    expect(firstChunk).toBeLessThan(finalIndex);
+  });
+
+  it('runs the agent with stream=true and onToken', async () => {
+    const cogitator = createStreamingCogitator(['x'], 'x');
+    await streamWith(cogitator, 'Check run args');
+    expect(cogitator.run).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ stream: true, onToken: expect.any(Function) })
+    );
+  });
+
+  it('keeps the streamed artifact id in the stored task', async () => {
+    const server = new A2AServer({
+      agents: { streamer: createMockAgent('streamer') },
+      cogitator: createStreamingCogitator(['Hel', 'lo'], 'Hello'),
+    });
+    const events = await collectEvents(
+      server.handleJsonRpcStream({
         jsonrpc: '2.0',
         method: 'message/stream',
-        params: { message: userMessage('Stream tokens') },
+        params: { message: userMessage('store') },
         id: 1,
-      })) {
-        events.push(event);
-      }
-
-      const tokenEvents = events.filter((e): e is TokenStreamEvent => e.type === 'token');
-      expect(tokenEvents).toHaveLength(4);
-      expect(tokenEvents.map((e) => e.token)).toEqual(['Hello', ' ', 'world', '!']);
+      })
+    );
+    const streamedId = chunks(events)[0].artifact.artifactId;
+    const response = await server.handleJsonRpc({
+      jsonrpc: '2.0',
+      method: 'tasks/get',
+      params: { id: chunks(events)[0].taskId },
+      id: 2,
     });
+    const task = response?.result as { artifacts: { artifactId: string; parts: unknown[] }[] };
+    expect(task.artifacts).toEqual([
+      { artifactId: streamedId, parts: [{ kind: 'text', text: 'Hello' }] },
+    ]);
+  });
 
-    it('should include correct taskId on token events', async () => {
-      const cogitator = createStreamingCogitator(['tok'], 'tok');
-      server = new A2AServer({
-        agents: { streamer: createMockAgent('streamer') },
-        cogitator,
-      });
+  it('replaces the streamed text when the final reply differs from it', async () => {
+    const events = await streamWith(
+      createStreamingCogitator(['Let me check. ', 'Done: 42'], 'Done: 42'),
+      'Replace'
+    );
+    const reply = chunks(events);
+    const last = reply.at(-1)!;
+    expect(last.append).toBe(false);
+    expect(last.lastChunk).toBe(true);
+    expect(chunkText(last)).toBe('Done: 42');
+    expect(last.artifact.artifactId).toBe(reply[0].artifact.artifactId);
+  });
 
-      const events: A2AStreamEvent[] = [];
-      for await (const event of server.handleJsonRpcStream({
-        jsonrpc: '2.0',
-        method: 'message/stream',
-        params: { message: userMessage('Get taskId') },
-        id: 1,
-      })) {
-        events.push(event);
-      }
+  it('sends the whole reply as one artifact when no token was streamed', async () => {
+    const events = await streamWith(createStreamingCogitator([], 'no tokens'), 'No tokens');
+    const reply = chunks(events);
+    expect(reply).toHaveLength(1);
+    expect(chunkText(reply[0])).toBe('no tokens');
+    expect(reply[0].lastChunk).toBe(true);
 
-      const initialStatus = events.find((e) => e.type === 'status-update');
-      const tokenEvent = events.find((e): e is TokenStreamEvent => e.type === 'token');
-      expect(tokenEvent).toBeDefined();
-      expect(tokenEvent!.taskId).toBe(initialStatus!.taskId);
-    });
-
-    it('should have timestamps on token events', async () => {
-      const cogitator = createStreamingCogitator(['a', 'b'], 'ab');
-      server = new A2AServer({
-        agents: { streamer: createMockAgent('streamer') },
-        cogitator,
-      });
-
-      const events: A2AStreamEvent[] = [];
-      for await (const event of server.handleJsonRpcStream({
-        jsonrpc: '2.0',
-        method: 'message/stream',
-        params: { message: userMessage('Timestamps') },
-        id: 1,
-      })) {
-        events.push(event);
-      }
-
-      const tokenEvents = events.filter((e): e is TokenStreamEvent => e.type === 'token');
-      for (const te of tokenEvents) {
-        expect(te.timestamp).toBeDefined();
-        expect(new Date(te.timestamp).getTime()).not.toBeNaN();
-      }
-    });
-
-    it('should yield token events before completion event', async () => {
-      const tokens = ['first', 'second', 'third'];
-      const cogitator = createStreamingCogitator(tokens, 'first second third');
-      server = new A2AServer({
-        agents: { streamer: createMockAgent('streamer') },
-        cogitator,
-      });
-
-      const events: A2AStreamEvent[] = [];
-      for await (const event of server.handleJsonRpcStream({
-        jsonrpc: '2.0',
-        method: 'message/stream',
-        params: { message: userMessage('Order check') },
-        id: 1,
-      })) {
-        events.push(event);
-      }
-
-      const lastStatusIdx = events.reduce(
-        (last, e, index) =>
-          e.type === 'status-update' && e.status.state === 'completed' ? index : last,
-        -1
-      );
-      const firstTokenIdx = events.findIndex((e) => e.type === 'token');
-
-      expect(firstTokenIdx).toBeGreaterThan(-1);
-      expect(lastStatusIdx).toBeGreaterThan(-1);
-      expect(firstTokenIdx).toBeLessThan(lastStatusIdx);
-    });
-
-    it('should call cogitator.run with stream=true and onToken', async () => {
-      const cogitator = createStreamingCogitator(['x'], 'x');
-      server = new A2AServer({
-        agents: { streamer: createMockAgent('streamer') },
-        cogitator,
-      });
-
-      const events: A2AStreamEvent[] = [];
-      for await (const event of server.handleJsonRpcStream({
-        jsonrpc: '2.0',
-        method: 'message/stream',
-        params: { message: userMessage('Check run args') },
-        id: 1,
-      })) {
-        events.push(event);
-      }
-
-      expect(cogitator.run).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({
-          stream: true,
-          onToken: expect.any(Function),
-        })
-      );
-    });
-
-    it('should still yield status and artifact events alongside tokens', async () => {
-      const tokens = ['Hello', ' world'];
-      const cogitator = createStreamingCogitator(tokens, 'Hello world');
-      server = new A2AServer({
-        agents: { streamer: createMockAgent('streamer') },
-        cogitator,
-      });
-
-      const events: A2AStreamEvent[] = [];
-      for await (const event of server.handleJsonRpcStream({
-        jsonrpc: '2.0',
-        method: 'message/stream',
-        params: { message: userMessage('Mixed events') },
-        id: 1,
-      })) {
-        events.push(event);
-      }
-
-      const types = new Set(events.map((e) => e.type));
-      expect(types.has('token')).toBe(true);
-      expect(types.has('status-update')).toBe(true);
-    });
-
-    it('should handle zero tokens gracefully', async () => {
-      const cogitator = createStreamingCogitator([], 'no tokens');
-      server = new A2AServer({
-        agents: { streamer: createMockAgent('streamer') },
-        cogitator,
-      });
-
-      const events: A2AStreamEvent[] = [];
-      for await (const event of server.handleJsonRpcStream({
-        jsonrpc: '2.0',
-        method: 'message/stream',
-        params: { message: userMessage('No tokens') },
-        id: 1,
-      })) {
-        events.push(event);
-      }
-
-      const tokenEvents = events.filter((e) => e.type === 'token');
-      expect(tokenEvents).toHaveLength(0);
-
-      const lastStatus = [...events].reverse().find((e) => e.type === 'status-update');
-      expect(lastStatus).toBeDefined();
-      if (lastStatus?.type === 'status-update') {
-        expect(lastStatus.status.state).toBe('completed');
-      }
-    });
+    const last = events.at(-1);
+    expect(last?.kind === 'status-update' && last.status.state).toBe('completed');
   });
 });

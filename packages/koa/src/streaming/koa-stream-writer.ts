@@ -23,6 +23,7 @@ import {
   resolveSseHeartbeatMs,
   startHeartbeat,
   type PendingApproval,
+  type StreamEvent,
   type Usage,
 } from '@cogitator-ai/server-shared';
 
@@ -63,8 +64,15 @@ export class KoaStreamWriter {
     this.res.write(encodeSSE(data));
   }
 
-  start(messageId: string): void {
-    this.write(createStartEvent(messageId));
+  /** Sends one protocol event; `finish`, the last one, is followed by `data: [DONE]` */
+  send(event: StreamEvent): void {
+    if (this.closed) return;
+    this.write(event);
+    if (event.type === 'finish') this.res.write(encodeDone());
+  }
+
+  start(messageId: string, threadId?: string): void {
+    this.write(createStartEvent(messageId, threadId));
   }
 
   textStart(id: string): void {
@@ -126,9 +134,7 @@ export class KoaStreamWriter {
   }
 
   finish(messageId: string, usage?: Usage): void {
-    if (this.closed) return;
-    this.write(createFinishEvent(messageId, usage));
-    this.res.write(encodeDone());
+    this.send(createFinishEvent(messageId, usage));
   }
 
   close(): void {

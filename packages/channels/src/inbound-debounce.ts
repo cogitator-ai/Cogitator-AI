@@ -1,4 +1,5 @@
 import type { ChannelMessage, DebounceConfig } from '@cogitator-ai/types';
+import { mergeChannelMessages, replyDestination } from './merge-messages';
 
 interface BufferEntry {
   messages: ChannelMessage[];
@@ -17,7 +18,7 @@ export class InboundDebouncer {
   }
 
   enqueue(msg: ChannelMessage): void {
-    const key = `${msg.channelType}:${msg.channelId}:${msg.userId}`;
+    const key = `${replyDestination(msg)}:${msg.userId}`;
     const delay = this.config.byChannel?.[msg.channelType] ?? this.defaultDelay;
 
     const existing = this.buffers.get(key);
@@ -51,22 +52,7 @@ export class InboundDebouncer {
     const messages = entry.messages;
     if (messages.length === 0) return;
 
-    const first = messages[0];
-    const last = messages[messages.length - 1];
-
-    const merged: ChannelMessage = {
-      id: first.id,
-      channelType: first.channelType,
-      channelId: first.channelId,
-      userId: first.userId,
-      userName: first.userName,
-      groupId: first.groupId,
-      text: messages.map((m) => m.text).join('\n'),
-      raw: last.raw,
-    };
-
-    const allAttachments = messages.flatMap((m) => m.attachments ?? []);
-    if (allAttachments.length > 0) merged.attachments = allAttachments;
+    const merged = mergeChannelMessages(messages);
 
     await this.onFlush(merged);
   }

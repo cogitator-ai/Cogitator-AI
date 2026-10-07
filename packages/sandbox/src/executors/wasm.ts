@@ -157,6 +157,7 @@ export class WasmSandboxExecutor extends BaseSandboxExecutor {
       exitCode: outcome.exitCode,
       timedOut: outcome.timedOut,
       duration: Date.now() - startTime,
+      ...(outcome.stdout.length > MAX_OUTPUT_SIZE && { truncated: true }),
     });
   }
 

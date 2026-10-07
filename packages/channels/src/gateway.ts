@@ -7,6 +7,7 @@ import type {
   ChannelMessage,
   ChannelUser,
   CompactionConfig,
+  CompactionResult,
   MiddlewareContext,
   GatewayMiddleware,
   HookRegistry,
@@ -256,7 +257,7 @@ export class Gateway {
 
   /**
    * Summarize older messages of a conversation thread, keeping `keepRecent` messages intact.
-   * Runs regardless of the configured message threshold.
+   * Runs regardless of the configured thresholds.
    */
   async compactThread(threadId: string, agent?: Agent): Promise<string> {
     const compaction = this.config.session?.compaction;
@@ -264,29 +265,41 @@ export class Gateway {
       return 'Compaction is not configured';
     }
 
+    const result = await this.compact(threadId, { ...compaction, threshold: 0 }, agent);
+    return result.compactedMessages < result.originalMessages
+      ? `Compacted ${result.originalMessages} messages into ${result.compactedMessages}`
+      : `Nothing to compact (${result.originalMessages} messages)`;
+  }
+
+  /**
+   * Compacts the thread once it holds `threshold` tokens or `messageThreshold` messages, the
+   * same rules `CompactionService` applies everywhere.
+   */
+  private async compactIfNeeded(threadId: string, agent: Agent): Promise<void> {
+    const compaction = this.config.session?.compaction;
+    if (!this.config.memory || !compaction) return;
+    await this.compact(threadId, compaction, agent);
+  }
+
+  private async compact(
+    threadId: string,
+    config: CompactionConfig,
+    agent?: Agent
+  ): Promise<CompactionResult> {
+    const memory = this.config.memory;
+    if (!memory) throw new Error('Compaction needs memory');
+
     const targetAgent = agent ?? (await this.resolveAgent({ id: 'system', channelType: 'system' }));
     const service = new CompactionService({
-      adapter: this.config.memory,
-      summarize: this.createSummarizeFn(targetAgent, compaction),
+      adapter: memory,
+      summarize: this.createSummarizeFn(targetAgent, config),
     });
-    const result = await service.compact(threadId, { ...compaction, threshold: 0 });
+    const result = await service.compact(threadId, config);
 
     if (result.compactedMessages < result.originalMessages) {
       await this.hooks?.emit('session:compacted', { threadId, result });
-      return `Compacted ${result.originalMessages} messages into ${result.compactedMessages}`;
     }
-    return `Nothing to compact (${result.originalMessages} messages)`;
-  }
-
-  private async compactIfNeeded(threadId: string, agent: Agent): Promise<void> {
-    const memory = this.config.memory;
-    const compaction = this.config.session?.compaction;
-    if (!memory || !compaction) return;
-
-    const entries = await memory.getEntries({ threadId });
-    if (!entries.success || entries.data.length < compaction.threshold) return;
-
-    await this.compactThread(threadId, agent);
+    return result;
   }
 
   /**

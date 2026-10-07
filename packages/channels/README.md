@@ -224,8 +224,8 @@ const gateway = new Gateway({
   memory, // MemoryAdapter — enables sessions and history
   session: {
     threadKey: (msg) => `${msg.channelType}:${msg.userId}`,
-    // compact once a conversation holds 50 messages, keep the last 10 verbatim
-    compaction: { strategy: 'summary', threshold: 50, keepRecent: 10 },
+    // compact once a conversation holds 50 messages (or `threshold` tokens), keep the last 10 verbatim
+    compaction: { strategy: 'summary', messageThreshold: 50, keepRecent: 10 },
   },
   runTimeout: 120_000,
 });
@@ -316,6 +316,8 @@ const gateway = new Gateway({
 });
 ```
 
+Messages merge per chat, topic and user, keeping `topicId` and `replyTo`, so answers land in the topic they were asked in.
+
 ## Envelope Formatting
 
 Wrap messages with context so the LLM knows who's talking, on which platform, and when:
@@ -351,7 +353,7 @@ const gateway = new Gateway({
 - **parallel** — default, all messages processed immediately
 - **sequential** — FIFO per thread, wait for current to finish
 - **interrupt** — abort the current run (its signal is passed to `cogitator.run`), start the new message
-- **collect** — buffer during processing, merge on idle
+- **collect** - buffer during processing, merge per chat and topic on idle
 
 ## Formatting Pipeline
 

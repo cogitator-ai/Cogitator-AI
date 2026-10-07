@@ -75,7 +75,8 @@ type CrawlState = { urls: string[] };
 
 const fetchPages = mapNode<CrawlState, string>('fetch-pages', {
   items: (state) => state.urls,
-  mapper: async (item) => fetch(item as string).then((r) => r.text()),
+  mapper: async (item, _index, _state, { signal }) =>
+    fetch(item as string, { signal }).then((r) => r.text()),
   concurrency: 10,
   continueOnError: true,
   timeout: 30_000,
@@ -88,8 +89,10 @@ const fetchPages = mapNode<CrawlState, string>('fetch-pages', {
 });
 ```
 
-- `concurrency` defaults to unlimited; `timeout` and `retry` apply per item (`maxAttempts` counts the first try).
-- Without `continueOnError`, the first failed item fails the whole map with its error (the error carries `partialResults`). With it, failed items appear in the results with `success: false` and `error`.
+- `concurrency` defaults to unlimited, `timeout` and `retry` apply per item (`maxAttempts` counts the first try).
+- The mapper's fourth argument is `{ signal, attempt }`. `signal` aborts when the attempt times out, when another item fails the map, or when the workflow run is cancelled, paused or times out. Pass it to fetches, agent runs and tools so their work stops too. A timed-out attempt is aborted before the next one starts, so attempts of one item never overlap.
+- Without `continueOnError`, the first failed item stops the map: no further item starts, the items in flight are aborted, and the map fails with that item's error. The error carries `partialResults`, one entry per item: the result of an item that finished, the error of one that failed or was aborted, and a `MapItemSkippedError` for an item that never started. With `continueOnError`, failed items appear in the results with `success: false` and `error`.
+- `mapWorkflowNode` and `mapReduceWorkflowNode` pass the run's signal to the map. Calling `executeMap(state, config, { signal })` or `executeMapReduce` directly takes it as the third argument.
 - `filter` runs before mapping and drops items; `transform` changes an item right before its `mapper` call.
 - Every item produces a `MapItemResult` (`index`, `item`, `result`, `success`, `error`, `duration`), in input order.
 

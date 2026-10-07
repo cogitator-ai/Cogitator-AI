@@ -9,6 +9,7 @@ import type {
   MemoryResult,
   InMemoryAdapterConfig,
   MemoryProvider,
+  NewMemoryEntry,
 } from '@cogitator-ai/types';
 import { BaseMemoryAdapter } from './base';
 
@@ -86,7 +87,7 @@ export class InMemoryAdapter extends BaseMemoryAdapter {
     return this.success(undefined);
   }
 
-  async addEntry(entry: Omit<MemoryEntry, 'id' | 'createdAt'>): Promise<MemoryResult<MemoryEntry>> {
+  async addEntry(entry: NewMemoryEntry): Promise<MemoryResult<MemoryEntry>> {
     if (this.entries.size >= this.maxEntries) {
       const oldestId = this.entries.keys().next().value;
       if (oldestId) {
@@ -97,7 +98,7 @@ export class InMemoryAdapter extends BaseMemoryAdapter {
     const full: MemoryEntry = {
       ...entry,
       id: this.generateId('entry'),
-      createdAt: this.nextEntryTimestamp(entry.threadId),
+      createdAt: this.entryTimestamp(entry),
     };
 
     this.entries.set(full.id, full);

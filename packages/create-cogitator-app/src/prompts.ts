@@ -4,11 +4,14 @@ import type { LLMProvider, PackageManager, ProjectOptions, Template } from './ty
 import { templateChoices } from './templates/index.js';
 import { detectPackageManager } from './utils/package-manager.js';
 import { defaultModels } from './utils/providers.js';
+import { projectNameFromDirectory, validateProjectName } from './utils/project-name.js';
+import { hasOllamaModel, listOllamaModels, resolveOllamaUrl } from './utils/ollama.js';
 
 interface ParsedArgs {
   name?: string;
   template?: Template;
   provider?: LLMProvider;
+  model?: string;
   packageManager?: PackageManager;
   docker?: boolean;
   git?: boolean;
@@ -35,6 +38,12 @@ export function parseArgs(args: string[]): ParsedArgs {
       if (i + 1 < args.length) {
         const val = args[++i] as LLMProvider;
         if (validProviders.includes(val)) parsed.provider = val;
+      }
+    } else if (arg === '--model') {
+      const val = args[i + 1];
+      if (val !== undefined && !val.startsWith('-')) {
+        parsed.model = val;
+        i++;
       }
     } else if (arg === '--pm') {
       if (i + 1 < args.length) {
@@ -80,6 +89,50 @@ function unlessCancelled<T>(answer: T | typeof p.CANCEL_SYMBOL): T {
   return answer;
 }
 
+function validateDirectory(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  if (!value.trim()) return 'Project name is required';
+  return validateProjectName(projectNameFromDirectory(value));
+}
+
+function formatSize(bytes: number): string | undefined {
+  return bytes > 0 ? `${(bytes / 1e9).toFixed(1)} GB` : undefined;
+}
+
+/**
+ * Asks which local model the agents should use, offering the recommended one and
+ * the ones already installed. Returns `undefined` without asking when Ollama does
+ * not answer, which leaves the recommended model in place.
+ */
+async function promptOllamaModel(): Promise<string | undefined> {
+  const installed = await listOllamaModels(resolveOllamaUrl());
+  if (!installed) return undefined;
+
+  const recommended = defaultModels.ollama;
+  const others = installed.filter((model) => !hasOllamaModel([model], recommended));
+
+  return unlessCancelled(
+    await p.select<string>({
+      message: 'Which Ollama model?',
+      options: [
+        {
+          value: recommended,
+          label: recommended,
+          hint: hasOllamaModel(installed, recommended)
+            ? 'recommended, installed'
+            : 'recommended, not installed yet',
+        },
+        ...others.map((model) => ({
+          value: model.name,
+          label: model.name,
+          hint: formatSize(model.size),
+        })),
+      ],
+      initialValue: recommended,
+    })
+  );
+}
+
 /**
  * Turn the parsed arguments into project options, asking for whatever they leave
  * out; with `--yes` nothing is asked and the defaults fill the gaps.
@@ -87,7 +140,7 @@ function unlessCancelled<T>(answer: T | typeof p.CANCEL_SYMBOL): T {
 export async function collectOptions(args: ParsedArgs): Promise<ProjectOptions> {
   const interactive = !args.yes;
 
-  const rawName =
+  const directory = (
     args.name ||
     (interactive
       ? unlessCancelled(
@@ -95,17 +148,18 @@ export async function collectOptions(args: ParsedArgs): Promise<ProjectOptions> 
             message: 'Where should we create your project?',
             placeholder: `./${defaultAnswers.name}`,
             defaultValue: defaultAnswers.name,
-            validate: (value) => {
-              if (value && !value.trim()) return 'Project name is required';
-              return undefined;
-            },
+            validate: validateDirectory,
           })
         )
-      : defaultAnswers.name);
+      : defaultAnswers.name)
+  ).trim();
 
-  const name = rawName.trim();
-  const projectName = path.basename(path.normalize(name).replace(/^\.\//, '').replace(/^\.\\/, ''));
-  const projectPath = path.resolve(process.cwd(), name);
+  const projectPath = path.resolve(process.cwd(), directory);
+  const projectName = projectNameFromDirectory(directory);
+  const nameError = validateProjectName(projectName);
+  if (nameError) {
+    throw new Error(`Invalid project name "${projectName}": ${nameError}`);
+  }
 
   const template =
     args.template ??
@@ -129,7 +183,7 @@ export async function collectOptions(args: ParsedArgs): Promise<ProjectOptions> 
               {
                 value: 'ollama',
                 label: 'Ollama',
-                hint: `${defaultModels.ollama} — local, free, requires Ollama installed`,
+                hint: `${defaultModels.ollama}, local, free, requires Ollama installed`,
               },
               { value: 'openai', label: 'OpenAI', hint: defaultModels.openai },
               { value: 'anthropic', label: 'Anthropic', hint: defaultModels.anthropic },
@@ -139,6 +193,9 @@ export async function collectOptions(args: ParsedArgs): Promise<ProjectOptions> 
           })
         )
       : defaultAnswers.provider);
+
+  const model =
+    args.model ?? (interactive && provider === 'ollama' ? await promptOllamaModel() : undefined);
 
   const packageManager =
     args.packageManager ??
@@ -186,6 +243,7 @@ export async function collectOptions(args: ParsedArgs): Promise<ProjectOptions> 
     path: projectPath,
     template,
     provider,
+    ...(model !== undefined && { model }),
     packageManager,
     docker,
     git,

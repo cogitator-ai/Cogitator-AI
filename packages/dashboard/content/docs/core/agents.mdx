@@ -100,7 +100,18 @@ The agent loops up to `maxIterations` times. Each iteration the LLM may call too
 
 When tool calls use up `maxIterations` before the model answers, the run gets one more turn with `toolChoice: 'none'` and an instruction to answer from what it has, so it still ends with an answer and `structured` output can be parsed. Tools the model asks for on that turn are not run. `result.iterationLimitReached` is `true` either way, and `onIterationLimit: 'stop'` ends the run at the last tool turn instead, without an answer.
 
-`result.truncated` is `true` when the model's last answer stopped at the output token limit (`maxTokens`): the output may be cut off, or empty when a reasoning model spent the whole limit thinking. Every provider reports it, so it is the way to tell a cut-off answer from a short one.
+`result.truncated` is `true` when the model's last answer stopped at the output token limit (`maxTokens`): the output may be cut off, or empty when a reasoning model spent the whole limit thinking. Every provider reports it, so it is the way to tell a cut-off answer from a short one. Tool calls in a turn cut off at the limit never run, since their arguments may be incomplete: the run ends truncated instead.
+
+`result.blocked` is set when the provider withheld the model's last answer instead of finishing it: `'content_filter'` when its safety system filtered the answer (OpenAI and Azure content filters, Gemini `SAFETY` and similar, Bedrock guardrails), `'refusal'` when the model declined (OpenAI and Anthropic refusals). The run still completes, with `output` holding what the model said before it stopped, the explanation of a refusal or often nothing. The run does not ask again for a blocked answer, and does not ask a blocked structured answer to be corrected.
+
+A turn the provider ends in an error fails the run with `LLM_INVALID_RESPONSE` instead of passing for an empty answer, with the provider's explanation when it gives one (`ChatResponse.finishMessage`). Gemini, for instance, reports a function call it could not complete, often one cut by `maxTokens`, as `MALFORMED_FUNCTION_CALL`: the run fails with that message, and the cut call never runs. Anthropic and Bedrock `malformed_tool_use` and a failed Responses API answer end the same way.
+
+```typescript
+const result = await cog.run(agent, { input });
+if (result.blocked) {
+  console.warn(`The answer was withheld (${result.blocked}): ${result.output || 'no text'}`);
+}
+```
 
 ## Agent with Structured Output
 
@@ -175,6 +186,22 @@ const restored = Agent.deserialize(saved, {
 Tools are stored by name in the snapshot. During deserialization, each tool name is resolved from `toolRegistry` (any `{ get(name) }`, such as a `ToolRegistry`) when given, otherwise from the `tools` array; a missing tool throws `AgentDeserializationError`. `overrides` replaces any config field of the restored agent.
 
 A snapshot keeps the model, instructions, sampling parameters, `reasoning`, `maxIterations`, `onIterationLimit` and `timeout`, but not `handoffs` or `skills` (their tools are kept by name). A `json_schema` response format is saved by name only, so pass the Zod schema back as `overrides.responseFormat`. `Agent.validateSnapshot(value)` checks a parsed snapshot; it rejects snapshots without a `model`, so give agents you serialize an explicit model.
+
+### Sending an agent to another process
+
+`agent.serialize()` is for storage. To run an agent in another process (a queue job, a workflow job, a distributed swarm turn), use the agent wire format, which keeps every setting:
+
+```typescript
+import { toAgentWire, fromAgentWire } from '@cogitator-ai/core';
+
+const wire = toAgentWire(agent); // plain JSON
+// in the process that runs it
+const received = fromAgentWire(JSON.parse(payload), { cogitator, tools: [searchWeb, readUrl] });
+```
+
+`toAgentWire` carries the whole configuration: model and provider, instructions, sampling, `stopSequences`, `reasoning`, `responseFormat` (a Zod schema as JSON Schema, turned back into one on arrival), `maxIterations`, `onIterationLimit`, `timeout`, the tool schemas and every agent the agent can hand over to (handoff graphs with cycles included). Skills arrive merged into the tools and instructions. An explicit `provider` also prefixes the model, so the agent runs on the same route wherever it lands. Pass `resolveModel` for an agent without a model, e.g. `toAgentWire(agent, { resolveModel: (a) => cogitator.resolveModel(a) })`.
+
+`fromAgentWire` validates the payload (`agentWireSchema`, or `parseAgentWire` alone), refuses keys it does not know instead of dropping them, resolves the tools by name from `tools` and throws `AgentWireError` for a missing tool or a provider the receiving Cogitator cannot route to. `toAgentWireRunResult(result)` and `fromAgentWireRunResult(wire, { agentId })` carry a run's outcome the same way: answer, structured output, usage with cost and duration, tool calls with their outputs, and the `truncated`, `blocked` and `iterationLimitReached` flags. `@cogitator-ai/worker` and distributed swarms use both.
 
 ## Skills
 

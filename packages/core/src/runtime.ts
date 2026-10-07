@@ -3,8 +3,10 @@ import type {
   CogitatorConfig,
   RunOptions,
   RunResult,
+  RunBlockReason,
   Message,
   ToolCall,
+  ToolChoice,
   ToolResult,
   LLMBackend,
   ChatResponse,
@@ -26,13 +28,18 @@ import type {
   Tool,
   ToolApprovalDecision,
   ToolApprovalRequest,
+  ToolInvocationOptions,
+  ToolInvocationResult,
+  ToolInvoker,
 } from '@cogitator-ai/types';
 import { type Agent } from './agent';
 import { ToolRegistry } from './registry';
 import { createLLMBackend } from './llm/index';
+import { llmInvalidResponse } from './llm/errors';
 import { isLLMProvider } from './llm/providers';
 import { createLLMBackendFromPlugin, hasLLMPlugin } from './llm/plugin';
 import { withLLMRetry } from './llm/retry';
+import { normalizeTurn } from './llm/turn';
 import { PiiMasker, withPiiMasking } from './security/pii';
 import { createLoggerFromConfig, getLogger, setLogger } from './logger';
 import { RunCostMeter } from './cogitator/run-cost';
@@ -47,7 +54,7 @@ import {
   initializeContextManager,
   cleanupState,
 } from './cogitator/initializers';
-import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
+import { CogitatorError, ErrorCode, resolveModelRoute } from '@cogitator-ai/types';
 import {
   buildInitialMessages,
   buildInputWithAudio,
@@ -85,6 +92,30 @@ const MAX_EMPTY_ANSWER_RETRIES = 2;
 
 const ITERATION_LIMIT_PROMPT =
   'You have used every step this run allows. Do not call any more tools. Give your final answer now, from what you have.';
+
+/** The reason a turn's answer was withheld, when it was. */
+function blockReasonOf(
+  reason: ChatResponse['finishReason'] | undefined
+): RunBlockReason | undefined {
+  return reason === 'content_filter' || reason === 'refusal' ? reason : undefined;
+}
+
+/**
+ * The tool choice of the next turn for a run asked to use `choice`: `'none'` holds for every turn,
+ * a forced choice (`'required'` or a named function) holds until the run made a tool call, so
+ * the model can then answer, and a named function the turn's tools lack is not forced.
+ */
+function toolChoiceForTurn(
+  choice: ToolChoice | undefined,
+  madeToolCall: boolean,
+  registry: ToolRegistry
+): ToolChoice | undefined {
+  if (choice === undefined || choice === 'auto') return undefined;
+  if (choice === 'none') return 'none';
+  if (madeToolCall) return undefined;
+  if (typeof choice === 'object' && !registry.get(choice.function.name)) return undefined;
+  return choice;
+}
 
 /** A finished turn with no text and no tool calls: nothing a caller could use as an answer. */
 function isEmptyAnswer(response: ChatResponse): boolean {
@@ -143,7 +174,7 @@ function isEmptyAnswer(response: ChatResponse): boolean {
  * });
  * ```
  */
-export class Cogitator {
+export class Cogitator implements ToolInvoker {
   private config: CogitatorConfig;
   private backends = new Map<string, LLMBackend>();
   private processCheckpoints?: InMemoryRunCheckpointStore;
@@ -266,6 +297,91 @@ export class Cogitator {
     );
   }
 
+  /**
+   * Run one tool call outside an agent run, the way a run executes it: the arguments validated
+   * against the tool's schema, approval asked for a call that needs it (`options.onApproval`,
+   * else `guardrails.onToolApproval`), the guardrails applied, sandboxed tools run in this
+   * runtime's sandbox and `tool.timeout` kept. A call that needs approval nobody gives does not
+   * run: there is no run to pause, so it is refused with the request in `pendingApproval`.
+   *
+   * @example
+   * ```ts
+   * const result = await cog.invokeTool(exec, { command: 'ls' }, {
+   *   onApproval: async (request) => ((await askUser(request)) ? { approved: true } : { approved: false }),
+   * });
+   * if (result.error) console.error(result.error);
+   * ```
+   */
+  async invokeTool(
+    tool: Tool,
+    args: unknown,
+    options: ToolInvocationOptions = {}
+  ): Promise<ToolInvocationResult> {
+    const toolCall: ToolCall = {
+      id: options.toolCallId ?? `call_${nanoid(12)}`,
+      name: tool.name,
+      arguments: isArgumentRecord(args) ? args : {},
+    };
+    this.ensureGuardrails();
+    const constitutionalAI = this.state.constitutionalAI;
+
+    let approvedByUser = false;
+    if (
+      needsApproval(tool, toolCall.arguments) ||
+      constitutionalAI?.toolNeedsApproval(tool, toolCall.arguments)
+    ) {
+      const request: ToolApprovalRequest = {
+        toolCallId: toolCall.id,
+        toolName: tool.name,
+        arguments: toolCall.arguments,
+        description: tool.description,
+        ...(tool.sideEffects && { sideEffects: [...tool.sideEffects] }),
+      };
+      const decision = await this.decideApproval(request, options.onApproval);
+      if (decision === 'pause') {
+        return {
+          callId: toolCall.id,
+          name: tool.name,
+          result: null,
+          error: `Tool "${tool.name}" needs approval, and nobody approved this call`,
+          pendingApproval: request,
+        };
+      }
+      if (!decision.approved) {
+        return {
+          callId: toolCall.id,
+          name: tool.name,
+          result: null,
+          error: `The user declined this tool call${decision.reason ? `: ${decision.reason}` : ''}`,
+        };
+      }
+      approvedByUser = true;
+    }
+
+    const registry = new ToolRegistry();
+    registry.register(tool);
+    return executeTool(
+      registry,
+      toolCall,
+      options.runId ?? `run_${nanoid(12)}`,
+      options.agentId ?? 'tool-invoker',
+      this.state.sandboxManager,
+      constitutionalAI,
+      constitutionalAI?.config.filterToolCalls ?? false,
+      () => initializeSandbox(this.config, this.state),
+      options.signal,
+      {
+        ...options.context,
+        ...(options.threadId !== undefined && { threadId: options.threadId }),
+        ...(options.userId !== undefined && { userId: options.userId }),
+        ...(options.channelType !== undefined && { channelType: options.channelType }),
+        ...(options.channelId !== undefined && { channelId: options.channelId }),
+      },
+      approvedByUser,
+      this.config.sandbox?.allowNativeFallback !== false
+    );
+  }
+
   private async execute(
     agent: Agent,
     options: RunOptions,
@@ -382,6 +498,16 @@ export class Cogitator {
         return { registry: ownerRegistry, targets: handoff.targets };
       };
       let { registry, targets: handoffTargets } = buildRegistry(active);
+      const requestedToolChoice = options.toolChoice;
+      if (
+        typeof requestedToolChoice === 'object' &&
+        !registry.get(requestedToolChoice.function.name)
+      ) {
+        throw new CogitatorError({
+          message: `toolChoice names "${requestedToolChoice.function.name}", which agent "${active.name}" does not have`,
+          code: ErrorCode.VALIDATION_ERROR,
+        });
+      }
 
       let effectiveModel = agentModel;
       let routeProvider = agent.config.provider;
@@ -581,7 +707,8 @@ export class Cogitator {
             description: tool.description,
             ...(tool.sideEffects && { sideEffects: [...tool.sideEffects] }),
           };
-          const decision = resumed?.fallback ?? (await this.decideApproval(request, options));
+          const decision =
+            resumed?.fallback ?? (await this.decideApproval(request, options.onApproval));
           if (decision === 'pause') pending.push(request);
           else decisions.set(toolCall.id, decision);
         }
@@ -748,6 +875,8 @@ export class Cogitator {
       let lastFinishReason: ChatResponse['finishReason'] | undefined;
       const streaming = Boolean(options.stream && (options.onToken ?? options.onReasoning));
       const onToken = options.onToken ?? (() => undefined);
+      const holdsTokensForOutputFilter = streaming && this.filtersOutput();
+      const turnTokens = holdsTokensForOutputFilter ? () => undefined : onToken;
       let structuredRepaired = false;
       let emptyAnswerRetries = 0;
 
@@ -770,8 +899,11 @@ export class Cogitator {
         agentContext.previousActions = [...allActions];
 
         const llmSpanStart = Date.now();
+        const turnToolChoice = limit.closingTurn
+          ? 'none'
+          : toolChoiceForTurn(requestedToolChoice, allToolCalls.length > 0, registry);
 
-        let response;
+        let response: ChatResponse;
         if (streaming) {
           response = await waitForAbortable(
             streamChat(
@@ -780,14 +912,14 @@ export class Cogitator {
               messages,
               registry,
               active,
-              onToken,
+              turnTokens,
               abortController.signal,
               responseFormat,
               {
                 reasoning,
                 cache: promptCache,
                 onReasoning: options.onReasoning,
-                ...(limit.closingTurn && { toolChoice: 'none' as const }),
+                ...(turnToolChoice && { toolChoice: turnToolChoice }),
               }
             ),
             abortController.signal
@@ -798,7 +930,7 @@ export class Cogitator {
               model,
               messages,
               tools: registry.getSchemas(),
-              ...(limit.closingTurn && { toolChoice: 'none' as const }),
+              ...(turnToolChoice && { toolChoice: turnToolChoice }),
               temperature: active.config.temperature,
               topP: active.config.topP,
               maxTokens: active.config.maxTokens,
@@ -811,6 +943,7 @@ export class Cogitator {
             abortController.signal
           );
         }
+        response = normalizeTurn(response);
 
         const llmSpan = createSpan(
           'llm.chat',
@@ -845,6 +978,9 @@ export class Cogitator {
         lastFinishReason = response.finishReason;
         const spentBefore = costMeter.total(costModel);
         costMeter.add(response.usage, effectiveModel);
+        if (response.usage.cost === undefined) {
+          this.state.costRouter?.noteUnreportedCost(effectiveModel);
+        }
         this.state.costRouter?.recordCost({
           runId,
           agentId: agent.id,
@@ -855,6 +991,13 @@ export class Cogitator {
           cost: costMeter.total(costModel) - spentBefore,
         });
         if (response.reasoning) reasoningParts.push(response.reasoning);
+
+        if (response.finishReason === 'error') {
+          throw llmInvalidResponse(
+            { provider: backend.provider, model },
+            `The model ended its turn with an error${response.finishMessage ? `: ${response.finishMessage}` : ''}`
+          );
+        }
 
         if (
           isEmptyAnswer(response) &&
@@ -889,6 +1032,7 @@ export class Cogitator {
             }
           }
         }
+        if (holdsTokensForOutputFilter && outputContent) onToken(outputContent);
 
         const requestsTools = !limit.closingTurn && Boolean(response.toolCalls?.length);
         const assistantMessage = requestsTools
@@ -900,9 +1044,13 @@ export class Cogitator {
           : ({ role: 'assistant', content: outputContent } as Message);
         messages.push(assistantMessage);
 
-        const finalAnswer = !(requestsTools && response.finishReason === 'tool_calls');
+        const finalAnswer = !requestsTools;
         const structuredProblem =
-          finalAnswer && !streaming && !structuredRepaired && iterations < maxIterations
+          finalAnswer &&
+          !streaming &&
+          !structuredRepaired &&
+          !blockReasonOf(response.finishReason) &&
+          iterations < maxIterations
             ? structuredOutputProblem(active.config.responseFormat, outputContent)
             : undefined;
 
@@ -932,7 +1080,7 @@ export class Cogitator {
           );
         }
 
-        if (finalAnswer || !response.toolCalls) break;
+        if (!requestsTools || !response.toolCalls) break;
         pausedTurn = await handleToolTurn(response.toolCalls);
         if (pausedTurn) break;
         if (reachedLimit()) break;
@@ -1048,6 +1196,7 @@ export class Cogitator {
       spans.unshift(rootSpan);
 
       const runCost = costMeter.total(costModel);
+      const blocked = blockReasonOf(lastFinishReason);
 
       const result: RunResult = {
         output: finalOutput,
@@ -1073,6 +1222,7 @@ export class Cogitator {
         },
         ...(reasoningParts.length > 0 && { reasoning: reasoningParts.join('\n\n') }),
         ...(lastFinishReason === 'length' && { truncated: true }),
+        ...(blocked && { blocked }),
         toolCalls: allToolCalls,
         messages,
         trace: {
@@ -1288,9 +1438,10 @@ export class Cogitator {
    */
   private async decideApproval(
     request: ToolApprovalRequest,
-    options: RunOptions
+    onApproval: RunOptions['onApproval']
   ): Promise<ToolApprovalDecision | 'pause'> {
-    if (options.onApproval) return options.onApproval(request);
+    const decided = await onApproval?.(request);
+    if (decided !== undefined) return decided;
     const legacy = this.config.guardrails?.onToolApproval;
     if (legacy) {
       const approved = await legacy(request.toolName, request.arguments, request.sideEffects ?? []);
@@ -1390,6 +1541,16 @@ export class Cogitator {
     );
   }
 
+  /**
+   * True when the guardrails check every answer before it is used. A streamed run then holds
+   * the tokens of each turn back and hands `onToken` the checked text (or its revision) in one
+   * chunk, so nothing the filter blocks reaches a listener.
+   */
+  private filtersOutput(): boolean {
+    const config = this.state.constitutionalAI?.config;
+    return Boolean(config?.enabled && config.filterOutput);
+  }
+
   private ensureCostRouting(): void {
     if (this.config.costRouting?.enabled && !this.state.costRoutingInitialized) {
       initializeCostRouting(this.config, this.state);
@@ -1418,14 +1579,10 @@ export class Cogitator {
     explicitProvider?: string
   ): { provider: string; model: string } {
     if (explicitProvider) return { provider: explicitProvider, model: modelString };
-    const slash = modelString.indexOf('/');
-    if (slash > 0) {
-      const prefix = modelString.slice(0, slash);
-      if (this.knowsProvider(prefix)) {
-        return { provider: prefix, model: modelString.slice(slash + 1) };
-      }
-    }
-    return { provider: this.config.llm?.defaultProvider ?? 'ollama', model: modelString };
+    return resolveModelRoute(modelString, {
+      defaultProvider: this.config.llm?.defaultProvider,
+      knowsProvider: (name) => this.knowsProvider(name),
+    });
   }
 
   /**
@@ -1718,6 +1875,10 @@ interface PausedTurn {
   toolCalls: ToolCall[];
   decisions: Record<string, ToolApprovalDecision>;
   pending: ToolApprovalRequest[];
+}
+
+function isArgumentRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /** Whether a call to `tool` with `args` needs approval; a check that throws counts as yes. */

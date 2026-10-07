@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { ToolContentResult } from '@cogitator-ai/types';
 import type { STTProvider, TTSProvider } from './types.js';
 
 export interface VoiceTool<TParams = unknown> {
@@ -44,14 +45,47 @@ export function transcribeTool(stt: STTProvider): VoiceTool<TranscribeParams> {
   };
 }
 
+type SpeechFormat = NonNullable<SpeakParams['format']>;
+
+const SPEECH_MEDIA_TYPES: Record<SpeechFormat, string> = {
+  mp3: 'audio/mpeg',
+  opus: 'audio/ogg',
+  aac: 'audio/aac',
+  flac: 'audio/flac',
+  wav: 'audio/wav',
+  pcm16: 'audio/L16',
+};
+
+/**
+ * `speak_text`: synthesizes speech and returns it as a tool result with a `file` part (see
+ * `ToolContentResult`). The application gets the audio from the result, in `onToolResult` or
+ * `RunResult.toolCalls`, while the model sees only a one-line description instead of the base64
+ * audio, which would fill its context.
+ */
 export function speakTool(tts: TTSProvider): VoiceTool<SpeakParams> {
   return {
     name: 'speak_text',
-    description: 'Convert text to speech audio',
+    description: 'Convert text to speech audio, which is delivered to the application',
     parameters: SpeakParamsSchema,
     execute: async ({ text, voice, format }) => {
       const audio = await tts.synthesize(text, { voice, format });
-      return { audioBase64: audio.toString('base64'), format: format ?? 'mp3' };
+      const speechFormat = format ?? 'mp3';
+      const result: ToolContentResult = {
+        type: 'tool-content',
+        content: [
+          {
+            type: 'text',
+            text: `Synthesized speech: ${audio.length} bytes of ${speechFormat} audio, delivered to the application.`,
+          },
+          {
+            type: 'file',
+            data: audio.toString('base64'),
+            mediaType: SPEECH_MEDIA_TYPES[speechFormat],
+            filename: `speech.${speechFormat === 'pcm16' ? 'pcm' : speechFormat}`,
+          },
+        ],
+      };
+      return result;
     },
   };
 }

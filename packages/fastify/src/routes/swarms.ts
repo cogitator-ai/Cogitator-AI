@@ -8,12 +8,14 @@ import type {
 import { SwarmRunRequestSchema } from '../types.js';
 import { FastifyStreamWriter, generateId } from '../streaming/index.js';
 import type { RunResult, SwarmMessage, SwarmEvent } from '@cogitator-ai/types';
+import { parseSwarmRunRequest, swarmAgentNames, withSwarm } from '@cogitator-ai/server-shared';
 import {
   isModuleNotFound,
   onClientDisconnect,
   resolveError,
   sendError,
   sendRouteError,
+  validateBody,
 } from './utils.js';
 
 interface SwarmParams {
@@ -34,11 +36,7 @@ export const swarmRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.get('/swarms', async () => {
     const swarmList = Object.entries(fastify.cogitator.swarms).map(([name, config]) => {
-      const agents: string[] = [];
-      if (config.supervisor) agents.push(config.supervisor.name);
-      if (config.workers) agents.push(...config.workers.map((w) => w.name));
-      if (config.agents) agents.push(...config.agents.map((a) => a.name));
-      if (config.moderator) agents.push(config.moderator.name);
+      const agents = swarmAgentNames(config);
 
       return {
         name,
@@ -51,9 +49,13 @@ export const swarmRoutes: FastifyPluginAsync = async (fastify) => {
     return response;
   });
 
+  const runBody = validateBody((body) =>
+    parseSwarmRunRequest(body, { acceptContext: fastify.cogitator.acceptContext })
+  );
+
   fastify.post<{ Params: SwarmParams; Body: SwarmRunRequest }>(
     '/swarms/:name/run',
-    { schema: { params: paramsSchema, body: SwarmRunRequestSchema } },
+    { schema: { params: paramsSchema, body: SwarmRunRequestSchema }, preValidation: runBody },
     async (request, reply) => {
       const { name } = request.params;
       const swarmConfig = findSwarm(name);
@@ -71,41 +73,43 @@ export const swarmRoutes: FastifyPluginAsync = async (fastify) => {
 
       try {
         const { Swarm } = await import('@cogitator-ai/swarms');
-        const swarm = new Swarm(fastify.cogitator.runtime, swarmConfig);
-        abortSwarm = () => swarm.abort();
-        if (disconnected) swarm.abort();
+        return await withSwarm(
+          new Swarm(fastify.cogitator.runtime, swarmConfig),
+          async (swarm): Promise<SwarmRunResponse> => {
+            abortSwarm = () => swarm.abort();
+            if (disconnected) swarm.abort();
 
-        const result = await swarm.run({
-          input: request.body.input,
-          context: request.body.context,
-          threadId: request.body.threadId,
-          userId: request.cogitatorAuth?.userId,
-          timeout: request.body.timeout,
-        });
+            const result = await swarm.run({
+              input: request.body.input,
+              context: request.body.context,
+              threadId: request.body.threadId,
+              userId: request.cogitatorAuth?.userId,
+              timeout: request.body.timeout,
+            });
 
-        const agentResults: Record<string, unknown> = {};
-        for (const [agentName, agentResult] of result.agentResults.entries()) {
-          agentResults[agentName] = {
-            output: agentResult.output,
-            usage: agentResult.usage,
-          };
-        }
+            const agentResults: Record<string, unknown> = {};
+            for (const [agentName, agentResult] of result.agentResults.entries()) {
+              agentResults[agentName] = {
+                output: agentResult.output,
+                usage: agentResult.usage,
+              };
+            }
 
-        const resourceUsage = swarm.getResourceUsage();
-        const response: SwarmRunResponse = {
-          swarmId: swarm.id,
-          swarmName: swarm.name,
-          strategy: swarm.strategyType,
-          output: result.output,
-          agentResults,
-          usage: {
-            totalTokens: resourceUsage.totalTokens,
-            totalCost: resourceUsage.totalCost,
-            elapsedTime: resourceUsage.elapsedTime,
-          },
-        };
-
-        return response;
+            const resourceUsage = swarm.getResourceUsage();
+            return {
+              swarmId: swarm.id,
+              swarmName: swarm.name,
+              strategy: swarm.strategyType,
+              output: result.output,
+              agentResults,
+              usage: {
+                totalTokens: resourceUsage.totalTokens,
+                totalCost: resourceUsage.totalCost,
+                elapsedTime: resourceUsage.elapsedTime,
+              },
+            };
+          }
+        );
       } catch (error) {
         if (isModuleNotFound(error)) {
           return sendError(reply, 501, SWARMS_MISSING, 'UNIMPLEMENTED');
@@ -117,7 +121,7 @@ export const swarmRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.post<{ Params: SwarmParams; Body: SwarmRunRequest }>(
     '/swarms/:name/stream',
-    { schema: { params: paramsSchema, body: SwarmRunRequestSchema } },
+    { schema: { params: paramsSchema, body: SwarmRunRequestSchema }, preValidation: runBody },
     async (request, reply) => {
       const { name } = request.params;
       const swarmConfig = findSwarm(name);
@@ -141,54 +145,55 @@ export const swarmRoutes: FastifyPluginAsync = async (fastify) => {
 
       try {
         const { Swarm } = await import('@cogitator-ai/swarms');
-        const swarm = new Swarm(fastify.cogitator.runtime, swarmConfig);
-        abortSwarm = () => swarm.abort();
-        if (disconnected) swarm.abort();
+        await withSwarm(new Swarm(fastify.cogitator.runtime, swarmConfig), async (swarm) => {
+          abortSwarm = () => swarm.abort();
+          if (disconnected) swarm.abort();
 
-        writer.start(messageId);
+          writer.start(messageId);
 
-        const result = await swarm.run({
-          input: request.body.input,
-          context: request.body.context,
-          threadId: request.body.threadId,
-          userId: request.cogitatorAuth?.userId,
-          timeout: request.body.timeout,
-          onAgentStart: (agentName: string) => {
-            writer.swarmEvent('agent_start', { agentName, timestamp: Date.now() });
-          },
-          onAgentComplete: (agentName: string, agentResult: RunResult) => {
-            writer.swarmEvent('agent_complete', {
-              agentName,
-              output: agentResult.output,
-              timestamp: Date.now(),
-            });
-          },
-          onAgentError: (agentName: string, error: Error) => {
-            writer.swarmEvent('agent_error', {
-              agentName,
-              error: resolveError(request, error, `swarm agent ${agentName} error`).message,
-            });
-          },
-          onMessage: (message: SwarmMessage) => {
-            writer.swarmEvent('message', message);
-          },
-          onEvent: (event: SwarmEvent) => {
-            writer.swarmEvent(event.type, event.data);
-          },
+          const result = await swarm.run({
+            input: request.body.input,
+            context: request.body.context,
+            threadId: request.body.threadId,
+            userId: request.cogitatorAuth?.userId,
+            timeout: request.body.timeout,
+            onAgentStart: (agentName: string) => {
+              writer.swarmEvent('agent_start', { agentName, timestamp: Date.now() });
+            },
+            onAgentComplete: (agentName: string, agentResult: RunResult) => {
+              writer.swarmEvent('agent_complete', {
+                agentName,
+                output: agentResult.output,
+                timestamp: Date.now(),
+              });
+            },
+            onAgentError: (agentName: string, error: Error) => {
+              writer.swarmEvent('agent_error', {
+                agentName,
+                error: resolveError(request, error, `swarm agent ${agentName} error`).message,
+              });
+            },
+            onMessage: (message: SwarmMessage) => {
+              writer.swarmEvent('message', message);
+            },
+            onEvent: (event: SwarmEvent) => {
+              writer.swarmEvent(event.type, event.data);
+            },
+          });
+
+          const resourceUsage = swarm.getResourceUsage();
+          writer.swarmEvent('swarm_completed', {
+            swarmId: swarm.id,
+            output: result.output,
+            usage: {
+              totalTokens: resourceUsage.totalTokens,
+              totalCost: resourceUsage.totalCost,
+              elapsedTime: resourceUsage.elapsedTime,
+            },
+          });
+
+          writer.finish(messageId);
         });
-
-        const resourceUsage = swarm.getResourceUsage();
-        writer.swarmEvent('swarm_completed', {
-          swarmId: swarm.id,
-          output: result.output,
-          usage: {
-            totalTokens: resourceUsage.totalTokens,
-            totalCost: resourceUsage.totalCost,
-            elapsedTime: resourceUsage.elapsedTime,
-          },
-        });
-
-        writer.finish(messageId);
       } catch (error) {
         if (isModuleNotFound(error)) {
           return sendError(reply, 501, SWARMS_MISSING, 'UNIMPLEMENTED');

@@ -1,7 +1,6 @@
-import type { FastifyReply, FastifyRequest } from 'fastify';
-import { CogitatorError, ERROR_STATUS_CODES, ErrorCode, type RunResult } from '@cogitator-ai/types';
-import { toRunUsage } from '@cogitator-ai/server-shared';
-import type { AgentRunResponse } from '../types.js';
+import type { FastifyReply, FastifyRequest, preValidationAsyncHookHandler } from 'fastify';
+import { CogitatorError, ERROR_STATUS_CODES, ErrorCode } from '@cogitator-ai/types';
+import type { ParseResult } from '@cogitator-ai/server-shared';
 
 export function sendError(
   reply: FastifyReply,
@@ -64,20 +63,18 @@ export function onClientDisconnect(reply: FastifyReply, handler: () => void): vo
   });
 }
 
-/** The client-facing shape of a run; never carries the paused run's checkpoint */
-export function toAgentRunResponse(result: RunResult): AgentRunResponse {
-  return {
-    output: result.output,
-    threadId: result.threadId,
-    usage: toRunUsage(result.usage),
-    toolCalls: [...result.toolCalls],
-    ...(result.reasoning && { reasoning: result.reasoning }),
-    status: result.status ?? 'completed',
-    ...(result.pendingApprovals && { pendingApprovals: [...result.pendingApprovals] }),
+/**
+ * A `preValidation` hook that reads the body with the shared validator every adapter uses
+ * and puts the validated value in its place. It runs before the JSON schema, whose type
+ * coercion would otherwise turn `input: 42` into `"42"`, so Fastify refuses exactly what
+ * the other adapters refuse, and the schema only documents the body.
+ */
+export function validateBody<T>(
+  parse: (body: unknown) => ParseResult<T>
+): preValidationAsyncHookHandler {
+  return async (request, reply) => {
+    const parsed = parse(request.body);
+    if (!parsed.ok) return sendError(reply, 400, parsed.message, 'INVALID_INPUT');
+    request.body = parsed.value;
   };
-}
-
-export function withoutCheckpoint(result: RunResult): Omit<RunResult, 'checkpoint'> {
-  const { checkpoint: _checkpoint, ...rest } = result;
-  return rest;
 }

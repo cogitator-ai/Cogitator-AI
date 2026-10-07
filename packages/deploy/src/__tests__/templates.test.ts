@@ -4,6 +4,17 @@ import { generateDockerCompose, imageTag } from '../templates/docker-compose';
 import { generateFlyToml, parseMemoryMb } from '../templates/fly-toml';
 
 describe('generateDockerfile', () => {
+  it('probes health on the IPv4 loopback, which servers bound to 0.0.0.0 answer', () => {
+    const df = generateDockerfile({
+      config: { port: 3000, health: { path: '/api/health' } },
+      hasTypeScript: false,
+      hasBuildScript: false,
+    });
+
+    expect(df).toContain('wget -q --spider http://127.0.0.1:3000/api/health');
+    expect(df).not.toContain('localhost');
+  });
+
   it('uses npm ci when a package-lock exists', () => {
     const df = generateDockerfile({
       config: { port: 3000 },
@@ -45,12 +56,12 @@ describe('generateDockerfile', () => {
       hasTypeScript: false,
     });
     expect(df).toContain('--interval=10s --timeout=2s');
-    expect(df).toContain('http://localhost:8080/ready');
+    expect(df).toContain('http://127.0.0.1:8080/ready');
   });
 
   it('checks the health route the server adapters serve by default', () => {
     const df = generateDockerfile({ config: { port: 3000 }, hasTypeScript: false });
-    expect(df).toContain('http://localhost:3000/cogitator/health');
+    expect(df).toContain('http://127.0.0.1:3000/cogitator/health');
   });
 });
 

@@ -116,6 +116,27 @@ describe('vector-search tool', () => {
       );
     });
 
+    it('reads an OLLAMA_BASE_URL with a long run of slashes in linear time', async () => {
+      delete process.env.OPENAI_API_KEY;
+      const base = `http://gpu${'/'.repeat(50_000)}a`;
+      process.env.OLLAMA_BASE_URL = `${base}/`;
+      process.env.DATABASE_URL = 'postgres://localhost/db';
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ embedding: Array(768).fill(0.1) }),
+      });
+      const { Client } = await import('pg');
+      const mockInstance = new Client();
+      (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
+
+      const started = performance.now();
+      await vectorSearch.execute({ query: 'test' }, ctx);
+
+      expect(performance.now() - started).toBeLessThan(500);
+      expect(mockFetch).toHaveBeenCalledWith(`${base}/api/embeddings`, expect.any(Object));
+    });
+
     it('detects Google provider from API key', async () => {
       delete process.env.OPENAI_API_KEY;
       delete process.env.OLLAMA_BASE_URL;

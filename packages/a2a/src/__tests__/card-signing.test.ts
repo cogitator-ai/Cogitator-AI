@@ -1,20 +1,24 @@
 import { describe, it, expect, vi } from 'vitest';
-import { signAgentCard, verifyAgentCardSignature } from '../agent-card';
+import { createHmac } from 'node:crypto';
+import { canonicalJson, signAgentCard, verifyAgentCardSignature } from '../agent-card';
 import { A2AServer } from '../server';
 import type { AgentCard, CogitatorLike, AgentRunResult } from '../types';
 import type { Agent, AgentConfig } from '@cogitator-ai/types';
 
 function createTestCard(): AgentCard {
   return {
+    protocolVersion: '0.3.0',
     name: 'test-agent',
     description: 'A test agent',
     url: 'https://example.com/a2a',
-    version: '0.3',
+    version: '1.0.0',
     capabilities: { streaming: true, pushNotifications: false },
     skills: [
       {
         id: 'search',
         name: 'search',
+        description: 'Search',
+        tags: ['search'],
         inputModes: ['text/plain'],
         outputModes: ['text/plain'],
       },
@@ -59,11 +63,28 @@ describe('Agent Card Signing', () => {
   const secret = 'my-signing-secret';
 
   describe('signAgentCard', () => {
-    it('should produce a card with signature field', () => {
+    it('should add a JWS signature (HS256, detached payload) to signatures', () => {
       const card = createTestCard();
       const signed = signAgentCard(card, { secret });
-      expect(signed.signature).toBeDefined();
-      expect(signed.signature).toMatch(/^hmac-sha256:/);
+      expect(signed.signatures).toHaveLength(1);
+      const [jws] = signed.signatures!;
+      expect(JSON.parse(Buffer.from(jws.protected, 'base64url').toString('utf8'))).toEqual({
+        alg: 'HS256',
+        typ: 'JOSE',
+      });
+      expect(jws.signature).toMatch(/^[A-Za-z0-9_-]+$/);
+    });
+
+    it('should sign the RFC 8785 canonical JSON of the card without its signatures', () => {
+      const card = createTestCard();
+      const signed = signAgentCard(card, { secret });
+      const [jws] = signed.signatures!;
+      const payload = Buffer.from(canonicalJson(card)).toString('base64url');
+      const expected = createHmac('sha256', secret)
+        .update(`${jws.protected}.${payload}`)
+        .digest('base64url');
+      expect(jws.signature).toBe(expected);
+      expect(signAgentCard(signed, { secret }).signatures).toEqual(signed.signatures);
     });
 
     it('should preserve all original card fields', () => {
@@ -79,19 +100,20 @@ describe('Agent Card Signing', () => {
       const card = createTestCard();
       const signed1 = signAgentCard(card, { secret });
       const signed2 = signAgentCard(card, { secret });
-      expect(signed1.signature).toBe(signed2.signature);
+      expect(signed1.signatures).toEqual(signed2.signatures);
     });
 
     it('should produce different signatures for different secrets', () => {
       const card = createTestCard();
       const signed1 = signAgentCard(card, { secret: 'secret-a' });
       const signed2 = signAgentCard(card, { secret: 'secret-b' });
-      expect(signed1.signature).not.toBe(signed2.signature);
+      expect(signed1.signatures).not.toEqual(signed2.signatures);
     });
 
     it('should produce same signature regardless of key order', () => {
       const base = createTestCard();
       const card1 = {
+        protocolVersion: base.protocolVersion,
         name: base.name,
         url: base.url,
         version: base.version,
@@ -110,10 +132,11 @@ describe('Agent Card Signing', () => {
         version: base.version,
         url: base.url,
         name: base.name,
+        protocolVersion: base.protocolVersion,
       } as AgentCard;
       const signed1 = signAgentCard(card1, { secret });
       const signed2 = signAgentCard(card2, { secret });
-      expect(signed1.signature).toBe(signed2.signature);
+      expect(signed1.signatures).toEqual(signed2.signatures);
     });
 
     it('should produce different signatures for different cards', () => {
@@ -121,7 +144,7 @@ describe('Agent Card Signing', () => {
       const card2 = { ...createTestCard(), name: 'different-agent' };
       const signed1 = signAgentCard(card1, { secret });
       const signed2 = signAgentCard(card2, { secret });
-      expect(signed1.signature).not.toBe(signed2.signature);
+      expect(signed1.signatures).not.toEqual(signed2.signatures);
     });
   });
 
@@ -150,9 +173,12 @@ describe('Agent Card Signing', () => {
       expect(verifyAgentCardSignature(card, secret)).toBe(false);
     });
 
-    it('should return false for unknown algorithm prefix', () => {
+    it('should return false for a signature with another algorithm', () => {
       const card = createTestCard();
-      const withBadSig = { ...card, signature: 'unknown-algo:abc123' };
+      const signed = signAgentCard(card, { secret });
+      const [jws] = signed.signatures!;
+      const none = Buffer.from(JSON.stringify({ alg: 'none' })).toString('base64url');
+      const withBadSig = { ...card, signatures: [{ ...jws, protected: none }] };
       expect(verifyAgentCardSignature(withBadSig, secret)).toBe(false);
     });
   });
@@ -165,9 +191,8 @@ describe('Agent Card Signing', () => {
         cardSigning: { secret },
       });
 
-      const card = server.getAgentCard() as AgentCard & { signature?: string };
-      expect(card.signature).toBeDefined();
-      expect(card.signature).toMatch(/^hmac-sha256:/);
+      const card = server.getAgentCard();
+      expect(card.signatures).toHaveLength(1);
       expect(verifyAgentCardSignature(card, secret)).toBe(true);
     });
 
@@ -181,10 +206,10 @@ describe('Agent Card Signing', () => {
         cardSigning: { secret },
       });
 
-      const cards = server.getAgentCards() as (AgentCard & { signature?: string })[];
+      const cards = server.getAgentCards();
       expect(cards).toHaveLength(2);
       for (const card of cards) {
-        expect(card.signature).toBeDefined();
+        expect(card.signatures).toHaveLength(1);
         expect(verifyAgentCardSignature(card, secret)).toBe(true);
       }
     });
@@ -195,8 +220,8 @@ describe('Agent Card Signing', () => {
         cogitator: createMockCogitator(),
       });
 
-      const card = server.getAgentCard() as AgentCard & { signature?: string };
-      expect(card.signature).toBeUndefined();
+      const card = server.getAgentCard();
+      expect(card.signatures).toBeUndefined();
     });
   });
 });

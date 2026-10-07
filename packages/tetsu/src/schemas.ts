@@ -1,6 +1,13 @@
 import { z } from 'zod';
 import { ERROR_STATUS_CODES } from '@cogitator-ai/types';
-import { NON_BLANK_PATTERN } from '@cogitator-ai/server-shared';
+import {
+  DEFAULT_THREAD_MESSAGE_ROLES,
+  MAX_RUN_TIMEOUT_MS,
+  NON_BLANK_PATTERN,
+  parseAddMessageRequest,
+  parseRunRequest,
+} from '@cogitator-ai/server-shared';
+import type { ContextPolicy, ThreadMessageRole } from '@cogitator-ai/server-shared';
 
 const JsonObject = z.record(z.string(), z.unknown());
 
@@ -13,10 +20,19 @@ const RunInput = z
   .regex(new RegExp(NON_BLANK_PATTERN), 'must not be blank')
   .describe('The message for the agent; must contain more than whitespace');
 
+/** A thread id: refused when empty or whitespace only, like every adapter */
+const ThreadId = z.string().regex(new RegExp(NON_BLANK_PATTERN), 'must not be blank');
+
+const RunContext = JsonObject.describe(
+  'Values the run adds to the system prompt as data. Refused unless the server accepts the keys (`acceptContext`)'
+);
+
 export const RunBody = z.object({
   input: RunInput,
-  context: JsonObject.optional().describe('Extra values passed to the run as context'),
-  threadId: z.string().min(1).optional().describe('Conversation thread kept in memory'),
+  context: RunContext.optional(),
+  threadId: ThreadId.optional().describe(
+    'Conversation thread kept in memory. Without one the run opens a new thread, named in the answer and in the `start` event of a stream'
+  ),
 });
 
 const ApprovalDecisionSchema = z.object({
@@ -25,7 +41,7 @@ const ApprovalDecisionSchema = z.object({
 });
 
 export const ResumeBody = z.object({
-  threadId: z.string().min(1).describe('Thread of the paused run'),
+  threadId: ThreadId.describe('Thread of the paused run'),
   decisions: z
     .record(z.string(), ApprovalDecisionSchema)
     .optional()
@@ -36,7 +52,12 @@ export const ResumeBody = z.object({
 });
 
 export const SwarmRunBody = RunBody.extend({
-  timeout: z.number().positive().optional().describe('Run timeout in milliseconds'),
+  timeout: z
+    .number()
+    .positive()
+    .max(MAX_RUN_TIMEOUT_MS)
+    .optional()
+    .describe('Run timeout in milliseconds, at most the longest delay a timer can hold'),
 });
 
 export const WorkflowRunBody = z.object({
@@ -45,14 +66,21 @@ export const WorkflowRunBody = z.object({
     .object({
       maxConcurrency: z.number().int().positive().optional(),
       maxIterations: z.number().int().positive().optional(),
-      checkpoint: z.boolean().optional(),
+      checkpoint: z
+        .literal(false)
+        .optional()
+        .describe('Only `false`: the server keeps no checkpoint store to resume from'),
     })
     .optional(),
 });
 
 export const AddMessageBody = z.object({
-  role: z.enum(['user', 'assistant', 'system']),
-  content: z.string().min(1),
+  role: z
+    .enum(['user', 'assistant', 'system'])
+    .describe(
+      '`system` is refused unless the server accepts it (`threadMessageRoles`), since the model reads it as operator instructions'
+    ),
+  content: z.string().regex(new RegExp(NON_BLANK_PATTERN), 'must not be blank'),
   metadata: JsonObject.optional(),
 });
 
@@ -129,25 +157,48 @@ export const AgentListResponse = z.object({
   ),
 });
 
-export const AgentRunResponse = z.object({
-  output: z.string(),
-  structured: z.unknown().optional(),
-  threadId: z.string(),
-  usage: RunUsageSchema,
-  toolCalls: z.array(ToolCallSchema),
-  reasoning: z
-    .string()
-    .optional()
-    .describe("The model's reasoning summary, when the agent asks for one"),
-  status: z
-    .enum(['completed', 'paused'])
-    .optional()
-    .describe('`paused` when tool calls wait for approval; resume the run to go on'),
-  pendingApprovals: z
-    .array(PendingApprovalSchema)
-    .optional()
-    .describe('The tool calls a paused run waits on'),
-});
+export const AgentRunResponse = z
+  .object({
+    output: z.string(),
+    threadId: z.string(),
+    usage: RunUsageSchema,
+    toolCalls: z.array(ToolCallSchema),
+    reasoning: z
+      .string()
+      .optional()
+      .describe("The model's reasoning summary, when the agent asks for one"),
+    status: z
+      .enum(['completed', 'paused'])
+      .describe('`paused` when tool calls wait for approval; resume the run to go on'),
+    pendingApprovals: z
+      .array(PendingApprovalSchema)
+      .optional()
+      .describe('The tool calls a paused run waits on'),
+    structured: z
+      .unknown()
+      .optional()
+      .describe("The answer parsed against the agent's responseFormat"),
+    structuredError: z
+      .string()
+      .optional()
+      .describe("Why the answer does not match the agent's responseFormat"),
+    truncated: z
+      .literal(true)
+      .optional()
+      .describe('The answer stopped at the output token limit and may be cut off'),
+    blocked: z
+      .enum(['content_filter', 'refusal'])
+      .optional()
+      .describe('The provider withheld the answer'),
+    iterationLimitReached: z
+      .literal(true)
+      .optional()
+      .describe("Tool calls used up the agent's maxIterations before the model answered"),
+    traceId: z.string().describe('Links the answer to the server traces'),
+  })
+  .describe(
+    'The answer of a run. It never carries the system prompt, the history, trace spans or the checkpoint of a paused run'
+  );
 
 export const ThreadResponse = z.object({
   id: z.string(),
@@ -217,19 +268,21 @@ export const SwarmRunResponse = z.object({
 
 export const BlackboardResponse = z.object({ sections: JsonObject });
 
+const RunPayload = z.object({
+  type: z.enum(['agent', 'workflow', 'swarm']),
+  name: z.string().min(1),
+  input: RunInput,
+  context: RunContext.optional(),
+  threadId: ThreadId.optional(),
+});
+
 export const SocketMessage = z.discriminatedUnion('type', [
   z.object({ type: z.literal('ping'), id: z.string().optional() }),
   z.object({ type: z.literal('stop'), id: z.string().optional() }),
   z.object({
     type: z.literal('run'),
     id: z.string().optional(),
-    payload: z.object({
-      type: z.enum(['agent', 'workflow', 'swarm']),
-      name: z.string().min(1),
-      input: RunInput,
-      context: JsonObject.optional(),
-      threadId: z.string().min(1).optional(),
-    }),
+    payload: RunPayload,
   }),
   z.object({
     type: z.literal('resume'),
@@ -237,6 +290,55 @@ export const SocketMessage = z.discriminatedUnion('type', [
     payload: ResumeBody.extend({ name: z.string().min(1) }),
   }),
 ]);
+
+/** What a server accepts from its clients beyond the request schema */
+export interface ClientTrust {
+  acceptContext?: ContextPolicy;
+  threadMessageRoles?: readonly ThreadMessageRole[];
+}
+
+/**
+ * The request schemas of one controller: the shared ones, refined with the server's trust
+ * policy through the validators every adapter shares. A `context` key the server does not
+ * accept, or a thread message role it does not take, fails validation like any other field,
+ * with the status and `VALIDATION_FAILED` envelope the application uses for its schemas.
+ */
+export function requestSchemas(trust: ClientTrust) {
+  const acceptContext = trust.acceptContext ?? false;
+  const roles = trust.threadMessageRoles ?? DEFAULT_THREAD_MESSAGE_ROLES;
+
+  const acceptedContext = (
+    body: { input: string; context?: Record<string, unknown> },
+    ctx: z.RefinementCtx
+  ) => {
+    if (body.context === undefined) return;
+    const parsed = parseRunRequest(body, { acceptContext });
+    if (!parsed.ok) ctx.addIssue({ code: 'custom', message: parsed.message, path: ['context'] });
+  };
+
+  return {
+    RunBody: RunBody.superRefine(acceptedContext),
+    SwarmRunBody: SwarmRunBody.superRefine(acceptedContext),
+    AddMessageBody: AddMessageBody.superRefine((body, ctx) => {
+      const parsed = parseAddMessageRequest(body, { roles });
+      if (!parsed.ok) ctx.addIssue({ code: 'custom', message: parsed.message, path: ['role'] });
+    }),
+    SocketMessage: z.discriminatedUnion('type', [
+      z.object({ type: z.literal('ping'), id: z.string().optional() }),
+      z.object({ type: z.literal('stop'), id: z.string().optional() }),
+      z.object({
+        type: z.literal('run'),
+        id: z.string().optional(),
+        payload: RunPayload.superRefine(acceptedContext),
+      }),
+      z.object({
+        type: z.literal('resume'),
+        id: z.string().optional(),
+        payload: ResumeBody.extend({ name: z.string().min(1) }),
+      }),
+    ]),
+  };
+}
 
 export function errorEnvelope<const E extends string>(error: E, description: string) {
   return z

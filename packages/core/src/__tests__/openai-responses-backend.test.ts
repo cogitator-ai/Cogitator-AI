@@ -480,6 +480,7 @@ describe('OpenAIBackend (Responses API)', () => {
       });
 
       expect(result.content).toBe('I can’t help with that.');
+      expect(result.finishReason).toBe('refusal');
     });
 
     it('maps incomplete responses', async () => {
@@ -509,7 +510,25 @@ describe('OpenAIBackend (Responses API)', () => {
         model: 'gpt-6.1-sol',
         messages: [{ role: 'user', content: 'x' }],
       });
-      expect(filtered.finishReason).toBe('error');
+      expect(filtered.finishReason).toBe('content_filter');
+    });
+
+    it('reports a response cut inside a call as truncated without reading its arguments', async () => {
+      mockResponsesCreate.mockResolvedValueOnce(
+        response({
+          status: 'incomplete',
+          incomplete_details: { reason: 'max_output_tokens' },
+          output: [{ ...weatherCall, arguments: '{"ci' }],
+        })
+      );
+
+      const truncated = await backend.chat({
+        model: 'gpt-6.1-sol',
+        messages: [{ role: 'user', content: 'x' }],
+      });
+
+      expect(truncated.finishReason).toBe('length');
+      expect(truncated.toolCalls).toBeUndefined();
     });
 
     it('throws a typed error for failed responses', async () => {
@@ -1078,6 +1097,36 @@ describe('OpenAIBackend (Responses API)', () => {
       );
 
       expect(chunks.at(-1)?.finishReason).toBe('length');
+    });
+
+    it('reports a streamed refusal as refusal', async () => {
+      const refusal = {
+        id: 'msg_1',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'refusal', refusal: 'No.' }],
+      };
+      mockResponsesCreate.mockResolvedValueOnce(
+        streamOf([
+          created,
+          {
+            type: 'response.refusal.delta',
+            item_id: 'msg_1',
+            output_index: 0,
+            content_index: 0,
+            delta: 'No.',
+          },
+          { type: 'response.completed', response: response({ output: [refusal] }) },
+        ])
+      );
+
+      const chunks = await collect(
+        backend.chatStream({ model: 'gpt-6.1-sol', messages: [{ role: 'user', content: 'x' }] })
+      );
+
+      expect(chunks.map((c) => c.delta.content ?? '').join('')).toBe('No.');
+      expect(chunks.at(-1)?.finishReason).toBe('refusal');
     });
 
     it('throws on response.failed and error events', async () => {

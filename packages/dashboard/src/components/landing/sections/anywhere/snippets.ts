@@ -214,30 +214,25 @@ export const WRANGLER_JSONC = `
 
 export const OPENAI_TS = `
 import OpenAI from 'openai';
-import { calculator } from '@cogitator-ai/core';
 import { createOpenAIServer } from '@cogitator-ai/openai-compat';
-import { cogitator } from './agent';
+import { assistant, cogitator } from './agent';
 
 const server = createOpenAIServer(cogitator, {
   port: 8080,
-  tools: [calculator],
-  defaultModel: 'anthropic/claude-sonnet-5-5',
+  agents: { assistant },
 });
 await server.start();
 
 const openai = new OpenAI({ baseURL: server.getBaseUrl(), apiKey: 'local' });
 
-const assistant = await openai.beta.assistants.create({
-  model: 'cogitator',
-  instructions: 'Answer briefly. Use the calculator for arithmetic.',
-});
-const thread = await openai.beta.threads.create({
+const stream = await openai.chat.completions.create({
+  model: 'assistant',
   messages: [{ role: 'user', content: 'What is 123 * 456?' }],
+  stream: true,
 });
-
-openai.beta.threads.runs
-  .stream(thread.id, { assistant_id: assistant.id })
-  .on('textDelta', (delta) => process.stdout.write(delta.value ?? ''));
+for await (const chunk of stream) {
+  process.stdout.write(chunk.choices[0]?.delta.content ?? '');
+}
 `;
 
 export const AI_SDK_TS = `

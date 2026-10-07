@@ -41,6 +41,11 @@ function asJsonb(param: unknown): unknown {
   return JSON.parse(param);
 }
 
+/** What a database with pgvector answers to the adapter's schema probes. */
+function withPgvector(sql: string): QueryResult | undefined {
+  return sql.includes("to_regtype('vector')") ? { rows: [{ available: true }] } : undefined;
+}
+
 vi.mock('pg', () => {
   class Pool {
     query = mockPool.query;
@@ -58,7 +63,7 @@ describe('PostgresAdapter', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    mockPool.query.mockResolvedValue({ rows: [] });
+    mockPool.query.mockImplementation(async (sql: string) => withPgvector(sql) ?? { rows: [] });
     adapter = new PostgresAdapter({
       provider: 'postgres',
       connectionString: 'postgresql://localhost:5432/test',
@@ -85,7 +90,7 @@ describe('PostgresAdapter', () => {
 
     it('uses custom schema name', async () => {
       vi.clearAllMocks();
-      mockPool.query.mockResolvedValue({ rows: [] });
+      mockPool.query.mockImplementation(async (sql: string) => withPgvector(sql) ?? { rows: [] });
 
       const newAdapter = new PostgresAdapter({
         provider: 'postgres',
@@ -711,7 +716,9 @@ describe('PostgresAdapter', () => {
       answer: (sql: string) => QueryResult | undefined
     ): Promise<{ fresh: PostgresAdapter; queries: string[] }> {
       vi.clearAllMocks();
-      mockPool.query.mockImplementation(async (sql: string) => answer(sql) ?? { rows: [] });
+      mockPool.query.mockImplementation(
+        async (sql: string) => answer(sql) ?? withPgvector(sql) ?? { rows: [] }
+      );
       const fresh = new PostgresAdapter({
         provider: 'postgres',
         connectionString: 'postgresql://localhost:5432/test',

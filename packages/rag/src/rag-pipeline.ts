@@ -11,6 +11,7 @@ import type {
   RetrievalResult,
   DocumentChunk,
   RAGDocument,
+  SearchFilter,
 } from '@cogitator-ai/types';
 import { RAGPipelineConfigSchema } from './schema.js';
 import { isChunkIndexer } from './retrievers/chunk-indexer.js';
@@ -31,41 +32,72 @@ function definedEntries<T extends object>(value: T | undefined): Partial<T> {
   return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as Partial<T>;
 }
 
+interface PreparedDocument {
+  doc: RAGDocument;
+  chunks: DocumentChunk[];
+  vectors: number[][];
+}
+
+/** Documents grouped by their `source`, in the order the loader returned them. */
+function groupBySource(documents: RAGDocument[]): RAGDocument[][] {
+  const groups = new Map<string, RAGDocument[]>();
+  for (const doc of documents) {
+    const group = groups.get(doc.source);
+    if (group) group.push(doc);
+    else groups.set(doc.source, [doc]);
+  }
+  return [...groups.values()];
+}
+
 export class RAGPipeline {
   private readonly config: RAGPipelineConfig;
   private readonly deps: RAGPipelineDeps;
   private stats = { documentsIngested: 0, chunksStored: 0, queriesProcessed: 0 };
+  private warnedAppendOnly = false;
 
   constructor(config: RAGPipelineConfig, deps: RAGPipelineDeps, alreadyParsed = false) {
     this.config = alreadyParsed ? config : RAGPipelineConfigSchema.parse(config);
     this.deps = deps;
   }
 
+  /**
+   * Loads `source` and stores its chunks. Each source the loader returns documents for replaces
+   * what this pipeline stored for it before, once the new chunks are embedded, so ingesting a
+   * file again (or an edited file) leaves no duplicates or stale text behind.
+   */
   async ingest(source: string): Promise<{ documents: number; chunks: number }> {
     const documents = await this.deps.loader.load(source);
     let totalChunks = 0;
-    let ingestedDocuments = 0;
 
-    for (const doc of documents) {
-      const chunks = await this.chunkDocument(doc);
-      if (chunks.length > 0) {
-        const vectors = await this.deps.embeddingService.embedBatch(chunks.map((c) => c.content));
+    for (const group of groupBySource(documents)) {
+      const prepared: PreparedDocument[] = [];
+      for (const doc of group) {
+        prepared.push(await this.prepareDocument(doc));
+      }
 
-        if (vectors.length !== chunks.length) {
-          throw new Error(
-            `Embedding count mismatch: got ${vectors.length} vectors for ${chunks.length} chunks`
-          );
-        }
-
+      await this.forgetSource(group[0]!.source);
+      for (const { doc, chunks, vectors } of prepared) {
         await this.storeChunks(chunks, vectors, doc);
         totalChunks += chunks.length;
         this.stats.chunksStored += chunks.length;
+        this.stats.documentsIngested++;
       }
-      ingestedDocuments++;
-      this.stats.documentsIngested++;
     }
 
-    return { documents: ingestedDocuments, chunks: totalChunks };
+    return { documents: documents.length, chunks: totalChunks };
+  }
+
+  /**
+   * Deletes every chunk this pipeline stored for `source`: the `source` its results carry (for
+   * files, the resolved path the loader read). Needs an embedding store with `deleteByFilter`.
+   */
+  async removeSource(source: string): Promise<void> {
+    if (!this.deps.embeddingAdapter.deleteByFilter) {
+      throw new Error(
+        'removeSource needs an embedding store with deleteByFilter (every built-in store has it)'
+      );
+    }
+    await this.forgetSource(source);
   }
 
   async query(text: string, options?: Partial<RetrievalConfig>): Promise<RetrievalResult[]> {
@@ -73,7 +105,10 @@ export class RAGPipeline {
       ...this.config.retrieval,
       ...definedEntries(options),
     };
-    const results = await this.deps.retriever.retrieve(text, merged);
+    const results = await this.deps.retriever.retrieve(text, {
+      ...merged,
+      filter: this.scope(merged.filter),
+    });
     this.stats.queriesProcessed++;
 
     if (this.deps.reranker && this.config.reranking?.enabled) {
@@ -85,6 +120,68 @@ export class RAGPipeline {
 
   getStats() {
     return { ...this.stats };
+  }
+
+  /**
+   * The filter every search of this pipeline runs with: documents only, so private memory kept
+   * in a shared store (messages, facts) never comes back, and only this pipeline's namespace.
+   */
+  private scope(filter: SearchFilter | undefined): SearchFilter {
+    const metadata = { ...filter?.metadata, ...this.namespaceMetadata() };
+    return {
+      ...filter,
+      sourceType: 'document',
+      ...(Object.keys(metadata).length > 0 && { metadata }),
+    };
+  }
+
+  private namespaceMetadata(): { namespace: string } | Record<string, never> {
+    return this.config.namespace === undefined ? {} : { namespace: this.config.namespace };
+  }
+
+  private async prepareDocument(doc: RAGDocument): Promise<PreparedDocument> {
+    const chunks = await this.chunkDocument(doc);
+    const vectors =
+      chunks.length > 0
+        ? await this.deps.embeddingService.embedBatch(chunks.map((c) => c.content))
+        : [];
+    if (vectors.length !== chunks.length) {
+      throw new Error(
+        `Embedding count mismatch: got ${vectors.length} vectors for ${chunks.length} chunks`
+      );
+    }
+    return { doc, chunks, vectors };
+  }
+
+  /** Deletes the stored chunks of `source` in this pipeline's namespace, and drops them from a local index. */
+  private async forgetSource(source: string): Promise<void> {
+    const adapter = this.deps.embeddingAdapter;
+    if (!adapter.deleteByFilter) {
+      if (!this.warnedAppendOnly) {
+        this.warnedAppendOnly = true;
+        console.warn(
+          'RAGPipeline: the embedding store has no deleteByFilter, so ingesting a source again ' +
+            'adds its chunks next to the old ones instead of replacing them'
+        );
+      }
+      return;
+    }
+
+    const result = await adapter.deleteByFilter({
+      sourceType: 'document',
+      metadata: { source, ...this.namespaceMetadata() },
+    });
+    if (!result.success) {
+      throw new Error(`Could not remove the previous chunks of ${source}: ${result.error}`);
+    }
+
+    const retriever = this.deps.retriever;
+    if (isChunkIndexer(retriever)) {
+      retriever.removeChunks?.(
+        (chunk) =>
+          chunk.metadata.source === source && chunk.metadata.namespace === this.config.namespace
+      );
+    }
   }
 
   private async chunkDocument(doc: RAGDocument): Promise<DocumentChunk[]> {
@@ -119,6 +216,7 @@ export class RAGPipeline {
       order: chunk.order,
       startOffset: chunk.startOffset,
       endOffset: chunk.endOffset,
+      ...this.namespaceMetadata(),
     };
 
     const result = await this.deps.embeddingAdapter.addEmbedding({

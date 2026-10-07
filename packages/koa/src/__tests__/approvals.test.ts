@@ -25,6 +25,7 @@ function result(overrides: Record<string, unknown> = {}) {
     threadId: 'thread-1',
     usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
     toolCalls: [],
+    trace: { traceId: 'trace-1', spans: [] },
     ...overrides,
   };
 }

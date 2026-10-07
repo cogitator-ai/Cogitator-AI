@@ -79,19 +79,22 @@ my-assistant/
 ├── tsconfig.json
 ├── .env             # API keys and channel tokens (mode 0600), when any were entered
 ├── .gitignore
+├── cogitator.yml    # provider, model, memory and deploy settings for `cogitator run` / `cogitator deploy`
 ├── pnpm-workspace.yaml  # allows native builds (better-sqlite3, esbuild, sharp), pnpm only
 └── src/
     ├── gateway.ts   # exports `gateway` — agent, channels, memory adapter
     └── agent.ts     # starts the gateway (pnpm dev / pnpm start)
 ```
 
-| Memory choice | Generated adapter | Extra dependency | Notes                               |
-| ------------- | ----------------- | ---------------- | ----------------------------------- |
-| SQLite        | `SQLiteAdapter`   | `better-sqlite3` | Stored in `./data/memory.db`        |
-| In-memory     | `InMemoryAdapter` | —                | Lost on restart                     |
-| PostgreSQL    | `PostgresAdapter` | `pg`             | Connection string in `DATABASE_URL` |
+| Memory choice | Generated adapter | Extra dependency | Notes                                                            |
+| ------------- | ----------------- | ---------------- | ---------------------------------------------------------------- |
+| SQLite        | `SQLiteAdapter`   | `better-sqlite3` | Stored in `./data/memory.db` (the directory is created at start) |
+| In-memory     | `InMemoryAdapter` | -                | Lost on restart                                                  |
+| PostgreSQL    | `PostgresAdapter` | `pg`             | Connection string in `DATABASE_URL`                              |
 
 `src/gateway.ts` loads `.env` itself (`process.loadEnvFile`, Node ≥ 20.12), so it works with `pnpm dev`, `cogitator assistant`, `cogitator build` and the daemon alike.
+
+`package.json` pins the package manager that ran `init` in its `packageManager` field (pnpm, Yarn or Bun), so corepack and the deploy image install with the same version. `cogitator.yml` makes the project deployable as it is: `cogitator deploy` runs the gateway as a worker (no HTTP health check, the WebChat port published when WebChat is on), keeps the SQLite database on a volume and passes the API key and channel tokens as secrets. The code in `src/` configures the gateway itself, so change the provider, model or memory in both places.
 
 ---
 
@@ -174,9 +177,9 @@ cogitator run            # interactive
 | `-s, --stream`        | `true`      | Stream response tokens              |
 | `--no-stream`         | -           | Disable streaming                   |
 
-**Config resolution:** `-c` → `COGITATOR_CONFIG` → `cogitator.yml`, `cogitator.yaml`, `cogitator.json`, `.cogitator.yml`, `.cogitator.yaml`. The file is loaded with [`@cogitator-ai/config`](/docs/getting-started/configuration), so `${ENV}` references and `COGITATOR_*` / provider environment variables apply even without a file.
+**Config resolution:** `-c` → `COGITATOR_CONFIG` → `cogitator.yml`, `cogitator.yaml`, `.cogitator.yml`, `.cogitator.yaml`, `cogitator.json`. The `.env` next to the file (or in the working directory without one) is loaded first, without overriding variables already set. The file is loaded with [`@cogitator-ai/config`](/docs/getting-started/configuration), so `${ENV}` references and `COGITATOR_*` / provider environment variables apply even without a file. An assistant config from `cogitator wizard` is not a runtime config: `run` takes its `llm.provider` and `llm.model` as the model and everything else from the environment (`cogitator up` runs the assistant itself).
 
-**Model resolution:** `-m` → `COGITATOR_MODEL` → `llm.defaultModel` from the config → first installed Ollama model (preferring qwen3:8b, qwen3.5:9b, llama3.1:8b, llama3:8b, gemma3:4b, gemma2:9b, mistral:7b). Ollama is reached at `llm.providers.ollama.baseUrl`, `OLLAMA_URL` or `OLLAMA_HOST`.
+**Model resolution:** `-m` → `COGITATOR_MODEL` → `llm.defaultModel` from the config → the model of an assistant config → first installed Ollama model (preferring qwen3:8b, qwen3.5:9b, llama3.1:8b, llama3:8b, gemma3:4b, gemma2:9b, mistral:7b). Ollama is reached at `llm.providers.ollama.baseUrl`, `OLLAMA_URL` or `OLLAMA_HOST`.
 
 Interactive commands: `/model [name]`, `/clear`, `/help`, `exit` / `quit` (Ctrl+D also exits).
 
@@ -202,7 +205,7 @@ node dist/cogitator.mjs
 | `--minify`             | `false`              |
 | `-q, --quiet`          | `false`              |
 
-Native and optional channel dependencies (`better-sqlite3`, `pg`, `grammy`, `discord.js`, `@slack/bolt`, `playwright`, …) stay external.
+Only the project's own code is bundled: every package stays an import resolved from `node_modules` at runtime, since packages ship native addons (`better-sqlite3`, the `ssh2` behind the Docker sandbox) and optional drivers loaded on demand. Run the bundle where the project's dependencies are installed.
 
 ---
 
@@ -247,7 +250,7 @@ cogitator models --pull qwen2.5:0.5b   # pull with progress
 cogitator models --url http://gpu-box:11434
 ```
 
-The Ollama URL defaults to `OLLAMA_URL`, then `OLLAMA_HOST`, then `http://localhost:11434`; `OLLAMA_API_KEY` is sent as a bearer token. Pull errors reported by Ollama (e.g. unknown model) fail the command.
+The Ollama URL defaults to `OLLAMA_BASE_URL`, then `OLLAMA_URL`, then `OLLAMA_HOST` (read like Ollama reads it: port 11434 when none is given, `0.0.0.0` as `localhost`), then `http://localhost:11434`, `OLLAMA_API_KEY` is sent as a bearer token. Pull errors reported by Ollama (e.g. unknown model) fail the command.
 
 ---
 
@@ -284,13 +287,13 @@ cogitator deploy destroy
 | Option                  | Description                              |
 | ----------------------- | ---------------------------------------- |
 | `-t, --target <target>` | `docker` (default) or `fly`              |
-| `-c, --config <path>`   | Config file with a `deploy:` section     |
+| `-c, --config <path>`   | Config file to deploy from               |
 | `--registry <url>`      | Container registry to push to            |
 | `--no-push`             | Skip pushing even when a registry is set |
 | `--dry-run`             | Show the plan without executing          |
 | `--region <region>`     | Deploy region (Fly.io)                   |
 
-The plan lists detected services, required secrets (read from the environment or the project's `.env`), warnings and preflight checks. See [`@cogitator-ai/deploy`](/docs/deployment/deploy-package) for details.
+The model, memory and `deploy:` section all come from one config file: the `-c` file, else the first of `cogitator.yml`, `cogitator.yaml`, `.cogitator.yml`, `.cogitator.yaml`. The plan lists the kind (server or worker), detected services (marked as not provisioned on Fly, where `REDIS_URL` / `DATABASE_URL` are required instead), volumes, required secrets (read from the environment or the project's `.env`), warnings and preflight checks. On Docker the deploy only succeeds when the app container keeps running after it starts, otherwise its last log lines are shown. See [`@cogitator-ai/deploy`](/docs/deployment/deploy-package) for details.
 
 ---
 

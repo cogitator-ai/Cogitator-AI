@@ -6,7 +6,32 @@
 
 export { Cogitator } from './runtime';
 export { Agent, AgentDeserializationError } from './agent';
+export {
+  toAgentWire,
+  fromAgentWire,
+  parseAgentWire,
+  agentWireSchema,
+  routeAgentWireModel,
+  toAgentWireResponseFormat,
+  fromAgentWireResponseFormat,
+  toAgentWireRunResult,
+  fromAgentWireRunResult,
+  findToolOutput,
+  AgentWireError,
+  AGENT_CONFIG_WIRE_FIELDS,
+} from './agent-wire';
+export type { ToAgentWireOptions, AgentWireRuntime } from './agent-wire';
+export { isPausedRun, AgentRunPausedError, findAgentRunPausedError } from './run-pause';
+export type { PausableRun, PausedRun, PausedRunInfo } from './run-pause';
 export { tool, toolset, toolToSchema } from './tool';
+export { toToolParameters } from './tool-schema';
+export {
+  toolContent,
+  isToolContentResult,
+  toolResultParts,
+  toolPartsToMessageContent,
+  toolPartsToText,
+} from './tool-content';
 export { defineSkill, validateSkill, mergeSkillsIntoAgent } from './skill';
 export { agentAsTool } from './agent-tool';
 export type { AgentAsToolOptions, AgentToolResult } from './agent-tool';
@@ -221,6 +246,10 @@ export {
   GoogleBackend,
   AzureOpenAIBackend,
   BedrockBackend,
+  normalizeTurn,
+  finishRunsTools,
+  turnFinishReason,
+  parseToolCallArguments,
   LLMError,
   createLLMError,
   wrapSDKError,
@@ -247,6 +276,7 @@ export {
   parseModel,
 } from './llm/index';
 export type {
+  TurnEnd,
   LLMErrorContext,
   LLMDebugOptions,
   LLMDebugLogger,
@@ -314,9 +344,11 @@ export type {
   ChatRequest,
   ChatResponse,
   ChatStreamChunk,
+  FinishReason,
   CogitatorConfig,
   RunOptions,
   RunResult,
+  RunBlockReason,
   Span,
   ToTConfig,
   ToTResult,

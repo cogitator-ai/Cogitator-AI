@@ -496,16 +496,18 @@ const client = new A2AClient('http://localhost:3100');
 const card = await client.agentCard();
 console.log(\`\${card.name}: \${card.description} (streaming: \${card.capabilities.streaming})\`);
 
-const task = await client.sendMessage({
+const result = await client.sendMessage({
   role: 'user',
-  parts: [{ type: 'text', text: 'Make this concise: "In my personal opinion, I think it is very cold today."' }],
+  parts: [{ kind: 'text', text: 'Make this concise: "In my personal opinion, I think it is very cold today."' }],
 });
-console.log('Task', task.id, task.status.state);
-const reply = task.artifacts[0]?.parts.find((part) => part.type === 'text');
-if (reply?.type === 'text') console.log(reply.text);
+if (result.kind === 'task') {
+  console.log('Task', result.id, result.status.state);
+  const reply = result.artifacts?.[0]?.parts.find((part) => part.kind === 'text');
+  if (reply?.kind === 'text') console.log(reply.text);
 
-const fetched = await client.getTask(task.id);
-console.log('History length:', fetched.history.length);
+  const fetched = await client.getTask(result.id);
+  console.log('History length:', fetched.history?.length ?? 0);
+}
 
 const orchestrator = new Agent({
   name: 'orchestrator',

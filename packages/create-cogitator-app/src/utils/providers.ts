@@ -1,11 +1,16 @@
-import type { LLMProvider } from '../types.js';
+import type { LLMProvider, ProjectOptions } from '../types.js';
 
 export const defaultModels: Record<LLMProvider, string> = {
-  ollama: 'qwen3:8b',
+  ollama: 'qwen3.5:9b',
   openai: 'gpt-6.1-sol',
   anthropic: 'claude-sonnet-5-5',
   google: 'gemini-3.8-flash',
 };
+
+/** The model the project's agents use: `options.model`, else the provider's default. */
+export function modelFor(options: Pick<ProjectOptions, 'provider' | 'model'>): string {
+  return options.model?.trim() || defaultModels[options.provider];
+}
 
 export function providerEnvKey(provider: LLMProvider): string {
   const map: Record<LLMProvider, string> = {
@@ -17,46 +22,41 @@ export function providerEnvKey(provider: LLMProvider): string {
   return map[provider];
 }
 
-export function providerConfig(provider: LLMProvider): string {
-  switch (provider) {
-    case 'ollama':
-      return [
-        `  llm: {`,
-        `    defaultProvider: 'ollama',`,
-        `    providers: {`,
-        `      ollama: { baseUrl: process.env.OLLAMA_BASE_URL || 'http://localhost:11434' },`,
-        `    },`,
-        `  },`,
-      ].join('\n');
+/**
+ * How generated code reads the provider's API key: `requireEnv` calls the
+ * `requireEnv` helper of the generated `src/env.ts`, which fails at startup
+ * with the name of the missing variable. `process-env` reads `process.env` and
+ * leaves a missing key to the first request, for code a build imports without
+ * the key, such as a Next.js route.
+ */
+export type ApiKeyAccess = 'requireEnv' | 'process-env';
 
-    case 'openai':
-      return [
-        `  llm: {`,
-        `    defaultProvider: 'openai',`,
-        `    providers: {`,
-        `      openai: { apiKey: process.env.OPENAI_API_KEY! },`,
-        `    },`,
-        `  },`,
-      ].join('\n');
+function apiKeyExpression(envKey: string, access: ApiKeyAccess): string {
+  return access === 'requireEnv' ? `requireEnv('${envKey}')` : `process.env.${envKey} ?? ''`;
+}
 
-    case 'anthropic':
-      return [
-        `  llm: {`,
-        `    defaultProvider: 'anthropic',`,
-        `    providers: {`,
-        `      anthropic: { apiKey: process.env.ANTHROPIC_API_KEY! },`,
-        `    },`,
-        `  },`,
-      ].join('\n');
-
-    case 'google':
-      return [
-        `  llm: {`,
-        `    defaultProvider: 'google',`,
-        `    providers: {`,
-        `      google: { apiKey: process.env.GOOGLE_API_KEY! },`,
-        `    },`,
-        `  },`,
-      ].join('\n');
+/** The `llm` section of the generated `new Cogitator({...})` call. */
+export function providerConfig(
+  provider: LLMProvider,
+  access: ApiKeyAccess = 'process-env'
+): string {
+  if (provider === 'ollama') {
+    return [
+      `  llm: {`,
+      `    defaultProvider: 'ollama',`,
+      `    providers: {`,
+      `      ollama: { baseUrl: process.env.OLLAMA_BASE_URL || 'http://localhost:11434' },`,
+      `    },`,
+      `  },`,
+    ].join('\n');
   }
+
+  return [
+    `  llm: {`,
+    `    defaultProvider: '${provider}',`,
+    `    providers: {`,
+    `      ${provider}: { apiKey: ${apiKeyExpression(providerEnvKey(provider), access)} },`,
+    `    },`,
+    `  },`,
+  ].join('\n');
 }

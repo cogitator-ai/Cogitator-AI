@@ -16,11 +16,14 @@ The prompts ask for:
 1. Project directory (default `my-agents`)
 2. Template
 3. LLM provider
-4. Package manager (pre-selected from the one running the command, otherwise pnpm)
-5. Docker Compose (default yes)
-6. Git repository (default yes)
+4. Ollama model, when Ollama is the provider and is running (the recommended `qwen3.5:9b` or one you already pulled)
+5. Package manager (pre-selected from the one running the command: npm under `npx` and `npm create`, pnpm under `pnpm create`, otherwise pnpm)
+6. Docker Compose (default yes)
+7. Git repository (default yes)
 
-The target directory must not exist or be empty. The scaffolder then writes the files, runs `<pm> install` (unless you pass `--no-install`) and, if chosen and git is installed, creates a repository. A failed install or git step is reported and left for you to run by hand.
+The target directory must not exist or be empty. Its last segment becomes the package name, so it must be a valid npm package name (lowercase letters, digits, `.`, `_`, `-`, starting with a letter or digit). `.` scaffolds into the current empty directory and names the project after it. The scaffolder then writes the files, runs `<pm> install` (unless you pass `--no-install`) and, if chosen and git is installed, creates a repository. A failed install or git step is reported and left for you to run by hand.
+
+With Ollama it then checks whether the model is pulled and, at the prompt, offers to pull it. The next steps it prints end in a first run that works: `ollama pull <model>` when the model is missing, `cp .env.example .env` and the key to set for a cloud provider, `docker compose up -d redis` for the `memory` template with Docker.
 
 ## Templates
 
@@ -58,24 +61,25 @@ npx create-cogitator-app my-project --provider openai --yes
 | `[directory]`              |           | First positional argument; its last segment names the project  |
 | `--template`               | `-t`      | `basic`, `memory`, `swarm`, `workflow`, `api-server`, `nextjs` |
 | `--provider`               | `-p`      | `ollama`, `openai`, `anthropic`, `google`                      |
+| `--model`                  |           | Model the agents use, default the provider's (below)           |
 | `--pm`                     |           | `pnpm`, `npm`, `yarn`, `bun`                                   |
 | `--docker` / `--no-docker` |           | Include Docker Compose                                         |
 | `--git` / `--no-git`       |           | Initialize a git repository                                    |
 | `--no-install`             |           | Write the files without installing dependencies                |
 | `--yes`                    | `-y`      | Don't prompt; use the defaults for every missing value         |
 
-An invalid flag value is ignored and asked for interactively; anything not given by a flag is prompted for. With `--yes` nothing is prompted and the defaults fill the gaps: `my-agents`, `basic`, `ollama`, the detected package manager, Docker Compose on, git on.
+An invalid flag value is ignored and asked for interactively, and anything not given by a flag is prompted for. With `--yes` nothing is prompted and the defaults fill the gaps: `my-agents`, `basic`, `ollama` with `qwen3.5:9b`, the detected package manager, Docker Compose on, git on. An invalid project name stops the scaffolder with an error instead.
 
 ## Providers
 
 | Provider    | Default Model       | Env Var                      |
 | ----------- | ------------------- | ---------------------------- |
-| `ollama`    | `qwen3:8b`          | `OLLAMA_BASE_URL` (optional) |
+| `ollama`    | `qwen3.5:9b`        | `OLLAMA_BASE_URL` (optional) |
 | `openai`    | `gpt-6.1-sol`       | `OPENAI_API_KEY`             |
 | `anthropic` | `claude-sonnet-5-5` | `ANTHROPIC_API_KEY`          |
 | `google`    | `gemini-3.8-flash`  | `GOOGLE_API_KEY`             |
 
-The generated code sets `llm.defaultProvider` to the chosen provider, reads the key from the environment variable above and gives each agent the default model. `.env.example` lists the variables to set. Next.js loads `.env*` files on its own; the other templates do not, so export the variables in your shell or run with `tsx --env-file=.env src/index.ts`.
+The generated code sets `llm.defaultProvider` to the chosen provider, reads the key from the environment variable above and gives each agent the chosen model. `.env.example` lists the variables to set, with the keys left empty. Copy it to `.env` and fill it in: the `dev` and `start` scripts run `tsx --env-file-if-exists=.env`, and Next.js loads `.env*` files on its own. With a cloud provider the script templates get `src/env.ts`, whose `requireEnv()` stops the app at startup with the name of a missing key.
 
 ## Generated Structure
 
@@ -83,10 +87,11 @@ The generated code sets `llm.defaultProvider` to the chosen provider, reads the 
 my-project/
 ├── src/
 │   ├── index.ts        # entry point
-│   └── tools.ts        # tool definitions (files vary by template)
-├── package.json        # dev/start scripts (tsx), build, typecheck
+│   ├── tools.ts        # tool definitions (files vary by template)
+│   └── env.ts          # requireEnv(), with a cloud provider
+├── package.json        # dev/start scripts (tsx, loading .env), build, typecheck
 ├── tsconfig.json       # not for nextjs, which brings its own
-├── cogitator.yml       # provider and model, for reference
+├── cogitator.yml       # provider, model, memory, deploy settings
 ├── .env.example
 ├── .gitignore
 ├── pnpm-workspace.yaml # with --pm pnpm
@@ -94,11 +99,22 @@ my-project/
 └── README.md
 ```
 
-`cogitator.yml` is in [`@cogitator-ai/config`](/docs/getting-started/configuration) format (`llm.defaultProvider`, `llm.defaultModel`, `memory` for the `memory` template, and `deploy.health.path: /api/health` for the `api-server` and `nextjs` templates, the route their app serves health on) and is read by `cogitator run` and `cogitator deploy`. The generated code configures `Cogitator` in `src/` itself and does not load it.
+`cogitator.yml` is in [`@cogitator-ai/config`](/docs/getting-started/configuration) format and is read by `cogitator run` and `cogitator deploy`: `llm.defaultProvider`, `llm.defaultModel`, the `memory` adapter (`redis` for `memory`, `memory` for `api-server` and `nextjs`, so deploy provisions the right services), `deploy.health.path: /api/health` for `api-server` and `nextjs`, the route their app serves health on, and `deploy.secrets` for `api-server` (the provider key and `API_TOKEN`). The generated code configures `Cogitator` in `src/` itself and does not load it, so change the provider, model or memory in both places.
 
-`docker-compose.yml` runs Redis 7 and Postgres 16 (credentials from `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, all defaulting to `cogitator`), plus Ollama when it is the provider.
+`docker-compose.yml` runs Redis 7 and Postgres 16 (credentials from `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, all defaulting to `cogitator`), plus Ollama when it is the provider, with a one-shot `ollama-pull` service that pulls the project's model into the Ollama volume once the server is healthy.
+
+`.gitignore` covers `node_modules/`, `dist/`, `.env` and every `.env.*` except `.env.example`, `*.tsbuildinfo`, and for `nextjs` also `.next/`, `out/` and `next-env.d.ts`.
+
+The `@cogitator-ai/*` dependencies are pinned with a caret to the versions released together with the scaffolder (for example `^0.33.0`), never `latest`, so an older cached scaffolder still generates projects that compile.
 
 Start the project with `npm run dev` (or `pnpm dev`, `yarn dev`, `bun dev`).
+
+## Template behavior
+
+- `basic`, `memory`, `swarm` and `workflow` set a non-zero exit code when the run fails (`workflow` also on an error in the workflow result), and `memory` and `swarm` close their connections either way. `workflow` prints the report and each node's output.
+- `api-server` and `nextjs` keep conversations in in-process memory, so the next message in a thread sees the earlier ones, and the thread routes of `api-server` answer. Use the Redis, Postgres or SQLite adapter to keep them across restarts.
+- `api-server` listens on `127.0.0.1` in development and on `0.0.0.0` with `NODE_ENV=production` (`HOST` overrides both). With `API_TOKEN` set, every route except `/api/health`, `/api/ready`, `/api/docs` and `/api/openapi.json` needs `Authorization: Bearer <token>`, and in production the server does not start without it. CORS is off unless `CORS_ORIGIN` lists the allowed origins, comma-separated.
+- `nextjs` renders run errors in the chat and shows a Stop button while a reply streams. Its scripts are `dev`, `build`, `start` and `typecheck`.
 
 ## Programmatic API
 
@@ -112,6 +128,7 @@ const result = await scaffold({
   path: '/projects/my-agent',
   template: 'basic',
   provider: 'ollama',
+  model: 'qwen3.5:9b', // optional, default defaultModels[provider]
   packageManager: 'pnpm',
   docker: false,
   git: true,
@@ -121,4 +138,4 @@ const result = await scaffold({
 if (result.install.status === 'failed') console.error(result.install.error);
 ```
 
-`scaffold()` writes the files, installs dependencies and initializes git like the CLI. Pass `install: false` to only write the files, for example when you embed the scaffolder and install later. It throws when the directory is not empty, and otherwise resolves to a `ScaffoldResult`: the generated `files`, and `install` and `git` steps that are each `{ status: 'done' }`, `{ status: 'skipped' }` or `{ status: 'failed', error }`. A failed step never throws, so the project stays on disk. `parseArgs(argv)` and `collectOptions(args)` turn command-line arguments into these options (prompting for the rest). `getTemplate(name)`, `templateChoices`, `defaultModels`, `providerConfig(provider)`, `providerEnvKey(provider)`, `detectPackageManager()` and `devCommand(pm)` are exported as well.
+`scaffold()` writes the files, installs dependencies and initializes git like the CLI. Pass `install: false` to only write the files, for example when you embed the scaffolder and install later. It throws when `name` is not a valid package name or the directory is not empty, and otherwise resolves to a `ScaffoldResult`: the generated `files`, and `install` and `git` steps that are each `{ status: 'done' }`, `{ status: 'skipped' }` or `{ status: 'failed', error }`. A failed step never throws, so the project stays on disk. `parseArgs(argv)` and `collectOptions(args)` turn command-line arguments into these options (prompting for the rest). `getTemplate(name)`, `templateChoices`, `defaultModels`, `providerConfig(provider, access?)`, `providerEnvKey(provider)`, `detectPackageManager()`, `devCommand(pm)` and `validateProjectName(name)` are exported as well.

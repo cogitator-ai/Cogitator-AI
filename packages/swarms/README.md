@@ -290,6 +290,8 @@ const usage = swarm.getResourceUsage();
 
 `CircuitBreaker` and `ResourceTracker` are exported for standalone use.
 
+A turn whose agent run pauses for tool approvals (`requiresApproval`) fails with an `AgentRunPausedError` from `@cogitator-ai/core`, carrying the waiting calls and the checkpoint, instead of passing the pre-tool text on as the answer. It is never retried, skipped or failed over, and does not trip the circuit breaker.
+
 ---
 
 ## Agent Communication
@@ -421,7 +423,7 @@ const result = await new WorkflowExecutor(cogitator).execute(workflow, {
 });
 ```
 
-`conditionalSwarmNode(swarm, condition, options)` and `parallelSwarmsNode([{ swarm, key }], merge)` are also available. Pass a `SwarmConfig` instead of a `Swarm` to create (and close) a fresh swarm per execution.
+`conditionalSwarmNode(swarm, condition, options)` and `parallelSwarmsNode([{ swarm, key }], merge)` are also available. Pass a `SwarmConfig` instead of a `Swarm` to create (and close) a fresh swarm per execution. The nodes pass the workflow run's abort signal to the swarm, so a node timeout, pause or cancel stops it and its agent turns. Outside workflows, `swarm.run({ input, signal })` takes a signal the same way.
 
 ---
 
@@ -494,7 +496,7 @@ await worker.start();
 process.on('SIGTERM', () => void worker.stop());
 ```
 
-`retry` re-dispatches jobs that fail on a worker or time out (defaults: 3 retries, exponential backoff from 1000 ms up to 30000 ms; without it nothing is re-dispatched); a timed-out job may still be running, so its turn can run twice. `cleanupAfter` expires the swarm's Redis state after `close()` (default one hour, `0` deletes it at once). `workerConcurrency` is deprecated — set `concurrency` on the worker. The swarm's `errorHandling` (retry, failover), budgets and circuit breaking work the same as for local swarms. `RedisMessageBus`, `RedisBlackboard` and `RedisSwarmEventEmitter` are exported for direct use.
+`retry` re-dispatches jobs that fail on a worker or time out (defaults: 3 retries, exponential backoff from 1000 ms up to 30000 ms, without it nothing is re-dispatched), a timed-out job may still be running, so its turn can run twice. `cleanupAfter` expires the swarm's Redis state after `close()` (default one hour, `0` deletes it at once). `workerConcurrency` is deprecated - set `concurrency` on the worker. The swarm's `errorHandling` (retry, failover), budgets and circuit breaking work the same as for local swarms: each turn carries the whole agent in the agent wire format of `@cogitator-ai/core` (response format, reasoning, stop sequences, timeout and the rest), and comes back with the cost, duration and flags (`truncated`, `blocked`) the worker measured. `RedisMessageBus`, `RedisBlackboard` and `RedisSwarmEventEmitter` are exported for direct use.
 
 ---
 

@@ -13,15 +13,50 @@ import { isRegistryAuthenticated } from '../utils/registry-auth.js';
 import { imageTag } from '../templates/docker-compose.js';
 import { ARTIFACTS_DIR } from '../generator.js';
 import { generateProjectArtifacts, secretChecks, writeArtifacts } from './artifacts.js';
-import { healthPath } from '../templates/health.js';
+import { healthPath, servesHttp } from '../templates/health.js';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 const PREFLIGHT_TIMEOUT_MS = 10_000;
 const COMPOSE_FILE = 'docker-compose.prod.yml';
+const DEFAULT_STARTUP_CHECK_MS = 8_000;
+const STARTUP_POLL_MS = 1_000;
+const LOG_TAIL_LINES = '30';
+
+export interface DockerProviderOptions {
+  /**
+   * How long the app container must keep running after `docker compose up`
+   * for the deploy to count as a success. A container that exits or restarts
+   * within it fails the deploy with its logs. 8 seconds by default, 0 checks once.
+   */
+  startupCheckMs?: number;
+}
+
+interface ContainerState {
+  status: string;
+  restarts: number;
+  exitCode: number;
+}
+
+function parseContainerState(output: string): ContainerState | undefined {
+  const [status, restarts, exitCode] = output.trim().split(/\s+/);
+  if (!status) return undefined;
+  return {
+    status,
+    restarts: Number.parseInt(restarts ?? '0', 10) || 0,
+    exitCode: Number.parseInt(exitCode ?? '0', 10) || 0,
+  };
+}
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export class DockerProvider implements DeployProvider {
   readonly name = 'docker';
+  private readonly startupCheckMs: number;
+
+  constructor(options: DockerProviderOptions = {}) {
+    this.startupCheckMs = Math.max(options.startupCheckMs ?? DEFAULT_STARTUP_CHECK_MS, 0);
+  }
 
   private composeArgs(config: DeployConfig, projectDir: string, ...rest: string[]): string[] {
     return [
@@ -126,16 +161,73 @@ export class DockerProvider implements DeployProvider {
       return { success: false, error: `docker compose up failed: ${upResult.error}` };
     }
 
+    const startupError = await this.verifyStartup(config, projectDir, env);
+    if (startupError) return { success: false, error: startupError };
+
+    if (!servesHttp(config)) return { success: true };
+
     const port = config.port ?? 3000;
     const url = `http://localhost:${port}`;
+    const health = healthPath(config);
     return {
       success: true,
       url,
-      endpoints: {
-        api: url,
-        health: `${url}${healthPath(config)}`,
-      },
+      endpoints: { api: url, ...(health ? { health: `${url}${health}` } : {}) },
     };
+  }
+
+  /**
+   * Watches the app container for `startupCheckMs` after it starts. A
+   * container that exits or restarts in that time (a missing secret, a
+   * crash at import) fails the deploy with its last log lines, instead of
+   * the deploy reporting success while it restarts in a loop.
+   */
+  private async verifyStartup(
+    config: DeployConfig,
+    projectDir: string,
+    env: NodeJS.ProcessEnv
+  ): Promise<string | undefined> {
+    const ps = run('docker', this.composeArgs(config, projectDir, 'ps', '-q', '-a', 'app'), {
+      cwd: projectDir,
+      env,
+    });
+    const containerId = ps.output.trim().split('\n')[0];
+    if (!ps.success || !containerId) {
+      return 'The app container was not created by docker compose up';
+    }
+
+    const deadline = Date.now() + this.startupCheckMs;
+    for (;;) {
+      const inspect = run(
+        'docker',
+        ['inspect', '-f', '{{.State.Status}} {{.RestartCount}} {{.State.ExitCode}}', containerId],
+        { env }
+      );
+      const state = inspect.success ? parseContainerState(inspect.output) : undefined;
+      if (state && (state.status !== 'running' || state.restarts > 0)) {
+        const logs = run(
+          'docker',
+          this.composeArgs(
+            config,
+            projectDir,
+            'logs',
+            '--no-color',
+            '--tail',
+            LOG_TAIL_LINES,
+            'app'
+          ),
+          { cwd: projectDir, env }
+        );
+        return [
+          `The app container is ${state.status} (exit code ${state.exitCode}, ${state.restarts} restarts) right after starting.`,
+          logs.output.trim() ? `Last log lines:\n${logs.output.trim()}` : '',
+        ]
+          .filter(Boolean)
+          .join('\n');
+      }
+      if (Date.now() >= deadline) return undefined;
+      await sleep(Math.min(STARTUP_POLL_MS, Math.max(deadline - Date.now(), 0)));
+    }
   }
 
   async status(config: DeployConfig, projectDir: string): Promise<DeployStatus> {
@@ -149,10 +241,11 @@ export class DockerProvider implements DeployProvider {
     if (!result.success) return { running: false };
 
     const services = result.output.split('\n').filter((line) => line.trim().length > 0);
+    const running = services.includes('app');
     return {
-      running: services.includes('app'),
-      instances: services.includes('app') ? 1 : 0,
-      url: services.includes('app') ? `http://localhost:${config.port ?? 3000}` : undefined,
+      running,
+      instances: running ? 1 : 0,
+      url: running && servesHttp(config) ? `http://localhost:${config.port ?? 3000}` : undefined,
     };
   }
 

@@ -336,6 +336,49 @@ describe('OpenAIBackend (Chat Completions wire API)', () => {
       expect(mockCreate.mock.calls[0][0]).not.toHaveProperty('max_tokens');
     });
 
+    it('sends a reasoning model no sampling parameters on Chat Completions', async () => {
+      mockCreate.mockResolvedValueOnce({
+        id: 'chatcmpl-123',
+        choices: [{ message: { role: 'assistant', content: 'OK' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 },
+      });
+
+      await backend.chat({
+        model: 'gpt-5',
+        messages: [{ role: 'user', content: 'Test' }],
+        temperature: 0.7,
+        topP: 0.9,
+        maxTokens: 500,
+        stop: ['END'],
+      });
+
+      const params = mockCreate.mock.calls[0][0] as Record<string, unknown>;
+      expect(params).toMatchObject({ max_completion_tokens: 500, stop: ['END'] });
+      expect(params).not.toHaveProperty('temperature');
+      expect(params).not.toHaveProperty('top_p');
+    });
+
+    it('sends a reasoning model max_completion_tokens behind an OpenAI proxy too', async () => {
+      const proxied = new OpenAIBackend({ apiKey: 'k', baseUrl: 'https://proxy.example/v1' });
+      mockCreate.mockResolvedValueOnce({
+        id: 'chatcmpl-123',
+        choices: [{ message: { role: 'assistant', content: 'OK' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 },
+      });
+
+      await proxied.chat({
+        model: 'o4-mini',
+        messages: [{ role: 'user', content: 'Test' }],
+        temperature: 0.7,
+        maxTokens: 500,
+      });
+
+      const params = mockCreate.mock.calls[0][0] as Record<string, unknown>;
+      expect(params).toMatchObject({ max_completion_tokens: 500 });
+      expect(params).not.toHaveProperty('max_tokens');
+      expect(params).not.toHaveProperty('temperature');
+    });
+
     it('uses max_tokens for OpenAI-compatible endpoints', async () => {
       const compatible = new OpenAIBackend({
         apiKey: 'test-api-key',
@@ -626,8 +669,9 @@ describe('OpenAIBackend (Chat Completions wire API)', () => {
     it('maps finish reasons correctly', async () => {
       const testCases = [
         { reason: 'stop', expected: 'stop' },
-        { reason: 'tool_calls', expected: 'tool_calls' },
+        { reason: 'tool_calls', expected: 'stop' },
         { reason: 'length', expected: 'length' },
+        { reason: 'content_filter', expected: 'content_filter' },
       ];
 
       for (const { reason, expected } of testCases) {
@@ -1258,6 +1302,118 @@ describe('OpenAIBackend (Chat Completions wire API)', () => {
       });
 
       expect(response.usage).not.toHaveProperty('cost');
+    });
+  });
+
+  describe('turn outcome', () => {
+    const vllm = () =>
+      new OpenAIBackend({ apiKey: 'k', baseUrl: 'http://gpu:8000/v1', provider: 'vllm' });
+    const completion = (message: Record<string, unknown>, finish_reason: string) => ({
+      id: 'chatcmpl-1',
+      choices: [{ message: { role: 'assistant', content: null, ...message }, finish_reason }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    });
+    const call = (args: string) => ({
+      id: 'call_1',
+      type: 'function',
+      function: { name: 'purge', arguments: args },
+    });
+    const streamOf = (chunks: unknown[]) =>
+      (async function* () {
+        for (const chunk of chunks) yield chunk;
+      })();
+    const collect = async (b: OpenAIBackend) => {
+      const chunks: Array<{ finishReason?: string; toolCalls?: unknown[]; content?: string }> = [];
+      for await (const chunk of b.chatStream({
+        model: 'm',
+        messages: [{ role: 'user', content: 'x' }],
+      })) {
+        chunks.push({
+          finishReason: chunk.finishReason,
+          toolCalls: chunk.delta.toolCalls,
+          content: chunk.delta.content,
+        });
+      }
+      return chunks;
+    };
+
+    it('reports tool calls answered with finish_reason stop as a tool turn', async () => {
+      mockCreate.mockResolvedValueOnce(completion({ tool_calls: [call('{"days":3}')] }, 'stop'));
+
+      const response = await vllm().chat({
+        model: 'm',
+        messages: [{ role: 'user', content: 'x' }],
+      });
+
+      expect(response.finishReason).toBe('tool_calls');
+      expect(response.toolCalls).toEqual([{ id: 'call_1', name: 'purge', arguments: { days: 3 } }]);
+    });
+
+    it('reports a turn cut inside a tool call as truncated instead of failing on its arguments', async () => {
+      mockCreate.mockResolvedValueOnce(completion({ tool_calls: [call('{"days":')] }, 'length'));
+
+      const response = await vllm().chat({
+        model: 'm',
+        messages: [{ role: 'user', content: 'x' }],
+      });
+
+      expect(response.finishReason).toBe('length');
+      expect(response.toolCalls).toBeUndefined();
+    });
+
+    it('streams a turn cut inside a tool call as truncated', async () => {
+      mockCreate.mockResolvedValueOnce(
+        streamOf([
+          {
+            id: 'c',
+            choices: [{ delta: { tool_calls: [{ index: 0, ...call('{"days":') }] } }],
+          },
+          { id: 'c', choices: [{ delta: {}, finish_reason: 'length' }] },
+        ])
+      );
+
+      const chunks = await collect(vllm());
+
+      expect(chunks.at(-1)).toMatchObject({ finishReason: 'length', toolCalls: undefined });
+    });
+
+    it('reports a content filter stop as content_filter', async () => {
+      mockCreate.mockResolvedValueOnce(completion({ content: '' }, 'content_filter'));
+
+      const response = await backend.chat({
+        model: 'm',
+        messages: [{ role: 'user', content: 'x' }],
+      });
+
+      expect(response.finishReason).toBe('content_filter');
+    });
+
+    it('reports a refusal with its explanation', async () => {
+      mockCreate.mockResolvedValueOnce(completion({ refusal: 'I cannot help with that.' }, 'stop'));
+
+      const response = await backend.chat({
+        model: 'm',
+        messages: [{ role: 'user', content: 'x' }],
+      });
+
+      expect(response).toMatchObject({
+        finishReason: 'refusal',
+        content: 'I cannot help with that.',
+      });
+    });
+
+    it('streams a refusal with its explanation', async () => {
+      mockCreate.mockResolvedValueOnce(
+        streamOf([
+          { id: 'c', choices: [{ delta: { refusal: 'I cannot ' } }] },
+          { id: 'c', choices: [{ delta: { refusal: 'help.' }, finish_reason: 'stop' }] },
+        ])
+      );
+
+      const chunks = await collect(backend);
+
+      expect(chunks.map((c) => c.content ?? '').join('')).toBe('I cannot help.');
+      expect(chunks.at(-1)?.finishReason).toBe('refusal');
     });
   });
 });

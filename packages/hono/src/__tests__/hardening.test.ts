@@ -23,6 +23,7 @@ vi.mock('@cogitator-ai/swarms', () => ({
     strategyType = 'round-robin';
     run = swarmRun;
     abort = swarmAbort;
+    close = vi.fn(async () => undefined);
     getResourceUsage = () => ({
       totalTokens: 7,
       totalCost: 0.5,
@@ -38,6 +39,7 @@ function runResult() {
     threadId: 'thread-1',
     usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
     toolCalls: [],
+    trace: { traceId: 'trace-1', spans: [] },
   };
 }
 
@@ -136,10 +138,12 @@ describe('request validation', () => {
   it('rejects invalid workflow option types', async () => {
     const res = await buildApp().request(
       '/workflows/pipeline/run',
-      post({ options: { checkpoint: 'yes' } })
+      post({ options: { checkpoint: true } })
     );
     expect(res.status).toBe(400);
-    expect((await res.json()).error.message).toBe('Field "options.checkpoint" must be a boolean');
+    expect((await res.json()).error.message).toBe(
+      'Field "options.checkpoint" is not supported: the server keeps no checkpoint store'
+    );
   });
 
   it('rejects unknown roles and forwards metadata with a token estimate', async () => {

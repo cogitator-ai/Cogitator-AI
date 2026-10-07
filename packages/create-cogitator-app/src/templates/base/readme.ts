@@ -1,5 +1,5 @@
 import type { ProjectOptions, TemplateFile } from '../../types.js';
-import { devCommand } from '../../utils/package-manager.js';
+import { nextSteps } from '../../next-steps.js';
 import { DOCS_URL, REPO_URL } from '../../utils/links.js';
 
 const templateNames: Record<string, string> = {
@@ -12,26 +12,37 @@ const templateNames: Record<string, string> = {
 };
 
 export function generateReadme(options: ProjectOptions): TemplateFile {
-  const dev = devCommand(options.packageManager);
   const templateName = templateNames[options.template] || options.template;
+  const steps = nextSteps(options, { installed: false, modelReady: false });
 
   const content = [
     `# ${options.name}`,
     '',
-    `> Created with [create-cogitator-app](${REPO_URL}) — ${templateName} template`,
+    `> Created with [create-cogitator-app](${REPO_URL}) - ${templateName} template`,
     '',
     '## Getting Started',
     '',
     '```bash',
-    `# Install dependencies`,
-    `${options.packageManager} install`,
-    '',
-    `# Run the project`,
-    dev,
+    ...steps.flatMap((step, i) => [
+      ...(i > 0 ? [''] : []),
+      ...(step.note ? [`# ${step.note}`] : []),
+      step.command,
+    ]),
     '```',
     '',
     ...(options.docker
-      ? ['## Docker Services', '', '```bash', 'docker compose up -d', '```', '']
+      ? [
+          '## Docker Services',
+          '',
+          '```bash',
+          'docker compose up -d',
+          '```',
+          '',
+          options.provider === 'ollama'
+            ? 'Starts Redis, Postgres and Ollama, and pulls the model into the Ollama container.'
+            : 'Starts Redis and Postgres.',
+          '',
+        ]
       : []),
     '## Learn More',
     '',

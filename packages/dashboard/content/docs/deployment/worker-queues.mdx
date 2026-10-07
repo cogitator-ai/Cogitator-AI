@@ -44,11 +44,11 @@ const job = await queue.addAgentJob(
 console.log('State:', await queue.getJobState(job.id!));
 ```
 
-The worker routes `model` like the same agent in-process: a prefix naming a built-in provider, a backend in the worker Cogitator's `llm.backends` or a registered plugin picks that provider, so `openrouter/deepseek/deepseek-v4-pro` runs on an `openrouter` backend whatever `provider` says. The optional `provider` (any provider the worker routes to, custom backends and plugins included) is prepended only to a model whose prefix names none, such as `meta-llama/llama-4-scout` with `provider: 'openrouter'`. Without it such a model runs on the worker's `llm.defaultProvider`, and a `provider` the worker cannot route to fails the job.
+The worker routes `model` like the same agent in-process: a prefix naming a built-in provider, a backend in the worker Cogitator's `llm.backends` or a registered plugin picks that provider, so `openrouter/deepseek/deepseek-v4-pro` runs on an `openrouter` backend whatever `provider` says. The optional `provider` (any provider the worker routes to, custom backends and plugins included) is prepended only to a model whose prefix names none, such as `meta-llama/llama-4-scout` with `provider: 'openrouter'`. Without it such a model runs on the worker's `llm.defaultProvider`, and a `provider` the worker cannot route to fails the job. `serializeAgent` sends an agent with an explicit `provider` as `<provider>/<model>`, so `{ model: 'openai/gpt-5', provider: 'openrouter' }` runs on `openrouter` on the worker as it does in-process.
 
 ### Queueing an agent you already have
 
-`serializeAgent` turns an `Agent` into a job: its model, instructions, sampling, reasoning effort, tool schemas and response format, with a Zod response schema turned into JSON Schema. The worker turns the schema back into a Zod schema, so a queued run validates and repairs its structured answer like an in-process run, and the job result carries it:
+`serializeAgent` turns an `Agent` into a job in the agent wire format of `@cogitator-ai/core` (`toAgentWire`), the one workflow jobs and distributed swarms use too: its whole configuration (model and provider, instructions, sampling, stop sequences, reasoning, response format, iteration limit, timeout), its tool schemas and the agents it can hand over to. A Zod response schema travels as JSON Schema and the worker turns it back into a Zod schema, so a queued run validates and repairs its structured answer like an in-process run, and the job result carries it. The worker refuses a config with a key it does not know (a producer newer than the worker) instead of running the agent without that setting:
 
 ```typescript
 import { serializeAgent, type AgentJobResult } from '@cogitator-ai/worker';
@@ -57,8 +57,25 @@ const job = await queue.addAgentJob(serializeAgent(chiefEditor), 'Pitches: ...')
 // once the job completes
 const result = (await queue.getJob(job.id!))?.returnvalue as AgentJobResult;
 result.structured; // the validated answer of a json_schema agent, when it fits
-result.usage; // { inputTokens, outputTokens, totalTokens, cost, reasoningTokens? }
+result.usage; // { inputTokens, outputTokens, totalTokens, cost, duration, reasoningTokens?, ... }
+result.truncated; // also blocked, iterationLimitReached, structuredError, toolCalls with outputs
 ```
+
+### Agent jobs that wait for approval
+
+An agent whose tool needs approval (`requiresApproval`) pauses its run, and the job completes with `status: 'paused'`: `output` is then not the answer, `pendingApprovals` lists the calls that wait, and `checkpoint` holds what the run continues from. Resume it with the decisions as a new job, on any worker, since the checkpoint travels with it:
+
+```typescript
+const result = (await queue.getJob(job.id!))?.returnvalue as AgentJobResult;
+if (result.status === 'paused') {
+  await queue.resumeAgentJob(serializeAgent(support), result, {
+    decisions: { [result.pendingApprovals![0].toolCallId]: { approved: true } },
+    // or defaultDecision: { approved: false, reason: 'not eligible' }
+  });
+}
+```
+
+Calls left without a decision pause the run again, and the new job's result says so the same way. A result without its checkpoint is resumed by thread from the worker's `runCheckpoints` store, which the workers then have to share (a memory adapter or your own store). A workflow or swarm job cannot wait for a decision: when one of its agents pauses, the job fails without retries with an `AgentRunPausedError` naming the agent, the node or swarm and the calls.
 
 The redis config also takes a `url` (`redis://user:password@host:port/db`, or `rediss://` for TLS); explicit `host`, `port`, `username`, `password`, `db` and `tls` fields override what it says.
 
@@ -76,11 +93,11 @@ await queue.addSwarmJob(
 );
 ```
 
-Workflow jobs execute a serialized DAG (`agent`, `transform`, `condition` and `parallel` nodes over a shared state object); swarm topologies map to strategies (`sequential` → pipeline, `hierarchical` → hierarchical with the coordinator as supervisor, `collaborative` → round-robin, `debate` → debate, `voting` → consensus). See the package README for the full workflow node reference.
+Workflow jobs execute a serialized DAG (`agent`, `transform`, `condition` and `parallel` nodes over a shared state object). An agent node takes the same `serializeAgent` config, and writes its validated structured answer to the state when its agent has a JSON schema response format (its text otherwise), so later nodes read fields like `{{decision.verdict}}`, swarm topologies map to strategies (`sequential` → pipeline, `hierarchical` → hierarchical with the coordinator as supervisor, `collaborative` → a pipeline in which every agent contributes in each of `maxRounds` rounds (default 3) seeing all contributions so far, the coordinator (if any) combining them, `debate` → debate, `voting` → consensus). See the package README for the full workflow node reference.
 
 ## WorkerPool
 
-`WorkerPool` spawns BullMQ workers that consume jobs from the queue. Built-in processors handle agent, workflow, swarm, and distributed swarm-agent job types. Without a `cogitator`, the pool runs agents with `new Cogitator()` (provider keys from the environment).
+`WorkerPool` spawns BullMQ workers that consume jobs from the queue. Built-in processors handle agent, workflow, swarm, and swarm-agent job types (`queue.addSwarmAgentJob`, one turn of a swarm queued by your own code). Distributed swarms (`distributed.enabled`) do not use this queue: their turns go to a Redis list that `DistributedSwarmWorker` consumes, see below. Without a `cogitator`, the pool runs agents with `new Cogitator()` (provider keys from the environment).
 
 ```typescript
 import { Cogitator } from '@cogitator-ai/core';
@@ -113,7 +130,7 @@ process.on('SIGTERM', async () => {
 });
 ```
 
-`lockDuration` and `stalledInterval` are passed to BullMQ. `forceStop()` closes workers without waiting; `getWorkerCount()` and `isPoolRunning()` report pool state.
+`lockDuration` and `stalledInterval` are passed to BullMQ. Each job gets the abort signal BullMQ gives it, down to every agent run, workflow node and swarm turn of the job: `pool.cancelJob(jobId, reason?)` stops a running job (it fails without retries), and `stop(timeout)` aborts the jobs still running when the timeout runs out before force-closing the workers, so BullMQ hands them to another worker once their locks expire instead of a stalled run going on unlocked. `forceStop()` aborts running jobs and closes workers without waiting, `getWorkerCount()` and `isPoolRunning()` report pool state.
 
 Serialized agents carry tool **schemas** only. The pool resolves tools by name from its `tools` option; jobs that need tools the worker does not provide fail with a clear error instead of running with stubs.
 

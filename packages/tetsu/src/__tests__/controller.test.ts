@@ -63,7 +63,11 @@ describe('agents', () => {
       })
     )
   );
-  const request = serveCogitator({ cogitator, agents: { chat: chatAgent() } });
+  const request = serveCogitator({
+    cogitator,
+    agents: { chat: chatAgent() },
+    acceptContext: ['lang'],
+  });
 
   test('lists agents with their tools', async () => {
     const res = await request('/cogitator/agents');
@@ -93,6 +97,8 @@ describe('agents', () => {
       threadId: 'thread-1',
       usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
       toolCalls: [{ id: 'call-1', name: 'get_weather', arguments: { city: 'Paris' } }],
+      status: 'completed',
+      traceId: 'trace-1',
     });
     const options = lastRunOptions(run);
     expect(options.input).toBe('Weather?');
@@ -255,6 +261,35 @@ describe('auth', () => {
     expect(((await res.json()) as { error: string }).error).toBe('THREAD_FORBIDDEN');
     expect(run.mock.calls.length).toBe(before);
   });
+});
+
+describe('auth that fails', () => {
+  const reports: FailureReport[] = [];
+  const request = serveCogitator(
+    {
+      cogitator: fakeCogitator().cogitator,
+      agents: { chat: chatAgent() },
+      auth: (ctx) => {
+        const token = ctx.req.headers.get('authorization');
+        if (token === 'Bearer expired') throw new Error('jwt expired');
+        if (token === 'Bearer revoked') return Promise.reject(new Error('token revoked'));
+        return { userId: 'ada' };
+      },
+    },
+    reports
+  );
+
+  test.each(['expired', 'revoked'])(
+    'answers 401 when auth throws for a %s token, not a server error',
+    async (token) => {
+      const res = await request('/cogitator/agents', {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(res.status).toBe(401);
+      expect(((await res.json()) as { error: string }).error).toBe('UNAUTHORIZED');
+      expect(reports).toEqual([]);
+    }
+  );
 });
 
 describe('threads', () => {
@@ -521,21 +556,24 @@ describe('agent stream', () => {
       'start',
       'text-start',
       'text-delta',
+      'text-end',
       'tool-call-start',
       'tool-call-delta',
       'tool-call-end',
       'tool-result',
+      'text-start',
       'text-delta',
       'text-end',
       'finish',
     ]);
-    expect(events[3]).toEqual({ type: 'tool-call-start', id: 'call-1', toolName: 'get_weather' });
-    expect(events[4]).toEqual({
+    expect(events[4]).toEqual({ type: 'tool-call-start', id: 'call-1', toolName: 'get_weather' });
+    expect(events[5]).toEqual({
       type: 'tool-call-delta',
       id: 'call-1',
       argsTextDelta: '{"city":"Paris"}',
     });
-    expect(events[6]).toMatchObject({ type: 'tool-result', toolCallId: 'call-1', result: 'Sunny' });
+    expect(events[7]).toMatchObject({ type: 'tool-result', toolCallId: 'call-1', result: 'Sunny' });
+    expect(events[1]).not.toMatchObject({ id: events[8].id });
     expect(events.at(-1)).toMatchObject({
       type: 'finish',
       usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
@@ -568,6 +606,8 @@ describe('agent stream', () => {
     expect(events.at(-1)).toEqual({
       type: 'finish',
       messageId: expect.any(String),
+      threadId: 'thread-1',
+      status: 'completed',
       usage: {
         inputTokens: 10,
         outputTokens: 20,

@@ -3,16 +3,23 @@ import type { Request } from 'express';
 import { getLogger, type Agent } from '@cogitator-ai/core';
 import type { RunOptions, RunResult } from '@cogitator-ai/types';
 import type {
-  AgentResumeRequest,
   AuthContext,
   WebSocketMessage,
   WebSocketResponse,
   RouteContext,
   WebSocketConfig,
 } from '../types.js';
-import { isNonBlankString } from '@cogitator-ai/server-shared';
+import {
+  isJsonObject,
+  parseResumeRequest,
+  parseRunRequest,
+  toAgentRunResponse,
+  toAgentToolCall,
+  type ContextPolicy,
+  type ResumeRequestBody,
+} from '@cogitator-ai/server-shared';
 import { generateId } from '../streaming/helpers.js';
-import { parseResumeBody, resolveError, withoutCheckpoint } from '../routes/utils.js';
+import { resolveError } from '../routes/utils.js';
 
 type WebSocketType = import('ws').WebSocket;
 type WebSocketServerType = import('ws').WebSocketServer;
@@ -44,7 +51,7 @@ interface RunPayload {
   threadId?: string;
 }
 
-interface ResumePayload extends AgentResumeRequest {
+interface ResumePayload extends ResumeRequestBody {
   name: string;
 }
 
@@ -91,10 +98,6 @@ class ChannelHub {
   }
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 function parseMessage(raw: string): WebSocketMessage | null {
   let data: unknown;
   try {
@@ -102,7 +105,7 @@ function parseMessage(raw: string): WebSocketMessage | null {
   } catch {
     return null;
   }
-  if (!isPlainObject(data) || typeof data.type !== 'string' || !MESSAGE_TYPES.has(data.type)) {
+  if (!isJsonObject(data) || typeof data.type !== 'string' || !MESSAGE_TYPES.has(data.type)) {
     return null;
   }
   if (data.id !== undefined && typeof data.id !== 'string') return null;
@@ -115,22 +118,20 @@ function parseMessage(raw: string): WebSocketMessage | null {
   };
 }
 
-function parseRunPayload(payload: unknown): RunPayload | null {
-  if (!isPlainObject(payload)) return null;
-  const { type, name, input, context, threadId } = payload;
+function parseRunPayload(payload: unknown, acceptContext: ContextPolicy): RunPayload | null {
+  if (!isJsonObject(payload)) return null;
+  const { type, name } = payload;
   if (type !== 'agent' && type !== 'workflow' && type !== 'swarm') return null;
   if (typeof name !== 'string' || !name) return null;
-  if (!isNonBlankString(input)) return null;
-  if (context !== undefined && !isPlainObject(context)) return null;
-  if (threadId !== undefined && typeof threadId !== 'string') return null;
-  return { type, name, input, context, threadId };
+  const parsed = parseRunRequest(payload, { acceptContext });
+  return parsed.ok ? { type, name, ...parsed.value } : null;
 }
 
 function parseResumePayload(payload: unknown): ResumePayload | null {
-  if (!isPlainObject(payload)) return null;
+  if (!isJsonObject(payload)) return null;
   const { name } = payload;
   if (typeof name !== 'string' || !name) return null;
-  const parsed = parseResumeBody(payload);
+  const parsed = parseResumeRequest(payload);
   return parsed.ok ? { name, ...parsed.value } : null;
 }
 
@@ -301,7 +302,7 @@ async function handleRun(
   state: ClientState,
   hub: ChannelHub
 ): Promise<void> {
-  const payload = parseRunPayload(message.payload);
+  const payload = parseRunPayload(message.payload, ctx.config.acceptContext);
 
   if (!payload) {
     sendResponse(ws, { type: 'error', id: message.id, error: 'Invalid run payload' });
@@ -392,14 +393,14 @@ async function streamAgentRun(
         emit({ type: 'reasoning', delta });
       },
       onToolCall: (toolCall) => {
-        emit({ type: 'tool-call', ...toolCall });
+        emit({ type: 'tool-call', ...toAgentToolCall(toolCall) });
       },
       onToolResult: (toolResult) => {
         emit({ type: 'tool-result', ...toolResult });
       },
     });
 
-    emit({ type: 'complete', result: withoutCheckpoint(result) });
+    emit({ type: 'complete', result: toAgentRunResponse(result) });
   } catch (error) {
     if (controller.signal.aborted) {
       emit({ type: 'cancelled' });

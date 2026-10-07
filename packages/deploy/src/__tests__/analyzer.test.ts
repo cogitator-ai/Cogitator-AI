@@ -203,8 +203,9 @@ describe('ProjectAnalyzer.analyze', () => {
     expect(result.warnings.some((w) => w.includes('instances'))).toBe(true);
   });
 
-  it('requires both AWS secrets for bedrock and recognises -cloud Ollama tags', () => {
+  it('requires a region and both AWS secrets for bedrock and recognises -cloud Ollama tags', () => {
     expect(analyzer.detectSecrets('bedrock/claude')).toEqual([
+      'AWS_REGION',
       'AWS_ACCESS_KEY_ID',
       'AWS_SECRET_ACCESS_KEY',
     ]);
@@ -227,6 +228,7 @@ describe('ProjectAnalyzer.analyze', () => {
         hasLockfile: true,
         hasBuildScript: true,
         startCommand: ['node', 'dist/server.js'],
+        installFiles: ['pnpm-lock.yaml'],
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });

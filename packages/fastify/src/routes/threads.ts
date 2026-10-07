@@ -2,7 +2,8 @@ import type { FastifyPluginAsync } from 'fastify';
 import { assertThreadAccess, ensureThreadAccess } from '@cogitator-ai/core';
 import type { ThreadResponse, AddMessageRequest } from '../types.js';
 import { AddMessageRequestSchema } from '../types.js';
-import { sendError, sendRouteError } from './utils.js';
+import { parseAddMessageRequest } from '@cogitator-ai/server-shared';
+import { sendError, sendRouteError, validateBody } from './utils.js';
 
 interface ThreadParams {
   id: string;
@@ -10,6 +11,9 @@ interface ThreadParams {
 
 export const threadRoutes: FastifyPluginAsync = async (fastify) => {
   const getMemory = () => fastify.cogitator.runtime.getMemory();
+  const messageBody = validateBody((body) =>
+    parseAddMessageRequest(body, { roles: fastify.cogitator.threadMessageRoles })
+  );
 
   fastify.get<{ Params: ThreadParams }>(
     '/threads/:id',
@@ -65,6 +69,7 @@ export const threadRoutes: FastifyPluginAsync = async (fastify) => {
         },
         body: AddMessageRequestSchema,
       },
+      preValidation: messageBody,
     },
     async (request, reply) => {
       const memory = await getMemory();

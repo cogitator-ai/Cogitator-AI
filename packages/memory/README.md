@@ -7,13 +7,15 @@ Memory adapters for Cogitator AI agents. Supports in-memory, Redis (short-term),
 ```bash
 pnpm add @cogitator-ai/memory
 
-# Optional peer dependencies
+# Install the driver of the store you use (optional peer dependencies)
 pnpm add ioredis  # For Redis adapter
-pnpm add pg       # For PostgreSQL adapter
-pnpm add better-sqlite3  # For SQLite adapter and CoreFactsStore
+pnpm add pg       # For PostgreSQL adapter and graph adapter
+pnpm add better-sqlite3  # For SQLite adapter, SQLite graph adapter and CoreFactsStore
 pnpm add mongodb  # For MongoDB adapter
 pnpm add @qdrant/js-client-rest  # For Qdrant embedding adapter
 ```
+
+Database drivers are not installed with the package (nor with `@cogitator-ai/core`): add the one your adapter needs. An adapter whose driver is missing fails `connect()` with the command to install it. The in-memory adapters need no driver.
 
 With `@cogitator-ai/core` you usually configure memory on the runtime (`new Cogitator({ memory: { adapter: 'postgres', postgres: { ... } } })`) and read it with `await cog.getMemory()`; the adapters below are for direct use. Website docs: [Memory](https://cogitator.app/docs/memory), [Adapters](https://cogitator.app/docs/memory/adapters), [Embeddings](https://cogitator.app/docs/memory/embeddings), [Hybrid Search](https://cogitator.app/docs/memory/hybrid-search), [Knowledge Graphs](https://cogitator.app/docs/memory/knowledge-graphs).
 
@@ -103,7 +105,7 @@ await memory.connect();
 
 ### Redis Adapter
 
-Persistent short-term memory with TTL support. Every write refreshes the TTL of the thread and its entry index, so active conversations do not expire mid-way; expired entries are pruned from the index on read.
+Persistent short-term memory with TTL support. Every write refreshes the TTL of the thread and its entry index, so active conversations do not expire mid-way, expired entries are pruned from the index on read. `getEntries({ limit })` reads only the newest `limit` entries. A failed `connect()` closes its client again, so an unreachable Redis does not keep the process alive.
 
 ```typescript
 import { RedisAdapter } from '@cogitator-ai/memory';
@@ -132,12 +134,16 @@ const memory = new PostgresAdapter({
   connectionString: 'postgresql://localhost:5432/cogitator',
   schema: 'public',
   poolSize: 10,
+  dimensions: 1536, // vector size of the embedding model, default 768
 });
 
 await memory.connect();
+memory.vectorStatus(); // { available: true, dimensions: 1536 } or { available: false, reason }
 ```
 
 On `connect()` the adapter creates its tables and an HNSW cosine index on the embeddings, which works from the first row on (no training data needed). An `ivfflat` index left by an earlier version is replaced on the first connect after upgrading, see the [adapters docs](https://cogitator.app/docs/memory/adapters) for building the new index ahead of time on a large table. `search()` raises `hnsw.ef_search` to the requested limit and, on pgvector 0.8+, uses iterative scans, so large limits and filters still get every matching row. Messages, tool calls, tool results and metadata are stored as `jsonb`.
+
+pgvector is only needed for embeddings. Without it, `connect()` still succeeds and threads, entries and facts work, while embedding operations return a failed result naming the reason (also logged at connect). An existing `embeddings` table keeps its vector size: an adapter without `dimensions` adopts it, one configured for another size reports the mismatch through `vectorStatus()` and the failed results instead of failing each search with a Postgres error.
 
 ### SQLite Adapter
 
@@ -320,6 +326,8 @@ Strategies:
 - `relevant` - messages ranked by embedding similarity to `currentInput` (requires `embeddingService`; falls back to `recent` without input), returned in chronological order
 - `hybrid` - always keeps the latest messages and fills the remaining budget with the most relevant older ones
 
+The system prompt is always kept and counted: history gets what it leaves of `maxTokens - reserveTokens`, and a prompt larger than that is still sent whole, with a note in `warnings`. Entries are counted by their text, tool call arguments and images rather than only by their saved `tokenCount`. `relevant` and `hybrid` score the newest 200 entries and embed each entry once per builder (vectors are cached by entry id).
+
 ### Basic Usage
 
 ```typescript
@@ -375,6 +383,8 @@ console.log(context.facts);
 console.log(context.semanticResults);
 ```
 
+Embedding stores also accept `filter.metadata` (exact metadata values) in `search`/`keywordSearch`, and `deleteByFilter({ sourceType?, agentId?, threadId?, metadata? })` deletes every matching embedding (a filter without conditions is refused). RAG re-ingest uses it to replace a source's chunks.
+
 Semantic context is scoped by embedding metadata: entries with `metadata.agentId` set are only visible to that agent, entries without an `agentId` (shared documents, knowledge bases) are visible to everyone. Adapters filter `search`/`keywordSearch` by `filter.agentId` and `filter.threadId` through the same metadata fields.
 
 ### Built Context
@@ -387,6 +397,8 @@ interface BuiltContext {
   graphContext?: GraphContext; // with includeGraphContext and a graph adapter
   tokenCount: number;
   truncated: boolean;
+  errors?: ContextBuildError[]; // parts that failed to load and were left out
+  warnings?: string[]; // budget problems, such as a system prompt over budget
   metadata: {
     originalMessageCount: number;
     includedMessageCount: number;
@@ -394,7 +406,14 @@ interface BuiltContext {
     semanticResultsIncluded: number;
   };
 }
+
+interface ContextBuildError {
+  source: 'history' | 'facts' | 'semantic' | 'graph' | 'relevance';
+  error: Error;
+}
 ```
+
+`build()` does not throw when a part of the context fails to load (an unreachable store, an embedding API answering 429, a vector size mismatch): the part is left out and reported in `errors`. A failed relevance scoring falls back to the `recent` strategy.
 
 ---
 
@@ -445,7 +464,11 @@ await sessions.compact(session.id, {
 });
 ```
 
-`list()` works with or without a `userId` filter (sessions are tracked in an index thread). `compact()` requires the `compaction` option; without it use `CompactionService` directly. The summarizer (`SummarizeFn`) is called as `summarize(messages, options)`, where `options` is a `SummarizeOptions` `{ model?, prompt? }` filled from the `summaryModel` / `summaryPrompt` of the compaction config.
+`list()` works with or without a `userId` filter (sessions are tracked in an index thread). Using a session puts it back into the index if the index lost it and rewrites the index at most once per `indexRefreshInterval` (default one minute), so with Redis and a `ttl` the index lives as long as any session is active.
+
+A thread is compacted once its entries hold `threshold` tokens or `messageThreshold` entries, whichever comes first (set at least one). The summary entry is dated just before the first kept entry and the kept entries are not rewritten, so a reply saved while the summary was being written keeps its place after its question. `addEntry` accepts an optional `createdAt` for this (`NewMemoryEntry`).
+
+`compact()` requires the `compaction` option, without it use `CompactionService` directly. The summarizer (`SummarizeFn`) is called as `summarize(messages, options)`, where `options` is a `SummarizeOptions` `{ model?, prompt? }` filled from the `summaryModel` / `summaryPrompt` of the compaction config.
 
 ---
 
@@ -478,6 +501,8 @@ import {
   countTokens,
   countMessageTokens,
   countMessagesTokens,
+  countToolCallsTokens,
+  countEntryTokens,
   truncateToTokens,
 } from '@cogitator-ai/memory';
 
@@ -492,6 +517,8 @@ const totalTokens = countMessagesTokens([
 
 const truncated = truncateToTokens('Very long text...', 100);
 ```
+
+`countMessageTokens` counts text, the names and JSON arguments of an assistant message's `toolCalls`, and images (85 tokens for `detail: 'low'`, otherwise an upper estimate of 1600, since the pixel size is unknown). `countEntryTokens` recounts a stored entry, including `entry.toolCalls`, and keeps the saved `tokenCount` when it is larger.
 
 ---
 

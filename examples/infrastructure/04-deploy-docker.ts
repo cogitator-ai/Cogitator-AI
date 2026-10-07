@@ -13,6 +13,7 @@ async function main() {
   const analysis = analyzer.analyze(projectDir);
 
   console.log('Project analysis:');
+  console.log(`  Kind:       ${analysis.kind ?? '(not detected, set deploy.kind)'}`);
   console.log(`  Server:     ${analysis.server ?? '(not detected)'}`);
   console.log(`  TypeScript: ${analysis.hasTypeScript}`);
   console.log(
@@ -22,8 +23,11 @@ async function main() {
     `  Secrets:    ${analysis.secrets.length > 0 ? analysis.secrets.join(', ') : '(none detected)'}`
   );
   console.log(
-    `  Warnings:   ${analysis.warnings.length > 0 ? analysis.warnings.join('; ') : '(none)'}`
+    `  Warnings:   ${analysis.warnings.length > 0 ? analysis.warnings.join(' | ') : '(none)'}`
   );
+  for (const check of analysis.checks) {
+    console.log(`  ${check.passed ? 'PASS' : 'FAIL'}       ${check.message}`);
+  }
 
   section('2. Deploy config from analysis');
 

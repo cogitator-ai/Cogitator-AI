@@ -4,6 +4,7 @@ import { createServer, type Server } from 'http';
 import type { AddressInfo } from 'net';
 import { WebSocket, type WebSocketServer } from 'ws';
 import type { RunOptions } from '@cogitator-ai/types';
+import { conformancePausedResult, toAgentRunResponse } from '@cogitator-ai/server-shared';
 import { CogitatorServer } from '../server.js';
 import type { CogitatorServerConfig, WebSocketResponse } from '../types.js';
 
@@ -30,7 +31,16 @@ async function start(
   run: (options: RunOptions) => Promise<unknown>,
   config: CogitatorServerConfig['config'] = {}
 ) {
-  const runMock = vi.fn((_agent: Agent, options: RunOptions) => run(options));
+  const runMock = vi.fn(async (_agent: Agent, options: RunOptions) => ({
+    runId: 'run-1',
+    agentId: 'bot',
+    threadId: 'thread-1',
+    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, cost: 0, duration: 1 },
+    toolCalls: [],
+    messages: [],
+    trace: { traceId: 'trace-1', spans: [] },
+    ...((await run(options)) as object),
+  }));
   const app = express();
   const server = new CogitatorServer({
     app,
@@ -240,6 +250,36 @@ describe('WebSocket', () => {
     client.send({ type: 'run', id: 'r1', payload: { type: 'agent', name: 'bot', input: 7 } });
     await vi.waitFor(() =>
       expect(client.messages[0]).toEqual({ type: 'error', id: 'r1', error: 'Invalid run payload' })
+    );
+    expect(runMock).not.toHaveBeenCalled();
+  });
+
+  it('completes a run with the client-facing answer, never the prompt, history or trace', async () => {
+    const result = conformancePausedResult('thread-1');
+    const { url } = await start(async () => result);
+    const client = await connect(url);
+    client.send(runMessage('r1'));
+
+    await vi.waitFor(() => expect(client.messages).toHaveLength(1));
+    const [complete] = client.messages;
+    expect(complete.payload).toEqual({ type: 'complete', result: toAgentRunResponse(result) });
+    const text = JSON.stringify(complete);
+    expect(text).not.toContain('SECRET OPERATOR INSTRUCTIONS');
+    expect(text).not.toContain('postgres://');
+    expect(text).not.toContain('checkpoint');
+  });
+
+  it('refuses a run whose context the server does not accept', async () => {
+    const { url, runMock } = await start(async () => ({ output: 'ok' }));
+    const client = await connect(url);
+    client.send({
+      type: 'run',
+      id: 'r1',
+      payload: { type: 'agent', name: 'bot', input: 'hi', context: { policy: 'x' } },
+    });
+
+    await vi.waitFor(() =>
+      expect(client.messages).toEqual([{ type: 'error', id: 'r1', error: 'Invalid run payload' }])
     );
     expect(runMock).not.toHaveBeenCalled();
   });

@@ -3,15 +3,18 @@
  */
 
 import { Command } from 'commander';
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import chalk from 'chalk';
+import { parse as parseYaml } from 'yaml';
 import { log, printBanner } from '../utils/logger.js';
 import { Cogitator, Agent } from '@cogitator-ai/core';
-import { loadConfig } from '@cogitator-ai/config';
+import { CONFIG_FILE_NAMES, loadConfig } from '@cogitator-ai/config';
 import type { CogitatorConfig } from '@cogitator-ai/types';
 import { listOllamaModels, resolveOllamaUrl } from '../utils/ollama.js';
+import { loadDotenvInto } from '../utils/env.js';
+import { detectConfigKind, type ProjectConfigKind } from '../utils/project-config.js';
 
 interface RunOptions {
   config?: string;
@@ -20,13 +23,7 @@ interface RunOptions {
   stream: boolean;
 }
 
-const CONFIG_FILE_NAMES = [
-  'cogitator.yml',
-  'cogitator.yaml',
-  'cogitator.json',
-  '.cogitator.yml',
-  '.cogitator.yaml',
-];
+const RUN_CONFIG_FILE_NAMES = [...CONFIG_FILE_NAMES, 'cogitator.json'];
 
 const PREFERRED_OLLAMA_MODELS = [
   'qwen3:8b',
@@ -80,19 +77,68 @@ export function findConfig(
     return existsSync(full) ? full : null;
   }
 
-  for (const name of CONFIG_FILE_NAMES) {
+  for (const name of RUN_CONFIG_FILE_NAMES) {
     const full = resolve(cwd, name);
     if (existsSync(full)) return full;
   }
   return null;
 }
 
+export interface RunConfig {
+  config: CogitatorConfig;
+  /** What the config file configures, undefined without one */
+  kind?: ProjectConfigKind;
+  /** `provider/model` of an assistant config, which has no `llm.defaultModel` */
+  model?: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** `llm.provider` and `llm.model` of an assistant config as one model string. */
+function assistantModel(document: unknown): string | undefined {
+  const llm = isRecord(document) ? document.llm : undefined;
+  if (!isRecord(llm) || typeof llm.model !== 'string' || !llm.model.trim()) return undefined;
+  const model = llm.model.trim();
+  if (model.includes('/') || typeof llm.provider !== 'string') return model;
+  return `${llm.provider}/${model}`;
+}
+
+/**
+ * The runtime config `cogitator run` uses. The `.env` next to the config file
+ * (or in `cwd` without one) is loaded first, without overriding variables
+ * already set, so API keys reach the env loader. An assistant config from
+ * `cogitator wizard` is not a runtime config: only its model is taken, and
+ * the rest comes from the environment.
+ */
+export function loadRunConfig(configPath: string | null, cwd: string = process.cwd()): RunConfig {
+  loadDotenvInto(join(configPath ? dirname(configPath) : cwd, '.env'), process.env);
+  if (!configPath) return { config: loadConfig({ skipYaml: true }) };
+
+  let document: unknown;
+  try {
+    document = parseYaml(readFileSync(configPath, 'utf-8'));
+  } catch {
+    document = undefined;
+  }
+  if (document !== undefined && detectConfigKind(document) === 'assistant') {
+    return {
+      config: loadConfig({ skipYaml: true }),
+      kind: 'assistant',
+      model: assistantModel(document),
+    };
+  }
+  return { config: loadConfig({ configPath }), kind: 'runtime' };
+}
+
 export function resolveRunModel(
   flagModel: string | undefined,
   env: Record<string, string | undefined>,
-  config: CogitatorConfig
+  config: CogitatorConfig,
+  configModel?: string
 ): string | undefined {
-  return flagModel || env.COGITATOR_MODEL || config.llm?.defaultModel || undefined;
+  return flagModel || env.COGITATOR_MODEL || config.llm?.defaultModel || configModel || undefined;
 }
 
 async function runInteractive(cog: Cogitator, initialModel: string, stream: boolean) {
@@ -229,16 +275,23 @@ export const runCommand = new Command('run')
       process.exit(1);
     }
 
-    let config: CogitatorConfig;
+    let loaded: RunConfig;
     try {
-      config = loadConfig(configPath ? { configPath } : { skipYaml: true });
+      loaded = loadRunConfig(configPath);
     } catch (error) {
       log.error(`Failed to load config: ${error instanceof Error ? error.message : error}`);
       process.exit(1);
     }
-    if (configPath) log.dim(`Using config: ${configPath}`);
+    const { config } = loaded;
+    if (configPath && loaded.kind === 'assistant') {
+      log.dim(
+        `Using the model of assistant config ${configPath} (run the assistant itself with "cogitator up")`
+      );
+    } else if (configPath) {
+      log.dim(`Using config: ${configPath}`);
+    }
 
-    let model = resolveRunModel(options.model, process.env, config);
+    let model = resolveRunModel(options.model, process.env, config, loaded.model);
 
     if (!model) {
       const ollama = config.llm?.providers?.ollama;

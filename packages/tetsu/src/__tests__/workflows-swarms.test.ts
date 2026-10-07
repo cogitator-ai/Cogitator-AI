@@ -1,8 +1,9 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import { createApp } from '@tetsujs/core';
 import { serve } from '@tetsujs/core/testing';
 import { Agent } from '@cogitator-ai/core';
 import { WorkflowBuilder } from '@cogitator-ai/workflows';
+import { Swarm } from '@cogitator-ai/swarms';
 import type { SwarmConfig, Workflow, WorkflowState } from '@cogitator-ai/types';
 import { cogitatorController } from '../index.js';
 import { fakeCogitator, json, readStream, runResult } from './helpers.js';
@@ -211,6 +212,50 @@ describe('swarms', () => {
     const res = await request('/swarms/quiet/blackboard');
     expect(res.status).toBe(409);
     expect(((await res.json()) as { error: string }).error).toBe('BLACKBOARD_DISABLED');
+  });
+
+  test('closes the swarm each request builds, so a distributed one leaves no connections', async () => {
+    const close = spyOn(Swarm.prototype, 'close');
+    try {
+      await request('/swarms/team/run', json({ input: 'hello' }));
+      await (await request('/swarms/team/stream', json({ input: 'hello' }))).text();
+      expect(close).toHaveBeenCalledTimes(2);
+    } finally {
+      close.mockRestore();
+    }
+  });
+
+  test('lists the router and the pipeline stages of a swarm', async () => {
+    const { cogitator } = fakeCogitator();
+    const routed = serve(
+      createApp({
+        routes: cogitatorController({
+          cogitator,
+          swarms: {
+            pipeline: {
+              name: 'pipeline',
+              strategy: 'pipeline',
+              stages: [
+                { name: 'draft', agent: agent('drafter') },
+                { name: 'review', agent: agent('reviewer') },
+              ],
+            },
+            routed: {
+              name: 'routed',
+              strategy: 'round-robin',
+              router: agent('router'),
+              agents: [agent('a'), agent('b')],
+            },
+          },
+        }),
+      })
+    );
+    expect(await (await routed('/swarms')).json()).toEqual({
+      swarms: [
+        { name: 'pipeline', strategy: 'pipeline', agents: ['drafter', 'reviewer'] },
+        { name: 'routed', strategy: 'round-robin', agents: ['a', 'b', 'router'] },
+      ],
+    });
   });
 
   test('answers 404 for an unknown swarm', async () => {

@@ -60,6 +60,10 @@ describe('Deployer.deploy', () => {
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   it("deploys the artifacts the target's provider generates", async () => {
+    writeFileSync(
+      join(dir, 'package.json'),
+      JSON.stringify({ name: 'api', dependencies: { '@cogitator-ai/express': 'latest' } })
+    );
     const artifacts: GeneratedArtifacts = {
       files: [{ path: 'Procfile', content: 'web: node server.js' }],
       outputDir: '.cogitator',
@@ -104,7 +108,7 @@ describe('Deployer.deploy', () => {
       (f) => f.path === 'fly.toml'
     )?.content;
 
-    expect(dockerfile).toContain('http://localhost:3000/api/health');
+    expect(dockerfile).toContain('http://127.0.0.1:3000/api/health');
     expect(flyToml).toContain('path = "/api/health"');
   });
 

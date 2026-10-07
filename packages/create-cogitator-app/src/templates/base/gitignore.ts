@@ -1,14 +1,20 @@
-import type { TemplateFile } from '../../types.js';
+import type { Template, TemplateFile } from '../../types.js';
 
-export function generateGitignore(): TemplateFile {
+/** What `next build` and `next dev` write next to the sources. */
+const NEXT_OUTPUT = ['.next/', 'out/', 'next-env.d.ts'];
+
+export function generateGitignore(template: Template): TemplateFile {
   return {
     path: '.gitignore',
     content: [
       'node_modules/',
       'dist/',
+      ...(template === 'nextjs' ? NEXT_OUTPUT : []),
       '.env',
-      '.env.local',
+      '.env.*',
+      '!.env.example',
       '*.log',
+      '*.tsbuildinfo',
       '.DS_Store',
       'coverage/',
       '.turbo/',

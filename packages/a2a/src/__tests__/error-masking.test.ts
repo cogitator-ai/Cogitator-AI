@@ -2,13 +2,14 @@ import { describe, it, expect, vi, afterEach, type MockInstance } from 'vitest';
 import type { Agent, AgentConfig } from '@cogitator-ai/types';
 import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import { A2AServer } from '../server';
-import { A2AError, taskNotFound } from '../errors';
+import { taskNotFound } from '../errors';
 import { InMemoryTaskStore } from '../task-store';
 import { InMemoryPushNotificationStore } from '../push-notifications';
-import { buildSseErrorEvent } from '../adapters/sse-error-event';
 import { a2aHono } from '../adapters/hono';
-import { expectResponse } from './helpers';
-import type { A2AMessage, A2AStreamEvent, AgentRunResult, TaskStore } from '../types';
+import { collect, expectResponse, userMessage } from './helpers';
+import { messageText } from '../protocol';
+import type { JsonRpcResponse } from '../json-rpc';
+import type { AgentRunResult, TaskStore } from '../types';
 
 const SECRET = 'connect ECONNREFUSED 10.0.0.5:6379';
 
@@ -37,18 +38,8 @@ function runResult(output: string): AgentRunResult {
   };
 }
 
-function userMessage(text: string): A2AMessage {
-  return { role: 'user', parts: [{ type: 'text', text }] };
-}
-
 function rpc(method: string, params: unknown) {
   return { jsonrpc: '2.0' as const, method, params, id: 1 };
-}
-
-async function collect(stream: AsyncGenerator<A2AStreamEvent>): Promise<A2AStreamEvent[]> {
-  const events: A2AStreamEvent[] = [];
-  for await (const event of stream) events.push(event);
-  return events;
 }
 
 function failingStore(method: keyof TaskStore): TaskStore {
@@ -65,9 +56,12 @@ function failingStore(method: keyof TaskStore): TaskStore {
   };
 }
 
-function lastStatusMessage(events: A2AStreamEvent[]): string | undefined {
-  const last = events.at(-1);
-  return last?.type === 'status-update' ? last.status.message : undefined;
+/** What the last response of a stream tells the client: its error, or the failed status. */
+function lastStreamMessage(responses: JsonRpcResponse[]): string | undefined {
+  const last = responses.at(-1);
+  if (last?.error) return last.error.message;
+  const result = last?.result as { kind?: string; status?: { message?: never } } | undefined;
+  return result?.kind === 'status-update' ? messageText(result.status?.message) : undefined;
 }
 
 let consoleError: MockInstance<typeof console.error>;
@@ -127,7 +121,7 @@ describe('JSON-RPC error masking', () => {
     );
 
     expect(response.error).toEqual({ code: -32603, message: 'Internal error' });
-    expect(lastStatusMessage(events)).toBe('Internal error');
+    expect(lastStreamMessage(events)).toBe('Internal error');
   });
 
   it('passes the message of a CogitatorError through', async () => {
@@ -161,7 +155,7 @@ describe('stream error masking', () => {
       server.handleJsonRpcStream(rpc('message/stream', { message: userMessage('hi') }))
     );
 
-    expect(lastStatusMessage(events)).toBe('Internal error');
+    expect(lastStreamMessage(events)).toBe('Internal error');
   });
 
   it('reports a failed agent run without the text of the error', async () => {
@@ -179,7 +173,7 @@ describe('stream error masking', () => {
       server.handleJsonRpcStream(rpc('message/stream', { message: userMessage('hi') }))
     );
 
-    expect(lastStatusMessage(events)).toBe('Internal error');
+    expect(lastStreamMessage(events)).toBe('Internal error');
     expect(JSON.stringify(events)).not.toContain('10.0.0.5');
   });
 
@@ -198,26 +192,37 @@ describe('stream error masking', () => {
       await server.handleJsonRpc(
         rpc('message/send', {
           message: userMessage('hi'),
-          configuration: { pushNotificationConfig: { webhookUrl: 'http://127.0.0.1/hook' } },
+          configuration: { pushNotificationConfig: { url: 'http://127.0.0.1/hook' } },
         })
       )
     );
     const tasks = expectResponse(await server.handleJsonRpc(rpc('tasks/list', {})));
 
     expect(response.error).toEqual({ code: -32603, message: 'Internal error' });
-    expect(JSON.stringify(tasks)).toContain('"message":"Failed to register push notification"');
+    expect(JSON.stringify(tasks)).toContain('"text":"Failed to register push notification"');
     expect(JSON.stringify(tasks)).not.toContain('10.0.0.5');
   });
 
-  it('builds adapter SSE error events without the text of internal errors', () => {
+  it('ends an adapter SSE stream that breaks with a masked error response', async () => {
     silenceConsole();
-    const internal = buildSseErrorEvent(new Error(SECRET));
-    const deliberate = buildSseErrorEvent(new A2AError(taskNotFound('t1')));
+    const server = new A2AServer({
+      agents: { helper: mockAgent() },
+      cogitator: { run: async () => runResult('x') },
+    });
+    vi.spyOn(server, 'handleJsonRpcStream').mockImplementation(async function* () {
+      yield { jsonrpc: '2.0', id: 1, result: { kind: 'status-update' } };
+      throw new Error(SECRET);
+    });
 
-    expect(internal.type === 'status-update' && internal.status.message).toBe('Internal error');
-    expect(deliberate.type === 'status-update' && deliberate.status.message).toBe(
-      'Task not found: t1'
-    );
+    const response = await a2aHono(server).request('/a2a', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(rpc('message/stream', { message: userMessage('hi') })),
+    });
+    const text = await response.text();
+
+    expect(text).toContain('"message":"Internal error"');
+    expect(text).not.toContain('10.0.0.5');
   });
 
   it('answers an adapter-level failure with a bare internal error', async () => {

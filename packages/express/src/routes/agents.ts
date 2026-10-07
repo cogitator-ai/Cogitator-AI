@@ -1,19 +1,18 @@
 import { Router } from 'express';
 import type { Response } from 'express';
 import type { RouteContext, CogitatorRequest, AgentListResponse } from '../types.js';
-import { parseRunRequest } from '@cogitator-ai/server-shared';
-import { ExpressStreamWriter, setupSSEHeaders, generateId } from '../streaming/index.js';
 import {
-  handleRouteError,
-  onClientDisconnect,
-  parseResumeBody,
-  resolveError,
-  sendError,
+  AgentStreamSession,
+  parseResumeRequest,
+  parseRunRequest,
   toAgentRunResponse,
-} from './utils.js';
+} from '@cogitator-ai/server-shared';
+import { ExpressStreamWriter, setupSSEHeaders } from '../streaming/index.js';
+import { handleRouteError, onClientDisconnect, resolveError, sendError } from './utils.js';
 
 export function createAgentRoutes(ctx: RouteContext): Router {
   const router = Router();
+  const runRequestOptions = { acceptContext: ctx.config.acceptContext };
 
   const findAgent = (name: string) =>
     Object.hasOwn(ctx.agents, name) ? ctx.agents[name] : undefined;
@@ -40,7 +39,7 @@ export function createAgentRoutes(ctx: RouteContext): Router {
         return;
       }
 
-      const parsed = parseRunRequest(req.body);
+      const parsed = parseRunRequest(req.body, runRequestOptions);
       if (!parsed.ok) {
         sendError(res, 400, parsed.message, 'INVALID_INPUT');
         return;
@@ -78,7 +77,7 @@ export function createAgentRoutes(ctx: RouteContext): Router {
         return;
       }
 
-      const parsed = parseResumeBody(req.body);
+      const parsed = parseResumeRequest(req.body);
       if (!parsed.ok) {
         sendError(res, 400, parsed.message, 'INVALID_INPUT');
         return;
@@ -115,7 +114,7 @@ export function createAgentRoutes(ctx: RouteContext): Router {
         return;
       }
 
-      const parsed = parseRunRequest(req.body);
+      const parsed = parseRunRequest(req.body, runRequestOptions);
       if (!parsed.ok) {
         sendError(res, 400, parsed.message, 'INVALID_INPUT');
         return;
@@ -124,7 +123,9 @@ export function createAgentRoutes(ctx: RouteContext): Router {
 
       setupSSEHeaders(res);
       const writer = new ExpressStreamWriter(res, { heartbeatMs: ctx.config.sseHeartbeatMs });
-      const messageId = generateId('msg');
+      const session = new AgentStreamSession((event) => writer.send(event), {
+        threadId: body.threadId,
+      });
       const abortController = new AbortController();
 
       onClientDisconnect(res, () => {
@@ -132,84 +133,22 @@ export function createAgentRoutes(ctx: RouteContext): Router {
         writer.close();
       });
 
-      let textId: string | null = null;
-      let reasoningId: string | null = null;
-      let streamedText = false;
-
-      const endText = () => {
-        if (textId === null) return;
-        writer.textEnd(textId);
-        textId = null;
-      };
-
-      const endReasoning = () => {
-        if (reasoningId === null) return;
-        writer.reasoningEnd(reasoningId);
-        reasoningId = null;
-      };
-
-      const endParts = () => {
-        endReasoning();
-        endText();
-      };
-
-      const writeText = (delta: string) => {
-        if (!delta) return;
-        if (textId === null) {
-          endReasoning();
-          textId = generateId('txt');
-          writer.textStart(textId);
-        }
-        writer.textDelta(textId, delta);
-      };
-
-      const writeReasoning = (delta: string) => {
-        if (!delta) return;
-        if (reasoningId === null) {
-          endText();
-          reasoningId = generateId('rsn');
-          writer.reasoningStart(reasoningId);
-        }
-        writer.reasoningDelta(reasoningId, delta);
-      };
-
       try {
-        writer.start(messageId);
-
+        session.start();
         const result = await ctx.cogitator.run(agent, {
           input: body.input,
           context: body.context,
-          threadId: body.threadId,
+          threadId: session.threadId,
           userId: req.cogitator?.auth?.userId,
           signal: abortController.signal,
           stream: true,
-          onToken: (token) => {
-            if (token) streamedText = true;
-            writeText(token);
-          },
-          onReasoning: writeReasoning,
-          onToolCall: (toolCall) => {
-            endParts();
-            writer.toolCallStart(toolCall.id, toolCall.name);
-            writer.toolCallDelta(toolCall.id, JSON.stringify(toolCall.arguments));
-            writer.toolCallEnd(toolCall.id);
-          },
-          onToolResult: (toolResult) => {
-            writer.toolResult(generateId('res'), toolResult.callId, toolResult.result);
-          },
+          ...session.callbacks,
         });
-
-        if (!streamedText) writeText(result.output);
-        endParts();
-        if (result.status === 'paused' && result.pendingApprovals) {
-          writer.approvalRequired(result.threadId, result.pendingApprovals);
-        }
-        writer.finish(messageId, result.usage);
+        session.complete(result);
       } catch (error) {
         if (!abortController.signal.aborted) {
           const resolved = resolveError(error, 'Agent stream error');
-          endParts();
-          writer.error(resolved.message, resolved.code);
+          session.fail(resolved.message, resolved.code);
         }
       } finally {
         writer.close();

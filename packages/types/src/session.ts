@@ -37,9 +37,17 @@ export interface SessionFilter {
   offset?: number;
 }
 
+/**
+ * When and how to compact a thread. It is compacted once its entries hold `threshold` tokens or
+ * once it holds `messageThreshold` entries, whichever comes first; at least one must be set.
+ */
 export interface CompactionConfig {
   strategy: CompactionStrategy;
-  threshold: number;
+  /** Tokens the thread's entries must hold before it is compacted */
+  threshold?: number;
+  /** Entries (messages) the thread must hold before it is compacted */
+  messageThreshold?: number;
+  /** Newest entries kept verbatim after the summary */
   keepRecent: number;
   /** Model that writes the summary; handed to the summarizer as `options.model`. */
   summaryModel?: string;

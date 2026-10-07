@@ -85,6 +85,17 @@ describe('OpenAPI document', () => {
     expect(document.paths?.['/api/health']?.get?.security).toBeUndefined();
   });
 
+  test('documents the successful answer of every stream route', () => {
+    for (const path of [
+      '/api/agents/{name}/stream',
+      '/api/agents/{name}/resume/stream',
+      '/api/workflows/{name}/stream',
+      '/api/swarms/{name}/stream',
+    ]) {
+      expect(Object.keys(document.paths?.[path]?.post?.responses ?? {})).toContain('200');
+    }
+  });
+
   test('names operations after the controller', () => {
     expect(document.paths?.['/api/agents/{name}/run']?.post?.operationId).toBe('cogitatorRunAgent');
     expect(document.paths?.['/api/threads/{id}']?.delete?.operationId).toBe(

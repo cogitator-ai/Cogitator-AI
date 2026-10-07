@@ -40,6 +40,7 @@ export {
 export type { AgentNodeOptions } from './nodes/agent';
 
 export type { ToolNodeOptions } from './nodes/tool';
+export type { NodeApprovalOptions } from './nodes/approvals';
 
 export type { SimpleNodeFn, FullNodeFn, FunctionNodeOptions } from './nodes/function';
 
@@ -169,6 +170,8 @@ export type {
 } from './timers/index';
 
 export {
+  MapItemSkippedError,
+  MapItemTimeoutError,
   executeMap,
   executeReduce,
   executeMapReduce,
@@ -196,6 +199,8 @@ export type {
   ReduceNodeConfig,
   MapReduceResult,
   MapReduceNodeConfig,
+  MapItemContext,
+  MapExecutionOptions,
 } from './patterns/index';
 
 export {

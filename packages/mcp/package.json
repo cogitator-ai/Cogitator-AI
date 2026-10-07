@@ -17,7 +17,8 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     }
   },
   "files": [
@@ -33,6 +34,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.31.0",
     "zod": "^4.6.5"

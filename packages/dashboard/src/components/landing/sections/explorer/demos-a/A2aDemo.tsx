@@ -15,12 +15,12 @@ interface Exchange {
 }
 
 const EXCHANGES: Exchange[] = [
-  { direction: 'request', method: 'GET', detail: '/.well-known/agent.json' },
+  { direction: 'request', method: 'GET', detail: '/.well-known/agent-card.json' },
   { direction: 'response', method: 'AgentCard', detail: 'researcher · streaming' },
   { direction: 'request', method: 'message/stream', detail: '"Summarize Q3 churn"' },
   { direction: 'response', method: 'status-update', detail: 'working', tone: 'info' },
-  { direction: 'response', method: 'artifact-update', detail: 'text/plain', tone: 'warn' },
-  { direction: 'response', method: 'status-update', detail: 'completed', tone: 'accent' },
+  { direction: 'response', method: 'artifact-update', detail: 'append · lastChunk', tone: 'warn' },
+  { direction: 'response', method: 'status-update', detail: 'completed · final', tone: 'accent' },
 ];
 
 const TONES = {

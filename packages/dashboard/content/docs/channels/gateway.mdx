@@ -101,7 +101,7 @@ User sends message
   → Middleware pipeline (dm-policy → owner-commands → rate-limit → ...)
   → message:received hook
   → Agent resolved (factory called per message), session lookup/create (emits session:created)
-  → Compaction (if the thread holds ≥ threshold messages)
+  → Compaction (if the thread holds ≥ threshold tokens or ≥ messageThreshold messages)
   → Status reaction 👀 → 🤔, typing indicator every 4s
   → Approve/deny reply on a paused thread? cogitator.resume(agent, threadId, { defaultDecision })
     otherwise: envelope (if enabled), media processing, cogitator.run(agent, { input, threadId, ... })
@@ -154,7 +154,7 @@ const gateway = new Gateway({
 });
 ```
 
-Messages are grouped by `channelType:channelId:userId`. Texts are joined with newlines, attachments are merged. Merged messages then go through `queueMode` like any other message.
+Messages are grouped by chat, topic and user (`channelType`, `channelId`, `topicId`, `userId`), so messages to different forum topics never merge and each answer goes to its own topic. Texts are joined with newlines, attachments are merged, and the merged message keeps the `topicId` and the `replyTo` of the first message that replies to one. A single message passes on unchanged. Merged messages then go through `queueMode` like any other message.
 
 ## Envelope Formatting
 
@@ -198,7 +198,7 @@ const gateway = new Gateway({
 | `parallel`   | Default. All messages processed immediately.                                                                                         |
 | `sequential` | FIFO per thread. Next message waits for current to finish.                                                                           |
 | `interrupt`  | Abort current processing (the run's `AbortSignal` fires), start new message immediately. Aborted runs are not reported to `onError`. |
-| `collect`    | Buffer messages during processing, merge all when idle.                                                                              |
+| `collect`    | Buffer messages during processing, merge them per chat and topic when idle.                                                          |
 
 For personal assistants, `sequential` or `collect` usually give the best UX. Queues are keyed by the same thread id as sessions.
 
@@ -373,7 +373,7 @@ const gateway = new Gateway({
     threadKey: (msg) => `${msg.channelType}:${msg.userId}`,
     compaction: {
       strategy: 'summary',
-      threshold: 100, // messages in the thread before compaction runs
+      messageThreshold: 100, // messages in the thread before compaction runs (or `threshold` in tokens)
       keepRecent: 20, // newest messages kept verbatim
       summaryModel: 'google/gemini-3.8-flash', // optional, defaults to the agent model
     },
@@ -383,7 +383,7 @@ const gateway = new Gateway({
 
 The `threadKey` function determines how sessions are grouped. By default, each user gets their own session per channel.
 
-Compaction summarizes everything except the newest `keepRecent` messages with an LLM call (`summaryPrompt` overrides the default prompt) and stores the summary as a system message. Strategies: `summary`, `sliding-window` (drop old messages), `hybrid`. A failed compaction is reported to `onError` and the message is still answered. Force it with `await gateway.compactThread(threadId)`.
+Compaction follows the same rules as `CompactionService`: `threshold` counts tokens and `messageThreshold` counts messages, and the thread is compacted once either is reached. Compaction summarizes everything except the newest `keepRecent` messages with an LLM call (`summaryPrompt` overrides the default prompt) and stores the summary as a system message. Strategies: `summary`, `sliding-window` (drop old messages), `hybrid`. A failed compaction is reported to `onError` and the message is still answered. Force it with `await gateway.compactThread(threadId)`.
 
 ## Stats
 

@@ -39,6 +39,7 @@ function mockRuntime(overrides?: { run?: unknown; memory?: unknown }) {
       threadId: 'thread-1',
       usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
       toolCalls: [],
+      trace: { traceId: 'trace-1', spans: [] },
     }),
     memory: undefined,
     getMemory() {
@@ -195,7 +196,8 @@ describe('agentRoutes', () => {
       output: 'response text',
       threadId: 'thread-42',
       usage: { inputTokens: 5, outputTokens: 10, totalTokens: 15 },
-      toolCalls: [{ name: 'search', arguments: { q: 'test' } }],
+      toolCalls: [{ id: 'call_1', name: 'search', arguments: { q: 'test' } }],
+      trace: { traceId: 'trace-42', spans: [] },
     };
     const runtime = mockRuntime({ run: vi.fn().mockResolvedValue(runResult) });
     const app = buildApp({
@@ -220,11 +222,13 @@ describe('agentRoutes', () => {
       threadId: 't1',
       usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
       toolCalls: [],
+      trace: { traceId: 'trace-1', spans: [] },
     });
     const runtime = mockRuntime({ run });
     const app = buildApp({
       cogitator: runtime as unknown as CogitatorAppOptions['cogitator'],
       agents: { bot: mockAgent('bot') as never },
+      acceptContext: ['key'],
     });
 
     await request(app.callback())

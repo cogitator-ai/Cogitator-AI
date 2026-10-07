@@ -133,7 +133,7 @@ interface QueueConfig {
 
 **Agent Jobs:**
 
-The simplest way is to serialize an agent you already have. `serializeAgent` keeps its model, instructions, sampling, reasoning effort, response format and tool schemas, and turns a Zod response schema into JSON Schema, so the worker validates the structured answer the same way an in-process run does:
+The simplest way is to serialize an agent you already have. `serializeAgent` writes it in the agent wire format of `@cogitator-ai/core` (`toAgentWire`), shared by agent, workflow and swarm jobs and by distributed swarm turns. It keeps the whole configuration (model and provider, instructions, sampling, stop sequences, reasoning effort, response format, iteration limit, timeout), the tool schemas and every agent it can hand over to, and turns a Zod response schema into JSON Schema, so the worker validates the structured answer the same way an in-process run does. A config with a key the worker does not know is refused rather than run without that setting:
 
 ```typescript
 import { Agent } from '@cogitator-ai/core';
@@ -184,7 +184,7 @@ const job = await queue.addAgentJob(agentConfig, 'Research quantum computing', {
 });
 ```
 
-The worker routes `model` exactly like the same agent in-process: a prefix that names a built-in provider, a backend in the worker Cogitator's `llm.backends` or a registered plugin picks that provider, so `'openrouter/deepseek/deepseek-v4-pro'` runs on an `openrouter` backend whatever `provider` says. `provider` (optional, any provider the worker routes to, custom backends and plugins included) is prepended only to a model whose prefix names none, such as `'meta-llama/llama-4-scout'` with `provider: 'openrouter'`. Without `provider` such a model runs on the worker's `llm.defaultProvider`, and a `provider` the worker cannot route to fails the job.
+The worker routes `model` exactly like the same agent in-process: a prefix that names a built-in provider, a backend in the worker Cogitator's `llm.backends` or a registered plugin picks that provider, so `'openrouter/deepseek/deepseek-v4-pro'` runs on an `openrouter` backend whatever `provider` says. `provider` (optional, any provider the worker routes to, custom backends and plugins included) is prepended only to a model whose prefix names none, such as `'meta-llama/llama-4-scout'` with `provider: 'openrouter'`. Without `provider` such a model runs on the worker's `llm.defaultProvider`, and a `provider` the worker cannot route to fails the job. `serializeAgent` sends an agent with an explicit `provider` as `<provider>/<model>`, so it takes the same route on the worker as in-process.
 
 **Workflow Jobs:**
 
@@ -199,7 +199,7 @@ const workflowConfig: SerializedWorkflow = {
       id: 'classify',
       type: 'agent',
       config: {
-        agentConfig: classifierAgent, // SerializedAgent
+        agentConfig: classifierAgent, // SerializedAgent; a json_schema agent writes its structured answer
         prompt: 'Classify this ticket as BUG or QUESTION: {{ticket}}',
         outputKey: 'category',
       },
@@ -252,13 +252,13 @@ await queue.addSwarmJob(swarmConfig, 'Write an article about AI', {
 });
 ```
 
-| Topology        | Swarm strategy | Notes                                                        |
-| --------------- | -------------- | ------------------------------------------------------------ |
-| `sequential`    | `pipeline`     | One stage per agent, in order                                |
-| `hierarchical`  | `hierarchical` | `coordinator` is required and becomes the supervisor         |
-| `collaborative` | `round-robin`  |                                                              |
-| `debate`        | `debate`       | `maxRounds` rounds, `coordinator` moderates                  |
-| `voting`        | `consensus`    | `consensusThreshold`, `maxRounds`; `coordinator` breaks ties |
+| Topology        | Swarm strategy | Notes                                                                                                                                                                          |
+| --------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `sequential`    | `pipeline`     | One stage per agent, in order                                                                                                                                                  |
+| `hierarchical`  | `hierarchical` | `coordinator` is required and becomes the supervisor                                                                                                                           |
+| `collaborative` | `pipeline`     | Every agent contributes in each of `maxRounds` rounds (default 3), seeing all contributions so far, `coordinator` combines them, otherwise the last contribution is the answer |
+| `debate`        | `debate`       | `maxRounds` rounds, `coordinator` moderates                                                                                                                                    |
+| `voting`        | `consensus`    | `consensusThreshold`, `maxRounds`, `coordinator` breaks ties                                                                                                                   |
 
 ### Queue Methods
 
@@ -268,6 +268,8 @@ const job = await queue.getJob('job-id');
 const state: JobState = await queue.getJobState('job-id');
 // 'waiting' | 'prioritized' | 'delayed' | 'active' | 'completed' | 'failed'
 // | 'waiting-children' | 'unknown'
+
+await queue.resumeAgentJob(agentConfig, pausedResult, { decisions }); // see Job Results
 
 const metrics = await queue.getMetrics();
 // { waiting, active, completed, failed, delayed, depth, workerCount }
@@ -368,12 +370,18 @@ const metrics = await pool.getMetrics(await queue.getMetrics());
 // Job duration histogram and per-type counters
 pool.metrics.format(await pool.getMetrics(await queue.getMetrics()));
 
-// Graceful shutdown (waits up to 30s for active jobs, then force-closes)
+// Cancel a job this pool is running: its agent runs stop and the job fails without retries
+pool.cancelJob(jobId, 'No longer needed');
+
+// Graceful shutdown (waits up to 30s for active jobs, then aborts them and force-closes;
+// BullMQ hands the aborted jobs to another worker once their locks expire)
 await pool.stop(30000);
 
-// Force shutdown
+// Force shutdown (aborts the jobs still running)
 await pool.forceStop();
 ```
+
+Every job gets the abort signal BullMQ gives it, down to each agent run, workflow node and swarm turn of the job. The processors take it too: `processAgentJob(payload, runtime, { signal })`, and the same third argument for `processWorkflowJob`, `processSwarmJob` and `executeSwarmAgentJob` (`processSwarmAgentJob` reads `signal` from its options).
 
 ---
 
@@ -430,6 +438,7 @@ const worker = new DistributedSwarmWorker(
   {
     onJobCompleted: (job) => console.log('done', job.agentName),
     onJobFailed: (job, error) => console.error(job.agentName, error.message),
+    onJobCancelled: (job) => console.log('the swarm gave up on', job.jobId),
     onError: (error) => console.error(error),
   }
 );
@@ -438,7 +447,7 @@ await worker.start();
 process.on('SIGTERM', () => void worker.stop()); // waits for in-flight turns
 ```
 
-Failed turns are reported back to the swarm as errors, so the swarm's own `errorHandling` (retry, failover, skip) applies. Each turn runs on the model its agent would use in-process, routed by the worker's `cogitator`, so give the worker the same `llm.backends`, plugins and provider keys as the process that runs the swarm.
+Failed turns are reported back to the swarm as errors, so the swarm's own `errorHandling` (retry, failover, skip) applies. A turn the swarm gave up on (its run aborted or timed out, the swarm closed, another attempt answered) is skipped, or aborted while it runs (checked every `cancelCheckInterval` ms, default 1000), and reported to `onJobCancelled` instead of being published. Each turn runs on the model its agent would use in-process, routed by the worker's `cogitator`, so give the worker the same `llm.backends`, plugins and provider keys as the process that runs the swarm.
 
 ---
 
@@ -467,6 +476,10 @@ interface AgentJobResult {
     input: unknown;
     output: unknown;
   }[];
+  /** 'paused' when tool calls wait for approval: output is then not the answer */
+  status?: 'completed' | 'paused';
+  pendingApprovals?: ToolApprovalRequest[]; // the calls a paused run waits on
+  checkpoint?: RunCheckpoint; // what a paused run continues from, see resumeAgentJob
   /** @deprecated use usage */
   tokenUsage?: {
     prompt: number;
@@ -475,6 +488,18 @@ interface AgentJobResult {
   };
 }
 ```
+
+A run that paused for tool approvals completes its job with `status: 'paused'`. Continue it with the decisions as a new job, on any worker:
+
+```typescript
+if (result.status === 'paused') {
+  await queue.resumeAgentJob(agentConfig, result, {
+    decisions: { [result.pendingApprovals![0].toolCallId]: { approved: true } },
+  });
+}
+```
+
+Workflow and swarm jobs cannot wait for a decision: when one of their agents pauses, the job fails without retries with an `AgentRunPausedError`.
 
 ### Workflow Job Result
 
@@ -643,18 +668,33 @@ Jobs use serialized configurations that can be stored in Redis.
 
 ### SerializedAgent
 
+`SerializedAgent` is `AgentWireConfig` from `@cogitator-ai/types`:
+
 ```typescript
 interface SerializedAgent {
+  id?: string;
   name: string;
+  description?: string;
   instructions: string;
   model: string; // routed like in-process: a known provider prefix picks the provider
-  provider?: LLMBackendProvider; // prepended when model names no provider the worker routes to
+  provider?: LLMBackendProvider; // used when model names no provider the worker routes to
   temperature?: number;
+  topP?: number;
   maxTokens?: number;
+  stopSequences?: string[];
+  responseFormat?:
+    { type: 'text' } | { type: 'json' } | { type: 'json_schema'; schema: JSONSchema };
+  reasoning?: ReasoningConfig;
   maxIterations?: number;
+  onIterationLimit?: 'answer' | 'stop';
+  timeout?: number;
   tools: ToolSchema[]; // resolved by name against the worker's tools
+  handoffs?: { agent: string; toolName?: string; description?: string }[];
+  handoffAgents?: Record<string, Omit<SerializedAgent, 'handoffAgents'>>; // handoff targets by name
 }
 ```
+
+Unknown keys are refused. Agent job results (`AgentJobResult`) carry `output`, `structured`, `structuredError`, `reasoning`, `usage` (tokens, `cost`, `duration`, reasoning and cache tokens), `toolCalls` with their outputs, and `truncated`, `blocked` and `iterationLimitReached`.
 
 ### SerializedWorkflow
 

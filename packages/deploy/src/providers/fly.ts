@@ -10,8 +10,11 @@ import type { DeployProvider } from './base.js';
 import { run, isCommandAvailable, type ExecResult, type RunOptions } from '../utils/exec.js';
 import { resolveDeployEnv } from '../utils/env.js';
 import { generateProjectArtifacts, secretChecks, writeArtifacts } from './artifacts.js';
-import { healthPath } from '../templates/health.js';
+import { healthPath, servesHttp } from '../templates/health.js';
+import { volumeName } from '../volumes.js';
 import { join } from 'node:path';
+
+const DEFAULT_REGION = 'iad';
 
 const PREFLIGHT_TIMEOUT_MS = 15_000;
 
@@ -135,6 +138,9 @@ export class FlyProvider implements DeployProvider {
       }
     }
 
+    const volumeError = this.ensureVolumes(config, app, projectDir);
+    if (volumeError) return { success: false, error: volumeError };
+
     const deployResult = this.fly(
       [
         'deploy',
@@ -163,16 +169,55 @@ export class FlyProvider implements DeployProvider {
       }
     }
 
+    if (!servesHttp(config)) return { success: true };
+
     const url = `https://${app}.fly.dev`;
+    const health = healthPath(config);
     return {
       success: true,
       url,
       endpoints: {
         api: url,
         a2a: `${url}/.well-known/agent.json`,
-        health: `${url}${healthPath(config)}`,
+        ...(health ? { health: `${url}${health}` } : {}),
       },
     };
+  }
+
+  /** Creates the Fly volume `fly.toml` mounts when the app has none of that name yet. */
+  private ensureVolumes(config: DeployConfig, app: string, projectDir: string): string | undefined {
+    const volume = config.volumes?.[0];
+    if (!volume) return undefined;
+    const name = volumeName(volume);
+
+    const list = this.fly(['volumes', 'list', '--app', app, '--json'], { cwd: projectDir });
+    if (!list.success) return `Failed to list Fly volumes: ${list.error}`;
+    let existing: unknown;
+    try {
+      existing = JSON.parse(list.output || '[]');
+    } catch {
+      existing = [];
+    }
+    const exists =
+      Array.isArray(existing) && existing.some((entry) => isRecord(entry) && entry.name === name);
+    if (exists) return undefined;
+
+    const create = this.fly(
+      [
+        'volumes',
+        'create',
+        name,
+        '--app',
+        app,
+        '--region',
+        config.region ?? DEFAULT_REGION,
+        '--size',
+        String(volume.size ?? 1),
+        '--yes',
+      ],
+      { cwd: projectDir }
+    );
+    return create.success ? undefined : `Failed to create Fly volume "${name}": ${create.error}`;
   }
 
   async status(config: DeployConfig, projectDir: string): Promise<DeployStatus> {

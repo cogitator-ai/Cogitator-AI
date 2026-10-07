@@ -10,7 +10,8 @@ import type { IncomingMessage, Server as HttpServer, ServerResponse } from 'node
 import type { StreamableHTTPServerTransport as StreamableHTTPServerTransportType } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import type { Tool } from '@cogitator-ai/types';
+import { Cogitator } from '@cogitator-ai/core';
+import type { Tool, ToolInvoker } from '@cogitator-ai/types';
 import { ElicitResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import type { ServerNotification, ServerRequest } from '@modelcontextprotocol/sdk/types.js';
@@ -27,6 +28,7 @@ import type {
   MCPToolContent,
 } from '../types';
 import { resultToMCPContent } from '../adapter/tool-adapter';
+import { elicitApproval } from './approval';
 import { z } from 'zod';
 
 type MCPServerContent =
@@ -83,6 +85,30 @@ function errorMessageOf(error: unknown): string {
 
 const PERMISSIVE_INPUT_SCHEMA = z.looseObject({});
 
+/** Arguments the MCP SDK already parsed with the tool's own schema: taken as they are. */
+const SDK_PARSED_ARGUMENTS = z.custom<unknown>(() => true);
+
+/**
+ * The tool as the invoker runs it once the MCP SDK validated the call's arguments against the
+ * tool's schema: everything that decides how it runs (approval, sandbox, timeout, side effects)
+ * stays, and the arguments are not parsed a second time, so transforms apply exactly once.
+ */
+function withSdkParsedArguments(tool: Tool): Tool {
+  return {
+    name: tool.name,
+    description: tool.description,
+    ...(tool.category !== undefined && { category: tool.category }),
+    ...(tool.tags !== undefined && { tags: tool.tags }),
+    parameters: SDK_PARSED_ARGUMENTS,
+    execute: (params, context) => tool.execute(params, context),
+    ...(tool.sideEffects !== undefined && { sideEffects: tool.sideEffects }),
+    ...(tool.requiresApproval !== undefined && { requiresApproval: tool.requiresApproval }),
+    ...(tool.timeout !== undefined && { timeout: tool.timeout }),
+    ...(tool.sandbox !== undefined && { sandbox: tool.sandbox }),
+    toJSON: () => tool.toJSON(),
+  };
+}
+
 /**
  * MCP Server for exposing Cogitator tools
  *
@@ -111,6 +137,7 @@ export class MCPServer {
   private resources = new Map<string, MCPResourceConfig>();
   private prompts = new Map<string, MCPPromptConfig>();
   private started = false;
+  private ownInvoker?: Cogitator;
   private httpServer?: HttpServer;
   private readonly sessions = new Map<
     string,
@@ -297,8 +324,18 @@ export class MCPServer {
     return params instanceof z.ZodType ? params : PERMISSIVE_INPUT_SCHEMA;
   }
 
+  /** The invoker tool calls run through: `config.toolInvoker`, else a Cogitator of its own. */
+  private invoker(): ToolInvoker {
+    if (this.config.toolInvoker) return this.config.toolInvoker;
+    this.ownInvoker ??= new Cogitator();
+    return this.ownInvoker;
+  }
+
   /**
-   * Execute a tool with SDK-validated arguments and return an MCP-formatted result
+   * Run a tool call through the tool invoker, the way an agent run executes it: schema
+   * validation, approval, guardrails, sandbox and `tool.timeout`. A call that needs approval is
+   * asked from the person at the client through elicitation; one nobody can approve does not run
+   * and comes back as an error that says so.
    */
   private async executeTool(
     tool: Tool,
@@ -306,26 +343,38 @@ export class MCPServer {
     extra: ToolHandlerExtra,
     caller?: MCPCaller
   ): Promise<MCPCallToolResult> {
-    const context: MCPToolContext = {
-      agentId: 'mcp-server',
-      runId: `mcp_${randomUUID()}`,
-      signal: extra.signal,
-      ...(caller?.userId !== undefined && { userId: caller.userId }),
-      ...(this.canElicit() && { elicit: (request) => this.elicit(extra, request) }),
-    };
+    const elicit: MCPToolContext['elicit'] = this.canElicit()
+      ? (request) => this.elicit(extra, request)
+      : undefined;
 
     try {
-      const result = await tool.execute(args ?? {}, context);
-      return { content: resultToMCPContent(result).map(toServerContent) };
+      const result = await this.invoker().invokeTool(withSdkParsedArguments(tool), args ?? {}, {
+        runId: `mcp_${randomUUID()}`,
+        agentId: 'mcp-server',
+        signal: extra.signal,
+        ...(caller?.userId !== undefined && { userId: caller.userId }),
+        ...(elicit && { context: { elicit } }),
+        onApproval: (request) => elicitApproval(elicit, request),
+      });
+      if (result.pendingApproval) {
+        return this.toolError(
+          tool,
+          `Tool "${tool.name}" needs the user's approval, and nobody could approve this call: ` +
+            'the client cannot answer MCP elicitation requests (or the server has no sessions). ' +
+            'Use a client that supports elicitation, or decide approvals on the server with ' +
+            'guardrails.onToolApproval.'
+        );
+      }
+      if (result.error !== undefined) return this.toolError(tool, result.error);
+      return { content: resultToMCPContent(result.result).map(toServerContent) };
     } catch (error) {
-      const errorMessage = errorMessageOf(error);
-      this.log('error', `Tool ${tool.name} error: ${errorMessage}`);
-
-      return {
-        content: [{ type: 'text', text: `Error: ${errorMessage}` }],
-        isError: true,
-      };
+      return this.toolError(tool, errorMessageOf(error));
     }
+  }
+
+  private toolError(tool: Tool, message: string): MCPCallToolResult {
+    this.log('error', `Tool ${tool.name} error: ${message}`);
+    return { content: [{ type: 'text', text: `Error: ${message}` }], isError: true };
   }
 
   /**
@@ -712,9 +761,12 @@ export class MCPServer {
       const server = this.server;
       this.server = undefined;
       this.started = false;
+      const own = this.ownInvoker;
+      this.ownInvoker = undefined;
       if (server) {
         await server.close();
       }
+      await own?.close();
     }
 
     this.log('info', 'Server stopped');

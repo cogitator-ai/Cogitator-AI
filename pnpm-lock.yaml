@@ -235,15 +235,21 @@ importers:
       '@types/ws':
         specifier: ^8.18.2
         version: 8.18.2
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
+      pg:
+        specifier: ^8.23.1
+        version: 8.23.1
       tsx:
         specifier: ^4.23.15
         version: 4.23.15
 
   packages/a2a:
     dependencies:
-      '@cogitator-ai/core':
-        specifier: workspace:>=0.33.0
-        version: link:../core
+      '@cogitator-ai/server-shared':
+        specifier: workspace:*
+        version: link:../server-shared
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
@@ -266,6 +272,12 @@ importers:
         specifier: ^4.6.5
         version: 4.6.5
     devDependencies:
+      '@a2a-js/sdk':
+        specifier: 0.3.14
+        version: 0.3.14(@grpc/grpc-js@1.14.5)(express@5.2.1(supports-color@10.2.2))
+      '@cogitator-ai/core':
+        specifier: workspace:*
+        version: link:../core
       '@types/express':
         specifier: ^5.0.6
         version: 5.0.6
@@ -275,6 +287,9 @@ importers:
       '@types/node':
         specifier: ^22.20.4
         version: 22.20.4
+      ajv:
+        specifier: ^8.18.0
+        version: 8.18.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -398,6 +413,9 @@ importers:
       '@whiskeysockets/baileys':
         specifier: 7.0.0-rc14
         version: 7.0.0-rc14(sharp@0.35.5(@types/node@22.20.4))(supports-color@10.2.2)
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -434,6 +452,9 @@ importers:
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
       chalk:
         specifier: ^6.0.1
         version: 6.0.1
@@ -493,9 +514,6 @@ importers:
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
-      better-sqlite3:
-        specifier: ^11.0.0 || ^12.0.0 || ^13.0.0
-        version: 13.0.3
       langfuse:
         specifier: ^3.0.0
         version: 3.38.6
@@ -530,16 +548,18 @@ importers:
       '@types/pg':
         specifier: ^8.23.1
         version: 8.23.1
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
+      pg:
+        specifier: ^8.23.1
+        version: 8.23.1
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
       vitest:
         specifier: ^5.0.3
         version: 5.0.3(@opentelemetry/api@1.9.0)(@types/node@22.20.4)(@vitest/coverage-v8@5.0.3)(vite@8.3.2(@types/node@22.20.4)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
-    optionalDependencies:
-      pg:
-        specifier: ^8.23.1
-        version: 8.23.1
 
   packages/create-cogitator-app:
     dependencies:
@@ -550,6 +570,27 @@ importers:
         specifier: ^1.1.0
         version: 1.1.1
     devDependencies:
+      '@cogitator-ai/core':
+        specifier: workspace:^
+        version: link:../core
+      '@cogitator-ai/express':
+        specifier: workspace:^
+        version: link:../express
+      '@cogitator-ai/memory':
+        specifier: workspace:^
+        version: link:../memory
+      '@cogitator-ai/next':
+        specifier: workspace:^
+        version: link:../next
+      '@cogitator-ai/redis':
+        specifier: workspace:^
+        version: link:../redis
+      '@cogitator-ai/swarms':
+        specifier: workspace:^
+        version: link:../swarms
+      '@cogitator-ai/workflows':
+        specifier: workspace:^
+        version: link:../workflows
       '@types/node':
         specifier: ^22.20.4
         version: 22.20.4
@@ -783,6 +824,9 @@ importers:
       '@types/ws':
         specifier: ^8.18.2
         version: 8.18.2
+      ioredis:
+        specifier: ^6.0.0
+        version: 6.0.0(supports-color@10.2.2)
       openai:
         specifier: ^7.25.0
         version: 7.25.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@7.30.0)(ws@8.22.0)(zod@4.6.5)
@@ -1181,6 +1225,9 @@ importers:
 
   packages/mcp:
     dependencies:
+      '@cogitator-ai/core':
+        specifier: workspace:*
+        version: link:../core
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
@@ -1216,6 +1263,9 @@ importers:
         specifier: ^4.6.5
         version: 4.6.5
     devDependencies:
+      '@qdrant/js-client-rest':
+        specifier: ^1.19.0
+        version: 1.19.0(typescript@6.0.3)
       '@types/better-sqlite3':
         specifier: ^9.6.0
         version: 9.6.0
@@ -1225,16 +1275,6 @@ importers:
       '@types/pg':
         specifier: ^8.23.1
         version: 8.23.1
-      typescript:
-        specifier: ^6.0.3
-        version: 6.0.3
-      vitest:
-        specifier: ^5.0.3
-        version: 5.0.3(@opentelemetry/api@1.9.0)(@types/node@22.20.4)(@vitest/coverage-v8@5.0.3)(vite@8.3.2(@types/node@22.20.4)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
-    optionalDependencies:
-      '@qdrant/js-client-rest':
-        specifier: ^1.19.0
-        version: 1.19.0(typescript@6.0.3)
       better-sqlite3:
         specifier: ^13.0.3
         version: 13.0.3
@@ -1247,6 +1287,12 @@ importers:
       pg:
         specifier: ^8.23.1
         version: 8.23.1
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^5.0.3
+        version: 5.0.3(@opentelemetry/api@1.9.0)(@types/node@22.20.4)(@vitest/coverage-v8@5.0.3)(vite@8.3.2(@types/node@22.20.4)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
 
   packages/models:
     dependencies:
@@ -1304,6 +1350,9 @@ importers:
       '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
+      '@cogitator-ai/server-shared':
+        specifier: workspace:*
+        version: link:../server-shared
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
@@ -1332,6 +1381,9 @@ importers:
       '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
+      '@cogitator-ai/server-shared':
+        specifier: workspace:*
+        version: link:../server-shared
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
@@ -1378,9 +1430,6 @@ importers:
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
-      nanoid:
-        specifier: ^6.0.1
-        version: 6.0.1
       zod:
         specifier: ^4.6.5
         version: 4.6.5
@@ -1413,16 +1462,15 @@ importers:
       '@types/node':
         specifier: ^22.20.4
         version: 22.20.4
+      ioredis:
+        specifier: ^6.0.0
+        version: 6.0.0(supports-color@10.2.2)
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
       vitest:
         specifier: ^5.0.3
         version: 5.0.3(@opentelemetry/api@1.9.0)(@types/node@22.20.4)(@vitest/coverage-v8@5.0.3)(vite@8.3.2(@types/node@22.20.4)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
-    optionalDependencies:
-      ioredis:
-        specifier: ^6.0.0
-        version: 6.0.0(supports-color@10.2.2)
 
   packages/sandbox:
     dependencies:
@@ -1452,6 +1500,9 @@ importers:
 
   packages/self-modifying:
     dependencies:
+      '@cogitator-ai/core':
+        specifier: workspace:*
+        version: link:../core
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
@@ -1473,6 +1524,10 @@ importers:
         version: 5.0.3(@opentelemetry/api@1.9.0)(@types/node@22.20.4)(@vitest/coverage-v8@5.0.3)(vite@8.3.2(@types/node@22.20.4)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
 
   packages/server-shared:
+    dependencies:
+      '@cogitator-ai/types':
+        specifier: workspace:*
+        version: link:../types
     devDependencies:
       typescript:
         specifier: ^6.0.3
@@ -1695,6 +1750,21 @@ importers:
         version: 5.0.3(@opentelemetry/api@1.9.0)(@types/node@22.20.4)(@vitest/coverage-v8@5.0.3)(vite@8.3.2(@types/node@22.20.4)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
 
 packages:
+
+  '@a2a-js/sdk@0.3.14':
+    resolution: {integrity: sha512-F6Ew1AtPzCLhTn8h9yiqTe7DiDf6XVrSnq9V1YqSl9eWqPm6anMveTiKdCSb/76cW0YiJc24rNaUrVezFFHbqQ==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      '@bufbuild/protobuf': ^2.10.2
+      '@grpc/grpc-js': ^1.11.0
+      express: ^4.21.2 || ^5.1.0
+    peerDependenciesMeta:
+      '@bufbuild/protobuf':
+        optional: true
+      '@grpc/grpc-js':
+        optional: true
+      express:
+        optional: true
 
   '@ai-sdk/gateway@2.0.162':
     resolution: {integrity: sha512-hC8/jPgPUr4Vly8Ths7t7qru2w6leH0cO2D9gr57CYRUYje6BUNz0hoGYVAjH2kzovXFAz5rK3QOX/mOMDcnOA==}
@@ -7198,6 +7268,10 @@ packages:
   util-deprecate@1.0.2:
     resolution: {integrity: sha512-EPD5q1uXyFxJpCrLnCc1nHnq3gOa6DZBocAIiI2TaSCA7VCJ1UJDMagCzIkXNsUYfD1daK//LTEQ8xiIbrHtcw==}
 
+  uuid@11.1.1:
+    resolution: {integrity: sha512-vIYxrBCC/N/K+Js3qSN88go7kIfNPssr/hHCesKCQNAjmgvYS2oqr69kIufEG+O4+PfezOH4EbIeHCfFov8ZgQ==}
+    hasBin: true
+
   vary@1.1.2:
     resolution: {integrity: sha512-BNGbWLfd0eUPabhkXUVm0j8uuvREyTh5ovRa/dyow/BqAbZJyC+5fU+IzQOzmAKzYqYRAISoRhdQr3eIZ/PXqg==}
     engines: {node: '>= 0.8'}
@@ -7427,6 +7501,13 @@ packages:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
 
 snapshots:
+
+  '@a2a-js/sdk@0.3.14(@grpc/grpc-js@1.14.5)(express@5.2.1(supports-color@10.2.2))':
+    dependencies:
+      uuid: 11.1.1
+    optionalDependencies:
+      '@grpc/grpc-js': 1.14.5
+      express: 5.2.1(supports-color@10.2.2)
 
   '@ai-sdk/gateway@2.0.162(zod@4.6.5)':
     dependencies:
@@ -13419,6 +13500,8 @@ snapshots:
 
   util-deprecate@1.0.2:
     optional: true
+
+  uuid@11.1.1: {}
 
   vary@1.1.2: {}
 

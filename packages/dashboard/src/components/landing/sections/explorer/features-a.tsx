@@ -59,7 +59,7 @@ const A2A_CODE = `
 const server = new A2AServer({
   agents: { researcher },
   cogitator: cog,
-  cardUrl: 'https://research.internal',
+  cardUrl: 'https://research.internal/a2a',
 });
 app.use(a2aExpress(server));
 
@@ -68,9 +68,9 @@ const card = await remote.agentCard();
 
 for await (const event of remote.sendMessageStream({
   role: 'user',
-  parts: [{ type: 'text', text: 'Summarize Q3 churn drivers' }],
+  parts: [{ kind: 'text', text: 'Summarize Q3 churn drivers' }],
 })) {
-  if (event.type === 'artifact-update') console.log(card.name, event.artifact.parts);
+  if (event.kind === 'artifact-update') console.log(card.name, event.artifact.parts);
 }
 `;
 

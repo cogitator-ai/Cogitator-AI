@@ -6,7 +6,7 @@ import { z } from 'zod';
 import type { CogitatorConfig } from '@cogitator-ai/types';
 import { CogitatorConfigSchema, type CogitatorConfigInput } from './schema';
 import { loadYamlConfig } from './loaders/yaml';
-import { loadEnvConfig } from './loaders/env';
+import { loadEnvConfig, loadEnvDefaults } from './loaders/env';
 
 export interface LoadConfigOptions {
   /** Path to YAML config file */
@@ -25,11 +25,16 @@ export interface LoadConfigOptions {
  * Priority (highest to lowest):
  * 1. Overrides passed in options
  * 2. Environment variables
- * 3. YAML config file
- * 4. Defaults
+ * 3. YAML config file (`configPath`, else the first of `CONFIG_FILE_NAMES` in the working directory)
+ * 4. Environment variables other tools share, such as `OLLAMA_HOST` (see `loadEnvDefaults`)
+ * 5. Defaults
  */
 export function loadConfig(options: LoadConfigOptions = {}): CogitatorConfig {
   const configs: CogitatorConfigInput[] = [];
+
+  if (!options.skipEnv) {
+    configs.push(loadEnvDefaults());
+  }
 
   if (!options.skipYaml) {
     const yamlConfig = loadYamlConfig(options.configPath);

@@ -47,7 +47,7 @@ describe('template registry', () => {
 describe('defaultModels', () => {
   it('uses current default models for every provider', () => {
     expect(defaultModels).toEqual({
-      ollama: 'qwen3:8b',
+      ollama: 'qwen3.5:9b',
       openai: 'gpt-6.1-sol',
       anthropic: 'claude-sonnet-5-5',
       google: 'gemini-3.8-flash',
@@ -109,6 +109,7 @@ describe('memory template', () => {
     const deps = template.dependencies();
     expect(deps).toHaveProperty('@cogitator-ai/memory');
     expect(deps).toHaveProperty('@cogitator-ai/redis');
+    expect(deps).toHaveProperty('ioredis');
   });
 
   it('uses threadId for memory', () => {

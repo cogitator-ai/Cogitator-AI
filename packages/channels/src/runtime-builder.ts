@@ -124,6 +124,12 @@ function isModuleNotFound(err: unknown, specifier: string): boolean {
   return !!code && MODULE_NOT_FOUND_CODES.has(code) && err.message.includes(specifier);
 }
 
+/** What the runtime uses of an `MCPClient` of `@cogitator-ai/mcp`, which is loaded on demand */
+interface MCPClientHandle {
+  getTools(options?: { namePrefix?: string }): Promise<Tool[]>;
+  close(): Promise<void>;
+}
+
 type AssistantChannelConfig = AssistantConfig['channels'][keyof AssistantConfig['channels']];
 
 function channelOwner(cfg: AssistantChannelConfig): string | undefined {
@@ -151,6 +157,8 @@ function formatDuration(ms: number): string {
 
 export class RuntimeBuilder {
   private readonly config: AssistantConfig;
+  /** The tools each connected MCP server added, by server name, as the model sees them */
+  private readonly mcpToolNames = new Map<string, string[]>();
 
   /**
    * `config` is validated and completed with the schema's defaults here, so
@@ -434,7 +442,7 @@ export class RuntimeBuilder {
         ? {
             compaction: {
               strategy: 'summary',
-              threshold: this.config.memory.compaction.threshold,
+              messageThreshold: this.config.memory.compaction.threshold,
               keepRecent: 10,
             },
           }
@@ -711,7 +719,13 @@ export class RuntimeBuilder {
     }
   }
 
+  /**
+   * Connects the configured MCP servers and adds their tools as `mcp_<server>_<tool>`, so tools
+   * of several servers with the same name (two `search` tools) stay apart. A tool whose name is
+   * already taken is left out with a warning instead of replacing the other one.
+   */
   private async wireMCPServers(tools: Tool[], resources: CleanupResources): Promise<void> {
+    this.mcpToolNames.clear();
     if (!this.config.mcpServers) return;
 
     try {
@@ -719,15 +733,26 @@ export class RuntimeBuilder {
 
       for (const [name, serverConfig] of Object.entries(this.config.mcpServers)) {
         try {
-          const client = await MCPClient.connect({
+          const client: MCPClientHandle = await MCPClient.connect({
             transport: 'stdio',
             command: serverConfig.command,
             args: serverConfig.args,
             env: serverConfig.env,
           });
-          const serverTools = await client.getTools();
-          tools.push(...serverTools);
           resources.mcpClients.push(client);
+          const serverTools = await client.getTools({ namePrefix: `mcp_${name}_` });
+          const added: string[] = [];
+          for (const serverTool of serverTools) {
+            if (tools.some((existing) => existing.name === serverTool.name)) {
+              console.warn(
+                `[RuntimeBuilder] MCP server "${name}" has a tool named "${serverTool.name}" like another tool; it is left out`
+              );
+              continue;
+            }
+            tools.push(serverTool);
+            added.push(serverTool.name);
+          }
+          this.mcpToolNames.set(name, added);
         } catch (err) {
           console.warn(
             `[RuntimeBuilder] Failed to connect MCP server "${name}":`,
@@ -991,9 +1016,10 @@ Other env vars: GITHUB_TOKEN (for GitHub capability), TG_TOKEN, DISCORD_TOKEN, S
       instructions += `\nYou can create custom tools using create_tool. Write JavaScript ESM code with a default export containing name, description, parameters (JSON Schema), and an async execute function. You have full Node.js access (fetch, fs, child_process, etc.). After creating a tool, ALWAYS use test_tool to verify it works. If test fails, use create_tool again with fixed code. Use list_custom_tools to see existing tools and delete_tool to remove them. Custom tools are available after restart.`;
     }
 
-    if (this.config.mcpServers && Object.keys(this.config.mcpServers).length > 0) {
-      const serverNames = Object.keys(this.config.mcpServers);
-      instructions += `\nYou have MCP (Model Context Protocol) servers connected: ${serverNames.join(', ')}. Their tools are available to you — look for tools with mcp_ prefix.`;
+    const mcpServers = [...this.mcpToolNames].filter(([, names]) => names.length > 0);
+    if (mcpServers.length > 0) {
+      const lines = mcpServers.map(([server, names]) => `- ${server}: ${names.join(', ')}`);
+      instructions += `\nYou have MCP (Model Context Protocol) servers connected. Their tools, by server:\n${lines.join('\n')}`;
     }
 
     instructions += `\n\n## Media

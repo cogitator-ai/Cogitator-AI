@@ -1,33 +1,74 @@
 /**
  * OpenAI-Compatible REST API Server
  *
- * Exposes Cogitator as an OpenAI Assistants API compatible server.
+ * Exposes registered Cogitator agents over the Chat Completions and Responses APIs, and the
+ * deprecated Assistants API.
  */
 
 import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyCors from '@fastify/cors';
 import type { Cogitator } from '@cogitator-ai/core';
-import type { Tool } from '@cogitator-ai/types';
+import type { Agent, Tool } from '@cogitator-ai/types';
+import { resolveSseHeartbeatMs } from '@cogitator-ai/server-shared';
 import type { ThreadStorage } from '../client/storage';
-import { OpenAIAdapter, COGITATOR_MODEL_ID } from '../client/openai-adapter';
+import { OpenAIAdapter } from '../client/openai-adapter';
 import { createAuthMiddleware, type AuthConfig } from './middleware/auth';
 import { errorHandler, notFoundHandler } from './middleware/error-handler';
 import { registerAssistantRoutes } from './routes/assistants';
 import { registerThreadRoutes } from './routes/threads';
 import { registerRunRoutes } from './routes/runs';
 import { registerFileRoutes } from './routes/files';
+import { registerChatCompletionRoutes } from './routes/chat-completions';
+import { registerResponseRoutes, ResponseStore } from './routes/responses';
+import { registerModelRoutes } from './routes/models';
+import { AgentTurnRunner } from './agents/agent-turn';
+import { AgentDirectory } from './agents/shared';
 
 export interface OpenAIServerConfig {
   /** Port to listen on */
   port?: number;
 
-  /** Host to bind to */
+  /**
+   * Host to bind to. Default: `127.0.0.1`, reachable from this machine only. Binding a
+   * public interface (`0.0.0.0`, `::` or an external address) needs `apiKeys`, or
+   * `allowUnauthenticatedPublicAccess`.
+   */
   host?: string;
 
-  /** API keys for authentication. Empty array disables auth. */
+  /**
+   * API keys for authentication. Without keys every caller may create assistants with any
+   * instructions and run the server's tools, so `start()` refuses a public `host` unless
+   * `allowUnauthenticatedPublicAccess` is set.
+   */
   apiKeys?: string[];
 
-  /** Tools to make available */
+  /**
+   * Serve a public `host` without `apiKeys`, for a server behind a gateway that
+   * authenticates callers itself. Default: `false`.
+   */
+  allowUnauthenticatedPublicAccess?: boolean;
+
+  /**
+   * How often a run stream writes an SSE comment while the run is silent, in milliseconds,
+   * so a proxy or load balancer does not cut a run that waits on a slow tool. Default: 5000.
+   * `0` turns heartbeats off.
+   */
+  sseHeartbeatMs?: number;
+
+  /**
+   * Agents served by `POST /v1/chat/completions` and `POST /v1/responses`, by the model id
+   * clients send (and `GET /v1/models` lists). Each answers with its own instructions, model and
+   * tools, and functions a client declares in `tools` come back to it as tool calls.
+   */
+  agents?: Record<string, Agent>;
+
+  /** Largest request body `POST /v1/chat/completions` and `POST /v1/responses` accept, in bytes (default: 20 MB) */
+  maxRequestBodyBytes?: number;
+
+  /** How many responses `POST /v1/responses` keeps in memory for `previous_response_id` and `GET` (default: 1000) */
+  maxStoredResponses?: number;
+
+  /** Tools every Assistants API run can use */
   tools?: Tool[];
 
   /**
@@ -45,11 +86,21 @@ export interface OpenAIServerConfig {
   /** Enable request logging */
   logging?: boolean;
 
-  /** CORS configuration */
+  /**
+   * CORS for browsers on other origins. Default: none, so a web page on another origin
+   * cannot call the server from a visitor's browser. Set `origin` to the origins that may.
+   */
   cors?: {
     origin?: string | string[] | boolean;
     methods?: string[];
   };
+}
+
+const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(['localhost', '::1', '[::1]']);
+
+/** True for a host only this machine can reach: `localhost`, `::1` or `127.0.0.0/8` */
+export function isLoopbackHost(host: string): boolean {
+  return LOOPBACK_HOSTS.has(host.toLowerCase()) || /^127(?:\.\d{1,3}){3}$/.test(host);
 }
 
 /**
@@ -63,20 +114,25 @@ export interface OpenAIServerConfig {
  * const cogitator = new Cogitator({ ... });
  * const server = createOpenAIServer(cogitator, {
  *   port: 8080,
- *   tools: [calculator, datetime],
+ *   agents: { support: supportAgent },
  * });
  *
  * await server.start();
- * // Server is now available at http://localhost:8080
- * // Use with OpenAI SDK:
- * // const openai = new OpenAI({ baseURL: 'http://localhost:8080/v1' });
+ * const openai = new OpenAI({ baseURL: server.getBaseUrl(), apiKey: 'unused' });
+ * const completion = await openai.chat.completions.create({
+ *   model: 'support',
+ *   messages: [{ role: 'user', content: 'Hi' }],
+ * });
  * ```
  */
 export class OpenAIServer {
   private fastify: FastifyInstance;
-  private config: Required<Omit<OpenAIServerConfig, 'defaultModel' | 'storage'>> &
-    Pick<OpenAIServerConfig, 'defaultModel' | 'storage'>;
+  private config: Required<Omit<OpenAIServerConfig, 'defaultModel' | 'storage' | 'cors'>> &
+    Pick<OpenAIServerConfig, 'defaultModel' | 'storage' | 'cors'>;
   private adapter: OpenAIAdapter;
+  private agentRunner: AgentTurnRunner;
+  private directory: AgentDirectory;
+  private responses: ResponseStore;
   private started = false;
   private ready: Promise<void>;
   private boundPort?: number;
@@ -84,14 +140,19 @@ export class OpenAIServer {
   constructor(cogitator: Cogitator, config: OpenAIServerConfig = {}) {
     this.config = {
       port: config.port ?? 8080,
-      host: config.host ?? '0.0.0.0',
+      host: config.host ?? '127.0.0.1',
       apiKeys: config.apiKeys ?? [],
+      allowUnauthenticatedPublicAccess: config.allowUnauthenticatedPublicAccess ?? false,
+      sseHeartbeatMs: resolveSseHeartbeatMs(config.sseHeartbeatMs),
+      agents: config.agents ?? {},
+      maxRequestBodyBytes: config.maxRequestBodyBytes ?? 20 * 1024 * 1024,
+      maxStoredResponses: config.maxStoredResponses ?? 1000,
       tools: config.tools ?? [],
       defaultModel: config.defaultModel,
       storage: config.storage,
       maxFileSize: config.maxFileSize ?? 512 * 1024 * 1024,
       logging: config.logging ?? false,
-      cors: config.cors ?? { origin: true },
+      cors: config.cors,
     };
 
     this.adapter = new OpenAIAdapter(cogitator, {
@@ -99,6 +160,9 @@ export class OpenAIServer {
       defaultModel: this.config.defaultModel,
       storage: this.config.storage,
     });
+    this.directory = new AgentDirectory(this.config.agents);
+    this.agentRunner = new AgentTurnRunner(cogitator);
+    this.responses = new ResponseStore(this.config.maxStoredResponses);
 
     this.fastify = Fastify({
       logger: this.config.logging ? { level: 'info' } : false,
@@ -112,10 +176,12 @@ export class OpenAIServer {
    * Set up the Fastify server
    */
   private async setupServer(): Promise<void> {
-    await this.fastify.register(fastifyCors, {
-      origin: this.config.cors.origin,
-      methods: this.config.cors.methods ?? ['GET', 'POST', 'DELETE', 'OPTIONS'],
-    });
+    if (this.config.cors) {
+      await this.fastify.register(fastifyCors, {
+        origin: this.config.cors.origin ?? false,
+        methods: this.config.cors.methods ?? ['GET', 'POST', 'DELETE', 'OPTIONS'],
+      });
+    }
 
     await this.fastify.register(import('@fastify/multipart'), {
       limits: {
@@ -137,21 +203,24 @@ export class OpenAIServer {
 
     this.fastify.get('/health', async () => ({ status: 'ok' }));
 
-    this.fastify.get('/v1/models', async () => ({
-      object: 'list',
-      data: [
-        {
-          id: COGITATOR_MODEL_ID,
-          object: 'model',
-          created: Math.floor(Date.now() / 1000),
-          owned_by: 'cogitator',
-        },
-      ],
-    }));
+    registerModelRoutes(this.fastify, this.directory);
+    registerChatCompletionRoutes(this.fastify, {
+      directory: this.directory,
+      runner: this.agentRunner,
+      heartbeatMs: this.config.sseHeartbeatMs,
+      bodyLimit: this.config.maxRequestBodyBytes,
+    });
+    registerResponseRoutes(this.fastify, {
+      directory: this.directory,
+      runner: this.agentRunner,
+      store: this.responses,
+      heartbeatMs: this.config.sseHeartbeatMs,
+      bodyLimit: this.config.maxRequestBodyBytes,
+    });
 
     registerAssistantRoutes(this.fastify, this.adapter);
     registerThreadRoutes(this.fastify, this.adapter);
-    registerRunRoutes(this.fastify, this.adapter);
+    registerRunRoutes(this.fastify, this.adapter, { heartbeatMs: this.config.sseHeartbeatMs });
     registerFileRoutes(this.fastify, this.adapter);
   }
 
@@ -161,6 +230,17 @@ export class OpenAIServer {
   async start(): Promise<void> {
     if (this.started) {
       throw new Error('Server already started');
+    }
+    if (
+      this.config.apiKeys.length === 0 &&
+      !this.config.allowUnauthenticatedPublicAccess &&
+      !isLoopbackHost(this.config.host)
+    ) {
+      throw new Error(
+        `Refusing to serve ${this.config.host} without apiKeys: anyone who can reach it could ` +
+          'create assistants and run the server tools. Set apiKeys, bind a loopback host such as ' +
+          '127.0.0.1, or set allowUnauthenticatedPublicAccess when a gateway authenticates callers.'
+      );
     }
 
     await this.ready;

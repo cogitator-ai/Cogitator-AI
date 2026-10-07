@@ -51,6 +51,57 @@ export class LLMError extends CogitatorError {
   }
 }
 
+/**
+ * Phrases providers use when the prompt does not fit the model's context window, matched in
+ * lower case: OpenAI, Azure, DeepSeek, Groq and vLLM, Anthropic, Gemini, Bedrock, Mistral,
+ * Ollama and llama.cpp. A bare mention of tokens or length is not enough: a rejected
+ * `max_tokens` value says that too.
+ */
+const CONTEXT_OVERFLOW_PATTERNS: readonly RegExp[] = [
+  /context_length_exceeded/,
+  /maximum context length/,
+  /context window/,
+  /prompt is too long/,
+  /input is too long/,
+  /too many input tokens/,
+  /input token count.*exceeds/,
+  /too large for model with \d+ maximum context length/,
+  /reduce the length of the messages/,
+  /exceeds (the )?(maximum |available )?context (length|size)/,
+  /context (length|size|window) exceeded/,
+];
+
+function isContextOverflow(text: string): boolean {
+  const lower = text.toLowerCase();
+  return CONTEXT_OVERFLOW_PATTERNS.some((pattern) => pattern.test(lower));
+}
+
+/**
+ * What the provider said, for the message of an `LLMError`: the `message` of a JSON error body
+ * (`{ error: { message } }`, a list of those, or `{ message }`), otherwise the body as it is.
+ */
+export function providerMessage(responseBody: string | undefined): string | undefined {
+  const text = responseBody?.trim();
+  if (!text) return undefined;
+  let message: unknown;
+  try {
+    const json: unknown = JSON.parse(text);
+    const body = asRecord(Array.isArray(json) ? json[0] : json);
+    const error = body?.error;
+    message = asRecord(error)?.message ?? (typeof error === 'string' ? error : body?.message);
+  } catch {
+    message = undefined;
+  }
+  const said = typeof message === 'string' && message.trim() ? message.trim() : text;
+  return said.length > 300 ? `${said.slice(0, 300)}...` : said;
+}
+
+/** `label`, followed by what the provider said unless that adds nothing. */
+function withProviderMessage(label: string, said: string | undefined): string {
+  if (!said || said.toLowerCase() === label.toLowerCase()) return label;
+  return `${label}: ${said}`;
+}
+
 export function createLLMError(
   context: LLMErrorContext,
   statusCode: number,
@@ -59,49 +110,56 @@ export function createLLMError(
 ): LLMError {
   const ctx = { ...context, statusCode, responseBody };
   const cause = options?.cause;
+  const said = providerMessage(responseBody);
 
   const retryAfter = options?.retryAfterOverride ?? parseRetryAfter(responseBody);
 
   if (statusCode === 429) {
-    return new LLMError('Rate limit exceeded', ErrorCode.LLM_RATE_LIMITED, ctx, {
-      cause,
-      retryable: true,
-      retryAfter,
-    });
+    return new LLMError(
+      withProviderMessage('Rate limit exceeded', said),
+      ErrorCode.LLM_RATE_LIMITED,
+      ctx,
+      {
+        cause,
+        retryable: true,
+        retryAfter,
+      }
+    );
   }
 
   if (statusCode === 401 || statusCode === 403) {
-    return new LLMError(`Authentication failed (${statusCode})`, ErrorCode.LLM_UNAVAILABLE, ctx, {
-      cause,
-      retryable: false,
-    });
+    return new LLMError(
+      withProviderMessage(`Authentication failed (${statusCode})`, said),
+      ErrorCode.LLM_UNAVAILABLE,
+      ctx,
+      { cause, retryable: false }
+    );
   }
 
   if (statusCode === 400) {
-    const lower = responseBody?.toLowerCase() ?? '';
-    if (lower.includes('context') || lower.includes('token') || lower.includes('length')) {
-      return new LLMError('Context length exceeded', ErrorCode.LLM_CONTEXT_LENGTH_EXCEEDED, ctx, {
-        cause,
-        retryable: false,
-      });
+    if (isContextOverflow(responseBody ?? '')) {
+      return new LLMError(
+        withProviderMessage('Context length exceeded', said),
+        ErrorCode.LLM_CONTEXT_LENGTH_EXCEEDED,
+        ctx,
+        { cause, retryable: false }
+      );
     }
+    const lower = responseBody?.toLowerCase() ?? '';
     if (
       (lower.includes('safety') || lower.includes('blocked')) &&
       !lower.includes('invalid json') &&
       !lower.includes('unknown name')
     ) {
       return new LLMError(
-        'Content filtered by safety policy',
+        withProviderMessage('Content filtered by safety policy', said),
         ErrorCode.LLM_CONTENT_FILTERED,
         ctx,
-        {
-          cause,
-          retryable: false,
-        }
+        { cause, retryable: false }
       );
     }
     return new LLMError(
-      `Bad request: ${responseBody?.slice(0, 200) ?? 'unknown'}`,
+      withProviderMessage('Bad request', said ?? 'unknown'),
       ErrorCode.VALIDATION_ERROR,
       ctx,
       { cause, retryable: false }
@@ -110,7 +168,7 @@ export function createLLMError(
 
   if (statusCode >= 500) {
     return new LLMError(
-      `Server error (${statusCode}): ${responseBody?.slice(0, 200) ?? 'unknown'}`,
+      withProviderMessage(`Server error (${statusCode})`, said ?? 'unknown'),
       ErrorCode.LLM_UNAVAILABLE,
       ctx,
       { cause, retryable: true, retryAfter }
@@ -119,7 +177,10 @@ export function createLLMError(
 
   if (statusCode === 404) {
     return new LLMError(
-      `Model or endpoint not found: ${context.model ?? context.endpoint ?? 'unknown'}`,
+      withProviderMessage(
+        `Model or endpoint not found: ${context.model ?? context.endpoint ?? 'unknown'}`,
+        said
+      ),
       ErrorCode.LLM_UNAVAILABLE,
       ctx,
       { cause, retryable: false }
@@ -127,7 +188,7 @@ export function createLLMError(
   }
 
   return new LLMError(
-    `HTTP ${statusCode}: ${responseBody?.slice(0, 200) ?? 'unknown'}`,
+    withProviderMessage(`HTTP ${statusCode}`, said ?? 'unknown'),
     ErrorCode.LLM_INVALID_RESPONSE,
     ctx,
     { cause, retryable: false }

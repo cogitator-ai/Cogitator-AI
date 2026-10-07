@@ -13,6 +13,7 @@ import type {
   ChatResponse,
   ChatStreamChunk,
   ChatUsage,
+  FinishReason,
   ReasoningConfig,
   ReasoningEffort,
   ToolCall,
@@ -34,6 +35,7 @@ import {
 } from './errors';
 import { getLogger } from '../logger';
 import { jsonInstruction } from './json-instruction';
+import { normalizeTurn } from './turn';
 
 interface GoogleConfig {
   apiKey: string;
@@ -65,11 +67,13 @@ interface GeminiFunctionResponse {
 interface GeminiFunctionDeclaration {
   name: string;
   description: string;
-  parameters: {
+  parameters?: {
     type: 'object';
     properties: Record<string, unknown>;
     required?: string[];
   };
+  /** JSON Schema form of the parameters, which unlike `parameters` can hold `$ref` and `$defs` */
+  parametersJsonSchema?: Record<string, unknown>;
 }
 
 interface GeminiTool {
@@ -104,7 +108,10 @@ interface GeminiRequest {
 
 interface GeminiCandidate {
   content: GeminiContent;
-  finishReason: 'STOP' | 'MAX_TOKENS' | 'SAFETY' | 'RECITATION' | 'OTHER';
+  /** `STOP`, `MAX_TOKENS`, `SAFETY`, `RECITATION`, `MALFORMED_FUNCTION_CALL` and others */
+  finishReason?: string;
+  /** Why the turn ended, for some finish reasons such as `MALFORMED_FUNCTION_CALL` */
+  finishMessage?: string;
   safetyRatings?: unknown[];
 }
 
@@ -273,16 +280,15 @@ export class GoogleBackend extends BaseLLMBackend {
         }
 
         if (candidate.finishReason) {
-          const finishReason =
-            accumulatedToolCalls.length > 0
-              ? ('tool_calls' as const)
-              : mapFinish(candidate.finishReason);
+          const end = normalizeTurn({
+            finishReason: mapFinish(candidate.finishReason),
+            toolCalls: accumulatedToolCalls,
+          });
           const streamChunk: ChatStreamChunk = {
             id,
-            delta: {
-              toolCalls: accumulatedToolCalls.length > 0 ? accumulatedToolCalls : undefined,
-            },
-            finishReason,
+            delta: { toolCalls: end.toolCalls },
+            finishReason: end.finishReason,
+            ...(candidate.finishMessage && { finishMessage: candidate.finishMessage }),
           };
 
           if (chunk.usageMetadata) {
@@ -547,7 +553,19 @@ export class GoogleBackend extends BaseLLMBackend {
     }
   }
 
+  /**
+   * A tool for Gemini. Parameters go in the OpenAPI subset of `parameters`, unless the schema is
+   * recursive: then they go in `parametersJsonSchema`, the JSON Schema form that keeps `$defs`
+   * and `$ref`, since `parameters` has no way to refer to a definition.
+   */
   private convertTool(tool: ToolSchema): GeminiFunctionDeclaration {
+    if (tool.parameters.$defs !== undefined || hasRef(tool.parameters)) {
+      return {
+        name: tool.name,
+        description: tool.description,
+        parametersJsonSchema: cleanJsonSchemaForGemini(tool.parameters),
+      };
+    }
     return {
       name: tool.name,
       description: tool.description,
@@ -628,17 +646,17 @@ export class GoogleBackend extends BaseLLMBackend {
       }
     }
 
-    return {
+    return normalizeTurn({
       id: this.generateId(),
       content,
-      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-      finishReason:
-        toolCalls.length > 0 ? 'tool_calls' : this.mapFinishReason(candidate.finishReason),
+      toolCalls,
+      finishReason: this.mapFinishReason(candidate.finishReason),
+      ...(candidate.finishMessage && { finishMessage: candidate.finishMessage }),
       usage: data.usageMetadata
         ? toChatUsage(data.usageMetadata)
         : { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
       ...(reasoning && { reasoning }),
-    };
+    });
   }
 
   private promptBlockedError(ctx: LLMErrorContext, feedback: GeminiPromptFeedback) {
@@ -646,15 +664,30 @@ export class GoogleBackend extends BaseLLMBackend {
     return llmInvalidResponse(ctx, `Gemini blocked the prompt: ${reason}`);
   }
 
-  private mapFinishReason(reason: string): 'stop' | 'tool_calls' | 'length' | 'error' {
+  /**
+   * Gemini's finish reason as a Cogitator one. Whether the turn runs tools is settled by
+   * `normalizeTurn` from its function calls.
+   */
+  private mapFinishReason(reason: string | undefined): FinishReason {
     switch (reason) {
-      case 'STOP':
-        return 'stop';
       case 'MAX_TOKENS':
         return 'length';
       case 'SAFETY':
       case 'RECITATION':
+      case 'BLOCKLIST':
+      case 'PROHIBITED_CONTENT':
+      case 'SPII':
+      case 'IMAGE_SAFETY':
+      case 'IMAGE_PROHIBITED_CONTENT':
+      case 'IMAGE_RECITATION':
+        return 'content_filter';
       case 'OTHER':
+      case 'LANGUAGE':
+      case 'MALFORMED_FUNCTION_CALL':
+      case 'UNEXPECTED_TOOL_CALL':
+      case 'TOO_MANY_TOOL_CALLS':
+      case 'NO_IMAGE':
+      case 'IMAGE_OTHER':
         return 'error';
       default:
         return 'stop';
@@ -848,4 +881,72 @@ function nullableForGemini(schema: Record<string, unknown>): Record<string, unkn
   }
 
   return schema;
+}
+
+const GEMINI_JSON_SCHEMA_KEYS = new Set([
+  '$id',
+  '$defs',
+  '$ref',
+  '$anchor',
+  'type',
+  'format',
+  'title',
+  'description',
+  'enum',
+  'items',
+  'prefixItems',
+  'minItems',
+  'maxItems',
+  'minimum',
+  'maximum',
+  'anyOf',
+  'oneOf',
+  'properties',
+  'additionalProperties',
+  'required',
+]);
+
+const GEMINI_SCHEMA_MAPS = new Set(['properties', '$defs']);
+
+/** A JSON Schema reduced to the keywords Gemini's `parametersJsonSchema` accepts. */
+function cleanJsonSchemaForGemini(schema: Record<string, unknown>): Record<string, unknown> {
+  const cleaned: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(withJsonSchemaNull(schema))) {
+    if (!GEMINI_JSON_SCHEMA_KEYS.has(key)) continue;
+    if (GEMINI_SCHEMA_MAPS.has(key) && isJsonObject(value)) {
+      cleaned[key] = Object.fromEntries(
+        Object.entries(value).map(([name, child]) => [
+          name,
+          isJsonObject(child) ? cleanJsonSchemaForGemini(child) : child,
+        ])
+      );
+    } else if (Array.isArray(value)) {
+      cleaned[key] = value.map((item) =>
+        isJsonObject(item) ? cleanJsonSchemaForGemini(item) : item
+      );
+    } else if (isJsonObject(value)) {
+      cleaned[key] = cleanJsonSchemaForGemini(value);
+    } else {
+      cleaned[key] = value;
+    }
+  }
+  return cleaned;
+}
+
+/** OpenAPI's `nullable: true` written as JSON Schema: `null` among the types. */
+function withJsonSchemaNull(schema: Record<string, unknown>): Record<string, unknown> {
+  if (schema.nullable !== true) return schema;
+  const { nullable: _nullable, ...rest } = schema;
+  if (typeof rest.type === 'string') return { ...rest, type: [rest.type, 'null'] };
+  if (Array.isArray(rest.type)) {
+    return rest.type.includes('null') ? rest : { ...rest, type: [...rest.type, 'null'] };
+  }
+  return { anyOf: [rest, { type: 'null' }] };
+}
+
+function hasRef(node: unknown): boolean {
+  if (Array.isArray(node)) return node.some(hasRef);
+  if (!isJsonObject(node)) return false;
+  if (typeof node.$ref === 'string') return true;
+  return Object.values(node).some(hasRef);
 }

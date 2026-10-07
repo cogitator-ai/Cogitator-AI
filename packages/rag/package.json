@@ -19,7 +19,8 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     }
   },
   "files": [
@@ -38,7 +39,6 @@
   },
   "dependencies": {
     "@cogitator-ai/types": "workspace:*",
-    "nanoid": "^6.0.1",
     "zod": "^4.6.5"
   },
   "peerDependencies": {

@@ -35,7 +35,7 @@ vi.mock('../client/transports', () => ({
   createHttpTransport: vi.fn().mockReturnValue({}),
 }));
 
-const { MCPClient, MCPToolError } = await import('../client/mcp-client');
+const { MCPClient, MCPToolError, MCPToolInterruptedError } = await import('../client/mcp-client');
 
 const fastRetry = { maxRetries: 3, initialDelay: 1, maxDelay: 5 };
 
@@ -115,7 +115,7 @@ describe('MCPClient retry policy', () => {
     expect(state.instances).toBe(1);
   });
 
-  it('retries transient failures with backoff', async () => {
+  it('retries timeouts of idempotent calls with backoff', async () => {
     let attempts = 0;
     state.callToolImpl = () => {
       attempts++;
@@ -130,7 +130,7 @@ describe('MCPClient retry policy', () => {
       retry: fastRetry,
     });
 
-    expect(await client.callTool('t', {})).toBe('done');
+    expect(await client.callTool('t', {}, { idempotent: true })).toBe('done');
     expect(attempts).toBe(3);
   });
 
@@ -175,9 +175,9 @@ describe('MCPClient retry policy', () => {
     };
 
     const results = await Promise.all([
-      client.callTool('a', {}),
-      client.callTool('b', {}),
-      client.callTool('c', {}),
+      client.callTool('a', {}, { idempotent: true }),
+      client.callTool('b', {}, { idempotent: true }),
+      client.callTool('c', {}, { idempotent: true }),
     ]);
 
     expect(results).toEqual([1, 1, 1]);
@@ -199,9 +199,77 @@ describe('MCPClient retry policy', () => {
     });
     state.connectImpl = () => Promise.reject(new Error('ECONNREFUSED'));
 
-    await expect(client.callTool('t', {})).rejects.toThrow();
+    await expect(client.callTool('t', {}, { idempotent: true })).rejects.toThrow();
     expect(onReconnectFailed).toHaveBeenCalledTimes(1);
     expect(client.isConnected()).toBe(false);
+  });
+});
+
+describe('MCPClient calls that must not run twice', () => {
+  it('does not send a timed-out call of a side-effect tool again', async () => {
+    const calls = vi.fn();
+    state.callToolImpl = () => {
+      calls();
+      return Promise.reject(
+        new McpError(ErrorCode.RequestTimeout, 'Request timed out', { timeout: 60000 })
+      );
+    };
+    const client = await MCPClient.connect({ transport: 'stdio', command: 'x', retry: fastRetry });
+
+    const error = await client.callTool('deploy_service', {}).catch((e: unknown) => e);
+
+    expect(calls).toHaveBeenCalledTimes(1);
+    expect(error).toBeInstanceOf(MCPToolInterruptedError);
+    expect((error as InstanceType<typeof MCPToolInterruptedError>).reason).toBe('timeout');
+    expect((error as Error).message).toBe(
+      'MCP tool "deploy_service" timed out after 60000ms. It was not called again, since the ' +
+        'server may have run it and the tool is not marked idempotent or read-only.'
+    );
+  });
+
+  it('does not send a call again after losing the connection mid-call', async () => {
+    const calls = vi.fn();
+    state.callToolImpl = () => {
+      calls();
+      return Promise.reject(new McpError(ErrorCode.ConnectionClosed, 'Connection closed'));
+    };
+    const client = await MCPClient.connect({ transport: 'stdio', command: 'x', retry: fastRetry });
+
+    const error = await client.callTool('send_email', {}).catch((e: unknown) => e);
+
+    expect(calls).toHaveBeenCalledTimes(1);
+    expect((error as InstanceType<typeof MCPToolInterruptedError>).reason).toBe('connection-lost');
+    expect(state.instances).toBe(1);
+  });
+
+  it('does not retry unknown errors of a side-effect tool', async () => {
+    const calls = vi.fn();
+    state.callToolImpl = () => {
+      calls();
+      return Promise.reject(new Error('socket hang up'));
+    };
+    const client = await MCPClient.connect({ transport: 'stdio', command: 'x', retry: fastRetry });
+
+    await expect(client.callTool('charge_card', {})).rejects.toThrow('socket hang up');
+    expect(calls).toHaveBeenCalledTimes(1);
+  });
+
+  it('restores a lost connection before sending the next call', async () => {
+    let healthy = false;
+    state.callToolImpl = () =>
+      healthy
+        ? Promise.resolve({ content: [{ type: 'text', text: '"sent"' }] })
+        : Promise.reject(new McpError(ErrorCode.ConnectionClosed, 'Connection closed'));
+    const client = await MCPClient.connect({ transport: 'stdio', command: 'x', retry: fastRetry });
+
+    await expect(client.callTool('send_email', {})).rejects.toThrow(MCPToolInterruptedError);
+    state.connectImpl = () => {
+      healthy = true;
+      return Promise.resolve();
+    };
+
+    expect(await client.callTool('send_email', {})).toBe('sent');
+    expect(state.instances).toBe(2);
   });
 });
 
@@ -225,7 +293,7 @@ describe('MCPClient lifecycle', () => {
       retry: fastRetry,
     });
 
-    await expect(client.callTool('t', {})).rejects.toThrow('Connection closed');
+    await expect(client.callTool('t', {})).rejects.toThrow(MCPToolInterruptedError);
     expect(client.isConnected()).toBe(false);
 
     await client.close();

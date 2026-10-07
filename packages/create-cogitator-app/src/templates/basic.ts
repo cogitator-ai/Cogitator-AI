@@ -1,22 +1,31 @@
 import type { ProjectOptions, TemplateGenerator } from '../types.js';
-import { defaultModels, providerConfig } from '../utils/providers.js';
-import { ZOD_VERSION } from './versions.js';
+import { modelFor, providerConfig } from '../utils/providers.js';
+import { cogitatorVersion, ZOD_VERSION } from './versions.js';
+import {
+  envHelperFiles,
+  envHelperImport,
+  RUN_MAIN,
+  scriptTemplateDevDependencies,
+  scriptTemplateScripts,
+  tsString,
+} from './shared.js';
 
 export const basicTemplate: TemplateGenerator = {
   files(options: ProjectOptions) {
-    const model = defaultModels[options.provider];
+    const model = modelFor(options);
 
     const indexTs = [
       `import { Cogitator, Agent } from '@cogitator-ai/core'`,
       `import { searchTool, summarizeTool } from './tools.js'`,
+      ...envHelperImport(options.provider),
       ``,
       `const cogitator = new Cogitator({`,
-      providerConfig(options.provider),
+      providerConfig(options.provider, 'requireEnv'),
       `})`,
       ``,
       `const agent = new Agent({`,
-      `  name: '${options.name}-agent',`,
-      `  model: '${model}',`,
+      `  name: ${tsString(`${options.name}-agent`)},`,
+      `  model: ${tsString(model)},`,
       `  instructions: 'You are a helpful AI assistant. Use your tools to help the user.',`,
       `  tools: [searchTool, summarizeTool],`,
       `  temperature: 0.7,`,
@@ -30,8 +39,7 @@ export const basicTemplate: TemplateGenerator = {
       `  console.log(result.output)`,
       `}`,
       ``,
-      `main().catch(console.error)`,
-      ``,
+      ...RUN_MAIN,
     ].join('\n');
 
     const toolsTs = [
@@ -67,30 +75,22 @@ export const basicTemplate: TemplateGenerator = {
     return [
       { path: 'src/index.ts', content: indexTs },
       { path: 'src/tools.ts', content: toolsTs },
+      ...envHelperFiles(options.provider),
     ];
   },
 
   dependencies() {
     return {
-      '@cogitator-ai/core': 'latest',
+      '@cogitator-ai/core': cogitatorVersion('@cogitator-ai/core'),
       zod: ZOD_VERSION,
     };
   },
 
   devDependencies() {
-    return {
-      typescript: '^5.8.0',
-      tsx: '^4.19.0',
-      '@types/node': '^22.0.0',
-    };
+    return scriptTemplateDevDependencies();
   },
 
   scripts() {
-    return {
-      dev: 'tsx watch src/index.ts',
-      start: 'tsx src/index.ts',
-      build: 'tsc',
-      typecheck: 'tsc --noEmit',
-    };
+    return scriptTemplateScripts();
   },
 };

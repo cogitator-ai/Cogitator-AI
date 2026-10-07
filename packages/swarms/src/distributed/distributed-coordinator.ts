@@ -2,14 +2,16 @@ import { nanoid } from 'nanoid';
 import Redis from 'ioredis';
 import type {
   Agent,
-  LLMBackendProvider,
+  AgentWireConfig,
+  AgentWireRunResult,
+  AgentWireUsage,
   SwarmConfig,
   SwarmAgent,
   RunResult,
   Tool,
-  ToolSchema,
   DistributedSwarmConfig,
 } from '@cogitator-ai/types';
+import { fromAgentWireRunResult, toAgentWire } from '@cogitator-ai/core';
 import { RedisMessageBus } from '../communication/redis-message-bus.js';
 import { RedisBlackboard } from '../communication/redis-blackboard.js';
 import { RedisSwarmEventEmitter } from '../communication/redis-event-emitter.js';
@@ -28,37 +30,19 @@ export interface DistributedCoordinatorOptions {
 }
 
 /**
- * Agent configuration as it travels to worker nodes. Tools travel as schemas and are
- * resolved by name against the worker's own tool registry.
+ * Agent configuration as it travels to worker nodes: the agent wire format of
+ * `@cogitator-ai/core` (`toAgentWire`), the same one worker queue jobs use.
+ *
+ * @deprecated Use `AgentWireConfig` from `@cogitator-ai/types`
  */
-export interface SerializedSwarmAgentConfig {
-  name: string;
-  instructions: string;
-  /**
-   * Model string the worker runs, routed like the agent in-process: the agent's model,
-   * prefixed with the agent's own `provider` when it sets one (an explicit provider gets
-   * the model string unchanged, so `{ model: 'openai/gpt-4o', provider: 'openrouter' }`
-   * travels as `'openrouter/openai/gpt-4o'`)
-   */
-  model: string;
-  /**
-   * The agent's own `provider`, if any. Workers prepend it to a model whose prefix names
-   * no provider they route to, and refuse it when they cannot route to it either. Without
-   * it such a model runs on the worker's `llm.defaultProvider`
-   */
-  provider?: LLMBackendProvider;
-  temperature?: number;
-  maxTokens?: number;
-  maxIterations?: number;
-  tools: ToolSchema[];
-}
+export type SerializedSwarmAgentConfig = AgentWireConfig;
 
 export interface SwarmAgentJobPayload {
   type: 'swarm-agent';
   jobId: string;
   swarmId: string;
   agentName: string;
-  agentConfig: SerializedSwarmAgentConfig;
+  agentConfig: AgentWireConfig;
   input: string;
   context?: Record<string, unknown>;
   runOptions?: {
@@ -71,16 +55,26 @@ export interface SwarmAgentJobPayload {
     blackboard: string;
     messages: string;
     results: string;
+    /**
+     * Redis set of the job ids the coordinator gave up on (the run was aborted or timed out, the
+     * swarm closed, or another attempt of the turn already answered). A worker skips such a job
+     * and aborts it when it shows up while the turn runs
+     */
+    cancelled?: string;
   };
 }
 
-export interface SwarmAgentJobResult {
+/**
+ * Outcome of one agent turn, published by the worker: the run result wire format of
+ * `@cogitator-ai/core` (`toAgentWireRunResult`) tagged with the job, or an `error`.
+ */
+export interface SwarmAgentJobResult extends Omit<AgentWireRunResult, 'usage'> {
   jobId: string;
   swarmId: string;
   agentName: string;
-  output: string;
-  structured?: unknown;
-  toolCalls: { name: string; input: unknown; output: unknown }[];
+  /** Usage with cost and duration; absent in results of workers that only report `tokenUsage` */
+  usage?: AgentWireUsage;
+  /** @deprecated Use `usage`, which also carries cost, duration and reasoning tokens */
   tokenUsage: { prompt: number; completion: number; total: number };
   error?: string;
 }
@@ -99,8 +93,24 @@ function isJobResult(value: unknown): value is SwarmAgentJobResult {
 }
 
 interface PendingJob {
+  /** The payload as queued: LREM needs the exact string */
+  raw: string;
   resolve: (result: SwarmAgentJobResult) => void;
   reject: (error: Error) => void;
+}
+
+/**
+ * A dispatched turn timed out without the worker's answer. `withdrawn` tells whether the job was
+ * still queued (and is now off the queue) or a worker may still be running it.
+ */
+class UnansweredJobError extends Error {
+  constructor(
+    message: string,
+    readonly withdrawn: boolean
+  ) {
+    super(message);
+    this.name = 'UnansweredJobError';
+  }
 }
 
 export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
@@ -225,54 +235,56 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
 
   protected async executeRun(request: AgentRunRequest): Promise<RunResult> {
     const jobResult = await this.dispatchWithRetry(request);
-    return this.toRunResult(request.swarmAgent, jobResult);
+    return this.toRunResult(request.swarmAgent, jobResult, request);
   }
 
   /**
    * Dispatch the agent turn as a job, re-dispatching it per `distributed.retry` when it fails
-   * on a worker or times out. Cancellation is never retried.
+   * on a worker or times out. Cancellation is never retried. Every attempt carries the same job
+   * id and payload, a timed-out attempt is taken off the queue before the next one is pushed,
+   * and once the turn settles any copy a worker may still hold is cancelled, so an abandoned
+   * turn never runs on its own later.
    */
   private async dispatchWithRetry(request: AgentRunRequest): Promise<SwarmAgentJobResult> {
     const retry = this.distributed.retry;
     const maxRetries = retry ? Math.max(0, retry.maxRetries ?? 3) : 0;
+    const payload = this.createJobPayload(request);
+    const raw = JSON.stringify(payload);
+    let abandoned = false;
 
-    for (let attempt = 0; ; attempt++) {
-      try {
-        return await this.dispatchJobAndWait(this.createJobPayload(request), request);
-      } catch (error) {
-        if (attempt >= maxRetries || request.signal.aborted || this.closed) throw error;
+    try {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await this.dispatchJobAndWait(payload, raw, request);
+        } catch (error) {
+          if (error instanceof UnansweredJobError && !error.withdrawn) abandoned = true;
+          if (attempt >= maxRetries || request.signal.aborted || this.closed) throw error;
 
-        const delay = computeBackoffDelay(
-          retry?.backoff ?? 'exponential',
-          attempt + 1,
-          retry?.initialDelay ?? 1000,
-          retry?.maxDelay ?? 30000
-        );
-        await abortableDelay(delay, request.signal);
+          const delay = computeBackoffDelay(
+            retry?.backoff ?? 'exponential',
+            attempt + 1,
+            retry?.initialDelay ?? 1000,
+            retry?.maxDelay ?? 30000
+          );
+          await abortableDelay(delay, request.signal);
+        }
+      }
+    } finally {
+      if (!this.closed && (abandoned || request.signal.aborted)) {
+        await this.cancelJob(payload.jobId, raw);
       }
     }
   }
 
   private createJobPayload(request: AgentRunRequest): SwarmAgentJobPayload {
     const { agent, input, context } = request;
-    const model = this.resolveAgentModel(agent);
-    const provider = agent.config.provider;
 
     return {
       type: 'swarm-agent',
       jobId: `job_${nanoid(12)}`,
       swarmId: this.swarmId,
       agentName: request.swarmAgent.agent.name,
-      agentConfig: {
-        name: agent.name,
-        instructions: agent.instructions,
-        model: provider ? `${provider}/${model}` : model,
-        ...(provider && { provider }),
-        temperature: agent.config.temperature,
-        maxTokens: agent.config.maxTokens,
-        maxIterations: agent.config.maxIterations,
-        tools: agent.tools.map((t) => t.toJSON()),
-      },
+      agentConfig: toAgentWire(agent, { resolveModel: this.resolveAgentModel }),
       input,
       context,
       runOptions: {
@@ -285,16 +297,58 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
         blackboard: `${this.keyPrefix}:${this.swarmId}:blackboard`,
         messages: `${this.keyPrefix}:${this.swarmId}:messages`,
         results: this.resultsChannel(),
+        cancelled: this.cancelledKey(),
       },
     };
   }
 
+  private queueKey(): string {
+    return swarmJobQueueKey(this.keyPrefix, this.distributed.queue);
+  }
+
+  private cancelledKey(): string {
+    return `${this.keyPrefix}:${this.swarmId}:cancelled`;
+  }
+
+  /** Take a queued copy of the job off the queue; resolves to whether one was there. */
+  private async withdrawJob(raw: string): Promise<boolean> {
+    if (this.redis.status !== 'ready') return false;
+    try {
+      return (await this.redis.lrem(this.queueKey(), 0, raw)) > 0;
+    } catch (error) {
+      console.warn('[DistributedSwarmCoordinator] Failed to withdraw a job:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Make sure no copy of the job runs any more: take it off the queue and add its id to the
+   * cancelled set that workers check before and while running a turn.
+   */
+  private async cancelJob(jobId: string, raw: string): Promise<void> {
+    if (this.redis.status !== 'ready') return;
+    const ttl = Math.max(
+      this.distributed.timeout ?? 300000,
+      this.distributed.cleanupAfter ?? 3600000
+    );
+    try {
+      await this.redis
+        .pipeline()
+        .lrem(this.queueKey(), 0, raw)
+        .sadd(this.cancelledKey(), jobId)
+        .pexpire(this.cancelledKey(), ttl)
+        .exec();
+    } catch (error) {
+      console.warn('[DistributedSwarmCoordinator] Failed to cancel a job:', error);
+    }
+  }
+
   private dispatchJobAndWait(
     payload: SwarmAgentJobPayload,
+    raw: string,
     request: AgentRunRequest
   ): Promise<SwarmAgentJobResult> {
     const timeout = this.distributed.timeout ?? 300000;
-    const queueKey = swarmJobQueueKey(this.keyPrefix, this.distributed.queue);
 
     return new Promise<SwarmAgentJobResult>((resolve, reject) => {
       const cleanup = () => {
@@ -311,7 +365,14 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
 
       const timeoutId = setTimeout(() => {
         cleanup();
-        reject(new Error(`Job timeout for agent '${payload.agentName}' after ${timeout}ms`));
+        void this.withdrawJob(raw).then((withdrawn) => {
+          reject(
+            new UnansweredJobError(
+              `Job timeout for agent '${payload.agentName}' after ${timeout}ms`,
+              withdrawn
+            )
+          );
+        });
       }, timeout);
 
       if (request.signal.aborted) {
@@ -321,6 +382,7 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
       request.signal.addEventListener('abort', onAbort, { once: true });
 
       this.pendingJobs.set(payload.jobId, {
+        raw,
         resolve: (result) => {
           cleanup();
           resolve(result);
@@ -331,35 +393,36 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
         },
       });
 
-      this.redis.rpush(queueKey, JSON.stringify(payload)).catch((error: unknown) => {
+      this.redis.rpush(this.queueKey(), raw).catch((error: unknown) => {
         cleanup();
         reject(error instanceof Error ? error : new Error(String(error)));
       });
     });
   }
 
-  private toRunResult(swarmAgent: SwarmAgent, jobResult: SwarmAgentJobResult): RunResult {
-    return {
-      output: jobResult.output,
-      structured: jobResult.structured,
-      runId: `run_${nanoid(8)}`,
-      agentId: swarmAgent.agent.id,
-      threadId: '',
-      usage: {
-        inputTokens: jobResult.tokenUsage.prompt,
-        outputTokens: jobResult.tokenUsage.completion,
-        totalTokens: jobResult.tokenUsage.total,
-        cost: 0,
-        duration: 0,
+  /**
+   * The turn's result as a `RunResult`, with the usage and cost the worker reported, so resource
+   * limits and strategies see the turn like a local one. A worker that only reports `tokenUsage`
+   * gives the tokens without cost or duration.
+   */
+  private toRunResult(
+    swarmAgent: SwarmAgent,
+    jobResult: SwarmAgentJobResult,
+    request: AgentRunRequest
+  ): RunResult {
+    const { usage, tokenUsage } = jobResult;
+    return fromAgentWireRunResult(
+      {
+        ...jobResult,
+        usage: usage ?? {
+          inputTokens: tokenUsage.prompt,
+          outputTokens: tokenUsage.completion,
+          totalTokens: tokenUsage.total,
+          cost: 0,
+        },
       },
-      toolCalls: jobResult.toolCalls.map((tc) => ({
-        id: nanoid(8),
-        name: tc.name,
-        arguments: isRecord(tc.input) ? tc.input : {},
-      })),
-      messages: [],
-      trace: { traceId: `trace_${nanoid(12)}`, spans: [] },
-    };
+      { agentId: swarmAgent.agent.id, threadId: request.threadId }
+    );
   }
 
   async reset(): Promise<void> {
@@ -369,6 +432,8 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
 
   async close(): Promise<void> {
     if (this.closed) return;
+    const pending = Array.from(this.pendingJobs, ([jobId, job]) => ({ jobId, raw: job.raw }));
+    await Promise.all(pending.map(({ jobId, raw }) => this.cancelJob(jobId, raw)));
     this.closed = true;
 
     this.rejectPendingJobs(new Error('Distributed swarm coordinator closed'));
@@ -433,10 +498,6 @@ function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
     }, ms);
     signal.addEventListener('abort', onAbort, { once: true });
   });
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 async function closeRedis(client: Redis): Promise<void> {

@@ -267,3 +267,96 @@ describe('runtime accessors before the first run', () => {
     expect(cog.getCostSummary()?.runCount).toBe(0);
   });
 });
+
+describe('guardrails on streamed runs', () => {
+  function streamingBackend(turns: string[][]): LLMBackend {
+    let turn = 0;
+    return {
+      provider: 'openai',
+      chat: vi.fn(async (): Promise<ChatResponse> => ({
+        id: 'judge',
+        content: safeVerdict,
+        finishReason: 'stop',
+        usage: usage(),
+      })),
+      chatStream: vi.fn(async function* (): AsyncGenerator<ChatStreamChunk> {
+        const chunks = turns[Math.min(turn++, turns.length - 1)];
+        for (const content of chunks) yield { id: 's', delta: { content } };
+        yield { id: 's', delta: {}, finishReason: 'stop', usage: usage() };
+      }),
+    };
+  }
+
+  const streamRun = async (cog: Cogitator) => {
+    const tokens: string[] = [];
+    const run = cog.run(new Agent({ name: 'a', model: 'openai/m', instructions: 'x' }), {
+      input: 'hello',
+      stream: true,
+      onToken: (token) => tokens.push(token),
+    });
+    return { tokens, run };
+  };
+
+  it('streams only the revision of a blocked answer, never the blocked text', async () => {
+    await useBackend(streamingBackend([['rm -rf ', '/ is how']]));
+    vi.spyOn(ConstitutionalAI.prototype, 'filterOutput').mockResolvedValue({
+      allowed: false,
+      harmScores: [],
+      blockedReason: 'dangerous command',
+      suggestedRevision: 'I cannot help with that.',
+    });
+    const cog = new Cogitator({ guardrails: { filterInput: false } });
+
+    const { tokens, run } = await streamRun(cog);
+    const result = await run;
+
+    expect(tokens.join('')).toBe('I cannot help with that.');
+    expect(tokens.join('')).not.toContain('rm -rf');
+    expect(result.output).toBe('I cannot help with that.');
+    await cog.close();
+  });
+
+  it('streams nothing of an answer the filter blocks without a revision', async () => {
+    await useBackend(streamingBackend([['rm -rf ', '/']]));
+    vi.spyOn(ConstitutionalAI.prototype, 'filterOutput').mockResolvedValue({
+      allowed: false,
+      harmScores: [],
+      blockedReason: 'dangerous command',
+    });
+    const cog = new Cogitator({ guardrails: { filterInput: false } });
+
+    const { tokens, run } = await streamRun(cog);
+    await expect(run).rejects.toMatchObject({ code: 'LLM_CONTENT_FILTERED' });
+
+    expect(tokens).toEqual([]);
+    await cog.close();
+  });
+
+  it('streams an allowed answer as one chunk once the filter passed it', async () => {
+    await useBackend(streamingBackend([['Hello ', 'there']]));
+    const filterOutput = vi.spyOn(ConstitutionalAI.prototype, 'filterOutput').mockResolvedValue({
+      allowed: true,
+      harmScores: [],
+    });
+    const cog = new Cogitator({ guardrails: { filterInput: false } });
+
+    const { tokens, run } = await streamRun(cog);
+    const result = await run;
+
+    expect(filterOutput).toHaveBeenCalledWith('Hello there', expect.any(Array));
+    expect(tokens).toEqual(['Hello there']);
+    expect(result.output).toBe('Hello there');
+    await cog.close();
+  });
+
+  it('keeps streaming token by token when the output filter is off', async () => {
+    await useBackend(streamingBackend([['Hello ', 'there']]));
+    const cog = new Cogitator({ guardrails: { filterInput: false, filterOutput: false } });
+
+    const { tokens, run } = await streamRun(cog);
+    await run;
+
+    expect(tokens).toEqual(['Hello ', 'there']);
+    await cog.close();
+  });
+});

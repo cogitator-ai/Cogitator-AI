@@ -3,15 +3,26 @@
  */
 
 import { readFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { parse } from 'yaml';
 import type { CogitatorConfigInput } from '../schema';
 
-const DEFAULT_CONFIG_NAMES = [
-  'cogitator.yaml',
+/** The names a project's config file goes by, in the order they are looked for. */
+export const CONFIG_FILE_NAMES = [
   'cogitator.yml',
-  '.cogitator.yaml',
+  'cogitator.yaml',
   '.cogitator.yml',
-];
+  '.cogitator.yaml',
+] as const;
+
+/**
+ * The config file of the project in `dir` (the working directory by default):
+ * the first of {@link CONFIG_FILE_NAMES} that exists. `loadConfig`, `cogitator run`
+ * and `cogitator deploy` all find it this way.
+ */
+export function findConfigFile(dir: string = process.cwd()): string | undefined {
+  return CONFIG_FILE_NAMES.map((name) => join(dir, name)).find((path) => existsSync(path));
+}
 
 const ENV_REFERENCE_HEAD = /\$(?:\$|\{([A-Za-z_][A-Za-z0-9_]*)(\}|:?-)?)/g;
 
@@ -81,13 +92,8 @@ export function loadYamlConfig(
     return parseYamlFile(configPath, env);
   }
 
-  for (const name of DEFAULT_CONFIG_NAMES) {
-    if (existsSync(name)) {
-      return parseYamlFile(name, env);
-    }
-  }
-
-  return null;
+  const found = findConfigFile();
+  return found ? parseYamlFile(found, env) : null;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

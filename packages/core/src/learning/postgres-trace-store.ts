@@ -53,7 +53,12 @@ export class PostgresTraceStore implements CombinedPersistentStore {
   }
 
   async connect(): Promise<void> {
-    const pg = await import('pg');
+    let pg: typeof import('pg');
+    try {
+      pg = await import('pg');
+    } catch {
+      throw new Error('PostgresTraceStore needs the "pg" package. Install it: pnpm add pg');
+    }
     const { Pool } = pg.default ?? pg;
 
     this.pool = new Pool({

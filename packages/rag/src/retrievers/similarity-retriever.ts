@@ -39,6 +39,7 @@ export class SimilarityRetriever implements Retriever {
       query,
       limit: options?.topK ?? this.defaultTopK,
       threshold: options?.threshold ?? this.defaultThreshold,
+      ...(options?.filter && { filter: options.filter }),
     });
 
     if (!result.success) {

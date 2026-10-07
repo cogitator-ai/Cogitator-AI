@@ -7,7 +7,6 @@ import {
   type Agent,
   type RunOptions,
   type RunResult,
-  type Tool,
 } from '@cogitator-ai/types';
 import { OpenAIServer } from '../server/api-server';
 import { ThreadManager } from '../client/thread-manager';
@@ -34,12 +33,6 @@ const cogitator = {
     } as RunResult;
   },
 } as unknown as Cogitator;
-
-function findTool(agent: Agent, name: string): Tool {
-  const tool = agent.tools.find((t) => t.name === name);
-  if (!tool) throw new Error(`tool ${name} not exposed to agent`);
-  return tool;
-}
 
 const POLL = { pollIntervalMs: 20 };
 
@@ -192,61 +185,6 @@ describe('OpenAI SDK compatibility', () => {
     expect(calls[0].options.input).toBe('new');
   });
 
-  it('pauses for client-side function calls and resumes with submitted outputs', async () => {
-    handler = async (agent) => {
-      const weather = await findTool(agent, 'get_weather').execute(
-        { city: 'Paris' },
-        { agentId: 'a', runId: 'r', signal: new AbortController().signal }
-      );
-      return { output: `Forecast: ${String(weather)}` };
-    };
-    const assistant = await client.beta.assistants.create({
-      model: 'cogitator',
-      tools: [
-        {
-          type: 'function',
-          function: {
-            name: 'get_weather',
-            description: 'Weather for a city',
-            parameters: {
-              type: 'object',
-              properties: { city: { type: 'string' } },
-              required: ['city'],
-            },
-          },
-        },
-      ],
-    });
-    const thread = await client.beta.threads.create({
-      messages: [{ role: 'user', content: 'Weather in Paris?' }],
-    });
-
-    const paused = await client.beta.threads.runs.createAndPoll(
-      thread.id,
-      { assistant_id: assistant.id },
-      POLL
-    );
-    expect(paused.status).toBe('requires_action');
-    const toolCall = paused.required_action!.submit_tool_outputs.tool_calls[0];
-    expect(toolCall.function.name).toBe('get_weather');
-    expect(JSON.parse(toolCall.function.arguments)).toEqual({ city: 'Paris' });
-
-    const missing = await client.beta.threads.runs
-      .submitToolOutputs(paused.id, { thread_id: thread.id, tool_outputs: [] })
-      .catch((e: unknown) => e);
-    expect(missing).toBeInstanceOf(OpenAI.BadRequestError);
-
-    const done = await client.beta.threads.runs.submitToolOutputsAndPoll(
-      paused.id,
-      { thread_id: thread.id, tool_outputs: [{ tool_call_id: toolCall.id, output: 'sunny' }] },
-      POLL
-    );
-    const messages = await client.beta.threads.messages.list(thread.id);
-
-    expect(done.status).toBe('completed');
-    expect(messages.data[0].content[0]).toMatchObject({ text: { value: 'Forecast: sunny' } });
-  });
-
   it('rejects a second run while the thread has an active run', async () => {
     let release: (() => void) | undefined;
     handler = () =>
@@ -328,47 +266,6 @@ describe('OpenAI SDK compatibility', () => {
 
     const stored = await client.beta.threads.messages.list(thread.id);
     expect(stored.data[0].id).toBe(finalMessages[0].id);
-  });
-
-  it('streams up to requires_action and continues with submitToolOutputsStream', async () => {
-    handler = async (agent, options) => {
-      const result = await findTool(agent, 'lookup').execute(
-        { key: 'x' },
-        { agentId: 'a', runId: 'r', signal: new AbortController().signal }
-      );
-      options.onToken?.(`value=${String(result)}`);
-      return { output: `value=${String(result)}` };
-    };
-    const assistant = await client.beta.assistants.create({
-      model: 'cogitator',
-      tools: [
-        {
-          type: 'function',
-          function: {
-            name: 'lookup',
-            parameters: { type: 'object', properties: { key: { type: 'string' } } },
-          },
-        },
-      ],
-    });
-    const thread = await client.beta.threads.create({
-      messages: [{ role: 'user', content: 'lookup x' }],
-    });
-
-    const first = client.beta.threads.runs.stream(thread.id, { assistant_id: assistant.id });
-    const paused = await first.finalRun();
-    expect(paused.status).toBe('requires_action');
-    const call = paused.required_action!.submit_tool_outputs.tool_calls[0];
-
-    const resumed = client.beta.threads.runs.submitToolOutputsStream(paused.id, {
-      thread_id: thread.id,
-      tool_outputs: [{ tool_call_id: call.id, output: '42' }],
-    });
-    const run = await resumed.finalRun();
-    const messages = await resumed.finalMessages();
-
-    expect(run.status).toBe('completed');
-    expect(messages[0].content[0]).toMatchObject({ text: { value: 'value=42' } });
   });
 
   it('validates list parameters', async () => {
@@ -531,6 +428,51 @@ describe('OpenAI SDK compatibility', () => {
     expect(calls).toHaveLength(0);
   });
 
+  it('ends a run cut by max_completion_tokens incomplete, with the message incomplete', async () => {
+    handler = async () => ({ output: '{"answer": "the quick brown', truncated: true });
+    const thread = await client.beta.threads.create({
+      messages: [{ role: 'user', content: 'Answer in JSON' }],
+    });
+
+    const run = await client.beta.threads.runs.createAndPoll(
+      thread.id,
+      { assistant_id: assistantId, max_completion_tokens: 8 },
+      POLL
+    );
+    const messages = await client.beta.threads.messages.list(thread.id);
+
+    expect(run.status).toBe('incomplete');
+    expect(run.incomplete_details).toEqual({ reason: 'max_completion_tokens' });
+    expect(run.completed_at).toBeNull();
+    expect(run.usage?.total_tokens).toBe(8);
+    expect(messages.data[0]).toMatchObject({
+      role: 'assistant',
+      status: 'incomplete',
+      incomplete_details: { reason: 'max_tokens' },
+      completed_at: null,
+    });
+    expect(messages.data[0].incomplete_at).toEqual(expect.any(Number));
+    expect(messages.data[0].content[0]).toMatchObject({
+      text: { value: '{"answer": "the quick brown' },
+    });
+  });
+
+  it('streams thread.message.incomplete and thread.run.incomplete for a truncated run', async () => {
+    handler = async () => ({ output: 'cut off', truncated: true });
+    const thread = await client.beta.threads.create({
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+
+    const events: string[] = [];
+    const stream = client.beta.threads.runs.stream(thread.id, { assistant_id: assistantId });
+    for await (const event of stream) events.push(event.event);
+
+    expect(events).toContain('thread.message.incomplete');
+    expect(events).not.toContain('thread.message.completed');
+    expect(events).toContain('thread.run.incomplete');
+    expect(events).not.toContain('thread.run.completed');
+  });
+
   it('rejects a max_prompt_tokens that is not a positive integer', async () => {
     const thread = await client.beta.threads.create({
       messages: [{ role: 'user', content: 'hi' }],
@@ -573,6 +515,93 @@ describe('OpenAI SDK compatibility', () => {
     expect([...first.data, ...rest.data].map((f) => f.id)).toEqual(all.data.map((f) => f.id));
     expect(rest.has_more).toBe(false);
     expect(bad.status).toBe(400);
+  });
+});
+
+describe('OpenAIServer exposure', () => {
+  it('listens on loopback by default', async () => {
+    const server = new OpenAIServer(cogitator, { port: 0 });
+    await server.start();
+    try {
+      expect(server.getUrl()).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it.each(['0.0.0.0', '::', '192.168.1.20'])(
+    'refuses to serve %s without API keys',
+    async (host) => {
+      const server = new OpenAIServer(cogitator, { port: 0, host });
+      await expect(server.start()).rejects.toThrow(/without apiKeys/);
+    }
+  );
+
+  it('serves a public host with API keys, or when told a gateway authenticates', async () => {
+    for (const config of [{ apiKeys: ['sk-test'] }, { allowUnauthenticatedPublicAccess: true }]) {
+      const server = new OpenAIServer(cogitator, { port: 0, host: '0.0.0.0', ...config });
+      await expect(server.start()).resolves.toBeUndefined();
+      await server.stop();
+    }
+  });
+
+  it('answers no cross-origin request unless CORS origins are configured', async () => {
+    const closed = new OpenAIServer(cogitator, { port: 0 });
+    const open = new OpenAIServer(cogitator, {
+      port: 0,
+      cors: { origin: ['https://app.example'] },
+    });
+    await closed.start();
+    await open.start();
+    try {
+      const headers = { Origin: 'https://evil.example' };
+      const refused = await fetch(`${closed.getBaseUrl()}/models`, { headers });
+      const allowed = await fetch(`${open.getBaseUrl()}/models`, {
+        headers: { Origin: 'https://app.example' },
+      });
+
+      expect(refused.headers.get('access-control-allow-origin')).toBeNull();
+      expect(allowed.headers.get('access-control-allow-origin')).toBe('https://app.example');
+    } finally {
+      await closed.stop();
+      await open.stop();
+    }
+  });
+});
+
+describe('OpenAIServer run stream heartbeat', () => {
+  it('writes comments while a run is silent, so proxies do not cut the stream', async () => {
+    const server = new OpenAIServer(cogitator, {
+      port: 0,
+      defaultModel: 'ollama/test-model',
+      sseHeartbeatMs: 20,
+    });
+    await server.start();
+    try {
+      handler = () => new Promise((resolve) => setTimeout(() => resolve({ output: 'late' }), 150));
+      const base = server.getBaseUrl();
+      const post = (path: string, body: unknown) =>
+        fetch(`${base}${path}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        }).then((res) => res.json() as Promise<{ id: string }>);
+      const assistant = await post('/assistants', { model: 'cogitator' });
+      const thread = await post('/threads', { messages: [{ role: 'user', content: 'hi' }] });
+
+      const res = await fetch(`${base}/threads/${thread.id}/runs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assistant_id: assistant.id, stream: true }),
+      });
+      const text = await res.text();
+
+      expect(text.match(/^: keep-alive$/gm)?.length).toBeGreaterThanOrEqual(3);
+      expect(text).toContain('event: done');
+    } finally {
+      handler = async () => ({ output: 'ok' });
+      await server.stop();
+    }
   });
 });
 

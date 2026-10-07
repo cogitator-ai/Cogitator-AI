@@ -3,6 +3,7 @@
  */
 
 import type { Message, ToolCall, ToolResult } from './message';
+import type { Tool } from './tool';
 import type {
   LLMBackend,
   LLMProvider,
@@ -10,6 +11,7 @@ import type {
   LLMRetryConfig,
   PromptCacheConfig,
   ReasoningConfig,
+  ToolChoice,
 } from './llm';
 import type { MemoryConfig } from './memory';
 import type { SandboxManagerConfig } from './sandbox';
@@ -114,15 +116,28 @@ export interface RunOptions {
   /** Overrides the agent's `reasoning` for this run */
   reasoning?: ReasoningConfig;
   /**
+   * Which tools the model may or must call. `'none'` keeps it from calling any on every turn.
+   * `'required'` or a named function forces a call on each turn until the model makes one,
+   * then the run goes back to `'auto'` so the model can answer from the results (forcing it on
+   * every turn would loop until `maxIterations`). A named function the agent does not have
+   * fails the run with `VALIDATION_ERROR`.
+   */
+  toolChoice?: ToolChoice;
+  /**
    * Decides tool calls that need approval (`requiresApproval`) while the run
    * waits. Return `{ approved }` to go on, or `'pause'` to pause the run: it
    * returns with `status: 'paused'`, the calls in `pendingApprovals` and a
-   * `checkpoint` to continue from with `cogitator.resume()`. Without it (and
-   * without `guardrails.onToolApproval`) such calls always pause the run.
+   * `checkpoint` to continue from with `cogitator.resume()`. Return `undefined`
+   * to leave a call to `guardrails.onToolApproval`, as if there were no
+   * `onApproval`. Without either, such calls always pause the run.
    */
   onApproval?: (
     request: ToolApprovalRequest
-  ) => ToolApprovalDecision | 'pause' | Promise<ToolApprovalDecision | 'pause'>;
+  ) =>
+    | ToolApprovalDecision
+    | 'pause'
+    | undefined
+    | Promise<ToolApprovalDecision | 'pause' | undefined>;
   onToolCall?: (call: ToolCall) => void;
   onToolResult?: (result: ToolResult) => void;
 
@@ -203,6 +218,55 @@ export interface ToolApprovalRequest {
 
 export type ToolApprovalDecision = { approved: true } | { approved: false; reason?: string };
 
+/** Options of one tool call made outside an agent run, see `ToolInvoker`. */
+export interface ToolInvocationOptions {
+  /** Id of the call, reported back as `callId` (default: a fresh id) */
+  toolCallId?: string;
+  /** Run and agent the call is made for, as the tool's context reports them */
+  runId?: string;
+  agentId?: string;
+  /** Cancels the call */
+  signal?: AbortSignal;
+  threadId?: string;
+  /** The user the call acts for */
+  userId?: string;
+  channelType?: string;
+  channelId?: string;
+  /**
+   * More fields for the tool's context, e.g. an MCP server's `elicit`. They cannot replace
+   * `agentId`, `runId` or `signal`
+   */
+  context?: Record<string, unknown>;
+  /**
+   * Decides a call that needs approval (`requiresApproval`, or the guardrails), as
+   * `RunOptions.onApproval` does in a run. Without it `guardrails.onToolApproval` decides. A call
+   * nobody decides, or one answered with `'pause'`, is refused: there is no run to pause, so the
+   * result carries the request in `pendingApproval`
+   */
+  onApproval?: RunOptions['onApproval'];
+}
+
+/** What a tool call made outside a run returned, see `ToolInvoker`. */
+export interface ToolInvocationResult extends ToolResult {
+  /** The call needed approval that nobody gave, so the tool did not run */
+  pendingApproval?: ToolApprovalRequest;
+}
+
+/**
+ * Runs single tool calls the way an agent run does: arguments validated against the tool's
+ * schema, approval asked for calls that need it, the guardrails applied, the sandbox used for
+ * sandboxed tools, and `tool.timeout` kept. A `Cogitator` is one, so code that runs tools
+ * outside a run (an MCP server, a self-modifying agent) takes it to honor all of that.
+ */
+export interface ToolInvoker {
+  /** Never throws for a failing tool: the error is in the result's `error` */
+  invokeTool(
+    tool: Tool,
+    args: unknown,
+    options?: ToolInvocationOptions
+  ): Promise<ToolInvocationResult>;
+}
+
 /**
  * Everything needed to continue a paused run, as plain JSON: keep it on your
  * server (it holds the conversation) and hand it to `cogitator.resume()`.
@@ -226,6 +290,8 @@ export interface RunCostTokens {
   outputTokens: number;
   cachedInputTokens: number;
   cacheWriteTokens: number;
+  /** Part of `cacheWriteTokens` written with the 1-hour TTL; missing in checkpoints saved before it existed */
+  cacheWrite1hTokens?: number;
 }
 
 export interface RunCheckpoint {
@@ -295,6 +361,9 @@ export interface ResumeOptions extends Omit<
   defaultDecision?: ToolApprovalDecision;
 }
 
+/** Why the model's last answer in a run was withheld; see `RunResult.blocked`. */
+export type RunBlockReason = 'content_filter' | 'refusal';
+
 export interface RunResult {
   readonly output: string;
   readonly structured?: unknown;
@@ -329,6 +398,13 @@ export interface RunResult {
    * output may be cut off, or empty when a reasoning model spent the whole limit thinking
    */
   readonly truncated?: boolean;
+  /**
+   * Set when the model's last answer was withheld instead of finished: `content_filter` when the
+   * provider's safety system filtered it, `refusal` when the model declined to answer. The run
+   * still completes, with `output` holding what the model said before it stopped: the explanation
+   * of a refusal, often nothing for a filter. The runtime does not ask again for such an answer.
+   */
+  readonly blocked?: RunBlockReason;
   /** The versioned instructions or A/B variant the run used */
   readonly prompt?: RunPrompt;
   /** Handoffs during the run, in order */

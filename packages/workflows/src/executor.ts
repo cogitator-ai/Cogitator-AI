@@ -22,7 +22,7 @@ import type {
   ApprovalNotifier,
   TimerStore,
 } from '@cogitator-ai/types';
-import type { Cogitator } from '@cogitator-ai/core';
+import { findAgentRunPausedError, type Cogitator } from '@cogitator-ai/core';
 import { nanoid } from 'nanoid';
 import { WorkflowScheduler } from './scheduler';
 import { InMemoryCheckpointStore, createCheckpointId } from './checkpoint';
@@ -60,7 +60,10 @@ export interface ExecutorExecuteOptions
   defaultCircuitBreaker?: CircuitBreakerConfig;
   /** Receives an entry for every node that finally failed */
   deadLetterQueue?: DeadLetterQueue;
-  /** Reuse results of nodes that already completed for the same workflow id and step */
+  /**
+   * Reuse results of nodes that already completed for the same workflow id and visit of the
+   * node (its first run, its second pass through a loop, ...), also across a resume
+   */
   idempotencyStore?: IdempotencyStore;
   /** Defaults for human-in-the-loop nodes (`humanWorkflowNode`) */
   approvalStore?: ApprovalStore;
@@ -191,7 +194,8 @@ function retryDelay(policy: NodeRunPolicy, attempt: number): number {
 /**
  * Run a node honouring its `NodeConfig` (timeout per attempt, `retries` extra attempts
  * separated by `retryDelay` ms), falling back to the run's default retry policy and
- * circuit breaker. Returns the result and the number of retries used.
+ * circuit breaker. An agent run that paused for tool approvals is not retried: another attempt
+ * would only pause again. Returns the result and the number of retries used.
  */
 async function runNodeWithPolicy<S extends WorkflowState>(
   node: WorkflowNode<S>,
@@ -220,6 +224,7 @@ async function runNodeWithPolicy<S extends WorkflowState>(
       lastError = error;
       const err = error instanceof Error ? error : new Error(String(error));
       if (err.name === 'CircuitBreakerOpenError') break;
+      if (findAgentRunPausedError(err)) break;
       if (isRetryable && !isRetryable(err)) break;
     }
   }
@@ -266,6 +271,11 @@ export class WorkflowExecutor {
       ])
     );
     const completedNodes = new Set<string>();
+    const nodeVisits = new Map<string, number>(
+      options?.nodeVisits
+        ? Object.entries(options.nodeVisits)
+        : [...(skipNodes ?? [])].map((node) => [node, 1])
+    );
     let iterations = 0;
     let checkpointId: string | undefined;
     let error: Error | undefined;
@@ -336,6 +346,7 @@ export class WorkflowExecutor {
         nodeResults: Object.fromEntries(
           Array.from(nodeResults.entries()).map(([k, v]) => [k, v.output])
         ),
+        nodeVisits: Object.fromEntries(nodeVisits),
         timestamp: lastCheckpointAt,
       });
     };
@@ -373,6 +384,7 @@ export class WorkflowExecutor {
             cogitator: this.cogitator,
             signal: options?.signal,
             depth: options?.depth ?? 0,
+            visit,
             approvalStore: options?.approvalStore,
             approvalNotifier: options?.approvalNotifier,
             timerStore: options?.timerStore,
@@ -387,7 +399,8 @@ export class WorkflowExecutor {
           return ctx;
         };
 
-        const idempotencyKey = `workflow:${workflowId}:node:${nodeName}:step:${currentIteration}`;
+        const visit = (nodeVisits.get(nodeName) ?? 0) + 1;
+        const idempotencyKey = `workflow:${workflowId}:node:${nodeName}:visit:${visit}`;
         const idempotencyStore = options?.idempotencyStore;
 
         try {
@@ -419,6 +432,9 @@ export class WorkflowExecutor {
           const err = e instanceof Error ? e : new Error(String(e));
           nodeSpan?.recordException(err);
           nodeSpan?.end('error', err.message);
+          if (options?.signal?.aborted) {
+            throw new NodeExecutionError(nodeName, err);
+          }
           metrics?.recordNodeExecution(
             workflow.name,
             nodeName,
@@ -468,6 +484,7 @@ export class WorkflowExecutor {
       });
 
       completedNodes.add(nodeName);
+      nodeVisits.set(nodeName, (nodeVisits.get(nodeName) ?? 0) + 1);
 
       if (result.next) {
         const next = Array.isArray(result.next) ? result.next : [result.next];
@@ -544,8 +561,8 @@ export class WorkflowExecutor {
     } catch (e) {
       if (e instanceof NodeExecutionError) {
         error = e.cause instanceof Error ? e.cause : e;
-        options?.onNodeError?.(e.nodeName, error);
         if (!options?.signal?.aborted) {
+          options?.onNodeError?.(e.nodeName, error);
           await compensate(e.nodeName, error).catch((compensationError: unknown) => {
             console.warn('[WorkflowExecutor] Compensation failed:', compensationError);
           });
@@ -635,6 +652,7 @@ export class WorkflowExecutor {
       workflowId: checkpoint.workflowId,
       skipNodes: completed,
       nodeResults: checkpoint.nodeResults,
+      ...(checkpoint.nodeVisits && { nodeVisits: checkpoint.nodeVisits }),
     });
   }
 

@@ -7,7 +7,12 @@
  * - Tool Adapter: Convert between Cogitator and MCP tool formats
  */
 
-export { MCPClient, MCPToolError, connectMCPServer } from './client/mcp-client';
+export {
+  MCPClient,
+  MCPToolError,
+  MCPToolInterruptedError,
+  connectMCPServer,
+} from './client/mcp-client';
 export { createStdioTransport, createHttpTransport } from './client/transports';
 export type { StdioTransportConfig, HttpTransportConfig } from './client/transports';
 
@@ -20,6 +25,7 @@ export {
   toolSchemaToMCP,
   mcpToCogitator,
   wrapMCPTools,
+  normalizeMCPToolName,
   zodToJsonSchema,
   jsonSchemaToZod,
   resultToMCPContent,
@@ -50,6 +56,7 @@ export type {
   MCPPromptConfig,
   MCPPromptResult,
   MCPToolDefinition,
+  MCPToolAnnotations,
   MCPToolCallResult,
   MCPToolContent,
   ToolAdapterOptions,

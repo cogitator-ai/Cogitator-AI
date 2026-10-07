@@ -29,12 +29,20 @@ export interface DistributedSwarmWorkerConfig extends WorkerRuntime {
   concurrency?: number;
   /** Seconds a blocking poll waits for new jobs before re-checking state (default: 1) */
   pollTimeout?: number;
+  /**
+   * How often, in ms, a running turn checks whether the coordinator cancelled it (its run
+   * aborted or timed out, the swarm closed, or another attempt answered), default 1000. A
+   * cancelled turn is aborted and its result is not published
+   */
+  cancelCheckInterval?: number;
 }
 
 export interface DistributedSwarmWorkerEvents {
   onJobStarted?: (job: SwarmAgentJobPayload) => void;
   onJobCompleted?: (job: SwarmAgentJobPayload, result: SwarmAgentJobResult) => void;
   onJobFailed?: (job: SwarmAgentJobPayload, error: Error) => void;
+  /** The coordinator gave up on the turn: it was skipped, or aborted while it ran */
+  onJobCancelled?: (job: SwarmAgentJobPayload) => void;
   onError?: (error: Error) => void;
 }
 
@@ -175,9 +183,25 @@ export class DistributedSwarmWorker {
     }
 
     const job = parsed;
+    if (await this.isCancelled(job)) {
+      this.events.onJobCancelled?.(job);
+      return;
+    }
     this.events.onJobStarted?.(job);
 
-    const result = await executeSwarmAgentJob(job, this.runtime);
+    const controller = new AbortController();
+    const watch = this.watchCancellation(job, controller);
+    let result: SwarmAgentJobResult;
+    try {
+      result = await executeSwarmAgentJob(job, this.runtime, { signal: controller.signal });
+    } finally {
+      clearInterval(watch);
+    }
+
+    if (controller.signal.aborted) {
+      this.events.onJobCancelled?.(job);
+      return;
+    }
 
     try {
       await this.publisher!.publish(job.stateKeys.results, JSON.stringify(result));
@@ -191,5 +215,40 @@ export class DistributedSwarmWorker {
     } else {
       this.events.onJobCompleted?.(job, result);
     }
+  }
+
+  /** Whether the coordinator gave up on the job (only coordinators that name a cancel set). */
+  private async isCancelled(job: SwarmAgentJobPayload): Promise<boolean> {
+    const key = job.stateKeys.cancelled;
+    if (!key || !this.publisher) return false;
+    try {
+      return (await this.publisher.sismember(key, job.jobId)) === 1;
+    } catch (error) {
+      this.events.onError?.(error instanceof Error ? error : new Error(toErrorMessage(error)));
+      return false;
+    }
+  }
+
+  /** Abort `controller` once the coordinator cancels the job while it runs. */
+  private watchCancellation(
+    job: SwarmAgentJobPayload,
+    controller: AbortController
+  ): ReturnType<typeof setInterval> | undefined {
+    if (!job.stateKeys.cancelled) return undefined;
+    const interval = Math.max(10, this.config.cancelCheckInterval ?? 1000);
+    let checking = false;
+    return setInterval(() => {
+      if (checking || controller.signal.aborted) return;
+      checking = true;
+      void this.isCancelled(job)
+        .then((cancelled) => {
+          if (cancelled) {
+            controller.abort(new Error(`Swarm turn ${job.jobId} was cancelled by its coordinator`));
+          }
+        })
+        .finally(() => {
+          checking = false;
+        });
+    }, interval);
   }
 }

@@ -6,12 +6,12 @@ import type {
   WorkflowListResponse,
   WorkflowRunResponse,
 } from '../types.js';
+import { parseWorkflowRunRequest } from '@cogitator-ai/server-shared';
 import { ExpressStreamWriter, setupSSEHeaders, generateId } from '../streaming/index.js';
 import {
   handleRouteError,
   isModuleNotFound,
   onClientDisconnect,
-  parseWorkflowBody,
   resolveError,
   sendError,
 } from './utils.js';
@@ -46,7 +46,7 @@ export function createWorkflowRoutes(ctx: RouteContext): Router {
         return;
       }
 
-      const parsed = parseWorkflowBody(req.body);
+      const parsed = parseWorkflowRunRequest(req.body);
       if (!parsed.ok) {
         sendError(res, 400, parsed.message, 'INVALID_INPUT');
         return;
@@ -107,7 +107,7 @@ export function createWorkflowRoutes(ctx: RouteContext): Router {
         return;
       }
 
-      const parsed = parseWorkflowBody(req.body);
+      const parsed = parseWorkflowRunRequest(req.body);
       if (!parsed.ok) {
         sendError(res, 400, parsed.message, 'INVALID_INPUT');
         return;

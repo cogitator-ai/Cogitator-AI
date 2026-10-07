@@ -2,56 +2,72 @@ import { Router, json, type Request, type Response, type NextFunction } from 'ex
 import type { A2AServer } from '../server.js';
 import { createErrorResponse } from '../json-rpc.js';
 import * as errors from '../errors.js';
-import { isStreamRequest, pipeJsonRpcStream, SSE_HEADERS } from './shared.js';
+import { handleA2AHttp, type A2AHttpResponse } from './shared.js';
 
-export function a2aExpress(server: A2AServer): Router {
-  const router = Router();
+const parseJson = json();
 
-  router.get('/.well-known/agent.json', (_req: Request, res: Response) => {
-    const cards = server.getAgentCards();
-    res.json(cards.length === 1 ? cards[0] : cards);
+function readBody(req: Request, res: Response): Promise<unknown> {
+  if (req.body !== undefined) return Promise.resolve(req.body);
+  return new Promise((resolve, reject) => {
+    parseJson(req, res, (error?: unknown) => {
+      if (error) reject(error instanceof Error ? error : new SyntaxError(String(error)));
+      else resolve(req.body);
+    });
   });
+}
 
-  router.post(server.basePath, json(), async (req: Request, res: Response) => {
-    const contentType = req.headers['content-type'];
-    if (contentType && !contentType.startsWith('application/json')) {
-      res.json(createErrorResponse(null, errors.contentTypeNotSupported(contentType)));
+async function send(res: Response, response: A2AHttpResponse): Promise<void> {
+  switch (response.kind) {
+    case 'json':
+      res.status(response.status).set(response.headers).json(response.body);
       return;
-    }
-
-    const body: unknown = req.body;
-    const authToken = server.getAuthToken((name) => req.get(name));
-
-    if (isStreamRequest(body)) {
-      const controller = new AbortController();
-      res.on('close', () => controller.abort());
-      res.writeHead(200, SSE_HEADERS);
-
-      await pipeJsonRpcStream(server, body, authToken, controller.signal, (frame) => {
+    case 'empty':
+      res.status(response.status).end();
+      return;
+    case 'sse':
+      res.writeHead(200, response.headers);
+      await response.pipe((frame) => {
         if (!res.writableEnded && !res.destroyed) res.write(frame);
       });
       if (!res.writableEnded) res.end();
       return;
-    }
+    case 'pass':
+      return;
+  }
+}
 
+/**
+ * Express router serving an A2A server: the Agent Card at `/.well-known/agent-card.json` (and the
+ * pre-v0.3 `/.well-known/agent.json`), JSON-RPC at `basePath`, and every agent's own card and
+ * endpoint under `<basePath>/<agent name>`.
+ */
+export function a2aExpress(server: A2AServer): Router {
+  const router = Router();
+
+  router.use(async (req: Request, res: Response, next: NextFunction) => {
+    const controller = new AbortController();
+    res.on('close', () => controller.abort());
     try {
-      const response = await server.handleJsonRpc(body, authToken);
-      if (response === null) {
-        res.status(204).end();
+      const response = await handleA2AHttp(server, {
+        method: req.method,
+        path: req.path,
+        mountUrl: `${req.protocol}://${req.get('host') ?? 'localhost'}${req.baseUrl}`,
+        header: (name) => req.get(name),
+        readBody: () => readBody(req, res),
+        signal: controller.signal,
+      });
+      if (response.kind === 'pass') {
+        next();
         return;
       }
-      res.json(response);
+      await send(res, response);
     } catch (error) {
+      if (res.headersSent) {
+        if (!res.writableEnded) res.end();
+        return;
+      }
       res.json(createErrorResponse(null, errors.clientJsonRpcError(error, 'A2A request failed')));
     }
-  });
-
-  router.use((err: Error, _req: Request, res: Response, next: NextFunction) => {
-    if (err instanceof SyntaxError) {
-      res.json(createErrorResponse(null, errors.parseError('Invalid JSON body')));
-      return;
-    }
-    next(err);
   });
 
   return router;

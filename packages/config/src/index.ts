@@ -54,11 +54,26 @@ export {
   CompressionStrategySchema,
   DeployTargetSchema,
   DeployServerSchema,
+  DeployKindSchema,
+  DeployVolumeSchema,
   DeployConfigSchema,
   PromptsConfigSchema,
   type CogitatorConfigInput,
   type CogitatorConfigOutput,
 } from './schema';
-export { loadYamlConfig, interpolateEnv, interpolateEnvString } from './loaders/yaml';
-export { loadEnvConfig } from './loaders/env';
+export {
+  loadYamlConfig,
+  interpolateEnv,
+  interpolateEnvString,
+  findConfigFile,
+  CONFIG_FILE_NAMES,
+} from './loaders/yaml';
+export { loadEnvConfig, loadEnvDefaults } from './loaders/env';
+export { resolveOllamaHost, OLLAMA_DEFAULT_PORT } from './ollama';
+export {
+  PROVIDER_ENV,
+  providerEnvNames,
+  preferredEnvName,
+  type ProviderEnvSetting,
+} from './provider-env';
 export { parseDotenv, loadDotenvFile } from './loaders/dotenv';

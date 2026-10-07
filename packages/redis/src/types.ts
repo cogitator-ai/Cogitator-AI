@@ -35,7 +35,10 @@ export interface RedisCommonOptions {
  */
 export interface RedisStandaloneConfig extends RedisCommonOptions {
   mode?: 'standalone';
-  /** Redis URL (e.g., redis://localhost:6379) */
+  /**
+   * Redis URL (e.g., redis://user:password@localhost:6379/0). The explicit `host`, `port`,
+   * `password` and `db` fields override what it says
+   */
   url?: string;
   /** Host (alternative to url) */
   host?: string;

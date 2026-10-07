@@ -76,7 +76,12 @@ http.createServer((req, res) => {
     const result = await deployer.deploy({
       projectDir,
       target: 'docker',
-      configOverrides: { port, secrets: ['E2E_DEPLOY_SECRET'] },
+      configOverrides: {
+        port,
+        kind: 'server',
+        health: { path: '/cogitator/health' },
+        secrets: ['E2E_DEPLOY_SECRET'],
+      },
     });
     expect(result.error).toBeUndefined();
     expect(result.success).toBe(true);

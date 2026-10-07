@@ -4,8 +4,8 @@ import { assertThreadAccess, ensureThreadAccess } from '@cogitator-ai/core';
 import { countMessageTokens } from '@cogitator-ai/memory';
 import type { Message } from '@cogitator-ai/types';
 import type { HonoEnv, ThreadResponse } from '../types.js';
-import { errorResponse, invalidInput, invalidJson, readJsonBody } from '../utils/request.js';
-import { parseAddMessageRequest } from '../utils/validation.js';
+import { bodyRefused, errorResponse, invalidInput, readJsonBody } from '../utils/request.js';
+import { parseAddMessageRequest } from '@cogitator-ai/server-shared';
 
 function memoryUnavailable(c: Context<HonoEnv>): Response {
   return c.json({ error: { message: 'Memory not configured', code: 'UNAVAILABLE' } }, 503);
@@ -49,8 +49,10 @@ export function createThreadRoutes(): Hono<HonoEnv> {
     const id = c.req.param('id');
 
     const body = await readJsonBody(c);
-    if (!body.ok) return invalidJson(c);
-    const parsed = parseAddMessageRequest(body.value);
+    if (!body.ok) return bodyRefused(c, body.refusal);
+    const parsed = parseAddMessageRequest(body.value, {
+      roles: c.get('cogitator').threadMessageRoles,
+    });
     if (!parsed.ok) return invalidInput(c, parsed.message);
 
     const message: Message = { role: parsed.value.role, content: parsed.value.content };

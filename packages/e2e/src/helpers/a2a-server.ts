@@ -1,8 +1,8 @@
 import express, { type Router } from 'express';
 import http from 'node:http';
-import { A2AServer } from '@cogitator-ai/a2a';
+import { A2AServer, isA2ATask, messageText } from '@cogitator-ai/a2a';
 import { a2aExpress } from '@cogitator-ai/a2a/express';
-import type { A2AServerConfig } from '@cogitator-ai/a2a';
+import type { A2AServerConfig, A2ATask, SendMessageResult } from '@cogitator-ai/a2a';
 import type { Agent, AgentConfig } from '@cogitator-ai/types';
 
 export interface TestA2AServer {
@@ -32,6 +32,13 @@ export async function startTestA2AServer(config: A2AServerConfig): Promise<TestA
       });
     });
   });
+}
+
+export function asTask(result: SendMessageResult): A2ATask {
+  if (!isA2ATask(result)) {
+    throw new Error(`Expected a task, got a direct reply message: ${messageText(result)}`);
+  }
+  return result;
 }
 
 export function createStubAgent(config: AgentConfig): Agent {

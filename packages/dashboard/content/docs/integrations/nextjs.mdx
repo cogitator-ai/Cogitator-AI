@@ -13,15 +13,16 @@ pnpm add @cogitator-ai/next @cogitator-ai/core
 
 ## Server: Chat Handler
 
-`createChatHandler` turns a Cogitator agent into a streaming API route handler. It accepts a standard `Request`, runs the agent with token streaming enabled, and returns an SSE stream of typed events (`start`, `text-*`, `reasoning-*`, `tool-call-*`, `tool-result`, `approval-required`, `finish`, `error`) ending with `data: [DONE]`. The events are the [server adapters' streaming protocol](/docs/server-adapters#streaming-protocol), with the `threadId` added to `finish` — consume them with `useCogitatorChat`. `finish` carries the run's `usage`, the same object `createAgentHandler` answers: `inputTokens`, `outputTokens`, `totalTokens`, and `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the model reported them. The handlers are plain `(req: Request) => Promise<Response>` functions, so they also work in other fetch-based runtimes.
+`createChatHandler` turns a Cogitator agent into a streaming API route handler. It accepts a standard `Request`, runs the agent with token streaming enabled, and returns an SSE stream of typed events (`start`, `text-*`, `reasoning-*`, `tool-call-*`, `tool-result`, `approval-required`, `finish`, `error`) ending with `data: [DONE]`. The events are the [server adapters' streaming protocol](/docs/server-adapters#streaming-protocol) from `@cogitator-ai/server-shared`, with the thread in `start` and `finish`: consume them with `useCogitatorChat`. `finish` carries the run's `usage`, the same object `createAgentHandler` answers: `inputTokens`, `outputTokens`, `totalTokens`, and `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the model reported them. The handlers are plain `(req: Request) => Promise<Response>` functions, so they also work in other fetch-based runtimes.
 
 The default body is `{ messages, threadId?, metadata? }`.
 
-- The **last user message** is the run input; history lives in the thread (configure `memory` on `Cogitator`). The `finish` event carries the `threadId`, and `useCogitatorChat` adopts it automatically.
-- Request `metadata` is passed to the run as `context`.
+- The **last user message** is the run input, history lives in the thread (configure `memory` on `Cogitator`). Without a `threadId` the handler opens a new thread and names it in `start`, `finish` repeats it, and `useCogitatorChat` adopts it automatically.
+- Request `metadata` is passed to the run as `context`, but only the keys `acceptContext` allows: the run puts `context` into the system prompt, so by default a request with `metadata` is refused with `400`. Pass `acceptContext: ['plan']` for those keys, or `true` for clients you trust like your own code.
+- While the run is silent the stream writes a `: keep-alive` comment every `sseHeartbeatMs` (5 s by default, `0` turns it off), so a proxy or the platform's idle timeout does not cut it.
 - The run is aborted when the client disconnects.
 - An agent with `reasoning: { summary: true }` streams its summary as `reasoning-start` / `reasoning-delta` / `reasoning-end`; a reasoning or text block is closed before the other kind, a tool call or `finish` starts.
-- Bodies over 1 MB get `413`; malformed bodies or a request without a user message get `400`.
+- Bodies over 1 MB get `413`, bodies that are not JSON (`text/plain`, forms, which browsers send across origins without a preflight) `415`, and malformed bodies or a request without a user message `400`.
 - A failed run ends the stream with an `error` event — see [Errors](#errors).
 
 ```typescript title="app/api/chat/route.ts"
@@ -101,19 +102,26 @@ interface AgentResponse {
     cachedInputTokens?: number;
     cacheWriteTokens?: number;
   };
-  toolCalls: ToolCall[];
-  trace?: { traceId: string; spans: unknown[] };
+  toolCalls: { id: string; name: string; arguments: Record<string, unknown> }[];
   reasoning?: string;
-  status?: 'completed' | 'paused';
+  status: 'completed' | 'paused';
   pendingApprovals?: PendingApproval[];
+  structured?: unknown;
+  structuredError?: string;
+  truncated?: true;
+  blocked?: 'content_filter' | 'refusal';
+  iterationLimitReached?: true;
+  traceId: string;
 }
 ```
+
+It is the object every Cogitator adapter answers (`toAgentRunResponse()`), never the system prompt, the history or trace spans with raw tool arguments and errors. `afterRun` receives the whole `RunResult`. `createAgentHandler` reads its default body with the validator the adapters share, so `context` takes only the keys `acceptContext` allows there too.
 
 ## Errors
 
 Every handler answers request problems before running the agent, as JSON `{ "error": "<message>" }`:
 
-- `413` for bodies over 1 MB, `400` for invalid JSON, a body that fails the default parser, or an error thrown by `parseInput`.
+- `413` for bodies over 1 MB, `415` for a body that is not JSON, `400` for invalid JSON, a body that fails the default parser (with `code: "INVALID_INPUT"`), or an error thrown by `parseInput`.
 - An error thrown by `beforeRun` uses its `status` property (`400`–`599`) and defaults to `401`, with the error's message.
 
 A failed run answers `{ "error": "<message>", "code": "<code>" }` — or, in a stream, an `error` event with the same `message` and `code`. A `CogitatorError` keeps its message, code and status (for example `403 THREAD_ACCESS_DENIED`, `429 LLM_RATE_LIMITED`); any other error is logged on the server and reported as `500` with `Internal server error` and code `INTERNAL_ERROR`, so its text never reaches the client.

@@ -8,8 +8,10 @@ vi.mock('bullmq', () => {
   class Worker {
     on = mockWorkerOn;
     close = mockWorkerClose;
+    cancelAllJobs = vi.fn();
   }
-  return { Worker };
+  class UnrecoverableError extends Error {}
+  return { Worker, UnrecoverableError };
 });
 
 vi.mock('../processors/agent.js', () => ({

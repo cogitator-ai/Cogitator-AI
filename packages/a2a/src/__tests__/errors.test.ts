@@ -7,6 +7,8 @@ import {
   contentTypeNotSupported,
   invalidAgentResponse,
   agentNotFound,
+  authenticatedExtendedCardNotConfigured,
+  taskNotContinuable,
   parseError,
   invalidRequest,
   methodNotFound,
@@ -51,10 +53,20 @@ describe('A2A errors', () => {
       expect(err.code).toBe(-32006);
     });
 
-    it('agentNotFound returns correct error', () => {
+    it('agentNotFound reports invalid params, leaving -32007 to the extended card error', () => {
       const err = agentNotFound('unknown-agent');
-      expect(err.code).toBe(-32007);
+      expect(err.code).toBe(-32602);
       expect(err.data).toEqual({ agentName: 'unknown-agent' });
+    });
+
+    it('authenticatedExtendedCardNotConfigured returns -32007', () => {
+      expect(authenticatedExtendedCardNotConfigured().code).toBe(-32007);
+    });
+
+    it('taskNotContinuable is an invalid request, as the reference SDK reports it', () => {
+      const err = taskNotContinuable('task_1', 'completed');
+      expect(err.code).toBe(-32600);
+      expect(err.data).toEqual({ taskId: 'task_1', state: 'completed' });
     });
   });
 

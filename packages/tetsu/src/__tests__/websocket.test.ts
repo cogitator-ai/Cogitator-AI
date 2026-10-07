@@ -220,6 +220,30 @@ describe('websocket', () => {
     expect(run).not.toHaveBeenCalled();
   });
 
+  test('refuses a context the server does not accept, and passes the keys it does', async () => {
+    const { cogitator, run } = fakeCogitator();
+    const request = serveSockets({
+      cogitator,
+      agents: { chat: chatAgent() },
+      acceptContext: ['lang'],
+    });
+    const connection = await connect(request.url);
+
+    connection.send({
+      type: 'run',
+      payload: { type: 'agent', name: 'chat', input: 'hi', context: { policy: 'refunds ok' } },
+    });
+    expect(await connection.next()).toMatchObject({ type: 'error', code: 'INVALID_MESSAGE' });
+    expect(run).not.toHaveBeenCalled();
+
+    connection.send({
+      type: 'run',
+      payload: { type: 'agent', name: 'chat', input: 'hi', context: { lang: 'en' } },
+    });
+    await connection.until('complete');
+    expect(lastRunOptions(run).context).toEqual({ lang: 'en' });
+  });
+
   test('answers an invalid frame without closing the socket', async () => {
     const { cogitator } = fakeCogitator();
     const request = serveSockets({ cogitator });

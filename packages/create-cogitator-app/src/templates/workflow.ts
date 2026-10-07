@@ -1,31 +1,39 @@
 import type { ProjectOptions, TemplateGenerator } from '../types.js';
-import { defaultModels, providerConfig } from '../utils/providers.js';
-import { ZOD_VERSION } from './versions.js';
+import { modelFor, providerConfig } from '../utils/providers.js';
+import { cogitatorVersion, ZOD_VERSION } from './versions.js';
+import {
+  envHelperFiles,
+  envHelperImport,
+  RUN_MAIN,
+  scriptTemplateDevDependencies,
+  scriptTemplateScripts,
+  tsString,
+} from './shared.js';
 
 export const workflowTemplate: TemplateGenerator = {
   files(options: ProjectOptions) {
-    const model = defaultModels[options.provider];
+    const model = modelFor(options);
 
     const agentsTs = [
       `import { Agent } from '@cogitator-ai/core'`,
       ``,
       `export const analyzer = new Agent({`,
       `  name: 'analyzer',`,
-      `  model: '${model}',`,
+      `  model: ${tsString(model)},`,
       `  instructions: 'You analyze input data and extract key information. Be thorough and structured.',`,
       `  temperature: 0.3,`,
       `})`,
       ``,
       `export const processor = new Agent({`,
       `  name: 'processor',`,
-      `  model: '${model}',`,
+      `  model: ${tsString(model)},`,
       `  instructions: 'You process analyzed data and transform it into actionable insights.',`,
       `  temperature: 0.5,`,
       `})`,
       ``,
       `export const formatter = new Agent({`,
       `  name: 'formatter',`,
-      `  model: '${model}',`,
+      `  model: ${tsString(model)},`,
       `  instructions: 'You format processed data into a clean, readable report.',`,
       `  temperature: 0.7,`,
       `})`,
@@ -41,9 +49,10 @@ export const workflowTemplate: TemplateGenerator = {
       `  functionNode,`,
       `} from '@cogitator-ai/workflows'`,
       `import { analyzer, processor, formatter } from './agents.js'`,
+      ...envHelperImport(options.provider),
       ``,
       `const cogitator = new Cogitator({`,
-      providerConfig(options.provider),
+      providerConfig(options.provider, 'requireEnv'),
       `})`,
       ``,
       `type WorkflowState = {`,
@@ -73,7 +82,7 @@ export const workflowTemplate: TemplateGenerator = {
       `  async (state) => state.report,`,
       `)`,
       ``,
-      `const workflow = new WorkflowBuilder<WorkflowState>('${options.name}-workflow')`,
+      `const workflow = new WorkflowBuilder<WorkflowState>(${tsString(`${options.name}-workflow`)})`,
       `  .initialState({ input: '' })`,
       `  .entryPoint(analyzeNode.name)`,
       `  .addNode(analyzeNode.name, analyzeNode.fn)`,
@@ -91,42 +100,36 @@ export const workflowTemplate: TemplateGenerator = {
       `    input: 'Analyze the current state of AI agent frameworks and their adoption in enterprise.',`,
       `  })`,
       ``,
-      `  console.log('Workflow completed!')`,
-      `  console.log('Result:', JSON.stringify(result, null, 2))`,
+      `  if (result.error) throw result.error`,
+      ``,
+      `  console.log(\`Workflow completed in \${result.duration}ms\`)`,
+      `  console.log('Report:', result.state.report)`,
+      `  console.log('Nodes:', JSON.stringify(Object.fromEntries(result.nodeResults), null, 2))`,
       `}`,
       ``,
-      `main().catch(console.error)`,
-      ``,
+      ...RUN_MAIN,
     ].join('\n');
 
     return [
       { path: 'src/index.ts', content: indexTs },
       { path: 'src/agents.ts', content: agentsTs },
+      ...envHelperFiles(options.provider),
     ];
   },
 
   dependencies() {
     return {
-      '@cogitator-ai/core': 'latest',
-      '@cogitator-ai/workflows': 'latest',
+      '@cogitator-ai/core': cogitatorVersion('@cogitator-ai/core'),
+      '@cogitator-ai/workflows': cogitatorVersion('@cogitator-ai/workflows'),
       zod: ZOD_VERSION,
     };
   },
 
   devDependencies() {
-    return {
-      typescript: '^5.8.0',
-      tsx: '^4.19.0',
-      '@types/node': '^22.0.0',
-    };
+    return scriptTemplateDevDependencies();
   },
 
   scripts() {
-    return {
-      dev: 'tsx watch src/index.ts',
-      start: 'tsx src/index.ts',
-      build: 'tsc',
-      typecheck: 'tsc --noEmit',
-    };
+    return scriptTemplateScripts();
   },
 };

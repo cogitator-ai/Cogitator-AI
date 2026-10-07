@@ -1,4 +1,4 @@
-import { nanoid } from 'nanoid';
+import { chunkId } from './chunk-id.js';
 import type { Chunker, DocumentChunk } from '@cogitator-ai/types';
 
 export interface FixedSizeChunkerOptions {
@@ -34,7 +34,7 @@ export class FixedSizeChunker implements Chunker {
     for (let start = 0; start < text.length; start += step) {
       const end = Math.min(start + this.chunkSize, text.length);
       chunks.push({
-        id: nanoid(),
+        id: chunkId(documentId, order),
         documentId,
         content: text.slice(start, end),
         startOffset: start,

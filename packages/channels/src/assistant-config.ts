@@ -67,6 +67,7 @@ const AssistantMemorySchema = z.object({
   connectionString: z.string().optional(),
   autoExtract: z.boolean().default(true),
   knowledgeGraph: z.boolean().default(true),
+  /** `threshold` counts messages: the thread is compacted once it holds that many */
   compaction: z.object({ threshold: z.number() }).optional(),
 });
 

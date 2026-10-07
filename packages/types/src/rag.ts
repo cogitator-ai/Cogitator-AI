@@ -8,6 +8,8 @@
  * - Pipeline configuration
  */
 
+import type { SearchFilter } from './memory';
+
 export interface DocumentChunk {
   id: string;
   documentId: string;
@@ -57,6 +59,11 @@ export interface RetrievalConfig {
   threshold: number;
   mmrLambda?: number;
   multiQueryCount?: number;
+  /**
+   * Narrows the search further. `RAGPipeline` always searches `sourceType: 'document'` of its
+   * own namespace, so private memory in a shared store never comes back as a RAG result.
+   */
+  filter?: SearchFilter;
 }
 
 export interface RetrievalResult {
@@ -79,6 +86,11 @@ export interface Reranker {
 export interface RAGPipelineConfig {
   chunking: ChunkingConfig;
   retrieval: RetrievalConfig;
+  /**
+   * Keeps this pipeline's chunks apart from other pipelines in the same embedding store: stored
+   * as `metadata.namespace`, and queries, re-ingest and `removeSource` only touch that namespace.
+   */
+  namespace?: string;
   reranking?: {
     enabled: boolean;
     topN?: number;

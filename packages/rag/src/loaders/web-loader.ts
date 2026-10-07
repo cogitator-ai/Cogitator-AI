@@ -5,8 +5,8 @@ import { BlockList, isIP } from 'node:net';
 import type { Readable } from 'node:stream';
 import { createBrotliDecompress, createGunzip, createInflate } from 'node:zlib';
 import type { DocumentLoader, RAGDocument, RobotsChecker } from '@cogitator-ai/types';
-import { nanoid } from 'nanoid';
 import { HTMLLoader } from './html-loader.js';
+import { documentId } from './document-id.js';
 
 const MAX_REDIRECTS = 5;
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -260,7 +260,7 @@ export class WebLoader implements DocumentLoader {
     if (mime.startsWith('text/') || mime === 'application/json' || mime.endsWith('+json')) {
       return [
         {
-          id: nanoid(),
+          id: documentId(source),
           content: page.body,
           source,
           sourceType: 'web',

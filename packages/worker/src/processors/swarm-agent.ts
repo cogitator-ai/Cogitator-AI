@@ -6,13 +6,19 @@
  * an `error` field instead of being thrown.
  */
 
-import type { SwarmAgentJobPayload, SwarmAgentJobResult, WorkerRuntime } from '../types';
+import { toAgentWireRunResult } from '@cogitator-ai/core';
+import type {
+  JobExecutionOptions,
+  SwarmAgentJobPayload,
+  SwarmAgentJobResult,
+  WorkerRuntime,
+} from '../types';
 import { createAgentFromConfig, resolveRuntime, toErrorMessage } from './shared.js';
-import { findToolOutput } from './agent.js';
 
 export async function executeSwarmAgentJob(
   payload: SwarmAgentJobPayload,
-  runtime: WorkerRuntime = {}
+  runtime: WorkerRuntime = {},
+  execution: JobExecutionOptions = {}
 ): Promise<SwarmAgentJobResult> {
   const { jobId, swarmId, agentName, agentConfig, input, context, runOptions } = payload;
 
@@ -26,6 +32,7 @@ export async function executeSwarmAgentJob(
       ...(runOptions?.userId !== undefined && { userId: runOptions.userId }),
       ...(runOptions?.timeout !== undefined && { timeout: runOptions.timeout }),
       ...(runOptions?.saveHistory !== undefined && { saveHistory: runOptions.saveHistory }),
+      ...(execution.signal && { signal: execution.signal }),
     });
 
     return {
@@ -33,13 +40,7 @@ export async function executeSwarmAgentJob(
       jobId,
       swarmId,
       agentName,
-      output: result.output,
-      structured: result.structured,
-      toolCalls: result.toolCalls.map((tc) => ({
-        name: tc.name,
-        input: tc.arguments,
-        output: findToolOutput(result.messages, tc.id),
-      })),
+      ...toAgentWireRunResult(result),
       tokenUsage: {
         prompt: result.usage.inputTokens,
         completion: result.usage.outputTokens,
@@ -67,7 +68,7 @@ export interface SwarmResultPublisher {
   publish(channel: string, message: string): Promise<unknown>;
 }
 
-export interface SwarmAgentJobOptions extends WorkerRuntime {
+export interface SwarmAgentJobOptions extends WorkerRuntime, JobExecutionOptions {
   /** Connection used to publish the result back to the coordinator */
   publisher: SwarmResultPublisher;
   /**
@@ -85,7 +86,7 @@ export async function processSwarmAgentJob(
   payload: SwarmAgentJobPayload,
   options: SwarmAgentJobOptions
 ): Promise<SwarmAgentJobResult> {
-  const result = await executeSwarmAgentJob(payload, options);
+  const result = await executeSwarmAgentJob(payload, options, { signal: options.signal });
   const isFinal = options.isFinalAttempt ?? true;
 
   if (result.error === undefined || isFinal) {

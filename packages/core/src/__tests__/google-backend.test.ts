@@ -431,7 +431,8 @@ describe('GoogleBackend', () => {
       const testCases = [
         { reason: 'STOP', expected: 'stop' },
         { reason: 'MAX_TOKENS', expected: 'length' },
-        { reason: 'SAFETY', expected: 'error' },
+        { reason: 'SAFETY', expected: 'content_filter' },
+        { reason: 'MALFORMED_FUNCTION_CALL', expected: 'error' },
       ];
 
       for (const { reason, expected } of testCases) {
@@ -909,6 +910,124 @@ describe('GoogleBackend', () => {
       await expect(
         backend.chat({ model: 'gemini-2.5-flash', messages: [{ role: 'user', content: 'x' }] })
       ).rejects.toThrow('Gemini blocked the prompt: SAFETY');
+    });
+  });
+
+  describe('turn outcome', () => {
+    const answer = (parts: unknown[], finishReason: string) => ({
+      ok: true,
+      json: async () => ({
+        candidates: [{ content: { role: 'model', parts }, finishReason }],
+        usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+      }),
+    });
+    const sse = (lines: string[]) => {
+      const encoder = new TextEncoder();
+      let index = 0;
+      return {
+        ok: true,
+        body: {
+          getReader: () => ({
+            read: async () =>
+              index < lines.length
+                ? { done: false, value: encoder.encode(lines[index++]) }
+                : { done: true, value: undefined },
+            releaseLock: () => undefined,
+          }),
+        },
+      };
+    };
+    const call = { functionCall: { name: 'purge', args: { olderThanDays: 3 } } };
+
+    it.each(['SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII'])(
+      'reports finish reason %s as content_filter',
+      async (reason) => {
+        mockFetch.mockResolvedValueOnce(answer([], reason));
+
+        const response = await backend.chat({
+          model: 'gemini-2.5-flash',
+          messages: [{ role: 'user', content: 'x' }],
+        });
+
+        expect(response.finishReason).toBe('content_filter');
+      }
+    );
+
+    it('passes on the explanation of a malformed function call', async () => {
+      const finishMessage = 'Malformed function call: call:default_api:purge{olderThanDays: 3';
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          candidates: [
+            {
+              content: { role: 'model', parts: [{ text: '' }] },
+              finishReason: 'MALFORMED_FUNCTION_CALL',
+              finishMessage,
+            },
+          ],
+          usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+        }),
+      });
+
+      const response = await backend.chat({
+        model: 'gemini-2.5-flash',
+        messages: [{ role: 'user', content: 'x' }],
+      });
+
+      expect(response.finishReason).toBe('error');
+      expect(response.finishMessage).toBe(finishMessage);
+    });
+
+    it('streams the explanation of a malformed function call', async () => {
+      const finishMessage = 'Malformed function call: call:default_api:purge{';
+      mockFetch.mockResolvedValueOnce(
+        sse([
+          `data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text: '' }] }, finishReason: 'MALFORMED_FUNCTION_CALL', finishMessage }] })}\n\n`,
+        ])
+      );
+
+      const ends: unknown[] = [];
+      for await (const chunk of backend.chatStream({
+        model: 'gemini-2.5-flash',
+        messages: [{ role: 'user', content: 'x' }],
+      })) {
+        if (chunk.finishReason) ends.push([chunk.finishReason, chunk.finishMessage]);
+      }
+
+      expect(ends).toEqual([['error', finishMessage]]);
+    });
+
+    it('does not run the tool calls of a turn cut at MAX_TOKENS', async () => {
+      mockFetch.mockResolvedValueOnce(answer([call], 'MAX_TOKENS'));
+
+      const response = await backend.chat({
+        model: 'gemini-2.5-flash',
+        messages: [{ role: 'user', content: 'x' }],
+      });
+
+      expect(response.finishReason).toBe('length');
+      expect(response.toolCalls).toBeUndefined();
+    });
+
+    it('streams a turn cut at MAX_TOKENS as truncated, without its calls', async () => {
+      mockFetch.mockResolvedValueOnce(
+        sse([
+          `data: ${JSON.stringify({ candidates: [{ content: { parts: [call] }, finishReason: 'MAX_TOKENS' }] })}\n\n`,
+        ])
+      );
+
+      const finishReasons: unknown[] = [];
+      const toolCalls: unknown[] = [];
+      for await (const chunk of backend.chatStream({
+        model: 'gemini-2.5-flash',
+        messages: [{ role: 'user', content: 'x' }],
+      })) {
+        if (chunk.finishReason) finishReasons.push(chunk.finishReason);
+        if (chunk.delta.toolCalls) toolCalls.push(...chunk.delta.toolCalls);
+      }
+
+      expect(finishReasons).toEqual(['length']);
+      expect(toolCalls).toEqual([]);
     });
   });
 });

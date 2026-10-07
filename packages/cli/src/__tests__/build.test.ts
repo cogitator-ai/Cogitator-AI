@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
-import { createGatewayEntry, BUNDLE_EXTERNALS } from '../commands/build.js';
+import { createGatewayEntry, gatewayBuildOptions } from '../commands/build.js';
 
 describe('createGatewayEntry', () => {
   let dir: string;
@@ -62,10 +62,15 @@ export const gateway = {
   });
 });
 
-describe('BUNDLE_EXTERNALS', () => {
-  it('keeps native and optional channel dependencies external', () => {
-    expect(BUNDLE_EXTERNALS).toEqual(
-      expect.arrayContaining(['better-sqlite3', 'pg', 'grammy', 'discord.js', 'playwright'])
-    );
+describe('gatewayBuildOptions', () => {
+  it('bundles the project code and leaves every package, native addons included, to node_modules', () => {
+    const options = gatewayBuildOptions({
+      configPath: '/app/src/gateway.ts',
+      outfile: '/app/dist/cogitator.mjs',
+      target: 'node22',
+      sourcemap: true,
+    });
+    expect(options).toMatchObject({ bundle: true, packages: 'external', format: 'esm' });
+    expect(options).not.toHaveProperty('external');
   });
 });

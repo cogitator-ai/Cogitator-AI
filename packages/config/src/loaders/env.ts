@@ -2,12 +2,16 @@
  * Environment variable configuration loader
  */
 
+import type { LLMProvider as LLMProviderName } from '@cogitator-ai/types';
 import { DeployTargetSchema, LLMProviderSchema, type CogitatorConfigInput } from '../schema';
+import { resolveOllamaHost } from '../ollama';
+import { PROVIDER_ENV, type ProviderEnvSetting } from '../provider-env';
 
 const ENV_PREFIX = 'COGITATOR_';
 
 /**
- * Load configuration from environment variables
+ * Load the configuration environment variables set over cogitator.yml.
+ * `PROVIDER_ENV` lists the variables of every provider.
  *
  * Environment variable mapping:
  * - COGITATOR_LLM_DEFAULT_PROVIDER -> llm.defaultProvider
@@ -25,6 +29,8 @@ const ENV_PREFIX = 'COGITATOR_';
  * - COGITATOR_BEDROCK_REGION -> llm.providers.bedrock.region
  * - COGITATOR_BEDROCK_ACCESS_KEY_ID -> llm.providers.bedrock.accessKeyId
  * - COGITATOR_BEDROCK_SECRET_ACCESS_KEY -> llm.providers.bedrock.secretAccessKey
+ * - COGITATOR_BEDROCK_SESSION_TOKEN -> llm.providers.bedrock.sessionToken
+ * - COGITATOR_BEDROCK_PROFILE -> llm.providers.bedrock.profile
  * - COGITATOR_MISTRAL_API_KEY -> llm.providers.mistral.apiKey
  * - COGITATOR_GROQ_API_KEY -> llm.providers.groq.apiKey
  * - COGITATOR_TOGETHER_API_KEY -> llm.providers.together.apiKey
@@ -36,18 +42,22 @@ const ENV_PREFIX = 'COGITATOR_';
  * Also supports standard env vars:
  * - OPENAI_API_KEY -> llm.providers.openai.apiKey
  * - ANTHROPIC_API_KEY -> llm.providers.anthropic.apiKey
- * - OLLAMA_URL / OLLAMA_HOST -> llm.providers.ollama.baseUrl (scheme added when missing)
  * - OLLAMA_API_KEY -> llm.providers.ollama.apiKey (baseUrl defaults to https://ollama.com)
  * - GEMINI_API_KEY -> llm.providers.google.apiKey (alias of GOOGLE_API_KEY)
  * - AZURE_OPENAI_API_KEY -> llm.providers.azure.apiKey
  * - AZURE_OPENAI_ENDPOINT -> llm.providers.azure.endpoint
  * - AWS_REGION -> llm.providers.bedrock.region
- * - AWS_ACCESS_KEY_ID -> llm.providers.bedrock.accessKeyId
- * - AWS_SECRET_ACCESS_KEY -> llm.providers.bedrock.secretAccessKey
  * - MISTRAL_API_KEY -> llm.providers.mistral.apiKey
  * - GROQ_API_KEY -> llm.providers.groq.apiKey
  * - TOGETHER_API_KEY -> llm.providers.together.apiKey
  * - DEEPSEEK_API_KEY -> llm.providers.deepseek.apiKey
+ *
+ * AWS credentials (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
+ * `AWS_SESSION_TOKEN`, `AWS_PROFILE`) are left to the AWS SDK, which keeps
+ * temporary credentials whole: with any of them set, `llm.providers.bedrock`
+ * is present so Bedrock counts as configured. The Ollama URL variables other
+ * tools share (`OLLAMA_HOST`, `OLLAMA_URL`, `OLLAMA_BASE_URL`) only apply
+ * under cogitator.yml, see {@link loadEnvDefaults}.
  */
 type LLMProvider = NonNullable<NonNullable<CogitatorConfigInput['llm']>['defaultProvider']>;
 
@@ -95,89 +105,109 @@ export function loadEnvConfig(): CogitatorConfigInput {
   return config;
 }
 
+/**
+ * Configuration from environment variables that apply only when
+ * cogitator.yml leaves the setting unset. Other tools own these variables
+ * too: `OLLAMA_HOST` is often `0.0.0.0` so `ollama serve` listens on every
+ * interface, which must not replace a `baseUrl` written in the config.
+ *
+ * - OLLAMA_BASE_URL / OLLAMA_URL / OLLAMA_HOST -> llm.providers.ollama.baseUrl,
+ *   read the way Ollama reads OLLAMA_HOST (port 11434 when none is given,
+ *   `0.0.0.0` reached as localhost)
+ */
+export function loadEnvDefaults(): CogitatorConfigInput {
+  const baseUrl = resolveOllamaHost(firstSet(settingOf('ollama', 'baseUrl').fallbackEnv));
+  return baseUrl ? { llm: { providers: { ollama: { baseUrl } } } } : {};
+}
+
 type ProvidersConfig = NonNullable<NonNullable<CogitatorConfigInput['llm']>['providers']>;
 type LimitsConfig = NonNullable<CogitatorConfigInput['limits']>;
+type ProviderValues = Record<string, string | undefined>;
+
+function settingOf(provider: LLMProviderName, field: string): ProviderEnvSetting {
+  const setting = PROVIDER_ENV[provider].find((s) => s.field === field);
+  if (!setting) throw new Error(`PROVIDER_ENV has no ${provider}.${field} setting`);
+  return setting;
+}
+
+function firstSet(names: readonly string[] | undefined): string | undefined {
+  for (const name of names ?? []) {
+    const value = process.env[name];
+    if (value !== undefined && value.trim() !== '') return value;
+  }
+  return undefined;
+}
+
+/** `provider`'s settings from the variables set over cogitator.yml. */
+function readProvider(provider: LLMProviderName): ProviderValues {
+  const values: ProviderValues = {};
+  for (const setting of PROVIDER_ENV[provider]) {
+    values[setting.field] = firstSet(setting.env);
+  }
+  return values;
+}
+
+function definedValues(values: ProviderValues): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(values)) {
+    if (value !== undefined) result[key] = value;
+  }
+  return result;
+}
 
 function loadProviderConfigs(): ProvidersConfig {
   const providers: ProvidersConfig = {};
 
-  const ollamaBaseUrl = normalizeHttpUrl(
-    getEnv('OLLAMA_BASE_URL') || process.env.OLLAMA_URL || process.env.OLLAMA_HOST
-  );
-  const ollamaApiKey = getEnv('OLLAMA_API_KEY') || process.env.OLLAMA_API_KEY;
-  if (ollamaBaseUrl || ollamaApiKey) {
+  const ollama = readProvider('ollama');
+  const ollamaBaseUrl = resolveOllamaHost(ollama.baseUrl);
+  if (ollamaBaseUrl || ollama.apiKey) {
     providers.ollama = {
       ...(ollamaBaseUrl ? { baseUrl: ollamaBaseUrl } : {}),
-      ...(ollamaApiKey ? { apiKey: ollamaApiKey } : {}),
+      ...(ollama.apiKey ? { apiKey: ollama.apiKey } : {}),
     };
   }
 
-  const openaiApiKey = getEnv('OPENAI_API_KEY') ?? process.env.OPENAI_API_KEY;
-  const openaiBaseUrl = getEnv('OPENAI_BASE_URL') ?? process.env.OPENAI_BASE_URL;
-  if (openaiApiKey) {
-    providers.openai = { apiKey: openaiApiKey, baseUrl: openaiBaseUrl };
+  const openai = readProvider('openai');
+  if (openai.apiKey) {
+    providers.openai = { apiKey: openai.apiKey, baseUrl: openai.baseUrl };
   }
 
-  const anthropicApiKey = getEnv('ANTHROPIC_API_KEY') ?? process.env.ANTHROPIC_API_KEY;
-  if (anthropicApiKey) {
-    providers.anthropic = { apiKey: anthropicApiKey };
-  }
+  const anthropic = readProvider('anthropic').apiKey;
+  if (anthropic) providers.anthropic = { apiKey: anthropic };
 
-  const googleApiKey =
-    getEnv('GOOGLE_API_KEY') ?? process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY;
-  if (googleApiKey) {
-    providers.google = { apiKey: googleApiKey };
-  }
+  const google = readProvider('google').apiKey;
+  if (google) providers.google = { apiKey: google };
 
-  const vllmBaseUrl = getEnv('VLLM_BASE_URL');
-  if (vllmBaseUrl) {
-    providers.vllm = { baseUrl: vllmBaseUrl };
-  }
+  const vllm = readProvider('vllm').baseUrl;
+  if (vllm) providers.vllm = { baseUrl: vllm };
 
-  const azureApiKey = getEnv('AZURE_API_KEY') ?? process.env.AZURE_OPENAI_API_KEY;
-  const azureEndpoint = getEnv('AZURE_ENDPOINT') ?? process.env.AZURE_OPENAI_ENDPOINT;
-  if (azureApiKey && azureEndpoint) {
-    const azureApiVersion = getEnv('AZURE_API_VERSION');
-    const azureDeployment = getEnv('AZURE_DEPLOYMENT') ?? process.env.AZURE_OPENAI_DEPLOYMENT;
+  const azure = readProvider('azure');
+  if (azure.apiKey && azure.endpoint) {
     providers.azure = {
-      apiKey: azureApiKey,
-      endpoint: azureEndpoint,
-      ...(azureApiVersion ? { apiVersion: azureApiVersion } : {}),
-      ...(azureDeployment ? { deployment: azureDeployment } : {}),
+      apiKey: azure.apiKey,
+      endpoint: azure.endpoint,
+      ...(azure.apiVersion ? { apiVersion: azure.apiVersion } : {}),
+      ...(azure.deployment ? { deployment: azure.deployment } : {}),
     };
   }
 
-  const bedrockRegion = getEnv('BEDROCK_REGION') ?? process.env.AWS_REGION;
-  const bedrockAccessKeyId = getEnv('BEDROCK_ACCESS_KEY_ID') ?? process.env.AWS_ACCESS_KEY_ID;
-  const bedrockSecretAccessKey =
-    getEnv('BEDROCK_SECRET_ACCESS_KEY') ?? process.env.AWS_SECRET_ACCESS_KEY;
-  if (bedrockRegion || bedrockAccessKeyId || bedrockSecretAccessKey) {
-    providers.bedrock = {
-      ...(bedrockRegion ? { region: bedrockRegion } : {}),
-      ...(bedrockAccessKeyId ? { accessKeyId: bedrockAccessKeyId } : {}),
-      ...(bedrockSecretAccessKey ? { secretAccessKey: bedrockSecretAccessKey } : {}),
-    };
+  const bedrock = definedValues(readProvider('bedrock'));
+  const sdkCredentials = PROVIDER_ENV.bedrock.some((s) => firstSet(s.sdkEnv) !== undefined);
+  if (Object.keys(bedrock).length > 0 || sdkCredentials) {
+    providers.bedrock = bedrock;
   }
 
-  const mistralApiKey = getEnv('MISTRAL_API_KEY') ?? process.env.MISTRAL_API_KEY;
-  if (mistralApiKey) {
-    providers.mistral = { apiKey: mistralApiKey };
-  }
+  const mistral = readProvider('mistral').apiKey;
+  if (mistral) providers.mistral = { apiKey: mistral };
 
-  const groqApiKey = getEnv('GROQ_API_KEY') ?? process.env.GROQ_API_KEY;
-  if (groqApiKey) {
-    providers.groq = { apiKey: groqApiKey };
-  }
+  const groq = readProvider('groq').apiKey;
+  if (groq) providers.groq = { apiKey: groq };
 
-  const togetherApiKey = getEnv('TOGETHER_API_KEY') ?? process.env.TOGETHER_API_KEY;
-  if (togetherApiKey) {
-    providers.together = { apiKey: togetherApiKey };
-  }
+  const together = readProvider('together').apiKey;
+  if (together) providers.together = { apiKey: together };
 
-  const deepseekApiKey = getEnv('DEEPSEEK_API_KEY') ?? process.env.DEEPSEEK_API_KEY;
-  if (deepseekApiKey) {
-    providers.deepseek = { apiKey: deepseekApiKey };
-  }
+  const deepseek = readProvider('deepseek').apiKey;
+  if (deepseek) providers.deepseek = { apiKey: deepseek };
 
   return providers;
 }
@@ -194,13 +224,6 @@ function loadLimitsConfig(): LimitsConfig {
   if (maxTokensPerRun !== undefined) limits.maxTokensPerRun = maxTokensPerRun;
 
   return limits;
-}
-
-function normalizeHttpUrl(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  if (!trimmed) return undefined;
-  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
-  return withScheme.replace(/\/+$/, '');
 }
 
 function getEnv(key: string): string | undefined {

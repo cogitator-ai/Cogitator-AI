@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { A2AServer } from '../server';
 import type { Agent, AgentConfig } from '@cogitator-ai/types';
-import type { A2AMessage, A2AStreamEvent, CogitatorLike, AgentRunResult } from '../types';
-import { expectResponse } from './helpers';
+import type { CogitatorLike, AgentRunResult } from '../types';
+import { collect, collectEvents, expectResponse, userMessage } from './helpers';
 
 function createMockAgent(name: string): Agent {
   const config: AgentConfig = {
@@ -40,10 +40,6 @@ function createMockCogitator(output: string = 'test output', structured?: unknow
     toolCalls: [],
   };
   return { run: vi.fn().mockResolvedValue(result) };
-}
-
-function userMessage(text: string): A2AMessage {
-  return { role: 'user', parts: [{ type: 'text', text }] };
 }
 
 describe('A2AServer', () => {
@@ -247,137 +243,121 @@ describe('A2AServer', () => {
   });
 
   describe('handleJsonRpcStream', () => {
-    it('should yield status events for streaming', async () => {
-      const events: A2AStreamEvent[] = [];
-      const stream = server.handleJsonRpcStream({
-        jsonrpc: '2.0',
-        method: 'message/stream',
-        params: { message: userMessage('Stream me') },
-        id: 1,
-      });
+    it('should yield the task, then status updates, each as a JSON-RPC response with the request id', async () => {
+      const responses = await collect(
+        server.handleJsonRpcStream({
+          jsonrpc: '2.0',
+          method: 'message/stream',
+          params: { message: userMessage('Stream me') },
+          id: 1,
+        })
+      );
 
-      for await (const event of stream) {
-        events.push(event);
-      }
-
-      expect(events.length).toBeGreaterThan(0);
-      const statusEvents = events.filter((e) => e.type === 'status-update');
-      expect(statusEvents.length).toBeGreaterThanOrEqual(1);
+      expect(responses.length).toBeGreaterThan(1);
+      expect(responses.every((r) => r.jsonrpc === '2.0' && r.id === 1)).toBe(true);
+      const events = responses.map((r) => r.result as { kind: string });
+      expect(events[0].kind).toBe('task');
+      expect(events.filter((e) => e.kind === 'status-update').length).toBeGreaterThanOrEqual(1);
     });
 
-    it('should complete with terminal state', async () => {
-      const events: A2AStreamEvent[] = [];
-      for await (const event of server.handleJsonRpcStream({
-        jsonrpc: '2.0',
-        method: 'message/stream',
-        params: { message: userMessage('Quick task') },
-        id: 1,
-      })) {
-        events.push(event);
-      }
+    it('should complete with a final terminal status update', async () => {
+      const events = await collectEvents(
+        server.handleJsonRpcStream({
+          jsonrpc: '2.0',
+          method: 'message/stream',
+          params: { message: userMessage('Quick task') },
+          id: 1,
+        })
+      );
 
-      const lastStatus = [...events].reverse().find((e) => e.type === 'status-update');
-      expect(lastStatus).toBeDefined();
-      if (lastStatus?.type === 'status-update') {
-        expect(['completed', 'failed']).toContain(lastStatus.status.state);
-      }
-    });
-
-    it('should yield failed event for non-stream methods', async () => {
-      const events: A2AStreamEvent[] = [];
-      for await (const event of server.handleJsonRpcStream({
-        jsonrpc: '2.0',
-        method: 'message/send',
-        params: { message: userMessage('Not streaming') },
-        id: 1,
-      })) {
-        events.push(event);
-      }
-      expect(events).toHaveLength(1);
-      expect(events[0].type).toBe('status-update');
-      if (events[0].type === 'status-update') {
-        expect(events[0].status.state).toBe('failed');
+      const last = events.at(-1);
+      expect(last?.kind).toBe('status-update');
+      if (last?.kind === 'status-update') {
+        expect(last.final).toBe(true);
+        expect(last.status.state).toBe('completed');
       }
     });
 
-    it('should yield failed event for malformed JSON-RPC request', async () => {
-      const events: A2AStreamEvent[] = [];
-      for await (const event of server.handleJsonRpcStream('not valid json-rpc')) {
-        events.push(event);
-      }
-      expect(events).toHaveLength(1);
-      expect(events[0].type).toBe('status-update');
-      if (events[0].type === 'status-update') {
-        expect(events[0].status.state).toBe('failed');
-      }
+    it('should answer a method that does not stream with its single response', async () => {
+      const responses = await collect(
+        server.handleJsonRpcStream({
+          jsonrpc: '2.0',
+          method: 'message/send',
+          params: { message: userMessage('Not streaming') },
+          id: 1,
+        })
+      );
+      expect(responses).toHaveLength(1);
+      expect((responses[0].result as { kind: string }).kind).toBe('task');
     });
 
-    it('should yield failed event for message without role', async () => {
-      const events: A2AStreamEvent[] = [];
-      for await (const event of server.handleJsonRpcStream({
-        jsonrpc: '2.0',
-        method: 'message/stream',
-        params: { message: { parts: [{ type: 'text', text: 'no role' }] } },
-        id: 1,
-      })) {
-        events.push(event);
-      }
-      expect(events).toHaveLength(1);
-      if (events[0].type === 'status-update') {
-        expect(events[0].status.state).toBe('failed');
-        expect(events[0].status.message).toContain('message');
-      }
+    it('should yield an error response for a malformed JSON-RPC request', async () => {
+      const responses = await collect(server.handleJsonRpcStream('not valid json-rpc'));
+      expect(responses).toHaveLength(1);
+      expect(responses[0].error?.code).toBe(-32600);
     });
 
-    it('should yield failed event for unknown agent name', async () => {
-      const events: A2AStreamEvent[] = [];
-      for await (const event of server.handleJsonRpcStream({
-        jsonrpc: '2.0',
-        method: 'message/stream',
-        params: { message: userMessage('Hello'), agentName: 'nonexistent' },
-        id: 1,
-      })) {
-        events.push(event);
-      }
-      expect(events).toHaveLength(1);
-      if (events[0].type === 'status-update') {
-        expect(events[0].status.state).toBe('failed');
-        expect(events[0].status.message).toContain('Agent not found');
-      }
+    it('should yield invalid params for a message without role', async () => {
+      const responses = await collect(
+        server.handleJsonRpcStream({
+          jsonrpc: '2.0',
+          method: 'message/stream',
+          params: { message: { messageId: 'm', parts: [{ kind: 'text', text: 'no role' }] } },
+          id: 1,
+        })
+      );
+      expect(responses).toHaveLength(1);
+      expect(responses[0].error?.code).toBe(-32602);
+      expect(responses[0].error?.message).toContain('message');
     });
 
-    it('should yield failed event for missing message params', async () => {
-      const events: A2AStreamEvent[] = [];
-      for await (const event of server.handleJsonRpcStream({
-        jsonrpc: '2.0',
-        method: 'message/stream',
-        params: {},
-        id: 1,
-      })) {
-        events.push(event);
-      }
-      expect(events).toHaveLength(1);
-      expect(events[0].type).toBe('status-update');
-      if (events[0].type === 'status-update') {
-        expect(events[0].status.state).toBe('failed');
-        expect(events[0].status.message).toContain('message');
-      }
+    it('should yield an error for an unknown agent name', async () => {
+      const responses = await collect(
+        server.handleJsonRpcStream({
+          jsonrpc: '2.0',
+          method: 'message/stream',
+          params: { message: userMessage('Hello'), agentName: 'nonexistent' },
+          id: 1,
+        })
+      );
+      expect(responses).toHaveLength(1);
+      expect(responses[0].error?.message).toContain('Agent not found');
     });
 
-    it('should yield failed event for batch requests', async () => {
-      const events: A2AStreamEvent[] = [];
-      for await (const event of server.handleJsonRpcStream([
-        { jsonrpc: '2.0', method: 'message/stream', params: { message: userMessage('a') }, id: 1 },
-        { jsonrpc: '2.0', method: 'message/stream', params: { message: userMessage('b') }, id: 2 },
-      ])) {
-        events.push(event);
-      }
-      expect(events).toHaveLength(1);
-      expect(events[0].type).toBe('status-update');
-      if (events[0].type === 'status-update') {
-        expect(events[0].status.state).toBe('failed');
-        expect(events[0].status.message).toContain('Batch');
-      }
+    it('should yield invalid params for missing message params', async () => {
+      const responses = await collect(
+        server.handleJsonRpcStream({
+          jsonrpc: '2.0',
+          method: 'message/stream',
+          params: {},
+          id: 1,
+        })
+      );
+      expect(responses).toHaveLength(1);
+      expect(responses[0].error?.code).toBe(-32602);
+      expect(responses[0].error?.message).toContain('message');
+    });
+
+    it('should yield an error for batch requests', async () => {
+      const responses = await collect(
+        server.handleJsonRpcStream([
+          {
+            jsonrpc: '2.0',
+            method: 'message/stream',
+            params: { message: userMessage('a') },
+            id: 1,
+          },
+          {
+            jsonrpc: '2.0',
+            method: 'message/stream',
+            params: { message: userMessage('b') },
+            id: 2,
+          },
+        ])
+      );
+      expect(responses).toHaveLength(1);
+      expect(responses[0].error?.code).toBe(-32600);
+      expect(responses[0].error?.message).toContain('Batch');
     });
   });
 
@@ -386,8 +366,11 @@ describe('A2AServer', () => {
       const response = expectResponse(
         await server.handleJsonRpc({
           jsonrpc: '2.0',
-          method: 'tasks/pushNotification/create',
-          params: { taskId: 'task_1', config: { webhookUrl: 'http://localhost:8080/hook' } },
+          method: 'tasks/pushNotificationConfig/set',
+          params: {
+            taskId: 'task_1',
+            pushNotificationConfig: { url: 'http://localhost:8080/hook' },
+          },
           id: 1,
         })
       );
@@ -412,8 +395,8 @@ describe('A2AServer', () => {
       const response = expectResponse(
         await permissiveServer.handleJsonRpc({
           jsonrpc: '2.0',
-          method: 'tasks/pushNotification/create',
-          params: { taskId, config: { webhookUrl: 'http://localhost:8080/hook' } },
+          method: 'tasks/pushNotificationConfig/set',
+          params: { taskId, pushNotificationConfig: { url: 'http://localhost:8080/hook' } },
           id: 1,
         })
       );

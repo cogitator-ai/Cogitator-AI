@@ -4,10 +4,13 @@ import type {
   MemoryResult,
   QdrantAdapterConfig,
   EmbeddingAdapter,
+  EmbeddingDeleteFilter,
+  SearchFilter,
 } from '@cogitator-ai/types';
 import type { QdrantClient as RestClient, Schemas } from '@qdrant/js-client-rest';
 import { nanoid } from 'nanoid';
 import { createHash } from 'node:crypto';
+import { EMPTY_DELETE_FILTER_ERROR, hasDeleteCondition } from '../search/filter';
 
 const POINT_ID_NAMESPACE = Buffer.from('a165b27944774045b57221d3df84e73b', 'hex');
 
@@ -35,6 +38,33 @@ type QdrantClient = Pick<
 
 type QdrantFilter = Schemas['Filter'];
 type QdrantCondition = Schemas['Condition'];
+
+/** A search filter as a Qdrant payload filter, undefined when it has no condition. */
+function qdrantFilter(filter: SearchFilter | undefined): QdrantFilter | undefined {
+  if (!filter) return undefined;
+  const must: QdrantCondition[] = [];
+  if (filter.sourceType) {
+    must.push({ key: 'sourceType', match: { value: filter.sourceType } });
+  }
+  if (filter.threadId) {
+    must.push({ key: 'metadata.threadId', match: { value: filter.threadId } });
+  }
+  if (filter.agentId) {
+    must.push({ key: 'metadata.agentId', match: { value: filter.agentId } });
+  }
+  if (filter.userId) {
+    must.push({
+      should: [
+        { key: 'metadata.userId', match: { value: filter.userId } },
+        { is_empty: { key: 'metadata.userId' } },
+      ],
+    });
+  }
+  for (const [key, value] of Object.entries(filter.metadata ?? {})) {
+    must.push({ key: `metadata.${key}`, match: { value } });
+  }
+  return must.length > 0 ? { must } : undefined;
+}
 
 export class QdrantAdapter implements EmbeddingAdapter {
   private client: QdrantClient | null = null;
@@ -131,28 +161,7 @@ export class QdrantAdapter implements EmbeddingAdapter {
     }
 
     try {
-      const must: QdrantCondition[] = [];
-      if (options.filter) {
-        if (options.filter.sourceType) {
-          must.push({ key: 'sourceType', match: { value: options.filter.sourceType } });
-        }
-        if (options.filter.threadId) {
-          must.push({ key: 'metadata.threadId', match: { value: options.filter.threadId } });
-        }
-        if (options.filter.agentId) {
-          must.push({ key: 'metadata.agentId', match: { value: options.filter.agentId } });
-        }
-        if (options.filter.userId) {
-          must.push({
-            should: [
-              { key: 'metadata.userId', match: { value: options.filter.userId } },
-              { is_empty: { key: 'metadata.userId' } },
-            ],
-          });
-        }
-      }
-
-      const filter: QdrantFilter | undefined = must.length > 0 ? { must } : undefined;
+      const filter = qdrantFilter(options.filter);
       const { points } = await this.client.query(this.collection, {
         query: options.vector,
         limit: options.limit ?? 10,
@@ -203,6 +212,19 @@ export class QdrantAdapter implements EmbeddingAdapter {
         wait: true,
         filter: { must: [{ key: 'sourceId', match: { value: sourceId } }] },
       });
+      return this.success(undefined);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
+  async deleteByFilter(filter: EmbeddingDeleteFilter): Promise<MemoryResult<void>> {
+    const conditions = hasDeleteCondition(filter) ? qdrantFilter(filter) : undefined;
+    if (!conditions) return this.failure(EMPTY_DELETE_FILTER_ERROR);
+    if (!this.client) return this.failure('Not connected');
+
+    try {
+      await this.client.delete(this.collection, { wait: true, filter: conditions });
       return this.success(undefined);
     } catch (err) {
       return this.failure((err as Error).message);

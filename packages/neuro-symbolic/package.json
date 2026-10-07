@@ -8,27 +8,33 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     },
     "./logic": {
       "types": "./dist/logic/index.d.ts",
-      "import": "./dist/logic/index.js"
+      "import": "./dist/logic/index.js",
+      "default": "./dist/logic/index.js"
     },
     "./constraints": {
       "types": "./dist/constraints/index.d.ts",
-      "import": "./dist/constraints/index.js"
+      "import": "./dist/constraints/index.js",
+      "default": "./dist/constraints/index.js"
     },
     "./planning": {
       "types": "./dist/planning/index.d.ts",
-      "import": "./dist/planning/index.js"
+      "import": "./dist/planning/index.js",
+      "default": "./dist/planning/index.js"
     },
     "./knowledge-graph": {
       "types": "./dist/knowledge-graph/index.d.ts",
-      "import": "./dist/knowledge-graph/index.js"
+      "import": "./dist/knowledge-graph/index.js",
+      "default": "./dist/knowledge-graph/index.js"
     },
     "./tools": {
       "types": "./dist/tools/index.d.ts",
-      "import": "./dist/tools/index.js"
+      "import": "./dist/tools/index.js",
+      "default": "./dist/tools/index.js"
     }
   },
   "files": [

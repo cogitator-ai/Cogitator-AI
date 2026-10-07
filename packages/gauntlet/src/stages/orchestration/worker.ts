@@ -298,7 +298,7 @@ const workerFailures: StageDefinition = {
         throw new Error('Jobs were not retried once');
       if (
         !jobs.every((job) =>
-          job?.failedReason?.includes('Tools not registered on this worker: fact_check')
+          job?.failedReason?.includes('needs tools that are not registered here: fact_check')
         )
       ) {
         throw new Error('The failure does not name the missing tool');

@@ -3,14 +3,14 @@ import { lookup as dnsLookup } from 'node:dns';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { isIP, type LookupFunction } from 'node:net';
-import type { PushNotificationConfig, PushNotificationStore, A2AStreamEvent } from './types.js';
+import type { A2ATask, PushNotificationConfig, PushNotificationStore } from './types.js';
 
 export class InMemoryPushNotificationStore implements PushNotificationStore {
   private configs = new Map<string, Map<string, PushNotificationConfig>>();
 
   async create(taskId: string, config: PushNotificationConfig): Promise<PushNotificationConfig> {
     const id = config.id ?? `pnc_${randomUUID()}`;
-    const stored: PushNotificationConfig = { ...config, id, createdAt: new Date().toISOString() };
+    const stored: PushNotificationConfig = { ...config, id };
     if (!this.configs.has(taskId)) this.configs.set(taskId, new Map());
     this.configs.get(taskId)!.set(id, stored);
     return stored;
@@ -229,6 +229,24 @@ function postJson(
   });
 }
 
+/** Header carrying the config's `token` on every webhook call (A2A v0.3, section 9.5). */
+export const NOTIFICATION_TOKEN_HEADER = 'X-A2A-Notification-Token';
+
+/**
+ * The `Authorization` header for a webhook from the config's `authentication`: the credentials
+ * under the first scheme the server knows (`Bearer`, or `Basic` with base64 `user:password`).
+ */
+function authorizationHeader(config: PushNotificationConfig): string | undefined {
+  const auth = config.authentication;
+  if (!auth?.credentials) return undefined;
+  for (const scheme of auth.schemes) {
+    const normalized = scheme.toLowerCase();
+    if (normalized === 'bearer') return `Bearer ${auth.credentials}`;
+    if (normalized === 'basic') return `Basic ${auth.credentials}`;
+  }
+  return undefined;
+}
+
 export class PushNotificationSender {
   private store: PushNotificationStore;
   private allowPrivateUrls: boolean;
@@ -238,44 +256,35 @@ export class PushNotificationSender {
     this.allowPrivateUrls = allowPrivateUrls;
   }
 
-  async notify(taskId: string, event: A2AStreamEvent): Promise<void> {
-    const configs = await this.store.list(taskId);
+  /** POST the task, as the client sees it, to every webhook registered for it. */
+  async notify(task: A2ATask): Promise<void> {
+    const configs = await this.store.list(task.id);
     const results = await Promise.allSettled(
-      configs.map((config) => this.sendWebhook(config, event))
+      configs.map((config) => this.sendWebhook(config, task))
     );
     for (const result of results) {
       if (result.status === 'rejected') {
         process.stderr.write(
-          `[a2a] Webhook delivery failed for task ${taskId}: ${describeError(result.reason)}\n`
+          `[a2a] Webhook delivery failed for task ${task.id}: ${describeError(result.reason)}\n`
         );
       }
     }
   }
 
-  private async sendWebhook(config: PushNotificationConfig, event: A2AStreamEvent): Promise<void> {
+  private async sendWebhook(config: PushNotificationConfig, task: A2ATask): Promise<void> {
     if (!this.allowPrivateUrls) {
-      validateWebhookUrl(config.webhookUrl);
+      validateWebhookUrl(config.url);
     }
 
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-
-    if (config.authenticationInfo) {
-      const { scheme, credentials } = config.authenticationInfo;
-      if (scheme === 'bearer' && credentials.token) {
-        headers.Authorization = `Bearer ${credentials.token}`;
-      } else if (scheme === 'oauth2' && (credentials.accessToken ?? credentials.token)) {
-        headers.Authorization = `Bearer ${credentials.accessToken ?? credentials.token}`;
-      } else if (scheme === 'apiKey' && credentials.key) {
-        headers[credentials.headerName ?? 'X-API-Key'] = credentials.key;
-      } else if (scheme === 'basic' && credentials.username && credentials.password) {
-        headers.Authorization = `Basic ${Buffer.from(`${credentials.username}:${credentials.password}`).toString('base64')}`;
-      }
-    }
+    if (config.token) headers[NOTIFICATION_TOKEN_HEADER] = config.token;
+    const authorization = authorizationHeader(config);
+    if (authorization) headers.Authorization = authorization;
 
     const status = await postJson(
-      new URL(config.webhookUrl),
+      new URL(config.url),
       headers,
-      JSON.stringify(event),
+      JSON.stringify(task),
       this.allowPrivateUrls ? undefined : publicOnlyLookup
     );
 

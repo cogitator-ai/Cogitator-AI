@@ -1,4 +1,4 @@
-import { nanoid } from 'nanoid';
+import { chunkId } from './chunk-id.js';
 import type { Chunker, DocumentChunk } from '@cogitator-ai/types';
 
 const DEFAULT_SEPARATORS = ['\n\n', '\n', '. ', ' ', ''];
@@ -50,7 +50,7 @@ export class RecursiveChunker implements Chunker {
 
       const chunkEnd = pieces[j - 1]!.end;
       chunks.push({
-        id: nanoid(),
+        id: chunkId(documentId, chunks.length),
         documentId,
         content: text.slice(chunkStart, chunkEnd),
         startOffset: chunkStart,

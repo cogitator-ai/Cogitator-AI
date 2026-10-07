@@ -65,7 +65,15 @@ POST   /api/threads/:id/messages      - Add message to thread
 DELETE /api/threads/:id               - Delete thread
 ```
 
-The routes use `cogitator.getMemory()`, which connects the configured memory adapter on first use, so threads can be read on a fresh server before any agent has run. Only a `Cogitator` without `memory` configured answers `503 UNAVAILABLE`. Message `metadata` is stored on the memory entry.
+The routes use `cogitator.getMemory()`, which connects the configured memory adapter on first use, so threads can be read on a fresh server before any agent has run. Only a `Cogitator` without `memory` configured answers `503 UNAVAILABLE`. Messages take `role` `user` or `assistant` (more with `threadMessageRoles`), and `metadata` is stored on the memory entry.
+
+Request bodies go through the validators of `@cogitator-ai/server-shared` in a `preValidation` hook, before the JSON schema could coerce `input: 42` into `"42"`, so Fastify refuses exactly what the other adapters refuse, and the schemas document the bodies.
+
+- A run puts `context` into the system prompt, and the model reads a `system` thread message as operator instructions, so clients may set neither unless the server allows it: `acceptContext` lists the `context` keys clients may send (`true` accepts any key, for clients trusted like your own code), and `threadMessageRoles` the roles of `POST /threads/:id/messages` (`user` and `assistant` by default). Anything else is refused with `400 INVALID_INPUT`, over HTTP and WebSocket alike.
+- A `POST` body that is not JSON (`text/plain`, a form) is refused with `415 UNSUPPORTED_MEDIA_TYPE` before it is parsed: browsers send those across origins without a CORS preflight.
+- `POST /agents/:name/run` and `/resume` answer `toAgentRunResponse()` of `@cogitator-ai/server-shared`: `output`, `threadId`, `usage`, `toolCalls` (`{ id, name, arguments }`), `status` and `traceId`, plus `reasoning`, `pendingApprovals`, `structured`, `structuredError`, `truncated`, `blocked` and `iterationLimitReached` when they apply. The WebSocket `complete` event carries the same object, never the system prompt, the history, trace spans or a paused run's checkpoint.
+- The `start` event of an agent stream names the run's thread (the request's `threadId`, or a new one), and `finish` repeats it with the run's outcome, so a client that sent no thread continues the conversation with this one.
+- Swarm routes close each swarm they build once its run ends, so a distributed swarm leaves no Redis connections behind and its state expires. `GET /swarms` lists every agent, the router and pipeline stages included.
 
 ### Workflows
 
@@ -75,7 +83,7 @@ POST   /api/workflows/:name/run       - Run workflow
 POST   /api/workflows/:name/stream    - Stream workflow events
 ```
 
-Options are limited to `maxConcurrency`/`maxIterations` (positive integers) and `checkpoint`. A failed workflow returns `500 WORKFLOW_FAILED` (the stream ends with an `error` event instead of `workflow_completed`). Disconnecting aborts the workflow. Stream events are `{ type: 'workflow', event, data }` with `event` one of `node_started`, `node_completed`, `node_error`, `node_progress`, `workflow_completed`.
+Options are limited to `maxConcurrency`/`maxIterations` (positive integers), and `checkpoint: true` is refused, since the server keeps no checkpoint store to resume from. A failed workflow returns `500 WORKFLOW_FAILED` (the stream ends with an `error` event instead of `workflow_completed`). Disconnecting aborts the workflow. Stream events are `{ type: 'workflow', event, data }` with `event` one of `node_started`, `node_completed`, `node_error`, `node_progress`, `workflow_completed`.
 
 ### Swarms
 
@@ -362,6 +370,8 @@ interface CogitatorPluginOptions {
   swagger?: SwaggerConfig;
   websocket?: WebSocketConfig;
   sseHeartbeatMs?: number; // Default: 5000, 0 turns SSE heartbeats off
+  acceptContext?: boolean | string[]; // context keys clients may send: none by default, a list, or true for any
+  threadMessageRoles?: ('user' | 'assistant' | 'system')[]; // roles of POST /threads/:id/messages, default user and assistant
 }
 ```
 
@@ -452,7 +462,7 @@ import {
 } from '@cogitator-ai/fastify';
 ```
 
-`AgentResumeRequestSchema` requires a non-blank `threadId` and validates each decision as `{ approved: boolean, reason?: string }`. `AgentRunRequestSchema` and `SwarmRunRequestSchema` require a non-blank `input` (the swarm `timeout` must be greater than 0), `AddMessageRequestSchema` requires a non-empty `content` and a `user`/`assistant`/`system` role, and `WorkflowRunRequestSchema.options` only allows `maxConcurrency`/`maxIterations` (integers ≥ 1) and `checkpoint` (`additionalProperties: false`).
+`AgentResumeRequestSchema` requires a non-blank `threadId` and validates each decision as `{ approved: boolean, reason?: string }`. `AgentRunRequestSchema` and `SwarmRunRequestSchema` require a non-blank `input` (the swarm `timeout` must be greater than 0), `AddMessageRequestSchema` requires a non-blank `content` and a `user`/`assistant`/`system` role (the routes accept `system` only with `threadMessageRoles`), and `WorkflowRunRequestSchema.options` only allows `maxConcurrency`/`maxIterations` (integers ≥ 1) and `checkpoint: false` (`additionalProperties: false`). The routes validate bodies with the shared validators first, so the schemas describe what they accept.
 
 ## Documentation
 

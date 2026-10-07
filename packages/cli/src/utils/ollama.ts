@@ -1,3 +1,5 @@
+import { resolveOllamaHost } from '@cogitator-ai/config';
+
 export const DEFAULT_OLLAMA_URL = 'http://localhost:11434';
 
 export interface OllamaModelInfo {
@@ -17,14 +19,21 @@ export interface OllamaRequestOptions {
   timeoutMs?: number;
 }
 
+/**
+ * The Ollama URL to use: `configured` (a flag or cogitator.yml), else
+ * `OLLAMA_BASE_URL`, `OLLAMA_URL` or `OLLAMA_HOST`, each read the way Ollama
+ * reads `OLLAMA_HOST`, the same way `loadConfig` reads them.
+ */
 export function resolveOllamaUrl(
   env: Record<string, string | undefined> = process.env,
   configured?: string
 ): string {
-  const raw = configured?.trim() || env.OLLAMA_URL?.trim() || env.OLLAMA_HOST?.trim();
-  if (!raw) return DEFAULT_OLLAMA_URL;
-  const withScheme = /^https?:\/\//i.test(raw) ? raw : `http://${raw}`;
-  return withScheme.replace(/\/+$/, '');
+  const candidates = [configured, env.OLLAMA_BASE_URL, env.OLLAMA_URL, env.OLLAMA_HOST];
+  for (const candidate of candidates) {
+    const url = resolveOllamaHost(candidate);
+    if (url) return url;
+  }
+  return DEFAULT_OLLAMA_URL;
 }
 
 function buildHeaders(apiKey: string | undefined, json: boolean): Record<string, string> {

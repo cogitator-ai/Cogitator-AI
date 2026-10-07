@@ -1,9 +1,10 @@
 /**
- * @cogitator-ai/openai-compat - OpenAI Assistants API Compatibility
+ * @cogitator-ai/openai-compat - OpenAI API Compatibility
  *
  * This package provides:
- * - OpenAI SDK adapter: Use OpenAI SDK to interact with Cogitator
- * - REST API server: Expose Cogitator as OpenAI-compatible API
+ * - REST API server: registered Cogitator agents over the Chat Completions and Responses APIs
+ *   (the agent is the `model`), plus the deprecated Assistants API
+ * - OpenAI SDK adapter: the Assistants API implementation behind the server
  */
 
 export { OpenAIServer, createOpenAIServer } from './server/api-server';
@@ -20,6 +21,17 @@ export type {
   OpenAIAdapterOptions,
 } from './client/openai-adapter';
 export { InvalidRequestError } from './client/errors';
+export { AgentTurnRunner, renderConversation } from './server/agents/agent-turn';
+export type {
+  AgentTurnRequest,
+  AgentTurnResult,
+  AgentTurnRunnerOptions,
+  AgentTurnUsage,
+  ClientFunction,
+  ClientFunctionCall,
+  ConversationItem,
+  TurnToolChoice,
+} from './server/agents/agent-turn';
 export { ThreadManager } from './client/thread-manager';
 export type {
   StoredThread,
@@ -55,6 +67,7 @@ export type {
   ToolResources,
   CreateThreadRequest,
   Message,
+  MessageIncompleteReason,
   MessageContent,
   TextContent,
   TextAnnotation,

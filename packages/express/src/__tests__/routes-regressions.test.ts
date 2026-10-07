@@ -391,16 +391,16 @@ describe('workflow routes', () => {
   });
 
   it.each([
-    ['string input', { input: 'x' }, 'Field input must be an object'],
+    ['string input', { input: 'x' }, 'Field "input" must be an object'],
     [
       'negative concurrency',
       { options: { maxConcurrency: -1 } },
-      'options.maxConcurrency must be a positive integer',
+      'Field "options.maxConcurrency" must be a positive integer',
     ],
     [
-      'non-boolean checkpoint',
-      { options: { checkpoint: 'yes' } },
-      'options.checkpoint must be a boolean',
+      'a checkpoint the server cannot keep',
+      { options: { checkpoint: true } },
+      'Field "options.checkpoint" is not supported: the server keeps no checkpoint store',
     ],
   ])('rejects %s with 400', async (_name, body, message) => {
     const { base } = await start(async () => runResult(), { workflows });

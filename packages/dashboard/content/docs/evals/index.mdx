@@ -97,6 +97,10 @@ const suite = new EvalSuite({
 
 Errors and timeouts are retried up to `retries` times. If every attempt fails, the case result has an empty `output` and an `error` message (for example `Timed out after 30000ms`), so a failed run is never mistaken for an empty answer. Metrics still score that empty output.
 
+A timed-out attempt is cancelled, not abandoned: the suite aborts the attempt's `AbortSignal`, which stops an agent target's run, and waits for the attempt to stop (at most another `timeout`) before it retries. So a cancelled attempt does not keep running and paying in the background, attempts of one case never overlap, and `concurrency` holds. A `fn` target gets the signal as `context.signal` and should pass it on to its model call.
+
+A failure never drops a case: a metric that throws or returns a score that is not a finite number (such as NaN) scores 0 for that case with the reason in `score.error`, and an `onProgress` callback that throws is reported as a process warning instead of crashing the run.
+
 ### Target
 
 The target defines what you're evaluating. Use `fn` for a simple function, or `agent` + `cogitator` for a full Cogitator agent:
@@ -106,7 +110,7 @@ import { Agent, Cogitator } from '@cogitator-ai/core';
 import type { EvalTarget } from '@cogitator-ai/evals';
 
 const fnTarget: EvalTarget = {
-  fn: async (input: string) => myApp.answer(input),
+  fn: async (input, { signal }) => myApp.answer(input, { signal }),
 };
 
 const cogitator = new Cogitator();
@@ -120,7 +124,7 @@ const agentTarget: EvalTarget = {
 };
 ```
 
-A target has either `fn` or both `agent` and `cogitator`; anything else throws when the suite is created. An agent target runs `cogitator.run(agent, { input, context })` with the case's `context`, and records the run's `usage` (tokens, cost) and `toolCalls` on the case result — that is what the `cost()` and `tokenUsage()` metrics read. A `fn` target only records the duration.
+A target has either `fn` or both `agent` and `cogitator`, anything else throws when the suite is created. An agent target runs `cogitator.run(agent, { input, context, signal })` with the case's `context`, and records the run's `usage` (tokens, cost) and `toolCalls` on the case result, which is what the `cost()` and `tokenUsage()` metrics read. The usage is summed over every attempt that reported one, so an attempt that finished after it timed out still counts, and `attempts` says how many the case took. A `fn` target is called as `fn(input, { signal, case, attempt })` and only records the duration.
 
 ### Results
 
@@ -132,12 +136,14 @@ const result = await suite.run();
 result.results; // per-case { case, output, duration, error?, usage?, toolCalls?, scores }
 result.aggregated; // { exactMatch: { mean, median, p95, ... }, ... }
 result.assertions; // [{ name, passed, message }, ...]
-result.stats; // { total, duration (ms), cost (sum of case usage.cost) }
+result.stats; // { total, errors, metricErrors, duration (ms), cost, targetCost, judgeCost }
 
 result.report('console');
 result.report(['json', 'csv'], { path: './eval-report' });
 result.saveBaseline('./baseline.json');
 ```
+
+`stats.errors` counts cases whose every attempt failed, `stats.metricErrors` the metric scores that failed and count as 0. `stats.cost` is what the run spent, `targetCost` (the target, over all attempts) plus `judgeCost` (the LLM judge), so a budget assertion sees the judge too.
 
 Results keep the dataset order regardless of concurrency. See [Reporters](/docs/evals/reporters) and [baselines](/docs/evals/assertions#noregression).
 
@@ -148,6 +154,16 @@ const smoke = await suite.run({ maxCases: 5 });
 ```
 
 Only the first `maxCases` cases run; `results`, `aggregated`, `assertions`, `stats.total` and the `onProgress` totals cover just those cases. `maxCases` must be a positive integer, otherwise `run()` throws.
+
+To cancel a run, pass a `signal`:
+
+```typescript
+const controller = new AbortController();
+const running = suite.run({ signal: controller.signal });
+controller.abort();
+```
+
+The attempts in flight are aborted, no further case starts, and `run()` rejects with the signal's reason.
 
 ## EvalBuilder
 

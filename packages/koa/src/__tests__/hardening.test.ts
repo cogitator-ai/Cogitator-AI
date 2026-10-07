@@ -11,6 +11,7 @@ import type { CogitatorAppOptions, CogitatorState } from '../types.js';
 const workflowExecute = vi.fn();
 const swarmRun = vi.fn();
 const swarmAbort = vi.fn();
+const swarmClose = vi.fn(async () => undefined);
 
 vi.mock('@cogitator-ai/workflows', () => ({
   WorkflowExecutor: class {
@@ -25,6 +26,7 @@ vi.mock('@cogitator-ai/swarms', () => ({
     strategyType = 'round-robin';
     run = swarmRun;
     abort = swarmAbort;
+    close = swarmClose;
     getResourceUsage = () => ({
       totalTokens: 7,
       totalCost: 0.5,
@@ -40,6 +42,7 @@ function runResult() {
     threadId: 'thread-1',
     usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
     toolCalls: [],
+    trace: { traceId: 'trace-1', spans: [] },
   };
 }
 
@@ -241,7 +244,7 @@ describe('request validation', () => {
 
     const bad = await postJson(app, '/threads/t1/messages', { role: 'tool', content: 'x' });
     expect(bad.status).toBe(400);
-    expect(bad.body.error.message).toBe('Field "role" must be one of: user, assistant, system');
+    expect(bad.body.error.message).toBe('Field "role" must be one of: user, assistant');
 
     const ok = await postJson(app, '/threads/t1/messages', {
       role: 'user',

@@ -462,11 +462,11 @@ describe('AnthropicBackend', () => {
       const testCases = [
         { reason: 'end_turn', expected: 'stop' },
         { reason: 'stop_sequence', expected: 'stop' },
-        { reason: 'tool_use', expected: 'tool_calls' },
+        { reason: 'tool_use', expected: 'stop' },
         { reason: 'max_tokens', expected: 'length' },
         { reason: 'model_context_window_exceeded', expected: 'length' },
         { reason: 'pause_turn', expected: 'length' },
-        { reason: 'refusal', expected: 'error' },
+        { reason: 'refusal', expected: 'refusal' },
       ];
 
       for (const { reason, expected } of testCases) {
@@ -1108,7 +1108,7 @@ describe('AnthropicBackend', () => {
     });
 
     it.each([
-      ['refusal', 'error'],
+      ['refusal', 'refusal'],
       ['model_context_window_exceeded', 'length'],
       ['pause_turn', 'length'],
     ])('maps streamed stop reason %s to %s', async (stopReason, expected) => {
@@ -1264,7 +1264,7 @@ describe('AnthropicBackend', () => {
           responseFormat: { type: 'json_schema', jsonSchema: personSchema },
         });
 
-        expect(response.finishReason).toBe('error');
+        expect(response.finishReason).toBe('refusal');
       });
 
       it('streams structured output as text deltas', async () => {
@@ -1495,6 +1495,172 @@ describe('AnthropicBackend', () => {
         expect(params.tool_choice).toEqual({ type: 'auto' });
         expect(params.system).toBe('You must respond by calling the "tool1" tool.');
       });
+    });
+  });
+
+  describe('prompt cache usage', () => {
+    it('reports the cache writes made with the 1-hour TTL', async () => {
+      mockCreate.mockResolvedValueOnce({
+        id: 'msg_1',
+        content: [{ type: 'text', text: 'OK' }],
+        stop_reason: 'end_turn',
+        usage: {
+          input_tokens: 10,
+          output_tokens: 2,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 500,
+          cache_creation: { ephemeral_5m_input_tokens: 100, ephemeral_1h_input_tokens: 400 },
+        },
+      });
+
+      const response = await backend.chat({
+        model: 'claude-sonnet-5-5',
+        messages: [{ role: 'user', content: 'x' }],
+        cache: { ttl: '1h' },
+      });
+
+      expect(response.usage).toMatchObject({
+        inputTokens: 510,
+        cacheWriteTokens: 500,
+        cacheWrite1hTokens: 400,
+      });
+    });
+
+    it('leaves the 1-hour count out when nothing was written for an hour', async () => {
+      mockCreate.mockResolvedValueOnce({
+        id: 'msg_1',
+        content: [{ type: 'text', text: 'OK' }],
+        stop_reason: 'end_turn',
+        usage: {
+          input_tokens: 10,
+          output_tokens: 2,
+          cache_creation_input_tokens: 100,
+          cache_creation: { ephemeral_5m_input_tokens: 100, ephemeral_1h_input_tokens: 0 },
+        },
+      });
+
+      const response = await backend.chat({
+        model: 'claude-sonnet-5-5',
+        messages: [{ role: 'user', content: 'x' }],
+      });
+
+      expect(response.usage).not.toHaveProperty('cacheWrite1hTokens');
+    });
+  });
+
+  describe('turn outcome', () => {
+    const purge = {
+      name: 'purge',
+      description: 'Delete old records',
+      parameters: {
+        type: 'object' as const,
+        properties: { olderThanDays: { type: 'number' } },
+      },
+    };
+    const toolStream = (partialJson: string, stopReason: string) =>
+      (async function* () {
+        yield { type: 'message_start', message: { usage: { input_tokens: 1 } } };
+        yield {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: 'toolu_1', name: 'purge' },
+        };
+        yield {
+          type: 'content_block_delta',
+          delta: { type: 'input_json_delta', partial_json: partialJson },
+        };
+        yield { type: 'content_block_stop' };
+        yield {
+          type: 'message_delta',
+          delta: { stop_reason: stopReason },
+          usage: { output_tokens: 1 },
+        };
+        yield { type: 'message_stop' };
+      })();
+    const collect = async () => {
+      const finishReasons: unknown[] = [];
+      const toolCalls: unknown[] = [];
+      for await (const chunk of backend.chatStream({
+        model: 'claude-sonnet-5-5',
+        messages: [{ role: 'user', content: 'Clean up' }],
+        tools: [purge],
+      })) {
+        if (chunk.finishReason) finishReasons.push(chunk.finishReason);
+        if (chunk.delta.toolCalls) toolCalls.push(...chunk.delta.toolCalls);
+      }
+      return { finishReasons, toolCalls };
+    };
+
+    it('streams a turn cut at max_tokens inside a tool call as truncated, without the call', async () => {
+      mockStream.mockReturnValueOnce(toolStream('{"olderThanDays": 3', 'max_tokens'));
+
+      const { finishReasons, toolCalls } = await collect();
+
+      expect(finishReasons).toEqual(['length']);
+      expect(toolCalls).toEqual([]);
+    });
+
+    it('fails a finished turn whose streamed tool input is not valid JSON', async () => {
+      mockStream.mockReturnValueOnce(toolStream('{"olderThanDays": 3', 'tool_use'));
+
+      await expect(collect()).rejects.toMatchObject({ code: 'LLM_INVALID_RESPONSE' });
+    });
+
+    it('drops the tool call of a turn cut at max_tokens', async () => {
+      mockCreate.mockResolvedValueOnce({
+        id: 'msg_1',
+        content: [{ type: 'tool_use', id: 'toolu_1', name: 'purge', input: {} }],
+        stop_reason: 'max_tokens',
+        usage: { input_tokens: 1, output_tokens: 1 },
+      });
+
+      const response = await backend.chat({
+        model: 'claude-sonnet-5-5',
+        messages: [{ role: 'user', content: 'Clean up' }],
+        tools: [purge],
+      });
+
+      expect(response.finishReason).toBe('length');
+      expect(response.toolCalls).toBeUndefined();
+    });
+
+    it('reports a json_schema answer cut at max_tokens as truncated', async () => {
+      mockCreate.mockResolvedValueOnce({
+        id: 'msg_1',
+        content: [{ type: 'tool_use', id: 'toolu_1', name: '__json_response', input: {} }],
+        stop_reason: 'max_tokens',
+        usage: { input_tokens: 1, output_tokens: 1 },
+      });
+
+      const response = await backend.chat({
+        model: 'claude-sonnet-4-20250514',
+        messages: [{ role: 'user', content: 'Person?' }],
+        responseFormat: {
+          type: 'json_schema',
+          jsonSchema: { name: 'person', schema: { type: 'object', properties: {} } },
+        },
+      });
+
+      expect(response.finishReason).toBe('length');
+    });
+
+    it.each([
+      ['refusal', 'refusal'],
+      ['content_filtered', 'content_filter'],
+      ['guardrail_intervened', 'content_filter'],
+    ])('reports stop reason %s as %s', async (stopReason, expected) => {
+      mockCreate.mockResolvedValueOnce({
+        id: 'msg_1',
+        content: [],
+        stop_reason: stopReason,
+        usage: { input_tokens: 1, output_tokens: 0 },
+      });
+
+      const response = await backend.chat({
+        model: 'claude-sonnet-5-5',
+        messages: [{ role: 'user', content: 'x' }],
+      });
+
+      expect(response.finishReason).toBe(expected);
     });
   });
 });

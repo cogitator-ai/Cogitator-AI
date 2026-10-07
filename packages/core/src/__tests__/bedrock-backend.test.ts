@@ -425,13 +425,13 @@ describe('BedrockBackend', () => {
     it('maps stop reasons correctly', async () => {
       const cases = [
         { stopReason: 'end_turn', expected: 'stop' },
-        { stopReason: 'tool_use', expected: 'tool_calls' },
+        { stopReason: 'tool_use', expected: 'stop' },
         { stopReason: 'max_tokens', expected: 'length' },
         { stopReason: 'stop_sequence', expected: 'stop' },
         { stopReason: 'model_context_window_exceeded', expected: 'length' },
-        { stopReason: 'guardrail_intervened', expected: 'error' },
-        { stopReason: 'content_filtered', expected: 'error' },
-        { stopReason: 'refusal', expected: 'error' },
+        { stopReason: 'guardrail_intervened', expected: 'content_filter' },
+        { stopReason: 'content_filtered', expected: 'content_filter' },
+        { stopReason: 'refusal', expected: 'refusal' },
         { stopReason: 'something_else', expected: 'stop' },
       ];
 
@@ -856,6 +856,152 @@ describe('BedrockBackend', () => {
         });
         expect(content).toBe('{"name":"J"}');
       });
+    });
+  });
+
+  describe('turn outcome', () => {
+    function toolStream(input: string, stopReason: string) {
+      return (async function* () {
+        yield {
+          contentBlockStart: {
+            contentBlockIndex: 0,
+            start: { toolUse: { toolUseId: 't1', name: 'purge' } },
+          },
+        };
+        yield { contentBlockDelta: { contentBlockIndex: 0, delta: { toolUse: { input } } } };
+        yield { contentBlockStop: { contentBlockIndex: 0 } };
+        yield { messageStop: { stopReason } };
+        yield { metadata: { usage: { inputTokens: 1, outputTokens: 1 } } };
+      })();
+    }
+    const collect = async () => {
+      const finishReasons: unknown[] = [];
+      const toolCalls: unknown[] = [];
+      for await (const chunk of backend.chatStream({
+        model: 'anthropic.claude-3-sonnet-20240229-v1:0',
+        messages: [{ role: 'user', content: 'Clean up' }],
+      })) {
+        if (chunk.finishReason) finishReasons.push(chunk.finishReason);
+        if (chunk.delta.toolCalls) toolCalls.push(...chunk.delta.toolCalls);
+      }
+      return { finishReasons, toolCalls };
+    };
+
+    it('streams a turn cut at max_tokens inside a tool call as truncated, without the call', async () => {
+      mockSend.mockResolvedValueOnce({ stream: toolStream('{"olderThanDays": 3', 'max_tokens') });
+
+      const { finishReasons, toolCalls } = await collect();
+
+      expect(finishReasons).toEqual(['length']);
+      expect(toolCalls).toEqual([]);
+    });
+
+    it('fails a finished turn whose streamed tool input is not valid JSON', async () => {
+      mockSend.mockResolvedValueOnce({ stream: toolStream('{"olderThanDays": 3', 'tool_use') });
+
+      await expect(collect()).rejects.toMatchObject({ code: 'LLM_INVALID_RESPONSE' });
+    });
+
+    it('drops the tool call of a turn cut at max_tokens', async () => {
+      mockSend.mockResolvedValueOnce({
+        output: {
+          message: { content: [{ toolUse: { toolUseId: 't1', name: 'purge', input: {} } }] },
+        },
+        stopReason: 'max_tokens',
+        usage: {},
+      });
+
+      const response = await backend.chat({
+        model: 'anthropic.claude-3-sonnet-20240229-v1:0',
+        messages: [{ role: 'user', content: 'Clean up' }],
+      });
+
+      expect(response.finishReason).toBe('length');
+      expect(response.toolCalls).toBeUndefined();
+    });
+  });
+
+  describe('error classification', () => {
+    function awsError(name: string, message: string, httpStatusCode?: number) {
+      const error = new Error(message) as Error & { $metadata?: { httpStatusCode?: number } };
+      error.name = name;
+      if (httpStatusCode !== undefined) error.$metadata = { httpStatusCode };
+      return error;
+    }
+    const fail = async (error: Error) => {
+      mockSend.mockRejectedValueOnce(error);
+      return backend
+        .chat({
+          model: 'anthropic.claude-3-sonnet-20240229-v1:0',
+          messages: [{ role: 'user', content: 'x' }],
+        })
+        .catch((e: unknown) => e);
+    };
+
+    it('reports an input that is too long as context length exceeded, not retryable', async () => {
+      const error = await fail(
+        awsError('ValidationException', 'Input is too long for requested model.', 400)
+      );
+
+      expect(error).toMatchObject({ code: 'LLM_CONTEXT_LENGTH_EXCEEDED', retryable: false });
+    });
+
+    it('keeps a validation error whose text contains "rate" a client error', async () => {
+      const error = await fail(
+        awsError('ValidationException', 'Messages must separate user and assistant turns.', 400)
+      );
+
+      expect(error).toMatchObject({ code: 'VALIDATION_ERROR', retryable: false });
+      expect((error as Error).message).toContain('separate user and assistant');
+    });
+
+    it('does not retry a denied access', async () => {
+      const error = await fail(
+        awsError(
+          'AccessDeniedException',
+          "You don't have access to the model with the specified model ID.",
+          403
+        )
+      );
+
+      expect(error).toMatchObject({ code: 'LLM_UNAVAILABLE', retryable: false });
+    });
+
+    it('retries throttling as a rate limit', async () => {
+      const error = await fail(awsError('ThrottlingException', 'Too many requests.', 429));
+
+      expect(error).toMatchObject({ code: 'LLM_RATE_LIMITED', retryable: true });
+    });
+
+    it('retries a model timeout', async () => {
+      const error = await fail(awsError('ModelTimeoutException', 'Model timed out.', 408));
+
+      expect(error).toMatchObject({ retryable: true });
+    });
+
+    it('classifies an unknown error by its HTTP status', async () => {
+      const error = await fail(awsError('SomethingNew', 'Not available right now.', 503));
+
+      expect(error).toMatchObject({ code: 'LLM_UNAVAILABLE', retryable: true });
+    });
+
+    it('classifies an error raised while reading the stream by its name', async () => {
+      async function* failing() {
+        yield { contentBlockDelta: { contentBlockIndex: 0, delta: { text: 'Hi' } } };
+        throw awsError('ValidationException', 'Input is too long for requested model.');
+      }
+      mockSend.mockResolvedValueOnce({ stream: failing() });
+
+      const error = await (async () => {
+        for await (const _ of backend.chatStream({
+          model: 'anthropic.claude-3-sonnet-20240229-v1:0',
+          messages: [{ role: 'user', content: 'x' }],
+        })) {
+          /* consume stream */
+        }
+      })().catch((e: unknown) => e);
+
+      expect(error).toMatchObject({ code: 'LLM_CONTEXT_LENGTH_EXCEEDED', retryable: false });
     });
   });
 });

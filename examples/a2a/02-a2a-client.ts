@@ -1,5 +1,5 @@
 import { createCogitator, DEFAULT_MODEL, header, section } from '../_shared/setup.js';
-import { A2AClient } from '@cogitator-ai/a2a';
+import { A2AClient, messageText } from '@cogitator-ai/a2a';
 import { Agent } from '@cogitator-ai/core';
 
 const SERVER_URL = 'http://localhost:3100';
@@ -16,26 +16,29 @@ async function main() {
   console.log('Streaming:', card.capabilities.streaming);
 
   section('2. Send a message');
-  const task = await client.sendMessage({
+  const sent = await client.sendMessage({
     role: 'user',
     parts: [
       {
-        type: 'text',
+        kind: 'text',
         text: 'Rewrite this sentence to be more concise: "In my personal opinion, I think that the weather is very extremely cold today."',
       },
     ],
   });
+  if (sent.kind !== 'task') {
+    console.log('Direct reply:', messageText(sent));
+    return;
+  }
+  const task = sent;
   console.log('Task ID:', task.id);
   console.log('Status:', task.status.state);
-  if (task.artifacts.length > 0) {
-    const text = task.artifacts[0].parts.find((p) => p.type === 'text');
-    if (text?.type === 'text') console.log('Response:', text.text);
-  }
+  const reply = task.artifacts?.[0]?.parts.find((p) => p.kind === 'text');
+  if (reply?.kind === 'text') console.log('Response:', reply.text);
 
   section('3. Get task by ID');
   const fetched = await client.getTask(task.id);
   console.log('Fetched status:', fetched.status.state);
-  console.log('History length:', fetched.history.length);
+  console.log('History length:', fetched.history?.length ?? 0);
 
   section('4. List all tasks');
   const tasks = await client.listTasks();

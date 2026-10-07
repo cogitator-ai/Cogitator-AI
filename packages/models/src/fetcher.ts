@@ -211,6 +211,9 @@ function calculatePricing(entry: LiteLLMModelEntry): ModelPricing {
     ...(entry.cache_creation_input_token_cost !== undefined && {
       inputCacheWrite: perMillion(entry.cache_creation_input_token_cost),
     }),
+    ...(entry.cache_creation_input_token_cost_above_1hr !== undefined && {
+      inputCacheWrite1h: perMillion(entry.cache_creation_input_token_cost_above_1hr),
+    }),
   };
 }
 

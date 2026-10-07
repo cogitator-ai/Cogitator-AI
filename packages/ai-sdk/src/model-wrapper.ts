@@ -23,7 +23,7 @@ import type {
 } from '@cogitator-ai/types';
 import { LLMError } from '@cogitator-ai/core';
 import { ErrorCode } from '@cogitator-ai/types';
-import { isRecord, type JSONObject, type JSONValue } from './json.js';
+import { isRecord, toJSONValue, type JSONObject, type JSONValue } from './json.js';
 import type { AISDKLanguageModel } from './types.js';
 import type {
   LanguageModelV1FunctionToolCall,
@@ -32,6 +32,7 @@ import type {
   LanguageModelV1Prompt,
   LanguageModelV1StreamPart,
   LanguageModelV1TextPart,
+  LanguageModelV1ToolResultPart,
   LanguageModelV1Usage,
 } from './v1-types.js';
 
@@ -58,20 +59,86 @@ interface ToolCallPart {
   providerOptions?: Record<string, JSONObject>;
 }
 
-interface ToolResultPart {
+interface ReasoningPart {
+  type: 'reasoning';
+  text: string;
+  providerOptions?: Record<string, JSONObject>;
+}
+
+type ToolOutput<TMedia> =
+  | { type: 'text'; value: string }
+  | { type: 'json'; value: JSONValue }
+  | { type: 'error-text'; value: string }
+  | { type: 'content'; value: Array<TextPart | TMedia> };
+
+interface ToolResultPart<TMedia> {
   type: 'tool-result';
   toolCallId: string;
   toolName: string;
-  output: { type: 'text'; value: string } | { type: 'json'; value: JSONValue };
+  output: ToolOutput<TMedia>;
 }
 
-type ModernMessage<TData> =
+type ModernMessage<TData, TMedia> =
   | { role: 'system'; content: string }
   | { role: 'user'; content: Array<TextPart | FilePart<TData>> }
-  | { role: 'assistant'; content: Array<TextPart | ToolCallPart> }
-  | { role: 'tool'; content: ToolResultPart[] };
+  | { role: 'assistant'; content: Array<TextPart | ReasoningPart | ToolCallPart> }
+  | { role: 'tool'; content: ToolResultPart<TMedia>[] };
 
 type V4FileData = { type: 'url'; url: URL } | { type: 'data'; data: string };
+
+/** An image of a tool result in the `content` output of a v2 prompt */
+type V2ToolMedia = { type: 'media'; data: string; mediaType: string };
+/** An image of a tool result in the `content` output of a v3 prompt */
+type V3ToolMedia =
+  { type: 'image-data'; data: string; mediaType: string } | { type: 'image-url'; url: string };
+/** An image of a tool result in the `content` output of a v4 prompt */
+type V4ToolMedia = { type: 'file'; data: V4FileData; mediaType: string };
+
+/** How a prompt of one specification version carries images: in user messages and tool results */
+interface PromptMedia<TData, TMedia> {
+  fileData(source: ImageSource): TData;
+  toolMedia(source: ImageSource): TMedia | undefined;
+}
+
+const V2_MEDIA: PromptMedia<URL | string, V2ToolMedia> = {
+  fileData: (source) => (source.kind === 'url' ? source.url : source.data),
+  toolMedia: (source) =>
+    source.kind === 'data'
+      ? { type: 'media', data: source.data, mediaType: source.mediaType }
+      : undefined,
+};
+
+const V3_MEDIA: PromptMedia<URL | string, V3ToolMedia> = {
+  fileData: V2_MEDIA.fileData,
+  toolMedia: (source) =>
+    source.kind === 'data'
+      ? { type: 'image-data', data: source.data, mediaType: source.mediaType }
+      : { type: 'image-url', url: source.url.href },
+};
+
+const V4_MEDIA: PromptMedia<V4FileData, V4ToolMedia> = {
+  fileData: (source) =>
+    source.kind === 'url' ? { type: 'url', url: source.url } : { type: 'data', data: source.data },
+  toolMedia: (source) => ({
+    type: 'file',
+    data: V4_MEDIA.fileData(source),
+    mediaType: source.kind === 'data' ? source.mediaType : 'image',
+  }),
+};
+
+/**
+ * Reasoning an AI SDK model returned before a tool call, kept in `ToolCall.replay.precedingItems`
+ * so it is sent back with the call (Anthropic needs its thinking blocks, with their signatures,
+ * before a `tool_use` it answers). Other backends skip these items.
+ */
+type AISDKReasoningItem =
+  | {
+      type: 'ai-sdk-reasoning';
+      text: string;
+      providerOptions?: Record<string, JSONObject>;
+      signature?: string;
+    }
+  | { type: 'ai-sdk-redacted-reasoning'; data: string };
 
 interface ModernContentPart {
   type: string;
@@ -81,6 +148,158 @@ interface ModernContentPart {
   input?: string;
   providerExecuted?: boolean;
   providerMetadata?: unknown;
+}
+
+function reasoningItemsOf(call: ToolCall): AISDKReasoningItem[] {
+  const items: AISDKReasoningItem[] = [];
+  for (const item of call.replay?.precedingItems ?? []) {
+    if (item.type === 'ai-sdk-reasoning' && typeof item.text === 'string') {
+      items.push({
+        type: 'ai-sdk-reasoning',
+        text: item.text,
+        ...(isProviderOptions(item.providerOptions) && { providerOptions: item.providerOptions }),
+        ...(typeof item.signature === 'string' && { signature: item.signature }),
+      });
+    } else if (item.type === 'ai-sdk-redacted-reasoning' && typeof item.data === 'string') {
+      items.push({ type: 'ai-sdk-redacted-reasoning', data: item.data });
+    }
+  }
+  return items;
+}
+
+function isProviderOptions(value: unknown): value is Record<string, JSONObject> {
+  return isRecord(value) && Object.values(value).every(isRecord);
+}
+
+/** Provider metadata as the provider options it is sent back as, keeping only JSON objects. */
+function providerOptionsOf(metadata: unknown): Record<string, JSONObject> | undefined {
+  if (!isRecord(metadata)) return undefined;
+  const options: Record<string, JSONObject> = {};
+  for (const [key, value] of Object.entries(metadata)) {
+    const json = toJSONValue(value);
+    if (isRecord(json)) options[key] = json as JSONObject;
+  }
+  return Object.keys(options).length > 0 ? options : undefined;
+}
+
+function mergeProviderOptions(
+  current: Record<string, JSONObject> | undefined,
+  next: Record<string, JSONObject> | undefined
+): Record<string, JSONObject> | undefined {
+  if (!next) return current;
+  if (!current) return next;
+  const merged: Record<string, JSONObject> = { ...current };
+  for (const [key, value] of Object.entries(next)) {
+    merged[key] = { ...(merged[key] ?? {}), ...value };
+  }
+  return merged;
+}
+
+/** A tool call with the reasoning that came before it and its own provider metadata. */
+function withReplay(
+  call: ToolCall,
+  reasoning: readonly AISDKReasoningItem[],
+  providerMetadata: unknown
+): ToolCall {
+  const metadata = providerOptionsOf(providerMetadata);
+  if (reasoning.length === 0 && !metadata) return call;
+  return {
+    ...call,
+    replay: {
+      ...call.replay,
+      ...(reasoning.length > 0 && { precedingItems: [...reasoning] }),
+      ...(metadata && { providerMetadata: metadata }),
+    },
+  };
+}
+
+/**
+ * Reasoning blocks of a streamed response, by block id, until the tool call they precede: text
+ * from the deltas, provider metadata (a signature, redacted data) merged from start, deltas and
+ * end.
+ */
+class ReasoningCollector {
+  private blocks = new Map<string, { text: string; options?: Record<string, JSONObject> }>();
+  private v1Items: AISDKReasoningItem[] = [];
+  private v1Text = '';
+
+  modern(id: string, delta: string, metadata: unknown): void {
+    const block = this.blocks.get(id) ?? { text: '' };
+    block.text += delta;
+    block.options = mergeProviderOptions(block.options, providerOptionsOf(metadata));
+    this.blocks.set(id, block);
+  }
+
+  v1Delta(delta: string): void {
+    this.v1Text += delta;
+  }
+
+  v1Signature(signature: string): void {
+    this.v1Items.push({ type: 'ai-sdk-reasoning', text: this.v1Text, signature });
+    this.v1Text = '';
+  }
+
+  v1Redacted(data: string): void {
+    this.flushV1Text();
+    this.v1Items.push({ type: 'ai-sdk-redacted-reasoning', data });
+  }
+
+  /** The reasoning collected since the last call, which now precedes this one */
+  take(): AISDKReasoningItem[] {
+    this.flushV1Text();
+    const items: AISDKReasoningItem[] = [
+      ...this.v1Items,
+      ...[...this.blocks.values()].map((block): AISDKReasoningItem => ({
+        type: 'ai-sdk-reasoning',
+        text: block.text,
+        ...(block.options && { providerOptions: block.options }),
+      })),
+    ];
+    this.blocks.clear();
+    this.v1Items = [];
+    return items;
+  }
+
+  private flushV1Text(): void {
+    if (!this.v1Text) return;
+    this.v1Items.push({ type: 'ai-sdk-reasoning', text: this.v1Text });
+    this.v1Text = '';
+  }
+}
+
+/**
+ * A tool message as the output of an AI SDK tool result: images as media of a `content` output,
+ * `{"error": "..."}` (how a failed call reaches the model) as `error-text`, JSON as `json`.
+ */
+function toolOutputOf<TMedia>(
+  content: Message['content'],
+  toolMedia: (source: ImageSource) => TMedia | undefined
+): ToolOutput<TMedia> {
+  if (typeof content !== 'string') {
+    const value: Array<TextPart | TMedia> = [];
+    for (const part of content) {
+      const image = imageSourceOf(part);
+      const media = image ? toolMedia(image) : undefined;
+      if (media) value.push(media);
+      else if (part.type === 'text') value.push({ type: 'text', text: part.text });
+      else if (image) value.push({ type: 'text', text: `[image: ${describeImage(image)}]` });
+    }
+    return { type: 'content', value };
+  }
+  const json = parseToolOutput(content);
+  if (json === undefined) return { type: 'text', value: content };
+  const error = toolErrorOf(json);
+  return error === undefined ? { type: 'json', value: json } : { type: 'error-text', value: error };
+}
+
+function toolErrorOf(json: JSONValue): string | undefined {
+  if (!isRecord(json)) return undefined;
+  const keys = Object.keys(json);
+  return keys.length === 1 && typeof json.error === 'string' ? json.error : undefined;
+}
+
+function describeImage(source: ImageSource): string {
+  return source.kind === 'url' ? source.url.href : source.mediaType;
 }
 
 interface ParsedTurn {
@@ -134,6 +353,8 @@ function finishReasonOf(reason: string, hasToolCalls: boolean): CogitatorFinishR
       return 'tool_calls';
     case 'length':
       return 'length';
+    case 'content-filter':
+      return 'content_filter';
     case 'error':
       return 'error';
     default:
@@ -304,27 +525,28 @@ export class AISDKBackend implements LLMBackend {
 
   private async *streamEvents(request: ChatRequest): AsyncGenerator<StreamEvent> {
     const model = this.model;
+    const reasoning = new ReasoningCollector();
     switch (model.specificationVersion) {
       case 'v1': {
         const { stream } = await model.doStream(this.v1Options(request));
         for await (const part of readStream(stream)) {
-          const event = this.fromV1StreamPart(part);
+          const event = this.fromV1StreamPart(part, reasoning);
           if (event) yield event;
         }
         break;
       }
       case 'v2': {
-        const { stream } = await model.doStream(this.modernOptions(request, toV2FileData));
+        const { stream } = await model.doStream(this.modernOptions(request, V2_MEDIA));
         for await (const part of readStream(stream)) {
-          const event = this.fromModernStreamPart(part);
+          const event = this.fromModernStreamPart(part, reasoning);
           if (event) yield event;
         }
         break;
       }
       case 'v3': {
-        const { stream } = await model.doStream(this.modernOptions(request, toV2FileData));
+        const { stream } = await model.doStream(this.modernOptions(request, V3_MEDIA));
         for await (const part of readStream(stream)) {
-          const event = this.fromModernStreamPart(part);
+          const event = this.fromModernStreamPart(part, reasoning);
           if (event) yield event;
         }
         break;
@@ -332,7 +554,7 @@ export class AISDKBackend implements LLMBackend {
       case 'v4': {
         const { stream } = await model.doStream(this.v4Options(request));
         for await (const part of readStream(stream)) {
-          const event = this.fromModernStreamPart(part);
+          const event = this.fromModernStreamPart(part, reasoning);
           if (event) yield event;
         }
         break;
@@ -340,14 +562,27 @@ export class AISDKBackend implements LLMBackend {
     }
   }
 
-  private fromV1StreamPart(part: LanguageModelV1StreamPart): StreamEvent | undefined {
+  private fromV1StreamPart(
+    part: LanguageModelV1StreamPart,
+    reasoning: ReasoningCollector
+  ): StreamEvent | undefined {
     switch (part.type) {
       case 'text-delta':
         return part.textDelta ? { type: 'text', delta: part.textDelta } : undefined;
       case 'reasoning':
+        reasoning.v1Delta(part.textDelta);
         return part.textDelta ? { type: 'reasoning', delta: part.textDelta } : undefined;
+      case 'reasoning-signature':
+        reasoning.v1Signature(part.signature);
+        return undefined;
+      case 'redacted-reasoning':
+        reasoning.v1Redacted(part.data);
+        return undefined;
       case 'tool-call':
-        return { type: 'tool-call', toolCall: this.fromV1ToolCall(part) };
+        return {
+          type: 'tool-call',
+          toolCall: withReplay(this.fromV1ToolCall(part), reasoning.take(), undefined),
+        };
       case 'finish':
         return { type: 'finish', finishReason: part.finishReason, usage: usageFromV1(part.usage) };
       case 'error':
@@ -358,17 +593,28 @@ export class AISDKBackend implements LLMBackend {
   }
 
   private fromModernStreamPart(
-    part: LanguageModelV2StreamPart | LanguageModelV3StreamPart | LanguageModelV4StreamPart
+    part: LanguageModelV2StreamPart | LanguageModelV3StreamPart | LanguageModelV4StreamPart,
+    reasoning: ReasoningCollector
   ): StreamEvent | undefined {
     switch (part.type) {
       case 'text-delta':
         return part.delta ? { type: 'text', delta: part.delta } : undefined;
+      case 'reasoning-start':
+      case 'reasoning-end':
+        reasoning.modern(part.id, '', part.providerMetadata);
+        return undefined;
       case 'reasoning-delta':
+        reasoning.modern(part.id, part.delta, part.providerMetadata);
         return part.delta ? { type: 'reasoning', delta: part.delta } : undefined;
       case 'tool-call': {
         if (part.providerExecuted) return undefined;
         const toolCall = this.fromModernToolCall(part);
-        return toolCall ? { type: 'tool-call', toolCall } : undefined;
+        return toolCall
+          ? {
+              type: 'tool-call',
+              toolCall: withReplay(toolCall, reasoning.take(), part.providerMetadata),
+            }
+          : undefined;
       }
       case 'finish':
         return typeof part.finishReason === 'string'
@@ -394,17 +640,20 @@ export class AISDKBackend implements LLMBackend {
     switch (model.specificationVersion) {
       case 'v1': {
         const result = await model.doGenerate(this.v1Options(request));
+        const reasoning = v1ReasoningItems(result.reasoning);
         return {
           id: result.response?.id,
           content: result.text ?? '',
           reasoning: reasoningFromV1(result.reasoning),
-          toolCalls: (result.toolCalls ?? []).map((call) => this.fromV1ToolCall(call)),
+          toolCalls: (result.toolCalls ?? []).map((call, index) =>
+            withReplay(this.fromV1ToolCall(call), index === 0 ? reasoning : [], undefined)
+          ),
           finishReason: result.finishReason,
           usage: usageFromV1(result.usage),
         };
       }
       case 'v2': {
-        const result = await model.doGenerate(this.modernOptions(request, toV2FileData));
+        const result = await model.doGenerate(this.modernOptions(request, V2_MEDIA));
         return this.modernTurn(
           result.content,
           result.finishReason,
@@ -416,7 +665,7 @@ export class AISDKBackend implements LLMBackend {
       case 'v4': {
         const result =
           model.specificationVersion === 'v3'
-            ? await model.doGenerate(this.modernOptions(request, toV2FileData))
+            ? await model.doGenerate(this.modernOptions(request, V3_MEDIA))
             : await model.doGenerate(this.v4Options(request));
         return this.modernTurn(
           result.content,
@@ -436,15 +685,25 @@ export class AISDKBackend implements LLMBackend {
   ): ParsedTurn {
     let text = '';
     const reasoning: string[] = [];
+    let precedingReasoning: AISDKReasoningItem[] = [];
     const toolCalls: ToolCall[] = [];
     for (const part of content) {
       if (part.type === 'text' && part.text) {
         text += part.text;
-      } else if (part.type === 'reasoning' && part.text) {
-        reasoning.push(part.text);
+      } else if (part.type === 'reasoning') {
+        if (part.text) reasoning.push(part.text);
+        const providerOptions = providerOptionsOf(part.providerMetadata);
+        precedingReasoning.push({
+          type: 'ai-sdk-reasoning',
+          text: part.text ?? '',
+          ...(providerOptions && { providerOptions }),
+        });
       } else if (part.type === 'tool-call' && !part.providerExecuted) {
         const toolCall = this.fromModernToolCall(part);
-        if (toolCall) toolCalls.push(toolCall);
+        if (toolCall) {
+          toolCalls.push(withReplay(toolCall, precedingReasoning, part.providerMetadata));
+          precedingReasoning = [];
+        }
       }
     }
     return {
@@ -528,7 +787,7 @@ export class AISDKBackend implements LLMBackend {
     };
   }
 
-  private modernOptions<TData>(request: ChatRequest, toFileData: (source: ImageSource) => TData) {
+  private modernOptions<TData, TMedia>(request: ChatRequest, media: PromptMedia<TData, TMedia>) {
     const tools = request.tools?.map((tool) => ({
       type: 'function' as const,
       name: tool.name,
@@ -537,7 +796,7 @@ export class AISDKBackend implements LLMBackend {
     }));
     const hasTools = tools !== undefined && tools.length > 0;
     return {
-      prompt: this.toModernPrompt(request.messages, toFileData),
+      prompt: this.toModernPrompt(request.messages, media),
       maxOutputTokens: request.maxTokens,
       temperature: request.temperature,
       topP: request.topP,
@@ -552,16 +811,16 @@ export class AISDKBackend implements LLMBackend {
   private v4Options(request: ChatRequest) {
     const reasoning = v4ReasoningOf(request.reasoning);
     return {
-      ...this.modernOptions(request, toV4FileData),
+      ...this.modernOptions(request, V4_MEDIA),
       ...(reasoning !== undefined && { reasoning }),
     };
   }
 
-  private toModernPrompt<TData>(
+  private toModernPrompt<TData, TMedia>(
     messages: Message[],
-    toFileData: (source: ImageSource) => TData
-  ): ModernMessage<TData>[] {
-    const prompt: ModernMessage<TData>[] = [];
+    media: PromptMedia<TData, TMedia>
+  ): ModernMessage<TData, TMedia>[] {
+    const prompt: ModernMessage<TData, TMedia>[] = [];
 
     for (const message of messages) {
       switch (message.role) {
@@ -577,7 +836,7 @@ export class AISDKBackend implements LLMBackend {
             if (image) {
               content.push({
                 type: 'file',
-                data: toFileData(image),
+                data: media.fileData(image),
                 mediaType: image.kind === 'data' ? image.mediaType : 'image/*',
               });
             } else if (part.type === 'text') {
@@ -589,28 +848,35 @@ export class AISDKBackend implements LLMBackend {
         }
         case 'assistant': {
           const text = textOf(message.content);
-          const content: Array<TextPart | ToolCallPart> = text ? [{ type: 'text', text }] : [];
-          for (const call of toolCallsOf(message)) {
+          const calls = toolCallsOf(message);
+          const content: Array<TextPart | ReasoningPart | ToolCallPart> = [];
+          for (const item of calls.flatMap(reasoningItemsOf)) {
+            if (item.type !== 'ai-sdk-reasoning') continue;
+            content.push({
+              type: 'reasoning',
+              text: item.text,
+              ...(item.providerOptions && { providerOptions: item.providerOptions }),
+            });
+          }
+          if (text) content.push({ type: 'text', text });
+          for (const call of calls) {
             content.push({
               type: 'tool-call',
               toolCallId: call.id,
               toolName: call.name,
               input: call.arguments,
-              providerOptions: this.thoughtSignatureOptions(call),
+              providerOptions: this.callProviderOptions(call),
             });
           }
           if (content.length > 0) prompt.push({ role: 'assistant', content });
           break;
         }
         case 'tool': {
-          const text = textOf(message.content);
-          const json = parseToolOutput(text);
-          const part: ToolResultPart = {
+          const part: ToolResultPart<TMedia> = {
             type: 'tool-result',
             toolCallId: message.toolCallId ?? '',
             toolName: message.name ?? '',
-            output:
-              json === undefined ? { type: 'text', value: text } : { type: 'json', value: json },
+            output: toolOutputOf(message.content, media.toolMedia),
           };
           const previous = prompt[prompt.length - 1];
           if (previous?.role === 'tool') {
@@ -624,6 +890,13 @@ export class AISDKBackend implements LLMBackend {
     }
 
     return prompt;
+  }
+
+  /** The provider options a tool call is sent back with: its own metadata, else its thought signature. */
+  private callProviderOptions(call: ToolCall): Record<string, JSONObject> | undefined {
+    const metadata = call.replay?.providerMetadata;
+    if (isProviderOptions(metadata)) return metadata;
+    return this.thoughtSignatureOptions(call);
   }
 
   private thoughtSignatureOptions(call: ToolCall): Record<string, JSONObject> | undefined {
@@ -656,14 +929,23 @@ function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
-function toV2FileData(source: ImageSource): URL | string {
-  return source.kind === 'url' ? source.url : source.data;
-}
-
-function toV4FileData(source: ImageSource): V4FileData {
-  return source.kind === 'url'
-    ? { type: 'url', url: source.url }
-    : { type: 'data', data: source.data };
+/** The reasoning of a v1 response as replay items for its first tool call. */
+function v1ReasoningItems(
+  reasoning: LanguageModelV1GenerateResult['reasoning']
+): AISDKReasoningItem[] {
+  if (reasoning === undefined) return [];
+  if (typeof reasoning === 'string') {
+    return reasoning ? [{ type: 'ai-sdk-reasoning', text: reasoning }] : [];
+  }
+  return reasoning.map((part): AISDKReasoningItem =>
+    part.type === 'text'
+      ? {
+          type: 'ai-sdk-reasoning',
+          text: part.text,
+          ...(part.signature !== undefined && { signature: part.signature }),
+        }
+      : { type: 'ai-sdk-redacted-reasoning', data: part.data }
+  );
 }
 
 function toV1Prompt(messages: Message[]): LanguageModelV1Prompt {
@@ -704,6 +986,15 @@ function toV1Prompt(messages: Message[]): LanguageModelV1Prompt {
         prompt.push({
           role: 'assistant',
           content: [
+            ...toolCalls.flatMap(reasoningItemsOf).map((item) =>
+              item.type === 'ai-sdk-reasoning'
+                ? {
+                    type: 'reasoning' as const,
+                    text: item.text,
+                    ...(item.signature !== undefined && { signature: item.signature }),
+                  }
+                : { type: 'redacted-reasoning' as const, data: item.data }
+            ),
             ...(text ? [{ type: 'text' as const, text }] : []),
             ...toolCalls.map((call) => ({
               type: 'tool-call' as const,
@@ -717,11 +1008,26 @@ function toV1Prompt(messages: Message[]): LanguageModelV1Prompt {
       }
       case 'tool': {
         const text = textOf(message.content);
-        const part = {
-          type: 'tool-result' as const,
+        const output = parseToolOutput(text);
+        const error = output === undefined ? undefined : toolErrorOf(output);
+        const images =
+          typeof message.content === 'string'
+            ? []
+            : message.content.flatMap((item) => {
+                const image = imageSourceOf(item);
+                return image?.kind === 'data'
+                  ? [{ type: 'image' as const, data: image.data, mimeType: image.mediaType }]
+                  : [];
+              });
+        const part: LanguageModelV1ToolResultPart = {
+          type: 'tool-result',
           toolCallId: message.toolCallId ?? '',
           toolName: message.name ?? '',
-          result: parseToolOutput(text) ?? text,
+          result: error ?? output ?? text,
+          ...(error !== undefined && { isError: true }),
+          ...(images.length > 0 && {
+            content: [...(text ? [{ type: 'text' as const, text }] : []), ...images],
+          }),
         };
         const previous = prompt[prompt.length - 1];
         if (previous?.role === 'tool') {

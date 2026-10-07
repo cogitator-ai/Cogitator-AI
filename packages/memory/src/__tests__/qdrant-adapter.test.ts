@@ -635,4 +635,48 @@ describe('QdrantAdapter', () => {
       }
     });
   });
+
+  describe('metadata filters', () => {
+    it('searches by metadata values', async () => {
+      mockClient.query.mockResolvedValue({ points: [] });
+
+      await adapter.search({
+        vector: [0.1],
+        filter: { sourceType: 'document', metadata: { namespace: 'docs', page: 2 } },
+      });
+
+      expect(mockClient.query.mock.calls[0][1].filter).toEqual({
+        must: [
+          { key: 'sourceType', match: { value: 'document' } },
+          { key: 'metadata.namespace', match: { value: 'docs' } },
+          { key: 'metadata.page', match: { value: 2 } },
+        ],
+      });
+    });
+
+    it('deletes every point a filter matches', async () => {
+      const result = await adapter.deleteByFilter({
+        sourceType: 'document',
+        metadata: { source: '/docs/a.md' },
+      });
+
+      expect(result.success).toBe(true);
+      expect(mockClient.delete).toHaveBeenCalledWith('test_collection', {
+        wait: true,
+        filter: {
+          must: [
+            { key: 'sourceType', match: { value: 'document' } },
+            { key: 'metadata.source', match: { value: '/docs/a.md' } },
+          ],
+        },
+      });
+    });
+
+    it('refuses a delete filter without conditions', async () => {
+      const result = await adapter.deleteByFilter({ metadata: {} });
+
+      expect(result.success).toBe(false);
+      expect(mockClient.delete).not.toHaveBeenCalled();
+    });
+  });
 });

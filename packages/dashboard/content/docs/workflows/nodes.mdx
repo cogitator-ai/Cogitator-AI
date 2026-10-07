@@ -82,6 +82,7 @@ const node = agentNode<ResearchState>(researcher, {
 | `inputMapper` | `(state, input?) => string`         | Build the agent input. Without it: `ctx.input` if it is a string, otherwise `JSON.stringify(ctx.input)`, or `JSON.stringify(state)` when the node has no input |
 | `stateMapper` | `(result: RunResult) => Partial<S>` | Map agent output to state updates                                                                                                                              |
 | `runOptions`  | `Partial<RunOptions>`               | Extra run options (`timeout`, `threadId`, `context`, `onToken`, ...). Sampling settings such as `temperature` belong on the `Agent`                            |
+| `approvals`   | `NodeApprovalOptions \| false`      | Where tool calls that need approval are asked, see [Tool approvals](#tool-approvals). `false` fails the node instead                                           |
 
 ### Behavior
 
@@ -91,6 +92,21 @@ const node = agentNode<ResearchState>(researcher, {
 4. The agent's raw output is passed downstream via `output`
 
 A failed run is rethrown as an error naming the agent, workflow and node, with the original error as `cause`.
+
+### Tool approvals
+
+When the agent calls a tool that needs approval (`requiresApproval`), its run pauses, and the node never passes that pause on as the agent's answer. With an approval store (the run's `approvalStore` execute option, or `approvals.approvalStore`), each waiting call becomes an approve/reject request in the [human-in-the-loop](/docs/workflows/human-in-the-loop) store, titled `Allow <agent> to call <tool>?` with the arguments in its description. The node waits like an `approvalNode`, then resumes the run: approved calls run, the others are declined with the approver's comment (or a timeout notice), and the agent answers.
+
+```typescript
+const node = agentNode<RefundState>(clerk, {
+  stateMapper: (result) => ({ answer: result.output }),
+  approvals: { assignee: 'finance-lead', timeout: 3_600_000, timeoutAction: 'reject' },
+});
+
+await executor.execute(workflow, input, { approvalStore: new RedisApprovalStore({ redis }) });
+```
+
+`approvals` takes `assignee`, `assigneeGroup`, `timeout`, `timeoutAction`, `escalateTo`, `priority` and its own `approvalStore` or `approvalNotifier`. The same question in the same run gets the same request id, so a node that runs again after a restart picks up the answer given meanwhile. Without an approval store, or with `approvals: false`, the node fails with an `AgentRunPausedError` (from `@cogitator-ai/core`) that carries the calls and the checkpoint to resume the run with, and is not retried. An `onApproval` in `runOptions` decides calls before they ever pause.
 
 ```typescript
 builder.addNode(
@@ -106,7 +122,7 @@ builder.addNode(
 
 ## toolNode
 
-Runs a single `Tool` directly without an agent wrapper.
+Runs a single `Tool` without an agent, the way an agent run calls it: through the node context's `cogitator.invokeTool`, so the mapped arguments are validated against the tool's schema, a call that needs approval is asked for, the guardrails apply, a sandboxed tool runs in the runtime's sandbox and `tool.timeout` is kept.
 
 ```typescript
 import { tool } from '@cogitator-ai/core';
@@ -131,18 +147,20 @@ const node = toolNode(fetchUrl, {
 
 ### ToolNodeOptions
 
-| Option        | Type                       | Required | Description                                             |
-| ------------- | -------------------------- | -------- | ------------------------------------------------------- |
-| `argsMapper`  | `(state, input?) => TArgs` | Yes      | Map state to tool arguments                             |
-| `stateMapper` | `(result) => Partial<S>`   | No       | Map tool result to state updates                        |
-| `signal`      | `AbortSignal`              | No       | Signal passed to the tool; defaults to the run's signal |
+| Option        | Type                           | Required | Description                                                                                                      |
+| ------------- | ------------------------------ | -------- | ---------------------------------------------------------------------------------------------------------------- |
+| `argsMapper`  | `(state, input?) => TArgs`     | Yes      | Map state to tool arguments                                                                                      |
+| `stateMapper` | `(result) => Partial<S>`       | No       | Map tool result to state updates                                                                                 |
+| `signal`      | `AbortSignal`                  | No       | Signal passed to the tool, defaults to the run's signal                                                          |
+| `approvals`   | `NodeApprovalOptions \| false` | No       | Where a call that needs approval is asked, as for [agent nodes](#tool-approvals). `false` fails the node instead |
 
 ### Behavior
 
 1. `argsMapper` builds typed arguments from state
-2. The tool's `execute` function runs with those arguments and a `ToolContext` whose `agentId` is `workflow:<workflowId>:<nodeId>` and `runId` is the workflow id
+2. `cogitator.invokeTool` runs the tool with those arguments and a `ToolContext` whose `agentId` is `workflow:<workflowId>:<nodeId>` and `runId` is the workflow id
 3. `stateMapper` extracts state updates from the result
-4. The raw tool result is passed downstream
+
+Arguments that do not match the tool's schema, a failing tool or a call over `tool.timeout` fail the node with an error naming the tool, workflow and node. A tool with `requiresApproval` asks the approval store like an agent node does, titled `Allow workflow node "<node>" to call <tool>?`, and runs once the call is approved. A declined call, or one with no approval store to ask (or `approvals: false`), fails the node without running the tool. The node needs the `Cogitator` the executor puts in its context. 4. The raw tool result is passed downstream
 
 ---
 

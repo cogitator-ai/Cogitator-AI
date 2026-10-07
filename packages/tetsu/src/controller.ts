@@ -3,18 +3,15 @@ import { sse } from '@tetsujs/sse';
 import type { ServerSentEvent } from '@tetsujs/sse';
 import { countMessageTokens } from '@cogitator-ai/memory';
 import {
-  createApprovalRequiredEvent,
+  AgentStreamSession,
   createErrorEvent,
   createFinishEvent,
   createStartEvent,
   createSwarmEvent,
-  createToolCallDeltaEvent,
-  createToolCallEndEvent,
-  createToolCallStartEvent,
-  createToolResultEvent,
   createWorkflowEvent,
   generateId,
   resolveSseHeartbeatMs,
+  toAgentRunResponse,
 } from '@cogitator-ai/server-shared';
 import type { StreamEvent } from '@cogitator-ai/server-shared';
 import { assertThreadAccess, ensureThreadAccess } from '@cogitator-ai/core';
@@ -29,7 +26,7 @@ import type {
 import { httpError } from '@tetsujs/core';
 import type { z } from 'zod';
 import { resolveCaller } from './auth.js';
-import { holdConnection } from './connection.js';
+import { holdConnection, jsonBody } from './connection.js';
 import { clientClosedRequest, cogitatorErrors, describeError } from './errors.js';
 import {
   checkThreadAccess,
@@ -45,14 +42,11 @@ import {
   resumeAgent,
   runAgent,
   serializeSwarmUsage,
-  toAgentRunResponse,
-  toPendingApprovals,
   toResumeDecisions,
   toSwarmRunResponse,
   toWorkflowRunResponse,
 } from './operations.js';
 import {
-  AddMessageBody,
   AddMessageResponse,
   AgentListResponse,
   AgentRunResponse,
@@ -65,10 +59,10 @@ import {
   ReadyResponse,
   ResumeBody,
   RUN_FAILURES,
-  RunBody,
+  requestSchemas,
   SwarmListResponse,
-  SwarmRunBody,
   SwarmRunResponse,
+  SwarmRunBody as BaseSwarmRunBody,
   ThreadParams,
   ThreadResponse,
   ToolListResponse,
@@ -77,7 +71,7 @@ import {
   WorkflowRunResponse,
 } from './schemas.js';
 import { cogitatorSocket } from './socket.js';
-import { DONE_EVENT, eventsOf, MessageParts, resolveSignal, sseEvent } from './streaming.js';
+import { DONE_EVENT, eventsOf, resolveSignal, sseEvent } from './streaming.js';
 import type { AgentStreamCallbacks } from './streaming.js';
 import type { AuthContext, CogitatorDeps } from './types.js';
 
@@ -133,11 +127,19 @@ const STREAM_DESCRIPTION =
 
 const AGENT_STREAM_DESCRIPTION = `${STREAM_DESCRIPTION} The \`finish\` event carries the run usage, the same as \`usage\` in the JSON response of \`/run\`, with the reasoning and cache token counts the model reported.`;
 
-type SwarmRunRequest = z.output<typeof SwarmRunBody>;
+type SwarmRunRequest = z.output<typeof BaseSwarmRunBody>;
 type WorkflowRunRequest = z.output<typeof WorkflowRunBody>;
 
-/** Starts or resumes an agent run with the callbacks of a stream. */
-type StreamedRun = (callbacks: AgentStreamCallbacks) => Promise<RunResult>;
+/** Starts or resumes an agent run on `threadId` with the callbacks of a stream. */
+type StreamedRun = (callbacks: AgentStreamCallbacks, threadId: string) => Promise<RunResult>;
+
+const NotJson = errorEnvelope(
+  'UNSUPPORTED_MEDIA_TYPE',
+  'The body is not JSON: only `application/json` bodies are read'
+);
+
+/** The `2xx` of an SSE route: a `text/event-stream` body the JSON document cannot describe. */
+const StreamOpened = null;
 
 /**
  * The Cogitator HTTP API as a Tetsu controller.
@@ -161,6 +163,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
   const caller = resolveCaller(deps.auth);
   const errors = cogitatorErrors();
   const heartbeatMs = resolveSseHeartbeatMs(deps.sseHeartbeatMs);
+  const { RunBody, SwarmRunBody, AddMessageBody } = requestSchemas(deps);
   const streamOptions = () => ({ until: resolveSignal(deps.until), heartbeatMs });
 
   const memoryOf = async () => {
@@ -210,13 +213,14 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
         params: NameParams,
         body: RunBody,
         response: {
+          415: NotJson,
           ...RUN_FAILURES,
           200: AgentRunResponse,
           403: ThreadForbidden,
           404: RunNotFound,
         },
       },
-      hooks: { beforeParse: [caller], beforeHandle: [holdConnection], onError: [errors] },
+      hooks: { beforeParse: [caller, jsonBody], beforeHandle: [holdConnection], onError: [errors] },
       docs: { summary: 'Run an agent and wait for its answer', tags: ['agents'] },
       handler: async (ctx) => {
         const agent = findAgent(deps, ctx.params.name);
@@ -238,9 +242,9 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
       schema: {
         params: NameParams,
         body: RunBody,
-        response: { 403: ThreadForbidden, 404: AgentNotFound },
+        response: { 200: StreamOpened, 403: ThreadForbidden, 404: AgentNotFound, 415: NotJson },
       },
-      hooks: { beforeParse: [caller], onError: [errors] },
+      hooks: { beforeParse: [caller, jsonBody], onError: [errors] },
       docs: {
         summary: 'Run an agent and stream tokens, tool calls and results',
         description: AGENT_STREAM_DESCRIPTION,
@@ -255,8 +259,10 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
           ctx,
           (signal) =>
             agentEvents(
-              (callbacks) => runAgent(deps, agent, { ...body, ...callbacks }, auth),
-              signal
+              (callbacks, threadId) =>
+                runAgent(deps, agent, { ...body, threadId, ...callbacks }, auth),
+              signal,
+              body.threadId
             ),
           streamOptions()
         );
@@ -270,6 +276,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
         params: NameParams,
         body: ResumeBody,
         response: {
+          415: NotJson,
           ...RUN_FAILURES,
           200: AgentRunResponse,
           403: ResumeForbidden,
@@ -277,7 +284,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
           409: ResumeConflict,
         },
       },
-      hooks: { beforeParse: [caller], beforeHandle: [holdConnection], onError: [errors] },
+      hooks: { beforeParse: [caller, jsonBody], beforeHandle: [holdConnection], onError: [errors] },
       docs: {
         summary: 'Resume a run paused for tool approvals and wait for its answer',
         description:
@@ -311,9 +318,9 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
       schema: {
         params: NameParams,
         body: ResumeBody,
-        response: { 403: ThreadForbidden, 404: AgentNotFound },
+        response: { 200: StreamOpened, 403: ThreadForbidden, 404: AgentNotFound, 415: NotJson },
       },
-      hooks: { beforeParse: [caller], onError: [errors] },
+      hooks: { beforeParse: [caller, jsonBody], onError: [errors] },
       docs: {
         summary: 'Resume a run paused for tool approvals and stream the rest of it',
         description: AGENT_STREAM_DESCRIPTION,
@@ -331,7 +338,8 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
             agentEvents(
               (callbacks) =>
                 resumeAgent(deps, agent, threadId, { ...decisions, ...callbacks }, auth),
-              signal
+              signal,
+              threadId
             ),
           streamOptions()
         );
@@ -377,29 +385,31 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
         params: ThreadParams,
         body: AddMessageBody,
         response: {
+          415: NotJson,
           201: AddMessageResponse,
           403: ThreadForbidden,
           500: ThreadUnwritable,
           503: MemoryNotConfigured,
         },
       },
-      hooks: { beforeParse: [caller], onError: [errors] },
+      hooks: { beforeParse: [caller, jsonBody], onError: [errors] },
       docs: {
         summary: 'Append a message to a memory thread',
         description: 'A thread that does not exist yet is created, owned by the caller.',
         tags: ['threads'],
       },
       handler: async (ctx) => {
+        const accepted = ctx.body;
         const memory = await memoryOf();
         const id = ctx.params.id;
         await checkThreadAccess(deps, ctx.cogitatorAuth, id);
         await ensureThreadAccess(memory, id, { agentId: '', userId: ctx.cogitatorAuth?.userId });
-        const message: Message = { role: ctx.body.role, content: ctx.body.content };
+        const message: Message = { role: accepted.role, content: accepted.content };
         const result = await memory.addEntry({
           threadId: id,
           message,
           tokenCount: countMessageTokens(message),
-          ...(ctx.body.metadata && { metadata: ctx.body.metadata }),
+          ...(accepted.metadata && { metadata: accepted.metadata }),
         });
         if (!result.success) throw new Error(result.error);
         ctx.out.status = 201;
@@ -456,13 +466,14 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
         params: NameParams,
         body: WorkflowRunBody,
         response: {
+          415: NotJson,
           ...RUN_FAILURES,
           200: WorkflowRunResponse,
           404: RunNotFound,
           501: NotImplemented,
         },
       },
-      hooks: { beforeParse: [caller], beforeHandle: [holdConnection], onError: [errors] },
+      hooks: { beforeParse: [caller, jsonBody], beforeHandle: [holdConnection], onError: [errors] },
       docs: { summary: 'Run a workflow and wait for its final state', tags: ['workflows'] },
       handler: async (ctx) => {
         const workflow = findWorkflow(deps, ctx.params.name);
@@ -489,9 +500,9 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
       schema: {
         params: NameParams,
         body: WorkflowRunBody,
-        response: { 404: WorkflowNotFound },
+        response: { 200: StreamOpened, 404: WorkflowNotFound, 415: NotJson },
       },
-      hooks: { beforeParse: [caller], onError: [errors] },
+      hooks: { beforeParse: [caller, jsonBody], onError: [errors] },
       docs: {
         summary: 'Run a workflow and stream node events',
         description: STREAM_DESCRIPTION,
@@ -520,6 +531,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
         params: NameParams,
         body: SwarmRunBody,
         response: {
+          415: NotJson,
           ...RUN_FAILURES,
           200: SwarmRunResponse,
           403: ThreadForbidden,
@@ -527,22 +539,23 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
           501: NotImplemented,
         },
       },
-      hooks: { beforeParse: [caller], beforeHandle: [holdConnection], onError: [errors] },
+      hooks: { beforeParse: [caller, jsonBody], beforeHandle: [holdConnection], onError: [errors] },
       docs: { summary: 'Run a swarm and wait for its result', tags: ['swarms'] },
       handler: async (ctx) => {
         const config = findSwarm(deps, ctx.params.name);
         await checkThreadAccess(deps, ctx.cogitatorAuth, ctx.body.threadId);
         const signal = ctx.req.signal;
         try {
-          const { swarm, result } = await executeSwarm(
+          const response = await executeSwarm(
             deps,
             config,
             ctx.body,
             ctx.cogitatorAuth,
-            signal
+            signal,
+            toSwarmRunResponse
           );
           if (signal.aborted) throw clientClosedRequest();
-          return toSwarmRunResponse(swarm, result);
+          return response;
         } catch (error) {
           if (signal.aborted) throw clientClosedRequest();
           throw error;
@@ -556,9 +569,9 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
       schema: {
         params: NameParams,
         body: SwarmRunBody,
-        response: { 403: ThreadForbidden, 404: SwarmNotFound },
+        response: { 200: StreamOpened, 403: ThreadForbidden, 404: SwarmNotFound, 415: NotJson },
       },
-      hooks: { beforeParse: [caller], onError: [errors] },
+      hooks: { beforeParse: [caller, jsonBody], onError: [errors] },
       docs: {
         summary: 'Run a swarm and stream agent events',
         description: STREAM_DESCRIPTION,
@@ -611,58 +624,38 @@ function* failure(error: unknown): Generator<ServerSentEvent, void, undefined> {
   if (described.unexpected) throw error;
 }
 
+/**
+ * The events of a streamed agent run or resume, as every adapter sends them: the thread in
+ * `start` and `finish`, text and reasoning parts closed before a tool call, the answer the
+ * model gave in one piece, `approval-required` when it pauses, and `[DONE]` after `finish`.
+ */
 async function* agentEvents(
   start: StreamedRun,
-  signal: AbortSignal
+  signal: AbortSignal,
+  threadId: string | undefined
 ): AsyncGenerator<ServerSentEvent, void, undefined> {
-  const messageId = generateId('msg');
-  const parts = new MessageParts();
-  let result: RunResult | undefined;
-
-  yield sseEvent(createStartEvent(messageId));
+  let sink: (event: StreamEvent) => void = () => undefined;
+  const session = new AgentStreamSession((event) => sink(event), { threadId });
 
   try {
     yield* eventsOf<ServerSentEvent>(signal, async (emit) => {
-      const emitAll = (events: StreamEvent[]) => {
-        for (const event of events) emit(sseEvent(event));
+      sink = (event) => {
+        emit(sseEvent(event));
+        if (event.type === 'finish') emit(DONE_EVENT);
       };
-      result = await start({
-        stream: true,
-        signal,
-        onToken: (token) => emitAll(parts.delta('text', token)),
-        onReasoning: (delta) => emitAll(parts.delta('reasoning', delta)),
-        onToolCall: (call) => {
-          emitAll(parts.end('reasoning'));
-          emit(sseEvent(createToolCallStartEvent(call.id, call.name)));
-          emit(sseEvent(createToolCallDeltaEvent(call.id, JSON.stringify(call.arguments))));
-          emit(sseEvent(createToolCallEndEvent(call.id)));
-        },
-        onToolResult: (toolResult) => {
-          emit(
-            sseEvent(createToolResultEvent(generateId('res'), toolResult.callId, toolResult.result))
-          );
-        },
-      });
+      session.start();
+      const result = await start({ stream: true, signal, ...session.callbacks }, session.threadId);
+      session.complete(result);
     });
   } catch (error) {
     if (signal.aborted) return;
-    yield* parts.end().map(sseEvent);
-    yield* failure(error);
-    return;
+    const described = describeError(error);
+    const closing: StreamEvent[] = [];
+    sink = (event) => closing.push(event);
+    session.fail(described.message, described.code);
+    yield* closing.map(sseEvent);
+    if (described.unexpected) throw error;
   }
-
-  if (signal.aborted || !result) return;
-  yield* parts.end().map(sseEvent);
-  if (result.status === 'paused') {
-    yield sseEvent(
-      createApprovalRequiredEvent(
-        result.threadId,
-        toPendingApprovals(result.pendingApprovals ?? [])
-      )
-    );
-  }
-  yield sseEvent(createFinishEvent(messageId, result.usage));
-  yield DONE_EVENT;
 }
 
 async function* workflowEvents(
@@ -721,7 +714,7 @@ async function* swarmEvents(
   signal: AbortSignal
 ): AsyncGenerator<ServerSentEvent, void, undefined> {
   const messageId = generateId('swarm');
-  let completed: Awaited<ReturnType<typeof executeSwarm>> | undefined;
+  let completed: StreamEvent | undefined;
 
   yield sseEvent(createStartEvent(messageId));
 
@@ -746,7 +739,13 @@ async function* swarmEvents(
           onEvent: (swarmEvent) => event(swarmEvent.type, swarmEvent.data),
         },
         auth,
-        signal
+        signal,
+        (swarm, result) =>
+          createSwarmEvent('swarm_completed', {
+            swarmId: swarm.id,
+            output: result.output,
+            usage: serializeSwarmUsage(swarm.getResourceUsage()),
+          })
       );
     });
   } catch (error) {
@@ -756,14 +755,7 @@ async function* swarmEvents(
   }
 
   if (signal.aborted || !completed) return;
-  const { swarm, result } = completed;
-  yield sseEvent(
-    createSwarmEvent('swarm_completed', {
-      swarmId: swarm.id,
-      output: result.output,
-      usage: serializeSwarmUsage(swarm.getResourceUsage()),
-    })
-  );
+  yield sseEvent(completed);
   yield sseEvent(createFinishEvent(messageId));
   yield DONE_EVENT;
 }

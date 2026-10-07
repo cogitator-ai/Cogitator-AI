@@ -1,4 +1,4 @@
-import { nanoid } from 'nanoid';
+import { chunkId } from './chunk-id.js';
 import type { AsyncChunker, DocumentChunk, EmbeddingService } from '@cogitator-ai/types';
 
 export interface SemanticChunkerOptions {
@@ -162,7 +162,7 @@ export class SemanticChunker implements AsyncChunker {
 
       if (content.length <= this.maxChunkSize) {
         chunks.push({
-          id: nanoid(),
+          id: chunkId(documentId, chunks.length),
           documentId,
           content,
           startOffset,
@@ -222,7 +222,7 @@ export class SemanticChunker implements AsyncChunker {
           const sliceEnd = Math.min(pos + this.maxChunkSize, sentence.length);
           const slice = sentence.slice(pos, sliceEnd);
           chunks.push({
-            id: nanoid(),
+            id: chunkId(documentId, order),
             documentId,
             content: slice,
             startOffset: sentenceStart + pos,
@@ -276,7 +276,7 @@ export class SemanticChunker implements AsyncChunker {
     const endOffset = lastStart + lastSentence.length;
 
     return {
-      id: nanoid(),
+      id: chunkId(documentId, order),
       documentId,
       content: originalText.slice(startOffset, endOffset),
       startOffset,

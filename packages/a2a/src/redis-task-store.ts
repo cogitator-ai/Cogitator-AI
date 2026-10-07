@@ -1,5 +1,5 @@
 import type { A2ATask, TaskFilter, TaskStore } from './types.js';
-import { isTaskVisibleTo } from './ownership.js';
+import { isTaskVisibleTo, taskTime } from './ownership.js';
 
 export interface RedisClientLike {
   get(key: string): Promise<string | null>;
@@ -144,8 +144,8 @@ export class RedisTaskStore implements TaskStore {
     }
 
     filtered.sort((a, b) => {
-      const ta = new Date(a.status.timestamp).getTime();
-      const tb = new Date(b.status.timestamp).getTime();
+      const ta = taskTime(a);
+      const tb = taskTime(b);
       return tb - ta;
     });
 

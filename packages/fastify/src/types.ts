@@ -5,7 +5,13 @@ import {
   NON_BLANK_PATTERN,
   RUN_INPUT_SCHEMA,
 } from '@cogitator-ai/server-shared';
-import type { PendingApproval, RunUsage } from '@cogitator-ai/server-shared';
+import type {
+  AgentRunResponse,
+  ContextPolicy,
+  PendingApproval,
+  ThreadMessageRole,
+  WorkflowRunRequestBody,
+} from '@cogitator-ai/server-shared';
 import type {
   Message,
   ToolCall,
@@ -39,6 +45,7 @@ export type {
   SwarmMessage,
   ToolApprovalDecision,
   PendingApproval,
+  AgentRunResponse,
 };
 
 export interface AuthContext {
@@ -105,6 +112,17 @@ export interface CogitatorPluginOptions {
    * model. Default: 5000. `0` turns heartbeats off.
    */
   sseHeartbeatMs?: number;
+  /**
+   * Keys of a run's `context` that clients may set. The run adds `context` to the system
+   * prompt, so by default (`false`) a request with `context` is refused with 400. List the
+   * keys clients may send, or pass `true` only for clients trusted like the server itself.
+   */
+  acceptContext?: ContextPolicy;
+  /**
+   * Roles clients may add with `POST /threads/:id/messages`. Default: `user` and
+   * `assistant`. A `system` message is read by the model as operator instructions.
+   */
+  threadMessageRoles?: readonly ThreadMessageRole[];
 }
 
 export interface CogitatorContext {
@@ -114,6 +132,10 @@ export interface CogitatorContext {
   swarms: Record<string, SwarmConfig>;
   /** The resolved `sseHeartbeatMs` option; the default applies when it is absent */
   sseHeartbeatMs?: number;
+  /** The resolved `acceptContext` option. Default: no keys */
+  acceptContext?: ContextPolicy;
+  /** The resolved `threadMessageRoles` option. Default: `user` and `assistant` */
+  threadMessageRoles?: readonly ThreadMessageRole[];
 }
 
 declare module 'fastify' {
@@ -140,16 +162,6 @@ export interface AgentRunRequest {
   input: string;
   context?: Record<string, unknown>;
   threadId?: string;
-}
-
-export interface AgentRunResponse {
-  output: string;
-  threadId?: string;
-  usage: RunUsage;
-  toolCalls: ToolCall[];
-  reasoning?: string;
-  status?: 'completed' | 'paused';
-  pendingApprovals?: PendingApproval[];
 }
 
 export interface AgentResumeRequest {
@@ -188,14 +200,7 @@ export interface WorkflowListResponse {
   }>;
 }
 
-export interface WorkflowRunRequest {
-  input?: Record<string, unknown>;
-  options?: {
-    maxConcurrency?: number;
-    maxIterations?: number;
-    checkpoint?: boolean;
-  };
-}
+export type WorkflowRunRequest = WorkflowRunRequestBody;
 
 export interface WorkflowRunResponse {
   workflowId: string;
@@ -310,12 +315,19 @@ export interface OpenAPISpec {
 
 const NON_BLANK_STRING = { type: 'string', minLength: 1, pattern: NON_BLANK_PATTERN } as const;
 
+const CONTEXT_SCHEMA = {
+  type: 'object',
+  additionalProperties: true,
+  description:
+    'Values the run adds to the system prompt as data; refused unless `acceptContext` allows the keys',
+} as const;
+
 export const AgentRunRequestSchema = {
   type: 'object',
   properties: {
     input: RUN_INPUT_SCHEMA,
-    context: { type: 'object', additionalProperties: true },
-    threadId: { type: 'string' },
+    context: CONTEXT_SCHEMA,
+    threadId: NON_BLANK_STRING,
   },
   required: ['input'],
 } as const;
@@ -356,9 +368,26 @@ export const AgentRunResponseSchema = {
         cacheWriteTokens: { type: 'number' },
       },
     },
-    toolCalls: { type: 'array' },
+    toolCalls: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          name: { type: 'string' },
+          arguments: { type: 'object', additionalProperties: true },
+        },
+        required: ['id', 'name', 'arguments'],
+      },
+    },
     reasoning: { type: 'string' },
     status: { type: 'string', enum: ['completed', 'paused'] },
+    structured: {},
+    structuredError: { type: 'string' },
+    truncated: { type: 'boolean' },
+    blocked: { type: 'string', enum: ['content_filter', 'refusal'] },
+    iterationLimitReached: { type: 'boolean' },
+    traceId: { type: 'string' },
     pendingApprovals: {
       type: 'array',
       items: {
@@ -374,13 +403,18 @@ export const AgentRunResponseSchema = {
       },
     },
   },
+  required: ['output', 'threadId', 'usage', 'toolCalls', 'status', 'traceId'],
 } as const;
 
 export const AddMessageRequestSchema = {
   type: 'object',
   properties: {
-    role: { type: 'string', enum: ['user', 'assistant', 'system'] },
-    content: { type: 'string', minLength: 1 },
+    role: {
+      type: 'string',
+      enum: ['user', 'assistant', 'system'],
+      description: '`system` is refused unless `threadMessageRoles` allows it',
+    },
+    content: NON_BLANK_STRING,
     metadata: { type: 'object', additionalProperties: true },
   },
   required: ['role', 'content'],
@@ -395,7 +429,11 @@ export const WorkflowRunRequestSchema = {
       properties: {
         maxConcurrency: { type: 'integer', minimum: 1 },
         maxIterations: { type: 'integer', minimum: 1 },
-        checkpoint: { type: 'boolean' },
+        checkpoint: {
+          type: 'boolean',
+          enum: [false],
+          description: 'Only `false`: the server keeps no checkpoint store',
+        },
       },
       additionalProperties: false,
     },
@@ -406,8 +444,8 @@ export const SwarmRunRequestSchema = {
   type: 'object',
   properties: {
     input: RUN_INPUT_SCHEMA,
-    context: { type: 'object', additionalProperties: true },
-    threadId: { type: 'string' },
+    context: CONTEXT_SCHEMA,
+    threadId: NON_BLANK_STRING,
     timeout: { type: 'number', exclusiveMinimum: 0, maximum: MAX_RUN_TIMEOUT_MS },
   },
   required: ['input'],

@@ -7,6 +7,7 @@ import type { RouteContext } from '../types.js';
 const workflowExecute = vi.fn();
 const swarmRun = vi.fn();
 const swarmAbort = vi.fn();
+const swarmClose = vi.fn(async () => undefined);
 
 vi.mock('@cogitator-ai/workflows', () => ({
   WorkflowExecutor: class {
@@ -21,6 +22,7 @@ vi.mock('@cogitator-ai/swarms', () => ({
     strategyType = 'round-robin';
     run = swarmRun;
     abort = swarmAbort;
+    close = swarmClose;
     getResourceUsage = () => ({
       totalTokens: 42,
       totalCost: 0.01,
@@ -49,6 +51,7 @@ function mockRouteContext(overrides?: Partial<RouteContext>): RouteContext {
         threadId: 'thread-1',
         usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
         toolCalls: [],
+        trace: { traceId: 'trace-1', spans: [] },
       }),
     } as unknown as RouteContext['runtime'],
     agents: {},
@@ -224,7 +227,7 @@ describe('setupWebSocket', () => {
     expect(response).toEqual({
       type: 'error',
       id: 'r1',
-      error: 'Invalid run payload: "input" is required',
+      error: 'Invalid run payload: Field "input" must not be blank',
     });
     expect(ctx.runtime.run).not.toHaveBeenCalled();
   });
@@ -253,7 +256,14 @@ describe('setupWebSocket', () => {
       const onToken = opts.onToken as (t: string) => void;
       onToken('Hello');
       onToken(' world');
-      return Promise.resolve({ output: 'Hello world', usage: { totalTokens: 5 } });
+      return Promise.resolve({
+        output: 'Hello world',
+        threadId: 'thread-1',
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        toolCalls: [],
+        messages: [{ role: 'system', content: 'secret instructions' }],
+        trace: { traceId: 'trace-1', spans: [] },
+      });
     });
 
     const ctx = mockRouteContext({
@@ -290,7 +300,14 @@ describe('setupWebSocket', () => {
       id: 'r3',
       payload: {
         type: 'complete',
-        result: { output: 'Hello world', usage: { totalTokens: 5 } },
+        result: {
+          output: 'Hello world',
+          threadId: 'thread-1',
+          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+          toolCalls: [],
+          status: 'completed',
+          traceId: 'trace-1',
+        },
       },
     });
   });
@@ -301,7 +318,14 @@ describe('setupWebSocket', () => {
       const onToken = opts.onToken as (token: string) => void;
       onReasoning('thinking');
       onToken('Hi');
-      return Promise.resolve({ output: 'Hi' });
+      return Promise.resolve({
+        output: 'Hi',
+        threadId: 'thread-1',
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        toolCalls: [],
+        messages: [{ role: 'system', content: 'secret instructions' }],
+        trace: { traceId: 'trace-1', spans: [] },
+      });
     });
 
     const ctx = mockRouteContext({
@@ -341,7 +365,14 @@ describe('setupWebSocket', () => {
       const onToolResult = opts.onToolResult as (tr: unknown) => void;
       onToolCall({ id: 'tc1', name: 'search', arguments: { q: 'test' } });
       onToolResult({ callId: 'tc1', result: 'found it' });
-      return Promise.resolve({ output: 'done' });
+      return Promise.resolve({
+        output: 'done',
+        threadId: 'thread-1',
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        toolCalls: [],
+        messages: [{ role: 'system', content: 'secret instructions' }],
+        trace: { traceId: 'trace-1', spans: [] },
+      });
     });
 
     const ctx = mockRouteContext({
@@ -376,7 +407,17 @@ describe('setupWebSocket', () => {
     expect(responses[2] as Record<string, unknown>).toEqual({
       type: 'event',
       id: 'r4',
-      payload: { type: 'complete', result: { output: 'done' } },
+      payload: {
+        type: 'complete',
+        result: {
+          output: 'done',
+          threadId: 'thread-1',
+          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+          toolCalls: [],
+          status: 'completed',
+          traceId: 'trace-1',
+        },
+      },
     });
   });
 
@@ -559,6 +600,7 @@ describe('setupWebSocket', () => {
   });
 
   it('runs swarm successfully', async () => {
+    swarmClose.mockClear();
     const ctx = mockRouteContext({
       swarms: { team: { strategy: 'round-robin' } as never },
     });
@@ -588,6 +630,7 @@ describe('setupWebSocket', () => {
         },
       },
     });
+    expect(swarmClose).toHaveBeenCalledOnce();
   });
 
   it('returns error when swarm not found', async () => {
@@ -842,7 +885,14 @@ describe('setupWebSocket hardening', () => {
           opts.signal.addEventListener('abort', () => reject(new Error('aborted')));
         });
       }
-      return Promise.resolve({ output: 'second', usage: {}, toolCalls: [] });
+      return Promise.resolve({
+        output: 'second',
+        threadId: 'thread-1',
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        toolCalls: [],
+        messages: [{ role: 'system', content: 'secret instructions' }],
+        trace: { traceId: 'trace-1', spans: [] },
+      });
     });
     const ctx = mockRouteContext({
       runtime: { run } as unknown as RouteContext['runtime'],

@@ -18,7 +18,15 @@ import type {
   ToolSchema,
 } from '@cogitator-ai/types';
 import { BaseLLMBackend } from './base';
-import { createLLMError, llmUnavailable, llmConfigError, type LLMErrorContext } from './errors';
+import { ErrorCode } from '@cogitator-ai/types';
+import {
+  LLMError,
+  createLLMError,
+  llmUnavailable,
+  llmConfigError,
+  type LLMErrorContext,
+} from './errors';
+import { finishRunsTools, normalizeTurn, parseToolCallArguments } from './turn';
 import {
   createWarnOnce,
   forcedToolChoiceInstruction,
@@ -36,7 +44,6 @@ import {
   type ClaudeThinkingParams,
 } from './anthropic-thinking';
 import { fetchImageAsBase64 } from '../utils/image-fetch';
-import { getLogger } from '../logger';
 
 type DocumentType =
   null | boolean | number | string | DocumentType[] | { [key: string]: DocumentType };
@@ -194,6 +201,10 @@ interface BedrockConfig {
   region?: string;
   accessKeyId?: string;
   secretAccessKey?: string;
+  /** Session token of temporary credentials, sent with the static keys */
+  sessionToken?: string;
+  /** Named profile from the shared AWS config files */
+  profile?: string;
   /** Retries the provider's SDK makes on its own; leave unset for the SDK default. The runtime passes 0 and retries itself. */
   maxRetries?: number;
 }
@@ -221,10 +232,14 @@ export class BedrockBackend extends BaseLLMBackend {
           if (this.config.region) {
             clientConfig.region = this.config.region;
           }
+          if (this.config.profile) {
+            clientConfig.profile = this.config.profile;
+          }
           if (this.config.accessKeyId && this.config.secretAccessKey) {
             clientConfig.credentials = {
               accessKeyId: this.config.accessKeyId,
               secretAccessKey: this.config.secretAccessKey,
+              ...(this.config.sessionToken ? { sessionToken: this.config.sessionToken } : {}),
             };
           }
 
@@ -294,7 +309,7 @@ export class BedrockBackend extends BaseLLMBackend {
 
     const id = this.generateId();
     const state: StreamState = {
-      toolCalls: [],
+      toolUses: [],
       toolCallInputs: new Map(),
       reasoning: new Map(),
       thinking: [],
@@ -306,9 +321,10 @@ export class BedrockBackend extends BaseLLMBackend {
 
     try {
       for await (const event of response.stream) {
-        yield* this.processStreamEvent(event, id, state);
+        yield* this.processStreamEvent(event, id, state, ctx);
       }
     } catch (e) {
+      if (e instanceof LLMError) throw e;
       throw this.wrapBedrockError(e, ctx);
     }
   }
@@ -316,9 +332,10 @@ export class BedrockBackend extends BaseLLMBackend {
   private *processStreamEvent(
     event: StreamEvent,
     id: string,
-    state: StreamState
+    state: StreamState,
+    ctx: LLMErrorContext
   ): Generator<ChatStreamChunk> {
-    const { toolCalls, toolCallInputs } = state;
+    const { toolUses, toolCallInputs } = state;
     if (event.contentBlockStart?.start?.toolUse) {
       const idx = event.contentBlockStart.contentBlockIndex ?? 0;
       toolCallInputs.set(idx, {
@@ -372,25 +389,24 @@ export class BedrockBackend extends BaseLLMBackend {
         const item = toThinkingItem(reasoning);
         if (item) state.thinking.push(item);
       } else if (toolCall) {
-        toolCalls.push({
-          id: toolCall.id,
-          name: toolCall.name,
-          arguments: this.tryParseJson(toolCall.input),
-          ...(state.thinking.length > 0 && { replay: { precedingItems: state.thinking } }),
-        });
+        toolUses.push({ ...toolCall, thinking: state.thinking });
+        toolCallInputs.delete(idx);
         state.thinking = [];
       }
     }
 
     if (event.messageStop) {
       const finishReason = mapClaudeStopReason(event.messageStop.stopReason);
-      yield {
-        id,
-        delta: {
-          toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-        },
-        finishReason,
-      };
+      const toolCalls = finishRunsTools(finishReason)
+        ? toolUses.map((use) => ({
+            id: use.id,
+            name: use.name,
+            arguments: parseToolCallArguments(use.input, ctx),
+            ...(use.thinking.length > 0 && { replay: { precedingItems: use.thinking } }),
+          }))
+        : [];
+      const end = normalizeTurn({ finishReason, toolCalls });
+      yield { id, delta: { toolCalls: end.toolCalls }, finishReason: end.finishReason };
     }
 
     if (event.metadata?.usage) {
@@ -720,64 +736,75 @@ export class BedrockBackend extends BaseLLMBackend {
       }
     }
 
-    return {
+    return normalizeTurn({
       id: this.generateId(),
       content,
-      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+      toolCalls,
       finishReason: mapClaudeStopReason(response.stopReason),
       usage: toChatUsage(response.usage ?? {}),
       ...(reasoning && { reasoning }),
-    };
+    });
   }
 
-  private tryParseJson(str: string): Record<string, unknown> {
-    if (!str.trim()) {
-      return {};
-    }
-    try {
-      const parsed = JSON.parse(str) as unknown;
-      return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
-        ? (parsed as Record<string, unknown>)
-        : {};
-    } catch (e) {
-      getLogger().warn('Failed to parse tool call JSON in Bedrock stream', {
-        input: str.slice(0, 200),
-        error: e instanceof Error ? e.message : String(e),
-      });
-      return {};
-    }
-  }
-
+  /**
+   * An AWS SDK error as an `LLMError`, classified by the exception's name, then by its HTTP
+   * status, and only for errors with neither by whole words of its message.
+   */
   private wrapBedrockError(error: unknown, ctx: LLMErrorContext): never {
-    if (error instanceof Error) {
-      const message = error.message.toLowerCase();
+    if (!(error instanceof Error)) throw llmUnavailable(ctx, String(error));
 
-      if (message.includes('throttl') || message.includes('rate')) {
-        throw createLLMError({ ...ctx, statusCode: 429 }, 429, error.message);
-      }
-      if (
-        message.includes('access denied') ||
-        message.includes('unauthorized') ||
-        message.includes('credentials')
-      ) {
-        throw createLLMError({ ...ctx, statusCode: 403 }, 403, error.message);
-      }
-      if (message.includes('not found') || message.includes('does not exist')) {
-        throw createLLMError({ ...ctx, statusCode: 404 }, 404, error.message);
-      }
-      if (message.includes('validation') || message.includes('invalid')) {
-        throw createLLMError({ ...ctx, statusCode: 400 }, 400, error.message);
-      }
-
-      throw llmUnavailable(ctx, error.message, error);
+    if (error.name === 'ModelTimeoutException') {
+      throw new LLMError(error.message, ErrorCode.LLM_TIMEOUT, ctx, {
+        cause: error,
+        retryable: true,
+      });
     }
-
-    throw llmUnavailable(ctx, String(error));
+    const status =
+      BEDROCK_EXCEPTION_STATUS[error.name] ??
+      (error as AWSServiceError).$metadata?.httpStatusCode ??
+      statusFromMessage(error.message);
+    if (status !== undefined) {
+      throw createLLMError({ ...ctx, statusCode: status }, status, error.message, {
+        cause: error,
+      });
+    }
+    throw llmUnavailable(ctx, error.message, error);
   }
 }
 
+/** The HTTP status each Bedrock Runtime exception stands for, as the runtime should treat it. */
+const BEDROCK_EXCEPTION_STATUS: Record<string, number> = {
+  ValidationException: 400,
+  UnrecognizedClientException: 401,
+  ExpiredTokenException: 401,
+  AccessDeniedException: 403,
+  ResourceNotFoundException: 404,
+  ThrottlingException: 429,
+  ServiceQuotaExceededException: 429,
+  InternalServerException: 500,
+  ModelErrorException: 502,
+  ModelStreamErrorException: 502,
+  ServiceUnavailableException: 503,
+  ModelNotReadyException: 503,
+};
+
+interface AWSServiceError extends Error {
+  $metadata?: { httpStatusCode?: number };
+}
+
+/** A status for an error that carries neither an exception name nor an HTTP status. */
+function statusFromMessage(message: string): number | undefined {
+  const lower = message.toLowerCase();
+  if (/\bthrottl|\brate limit|\btoo many requests\b/.test(lower)) return 429;
+  if (/\baccess denied\b|\bnot authorized\b|\bunauthorized\b|\bsecurity token\b/.test(lower)) {
+    return 403;
+  }
+  return undefined;
+}
+
 interface StreamState {
-  toolCalls: ToolCall[];
+  /** Finished `toolUse` blocks, kept as raw JSON until the turn's stop reason is known */
+  toolUses: Array<{ id: string; name: string; input: string; thinking: Record<string, unknown>[] }>;
   toolCallInputs: Map<number, { id: string; name: string; input: string }>;
   reasoning: Map<number, ReasoningContentBlock>;
   thinking: Record<string, unknown>[];

@@ -36,6 +36,6 @@ app.listen(PORT, () => {
   console.log('Agent Card:');
   console.log(JSON.stringify(card, null, 2));
   console.log(`\nListening on http://localhost:${PORT}`);
-  console.log(`Agent card:  http://localhost:${PORT}/.well-known/agent.json`);
+  console.log(`Agent card:  http://localhost:${PORT}/.well-known/agent-card.json`);
   console.log(`RPC endpoint: http://localhost:${PORT}/a2a`);
 });

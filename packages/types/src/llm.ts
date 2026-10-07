@@ -106,11 +106,33 @@ export interface ChatRequest {
   signal?: AbortSignal;
 }
 
+/**
+ * Why a model turn ended, the same for every provider:
+ * - `stop`: the model finished its answer
+ * - `tool_calls`: the model asked for the calls in `toolCalls`, all of them complete
+ * - `length`: the output hit the token limit, so the answer is cut off; a turn cut inside a tool
+ *   call carries no tool calls, since they may be incomplete
+ * - `content_filter`: the provider's safety system withheld or cut the answer
+ * - `refusal`: the model declined to answer; `content` holds its explanation when it gave one
+ * - `error`: the provider ended the turn abnormally, e.g. with malformed output
+ *
+ * Only `tool_calls` runs tools. Backends report the provider's own reason and the runtime settles
+ * the turn with `normalizeTurn` from `@cogitator-ai/core`, so a turn with complete tool calls is a
+ * tool turn even when the provider reported `stop` for it.
+ */
+export type FinishReason =
+  'stop' | 'tool_calls' | 'length' | 'content_filter' | 'refusal' | 'error';
+
 export interface ChatResponse {
   id: string;
   content: string;
   toolCalls?: ToolCall[];
-  finishReason: 'stop' | 'tool_calls' | 'length' | 'error';
+  finishReason: FinishReason;
+  /**
+   * The provider's own explanation of how the turn ended, when it gives one, such as Gemini's
+   * `finishMessage` for a malformed function call. A run that ends in an `error` turn reports it
+   */
+  finishMessage?: string;
   usage: ChatUsage;
   /** Readable summary of the model's reasoning, when the provider returned one */
   reasoning?: string;
@@ -124,6 +146,11 @@ export interface ChatUsage {
   cachedInputTokens?: number;
   /** Input tokens written to the provider prompt cache; already counted in `inputTokens`. */
   cacheWriteTokens?: number;
+  /**
+   * The part of `cacheWriteTokens` written with the 1-hour TTL, which Anthropic bills at twice
+   * the input price instead of the 5-minute write price.
+   */
+  cacheWrite1hTokens?: number;
   /** Hidden reasoning tokens; already counted in `outputTokens`. */
   reasoningTokens?: number;
   /**
@@ -141,7 +168,10 @@ export interface ChatStreamChunk {
     reasoning?: string;
     toolCalls?: Partial<ToolCall>[];
   };
-  finishReason?: 'stop' | 'tool_calls' | 'length' | 'error';
+  /** Set on the chunk that ends the turn */
+  finishReason?: FinishReason;
+  /** The provider's explanation of how the turn ended, see `ChatResponse.finishMessage` */
+  finishMessage?: string;
   /** Usage data, typically included only in the final chunk */
   usage?: ChatUsage;
 }
@@ -213,14 +243,30 @@ export interface GoogleProviderConfig {
 export interface AzureProviderConfig {
   endpoint: string;
   apiKey: string;
+  /** Defaults to `2025-04-01-preview`, the first version that serves GPT-5 and o-series models */
   apiVersion?: string;
   deployment?: string;
+  /**
+   * The model the deployments serve, e.g. `gpt-5`, when their names do not say. Reasoning models
+   * (o-series, GPT-5 and later) get no sampling parameters and `max_completion_tokens`.
+   */
+  model?: string;
 }
 
+/**
+ * Bedrock settings. Leave the credentials unset to let the AWS SDK resolve them
+ * (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`,
+ * `AWS_PROFILE`, SSO, instance roles). Static credentials apply only when both
+ * `accessKeyId` and `secretAccessKey` are set.
+ */
 export interface BedrockProviderConfig {
   region?: string;
   accessKeyId?: string;
   secretAccessKey?: string;
+  /** Session token of temporary credentials (STS, SSO, CI roles), sent with the static keys */
+  sessionToken?: string;
+  /** Named profile from the shared AWS config files, used when no static keys are set */
+  profile?: string;
 }
 
 export interface VLLMProviderConfig {

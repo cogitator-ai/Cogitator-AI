@@ -70,8 +70,10 @@ That's it. The agent reads your question, decides to call `get_weather`, gets th
 
 ```bash
 npx create-cogitator-app my-agents
-cd my-agents && pnpm dev
+cd my-agents && npm run dev
 ```
+
+It prints what the first run needs: `ollama pull` for the local model, or `cp .env.example .env` and the key for a cloud provider.
 
 Choose from 6 templates: basic agent, agent with memory, multi-agent swarm, DAG workflow, REST API server, or Next.js chat app.
 
@@ -222,7 +224,7 @@ Install only what you need. Everything is a separate npm package.
 [`ai-sdk`](https://www.npmjs.com/package/@cogitator-ai/ai-sdk) ·
 [`openai-compat`](https://www.npmjs.com/package/@cogitator-ai/openai-compat)
 
-All with Swagger docs, SSE streaming, and WebSocket support, built on the shared streaming protocol in [`server-shared`](https://www.npmjs.com/package/@cogitator-ai/server-shared). See [integration examples](./examples/integrations/).
+All with Swagger docs, SSE streaming, and WebSocket support, built on the shared protocol in [`server-shared`](https://www.npmjs.com/package/@cogitator-ai/server-shared): one request validator, one response shape and one stream session for every adapter, checked by a shared conformance suite. Clients cannot set system-prompt `context` or add `system` thread messages unless the server allows it (`acceptContext`, `threadMessageRoles`), and non-JSON bodies are refused with `415`. See [integration examples](./examples/integrations/).
 
 ---
 
@@ -312,15 +314,15 @@ All with Swagger docs, SSE streaming, and WebSocket support, built on the shared
 
 ## Why Cogitator?
 
-|                   | Cogitator     | LangChain      | OpenAI Assistants |
-| ----------------- | ------------- | -------------- | ----------------- |
-| **Language**      | TypeScript    | Python         | REST API          |
-| **Self-hosted**   | Yes           | Yes            | No                |
-| **Any LLM**       | Yes           | Yes            | OpenAI only       |
-| **Multi-agent**   | 7 strategies  | Limited        | No                |
-| **A2A Protocol**  | Yes           | No             | No                |
-| **Observability** | OpenTelemetry | Requires setup | Dashboard only    |
-| **Dependencies**  | 7 (core)      | 150+           | N/A               |
+|                   | Cogitator                         | LangChain      | OpenAI Assistants |
+| ----------------- | --------------------------------- | -------------- | ----------------- |
+| **Language**      | TypeScript                        | Python         | REST API          |
+| **Self-hosted**   | Yes                               | Yes            | No                |
+| **Any LLM**       | Yes                               | Yes            | OpenAI only       |
+| **Multi-agent**   | 7 strategies                      | Limited        | No                |
+| **A2A Protocol**  | Yes                               | No             | No                |
+| **Observability** | OpenTelemetry                     | Requires setup | Dashboard only    |
+| **Dependencies**  | 7 (core), database drivers opt-in | 150+           | N/A               |
 
 ---
 
@@ -388,7 +390,7 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
 | [@cogitator-ai/sandbox](https://www.npmjs.com/package/@cogitator-ai/sandbox)               | Docker/WASM sandboxed execution                              | [![npm](https://img.shields.io/npm/v/@cogitator-ai/sandbox.svg)](https://www.npmjs.com/package/@cogitator-ai/sandbox)               |
 | [@cogitator-ai/redis](https://www.npmjs.com/package/@cogitator-ai/redis)                   | Redis client (standalone + cluster)                          | [![npm](https://img.shields.io/npm/v/@cogitator-ai/redis.svg)](https://www.npmjs.com/package/@cogitator-ai/redis)                   |
 | [@cogitator-ai/worker](https://www.npmjs.com/package/@cogitator-ai/worker)                 | Distributed job queue (BullMQ)                               | [![npm](https://img.shields.io/npm/v/@cogitator-ai/worker.svg)](https://www.npmjs.com/package/@cogitator-ai/worker)                 |
-| [@cogitator-ai/openai-compat](https://www.npmjs.com/package/@cogitator-ai/openai-compat)   | OpenAI Assistants API compatibility                          | [![npm](https://img.shields.io/npm/v/@cogitator-ai/openai-compat.svg)](https://www.npmjs.com/package/@cogitator-ai/openai-compat)   |
+| [@cogitator-ai/openai-compat](https://www.npmjs.com/package/@cogitator-ai/openai-compat)   | OpenAI-compatible server: Chat Completions, Responses        | [![npm](https://img.shields.io/npm/v/@cogitator-ai/openai-compat.svg)](https://www.npmjs.com/package/@cogitator-ai/openai-compat)   |
 | [@cogitator-ai/wasm-tools](https://www.npmjs.com/package/@cogitator-ai/wasm-tools)         | WASM-based sandboxed tools (14 built-in)                     | [![npm](https://img.shields.io/npm/v/@cogitator-ai/wasm-tools.svg)](https://www.npmjs.com/package/@cogitator-ai/wasm-tools)         |
 | [@cogitator-ai/self-modifying](https://www.npmjs.com/package/@cogitator-ai/self-modifying) | Self-modifying agents with meta-reasoning                    | [![npm](https://img.shields.io/npm/v/@cogitator-ai/self-modifying.svg)](https://www.npmjs.com/package/@cogitator-ai/self-modifying) |
 | [@cogitator-ai/neuro-symbolic](https://www.npmjs.com/package/@cogitator-ai/neuro-symbolic) | Neuro-symbolic reasoning with SAT/SMT                        | [![npm](https://img.shields.io/npm/v/@cogitator-ai/neuro-symbolic.svg)](https://www.npmjs.com/package/@cogitator-ai/neuro-symbolic) |
@@ -405,7 +407,7 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
 | [@cogitator-ai/tetsu](https://www.npmjs.com/package/@cogitator-ai/tetsu)                   | Tetsu controller on Bun (SSE, WebSocket, OpenAPI)            | [![npm](https://img.shields.io/npm/v/@cogitator-ai/tetsu.svg)](https://www.npmjs.com/package/@cogitator-ai/tetsu)                   |
 | [@cogitator-ai/deploy](https://www.npmjs.com/package/@cogitator-ai/deploy)                 | Deployment engine (Docker, Fly.io)                           | [![npm](https://img.shields.io/npm/v/@cogitator-ai/deploy.svg)](https://www.npmjs.com/package/@cogitator-ai/deploy)                 |
 | [@cogitator-ai/channels](https://www.npmjs.com/package/@cogitator-ai/channels)             | Messaging channels (Telegram, Discord, Slack, WhatsApp, Web) | [![npm](https://img.shields.io/npm/v/@cogitator-ai/channels.svg)](https://www.npmjs.com/package/@cogitator-ai/channels)             |
-| [@cogitator-ai/server-shared](https://www.npmjs.com/package/@cogitator-ai/server-shared)   | Shared streaming protocol and OpenAPI for server adapters    | [![npm](https://img.shields.io/npm/v/@cogitator-ai/server-shared.svg)](https://www.npmjs.com/package/@cogitator-ai/server-shared)   |
+| [@cogitator-ai/server-shared](https://www.npmjs.com/package/@cogitator-ai/server-shared)   | Shared protocol, validation, conformance for server adapters | [![npm](https://img.shields.io/npm/v/@cogitator-ai/server-shared.svg)](https://www.npmjs.com/package/@cogitator-ai/server-shared)   |
 | [@cogitator-ai/test-utils](https://www.npmjs.com/package/@cogitator-ai/test-utils)         | Testing utilities: mock backends, fixtures, helpers          | [![npm](https://img.shields.io/npm/v/@cogitator-ai/test-utils.svg)](https://www.npmjs.com/package/@cogitator-ai/test-utils)         |
 
 Not published to npm: [`packages/dashboard`](./packages/dashboard) (the [cogitator.app](https://cogitator.app) website: landing, docs, cookbook), [`packages/e2e`](./packages/e2e) (end-to-end test suite) and [`packages/gauntlet`](./packages/gauntlet) (integration proving ground that runs every package together on real models).

@@ -8,7 +8,13 @@ import { expectResponse } from './helpers';
 const TOKENS: Record<string, string> = { 'token-ada': 'ada', 'token-bob': 'bob' };
 
 function message(text: string, extra: Partial<A2AMessage> = {}): A2AMessage {
-  return { role: 'user', parts: [{ type: 'text', text }], ...extra };
+  return {
+    kind: 'message',
+    messageId: crypto.randomUUID(),
+    role: 'user',
+    parts: [{ kind: 'text', text }],
+    ...extra,
+  };
 }
 
 function runResult(): AgentRunResult {
@@ -81,7 +87,7 @@ describe('A2A callers', () => {
 
     const get = await call('token-bob', 'tasks/get', { id: task.id });
     const cancel = await call('token-bob', 'tasks/cancel', { id: task.id });
-    const push = await call('token-bob', 'tasks/pushNotification/list', { taskId: task.id });
+    const push = await call('token-bob', 'tasks/pushNotificationConfig/list', { id: task.id });
     const bobList = await call('token-bob', 'tasks/list', {});
     const adaList = await call('token-ada', 'tasks/list', {});
 
@@ -145,7 +151,7 @@ describe('A2A callers', () => {
     }
 
     expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({ type: 'status-update', status: { state: 'failed' } });
+    expect(events[0]).toMatchObject({ id: 9, error: { code: -32001 } });
     expect(run).toHaveBeenCalledTimes(1);
   });
 });

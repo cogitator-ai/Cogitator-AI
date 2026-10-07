@@ -50,7 +50,11 @@ export class ModelRegistry {
   private providers = new Map<string, ProviderInfo>();
   private cache: ModelCache;
   private options: Required<RegistryOptions>;
+  /** Whether `initialize()` has finished: the catalogue, its cache or the built-in fallback is loaded */
   private initialized = false;
+  /** Whether any models are loaded, the built-in ones a lookup before `initialize()` falls back to included */
+  private loaded = false;
+  private initializing: Promise<void> | null = null;
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(options: RegistryOptions = {}) {
@@ -64,9 +68,21 @@ export class ModelRegistry {
     this.cache = new ModelCache(this.options.cache);
   }
 
+  /**
+   * Loads the model catalogue: from the cache when it is fresh, otherwise from LiteLLM, falling
+   * back to the built-in models when both fail and `fallbackToBuiltin` is set. Lookups made
+   * before it use the built-in models without counting as initialization, so calling it later
+   * still loads the full catalogue. Overlapping calls share one load.
+   */
   async initialize(): Promise<void> {
     if (this.initialized) return;
+    this.initializing ??= this.load().finally(() => {
+      this.initializing = null;
+    });
+    await this.initializing;
+  }
 
+  private async load(): Promise<void> {
     try {
       const cached = await this.cache.get();
 
@@ -218,6 +234,7 @@ export class ModelRegistry {
   }
 
   private loadModels(models: ModelInfo[]): void {
+    this.loaded = true;
     this.models.clear();
     this.keys.clear();
     this.aliases.clear();
@@ -358,10 +375,7 @@ export class ModelRegistry {
   }
 
   private ensureInitialized(): void {
-    if (!this.initialized) {
-      this.loadModels(BUILTIN_MODELS);
-      this.initialized = true;
-    }
+    if (!this.loaded) this.loadModels(BUILTIN_MODELS);
   }
 
   private refreshInBackground(): void {
@@ -419,23 +433,29 @@ export interface TokenUsageForCost {
   cachedInputTokens?: number;
   /** Part of `inputTokens` written to the prompt cache */
   cacheWriteTokens?: number;
+  /** Part of `cacheWriteTokens` written with the 1-hour TTL */
+  cacheWrite1hTokens?: number;
 }
 
 /**
  * Cost in USD of a model's tokens: cache reads and writes at the model's
- * cache prices where it has them, the rest of the input at the input price.
- * `null` when the model's price is unknown.
+ * cache prices where it has them (1-hour cache writes at their own price),
+ * the rest of the input at the input price. `null` when the model's price is
+ * unknown.
  */
 export function calculateCost(modelId: string, usage: TokenUsageForCost): number | null {
   const pricing = getPricing(modelId);
   if (!pricing) return null;
   const cached = Math.min(usage.cachedInputTokens ?? 0, usage.inputTokens);
   const written = Math.min(usage.cacheWriteTokens ?? 0, usage.inputTokens - cached);
+  const writtenFor1h = Math.min(usage.cacheWrite1hTokens ?? 0, written);
   const uncached = usage.inputTokens - cached - written;
+  const writePrice = pricing.inputCacheWrite ?? pricing.input;
   return (
     (uncached * pricing.input +
       cached * (pricing.inputCached ?? pricing.input) +
-      written * (pricing.inputCacheWrite ?? pricing.input) +
+      (written - writtenFor1h) * writePrice +
+      writtenFor1h * (pricing.inputCacheWrite1h ?? writePrice) +
       usage.outputTokens * pricing.output) /
     1_000_000
   );

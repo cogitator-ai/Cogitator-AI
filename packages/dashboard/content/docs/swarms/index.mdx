@@ -116,6 +116,8 @@ const team = swarm('team')
   .build(cogitator);
 ```
 
+A swarm turn cannot wait for a person: when an agent calls a tool that needs approval (`requiresApproval`) and its run pauses, the turn fails with an `AgentRunPausedError` (from `@cogitator-ai/core`) that names the agent and the calls and carries the checkpoint, instead of passing the model's text before the tool call on as the agent's answer. It is not retried, skipped or failed over, since another attempt would only pause again, and it does not count against the circuit breaker. Give swarm agents an `onApproval` policy, or tools without approval, when the swarm must finish on its own. Distributed turns behave the same way.
+
 ## Events
 
 Every swarm emits structured events you can subscribe to:
@@ -175,7 +177,7 @@ const workflow = new WorkflowBuilder<ReviewState>('review')
   .build();
 ```
 
-The swarm sees the node's step and the workflow state as `workflowContext` in its run context. `parallelSwarmsNode([{ swarm, key, options }, ...], merge)` runs several swarms at once and fails only when all of them fail; its output maps each `key` to its `StrategyResult`.
+The swarm sees the node's step and the workflow state as `workflowContext` in its run context. The node passes the workflow run's abort signal to `swarm.run()`, so a node `timeout`, a pause or a cancel aborts the swarm and its agent turns in flight, and a retry of the node can run the same `Swarm` again. `parallelSwarmsNode([{ swarm, key, options }, ...], merge)` runs several swarms at once and fails only when all of them fail, its output maps each `key` to its `StrategyResult`.
 
 ## Next Steps
 

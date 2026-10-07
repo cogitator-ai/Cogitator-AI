@@ -25,6 +25,7 @@ function createMockRedis(): RedisClientLike {
 
 function createTask(id: string, overrides?: Partial<A2ATask>): A2ATask {
   return {
+    kind: 'task',
     id,
     contextId: overrides?.contextId ?? 'ctx_default',
     status: overrides?.status ?? { state: 'working', timestamp: new Date().toISOString() },

@@ -146,6 +146,11 @@ describe('parseArgs', () => {
     expect(result.name).toBe('first');
   });
 
+  it('parses --model', () => {
+    expect(parseArgs(['--model', 'llama3.2:3b']).model).toBe('llama3.2:3b');
+    expect(parseArgs(['--model']).model).toBeUndefined();
+  });
+
   it('returns empty object for no args', () => {
     const result = parseArgs([]);
     expect(result).toEqual({});
@@ -158,7 +163,7 @@ describe('collectOptions with --yes', () => {
   });
 
   it('answers every prompt with its default', async () => {
-    vi.stubEnv('npm_config_user_agent', 'npm/10.0.0 node/v22.0.0');
+    vi.stubEnv('npm_config_user_agent', 'pnpm/11.0.0 npm/? node/v22.0.0');
 
     const options = await collectOptions(parseArgs(['-y']));
 
@@ -207,6 +212,31 @@ describe('collectOptions with --yes', () => {
       docker: false,
       git: false,
     });
+  });
+
+  it('picks npm when launched through npx', async () => {
+    vi.stubEnv('npm_config_user_agent', 'npm/10.9.8 node/v22.23.1 darwin arm64 workspaces/false');
+
+    expect((await collectOptions({ yes: true })).packageManager).toBe('npm');
+  });
+
+  it('names the project after the current directory for "."', async () => {
+    const options = await collectOptions({ yes: true, name: '.' });
+
+    expect(options.path).toBe(process.cwd());
+    expect(options.name).toBe(path.basename(process.cwd()));
+  });
+
+  it('refuses a directory name that is not a valid package name', async () => {
+    await expect(collectOptions({ yes: true, name: "bob's agents" })).rejects.toThrow(
+      /Invalid project name "bob's agents"/
+    );
+  });
+
+  it('keeps --model for the agents', async () => {
+    const options = await collectOptions(parseArgs(['-y', '--model', 'qwen2.5:0.5b']));
+
+    expect(options.model).toBe('qwen2.5:0.5b');
   });
 
   it('uses the package manager it was launched with', async () => {

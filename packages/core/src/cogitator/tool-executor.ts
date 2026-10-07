@@ -1,5 +1,4 @@
 import type {
-  ImageBase64ContentPart,
   Message,
   MessageContent,
   Tool,
@@ -10,10 +9,13 @@ import type {
 import { ToolRegistry } from '../registry';
 import { getLogger } from '../logger';
 import type { SandboxManager } from './initializers';
+
+type SandboxRunOutput = NonNullable<Awaited<ReturnType<SandboxManager['execute']>>['data']>;
 import type { ConstitutionalAI } from '../constitutional/index';
 import { createLinkedAbortController } from '../utils/abort';
+import { toolPartsToMessageContent, toolPartsToText, toolResultParts } from '../tool-content';
 
-type ExtraToolContext = {
+type ExtraToolContext = Record<string, unknown> & {
   threadId?: string;
   userId?: string;
   channelType?: string;
@@ -115,6 +117,8 @@ export async function executeTool(
 
 function toolResultText(value: unknown): string {
   if (typeof value === 'string') return value;
+  const parts = toolResultParts(value);
+  if (parts) return toolPartsToText(parts);
   return JSON.stringify(value) ?? String(value);
 }
 
@@ -130,10 +134,11 @@ async function executeNatively(
   const timeoutMs = tool.timeout && tool.timeout > 0 ? tool.timeout : undefined;
   const abort = timeoutMs ? createLinkedAbortController(signal, timeoutMs) : undefined;
   const context: ToolContext = {
+    ...extraContext,
     agentId,
     runId,
     signal: abort?.signal ?? signal ?? new AbortController().signal,
-    ...extraContext,
+    toolCallId: toolCall.id,
   };
 
   try {
@@ -268,6 +273,10 @@ async function executeInSandbox(
   }
 
   if (isWasm) {
+    const failure = wasmFailure(tool, result.data);
+    if (failure) {
+      return { callId: toolCall.id, name: toolCall.name, result: null, error: failure };
+    }
     try {
       const parsed = JSON.parse(result.data.stdout);
       return {
@@ -299,20 +308,35 @@ async function executeInSandbox(
 }
 
 /**
- * The message that answers a tool call. A result object carrying a base64
- * image in `image` or `imageBase64` (a PNG, JPEG, GIF or WebP, plain or as a
- * `data:` URL) reaches the model as an image after the rest of the result as
- * JSON, so vision models see a screenshot instead of its base64 text.
+ * Why a WASM tool's run produced no usable result: it timed out, exited with an error (a panic
+ * or a trap), or wrote more than the sandbox keeps, which leaves its JSON cut off.
+ */
+function wasmFailure(tool: Tool, data: SandboxRunOutput): string | undefined {
+  const stderr = data.stderr.trim();
+  if (data.timedOut) {
+    return `Tool "${tool.name}" timed out in the WASM sandbox after ${data.duration}ms`;
+  }
+  if (data.exitCode !== 0) {
+    return `Tool "${tool.name}" failed in the WASM sandbox (exit code ${data.exitCode})${stderr ? `: ${stderr}` : ''}`;
+  }
+  if (data.truncated) {
+    return `Tool "${tool.name}" wrote more output than the WASM sandbox keeps (${data.stdout.length} characters), so its result was cut off`;
+  }
+  return undefined;
+}
+
+/**
+ * The message that answers a tool call. A result that carries media (a `toolContent()` result,
+ * or an object with a base64 image in `image` or `imageBase64`, see `toolResultParts`) reaches
+ * the model as text and image parts, so vision models see a screenshot instead of its base64
+ * text, and files only as a description.
  */
 export function createToolMessage(toolCall: ToolCall, result: ToolResult): Message {
-  const image = result.error ? undefined : findImage(result.result);
+  const parts = result.error ? undefined : toolResultParts(result.result);
   const content: MessageContent = result.error
     ? JSON.stringify({ error: result.error })
-    : image
-      ? [
-          { type: 'text', text: JSON.stringify({ ...image.rest, [image.key]: IMAGE_PLACEHOLDER }) },
-          { type: 'image_base64', image_base64: { data: image.data, media_type: image.mediaType } },
-        ]
+    : parts
+      ? toolPartsToMessageContent(parts)
       : JSON.stringify(result.result ?? null);
   return {
     role: 'tool',
@@ -320,35 +344,4 @@ export function createToolMessage(toolCall: ToolCall, result: ToolResult): Messa
     toolCallId: toolCall.id,
     name: toolCall.name,
   };
-}
-
-type ImageMediaType = ImageBase64ContentPart['image_base64']['media_type'];
-
-const IMAGE_PLACEHOLDER = '(image attached)';
-const IMAGE_KEYS = ['image', 'imageBase64'] as const;
-const IMAGE_SIGNATURES: readonly (readonly [string, ImageMediaType])[] = [
-  ['iVBORw0KGgo', 'image/png'],
-  ['/9j/', 'image/jpeg'],
-  ['R0lGOD', 'image/gif'],
-  ['UklGR', 'image/webp'],
-];
-const DATA_URL = /^data:image\/[a-z+.-]+;base64,/i;
-
-function findImage(
-  value: unknown
-):
-  | { key: string; data: string; mediaType: ImageMediaType; rest: Record<string, unknown> }
-  | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const record = value as Record<string, unknown>;
-  for (const key of IMAGE_KEYS) {
-    const raw = record[key];
-    if (typeof raw !== 'string') continue;
-    const data = raw.replace(DATA_URL, '');
-    const mediaType = IMAGE_SIGNATURES.find(([signature]) => data.startsWith(signature))?.[1];
-    if (!mediaType) continue;
-    const { [key]: _image, ...rest } = record;
-    return { key, data, mediaType, rest };
-  }
-  return undefined;
 }

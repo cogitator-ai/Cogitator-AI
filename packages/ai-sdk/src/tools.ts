@@ -1,6 +1,12 @@
-import { toolToSchema } from '@cogitator-ai/core';
-import type { Tool, ToolContext, ToolSchema } from '@cogitator-ai/types';
-import { isRecord } from './json.js';
+import {
+  toToolParameters,
+  toolPartsToText,
+  toolResultParts,
+  toolToSchema,
+} from '@cogitator-ai/core';
+import { defaultSpecificationVersion } from './ai-version.js';
+import type { ApprovalCheck, Tool, ToolContext, ToolSchema } from '@cogitator-ai/types';
+import { isRecord, toJSONValue } from './json.js';
 import type {
   AISDKJSONSchemaConverterOptions,
   AISDKSchema,
@@ -189,10 +195,46 @@ function resolveDescription(aiTool: AISDKToolLike): string {
 }
 
 /**
+ * The AI SDK tool's `needsApproval` as a Cogitator `requiresApproval`. Cogitator decides
+ * synchronously whether a call needs approval, so a check that answers with a promise (or
+ * throws) counts as "needs approval": a call is never run unasked.
+ */
+function requiresApprovalOf(aiTool: AISDKToolLike): Tool['requiresApproval'] {
+  const needs = aiTool.needsApproval;
+  if (needs === undefined || typeof needs === 'boolean') return needs;
+  const check: ApprovalCheck = (args) => {
+    const answer = needs(args, { toolCallId: '', messages: [] });
+    if (typeof answer === 'boolean') return answer;
+    if (isThenable(answer)) Promise.resolve(answer).catch(() => undefined);
+    return true;
+  };
+  return check;
+}
+
+/**
+ * A Cogitator tool's `requiresApproval` as an AI SDK `needsApproval`; a check that throws counts
+ * as "needs approval", as in a Cogitator run.
+ */
+function needsApprovalOf<TParams>(
+  cogTool: Tool<TParams>
+): AISDKTool<TParams>['needsApproval'] | undefined {
+  const requires = cogTool.requiresApproval;
+  if (requires === undefined || typeof requires === 'boolean') return requires;
+  return (input) => {
+    try {
+      return requires(isRecord(input) ? input : {});
+    } catch {
+      return true;
+    }
+  };
+}
+
+/**
  * Convert an AI SDK tool (ai@4 – ai@7) into a Cogitator tool.
  *
  * Reads `inputSchema` (ai@5+) or `parameters` (ai@4). Zod 4 schemas are kept as-is; other
- * schemas are converted to JSON Schema and validated before `execute` runs.
+ * schemas are converted to JSON Schema and validated before `execute` runs. `needsApproval`
+ * becomes `requiresApproval`, so a Cogitator run pauses before the tool runs.
  */
 export function fromAISDKTool<TParams = unknown, TResult = unknown>(
   aiTool: AISDKToolLike,
@@ -224,7 +266,7 @@ export function fromAISDKTool<TParams = unknown, TResult = unknown>(
 
     const toolContext = aiSDKContext(context);
     const options: AISDKToolExecutionOptions = {
-      toolCallId: context.runId,
+      toolCallId: context.toolCallId ?? `${context.runId}:${crypto.randomUUID()}`,
       messages: [],
       abortSignal: context.signal,
       context: toolContext,
@@ -233,21 +275,19 @@ export function fromAISDKTool<TParams = unknown, TResult = unknown>(
     return (await lastValue(aiTool.execute(input, options))) as TResult;
   };
 
+  const requiresApproval = requiresApprovalOf(aiTool);
   const cogTool: Tool<TParams, TResult> = {
     name,
     description: resolveDescription(aiTool),
     parameters: (zodSchema ?? objectSchema) as Tool<TParams, TResult>['parameters'],
     execute,
+    ...(requiresApproval !== undefined && { requiresApproval }),
     toJSON(): ToolSchema {
       if (objectSchema) {
         return {
           name: this.name,
           description: this.description,
-          parameters: {
-            type: 'object',
-            properties: objectSchema.properties,
-            required: objectSchema.required,
-          },
+          parameters: toToolParameters(objectSchema),
         };
       }
       return toolToSchema(this);
@@ -324,6 +364,7 @@ function cogitatorContext(options: AISDKToolExecutionOptions): ToolContext {
   return {
     agentId: pick('agentId') ?? 'ai-sdk',
     runId: pick('runId') ?? options.toolCallId,
+    toolCallId: options.toolCallId,
     signal: options.abortSignal ?? new AbortController().signal,
     threadId: pick('threadId'),
     userId: pick('userId'),
@@ -332,25 +373,82 @@ function cogitatorContext(options: AISDKToolExecutionOptions): ToolContext {
   };
 }
 
+type ModelOutputPart =
+  | { type: 'text'; text: string }
+  | { type: 'media'; data: string; mediaType: string }
+  | { type: 'file'; data: { type: 'data'; data: string }; mediaType: string };
+
+/**
+ * What the model sees of a tool's output (`toModelOutput`): a result with media (`toolContent()`,
+ * a screenshot object) as a `content` output with its images, files only described, anything
+ * else as text or JSON, as the AI SDK sends it by default. ai@5 passes the output, ai@6 and ai@7
+ * an object holding it, and ai@7 takes images as `file` parts.
+ */
+function toModelOutput(arg: unknown) {
+  const output =
+    isRecord(arg) && 'output' in arg && 'toolCallId' in arg
+      ? (arg as { output: unknown }).output
+      : arg;
+  const parts = toolResultParts(output);
+  if (!parts) {
+    return typeof output === 'string'
+      ? { type: 'text' as const, value: output }
+      : { type: 'json' as const, value: toJSONValue(output) };
+  }
+  const fileParts = defaultSpecificationVersion() === 'v4';
+  const value = parts.map((part): ModelOutputPart => {
+    if (part.type !== 'image') return { type: 'text', text: toolPartsToText([part]) };
+    return fileParts
+      ? { type: 'file', data: { type: 'data', data: part.data }, mediaType: part.mediaType }
+      : { type: 'media', data: part.data, mediaType: part.mediaType };
+  });
+  return { type: 'content' as const, value };
+}
+
+/** ai@4's `experimental_toToolResultContent`: the same as `toModelOutput` in ai@4's form. */
+function toToolResultContent(output: unknown) {
+  const parts = toolResultParts(output);
+  if (!parts) {
+    return [
+      {
+        type: 'text' as const,
+        text: typeof output === 'string' ? output : JSON.stringify(toJSONValue(output)),
+      },
+    ];
+  }
+  return parts.map((part) =>
+    part.type === 'image'
+      ? { type: 'image' as const, data: part.data, mimeType: part.mediaType }
+      : { type: 'text' as const, text: toolPartsToText([part]) }
+  );
+}
+
 /**
  * Convert a Cogitator tool into an AI SDK tool usable with ai@4 – ai@7.
  *
  * The tool exposes the same schema as `inputSchema` (ai@5+) and `parameters` (ai@4). String
  * fields of the AI SDK tool context (`agentId`, `runId`, `threadId`, `userId`, `channelType`,
- * `channelId`) are forwarded to the Cogitator `ToolContext`.
+ * `channelId`) are forwarded to the Cogitator `ToolContext`. A tool with `requiresApproval` gets
+ * the same `needsApproval`, so ai@6 and ai@7 ask before they run it.
  */
 export function toAISDKTool<TParams = unknown, TResult = unknown>(
   cogTool: Tool<TParams, TResult>
 ): AISDKTool<TParams, TResult> {
   const schema = createAISDKSchema(cogTool);
-  return {
+  const needsApproval = needsApprovalOf(cogTool);
+  const aiTool: AISDKTool<TParams, TResult> = {
     description: cogTool.description,
     inputSchema: isZod4Schema(cogTool.parameters)
       ? cogTool.parameters
       : (schema as unknown as Tool<TParams, TResult>['parameters']),
     parameters: schema,
     execute: (input, options) => cogTool.execute(input, cogitatorContext(options)),
+    ...(needsApproval !== undefined && { needsApproval }),
   };
+  return Object.assign(aiTool, {
+    toModelOutput,
+    experimental_toToolResultContent: toToolResultContent,
+  });
 }
 
 export function convertToolsFromAISDK(aiTools: Record<string, AISDKToolLike>): Tool[] {

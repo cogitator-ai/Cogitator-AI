@@ -45,8 +45,10 @@ export type {
   ConditionNodeConfig,
   ConditionOperator,
   SerializedSwarm,
+  SwarmTopology,
   JobPayload,
   AgentJobPayload,
+  AgentJobResume,
   WorkflowJobPayload,
   SwarmJobPayload,
   SwarmAgentJobPayload,
@@ -58,6 +60,7 @@ export type {
   QueueConfig,
   WorkerConfig,
   WorkerRuntime,
+  JobExecutionOptions,
   QueueMetrics,
   JobState,
 } from './types';

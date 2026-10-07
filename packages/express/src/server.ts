@@ -1,12 +1,13 @@
 import { Router, json } from 'express';
 import { getLogger } from '@cogitator-ai/core';
-import { resolveSseHeartbeatMs } from '@cogitator-ai/server-shared';
+import { DEFAULT_THREAD_MESSAGE_ROLES, resolveSseHeartbeatMs } from '@cogitator-ai/server-shared';
 import type { Server as HttpServer } from 'http';
 import type { CogitatorServerConfig, RouteContext } from './types.js';
 import {
   createAuthMiddleware,
   createRateLimitMiddleware,
   createCorsMiddleware,
+  createJsonBodyGuard,
   errorHandler,
   notFoundHandler,
 } from './middleware/index.js';
@@ -54,6 +55,8 @@ export class CogitatorServer {
       swagger: cfg.swagger ?? {},
       websocket: cfg.websocket ?? {},
       sseHeartbeatMs: resolveSseHeartbeatMs(cfg.sseHeartbeatMs),
+      acceptContext: cfg.acceptContext ?? false,
+      threadMessageRoles: cfg.threadMessageRoles ?? DEFAULT_THREAD_MESSAGE_ROLES,
     } as Required<NonNullable<CogitatorServerConfig['config']>>;
   }
 
@@ -65,11 +68,12 @@ export class CogitatorServer {
     const router = Router();
     const basePath = this.config.basePath;
 
-    router.use(json());
-
     if (this.config.cors) {
       router.use(createCorsMiddleware(this.config.cors));
     }
+
+    router.use(createJsonBodyGuard());
+    router.use(json());
 
     router.use(createAuthMiddleware(this.config.auth));
 

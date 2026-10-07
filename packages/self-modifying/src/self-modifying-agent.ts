@@ -1,4 +1,5 @@
 import { nanoid } from 'nanoid';
+import { Cogitator } from '@cogitator-ai/core';
 import type {
   Agent,
   AgentConfig,
@@ -29,7 +30,8 @@ import type {
   ReasoningMode,
   Message,
   ToolSchema,
-  ToolContext,
+  ToolInvocationOptions,
+  ToolInvoker,
 } from '@cogitator-ai/types';
 import { DEFAULT_META_REASONING_CONFIG } from '@cogitator-ai/types';
 
@@ -69,6 +71,20 @@ export interface SelfModifyingAgentOptions {
   modificationConstraints?: Partial<ModificationConstraints>;
   /** Models architecture evolution may switch to. Model changes are never proposed when empty. */
   availableModels?: string[];
+  /**
+   * Runs the agent's tool calls the way a Cogitator run does: arguments validated against the
+   * tool's schema (Zod or JSON Schema), approval asked for calls that need it, the guardrails
+   * applied, sandboxed tools run in the sandbox and `tool.timeout` kept. Pass the `Cogitator`
+   * whose sandbox and guardrails should apply. Default: a Cogitator of its own without
+   * configuration, released by `close()`.
+   */
+  toolInvoker?: ToolInvoker;
+  /**
+   * Decides tool calls that need approval (`requiresApproval`), like `RunOptions.onApproval`.
+   * Without it the invoker's `guardrails.onToolApproval` decides. A self-modifying run cannot
+   * pause, so a call nobody approves is refused and the model is told why.
+   */
+  onApproval?: ToolInvocationOptions['onApproval'];
 }
 
 export interface SelfModifyingEventDataMap {
@@ -148,6 +164,7 @@ interface ToolCallOutcome {
   failed: boolean;
 }
 
+/** How long a tool without its own `timeout` gets before its signal aborts. */
 const DEFAULT_TOOL_TIMEOUT_MS = 30_000;
 
 function resolveModelName(agent: Agent, provider: string): string {
@@ -181,10 +198,15 @@ export class SelfModifyingAgent {
 
   private currentContext: RunContext | null = null;
   private runQueue: Promise<unknown> = Promise.resolve();
+  private readonly toolInvoker?: ToolInvoker;
+  private ownInvoker?: Cogitator;
+  private readonly onApproval?: ToolInvocationOptions['onApproval'];
 
   constructor(options: SelfModifyingAgentOptions) {
     this.agent = options.agent;
     this.llm = options.llm;
+    this.toolInvoker = options.toolInvoker;
+    this.onApproval = options.onApproval;
     this.modelName = resolveModelName(options.agent, options.llm.provider);
     this.config = this.mergeConfig(options.config);
 
@@ -278,6 +300,19 @@ export class SelfModifyingAgent {
     const result = this.runQueue.then(() => this.executeRun(input));
     this.runQueue = result.catch(() => undefined);
     return result;
+  }
+
+  /** Releases the Cogitator the agent created for tool calls, when no `toolInvoker` was given. */
+  async close(): Promise<void> {
+    const own = this.ownInvoker;
+    this.ownInvoker = undefined;
+    await own?.close();
+  }
+
+  private invoker(): ToolInvoker {
+    if (this.toolInvoker) return this.toolInvoker;
+    this.ownInvoker ??= new Cogitator();
+    return this.ownInvoker;
   }
 
   async generateTool(gap: CapabilityGap): Promise<GeneratedTool | null> {
@@ -990,22 +1025,18 @@ export class SelfModifyingAgent {
     if (!t) {
       error = `Tool "${call.name}" not found`;
     } else {
-      const parsed = t.parameters.safeParse(call.arguments);
-      if (!parsed.success) {
-        error = `Invalid arguments for "${call.name}": ${parsed.error.issues
-          .map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`)
-          .join('; ')}`;
-      } else {
-        try {
-          const toolContext: ToolContext = {
-            agentId: this.agent.id ?? this.agent.name ?? 'self-modifying',
-            runId: ctx.runId,
-            signal: AbortSignal.timeout(t.timeout ?? DEFAULT_TOOL_TIMEOUT_MS),
-          };
-          result = await t.execute(parsed.data, toolContext);
-        } catch (err) {
-          error = err instanceof Error ? err.message : String(err);
-        }
+      try {
+        const outcome = await this.invoker().invokeTool(t, call.arguments, {
+          toolCallId: call.id,
+          runId: ctx.runId,
+          agentId: this.agent.id ?? this.agent.name ?? 'self-modifying',
+          ...(t.timeout === undefined && { signal: AbortSignal.timeout(DEFAULT_TOOL_TIMEOUT_MS) }),
+          ...(this.onApproval && { onApproval: this.onApproval }),
+        });
+        result = outcome.result;
+        error = outcome.error;
+      } catch (err) {
+        error = err instanceof Error ? err.message : String(err);
       }
     }
 

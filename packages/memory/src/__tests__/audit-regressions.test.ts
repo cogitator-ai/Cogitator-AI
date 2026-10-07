@@ -4,6 +4,7 @@ import { InMemoryAdapter } from '../adapters/memory';
 import { SQLiteAdapter } from '../adapters/sqlite';
 import { InMemoryEmbeddingAdapter } from '../adapters/memory-embedding';
 import { ContextBuilder } from '../context-builder';
+import { countMessageTokens } from '../token-counter';
 import { SessionManager } from '../session-manager';
 import { CompactionService } from '../compaction';
 import { SQLiteGraphAdapter } from '../knowledge-graph/sqlite-graph-adapter';
@@ -241,12 +242,12 @@ describe('ContextBuilder', () => {
       await memoryAdapter.addEntry({
         threadId: 't1',
         message: msg('user', content),
-        tokenCount: 10,
+        tokenCount: countMessageTokens(msg('user', content)),
       });
     }
 
     const builder = new ContextBuilder(
-      { maxTokens: 4000, reserveTokens: 3880, strategy: 'hybrid', includeSystemPrompt: false },
+      { maxTokens: 4000, reserveTokens: 3860, strategy: 'hybrid', includeSystemPrompt: false },
       {
         memoryAdapter,
         embeddingService: fakeEmbeddings({

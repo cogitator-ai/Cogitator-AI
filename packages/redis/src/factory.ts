@@ -114,7 +114,7 @@ async function loadIoRedis(): Promise<IoRedis> {
  * Create a standalone Redis client
  */
 function createStandaloneClient(ioredis: IoRedis, config: RedisStandaloneConfig): RedisClient {
-  const url = config.url ?? buildUrl(config.host, config.port);
+  const url = resolveStandaloneUrl(config);
 
   const client = new ioredis(url, {
     password: config.password,
@@ -147,6 +147,28 @@ function createClusterClient(ioredis: IoRedis, config: RedisClusterConfig): Redi
   });
 
   return wrapClient(cluster, { keyPrefix: config.keyPrefix ?? '', cluster: true });
+}
+
+/**
+ * The url a standalone client connects to, so the explicit fields win over what `url` says
+ * (ioredis lets the url win over its options): explicit `host` and `port` are written into it,
+ * and its password and database are dropped when `password` or `db` is set, which the client
+ * options then carry. Without `url` it is built from `host` and `port`. A url that is not a URL
+ * (a unix socket path) is kept as it is.
+ */
+export function resolveStandaloneUrl(config: RedisStandaloneConfig): string {
+  if (!config.url) return buildUrl(config.host, config.port);
+  let url: URL;
+  try {
+    url = new URL(config.url);
+  } catch {
+    return config.url;
+  }
+  if (config.host !== undefined) url.hostname = config.host;
+  if (config.port !== undefined) url.port = String(config.port);
+  if (config.password !== undefined) url.password = '';
+  if (config.db !== undefined) url.pathname = '';
+  return url.toString();
 }
 
 /**
@@ -328,7 +350,7 @@ export function parseClusterNodesEnv(env?: string): { host: string; port: number
  * Create Redis configuration from environment variables
  *
  * Supports:
- * - REDIS_URL - standalone Redis URL
+ * - REDIS_URL - standalone Redis URL (REDIS_HOST and REDIS_PORT are ignored with it)
  * - REDIS_HOST + REDIS_PORT - standalone Redis host/port
  * - REDIS_CLUSTER_NODES - JSON array of cluster nodes
  * - REDIS_PASSWORD - authentication password
@@ -357,10 +379,20 @@ export function createConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Redis
   }
 
   const port = parseInt(env.REDIS_PORT ?? '6379', 10);
+  const url = env.REDIS_URL?.trim() || undefined;
+
+  if (url) {
+    return {
+      mode: 'standalone',
+      url,
+      password: env.REDIS_PASSWORD,
+      keyPrefix: env.REDIS_KEY_PREFIX ?? 'cogitator:',
+    };
+  }
 
   return {
     mode: 'standalone',
-    url: env.REDIS_URL,
+    url: undefined,
     host: env.REDIS_HOST ?? 'localhost',
     port: Number.isNaN(port) ? 6379 : port,
     password: env.REDIS_PASSWORD,

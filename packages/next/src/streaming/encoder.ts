@@ -1,3 +1,5 @@
+export { generateId } from '@cogitator-ai/server-shared';
+
 const encoder = new TextEncoder();
 
 export function encodeSSE(data: unknown): Uint8Array {
@@ -6,13 +8,4 @@ export function encodeSSE(data: unknown): Uint8Array {
 
 export function encodeDone(): Uint8Array {
   return encoder.encode('data: [DONE]\n\n');
-}
-
-let counter = 0;
-
-export function generateId(prefix: string = 'id'): string {
-  const timestamp = Date.now().toString(36);
-  const random = Math.random().toString(36).substring(2, 8);
-  const count = (counter++).toString(36);
-  return `${prefix}_${timestamp}${random}${count}`;
 }

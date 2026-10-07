@@ -6,21 +6,6 @@ import { log, printBanner } from '../utils/logger.js';
 import { importOptionalPackage } from '../utils/module-loader.js';
 import { BUNDLE_MARKER } from '../utils/daemon.js';
 
-export const BUNDLE_EXTERNALS = [
-  'grammy',
-  'discord.js',
-  '@slack/bolt',
-  '@whiskeysockets/baileys',
-  'ws',
-  'better-sqlite3',
-  'pg',
-  'ioredis',
-  'mongodb',
-  '@qdrant/js-client-rest',
-  'playwright',
-  'playwright-core',
-];
-
 interface EsbuildBuildResult {
   metafile?: { inputs: Record<string, unknown> };
 }
@@ -75,6 +60,51 @@ if (gateway && typeof gateway.start === 'function' && typeof gateway.stop === 'f
 `;
 }
 
+export interface GatewayBuildOptions {
+  configPath: string;
+  outfile: string;
+  target: string;
+  sourcemap: boolean;
+  minify?: boolean;
+  quiet?: boolean;
+}
+
+/**
+ * esbuild options for a gateway bundle. The project's own code is bundled,
+ * while every package stays an import resolved from node_modules at runtime:
+ * packages ship native addons (better-sqlite3, the ssh2 behind the Docker
+ * sandbox) and optional drivers loaded on demand, which a bundle cannot
+ * carry, so the bundle runs next to the project's node_modules.
+ */
+export function gatewayBuildOptions(options: GatewayBuildOptions): Record<string, unknown> {
+  return {
+    stdin: {
+      contents: createGatewayEntry(options.configPath),
+      resolveDir: dirname(options.configPath),
+      sourcefile: 'cogitator-entry.mjs',
+      loader: 'js',
+    },
+    bundle: true,
+    packages: 'external',
+    platform: 'node',
+    target: options.target,
+    format: 'esm',
+    outfile: options.outfile,
+    sourcemap: options.sourcemap,
+    minify: options.minify ?? false,
+    treeShaking: true,
+    metafile: true,
+    logLevel: options.quiet ? 'error' : 'warning',
+    banner: {
+      js: [
+        '#!/usr/bin/env node',
+        `import { createRequire as ${BUNDLE_MARKER} } from "module";`,
+        `const require = ${BUNDLE_MARKER}(import.meta.url);`,
+      ].join('\n'),
+    },
+  };
+}
+
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -125,32 +155,16 @@ export const buildCommand = new Command('build')
 
       let result: EsbuildBuildResult;
       try {
-        result = await esbuild.build({
-          stdin: {
-            contents: createGatewayEntry(configPath),
-            resolveDir: dirname(configPath),
-            sourcefile: 'cogitator-entry.mjs',
-            loader: 'js',
-          },
-          bundle: true,
-          platform: 'node',
-          target: options.target,
-          format: 'esm',
-          outfile,
-          sourcemap: options.sourcemap,
-          minify: options.minify ?? false,
-          treeShaking: true,
-          metafile: true,
-          logLevel: options.quiet ? 'error' : 'warning',
-          external: BUNDLE_EXTERNALS,
-          banner: {
-            js: [
-              '#!/usr/bin/env node',
-              `import { createRequire as ${BUNDLE_MARKER} } from "module";`,
-              `const require = ${BUNDLE_MARKER}(import.meta.url);`,
-            ].join('\n'),
-          },
-        });
+        result = await esbuild.build(
+          gatewayBuildOptions({
+            configPath,
+            outfile,
+            target: options.target,
+            sourcemap: options.sourcemap,
+            minify: options.minify,
+            quiet: options.quiet,
+          })
+        );
       } catch (error) {
         log.error('Build failed');
         if (error instanceof Error) log.dim(error.message);

@@ -319,7 +319,7 @@ describeRedisOllama('Worker: job processing with Ollama', () => {
     );
 
     await expect(waitForJob(job.id!)).rejects.toThrow(
-      'Tools not registered on this worker: deploy'
+      'Agent "deployer" needs tools that are not registered here: deploy'
     );
   });
 

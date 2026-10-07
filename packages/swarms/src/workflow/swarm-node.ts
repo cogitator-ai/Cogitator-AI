@@ -19,6 +19,8 @@ import { Swarm } from '../swarm';
  */
 export interface SwarmNodeContext<S = WorkflowState> extends NodeContext<S> {
   cogitator: Cogitator;
+  /** Abort signal of the workflow run (node timeout, pause, cancel) */
+  signal?: AbortSignal;
 }
 
 export interface SwarmNodeOptions<S = WorkflowState> {
@@ -55,12 +57,23 @@ function requireCogitator<S extends WorkflowState>(ctx: NodeContext<S>): Cogitat
   return (ctx as SwarmNodeContext<S>).cogitator;
 }
 
+function combineSignals(...signals: (AbortSignal | undefined)[]): AbortSignal | undefined {
+  const present = signals.filter((signal): signal is AbortSignal => signal !== undefined);
+  if (present.length <= 1) return present[0];
+  return AbortSignal.any(present);
+}
+
+/**
+ * Run the swarm for one node execution, bound to the workflow run's signal: a node timeout,
+ * pause or cancel aborts the swarm and its agent turns, so a retry can run it again.
+ */
 async function runSwarmForNode<S extends WorkflowState>(
   swarmOrConfig: Swarm | SwarmConfig,
   ctx: NodeContext<S>,
   options?: SwarmNodeOptions<S>
 ): Promise<StrategyResult> {
   const cogitator = requireCogitator(ctx);
+  const signal = combineSignals((ctx as SwarmNodeContext<S>).signal, options?.runOptions?.signal);
   const isOwned = !(swarmOrConfig instanceof Swarm);
   const swarm =
     swarmOrConfig instanceof Swarm ? swarmOrConfig : new Swarm(cogitator, swarmOrConfig);
@@ -69,6 +82,7 @@ async function runSwarmForNode<S extends WorkflowState>(
     return await swarm.run({
       input: resolveSwarmInput(ctx, options),
       ...options?.runOptions,
+      ...(signal && { signal }),
       context: {
         ...options?.runOptions?.context,
         workflowContext: {

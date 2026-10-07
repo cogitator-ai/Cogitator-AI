@@ -43,7 +43,7 @@ const toolModels = listModels({
 });
 ```
 
-Lookups are case-insensitive and resolve aliases. Calling them before `initializeModels()` works too: the registry then loads the built-in models only, with the same lookup rules.
+Lookups are case-insensitive and resolve aliases. Calling them before `initializeModels()` works too: the registry then uses the built-in models, with the same lookup rules, and `initializeModels()` still loads the full catalogue whenever it runs.
 
 ### Provider-qualified ids
 
@@ -177,6 +177,7 @@ const cost = calculateCost('claude-sonnet-5-5', {
   outputTokens: 800,
   cachedInputTokens: 10_000,
   cacheWriteTokens: 0,
+  cacheWrite1hTokens: 0, // part of cacheWriteTokens written with the 1-hour TTL
 }); // null when the model's price is unknown
 
 const registry = getModelRegistry();
@@ -209,7 +210,8 @@ interface ModelPricing {
   input: number; // USD per million input tokens
   output: number; // USD per million output tokens
   inputCached?: number; // cache reads
-  inputCacheWrite?: number; // cache writes
+  inputCacheWrite?: number; // cache writes (5-minute TTL)
+  inputCacheWrite1h?: number; // cache writes with the 1-hour TTL (Anthropic)
   outputCached?: number;
 }
 

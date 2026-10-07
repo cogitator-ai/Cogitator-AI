@@ -1,18 +1,23 @@
 import type { Context } from 'hono';
-import { isJsonObject } from '@cogitator-ai/server-shared';
+import { isJsonObject, parseJsonBody, type BodyRefusal } from '@cogitator-ai/server-shared';
 import type { HonoEnv } from '../types.js';
 import { resolveError } from './errors.js';
 
-export type JsonBodyResult = { ok: true; value: unknown } | { ok: false };
+export type { JsonBodyResult } from '@cogitator-ai/server-shared';
 
-export async function readJsonBody(c: Context<HonoEnv>): Promise<JsonBodyResult> {
-  const text = await c.req.text();
-  if (!text.trim()) return { ok: true, value: undefined };
-  try {
-    return { ok: true, value: JSON.parse(text) as unknown };
-  } catch {
-    return { ok: false };
-  }
+/**
+ * Reads the JSON body of a request: `undefined` for no body, a refusal for a body that is
+ * not JSON (`415`) or not valid JSON (`400`). Only JSON media types are read, so a page on
+ * another origin cannot start a run with a `text/plain` or form body, which browsers send
+ * without a CORS preflight.
+ */
+export async function readJsonBody(c: Context<HonoEnv>) {
+  return parseJsonBody(c.req.header('content-type'), await c.req.text());
+}
+
+/** Answers a body that {@link readJsonBody} refused */
+export function bodyRefused(c: Context<HonoEnv>, refusal: BodyRefusal): Response {
+  return c.json({ error: { message: refusal.message, code: refusal.code } }, refusal.status);
 }
 
 export function createRequestAbortController(c: Context<HonoEnv>): AbortController {
@@ -57,10 +62,6 @@ export function holdConnectionOpen(c: Context<HonoEnv>): void {
 
 export function invalidInput(c: Context<HonoEnv>, message: string): Response {
   return c.json({ error: { message, code: 'INVALID_INPUT' } }, 400);
-}
-
-export function invalidJson(c: Context<HonoEnv>): Response {
-  return invalidInput(c, 'Invalid JSON body');
 }
 
 export function errorResponse(c: Context<HonoEnv>, error: unknown, label: string): Response {

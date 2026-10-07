@@ -135,16 +135,24 @@ describe('createBodyParser', () => {
     expect(res.status).toBe(200);
   });
 
-  it('skips body parsing for non-JSON content types', async () => {
-    const app = buildApp();
-    const res = await request(app.callback())
-      .post('/echo')
-      .set('Content-Type', 'text/plain')
-      .send('plain text');
+  it.each(['text/plain', 'application/x-www-form-urlencoded'])(
+    'refuses a %s body a cross-origin page can send without a preflight',
+    async (type) => {
+      const app = buildApp();
+      const res = await request(app.callback())
+        .post('/echo')
+        .set('Content-Type', type)
+        .send('{"input":"hi"}');
 
-    expect(res.status).toBe(200);
-    expect(res.body.received).toBeUndefined();
-  });
+      expect(res.status).toBe(415);
+      expect(res.body).toEqual({
+        error: {
+          message: 'Request body must be JSON (Content-Type: application/json)',
+          code: 'UNSUPPORTED_MEDIA_TYPE',
+        },
+      });
+    }
+  );
 
   it('rejects payloads exceeding 1MB', async () => {
     const app = buildApp();

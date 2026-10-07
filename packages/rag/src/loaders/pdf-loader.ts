@@ -1,8 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { nanoid } from 'nanoid';
 import type { PDFParse as PDFParseClass } from 'pdf-parse';
 import type { DocumentLoader, RAGDocument } from '@cogitator-ai/types';
+import { documentId } from './document-id.js';
 
 type PDFParseConstructor = typeof PDFParseClass;
 
@@ -82,7 +82,7 @@ export class PDFLoader implements DocumentLoader {
     if (parsed.title) metadata.title = parsed.title;
 
     return {
-      id: nanoid(),
+      id: documentId(source),
       content: parsed.text,
       source,
       sourceType: 'pdf',
@@ -113,7 +113,7 @@ export class PDFLoader implements DocumentLoader {
     if (title) metadata.title = title;
 
     return {
-      id: nanoid(),
+      id: documentId(source, `page-${pageNumber}`),
       content,
       source,
       sourceType: 'pdf',

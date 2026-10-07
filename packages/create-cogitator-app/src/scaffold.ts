@@ -12,6 +12,11 @@ import { generateReadme } from './templates/base/readme.js';
 import { generatePnpmWorkspace } from './templates/base/pnpm-workspace.js';
 import { installDependencies } from './utils/package-manager.js';
 import { initGitRepo, isGitInstalled } from './utils/git.js';
+import { validateProjectName } from './utils/project-name.js';
+import { modelFor } from './utils/providers.js';
+
+/** The Node.js versions generated projects run on: `--env-file-if-exists` in their scripts needs 22.9+. */
+const NODE_ENGINES = '>=22.12.0';
 
 function writeFile(basePath: string, file: TemplateFile) {
   const fullPath = path.join(basePath, file.path);
@@ -28,6 +33,7 @@ function buildPackageJson(options: ProjectOptions): string {
     version: '0.1.0',
     private: true,
     ...(isNextjs ? {} : { type: 'module' }),
+    engines: { node: NODE_ENGINES },
     scripts: template.scripts(),
     dependencies: template.dependencies(),
     devDependencies: template.devDependencies(),
@@ -42,9 +48,9 @@ function collectFiles(options: ProjectOptions): TemplateFile[] {
 
   files.push({ path: 'package.json', content: buildPackageJson(options) });
   files.push(...template.files(options));
-  files.push(generateGitignore());
+  files.push(generateGitignore(options.template));
   files.push(generateEnvExample(options.provider, options.template));
-  files.push(generateCogitatorYml(options.provider, options.template));
+  files.push(generateCogitatorYml(options.provider, options.template, modelFor(options)));
   files.push(generateReadme(options));
 
   if (options.template !== 'nextjs') {
@@ -56,7 +62,7 @@ function collectFiles(options: ProjectOptions): TemplateFile[] {
   }
 
   if (options.docker) {
-    files.push(generateDockerCompose(options.provider));
+    files.push(generateDockerCompose(options.provider, modelFor(options)));
   }
 
   return files;
@@ -81,10 +87,15 @@ function runStep(
 /**
  * Writes the project described by `options`, then installs its dependencies
  * (unless `install` is `false`) and initializes git (when `git` is `true`).
- * Throws when `path` exists and is not empty. A failed install or git step
- * does not throw: the result reports it, and the project stays written.
+ * Throws when `name` is not a valid package name or `path` exists and is not
+ * empty. A failed install or git step does not throw: the result reports it,
+ * and the project stays written.
  */
 export async function scaffold(options: ProjectOptions): Promise<ScaffoldResult> {
+  const nameError = validateProjectName(options.name);
+  if (nameError) {
+    throw new Error(`Invalid project name "${options.name}": ${nameError}`);
+  }
   if (fs.existsSync(options.path) && fs.readdirSync(options.path).length > 0) {
     throw new Error(`Directory "${options.path}" already exists and is not empty`);
   }

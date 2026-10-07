@@ -226,6 +226,41 @@ describe('ModelRegistry initialization', () => {
     reg.shutdown();
   });
 
+  it('loads the full catalogue even after a lookup fell back to the built-in models', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          'deepseek/deepseek-chat': {
+            max_tokens: 8192,
+            input_cost_per_token: 0.00000028,
+            output_cost_per_token: 0.00000042,
+            litellm_provider: 'deepseek',
+          },
+        }),
+    });
+    const reg = new ModelRegistry({ cache: { ttl: 60_000, storage: 'memory' } });
+
+    expect(reg.getPrice('deepseek/deepseek-chat')).toBeNull();
+    expect(reg.isInitialized()).toBe(false);
+
+    await reg.initialize();
+
+    expect(reg.isInitialized()).toBe(true);
+    expect(reg.getPrice('deepseek/deepseek-chat')).toEqual({ input: 0.28, output: 0.42 });
+    expect(reg.getModel('gpt-4o')).not.toBeNull();
+  });
+
+  it('fetches the catalogue once for initializations that overlap', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
+    globalThis.fetch = fetchMock;
+    const reg = new ModelRegistry({ cache: { ttl: 60_000, storage: 'memory' } });
+
+    await Promise.all([reg.initialize(), reg.initialize()]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('should resolve fetched model ids case-insensitively', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,

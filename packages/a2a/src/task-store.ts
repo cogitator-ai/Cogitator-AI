@@ -1,6 +1,6 @@
 import type { A2ATask, TaskFilter, TaskStore } from './types.js';
 import { isTerminalState } from './types.js';
-import { isTaskVisibleTo } from './ownership.js';
+import { isTaskVisibleTo, taskTime } from './ownership.js';
 
 export interface InMemoryTaskStoreConfig {
   maxSize?: number;
@@ -45,8 +45,8 @@ export class InMemoryTaskStore implements TaskStore {
     }
 
     tasks.sort((a, b) => {
-      const ta = new Date(a.status.timestamp).getTime();
-      const tb = new Date(b.status.timestamp).getTime();
+      const ta = taskTime(a);
+      const tb = taskTime(b);
       return tb - ta;
     });
 
@@ -70,7 +70,7 @@ export class InMemoryTaskStore implements TaskStore {
       let oldestFinished: { id: string; time: number } | null = null;
       let oldestAny: { id: string; time: number } | null = null;
       for (const [id, task] of this.tasks) {
-        const time = new Date(task.status.timestamp).getTime();
+        const time = taskTime(task);
         if (!oldestAny || time < oldestAny.time) oldestAny = { id, time };
         if (isTerminalState(task.status.state) && (!oldestFinished || time < oldestFinished.time)) {
           oldestFinished = { id, time };

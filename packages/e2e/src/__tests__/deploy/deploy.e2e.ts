@@ -64,6 +64,18 @@ describe('deploy E2E', () => {
       const result = analyzer.analyze(tmpDir);
       expect(result.server).toBeUndefined();
       expect(result.hasTypeScript).toBe(false);
+      expect(result.checks.find((check) => check.name === 'package.json')?.passed).toBe(false);
+    });
+
+    it('refuses a script that would exit and be restarted forever', async () => {
+      tmpDir = createTempProject({ dependencies: { '@cogitator-ai/core': '^0.1.0' } });
+      const result = await new Deployer().deploy({
+        projectDir: tmpDir,
+        target: 'docker',
+        dryRun: true,
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('deploy.kind');
     });
   });
 
@@ -156,7 +168,7 @@ describe('deploy E2E', () => {
     });
 
     it('dry run deploy returns success without executing', async () => {
-      tmpDir = createTempProject({ dependencies: {} });
+      tmpDir = createTempProject({ dependencies: { '@cogitator-ai/express': '^0.1.0' } });
       const deployer = new Deployer();
       const result = await deployer.deploy({
         projectDir: tmpDir,

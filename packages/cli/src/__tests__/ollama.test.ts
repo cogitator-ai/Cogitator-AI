@@ -36,6 +36,14 @@ describe('resolveOllamaUrl', () => {
   it('ignores blank values', () => {
     expect(resolveOllamaUrl({ OLLAMA_URL: '  ' }, '')).toBe('http://localhost:11434');
   });
+
+  it('reads OLLAMA_HOST the way Ollama does: default port 11434, 0.0.0.0 as localhost', () => {
+    expect(resolveOllamaUrl({ OLLAMA_HOST: '0.0.0.0' })).toBe('http://localhost:11434');
+    expect(resolveOllamaUrl({ OLLAMA_HOST: 'gpu-box' })).toBe('http://gpu-box:11434');
+    expect(resolveOllamaUrl({ OLLAMA_BASE_URL: 'lan-box', OLLAMA_HOST: '0.0.0.0' })).toBe(
+      'http://lan-box:11434'
+    );
+  });
 });
 
 describe('readNdjson', () => {

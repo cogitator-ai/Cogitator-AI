@@ -118,35 +118,36 @@ const result = await cog.run(agent, {
 
 ### RunOptions
 
-| Option                     | Type                                                  | Description                                                                                              |
-| -------------------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `input`                    | `string`                                              | User prompt (required)                                                                                   |
-| `images`                   | `ImageInput[]`                                        | Images to include with the input ([Vision & Audio](/docs/core/vision-and-audio))                         |
-| `audio`                    | `AudioInput[]`                                        | Audio files to transcribe and include                                                                    |
-| `threadId`                 | `string`                                              | Conversation to continue; a new one is created when omitted                                              |
-| `userId`                   | `string`                                              | The user the run acts for: owns new threads, scopes memory, reaches tools as `context.userId`            |
-| `threadAccess`             | `'owner' \| 'shared'`                                 | `'owner'` (default): only the thread's creator may continue it ([Multi-User](/docs/advanced/multi-user)) |
-| `context`                  | `Record<string, unknown>`                             | Additional context injected into the system prompt                                                       |
-| `stream`                   | `boolean`                                             | Enable token streaming                                                                                   |
-| `signal`                   | `AbortSignal`                                         | Cancel the run and linked provider/tool work                                                             |
-| `timeout`                  | `number`                                              | Override the agent timeout (ms)                                                                          |
-| `reasoning`                | `ReasoningConfig`                                     | Override the agent's `reasoning` for this run                                                            |
-| `parallelToolCalls`        | `boolean`                                             | Execute tool calls in parallel (default: sequential)                                                     |
-| `useMemory`                | `boolean`                                             | Enable/disable memory for this run (default: on when an adapter is configured)                           |
-| `loadHistory`              | `boolean`                                             | Load prior memory history for this run (default: true)                                                   |
-| `saveHistory`              | `boolean`                                             | Persist run messages to memory (default: true)                                                           |
-| `onApproval`               | `(request) => decision \| 'pause'`                    | Decide calls of tools with `requiresApproval` ([Approvals](/docs/tools/approvals))                       |
-| `onToken`                  | `(token: string) => void`                             | Streaming callback                                                                                       |
-| `onReasoning`              | `(delta: string) => void`                             | Streamed reasoning summary (needs `reasoning.summary`)                                                   |
-| `onToolCall`               | `(call: ToolCall) => void`                            | Called when the agent invokes a tool                                                                     |
-| `onToolResult`             | `(result: ToolResult) => void`                        | Called when a tool returns                                                                               |
-| `onHandoff`                | `(handoff: HandoffEvent) => void`                     | Called when an agent hands the conversation over ([Handoffs](/docs/core/agents#handoffs))                |
-| `onRunStart`               | `({ runId, agentId, input, threadId }) => void`       | Called when the run starts                                                                               |
-| `onRunComplete`            | `(result: RunResult) => void`                         | Called with the result                                                                                   |
-| `onRunError`               | `(error: Error, runId: string) => void`               | Called when the run fails                                                                                |
-| `onMemoryError`            | `(error: Error, operation: 'save' \| 'load') => void` | Called when loading or saving history fails (the run goes on)                                            |
-| `onSpan`                   | `(span: Span) => void`                                | Observability callback for tracing                                                                       |
-| `channelType`, `channelId` | `string`                                              | Where the message came from; passed on to tools in their context                                         |
+| Option                     | Type                                                  | Description                                                                                                   |
+| -------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `input`                    | `string`                                              | User prompt (required)                                                                                        |
+| `images`                   | `ImageInput[]`                                        | Images to include with the input ([Vision & Audio](/docs/core/vision-and-audio))                              |
+| `audio`                    | `AudioInput[]`                                        | Audio files to transcribe and include                                                                         |
+| `threadId`                 | `string`                                              | Conversation to continue; a new one is created when omitted                                                   |
+| `userId`                   | `string`                                              | The user the run acts for: owns new threads, scopes memory, reaches tools as `context.userId`                 |
+| `threadAccess`             | `'owner' \| 'shared'`                                 | `'owner'` (default): only the thread's creator may continue it ([Multi-User](/docs/advanced/multi-user))      |
+| `context`                  | `Record<string, unknown>`                             | System prompt values, as one JSON data block, adapters accept client keys via `acceptContext`                 |
+| `stream`                   | `boolean`                                             | Enable token streaming                                                                                        |
+| `signal`                   | `AbortSignal`                                         | Cancel the run and linked provider/tool work                                                                  |
+| `timeout`                  | `number`                                              | Override the agent timeout (ms)                                                                               |
+| `reasoning`                | `ReasoningConfig`                                     | Override the agent's `reasoning` for this run                                                                 |
+| `parallelToolCalls`        | `boolean`                                             | Execute tool calls in parallel (default: sequential)                                                          |
+| `toolChoice`               | `ToolChoice`                                          | `'none'` on every turn, or force `'required'` or a named function until the model makes a call, then `'auto'` |
+| `useMemory`                | `boolean`                                             | Enable/disable memory for this run (default: on when an adapter is configured)                                |
+| `loadHistory`              | `boolean`                                             | Load prior memory history for this run (default: true)                                                        |
+| `saveHistory`              | `boolean`                                             | Persist run messages to memory (default: true)                                                                |
+| `onApproval`               | `(request) => decision \| 'pause'`                    | Decide calls of tools with `requiresApproval` ([Approvals](/docs/tools/approvals))                            |
+| `onToken`                  | `(token: string) => void`                             | Streaming callback                                                                                            |
+| `onReasoning`              | `(delta: string) => void`                             | Streamed reasoning summary (needs `reasoning.summary`)                                                        |
+| `onToolCall`               | `(call: ToolCall) => void`                            | Called when the agent invokes a tool                                                                          |
+| `onToolResult`             | `(result: ToolResult) => void`                        | Called when a tool returns                                                                                    |
+| `onHandoff`                | `(handoff: HandoffEvent) => void`                     | Called when an agent hands the conversation over ([Handoffs](/docs/core/agents#handoffs))                     |
+| `onRunStart`               | `({ runId, agentId, input, threadId }) => void`       | Called when the run starts                                                                                    |
+| `onRunComplete`            | `(result: RunResult) => void`                         | Called with the result                                                                                        |
+| `onRunError`               | `(error: Error, runId: string) => void`               | Called when the run fails                                                                                     |
+| `onMemoryError`            | `(error: Error, operation: 'save' \| 'load') => void` | Called when loading or saving history fails (the run goes on)                                                 |
+| `onSpan`                   | `(span: Span) => void`                                | Observability callback for tracing                                                                            |
+| `channelType`, `channelId` | `string`                                              | Where the message came from; passed on to tools in their context                                              |
 
 ### RunResult
 

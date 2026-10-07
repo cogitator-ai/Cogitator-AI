@@ -37,37 +37,58 @@ const agentConfig = (overrides: Partial<SerializedAgent> = {}): SerializedAgent 
 });
 
 describe('processors/shared', () => {
-  it('prefixes unqualified models with the serialized provider', async () => {
-    const { Cogitator } = await import('@cogitator-ai/core');
-    const { resolveModelString } = await import('../processors/shared');
+  it('routes a serialized model like the same agent in-process', async () => {
+    const { Cogitator, routeAgentWireModel } = await import('@cogitator-ai/core');
     const cog = new Cogitator();
-    expect(resolveModelString('gpt-4o', 'openai', cog)).toBe('openai/gpt-4o');
-    expect(resolveModelString('ollama/llama3', 'openai', cog)).toBe('ollama/llama3');
-    expect(resolveModelString('meta-llama/llama-4', 'groq', cog)).toBe('groq/meta-llama/llama-4');
-    expect(resolveModelString('meta-llama/llama-4', undefined, cog)).toBe('meta-llama/llama-4');
+    expect(routeAgentWireModel('gpt-4o', 'openai', cog)).toEqual({
+      model: 'gpt-4o',
+      provider: 'openai',
+    });
+    expect(routeAgentWireModel('openai/gpt-4o', 'openai', cog)).toEqual({
+      model: 'gpt-4o',
+      provider: 'openai',
+    });
+    expect(routeAgentWireModel('ollama/llama3', 'openai', cog)).toEqual({ model: 'ollama/llama3' });
+    expect(routeAgentWireModel('meta-llama/llama-4', 'groq', cog)).toEqual({
+      model: 'meta-llama/llama-4',
+      provider: 'groq',
+    });
+    expect(routeAgentWireModel('meta-llama/llama-4', undefined, cog)).toEqual({
+      model: 'meta-llama/llama-4',
+    });
   });
 
   it('resolves tools by name from the worker registry', async () => {
-    const { resolveTools } = await import('../processors/shared');
+    const { Cogitator } = await import('@cogitator-ai/core');
+    const { createAgentFromConfig } = await import('../processors/shared');
     const search = { name: 'search' } as Tool;
 
-    const tools = resolveTools(
-      [{ name: 'search', description: 'd', parameters: { type: 'object', properties: {} } }],
-      [search]
+    const agent = createAgentFromConfig(
+      agentConfig({
+        tools: [
+          { name: 'search', description: 'd', parameters: { type: 'object', properties: {} } },
+        ],
+      }),
+      { cogitator: new Cogitator(), tools: [search] }
     );
 
-    expect(tools).toEqual([search]);
+    expect(agent.tools).toEqual([search]);
   });
 
   it('fails fast when a tool is not registered on the worker', async () => {
-    const { resolveTools } = await import('../processors/shared');
+    const { Cogitator } = await import('@cogitator-ai/core');
+    const { createAgentFromConfig } = await import('../processors/shared');
 
     expect(() =>
-      resolveTools(
-        [{ name: 'deploy', description: 'd', parameters: { type: 'object', properties: {} } }],
-        []
+      createAgentFromConfig(
+        agentConfig({
+          tools: [
+            { name: 'deploy', description: 'd', parameters: { type: 'object', properties: {} } },
+          ],
+        }),
+        { cogitator: new Cogitator(), tools: [] }
       )
-    ).toThrow('Tools not registered on this worker: deploy');
+    ).toThrow('not registered here: deploy');
   });
 });
 
@@ -91,7 +112,10 @@ describe('processors/agent', () => {
 
     expect(result).toMatchObject({ type: 'agent', output: 'hello', tokenUsage: { total: 5 } });
     expect(runMock.mock.calls[0][1]).toMatchObject({ threadId: 't', userId: 'alice' });
-    expect(runMock.mock.calls[0][0].model).toBe('ollama/qwen2.5:0.5b');
+    expect(runMock.mock.calls[0][0].config).toMatchObject({
+      model: 'qwen2.5:0.5b',
+      provider: 'ollama',
+    });
   });
 
   it('recovers tool outputs from tool messages', async () => {
@@ -175,7 +199,7 @@ describe('processors/swarm', () => {
       buildSwarmConfig({ topology: 'voting', agents, consensusThreshold: 0.8 }, {})
     ).toMatchObject({ strategy: 'consensus', consensus: { threshold: 0.8 } });
     expect(buildSwarmConfig({ topology: 'collaborative', agents }, {})).toMatchObject({
-      strategy: 'round-robin',
+      strategy: 'pipeline',
     });
   });
 
@@ -203,6 +227,64 @@ describe('processors/swarm', () => {
 
     expect(result.output).toBe('b out');
     expect(result.agentOutputs.map((o) => o.agent)).toEqual(['a', 'b']);
+  });
+});
+
+describe('processors/swarm collaborative topology', () => {
+  it('has every agent contribute in every round, each building on the others', async () => {
+    runMock.mockReset();
+    runMock.mockImplementation(async (agent: { name: string }, options: RunOptions) =>
+      runResult(`${agent.name}#${(options.input.match(/\[/g) ?? []).length}`)
+    );
+    const { processSwarmJob } = await import('../processors/swarm');
+
+    const result = await processSwarmJob({
+      type: 'swarm',
+      jobId: 'collab',
+      swarmConfig: {
+        topology: 'collaborative',
+        agents: [
+          agentConfig({ name: 'researcher' }),
+          agentConfig({ name: 'writer' }),
+          agentConfig({ name: 'editor' }),
+        ],
+        maxRounds: 2,
+      },
+      input: 'Write about tides',
+    });
+
+    const order = runMock.mock.calls.map(([agent]) => (agent as { name: string }).name);
+    expect(order).toEqual(['researcher', 'writer', 'editor', 'researcher', 'writer', 'editor']);
+    const lastInput = (runMock.mock.calls.at(-1)![1] as RunOptions).input;
+    expect(lastInput).toContain('Write about tides');
+    expect(lastInput).toContain('researcher#0');
+    expect(lastInput).toContain('writer#4');
+    expect(result.rounds).toBe(2);
+    expect(result.output).toBe('editor#5');
+    expect(result.agentOutputs.map((o) => o.agent)).toEqual(order);
+  });
+
+  it('ends with the coordinator combining the contributions', async () => {
+    runMock.mockReset();
+    runMock.mockImplementation(async (agent: { name: string }) => runResult(`${agent.name} says`));
+    const { processSwarmJob } = await import('../processors/swarm');
+
+    const result = await processSwarmJob({
+      type: 'swarm',
+      jobId: 'collab-lead',
+      swarmConfig: {
+        topology: 'collaborative',
+        agents: [agentConfig({ name: 'a' }), agentConfig({ name: 'b' })],
+        coordinator: agentConfig({ name: 'lead' }),
+        maxRounds: 1,
+      },
+      input: 'Plan the launch',
+    });
+
+    const order = runMock.mock.calls.map(([agent]) => (agent as { name: string }).name);
+    expect(order).toEqual(['a', 'b', 'lead']);
+    expect((runMock.mock.calls[2][1] as RunOptions).input).toContain('b says');
+    expect(result.output).toBe('lead says');
   });
 });
 

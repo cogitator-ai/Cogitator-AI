@@ -40,6 +40,7 @@ export const ProvidersConfigSchema = z.object({
       endpoint: z.string(),
       apiVersion: z.string().optional(),
       deployment: z.string().optional(),
+      model: z.string().optional(),
     })
     .optional(),
   bedrock: z
@@ -47,6 +48,8 @@ export const ProvidersConfigSchema = z.object({
       region: z.string().optional(),
       accessKeyId: z.string().optional(),
       secretAccessKey: z.string().optional(),
+      sessionToken: z.string().optional(),
+      profile: z.string().optional(),
     })
     .optional(),
   vllm: z.object({ baseUrl: z.string() }).optional(),
@@ -176,6 +179,7 @@ export const MemoryConfigSchema = z.object({
       connectionString: z.string(),
       schema: z.string().optional(),
       poolSize: z.number().positive().optional(),
+      dimensions: z.number().int().positive().optional(),
     })
     .optional(),
   sqlite: z
@@ -492,10 +496,17 @@ export const ContextManagerConfigSchema = z.object({
 });
 
 export const DeployTargetSchema = z.enum(['docker', 'fly']);
-export const DeployServerSchema = z.enum(['express', 'fastify', 'hono', 'koa']);
+export const DeployServerSchema = z.enum(['express', 'fastify', 'hono', 'koa', 'tetsu', 'next']);
+export const DeployKindSchema = z.enum(['server', 'worker']);
+export const DeployVolumeSchema = z.object({
+  path: z.string().min(1),
+  name: z.string().optional(),
+  size: z.number().int().positive().optional(),
+});
 
 export const DeployConfigSchema = z.object({
   target: DeployTargetSchema.optional(),
+  kind: DeployKindSchema.optional(),
   server: DeployServerSchema.optional(),
   port: z.number().int().min(1).max(65535).optional(),
   registry: z.string().optional(),
@@ -523,6 +534,8 @@ export const DeployConfigSchema = z.object({
       cpu: z.number().positive().optional(),
     })
     .optional(),
+  volumes: z.array(DeployVolumeSchema).optional(),
+  hostGateway: z.boolean().optional(),
 });
 
 export const PromptsConfigSchema = z.object({

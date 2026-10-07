@@ -1,13 +1,4 @@
 import type { ServerSentEvent } from '@tetsujs/sse';
-import {
-  createReasoningDeltaEvent,
-  createReasoningEndEvent,
-  createReasoningStartEvent,
-  createTextDeltaEvent,
-  createTextEndEvent,
-  createTextStartEvent,
-  generateId,
-} from '@cogitator-ai/server-shared';
 import type { StreamEvent } from '@cogitator-ai/server-shared';
 import type { RunOptions } from '@cogitator-ai/types';
 import type { ShutdownSignal } from './types.js';
@@ -23,53 +14,6 @@ export const DONE_EVENT: ServerSentEvent = { data: '[DONE]' };
 
 export function sseEvent(event: StreamEvent): ServerSentEvent {
   return { data: event };
-}
-
-type PartKind = 'text' | 'reasoning';
-
-const PART_EVENTS = {
-  text: {
-    prefix: 'txt',
-    start: createTextStartEvent,
-    delta: createTextDeltaEvent,
-    end: createTextEndEvent,
-  },
-  reasoning: {
-    prefix: 'rsn',
-    start: createReasoningStartEvent,
-    delta: createReasoningDeltaEvent,
-    end: createReasoningEndEvent,
-  },
-} as const;
-
-/**
- * The text and reasoning parts of one streamed message.
- *
- * A part opens with its first delta and closes before a part of the other kind
- * opens, so a client never sees two of them open at once.
- */
-export class MessageParts {
-  private open: { kind: PartKind; id: string } | undefined;
-
-  delta(kind: PartKind, delta: string): StreamEvent[] {
-    if (!delta) return [];
-    const part = PART_EVENTS[kind];
-    const events = this.open?.kind === kind ? [] : this.end();
-    if (!this.open) {
-      this.open = { kind, id: generateId(part.prefix) };
-      events.push(part.start(this.open.id));
-    }
-    events.push(part.delta(this.open.id, delta));
-    return events;
-  }
-
-  /** Closes the open part, or only a part of `kind` when given. */
-  end(kind?: PartKind): StreamEvent[] {
-    const open = this.open;
-    if (!open || (kind !== undefined && open.kind !== kind)) return [];
-    this.open = undefined;
-    return [PART_EVENTS[open.kind].end(open.id)];
-  }
 }
 
 export function resolveSignal(until: ShutdownSignal | undefined): AbortSignal | undefined {

@@ -16,6 +16,8 @@ unwrap(await memory.connect());
 
 `createMemoryAdapter` handles `memory`, `redis`, `postgres`, `sqlite` and `mongodb` and returns the common `MemoryAdapter` interface. For Qdrant use `createEmbeddingAdapter({ provider: 'qdrant', dimensions })`, which returns a `ConnectableEmbeddingAdapter` (an `EmbeddingAdapter` with `connect()` and `disconnect()`) to connect before use. Construct the class directly (e.g. `new PostgresAdapter(...)`) when you need its extra capabilities — facts, vector or keyword search.
 
+Database drivers are optional peer dependencies, installed by you and not with `@cogitator-ai/memory` or `@cogitator-ai/core`: each section below names the one its adapter needs, and an adapter whose driver is missing fails `connect()` with the install command.
+
 All conversation adapters share the same `MemoryAdapter` interface: `createThread`, `getThread`, `updateThread`, `deleteThread`, `addEntry`, `getEntries`, `getEntry`, `deleteEntry`, `clearThread`, `connect` and `disconnect`. Some adapters add `FactAdapter`, `EmbeddingAdapter` or `KeywordSearchAdapter`.
 
 Every method — `connect()` included — returns a `MemoryResult` instead of throwing, so a failed connection goes unnoticed unless you check it. Wrap calls in `unwrap()` (throws on failure) or check `result.success`; see [Results and `unwrap()`](/docs/memory#results-and-unwrap).
@@ -92,6 +94,8 @@ const memory = new RedisAdapter({
 
 Each write refreshes the TTL of the thread and its entry index, so active conversations do not expire mid-way; expired entries are pruned from the index on read. In cluster mode a custom `keyPrefix` without a hash tag is wrapped automatically (`'myapp:'` → `'{myapp}:'`) so all keys of the adapter map to one slot.
 
+`getEntries({ limit })` reads only the newest `limit` entries of the thread instead of the whole thread. When `connect()` fails, the client is closed again, so an unreachable Redis does not leave a client reconnecting in the background and keeping the process alive, and the error names the connection problem (`connect ECONNREFUSED ...`).
+
 **Requires:** `pnpm add ioredis`
 
 **When to use:** Ephemeral conversations that should auto-expire, high-throughput scenarios, or when you already run Redis.
@@ -113,19 +117,22 @@ memory.setVectorDimensions(1536); // before connect(); default 768
 unwrap(await memory.connect());
 ```
 
-On `connect()` the adapter creates the schema, the `threads`, `entries`, `facts` and `embeddings` tables, the pgvector extension, an HNSW cosine index on the vectors and a generated English `tsvector` column for keyword search. If the extension or an index cannot be created, it logs a warning and carries on.
+On `connect()` the adapter creates the schema, the `threads`, `entries`, `facts` and `embeddings` tables, the pgvector extension, an HNSW cosine index on the vectors and a generated English `tsvector` column for keyword search. If an index cannot be created, it logs a warning and carries on.
+
+pgvector is only needed for embeddings. On a database without it (a managed Postgres without the extension, or a role not allowed to run `CREATE EXTENSION`), `connect()` still succeeds and threads, entries and facts work: the `embeddings` table is not created, a warning names the reason, and `addEmbedding`, `search`, `keywordSearch`, `deleteEmbedding` and `deleteBySource` return a failed result with it. `memory.vectorStatus()` returns `{ available: true, dimensions }` or `{ available: false, reason }`, and the `Cogitator` runtime does not use such a store for semantic context.
 
 HNSW needs no training data, so the index built on the empty table finds every row as the table fills up. Earlier versions built an `ivfflat` index there instead, which missed rows for small limits. The first `connect()` after upgrading replaces that index with HNSW, which on a large table takes a while. To avoid the wait, build the index ahead of the deploy with `CREATE INDEX CONCURRENTLY idx_embeddings_vector_new ON <schema>.embeddings USING hnsw (vector vector_cosine_ops)`, then drop the old index and rename the new one to `idx_embeddings_vector`. An existing HNSW index is kept as it is.
 
 `search()` sizes each query for the index: it raises `hnsw.ef_search` to the requested `limit` (up to 1000) and, on pgvector 0.8 or later, turns on iterative scans, so a large limit or a filter on agent, thread or user still gets every matching row. Equally similar rows are ordered by id, so the result does not depend on the query plan.
 
-The `embeddings.vector` column is created with the dimension set at that moment, so call `setVectorDimensions(n)` **before** `connect()` — it throws once connected. An existing table keeps its original dimension.
+The `embeddings.vector` column is created with the vector size set at that moment, so pass `dimensions` in the config or call `setVectorDimensions(n)` **before** `connect()` (it throws once connected). `connect()` reads the size of an existing table: without a configured size the adapter adopts it, and with another configured size (say after switching the embedding model) the table is left as it is, a warning explains the mismatch, and storing or searching embeddings fails with that message until the table is migrated. Deleting embeddings and keyword search keep working. Before, each search failed with a Postgres error.
 
 | Option             | Type   | Default     | Description                                        |
 | ------------------ | ------ | ----------- | -------------------------------------------------- |
 | `connectionString` | string | —           | Postgres connection URL                            |
 | `schema`           | string | `cogitator` | Schema name (letters, digits and underscores only) |
 | `poolSize`         | number | 10          | Connection pool size                               |
+| `dimensions`       | number | 768         | Vector size of the embedding model                 |
 
 ### Facts (FactAdapter)
 
@@ -171,7 +178,7 @@ const results = unwrap(
 );
 ```
 
-`search()` needs a `vector` — embed the query with an [embedding service](/docs/memory/embeddings) first. `limit` defaults to 10 and `threshold` (cosine similarity) to 0.7. `filter.agentId` and `filter.threadId` match `metadata.agentId` / `metadata.threadId`; `filter.userId` matches `metadata.userId` and also lets through embeddings without a user. Remove embeddings with `deleteEmbedding(id)` or `deleteBySource(sourceId)`.
+`search()` needs a `vector`, so embed the query with an [embedding service](/docs/memory/embeddings) first. `limit` defaults to 10 and `threshold` (cosine similarity) to 0.7. `filter.agentId` and `filter.threadId` match `metadata.agentId` / `metadata.threadId`, `filter.userId` matches `metadata.userId` and also lets through embeddings without a user, and `filter.metadata` matches metadata values exactly (`{ metadata: { namespace: 'docs' } }`, a JSONB containment on Postgres). Remove embeddings with `deleteEmbedding(id)`, `deleteBySource(sourceId)` or `deleteByFilter(filter)`, which deletes every embedding matching `sourceType`, `agentId`, `threadId` and `metadata` (it has no `userId`, delete a user's embeddings with `metadata: { userId }`) and refuses a filter without any condition. `deleteByFilter` is optional in the `EmbeddingAdapter` interface, every built-in store implements it.
 
 ### Keyword Search (KeywordSearchAdapter)
 

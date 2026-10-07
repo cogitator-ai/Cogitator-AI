@@ -262,8 +262,10 @@ export function mapClaudeStopReason(
     case 'pause_turn':
       return 'length';
     case 'refusal':
+      return 'refusal';
     case 'guardrail_intervened':
     case 'content_filtered':
+      return 'content_filter';
     case 'malformed_model_output':
     case 'malformed_tool_use':
       return 'error';

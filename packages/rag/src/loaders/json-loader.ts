@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { nanoid } from 'nanoid';
 import type { DocumentLoader, RAGDocument } from '@cogitator-ai/types';
+import { documentId } from './document-id.js';
 
 const CONTENT_FIELDS = ['content', 'text', 'body'];
 
@@ -33,13 +33,13 @@ export class JSONLoader implements DocumentLoader {
     }
 
     const items = Array.isArray(data) ? data : [data];
-    return items.map((item) => this.itemToDocument(item, filePath));
+    return items.map((item, index) => this.itemToDocument(item, filePath, index));
   }
 
-  private itemToDocument(item: unknown, source: string): RAGDocument {
+  private itemToDocument(item: unknown, source: string, index: number): RAGDocument {
     if (typeof item !== 'object' || item === null || Array.isArray(item)) {
       return {
-        id: nanoid(),
+        id: documentId(source, `item-${index}`),
         content: String(item),
         source,
         sourceType: 'json',
@@ -50,7 +50,7 @@ export class JSONLoader implements DocumentLoader {
     const metadata = this.extractMetadata(obj);
 
     return {
-      id: nanoid(),
+      id: documentId(source, `item-${index}`),
       content,
       source,
       sourceType: 'json',

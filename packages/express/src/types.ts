@@ -1,6 +1,13 @@
 import type { Request, Response, NextFunction, Router } from 'express';
 import type { Cogitator, Agent } from '@cogitator-ai/core';
-import type { SwaggerConfig, PendingApproval, RunUsage } from '@cogitator-ai/server-shared';
+import type {
+  AgentRunResponse,
+  ContextPolicy,
+  PendingApproval,
+  SwaggerConfig,
+  ThreadMessageRole,
+  WorkflowRunRequestBody,
+} from '@cogitator-ai/server-shared';
 import type {
   Message,
   ToolCall,
@@ -34,6 +41,7 @@ export type {
   SwarmMessage,
   ToolApprovalDecision,
   PendingApproval,
+  AgentRunResponse,
 };
 
 export interface AuthContext {
@@ -102,6 +110,17 @@ export interface CogitatorServerConfig {
      * model. Default: 5000. `0` turns heartbeats off.
      */
     sseHeartbeatMs?: number;
+    /**
+     * Keys of a run's `context` that clients may set. The run adds `context` to the system
+     * prompt, so by default (`false`) a request with `context` is refused with 400. List the
+     * keys clients may send, or pass `true` only for clients trusted like the server itself.
+     */
+    acceptContext?: ContextPolicy;
+    /**
+     * Roles clients may add with `POST /threads/:id/messages`. Default: `user` and
+     * `assistant`. A `system` message is read by the model as operator instructions.
+     */
+    threadMessageRoles?: readonly ThreadMessageRole[];
   };
 }
 
@@ -117,16 +136,6 @@ export interface AgentRunRequest {
   input: string;
   context?: Record<string, unknown>;
   threadId?: string;
-}
-
-export interface AgentRunResponse {
-  output: string;
-  threadId?: string;
-  usage: RunUsage;
-  toolCalls: ToolCall[];
-  reasoning?: string;
-  status?: 'completed' | 'paused';
-  pendingApprovals?: PendingApproval[];
 }
 
 export interface AgentResumeRequest {
@@ -165,14 +174,7 @@ export interface WorkflowListResponse {
   }>;
 }
 
-export interface WorkflowRunRequest {
-  input?: Record<string, unknown>;
-  options?: {
-    maxConcurrency?: number;
-    maxIterations?: number;
-    checkpoint?: boolean;
-  };
-}
+export type WorkflowRunRequest = WorkflowRunRequestBody;
 
 export interface WorkflowRunResponse {
   workflowId: string;

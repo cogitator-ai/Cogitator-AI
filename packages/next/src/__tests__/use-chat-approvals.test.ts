@@ -168,6 +168,7 @@ describe('useCogitatorChat approvals', () => {
       reasoning: 'Second refund',
       status: 'paused',
       pendingApprovals: [{ ...refundApproval, toolCallId: 'call_2' }],
+      traceId: 'trace_1',
     };
     installFetch([pausedStream, () => json(answer)]);
     const onFinish = vi.fn();

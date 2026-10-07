@@ -126,6 +126,29 @@ const renderChart = tool({
 
 Each backend places the image where its API allows: inside the tool result for Anthropic, Bedrock and the OpenAI Responses API, after the function responses of the turn for Google, in the tool message's `images` for Ollama, and in a user message right after the turn's tool messages for Chat Completions (`api: 'chat-completions'`, OpenAI-compatible `baseUrl`, Azure), whose tool messages take only text. Results of the image-generation tool (`imageBase64`) and the browser screenshot tools (`image`) take this path.
 
+### Media Results with toolContent
+
+For results made of several parts, or with media other than images, return `toolContent()`. Text and images reach the model as the tool message's content. File parts (audio, PDFs and other binary data) stay with the result for your application, in `onToolResult` and `RunResult.toolCalls`, and the model sees only a one-line description such as `[audio/mpeg file "speech.mp3", 46.9 KB, delivered to the application, not shown here]`, so the bytes never fill the context:
+
+```typescript
+import { tool, toolContent } from '@cogitator-ai/core';
+
+const screenshotPage = tool({
+  name: 'screenshot_page',
+  description: 'Screenshot a page',
+  parameters: z.object({ url: z.string().url() }),
+  execute: async ({ url }) => {
+    const png = await capture(url);
+    return toolContent(
+      { type: 'text', text: `Screenshot of ${url}` },
+      { type: 'image', data: png.toString('base64'), mediaType: 'image/png' }
+    );
+  },
+});
+```
+
+Images in formats the providers do not take (anything but PNG, JPEG, GIF and WebP) are described like files. Guardrails that filter tool results read the text and the descriptions, never the base64 data. MCP tools that return image or audio content and AI SDK tools come through as the same parts.
+
 ## Typed Tool Sets
 
 A function that returns several tools as `Tool[]` loses each tool's own parameter types. `toolset()` keeps them as a tuple, which is still an array an agent accepts:
@@ -241,12 +264,14 @@ const schema = toolToSchema(getWeather);
 
 The conversion uses the schema's input type, so fields with a `.default()` are optional for the model; the default is applied when the arguments are parsed. `tool.toJSON()` returns the same schema.
 
+Recursive schemas work too. A `z.lazy()` schema (a tree, a nested comment thread) refers to its definition with `$ref`: the definitions such refs point to travel along in `parameters.$defs`, and refs to definitions that are not recursive (a schema reused with `.meta({ id })`) are inlined, so every provider gets a self-contained schema. Google receives recursive schemas as `parametersJsonSchema`, the form of its API that can hold `$ref`. `toToolParameters(jsonSchema)` applies the same rules to a JSON Schema of your own, and the registry applies them to every tool's `toJSON()` before a request.
+
 ## Sandboxed Execution
 
 Tools that run untrusted commands can declare a sandbox. A sandboxed tool does not run its `execute` function: the runtime executes the call in the sandbox instead (install `@cogitator-ai/sandbox`):
 
 - `type: 'docker'` runs the `command` argument with `sh -c` in a container of `image`, with optional `cwd` and `env` arguments, and returns `{ stdout, stderr, exitCode, timedOut, duration, command }`.
-- `type: 'wasm'` passes the arguments as JSON on stdin to `wasmModule` and returns its stdout, parsed as JSON when possible.
+- `type: 'wasm'` passes the arguments as JSON on stdin to `wasmModule` and returns its stdout, parsed as JSON when possible. A run that traps or panics, times out, or writes more than the sandbox keeps comes back to the model as a tool error, never as an empty result.
 
 ```typescript
 const runPython = tool({

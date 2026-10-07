@@ -98,6 +98,12 @@ export interface WorkflowExecuteOptions {
   skipNodes?: Set<string>;
   /** Outputs of the `skipNodes`, so the nodes after them get their inputs */
   nodeResults?: Record<string, unknown>;
+  /**
+   * How many times each node completed before the run being resumed stopped (see
+   * `WorkflowCheckpoint.nodeVisits`). Idempotency keys count visits, so a resumed run finds the
+   * results its node runs already stored
+   */
+  nodeVisits?: Record<string, number>;
   workflowId?: string;
   onNodeStart?: (node: string) => void;
   onNodeComplete?: (node: string, result: unknown, duration: number) => void;
@@ -147,6 +153,13 @@ export interface WorkflowCheckpoint {
   state: WorkflowState;
   completedNodes: string[];
   nodeResults: Record<string, unknown>;
+  /**
+   * How many times each node completed so far: a node in a loop completes once per pass. The
+   * idempotency key of a node run is `workflow:<workflowId>:node:<name>:visit:<n>`, so a run
+   * resumed from this checkpoint gives each node the key it had the first time. Checkpoints
+   * without it count each completed node once
+   */
+  nodeVisits?: Record<string, number>;
   timestamp: number;
 }
 

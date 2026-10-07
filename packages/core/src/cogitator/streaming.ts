@@ -1,6 +1,7 @@
 import { nanoid } from 'nanoid';
 import type {
   ChatUsage,
+  FinishReason,
   LLMBackend,
   LLMResponseFormat,
   Message,
@@ -11,13 +12,15 @@ import type {
 } from '@cogitator-ai/types';
 import { countMessagesTokens } from '@cogitator-ai/memory';
 import { ToolRegistry } from '../registry';
+import { normalizeTurn } from '../llm/turn';
 import type { Agent } from '../agent';
 
 export interface StreamChatResult {
   id: string;
   content: string;
   toolCalls?: ToolCall[];
-  finishReason: 'stop' | 'tool_calls' | 'length' | 'error';
+  finishReason: FinishReason;
+  finishMessage?: string;
   usage: ChatUsage;
   reasoning?: string;
 }
@@ -29,6 +32,10 @@ export interface StreamChatExtras {
   onReasoning?: (delta: string) => void;
 }
 
+/**
+ * Runs one streamed model turn: text and reasoning reach `onToken` and `onReasoning` as they
+ * arrive, and the turn comes back assembled and settled by `normalizeTurn`.
+ */
 export async function streamChat(
   backend: LLMBackend,
   model: string,
@@ -46,7 +53,8 @@ export async function streamChat(
   let reasoning = '';
   let streamUsage: ChatUsage | undefined;
   let toolCalls: ToolCall[] | undefined;
-  let finishReason: 'stop' | 'tool_calls' | 'length' | 'error' = 'stop';
+  let finishReason: FinishReason = 'stop';
+  let finishMessage: string | undefined;
   let inputTokens = 0;
   let outputTokens = 0;
   let hasUsageFromStream = false;
@@ -115,6 +123,9 @@ export async function streamChat(
     if (chunk.finishReason) {
       finishReason = chunk.finishReason;
     }
+    if (chunk.finishMessage) {
+      finishMessage = chunk.finishMessage;
+    }
     if (chunk.usage) {
       inputTokens = chunk.usage.inputTokens;
       outputTokens = chunk.usage.outputTokens;
@@ -128,15 +139,12 @@ export async function streamChat(
     outputTokens = Math.ceil(content.length / 4);
   }
 
-  if (toolCalls && toolCalls.length > 0 && finishReason !== 'tool_calls') {
-    finishReason = 'tool_calls';
-  }
-
-  return {
+  return normalizeTurn({
     id: `stream_${nanoid(8)}`,
     content,
     toolCalls,
     finishReason,
+    ...(finishMessage && { finishMessage }),
     usage: {
       ...streamUsage,
       inputTokens,
@@ -144,7 +152,7 @@ export async function streamChat(
       totalTokens: inputTokens + outputTokens,
     },
     ...(reasoning && { reasoning }),
-  };
+  });
 }
 
 function throwIfStreamAborted(signal?: AbortSignal): void {

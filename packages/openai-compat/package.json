@@ -1,13 +1,15 @@
 {
   "name": "@cogitator-ai/openai-compat",
   "version": "21.1.13",
-  "description": "OpenAI Assistants API compatibility layer for Cogitator",
+  "description": "OpenAI-compatible server for Cogitator agents: Chat Completions, Responses and Assistants APIs",
   "keywords": [
     "cogitator",
     "ai",
     "agents",
     "llm",
     "openai",
+    "chat-completions",
+    "responses-api",
     "assistants-api",
     "compatibility"
   ],
@@ -17,7 +19,8 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     }
   },
   "files": [
@@ -35,6 +38,7 @@
   "dependencies": {
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
+    "@cogitator-ai/server-shared": "workspace:*",
     "@fastify/cors": "^11.3.0",
     "@fastify/multipart": "^10.1.2",
     "fastify": "^5.12.5",

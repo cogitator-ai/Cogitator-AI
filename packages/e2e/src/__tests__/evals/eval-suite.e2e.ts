@@ -135,6 +135,54 @@ describeIf('Evals E2E', () => {
     expect(result.aggregated.cost.metadata?.total).toBeGreaterThanOrEqual(0);
   }, 180_000);
 
+  it('counts the judge in stats.cost, split into target and judge cost', async () => {
+    const agent = new Agent({
+      name: 'Answerer',
+      model: getModel(),
+      instructions: 'Answer correctly and briefly.',
+      temperature: 0,
+    });
+
+    const suite = new EvalSuite({
+      dataset: Dataset.from([{ input: 'What is the capital of Italy? Answer in one word.' }]),
+      target: { agent, cogitator },
+      metrics: [relevance()],
+      judge: { model: getModel(), temperature: 0 },
+      retries: 2,
+    });
+
+    const result = await suite.run();
+
+    const judged = result.results[0].scores[0];
+    expect(judged.error).toBeUndefined();
+    expect(judged.usage?.totalTokens).toBeGreaterThan(0);
+    expect(result.stats.judgeCost).toBeGreaterThanOrEqual(0);
+    expect(result.stats.cost).toBeCloseTo(result.stats.targetCost + result.stats.judgeCost, 10);
+  }, 120_000);
+
+  it('aborts the agent run of an attempt that times out', async () => {
+    const agent = new Agent({
+      name: 'Essayist',
+      model: getModel(),
+      instructions: 'Write long, thorough essays.',
+      temperature: 0,
+    });
+
+    const suite = new EvalSuite({
+      dataset: Dataset.from([
+        { input: 'Write a 3000 word essay on the history of mechanical clocks.' },
+      ]),
+      target: { agent, cogitator },
+      timeout: 1000,
+    });
+
+    const result = await suite.run();
+
+    expect(result.results[0].error).toBe('Timed out after 1000ms');
+    expect(result.stats.errors).toBe(1);
+    expect(result.stats.duration).toBeLessThan(1800);
+  }, 60_000);
+
   it('LLM-as-judge with faithfulness', async () => {
     const dataset = Dataset.from([
       {

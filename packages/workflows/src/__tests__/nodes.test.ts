@@ -14,6 +14,7 @@ import {
 } from '../index';
 import type { WorkflowCheckpoint, Tool, NodeContext, WorkflowState } from '@cogitator-ai/types';
 import type { Cogitator, Agent } from '@cogitator-ai/core';
+import { Cogitator as RealCogitator } from '@cogitator-ai/core';
 
 interface TestState extends WorkflowState {
   count: number;
@@ -207,6 +208,10 @@ describe('agentNode', () => {
 });
 
 describe('toolNode', () => {
+  const cogitator = new RealCogitator();
+  const toolCtx = (overrides: Partial<NodeContext<TestState>> = {}) =>
+    ({ ...makeCtx(overrides), cogitator }) as NodeContext<TestState>;
+
   const mockTool: Tool<{ x: number }, number> = {
     name: 'multiply',
     description: 'multiply by 2',
@@ -225,7 +230,7 @@ describe('toolNode', () => {
     });
 
     expect(node.name).toBe('multiply');
-    const result = await node.fn(makeCtx({ state: { count: 7 } }));
+    const result = await node.fn(toolCtx({ state: { count: 7 } }));
     expect(result.output).toBe(14);
     expect(mockTool.execute).toHaveBeenCalled();
   });
@@ -236,7 +241,7 @@ describe('toolNode', () => {
       stateMapper: (result) => ({ count: result as number }),
     });
 
-    const result = await node.fn(makeCtx({ state: { count: 3 } }));
+    const result = await node.fn(toolCtx({ state: { count: 3 } }));
     expect(result.state).toEqual({ count: 6 });
   });
 
@@ -261,7 +266,7 @@ describe('toolNode', () => {
       argsMapper: () => ({ x: 1 }),
     });
 
-    await node.fn(makeCtx({ workflowId: 'wf-42' }));
+    await node.fn(toolCtx({ workflowId: 'wf-42' }));
     expect(spyTool.execute).toHaveBeenCalled();
   });
 
@@ -271,7 +276,7 @@ describe('toolNode', () => {
     }));
 
     const node = toolNode<TestState, { x: number }>(mockTool, { argsMapper });
-    await node.fn(makeCtx({ input: 99 }));
+    await node.fn(toolCtx({ input: 99 }));
     expect(argsMapper).toHaveBeenCalledWith({ count: 0 }, 99);
   });
 });

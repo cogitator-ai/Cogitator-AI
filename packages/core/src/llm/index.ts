@@ -12,6 +12,13 @@ export { GoogleBackend } from './google';
 export { AzureOpenAIBackend } from './azure';
 export { BedrockBackend } from './bedrock';
 export {
+  normalizeTurn,
+  finishRunsTools,
+  turnFinishReason,
+  parseToolCallArguments,
+  type TurnEnd,
+} from './turn';
+export {
   LLMError,
   createLLMError,
   wrapSDKError,
@@ -107,6 +114,7 @@ export function createLLMBackend(
         apiKey: providers.azure.apiKey,
         apiVersion: providers.azure.apiVersion,
         deployment: providers.azure.deployment,
+        model: providers.azure.model,
         maxRetries: 0,
       });
 
@@ -115,6 +123,8 @@ export function createLLMBackend(
         region: providers.bedrock?.region,
         accessKeyId: providers.bedrock?.accessKeyId,
         secretAccessKey: providers.bedrock?.secretAccessKey,
+        sessionToken: providers.bedrock?.sessionToken,
+        profile: providers.bedrock?.profile,
         maxRetries: 0,
       });
 

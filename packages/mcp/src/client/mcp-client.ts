@@ -7,7 +7,7 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
-import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+import { McpError, ErrorCode, type CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { Tool } from '@cogitator-ai/types';
 import { createStdioTransport, createHttpTransport } from './transports';
 import type {
@@ -20,8 +20,9 @@ import type {
   MCPToolContent,
   MCPRetryConfig,
   MCPCallToolOptions,
+  ToolAdapterOptions,
 } from '../types';
-import { mcpToCogitator, mcpContentToResult } from '../adapter/tool-adapter';
+import { wrapMCPTools, mcpContentToResult } from '../adapter/tool-adapter';
 
 const DEFAULT_RETRY_CONFIG: Required<MCPRetryConfig> = {
   maxRetries: 3,
@@ -56,6 +57,43 @@ export class MCPToolError extends Error {
     this.toolName = toolName;
     this.content = content;
   }
+}
+
+/**
+ * Error raised when a call of a tool that is not marked idempotent or read-only times out or
+ * loses its connection. The call is not sent again: the server may still be running it, or may
+ * have finished it, and a second call could repeat its effect (a deploy, an email).
+ */
+export class MCPToolInterruptedError extends Error {
+  readonly toolName: string;
+  readonly reason: 'timeout' | 'connection-lost';
+
+  constructor(toolName: string, reason: 'timeout' | 'connection-lost', cause: unknown) {
+    const what =
+      reason === 'timeout'
+        ? `MCP tool "${toolName}" timed out${timeoutOf(cause)}`
+        : `The connection to the MCP server was lost during a call of tool "${toolName}"`;
+    super(
+      `${what}. It was not called again, since the server may have run it and the tool is ` +
+        'not marked idempotent or read-only.',
+      { cause }
+    );
+    this.name = 'MCPToolInterruptedError';
+    this.toolName = toolName;
+    this.reason = reason;
+  }
+}
+
+function timeoutOf(error: unknown): string {
+  if (!(error instanceof McpError) || typeof error.data !== 'object' || error.data === null) {
+    return '';
+  }
+  const timeout = (error.data as { timeout?: unknown }).timeout;
+  return typeof timeout === 'number' ? ` after ${timeout}ms` : '';
+}
+
+function isRequestTimeout(error: unknown): boolean {
+  return error instanceof McpError && error.code === REQUEST_TIMEOUT_CODE;
 }
 
 function isConnectionError(error: unknown): boolean {
@@ -392,6 +430,7 @@ export class MCPClient {
             name: tool.name,
             description: tool.description ?? '',
             inputSchema: tool.inputSchema as MCPToolDefinition['inputSchema'],
+            ...(tool.annotations && { annotations: tool.annotations }),
           });
         }
         cursor = result.nextCursor;
@@ -406,56 +445,91 @@ export class MCPClient {
    *
    * These tools can be directly used with Cogitator agents.
    */
-  async getTools(): Promise<Tool[]> {
-    const definitions = await this.listToolDefinitions();
-    return definitions.map((def) => mcpToCogitator(def, this));
+  async getTools(options?: ToolAdapterOptions): Promise<Tool[]> {
+    return wrapMCPTools(this, options);
   }
 
   /**
-   * Call a tool on the MCP server with automatic retry on failure
-   */
-  /**
-   * Call a tool on the MCP server with automatic retry on transient failures.
+   * Call a tool on the MCP server.
    *
-   * Returns `structuredContent` when the server provides it, otherwise the
-   * text/JSON value(s) of the content blocks. Throws {@link MCPToolError}
-   * when the server reports `isError: true`; such failures are not retried.
+   * Returns `structuredContent` when the server provides it (and no media), the text/JSON
+   * value(s) of text content, or a `toolContent()` result when the content holds images, audio
+   * or binary resources. Throws {@link MCPToolError} when the server reports `isError: true`.
+   *
+   * A call is sent once. Only with `idempotent: true` (a read-only or idempotent tool) is it sent
+   * again after a timeout or a lost connection, otherwise those throw
+   * {@link MCPToolInterruptedError}, since the server may have run the call. A connection that was
+   * already lost is restored before the call is sent.
    */
   async callTool(
     name: string,
     args: Record<string, unknown>,
     options?: MCPCallToolOptions
   ): Promise<unknown> {
-    return this.withRetry(
-      async () => {
-        const result = await this.client.callTool({ name, arguments: args }, undefined, {
-          signal: options?.signal,
-          timeout: options?.timeout,
-        });
+    const call = async (): Promise<unknown> => {
+      const result = await this.client.callTool({ name, arguments: args }, undefined, {
+        signal: options?.signal,
+        timeout: options?.timeout,
+      });
 
-        const content = (Array.isArray(result.content) ? result.content : []) as MCPToolContent[];
+      const content = toToolContent(
+        Array.isArray(result.content) ? (result.content as CallToolResult['content']) : []
+      );
 
-        if (result.isError) {
-          throw new MCPToolError(name, content);
-        }
+      if (result.isError) {
+        throw new MCPToolError(name, content);
+      }
 
-        if (result.structuredContent !== undefined) {
-          return result.structuredContent;
-        }
+      if (content.length > 0 && hasMedia(content)) {
+        return mcpContentToResult(content);
+      }
 
-        if (content.length > 0) {
-          return mcpContentToResult(content);
-        }
+      if (result.structuredContent !== undefined) {
+        return result.structuredContent;
+      }
 
-        if ('toolResult' in result) {
-          return result.toolResult;
-        }
+      if (content.length > 0) {
+        return mcpContentToResult(content);
+      }
 
-        return null;
-      },
-      `callTool:${name}`,
-      options?.signal
-    );
+      if ('toolResult' in result) {
+        return result.toolResult;
+      }
+
+      return null;
+    };
+
+    if (options?.idempotent === true) {
+      return this.withRetry(call, `callTool:${name}`, options.signal);
+    }
+    return this.callOnce(call, name);
+  }
+
+  /** A call that must not run twice: sent once, on a connection restored beforehand if needed. */
+  private async callOnce<T>(operation: () => Promise<T>, toolName: string): Promise<T> {
+    if (this.closed) {
+      throw new Error(`callTool:${toolName} failed: MCP client has been closed`);
+    }
+    if (
+      !this.connected &&
+      this.config.autoReconnect !== false &&
+      this.retryConfig.retryOnConnectionLoss
+    ) {
+      await this.reconnect();
+    }
+    try {
+      return await operation();
+    } catch (error) {
+      if (error instanceof MCPToolError) throw error;
+      if (isConnectionError(error)) {
+        this.connected = false;
+        throw new MCPToolInterruptedError(toolName, 'connection-lost', error);
+      }
+      if (isRequestTimeout(error)) {
+        throw new MCPToolInterruptedError(toolName, 'timeout', error);
+      }
+      throw error;
+    }
   }
 
   /**
@@ -577,6 +651,45 @@ export class MCPClient {
       this.connected = false;
     }
   }
+}
+
+type SDKToolContent = CallToolResult['content'][number];
+
+/** The content blocks of a tool result; a link to a resource becomes a line of text. */
+function toToolContent(content: readonly SDKToolContent[]): MCPToolContent[] {
+  return content.map((block): MCPToolContent => {
+    switch (block.type) {
+      case 'text':
+        return { type: 'text', text: block.text };
+      case 'image':
+      case 'audio':
+        return { type: block.type, data: block.data, mimeType: block.mimeType };
+      case 'resource':
+        return {
+          type: 'resource',
+          resource: {
+            uri: block.resource.uri,
+            mimeType: block.resource.mimeType,
+            text: 'text' in block.resource ? block.resource.text : undefined,
+            blob: 'blob' in block.resource ? block.resource.blob : undefined,
+          },
+        };
+      case 'resource_link':
+        return {
+          type: 'text',
+          text: `Resource: ${block.uri}${block.name ? ` (${block.name})` : ''}${block.mimeType ? `, ${block.mimeType}` : ''}`,
+        };
+    }
+  });
+}
+
+function hasMedia(content: readonly MCPToolContent[]): boolean {
+  return content.some(
+    (block) =>
+      block.type === 'image' ||
+      block.type === 'audio' ||
+      (block.type === 'resource' && typeof block.resource.blob === 'string')
+  );
 }
 
 type SDKPromptContent = Awaited<ReturnType<Client['getPrompt']>>['messages'][number]['content'];

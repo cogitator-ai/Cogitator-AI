@@ -8,8 +8,10 @@ export function ciReport(result: EvalSuiteResult): void {
   const passed = result.assertions.filter((a) => a.passed).length;
   const failed = result.assertions.filter((a) => !a.passed).length;
 
+  const errors = result.stats.errors ?? 0;
+
   console.log(
-    `Eval: ${result.stats.total} cases | ${result.stats.duration}ms | $${result.stats.cost}`
+    `Eval: ${result.stats.total} cases${errors > 0 ? ` | ${errors} errored` : ''} | ${result.stats.duration}ms | $${result.stats.cost}`
   );
 
   for (const a of result.assertions) {

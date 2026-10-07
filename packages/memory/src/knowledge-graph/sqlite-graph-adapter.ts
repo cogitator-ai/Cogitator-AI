@@ -94,7 +94,14 @@ export class SQLiteGraphAdapter implements GraphAdapter {
     if (this.initialized) return;
 
     if (!this.db) {
-      const Database = (await import('better-sqlite3')).default;
+      let Database: typeof import('better-sqlite3');
+      try {
+        Database = (await import('better-sqlite3')).default;
+      } catch {
+        throw new Error(
+          'SQLiteGraphAdapter needs the "better-sqlite3" package. Install it: pnpm add better-sqlite3'
+        );
+      }
       this.db = new Database(this.path);
 
       this.db.pragma('foreign_keys = ON');

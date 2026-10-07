@@ -60,6 +60,12 @@ POST   /api/agents/:name/resume       - Resume a run paused for tool approvals
 
 Run/stream body: `{ input: string; context?: object; threadId?: string }`. `input` must contain more than whitespace and `threadId`, when sent, must be a non-empty string (`400 INVALID_INPUT` otherwise, before the model is called). The validator comes from `@cogitator-ai/server-shared`, so Express, Fastify, Hono and Koa refuse exactly the same bodies. The `usage` of a run answer carries `inputTokens`, `outputTokens` and `totalTokens`, plus `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the model reported them, the same shape as every other adapter. The `finish` event of an agent stream carries the same `usage` (never the run's cost or duration). The agent list exposes `config.description`, never the agent instructions. The authenticated `userId` (from `auth`) is passed to the run, and the run is aborted when the client disconnects.
 
+- A run puts `context` into the system prompt, and the model reads a `system` thread message as operator instructions, so clients may set neither unless the server allows it: `acceptContext` lists the `context` keys clients may send (`true` accepts any key, for clients trusted like your own code), and `threadMessageRoles` the roles of `POST /threads/:id/messages` (`user` and `assistant` by default). Anything else is refused with `400 INVALID_INPUT`, over HTTP and WebSocket alike.
+- A `POST` body that is not JSON (`text/plain`, a form) is refused with `415 UNSUPPORTED_MEDIA_TYPE` before it is parsed: browsers send those across origins without a CORS preflight.
+- `POST /agents/:name/run` and `/resume` answer `toAgentRunResponse()` of `@cogitator-ai/server-shared`: `output`, `threadId`, `usage`, `toolCalls` (`{ id, name, arguments }`), `status` and `traceId`, plus `reasoning`, `pendingApprovals`, `structured`, `structuredError`, `truncated`, `blocked` and `iterationLimitReached` when they apply. The WebSocket `complete` event carries the same object, never the system prompt, the history, trace spans or a paused run's checkpoint.
+- The `start` event of an agent stream names the run's thread (the request's `threadId`, or a new one), and `finish` repeats it with the run's outcome, so a client that sent no thread continues the conversation with this one.
+- Swarm routes close each swarm they build once its run ends, so a distributed swarm leaves no Redis connections behind and its state expires. `GET /swarms` lists every agent, the router and pipeline stages included.
+
 ### Threads (Memory)
 
 ```
@@ -68,7 +74,7 @@ POST   /api/threads/:id/messages      - Add message to thread
 DELETE /api/threads/:id               - Delete thread
 ```
 
-The routes use `cogitator.getMemory()`, which connects the configured memory adapter on first use, so threads can be read on a fresh server before any agent has run. Only a `Cogitator` without `memory` configured answers `503 UNAVAILABLE`. New messages need `role` (`user` | `assistant` | `system`) and a non-empty string `content`; optional `metadata` is stored on the memory entry.
+The routes use `cogitator.getMemory()`, which connects the configured memory adapter on first use, so threads can be read on a fresh server before any agent has run. Only a `Cogitator` without `memory` configured answers `503 UNAVAILABLE`. New messages need `role` (`user` or `assistant`, more with `threadMessageRoles`) and a non-empty string `content`, optional `metadata` is stored on the memory entry.
 
 ### Workflows
 
@@ -78,7 +84,7 @@ POST   /api/workflows/:name/run       - Run workflow
 POST   /api/workflows/:name/stream    - Stream workflow events
 ```
 
-Body: `{ input?: object; options?: { maxConcurrency?: number; maxIterations?: number; checkpoint?: boolean } }`. `maxConcurrency`/`maxIterations` must be positive integers and `checkpoint` a boolean (400 otherwise); other options are dropped. A failed workflow returns `500` with code `WORKFLOW_FAILED` (the stream ends with an `error` event instead of `workflow_completed`). Disconnecting aborts the workflow.
+Body: `{ input?: object; options?: { maxConcurrency?: number; maxIterations?: number } }`. `maxConcurrency`/`maxIterations` must be positive integers (400 otherwise). Other options are dropped, and `checkpoint: true` is refused, since the server keeps no checkpoint store to resume from. A failed workflow returns `500` with code `WORKFLOW_FAILED` (the stream ends with an `error` event instead of `workflow_completed`). Disconnecting aborts the workflow.
 
 The stream sends `{ type: 'workflow', event, data }` events: `node_started`, `node_completed`, `node_error`, `node_progress` and finally `workflow_completed`.
 
@@ -91,7 +97,7 @@ POST   /api/swarms/:name/stream       - Stream swarm events
 GET    /api/swarms/:name/blackboard   - Get configured blackboard sections
 ```
 
-Run/stream body: `{ input: string; context?: object; threadId?: string; timeout?: number }` (`timeout` must be positive). Disconnecting aborts the swarm. The stream sends `{ type: 'swarm', event, data }` events (`agent_start`, `agent_complete`, `agent_error`, `message`, the swarm's own events, and finally `swarm_completed` with the output and usage). Each run creates a fresh swarm, so the blackboard endpoint returns the configured initial sections.
+Run/stream body: `{ input: string; context?: object; threadId?: string; timeout?: number }` (`timeout` must be positive, at most `2147483647` ms). Disconnecting aborts the swarm. The stream sends `{ type: 'swarm', event, data }` events (`agent_start`, `agent_complete`, `agent_error`, `message`, the swarm's own events, and finally `swarm_completed` with the output and usage). Each run creates a fresh swarm, so the blackboard endpoint returns the configured initial sections.
 
 ### Tools & Docs
 
@@ -378,6 +384,8 @@ interface CogitatorServerConfig {
     swagger?: SwaggerConfig;
     websocket?: WebSocketConfig;
     sseHeartbeatMs?: number; // Default: 5000, 0 turns SSE heartbeats off
+    acceptContext?: boolean | string[]; // context keys clients may send: none by default, a list, or true for any
+    threadMessageRoles?: ('user' | 'assistant' | 'system')[]; // roles of POST /threads/:id/messages, default user and assistant
   };
 }
 ```

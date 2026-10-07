@@ -1,13 +1,14 @@
 import { execSync } from 'node:child_process';
 import type { PackageManager } from '../types.js';
 
+/**
+ * The package manager that launched the scaffolder, read from the
+ * `npm_config_user_agent` it sets (`npm/10.9.8 node/v22...` under npx), or pnpm
+ * when there is none.
+ */
 export function detectPackageManager(): PackageManager {
-  const ua = process.env.npm_config_user_agent;
-  if (ua) {
-    if (ua.startsWith('pnpm')) return 'pnpm';
-    if (ua.startsWith('yarn')) return 'yarn';
-    if (ua.startsWith('bun')) return 'bun';
-  }
+  const name = process.env.npm_config_user_agent?.split('/')[0];
+  if (name === 'npm' || name === 'pnpm' || name === 'yarn' || name === 'bun') return name;
   return 'pnpm';
 }
 

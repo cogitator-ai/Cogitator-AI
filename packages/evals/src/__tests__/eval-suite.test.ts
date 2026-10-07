@@ -162,6 +162,7 @@ describe('EvalSuite', () => {
       expect(mockCogitator.run).toHaveBeenCalledWith(mockAgent, {
         input: 'query',
         context: undefined,
+        signal: expect.any(AbortSignal),
       });
     });
 
@@ -197,7 +198,7 @@ describe('EvalSuite', () => {
 
       expect(mockCogitator.run).toHaveBeenCalledWith(
         {},
-        { input: 'test', context: { key: 'value' } }
+        { input: 'test', context: { key: 'value' }, signal: expect.any(AbortSignal) }
       );
     });
   });

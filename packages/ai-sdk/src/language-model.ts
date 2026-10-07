@@ -10,15 +10,22 @@ import type { Agent, Cogitator } from '@cogitator-ai/core';
 import type { ReasoningEffort, RunResult, ToolCall, ToolResult } from '@cogitator-ai/types';
 import {
   AgentRunner,
+  PAUSE_WARNING,
+  approvalIdFor,
+  runFinish,
   runMetadata,
+  toolCallPreambles,
   serializeToolInput,
   toolResultValue,
   type AgentCallResponseFormat,
+  type AgentCallToolChoice,
   type CallWarning,
   type PreparedAgentCall,
   type PromptMessageLike,
 } from './agent-runner.js';
 import type {
+  CogitatorContent,
+  CogitatorFinishReasonV2,
   CogitatorFinishReasonV3,
   CogitatorGenerateResult,
   CogitatorLanguageModelV2,
@@ -27,6 +34,7 @@ import type {
   CogitatorProviderOptions,
   CogitatorStreamPart,
   CogitatorStreamResult,
+  CogitatorToolApprovalRequestContent,
   CogitatorToolCallContent,
   CogitatorToolResultContent,
   CogitatorUsageV2,
@@ -47,6 +55,7 @@ interface ModernCallOptions {
   stopSequences?: string[];
   responseFormat?: AgentCallResponseFormat;
   tools?: ReadonlyArray<{ name: string }>;
+  toolChoice?: AgentCallToolChoice;
   abortSignal?: AbortSignal;
 }
 
@@ -86,6 +95,7 @@ abstract class AgentLanguageModel<
   TWarning,
   TUsage,
   TFinishReason,
+  TApproval = never,
 > {
   readonly provider = 'cogitator';
   readonly modelId: string;
@@ -105,7 +115,16 @@ abstract class AgentLanguageModel<
 
   protected abstract toWarning(warning: CallWarning): TWarning;
   protected abstract toUsage(result: RunResult): TUsage;
-  protected abstract stopReason(): TFinishReason;
+  /** Why the turn ended, from how the agent's run ended (see `runFinish`) */
+  protected abstract finishReason(result: RunResult): TFinishReason;
+
+  /**
+   * The approval requests of a paused run, for specifications that can ask for them; the others
+   * report the pause with a warning and their finish reason for it.
+   */
+  protected approvalRequests(_result: RunResult): TApproval[] {
+    return [];
+  }
 
   protected exposesToolCall(_toolName: string, _options: TCallOptions): boolean {
     return true;
@@ -121,9 +140,12 @@ abstract class AgentLanguageModel<
 
   async doGenerate(
     options: TCallOptions
-  ): Promise<CogitatorGenerateResult<TWarning, TUsage, TFinishReason>> {
+  ): Promise<
+    CogitatorGenerateResult<TWarning, TUsage, TFinishReason, CogitatorContent | TApproval>
+  > {
     const prepared = this.prepare(options);
-    const content: CogitatorGenerateResult<TWarning, TUsage, TFinishReason>['content'] = [];
+    const content: (CogitatorContent | TApproval)[] = [];
+    const events: ({ call: ToolCall } | { result: ToolResult })[] = [];
 
     const toolResults = new Map<string, ToolResult>();
 
@@ -131,24 +153,40 @@ abstract class AgentLanguageModel<
       prepared,
       {
         onToolCall: (call) => {
-          if (this.exposesToolCall(call.name, options)) content.push(toolCallContent(call));
+          if (this.exposesToolCall(call.name, options)) events.push({ call });
         },
         onToolResult: (toolResult) => {
           toolResults.set(toolResult.callId, toolResult);
-          if (this.exposesToolCall(toolResult.name, options)) {
-            content.push(toolResultContent(toolResult));
-          }
+          if (this.exposesToolCall(toolResult.name, options)) events.push({ result: toolResult });
         },
       },
       { stream: false }
     );
 
+    const preambles =
+      prepared.jsonMode || prepared.resume ? new Map<string, string>() : toolCallPreambles(result);
+    for (const event of events) {
+      if ('call' in event) {
+        const preamble = preambles.get(event.call.id);
+        if (preamble) content.push({ type: 'text', text: preamble });
+        content.push(toolCallContent(event.call));
+      } else {
+        content.push(toolResultContent(event.result));
+      }
+    }
+
     if (result.reasoning) content.push({ type: 'reasoning', text: result.reasoning });
     if (result.output) content.push({ type: 'text', text: result.output });
+    const approvals = this.approvalRequests(result);
+    content.push(...approvals);
+    const warnings = prepared.warnings.map((warning) => this.toWarning(warning));
+    if (result.status === 'paused' && approvals.length === 0) {
+      warnings.push(this.toWarning({ type: 'other', message: PAUSE_WARNING }));
+    }
 
     return {
       content,
-      finishReason: this.stopReason(),
+      finishReason: this.finishReason(result),
       usage: this.toUsage(result),
       providerMetadata: runMetadata(result, prepared.model, toolResults),
       request: { body: { input: prepared.input } },
@@ -157,13 +195,13 @@ abstract class AgentLanguageModel<
         timestamp: new Date(),
         modelId: result.modelUsed ?? prepared.model,
       },
-      warnings: prepared.warnings.map((warning) => this.toWarning(warning)),
+      warnings,
     };
   }
 
   async doStream(
     options: TCallOptions
-  ): Promise<CogitatorStreamResult<TWarning, TUsage, TFinishReason>> {
+  ): Promise<CogitatorStreamResult<TWarning, TUsage, TFinishReason, TApproval>> {
     const prepared = this.prepare(options);
     const warnings = prepared.warnings.map((warning) => this.toWarning(warning));
     const abortController = new AbortController();
@@ -172,13 +210,15 @@ abstract class AgentLanguageModel<
       : abortController.signal;
     let closed = false;
 
-    const stream = new ReadableStream<CogitatorStreamPart<TWarning, TUsage, TFinishReason>>({
+    const stream = new ReadableStream<
+      CogitatorStreamPart<TWarning, TUsage, TFinishReason, TApproval>
+    >({
       start: (controller) => {
         let openPart: { kind: 'text' | 'reasoning'; id: string } | undefined;
         let blocks = 0;
         const toolResults = new Map<string, ToolResult>();
 
-        const emit = (part: CogitatorStreamPart<TWarning, TUsage, TFinishReason>) => {
+        const emit = (part: CogitatorStreamPart<TWarning, TUsage, TFinishReason, TApproval>) => {
           if (!closed) controller.enqueue(part);
         };
         const closePart = () => {
@@ -210,7 +250,7 @@ abstract class AgentLanguageModel<
                   modelId: prepared.model,
                 }),
               onTextDelta: (delta) => {
-                if (!delta) return;
+                if (!delta || prepared.jsonMode) return;
                 emit({ type: 'text-delta', id: openPartOf('text'), delta });
               },
               onReasoningDelta: (delta) => {
@@ -243,11 +283,15 @@ abstract class AgentLanguageModel<
           )
           .then(
             (result) => {
+              if (prepared.jsonMode && result.output) {
+                emit({ type: 'text-delta', id: openPartOf('text'), delta: result.output });
+              }
               closePart();
+              for (const approval of this.approvalRequests(result)) emit(approval);
               emit({
                 type: 'finish',
                 usage: this.toUsage(result),
-                finishReason: this.stopReason(),
+                finishReason: this.finishReason(result),
                 providerMetadata: runMetadata(result, prepared.model, toolResults),
               });
             },
@@ -280,6 +324,7 @@ abstract class AgentLanguageModel<
       stopSequences: options.stopSequences,
       responseFormat: options.responseFormat,
       toolNames: (options.tools ?? []).map((tool) => tool.name),
+      toolChoice: options.toolChoice,
       unsupportedSettings: this.unsupportedSettings(options),
       reasoningEffort: this.reasoningEffort(options),
       abortSignal: options.abortSignal,
@@ -323,14 +368,22 @@ function v3Warning(warning: CallWarning): CogitatorWarningV3 {
   }
 }
 
-const V3_STOP: CogitatorFinishReasonV3 = { unified: 'stop', raw: 'stop' };
+/** The `tool-approval-request` parts of a paused run, one per waiting call. */
+function v3ApprovalRequests(result: RunResult): CogitatorToolApprovalRequestContent[] {
+  if (result.status !== 'paused') return [];
+  return (result.pendingApprovals ?? []).map((approval) => ({
+    type: 'tool-approval-request',
+    approvalId: approvalIdFor(result.threadId, approval.toolCallId),
+    toolCallId: approval.toolCallId,
+  }));
+}
 
 export class AgentLanguageModelV2
   extends AgentLanguageModel<
     LanguageModelV2CallOptions,
     CogitatorWarningV2,
     CogitatorUsageV2,
-    'stop'
+    CogitatorFinishReasonV2
   >
   implements CogitatorLanguageModelV2, LanguageModelV2
 {
@@ -368,8 +421,9 @@ export class AgentLanguageModelV2
     };
   }
 
-  protected stopReason(): 'stop' {
-    return 'stop';
+  protected finishReason(result: RunResult): CogitatorFinishReasonV2 {
+    const { unified } = runFinish(result);
+    return unified === 'tool-calls' ? 'other' : unified;
   }
 }
 
@@ -378,7 +432,8 @@ export class AgentLanguageModelV3
     LanguageModelV3CallOptions,
     CogitatorWarningV3,
     CogitatorUsageV3,
-    CogitatorFinishReasonV3
+    CogitatorFinishReasonV3,
+    CogitatorToolApprovalRequestContent
   >
   implements CogitatorLanguageModelV3, LanguageModelV3
 {
@@ -392,8 +447,12 @@ export class AgentLanguageModelV3
     return v3Usage(result);
   }
 
-  protected stopReason(): CogitatorFinishReasonV3 {
-    return V3_STOP;
+  protected finishReason(result: RunResult): CogitatorFinishReasonV3 {
+    return runFinish(result);
+  }
+
+  protected approvalRequests(result: RunResult): CogitatorToolApprovalRequestContent[] {
+    return v3ApprovalRequests(result);
   }
 }
 
@@ -402,7 +461,8 @@ export class AgentLanguageModelV4
     LanguageModelV4CallOptions,
     CogitatorWarningV3,
     CogitatorUsageV3,
-    CogitatorFinishReasonV3
+    CogitatorFinishReasonV3,
+    CogitatorToolApprovalRequestContent
   >
   implements CogitatorLanguageModelV4, LanguageModelV4
 {
@@ -420,7 +480,11 @@ export class AgentLanguageModelV4
     return v3Usage(result);
   }
 
-  protected stopReason(): CogitatorFinishReasonV3 {
-    return V3_STOP;
+  protected finishReason(result: RunResult): CogitatorFinishReasonV3 {
+    return runFinish(result);
+  }
+
+  protected approvalRequests(result: RunResult): CogitatorToolApprovalRequestContent[] {
+    return v3ApprovalRequests(result);
   }
 }

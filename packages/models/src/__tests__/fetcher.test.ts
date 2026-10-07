@@ -185,6 +185,20 @@ describe('transformLiteLLMData', () => {
     expect(result[0].pricing.output).toBe(60);
   });
 
+  it('reads the price of cache writes with the 1-hour TTL', () => {
+    const [model] = transformLiteLLMData({
+      'claude-x': {
+        litellm_provider: 'anthropic',
+        input_cost_per_token: 0.000003,
+        output_cost_per_token: 0.000015,
+        cache_creation_input_token_cost: 0.00000375,
+        cache_creation_input_token_cost_above_1hr: 0.000006,
+      },
+    });
+
+    expect(model.pricing).toMatchObject({ inputCacheWrite: 3.75, inputCacheWrite1h: 6 });
+  });
+
   it('calculates pricing from character cost', () => {
     const data: LiteLLMModelData = {
       'test-model': {

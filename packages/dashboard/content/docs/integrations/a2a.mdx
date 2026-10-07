@@ -1,16 +1,18 @@
 ---
 title: A2A Protocol (Agent-to-Agent)
-description: Native implementation of Google's A2A Protocol v0.3 for cross-framework agent interoperability.
+description: Native implementation of the A2A protocol v0.3 for cross-framework agent interoperability.
 ---
 
 ## Overview
 
-The `@cogitator-ai/a2a` package implements [Google's A2A Protocol v0.3](https://a2a-protocol.org) — the open standard for agent-to-agent communication. It enables Cogitator agents to interoperate with agents from any framework (LangChain, CrewAI, etc.) via a standardized JSON-RPC protocol.
+The `@cogitator-ai/a2a` package implements the [A2A (Agent2Agent) protocol v0.3](https://a2a-protocol.org/v0.3.0/specification/), the open standard for agent-to-agent communication. Cogitator agents talk JSON-RPC 2.0 with agents from any framework that speaks A2A v0.3 (the official A2A SDKs, Google ADK, LangGraph and others).
 
-- **A2AServer** -- expose any Cogitator agent as an A2A-compliant service with auto-generated Agent Cards
-- **A2AClient** -- connect to any remote A2A agent, with discovery, messaging, and streaming
-- **asTool() Bridge** -- wrap remote A2A agents as local Cogitator tools for seamless delegation
-- **Framework Adapters** -- Express, Hono, Fastify, Koa, Next.js
+- **A2AServer** - expose any Cogitator agent as an A2A v0.3 service, one Agent Card and endpoint per agent
+- **A2AClient** - talk to any A2A v0.3 agent: card discovery, messages, streaming, tasks, webhooks
+- **asTool() Bridge** - wrap remote A2A agents as local Cogitator tools
+- **Framework Adapters** - Express, Hono, Fastify, Koa, Next.js
+
+Conformance is tested: every response is validated against the official v0.3.0 JSON schema, and the official A2A JavaScript SDK client talks to `A2AServer` (and `A2AClient` to a server built with the SDK) in the test suite.
 
 ```bash
 pnpm add @cogitator-ai/a2a
@@ -19,8 +21,6 @@ pnpm add @cogitator-ai/a2a
 ## A2AServer
 
 ### Exposing Agents
-
-Create an A2A server to expose your agents to any A2A-compatible client:
 
 ```typescript
 import { Cogitator, Agent } from '@cogitator-ai/core';
@@ -40,7 +40,6 @@ const researcher = new Agent({
 const a2aServer = new A2AServer({
   agents: { researcher },
   cogitator,
-  cardUrl: 'https://my-server.com',
 });
 
 const app = express();
@@ -50,81 +49,87 @@ app.listen(3000);
 
 This exposes:
 
-- `GET /.well-known/agent.json` -- Agent Card discovery
-- `POST /a2a` -- JSON-RPC endpoint for messaging, streaming, and task management
+- `GET /.well-known/agent-card.json` - Agent Card discovery (the v0.3 well-known path)
+- `POST /a2a` - JSON-RPC endpoint for messaging, streaming and task management
+- `GET /.well-known/agent.json` - the pre-v0.3 card path, kept as an alias
 
-`basePath` (default `/a2a`, must start with `/`) is the JSON-RPC path the adapters serve, relative to where they are mounted, and the card URL when `cardUrl` is unset; the server exposes it as `a2aServer.basePath`. For Next.js, put the `POST` route file at that path. `cardUrl` is the `url` the cards advertise.
-
-```typescript
-const a2aServer = new A2AServer({ agents: { researcher }, cogitator, basePath: '/rpc' });
-
-app.use(a2aExpress(a2aServer)); // POST /rpc
-const client = new A2AClient('http://localhost:3000', { rpcPath: a2aServer.basePath });
-```
+`basePath` (default `/a2a`, must start with `/`) is the JSON-RPC path the adapters serve, relative to where they are mounted, readable as `a2aServer.basePath`.
 
 ### Agent Cards
 
-Agent Cards are auto-generated from your Agent configuration. Each tool becomes a skill in the card:
-
-```typescript
-const card = a2aServer.getAgentCard('researcher');
-```
+The card is generated from the agent. Its `url` is the absolute address of the agent's JSON-RPC endpoint: without `cardUrl` the adapters derive it from the request that fetches the card, behind a proxy that changes the host or the path set `cardUrl` to the public endpoint URL.
 
 ```json
 {
+  "protocolVersion": "0.3.0",
   "name": "researcher",
   "description": "Research agent that finds information",
-  "url": "https://my-server.com",
-  "version": "0.3",
-  "capabilities": {
-    "streaming": true,
-    "pushNotifications": false,
-    "extendedAgentCard": false
-  },
+  "url": "https://my-server.com/a2a",
+  "preferredTransport": "JSONRPC",
+  "additionalInterfaces": [{ "transport": "JSONRPC", "url": "https://my-server.com/a2a" }],
+  "version": "1.0.0",
+  "capabilities": { "streaming": true, "pushNotifications": true, "stateTransitionHistory": false },
+  "defaultInputModes": ["text/plain", "application/json"],
+  "defaultOutputModes": ["text/plain", "application/json"],
   "skills": [
     {
       "id": "web_search",
       "name": "web_search",
-      "description": "Search the web for information",
+      "description": "Search the web",
+      "tags": ["tool"],
       "inputModes": ["text/plain", "application/json"],
       "outputModes": ["text/plain", "application/json"]
     }
-  ],
-  "defaultInputModes": ["text/plain"],
-  "defaultOutputModes": ["text/plain", "application/json"]
+  ]
 }
 ```
 
-`capabilities.pushNotifications` is `true` when you pass a `pushNotificationStore`, and `extendedAgentCard` when you pass an `extendedCardGenerator`. With `auth`, the card also lists `securitySchemes` and `security`. `getAgentCards()` returns every card, signed when `cardSigning` is set.
+The description is the agent's `description` (its name when unset), never its instructions. Every tool becomes a skill. `agentVersion` sets `version` (default `1.0.0`) and `provider: { organization, url }` names who runs the agent. With `auth` the card lists `securitySchemes` and `security`, with `extendedCardGenerator` it declares `supportsAuthenticatedExtendedCard: true`, and with `cardSigning` it carries a JWS in `signatures`.
 
 ### Multiple Agents
 
-Register multiple agents on a single server (at least one is required):
-
 ```typescript
 const a2aServer = new A2AServer({
-  agents: {
-    researcher: researchAgent,
-    writer: writerAgent,
-    analyst: analystAgent,
-  },
+  agents: { researcher, writer },
   cogitator,
 });
 ```
 
-`/.well-known/agent.json` then returns an array of cards. `message/send`, `message/stream` and `agent/extendedCard` pick the agent from an `agentName` param and fall back to the first registered agent. To reach another agent from `A2AClient`, pass its registered name:
+Every agent gets its own card and endpoint, so any A2A client reaches it by URL:
+
+| Route                                                | Serves                                                 |
+| ---------------------------------------------------- | ------------------------------------------------------ |
+| `GET /.well-known/agent-card.json`                   | Card of the first agent                                |
+| `POST <basePath>`                                    | First agent, or the one named by an `agentName` param  |
+| `GET <basePath>/<agent>/.well-known/agent-card.json` | Card of `<agent>`, whose `url` is `<basePath>/<agent>` |
+| `POST <basePath>/<agent>`                            | `<agent>`                                              |
+| `GET /.well-known/agent.json`                        | Pre-v0.3 path: the card, or every card in an array     |
 
 ```typescript
-const writer = new A2AClient('https://my-server.com', { agentName: 'writer' });
+import { ClientFactory } from '@a2a-js/sdk/client';
 
-const card = await writer.agentCard();
-const task = await writer.sendMessage({
-  role: 'user',
-  parts: [{ type: 'text', text: 'Draft a summary' }],
+// any A2A v0.3 client: point it at the agent's base URL
+const writer = await new ClientFactory().createFromUrl('https://my-server.com/a2a/writer/');
+
+// A2AClient: name the agent
+const writerClient = new A2AClient('https://my-server.com', { agentName: 'writer' });
+```
+
+An unknown agent path answers `404`, an unknown `agentName` param `-32602 Invalid params`.
+
+### Run time limits
+
+A client may ask for a shorter run with `configuration.timeout` (a Cogitator extension), never a longer one. It must be a positive integer, and the server caps it at the agent's own `timeout`, or at `maxRunTimeoutMs` (default `120000`, the Cogitator run default) for an agent without one:
+
+```typescript
+const a2aServer = new A2AServer({
+  agents: { researcher },
+  cogitator,
+  maxRunTimeoutMs: 300_000,
 });
 ```
 
-The client sends `agentName` with `message/send`, `message/stream` and `agent/extendedCard`, and `agentCard()` returns the card of that name (`-32007 Agent not found` when the server has none).
+Without a client `timeout` the agent's own limit applies.
 
 ## A2AClient
 
@@ -136,58 +141,60 @@ import { A2AClient } from '@cogitator-ai/a2a';
 const client = new A2AClient('https://remote-agent.example.com');
 
 const card = await client.agentCard();
-console.log(`Agent: ${card.name}`);
-console.log(`Skills: ${card.skills.map((s) => s.name).join(', ')}`);
+console.log(card.name, card.description, card.skills);
 ```
+
+The client reads the card at `/.well-known/agent-card.json` (falling back to `/.well-known/agent.json` for servers before v0.3) and sends every request to the `url` the card names, as the specification requires.
+
+| Option          | Effect                                                                                   |
+| --------------- | ---------------------------------------------------------------------------------------- |
+| `headers`       | Sent with every request, e.g. `Authorization`                                            |
+| `timeout`       | Request timeout in ms (default `30000`), the idle timeout between events of a stream     |
+| `agentCardPath` | Card path relative to the base URL, without fallback                                     |
+| `rpcPath`       | Send requests to this path at the base URL instead of the card's `url`, without the card |
+| `agentName`     | An agent of a Cogitator server hosting several: use its own card and endpoint            |
 
 ### Sending Messages
 
 ```typescript
-const task = await client.sendMessage({
+const result = await client.sendMessage({
   role: 'user',
-  parts: [{ type: 'text', text: 'Research quantum computing trends' }],
+  parts: [{ kind: 'text', text: 'Research quantum computing trends' }],
 });
 
-console.log(task.status.state);
-
-for (const artifact of task.artifacts) {
-  for (const part of artifact.parts) {
-    if (part.type === 'text') console.log(part.text);
-  }
+if (result.kind === 'task') {
+  console.log(result.status.state); // 'completed'
+  console.log(result.artifacts); // [{ artifactId, parts: [{ kind: 'text', text: '...' }] }]
 }
 ```
+
+`sendMessage` returns the task the server started or continued, or a direct reply message (`kind: 'message'`) from servers that answer that way. The client fills in `kind: 'message'` and a fresh `messageId` when a message leaves them out. Parts are `{ kind: 'text', text }`, `{ kind: 'data', data }` and `{ kind: 'file', file: { uri | bytes, mimeType?, name? } }`.
 
 ### Streaming
 
 ```typescript
 for await (const event of client.sendMessageStream({
   role: 'user',
-  parts: [{ type: 'text', text: 'Analyze market trends' }],
+  parts: [{ kind: 'text', text: 'Analyze market trends' }],
 })) {
-  if (event.type === 'status-update') {
-    console.log(`Status: ${event.status.state}`);
-  } else if (event.type === 'artifact-update') {
-    console.log(`Artifact: ${event.artifact.id}`);
-  }
+  console.log(event.kind, event);
 }
 ```
 
-Artifact events arrive before the final status, and the stream ends on a terminal state or `input-required`. The client `timeout` is an idle timeout between events; pass `{ signal }` as the third argument to cancel (the server aborts the agent run when the client disconnects).
-
 ### Send Configuration
 
-| Option                   | Effect                                                                  |
-| ------------------------ | ----------------------------------------------------------------------- |
-| `blocking: false`        | Return the task immediately in `working` state                          |
-| `historyLength`          | Return only the last N history messages (`0` = none); also on `getTask` |
-| `acceptedOutputModes`    | Only return artifacts with these MIME types                             |
-| `timeout`                | Maximum agent run time in ms                                            |
-| `pushNotificationConfig` | Register a webhook before the task starts executing                     |
+| Option                   | Effect                                                                             |
+| ------------------------ | ---------------------------------------------------------------------------------- |
+| `blocking: false`        | Return the task at once (`submitted`), poll `getTask` or use a webhook             |
+| `historyLength`          | Return only the last N history messages (`0` = none), also on `getTask`            |
+| `acceptedOutputModes`    | Only return artifacts with a part of these MIME types                              |
+| `pushNotificationConfig` | Register a webhook before the task starts executing                                |
+| `timeout`                | Cogitator extension: a shorter run time limit in ms, see [above](#run-time-limits) |
 
 ```typescript
 const task = await client.sendMessage(
-  { role: 'user', parts: [{ type: 'text', text: 'Long running analysis' }] },
-  { blocking: false, pushNotificationConfig: { webhookUrl: 'https://my-app.com/hooks/a2a' } }
+  { role: 'user', parts: [{ kind: 'text', text: 'Long running analysis' }] },
+  { blocking: false, pushNotificationConfig: { url: 'https://my-app.com/hooks/a2a' } }
 );
 ```
 
@@ -195,8 +202,11 @@ const task = await client.sendMessage(
 
 ```typescript
 const task = await client.getTask('task_abc123', 5);
-
 await client.cancelTask('task_abc123');
+
+for await (const event of client.resubscribeTask('task_abc123')) {
+  console.log(event.kind);
+}
 ```
 
 ## asTool() Bridge
@@ -224,106 +234,124 @@ const result = await cogitator.run(orchestrator, {
 });
 ```
 
-The orchestrator agent calls the remote researcher via A2A protocol transparently -- it looks like a regular tool call with a single `task` string parameter. `asToolFromCard` names and describes the tool from the card unless you override them; `client.asTool({ name?, description?, timeout? })` does the same without a card (default name `a2a_remote_agent`). The tool is marked with the `external` side effect and forwards the run's abort signal.
+The orchestrator calls the remote agent like any tool with a single `task` string parameter. `asToolFromCard` names and describes the tool from the card unless you override them, `client.asTool({ name?, description?, timeout? })` does the same without a card (default name `a2a_remote_agent`). The tool is marked with the `external` side effect and forwards the run's abort signal.
 
-The tool result is `{ output, success, error?, taskId?, state? }`; when the remote agent asks a question (`state: 'input-required'`), `output` holds the question and `taskId` lets you continue the task.
+The tool result is `{ output, success, error?, taskId?, state?, pendingApprovals? }`. `output` is the text of the task's status message, else of its last agent message, else of its artifacts. When the remote agent asks a question (`state: 'input-required'`), `output` holds the question and `taskId` lets you answer. When it waits for [tool approvals](#tool-approvals), `pendingApprovals` lists the calls.
 
 ## Multi-Turn Conversations
 
-A2A supports multi-turn conversations where follow-up messages continue an existing task. Each task belongs to a `contextId` that groups related tasks into a conversation.
+### Answering a question
 
-### Client-Side
-
-Use `continueTask` to send follow-up messages to an existing task:
+A task that waits on the client (`input-required`, or `auth-required`) takes the answer as a message with its `taskId`. The server appends it to the task and runs the agent again with the task transcript:
 
 ```typescript
-const client = new A2AClient('https://remote-agent.example.com');
+const task = await client.sendMessage({
+  role: 'user',
+  parts: [{ kind: 'text', text: 'Book a flight to Paris' }],
+});
+
+if (task.kind === 'task' && task.status.state === 'input-required') {
+  // the question is in task.status.message
+  const answered = await client.continueTask(task.id, 'Next Friday');
+}
+```
+
+### Carrying a conversation on
+
+A task in a terminal state (`completed`, `failed`, `canceled`, `rejected`) can't be restarted (section 7.1 of the specification): a message for it is refused with `-32600 Invalid request`. Send a new message in the same `contextId` instead:
+
+```typescript
+const first = await client.sendMessage({
+  role: 'user',
+  parts: [{ kind: 'text', text: 'Research quantum computing' }],
+});
+
+const next = await client.sendMessage({
+  role: 'user',
+  contextId: first.kind === 'task' ? first.contextId : undefined,
+  parts: [{ kind: 'text', text: 'Now compare it with classical computing' }],
+});
+```
+
+Runs are threaded by `contextId` (`threadId`), and the agent gets the transcript of the earlier tasks of the context, so follow-ups work even without a memory adapter. Artifacts accumulate across the turns of a task. A task that is still running takes no second message.
+
+## Tool Approvals
+
+When the agent calls a tool that needs approval (`requiresApproval`), its run pauses and the task waits in `input-required`, never `completed`. Its status message says `Waiting for approval of <tools>` and carries the waiting calls in a data part (`{ kind: 'tool-approval-request', approvals: [{ toolCallId, toolName, arguments, description }] }`). The client answers with a `tool-approval-response` data part in the message that continues the task, and the server resumes the run with those decisions:
+
+```typescript
+import { readToolApprovalRequest } from '@cogitator-ai/a2a';
 
 const task = await client.sendMessage({
   role: 'user',
-  parts: [{ type: 'text', text: 'Research quantum computing' }],
+  parts: [{ kind: 'text', text: 'Refund A-1' }],
 });
 
-const followUp = await client.continueTask(task.id, 'Now compare it with classical computing');
-
-console.log(task.contextId === followUp.contextId); // true
+const waiting = task.kind === 'task' ? readToolApprovalRequest(task) : undefined;
+if (waiting) {
+  await client.answerApprovals(task.id, {
+    decisions: { [waiting[0].toolCallId]: { approved: true } },
+  });
+}
 ```
 
-### Server-Side
-
-On the server, multi-turn is handled automatically. When a message includes a `taskId`, the server appends the new message to the existing task history and re-runs the agent with the task transcript as context, so follow-ups work even without a memory adapter. Runs are threaded by `contextId`, artifacts accumulate across turns, and a task that is still running cannot be continued concurrently.
+`toolApprovalResponsePart({ decisions?, defaultDecision? })` builds the part for a hand-written message. Calls left without a decision keep the task waiting, a text reply declines them and moves on. The server resumes through `cogitator.resume()` by the task's `contextId`, so the paused run has to be where the server Cogitator keeps paused runs (its memory, or `runCheckpoints` shared by every server instance).
 
 ## Listing Tasks
 
-Query stored tasks with filtering and pagination via the `tasks/list` method:
+`tasks/list` is a Cogitator extension method (A2A v0.3 defines no JSON-RPC method for listing):
 
 ```typescript
-const client = new A2AClient('https://remote-agent.example.com');
-
 const allTasks = await client.listTasks();
-
-const conversationTasks = await client.listTasks({
-  contextId: 'ctx_abc123',
-});
-
-const completedTasks = await client.listTasks({
-  state: 'completed',
-  limit: 10,
-  offset: 0,
-});
+const conversationTasks = await client.listTasks({ contextId: 'ctx_abc123' });
+const completedTasks = await client.listTasks({ state: 'completed', limit: 10, offset: 0 });
 ```
 
-Tasks are returned sorted by timestamp (newest first). The `TaskFilter` supports:
+Tasks are returned newest first. The filter takes `contextId`, `state`, `limit` and `offset`.
 
-| Field       | Type        | Description                    |
-| ----------- | ----------- | ------------------------------ |
-| `contextId` | `string`    | Filter by conversation context |
-| `state`     | `TaskState` | Filter by task state           |
-| `limit`     | `number`    | Max number of tasks to return  |
-| `offset`    | `number`    | Number of tasks to skip        |
+## Streaming
 
-## Token Streaming
+`message/stream` answers with Server-Sent Events. Every event is a JSON-RPC response carrying the request `id`, its `result` is the task, a `status-update` or an `artifact-update`:
 
-SSE streaming now includes `TokenStreamEvent` alongside status and artifact updates, giving clients real-time character-by-character output:
+```text
+data: {"jsonrpc":"2.0","id":1,"result":{"kind":"task","id":"task_1","status":{"state":"submitted"},...}}
+
+data: {"jsonrpc":"2.0","id":1,"result":{"kind":"status-update","taskId":"task_1","status":{"state":"working"},"final":false,...}}
+
+data: {"jsonrpc":"2.0","id":1,"result":{"kind":"artifact-update","artifact":{"artifactId":"art_1","parts":[{"kind":"text","text":"Roses"}]},"lastChunk":false,...}}
+
+data: {"jsonrpc":"2.0","id":1,"result":{"kind":"artifact-update","artifact":{"artifactId":"art_1","parts":[{"kind":"text","text":" are red"}]},"append":true,"lastChunk":true,...}}
+
+data: {"jsonrpc":"2.0","id":1,"result":{"kind":"status-update","taskId":"task_1","status":{"state":"completed",...},"final":true,...}}
+```
 
 ```typescript
 for await (const event of client.sendMessageStream({
   role: 'user',
-  parts: [{ type: 'text', text: 'Write a poem about the ocean' }],
+  parts: [{ kind: 'text', text: 'Write a poem about the ocean' }],
 })) {
-  switch (event.type) {
-    case 'token':
-      process.stdout.write(event.token);
-      break;
-    case 'status-update':
-      console.log(`\nStatus: ${event.status.state}`);
-      break;
-    case 'artifact-update':
-      console.log(`\nArtifact: ${event.artifact.id}`);
-      break;
+  if (event.kind === 'artifact-update') {
+    for (const part of event.artifact.parts) {
+      if (part.kind === 'text') process.stdout.write(part.text);
+    }
+  }
+  if (event.kind === 'status-update' && event.final) {
+    console.log(`\n${event.status.state}`);
   }
 }
 ```
 
-The `A2AStreamEvent` union type includes three event types:
+The reply streams token by token as chunks of one artifact: the first chunk starts it, the next ones carry `append: true`, the last one `lastChunk: true`. When the final reply differs from the streamed text (text the model wrote before a tool call, for instance), the last chunk replaces the artifact (`append: false`), so the artifact a client assembles is always the one `tasks/get` returns. Artifacts arrive before the final status update, and the stream ends after the status update with `final: true` (a terminal state, `input-required` or `auth-required`).
 
-| Event Type        | Description                             |
-| ----------------- | --------------------------------------- |
-| `status-update`   | Task state changed (working, completed) |
-| `artifact-update` | New artifact produced by the agent      |
-| `token`           | Individual token from LLM output        |
-
-The server emits token events via the `onToken` callback passed to `Cogitator.run()`.
+A request that fails before the stream starts (bad params, unknown task, missing credentials) is answered with a plain JSON-RPC error instead of a stream, a failure during the stream ends it with a JSON-RPC error response. `tasks/resubscribe` reconnects to a task: the task as it is now, then its updates while it still runs in this process. When the client disconnects, the adapters abort the agent run.
 
 ## RedisTaskStore
 
-For production deployments, use `RedisTaskStore` instead of the default in-memory store:
-
 ```typescript
 import { A2AServer, RedisTaskStore } from '@cogitator-ai/a2a';
-import { createRedisClient } from '@cogitator-ai/redis';
+import Redis from 'ioredis';
 
-const redis = await createRedisClient({ url: 'redis://localhost:6379' });
+const redis = new Redis('redis://localhost:6379');
 
 const a2aServer = new A2AServer({
   agents: { researcher },
@@ -336,52 +364,37 @@ const a2aServer = new A2AServer({
 });
 ```
 
-`RedisTaskStore` accepts any Redis client that implements the `RedisClientLike` interface: `get`, `set`, `del`, `keys`, and optionally `setex` (TTL), `scan` (listing without blocking `KEYS`), `mget` (batched reads) and `eval` (atomic task updates). The client from `@cogitator-ai/redis` (`createRedisClient`, standalone or cluster) and an `ioredis` instance (`new Redis(url)`) fit it directly; other clients such as `redis` may need a thin wrapper whose methods match these signatures.
-
-Configuration options:
-
-| Option      | Type              | Default     | Description                          |
-| ----------- | ----------------- | ----------- | ------------------------------------ |
-| `client`    | `RedisClientLike` | required    | Redis client instance                |
-| `keyPrefix` | `string`          | `a2a:task:` | Key prefix for task storage          |
-| `ttl`       | `number`          | none        | TTL in seconds (uses `SETEX` if set) |
+`RedisTaskStore` implements the full `TaskStore` interface, including `list()` with filtering by `contextId` and `state`, pagination and newest-first sorting. Updates are atomic when the client supports `eval` (Lua).
 
 ## Push Notifications
 
-Register webhooks to receive task event notifications instead of polling or holding open SSE connections. When a task's status or artifacts change, the server POSTs the event to all registered webhook URLs.
+The server POSTs the task (as `tasks/get` returns it) to every webhook registered for it on each status change.
 
 ### Registering Webhooks
 
 ```typescript
-const client = new A2AClient('https://remote-agent.example.com');
-
-const task = await client.sendMessage({
-  role: 'user',
-  parts: [{ type: 'text', text: 'Run a long analysis' }],
-});
-
-const config = await client.createPushNotification(task.id, {
-  webhookUrl: 'https://my-app.com/webhooks/a2a',
-  authenticationInfo: {
-    scheme: 'bearer',
-    credentials: { token: 'my-webhook-secret' },
-  },
+const config = await client.setPushNotificationConfig(task.id, {
+  url: 'https://my-app.com/webhooks/a2a',
+  token: 'per-task-secret',
+  authentication: { schemes: ['Bearer'], credentials: 'my-webhook-token' },
 });
 ```
+
+The webhook request carries `X-A2A-Notification-Token: <token>` and `Authorization: Bearer <credentials>` (or `Basic <credentials>`) for the first of `authentication.schemes` the server knows.
 
 ### Managing Webhooks
 
 ```typescript
-const configs = await client.listPushNotifications(task.id);
-
-const single = await client.getPushNotification(task.id, config.id!);
-
-await client.deletePushNotification(task.id, config.id!);
+const one = await client.getPushNotificationConfig(task.id, config.pushNotificationConfig.id);
+const all = await client.listPushNotificationConfigs(task.id);
+await client.deletePushNotificationConfig(task.id, config.pushNotificationConfig.id!);
 ```
+
+Every config method requires an existing task the caller may see (`-32001 Task not found` otherwise). To subscribe before the task starts, pass `configuration.pushNotificationConfig` with `blocking: false`.
 
 ### Server Configuration
 
-Enable push notifications by providing a `PushNotificationStore`:
+Configs live in an `InMemoryPushNotificationStore` unless you pass your own `PushNotificationStore`:
 
 ```typescript
 import { A2AServer, InMemoryPushNotificationStore } from '@cogitator-ai/a2a';
@@ -393,33 +406,25 @@ const a2aServer = new A2AServer({
 });
 ```
 
-The server automatically sends `A2AStreamEvent` payloads to registered webhooks on status and artifact updates. Authentication schemes supported: `bearer` (`token`), `apiKey` (`key`, optional `headerName`), `basic` (`username`, `password`), `oauth2` (`accessToken`). Configs can only be created for existing tasks.
-
-Unless `allowPrivateUrls: true`, delivery refuses loopback, private, link-local, CGNAT, multicast and IPv4-mapped IPv6 targets, validates the address the socket actually connects to (no DNS rebinding) and does not follow redirects.
+Webhook delivery is SSRF-hardened unless `allowPrivateUrls: true`: loopback, private, link-local, CGNAT, multicast and IPv4-mapped IPv6 targets are rejected, the check applies to the address the socket actually connects to, and redirects are not followed.
 
 ## Agent Card Signing
 
-Sign Agent Cards with HMAC-SHA256 to let clients verify card integrity:
+Cards are signed with a JWS (RFC 7515, `HS256`, detached payload) over their canonical JSON (RFC 8785, without `signatures`), the form A2A v0.3 specifies.
 
 ### Server-Side
-
-Configure `cardSigning` on the server to automatically sign all Agent Cards:
 
 ```typescript
 const a2aServer = new A2AServer({
   agents: { researcher },
   cogitator,
-  cardSigning: {
-    algorithm: 'hmac-sha256',
-    secret: process.env.CARD_SIGNING_SECRET!,
-  },
+  cardSigning: { secret: process.env.CARD_SIGNING_SECRET! },
 });
 ```
 
 ### Client-Side Verification
 
 ```typescript
-const client = new A2AClient('https://remote-agent.example.com');
 const isValid = await client.verifyAgentCard(process.env.CARD_SIGNING_SECRET!);
 ```
 
@@ -428,60 +433,47 @@ const isValid = await client.verifyAgentCard(process.env.CARD_SIGNING_SECRET!);
 ```typescript
 import { signAgentCard, verifyAgentCardSignature } from '@cogitator-ai/a2a';
 
-const signed = signAgentCard(card, { secret: 'shared-secret' });
-console.log(signed.signature); // "hmac-sha256:a1b2c3..."
+const signed = signAgentCard(card, { secret: 'my-secret' });
+console.log(signed.signatures); // [{ protected: 'eyJhbGciOiJIUzI1NiIs...', signature: '...' }]
 
-const valid = verifyAgentCardSignature(signed, 'shared-secret');
+const valid = verifyAgentCardSignature(signed, 'my-secret');
 ```
 
-## Extended Agent Card
+## Authenticated Extended Agent Card
 
-The `agent/extendedCard` method provides an authenticated endpoint that returns additional agent details not included in the public Agent Card -- rate limits, pricing, extended skills, and custom metadata.
-
-### Server Configuration
+`agent/getAuthenticatedExtendedCard` returns a more detailed card to authenticated clients:
 
 ```typescript
-const a2aServer: A2AServer = new A2AServer({
+const a2aServer = new A2AServer({
   agents: { researcher },
   cogitator,
+  auth: { type: 'bearer', validate: async (token) => token === process.env.A2A_SECRET },
   extendedCardGenerator: (agentName) => ({
     ...a2aServer.getAgentCard(agentName),
-    extendedSkills: [
+    skills: [
       {
         id: 'deep_research',
-        name: 'deep_research',
+        name: 'Deep research',
         description: 'Multi-source deep research',
-        inputModes: ['text/plain'],
-        outputModes: ['text/plain', 'application/json'],
+        tags: ['research'],
       },
     ],
-    rateLimit: { requestsPerMinute: 60 },
-    pricing: { model: 'per-request', details: '$0.01 per task' },
-    metadata: { version: '2.1.0', region: 'us-east-1' },
   }),
 });
-```
 
-### Fetching from Client
-
-```typescript
 const client = new A2AClient('https://remote-agent.example.com', {
   headers: { Authorization: 'Bearer my-token' },
 });
-
 const extendedCard = await client.extendedAgentCard();
-console.log(extendedCard.rateLimit);
-console.log(extendedCard.pricing);
-console.log(extendedCard.extendedSkills);
 ```
 
-The Agent Card advertises this capability via `capabilities.extendedAgentCard: true`.
+Without `extendedCardGenerator` the method answers `-32007 Authenticated Extended Card not configured`.
 
 ## Framework Adapters
 
-All adapters stream only for `message/stream` (an `Accept: text/event-stream` header alone does not switch `message/send` to SSE) and answer JSON-RPC notifications with HTTP `204` and no body. Structurally invalid JSON-RPC requests get `-32600 Invalid Request`; only unparseable JSON gets `-32700 Parse error`.
+Every adapter serves the routes listed under [Multiple Agents](#multiple-agents), streams only for `message/stream` and `tasks/resubscribe` (an `Accept: text/event-stream` header alone does not switch `message/send` to SSE), answers JSON-RPC notifications with HTTP `204`, a body that is not `application/json` with `415`, and missing or rejected credentials with `401`. While a stream is open it writes a `: keep-alive` comment every `sseHeartbeatMs` (an `A2AServer` option, 5 seconds by default, `0` turns it off), so a proxy (nginx closes after 60 s) or Bun (after 10 s) does not cut a run that waits on a slow tool. Structurally invalid JSON-RPC requests get `-32600 Invalid Request`, only unparseable JSON gets `-32700 Parse error`.
 
-Errors that are neither A2A errors nor `CogitatorError`s (in parsing, authentication, routing, streams or agent runs) are logged on the server and answered as `-32603 Internal error`, without their text; a `CogitatorError` is answered as `-32603 Internal error: <message>`. A task that fails that way gets the status message `Internal error`, and so does the `failed` status event of a stream.
+Errors that are neither A2A errors nor `CogitatorError`s (in parsing, authentication, routing, streams or agent runs) are logged on the server and answered as `-32603 Internal error`, without their text. A `CogitatorError` is answered as `-32603 Internal error: <message>`. A task that fails that way gets the status message `Internal error`.
 
 ### Express
 
@@ -518,11 +510,12 @@ app.use(a2aKoa(a2aServer));
 
 ### Next.js
 
-`a2aNext` returns route handlers: `GET` answers with the Agent Card and `POST` with JSON-RPC. Export them from the two routes clients expect:
+`a2aNext` returns route handlers: `GET` answers with the Agent Card and `POST` with JSON-RPC. In a dynamic `[agent]` route they serve that agent's own card and endpoint:
 
 ```typescript
-// app/.well-known/agent.json/route.ts → GET
-// app/a2a/route.ts → POST (the route at basePath)
+// app/.well-known/agent-card.json/route.ts -> GET
+// app/a2a/route.ts -> POST (the route at basePath)
+// app/a2a/[agent]/route.ts -> POST, app/a2a/[agent]/.well-known/agent-card.json/route.ts -> GET
 import { a2aNext } from '@cogitator-ai/a2a/next';
 
 export const { GET, POST } = a2aNext(a2aServer);
@@ -552,14 +545,12 @@ const a2aServer = new A2AServer({
   cogitator,
   auth: {
     type: 'bearer',
-    validate: async (token) => {
-      return token === process.env.A2A_SECRET;
-    },
+    validate: async (token) => token === process.env.A2A_SECRET,
   },
 });
 ```
 
-`validate` receives the credential and returns `true`, `false` or a caller. Every adapter extracts the credential (`Authorization: Bearer ...`, or the `x-api-key` header / `headerName` for `type: 'apiKey'`) with `a2aServer.getAuthToken()`; a missing or rejected credential answers a JSON-RPC `unauthorized` error. The Agent Card itself stays public and advertises the scheme in `securitySchemes`.
+`validate` receives the credential and returns `true`, `false` or a caller. Every adapter extracts the credential (`Authorization: Bearer ...`, or the `x-api-key` header or `headerName` for `type: 'apiKey'`) with `a2aServer.getAuthToken()`. A missing or rejected credential is answered with HTTP `401` (and `WWW-Authenticate: Bearer` for bearer auth) and the JSON-RPC error `-32000 Unauthorized`. The Agent Card itself stays public and declares the scheme in `securitySchemes` and `security`.
 
 ### One caller per user
 
@@ -575,40 +566,67 @@ auth: {
 },
 ```
 
-Each task then belongs to the user who created it: another user's `tasks/get`, `tasks/cancel`, push-notification calls and attempts to continue the task get `Task not found`, `tasks/list` returns only their own tasks (plus tasks without an owner), and a `contextId` holding someone else's tasks is refused. Runs carry the `userId`, so the agent's threads and memory are scoped to the user as well ([multi-user](/docs/advanced/multi-user)). The owner is kept in the task's metadata on the server and never sent to clients. Returning `true` admits the caller without a user: such callers share the tasks that have no owner.
+Each task then belongs to the user who created it: another user's `tasks/get`, `tasks/cancel`, `tasks/resubscribe`, push notification calls and attempts to continue the task get `Task not found`, `tasks/list` returns only their own tasks (plus tasks without an owner), and a `contextId` holding someone else's tasks is refused. Runs carry the `userId`, so the agent's threads and memory are scoped to the user as well ([multi-user](/docs/advanced/multi-user)). The owner is kept in the task's metadata on the server and never sent to clients. Returning `true` admits the caller without a user: such callers share the tasks that have no owner.
 
 Clients include credentials via headers:
 
 ```typescript
 const client = new A2AClient('https://remote-agent.example.com', {
-  headers: {
-    Authorization: 'Bearer my-secret-token',
-  },
+  headers: { Authorization: 'Bearer my-secret-token' },
 });
 ```
 
 ## A2A Protocol Methods
 
-| Method                          | Description                                                     |
-| ------------------------------- | --------------------------------------------------------------- |
-| `message/send`                  | Send a message (blocking, or background with `blocking: false`) |
-| `message/stream`                | Send a message with SSE streaming (incl. token events)          |
-| `tasks/get`                     | Retrieve a task by ID                                           |
-| `tasks/cancel`                  | Cancel a running task                                           |
-| `tasks/list`                    | List tasks with filtering and pagination                        |
-| `tasks/pushNotification/create` | Register a webhook for task events                              |
-| `tasks/pushNotification/get`    | Get a push notification config                                  |
-| `tasks/pushNotification/list`   | List push notification configs for a task                       |
-| `tasks/pushNotification/delete` | Remove a push notification config                               |
-| `agent/extendedCard`            | Fetch extended Agent Card (authenticated)                       |
+| Method                                | Description                                                     |
+| ------------------------------------- | --------------------------------------------------------------- |
+| `message/send`                        | Send a message (blocking, or background with `blocking: false`) |
+| `message/stream`                      | Send a message with SSE streaming                               |
+| `tasks/get`                           | Retrieve a task by id                                           |
+| `tasks/cancel`                        | Cancel a running task                                           |
+| `tasks/resubscribe`                   | Reconnect to the stream of a task                               |
+| `tasks/pushNotificationConfig/set`    | Register a webhook for a task                                   |
+| `tasks/pushNotificationConfig/get`    | Get a webhook config                                            |
+| `tasks/pushNotificationConfig/list`   | List the webhook configs of a task                              |
+| `tasks/pushNotificationConfig/delete` | Remove a webhook config                                         |
+| `agent/getAuthenticatedExtendedCard`  | Fetch the authenticated extended Agent Card                     |
+| `tasks/list`                          | Cogitator extension: list tasks with filters and paging         |
+
+## Error Codes
+
+| Code     | Meaning                                                        |
+| -------- | -------------------------------------------------------------- |
+| `-32700` | Parse error                                                    |
+| `-32600` | Invalid request, also a message for a task that can't take one |
+| `-32601` | Method not found                                               |
+| `-32602` | Invalid params, also an unknown agent name                     |
+| `-32603` | Internal error                                                 |
+| `-32001` | Task not found                                                 |
+| `-32002` | Task cannot be canceled                                        |
+| `-32004` | Unsupported operation                                          |
+| `-32007` | Authenticated Extended Card not configured                     |
+| `-32000` | Cogitator: missing or rejected credentials (HTTP 401)          |
 
 ## Task States
 
-| State            | Description                |
-| ---------------- | -------------------------- |
-| `working`        | Agent is processing        |
-| `completed`      | Task finished successfully |
-| `failed`         | Task encountered an error  |
-| `input-required` | Agent needs more input     |
-| `canceled`       | Task was canceled          |
-| `rejected`       | Server rejected the task   |
+| State            | Description                                       |
+| ---------------- | ------------------------------------------------- |
+| `submitted`      | Task created, the run has not started yet         |
+| `working`        | Agent is processing                               |
+| `input-required` | Agent needs more input, or approval of tool calls |
+| `auth-required`  | Agent needs the client to authenticate            |
+| `completed`      | Task finished successfully                        |
+| `failed`         | Task encountered an error                         |
+| `canceled`       | Task was canceled                                 |
+| `rejected`       | Server rejected the task                          |
+
+## Migrating from earlier versions
+
+Earlier versions of this package spoke their own dialect, which A2A v0.3 clients and servers did not understand. The wire format now follows the specification:
+
+- Parts use `kind` (`{ kind: 'text', text }`), file parts nest the file (`{ kind: 'file', file: { uri } }`), data parts have no `mimeType`. Messages carry `kind: 'message'` and a `messageId` (`A2AClient` fills both in). Tasks carry `kind: 'task'`, artifacts `artifactId` instead of `id`.
+- `status.message` is an agent message instead of a string, read its text with `messageText(task.status.message)`. `errorDetails` is gone.
+- Stream events use `kind`, carry `contextId`, and the final status update has `final: true`. Every SSE event is a JSON-RPC response, there is no `[DONE]` marker, and tokens arrive as `artifact-update` chunks instead of `token` events.
+- The card is at `/.well-known/agent-card.json` with `protocolVersion`, `preferredTransport`, a required `description` and skill `tags`. `version` is the agent version, not the protocol version. Security schemes use `in` and `name`. `capabilities.extendedAgentCard` became `supportsAuthenticatedExtendedCard`, and signatures are JWS objects in `signatures`.
+- Methods: `tasks/pushNotification/*` became `tasks/pushNotificationConfig/{set,get,list,delete}` with spec params (`url`, `token`, `authentication`), webhooks receive the task, and `agent/extendedCard` became `agent/getAuthenticatedExtendedCard`. On the client: `setPushNotificationConfig`, `getPushNotificationConfig`, `listPushNotificationConfigs`, `deletePushNotificationConfig`.
+- A completed task can't be continued, send a new message in its `contextId`. `agentNotFound` is `-32602`, a refused continuation `-32600`, and `-32007` is the extended card error of the specification.

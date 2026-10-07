@@ -1,8 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { A2AClient, type CogitatorLike, type A2ATask } from '@cogitator-ai/a2a';
+import { A2AClient, messageText, type CogitatorLike, type A2ATask } from '@cogitator-ai/a2a';
 import type { AgentRunResult } from '@cogitator-ai/a2a';
 import type { Agent, AgentConfig } from '@cogitator-ai/types';
-import { createStubAgent, startTestA2AServer, type TestA2AServer } from '../../helpers/a2a-server';
+import {
+  asTask,
+  createStubAgent,
+  startTestA2AServer,
+  type TestA2AServer,
+} from '../../helpers/a2a-server';
 
 let callCount = 0;
 
@@ -16,9 +21,10 @@ function createMockAgent(name: string): Agent {
   return createStubAgent(config);
 }
 
-function createMockRunResult(output: string): AgentRunResult {
+function createMockRunResult(output: string, requiresInput = false): AgentRunResult {
   return {
     output,
+    requiresInput,
     runId: `run_${++callCount}`,
     agentId: 'agent_1',
     threadId: 'thread_1',
@@ -30,6 +36,10 @@ function createMockRunResult(output: string): AgentRunResult {
 function createMockCogitator(): CogitatorLike {
   return {
     run: async (_agent, options) => {
+      const latest = options.input.split('User: ').at(-1) ?? options.input;
+      if (latest.includes('[ask]')) {
+        return createMockRunResult('How many guests?', true);
+      }
       return createMockRunResult(`Response to: ${options.input}`);
     },
   };
@@ -53,72 +63,100 @@ describe('A2A v2: Multi-turn Conversations + ListTasks', () => {
   });
 
   describe('multi-turn', () => {
-    it('creates a task and continues it, history accumulates', async () => {
-      const task1 = await client.sendMessage({
-        role: 'user',
-        parts: [{ type: 'text', text: 'Hello, who are you?' }],
-      });
+    async function send(text: string, contextId?: string): Promise<A2ATask> {
+      return asTask(
+        await client.sendMessage({
+          role: 'user',
+          parts: [{ kind: 'text', text }],
+          ...(contextId && { contextId }),
+        })
+      );
+    }
+
+    it('answers an input-required task in the same task, history accumulates', async () => {
+      const task1 = await send('Book a table [ask]');
 
       expect(task1.id).toBeDefined();
-      expect(task1.status.state).toBe('completed');
-      expect(task1.history.length).toBeGreaterThanOrEqual(2);
+      expect(task1.status.state).toBe('input-required');
+      expect(messageText(task1.status.message)).toBe('How many guests?');
 
-      const task2 = await client.continueTask(task1.id, 'Tell me more about yourself');
+      const task2 = asTask(await client.continueTask(task1.id, 'Four guests'));
 
       expect(task2.id).toBe(task1.id);
       expect(task2.contextId).toBe(task1.contextId);
       expect(task2.status.state).toBe('completed');
-      expect(task2.history.length).toBeGreaterThanOrEqual(4);
+      expect(messageText(task2.status.message)).toContain('Book a table');
+      expect(messageText(task2.status.message)).toContain('Four guests');
 
-      const userMessages = task2.history.filter((m) => m.role === 'user');
-      const agentMessages = task2.history.filter((m) => m.role === 'agent');
-      expect(userMessages.length).toBe(2);
-      expect(agentMessages.length).toBe(2);
+      const history = task2.history ?? [];
+      expect(history.filter((m) => m.role === 'user')).toHaveLength(2);
+      expect(history.filter((m) => m.role === 'agent')).toHaveLength(2);
     });
 
-    it('preserves contextId across turns', async () => {
-      const contextId = 'ctx_shared_e2e';
-      const task = await client.sendMessage({
-        role: 'user',
-        parts: [{ type: 'text', text: 'Start conversation' }],
-        contextId,
-      });
+    it('continues a conversation with a new task in the same context', async () => {
+      const task1 = await send('Hello, who are you?');
+      expect(task1.status.state).toBe('completed');
+      expect(task1.history?.length).toBeGreaterThanOrEqual(2);
 
+      const task2 = await send('Tell me more about yourself', task1.contextId);
+
+      expect(task2.id).not.toBe(task1.id);
+      expect(task2.contextId).toBe(task1.contextId);
+      expect(task2.status.state).toBe('completed');
+      expect(messageText(task2.status.message)).toContain('Hello, who are you?');
+      expect(messageText(task2.status.message)).toContain('Tell me more about yourself');
+    });
+
+    it('preserves a client-chosen contextId across turns', async () => {
+      const contextId = 'ctx_shared_e2e';
+      const task = await send('Start conversation', contextId);
       expect(task.contextId).toBe(contextId);
 
-      const continued = await client.continueTask(task.id, 'Continue conversation');
+      const continued = await send('Continue conversation', contextId);
       expect(continued.contextId).toBe(contextId);
+
+      const tasks = await client.listTasks({ contextId });
+      expect(tasks.map((t) => t.id).sort()).toEqual([task.id, continued.id].sort());
     });
 
     it('supports three turns of conversation', async () => {
-      const task1 = await client.sendMessage({
-        role: 'user',
-        parts: [{ type: 'text', text: 'Turn 1' }],
+      const task1 = await send('Turn 1');
+      const task2 = await send('Turn 2', task1.contextId);
+      const task3 = await send('Turn 3', task2.contextId);
+
+      expect(task3.contextId).toBe(task1.contextId);
+      const reply = messageText(task3.status.message);
+      expect(reply).toContain('Turn 1');
+      expect(reply).toContain('Turn 2');
+      expect(reply).toContain('Turn 3');
+
+      const tasks = await client.listTasks({ contextId: task1.contextId });
+      expect(tasks).toHaveLength(3);
+    });
+
+    it('refuses to continue a completed task', async () => {
+      const task = await send('Finish right away');
+      expect(task.status.state).toBe('completed');
+
+      await expect(client.continueTask(task.id, 'One more thing')).rejects.toMatchObject({
+        code: -32600,
       });
-      const task2 = await client.continueTask(task1.id, 'Turn 2');
-      const task3 = await client.continueTask(task2.id, 'Turn 3');
-
-      expect(task3.id).toBe(task1.id);
-      expect(task3.history.length).toBeGreaterThanOrEqual(6);
-
-      const userMessages = task3.history.filter((m) => m.role === 'user');
-      expect(userMessages.length).toBe(3);
     });
 
     it('returns error when continuing nonexistent task', async () => {
-      await expect(client.continueTask('nonexistent_task_xyz', 'Hello')).rejects.toThrow();
+      await expect(client.continueTask('nonexistent_task_xyz', 'Hello')).rejects.toMatchObject({
+        code: -32001,
+      });
     });
 
     it('retrieved task matches final state after multi-turn', async () => {
-      const task = await client.sendMessage({
-        role: 'user',
-        parts: [{ type: 'text', text: 'First message' }],
-      });
+      const task = await send('First message [ask]');
       await client.continueTask(task.id, 'Second message');
 
       const retrieved = await client.getTask(task.id);
       expect(retrieved.id).toBe(task.id);
-      expect(retrieved.history.length).toBeGreaterThanOrEqual(4);
+      expect(retrieved.status.state).toBe('completed');
+      expect(retrieved.history?.length).toBeGreaterThanOrEqual(4);
     });
   });
 
@@ -139,9 +177,9 @@ describe('A2A v2: Multi-turn Conversations + ListTasks', () => {
     });
 
     it('lists all created tasks', async () => {
-      await client2.sendMessage({ role: 'user', parts: [{ type: 'text', text: 'Task A' }] });
-      await client2.sendMessage({ role: 'user', parts: [{ type: 'text', text: 'Task B' }] });
-      await client2.sendMessage({ role: 'user', parts: [{ type: 'text', text: 'Task C' }] });
+      await client2.sendMessage({ role: 'user', parts: [{ kind: 'text', text: 'Task A' }] });
+      await client2.sendMessage({ role: 'user', parts: [{ kind: 'text', text: 'Task B' }] });
+      await client2.sendMessage({ role: 'user', parts: [{ kind: 'text', text: 'Task C' }] });
 
       const tasks = await client2.listTasks();
       expect(tasks.length).toBeGreaterThanOrEqual(3);
@@ -151,17 +189,17 @@ describe('A2A v2: Multi-turn Conversations + ListTasks', () => {
       const ctx = 'e2e_filter_ctx';
       await client2.sendMessage({
         role: 'user',
-        parts: [{ type: 'text', text: 'Filtered task 1' }],
+        parts: [{ kind: 'text', text: 'Filtered task 1' }],
         contextId: ctx,
       });
       await client2.sendMessage({
         role: 'user',
-        parts: [{ type: 'text', text: 'Filtered task 2' }],
+        parts: [{ kind: 'text', text: 'Filtered task 2' }],
         contextId: ctx,
       });
       await client2.sendMessage({
         role: 'user',
-        parts: [{ type: 'text', text: 'Other context' }],
+        parts: [{ kind: 'text', text: 'Other context' }],
         contextId: 'other_ctx',
       });
 

@@ -13,6 +13,7 @@ import type {
   MemoryResult,
   RedisAdapterConfig,
   MemoryProvider,
+  NewMemoryEntry,
 } from '@cogitator-ai/types';
 import { createRedisClient, type RedisClient } from '@cogitator-ai/redis';
 import { BaseMemoryAdapter } from './base';
@@ -54,29 +55,37 @@ export class RedisAdapter extends BaseMemoryAdapter {
   }
 
   async connect(): Promise<MemoryResult<void>> {
-    try {
-      if (this.config.cluster) {
-        this.client = await createRedisClient({
-          mode: 'cluster',
-          nodes: this.config.cluster.nodes,
-          scaleReads: this.config.cluster.scaleReads,
-          password: this.config.password,
-        });
-      } else {
-        this.client = await createRedisClient({
-          mode: 'standalone',
-          url: this.config.url,
-          host: this.config.host,
-          port: this.config.port,
-          password: this.config.password,
-        });
-      }
+    if (this.client) return this.success(undefined);
 
-      await this.client.ping();
+    let client: RedisClient | undefined;
+    let connectionError: Error | undefined;
+    try {
+      client = this.config.cluster
+        ? await createRedisClient({
+            mode: 'cluster',
+            nodes: this.config.cluster.nodes,
+            scaleReads: this.config.cluster.scaleReads,
+            password: this.config.password,
+          })
+        : await createRedisClient({
+            mode: 'standalone',
+            url: this.config.url,
+            host: this.config.host,
+            port: this.config.port,
+            password: this.config.password,
+          });
+      client.on('error', (error: Error) => {
+        connectionError ??= error;
+      });
+
+      await client.ping();
+      this.client = client;
       return this.success(undefined);
     } catch (error) {
+      await client?.quit().catch(() => undefined);
+      const reason = connectionError ?? error;
       return this.failure(
-        `Redis connection failed: ${error instanceof Error ? error.message : String(error)}`
+        `Redis connection failed: ${reason instanceof Error ? reason.message : String(reason)}`
       );
     }
   }
@@ -165,12 +174,12 @@ export class RedisAdapter extends BaseMemoryAdapter {
     });
   }
 
-  async addEntry(entry: Omit<MemoryEntry, 'id' | 'createdAt'>): Promise<MemoryResult<MemoryEntry>> {
+  async addEntry(entry: NewMemoryEntry): Promise<MemoryResult<MemoryEntry>> {
     return this.run(async (client) => {
       const full: MemoryEntry = {
         ...entry,
         id: this.generateId('entry'),
-        createdAt: this.nextEntryTimestamp(entry.threadId),
+        createdAt: this.entryTimestamp(entry),
       };
 
       const key = this.key('entry', full.id);
@@ -188,38 +197,42 @@ export class RedisAdapter extends BaseMemoryAdapter {
   async getEntries(options: MemoryQueryOptions): Promise<MemoryResult<MemoryEntry[]>> {
     return this.run(async (client) => {
       const setKey = this.key('thread:entries', options.threadId);
+      const limit = options.limit && options.limit > 0 ? options.limit : undefined;
+      const ranged = Boolean(options.before || options.after);
 
-      let keys: string[];
-      if (options.before || options.after) {
-        const min = options.after ? `(${options.after.getTime()}` : '-inf';
-        const max = options.before ? `(${options.before.getTime()}` : '+inf';
-        keys = await client.zrangebyscore(setKey, min, max);
-      } else {
-        keys = await client.zrange(setKey, 0, -1);
-      }
+      const read = async (): Promise<string[]> => {
+        if (ranged) {
+          const min = options.after ? `(${options.after.getTime()}` : '-inf';
+          const max = options.before ? `(${options.before.getTime()}` : '+inf';
+          return client.zrangebyscore(setKey, min, max);
+        }
+        return limit ? client.zrange(setKey, -limit, -1) : client.zrange(setKey, 0, -1);
+      };
 
-      if (keys.length === 0) return this.success([]);
-
-      const values = await client.mget(...keys);
-      const expired = keys.filter((_key, index) => values[index] === null);
-      if (expired.length > 0) {
+      let values: string[] = [];
+      for (;;) {
+        const keys = await read();
+        if (keys.length === 0) break;
+        const found = await client.mget(...keys);
+        const expired = keys.filter((_key, index) => found[index] === null);
+        values = found.filter((v): v is string => v !== null);
+        if (expired.length === 0) break;
         await client.zrem(setKey, ...expired);
+        if (ranged || !limit) break;
       }
 
-      let entries: MemoryEntry[] = values
-        .filter((v): v is string => v !== null)
-        .map((v) => {
-          const entry = JSON.parse(v) as MemoryEntry;
-          entry.createdAt = new Date(entry.createdAt);
-          if (!options.includeToolCalls) {
-            entry.toolCalls = undefined;
-            entry.toolResults = undefined;
-          }
-          return entry;
-        });
+      let entries: MemoryEntry[] = values.map((v) => {
+        const entry = JSON.parse(v) as MemoryEntry;
+        entry.createdAt = new Date(entry.createdAt);
+        if (!options.includeToolCalls) {
+          entry.toolCalls = undefined;
+          entry.toolResults = undefined;
+        }
+        return entry;
+      });
 
-      if (options.limit && entries.length > options.limit) {
-        entries = entries.slice(-options.limit);
+      if (limit && entries.length > limit) {
+        entries = entries.slice(-limit);
       }
 
       return this.success(entries);

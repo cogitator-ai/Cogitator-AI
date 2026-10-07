@@ -157,9 +157,13 @@ export class Swarm {
         `Swarm '${this.config.name}' is already running; create a separate Swarm instance for concurrent runs`
       );
     }
+    const callerSignal = options.signal;
+    if (callerSignal?.aborted) throw abortReason(callerSignal);
     this.running = true;
 
     const runController = new AbortController();
+    const forwardCallerAbort = () => runController.abort(abortReason(callerSignal!));
+    callerSignal?.addEventListener('abort', forwardCallerAbort, { once: true });
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     let detachCallbacks: (() => void) | undefined;
 
@@ -227,6 +231,7 @@ export class Swarm {
       throw failure;
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
+      callerSignal?.removeEventListener('abort', forwardCallerAbort);
       detachCallbacks?.();
       this.coordinator.endRun();
       this.running = false;
@@ -491,6 +496,7 @@ export class Swarm {
     }
 
     this.validateAgentTools(config);
+    this.validateDistributedStrategy(config);
 
     switch (config.strategy) {
       case 'hierarchical':
@@ -539,6 +545,21 @@ export class Swarm {
     return config;
   }
 
+  /**
+   * Strategies whose agents act through tools bound to this process cannot run on remote
+   * workers: those tools do not exist there, and the agents would answer without them.
+   */
+  private validateDistributedStrategy(config: SwarmConfig): void {
+    if (!config.distributed?.enabled) return;
+    const reason = DISTRIBUTED_UNSUPPORTED[config.strategy];
+    if (!reason) return;
+    throw new Error(
+      `The ${config.strategy} strategy cannot run distributed: ${reason}, which only exist ` +
+        'in the process that runs the swarm. Run it without distributed, or use pipeline, ' +
+        'round-robin, consensus, debate or auction.'
+    );
+  }
+
   private validateAgentTools(config: SwarmConfig): void {
     const tools = config.agentTools;
     if (!tools?.messaging && !tools?.blackboard) return;
@@ -556,6 +577,11 @@ export class Swarm {
     }
   }
 }
+
+const DISTRIBUTED_UNSUPPORTED: Partial<Record<SwarmConfig['strategy'], string>> = {
+  hierarchical: 'the supervisor delegates through the delegate_task tool',
+  negotiation: 'negotiators make and answer offers through the negotiation tools',
+};
 
 function abortReason(signal: AbortSignal): Error {
   const reason: unknown = signal.reason;

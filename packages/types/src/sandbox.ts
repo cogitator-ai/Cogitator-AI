@@ -80,6 +80,8 @@ export interface SandboxExecutionResult {
   timedOut: boolean;
   /** Execution duration in milliseconds */
   duration: number;
+  /** Whether `stdout` was cut at the executor's output limit */
+  truncated?: boolean;
 }
 
 export interface SandboxPoolConfig {

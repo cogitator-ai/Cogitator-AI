@@ -182,9 +182,12 @@ describe('MCPServer <-> MCPClient over HTTP', () => {
     expect(result).toEqual({ id: 'x', extra: true });
   });
 
-  it('passes image content through instead of stringifying it', async () => {
+  it('passes image content through as a media result instead of stringifying it', async () => {
     const result = await client.callTool('image', {});
-    expect(result).toEqual({ type: 'image', data: PIXEL, mimeType: 'image/png' });
+    expect(result).toEqual({
+      type: 'tool-content',
+      content: [{ type: 'image', data: PIXEL, mediaType: 'image/png' }],
+    });
   });
 
   it('serializes domain objects with a "type" field as JSON text', async () => {

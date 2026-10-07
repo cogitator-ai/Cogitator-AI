@@ -1,7 +1,13 @@
 import type { Context as HonoContext } from 'hono';
 import type { UpgradeWebSocket } from 'hono/ws';
 import type { Cogitator, Agent } from '@cogitator-ai/core';
-import type { PendingApproval, RunUsage } from '@cogitator-ai/server-shared';
+import type {
+  AgentRunResponse,
+  ContextPolicy,
+  PendingApproval,
+  ThreadMessageRole,
+  WorkflowRunRequestBody,
+} from '@cogitator-ai/server-shared';
 import type {
   Message,
   ToolCall,
@@ -75,6 +81,17 @@ export interface CogitatorAppOptions {
    * 60 s). Default: 5000. `0` turns heartbeats off.
    */
   sseHeartbeatMs?: number;
+  /**
+   * Keys of a run's `context` that clients may set. The run adds `context` to the system
+   * prompt, so by default (`false`) a request with `context` is refused with 400. List the
+   * keys clients may send, or pass `true` only for clients trusted like the server itself.
+   */
+  acceptContext?: ContextPolicy;
+  /**
+   * Roles clients may add with `POST /threads/:id/messages`. Default: `user` and
+   * `assistant`. A `system` message is read by the model as operator instructions.
+   */
+  threadMessageRoles?: readonly ThreadMessageRole[];
 }
 
 export interface CogitatorContext {
@@ -84,6 +101,10 @@ export interface CogitatorContext {
   swarms: Record<string, SwarmConfig>;
   /** The resolved `sseHeartbeatMs` option; the default applies when it is absent */
   sseHeartbeatMs?: number;
+  /** The resolved `acceptContext` option. Default: no keys */
+  acceptContext?: ContextPolicy;
+  /** The resolved `threadMessageRoles` option. Default: `user` and `assistant` */
+  threadMessageRoles?: readonly ThreadMessageRole[];
 }
 
 export type HonoEnv = {
@@ -109,15 +130,7 @@ export interface AgentRunRequest {
   threadId?: string;
 }
 
-export interface AgentRunResponse {
-  output: string;
-  threadId?: string;
-  usage: RunUsage;
-  toolCalls: ToolCall[];
-  reasoning?: string;
-  status?: 'completed' | 'paused';
-  pendingApprovals?: PendingApproval[];
-}
+export type { AgentRunResponse };
 
 export interface AgentResumeRequest {
   threadId: string;
@@ -155,14 +168,7 @@ export interface WorkflowListResponse {
   }>;
 }
 
-export interface WorkflowRunRequest {
-  input?: Record<string, unknown>;
-  options?: {
-    maxConcurrency?: number;
-    maxIterations?: number;
-    checkpoint?: boolean;
-  };
-}
+export type WorkflowRunRequest = WorkflowRunRequestBody;
 
 export interface WorkflowRunResponse {
   workflowId: string;

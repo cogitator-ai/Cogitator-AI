@@ -66,6 +66,20 @@ regex(/\d{4}-\d{2}-\d{2}/); // matches date format
 regex('^(yes|no)$'); // string pattern
 ```
 
+The `g` and `y` flags are ignored: they make `RegExp.test` resume from the last match, so identical outputs would alternate between pass and fail.
+
+### Metric names
+
+Every built-in per-case metric (`exactMatch`, `contains`, `regex`, `jsonSchema`, `faithfulness`, `relevance`, `coherence`, `helpfulness`) takes a `name` option. A suite refuses two metrics with the same name, a per-case metric and a statistical one included, because their scores would merge into one aggregate, comparison and CSV column. Name the second metric of a kind:
+
+```typescript
+metrics: [
+  regex(/\d{4}-\d{2}-\d{2}/, { name: 'hasDate' }),
+  regex(/\[\d+\]/, { name: 'hasCitation' }),
+  faithfulness({ name: 'faithfulToSources' }),
+];
+```
+
 ### jsonSchema
 
 Validates that the output is valid JSON conforming to a Zod schema. Useful for evaluating structured output agents.
@@ -117,7 +131,7 @@ const suite = new EvalSuite({
 
 The option type is `JudgeConfigInput`; the suite parses it into `JudgeConfig`, filling in the `temperature` default.
 
-Each judge metric sends one prompt per case containing the rubric, the case `input`, its `context` when it has one (each key on its own line, objects as JSON), the `expected` value (or `N/A`) and the response, and asks for JSON with `score` and `reasoning`; the judge agent (one iteration, no memory) requests that shape with a JSON schema. The score is clamped to [0, 1] and `reasoning` becomes the score's `details`. An answer without a parsable score, or a judge error, counts as 0 with the reason in `details` — it never fails the run.
+Each judge metric sends one prompt per case containing the rubric, the case `input`, its `context` when it has one (each key on its own line, objects as JSON), the `expected` value (or `N/A`) and the response, and asks for JSON with `score` and `reasoning`, the judge agent (one iteration, no memory) requests that shape with a JSON schema. The score is clamped to [0, 1] and `reasoning` becomes the score's `details`. The verdict may come in a code fence or carry its score as a numeric string (`"0.8"`). An answer without JSON falls back to its last labelled score (`Score: 0.4`, `score is 4/5`), never to the first number in the prose. An answer without a readable score, or a judge error, counts as 0 with the reason in `error` and `details`, it never fails the run. The judge's token usage and cost are on the score as `usage` and add up to the suite's `stats.judgeCost`.
 
 ### Built-in Judge Metrics
 
@@ -238,7 +252,7 @@ const responseLength = metric({
 });
 ```
 
-The `evaluate` function receives `{ input, output, expected, context }` and must return `{ score, details? }`. The score is automatically clamped to [0, 1]. Both sync and async evaluate functions are supported; if `evaluate` throws, the case scores 0 with the error in `details`.
+The `evaluate` function receives `{ input, output, expected, context }` and must return `{ score, details? }`. The score is automatically clamped to [0, 1]. Both sync and async evaluate functions are supported. If `evaluate` throws, or returns a score that is not a finite number (NaN from `0 / 0`, Infinity), the case scores 0 with the reason in `error` and `details`, so a bad division never passes as a perfect score.
 
 For access to the whole case result — `duration`, `usage`, `toolCalls`, `error` — write a `MetricFn` directly. It must carry a `metricName`:
 
@@ -253,6 +267,8 @@ const usedSearch: MetricFn = Object.assign(
   { metricName: 'usedSearch' }
 );
 ```
+
+The suite guards a `MetricFn` the same way: if it throws or its score is not a finite number, that case scores 0 for it with the reason in `error`, and the case and the other metrics are kept.
 
 ## Combining Metrics
 

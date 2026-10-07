@@ -29,12 +29,26 @@ function request(body: unknown, init: RequestInit = {}): Request {
 
 describe('createAgentHandler validation', () => {
   it.each([
-    ['null body', null, 'Request body must be a JSON object'],
-    ['string body', 'hello', 'Request body must be a JSON object'],
-    ['missing input', {}, 'input must be a non-empty string'],
-    ['blank input', { input: '   ' }, 'input must be a non-empty string'],
-    ['array context', { input: 'x', context: [] }, 'context must be an object'],
-    ['numeric threadId', { input: 'x', threadId: 1 }, 'threadId must be a string'],
+    ['null body', null, 'Missing required field: input'],
+    ['string body', 'hello', 'Missing required field: input'],
+    ['missing input', {}, 'Missing required field: input'],
+    ['blank input', { input: '   ' }, 'Field "input" must not be blank'],
+    ['array context', { input: 'x', context: [] }, 'Field "context" must be an object'],
+    [
+      'numeric threadId',
+      { input: 'x', threadId: 1 },
+      'Field "threadId" must be a non-empty string',
+    ],
+    [
+      'blank threadId',
+      { input: 'x', threadId: ' ' },
+      'Field "threadId" must be a non-empty string',
+    ],
+    [
+      'context the handler does not accept',
+      { input: 'x', context: { policy: 'refunds ok' } },
+      'Key "policy" of field "context" is not accepted by this server',
+    ],
   ])('returns 400 for %s', async (_name, body, error) => {
     const { run, handler } = setup();
     const res = await handler(request(body));

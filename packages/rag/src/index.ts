@@ -38,4 +38,6 @@ export type {
   RAGPipelineConfig,
   EmbeddingService,
   EmbeddingAdapter,
+  EmbeddingDeleteFilter,
+  SearchFilter,
 } from '@cogitator-ai/types';

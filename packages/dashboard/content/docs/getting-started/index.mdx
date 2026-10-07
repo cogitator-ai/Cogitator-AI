@@ -95,8 +95,8 @@ docker compose up -d
 
 The `postgres:16-alpine` image has no pgvector extension. For semantic search in Postgres, switch the image to `pgvector/pgvector:pg16`.
 
-Pull a model when you use Ollama:
+With Ollama as the provider, the compose file also pulls the project's model (`qwen3.5:9b` unless you chose another) into the Ollama container. With Ollama installed on your machine instead, pull it yourself:
 
 ```bash
-ollama pull llama3.2
+ollama pull qwen3.5:9b
 ```

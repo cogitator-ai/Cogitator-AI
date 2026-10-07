@@ -62,11 +62,39 @@ result.report('console');
 result.saveBaseline('./baseline.json');
 ```
 
-A target is either `{ fn: (input) => Promise<string> }` or `{ agent, cogitator }`, which runs the agent with `cogitator.run(agent, { input })` and records its usage for the statistical metrics. Defaults: `concurrency` 5, `timeout` 30 000 ms (minimum 1 000), `retries` 0.
+A target is either `{ fn: (input, { signal, case, attempt }) => Promise<string> }` or `{ agent, cogitator }`, which runs the agent with `cogitator.run(agent, { input, context, signal })` and records its usage for the statistical metrics. Defaults: `concurrency` 5, `timeout` 30 000 ms (minimum 1 000), `retries` 0.
 
-A case that throws or exceeds `timeout` is retried up to `retries` times. If every attempt fails, its result has an empty `output` and an `error` message describing the last failure.
+A case that throws or exceeds `timeout` is retried up to `retries` times. A timed-out attempt is cancelled through its `signal`: an agent target's run is aborted, and a `fn` target should pass the signal on to its model call. The suite waits for the cancelled attempt to stop (at most another `timeout`) before it retries, so attempts of one case never overlap and `concurrency` holds. If every attempt fails, its result has an empty `output` and an `error` message describing the last failure.
 
-`suite.run(options?: EvalRunOptions)` takes `{ maxCases?: number }`: with `maxCases` only the first N cases of the dataset run, and the results, aggregates, assertions and `stats.total` cover just those cases.
+```typescript
+const suite = new EvalSuite({
+  dataset,
+  target: {
+    fn: async (input, { signal }) => {
+      const res = await fetch(MODEL_URL, { method: 'POST', body: input, signal });
+      return res.text();
+    },
+  },
+  timeout: 10_000,
+  retries: 2,
+});
+```
+
+`suite.run(options?: EvalRunOptions)` takes `{ maxCases?: number, signal?: AbortSignal }`: with `maxCases` only the first N cases of the dataset run, and the results, aggregates, assertions and `stats.total` cover just those cases. Aborting `signal` cancels the attempts in flight, starts no further case, and `run()` rejects with the signal's reason.
+
+A failure never drops a case. A metric that throws or returns a score that is not a finite number (such as NaN) scores 0 for that case with the reason in `score.error`, and an `onProgress` callback that throws is reported as a process warning.
+
+`result.stats` holds:
+
+| Field          | Meaning                                                      |
+| -------------- | ------------------------------------------------------------ |
+| `total`        | Cases run                                                    |
+| `errors`       | Cases whose every attempt failed or timed out                |
+| `metricErrors` | Metric scores that failed and count as 0                     |
+| `duration`     | Wall time of the run in ms                                   |
+| `cost`         | USD spent, `targetCost + judgeCost`                          |
+| `targetCost`   | USD the target spent, over every attempt that reported usage |
+| `judgeCost`    | USD the LLM judge spent                                      |
 
 ---
 
@@ -145,6 +173,17 @@ const metrics = [
 ];
 ```
 
+Every built-in per-case metric takes a `name` option. A suite refuses two metrics with the same name, because their scores would merge into one aggregate, so name the second of a kind:
+
+```typescript
+const metrics = [
+  regex(/\d{4}-\d{2}-\d{2}/, { name: 'hasDate' }),
+  regex(/\[\d+\]/, { name: 'hasCitation' }),
+];
+```
+
+`regex()` ignores the `g` and `y` flags, which would make identical outputs alternate between pass and fail.
+
 ### LLM-as-Judge
 
 Metrics scored by an LLM judge (0.0 to 1.0). They require a `judge` config on the suite and a Cogitator to run the judge agent: `judge.cogitator`, or the `cogitator` of an agent target. Without one, the suite throws when it is created.
@@ -183,6 +222,8 @@ Dataset.from([{ input: 'Write the lede', context: { dossier: dossierText } }]);
 
 The `judge` option is a `JudgeConfigInput`: `{ model, temperature?, maxTokens?, cogitator? }`, with `temperature` defaulting to `0`.
 
+The judge answers with `{ "score", "reasoning" }` JSON. A verdict in a code fence or with the score as a numeric string is read as well, and an answer without JSON falls back to its last labelled score (`Score: 0.4`, `score is 4/5`), never to a stray number in the prose. When no verdict can be read, or the judge call fails, the metric scores 0 with the reason in `score.error`. The judge's usage is reported on each score and counted in `stats.judgeCost`.
+
 ### Statistical
 
 Aggregate metrics computed across all results. These report percentile breakdowns (p50, p95, p99) rather than per-case scores.
@@ -220,7 +261,7 @@ const suite = new EvalSuite({
 });
 ```
 
-Scores are automatically clamped to [0, 1].
+Scores are automatically clamped to [0, 1]. A score that is not a finite number (NaN from a division by zero, Infinity) is not clamped: the metric scores 0 and reports the problem in `error`.
 
 ---
 
@@ -254,6 +295,8 @@ import { noRegression } from '@cogitator-ai/evals';
 const assertions = [noRegression('./baseline.json', { tolerance: 0.05 })];
 ```
 
+`threshold` and `noRegression` fail on a value that is not a finite number, in the results or in the baseline, and `result.saveBaseline()` refuses to write one.
+
 ### Custom assertion
 
 ```typescript
@@ -267,6 +310,8 @@ const assertions = [
   }),
 ];
 ```
+
+`stats.cost` includes the LLM judge, `stats.targetCost` and `stats.judgeCost` split it.
 
 ---
 
@@ -303,7 +348,7 @@ for (const [name, mc] of Object.entries(result.summary.metrics)) {
 }
 ```
 
-Access full suite results via `result.baseline` and `result.challenger`.
+Access full suite results via `result.baseline` and `result.challenger`. `comparison.run({ signal })` cancels both runs.
 
 ---
 

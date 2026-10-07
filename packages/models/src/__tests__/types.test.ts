@@ -176,6 +176,7 @@ describe('Builtin data integrity', () => {
       output: 50,
       inputCached: 1,
       inputCacheWrite: 12.5,
+      inputCacheWrite1h: 20,
     });
     expect(byId.get('claude-sonnet-4-6')?.maxOutputTokens).toBe(128000);
     expect(byId.get('gemini-3.5-flash')?.pricing).toEqual({ input: 1.5, output: 9 });
@@ -188,12 +189,14 @@ describe('Builtin data integrity', () => {
       output: 20,
       inputCached: 0.2,
       inputCacheWrite: 5,
+      inputCacheWrite1h: 8,
     });
     expect(byId.get('claude-sonnet-5-5')?.pricing).toEqual({
       input: 2,
       output: 10,
       inputCached: 0.2,
       inputCacheWrite: 2.5,
+      inputCacheWrite1h: 4,
     });
     expect(byId.get('claude-sonnet-5-5')?.contextWindow).toBe(1000000);
     expect(byId.get('gemini-3.8-flash')?.pricing).toEqual({
@@ -248,5 +251,25 @@ describe('calculateCost', () => {
       0.004
     );
     expect(calculateCost('no-such-model', { inputTokens: 1, outputTokens: 1 })).toBeNull();
+  });
+
+  it('prices cache writes with the 1-hour TTL at their own rate', async () => {
+    const { calculateCost } = await import('../registry');
+
+    const cost = calculateCost('claude-opus-5-5', {
+      inputTokens: 1_000_000,
+      outputTokens: 0,
+      cacheWriteTokens: 1_000_000,
+      cacheWrite1hTokens: 400_000,
+    });
+
+    expect(cost).toBeCloseTo((600_000 * 5 + 400_000 * 8) / 1e6);
+  });
+
+  it('gives every built-in Claude model a 1-hour cache write price of twice its input', async () => {
+    const { BUILTIN_MODELS } = await import('../providers/index');
+    for (const model of BUILTIN_MODELS.filter((m) => m.provider === 'anthropic')) {
+      expect(model.pricing.inputCacheWrite1h, model.id).toBeCloseTo(model.pricing.input * 2);
+    }
   });
 });

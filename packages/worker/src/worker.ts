@@ -5,8 +5,8 @@
  * Supports graceful shutdown and health monitoring.
  */
 
-import { Worker, type Job } from 'bullmq';
-import { Cogitator } from '@cogitator-ai/core';
+import { UnrecoverableError, Worker, type Job } from 'bullmq';
+import { Cogitator, findAgentRunPausedError } from '@cogitator-ai/core';
 import type { WorkerConfig, JobPayload, JobResult, QueueMetrics, WorkerRuntime } from './types';
 import { processAgentJob } from './processors/agent.js';
 import { processWorkflowJob } from './processors/workflow.js';
@@ -64,7 +64,7 @@ export class WorkerPool {
       this.connections.push(connection);
       const worker = new Worker<JobPayload, JobResult>(
         this.config.name ?? DEFAULT_QUEUE_NAME,
-        async (job) => this.processJob(job),
+        async (job, _token, signal) => this.processJob(job, signal),
         {
           connection: connection.connection,
           prefix: queuePrefix(this.config.redis),
@@ -99,21 +99,41 @@ export class WorkerPool {
   }
 
   /**
-   * Process a job based on its type
+   * Process a job based on its type. `signal` is the one BullMQ gives the job: it aborts on
+   * `cancelJob()` and when a shutdown runs out of time, and reaches every agent run of the job.
+   * A job cancelled while the pool runs fails without retries. One stopped by a shutdown is left
+   * to BullMQ, which hands it to another worker once its lock expires. A workflow or swarm job
+   * whose agent run paused for tool approvals fails without retries too: another attempt would
+   * only pause again.
    */
-  private async processJob(job: Job<JobPayload>): Promise<JobResult> {
+  private async processJob(job: Job<JobPayload>, signal?: AbortSignal): Promise<JobResult> {
     this.events.onJobStarted?.(job.id ?? job.data.jobId, job.data.type);
 
+    try {
+      return await this.runJob(job, signal);
+    } catch (error) {
+      if (signal?.aborted && this.isRunning) {
+        throw new UnrecoverableError(`Job cancelled: ${abortMessage(signal)}`);
+      }
+      const paused = findAgentRunPausedError(error);
+      if (paused) throw new UnrecoverableError(paused.message);
+      throw error;
+    }
+  }
+
+  private runJob(job: Job<JobPayload>, signal?: AbortSignal): Promise<JobResult> {
+    const execution = { ...(signal && { signal }) };
     switch (job.data.type) {
       case 'agent':
-        return processAgentJob(job.data, this.runtime);
+        return processAgentJob(job.data, this.runtime, execution);
       case 'workflow':
-        return processWorkflowJob(job.data, this.runtime);
+        return processWorkflowJob(job.data, this.runtime, execution);
       case 'swarm':
-        return processSwarmJob(job.data, this.runtime);
+        return processSwarmJob(job.data, this.runtime, execution);
       case 'swarm-agent':
         return processSwarmAgentJob(job.data, {
           ...this.runtime,
+          ...execution,
           publisher: this.getPublisher(),
           isFinalAttempt: job.attemptsMade + 1 >= (job.opts.attempts ?? 1),
         });
@@ -122,6 +142,20 @@ export class WorkerPool {
         throw new Error(`Unknown job type: ${(_exhaustive as JobPayload).type}`);
       }
     }
+  }
+
+  /**
+   * Cancel a job this pool is running: its agent runs, workflow nodes and swarm turns are
+   * aborted and the job fails without retries.
+   *
+   * @returns whether a worker of this pool was running the job
+   */
+  cancelJob(jobId: string, reason = 'Cancelled'): boolean {
+    let found = false;
+    for (const worker of this.workers) {
+      if (worker.cancelJob(jobId, reason)) found = true;
+    }
+    return found;
   }
 
   private getPublisher(): RedisClient {
@@ -155,7 +189,9 @@ export class WorkerPool {
 
   /**
    * Graceful shutdown
-   * Waits up to `timeout` ms for active jobs to complete, then force-closes the workers.
+   * Waits up to `timeout` ms for active jobs to complete. Then the jobs still running are
+   * aborted (their agent runs stop) and the workers are force-closed, BullMQ handing those jobs
+   * to another worker once their locks expire.
    */
   async stop(timeout = 30000): Promise<void> {
     if (!this.isRunning) return;
@@ -174,6 +210,7 @@ export class WorkerPool {
     if (timer) clearTimeout(timer);
 
     if (timedOut) {
+      for (const worker of workers) worker.cancelAllJobs('Worker pool stopped');
       await Promise.all(workers.map((w) => w.close(true)));
     }
 
@@ -181,12 +218,13 @@ export class WorkerPool {
   }
 
   /**
-   * Force shutdown without waiting for jobs
+   * Force shutdown without waiting for jobs: the jobs still running are aborted
    */
   async forceStop(): Promise<void> {
     this.isRunning = false;
     const workers = this.workers;
     this.workers = [];
+    for (const worker of workers) worker.cancelAllJobs('Worker pool stopped');
     await Promise.all(workers.map((w) => w.close(true)));
     await this.releaseConnections();
   }
@@ -205,4 +243,10 @@ export class WorkerPool {
       await publisher.quit();
     }
   }
+}
+
+function abortMessage(signal: AbortSignal): string {
+  const reason: unknown = signal.reason;
+  if (reason instanceof Error) return reason.message;
+  return typeof reason === 'string' && reason !== '' ? reason : 'aborted';
 }

@@ -3,6 +3,7 @@ import type { ImageInput } from '@cogitator-ai/types';
 import type {
   Thread,
   Message,
+  MessageIncompleteReason,
   CreateMessageRequest,
   MessageContent,
   MessageContentPart,
@@ -329,14 +330,16 @@ export class ThreadManager {
 
   /**
    * Add an assistant message (from LLM response).
-   * Pass `messageId` to keep the id already announced in stream events.
+   * Pass `messageId` to keep the id already announced in stream events, and
+   * `incompleteReason` for an answer the model did not finish (status `incomplete`).
    */
   async addAssistantMessage(
     threadId: string,
     content: string,
     assistantId: string,
     runId: string,
-    messageId?: string
+    messageId?: string,
+    incompleteReason?: MessageIncompleteReason
   ): Promise<Message | undefined> {
     return this.withLock(`thread:${threadId}`, async () => {
       const stored = await this.getStoredThread(threadId);
@@ -348,9 +351,10 @@ export class ThreadManager {
         object: 'thread.message',
         created_at: now,
         thread_id: threadId,
-        status: 'completed',
-        completed_at: now,
-        incomplete_at: null,
+        status: incompleteReason ? 'incomplete' : 'completed',
+        ...(incompleteReason && { incomplete_details: { reason: incompleteReason } }),
+        completed_at: incompleteReason ? null : now,
+        incomplete_at: incompleteReason ? now : null,
         role: 'assistant',
         content: [{ type: 'text', text: { value: content, annotations: [] } }],
         assistant_id: assistantId,

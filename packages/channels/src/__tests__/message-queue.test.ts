@@ -154,5 +154,35 @@ describe('MessageQueue', () => {
 
       queue.dispose();
     });
+
+    it('merges only messages to the same topic and keeps topicId and replyTo', async () => {
+      const d1 = defer();
+      const processed: ChannelMessage[] = [];
+      let firstCall = true;
+      const processor = vi.fn().mockImplementation(async (msg: ChannelMessage) => {
+        processed.push(msg);
+        if (firstCall) {
+          firstCall = false;
+          await d1.promise;
+        }
+      });
+      const queue = new MessageQueue('collect', processor);
+
+      queue.push(makeMsg({ text: 'first', topicId: '7' }), 'thread1');
+      await new Promise((r) => setTimeout(r, 10));
+      queue.push(makeMsg({ text: 'in 7', topicId: '7', replyTo: '41' }), 'thread1');
+      queue.push(makeMsg({ text: 'in 9', topicId: '9' }), 'thread1');
+      queue.push(makeMsg({ text: 'in 7 again', topicId: '7' }), 'thread1');
+      d1.resolve();
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(processed.map((m) => [m.text, m.topicId, m.replyTo])).toEqual([
+        ['first', '7', undefined],
+        ['in 7\nin 7 again', '7', '41'],
+        ['in 9', '9', undefined],
+      ]);
+
+      queue.dispose();
+    });
   });
 });

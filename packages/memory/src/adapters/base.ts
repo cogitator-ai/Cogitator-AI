@@ -10,6 +10,7 @@ import type {
   Thread,
   MemoryEntry,
   MemoryQueryOptions,
+  NewMemoryEntry,
 } from '@cogitator-ai/types';
 
 const MAX_TRACKED_THREADS = 10_000;
@@ -32,9 +33,7 @@ export abstract class BaseMemoryAdapter implements MemoryAdapter {
 
   abstract deleteThread(threadId: string): Promise<MemoryResult<void>>;
 
-  abstract addEntry(
-    entry: Omit<MemoryEntry, 'id' | 'createdAt'>
-  ): Promise<MemoryResult<MemoryEntry>>;
+  abstract addEntry(entry: NewMemoryEntry): Promise<MemoryResult<MemoryEntry>>;
 
   abstract getEntries(options: MemoryQueryOptions): Promise<MemoryResult<MemoryEntry[]>>;
 
@@ -71,6 +70,11 @@ export abstract class BaseMemoryAdapter implements MemoryAdapter {
     }
 
     return new Date(timestamp);
+  }
+
+  /** Creation time of a new entry: the `createdAt` it asks for, or the next {@link nextEntryTimestamp}. */
+  protected entryTimestamp(entry: NewMemoryEntry): Date {
+    return entry.createdAt ? new Date(entry.createdAt) : this.nextEntryTimestamp(entry.threadId);
   }
 
   protected success<T>(data: T): MemoryResult<T> {

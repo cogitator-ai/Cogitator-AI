@@ -98,11 +98,24 @@ describe('createChatHandler', () => {
     const handler = createChatHandler(mockCogitator(), mockAgent());
     const req = new Request('http://localhost/api/chat', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: 'not json',
     });
 
     const res = await handler(req);
     expect(res.status).toBe(400);
+  });
+
+  it('refuses a text/plain body with 415', async () => {
+    const handler = createChatHandler(mockCogitator(), mockAgent());
+    const req = new Request('http://localhost/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] }),
+    });
+
+    const res = await handler(req);
+    expect(res.status).toBe(415);
   });
 
   it('returns 401 on beforeRun error', async () => {

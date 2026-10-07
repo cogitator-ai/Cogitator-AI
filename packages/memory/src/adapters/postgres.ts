@@ -23,8 +23,11 @@ import type {
   KeywordSearchOptions,
   SearchFilter,
   SearchResult,
+  NewMemoryEntry,
+  EmbeddingDeleteFilter,
 } from '@cogitator-ai/types';
 import { BaseMemoryAdapter } from './base';
+import { EMPTY_DELETE_FILTER_ERROR, hasDeleteCondition } from '../search/filter';
 import {
   detectVectorSearchTuning,
   ensureHnswCosineIndex,
@@ -42,6 +45,17 @@ type Pool = SqlQueryable & {
   end(): Promise<void>;
 };
 
+const DEFAULT_VECTOR_DIMENSIONS = 768;
+
+/**
+ * Whether a Postgres adapter can store and search embeddings, and why not. `tableExists` tells
+ * that the `embeddings` table is there (with another vector size), so its rows can still be
+ * deleted and searched by keyword.
+ */
+export type VectorStoreState =
+  | { available: true; dimensions: number }
+  | { available: false; reason: string; tableExists?: boolean };
+
 /** JSON text for a JSONB parameter. node-pg would send a JS array as a Postgres array literal. */
 function toJsonb(value: unknown): string | null {
   return value === undefined || value === null ? null : JSON.stringify(value);
@@ -56,12 +70,15 @@ export class PostgresAdapter
   private pool: Pool | null = null;
   private config: PostgresAdapterConfig;
   private schema: string;
-  private vectorDimensions = 768;
+  private vectorDimensions = DEFAULT_VECTOR_DIMENSIONS;
+  private dimensionsConfigured = false;
   private vectorTuning: VectorSearchTuning = { iterativeScan: false };
+  private vectorStore: VectorStoreState = { available: false, reason: 'Not connected' };
 
   constructor(config: PostgresAdapterConfig) {
     super();
     this.config = config;
+    if (config.dimensions !== undefined) this.setVectorDimensions(config.dimensions);
     const schema = config.schema ?? 'cogitator';
     if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(schema)) {
       throw new Error(
@@ -72,40 +89,62 @@ export class PostgresAdapter
   }
 
   async connect(): Promise<MemoryResult<void>> {
+    if (this.pool) return this.success(undefined);
+
+    let pg: typeof import('pg');
     try {
-      const pg = await import('pg');
+      pg = await import('pg');
+    } catch {
+      return this.failure('PostgresAdapter needs the "pg" package. Install it: pnpm add pg');
+    }
+
+    let pool: Pool | undefined;
+    try {
       const { Pool } = pg.default ?? pg;
 
-      this.pool = new Pool({
+      pool = new Pool({
         connectionString: this.config.connectionString,
         max: this.config.poolSize ?? 10,
       }) as Pool;
 
-      const client = await this.pool.connect();
+      const client = await pool.connect();
       client.release();
 
-      await this.initSchema();
+      await this.initSchema(pool);
 
+      this.pool = pool;
+      if (!this.vectorStore.available) {
+        console.warn(`PostgresAdapter: ${this.vectorStore.reason}`);
+      }
       return this.success(undefined);
     } catch (error) {
+      await pool?.end().catch(() => undefined);
       return this.failure(
         `Postgres connection failed: ${error instanceof Error ? error.message : String(error)}`
       );
     }
   }
 
-  private async initSchema(): Promise<void> {
-    if (!this.pool) return;
+  /**
+   * Whether embeddings can be stored and searched: pgvector must be installed, and the
+   * `embeddings` table must have the configured vector size. Threads, entries and facts work
+   * either way.
+   */
+  vectorStatus(): VectorStoreState {
+    return this.vectorStore;
+  }
 
-    await this.pool.query(`CREATE SCHEMA IF NOT EXISTS ${this.schema}`);
+  private async initSchema(pool: Pool): Promise<void> {
+    await pool.query(`CREATE SCHEMA IF NOT EXISTS ${this.schema}`);
 
+    let extensionError: string | undefined;
     try {
-      await this.pool.query('CREATE EXTENSION IF NOT EXISTS vector');
+      await pool.query('CREATE EXTENSION IF NOT EXISTS vector');
     } catch (err) {
-      console.warn('Failed to create vector extension:', (err as Error).message);
+      extensionError = (err as Error).message;
     }
 
-    await this.pool.query(`
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.schema}.threads (
         id TEXT PRIMARY KEY,
         agent_id TEXT NOT NULL,
@@ -115,7 +154,7 @@ export class PostgresAdapter
       )
     `);
 
-    await this.pool.query(`
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.schema}.entries (
         id TEXT PRIMARY KEY,
         thread_id TEXT NOT NULL REFERENCES ${this.schema}.threads(id) ON DELETE CASCADE,
@@ -128,7 +167,7 @@ export class PostgresAdapter
       )
     `);
 
-    await this.pool.query(`
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.schema}.facts (
         id TEXT PRIMARY KEY,
         agent_id TEXT NOT NULL,
@@ -143,52 +182,115 @@ export class PostgresAdapter
       )
     `);
 
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.schema}.embeddings (
-        id TEXT PRIMARY KEY,
-        source_id TEXT NOT NULL,
-        source_type TEXT NOT NULL,
-        vector vector(${this.vectorDimensions}),
-        content TEXT NOT NULL,
-        metadata JSONB DEFAULT '{}',
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    `);
-
-    await this.pool.query(`
+    await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_entries_thread_id
       ON ${this.schema}.entries(thread_id, created_at)
     `);
-    await this.pool.query(`
+    await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_facts_agent_id
       ON ${this.schema}.facts(agent_id, category)
     `);
 
+    this.vectorStore = await this.prepareVectorStore(pool, extensionError);
+  }
+
+  /**
+   * Creates the `embeddings` table, its HNSW index and its full-text column when pgvector is
+   * available. An existing table keeps its vector size: an adapter without configured dimensions
+   * adopts it, one configured for another size cannot store or search embeddings until the
+   * table is migrated.
+   */
+  private async prepareVectorStore(
+    pool: Pool,
+    extensionError: string | undefined
+  ): Promise<VectorStoreState> {
+    const type = await pool.query("SELECT to_regtype('vector') IS NOT NULL AS available");
+    if (type.rows[0]?.available !== true) {
+      return {
+        available: false,
+        reason:
+          'pgvector is not installed in this database' +
+          (extensionError ? ` (CREATE EXTENSION vector failed: ${extensionError})` : '') +
+          ', so embeddings cannot be stored or searched. Threads, entries and facts work. ' +
+          'Install pgvector and run CREATE EXTENSION vector with a role allowed to.',
+      };
+    }
+
+    const existing = await this.embeddingColumnDimensions(pool);
+    if (existing === null) {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS ${this.schema}.embeddings (
+          id TEXT PRIMARY KEY,
+          source_id TEXT NOT NULL,
+          source_type TEXT NOT NULL,
+          vector vector(${this.vectorDimensions}),
+          content TEXT NOT NULL,
+          metadata JSONB DEFAULT '{}',
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        )
+      `);
+    } else if (existing > 0 && existing !== this.vectorDimensions) {
+      if (this.dimensionsConfigured) {
+        return {
+          available: false,
+          tableExists: true,
+          reason:
+            `${this.schema}.embeddings stores vector(${existing}), but the adapter is set to ` +
+            `${this.vectorDimensions} dimensions, so embeddings cannot be stored or searched. ` +
+            'Use an embedding model with the same size, or another schema, or migrate the table ' +
+            'and re-embed its rows.',
+        };
+      }
+      this.vectorDimensions = existing;
+    }
+
     try {
-      await ensureHnswCosineIndex(this.pool, {
+      await ensureHnswCosineIndex(pool, {
         schema: this.schema,
         table: 'embeddings',
         column: 'vector',
         index: 'idx_embeddings_vector',
       });
-      this.vectorTuning = await detectVectorSearchTuning(this.pool);
+      this.vectorTuning = await detectVectorSearchTuning(pool);
     } catch (err) {
       console.warn('Failed to create the HNSW vector index:', (err as Error).message);
     }
 
     try {
-      await this.pool.query(`
+      await pool.query(`
         ALTER TABLE ${this.schema}.embeddings
         ADD COLUMN IF NOT EXISTS content_tsv tsvector
         GENERATED ALWAYS AS (to_tsvector('english', content)) STORED
       `);
-      await this.pool.query(`
+      await pool.query(`
         CREATE INDEX IF NOT EXISTS idx_embeddings_tsv
         ON ${this.schema}.embeddings USING GIN (content_tsv)
       `);
     } catch (err) {
       console.warn('Failed to create tsvector column/index:', (err as Error).message);
     }
+
+    return { available: true, dimensions: this.vectorDimensions };
+  }
+
+  /**
+   * The vector size of the existing `embeddings.vector` column: null without the table, 0 for a
+   * column declared without a size.
+   */
+  private async embeddingColumnDimensions(pool: Pool): Promise<number | null> {
+    const result = await pool.query(
+      `SELECT a.atttypmod AS dimensions
+       FROM pg_attribute a
+       JOIN pg_class c ON c.oid = a.attrelid
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = lower($1) AND c.relname = 'embeddings'
+         AND a.attname = 'vector' AND NOT a.attisdropped`,
+      [this.schema]
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    const dimensions = Number(row.dimensions);
+    return Number.isInteger(dimensions) && dimensions > 0 ? dimensions : 0;
   }
 
   async disconnect(): Promise<MemoryResult<void>> {
@@ -200,7 +302,19 @@ export class PostgresAdapter
       return this.failure((err as Error).message);
     } finally {
       this.pool = null;
+      this.vectorStore = { available: false, reason: 'Not connected' };
     }
+  }
+
+  /** Why embeddings cannot be written or searched by vector, or null when they can. */
+  private vectorUnavailable(): MemoryResult<never> | null {
+    return this.vectorStore.available ? null : this.failure(this.vectorStore.reason);
+  }
+
+  /** Why the `embeddings` table cannot be read or cleaned up, or null when it can. */
+  private embeddingTableUnavailable(): MemoryResult<never> | null {
+    const state = this.vectorStore;
+    return state.available || state.tableExists ? null : this.failure(state.reason);
   }
 
   async createThread(
@@ -280,11 +394,11 @@ export class PostgresAdapter
     }
   }
 
-  async addEntry(entry: Omit<MemoryEntry, 'id' | 'createdAt'>): Promise<MemoryResult<MemoryEntry>> {
+  async addEntry(entry: NewMemoryEntry): Promise<MemoryResult<MemoryEntry>> {
     if (!this.pool) return this.failure('Not connected');
 
     const id = this.generateId('entry');
-    const now = this.nextEntryTimestamp(entry.threadId);
+    const now = this.entryTimestamp(entry);
 
     try {
       await this.pool.query(
@@ -579,6 +693,8 @@ export class PostgresAdapter
     embedding: Omit<Embedding, 'id' | 'createdAt'>
   ): Promise<MemoryResult<Embedding>> {
     if (!this.pool) return this.failure('Not connected');
+    const unavailable = this.vectorUnavailable();
+    if (unavailable) return unavailable;
 
     const id = this.generateId('emb');
     const now = new Date();
@@ -611,6 +727,8 @@ export class PostgresAdapter
     options: SemanticSearchOptions
   ): Promise<MemoryResult<(Embedding & { score: number })[]>> {
     if (!this.pool) return this.failure('Not connected');
+    const unavailable = this.vectorUnavailable();
+    if (unavailable) return unavailable;
 
     if (!options.vector) {
       return this.failure(
@@ -672,6 +790,8 @@ export class PostgresAdapter
 
   async deleteEmbedding(embeddingId: string): Promise<MemoryResult<void>> {
     if (!this.pool) return this.failure('Not connected');
+    const unavailable = this.embeddingTableUnavailable();
+    if (unavailable) return unavailable;
     try {
       await this.pool.query(`DELETE FROM ${this.schema}.embeddings WHERE id = $1`, [embeddingId]);
       return this.success(undefined);
@@ -682,6 +802,8 @@ export class PostgresAdapter
 
   async deleteBySource(sourceId: string): Promise<MemoryResult<void>> {
     if (!this.pool) return this.failure('Not connected');
+    const unavailable = this.embeddingTableUnavailable();
+    if (unavailable) return unavailable;
     try {
       await this.pool.query(`DELETE FROM ${this.schema}.embeddings WHERE source_id = $1`, [
         sourceId,
@@ -692,8 +814,29 @@ export class PostgresAdapter
     }
   }
 
+  async deleteByFilter(filter: EmbeddingDeleteFilter): Promise<MemoryResult<void>> {
+    if (!hasDeleteCondition(filter)) return this.failure(EMPTY_DELETE_FILTER_ERROR);
+    if (!this.pool) return this.failure('Not connected');
+    const unavailable = this.embeddingTableUnavailable();
+    if (unavailable) return unavailable;
+
+    const params: unknown[] = [];
+    const conditions = this.embeddingFilterClause(filter, params, 1);
+    try {
+      await this.pool.query(
+        `DELETE FROM ${this.schema}.embeddings WHERE TRUE${conditions.sql}`,
+        params
+      );
+      return this.success(undefined);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
   async keywordSearch(options: KeywordSearchOptions): Promise<MemoryResult<SearchResult[]>> {
     if (!this.pool) return this.failure('Not connected');
+    const unavailable = this.embeddingTableUnavailable();
+    if (unavailable) return unavailable;
 
     const limit = options.limit ?? 10;
     const params: unknown[] = [options.query];
@@ -736,7 +879,8 @@ export class PostgresAdapter
 
   /**
    * SQL conditions for a search filter; agent and thread scoping use `metadata.agentId` /
-   * `metadata.threadId`, and a user filter also lets through embeddings of no user.
+   * `metadata.threadId`, a user filter also lets through embeddings of no user, and `metadata`
+   * conditions are matched by JSONB containment.
    */
   private embeddingFilterClause(
     filter: SearchFilter | undefined,
@@ -760,6 +904,10 @@ export class PostgresAdapter
     if (filter?.userId) {
       sql += ` AND (metadata->>'userId' = $${index++} OR metadata->>'userId' IS NULL)`;
       params.push(filter.userId);
+    }
+    if (filter?.metadata && Object.keys(filter.metadata).length > 0) {
+      sql += ` AND metadata @> $${index++}::jsonb`;
+      params.push(toJsonb(filter.metadata));
     }
     return { sql, nextIndex: index };
   }
@@ -796,6 +944,11 @@ export class PostgresAdapter
     };
   }
 
+  /**
+   * The vector size of the embedding model, before `connect()`. The `embeddings` table is
+   * created with it, and an existing table of another size is reported by `vectorStatus()`
+   * instead of failing each search. Same as `dimensions` in the config.
+   */
   setVectorDimensions(dimensions: number): void {
     if (this.pool) {
       throw new Error('Cannot change vector dimensions after connecting');
@@ -804,5 +957,6 @@ export class PostgresAdapter
       throw new Error(`Invalid vector dimensions: ${dimensions}. Must be a positive integer`);
     }
     this.vectorDimensions = dimensions;
+    this.dimensionsConfigured = true;
   }
 }

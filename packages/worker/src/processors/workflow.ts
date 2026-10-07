@@ -8,6 +8,12 @@
  */
 
 import { z } from 'zod';
+import {
+  AgentRunPausedError,
+  agentWireSchema,
+  isPausedRun,
+  parseAgentWire,
+} from '@cogitator-ai/core';
 import type {
   ConditionNodeConfig,
   SerializedWorkflow,
@@ -16,35 +22,14 @@ import type {
   WorkerRuntime,
   WorkflowJobPayload,
   WorkflowJobResult,
+  JobExecutionOptions,
 } from '../types';
 import { createAgentFromConfig, resolveRuntime, type ResolvedRuntime } from './shared.js';
 
 type WorkflowState = Record<string, unknown>;
 
-const serializedAgentSchema = z.object({
-  name: z.string().min(1),
-  instructions: z.string(),
-  model: z.string().min(1),
-  provider: z.string().min(1).optional(),
-  temperature: z.number().optional(),
-  maxTokens: z.number().int().positive().optional(),
-  maxIterations: z.number().int().positive().optional(),
-  onIterationLimit: z.enum(['answer', 'stop']).optional(),
-  tools: z.array(
-    z.object({
-      name: z.string(),
-      description: z.string(),
-      parameters: z.object({
-        type: z.literal('object'),
-        properties: z.record(z.string(), z.unknown()),
-        required: z.array(z.string()).optional(),
-      }),
-    })
-  ),
-});
-
 const agentNodeSchema = z.object({
-  agentConfig: serializedAgentSchema,
+  agentConfig: agentWireSchema,
   prompt: z.string().optional(),
   outputKey: z.string().min(1).optional(),
 });
@@ -136,9 +121,18 @@ export function validateWorkflow(workflow: SerializedWorkflow): void {
 
   for (const node of workflow.nodes) {
     switch (node.type) {
-      case 'agent':
-        parseNodeConfig(node, agentNodeSchema);
+      case 'agent': {
+        const config = parseNodeConfig(node, agentNodeSchema);
+        try {
+          parseAgentWire(config.agentConfig);
+        } catch (error) {
+          throw new Error(
+            `Invalid config for agent node '${node.id}': ${error instanceof Error ? error.message : String(error)}`,
+            { cause: error }
+          );
+        }
         break;
+      }
       case 'transform': {
         const config = parseNodeConfig(node, transformNodeSchema);
         if (config.transform === 'template' && config.template === undefined) {
@@ -230,21 +224,42 @@ class WorkflowRun {
   private readonly outcomes = new Map<string, NodeOutcome>();
   private readonly outputKeys = new Map<string, string>();
   private readonly state: WorkflowState;
+  private readonly controller = new AbortController();
 
   constructor(
     private readonly workflow: SerializedWorkflow,
     input: Record<string, unknown>,
-    private readonly runtime: ResolvedRuntime
+    private readonly runtime: ResolvedRuntime,
+    private readonly signal?: AbortSignal
   ) {
     this.nodes = new Map(workflow.nodes.map((n) => [n.id, n]));
     this.state = { ...input };
   }
 
+  /**
+   * Run the graph. Cancelling the job (`signal`) or a failing node aborts the agent runs still
+   * in flight, and the run rejects once they have settled.
+   */
   async execute(): Promise<{ state: WorkflowState; nodeResults: Record<string, unknown> }> {
+    const forwardAbort = () => this.controller.abort(this.signal?.reason);
+    if (this.signal?.aborted) forwardAbort();
+    this.signal?.addEventListener('abort', forwardAbort, { once: true });
+    try {
+      return await this.runGraph();
+    } finally {
+      this.signal?.removeEventListener('abort', forwardAbort);
+    }
+  }
+
+  private async runGraph(): Promise<{
+    state: WorkflowState;
+    nodeResults: Record<string, unknown>;
+  }> {
     const pending = new Set(this.nodes.keys());
     const running = new Map<string, Promise<void>>();
 
     while (pending.size > 0 || running.size > 0) {
+      this.controller.signal.throwIfAborted();
       for (const id of [...pending]) {
         const incoming = this.workflow.edges.filter((e) => e.to === id);
         if (!incoming.every((e) => this.outcomes.has(e.from))) continue;
@@ -266,7 +281,13 @@ class WorkflowRun {
       }
 
       if (running.size > 0) {
-        await Promise.race(running.values());
+        try {
+          await Promise.race(running.values());
+        } catch (error) {
+          this.controller.abort(error);
+          await Promise.allSettled(running.values());
+          throw error;
+        }
       } else if (pending.size > 0 && ![...pending].some((id) => this.isReady(id))) {
         throw new Error(`Workflow '${this.workflow.name}' cannot make progress`);
       }
@@ -309,8 +330,22 @@ class WorkflowRun {
         const prompt = config.prompt
           ? renderTemplate(config.prompt, this.state)
           : JSON.stringify(this.state);
-        const result = await this.runtime.cogitator.run(agent, { input: prompt });
-        return this.store(node.id, config.outputKey, result.output);
+        const result = await this.runtime.cogitator.run(agent, {
+          input: prompt,
+          signal: this.controller.signal,
+        });
+        if (isPausedRun(result)) {
+          throw new AgentRunPausedError(
+            result,
+            agent.name,
+            `workflow "${this.workflow.name}", node "${node.id}"`
+          );
+        }
+        const answer =
+          agent.config.responseFormat?.type === 'json_schema' && result.structured !== undefined
+            ? result.structured
+            : result.output;
+        return this.store(node.id, config.outputKey, answer);
       }
 
       case 'transform': {
@@ -343,7 +378,8 @@ class WorkflowRun {
 
 export async function processWorkflowJob(
   payload: WorkflowJobPayload,
-  runtime: WorkerRuntime = {}
+  runtime: WorkerRuntime = {},
+  execution: JobExecutionOptions = {}
 ): Promise<WorkflowJobResult> {
   const started = Date.now();
   validateWorkflow(payload.workflowConfig);
@@ -351,7 +387,8 @@ export async function processWorkflowJob(
   const { state, nodeResults } = await new WorkflowRun(
     payload.workflowConfig,
     payload.input,
-    resolveRuntime(runtime)
+    resolveRuntime(runtime),
+    execution.signal
   ).execute();
 
   return {

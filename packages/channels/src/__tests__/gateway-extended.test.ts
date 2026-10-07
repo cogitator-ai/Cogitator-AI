@@ -99,7 +99,10 @@ describe('Gateway regressions', () => {
       }),
       updateThread: vi.fn().mockResolvedValue({ success: true }),
       getEntries: vi.fn().mockResolvedValue({ success: true, data: entries }),
-      addEntry: vi.fn().mockResolvedValue({ success: true }),
+      addEntry: vi.fn(async (entry: { createdAt?: Date }) => ({
+        success: true,
+        data: { ...entry, id: 'summary', createdAt: entry.createdAt ?? new Date() },
+      })),
       deleteEntry: vi.fn().mockResolvedValue({ success: true }),
     } as unknown as MemoryAdapter;
     const chat = vi.fn().mockResolvedValue({ content: 'SUMMARY' });
@@ -122,8 +125,8 @@ describe('Gateway regressions', () => {
     await gateway.start();
     await channel.trigger(msg());
 
-    expect(memory.getEntries).toHaveBeenCalledWith({ threadId: 'test:u1' });
-    expect(memory.getEntries).toHaveBeenCalledTimes(2);
+    expect(memory.getEntries).toHaveBeenCalledWith({ threadId: 'test:u1', includeToolCalls: true });
+    expect(memory.getEntries).toHaveBeenCalledTimes(1);
     expect(chat).toHaveBeenCalledWith(expect.objectContaining({ model: 'test' }));
     expect(memory.addEntry).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -131,16 +134,11 @@ describe('Gateway regressions', () => {
         message: expect.objectContaining({ content: expect.stringContaining('SUMMARY') }),
       })
     );
-    const addedContents = vi
-      .mocked(memory.addEntry)
-      .mock.calls.map(([entry]) => entry.message.content);
-    expect(addedContents).toEqual([
-      expect.stringContaining('SUMMARY'),
-      entries[4].message.content,
-      entries[5].message.content,
-    ]);
+    const added = vi.mocked(memory.addEntry).mock.calls.map(([entry]) => entry);
+    expect(added).toHaveLength(1);
+    expect(added[0].createdAt).toEqual(new Date(entries[4].createdAt.getTime() - 1));
     const deletedIds = vi.mocked(memory.deleteEntry).mock.calls.map(([id]) => id);
-    expect(deletedIds).toEqual(expect.arrayContaining(['e0', 'e1', 'e2', 'e3']));
+    expect(deletedIds).toEqual(['e0', 'e1', 'e2', 'e3']);
     expect(compacted).toHaveBeenCalled();
   });
 
@@ -192,6 +190,103 @@ describe('Gateway regressions', () => {
     expect(memory.getEntries).toHaveBeenCalledTimes(1);
     expect(getLLMBackend).not.toHaveBeenCalled();
     expect(memory.deleteEntry).not.toHaveBeenCalled();
+  });
+
+  it('counts the compaction threshold in tokens, as CompactionService does', async () => {
+    const channel = createChannel();
+    const entries = Array.from({ length: 12 }, (_, i) => ({
+      id: `e${i}`,
+      threadId: 'test:u1',
+      message: { role: 'user', content: `short message number ${i}` },
+      createdAt: new Date(2026, 0, 1, 0, i),
+      tokenCount: 10,
+    }));
+    const memory = {
+      getThread: vi.fn().mockResolvedValue({ success: true, data: null }),
+      createThread: vi.fn().mockResolvedValue({
+        success: true,
+        data: {
+          id: 's',
+          agentId: 'bot',
+          metadata: {},
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      }),
+      updateThread: vi.fn().mockResolvedValue({ success: true }),
+      getEntries: vi.fn().mockResolvedValue({ success: true, data: entries }),
+      addEntry: vi.fn(async (entry: { createdAt?: Date }) => ({
+        success: true,
+        data: { ...entry, id: 'summary', createdAt: entry.createdAt ?? new Date() },
+      })),
+      deleteEntry: vi.fn().mockResolvedValue({ success: true }),
+    } as unknown as MemoryAdapter;
+    const chat = vi.fn().mockResolvedValue({ content: 'SUMMARY' });
+
+    const gateway = new Gateway({
+      agent,
+      channels: [channel],
+      cogitator: {
+        run: vi.fn().mockResolvedValue({ output: 'ok' }),
+        getLLMBackend: vi.fn().mockReturnValue({ chat }),
+        resolveModel: (a: { model?: string }) => a.model,
+      } as never,
+      memory,
+      session: { compaction: { strategy: 'summary', threshold: 100, keepRecent: 2 } },
+    });
+    await gateway.start();
+    await channel.trigger(msg());
+
+    expect(chat).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(memory.deleteEntry)).toHaveBeenCalledTimes(10);
+  });
+
+  it('compacts by message count with messageThreshold', async () => {
+    const channel = createChannel();
+    const entries = Array.from({ length: 6 }, (_, i) => ({
+      id: `e${i}`,
+      threadId: 'test:u1',
+      message: { role: 'user', content: `m${i}` },
+      createdAt: new Date(2026, 0, 1, 0, i),
+      tokenCount: 1,
+    }));
+    const memory = {
+      getThread: vi.fn().mockResolvedValue({ success: true, data: null }),
+      createThread: vi.fn().mockResolvedValue({
+        success: true,
+        data: {
+          id: 's',
+          agentId: 'bot',
+          metadata: {},
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      }),
+      updateThread: vi.fn().mockResolvedValue({ success: true }),
+      getEntries: vi.fn().mockResolvedValue({ success: true, data: entries }),
+      addEntry: vi.fn(async (entry: { createdAt?: Date }) => ({
+        success: true,
+        data: { ...entry, id: 'summary', createdAt: entry.createdAt ?? new Date() },
+      })),
+      deleteEntry: vi.fn().mockResolvedValue({ success: true }),
+    } as unknown as MemoryAdapter;
+    const chat = vi.fn().mockResolvedValue({ content: 'SUMMARY' });
+
+    const gateway = new Gateway({
+      agent,
+      channels: [channel],
+      cogitator: {
+        run: vi.fn().mockResolvedValue({ output: 'ok' }),
+        getLLMBackend: vi.fn().mockReturnValue({ chat }),
+        resolveModel: (a: { model?: string }) => a.model,
+      } as never,
+      memory,
+      session: { compaction: { strategy: 'summary', messageThreshold: 5, keepRecent: 2 } },
+    });
+    await gateway.start();
+    await channel.trigger(msg());
+
+    expect(chat).toHaveBeenCalledTimes(1);
   });
 
   it('routes debounced messages through the queue', async () => {

@@ -50,7 +50,7 @@ describe('fromAISDKTool', () => {
     expect(executeFn).toHaveBeenCalledWith(
       { a: 1, b: 2 },
       {
-        toolCallId: 'run1',
+        toolCallId: expect.stringMatching(/^run1:[0-9a-f-]{36}$/),
         messages: [],
         abortSignal: ctx.signal,
         context,
@@ -182,6 +182,7 @@ describe('toAISDKTool', () => {
       {
         agentId: 'ai-sdk',
         runId: 'tc1',
+        toolCallId: 'tc1',
         signal,
         threadId: undefined,
         userId: 'u1',

@@ -20,9 +20,17 @@ interface SessionIndexMetadata {
   [key: string]: unknown;
 }
 
+const DEFAULT_INDEX_REFRESH_INTERVAL = 60_000;
+
 export interface SessionManagerOptions {
   /** Enables `compact()`; without it compaction must be done with CompactionService directly */
   compaction?: CompactionService;
+  /**
+   * How often, at most, using a session rewrites the session index (milliseconds, default one
+   * minute). Rewriting keeps the index alive in stores whose threads expire, such as Redis with
+   * a TTL: keep it well below that TTL.
+   */
+  indexRefreshInterval?: number;
 }
 
 interface SessionMetadata {
@@ -82,6 +90,8 @@ function isSessionThread(thread: Thread): boolean {
 
 export class SessionManager implements ISessionManager {
   private indexQueue: Promise<void> = Promise.resolve();
+  private indexedSessions = new Set<string>();
+  private indexWrittenAt = Number.NEGATIVE_INFINITY;
 
   constructor(
     private readonly adapter: MemoryAdapter,
@@ -109,11 +119,25 @@ export class SessionManager implements ISessionManager {
       if (!result.success) {
         throw new Error(`Failed to update session index: ${result.error}`);
       }
+      this.indexedSessions = sessions;
+      this.indexWrittenAt = Date.now();
     };
 
     const next = this.indexQueue.then(run, run);
     this.indexQueue = next.catch(() => {});
     return next;
+  }
+
+  /**
+   * Records that `sessionId` is in use: adds it to the index when the index lost it (an index
+   * thread that expired, or one rewritten by another process) and rewrites the index at most
+   * once per `indexRefreshInterval`, which keeps it from expiring while sessions are active.
+   */
+  private touchIndex(sessionId: string): Promise<void> {
+    const interval = this.options.indexRefreshInterval ?? DEFAULT_INDEX_REFRESH_INTERVAL;
+    const fresh = Date.now() - this.indexWrittenAt < interval;
+    if (fresh && this.indexedSessions.has(sessionId)) return Promise.resolve();
+    return this.updateIndex((sessions) => sessions.add(sessionId));
   }
 
   private async indexedSessionIds(): Promise<string[]> {
@@ -134,6 +158,7 @@ export class SessionManager implements ISessionManager {
     const existing = await this.adapter.getThread(threadId);
     if (existing.success && existing.data) {
       const session = threadToSession(existing.data);
+      await this.touchIndex(threadId);
       if (session.status === 'archived') {
         await this.adapter.updateThread(threadId, {
           ...(existing.data.metadata as Record<string, unknown>),

@@ -55,7 +55,9 @@ interface DeserializeOptions {
 }
 ```
 
-`AgentSnapshot` (`{ version, id, name, config: SerializedAgentConfig, metadata? }`) is the JSON form `agent.serialize()` produces; tools are kept by name.
+`AgentSnapshot` (`{ version, id, name, config: SerializedAgentConfig, metadata? }`) is the JSON form `agent.serialize()` produces, tools are kept by name.
+
+`AgentWireConfig` is how an agent travels to another process (`toAgentWire` / `fromAgentWire` in `@cogitator-ai/core`): every `AgentConfig` field, tools as `ToolSchema`s, the response schema as JSON Schema (`AgentWireResponseFormat`), handoffs as `AgentWireHandoff`s naming agents carried in `handoffAgents`. `AgentWireRunResult` is a run's outcome on the wire: `output`, `structured`, `structuredError`, `reasoning`, `usage` (`AgentWireUsage`: tokens, `cost`, `duration`, reasoning and cache tokens), `toolCalls` (`AgentWireToolCall`: `name`, `input`, `output`), `truncated`, `blocked`, `iterationLimitReached`, `modelUsed`, `handoffs`, `finalAgent`, `runId` and `threadId`.
 
 ## Run Types
 
@@ -111,6 +113,8 @@ interface RunResult {
     readonly cacheWriteTokens?: number;
   };
   readonly reasoning?: string;
+  readonly truncated?: boolean; // the last answer stopped at maxTokens
+  readonly blocked?: 'content_filter' | 'refusal'; // the last answer was filtered or refused
   readonly prompt?: RunPrompt; // the instruction version or A/B variant used
   readonly handoffs?: readonly HandoffEvent[];
   readonly finalAgent?: string;
@@ -333,11 +337,14 @@ interface ChatRequest {
   signal?: AbortSignal;
 }
 
+type FinishReason = 'stop' | 'tool_calls' | 'length' | 'content_filter' | 'refusal' | 'error';
+
 interface ChatResponse {
   id: string;
   content: string;
   toolCalls?: ToolCall[];
-  finishReason: 'stop' | 'tool_calls' | 'length' | 'error';
+  finishReason: FinishReason; // only 'tool_calls' runs tools
+  finishMessage?: string; // the provider's explanation, e.g. of an 'error' turn
   usage: ChatUsage;
   reasoning?: string; // readable reasoning summary, when returned
 }
@@ -358,7 +365,8 @@ interface ChatStreamChunk {
     reasoning?: string;
     toolCalls?: Partial<ToolCall>[];
   };
-  finishReason?: 'stop' | 'tool_calls' | 'length' | 'error';
+  finishReason?: FinishReason; // on the chunk that ends the turn
+  finishMessage?: string;
   usage?: ChatUsage; // typically only on the final chunk
 }
 
@@ -419,8 +427,9 @@ interface GoogleProviderConfig {
 interface AzureProviderConfig {
   endpoint: string;
   apiKey: string;
-  apiVersion?: string;
+  apiVersion?: string; // default '2025-04-01-preview'
   deployment?: string;
+  model?: string; // the model the deployments serve, e.g. 'gpt-5', when their names do not say
 }
 interface BedrockProviderConfig {
   region?: string;

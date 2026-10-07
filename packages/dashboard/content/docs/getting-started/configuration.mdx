@@ -152,20 +152,20 @@ setLogger(createLogger({ level: 'debug', format: 'json' }));
 
 Cogitator reads environment variables with the `COGITATOR_` prefix:
 
-| Variable                                                                               | Config path                       |
-| -------------------------------------------------------------------------------------- | --------------------------------- |
-| `COGITATOR_LLM_DEFAULT_PROVIDER`                                                       | `llm.defaultProvider`             |
-| `COGITATOR_LLM_DEFAULT_MODEL`                                                          | `llm.defaultModel`                |
-| `COGITATOR_OLLAMA_BASE_URL`, `COGITATOR_OLLAMA_API_KEY`                                | `llm.providers.ollama.*`          |
-| `COGITATOR_OPENAI_API_KEY`, `COGITATOR_OPENAI_BASE_URL`                                | `llm.providers.openai.*`          |
-| `COGITATOR_ANTHROPIC_API_KEY`                                                          | `llm.providers.anthropic.apiKey`  |
-| `COGITATOR_GOOGLE_API_KEY`                                                             | `llm.providers.google.apiKey`     |
-| `COGITATOR_AZURE_API_KEY`, `_ENDPOINT`, `_API_VERSION`, `_DEPLOYMENT`                  | `llm.providers.azure.*`           |
-| `COGITATOR_BEDROCK_REGION`, `_ACCESS_KEY_ID`, `_SECRET_ACCESS_KEY`                     | `llm.providers.bedrock.*`         |
-| `COGITATOR_VLLM_BASE_URL`                                                              | `llm.providers.vllm.baseUrl`      |
-| `COGITATOR_MISTRAL_API_KEY`, `_GROQ_API_KEY`, `_TOGETHER_API_KEY`, `_DEEPSEEK_API_KEY` | `llm.providers.<provider>.apiKey` |
-| `COGITATOR_LIMITS_MAX_CONCURRENT_RUNS`, `_DEFAULT_TIMEOUT`, `_MAX_TOKENS_PER_RUN`      | `limits.*` (digits only)          |
-| `COGITATOR_DEPLOY_TARGET`, `_PORT`, `_REGISTRY`                                        | `deploy.*`                        |
+| Variable                                                                                         | Config path                       |
+| ------------------------------------------------------------------------------------------------ | --------------------------------- |
+| `COGITATOR_LLM_DEFAULT_PROVIDER`                                                                 | `llm.defaultProvider`             |
+| `COGITATOR_LLM_DEFAULT_MODEL`                                                                    | `llm.defaultModel`                |
+| `COGITATOR_OLLAMA_BASE_URL`, `COGITATOR_OLLAMA_API_KEY`                                          | `llm.providers.ollama.*`          |
+| `COGITATOR_OPENAI_API_KEY`, `COGITATOR_OPENAI_BASE_URL`                                          | `llm.providers.openai.*`          |
+| `COGITATOR_ANTHROPIC_API_KEY`                                                                    | `llm.providers.anthropic.apiKey`  |
+| `COGITATOR_GOOGLE_API_KEY`                                                                       | `llm.providers.google.apiKey`     |
+| `COGITATOR_AZURE_API_KEY`, `_ENDPOINT`, `_API_VERSION`, `_DEPLOYMENT`                            | `llm.providers.azure.*`           |
+| `COGITATOR_BEDROCK_REGION`, `_ACCESS_KEY_ID`, `_SECRET_ACCESS_KEY`, `_SESSION_TOKEN`, `_PROFILE` | `llm.providers.bedrock.*`         |
+| `COGITATOR_VLLM_BASE_URL`                                                                        | `llm.providers.vllm.baseUrl`      |
+| `COGITATOR_MISTRAL_API_KEY`, `_GROQ_API_KEY`, `_TOGETHER_API_KEY`, `_DEEPSEEK_API_KEY`           | `llm.providers.<provider>.apiKey` |
+| `COGITATOR_LIMITS_MAX_CONCURRENT_RUNS`, `_DEFAULT_TIMEOUT`, `_MAX_TOKENS_PER_RUN`                | `limits.*` (digits only)          |
+| `COGITATOR_DEPLOY_TARGET`, `_PORT`, `_REGISTRY`                                                  | `deploy.*`                        |
 
 Standard provider variables work too; a `COGITATOR_*` variable wins over its standard counterpart:
 
@@ -174,10 +174,10 @@ OPENAI_API_KEY=sk-xxx
 OPENAI_BASE_URL=https://proxy.example.com/v1
 ANTHROPIC_API_KEY=sk-ant-xxx
 GOOGLE_API_KEY=xxx            # or GEMINI_API_KEY
-OLLAMA_URL=http://localhost:11434   # or OLLAMA_HOST (scheme optional)
+OLLAMA_URL=http://localhost:11434   # or OLLAMA_BASE_URL / OLLAMA_HOST, read like Ollama reads OLLAMA_HOST
 OLLAMA_API_KEY=xxx            # Ollama Cloud; URL defaults to https://ollama.com unless set in env or YAML
 AZURE_OPENAI_API_KEY=xxx      # with AZURE_OPENAI_ENDPOINT, optional AZURE_OPENAI_DEPLOYMENT
-AWS_REGION=us-east-1          # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY for Bedrock
+AWS_REGION=us-east-1          # Bedrock, credentials come from the AWS SDK chain
 MISTRAL_API_KEY=xxx
 GROQ_API_KEY=xxx
 TOGETHER_API_KEY=xxx
@@ -185,6 +185,12 @@ DEEPSEEK_API_KEY=xxx
 ```
 
 Azure is configured from the environment only when both the key and the endpoint are set.
+
+`OLLAMA_BASE_URL`, `OLLAMA_URL` and `OLLAMA_HOST` are read the way Ollama reads `OLLAMA_HOST`: without a scheme the port is 11434, and `0.0.0.0` (often set so `ollama serve` listens on every interface) is reached as `localhost`. They only apply when `cogitator.yml` sets no `llm.providers.ollama.baseUrl`, while `COGITATOR_OLLAMA_BASE_URL` overrides it.
+
+Bedrock credentials stay with the AWS SDK, so `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_PROFILE`, SSO and instance roles work as the SDK resolves them and temporary credentials keep their session token. Static credentials come only from `COGITATOR_BEDROCK_*` or `llm.providers.bedrock` in YAML.
+
+Without an explicit path the config file is the first of `cogitator.yml`, `cogitator.yaml`, `.cogitator.yml` and `.cogitator.yaml` in the working directory, the same for `loadConfig`, `cogitator run` and `cogitator deploy`.
 
 ### Referencing Environment Variables in YAML
 
@@ -296,8 +302,9 @@ llm:
     azure:
       apiKey: xxx
       endpoint: https://your-resource.openai.azure.com
-      apiVersion: '2024-02-15-preview' # optional
+      apiVersion: '2025-04-01-preview' # optional, the default
       deployment: gpt-6.1-sol # optional
+      model: gpt-5 # optional: the model the deployments serve, when their names do not say
 ```
 
 ### AWS Bedrock

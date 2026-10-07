@@ -183,15 +183,17 @@ interface MCPRetryConfig {
 
 #### Automatic Retry Behavior
 
-All MCP operations (`listToolDefinitions`, `callTool`, `listResources`, `readResource`, `readResourceContents`, `listPrompts`, `getPrompt`) automatically retry on transient failures:
+Requests that are safe to send twice (`listToolDefinitions`, `listResources`, `readResource`, `readResourceContents`, `listPrompts`, `getPrompt`) automatically retry on transient failures:
 
 - Connection errors (ECONNREFUSED, ECONNRESET, closed connections)
 - Request timeouts
 - Network failures
 
+A tool call is different: after a timeout or a lost connection the server may still be running it, or may have finished it, and a second call could deploy twice or send a second email. So `callTool` sends a call once and throws `MCPToolInterruptedError` (`reason: 'timeout' | 'connection-lost'`) instead of retrying, unless the call is marked `idempotent: true`. Tools from `getTools()` / `wrapMCPTools()` set `idempotent` from the server's tool annotations: a tool with `readOnlyHint` or `idempotentHint` is retried like a read, any other is not. A connection lost by an earlier call is restored before the next call is sent.
+
 Deterministic failures are **not** retried: JSON-RPC protocol errors from the server (invalid params, unknown tool, internal handler errors), tool results with `isError: true`, and calls whose `signal` was aborted fail immediately.
 
-When a connection error is detected (with `autoReconnect` and `retryOnConnectionLoss` on, the defaults), the client will:
+When a connection error is detected on a retried request (with `autoReconnect` and `retryOnConnectionLoss` on, the defaults), the client will:
 
 1. Close the existing connection
 2. Create a new transport and client
@@ -244,6 +246,8 @@ const result = await client.callTool('tool_name', { arg: 'value' });
 const controller = new AbortController();
 await client.callTool('slow_tool', {}, { signal: controller.signal, timeout: 10_000 });
 
+await client.callTool('get_status', {}, { idempotent: true });
+
 const resources = await client.listResources();
 
 const content = await client.readResource('file://path/to/file');
@@ -259,7 +263,7 @@ await client.close();
 
 ### Tool Results and Errors
 
-`callTool` returns the server's `structuredContent` when present; otherwise the content blocks are unwrapped — text blocks are JSON-parsed when possible (other blocks stay as content objects), a single block's value is returned on its own, multiple blocks are returned as an array, and an empty result is `null`.
+`callTool` returns the server's `structuredContent` when present, otherwise text blocks are unwrapped: JSON-parsed when possible, a single block's value on its own, several as an array, and an empty result is `null`. Content with images, audio or binary resources comes back as a `toolContent()` result of `@cogitator-ai/core` (images as `image` parts, audio and blobs as `file` parts), so an agent's model sees a screenshot as an image instead of base64 text, and audio stays out of the context. A link to a resource becomes a line of text.
 
 When the server reports a tool failure (`isError: true`), `callTool` throws an `MCPToolError` carrying the tool name and the original content blocks. Tools produced by `getTools()` / `wrapMCPTools()` therefore surface MCP tool failures as regular Cogitator tool errors, and they forward the run's abort signal to the server.
 
@@ -343,10 +347,14 @@ interface MCPServerConfig {
   sessions?: boolean; // Session per client (needed for elicitation); default: off
 
   logging?: boolean; // Diagnostic logging to stderr (stdout stays clean for stdio JSON-RPC)
+
+  toolInvoker?: ToolInvoker; // Runs tool calls, e.g. your Cogitator; default: one of its own
 }
 ```
 
-Tool arguments are validated by the MCP SDK against the tool's full Zod schema (including refinements, transforms and object modifiers such as `z.looseObject`). Invalid arguments and thrown errors are returned to the client as `isError` tool results. Errors thrown by resource `read` and prompt `get` handlers are returned as JSON-RPC errors.
+Tool calls run the way an agent run executes them, through a `ToolInvoker` (`cogitator.invokeTool()`): the arguments are validated, a tool with `requiresApproval` (or one the guardrails flag) is asked from the person at the client through MCP elicitation, the guardrails apply, sandboxed tools run in the sandbox and `tool.timeout` holds. Pass your `Cogitator` as `toolInvoker` so its sandbox and guardrails are the ones used, otherwise the server uses a Cogitator of its own without configuration. A call that needs approval when nobody can be asked (a client without elicitation, or HTTP without `sessions: true`) does not run: it comes back as an `isError` result that says so, unless the invoker's `guardrails.onToolApproval` decides it.
+
+Tool arguments are validated once, by the MCP SDK against the tool's full Zod schema (including refinements, transforms and object modifiers such as `z.looseObject`). Invalid arguments and thrown errors are returned to the client as `isError` tool results. Errors thrown by resource `read` and prompt `get` handlers are returned as JSON-RPC errors.
 
 ### Server Methods
 
@@ -638,12 +646,13 @@ Create a script that Claude Desktop can execute:
 ```typescript
 // serve-tools.ts
 import { serveMCPTools } from '@cogitator-ai/mcp';
-import { builtinTools } from '@cogitator-ai/core';
+import { Cogitator, calculator, datetime, webSearch } from '@cogitator-ai/core';
 
-await serveMCPTools([...builtinTools], {
+await serveMCPTools([calculator, datetime, webSearch], {
   name: 'cogitator-tools',
   version: '1.0.0',
   transport: 'stdio',
+  toolInvoker: new Cogitator({ sandbox: { allowNativeFallback: false } }),
 });
 ```
 
@@ -751,6 +760,10 @@ const tools = await wrapMCPTools(client, {
 ```
 
 The prefix only renames the Cogitator tool; calls still go to the server under the original name, with the run's abort signal.
+
+Tool names are made safe for every LLM provider (letters, digits, `_` and `-`, at most 64 characters): `admin.list_users` becomes `admin_list_users`, a longer name is cut and ends with a hash of the full one, and two names of a server that would end up the same (`files.read`, `files_read`) are told apart by a hash on the changed one. `normalizeMCPToolName(name)` gives the name a tool gets. When an agent uses several servers, give each its own `namePrefix`, since two servers can both have a `search` tool: the registry warns when two tools of an agent share a name, and only one of them would reach the model.
+
+Input schemas with `$ref` (such as a FastMCP tool with a nested Pydantic model) keep their definitions: the model sees the full schema and arguments are validated against it, recursive definitions included.
 
 ### Adapter Options
 
@@ -1067,7 +1080,7 @@ const textResult = resultToMCPContent('Hello world');
 // [{ type: 'text', text: 'Hello world' }]
 ```
 
-A tool result that is already an array of MCP content blocks (text, image, audio, resource) is passed through unchanged, so a served tool can return images or embedded resources; `null`/`undefined` becomes an empty text block.
+A tool result that is already an array of MCP content blocks (text, image, audio, resource) is passed through unchanged, so a served tool can return images or embedded resources, `null`/`undefined` becomes an empty text block. A `toolContent()` result, and an object with a base64 `image` such as a browser screenshot, becomes text and image blocks, with `file` parts as audio blocks (`audio/*`) or embedded resource blobs.
 
 ---
 

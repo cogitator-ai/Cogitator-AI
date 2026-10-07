@@ -86,14 +86,14 @@ model: 'openai/gpt-6-astra';
 
 The official OpenAI backend talks to the **Responses API**. GPT-6 models only support tool calling there, and GPT-5.x/GPT-6 reject non-default sampling parameters on Chat Completions. Requests are stateless (`store: false`); encrypted reasoning items are kept on `ToolCall.replay` and sent back with the call on the next turn, so reasoning models keep their chain of thought across tool calls (also after a memory round-trip).
 
-| Behaviour          | Details                                                                                                                                                                    |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Wire API selection | `responses` for the official endpoint (no `baseUrl`, or a `baseUrl` on `api.openai.com`); `chat-completions` when `baseUrl` points anywhere else. `api` forces either path |
-| Stop sequences     | The Responses API has no stop parameter, so a request with `stop` sequences is sent through Chat Completions                                                               |
-| Sampling params    | Reasoning models (o-series, GPT-5 and later) get no `temperature` / `top_p`; `gpt-4o` / `gpt-4.1` and `-chat` variants keep them                                           |
-| `maxTokens`        | Sent as `max_output_tokens` on the Responses API; on Chat Completions as `max_completion_tokens` for the official endpoint and `max_tokens` otherwise                      |
-| Structured output  | `responseFormat` maps to `text.format` (`json_object` / `json_schema`); images are sent as `input_image`                                                                   |
-| Usage              | `usage.cachedInputTokens` and `usage.reasoningTokens` are reported when OpenAI returns them (both already included in `inputTokens` / `outputTokens`)                      |
+| Behaviour          | Details                                                                                                                                                                                                                 |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Wire API selection | `responses` for the official endpoint (no `baseUrl`, or a `baseUrl` on `api.openai.com`), `chat-completions` when `baseUrl` points anywhere else. `api` forces either path                                              |
+| Stop sequences     | The Responses API has no stop parameter, so a request with `stop` sequences is sent through Chat Completions                                                                                                            |
+| Sampling params    | Reasoning models (o-series, GPT-5 and later) get no `temperature` / `top_p`, on the Responses API and on Chat Completions alike, including the agent default `0.7`, `gpt-4o` / `gpt-4.1` and `-chat` variants keep them |
+| `maxTokens`        | Sent as `max_output_tokens` on the Responses API, on Chat Completions as `max_completion_tokens` for the official endpoint and for reasoning models, `max_tokens` otherwise                                             |
+| Structured output  | `responseFormat` maps to `text.format` (`json_object` / `json_schema`), images are sent as `input_image`                                                                                                                |
+| Usage              | `usage.cachedInputTokens` and `usage.reasoningTokens` are reported when OpenAI returns them (both already included in `inputTokens` / `outputTokens`)                                                                   |
 
 OpenAI-compatible providers (Azure, Mistral, Groq, Together, DeepSeek, vLLM, any custom `baseUrl`) stay on Chat Completions unchanged. `DEFAULT_OPENAI_MODEL` and `isOpenAIReasoningModel(model)` are exported from `@cogitator-ai/core`.
 
@@ -122,7 +122,7 @@ The backend adapts each request to what the target Claude model accepts (model i
 | Claude 4.5+, Fable                 | `json_schema` response format uses native structured outputs (`output_config`) instead of a forced tool                                                        |
 | Claude Opus 5.5, Sonnet 5.5, Fable | Forced tool choice (`'required'` or a named function) falls back to `auto` with a system-prompt instruction naming the tool, plus a one-time warning per model |
 
-The stop reasons `model_context_window_exceeded` and `pause_turn` are reported as `finishReason: 'length'`, and `refusal` as `'error'`.
+The stop reasons `model_context_window_exceeded` and `pause_turn` are reported as `finishReason: 'length'`, and `refusal` as `'refusal'`.
 
 ### Google (Gemini)
 
@@ -149,11 +149,14 @@ providers: {
   azure: {
     endpoint: 'https://your-resource.openai.azure.com',
     apiKey: process.env.AZURE_OPENAI_API_KEY!,
-    apiVersion: '2024-02-01',  // optional
-    deployment: 'gpt-6.1-sol',      // optional default deployment
+    apiVersion: '2025-04-01-preview', // optional, the default
+    deployment: 'prod-chat', // optional default deployment
+    model: 'gpt-5', // optional: the model the deployments serve, when their names do not say
   },
 }
 ```
+
+A deployment that serves a reasoning model (o-series, GPT-5 and later) gets no `temperature` / `top_p` and its token limit as `max_completion_tokens`, as Azure requires. The backend tells by the deployment name (`azure/gpt-5`) or, when the name is your own, by `model`. Other deployments keep sampling parameters and `max_tokens`.
 
 ### AWS Bedrock
 
@@ -167,7 +170,7 @@ providers: {
 }
 ```
 
-Bedrock needs the optional `@aws-sdk/client-bedrock-runtime` package. Without explicit credentials it uses the AWS credential chain.
+Bedrock needs the optional `@aws-sdk/client-bedrock-runtime` package. Without explicit credentials it uses the AWS credential chain (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_PROFILE`, SSO, instance roles). Temporary credentials passed explicitly need their `sessionToken` too, and `profile` picks a named profile from the shared AWS config files.
 
 ```typescript
 model: 'bedrock/global.anthropic.claude-sonnet-5-5';
@@ -201,6 +204,17 @@ model: 'vllm/mistral-7b';
 ### Message Conversion
 
 All backends receive the same `Message[]`. Every `system` message (the agent instructions plus any later ones, such as reflection hints or context summaries) is combined into the provider's system prompt for Anthropic, Gemini and Bedrock, and consecutive tool results are sent together in a single turn, as those APIs expect for parallel tool calls. Images in tool results are placed where each API accepts them (see [Images in Tool Results](/docs/core/tools#images-in-tool-results)).
+
+### Turn Outcomes
+
+Every backend reports why a turn ended with the same `finishReason`: `stop`, `tool_calls`, `length`, `content_filter`, `refusal` or `error`. The rules are the same everywhere:
+
+- Only a `tool_calls` turn runs tools. A finished turn with complete tool calls is one even when the provider reported `stop`, as vLLM, LM Studio and other OpenAI-compatible servers do for a forced tool.
+- A turn cut at the token limit (`length`), filtered, refused or failed carries no tool calls, so a call cut off in the middle of its arguments never runs with partial or empty ones.
+- A finished turn whose tool arguments are not valid JSON fails with `LLM_INVALID_RESPONSE`, streamed or not.
+- `content_filter` covers OpenAI and Azure `content_filter`, Gemini `SAFETY`, `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT` and `SPII`, and Bedrock or Anthropic `guardrail_intervened` and `content_filtered`. `refusal` covers the OpenAI `refusal` message (its text becomes the content) and the Anthropic `refusal` stop reason.
+
+A run reports a filtered or refused last answer as `result.blocked` and a cut-off one as `result.truncated` (see [Agents](/docs/core/agents)). The built-in backends settle each turn with `normalizeTurn()` from `@cogitator-ai/core`, and the runtime applies it to every turn, so a backend of your own only has to report the provider's reason and the complete tool calls.
 
 ## Custom Backends
 
@@ -312,10 +326,10 @@ Agent runs cache their prompt by default. Anthropic and Bedrock cache only what 
 ```typescript
 const result = await cog.run(agent, { input });
 result.usage.cachedInputTokens; // read from the cache (about a tenth of the input price on Claude)
-result.usage.cacheWriteTokens; // written to it (Anthropic: 1.25× the input price)
+result.usage.cacheWriteTokens; // written to it (Anthropic: 1.25× the input price, 2× with the 1-hour TTL)
 ```
 
-In an agent loop every iteration resends the previous one's prompt, so after the first call most of the input is a cache read. `llm.promptCache: { ttl: '1h' }` keeps Anthropic's cache for an hour instead of five minutes; `llm.promptCache: false` turns marking off. A single `ChatRequest` takes the same setting as `cache`.
+In an agent loop every iteration resends the previous one's prompt, so after the first call most of the input is a cache read. `llm.promptCache: { ttl: '1h' }` keeps Anthropic's cache for an hour instead of five minutes, and the run's cost prices those writes at the 1-hour rate (`ChatUsage.cacheWrite1hTokens`), `llm.promptCache: false` turns marking off. A single `ChatRequest` takes the same setting as `cache`.
 
 ## Retries
 
@@ -363,3 +377,5 @@ try {
 ```
 
 Error codes include `LLM_UNAVAILABLE`, `LLM_RATE_LIMITED`, `LLM_TIMEOUT`, `LLM_INVALID_RESPONSE`, `LLM_CONTEXT_LENGTH_EXCEEDED` and `LLM_CONTENT_FILTERED`; `e.details` carries the provider, model, status code and request id. Rate limit, server and connection errors are marked as retryable, and `retryAfter` holds the wait the provider asked for, when it named one.
+
+The message always ends with what the provider said, for example `[openai] Bad request: Unsupported parameter: 'max_tokens' is not supported with this model`, and `e.details.responseBody` keeps the raw body. `LLM_CONTEXT_LENGTH_EXCEEDED` is reported only for the providers' own context overflow errors (`context_length_exceeded`, `maximum context length`, `prompt is too long`, `input is too long`, the Ollama and llama.cpp `exceeds the context length` and the like), so a request rejected for a parameter that merely mentions tokens stays a `VALIDATION_ERROR`. Bedrock errors are classified by the AWS exception (`ThrottlingException` is a retryable rate limit, `ValidationException` and `AccessDeniedException` are not retried, `ModelTimeoutException` is a retryable `LLM_TIMEOUT`), then by the HTTP status the SDK reports.

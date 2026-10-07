@@ -120,7 +120,7 @@ await executor.execute(workflow, input, {
   defaultRetry: { maxRetries: 3, backoff: 'exponential', initialDelay: 500 }, // nodes without config.retries
   defaultCircuitBreaker: breakerConfig, // per-node breaker, shared across runs of this executor
   deadLetterQueue: createInMemoryDLQ(), // entry for every node that finally failed
-  idempotencyStore, // reuse results of nodes that already completed for this workflowId
+  idempotencyStore, // reuse results of nodes that already completed for this workflowId and visit, across resumes
   approvalStore, // default store for humanWorkflowNode
   timerStore, // default store for persisted timers
   tracer,
@@ -183,6 +183,10 @@ builder
     { after: ['calculate'] }
   );
 ```
+
+When an `agentNode` agent calls a tool that needs approval, its paused run never passes for an answer. With an `approvalStore` (execute option, or `approvals.approvalStore`) each waiting call becomes an approve/reject request in the human-in-the-loop store and the run resumes once it is answered, `approvals: { assignee, timeout, timeoutAction, ... }` shapes the requests. Without a store, or with `approvals: false`, the node fails with an `AgentRunPausedError` carrying the checkpoint, and is not retried.
+
+A `toolNode` runs its tool through `cogitator.invokeTool`, the way an agent run calls it: arguments validated against the tool's schema, the guardrails, the sandbox and `tool.timeout` apply, and a tool with `requiresApproval` asks the same approval store before it runs. A declined call, or one with nobody to ask, fails the node without running the tool.
 
 Agent and tool nodes use the run's abort signal, so cancelling the workflow cancels in-flight LLM and tool calls.
 
@@ -600,6 +604,8 @@ builder.addNode(
   )
 );
 ```
+
+The mapper's fourth argument is `{ signal, attempt }`: the signal aborts when the attempt times out, another item fails the map (without `continueOnError`) or the run is cancelled or paused, so pass it to the work the mapper starts. The first failure stops the map: no further item starts and the error's `partialResults` hold what each item really did.
 
 `mapNode` + `mapWorkflowNode`, `parallelMap`, `batchedMap` and the reducer presets `collect`, `sum`, `count`, `groupBy`, `partition`, `flatMap` and `stats` cover other shapes.
 

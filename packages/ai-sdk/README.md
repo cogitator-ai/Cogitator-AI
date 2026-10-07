@@ -85,16 +85,45 @@ With **ai@4** the same call returns a `LanguageModelV1`; `{ specificationVersion
 
 #### How the agent maps to a model
 
-- The agent runs its whole loop — LLM calls **and its own tool calls** — inside one model call. The result's `finishReason` is `'stop'`.
+- The agent runs its whole loop (LLM calls **and its own tool calls**) inside one model call. The result's `finishReason` says how the run ended: `stop` for an answer, `length` when the answer stopped at the token limit (`RunResult.truncated`), `content-filter` when it was withheld (raw `content_filter` for a provider's filter, `refusal` when the model declined), `other` (raw `iteration-limit`) when tool calls used up the agent's `maxIterations`, and `tool-calls` when the run waits for tool approvals (below). `v1` and `v2` models get the same reasons in their form (`other` for a paused run). `providerMetadata.cogitator` also carries `truncated`, `blocked` and `iterationLimitReached`.
+- `generateText` and `streamText` see the same text: what the agent writes before a tool call ("Let me check.") comes before that call in both, as text parts of the response. In JSON mode (`Output.object`, `generateObject`) only the agent's final answer is text, so a preamble never breaks the parsed object, and a stream then delivers the JSON when the run ends.
 - The agent's tool calls are reported as **provider-executed** tool calls with their results (`result.toolCalls` / `result.toolResults`, `tool-call` / `tool-result` stream parts). The AI SDK never executes them again.
   - With `v3` / `v4` models they are always reported.
   - With `v2` models they are reported only for tools you also pass in `tools` (ai@5 cannot handle provider-executed calls of undeclared tools).
   - Every model also lists them in `providerMetadata.cogitator.toolCalls`, together with `runId`, `threadId`, `agentId`, `model`, `cost` and `duration`.
-- User and assistant text of the prompt is forwarded as the agent input (multi-turn prompts become a `User:` / `Assistant:` transcript). System messages, files and images are not forwarded — the agent's `instructions` are its system prompt — and the AI SDK reports a warning.
+- User and assistant text of the prompt is forwarded as the agent input (multi-turn prompts become a `User:` / `Assistant:` / `Tool:` transcript). Tool calls and tool results of earlier turns are written into the transcript (`[called tool search with {...}]`, `[tool search returned: ...]`), so the agent knows what its tools found before. System messages, files and images are not forwarded (the agent's `instructions` are its system prompt) and the AI SDK reports a warning.
 - `temperature`, `topP`, `maxOutputTokens` (`maxTokens` on ai@4) and `stopSequences` override the agent settings for the call; `abortSignal` cancels the run, as does cancelling the stream.
 - The `reasoning` call option of `v4` models (ai@7) overrides the effort of the agent's `reasoning` for the call. An agent with `reasoning: { summary: true }` returns its summary as `reasoning` content (`reasoning-start` / `reasoning-delta` / `reasoning-end` stream parts, `reasoning` text on ai@4), and usage carries its reasoning and cached input tokens.
 - JSON response formats (`generateObject`, `Output.object`, ai@4 `object-json` / `object-tool` modes) switch the agent to JSON mode and append the schema to the input.
 - AI SDK `tools` the agent does not own cannot be called by the agent; the model reports a warning for each of them.
+- `toolChoice: 'none'` runs the agent without its tools and handoffs (tools registered on the `Cogitator` itself stay, with a warning). `required` and a named tool of the agent become the run's `toolChoice`: the model must call a tool (or that one) before it answers, and the run goes back to `auto` once it has. A named tool the agent does not have comes back as an unsupported-setting warning.
+- When the agent calls a tool that needs approval (`requiresApproval`), its run pauses and the call never passes for an answer. `v3` and `v4` models (ai@6, ai@7) end the turn with `finishReason: 'tool-calls'` and a `tool-approval-request` for each waiting call (a provider-executed `tool-call` comes with it). Answer with a `tool-approval-response` (`providerExecuted: true`, which `convertToModelMessages` sets for UI messages) as the last message of the next prompt and the run resumes: approved calls run, denied ones are declined with your `reason`. `v1` and `v2` models cannot ask, so they finish with `finishReason: 'other'` and a warning, and `providerMetadata.cogitator` holds `status: 'paused'`, the `threadId` and `pendingApprovals` to resume with `cogitator.resume(agent, threadId, { decisions })`.
+
+```typescript
+const paused = await generateText({ model: cogitatorModel(cog, agent), prompt: 'Refund A-1' });
+const request = paused.content.find((part) => part.type === 'tool-approval-request');
+
+if (request?.type === 'tool-approval-request') {
+  const done = await generateText({
+    model: cogitatorModel(cog, agent),
+    messages: [
+      { role: 'user', content: 'Refund A-1' },
+      ...paused.response.messages,
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-approval-response',
+            approvalId: request.approvalId,
+            approved: true,
+            providerExecuted: true,
+          },
+        ],
+      },
+    ],
+  });
+}
+```
 
 ### Named Agents
 
@@ -132,7 +161,7 @@ for await (const chunk of backend.chatStream({ model: 'gemini-3.5-flash-lite', m
 }
 ```
 
-The backend converts Cogitator messages (text, images, assistant tool calls and tool results), tools, `toolChoice`, `responseFormat`, sampling settings and the abort signal to the model's specification, and maps text, reasoning, tool calls, finish reasons and usage (including cached, cache-write and reasoning tokens) back: reasoning content and stream parts become `ChatResponse.reasoning` / `delta.reasoning`. `ChatRequest.reasoning.effort` is sent as the `reasoning` call option of `v4` models (`max` as `xhigh`); older specifications have no provider-neutral reasoning setting, so configure effort, budgets and summaries on the AI SDK provider model (its `providerOptions` or settings). Gemini thought signatures on tool calls are preserved across turns.
+The backend converts Cogitator messages (text, images, assistant tool calls and tool results), tools, `toolChoice`, `responseFormat`, sampling settings and the abort signal to the model's specification, and maps text, reasoning, tool calls, finish reasons and usage (including cached, cache-write and reasoning tokens) back: reasoning content and stream parts become `ChatResponse.reasoning` / `delta.reasoning`. `ChatRequest.reasoning.effort` is sent as the `reasoning` call option of `v4` models (`max` as `xhigh`). Older specifications have no provider-neutral reasoning setting, so configure effort, budgets and summaries on the AI SDK provider model (its `providerOptions` or settings). Gemini thought signatures on tool calls are preserved across turns, and so are the reasoning parts before a tool call with their provider metadata (Anthropic thinking signatures, redacted thinking) and each tool call's own provider metadata, which models with extended thinking need on the turn after a tool call. Tool results with images go to the model as images (`content` output with `media`, `image-data` or `file` parts by specification, `content` on ai@4), and failed tool calls as `error-text`.
 
 To run Cogitator agents on an AI SDK model, register the backend under a name in `llm.backends` and point agents at it with `name/model`:
 
@@ -186,7 +215,11 @@ const aiTools = convertToolsToAISDK([cogCalculator]);
 - `inputSchema` (read by ai@5 – ai@7) — the Cogitator tool's zod schema
 - `parameters` (read by ai@4) — an AI SDK `Schema` with draft-07 JSON Schema and synchronous validation; it is also a Standard JSON Schema
 
-`execute(input, options)` maps the AI SDK options to a Cogitator `ToolContext`: `toolCallId` becomes `runId`, `abortSignal` becomes `signal`, and string fields `agentId`, `runId`, `threadId`, `userId`, `channelType`, `channelId` of the tool context (`context` on ai@7, `experimental_context` on ai@5 / ai@6) are copied over.
+`execute(input, options)` maps the AI SDK options to a Cogitator `ToolContext`: `toolCallId` becomes `toolCallId` (and `runId`, unless the tool context names one), `abortSignal` becomes `signal`, and string fields `agentId`, `runId`, `threadId`, `userId`, `channelType`, `channelId` of the tool context (`context` on ai@7, `experimental_context` on ai@5 / ai@6) are copied over.
+
+A tool result with media (`toolContent()` of `@cogitator-ai/core`, or an object with a base64 `image` such as a browser screenshot) reaches the model of `generateText` / `streamText` as an image through the tool's `toModelOutput` (`experimental_toToolResultContent` on ai@4). Files are described, other results go as text or JSON as usual. In the other direction, `fromAISDKTool()` gives the AI SDK tool the id of the call it runs for as `toolCallId`, and keeps the `$defs` of its JSON Schema.
+
+Approval flags survive both ways: `toAISDKTool()` sets `needsApproval` from `requiresApproval`, so ai@6 and ai@7 ask before running the tool, and `fromAISDKTool()` sets `requiresApproval` from `needsApproval`, so a Cogitator run pauses (a `needsApproval` function that answers with a promise counts as "needs approval").
 
 `fromAISDKTool()` accepts zod 4 schemas, Standard JSON Schemas, `jsonSchema()` / `zodSchema()` schemas from any AI SDK major and plain JSON Schema objects. Non-zod schemas are converted to JSON Schema and validated before the AI SDK `execute` runs. It also resolves ai@7 dynamic descriptions and the final value of streaming (`async function*`) `execute` functions, and passes the Cogitator context to the AI SDK tool as `context` / `experimental_context`. Zod 3 schemas cannot be converted to JSON Schema here — wrap them with `zodSchema()` from `ai`.
 

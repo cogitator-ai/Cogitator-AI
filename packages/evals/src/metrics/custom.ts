@@ -1,4 +1,5 @@
 import type { MetricFn, EvalCaseResult } from './types';
+import { nonFiniteScoreError } from './types';
 
 export interface CustomMetricConfig {
   name: string;
@@ -10,6 +11,11 @@ export interface CustomMetricConfig {
   }) => Promise<{ score: number; details?: string }> | { score: number; details?: string };
 }
 
+/**
+ * A metric from an `evaluate` function. Its score is clamped to 0 - 1. When `evaluate` throws or
+ * returns a score that is not a finite number (such as NaN from a division by zero), the metric
+ * scores 0 and reports the failure in `error`.
+ */
 export function metric(config: CustomMetricConfig): MetricFn {
   const fn = (async (result: EvalCaseResult) => {
     try {
@@ -20,18 +26,28 @@ export function metric(config: CustomMetricConfig): MetricFn {
         context: result.case.context,
       });
 
-      const clamped = Math.max(0, Math.min(1, score));
+      const invalid = nonFiniteScoreError(score);
+      if (invalid) {
+        return {
+          name: config.name,
+          score: 0,
+          details: `evaluate error: ${invalid}`,
+          error: invalid,
+        };
+      }
 
       return {
         name: config.name,
-        score: clamped,
+        score: Math.max(0, Math.min(1, score)),
         ...(details !== undefined && { details }),
       };
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
       return {
         name: config.name,
         score: 0,
-        details: `evaluate error: ${(err as Error).message}`,
+        details: `evaluate error: ${message}`,
+        error: message,
       };
     }
   }) as MetricFn;

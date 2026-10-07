@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { loadEnvConfig } from '../loaders/env';
+import { loadEnvConfig, loadEnvDefaults } from '../loaders/env';
 
 describe('loadEnvConfig()', () => {
   const originalEnv = process.env;
@@ -32,6 +32,8 @@ describe('loadEnvConfig()', () => {
           'AWS_REGION',
           'AWS_ACCESS_KEY_ID',
           'AWS_SECRET_ACCESS_KEY',
+          'AWS_SESSION_TOKEN',
+          'AWS_PROFILE',
           'MISTRAL_API_KEY',
           'GROQ_API_KEY',
           'TOGETHER_API_KEY',
@@ -63,12 +65,14 @@ describe('loadEnvConfig()', () => {
     expect(config.llm?.providers?.ollama?.baseUrl).toBe('http://localhost:11434');
   });
 
-  it('loads Ollama config from standard OLLAMA_HOST', () => {
+  it('loads Ollama config from standard OLLAMA_HOST as a default under cogitator.yml', () => {
     delete process.env.COGITATOR_OLLAMA_BASE_URL;
+    delete process.env.OLLAMA_BASE_URL;
+    delete process.env.OLLAMA_URL;
     process.env.OLLAMA_HOST = 'http://192.168.1.100:11434';
 
-    const config = loadEnvConfig();
-    expect(config.llm?.providers?.ollama?.baseUrl).toBe('http://192.168.1.100:11434');
+    expect(loadEnvDefaults().llm?.providers?.ollama?.baseUrl).toBe('http://192.168.1.100:11434');
+    expect(loadEnvConfig().llm?.providers?.ollama).toBeUndefined();
   });
 
   it('loads OpenAI config from standard OPENAI_API_KEY', () => {
@@ -185,7 +189,7 @@ describe('loadEnvConfig()', () => {
     expect(config.llm?.providers?.bedrock?.secretAccessKey).toBe('secret-test');
   });
 
-  it('loads Bedrock config from standard AWS_* vars', () => {
+  it('reads the Bedrock region from AWS_REGION and leaves AWS_* credentials to the SDK', () => {
     delete process.env.COGITATOR_BEDROCK_REGION;
     delete process.env.COGITATOR_BEDROCK_ACCESS_KEY_ID;
     delete process.env.COGITATOR_BEDROCK_SECRET_ACCESS_KEY;
@@ -195,8 +199,8 @@ describe('loadEnvConfig()', () => {
 
     const config = loadEnvConfig();
     expect(config.llm?.providers?.bedrock?.region).toBe('eu-west-1');
-    expect(config.llm?.providers?.bedrock?.accessKeyId).toBe('AKIA-aws');
-    expect(config.llm?.providers?.bedrock?.secretAccessKey).toBe('aws-secret');
+    expect(config.llm?.providers?.bedrock?.accessKeyId).toBeUndefined();
+    expect(config.llm?.providers?.bedrock?.secretAccessKey).toBeUndefined();
   });
 
   it('loads Bedrock with region only (uses AWS credentials chain)', () => {
@@ -249,6 +253,7 @@ describe('loadEnvConfig()', () => {
       for (const key of [
         'COGITATOR_OLLAMA_BASE_URL',
         'COGITATOR_OLLAMA_API_KEY',
+        'OLLAMA_BASE_URL',
         'OLLAMA_URL',
         'OLLAMA_HOST',
         'OLLAMA_API_KEY',
@@ -259,14 +264,14 @@ describe('loadEnvConfig()', () => {
 
     it('reads OLLAMA_URL (used by channels and the CLI)', () => {
       process.env.OLLAMA_URL = 'https://ollama.example.com/';
-      expect(loadEnvConfig().llm?.providers?.ollama).toEqual({
+      expect(loadEnvDefaults().llm?.providers?.ollama).toEqual({
         baseUrl: 'https://ollama.example.com',
       });
     });
 
     it('adds a scheme to OLLAMA_HOST values like 127.0.0.1:11434', () => {
       process.env.OLLAMA_HOST = '127.0.0.1:11434';
-      expect(loadEnvConfig().llm?.providers?.ollama?.baseUrl).toBe('http://127.0.0.1:11434');
+      expect(loadEnvDefaults().llm?.providers?.ollama?.baseUrl).toBe('http://127.0.0.1:11434');
     });
 
     it('does not invent a baseUrl when only an API key is set', () => {
@@ -278,6 +283,7 @@ describe('loadEnvConfig()', () => {
       process.env.OLLAMA_URL = '';
       process.env.OLLAMA_API_KEY = '';
       expect(loadEnvConfig().llm?.providers?.ollama).toBeUndefined();
+      expect(loadEnvDefaults().llm).toBeUndefined();
     });
   });
 

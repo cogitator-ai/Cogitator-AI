@@ -2,6 +2,7 @@ import { EvalSuite } from './eval-suite';
 import type { EvalTarget, EvalSuiteResult } from './eval-suite';
 import type { MetricFn, MetricScore, StatisticalMetricFn } from './metrics/types';
 import type { JudgeConfigInput } from './schema';
+import { EvalComparisonConfigSchema } from './schema';
 import { Dataset } from './datasets';
 import { pairedTTest } from './stats/t-test';
 import { mcnemarsTest } from './stats/mcnemar';
@@ -20,6 +21,11 @@ export interface EvalComparisonOptions {
   timeout?: number;
   retries?: number;
   onProgress?: (progress: { target: string; completed: number; total: number }) => void;
+}
+
+export interface EvalComparisonRunOptions {
+  /** Cancels both runs; `run()` rejects with the signal's reason */
+  signal?: AbortSignal;
 }
 
 export interface MetricComparison {
@@ -107,10 +113,15 @@ export class EvalComparison {
   private readonly opts: EvalComparisonOptions;
 
   constructor(opts: EvalComparisonOptions) {
+    EvalComparisonConfigSchema.parse({
+      concurrency: opts.concurrency,
+      timeout: opts.timeout,
+      retries: opts.retries,
+    });
     this.opts = opts;
   }
 
-  async run(): Promise<ComparisonResult> {
+  async run(options: EvalComparisonRunOptions = {}): Promise<ComparisonResult> {
     const {
       dataset,
       targets,
@@ -150,8 +161,8 @@ export class EvalComparison {
     });
 
     const [baselineResult, challengerResult] = await Promise.all([
-      baselineSuite.run(),
-      challengerSuite.run(),
+      baselineSuite.run({ signal: options.signal }),
+      challengerSuite.run({ signal: options.signal }),
     ]);
 
     const metricNames = new Set<string>();

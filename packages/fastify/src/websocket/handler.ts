@@ -1,16 +1,19 @@
 import type { FastifyInstance, FastifyPluginAsync, FastifyRequest } from 'fastify';
 import type { WebSocket } from 'ws';
 import type { Agent } from '@cogitator-ai/core';
-import type { RunOptions, RunResult, ToolApprovalDecision } from '@cogitator-ai/types';
-import type {
-  AgentResumeRequest,
-  AuthContext,
-  WebSocketMessage,
-  WebSocketResponse,
-} from '../types.js';
-import { isNonBlankString } from '@cogitator-ai/server-shared';
+import type { RunOptions, RunResult } from '@cogitator-ai/types';
+import type { AuthContext, WebSocketMessage, WebSocketResponse } from '../types.js';
+import {
+  isJsonObject,
+  parseResumeRequest,
+  parseRunRequest,
+  toAgentRunResponse,
+  toAgentToolCall,
+  type ContextPolicy,
+  type ResumeRequestBody,
+} from '@cogitator-ai/server-shared';
 import { generateId } from '../streaming/helpers.js';
-import { resolveError, withoutCheckpoint } from '../routes/utils.js';
+import { resolveError } from '../routes/utils.js';
 
 const WS_OPEN = 1;
 const MAX_SUBSCRIPTIONS = 64;
@@ -39,7 +42,7 @@ interface RunPayload {
   threadId?: string;
 }
 
-interface ResumePayload extends AgentResumeRequest {
+interface ResumePayload extends ResumeRequestBody {
   name: string;
 }
 
@@ -90,10 +93,6 @@ class ChannelHub {
   }
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 function parseMessage(raw: string): WebSocketMessage | null {
   let data: unknown;
   try {
@@ -101,7 +100,7 @@ function parseMessage(raw: string): WebSocketMessage | null {
   } catch {
     return null;
   }
-  if (!isPlainObject(data) || typeof data.type !== 'string' || !MESSAGE_TYPES.has(data.type)) {
+  if (!isJsonObject(data) || typeof data.type !== 'string' || !MESSAGE_TYPES.has(data.type)) {
     return null;
   }
   if (data.id !== undefined && typeof data.id !== 'string') return null;
@@ -114,49 +113,21 @@ function parseMessage(raw: string): WebSocketMessage | null {
   };
 }
 
-function parseRunPayload(payload: unknown): RunPayload | null {
-  if (!isPlainObject(payload)) return null;
-  const { type, name, input, context, threadId } = payload;
+function parseRunPayload(payload: unknown, acceptContext: ContextPolicy): RunPayload | null {
+  if (!isJsonObject(payload)) return null;
+  const { type, name } = payload;
   if (type !== 'agent' && type !== 'workflow' && type !== 'swarm') return null;
   if (typeof name !== 'string' || !name) return null;
-  if (!isNonBlankString(input)) return null;
-  if (context !== undefined && !isPlainObject(context)) return null;
-  if (threadId !== undefined && typeof threadId !== 'string') return null;
-  return { type, name, input, context, threadId };
-}
-
-function parseDecision(value: unknown): ToolApprovalDecision | null {
-  if (!isPlainObject(value) || typeof value.approved !== 'boolean') return null;
-  if (value.reason !== undefined && typeof value.reason !== 'string') return null;
-  if (value.approved) return { approved: true };
-  return value.reason === undefined
-    ? { approved: false }
-    : { approved: false, reason: value.reason };
+  const parsed = parseRunRequest(payload, { acceptContext });
+  return parsed.ok ? { type, name, ...parsed.value } : null;
 }
 
 function parseResumePayload(payload: unknown): ResumePayload | null {
-  if (!isPlainObject(payload)) return null;
-  const { name, threadId, decisions, defaultDecision } = payload;
+  if (!isJsonObject(payload)) return null;
+  const { name } = payload;
   if (typeof name !== 'string' || !name) return null;
-  if (typeof threadId !== 'string' || !threadId.trim()) return null;
-
-  const resume: ResumePayload = { name, threadId };
-  if (decisions !== undefined) {
-    if (!isPlainObject(decisions)) return null;
-    const entries: Array<[string, ToolApprovalDecision]> = [];
-    for (const [toolCallId, value] of Object.entries(decisions)) {
-      const decision = parseDecision(value);
-      if (!decision) return null;
-      entries.push([toolCallId, decision]);
-    }
-    resume.decisions = Object.fromEntries(entries);
-  }
-  if (defaultDecision !== undefined) {
-    const decision = parseDecision(defaultDecision);
-    if (!decision) return null;
-    resume.defaultDecision = decision;
-  }
-  return resume;
+  const parsed = parseResumeRequest(payload);
+  return parsed.ok ? { name, ...parsed.value } : null;
 }
 
 export const websocketRoutes: FastifyPluginAsync<WebSocketRoutesOptions> = async (
@@ -255,7 +226,7 @@ async function handleRun(
   state: ClientState,
   hub: ChannelHub
 ): Promise<void> {
-  const payload = parseRunPayload(message.payload);
+  const payload = parseRunPayload(message.payload, fastify.cogitator.acceptContext ?? false);
   if (!payload) {
     sendResponse(socket, { type: 'error', id: message.id, error: 'Invalid run payload' });
     return;
@@ -355,14 +326,14 @@ async function streamAgentRun(
         emit({ type: 'reasoning', delta });
       },
       onToolCall: (toolCall) => {
-        emit({ type: 'tool-call', ...toolCall });
+        emit({ type: 'tool-call', ...toAgentToolCall(toolCall) });
       },
       onToolResult: (toolResult) => {
         emit({ type: 'tool-result', ...toolResult });
       },
     });
 
-    emit({ type: 'complete', result: withoutCheckpoint(result) });
+    emit({ type: 'complete', result: toAgentRunResponse(result) });
   } catch (error) {
     if (controller.signal.aborted) {
       emit({ type: 'cancelled' });

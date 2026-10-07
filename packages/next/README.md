@@ -92,10 +92,11 @@ export function Chat() {
 Creates a streaming chat handler. The handler:
 
 - runs the agent with token streaming enabled and forwards `text-*`, `tool-*` and `finish` events as they happen
-- uses the **last user message** as the run input; conversation history is carried by `threadId` (configure `memory` on the `Cogitator` instance) — the server returns the thread id in the `finish` event and `useCogitatorChat` adopts it automatically
-- passes request `metadata` to the run as `context`
+- uses the **last user message** as the run input, conversation history is carried by `threadId` (configure `memory` on the `Cogitator` instance). Without one the handler opens a new thread and names it in the `start` event, and the `finish` event repeats it, and `useCogitatorChat` adopts it automatically
+- passes request `metadata` to the run as `context`, only the keys `acceptContext` allows: the run puts `context` into the system prompt, so by default a request with `metadata` is refused with `400`
+- writes a `: keep-alive` comment every `sseHeartbeatMs` (5 s by default, `0` turns it off) while the run is silent, so a proxy or the platform does not close a stream that waits on a slow tool
 - aborts the run when the client disconnects (`req.signal`)
-- validates the body (JSON object, `messages` array, string `threadId`, object `metadata`), limits it to 1 MB (413 otherwise) and returns `400` when there is no user message
+- reads only JSON bodies (`415` for `text/plain` and forms, which browsers send across origins without a preflight), validates the body (JSON object, `messages` array, non-blank `threadId`, object `metadata`), limits it to 1 MB (413 otherwise) and returns `400` when there is no user message
 
 ```typescript
 import { createChatHandler } from '@cogitator-ai/next';
@@ -130,7 +131,7 @@ export const POST = createChatHandler(cogitator, agent, {
 
 ### `createAgentHandler`
 
-Creates a batch (non-streaming) handler for long-running tasks. The default parser requires a non-blank string `input`, an optional object `context` and an optional string `threadId` (400 otherwise). The run is aborted if the client disconnects.
+Creates a batch (non-streaming) handler for long-running tasks. The default parser is the validator every Cogitator adapter shares: a non-blank string `input`, an optional object `context` with only the keys `acceptContext` allows (none by default, since the run puts `context` into the system prompt), and an optional non-blank `threadId` (`400 { error, code: 'INVALID_INPUT' }` otherwise, `415` for a body that is not JSON). A `parseInput` of your own decides for itself. The run is aborted if the client disconnects.
 
 ```typescript
 import { createAgentHandler } from '@cogitator-ai/next';
@@ -158,13 +159,13 @@ Response format:
     "outputTokens": 500,
     "totalTokens": 650
   },
-  "toolCalls": [...],
-  "trace": { "traceId": "trace-xyz", "spans": [...] },
-  "status": "completed"
+  "toolCalls": [{ "id": "call_1", "name": "search", "arguments": { "q": "AI" } }],
+  "status": "completed",
+  "traceId": "trace-xyz"
 }
 ```
 
-A run waiting for [approvals](#approvals) answers `"status": "paused"` with its `pendingApprovals`. A run that fails with a `CogitatorError` answers `{ "error": message, "code": code }` with that error's status (for example `429 LLM_RATE_LIMITED`). Any other error is logged on the server and answered as `500 { "error": "Internal server error", "code": "INTERNAL_ERROR" }`, so its text (connection strings, file paths) never reaches the client. The same applies when `afterRun` throws.
+The answer is the same object every Cogitator adapter returns (`toAgentRunResponse()` of `@cogitator-ai/server-shared`): `reasoning`, `structured`, `structuredError`, `truncated`, `blocked` and `iterationLimitReached` appear when they apply. It never carries the system prompt, the history or trace spans, whose attributes hold raw tool arguments and errors: `traceId` links the answer to your traces, and `afterRun` receives the whole `RunResult`. A run waiting for [approvals](#approvals) answers `"status": "paused"` with its `pendingApprovals`. A run that fails with a `CogitatorError` answers `{ "error": message, "code": code }` with that error's status (for example `429 LLM_RATE_LIMITED`). Any other error is logged on the server and answered as `500 { "error": "Internal server error", "code": "INTERNAL_ERROR" }`, so its text (connection strings, file paths) never reaches the client. The same applies when `afterRun` throws.
 
 ### Multiple users
 
@@ -309,9 +310,9 @@ const {
 // Basic send
 await send('Hello!');
 
-// Send with metadata (passed to the run as `context` on the server)
+// Send with metadata (passed to the run as `context` on the server,
+// for the keys the handler accepts: createChatHandler(cogitator, agent, { acceptContext: ['priority'] }))
 await send('Analyze this', {
-  userId: 'user-123',
   priority: 'high',
 });
 
@@ -383,7 +384,7 @@ console.log(result?.toolCalls);
 The chat handler streams Server-Sent Events. The event names follow the Vercel AI SDK event-stream style, but the payloads are Cogitator's own (`tool-call-*`, `message` on errors, `usage`/`threadId` on finish), so use `useCogitatorChat` (or your own parser) on the client rather than the AI SDK's `useChat`:
 
 ```
-data: {"type":"start","messageId":"msg-1"}
+data: {"type":"start","messageId":"msg-1","threadId":"thread-abc"}
 
 data: {"type":"text-start","id":"text-1"}
 
@@ -401,7 +402,7 @@ data: {"type":"tool-call-end","id":"tool-1"}
 
 data: {"type":"tool-result","id":"tr-1","toolCallId":"tool-1","result":"72°F"}
 
-data: {"type":"finish","messageId":"msg-1","usage":{...},"threadId":"thread-abc"}
+data: {"type":"finish","messageId":"msg-1","usage":{...},"threadId":"thread-abc","status":"completed"}
 
 data: [DONE]
 ```
@@ -412,7 +413,7 @@ A run that pauses for [approvals](#approvals) sends `{"type":"approval-required"
 
 If the run fails, the open text or reasoning block is closed and an `{"type":"error","message":"...","code":"..."}` event is sent instead of `finish`. A `CogitatorError` keeps its message and code; any other error is logged on the server and sent as `"message":"Internal server error","code":"INTERNAL_ERROR"`.
 
-The server-side building blocks are exported for custom handlers:
+The protocol is the one every Cogitator adapter speaks, from `@cogitator-ai/server-shared`. The server-side building blocks are exported for custom handlers:
 
 ```typescript
 import { StreamWriter, encodeSSE, generateId } from '@cogitator-ai/next';
@@ -449,11 +450,16 @@ interface AgentResponse {
     cachedInputTokens?: number;
     cacheWriteTokens?: number;
   };
-  toolCalls: ToolCall[];
-  trace?: { traceId: string; spans: unknown[] };
+  toolCalls: { id: string; name: string; arguments: Record<string, unknown> }[];
   reasoning?: string;
-  status?: 'completed' | 'paused';
+  status: 'completed' | 'paused';
   pendingApprovals?: PendingApproval[];
+  structured?: unknown;
+  structuredError?: string;
+  truncated?: true;
+  blocked?: 'content_filter' | 'refusal';
+  iterationLimitReached?: true;
+  traceId: string;
 }
 
 interface PendingApproval {

@@ -1,13 +1,17 @@
 import Router from '@koa/router';
 import type { CogitatorState, SwarmListResponse, BlackboardResponse } from '../types.js';
 import { KoaStreamWriter, setupSSEHeaders } from '../streaming/index.js';
-import { generateId } from '@cogitator-ai/server-shared';
+import {
+  generateId,
+  parseSwarmRunRequest,
+  swarmAgentNames,
+  withSwarm,
+} from '@cogitator-ai/server-shared';
 import type { RunResult, SwarmMessage, SwarmEvent } from '@cogitator-ai/types';
 import { getOwn } from '../utils/lookup.js';
 import { isModuleNotFoundError, resolveError } from '../utils/errors.js';
 import { getRequestBody, onClientDisconnect } from '../utils/request.js';
 import { serializeSwarmUsage, toSwarmRunResponse } from '../utils/results.js';
-import { parseSwarmRunRequest } from '../utils/validation.js';
 
 export function createSwarmRoutes(): Router<CogitatorState> {
   const router = new Router<CogitatorState>();
@@ -15,11 +19,7 @@ export function createSwarmRoutes(): Router<CogitatorState> {
   router.get('/swarms', (ctx) => {
     const { swarms } = ctx.state.cogitator;
     const swarmList = Object.entries(swarms).map(([name, config]) => {
-      const agents: string[] = [];
-      if (config.supervisor) agents.push(config.supervisor.name);
-      if (config.workers) agents.push(...config.workers.map((w) => w.name));
-      if (config.agents) agents.push(...config.agents.map((a) => a.name));
-      if (config.moderator) agents.push(config.moderator.name);
+      const agents = swarmAgentNames(config);
 
       return {
         name,
@@ -43,7 +43,9 @@ export function createSwarmRoutes(): Router<CogitatorState> {
       return;
     }
 
-    const parsed = parseSwarmRunRequest(getRequestBody(ctx));
+    const parsed = parseSwarmRunRequest(getRequestBody(ctx), {
+      acceptContext: ctx.state.cogitator.acceptContext,
+    });
     if (!parsed.ok) {
       ctx.status = 400;
       ctx.body = { error: { message: parsed.message, code: 'INVALID_INPUT' } };
@@ -59,14 +61,15 @@ export function createSwarmRoutes(): Router<CogitatorState> {
 
     try {
       const { Swarm } = await import('@cogitator-ai/swarms');
-      const swarm = new Swarm(runtime, swarmConfig);
-      abortSwarm = () => swarm.abort();
+      if (aborted) return;
+      const response = await withSwarm(new Swarm(runtime, swarmConfig), async (swarm) => {
+        abortSwarm = () => swarm.abort();
+        const result = await swarm.run({ ...parsed.value, userId: ctx.state.auth?.userId });
+        return toSwarmRunResponse(swarm, result);
+      });
       if (aborted) return;
 
-      const result = await swarm.run({ ...parsed.value, userId: ctx.state.auth?.userId });
-      if (aborted) return;
-
-      ctx.body = toSwarmRunResponse(swarm, result);
+      ctx.body = response;
     } catch (error) {
       if (aborted) return;
       if (isModuleNotFoundError(error)) {
@@ -92,7 +95,9 @@ export function createSwarmRoutes(): Router<CogitatorState> {
       return;
     }
 
-    const parsed = parseSwarmRunRequest(getRequestBody(ctx));
+    const parsed = parseSwarmRunRequest(getRequestBody(ctx), {
+      acceptContext: ctx.state.cogitator.acceptContext,
+    });
     if (!parsed.ok) {
       ctx.status = 400;
       ctx.body = { error: { message: parsed.message, code: 'INVALID_INPUT' } };
@@ -115,47 +120,48 @@ export function createSwarmRoutes(): Router<CogitatorState> {
 
     try {
       const { Swarm } = await import('@cogitator-ai/swarms');
-      const swarm = new Swarm(runtime, swarmConfig);
-      abortSwarm = () => swarm.abort();
       if (aborted) return;
+      await withSwarm(new Swarm(runtime, swarmConfig), async (swarm) => {
+        abortSwarm = () => swarm.abort();
 
-      writer.start(messageId);
+        writer.start(messageId);
 
-      const result = await swarm.run({
-        ...parsed.value,
-        userId: ctx.state.auth?.userId,
-        onAgentStart: (agentName: string) => {
-          writer.swarmEvent('agent_start', { agentName, timestamp: Date.now() });
-        },
-        onAgentComplete: (agentName: string, agentResult: RunResult) => {
-          writer.swarmEvent('agent_complete', {
-            agentName,
-            output: agentResult.output,
-            timestamp: Date.now(),
-          });
-        },
-        onAgentError: (agentName: string, error: Error) => {
-          writer.swarmEvent('agent_error', {
-            agentName,
-            error: resolveError(error, `Swarm agent ${agentName} error`).body.error.message,
-          });
-        },
-        onMessage: (message: SwarmMessage) => {
-          writer.swarmEvent('message', message);
-        },
-        onEvent: (event: SwarmEvent) => {
-          writer.swarmEvent(event.type, event.data);
-        },
+        const result = await swarm.run({
+          ...parsed.value,
+          userId: ctx.state.auth?.userId,
+          onAgentStart: (agentName: string) => {
+            writer.swarmEvent('agent_start', { agentName, timestamp: Date.now() });
+          },
+          onAgentComplete: (agentName: string, agentResult: RunResult) => {
+            writer.swarmEvent('agent_complete', {
+              agentName,
+              output: agentResult.output,
+              timestamp: Date.now(),
+            });
+          },
+          onAgentError: (agentName: string, error: Error) => {
+            writer.swarmEvent('agent_error', {
+              agentName,
+              error: resolveError(error, `Swarm agent ${agentName} error`).body.error.message,
+            });
+          },
+          onMessage: (message: SwarmMessage) => {
+            writer.swarmEvent('message', message);
+          },
+          onEvent: (event: SwarmEvent) => {
+            writer.swarmEvent(event.type, event.data);
+          },
+        });
+
+        if (aborted) return;
+
+        writer.swarmEvent('swarm_completed', {
+          swarmId: swarm.id,
+          output: result.output,
+          usage: serializeSwarmUsage(swarm.getResourceUsage()),
+        });
+        writer.finish(messageId);
       });
-
-      if (aborted) return;
-
-      writer.swarmEvent('swarm_completed', {
-        swarmId: swarm.id,
-        output: result.output,
-        usage: serializeSwarmUsage(swarm.getResourceUsage()),
-      });
-      writer.finish(messageId);
     } catch (error) {
       if (aborted) return;
       if (isModuleNotFoundError(error)) {
