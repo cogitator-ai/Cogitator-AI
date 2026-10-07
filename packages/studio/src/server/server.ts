@@ -52,6 +52,8 @@ const MIME: Record<string, string> = {
   '.png': 'image/png',
   '.ico': 'image/x-icon',
   '.json': 'application/json',
+  '.woff2': 'font/woff2',
+  '.woff': 'font/woff',
 };
 
 class HttpError extends Error {
@@ -338,6 +340,8 @@ export async function startStudio(options: StudioOptions): Promise<StudioHandle>
           runs: store.listRuns({ limit: 100 }),
           threads: store.listThreads(),
         });
+      case 'GET /stats':
+        return send(res, 200, store.stats());
       case 'GET /runs': {
         const kind = url.searchParams.get('kind');
         return send(res, 200, {

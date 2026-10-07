@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { request } from 'node:http';
 import { startStudio, type StudioHandle } from '../server/server.js';
-import type { HostStatus, RunRecord, StudioEvent, ThreadRecord } from '../protocol.js';
+import type { HostStatus, RunRecord, StudioEvent, StudioStats, ThreadRecord } from '../protocol.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = join(HERE, 'fixtures', 'project');
@@ -95,6 +95,7 @@ describe('loading the project', () => {
       'assistant',
       'researcher',
     ]);
+    expect(state.host.registry.defaultModel).toBe('scripted/test-model');
     expect(
       state.host.registry.agents[0].tools.map((tool) => [tool.name, tool.requiresApproval])
     ).toEqual([
@@ -335,6 +336,19 @@ describe('history', () => {
     expect(forks.runs.every((candidate) => candidate.kind === 'fork')).toBe(true);
     const workflows = await api<{ runs: RunRecord[] }>('/api/runs?target=report');
     expect(workflows.runs.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('sums up every run for the overview', async () => {
+    const { runs } = await api<{ runs: RunRecord[] }>('/api/runs?limit=1000');
+    const stats = await api<StudioStats>('/api/stats');
+    expect(stats.runs).toBe(runs.length);
+    expect(Object.values(stats.byStatus).reduce((sum, count) => sum + count, 0)).toBe(runs.length);
+    expect(stats.activity.at(-1)?.runs).toBe(runs.length);
+    expect(stats.cost).toBeGreaterThan(0);
+    expect(stats.targets.map((target) => target.target)).toEqual(
+      expect.arrayContaining(['assistant', 'report'])
+    );
+    expect(stats.duration?.p95).toBeGreaterThanOrEqual(stats.duration?.p50 ?? Infinity);
   });
 
   it('survives a restart of the studio, threads included', async () => {

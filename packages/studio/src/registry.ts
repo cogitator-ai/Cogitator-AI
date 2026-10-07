@@ -107,9 +107,19 @@ function describeGroup<T>(
     .filter((item): item is T => item !== undefined);
 }
 
+/** `llm.defaultModel` of the runtime the registry exports as `cogitator`. */
+function defaultModelOf(runtime: unknown): string | undefined {
+  if (!isRecord(runtime) || !isRecord(runtime.config) || !isRecord(runtime.config.llm)) {
+    return undefined;
+  }
+  return stringOf(runtime.config.llm.defaultModel);
+}
+
 /** The agents, workflows and swarms a registry module exports, as plain data. */
 export function describeRegistry(module: UnknownRecord): RegistryInfo {
+  const defaultModel = defaultModelOf(module.cogitator);
   return {
+    ...(defaultModel && { defaultModel }),
     agents: describeGroup(module.agents, describeAgent),
     workflows: describeGroup(module.workflows, describeWorkflow),
     swarms: describeGroup(module.swarms, describeSwarm),

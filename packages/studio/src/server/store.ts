@@ -13,7 +13,10 @@ import type {
   RawSpan,
   RegistryInfo,
   RunRecord,
+  RunStatus,
   SpanRecord,
+  StudioStats,
+  TargetStats,
   ThreadRecord,
   UsageInfo,
   WorkflowNodeRecord,
@@ -172,6 +175,92 @@ export class StudioStore {
       })
       .sort((a, b) => b.startedAt - a.startedAt)
       .slice(0, query.limit ?? 200);
+  }
+
+  /** Counts, spend, latency and daily activity over every run kept. */
+  stats(now = Date.now(), days = 14): StudioStats {
+    const startOfDay = (at: number) => {
+      const date = new Date(at);
+      date.setHours(0, 0, 0, 0);
+      return date.getTime();
+    };
+    const today = new Date(startOfDay(now));
+    const activity = Array.from({ length: days }, (_, i) => ({
+      day: new Date(
+        today.getFullYear(),
+        today.getMonth(),
+        today.getDate() - (days - 1 - i)
+      ).getTime(),
+      runs: 0,
+      failed: 0,
+    }));
+    const dayIndex = new Map(activity.map((bucket, i) => [bucket.day, i]));
+    const byStatus: Record<RunStatus, number> = {
+      running: 0,
+      waiting: 0,
+      completed: 0,
+      failed: 0,
+      stopped: 0,
+    };
+    const targets = new Map<string, TargetStats>();
+    const durations: number[] = [];
+    let runs = 0;
+    let cost = 0;
+    let priced = false;
+    let inputTokens = 0;
+    let outputTokens = 0;
+
+    for (const run of this.runs.values()) {
+      const runPriced = run.usage !== undefined && run.usage.priced !== false;
+      cost += run.usage?.cost ?? 0;
+      priced ||= runPriced;
+      inputTokens += run.usage?.inputTokens ?? 0;
+      outputTokens += run.usage?.outputTokens ?? 0;
+
+      const kind = run.kind === 'workflow' ? 'workflow' : 'agent';
+      const key = `${kind}:${run.target}`;
+      const target = targets.get(key) ?? {
+        target: run.target,
+        kind,
+        runs: 0,
+        failed: 0,
+        cost: 0,
+        priced: false,
+        lastRunAt: 0,
+      };
+      target.runs += 1;
+      target.failed += run.status === 'failed' ? 1 : 0;
+      target.cost += run.usage?.cost ?? 0;
+      target.priced ||= runPriced;
+      target.lastRunAt = Math.max(target.lastRunAt, run.startedAt);
+      targets.set(key, target);
+
+      if (run.parentRunId) continue;
+      runs += 1;
+      byStatus[run.status] += 1;
+      if (run.endedAt !== undefined && run.status !== 'running' && run.status !== 'waiting')
+        durations.push(run.endedAt - run.startedAt);
+      const bucket = dayIndex.get(startOfDay(run.startedAt));
+      if (bucket !== undefined) {
+        activity[bucket].runs += 1;
+        activity[bucket].failed += run.status === 'failed' ? 1 : 0;
+      }
+    }
+
+    durations.sort((a, b) => a - b);
+    const percentile = (p: number) =>
+      durations[Math.min(durations.length - 1, Math.ceil((p / 100) * durations.length) - 1)];
+    return {
+      runs,
+      byStatus,
+      cost,
+      priced,
+      inputTokens,
+      outputTokens,
+      duration: durations.length > 0 ? { p50: percentile(50), p95: percentile(95) } : null,
+      activity,
+      targets: [...targets.values()].sort((a, b) => b.runs - a.runs || b.lastRunAt - a.lastRunAt),
+    };
   }
 
   listThreads(agent?: string): ThreadRecord[] {

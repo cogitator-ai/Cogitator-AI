@@ -165,6 +165,71 @@ describe('StudioStore', () => {
   });
 });
 
+describe('StudioStore.stats', () => {
+  const HOUR = 3_600_000;
+
+  function finish(s: StudioStore, runId: string, endedAt: number, cost: number): void {
+    s.apply({
+      type: 'run.completed',
+      runId,
+      output: 'ok',
+      usage: { inputTokens: 10, outputTokens: 5, cost, duration: 1, priced: true },
+      endedAt,
+    });
+  }
+
+  it('counts the runs started from the studio and spends every run, nested ones included', () => {
+    const { store: s } = store();
+    const now = new Date(2026, 9, 7, 15).getTime();
+    s.apply(started('a', 'a', now - 2 * HOUR));
+    s.apply({
+      type: 'run.span',
+      runId: 'a',
+      span: toolSpan('t', 'call-1', now - 2 * HOUR, now - 2 * HOUR + 50),
+    });
+    s.apply(started('nested', 'a', now - 2 * HOUR + 10, 'researcher'));
+    finish(s, 'nested', now - 2 * HOUR + 40, 0.5);
+    finish(s, 'a', now - 2 * HOUR + 100, 1);
+    s.apply(started('b', 'b', now - 30 * HOUR));
+    s.apply({
+      type: 'run.failed',
+      runId: 'b',
+      error: 'boom',
+      endedAt: now - 30 * HOUR + 300,
+      stopped: false,
+    });
+    s.apply(started('old', 'old', now - 40 * 24 * HOUR));
+    finish(s, 'old', now - 40 * 24 * HOUR + 200, 0);
+
+    const stats = s.stats(now, 7);
+    expect(stats.runs).toBe(3);
+    expect(stats.byStatus).toMatchObject({ completed: 2, failed: 1 });
+    expect(stats.cost).toBe(1.5);
+    expect(stats.priced).toBe(true);
+    expect(stats.inputTokens).toBe(30);
+    expect(stats.duration).toEqual({ p50: 200, p95: 300 });
+    expect(stats.activity).toHaveLength(7);
+    expect(stats.activity.at(-1)).toMatchObject({
+      day: new Date(2026, 9, 7).getTime(),
+      runs: 1,
+      failed: 0,
+    });
+    expect(stats.activity.at(-2)).toMatchObject({ runs: 1, failed: 1 });
+    expect(stats.activity.reduce((sum, day) => sum + day.runs, 0)).toBe(2);
+    expect(stats.targets).toEqual([
+      expect.objectContaining({ target: 'assistant', kind: 'agent', runs: 3, failed: 1, cost: 1 }),
+      expect.objectContaining({ target: 'researcher', kind: 'agent', runs: 1, cost: 0.5 }),
+    ]);
+  });
+
+  it('has no latency before a run finished', () => {
+    const { store: s } = store();
+    s.apply(started('r', 'r', Date.now()));
+    expect(s.stats().duration).toBeNull();
+    expect(s.stats().byStatus.running).toBe(1);
+  });
+});
+
 describe('reloadsProject', () => {
   it('reloads on source and config changes, not on data and dependencies', () => {
     expect(reloadsProject('src/agents/assistant.ts')).toBe(true);
