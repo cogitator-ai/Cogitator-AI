@@ -54,7 +54,8 @@ describe('initSpec', () => {
         const plan = planProject(
           initSpec(answers({ memory, provider, model: `${provider}/m` }), 'pnpm')
         );
-        expect(plan.files.some((file) => file.path === 'src/index.ts')).toBe(true);
+        const paths = plan.files.map((file) => file.path);
+        expect(paths).toEqual(expect.arrayContaining(['src/index.ts', 'src/gateway.ts']));
       }
     }
   });
