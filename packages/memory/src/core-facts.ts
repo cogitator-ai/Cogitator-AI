@@ -1,3 +1,5 @@
+import { mkdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
 /**
  * The database a {@link CoreFactsStore} shares when given `{ db }`. A `better-sqlite3` `Database`
  * satisfies it. It is declared here instead of imported so the published types do not require
@@ -64,6 +66,7 @@ export class CoreFactsStore {
       } catch {
         throw new Error('better-sqlite3 not installed. Run: pnpm add better-sqlite3');
       }
+      if (this.path !== ':memory:') await mkdir(dirname(this.path), { recursive: true });
       this.db = new DatabaseCtor(this.path);
 
       if (this.path !== ':memory:') {
