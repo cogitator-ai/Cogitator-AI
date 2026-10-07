@@ -2,7 +2,7 @@ import { code } from '../code.js';
 import { runScript } from '../package-manager.js';
 import type { ChannelKind } from '../spec.js';
 import { cogitatorVersion, VERSIONS } from '../versions.js';
-import { LIFECYCLE_TS } from './shared.js';
+import { LIFECYCLE_TS, startupImports, startupStatements } from './shared.js';
 import type { FeatureModule } from './types.js';
 
 export const WEBCHAT_PORT = 18789;
@@ -115,8 +115,10 @@ export const appChannelsFeature: FeatureModule = {
         import { agents, cogitator } from './cogitator.js';
         import { loadEnv } from './env.js';
         import { onShutdown } from './lifecycle.js';
+        ${startupImports(project)}
 
         const env = loadEnv();
+        ${startupStatements(project)}
         ${memory && 'const memory = await cogitator.getMemory();'}
 
         const gateway = new Gateway({

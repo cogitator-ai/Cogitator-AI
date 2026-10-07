@@ -3,6 +3,7 @@ import type { ProjectBuilder } from '../project.js';
 import { runScript } from '../package-manager.js';
 import { hasFeature, primaryTarget } from '../spec.js';
 import { cogitatorVersion } from '../versions.js';
+import { startupImports, startupStatements } from './shared.js';
 import type { FeatureModule } from './types.js';
 
 const RESEARCHER_TS = code`
@@ -122,13 +123,14 @@ const REPORT_TEST_TS = code`
   });
 `;
 
-function workflowEntry(): string {
+function workflowEntry(project: ProjectBuilder): string {
   return code`
     import { createInterface } from 'node:readline/promises';
     import { styleText } from 'node:util';
     import { WorkflowExecutor } from '@cogitator-ai/workflows';
     import { cogitator, workflows } from './cogitator.js';
     import { loadEnv } from './env.js';
+    ${startupImports(project)}
 
     async function topicFromUser(): Promise<string> {
       const fromArgs = process.argv.slice(2).join(' ').trim();
@@ -143,6 +145,7 @@ function workflowEntry(): string {
 
     async function main(): Promise<void> {
       loadEnv();
+      ${startupStatements(project)}
       const topic = await topicFromUser();
       if (!topic) throw new Error('Give the report a topic');
 
@@ -191,7 +194,7 @@ export const workflowsFeature: FeatureModule = {
       primaryTarget(spec) === 'workflow' &&
       !hasFeature(spec, 'durable')
     ) {
-      project.file('src/index.ts', workflowEntry());
+      project.file('src/index.ts', workflowEntry(project));
     }
     project.section(
       'Workflows',
@@ -312,12 +315,14 @@ const DURABLE_RUNTIME_TS = code`
   export const { manager, approvalStore } = createDurableRuntime(cogitator, '.cogitator/workflows');
 `;
 
-const DURABLE_ENTRY_TS = code`
+function durableEntry(project: ProjectBuilder): string {
+  return code`
   import { styleText } from 'node:util';
   import type { WorkflowRun } from '@cogitator-ai/workflows';
   import { cogitator, workflows } from './cogitator.js';
   import { approvalStore, manager } from './durable.js';
   import { loadEnv } from './env.js';
+  ${startupImports(project)}
 
   const FINISHED = new Set<WorkflowRun['status']>(['completed', 'failed', 'cancelled']);
 
@@ -347,6 +352,7 @@ const DURABLE_ENTRY_TS = code`
 
   async function main(): Promise<void> {
     loadEnv();
+    ${startupStatements(project)}
     manager.start();
 
     const recovered = await manager.recoverRuns(options);
@@ -377,6 +383,7 @@ const DURABLE_ENTRY_TS = code`
       await cogitator.close();
     });
 `;
+}
 
 const APPROVE_TS = code`
   import { createInterface } from 'node:readline/promises';
@@ -566,7 +573,7 @@ export const durableFeature: FeatureModule = {
     const { spec } = project;
     const pm = spec.packageManager;
     if (spec.app === 'script' && primaryTarget(spec) === 'workflow') {
-      project.file('src/index.ts', DURABLE_ENTRY_TS);
+      project.file('src/index.ts', durableEntry(project));
     }
     project.section(
       'Durable workflow',
@@ -615,13 +622,14 @@ const SWARM_TEST_TS = code`
   });
 `;
 
-function swarmEntry(): string {
+function swarmEntry(project: ProjectBuilder): string {
   return code`
     import { createInterface } from 'node:readline/promises';
     import { styleText } from 'node:util';
     import { Swarm } from '@cogitator-ai/swarms';
     import { cogitator, swarms } from './cogitator.js';
     import { loadEnv } from './env.js';
+    ${startupImports(project)}
 
     async function taskFromUser(): Promise<string> {
       const fromArgs = process.argv.slice(2).join(' ').trim();
@@ -636,6 +644,7 @@ function swarmEntry(): string {
 
     async function main(): Promise<void> {
       loadEnv();
+      ${startupStatements(project)}
       const input = await taskFromUser();
       if (!input) throw new Error('Give the team a task');
 
@@ -683,7 +692,7 @@ export const swarmsFeature: FeatureModule = {
   finalize(project) {
     const { spec } = project;
     if (spec.app === 'script' && primaryTarget(spec) === 'swarm') {
-      project.file('src/index.ts', swarmEntry());
+      project.file('src/index.ts', swarmEntry(project));
     }
     project.section(
       'Swarm',

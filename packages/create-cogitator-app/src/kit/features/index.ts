@@ -7,6 +7,7 @@ import { harnessFeature } from './harness.js';
 import { memoryFeature } from './memory.js';
 import { durableFeature, swarmsFeature, workflowsFeature } from './orchestration.js';
 import { providerFeature } from './provider.js';
+import { ragFeature } from './rag.js';
 import type { FeatureModule } from './types.js';
 
 /**
@@ -20,6 +21,7 @@ export const FEATURE_MODULES: readonly FeatureModule[] = [
   memoryFeature,
   harnessFeature,
   evalsFeature,
+  ragFeature,
   workflowsFeature,
   durableFeature,
   swarmsFeature,
