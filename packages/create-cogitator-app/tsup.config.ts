@@ -1,4 +1,7 @@
 import { defineConfig } from 'tsup';
+import { scaffolderDefines } from './build/defines.ts';
+
+const define = scaffolderDefines();
 
 export default defineConfig([
   {
@@ -7,6 +10,7 @@ export default defineConfig([
     dts: false,
     clean: true,
     sourcemap: true,
+    define,
     banner: {
       js: '#!/usr/bin/env node',
     },
@@ -16,5 +20,6 @@ export default defineConfig([
     format: ['esm'],
     dts: { compilerOptions: { ignoreDeprecations: '6.0' } },
     sourcemap: true,
+    define,
   },
 ]);
