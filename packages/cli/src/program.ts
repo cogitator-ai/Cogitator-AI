@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { initCommand } from './commands/init.js';
 import { addCommand } from './commands/add.js';
 import { mcpCommand } from './commands/mcp.js';
+import { devCommand } from './commands/dev.js';
 import { doctorCommand } from './commands/doctor.js';
 import { evalCommand } from './commands/eval.js';
 import { upCommand, downCommand } from './commands/up.js';
@@ -39,6 +40,7 @@ export function createProgram(): Command {
   for (const command of [
     initCommand,
     addCommand,
+    devCommand,
     doctorCommand,
     evalCommand,
     mcpCommand,

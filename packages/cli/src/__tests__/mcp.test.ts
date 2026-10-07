@@ -102,6 +102,7 @@ describe('project registry', () => {
         key: 'report',
         name: 'report',
         entryPoint: 'draft',
+        initialState: {},
         nodes: ['draft', 'review'],
         edges: [{ type: 'sequential', from: 'draft', to: ['review'] }],
       },
