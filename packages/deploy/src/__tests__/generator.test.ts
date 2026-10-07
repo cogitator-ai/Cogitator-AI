@@ -10,7 +10,7 @@ describe('ArtifactGenerator', () => {
     const artifacts = generator.generate(config, { hasTypeScript: true });
     const dockerfile = artifacts.files.find((f) => f.path === 'Dockerfile');
     expect(dockerfile).toBeDefined();
-    expect(dockerfile!.content).toContain('FROM node:22-alpine');
+    expect(dockerfile!.content).toContain('FROM node:24-alpine AS base');
     expect(dockerfile!.content).toContain('EXPOSE 3000');
   });
 

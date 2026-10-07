@@ -569,6 +569,9 @@ importers:
       '@clack/prompts':
         specifier: ^1.8.1
         version: 1.8.1
+      '@cogitator-ai/deploy':
+        specifier: workspace:^
+        version: link:../deploy
       '@cogitator-ai/models':
         specifier: workspace:^
         version: link:../models
@@ -654,6 +657,9 @@ importers:
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
+      yaml:
+        specifier: ^2.9.1
+        version: 2.9.1
     devDependencies:
       '@types/node':
         specifier: ^22.20.4

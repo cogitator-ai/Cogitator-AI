@@ -1,3 +1,4 @@
+import { parse as parseYaml } from 'yaml';
 import type {
   CogitatorConfig,
   DeployConfig,
@@ -69,6 +70,9 @@ interface PackageJson {
   scripts?: Record<string, string>;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
+  overrides?: Record<string, unknown>;
+  resolutions?: Record<string, unknown>;
   patchedDependencies?: Record<string, string>;
 }
 
@@ -275,6 +279,74 @@ function providerField(
   return typeof value === 'string' && value.trim() !== '' ? value : undefined;
 }
 
+/** The first directory of a relative path inside the project, undefined for anything else. */
+function topDirectory(path: string): string | undefined {
+  if (isAbsolute(path)) return undefined;
+  const first = posix.normalize(path.replace(/\\/g, '/')).split('/')[0];
+  return first && first !== '..' && first !== '.' ? first : undefined;
+}
+
+const LOCAL_SPEC = /^(?:file|link):(.+)$/;
+
+/**
+ * Relative paths of the local packages the install reads (`file:` and `link:`
+ * specs in dependencies, overrides and resolutions, and in the overrides of
+ * pnpm-workspace.yaml), so the image copies them before it installs.
+ */
+export function localDependencySpecs(projectDir: string, pkg: PackageJson): string[] {
+  const specs: string[] = [];
+  const collect = (value: unknown) => {
+    if (typeof value === 'string') {
+      const match = LOCAL_SPEC.exec(value.trim());
+      if (match) specs.push(match[1]);
+    } else if (typeof value === 'object' && value !== null) {
+      for (const nested of Object.values(value)) collect(nested);
+    }
+  };
+  for (const field of [
+    pkg.dependencies,
+    pkg.devDependencies,
+    pkg.optionalDependencies,
+    pkg.overrides,
+    pkg.resolutions,
+  ]) {
+    collect(field);
+  }
+  const workspace = join(projectDir, 'pnpm-workspace.yaml');
+  if (existsSync(workspace)) {
+    try {
+      const parsed: unknown = parseYaml(readFileSync(workspace, 'utf-8'));
+      if (typeof parsed === 'object' && parsed !== null && 'overrides' in parsed)
+        collect(parsed.overrides);
+    } catch {
+      return specs;
+    }
+  }
+  return specs;
+}
+
+/** `.env` never reaches the image (.dockerignore), so a flag that loads it only logs that it is missing. */
+const DOTENV_FLAG = /^--env-file(?:-if-exists)?(?:=|$)/;
+
+const PLAIN_WORD = /^[^\s&|;<>$`"'*?()]+$/;
+
+/**
+ * `start` as argv when it is `node` or `bun` with flags and one script, such as
+ * `node --env-file-if-exists=.env dist/index.js`, and undefined for anything a
+ * shell would have to interpret. Flags that load `.env` are dropped: the image
+ * gets its environment from the deployment.
+ */
+export function directCommand(start: string): string[] | undefined {
+  const words = start.split(/\s+/);
+  const [runtime, ...rest] = words;
+  if (runtime !== 'node' && runtime !== 'bun') return undefined;
+  if (rest.length === 0 || !rest.every((word) => PLAIN_WORD.test(word))) return undefined;
+  const script = rest[rest.length - 1];
+  if (script.startsWith('-') || rest.slice(0, -1).some((word) => !word.startsWith('--')))
+    return undefined;
+  return [runtime, ...rest.filter((word) => !DOTENV_FLAG.test(word))];
+}
+
 export class ProjectAnalyzer {
   detectServer(pkg: PackageJson): DeployServer | undefined {
     for (const [pkgName, server] of Object.entries(SERVER_PACKAGES)) {
@@ -383,6 +455,11 @@ export class ProjectAnalyzer {
     return { packageManager: 'npm', hasLockfile: false };
   }
 
+  /**
+   * The command a container runs: the start script itself when it is a plain
+   * `node` or `bun` call, so the runtime is PID 1's direct child and gets
+   * signals without a package manager in between, else the package manager.
+   */
   detectStartCommand(
     pkg: PackageJson,
     hasTypeScript: boolean,
@@ -391,10 +468,11 @@ export class ProjectAnalyzer {
     const bun = packageManager === 'bun';
     const start = pkg.scripts?.start?.trim();
     if (start) {
+      const direct = directCommand(start);
+      if (direct) return direct;
       if (bun) return ['bun', 'run', 'start'];
       if (packageManager === 'yarn-berry') return ['yarn', 'start'];
-      const nodeScript = /^node\s+([^\s&|;<>$`"']+)$/.exec(start);
-      return nodeScript ? ['node', nodeScript[1]] : ['npm', 'start'];
+      return ['npm', 'start'];
     }
     const runtime = bun ? 'bun' : 'node';
     if (pkg.main) return [runtime, pkg.main];
@@ -746,12 +824,13 @@ export class ProjectAnalyzer {
       'yarn-berry': ['yarn.lock', '.yarnrc.yml', '.yarn'],
       bun: ['bun.lock', 'bun.lockb', 'bunfig.toml'],
     };
+    const isDir = (dir: string | undefined): dir is string => dir !== undefined;
     const patchDirs = Object.values(pkg.patchedDependencies ?? {})
-      .filter((path) => !isAbsolute(path))
-      .map((path) => posix.normalize(path.replace(/\\/g, '/')).split('/')[0])
-      .filter((first) => first && first !== '..' && first !== '.');
+      .map(topDirectory)
+      .filter(isDir);
+    const localDirs = localDependencySpecs(projectDir, pkg).map(topDirectory).filter(isDir);
 
-    return unique([...candidates[pm], '.npmrc', 'patches', ...patchDirs])
+    return unique([...candidates[pm], '.npmrc', 'patches', ...patchDirs, ...localDirs])
       .filter((file) => existsSync(join(projectDir, file)))
       .map((file) => (statSync(join(projectDir, file)).isDirectory() ? `${file}/` : file));
   }

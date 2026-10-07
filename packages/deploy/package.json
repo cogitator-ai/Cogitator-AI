@@ -33,7 +33,8 @@
   },
   "dependencies": {
     "@cogitator-ai/types": "workspace:*",
-    "@cogitator-ai/config": "workspace:*"
+    "@cogitator-ai/config": "workspace:*",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@types/node": "^22.20.4",
