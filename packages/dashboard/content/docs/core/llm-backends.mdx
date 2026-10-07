@@ -331,6 +331,8 @@ result.usage.cacheWriteTokens; // written to it (Anthropic: 1.25× the input pri
 
 In an agent loop every iteration resends the previous one's prompt, so after the first call most of the input is a cache read. `llm.promptCache: { ttl: '1h' }` keeps Anthropic's cache for an hour instead of five minutes, and the run's cost prices those writes at the 1-hour rate (`ChatUsage.cacheWrite1hTokens`), `llm.promptCache: false` turns marking off. A single `ChatRequest` takes the same setting as `cache`.
 
+Claude through OpenRouter (an `OpenAIBackend` with `provider: 'openrouter'` or an `openrouter.ai` base URL, model `anthropic/...`) is marked the same way, with Anthropic's top-level `cache_control`, since OpenRouter caches Claude only when asked. Its usage reports `cache_write_tokens` as `cacheWriteTokens`, and the cost OpenRouter reports already prices reads and writes. Other OpenAI-compatible servers get no marking, as they may reject fields they do not know.
+
 ## Retries
 
 The runtime retries LLM calls that fail with a retryable error: rate limits (429), server errors (5xx), timeouts and dropped connections. Authentication, bad requests and content filters fail at once. Retries are on by default for every backend an agent runs on, including your own `llm.backends` and plugins:

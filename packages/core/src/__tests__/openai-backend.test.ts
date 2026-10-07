@@ -1416,4 +1416,121 @@ describe('OpenAIBackend (Chat Completions wire API)', () => {
       expect(chunks.at(-1)?.finishReason).toBe('refusal');
     });
   });
+  describe('prompt caching of Claude on OpenRouter', () => {
+    const answer = (
+      usage: Record<string, unknown> = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+    ) => ({
+      id: 'chatcmpl-1',
+      choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+      usage,
+    });
+    const openRouter = (provider: 'openrouter' | 'gateway' = 'openrouter') =>
+      new OpenAIBackend({
+        apiKey: 'test-api-key',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        provider,
+      });
+    const messages = [{ role: 'user' as const, content: 'Hi' }];
+    const sentCacheControl = (call = 0) =>
+      (mockCreate.mock.calls[call][0] as { cache_control?: unknown }).cache_control;
+
+    it('marks a Claude request for caching, with the TTL when one is set', async () => {
+      mockCreate.mockResolvedValueOnce(answer()).mockResolvedValueOnce(answer());
+
+      await openRouter().chat({ model: 'anthropic/claude-sonnet-5.5', messages, cache: {} });
+      await openRouter().chat({
+        model: 'anthropic/claude-sonnet-5.5',
+        messages,
+        cache: { ttl: '1h' },
+      });
+
+      expect(sentCacheControl(0)).toEqual({ type: 'ephemeral' });
+      expect(sentCacheControl(1)).toEqual({ type: 'ephemeral', ttl: '1h' });
+    });
+
+    it('marks a streamed Claude request too', async () => {
+      mockCreate.mockResolvedValueOnce(
+        (async function* () {
+          yield { id: 'c', choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] };
+        })()
+      );
+
+      const chunks = [];
+      for await (const chunk of openRouter().chatStream({
+        model: 'anthropic/claude-haiku-4.5',
+        messages,
+        cache: {},
+      }))
+        chunks.push(chunk);
+
+      expect(chunks.length).toBeGreaterThan(0);
+      expect(sentCacheControl()).toEqual({ type: 'ephemeral' });
+    });
+
+    it('sends no cache_control when caching is off, for other models, or to other servers', async () => {
+      mockCreate.mockResolvedValue(answer());
+
+      await openRouter().chat({ model: 'anthropic/claude-sonnet-5.5', messages, cache: false });
+      await openRouter().chat({ model: 'openai/gpt-6-luna', messages, cache: {} });
+      await openRouter().chat({ model: 'google/gemini-3.5-flash', messages, cache: {} });
+      await new OpenAIBackend({
+        apiKey: 'test-api-key',
+        baseUrl: 'https://llm-gateway.internal/v1',
+        provider: 'gateway',
+      }).chat({ model: 'anthropic/claude-sonnet-5.5', messages, cache: {} });
+      await backend.chat({ model: 'gpt-4o-mini', messages, cache: {} });
+
+      expect(mockCreate.mock.calls.length).toBe(5);
+      for (let call = 0; call < 5; call++) expect(sentCacheControl(call)).toBeUndefined();
+    });
+
+    it('recognizes OpenRouter by its host when the provider has another name', async () => {
+      mockCreate.mockResolvedValueOnce(answer());
+
+      await openRouter('gateway').chat({
+        model: 'anthropic/claude-sonnet-5.5',
+        messages,
+        cache: {},
+      });
+
+      expect(sentCacheControl()).toEqual({ type: 'ephemeral' });
+    });
+
+    it('reports cache reads and writes from the usage', async () => {
+      mockCreate.mockResolvedValueOnce(
+        answer({
+          prompt_tokens: 13517,
+          completion_tokens: 5,
+          total_tokens: 13522,
+          cost: 0.016751295,
+          prompt_tokens_details: { cached_tokens: 0, cache_write_tokens: 13514 },
+        })
+      );
+      mockCreate.mockResolvedValueOnce(
+        answer({
+          prompt_tokens: 13517,
+          completion_tokens: 5,
+          total_tokens: 13522,
+          cost: 0.001365606,
+          prompt_tokens_details: { cached_tokens: 13514, cache_write_tokens: 0 },
+        })
+      );
+
+      const first = await openRouter().chat({
+        model: 'anthropic/claude-haiku-4.5',
+        messages,
+        cache: {},
+      });
+      const second = await openRouter().chat({
+        model: 'anthropic/claude-haiku-4.5',
+        messages,
+        cache: {},
+      });
+
+      expect(first.usage).toMatchObject({ cacheWriteTokens: 13514, cost: 0.016751295 });
+      expect(first.usage.cachedInputTokens).toBeUndefined();
+      expect(second.usage).toMatchObject({ cachedInputTokens: 13514, cost: 0.001365606 });
+      expect(second.usage.cacheWriteTokens).toBeUndefined();
+    });
+  });
 });

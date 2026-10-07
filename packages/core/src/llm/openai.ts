@@ -7,7 +7,7 @@ import type {
   LLMBackendProvider,
   OpenAIWireApi,
 } from '@cogitator-ai/types';
-import { OpenAICompatibleBackend } from './openai-compatible-base';
+import { OpenAICompatibleBackend, type PromptCacheParams } from './openai-compatible-base';
 import type { LLMErrorContext } from './errors';
 import {
   DEFAULT_OPENAI_MODEL,
@@ -32,14 +32,24 @@ interface OpenAIConfig {
 }
 
 const OFFICIAL_OPENAI_HOST = 'api.openai.com';
+const OPENROUTER_HOST = 'openrouter.ai';
+
+function hostOf(baseUrl: string | undefined): string | undefined {
+  if (!baseUrl) return undefined;
+  try {
+    return new URL(baseUrl).hostname;
+  } catch {
+    return undefined;
+  }
+}
 
 function isOfficialEndpoint(baseUrl: string | undefined): boolean {
-  if (!baseUrl) return true;
-  try {
-    return new URL(baseUrl).hostname === OFFICIAL_OPENAI_HOST;
-  } catch {
-    return false;
-  }
+  return !baseUrl || hostOf(baseUrl) === OFFICIAL_OPENAI_HOST;
+}
+
+/** Claude as OpenRouter names it: `anthropic/claude-...`. */
+function isClaudeModel(model: string): boolean {
+  return /^anthropic\//i.test(model);
 }
 
 export class OpenAIBackend extends OpenAICompatibleBackend {
@@ -48,11 +58,13 @@ export class OpenAIBackend extends OpenAICompatibleBackend {
   protected client: OpenAI;
   protected override readonly maxTokensField: 'max_tokens' | 'max_completion_tokens';
   private readonly official: boolean;
+  private readonly openRouter: boolean;
 
   constructor(config: OpenAIConfig) {
     super();
     this.provider = config.provider ?? 'openai';
     this.official = this.provider === 'openai' && isOfficialEndpoint(config.baseUrl);
+    this.openRouter = this.provider === 'openrouter' || hostOf(config.baseUrl) === OPENROUTER_HOST;
     this.maxTokensField = this.official ? 'max_completion_tokens' : 'max_tokens';
     this.api = config.api ?? (this.official ? 'responses' : 'chat-completions');
     this.client = new OpenAI({
@@ -69,6 +81,18 @@ export class OpenAIBackend extends OpenAICompatibleBackend {
   /** OpenAI itself, or a proxy in front of it, serves OpenAI's reasoning models under their names. */
   protected override isReasoningModel(model: string): boolean {
     return this.provider === 'openai' && isOpenAIReasoningModel(model);
+  }
+
+  /**
+   * Claude through OpenRouter caches only a prompt marked for it, with the same top-level
+   * `cache_control` as Anthropic's own API, so a long system prompt is billed in full on every
+   * turn without it. Other models there, like OpenAI's, cache on their own. Only OpenRouter gets
+   * the field: other OpenAI-compatible servers may reject what they do not know.
+   */
+  protected override promptCacheParams(request: ChatRequest, model: string): PromptCacheParams {
+    if (!request.cache || !this.openRouter || !isClaudeModel(model)) return {};
+    const ttl = request.cache.ttl;
+    return { cache_control: { type: 'ephemeral', ...(ttl && { ttl }) } };
   }
 
   protected override resolveModel(request: ChatRequest): string {

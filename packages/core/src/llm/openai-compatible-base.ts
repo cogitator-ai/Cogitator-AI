@@ -22,6 +22,11 @@ import {
 import { jsonInstruction, withSystemInstruction } from './json-instruction';
 import { finishRunsTools, normalizeTurn, parseToolCallArguments, type TurnEnd } from './turn';
 
+/** The prompt cache marking a request carries, see `OpenAICompatibleBackend.promptCacheParams`. */
+export interface PromptCacheParams {
+  cache_control?: { type: 'ephemeral'; ttl?: '5m' | '1h' };
+}
+
 export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
   protected abstract client: OpenAI;
 
@@ -38,6 +43,15 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
    */
   protected isReasoningModel(_model: string): boolean {
     return false;
+  }
+
+  /**
+   * Request fields that mark the prompt for the server's prompt cache, when the server and the
+   * model need marking (Claude through OpenRouter takes Anthropic's top-level `cache_control`).
+   * OpenAI and most OpenAI-compatible servers cache on their own, so the base adds none.
+   */
+  protected promptCacheParams(_request: ChatRequest, _model: string): PromptCacheParams {
+    return {};
   }
 
   /**
@@ -67,6 +81,7 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
         : { max_tokens: request.maxTokens }),
       stop: request.stop,
       ...(request.reasoning?.effort && { reasoning_effort: request.reasoning.effort }),
+      ...this.promptCacheParams(request, model),
     };
   }
 
@@ -458,6 +473,7 @@ export { parseToolCallArguments };
 
 function toChatUsage(usage: OpenAI.CompletionUsage | null | undefined): ChatUsage {
   const cached = usage?.prompt_tokens_details?.cached_tokens;
+  const cacheWrite = cacheWriteTokensOf(usage);
   const reasoning = usage?.completion_tokens_details?.reasoning_tokens;
   const cost = reportedCost(usage);
   return {
@@ -465,9 +481,17 @@ function toChatUsage(usage: OpenAI.CompletionUsage | null | undefined): ChatUsag
     outputTokens: usage?.completion_tokens ?? 0,
     totalTokens: usage?.total_tokens ?? 0,
     ...(cached ? { cachedInputTokens: cached } : {}),
+    ...(cacheWrite ? { cacheWriteTokens: cacheWrite } : {}),
     ...(reasoning ? { reasoningTokens: reasoning } : {}),
     ...(cost !== undefined ? { cost } : {}),
   };
+}
+
+/** Prompt tokens written to the cache, as OpenRouter reports them (`prompt_tokens_details.cache_write_tokens`). */
+function cacheWriteTokensOf(usage: OpenAI.CompletionUsage | null | undefined): number | undefined {
+  const details = usage?.prompt_tokens_details as { cache_write_tokens?: unknown } | undefined;
+  const tokens = details?.cache_write_tokens;
+  return typeof tokens === 'number' && Number.isFinite(tokens) && tokens > 0 ? tokens : undefined;
 }
 
 /** The USD cost some OpenAI-compatible services add to `usage` (OpenRouter's `usage.cost`). */
