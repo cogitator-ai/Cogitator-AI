@@ -155,7 +155,7 @@ export class InMemoryCheckpointStore implements TimeTravelCheckpointStore {
     stepIndex: number,
     options?: { label?: string; metadata?: Record<string, unknown> }
   ): ExecutionCheckpoint {
-    const messagesUpToStep = this.extractMessagesUpToStep(result.messages as Message[], stepIndex);
+    const messagesUpToStep = this.extractMessagesUpToStep(result, stepIndex);
     const toolResultsUpToStep = this.extractToolResultsUpToStep(result, stepIndex);
     const pendingToolCalls = this.extractPendingToolCalls(result, stepIndex);
 
@@ -270,19 +270,44 @@ export class InMemoryCheckpointStore implements TimeTravelCheckpointStore {
     }
   }
 
-  /** The conversation before the result of the `stepIndex`-th tool call. */
-  private extractMessagesUpToStep(messages: Message[], stepIndex: number): Message[] {
-    let toolResultCount = 0;
-    const result: Message[] = [];
+  /**
+   * The conversation before the result of the `stepIndex`-th tool call of the
+   * run. Only the run's own tool calls count: a run that continues a thread
+   * carries earlier turns, whose tool results belong to other runs. A step past
+   * the run's last tool call is the moment before its final answer.
+   */
+  private extractMessagesUpToStep(run: RunResult, stepIndex: number): Message[] {
+    const messages = run.messages as Message[];
+    const own = new Set<string>();
+    for (const span of run.trace.spans) {
+      const callId = span.name.startsWith('tool.') ? this.callIdOf(span.attributes) : undefined;
+      if (callId) own.add(callId);
+    }
+    for (const call of run.toolCalls) own.add(call.id);
+    const toolMessages = messages.filter((msg) => msg.role === 'tool');
+    const identified = toolMessages.every((msg) => msg.toolCallId !== undefined);
+    let skip = identified ? 0 : Math.max(0, toolMessages.length - countToolCallSteps(run));
 
+    let count = 0;
+    const result: Message[] = [];
     for (const msg of messages) {
       if (msg.role === 'tool') {
-        if (toolResultCount === stepIndex) break;
-        toolResultCount++;
+        const mine = identified ? own.has(msg.toolCallId ?? '') : skip-- <= 0;
+        if (mine) {
+          if (count === stepIndex) return result;
+          count++;
+        }
       }
       result.push(msg);
     }
 
+    const last = result.at(-1);
+    if (
+      last?.role === 'assistant' &&
+      !('toolCalls' in last && Array.isArray(last.toolCalls) && last.toolCalls.length > 0)
+    ) {
+      result.pop();
+    }
     return result;
   }
 
