@@ -45,6 +45,67 @@ describe('generateDockerfile', () => {
     expect(df).not.toContain('run build');
   });
 
+  it("takes what the install produced, so Yarn Plug'n'Play images build without node_modules", () => {
+    const df = generateDockerfile({
+      config: {},
+      hasTypeScript: false,
+      packageManager: 'yarn-berry',
+      packageManagerVersion: '4.9.1',
+    });
+    expect(df).toContain('COPY --from=deps --chown=node:node /app ./');
+    expect(df).not.toContain('/app/node_modules');
+    expect(df.indexOf('COPY --from=deps')).toBeLessThan(df.indexOf('COPY --chown=node:node . .'));
+  });
+
+  it("installs Plug'n'Play archives into the image and loads the resolver", () => {
+    const df = generateDockerfile({
+      config: {},
+      hasTypeScript: true,
+      packageManager: 'yarn-berry',
+      packageManagerVersion: '4.9.1',
+      startCommand: ['node', 'dist/server.js'],
+      plugAndPlay: { esmLoader: true },
+    });
+    expect(df).toContain('YARN_ENABLE_GLOBAL_CACHE=false yarn install --immutable');
+    expect(df).toContain(
+      'rm -rf .yarn/cache && YARN_ENABLE_GLOBAL_CACHE=false yarn workspaces focus --all --production'
+    );
+    expect(df).toContain(
+      'NODE_OPTIONS="--require /app/.pnp.cjs --experimental-loader file:///app/.pnp.loader.mjs"'
+    );
+
+    const commonjs = generateDockerfile({
+      config: {},
+      hasTypeScript: false,
+      packageManager: 'yarn-berry',
+      startCommand: ['node', 'index.js'],
+      plugAndPlay: { esmLoader: false },
+    });
+    expect(commonjs).toContain('NODE_OPTIONS="--require /app/.pnp.cjs"');
+  });
+
+  it('leaves the resolver to Yarn when Yarn starts the app, and to nobody without PnP', () => {
+    const viaYarn = generateDockerfile({
+      config: {},
+      hasTypeScript: false,
+      packageManager: 'yarn-berry',
+      startCommand: ['yarn', 'start'],
+      plugAndPlay: { esmLoader: true },
+    });
+    expect(viaYarn).not.toContain('NODE_OPTIONS');
+    expect(viaYarn).toContain('YARN_ENABLE_GLOBAL_CACHE=false');
+
+    const nodeModules = generateDockerfile({
+      config: {},
+      hasTypeScript: true,
+      packageManager: 'yarn-berry',
+      packageManagerVersion: '4.9.1',
+    });
+    expect(nodeModules).not.toContain('NODE_OPTIONS');
+    expect(nodeModules).not.toContain('YARN_ENABLE_GLOBAL_CACHE');
+    expect(nodeModules).not.toContain('rm -rf .yarn/cache');
+  });
+
   it('copies the full builder output so non-dist start commands work', () => {
     const df = generateDockerfile({ config: {}, hasTypeScript: true });
     expect(df).toContain('COPY --from=builder --chown=node:node /app ./');

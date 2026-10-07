@@ -26,6 +26,7 @@ import {
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join, posix } from 'node:path';
 import { resolveDeployEnv, sanitizeName } from './utils/env.js';
+import type { PlugAndPlay } from './templates/dockerfile.js';
 import { healthPath } from './templates/health.js';
 import { APP_DIR } from './volumes.js';
 
@@ -65,6 +66,7 @@ export type PackageManager = 'pnpm' | 'npm' | 'yarn' | 'yarn-berry' | 'bun';
 
 interface PackageJson {
   name?: string;
+  type?: string;
   main?: string;
   packageManager?: string;
   scripts?: Record<string, string>;
@@ -87,6 +89,8 @@ export interface ProjectBuild {
   installFiles: string[];
   /** Version of the package manager from the `packageManager` field, e.g. `4.5.0` */
   packageManagerVersion?: string;
+  /** Set when Yarn installs with Plug'n'Play: no node_modules, a resolver the app has to load. */
+  plugAndPlay?: PlugAndPlay;
 }
 
 export interface AnalyzerResult extends ProjectBuild {
@@ -173,6 +177,7 @@ function readPackageJson(projectDir: string, warnings: string[]): PackageJson {
 
   return {
     name: typeof raw.name === 'string' ? raw.name : undefined,
+    type: typeof raw.type === 'string' ? raw.type : undefined,
     main: typeof raw.main === 'string' ? raw.main : undefined,
     packageManager: typeof raw.packageManager === 'string' ? raw.packageManager : undefined,
     scripts: isStringRecord(raw.scripts) ? raw.scripts : undefined,
@@ -835,12 +840,41 @@ export class ProjectAnalyzer {
       .map((file) => (statSync(join(projectDir, file)).isDirectory() ? `${file}/` : file));
   }
 
+  /**
+   * Plug'n'Play settings of a Yarn 2+ project, `undefined` when it installs
+   * node_modules. PnP is Yarn's default linker, and Yarn writes the ESM loader
+   * when it is asked to or when a workspace is an ES module.
+   */
+  detectPlugAndPlay(projectDir: string, pkg: PackageJson): PlugAndPlay | undefined {
+    const rcPath = join(projectDir, '.yarnrc.yml');
+    let rc: Record<string, unknown> = {};
+    if (existsSync(rcPath)) {
+      try {
+        const parsed: unknown = parseYaml(readFileSync(rcPath, 'utf-8'));
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+          rc = parsed as Record<string, unknown>;
+      } catch {
+        rc = {};
+      }
+    }
+    const linker = typeof rc.nodeLinker === 'string' ? rc.nodeLinker : 'pnp';
+    if (linker !== 'pnp') return undefined;
+    return {
+      esmLoader:
+        rc.pnpEnableEsmLoader === true ||
+        pkg.type === 'module' ||
+        existsSync(join(projectDir, '.pnp.loader.mjs')),
+    };
+  }
+
   private buildOf(projectDir: string, pkg: PackageJson): ProjectBuild {
     const hasTypeScript = existsSync(join(projectDir, 'tsconfig.json'));
     const pm = this.detectPackageManager(projectDir, pkg);
     const declared = parsePackageManagerField(pkg.packageManager);
     const binary = pm.packageManager === 'yarn-berry' ? 'yarn' : pm.packageManager;
     const version = declared?.name === binary ? declared.version : undefined;
+    const plugAndPlay =
+      pm.packageManager === 'yarn-berry' ? this.detectPlugAndPlay(projectDir, pkg) : undefined;
     return {
       hasTypeScript,
       ...pm,
@@ -848,6 +882,7 @@ export class ProjectAnalyzer {
       startCommand: this.detectStartCommand(pkg, hasTypeScript, pm.packageManager),
       installFiles: this.installFiles(projectDir, pkg, pm.packageManager),
       ...(version ? { packageManagerVersion: version } : {}),
+      ...(plugAndPlay && { plugAndPlay }),
     };
   }
 }

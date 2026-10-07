@@ -258,6 +258,56 @@ describe('ProjectAnalyzer.analyze', () => {
   });
 });
 
+describe("Yarn Plug'n'Play", () => {
+  function yarnProject(files: Record<string, string>) {
+    const dir = mkdtempSync(join(tmpdir(), 'deploy-pnp-'));
+    writeFileSync(join(dir, 'yarn.lock'), '__metadata:\n  version: 8\n');
+    for (const [file, content] of Object.entries(files)) writeFileSync(join(dir, file), content);
+    return dir;
+  }
+
+  it.each([
+    [
+      'the default linker',
+      { 'package.json': '{"packageManager":"yarn@4.9.1"}' },
+      { esmLoader: false },
+    ],
+    [
+      'an ES module project',
+      { 'package.json': '{"type":"module","packageManager":"yarn@4.9.1"}' },
+      { esmLoader: true },
+    ],
+    [
+      'the ESM loader turned on',
+      { 'package.json': '{}', '.yarnrc.yml': 'nodeLinker: pnp\npnpEnableEsmLoader: true\n' },
+      { esmLoader: true },
+    ],
+    [
+      'node_modules',
+      { 'package.json': '{}', '.yarnrc.yml': 'nodeLinker: node-modules\n' },
+      undefined,
+    ],
+  ])('reads %s', (_, files, expected) => {
+    const dir = yarnProject(files);
+    try {
+      expect(new ProjectAnalyzer().detectBuild(dir).plugAndPlay).toEqual(expected);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves other package managers alone', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deploy-pnp-'));
+    try {
+      writeFileSync(join(dir, 'package.json'), '{}');
+      writeFileSync(join(dir, 'pnpm-lock.yaml'), '');
+      expect(new ProjectAnalyzer().detectBuild(dir).plugAndPlay).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('local dependencies', () => {
   it('copies vendored packages and local links before the install', () => {
     const dir = mkdtempSync(join(tmpdir(), 'deploy-local-deps-'));
