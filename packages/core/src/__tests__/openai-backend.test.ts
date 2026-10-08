@@ -1383,6 +1383,32 @@ describe('OpenAIBackend (Chat Completions wire API)', () => {
       expect(chunks.at(-1)).toMatchObject({ finishReason: 'length', toolCalls: undefined });
     });
 
+    it('keeps a finished streamed call whose arguments are not valid JSON, with the reason', async () => {
+      mockCreate.mockResolvedValueOnce(
+        streamOf([
+          {
+            id: 'c',
+            choices: [{ delta: { tool_calls: [{ index: 0, ...call('{"days": 3, "why": "ol') }] } }],
+          },
+          { id: 'c', choices: [{ delta: {}, finish_reason: 'tool_calls' }] },
+        ])
+      );
+
+      const chunks = await collect(vllm());
+
+      expect(chunks.at(-1)).toMatchObject({
+        finishReason: 'tool_calls',
+        toolCalls: [
+          {
+            id: 'call_1',
+            name: 'purge',
+            arguments: {},
+            argumentsError: 'not valid JSON: {"days": 3, "why": "ol',
+          },
+        ],
+      });
+    });
+
     it('reports a content filter stop as content_filter', async () => {
       mockCreate.mockResolvedValueOnce(completion({ content: '' }, 'content_filter'));
 
