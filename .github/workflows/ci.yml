@@ -138,7 +138,8 @@ jobs:
           NODE_OPTIONS: '--max-old-space-size=4096'
 
   # Every preset installed from the workspace tarballs, checked, run and built
-  # into a Docker image, one package manager per job.
+  # into a Docker image, one package manager per job. The model is scripted,
+  # so it needs no Ollama.
   scaffold-matrix:
     name: Scaffold matrix (${{ matrix.pm }})
     runs-on: ubuntu-latest
@@ -147,11 +148,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pm: [pnpm, npm]
+        pm: [pnpm, npm, bun]
     steps:
       - uses: actions/checkout@v7
 
       - uses: ./.github/actions/setup-built
+
+      - if: matrix.pm == 'bun'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.x
 
       - run: pnpm --filter @cogitator-ai/e2e exec vitest run src/__tests__/create-cogitator-app/matrix.e2e.ts
         env:
