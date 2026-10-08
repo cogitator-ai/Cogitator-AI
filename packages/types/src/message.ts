@@ -64,6 +64,12 @@ export interface ToolCall {
    * backends that did not produce it ignore it.
    */
   replay?: ToolCallReplayState;
+  /**
+   * Why the arguments the model sent for this call could not be read, such as JSON the provider
+   * broke. The call keeps empty `arguments`, never runs or asks for approval, and the model gets
+   * this reason as the call's error so it can call again.
+   */
+  argumentsError?: string;
 }
 
 /**

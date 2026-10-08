@@ -382,6 +382,7 @@ interface LLMRetryConfig {
   baseDelay?: number; // default 1000 ms, doubled per retry
   maxDelay?: number; // default 30000 ms
   maxRetryAfter?: number; // default 60000 ms
+  requestTimeout?: number; // ms one call may take before it is aborted and retried, off by default
   onRetry?: (event: LLMRetryEvent) => void;
 }
 

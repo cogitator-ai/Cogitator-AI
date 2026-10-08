@@ -66,6 +66,7 @@ export const LLMRetryConfigSchema = z.union([
     baseDelay: z.number().nonnegative().optional(),
     maxDelay: z.number().nonnegative().optional(),
     maxRetryAfter: z.number().nonnegative().optional(),
+    requestTimeout: z.number().positive().optional(),
   }),
 ]);
 

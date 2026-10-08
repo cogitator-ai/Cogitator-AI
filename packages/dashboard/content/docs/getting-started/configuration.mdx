@@ -348,6 +348,7 @@ llm:
     baseDelay: 1000 # ms before the first retry, doubled each time
     maxDelay: 30000 # backoff cap, ms
     maxRetryAfter: 60000 # a longer Retry-After fails the call at once
+    requestTimeout: 180000 # abort and retry a call with no answer by then, off by default
 ```
 
 ### Prompt Caching

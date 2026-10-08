@@ -253,6 +253,7 @@ export {
   finishRunsTools,
   turnFinishReason,
   parseToolCallArguments,
+  toolCallArguments,
   LLMError,
   createLLMError,
   wrapSDKError,

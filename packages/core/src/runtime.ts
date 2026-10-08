@@ -768,6 +768,7 @@ export class Cogitator implements ToolInvoker {
           const tool = registry.get(toolCall.name);
           if (
             !tool ||
+            toolCall.argumentsError !== undefined ||
             decisions.has(toolCall.id) ||
             !(
               needsApproval(tool, toolCall.arguments) ||

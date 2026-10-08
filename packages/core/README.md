@@ -163,7 +163,7 @@ const response = await backend.chat({
 });
 ```
 
-`response.finishReason` is the same for every provider: `stop`, `tool_calls`, `length`, `content_filter`, `refusal` or `error`. Only a `tool_calls` turn runs tools: a finished turn with complete tool calls is one even when the provider reported `stop` (vLLM, LM Studio and other OpenAI-compatible servers do for forced tools), and a turn cut at the token limit, filtered or refused carries no tool calls, so a call cut off mid-arguments never runs with partial or empty ones. A finished turn whose streamed tool arguments are not valid JSON fails with `LLM_INVALID_RESPONSE`. The built-in backends settle each turn with `normalizeTurn()`, and the runtime applies it to every turn, backends of your own included.
+`response.finishReason` is the same for every provider: `stop`, `tool_calls`, `length`, `content_filter`, `refusal` or `error`. Only a `tool_calls` turn runs tools: a finished turn with complete tool calls is one even when the provider reported `stop` (vLLM, LM Studio and other OpenAI-compatible servers do for forced tools), and a turn cut at the token limit, filtered or refused carries no tool calls, so a call cut off mid-arguments never runs with partial or empty ones. A finished call whose arguments are not valid JSON, or not a JSON object, never runs either: it keeps the reason in `argumentsError`, and the model gets `Invalid arguments: ...` as its result and can call again. The built-in backends settle each turn with `normalizeTurn()`, and the runtime applies it to every turn, backends of your own included.
 
 ### LLM Plugin System
 
@@ -1469,7 +1469,12 @@ import { Cogitator, GoogleBackend, withLLMRetry } from '@cogitator-ai/core';
 
 const cog = new Cogitator({
   llm: {
-    retry: { maxRetries: 3, maxRetryAfter: 30_000, onRetry: (e) => console.warn(e) },
+    retry: {
+      maxRetries: 3,
+      maxRetryAfter: 30_000,
+      requestTimeout: 180_000, // abort and retry a call that hangs
+      onRetry: (e) => console.warn(e),
+    },
     // retry: false — no retries
   },
 });

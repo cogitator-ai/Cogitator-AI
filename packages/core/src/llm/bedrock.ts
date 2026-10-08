@@ -26,7 +26,7 @@ import {
   llmConfigError,
   type LLMErrorContext,
 } from './errors';
-import { finishRunsTools, normalizeTurn, parseToolCallArguments } from './turn';
+import { finishRunsTools, normalizeTurn, toolCallArguments } from './turn';
 import {
   createWarnOnce,
   forcedToolChoiceInstruction,
@@ -321,7 +321,7 @@ export class BedrockBackend extends BaseLLMBackend {
 
     try {
       for await (const event of response.stream) {
-        yield* this.processStreamEvent(event, id, state, ctx);
+        yield* this.processStreamEvent(event, id, state);
       }
     } catch (e) {
       if (e instanceof LLMError) throw e;
@@ -332,8 +332,7 @@ export class BedrockBackend extends BaseLLMBackend {
   private *processStreamEvent(
     event: StreamEvent,
     id: string,
-    state: StreamState,
-    ctx: LLMErrorContext
+    state: StreamState
   ): Generator<ChatStreamChunk> {
     const { toolUses, toolCallInputs } = state;
     if (event.contentBlockStart?.start?.toolUse) {
@@ -401,7 +400,7 @@ export class BedrockBackend extends BaseLLMBackend {
         ? toolUses.map((use) => ({
             id: use.id,
             name: use.name,
-            arguments: parseToolCallArguments(use.input, ctx),
+            ...toolCallArguments(use.input),
             ...(use.thinking.length > 0 && { replay: { precedingItems: use.thinking } }),
           }))
         : [];

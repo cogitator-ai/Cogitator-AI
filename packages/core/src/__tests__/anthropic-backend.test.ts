@@ -1697,10 +1697,19 @@ describe('AnthropicBackend', () => {
       expect(toolCalls).toEqual([]);
     });
 
-    it('fails a finished turn whose streamed tool input is not valid JSON', async () => {
+    it('keeps a finished call whose streamed tool input is not valid JSON, with the reason', async () => {
       mockStream.mockReturnValueOnce(toolStream('{"olderThanDays": 3', 'tool_use'));
 
-      await expect(collect()).rejects.toMatchObject({ code: 'LLM_INVALID_RESPONSE' });
+      const { finishReasons, toolCalls } = await collect();
+
+      expect(finishReasons).toEqual(['tool_calls']);
+      expect(toolCalls).toEqual([
+        expect.objectContaining({
+          name: 'purge',
+          arguments: {},
+          argumentsError: 'not valid JSON: {"olderThanDays": 3',
+        }),
+      ]);
     });
 
     it('drops the tool call of a turn cut at max_tokens', async () => {
