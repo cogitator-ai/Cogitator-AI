@@ -136,8 +136,10 @@ jobs:
       - name: Pull model
         run: ollama pull qwen2.5:0.5b
 
+      # The scaffolder matrix runs on a scripted model in the CI workflow, one
+      # job per package manager. Here it took 8 of the 20 minutes this job has.
       - name: Run E2E tests
-        run: pnpm --filter @cogitator-ai/e2e test
+        run: pnpm --filter @cogitator-ai/e2e exec vitest run --exclude 'src/__tests__/create-cogitator-app/matrix.e2e.ts'
         env:
           TEST_OLLAMA: 'true'
           TEST_MODEL: qwen2.5:0.5b
