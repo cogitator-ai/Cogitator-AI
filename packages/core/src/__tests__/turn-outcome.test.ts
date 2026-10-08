@@ -229,6 +229,36 @@ describe('a tool call whose arguments could not be read', () => {
     }
   );
 
+  it('runs the corrected call of a tool without parameters, not taking it for a duplicate', async () => {
+    let pinged = 0;
+    const ping = tool({
+      name: 'ping',
+      description: 'Check the service',
+      parameters: z.object({}),
+      execute: async () => {
+        pinged++;
+        return 'pong';
+      },
+    });
+    const agent = new Agent({ name: 'ops', model: 'scripted/m', instructions: 'x', tools: [ping] });
+    const backend = scripted([
+      turn({
+        toolCalls: [{ id: 'c1', name: 'ping', arguments: {}, argumentsError: 'not valid JSON: {' }],
+        finishReason: 'tool_calls',
+      }),
+      turn({ toolCalls: [{ id: 'c2', name: 'ping', arguments: {} }], finishReason: 'tool_calls' }),
+      turn({ content: 'up' }),
+    ]);
+    const cog = new Cogitator({ llm: { backends: { scripted: backend } } });
+
+    const result = await cog.run(agent, { input: 'is it up?' });
+
+    expect(pinged).toBe(1);
+    const second = result.messages.find((m) => m.role === 'tool' && m.toolCallId === 'c2');
+    expect(String(second?.content)).toContain('pong');
+    await cog.close();
+  });
+
   it('does not ask for approval of such a call', async () => {
     const onApproval = vi.fn(() => ({ approved: true }));
     const guarded = tool({

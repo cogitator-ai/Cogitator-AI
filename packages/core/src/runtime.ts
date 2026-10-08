@@ -722,7 +722,10 @@ export class Cogitator implements ToolInvoker {
       ): Promise<PausedTurn | undefined> => {
         if (!resumed) {
           const currentSig = toolCalls
-            .map((tc) => `${tc.name}:${JSON.stringify(tc.arguments)}`)
+            .map(
+              (tc) =>
+                `${tc.name}:${tc.argumentsError === undefined ? JSON.stringify(tc.arguments) : `unreadable ${tc.argumentsError}`}`
+            )
             .join('|');
           if (currentSig === lastToolCallSig) {
             for (const tc of toolCalls) {
