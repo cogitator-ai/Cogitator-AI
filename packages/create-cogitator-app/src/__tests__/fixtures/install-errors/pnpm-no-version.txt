@@ -1,0 +1,7 @@
+ ERR_PNPM_NO_MATCHING_VERSION  No matching version found for @cogitator-ai/core@^99.0.0 while fetching it from https://registry.npmjs.org/
+
+This error happened while installing a direct dependency of /tmp/project
+
+The latest release of @cogitator-ai/core is "0.37.0".
+
+If you need the full list of all 59 published versions run "$ pnpm view @cogitator-ai/core versions".

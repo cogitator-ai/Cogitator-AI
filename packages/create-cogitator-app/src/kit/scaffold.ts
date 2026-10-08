@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import { installCommand } from './package-manager.js';
+import { CodedError } from './errors.js';
+import { installCommand, installErrorCode } from './package-manager.js';
 import { planProject, type PlanOptions, type ProjectPlan } from './plan.js';
 import { hasCommand, runCommand, tail } from './process.js';
 import type { GeneratedFile } from './project.js';
@@ -262,13 +263,21 @@ export async function installDependencies(
   inherit: boolean
 ): Promise<StepResult> {
   if (!(await hasCommand(pm, directory))) {
-    return failure(new Error(`${pm} is not installed, install it or pick another one with --pm`));
+    return failure(
+      new CodedError(
+        'PM_NOT_FOUND',
+        `${pm} is not installed, install it or pick another one with --pm`
+      )
+    );
   }
   try {
     const result = await runCommand(pm, ['install'], { cwd: directory, inherit });
     if (result.code !== 0) {
       return failure(
-        new Error(`${installCommand(pm)} exited with ${result.code}:\n${tail(result.output)}`)
+        new CodedError(
+          installErrorCode(result.output, result.code),
+          `${installCommand(pm)} exited with ${result.code}:\n${tail(result.output)}`
+        )
       );
     }
     return { status: 'done' };
@@ -279,7 +288,7 @@ export async function installDependencies(
 
 export function assertEmptyDirectory(directory: string): void {
   if (existsSync(directory) && readdirSync(directory).length > 0) {
-    throw new Error(`${directory} already exists and is not empty`);
+    throw new CodedError('DIRECTORY_NOT_EMPTY', `${directory} already exists and is not empty`);
   }
 }
 

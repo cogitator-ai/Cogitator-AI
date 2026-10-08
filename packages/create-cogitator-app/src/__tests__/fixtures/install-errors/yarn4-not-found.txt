@@ -1,0 +1,8 @@
+➤ YN0000: · Yarn 4.9.2
+➤ YN0000: ┌ Resolution step
+➤ YN0035: │ @cogitator-ai/zz-not-a-package-404@npm:^1.0.0: Package not found
+➤ YN0035: │   Response Code: 404 (Not Found)
+➤ YN0035: │   Request Method: GET
+➤ YN0035: │   Request URL: https://registry.npmjs.org/@cogitator-ai%2fzz-not-a-package-404
+➤ YN0000: └ Completed
+➤ YN0000: · Failed with errors in 0s 58ms

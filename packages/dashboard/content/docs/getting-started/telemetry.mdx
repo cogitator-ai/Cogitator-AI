@@ -5,7 +5,7 @@ description: The one anonymous event create-cogitator-app and cogitator init sen
 
 ## What is sent
 
-When `create-cogitator-app` or `cogitator init` scaffolds a project, it sends **one** event to the Umami instance of the Cogitator project (`analytics.el1fe.com`). It tells us which presets, providers and add-ons people start with, and how often scaffolding fails, so we know what to improve first.
+When `create-cogitator-app` or `cogitator init` scaffolds a project, it sends **one** event to the Umami instance of the Cogitator project (`analytics.el1fe.com`). It tells us which presets, providers and add-ons people start with, and how often and why scaffolding fails, so we know what to improve first.
 
 The event holds exactly these fields and nothing else:
 
@@ -19,11 +19,22 @@ The event holds exactly these fields and nothing else:
 | `packageManager` | `pnpm` | The package manager |
 | `node` | `24` | The major version of Node |
 | `os` | `darwin` | The operating system |
-| `outcome` | `success` | `success`, or `failure` when scaffolding or the install failed |
+| `outcome` | `success` | `success`, or `failure` when creating the project or installing its dependencies failed |
+| `failedStep` | `install` | Where a failure stopped: `create` (the options, the directory, downloading or writing files) or `install`, `none` on success |
+| `errorCode` | `ERR_PNPM_NO_MATCHING_VERSION` | Why it stopped, as a code (see below), `none` on success |
 
-It never contains the project name, a path, the model, an API key, the name of an example or a template repository, or anything else you typed. The request goes to Umami's `/api/send` endpoint, which does not store IP addresses.
+It never contains the project name, a path, the model, an API key, the name of an example or a template repository, an error message, the output of the install, or anything else you typed. The request goes to Umami's `/api/send` endpoint, which does not store IP addresses.
 
 Sending is fire-and-forget with a 1.5 second timeout: a slow or offline network changes nothing about the project or the output.
+
+## The error code
+
+`errorCode` is only ever a code, never a message or a line of output, which can hold paths and package names:
+
+- the code the package manager failed with: pnpm's `ERR_PNPM_*` (`ERR_PNPM_NO_MATCHING_VERSION`), npm's `E*` (`ETARGET`, `E404`), Yarn's `YN*` (`YN0035`). Bun and Yarn 1 print no codes, so their messages map to `NO_MATCHING_VERSION`, `HTTP_404`, `ELIFECYCLE` (a failed install script) or Bun's error name (`CONNECTION_REFUSED`)
+- a Node network or file system code: `ENOTFOUND`, `ECONNREFUSED`, `EACCES`, `ENOSPC`
+- the scaffolder's own: `DIRECTORY_NOT_EMPTY`, `INCOMPATIBLE_SPEC`, `INVALID_ARGS`, `PM_NOT_FOUND`, `HTTP_<status>` for a download, `UNKNOWN_EXAMPLE` and `TEMPLATE_*` for a template that cannot be used
+- otherwise the kind of error (`TYPE_ERROR`), the exit code of the install (`EXIT_1`) or `UNKNOWN`
 
 ## Turning it off
 
@@ -42,4 +53,4 @@ The first time it is on, the scaffolder prints one line saying so and how to tur
 
 ## The code
 
-The whole implementation is one file: [`packages/create-cogitator-app/src/kit/telemetry.ts`](https://github.com/cogitator-ai/Cogitator-AI/blob/main/packages/create-cogitator-app/src/kit/telemetry.ts). Its tests check that every way of turning it off makes no request and that the payload holds exactly the fields above.
+The implementation is [`packages/create-cogitator-app/src/kit/telemetry.ts`](https://github.com/cogitator-ai/Cogitator-AI/blob/main/packages/create-cogitator-app/src/kit/telemetry.ts), and `installErrorCode` in [`package-manager.ts`](https://github.com/cogitator-ai/Cogitator-AI/blob/main/packages/create-cogitator-app/src/kit/package-manager.ts) next to it reads the code of a failed install. Their tests check that every way of turning it off makes no request, that the payload holds exactly the fields above, and that the error code is read correctly from real failed installs of npm, pnpm, Yarn 1, Yarn 4 and Bun.

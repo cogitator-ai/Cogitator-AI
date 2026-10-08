@@ -1,0 +1,10 @@
+➤ YN0000: · Yarn 4.9.2
+➤ YN0000: ┌ Resolution step
+➤ YN0000: └ Completed
+➤ YN0000: ┌ Fetch step
+➤ YN0000: └ Completed
+➤ YN0000: ┌ Link step
+➤ YN0007: │ x@workspace:. must be built because it never has been before or the last one failed
+➤ YN0009: │ x@workspace:. couldn't be built successfully (exit code 3, logs can be found here: /tmp/xfs-build/build.log)
+➤ YN0000: └ Completed in 0s 662ms
+➤ YN0000: · Failed with errors in 0s 671ms

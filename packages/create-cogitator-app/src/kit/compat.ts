@@ -128,6 +128,7 @@ export function compatibilityIssues(spec: ProjectSpec): CompatIssue[] {
 }
 
 export class IncompatibleSpecError extends Error {
+  readonly code = 'INCOMPATIBLE_SPEC';
   readonly issues: CompatIssue[];
 
   constructor(issues: CompatIssue[]) {

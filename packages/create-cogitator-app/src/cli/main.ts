@@ -26,6 +26,7 @@ import {
 import { bareModel, parseSpec, type ProjectSpec } from '../kit/spec.js';
 import {
   firstRunNotice,
+  installFailure,
   payloadFor,
   sendTelemetry,
   telemetryDisabledReason,
@@ -269,24 +270,21 @@ export async function run(
   if (args.example !== undefined || args.remote) {
     const kind = args.example !== undefined ? 'example' : 'template';
     try {
-      const code = await runStarter(args, interactive, io, deps);
-      if (!args.dryRun)
-        await report(
-          telemetry,
-          deps,
-          payloadFor(undefined, code === 0 ? 'success' : 'failure', kind)
-        );
-      return code;
+      const created = await runStarter(args, interactive, io, deps);
+      if (created)
+        await report(telemetry, deps, payloadFor(undefined, installFailure(created), kind));
+      return 0;
     } catch (error) {
       if (error instanceof CancelledError) {
         p.cancel('Cancelled, nothing was created.');
         return 1;
       }
-      await report(telemetry, deps, payloadFor(undefined, 'failure', kind));
+      await report(telemetry, deps, payloadFor(undefined, { step: 'create', error }, kind));
       return reportError(error, args.json, io);
     }
   }
   let resolvedSpec: ProjectSpec | undefined;
+  let reported = false;
   try {
     if (interactive) {
       io.stderr(banner(version));
@@ -323,11 +321,8 @@ export async function run(
       log: args.json ? undefined : clackLogger(),
     });
 
-    await report(
-      telemetry,
-      deps,
-      payloadFor(result.plan.spec, result.install.status === 'failed' ? 'failure' : 'success')
-    );
+    reported = true;
+    await report(telemetry, deps, payloadFor(result.plan.spec, installFailure(result)));
 
     const modelReady =
       result.plan.spec.provider === 'ollama' ? await prepareOllama(result.plan, interactive) : true;
@@ -377,7 +372,8 @@ export async function run(
       p.cancel('Cancelled, nothing was created.');
       return 1;
     }
-    if (resolvedSpec) await report(telemetry, deps, payloadFor(resolvedSpec, 'failure'));
+    if (resolvedSpec && !reported)
+      await report(telemetry, deps, payloadFor(resolvedSpec, { step: 'create', error }));
     return reportError(error, args.json, io);
   }
 }
@@ -394,13 +390,16 @@ function starterOutro(result: StarterResult): string {
   ].join('\n');
 }
 
-/** `--example` and remote `--template`: a project copied from source instead of generated. */
+/**
+ * `--example` and remote `--template`: a project copied from source instead of
+ * generated. Resolves with what was created, `undefined` on a dry run.
+ */
 async function runStarter(
   args: CliArgs,
   interactive: boolean,
   io: Io,
   deps: RunDeps
-): Promise<number> {
+): Promise<StarterResult | undefined> {
   const ignored = (
     [
       ['--app', args.app],
@@ -468,7 +467,7 @@ async function runStarter(
           ].join('\n')
         );
       }
-      return 0;
+      return undefined;
     }
     result = await createFromExample(plan, options);
   } else if (args.remote) {
@@ -479,7 +478,7 @@ async function runStarter(
           ? `${JSON.stringify({ ok: true, dryRun: true, directory, template: args.remote }, null, 2)}\n`
           : `${pc.bold('Dry run:')} nothing was written. ${message}.\n`
       );
-      return 0;
+      return undefined;
     }
     result = await createFromTemplate(args.remote, {
       ...options,
@@ -507,12 +506,12 @@ async function runStarter(
         2
       )}\n`
     );
-    return 0;
+    return result;
   }
   for (const note of result.notes) p.log.info(note);
   if (interactive) p.outro(starterOutro(result));
   else io.stderr(`${starterOutro(result)}\n`);
-  return 0;
+  return result;
 }
 
 function reportError(error: unknown, json: boolean, io: Io): number {

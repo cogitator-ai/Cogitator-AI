@@ -1,4 +1,5 @@
 import { pnpmWorkspaceYaml } from './emit.js';
+import { CodedError } from './errors.js';
 import type { GeneratedFile } from './project.js';
 import type { PackageManager } from './spec.js';
 import { closest } from './suggest.js';
@@ -60,7 +61,8 @@ export function findExample(
   const short = index.filter((example) => example.name.split('/')[1] === normalized);
   if (short.length === 1) return short[0];
   if (short.length > 1) {
-    throw new Error(
+    throw new CodedError(
+      'AMBIGUOUS_EXAMPLE',
       `"${query}" is in more than one category: ${short.map((example) => example.name).join(', ')}`
     );
   }
@@ -69,7 +71,8 @@ export function findExample(
   const suggestion = match
     ? ` Did you mean "${names.find((name) => name.endsWith(match)) ?? match}"?`
     : '';
-  throw new Error(
+  throw new CodedError(
+    'UNKNOWN_EXAMPLE',
     `There is no example "${query}".${suggestion} Run with --list-examples to see them all.`
   );
 }
@@ -285,11 +288,17 @@ export async function fetchExampleFiles(
       const url = exampleFileUrl(plan.ref, path);
       const response = await fetchImpl(url, { signal: AbortSignal.timeout(30_000) });
       if (response.status === 404) {
-        throw new Error(
+        throw new CodedError(
+          'HTTP_404',
           `examples/${path} is not at ${plan.ref} of ${EXAMPLES_REPO.owner}/${EXAMPLES_REPO.repo}. Pass --example ${plan.example.name}#main for the main branch.`
         );
       }
-      if (!response.ok) throw new Error(`Could not download ${url}: HTTP ${response.status}`);
+      if (!response.ok) {
+        throw new CodedError(
+          `HTTP_${response.status}`,
+          `Could not download ${url}: HTTP ${response.status}`
+        );
+      }
       return { path: exampleTarget(path), content: await response.text() };
     })
   );

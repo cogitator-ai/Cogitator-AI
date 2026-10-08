@@ -1,0 +1,3 @@
+ ERR_PNPM_META_FETCH_FAIL  GET http://127.0.0.1:9/is-number: request to http://127.0.0.1:9/is-number failed, reason: connect ECONNREFUSED 127.0.0.1:9
+
+This error happened while installing a direct dependency of /tmp/project

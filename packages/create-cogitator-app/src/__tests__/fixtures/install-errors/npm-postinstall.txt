@@ -1,0 +1,9 @@
+
+> x@1.0.0 postinstall
+> node -e "process.exit(3)"
+
+npm error code 3
+npm error path /tmp/project
+npm error command failed
+npm error command sh -c node -e "process.exit(3)"
+npm error A complete log of this run can be found in: /tmp/project/.npmcache/_logs/2026-10-08T11_10_02_794Z-debug-0.log

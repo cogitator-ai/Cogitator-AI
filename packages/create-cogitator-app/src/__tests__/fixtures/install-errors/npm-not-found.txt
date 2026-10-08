@@ -1,0 +1,13 @@
+npm error code E404
+npm error 404 Not Found - GET https://registry.npmjs.org/@cogitator-ai%2fzz-not-a-package-404 - Not found
+npm error 404
+npm error 404  '@cogitator-ai/zz-not-a-package-404@^1.0.0' is not in this registry.
+npm error 404
+npm error 404 Note that you can also install from a
+npm error 404 tarball, folder, http url, or git url.
+npm notice
+npm notice New major version of npm available! 10.9.8 -> 12.2.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.0
+npm notice To update run: npm install -g npm@12.2.0
+npm notice
+npm error A complete log of this run can be found in: /tmp/project/.npmcache/_logs/2026-10-08T11_10_00_504Z-debug-0.log

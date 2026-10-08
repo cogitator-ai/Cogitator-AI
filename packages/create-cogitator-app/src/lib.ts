@@ -131,6 +131,7 @@ export {
   runScript,
   execCommand,
   installCommand,
+  installErrorCode,
 } from './kit/package-manager.js';
 export {
   cogitatorVersion,
@@ -142,13 +143,16 @@ export {
 export {
   telemetryDisabledReason,
   firstRunNotice,
+  installFailure,
   payloadFor,
   sendTelemetry,
+  telemetryErrorCode,
   telemetryWebsiteId,
   PAYLOAD_FIELDS,
   TELEMETRY_DOCS,
   TELEMETRY_HOST,
 } from './kit/telemetry.js';
-export type { TelemetryPayload } from './kit/telemetry.js';
+export type { FailedStep, ScaffoldFailure, TelemetryPayload } from './kit/telemetry.js';
+export { CodedError } from './kit/errors.js';
 export { run } from './cli/main.js';
 export { closest } from './cli/args.js';

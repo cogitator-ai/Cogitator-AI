@@ -1,0 +1,16 @@
+➤ YN0000: · Yarn 4.9.2
+➤ YN0000: ┌ Resolution step
+➤ YN0001: │ RequestError: connect ECONNREFUSED 127.0.0.1:9
+    at ClientRequest.<anonymous> (/home/user/.cache/node/corepack/v1/yarn/4.9.2/yarn.js:146:14258)
+    at Object.onceWrapper (node:events:634:26)
+    at ClientRequest.emit (node:events:531:35)
+    at c.emit (/home/user/.cache/node/corepack/v1/yarn/4.9.2/yarn.js:141:22975)
+    at emitErrorEvent (node:_http_client:108:11)
+    at Socket.socketErrorListener (node:_http_client:575:5)
+    at Socket.emit (node:events:519:28)
+    at emitErrorNT (node:internal/streams/destroy:170:8)
+    at emitErrorCloseNT (node:internal/streams/destroy:129:3)
+    at process.processTicksAndRejections (node:internal/process/task_queues:89:21)
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1638:16)
+➤ YN0000: └ Completed
+➤ YN0000: · Failed with errors in 0s 21ms
