@@ -1,0 +1,5 @@
+bun install v1.4.2 (744846f84)
+Resolving dependencies
+Resolved, downloaded and extracted [6]
+error: ConnectionRefused downloading package manifest is-number
+error: is-number@^7.0.0 failed to resolve

@@ -1,0 +1,5 @@
+bun install v1.4.2 (744846f84)
+Resolving dependencies
+Resolved, downloaded and extracted [1]
+error: GET https://registry.npmjs.org/@cogitator-ai%2fzz-not-a-package-404 - 404
+error: @cogitator-ai/zz-not-a-package-404@^1.0.0 failed to resolve

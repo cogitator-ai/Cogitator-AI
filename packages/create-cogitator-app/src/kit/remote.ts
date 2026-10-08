@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { x as extract } from 'tar';
+import { CodedError } from './errors.js';
 import { LOCKFILES } from './package-manager.js';
 import { PACKAGE_MANAGERS, type PackageManager } from './spec.js';
 import { cogitatorVersion, type CogitatorPackage } from './versions.js';
@@ -67,22 +68,28 @@ export async function downloadTemplate(
     signal: AbortSignal.timeout(120_000),
   });
   if (response.status === 404) {
-    throw new Error(
+    throw new CodedError(
+      'HTTP_404',
       `${describeTemplate(template)} was not found: check the repository and the ref${options.token ? '' : ', and set GITHUB_TOKEN for a private repository'}`
     );
   }
   if (!response.ok) {
-    throw new Error(`Could not download ${describeTemplate(template)}: HTTP ${response.status}`);
+    throw new CodedError(
+      `HTTP_${response.status}`,
+      `Could not download ${describeTemplate(template)}: HTTP ${response.status}`
+    );
   }
   const length = Number(response.headers.get('content-length') ?? 0);
   if (length > MAX_ARCHIVE_BYTES) {
-    throw new Error(
+    throw new CodedError(
+      'TEMPLATE_TOO_LARGE',
       `${describeTemplate(template)} is larger than ${MAX_ARCHIVE_BYTES / 1024 / 1024} MB`
     );
   }
   const archive = Buffer.from(await response.arrayBuffer());
   if (archive.length > MAX_ARCHIVE_BYTES) {
-    throw new Error(
+    throw new CodedError(
+      'TEMPLATE_TOO_LARGE',
       `${describeTemplate(template)} is larger than ${MAX_ARCHIVE_BYTES / 1024 / 1024} MB`
     );
   }
@@ -113,7 +120,8 @@ export async function downloadTemplate(
     })
   );
   if (files.length === 0) {
-    throw new Error(
+    throw new CodedError(
+      'TEMPLATE_EMPTY',
       template.path
         ? `${describeTemplate(template)} has no files under ${template.path}`
         : `${describeTemplate(template)} is empty`
@@ -140,7 +148,8 @@ export function prepareTemplate(directory: string, options: { name: string }): P
   const lockfile = PACKAGE_MANAGERS.find((pm) => existsSync(join(directory, LOCKFILES[pm])));
   const manifestPath = join(directory, 'package.json');
   if (!existsSync(manifestPath)) {
-    throw new Error(
+    throw new CodedError(
+      'TEMPLATE_NO_MANIFEST',
       `The template has no package.json at its root (it has ${readdirSync(directory).slice(0, 8).join(', ')}): point --template at the project directory`
     );
   }
@@ -168,7 +177,8 @@ export function prepareTemplate(directory: string, options: { name: string }): P
     }
   }
   if (unresolvable.length > 0) {
-    throw new Error(
+    throw new CodedError(
+      'TEMPLATE_WORKSPACE_DEPENDENCIES',
       `The template depends on packages of its own monorepo, which cannot be installed outside it: ${unresolvable.join(', ')}`
     );
   }

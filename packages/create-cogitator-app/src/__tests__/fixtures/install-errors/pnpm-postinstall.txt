@@ -1,0 +1,7 @@
+Already up to date
+
+> x@1.0.0 postinstall /tmp/project
+> node -e "process.exit(3)"
+
+ WARN   Local package.json exists, but node_modules missing, did you mean to install?
+ ELIFECYCLE  Command failed with exit code 3.

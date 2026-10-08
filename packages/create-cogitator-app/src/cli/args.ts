@@ -29,6 +29,8 @@ export { closest };
 
 /** A usage mistake: shown without a stack trace, exits with code 1. */
 export class CliError extends Error {
+  readonly code = 'INVALID_ARGS';
+
   constructor(message: string) {
     super(message);
     this.name = 'CliError';

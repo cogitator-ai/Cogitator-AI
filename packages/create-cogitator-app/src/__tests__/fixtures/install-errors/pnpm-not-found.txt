@@ -1,0 +1,5 @@
+ ERR_PNPM_FETCH_404  GET https://registry.npmjs.org/@cogitator-ai%2Fzz-not-a-package-404: Not Found - 404
+
+This error happened while installing a direct dependency of /tmp/project
+
+@cogitator-ai/zz-not-a-package-404 is not in the npm registry, or you have no permission to fetch it.

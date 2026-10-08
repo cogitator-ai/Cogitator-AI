@@ -1,0 +1,5 @@
+yarn install v1.22.22
+info No lockfile found.
+[1/4] Resolving packages...
+error Couldn't find any versions for "@cogitator-ai/core" that matches "^99.0.0"
+info Visit https://yarnpkg.com/en/docs/cli/install for documentation about this command.

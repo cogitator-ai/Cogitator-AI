@@ -1,0 +1,15 @@
+yarn install v1.22.22
+info No lockfile found.
+[1/4] Resolving packages...
+error Error: https://registry.yarnpkg.com/@cogitator-ai%2fzz-not-a-package-404: Not found
+    at params.callback [as _callback] (/home/user/.cache/node/corepack/v1/yarn/1.22.22/lib/cli.js:66680:18)
+    at self.callback (/home/user/.cache/node/corepack/v1/yarn/1.22.22/lib/cli.js:141410:22)
+    at Request.emit (node:events:519:28)
+    at Request.<anonymous> (/home/user/.cache/node/corepack/v1/yarn/1.22.22/lib/cli.js:142382:10)
+    at Request.emit (node:events:519:28)
+    at IncomingMessage.<anonymous> (/home/user/.cache/node/corepack/v1/yarn/1.22.22/lib/cli.js:142304:12)
+    at Object.onceWrapper (node:events:633:28)
+    at IncomingMessage.emit (node:events:531:35)
+    at endReadableNT (node:internal/streams/readable:1698:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:89:21)
+info Visit https://yarnpkg.com/en/docs/cli/install for documentation about this command.

@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { constantCase } from './errors.js';
+import type { StepResult } from './scaffold.js';
 import type { ProjectSpec } from './spec.js';
 import { scaffolderVersion } from './versions.js';
 
@@ -38,6 +40,26 @@ export interface TelemetryPayload {
   /** `darwin`, `linux` or `win32`. */
   os: string;
   outcome: 'success' | 'failure';
+  /** Where a failure stopped, `none` on success. */
+  failedStep: FailedStep | 'none';
+  /**
+   * Why it stopped, as a code such as `ERR_PNPM_NO_MATCHING_VERSION`,
+   * `ENOTFOUND` or `HTTP_404` (see `telemetryErrorCode`), `none` on success.
+   */
+  errorCode: string;
+}
+
+/**
+ * Where a scaffold failed: `create` while making the project (its options,
+ * the directory, writing or downloading files), `install` while installing
+ * its dependencies.
+ */
+export type FailedStep = 'create' | 'install';
+
+/** A failed scaffold: the step it stopped at and the error it stopped with. */
+export interface ScaffoldFailure {
+  step: FailedStep;
+  error: unknown;
 }
 
 export const PAYLOAD_FIELDS: ReadonlyArray<keyof TelemetryPayload> = [
@@ -50,12 +72,49 @@ export const PAYLOAD_FIELDS: ReadonlyArray<keyof TelemetryPayload> = [
   'node',
   'os',
   'outcome',
+  'failedStep',
+  'errorCode',
 ];
 
+const SAFE_CODE = /^[A-Z][A-Z0-9_]{1,63}$/;
+
+/**
+ * A code for why `error` happened that is safe to send: the `code` of the
+ * error or of one of its causes (Node's `ENOTFOUND`, a package manager's
+ * `ERR_PNPM_NO_MATCHING_VERSION`, the scaffolder's own `HTTP_404` or
+ * `DIRECTORY_NOT_EMPTY`), else the kind of error (`TYPE_ERROR`), else
+ * `UNKNOWN`. Never the message, which can hold paths and names.
+ */
+export function telemetryErrorCode(error: unknown): string {
+  let kind: string | undefined;
+  let current = error;
+  for (let depth = 0; depth < 5 && typeof current === 'object' && current !== null; depth++) {
+    if ('code' in current && typeof current.code === 'string' && SAFE_CODE.test(current.code))
+      return current.code;
+    if (
+      !kind &&
+      current instanceof Error &&
+      current.name !== 'Error' &&
+      /^[A-Za-z]+$/.test(current.name)
+    )
+      kind = constantCase(current.name);
+    current = 'cause' in current ? current.cause : undefined;
+  }
+  return kind ?? 'UNKNOWN';
+}
+
+/** The failure of a scaffold whose install step failed, `undefined` when it did not. */
+export function installFailure(result: { install: StepResult }): ScaffoldFailure | undefined {
+  return result.install.status === 'failed'
+    ? { step: 'install', error: result.install.error }
+    : undefined;
+}
+
+/** The event of a scaffold of `spec`: failed with `failure`, successful without one. */
 export function payloadFor(
   spec:
     Pick<ProjectSpec, 'preset' | 'provider' | 'memory' | 'features' | 'packageManager'> | undefined,
-  outcome: TelemetryPayload['outcome'],
+  failure?: ScaffoldFailure,
   kind: 'generated' | 'example' | 'template' = 'generated'
 ): TelemetryPayload {
   return {
@@ -67,7 +126,9 @@ export function payloadFor(
     packageManager: spec?.packageManager ?? 'unknown',
     node: process.versions.node.split('.')[0],
     os: process.platform,
-    outcome,
+    outcome: failure ? 'failure' : 'success',
+    failedStep: failure?.step ?? 'none',
+    errorCode: failure ? telemetryErrorCode(failure.error) : 'none',
   };
 }
 
@@ -113,7 +174,7 @@ export function firstRunNotice(env: NodeJS.ProcessEnv = process.env): string | u
   } catch {
     return undefined;
   }
-  return `Cogitator sends one anonymous event per scaffolded project (version, preset, provider, memory, add-ons, package manager, Node major, OS). Turn it off with --no-telemetry or COGITATOR_TELEMETRY_DISABLED=1: ${TELEMETRY_DOCS}`;
+  return `Cogitator sends one anonymous event per scaffolded project (version, preset, provider, memory, add-ons, package manager, Node major, OS, and where and why it failed if it did). Turn it off with --no-telemetry or COGITATOR_TELEMETRY_DISABLED=1: ${TELEMETRY_DOCS}`;
 }
 
 /** How browsers name each platform, which is what Umami reads the OS from. */

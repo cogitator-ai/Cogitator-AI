@@ -1,0 +1,5 @@
+bun install v1.4.2 (744846f84)
+No packages! Deleted empty lockfile
+
+$ node -e "process.exit(3)"
+error: postinstall script from "x" exited with 3

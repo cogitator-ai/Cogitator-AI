@@ -1,0 +1,5 @@
+bun install v1.4.2 (744846f84)
+Resolving dependencies
+Resolved, downloaded and extracted [2]
+error: No version matching "^99.0.0" found for specifier "@cogitator-ai/core" (but package exists)
+error: @cogitator-ai/core@^99.0.0 failed to resolve

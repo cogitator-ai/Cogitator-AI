@@ -6,6 +6,7 @@ import {
   detectPackageManager,
   detectPackageManagerSpec,
   firstRunNotice,
+  installFailure,
   parseSpec,
   payloadFor,
   scaffold,
@@ -286,16 +287,12 @@ export const initCommand = new Command('init')
           log: clackLogger(),
         });
       } catch (error) {
-        if (telemetry) await sendTelemetry(payloadFor(parseSpec(spec), 'failure'));
+        if (telemetry) await sendTelemetry(payloadFor(parseSpec(spec), { step: 'create', error }));
         p.cancel(errorMessage(error));
         process.exitCode = EXIT.failed;
         return;
       }
-      if (telemetry) {
-        await sendTelemetry(
-          payloadFor(result.plan.spec, result.install.status === 'failed' ? 'failure' : 'success')
-        );
-      }
+      if (telemetry) await sendTelemetry(payloadFor(result.plan.spec, installFailure(result)));
 
       const steps = result.plan.nextSteps({
         directory: answers.projectName,
