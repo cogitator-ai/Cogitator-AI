@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/rag",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "Retrieval Augmented Generation for Cogitator AI agents",
   "keywords": [
     "cogitator",
@@ -42,7 +42,7 @@
     "zod": "^4.6.5"
   },
   "peerDependencies": {
-    "@cogitator-ai/memory": "workspace:>=0.12.2"
+    "@cogitator-ai/memory": "workspace:>=0.12.3"
   },
   "peerDependenciesMeta": {
     "@cogitator-ai/memory": {

@@ -1,5 +1,20 @@
 # @cogitator-ai/core
 
+## 0.37.0
+
+### Minor Changes
+
+- [#149](https://github.com/cogitator-ai/Cogitator-AI/pull/149) [`82aeef6`](https://github.com/cogitator-ai/Cogitator-AI/commit/82aeef692bf1d08a6b9c21adc3fdcd5437f8285e) - A tool call whose arguments are not valid JSON no longer fails the run. When a finished turn carries arguments a provider broke, or arguments that are not a JSON object, the call keeps empty `arguments` with the reason in the new `ToolCall.argumentsError`. The runtime does not run it or ask for its approval, and gives the model `Invalid arguments: ...` as the call's result, as it does for arguments that miss the tool's schema, so the model calls again. Before, the run failed with `LLM_INVALID_RESPONSE`. A call cut off at the token limit is still never run. `toolCallArguments()` reads arguments this way for backends of your own, and `parseToolCallArguments()` still throws.
+
+- [#149](https://github.com/cogitator-ai/Cogitator-AI/pull/149) [`82aeef6`](https://github.com/cogitator-ai/Cogitator-AI/commit/82aeef692bf1d08a6b9c21adc3fdcd5437f8285e) - A model call that hangs no longer eats the whole run. `llm.retry.requestTimeout` sets how long one call may take: a call with no answer by then is aborted and retried like a dropped connection, as a retryable `LLM_TIMEOUT`, and a stream gets that long for each chunk (a stream that stalls after its first chunk fails, as any broken stream does). Before, a request the provider never answered waited for the SDK's own timeout, ten minutes for OpenAI-compatible servers, so a run with a shorter `timeout` failed without a retry while other calls to the same model answered in seconds. It is off by default, and YAML configs take it as `llm.retry.requestTimeout`.
+
+### Patch Changes
+
+- Updated dependencies [[`82aeef6`](https://github.com/cogitator-ai/Cogitator-AI/commit/82aeef692bf1d08a6b9c21adc3fdcd5437f8285e), [`82aeef6`](https://github.com/cogitator-ai/Cogitator-AI/commit/82aeef692bf1d08a6b9c21adc3fdcd5437f8285e)]:
+  - @cogitator-ai/types@0.39.0
+  - @cogitator-ai/memory@0.12.3
+  - @cogitator-ai/sandbox@0.5.12
+
 ## 0.36.0
 
 ### Minor Changes

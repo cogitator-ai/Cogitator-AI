@@ -353,13 +353,13 @@ importers:
   packages/channels:
     dependencies:
       '@cogitator-ai/browser':
-        specifier: workspace:>=0.4.12
+        specifier: workspace:>=0.4.13
         version: link:../browser
       '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
       '@cogitator-ai/mcp':
-        specifier: workspace:^19.3.2
+        specifier: workspace:^19.3.3
         version: link:../mcp
       '@cogitator-ai/memory':
         specifier: workspace:*
@@ -368,7 +368,7 @@ importers:
         specifier: workspace:^18.3.0
         version: link:../models
       '@cogitator-ai/rag':
-        specifier: workspace:>=0.6.2
+        specifier: workspace:>=0.6.3
         version: link:../rag
       '@cogitator-ai/types':
         specifier: workspace:*
@@ -1740,7 +1740,7 @@ importers:
   packages/voice:
     dependencies:
       '@cogitator-ai/core':
-        specifier: workspace:>=0.36.0
+        specifier: workspace:>=0.37.0
         version: link:../core
       '@cogitator-ai/types':
         specifier: workspace:*
@@ -10075,7 +10075,7 @@ snapshots:
       obug: 2.2.1
       std-env: 4.3.0
       tinyrainbow: 3.2.0
-      vitest: 5.0.3(@opentelemetry/api@1.9.0)(@types/node@22.20.4)(@vitest/coverage-v8@5.0.3)(vite@8.3.2(@types/node@22.20.4)(esbuild@0.27.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+      vitest: 5.0.3(@opentelemetry/api@1.9.0)(@types/node@22.20.4)(@vitest/coverage-v8@5.0.3)(vite@8.3.2(@types/node@22.20.4)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
 
   '@vitest/istanbul-lib-coverage@1.0.2': {}
 

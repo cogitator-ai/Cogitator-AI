@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/types",
-  "version": "0.38.0",
+  "version": "0.39.0",
   "description": "Shared TypeScript types for Cogitator",
   "keywords": [
     "cogitator",
