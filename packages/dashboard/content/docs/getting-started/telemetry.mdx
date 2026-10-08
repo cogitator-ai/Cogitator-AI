@@ -31,7 +31,7 @@ Sending is fire-and-forget with a 1.5 second timeout: a slow or offline network 
 
 `errorCode` is only ever a code, never a message or a line of output, which can hold paths and package names:
 
-- the code the package manager failed with: pnpm's `ERR_PNPM_*` (`ERR_PNPM_NO_MATCHING_VERSION`), npm's `E*` (`ETARGET`, `E404`), Yarn's `YN*` (`YN0035`). Bun and Yarn 1 print no codes, so their messages map to `NO_MATCHING_VERSION`, `HTTP_404`, `ELIFECYCLE` (a failed install script) or Bun's error name (`CONNECTION_REFUSED`)
+- the code the package manager failed with: pnpm's `ERR_PNPM_*` (`ERR_PNPM_NO_MATCHING_VERSION`), npm's `E*` (`ETARGET`, `E404`), Yarn's `YN*` (`YN0035`). Bun and Yarn 1 print no codes, so their messages map to `NO_MATCHING_VERSION`, `HTTP_404`, `ELIFECYCLE` (a failed install script) or, for Bun's network errors, the Node code. Install scripts print into the same output, so only known codes are taken from it: any other pnpm or npm code is sent as `ERR_PNPM_OTHER` or `NPM_OTHER`
 - a Node network or file system code: `ENOTFOUND`, `ECONNREFUSED`, `EACCES`, `ENOSPC`
 - the scaffolder's own: `DIRECTORY_NOT_EMPTY`, `INCOMPATIBLE_SPEC`, `INVALID_ARGS`, `PM_NOT_FOUND`, `HTTP_<status>` for a download, `UNKNOWN_EXAMPLE` and `TEMPLATE_*` for a template that cannot be used
 - otherwise the kind of error (`TYPE_ERROR`), the exit code of the install (`EXIT_1`) or `UNKNOWN`
