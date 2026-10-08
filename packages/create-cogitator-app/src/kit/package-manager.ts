@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { PACKAGE_MANAGERS, type PackageManager } from './spec.js';
 
 /**
@@ -39,6 +41,46 @@ export function execCommand(pm: PackageManager, bin: string): string {
   if (pm === 'npm') return `npx ${bin}`;
   if (pm === 'bun') return `bunx ${bin}`;
   return `${pm} exec ${bin}`;
+}
+
+/** How to run a package manager: its command, and whether it is looked up on PATH. */
+export interface PackageManagerInvocation {
+  command: string;
+  args: readonly string[];
+  fromPath: boolean;
+}
+
+/**
+ * The package manager that launched this process, from the `npm_execpath` it
+ * sets, when that is `pm`: its JavaScript entry or its binary. npx sets the
+ * path of npx-cli.js, whose npm-cli.js sits next to it.
+ */
+function launchingPackageManager(pm: PackageManager, env: NodeJS.ProcessEnv): string | undefined {
+  const execPath = env.npm_execpath;
+  if (!execPath || env.npm_config_user_agent?.split('/')[0] !== pm) return undefined;
+  const path =
+    pm === 'npm' && basename(execPath) === 'npx-cli.js'
+      ? join(dirname(execPath), 'npm-cli.js')
+      : execPath;
+  return existsSync(path) ? path : undefined;
+}
+
+/**
+ * How to run `pm` with `args`: the very package manager that launched the
+ * scaffolder when it is `pm`, so one that is not on PATH (a standalone binary,
+ * one started by its full path) still runs, and at the version that launched
+ * it. Otherwise `pm` from PATH.
+ */
+export function packageManagerInvocation(
+  pm: PackageManager,
+  args: readonly string[],
+  env: NodeJS.ProcessEnv = process.env
+): PackageManagerInvocation {
+  const launcher = launchingPackageManager(pm, env);
+  if (!launcher) return { command: pm, args, fromPath: true };
+  return /\.[cm]?js$/.test(launcher)
+    ? { command: process.execPath, args: [launcher, ...args], fromPath: false }
+    : { command: launcher, args, fromPath: false };
 }
 
 export function installCommand(pm: PackageManager): string {
