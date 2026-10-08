@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { z } from 'zod';
 import { constantCase } from './errors.js';
 import type { StepResult } from './scaffold.js';
 import type { ProjectSpec } from './spec.js';
@@ -75,6 +76,27 @@ export const PAYLOAD_FIELDS: ReadonlyArray<keyof TelemetryPayload> = [
   'failedStep',
   'errorCode',
 ];
+
+const VALUE = z.string().regex(/^[\w.,-]{0,100}$/);
+
+/**
+ * An event exactly: the fields above and no other, each a short value of
+ * letters, digits and `._,-`. `sendTelemetry` is exported, so anything can be
+ * handed to it, and only what passes this is ever sent.
+ */
+const PAYLOAD_SCHEMA: z.ZodType<TelemetryPayload> = z.strictObject({
+  version: VALUE,
+  preset: VALUE,
+  provider: VALUE,
+  memory: VALUE,
+  features: VALUE,
+  packageManager: VALUE,
+  node: VALUE,
+  os: VALUE,
+  outcome: z.enum(['success', 'failure']),
+  failedStep: z.enum(['none', 'create', 'install']),
+  errorCode: VALUE,
+});
 
 const SAFE_CODE = /^[A-Z][A-Z0-9_]{1,63}$/;
 
@@ -195,7 +217,9 @@ export function telemetryUserAgent(payload: Pick<TelemetryPayload, 'os' | 'versi
 
 /**
  * Sends the event to Umami. It never throws and never takes longer than its
- * timeout: a slow or failing network changes nothing for the scaffolder.
+ * timeout: a slow or failing network changes nothing for the scaffolder. A
+ * payload that is not exactly an event (another field, a value with a path or
+ * a space in it) sends nothing.
  */
 export async function sendTelemetry(
   payload: TelemetryPayload,
@@ -203,14 +227,17 @@ export async function sendTelemetry(
 ): Promise<boolean> {
   const website = options.websiteId ?? telemetryWebsiteId();
   if (!website) return false;
+  const parsed = PAYLOAD_SCHEMA.safeParse(payload);
+  if (!parsed.success) return false;
+  const data = parsed.data;
   const body = {
     type: 'event',
     payload: {
       website,
       hostname: 'create-cogitator-app',
-      url: `/scaffold/${payload.preset}`,
+      url: `/scaffold/${data.preset}`,
       name: 'scaffold',
-      data: payload,
+      data,
     },
   };
   try {
@@ -218,7 +245,7 @@ export async function sendTelemetry(
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'user-agent': telemetryUserAgent(payload),
+        'user-agent': telemetryUserAgent(data),
       },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(options.timeoutMs ?? SEND_TIMEOUT_MS),

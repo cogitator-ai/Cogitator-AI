@@ -25,7 +25,7 @@ The event holds exactly these fields and nothing else:
 
 It never contains the project name, a path, the model, an API key, the name of an example or a template repository, an error message, the output of the install, or anything else you typed. The request goes to Umami's `/api/send` endpoint, which does not store IP addresses.
 
-Sending is fire-and-forget with a 1.5 second timeout: a slow or offline network changes nothing about the project or the output.
+Sending is fire-and-forget with a 1.5 second timeout: a slow or offline network changes nothing about the project or the output. A payload that is not exactly these fields, each a short value of letters, digits and `._,-`, is not sent at all.
 
 ## The error code
 

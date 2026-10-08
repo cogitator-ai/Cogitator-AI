@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
@@ -14,6 +14,7 @@ import {
   telemetryDisabledReason,
   telemetryErrorCode,
   telemetryUserAgent,
+  type TelemetryPayload,
 } from '../kit/telemetry.js';
 import { IncompatibleSpecError } from '../kit/compat.js';
 import { CodedError } from '../kit/errors.js';
@@ -55,6 +56,11 @@ async function templateArchive(): Promise<Buffer> {
 function serve(body: Buffer): typeof fetch {
   return async () =>
     new Response(new Uint8Array(body), { headers: { 'content-length': String(body.length) } });
+}
+
+/** What a JavaScript caller, which no type stops, can pass as a payload. */
+function untyped(value: unknown): TelemetryPayload {
+  return value as TelemetryPayload;
 }
 
 function recorder(): { fetch: typeof fetch; sent: Sent[] } {
@@ -207,6 +213,22 @@ describe('sending', () => {
     expect(Date.now() - started).toBeLessThan(1000);
   });
 
+  it.each([
+    ['a buffer', { type: 'Buffer', data: [116, 101, 115, 116] }],
+    [
+      'a callback and a token',
+      { url: 'http://127.0.0.1:9/callback', token: 'test', path: '/tmp/test' },
+    ],
+    ['a command', { command: 'init', args: [] }],
+    ['an event with another field', { ...payloadFor(spec), token: 'test' }],
+    ['an event with a path in it', { ...payloadFor(spec), preset: '/Users/zebra/app' }],
+    ['an event without a field', { ...payloadFor(spec), errorCode: undefined }],
+  ])('sends nothing for %s, whatever a JavaScript caller hands it', async (_name, value) => {
+    const { fetch, sent } = recorder();
+    expect(await sendTelemetry(untyped(value), { fetch, websiteId: 'site' })).toBe(false);
+    expect(sent).toEqual([]);
+  });
+
   it('sends nothing without a website', async () => {
     const { fetch, sent } = recorder();
     expect(await sendTelemetry(payloadFor(spec), { fetch, websiteId: '' })).toBe(false);
@@ -301,6 +323,7 @@ describe.skipIf(process.platform === 'win32')('the reported failure', () => {
 
   afterEach(() => {
     process.env.PATH = path;
+    vi.unstubAllEnvs();
   });
 
   /** Puts a pnpm on PATH whose install fails the way pnpm does for a version not published yet. */
@@ -319,6 +342,7 @@ describe.skipIf(process.platform === 'win32')('the reported failure', () => {
     );
     chmodSync(join(bin, 'pnpm'), 0o755);
     process.env.PATH = `${bin}${delimiter}${path ?? ''}`;
+    vi.stubEnv('npm_execpath', undefined);
   }
 
   async function runWith(argv: string[], download?: typeof fetch) {
