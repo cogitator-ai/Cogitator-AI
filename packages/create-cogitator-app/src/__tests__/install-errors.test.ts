@@ -30,10 +30,20 @@ describe('the code of a failed install', () => {
     ['yarn1-postinstall', 'ELIFECYCLE', 3],
     ['bun-no-version', 'NO_MATCHING_VERSION', 1],
     ['bun-not-found', 'HTTP_404', 1],
-    ['bun-offline', 'CONNECTION_REFUSED', 1],
+    ['bun-offline', 'ECONNREFUSED', 1],
     ['bun-postinstall', 'ELIFECYCLE', 3],
   ])('from the output of %s is %s', (name, code, exitCode) => {
     expect(installErrorCode(output(name), exitCode)).toBe(code);
+  });
+
+  it.each([
+    ['pnpm', ' ERR_PNPM_TOKEN_SECRET123  install script output', 'ERR_PNPM_OTHER'],
+    ['npm', 'npm error code ESECRET123\nnpm error something', 'NPM_OTHER'],
+    ['Yarn', '➤ YN9123: │ secret\n➤ YN0000: · Failed with errors', 'EXIT_1'],
+    ['Bun', 'error: SecretToken123 leaked\n', 'EXIT_1'],
+    ['Bun', 'error: GET https://registry.zebra.dev/x - 123\n', 'EXIT_1'],
+  ])('never takes an unknown %s code from output a script could print', (_pm, text, code) => {
+    expect(installErrorCode(text, 1)).toBe(code);
   });
 
   it('is the exit code when the output names no cause', () => {
