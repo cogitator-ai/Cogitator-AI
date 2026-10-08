@@ -1,5 +1,15 @@
 # create-cogitator-app
 
+## 0.6.1
+
+### Patch Changes
+
+- [#151](https://github.com/cogitator-ai/Cogitator-AI/pull/151) [`90a5055`](https://github.com/cogitator-ai/Cogitator-AI/commit/90a50551e802a308655b46ad50547856f1e420cd) - The install runs with the package manager that launched the scaffolder, from the `npm_execpath` it sets, and falls back to the one on PATH. A pnpm started by its full path or as a standalone binary, which is not on PATH, failed the install with "pnpm is not installed". `cogitator add` installs the same way.
+
+- [#151](https://github.com/cogitator-ai/Cogitator-AI/pull/151) [`6ff6a3f`](https://github.com/cogitator-ai/Cogitator-AI/commit/6ff6a3f8a2b6a617bc04007ff46908e30c81cc2f) - pnpm projects decline the build of better-sqlite3 unless a feature needs it. Every project gets better-sqlite3 through `@cogitator-ai/cli`, and pnpm 11.0 failed the install over its build nobody approved (`ERR_PNPM_IGNORED_BUILDS`). better-sqlite3 ships prebuilt binaries, so the build is not needed. SQLite memory and the assistant harness still allow it.
+
+- [#151](https://github.com/cogitator-ai/Cogitator-AI/pull/151) [`398426b`](https://github.com/cogitator-ai/Cogitator-AI/commit/398426b3fb620937e94535c3a66e18b1fb330b38) - `sendTelemetry` sends nothing for a payload that is not exactly an event: the documented fields and no other, each a short value of letters, digits and `._,-`. It is exported, so a JavaScript caller could hand it anything, and analysis sandboxes that call every export with test values sent them to the project's analytics.
+
 ## 0.6.0
 
 ### Minor Changes
