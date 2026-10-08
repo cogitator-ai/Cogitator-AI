@@ -6,6 +6,10 @@ import {
   type CheckpointPgClient,
   type CheckpointRedisClient,
 } from '../checkpoint-stores';
+import { WorkflowBuilder } from '../builder';
+import { InMemoryCheckpointStore } from '../checkpoint';
+import { WorkflowExecutor } from '../executor';
+import { createWorkflowManager } from '../manager/index';
 
 /** Enough of Redis for the store: strings and sorted sets. */
 function fakeRedis(): CheckpointRedisClient {
@@ -130,9 +134,6 @@ describe('PostgresCheckpointStore', () => {
 
 describe('resuming from a checkpoint', () => {
   it('runs only what is left and hands finished outputs to the next node', async () => {
-    const { WorkflowBuilder } = await import('../builder');
-    const { WorkflowExecutor } = await import('../executor');
-    const { InMemoryCheckpointStore } = await import('../checkpoint');
     const runs: string[] = [];
     let emailWorks = false;
     const workflow = new WorkflowBuilder<{ sent?: string }>('orders')
@@ -177,9 +178,6 @@ describe('resuming from a checkpoint', () => {
 
 describe('replaying a run from a node', () => {
   it('runs that node and everything after it again, keeping what came before', async () => {
-    const { WorkflowBuilder } = await import('../builder');
-    const { InMemoryCheckpointStore } = await import('../checkpoint');
-    const { createWorkflowManager } = await import('../manager/index');
     const runs: string[] = [];
     const workflow = new WorkflowBuilder<{ total?: string }>('pipeline')
       .initialState({})

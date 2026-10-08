@@ -20,6 +20,7 @@ import { createInMemoryTimerStore } from '../timers/timer-store';
 import { approvalNode } from '../human/human-node';
 import { InMemoryApprovalStore } from '../human/approval-store';
 import { createInMemoryDLQ } from '../saga/dead-letter';
+import { createInMemoryIdempotencyStore } from '../saga/idempotency';
 import { DefaultWorkflowManager } from '../manager/workflow-manager';
 import type { ExtendedNodeContext } from '../nodes/base';
 
@@ -408,7 +409,6 @@ describe('WorkflowExecutor run policies', () => {
   });
 
   it('writes finally failed nodes to the dead letter queue', async () => {
-    const { createInMemoryDLQ } = await import('../saga/dead-letter');
     const deadLetterQueue = createInMemoryDLQ();
     const workflow = new WorkflowBuilder<{ orderId: string }>('dlq')
       .initialState({ orderId: 'o-1' })
@@ -426,7 +426,6 @@ describe('WorkflowExecutor run policies', () => {
   });
 
   it('reuses completed node results for the same workflow id', async () => {
-    const { createInMemoryIdempotencyStore } = await import('../saga/idempotency');
     const idempotencyStore = createInMemoryIdempotencyStore();
     let charges = 0;
     const workflow = new WorkflowBuilder('idempotent')
@@ -445,9 +444,6 @@ describe('WorkflowExecutor run policies', () => {
   });
 
   it('provides run-level approval stores to human nodes', async () => {
-    const { humanWorkflowNode } = await import('../nodes/adapters');
-    const { approvalNode } = await import('../human/human-node');
-    const { InMemoryApprovalStore } = await import('../human/approval-store');
     const approvalStore = new InMemoryApprovalStore();
 
     const workflow = new WorkflowBuilder('approval-defaults')
