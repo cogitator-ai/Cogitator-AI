@@ -148,6 +148,9 @@ describe('generated configuration', () => {
       trustedDependencies?: string[];
     };
     expect(bun.trustedDependencies).toEqual(['better-sqlite3']);
+    expect(file(planProject(specFor('basic', 'openai')), 'pnpm-workspace.yaml')).toBe(
+      'allowBuilds:\n  better-sqlite3: false\n  cpu-features: false\n  esbuild: true\n  protobufjs: false\n  ssh2: false\n'
+    );
   });
 
   it('pins every @cogitator-ai package to the release of the scaffolder', () => {

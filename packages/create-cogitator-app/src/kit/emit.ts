@@ -64,11 +64,14 @@ export function emitPackageJson(project: ProjectBuilder, extras: PackageJsonExtr
 
 /**
  * Packages with build scripts the project does not need: optional native
- * speedups of the Docker client the CLI uses (ssh2, cpu-features) and a
- * protobufjs version check. Saying no to them explicitly keeps pnpm 11 from
- * failing the install in CI over builds nobody approved.
+ * speedups of the Docker client the CLI uses (ssh2, cpu-features), a
+ * protobufjs version check, and better-sqlite3, which the CLI depends on and
+ * which ships prebuilt binaries, so its implicit `node-gyp rebuild` only
+ * needs a compiler. Saying no to them explicitly keeps pnpm 11 from failing
+ * the install over builds nobody approved, which pnpm 11.0 does even outside
+ * CI. A feature that allows one of them wins.
  */
-const SKIPPED_BUILDS = ['cpu-features', 'protobufjs', 'ssh2'];
+const SKIPPED_BUILDS = ['better-sqlite3', 'cpu-features', 'protobufjs', 'ssh2'];
 
 /**
  * pnpm runs dependency build scripts only when they are allowed, and fails
