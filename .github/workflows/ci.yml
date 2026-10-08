@@ -74,23 +74,43 @@ jobs:
 
       - run: pnpm build
 
+      # The test jobs run on this build instead of building again. tar keeps the
+      # executable bits of the CLI entries, which an artifact alone would drop.
+      - run: tar -czf build.tgz packages/*/dist packages/core/docs
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: build
+          path: build.tgz
+          retention-days: 1
+          if-no-files-found: error
+
+  # Unit tests of every package. The e2e suite and the scaffolder matrix run in
+  # jobs of their own: next to them the runner was so busy that unit tests ran
+  # into their timeouts.
   test:
     name: Test
     runs-on: ubuntu-latest
     needs: build
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v6
+      - uses: ./.github/actions/setup-built
 
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: pnpm
+      - run: pnpm exec turbo run test --only --filter='!@cogitator-ai/tetsu' --filter='!@cogitator-ai/e2e'
+        env:
+          NODE_OPTIONS: '--max-old-space-size=4096'
 
-      - run: pnpm install --frozen-lockfile
+  e2e:
+    name: E2E
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
 
-      - run: pnpm build
+      - uses: ./.github/actions/setup-built
 
       - name: Cache Playwright browsers
         uses: actions/cache@v6
@@ -113,8 +133,29 @@ jobs:
             pnpm exec playwright install-deps chromium
           fi
 
-      - run: pnpm exec turbo run test --filter='!@cogitator-ai/tetsu'
+      - run: pnpm --filter @cogitator-ai/e2e exec vitest run --exclude 'src/__tests__/create-cogitator-app/matrix.e2e.ts'
         env:
+          NODE_OPTIONS: '--max-old-space-size=4096'
+
+  # Every preset installed from the workspace tarballs, checked, run and built
+  # into a Docker image, one package manager per job.
+  scaffold-matrix:
+    name: Scaffold matrix (${{ matrix.pm }})
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        pm: [pnpm, npm]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-built
+
+      - run: pnpm --filter @cogitator-ai/e2e exec vitest run src/__tests__/create-cogitator-app/matrix.e2e.ts
+        env:
+          MATRIX_PMS: ${{ matrix.pm }}
           NODE_OPTIONS: '--max-old-space-size=4096'
 
   test-bun:
