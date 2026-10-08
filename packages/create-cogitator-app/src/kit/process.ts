@@ -11,21 +11,29 @@ export function tail(text: string, lines = 20): string {
 }
 
 /**
- * Runs `command` without a shell. Output is captured, or shown live with
- * `inherit`. Resolves with the exit code instead of throwing, and rejects only
- * when the command cannot be started at all.
+ * Runs `command`. Output is captured, or shown live with `inherit`. A command
+ * looked up on PATH goes through the shell on Windows, where package managers
+ * are `.cmd` shims, unless `shell` is false for an executable given by path.
+ * Resolves with the exit code instead of throwing, and rejects only when the
+ * command cannot be started at all.
  */
 export function runCommand(
   command: string,
   args: readonly string[],
-  options: { cwd: string; inherit?: boolean; env?: NodeJS.ProcessEnv; timeoutMs?: number }
+  options: {
+    cwd: string;
+    inherit?: boolean;
+    env?: NodeJS.ProcessEnv;
+    timeoutMs?: number;
+    shell?: boolean;
+  }
 ): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: options.env ?? process.env,
       stdio: options.inherit ? 'inherit' : ['ignore', 'pipe', 'pipe'],
-      shell: process.platform === 'win32',
+      shell: options.shell ?? process.platform === 'win32',
       timeout: options.timeoutMs,
     });
     let output = '';

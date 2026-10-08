@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import {
   existsSync,
@@ -11,12 +11,20 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { enclosingWorkspace, hashContent, LOCK_PATH, readLock, scaffold } from '../kit/scaffold.js';
+import {
+  enclosingWorkspace,
+  hashContent,
+  installDependencies,
+  LOCK_PATH,
+  readLock,
+  scaffold,
+} from '../kit/scaffold.js';
 import type { ProjectSpecInput } from '../kit/spec.js';
 
 const roots: string[] = [];
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -148,6 +156,7 @@ describe('scaffold', () => {
     const directory = join(tempRoot(), 'demo');
     const path = process.env.PATH;
     process.env.PATH = tempRoot();
+    vi.stubEnv('npm_execpath', undefined);
     try {
       const result = await scaffold(spec, { directory, git: false, install: true });
       expect(result.install.status).toBe('failed');
@@ -157,6 +166,26 @@ describe('scaffold', () => {
         );
       }
       expect(existsSync(join(directory, 'package.json'))).toBe(true);
+    } finally {
+      process.env.PATH = path;
+    }
+  });
+
+  it('installs with the package manager that launched it, also one that is not on PATH', async () => {
+    const bin = tempRoot();
+    const launcher = join(bin, 'pnpm.cjs');
+    writeFileSync(
+      launcher,
+      "require('node:fs').writeFileSync('installed-with', process.argv.slice(2).join(' '));\n"
+    );
+    const directory = tempRoot();
+    const path = process.env.PATH;
+    process.env.PATH = tempRoot();
+    vi.stubEnv('npm_execpath', launcher);
+    vi.stubEnv('npm_config_user_agent', 'pnpm/11.0.0 npm/? node/v24.0.0 linux x64');
+    try {
+      expect(await installDependencies(directory, 'pnpm', false)).toEqual({ status: 'done' });
+      expect(readFileSync(join(directory, 'installed-with'), 'utf-8')).toBe('install');
     } finally {
       process.env.PATH = path;
     }

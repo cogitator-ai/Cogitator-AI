@@ -3,7 +3,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { CodedError } from './errors.js';
-import { installCommand, installErrorCode } from './package-manager.js';
+import { installCommand, installErrorCode, packageManagerInvocation } from './package-manager.js';
 import { planProject, type PlanOptions, type ProjectPlan } from './plan.js';
 import { hasCommand, runCommand, tail } from './process.js';
 import type { GeneratedFile } from './project.js';
@@ -257,12 +257,18 @@ export async function initGit(directory: string): Promise<StepResult> {
   return { status: 'done' };
 }
 
+/**
+ * Installs the dependencies with `pm`: the one that launched the scaffolder
+ * when it is `pm`, else the one on PATH. A failed install resolves with its
+ * error and the code it names its cause with, it never throws.
+ */
 export async function installDependencies(
   directory: string,
   pm: PackageManager,
   inherit: boolean
 ): Promise<StepResult> {
-  if (!(await hasCommand(pm, directory))) {
+  const invocation = packageManagerInvocation(pm, ['install']);
+  if (invocation.fromPath && !(await hasCommand(pm, directory))) {
     return failure(
       new CodedError(
         'PM_NOT_FOUND',
@@ -271,7 +277,11 @@ export async function installDependencies(
     );
   }
   try {
-    const result = await runCommand(pm, ['install'], { cwd: directory, inherit });
+    const result = await runCommand(invocation.command, invocation.args, {
+      cwd: directory,
+      inherit,
+      ...(!invocation.fromPath && { shell: false }),
+    });
     if (result.code !== 0) {
       return failure(
         new CodedError(
