@@ -449,7 +449,7 @@ describe('OpenAIBackend (Chat Completions wire API)', () => {
       expect(response.toolCalls?.map((tc) => tc.arguments)).toEqual([{}, {}]);
     });
 
-    it('rejects non-object tool call arguments', async () => {
+    it('keeps a call whose arguments are not a JSON object, with the reason', async () => {
       mockCreate.mockResolvedValueOnce({
         id: 'chatcmpl-123',
         choices: [
@@ -467,9 +467,15 @@ describe('OpenAIBackend (Chat Completions wire API)', () => {
         usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       });
 
-      await expect(
-        backend.chat({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'x' }] })
-      ).rejects.toThrow('must be a JSON object');
+      const response = await backend.chat({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'x' }],
+      });
+
+      expect(response.finishReason).toBe('tool_calls');
+      expect(response.toolCalls).toEqual([
+        { id: 'call_1', name: 'x', arguments: {}, argumentsError: 'not a JSON object: [1,2]' },
+      ]);
     });
 
     it('handles tool results in messages', async () => {

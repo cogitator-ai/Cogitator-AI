@@ -21,7 +21,13 @@ import {
 } from './errors';
 import { jsonInstruction, withSystemInstruction } from './json-instruction';
 import type { CacheControl } from './prompt-cache';
-import { finishRunsTools, normalizeTurn, parseToolCallArguments, type TurnEnd } from './turn';
+import {
+  finishRunsTools,
+  normalizeTurn,
+  parseToolCallArguments,
+  toolCallArguments,
+  type TurnEnd,
+} from './turn';
 
 /** The prompt cache marking a request carries, see `OpenAICompatibleBackend.promptCacheParams`. */
 export interface PromptCacheParams {
@@ -175,7 +181,7 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
           .map((tc) => ({
             id: tc.id,
             name: tc.function.name,
-            arguments: this.tryParseJson(tc.function.arguments, ctx),
+            ...toolCallArguments(tc.function.arguments),
           }))
       : undefined;
 
@@ -255,8 +261,7 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
         ? this.streamEnd(
             refused ? 'refusal' : this.mapFinishReason(choice.finish_reason),
             toolCallsAccum,
-            toolCallArgsAccum,
-            ctx
+            toolCallArgsAccum
           )
         : undefined;
 
@@ -280,14 +285,13 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
   private streamEnd(
     reason: ChatResponse['finishReason'],
     calls: Map<number, { id?: string; name?: string }>,
-    args: Map<number, string>,
-    ctx: LLMErrorContext
+    args: Map<number, string>
   ): TurnEnd {
     const toolCalls = finishRunsTools(reason)
       ? Array.from(calls.entries()).map(([index, partial]) => ({
           id: partial.id ?? '',
           name: partial.name ?? '',
-          arguments: this.tryParseJson(args.get(index) ?? '', ctx),
+          ...toolCallArguments(args.get(index) ?? ''),
         }))
       : [];
     return normalizeTurn({ finishReason: reason, toolCalls });

@@ -16,6 +16,8 @@ export {
   finishRunsTools,
   turnFinishReason,
   parseToolCallArguments,
+  toolCallArguments,
+  type ToolCallArguments,
   type TurnEnd,
 } from './turn';
 export {

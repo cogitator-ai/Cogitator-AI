@@ -318,7 +318,9 @@ const reasoning: ReasoningConfig = { effort: 'high', budgetTokens: 8000, summary
 const promptCache: PromptCacheConfig = { ttl: '1h' }; // '5m' (default) | '1h'
 ```
 
-`LLMRetryConfig` (`maxRetries`, `baseDelay`, `maxDelay`, `maxRetryAfter`, `onRetry`) types `CogitatorConfig.llm.retry`; `ModelRoute` is what `cog.route()` resolves a model string to.
+`LLMRetryConfig` (`maxRetries`, `baseDelay`, `maxDelay`, `maxRetryAfter`, `requestTimeout`, `onRetry`) types `CogitatorConfig.llm.retry`; `ModelRoute` is what `cog.route()` resolves a model string to.
+
+`ToolCall.argumentsError` says why the arguments of a call could not be read, such as JSON the provider broke: the call has empty `arguments`, never runs, and the model is told why.
 
 `ToolCall.replay` (`ToolCallReplayState`) carries opaque provider output that must be sent back with the call on the next turn, such as OpenAI Responses reasoning items. It is JSON-serializable, so it survives memory persistence; backends that did not produce it ignore it.
 

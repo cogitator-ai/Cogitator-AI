@@ -193,3 +193,67 @@ describe('the outcome of a turn in a run', () => {
     await cog.close();
   });
 });
+
+describe('a tool call whose arguments could not be read', () => {
+  const broken: ToolCall = {
+    id: 'c1',
+    name: 'purge',
+    arguments: {},
+    argumentsError: 'not valid JSON: {"olderThanDays": 3',
+  };
+
+  it.each([false, true])(
+    'tells the model why instead of running the tool or failing the run (stream: %s)',
+    async (stream) => {
+      const purged: Array<Record<string, unknown>> = [];
+      const backend = scripted([
+        turn({ toolCalls: [broken], finishReason: 'tool_calls' }),
+        turn({ toolCalls: [{ ...purgeCall, id: 'c2' }], finishReason: 'tool_calls' }),
+        turn({ content: 'done' }),
+      ]);
+      const cog = new Cogitator({ llm: { backends: { scripted: backend } } });
+
+      const result = await cog.run(purgeAgent(purged), {
+        input: 'clean up',
+        ...(stream && { stream: true, onToken: () => undefined }),
+      });
+
+      expect(result.status).toBe('completed');
+      expect(result.output).toBe('done');
+      expect(purged).toEqual([{ olderThanDays: 3 }]);
+      const told = result.messages.find((m) => m.role === 'tool' && m.toolCallId === 'c1');
+      expect(JSON.parse(String(told?.content))).toEqual({
+        error: 'Invalid arguments: not valid JSON: {"olderThanDays": 3',
+      });
+      await cog.close();
+    }
+  );
+
+  it('does not ask for approval of such a call', async () => {
+    const onApproval = vi.fn(() => ({ approved: true }));
+    const guarded = tool({
+      name: 'purge',
+      description: 'Delete old records',
+      parameters: z.object({ olderThanDays: z.number().optional() }),
+      requiresApproval: true,
+      execute: async () => 'purged',
+    });
+    const agent = new Agent({
+      name: 'janitor',
+      model: 'scripted/m',
+      instructions: 'x',
+      tools: [guarded],
+    });
+    const backend = scripted([
+      turn({ toolCalls: [broken], finishReason: 'tool_calls' }),
+      turn({ content: 'gave up' }),
+    ]);
+    const cog = new Cogitator({ llm: { backends: { scripted: backend } } });
+
+    const result = await cog.run(agent, { input: 'clean up', onApproval });
+
+    expect(result.status).toBe('completed');
+    expect(onApproval).not.toHaveBeenCalled();
+    await cog.close();
+  });
+});

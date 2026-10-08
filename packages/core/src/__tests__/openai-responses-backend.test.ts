@@ -565,14 +565,19 @@ describe('OpenAIBackend (Responses API)', () => {
       ).rejects.toMatchObject({ code: ErrorCode.LLM_UNAVAILABLE, retryable: true });
     });
 
-    it('rejects non-object tool arguments', async () => {
+    it('keeps a call whose arguments are not a JSON object, with the reason', async () => {
       mockResponsesCreate.mockResolvedValueOnce(
         response({ output: [{ ...weatherCall, arguments: '"Paris"' }] })
       );
 
-      await expect(
-        backend.chat({ model: 'gpt-6.1-sol', messages: [{ role: 'user', content: 'x' }] })
-      ).rejects.toThrow('Tool call arguments must be a JSON object');
+      const result = await backend.chat({
+        model: 'gpt-6.1-sol',
+        messages: [{ role: 'user', content: 'x' }],
+      });
+
+      expect(result.toolCalls).toEqual([
+        expect.objectContaining({ arguments: {}, argumentsError: 'not a JSON object: "Paris"' }),
+      ]);
     });
   });
 

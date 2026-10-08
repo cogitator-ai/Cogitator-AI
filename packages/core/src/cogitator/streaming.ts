@@ -102,6 +102,9 @@ export async function streamChat(
             if (partial.replay) {
               existing.replay = partial.replay;
             }
+            if (partial.argumentsError !== undefined) {
+              existing.argumentsError = partial.argumentsError;
+            }
           } else {
             const toolCall: ToolCall = {
               id: partial.id,
@@ -113,6 +116,9 @@ export async function streamChat(
             }
             if (partial.replay) {
               toolCall.replay = partial.replay;
+            }
+            if (partial.argumentsError !== undefined) {
+              toolCall.argumentsError = partial.argumentsError;
             }
             toolCalls.push(toolCall);
           }

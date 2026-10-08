@@ -897,6 +897,7 @@ const cog = new Cogitator({
       baseDelay: 1000,
       maxDelay: 30_000,
       maxRetryAfter: 60_000, // a longer Retry-After fails the call at once
+      requestTimeout: 180_000, // a call with no answer by then is aborted and retried
       onRetry: (event) => console.warn('LLM retry', event),
     },
     // retry: false,

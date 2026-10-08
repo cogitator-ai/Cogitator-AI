@@ -348,6 +348,7 @@ const cog = new Cogitator({
       baseDelay: 1000, // first backoff, doubled on each retry (default 1000 ms)
       maxDelay: 30_000, // backoff cap (default 30000 ms)
       maxRetryAfter: 60_000, // longest Retry-After worth waiting for (default 60000 ms)
+      requestTimeout: 180_000, // abort and retry a call with no answer by then (off by default)
       onRetry: ({ provider, attempt, delay, error }) =>
         console.warn(`${provider}: retry ${attempt} in ${delay}ms (${error.message})`),
     },
@@ -356,6 +357,7 @@ const cog = new Cogitator({
 ```
 
 - **Retry-After.** When the provider names a wait (`retry-after`, `retry-after-ms` or Gemini's `RetryInfo`), the runtime waits exactly that long. If the wait is longer than `maxRetryAfter`, the call fails at once instead of holding the run.
+- **Hung calls.** With `requestTimeout`, a call that has not answered in time is aborted and retried as `LLM_TIMEOUT`, so one request a provider never answers does not use up the run's `timeout`. A stream gets that long for each chunk. Without it a call waits as long as the provider's SDK does, ten minutes for OpenAI-compatible servers.
 - **Streaming.** A stream is retried only until its first chunk. After that the caller has already seen part of the answer, so the error is passed on.
 - **Cancellation.** The run's timeout and abort signal stop the waits between attempts too.
 - **One layer.** Backends created by the runtime make one attempt per call: the OpenAI, Anthropic, Azure and Bedrock SDKs have their own retries switched off, so attempts never multiply.

@@ -33,7 +33,7 @@ import type {
   ToolSchema,
 } from '@cogitator-ai/types';
 import { createLLMError, llmInvalidResponse, type LLMError, type LLMErrorContext } from './errors';
-import { finishRunsTools, normalizeTurn, parseToolCallArguments } from './turn';
+import { finishRunsTools, normalizeTurn, toolCallArguments } from './turn';
 
 export const DEFAULT_OPENAI_MODEL = 'gpt-6.1-sol';
 
@@ -88,7 +88,6 @@ export function parseResponsesResponse(response: Response, ctx: LLMErrorContext)
   const finishReason = toFinishReason(response);
   const { content, toolCalls, reasoning, refused } = parseOutput(
     response.output,
-    ctx,
     finishRunsTools(finishReason)
   );
 
@@ -162,7 +161,7 @@ export async function* readResponsesStream(
             ? response.output
             : [...items.entries()].sort(([a], [b]) => a - b).map(([, item]) => item);
         const finishReason = toFinishReason(response);
-        const { toolCalls, refused } = parseOutput(output, ctx, finishRunsTools(finishReason));
+        const { toolCalls, refused } = parseOutput(output, finishRunsTools(finishReason));
         const end = normalizeTurn({
           finishReason: refused ? 'refusal' : finishReason,
           toolCalls,
@@ -339,7 +338,6 @@ function captureMessage(item: ResponseOutputMessage): Record<string, unknown> {
  */
 function parseOutput(
   output: ResponseOutputItem[],
-  ctx: LLMErrorContext,
   withToolCalls: boolean
 ): { content: string; toolCalls: ToolCall[]; reasoning: string; refused: boolean } {
   let content = '';
@@ -368,7 +366,7 @@ function parseOutput(
         const toolCall: ToolCall = {
           id: item.call_id,
           name: item.name,
-          arguments: parseToolCallArguments(item.arguments, ctx),
+          ...toolCallArguments(item.arguments),
         };
         const replay = toReplayState(item.id, preceding);
         if (replay) toolCall.replay = replay;

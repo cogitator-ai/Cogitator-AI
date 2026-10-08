@@ -47,6 +47,30 @@ export function normalizeTurn<T extends TurnEnd>(turn: T): T {
   return settled;
 }
 
+/** The arguments of a tool call as a backend reads them: an object, or why there is none. */
+export type ToolCallArguments = Pick<ToolCall, 'arguments' | 'argumentsError'>;
+
+/**
+ * Reads the JSON arguments string of a finished tool call without failing the turn. Empty
+ * strings and `null` become `{}`. Anything else that is not a JSON object, such as JSON a
+ * provider broke, becomes empty arguments with an `argumentsError`: the runtime does not run
+ * such a call and tells the model why, so the model can call again.
+ */
+export function toolCallArguments(str: string): ToolCallArguments {
+  if (!str.trim()) return { arguments: {} };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(str);
+  } catch {
+    return { arguments: {}, argumentsError: `not valid JSON: ${str.slice(0, 200)}` };
+  }
+  if (parsed === null) return { arguments: {} };
+  if (typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { arguments: {}, argumentsError: `not a JSON object: ${str.slice(0, 200)}` };
+  }
+  return { arguments: parsed as Record<string, unknown> };
+}
+
 /**
  * Parse the JSON arguments string of a tool call into an object. Empty strings and `null` become
  * `{}`; anything else that is not a JSON object fails with `LLM_INVALID_RESPONSE`.

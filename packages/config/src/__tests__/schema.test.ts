@@ -86,13 +86,22 @@ describe('CogitatorConfigSchema', () => {
 
   it('keeps LLM retry settings, or false to turn retries off', () => {
     const tuned = CogitatorConfigSchema.parse({
-      llm: { retry: { maxRetries: 4, baseDelay: 500, maxDelay: 10_000, maxRetryAfter: 30_000 } },
+      llm: {
+        retry: {
+          maxRetries: 4,
+          baseDelay: 500,
+          maxDelay: 10_000,
+          maxRetryAfter: 30_000,
+          requestTimeout: 120_000,
+        },
+      },
     });
     expect(tuned.llm?.retry).toEqual({
       maxRetries: 4,
       baseDelay: 500,
       maxDelay: 10_000,
       maxRetryAfter: 30_000,
+      requestTimeout: 120_000,
     });
     expect(CogitatorConfigSchema.parse({ llm: { retry: false } }).llm?.retry).toBe(false);
     expect(() => CogitatorConfigSchema.parse({ llm: { retry: { maxRetries: -1 } } })).toThrow();

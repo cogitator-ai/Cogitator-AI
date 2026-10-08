@@ -16,7 +16,13 @@ import type {
 } from '@cogitator-ai/types';
 import { BaseLLMBackend } from './base';
 import { LLMError, wrapSDKError, type LLMErrorContext } from './errors';
-import { finishRunsTools, normalizeTurn, parseToolCallArguments } from './turn';
+import {
+  finishRunsTools,
+  normalizeTurn,
+  parseToolCallArguments,
+  toolCallArguments,
+  type ToolCallArguments,
+} from './turn';
 import { promptCacheMarks, splitSystemPrompt, type PromptCacheMarks } from './prompt-cache';
 import {
   createWarnOnce,
@@ -210,7 +216,7 @@ export class AnthropicBackend extends BaseLLMBackend {
           const toolCalls = runsTools
             ? toolUses
                 .filter((use) => use.name !== JSON_RESPONSE_TOOL)
-                .map((use) => toToolCall(use, parseToolCallArguments(use.inputJson, ctx)))
+                .map((use) => toToolCall(use, toolCallArguments(use.inputJson)))
             : [];
           const end = normalizeTurn({ finishReason, toolCalls });
           yield {
@@ -573,11 +579,11 @@ interface StreamedToolUse {
   thinking: Record<string, unknown>[];
 }
 
-function toToolCall(use: StreamedToolUse, args: Record<string, unknown>): ToolCall {
+function toToolCall(use: StreamedToolUse, args: ToolCallArguments): ToolCall {
   return {
     id: use.id,
     name: use.name,
-    arguments: args,
+    ...args,
     ...(use.thinking.length > 0 && { replay: { precedingItems: use.thinking } }),
   };
 }

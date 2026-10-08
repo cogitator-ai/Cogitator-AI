@@ -195,6 +195,109 @@ describe('RetryingBackend', () => {
   });
 });
 
+/** A backend whose first `hangs` calls never answer until their signal aborts, then answer. */
+function hangingBackend(hangs: number, answer = ok()) {
+  let left = hangs;
+  const signals: (AbortSignal | undefined)[] = [];
+  const hang = (signal: AbortSignal | undefined) =>
+    new Promise<never>((_, reject) => {
+      signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+    });
+  const chat = vi.fn(async (request: ChatRequest): Promise<ChatResponse> => {
+    signals.push(request.signal);
+    if (left-- > 0) return hang(request.signal);
+    return answer;
+  });
+  const chatStream = vi.fn(async function* (request: ChatRequest): AsyncGenerator<ChatStreamChunk> {
+    signals.push(request.signal);
+    if (left-- > 0) await hang(request.signal);
+    yield { id: 's', delta: { content: answer.content } };
+    yield { id: 's', delta: {}, finishReason: 'stop' };
+  });
+  const backend: LLMBackend = { provider: 'openai', chat, chatStream };
+  return { backend, chat, chatStream, signals };
+}
+
+describe('RetryingBackend with requestTimeout', () => {
+  it('aborts a call that does not answer in time and retries it', async () => {
+    const { backend, chat, signals } = hangingBackend(1, ok('second try'));
+    const retries: unknown[] = [];
+
+    const response = await new RetryingBackend(backend, {
+      ...fast,
+      requestTimeout: 20,
+      onRetry: (event) => retries.push(event.error),
+    }).chat(request);
+
+    expect(response.content).toBe('second try');
+    expect(chat).toHaveBeenCalledTimes(2);
+    expect(signals[0]?.aborted).toBe(true);
+    expect(retries).toEqual([expect.objectContaining({ code: ErrorCode.LLM_TIMEOUT })]);
+  });
+
+  it('fails with LLM_TIMEOUT when every attempt hangs', async () => {
+    const { backend, chat } = hangingBackend(3);
+
+    await expect(
+      new RetryingBackend(backend, { ...fast, maxRetries: 2, requestTimeout: 10 }).chat(request)
+    ).rejects.toMatchObject({ code: ErrorCode.LLM_TIMEOUT, retryable: true });
+    expect(chat).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not retry when the caller's own signal aborts a call", async () => {
+    const { backend, chat } = hangingBackend(1);
+    const controller = new AbortController();
+    const reason = new Error('run cancelled');
+
+    const pending = new RetryingBackend(backend, { ...fast, requestTimeout: 1_000 }).chat({
+      ...request,
+      signal: controller.signal,
+    });
+    setTimeout(() => controller.abort(reason), 5);
+
+    await expect(pending).rejects.toThrow();
+    expect(chat).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a call alone that answers in time', async () => {
+    const { backend, chat } = flakyBackend([]);
+
+    await new RetryingBackend(backend, { ...fast, requestTimeout: 1_000 }).chat(request);
+
+    expect(chat).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a stream whose first chunk does not come in time', async () => {
+    const { backend, chatStream } = hangingBackend(1, ok('streamed'));
+
+    const text = await collect(
+      new RetryingBackend(backend, { ...fast, requestTimeout: 20 }).chatStream(request)
+    );
+
+    expect(text).toBe('streamed');
+    expect(chatStream).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails a stream that stalls after its first chunk, without a retry', async () => {
+    const chatStream = vi.fn(async function* (
+      streamRequest: ChatRequest
+    ): AsyncGenerator<ChatStreamChunk> {
+      yield { id: 's', delta: { content: 'par' } };
+      await new Promise((_, reject) => {
+        streamRequest.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+      });
+    });
+    const backend: LLMBackend = { provider: 'openai', chat: vi.fn(), chatStream };
+
+    const error = await collect(
+      new RetryingBackend(backend, { ...fast, requestTimeout: 20 }).chatStream(request)
+    ).catch((e: unknown) => e);
+
+    expect(error).toMatchObject({ code: ErrorCode.LLM_TIMEOUT });
+    expect(chatStream).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('agent runs on a flaky provider', () => {
   const agent = new Agent({ name: 'a', model: 'flaky/m', instructions: 'x' });
 
@@ -222,6 +325,19 @@ describe('agent runs on a flaky provider', () => {
 
     expect(result.output).toBe('streamed');
     expect(tokens).toEqual(['streamed']);
+    await cog.close();
+  });
+
+  it('runs on after a hung call with requestTimeout', async () => {
+    const { backend, chat } = hangingBackend(1, ok('answered'));
+    const cog = new Cogitator({
+      llm: { backends: { flaky: backend }, retry: { ...fast, requestTimeout: 20 } },
+    });
+
+    const result = await cog.run(agent, { input: 'hi' });
+
+    expect(result.output).toBe('answered');
+    expect(chat).toHaveBeenCalledTimes(2);
     await cog.close();
   });
 

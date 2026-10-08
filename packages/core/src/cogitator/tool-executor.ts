@@ -47,6 +47,15 @@ export async function executeTool(
     };
   }
 
+  if (toolCall.argumentsError !== undefined) {
+    return {
+      callId: toolCall.id,
+      name: toolCall.name,
+      result: null,
+      error: `Invalid arguments: ${toolCall.argumentsError}`,
+    };
+  }
+
   const isZod = typeof tool.parameters.safeParse === 'function';
   let validatedArgs: unknown = toolCall.arguments;
 

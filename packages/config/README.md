@@ -121,6 +121,7 @@ llm:
     baseDelay: 1000
     maxDelay: 30000
     maxRetryAfter: 60000
+    requestTimeout: 180000 # ms one call may take before it is aborted and retried, off by default
   promptCache: # or `false`; on by default
     ttl: 1h # 5m | 1h (Anthropic)
   plugins: # settings for backend plugins registered with registerLLMBackend, by provider name

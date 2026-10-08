@@ -210,6 +210,12 @@ export interface LLMRetryConfig {
   maxDelay?: number;
   /** Longest `Retry-After` worth waiting for; a longer one fails the call at once (default 60000 ms) */
   maxRetryAfter?: number;
+  /**
+   * Longest wait for one call, in ms: a call with no answer by then is aborted and retried like a
+   * dropped connection, as `LLM_TIMEOUT`. A stream gets this long for each chunk. Off by default,
+   * so a call waits for as long as the provider's SDK does.
+   */
+  requestTimeout?: number;
   /** Called before each retry */
   onRetry?: (event: LLMRetryEvent) => void;
 }
