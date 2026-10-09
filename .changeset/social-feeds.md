@@ -15,4 +15,4 @@ Bluesky and Threads, for publishing posts and for talking with people.
 - `cogitator.yml` takes `channels.bluesky` and `channels.threads`, read from `BLUESKY_HANDLE`, `BLUESKY_APP_PASSWORD` and `THREADS_ACCESS_TOKEN`.
 - `@cogitator-ai/types` adds `FeedChannel` (with `idempotencyKey()` and `FeedPublishOptions`), `FeedPost`, `PublishedPost`, `FeedLimits`, `TokenStore` and `StoredToken`, the `bluesky` and `threads` channel types and `Channel.editable`.
 
-`@atproto/api` is an optional peer dependency, needed only for Bluesky.
+`@atproto/api` 0.24 or newer is an optional peer dependency, needed only for Bluesky.
