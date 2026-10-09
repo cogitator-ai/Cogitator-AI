@@ -40,8 +40,8 @@ export interface RunQuery {
 /** What changed after an event, for the server to push to the UI. */
 export interface StoreChange {
   runs: RunRecord[];
-  token?: { runId: string; text: string };
-  reasoning?: { runId: string; text: string };
+  token?: { runId: string; text: string; revision: number };
+  reasoning?: { runId: string; text: string; revision: number };
 }
 
 function num(value: unknown): number | undefined {
@@ -78,6 +78,10 @@ export class StudioStore {
   private readonly threads = new Map<string, ThreadRecord>();
   private readonly roots = new Map<string, string>();
   private registry?: RegistryInfo;
+  /** The revision the last change of a run took. */
+  private revision = 0;
+  /** Runs changed since the last write, written once they have their revision. */
+  private readonly unsaved = new Set<RunRecord>();
 
   constructor(
     private readonly directory: string,
@@ -94,17 +98,21 @@ export class StudioStore {
         const run = JSON.parse(
           readFileSync(join(this.directory, 'runs', name), 'utf-8')
         ) as RunRecord;
-        if (run.status === 'running' || run.status === 'waiting') {
-          run.status = 'failed';
-          run.error = 'Cogitator Studio stopped during the run';
-          run.endedAt ??= run.startedAt;
-          this.persist(run);
-        }
+        run.revision ??= 0;
+        this.revision = Math.max(this.revision, run.revision);
         this.runs.set(run.id, run);
       } catch {
         continue;
       }
     }
+    for (const run of this.runs.values()) {
+      if (run.status !== 'running' && run.status !== 'waiting') continue;
+      run.status = 'failed';
+      run.error = 'Cogitator Studio stopped during the run';
+      run.endedAt ??= run.startedAt;
+      this.persist(run);
+    }
+    this.save([]);
     const threadsFile = join(this.directory, 'threads.json');
     if (existsSync(threadsFile)) {
       try {
@@ -117,11 +125,35 @@ export class StudioStore {
     }
   }
 
+  /**
+   * The revision of the next change: above every earlier one, and, being
+   * the time in microseconds at least, above those of a session before a
+   * restart, which a page still open may have seen.
+   */
+  private nextRevision(): number {
+    this.revision = Math.max(this.revision + 1, Date.now() * 1000);
+    return this.revision;
+  }
+
+  /** Marks a run to be written by the next `save`. */
   private persist(run: RunRecord): void {
-    writeAtomic(
-      join(this.directory, 'runs', `${run.id.replace(/[^\w-]/g, '_')}.json`),
-      JSON.stringify(run)
-    );
+    this.unsaved.add(run);
+  }
+
+  /**
+   * Gives every changed run its next revision and writes the ones marked
+   * for it. A client keeps the copy of a run with the highest revision, so a
+   * snapshot it loaded never replaces what an event told it since.
+   */
+  private save(changed: readonly RunRecord[]): void {
+    for (const run of new Set([...changed, ...this.unsaved])) run.revision = this.nextRevision();
+    for (const run of this.unsaved) {
+      writeAtomic(
+        join(this.directory, 'runs', `${run.id.replace(/[^\w-]/g, '_')}.json`),
+        JSON.stringify(run)
+      );
+    }
+    this.unsaved.clear();
   }
 
   private persistThreads(): void {
@@ -351,6 +383,7 @@ export class StudioStore {
       this.persist(run);
       changed.push(run);
     }
+    this.save(changed);
     return changed;
   }
 
@@ -465,6 +498,16 @@ export class StudioStore {
 
   /** Applies an event of the host and returns what changed. */
   apply(event: HostEvent): StoreChange {
+    const change = this.change(event);
+    this.save(change.runs);
+    for (const streamed of [change.token, change.reasoning]) {
+      const run = streamed && this.runs.get(streamed.runId);
+      if (streamed && run) streamed.revision = run.revision = this.nextRevision();
+    }
+    return change;
+  }
+
+  private change(event: HostEvent): StoreChange {
     switch (event.type) {
       case 'run.started': {
         const run: RunRecord = {
@@ -475,6 +518,7 @@ export class StudioStore {
           ...(event.threadId && { threadId: event.threadId }),
           input: event.input,
           status: 'running',
+          revision: 0,
           startedAt: event.startedAt,
           ...(event.model && { model: event.model }),
           toolCalls: [],
@@ -509,13 +553,19 @@ export class StudioStore {
         const run = this.runs.get(event.runId);
         if (!run) return { runs: [] };
         run.output = (run.output ?? '') + event.text;
-        return { runs: [], token: { runId: event.runId, text: event.text } };
+        return {
+          runs: [],
+          token: { runId: event.runId, text: event.text, revision: run.revision },
+        };
       }
       case 'run.reasoning': {
         const run = this.runs.get(event.runId);
         if (!run) return { runs: [] };
         run.reasoning = (run.reasoning ?? '') + event.text;
-        return { runs: [], reasoning: { runId: event.runId, text: event.text } };
+        return {
+          runs: [],
+          reasoning: { runId: event.runId, text: event.text, revision: run.revision },
+        };
       }
       case 'run.tool.call': {
         const run = this.runs.get(event.runId);

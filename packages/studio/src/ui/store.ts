@@ -28,10 +28,16 @@ function set(next: Partial<UiState>): void {
   for (const listener of listeners) listener();
 }
 
+/**
+ * Takes the runs that are newer than the copies the UI has. A snapshot the
+ * UI asked for can arrive after events that changed the run since, and must
+ * not take it back to how it was.
+ */
 function upsertRuns(runs: readonly RunRecord[]): void {
-  if (runs.length === 0) return;
+  const newer = runs.filter((run) => (state.runs[run.id]?.revision ?? -1) < run.revision);
+  if (newer.length === 0) return;
   const next = { ...state.runs };
-  for (const run of runs) next[run.id] = run;
+  for (const run of newer) next[run.id] = run;
   set({ runs: next });
 }
 
@@ -68,7 +74,7 @@ function apply(event: StudioEvent): void {
       const run = state.runs[event.runId];
       if (!run) break;
       const field = event.type === 'token' ? 'output' : 'reasoning';
-      upsertRuns([{ ...run, [field]: (run[field] ?? '') + event.text }]);
+      upsertRuns([{ ...run, [field]: (run[field] ?? '') + event.text, revision: event.revision }]);
       break;
     }
   }
