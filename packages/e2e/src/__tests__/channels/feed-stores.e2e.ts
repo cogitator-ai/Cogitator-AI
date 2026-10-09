@@ -4,6 +4,7 @@ import {
   FeedPublisher,
   PostgresPublishStore,
   PostgresTokenStore,
+  ThreadsAccount,
   graphemeLength,
   type PublishJob,
 } from '@cogitator-ai/channels';
@@ -76,6 +77,38 @@ describePostgres('Postgres feed stores', () => {
     expect(await first.get('threads')).toEqual({ value: 'token-2', issuedAt: 3 });
     await first.delete('threads');
     expect(await second.get('threads')).toBeUndefined();
+  });
+
+  it('keeps a renewed Threads token for every process that shares the table', async () => {
+    const name = table('feed_tokens');
+    const day = 24 * 60 * 60 * 1000;
+    const seeded = new PostgresTokenStore({ client: pool, table: name });
+    await seeded.set('threads', {
+      value: 'old-token',
+      issuedAt: Date.now() - 55 * day,
+      expiresAt: Date.now() + 5 * day,
+    });
+    const refreshes: string[] = [];
+    const graph = (async (input: string | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/refresh_access_token')) {
+        refreshes.push(url.searchParams.get('access_token') ?? '');
+        return Response.json({
+          access_token: 'new-token',
+          token_type: 'bearer',
+          expires_in: 5_184_000,
+        });
+      }
+      return Response.json({ id: url.searchParams.get('access_token') });
+    }) as typeof fetch;
+    const account = new ThreadsAccount({ store: seeded, fetch: graph });
+    expect(await account.get<{ id: string }>('me')).toEqual({ id: 'new-token' });
+    expect(refreshes).toEqual(['old-token']);
+    const other = new PostgresTokenStore({ client: pool, table: name });
+    expect(await other.get('threads')).toMatchObject({ value: 'new-token' });
+    const second = new ThreadsAccount({ store: other, fetch: graph });
+    expect(await second.get<{ id: string }>('me')).toEqual({ id: 'new-token' });
+    expect(refreshes).toHaveLength(1);
   });
 
   it('adds a job once per key and keeps attachment bytes', async () => {

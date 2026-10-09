@@ -83,6 +83,7 @@ export type { AssistantConfig, BuiltRuntime, RuntimeBuilderOpts } from './runtim
 
 export * from './feeds/index';
 export * from './channels/bluesky/index';
+export * from './channels/threads/index';
 
 export { SimpleTimerStore } from './simple-timer-store';
 export type { TimerStoreOptions } from './simple-timer-store';
