@@ -1,4 +1,4 @@
-import type { Agent, AtpSessionData, AtpSessionEvent } from '@atproto/api';
+import type { Agent, AtpSessionData, AtpSessionEvent, CredentialSession } from '@atproto/api';
 import type { TokenStore } from '@cogitator-ai/types';
 import type { BlueskyConnectionConfig } from './config';
 import { FeedError, type FeedErrorCode, feedErrorCode } from '../../feeds/errors';
@@ -67,14 +67,16 @@ export function blueskyError(error: unknown, action: string): FeedError {
 /**
  * A signed-in Bluesky account, shared by the feed and the chat channel of
  * one account. The session is resumed from the store when it holds one and
- * kept there as it is refreshed; a session that cannot be resumed is
- * replaced by a new sign-in with the app password.
+ * kept there as it is refreshed. A session that cannot be resumed, or that
+ * expires because its refresh token was used up (by another process sharing
+ * the store, say), is replaced by a new sign-in with the app password.
  */
 export class BlueskyConnection {
   readonly config: BlueskyConnectionConfig;
   private readonly store: TokenStore;
   private readonly key: string;
   private connecting?: Promise<Agent>;
+  private session?: CredentialSession;
 
   constructor(config: BlueskyConnectionConfig) {
     if (!config.identifier) throw new Error('Bluesky needs the account handle or DID');
@@ -93,6 +95,21 @@ export class BlueskyConnection {
     return this.connecting;
   }
 
+  /**
+   * Runs `action` with the signed-in agent, and once more after signing in
+   * again when the session expired while it ran.
+   */
+  async use<T>(action: (agent: Agent) => Promise<T>): Promise<T> {
+    const agent = await this.agent();
+    const session = this.session;
+    try {
+      return await action(agent);
+    } catch (error) {
+      if (this.session === session && this.connecting) throw error;
+      return action(await this.agent());
+    }
+  }
+
   /** The DID of the signed-in account. */
   async did(): Promise<string> {
     const agent = await this.agent();
@@ -101,27 +118,42 @@ export class BlueskyConnection {
   }
 
   private async connect(): Promise<Agent> {
-    const { Agent: AgentClass, CredentialSession } = await loadAtproto();
-    const session = new CredentialSession(
+    const { Agent: AgentClass, CredentialSession: SessionClass } = await loadAtproto();
+    const session: CredentialSession = new SessionClass(
       new URL(this.config.service ?? 'https://bsky.social'),
       this.config.fetch,
-      (event, data) => this.persist(event, data)
+      (event, data) => this.persist(session, event, data)
     );
     const agent = new AgentClass(session);
     const stored = await this.store.get(this.key);
+    let resumed = false;
     if (stored) {
       try {
         await session.resumeSession(JSON.parse(stored.value) as AtpSessionData);
-        return agent;
+        resumed = true;
       } catch {
         await this.store.delete(this.key);
       }
     }
-    await session.login({ identifier: this.config.identifier, password: this.config.appPassword });
+    if (!resumed) {
+      await session.login({
+        identifier: this.config.identifier,
+        password: this.config.appPassword,
+      });
+    }
+    this.session = session;
     return agent;
   }
 
-  private async persist(event: AtpSessionEvent, data: AtpSessionData | undefined): Promise<void> {
+  private async persist(
+    session: CredentialSession,
+    event: AtpSessionEvent,
+    data: AtpSessionData | undefined
+  ): Promise<void> {
+    if (event === 'expired' && this.session === session) {
+      this.session = undefined;
+      this.connecting = undefined;
+    }
     try {
       if ((event === 'create' || event === 'update') && data) {
         await this.store.set(this.key, { value: JSON.stringify(data), issuedAt: Date.now() });

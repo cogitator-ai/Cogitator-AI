@@ -3,6 +3,7 @@ import type { FeedChannel, FeedPost, PublishedPost } from '@cogitator-ai/types';
 import { FeedError } from './errors';
 import {
   type FeedDelivery,
+  type JobClaim,
   MemoryPublishStore,
   type PublishJob,
   type PublishStore,
@@ -39,14 +40,18 @@ export interface FeedPublisherOptions {
   retry?: FeedRetryOptions;
   /** How often a started publisher looks for due jobs, in ms (default 15 000). */
   pollInterval?: number;
-  /** How long a worker holds a job it publishes, in ms (default five minutes). */
+  /**
+   * How long a claim on a job lasts, in ms (default five minutes). The
+   * publisher extends it every third of that while it works on the job, so
+   * this is how soon another worker takes over a job whose worker died.
+   */
   claimTtl?: number;
   /**
    * A text longer than a feed takes: `truncate` (default) cuts it at a word
    * with an ellipsis for that feed, `fail` fails that feed.
    */
   overflow?: 'truncate' | 'fail';
-  /** Goes through every step but publishing. */
+  /** Goes through every step but publishing. Dry runs keep their keys apart from real ones. */
   dryRun?: boolean;
   onPublished?: (event: FeedPublishedEvent) => void | Promise<void>;
   onFailed?: (event: FeedFailedEvent) => void | Promise<void>;
@@ -59,7 +64,7 @@ export interface PublishOptions {
   feeds?: string[];
   /** Publishing twice with the same key publishes once: the second call returns the first job. */
   key?: string;
-  /** When to publish; a time in the future schedules the post. */
+  /** When to publish. A time in the future schedules the post. */
   publishAt?: Date | number;
 }
 
@@ -79,9 +84,10 @@ const DEFAULT_RETRY: Required<FeedRetryOptions> = {
 
 /**
  * Publishes posts to several feeds: now or at a time, each feed tried and
- * retried on its own, each outcome saved as soon as it is known. A post that
- * reached a feed is not sent there again when the job runs after a crash,
- * and a key makes the whole publication idempotent.
+ * retried on its own, each outcome saved as soon as it is known. Each
+ * delivery keeps the feed's idempotency key from before its first attempt,
+ * so an attempt after a crash or a lost answer finds the post instead of
+ * publishing it twice, and a key makes the whole publication idempotent.
  */
 export class FeedPublisher {
   private readonly feeds = new Map<string, FeedChannel>();
@@ -90,8 +96,10 @@ export class FeedPublisher {
   private readonly pollInterval: number;
   private readonly claimTtl: number;
   private readonly now: () => number;
+  private readonly owner = `feedpub_${nanoid(12)}`;
   private timer?: ReturnType<typeof setInterval>;
   private ticking?: Promise<void>;
+  private stopping = false;
 
   constructor(private readonly options: FeedPublisherOptions) {
     if (options.feeds.length === 0) throw new Error('FeedPublisher needs at least one feed');
@@ -126,9 +134,10 @@ export class FeedPublisher {
         : typeof options.publishAt === 'number'
           ? options.publishAt
           : options.publishAt.getTime();
+    const key = options.key && (this.options.dryRun ? `dry-run:${options.key}` : options.key);
     const job: PublishJob = {
       id: `feedjob_${nanoid(12)}`,
-      ...(options.key ? { key: options.key } : {}),
+      ...(key ? { key } : {}),
       post,
       createdAt: now,
       deliveries: [...new Set(feeds)].map((feed) => ({
@@ -140,44 +149,47 @@ export class FeedPublisher {
     };
     const stored = await this.store.add(job);
     const duplicate = stored.id !== job.id;
-    if (duplicate || publishAt > now || !(await this.store.claim(stored.id, this.claimTtl))) {
+    if (duplicate || publishAt > now || !(await this.store.claim(stored.id, this.claimOf()))) {
       return { job: stored, pending: stored.deliveries.some(isWaiting), duplicate };
     }
-    try {
-      const done = await this.process(stored);
-      return { job: done, pending: done.deliveries.some(isWaiting), duplicate };
-    } finally {
-      await this.store.release(stored.id);
-    }
+    const done = await this.run(stored);
+    return { job: done, pending: done.deliveries.some(isWaiting), duplicate };
   }
 
   /** Looks for due jobs every `pollInterval` until `stop()`: scheduled posts and retries. */
   start(): void {
     if (this.timer) return;
     this.timer = setInterval(() => void this.tick(), this.pollInterval);
-    this.timer.unref?.();
     void this.tick();
   }
 
-  /** Stops looking for due jobs and waits for the jobs being published. */
+  /** Stops looking for due jobs, letting the job being published finish, and waits for it. */
   async stop(): Promise<void> {
+    this.stopping = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
     await this.ticking;
   }
 
-  /** Publishes the jobs that are due now, once; `start()` does this on a timer. */
+  /**
+   * Publishes the jobs that are due now, one at a time, so a claim is taken
+   * only when the job is about to be published. `start()` does this on a timer.
+   */
   async tick(): Promise<void> {
     if (this.ticking) return this.ticking;
+    this.stopping = false;
     this.ticking = (async () => {
+      const seen = new Set<string>();
       try {
-        const jobs = await this.store.claimDue(this.now(), { limit: 10, ttl: this.claimTtl });
-        for (const job of jobs) {
-          try {
-            await this.process(job);
-          } finally {
-            await this.store.release(job.id);
+        while (!this.stopping) {
+          const job = await this.store.claimNext(this.now(), this.claimOf());
+          if (!job) break;
+          if (seen.has(job.id)) {
+            await this.store.release(job.id, this.owner);
+            break;
           }
+          seen.add(job.id);
+          await this.run(job);
         }
       } catch (error) {
         console.error('[feeds] Publishing due jobs failed:', error);
@@ -196,26 +208,69 @@ export class FeedPublisher {
     return this.store.list(filter);
   }
 
-  /** Drops a job before it is published; `false` when it is missing or being published. */
+  /** Drops a job before it is published, `false` when it is missing or being published. */
   async cancel(id: string): Promise<boolean> {
     return this.store.remove(id);
   }
 
-  private async process(job: PublishJob): Promise<PublishJob> {
+  private claimOf(): JobClaim {
+    return { owner: this.owner, ttl: this.claimTtl };
+  }
+
+  /** Publishes a job this publisher claimed, extending the claim while it works, then releases it. */
+  private async run(job: PublishJob): Promise<PublishJob> {
+    const lost = new AbortController();
+    const heartbeat = setInterval(
+      () => {
+        this.store.extend(job.id, this.claimOf()).then(
+          (held) => {
+            if (!held) lost.abort(new Error(`Lost the claim on feed job ${job.id}`));
+          },
+          (error: unknown) => console.error('[feeds] Extending a job claim failed:', error)
+        );
+      },
+      Math.max(1, Math.floor(this.claimTtl / 3))
+    );
+    heartbeat.unref?.();
+    try {
+      return await this.process(job, lost.signal);
+    } finally {
+      clearInterval(heartbeat);
+      await this.store.release(job.id, this.owner);
+    }
+  }
+
+  private async process(job: PublishJob, signal: AbortSignal): Promise<PublishJob> {
     for (const delivery of job.deliveries) {
       if (delivery.status !== 'pending' || delivery.nextAttemptAt > this.now()) continue;
-      await this.attempt(job, delivery);
-      await this.store.save(job);
+      const feed = this.feeds.get(delivery.feed);
+      if (feed && !this.options.dryRun && !delivery.idempotencyKey) {
+        delivery.idempotencyKey = feed.idempotencyKey();
+        if (!(await this.save(job, signal))) break;
+      }
+      await this.attempt(job, delivery, feed, signal);
+      if (!(await this.save(job, signal))) break;
     }
     return job;
   }
 
-  private async attempt(job: PublishJob, delivery: FeedDelivery): Promise<void> {
-    const feed = this.feeds.get(delivery.feed);
+  /** Saves the job while the claim holds, `false` when another worker took it over. */
+  private async save(job: PublishJob, signal: AbortSignal): Promise<boolean> {
+    if (!signal.aborted && (await this.store.save(job, this.owner))) return true;
+    console.warn(`[feeds] Lost the claim on feed job ${job.id}: another worker took it over`);
+    return false;
+  }
+
+  private async attempt(
+    job: PublishJob,
+    delivery: FeedDelivery,
+    feed: FeedChannel | undefined,
+    signal: AbortSignal
+  ): Promise<void> {
     delivery.attempts += 1;
     try {
       if (!feed) throw new FeedError(delivery.feed, 'unknown', 'The publisher has no such feed');
-      const published = await this.send(feed, job.post);
+      const published = await this.send(feed, job.post, delivery.idempotencyKey, signal);
       delivery.status = 'published';
       delivery.post = {
         id: published.id,
@@ -223,20 +278,28 @@ export class FeedPublisher {
         publishedAt: published.publishedAt.getTime(),
       };
       delete delivery.error;
+      delete delivery.idempotencyKey;
       await this.notify(() =>
         this.options.onPublished?.({ job, feed: delivery.feed, post: published })
       );
     } catch (caught) {
+      if (signal.aborted) return;
       const error = caught instanceof Error ? caught : new Error(String(caught));
+      const quota = error instanceof FeedError && error.code === 'quota_exceeded';
+      if (quota) delivery.attempts -= 1;
       const retry =
-        error instanceof FeedError && error.retryable && delivery.attempts < this.retry.maxAttempts;
+        error instanceof FeedError &&
+        error.retryable &&
+        (quota || delivery.attempts < this.retry.maxAttempts);
       delivery.error = {
         code: error instanceof FeedError ? error.code : 'unknown',
         message: error.message,
       };
       if (retry) {
-        delivery.nextAttemptAt =
-          this.now() + Math.max(error.retryAfter ?? 0, this.backoff(delivery.attempts));
+        const wait = quota
+          ? (error.retryAfter ?? this.retry.maxDelay)
+          : Math.max(error.retryAfter ?? 0, this.backoff(delivery.attempts));
+        delivery.nextAttemptAt = this.now() + wait;
       } else {
         delivery.status = 'failed';
       }
@@ -246,17 +309,24 @@ export class FeedPublisher {
     }
   }
 
-  private async send(feed: FeedChannel, post: FeedPost): Promise<PublishedPost> {
+  private async send(
+    feed: FeedChannel,
+    post: FeedPost,
+    idempotencyKey: string | undefined,
+    signal: AbortSignal
+  ): Promise<PublishedPost> {
+    const measure = lengthOf(feed);
+    const { maxLength } = feed.limits;
     let text = post.text;
-    if (feed.measure(text) > feed.limits.maxLength) {
+    if (measure(text) > maxLength) {
       if (this.options.overflow === 'fail') {
         throw new FeedError(
           feed.type,
           'invalid_post',
-          `The text is ${feed.measure(text)} long, the feed takes ${feed.limits.maxLength}`
+          `The text is longer than ${feed.type} takes (${describeLimits(feed)})`
         );
       }
-      text = fitText(text, feed.limits.maxLength, (value) => feed.measure(value));
+      text = fitText(text, maxLength, measure);
     }
     if (this.options.dryRun) {
       return {
@@ -266,7 +336,10 @@ export class FeedPublisher {
         publishedAt: new Date(this.now()),
       };
     }
-    return feed.publish(text === post.text ? post : { ...post, text });
+    return feed.publish(text === post.text ? post : { ...post, text }, {
+      signal,
+      ...(idempotencyKey && { idempotencyKey }),
+    });
   }
 
   private backoff(attempts: number): number {
@@ -284,4 +357,23 @@ export class FeedPublisher {
 
 function isWaiting(delivery: FeedDelivery): boolean {
   return delivery.status === 'pending';
+}
+
+const encoder = new TextEncoder();
+
+/**
+ * The length of a text against `limits.maxLength`, folding in a limit in
+ * bytes: a text fits when this is at most `maxLength` exactly when it fits
+ * both, so one cut honors both limits.
+ */
+function lengthOf(feed: FeedChannel): (text: string) => number {
+  const { maxLength, maxBytes } = feed.limits;
+  if (maxBytes === undefined) return (text) => feed.measure(text);
+  return (text) =>
+    Math.max(feed.measure(text), Math.ceil((encoder.encode(text).length * maxLength) / maxBytes));
+}
+
+function describeLimits(feed: FeedChannel): string {
+  const { maxLength, maxBytes } = feed.limits;
+  return maxBytes === undefined ? `${maxLength}` : `${maxLength} and ${maxBytes} bytes`;
 }

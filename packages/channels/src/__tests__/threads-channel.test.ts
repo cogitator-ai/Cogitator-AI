@@ -28,11 +28,14 @@ function graph(
     calls.push({ method, path, params });
     const json = (body: unknown) => Response.json(body);
     if (path === 'me' && params.fields === 'id,username')
-      return json({ id: '1', username: 'newsroom' });
+      return json({ id: '1', username: 'mybot' });
     if (path === 'me/mentions') return json({ data: data.mentions ?? [] });
     if (path === 'me/threads' && method === 'GET') return json({ data: data.own ?? [] });
     if (path.endsWith('/conversation'))
-      return json({ data: data.conversations?.[path.split('/')[0]] ?? [] });
+      return json({
+        data: data.conversations?.[path.split('/')[0]] ?? [],
+        paging: { cursors: { before: 'QVFIUmx1', after: 'QVFIUnB4' } },
+      });
     if (path === 'me/threads_publishing_limit')
       return json({
         data: [
@@ -59,7 +62,7 @@ afterEach(async () => {
   for (const channel of channels.splice(0)) await channel.stop();
 });
 
-async function started(api: ReturnType<typeof graph>, webhook?: { port?: number }) {
+function created(api: ReturnType<typeof graph>, webhook?: { port?: number }) {
   const channel = new ThreadsChannel({
     accessToken: 'token',
     accessTokenExpiresAt: Date.now() + 50 * 24 * 60 * 60 * 1000,
@@ -69,8 +72,13 @@ async function started(api: ReturnType<typeof graph>, webhook?: { port?: number 
   channels.push(channel);
   const received: ChannelMessage[] = [];
   channel.onMessage(async (msg) => void received.push(msg));
-  await channel.start();
   return { channel, received };
+}
+
+async function started(api: ReturnType<typeof graph>, webhook?: { port?: number }) {
+  const made = created(api, webhook);
+  await made.channel.start();
+  return made;
 }
 
 function signed(payload: unknown) {
@@ -97,7 +105,7 @@ const reply = (
   media_type: 'TEXT_POST',
   timestamp: later(),
   replied_to: { id: 'root-post' },
-  root_post: { id: 'root-post', owner_id: '1', username: 'newsroom' },
+  root_post: { id: 'root-post', owner_id: '1', username: 'mybot' },
   ...extra,
 });
 
@@ -135,7 +143,7 @@ describe('ThreadsChannel webhooks', () => {
     const threadsShape = {
       app_id: '1',
       topic: 'moderate',
-      values: { value: reply('r1', '@newsroom is this true?'), field: 'replies' },
+      values: { value: reply('r1', '@mybot is this true?'), field: 'replies' },
     };
     expect(await channel.handleWebhook(signed(threadsShape))).toEqual({ status: 200, body: 'OK' });
     const metaShape = {
@@ -144,7 +152,7 @@ describe('ThreadsChannel webhooks', () => {
           changes: [
             {
               field: 'mentions',
-              value: reply('m1', 'hey @newsroom', 'fan', { replied_to: undefined }),
+              value: reply('m1', 'hey @mybot', 'fan', { replied_to: undefined }),
             },
           ],
         },
@@ -155,7 +163,7 @@ describe('ThreadsChannel webhooks', () => {
     await settle();
     expect(received.map((m) => [m.id, m.text, m.userId])).toEqual([
       ['r1', 'is this true?', 'reader'],
-      ['m1', 'hey @newsroom', 'fan'],
+      ['m1', 'hey @mybot', 'fan'],
     ]);
     expect(received[0]).toMatchObject({
       channelType: 'threads',
@@ -172,10 +180,22 @@ describe('ThreadsChannel webhooks', () => {
       headers: { 'x-hub-signature-256': 'sha256=00' },
     };
     expect((await channel.handleWebhook(forged)).status).toBe(401);
-    await channel.handleWebhook(signed({ values: { value: reply('own', 'mine', 'newsroom') } }));
+    await channel.handleWebhook(signed({ values: { value: reply('own', 'mine', 'mybot') } }));
     await settle();
     expect(received).toEqual([]);
     expect(verifyThreadsSignature('body', undefined, SECRET)).toBe(false);
+  });
+
+  it('skips its own replies when a delivery comes before start(), loading its username once', async () => {
+    const api = graph();
+    const { channel, received } = created(api, {});
+    await channel.handleWebhook(signed({ values: { value: reply('own', 'mine', 'mybot') } }));
+    await channel.handleWebhook(signed({ values: { value: reply('r1', 'a question') } }));
+    await settle();
+    expect(received.map((m) => m.id)).toEqual(['r1']);
+    expect(
+      api.calls.filter((c) => c.path === 'me' && c.params.fields === 'id,username')
+    ).toHaveLength(1);
   });
 
   it('runs its own webhook server when given a port', async () => {
@@ -213,9 +233,9 @@ describe('ThreadsChannel without webhooks', () => {
         reply('m1', 'mention me'),
         reply('m-old', 'too old', 'reader', { timestamp: old }),
       ],
-      own: [{ id: 'post-1' }],
+      own: [{ id: 'root-post' }],
       conversations: {
-        'post-1': [reply('c1', 'a reply'), reply('c-own', 'my own reply', 'newsroom')],
+        'root-post': [reply('c1', 'a reply'), reply('c-own', 'my own reply', 'mybot')],
       },
     });
     const { channel, received } = await started(api);
@@ -223,6 +243,30 @@ describe('ThreadsChannel without webhooks', () => {
     await channel.poll();
     expect(received.map((m) => m.id).sort()).toEqual(['c1', 'm1']);
     expect(api.calls.find((c) => c.path === 'me/mentions')?.params.fields).toContain('replied_to');
+  });
+
+  it('takes replies to its posts and mentions from a conversation, not what people answer each other', async () => {
+    const api = graph({
+      own: [{ id: 'root-post' }],
+      conversations: {
+        'root-post': [
+          reply('to-bot', 'is this true?'),
+          reply('bot-answer', 'yes, it is', 'mybot', { replied_to: { id: 'to-bot' } }),
+          reply('to-bot-answer', 'thanks!', 'reader', { replied_to: { id: 'bot-answer' } }),
+          reply('between-people', 'I disagree', 'other', { replied_to: { id: 'to-bot' } }),
+          reply('mention', '@mybot what do you think?', 'other', {
+            replied_to: { id: 'between-people' },
+          }),
+          reply('other-mention', '@mybot.fan agreed', 'third', {
+            replied_to: { id: 'between-people' },
+          }),
+        ],
+      },
+    });
+    const { channel, received } = await started(api);
+    await channel.poll();
+    expect(received.map((m) => m.id).sort()).toEqual(['mention', 'to-bot', 'to-bot-answer']);
+    expect(received.find((m) => m.id === 'mention')?.text).toBe('what do you think?');
   });
 
   it('answers under a post as a chain of replies within 500, and posts to its feed', async () => {

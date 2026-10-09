@@ -83,9 +83,19 @@ vi.mock('@atproto/api', () => {
     app = {
       bsky: {
         notification: {
-          listNotifications: async () => ({
-            data: { notifications: state.notifications.map((n) => ({ ...n })) },
-          }),
+          listNotifications: async ({ limit, cursor }: { limit: number; cursor?: string }) => {
+            const newestFirst = [...state.notifications].sort((a, b) =>
+              String(b.indexedAt).localeCompare(String(a.indexedAt))
+            );
+            const start = Number(cursor ?? 0);
+            const page = newestFirst.slice(start, start + limit);
+            return {
+              data: {
+                notifications: page.map((n) => ({ ...n })),
+                ...(start + limit < newestFirst.length && { cursor: String(start + limit) }),
+              },
+            };
+          },
           updateSeen: async ({ seenAt }: { seenAt: string }) => {
             state.seenAt.push(seenAt);
             for (const n of state.notifications) if (String(n.indexedAt) <= seenAt) n.isRead = true;
@@ -93,12 +103,29 @@ vi.mock('@atproto/api', () => {
         },
       },
     };
-    async post(record: Record<string, unknown>) {
-      state.posts.push(record);
-      const uri = `at://did:plc:bot/app.bsky.feed.post/r${state.posts.length}`;
-      state.existing.set(uri, { uri, cid: `c${state.posts.length}`, record });
-      return { uri, cid: `c${state.posts.length}` };
-    }
+    com = {
+      atproto: {
+        repo: {
+          createRecord: async (input: { record: Record<string, unknown> }) => {
+            const { createdAt: _createdAt, ...record } = input.record;
+            state.posts.push(record);
+            const uri = `at://did:plc:bot/app.bsky.feed.post/r${state.posts.length}`;
+            state.existing.set(uri, { uri, cid: `c${state.posts.length}`, record });
+            return { data: { uri, cid: `c${state.posts.length}` } };
+          },
+          getRecord: async (input: { rkey: string }) => {
+            const found = state.existing.get(`at://did:plc:bot/app.bsky.feed.post/${input.rkey}`);
+            if (!found) {
+              throw Object.assign(new Error('Could not locate record'), {
+                status: 400,
+                error: 'RecordNotFound',
+              });
+            }
+            return { data: { uri: found.uri, cid: found.cid, value: found.record } };
+          },
+        },
+      },
+    };
     async getPosts({ uris }: { uris: string[] }) {
       return { data: { posts: uris.map((uri) => state.existing.get(uri)).filter(Boolean) } };
     }
@@ -196,6 +223,27 @@ describe('BlueskyChannel', () => {
     expect(state.seenAt).toEqual(['2026-10-09T10:02:00Z']);
     await channel.poll();
     expect(received).toHaveLength(2);
+    await channel.stop();
+  });
+
+  it('pages back through a backlog of more than one page of notifications', async () => {
+    for (let index = 0; index < 230; index++) {
+      const at = new Date(Date.UTC(2026, 9, 9, 8, 0, index)).toISOString();
+      state.notifications.push(
+        mention(`at://did:plc:reader/app.bsky.feed.post/n${index}`, `question ${index}`, at)
+      );
+    }
+    const read = mention(
+      'at://did:plc:reader/app.bsky.feed.post/old',
+      'answered',
+      '2026-10-08T00:00:00.000Z'
+    );
+    state.notifications.push({ ...read, isRead: true });
+    const { channel, received } = await started({ directMessages: false });
+    expect(received).toHaveLength(230);
+    expect(received[0]?.text).toBe('question 0');
+    expect(received.at(-1)?.text).toBe('question 229');
+    expect(state.seenAt).toEqual([new Date(Date.UTC(2026, 9, 9, 8, 0, 229)).toISOString()]);
     await channel.stop();
   });
 

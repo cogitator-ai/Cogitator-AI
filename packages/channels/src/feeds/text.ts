@@ -70,7 +70,7 @@ export function fitText(
     parts
       .slice(0, cut)
       .join('')
-      .replace(/[\s,;:–—-]+$/u, '') + ellipsis
+      .replace(/[\s,;:\u2013\u2014-]+$/u, '') + ellipsis
   );
 }
 

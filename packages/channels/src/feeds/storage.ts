@@ -1,5 +1,5 @@
 import { mkdir, rename, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { dirname, resolve } from 'node:path';
 
 /** The part of a `pg` Pool or Client the Postgres stores use. */
 export interface PgClient {
@@ -13,7 +13,7 @@ const DUPLICATE_OBJECT_CODES = new Set(['23505', '42P07', '42710']);
 
 /**
  * Runs a `CREATE ... IF NOT EXISTS` statement. Two sessions creating the
- * same object at once can still collide on Postgres' catalog; by the retry
+ * same object at once can still collide on Postgres' catalog. By the retry
  * the object exists and the statement succeeds.
  */
 export async function createIfMissing(client: PgClient, statement: string): Promise<void> {
@@ -55,4 +55,20 @@ export class SerialQueue {
     this.tail = result.catch(() => undefined);
     return result;
   }
+}
+
+const fileQueues = new Map<string, SerialQueue>();
+
+/**
+ * The queue of one file, shared by every store of this process that uses
+ * it, so two stores on the same file never lose each other's writes.
+ */
+export function queueFor(path: string): SerialQueue {
+  const file = resolve(path);
+  let queue = fileQueues.get(file);
+  if (!queue) {
+    queue = new SerialQueue();
+    fileQueues.set(file, queue);
+  }
+  return queue;
 }

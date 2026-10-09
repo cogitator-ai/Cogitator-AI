@@ -5,7 +5,8 @@ import type { StoredToken, TokenStore } from '@cogitator-ai/types';
 import {
   createIfMissing,
   type PgClient,
-  SerialQueue,
+  queueFor,
+  type SerialQueue,
   TABLE_NAME,
   writeFileAtomic,
 } from './storage';
@@ -45,15 +46,17 @@ export interface FileTokenStoreOptions {
 
 /**
  * Tokens in one JSON file, written atomically with owner-only permissions,
- * for a single process. Several processes renewing the same token need
- * `PostgresTokenStore`.
+ * for a single process. Stores of one process on the same file take turns,
+ * so a Bluesky session and a Threads token kept in one file never overwrite
+ * each other. Several processes need `PostgresTokenStore`.
  */
 export class FileTokenStore implements TokenStore {
   readonly path: string;
-  private readonly queue = new SerialQueue();
+  private readonly queue: SerialQueue;
 
   constructor(options: FileTokenStoreOptions = {}) {
     this.path = options.path ?? join(homedir(), '.cogitator', 'tokens.json');
+    this.queue = queueFor(this.path);
   }
 
   async get(key: string): Promise<StoredToken | undefined> {
@@ -99,7 +102,7 @@ export class FileTokenStore implements TokenStore {
 
 export interface PostgresTokenStoreOptions {
   client: PgClient;
-  /** Table name (default `cogitator_tokens`); created on first use. */
+  /** Table name (default `cogitator_tokens`), created on first use. */
   table?: string;
 }
 

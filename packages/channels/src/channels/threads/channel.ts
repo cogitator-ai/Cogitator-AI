@@ -122,6 +122,7 @@ export class ThreadsChannel implements Channel {
   private server?: Server;
   private timer?: ReturnType<typeof setInterval>;
   private polling?: Promise<void>;
+  private identity?: Promise<void>;
   private username?: string;
   private since = 0;
   private running = false;
@@ -139,10 +140,7 @@ export class ThreadsChannel implements Channel {
   async start(): Promise<void> {
     if (this.running) return;
     await this.account.connect();
-    const me = await this.account.get<{ id: string; username?: string }>(this.account.userId, {
-      fields: 'id,username',
-    });
-    this.username = me.username;
+    await this.identify();
     this.since = Date.now();
     this.running = true;
     const webhook = this.config.webhook;
@@ -150,7 +148,6 @@ export class ThreadsChannel implements Channel {
       await this.listen(webhook.port, webhook.path ?? '/threads/webhook', webhook.host);
     } else if (!webhook) {
       this.timer = setInterval(() => void this.poll(), this.config.pollInterval ?? 60_000);
-      this.timer.unref?.();
     }
   }
 
@@ -168,7 +165,9 @@ export class ThreadsChannel implements Channel {
   /**
    * Answers a webhook request: the verification Meta sends when the callback
    * URL is set, and signed deliveries of replies and mentions. Mount it in
-   * any HTTP server; the raw body must reach it unparsed.
+   * any HTTP server, with the raw body unparsed. It works before `start()`
+   * too: the first delivery loads the account's username, so the bot's own
+   * replies are skipped.
    */
   async handleWebhook(request: ThreadsWebhookRequest): Promise<ThreadsWebhookResponse> {
     const webhook = this.config.webhook;
@@ -201,16 +200,28 @@ export class ThreadsChannel implements Channel {
     } catch {
       return { status: 400, body: 'Invalid JSON' };
     }
+    try {
+      await this.identify();
+    } catch (error) {
+      console.error('[threads] Could not load the account for a webhook delivery:', error);
+      return { status: 503, body: 'The account could not be loaded' };
+    }
     void this.receive(postsOf(payload)).catch((error: unknown) =>
       console.error('[threads] Webhook delivery failed:', error)
     );
     return { status: 200, body: 'OK' };
   }
 
-  /** Looks for new replies and mentions once; a started channel without webhooks polls on a timer. */
+  /**
+   * Looks for new replies and mentions once. A started channel without
+   * webhooks polls on a timer. Of the conversations under the bot's latest
+   * posts it takes the replies to the bot's posts and the posts that mention
+   * it, not what people answer each other.
+   */
   poll(): Promise<void> {
     this.polling ??= (async () => {
       try {
+        await this.identify();
         const user = this.account.userId;
         const mentions = await this.account.get<{ data?: ThreadsPost[] }>(`${user}/mentions`, {
           fields: POST_FIELDS,
@@ -220,14 +231,21 @@ export class ThreadsChannel implements Channel {
           fields: 'id,timestamp',
           limit: this.config.watchPosts ?? 10,
         });
-        const replies: ThreadsPost[] = [];
+        const conversations: ThreadsPost[] = [];
         for (const post of own.data ?? []) {
           const conversation = await this.account.get<{ data?: ThreadsPost[] }>(
             `${post.id}/conversation`,
             { fields: POST_FIELDS, limit: 50 }
           );
-          replies.push(...(conversation.data ?? []));
+          conversations.push(...(conversation.data ?? []));
         }
+        const botPosts = new Set((own.data ?? []).map((post) => post.id));
+        for (const post of conversations) if (this.isOwn(post)) botPosts.add(post.id);
+        const replies = conversations.filter(
+          (post) =>
+            (post.replied_to !== undefined && botPosts.has(post.replied_to.id)) ||
+            this.mentionsBot(post.text)
+        );
         await this.receive(
           [...(mentions.data ?? []), ...replies].filter(
             (post) => post.timestamp === undefined || Date.parse(post.timestamp) >= this.since
@@ -278,7 +296,7 @@ export class ThreadsChannel implements Channel {
 
   private async receive(posts: ThreadsPost[]): Promise<void> {
     const fresh = posts
-      .filter((post) => post.username !== this.username)
+      .filter((post) => !this.isOwn(post))
       .sort((a, b) => (a.timestamp ?? '').localeCompare(b.timestamp ?? ''));
     for (const post of fresh) {
       if (!this.remember(post.id) || !post.text?.trim() || !this.handler) continue;
@@ -300,6 +318,32 @@ export class ThreadsChannel implements Channel {
         console.error('[threads] Message handler error:', error);
       }
     }
+  }
+
+  /** Loads the account's username once, for telling its own posts and its mentions apart. */
+  private identify(): Promise<void> {
+    this.identity ??= this.account
+      .get<{ id: string; username?: string }>(this.account.userId, { fields: 'id,username' })
+      .then((me) => {
+        this.username = me.username;
+      })
+      .catch((error: unknown) => {
+        this.identity = undefined;
+        throw error;
+      });
+    return this.identity;
+  }
+
+  private isOwn(post: ThreadsPost): boolean {
+    return (
+      this.username !== undefined && post.username?.toLowerCase() === this.username.toLowerCase()
+    );
+  }
+
+  private mentionsBot(text: string | undefined): boolean {
+    if (!this.username || !text) return false;
+    const escaped = this.username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(^|[^\\w.@])@${escaped}(?![\\w]|\\.[\\w])`, 'iu').test(text);
   }
 
   private stripMention(text: string): string {

@@ -19,6 +19,7 @@ export {
   nextDueAt,
   type FeedDelivery,
   type FilePublishStoreOptions,
+  type JobClaim,
   type PostgresPublishStoreOptions,
   type PublishJob,
   type PublishStore,

@@ -11,7 +11,7 @@ export interface FeedLink {
   title?: string;
   description?: string;
   /**
-   * The card's preview image. Bluesky uploads it with the post; Threads
+   * The card's preview image. Bluesky uploads it with the post, Threads
    * builds the card from the page itself and ignores it.
    */
   image?: Attachment;
@@ -30,7 +30,7 @@ export interface FeedPost {
   link?: FeedLink;
   images?: FeedImage[];
   /**
-   * Topics of the post. Threads takes the first as its topic tag; Bluesky
+   * Topics of the post. Threads takes the first as its topic tag, Bluesky
    * adds them as hashtags that are not in the text.
    */
   tags?: string[];
@@ -53,6 +53,8 @@ export interface PublishedPost {
 export interface FeedLimits {
   /** The longest text, in the unit `measure` counts. */
   maxLength: number;
+  /** The longest text in UTF-8 bytes, where the feed also limits that. */
+  maxBytes?: number;
   maxImages: number;
   /** The largest image, in bytes. */
   maxImageBytes: number;
@@ -60,6 +62,17 @@ export interface FeedLimits {
   maxLinks?: number;
   /** The most tags a post may have. */
   maxTags: number;
+}
+
+export interface FeedPublishOptions {
+  signal?: AbortSignal;
+  /**
+   * A key from the feed's `idempotencyKey()`, kept with the post until it is
+   * published. Publishing again with the same key, after an attempt whose
+   * outcome is unknown, returns the post that attempt made instead of
+   * posting it twice.
+   */
+  idempotencyKey?: string;
 }
 
 /** A social feed a post can be published to. */
@@ -70,7 +83,9 @@ export interface FeedChannel {
   measure(text: string): number;
   /** Connects: signs in, or loads and renews the token. Publishing connects too when needed. */
   connect(): Promise<void>;
-  publish(post: FeedPost, options?: { signal?: AbortSignal }): Promise<PublishedPost>;
+  /** A new key that makes one publication idempotent, see `FeedPublishOptions`. */
+  idempotencyKey(): string;
+  publish(post: FeedPost, options?: FeedPublishOptions): Promise<PublishedPost>;
   delete(id: string): Promise<void>;
   /** Stops background work such as scheduled token renewal. */
   close(): Promise<void>;

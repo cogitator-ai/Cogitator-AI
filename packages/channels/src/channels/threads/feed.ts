@@ -1,4 +1,11 @@
-import type { FeedChannel, FeedLimits, FeedPost, PublishedPost } from '@cogitator-ai/types';
+import { nanoid } from 'nanoid';
+import type {
+  FeedChannel,
+  FeedLimits,
+  FeedPost,
+  FeedPublishOptions,
+  PublishedPost,
+} from '@cogitator-ai/types';
 import { assertImage } from '../../feeds/attachments';
 import { FeedError } from '../../feeds/errors';
 import { threadsLength } from '../../feeds/text';
@@ -8,7 +15,7 @@ import type { ThreadsParams } from './client';
 export type ThreadsFeedConfig = ({ account: ThreadsAccount } | ThreadsAccountConfig) & {
   /** How long to wait for Threads to get a post ready, in ms (default five minutes). */
   containerTimeout?: number;
-  /** The waits between readiness checks, in ms; the last repeats. */
+  /** The waits between readiness checks, in ms. The last one repeats. */
   pollDelays?: readonly number[];
   /** Checks the 24-hour publishing quota before each post (default true). */
   checkQuota?: boolean;
@@ -25,6 +32,15 @@ export const THREADS_LIMITS: FeedLimits & { maxLinks: number; maxTopicTagLength:
 };
 
 const URL_PATTERN = /https?:\/\/[^\s<>"']+/giu;
+const KEY_PATTERN = /^(\d{1,15})\.([\w-]{8,64})$/u;
+const HOUR = 60 * 60_000;
+/** How much earlier than its key a lookup starts, for clocks that disagree. */
+const CLOCK_SKEW = 60_000;
+/** How long after the oldest post leaves the quota window a retry waits. */
+const QUOTA_MARGIN = 60_000;
+const QUOTA_WINDOW = 86_400;
+const LOOKUP_PAGES = 4;
+const QUOTA_PAGES = 12;
 
 interface Container {
   id: string;
@@ -35,6 +51,20 @@ interface ContainerStatus {
   error_message?: string;
 }
 
+/** A post as `/{user-id}/threads` and `/{user-id}/replies` list it. */
+interface ListedPost {
+  id: string;
+  text?: string;
+  timestamp?: string;
+  permalink?: string;
+  replied_to?: { id: string };
+}
+
+interface Page<T> {
+  data?: T[];
+  paging?: { cursors?: { before?: string; after?: string }; next?: string; previous?: string };
+}
+
 interface PublishingLimit {
   data?: Array<{
     quota_usage?: number;
@@ -42,6 +72,46 @@ interface PublishingLimit {
     reply_quota_usage?: number;
     reply_config?: { quota_total?: number; quota_duration?: number };
   }>;
+}
+
+/** Text as compared between a post and the one Threads lists: trimmed, whitespace runs as one space. */
+function normalized(text: string | undefined): string {
+  return (text ?? '').trim().replace(/\s+/gu, ' ');
+}
+
+function dateOf(timestamp: string | undefined): Date | undefined {
+  const time = timestamp === undefined ? Number.NaN : Date.parse(timestamp);
+  return Number.isFinite(time) ? new Date(time) : undefined;
+}
+
+/** When a key from `ThreadsFeed.idempotencyKey()` was made, in ms since the epoch. */
+function keyTime(key: string): number {
+  const match = KEY_PATTERN.exec(key);
+  const time = match ? Number(match[1]) : Number.NaN;
+  if (!Number.isSafeInteger(time)) {
+    throw new FeedError(
+      'threads',
+      'invalid_post',
+      `"${key}" is not an idempotency key from ThreadsFeed.idempotencyKey()`
+    );
+  }
+  return time;
+}
+
+/** The query of the page after `page`, or none when it was the last. */
+function nextQuery<T>(page: Page<T>, query: ThreadsParams): ThreadsParams | undefined {
+  const count = page.data?.length ?? 0;
+  if (count === 0) return undefined;
+  const { cursors, next } = page.paging ?? {};
+  if (!next && typeof query.limit === 'number' && count < query.limit) return undefined;
+  if (cursors?.after && cursors.after !== query.after) return { ...query, after: cursors.after };
+  if (!next) return undefined;
+  try {
+    const params = [...new URL(next).searchParams].filter(([name]) => name !== 'access_token');
+    return params.length > 0 ? { ...query, ...Object.fromEntries(params) } : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function abortError(signal: AbortSignal): Error {
@@ -66,10 +136,16 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 /**
  * Publishes posts to a Threads account in the two steps Threads asks for: a
  * media container, then its publication once Threads says it is ready.
- * Text posts carry a link card and a topic tag; one image or a carousel of
+ * Text posts carry a link card and a topic tag. One image or a carousel of
  * up to twenty is published from public URLs, since Threads fetches images
- * itself; replies go under the post they answer. The account's token is
+ * itself. Replies go under the post they answer. The account's token is
  * renewed before it expires.
+ *
+ * Threads takes no client-chosen ids, so a publication with an idempotency
+ * key first looks for a post an earlier attempt made: one of the account's
+ * posts (or replies) since the key was made, with the same text (and the same
+ * parent for a reply). A full quota fails with `quota_exceeded` and a
+ * `retryAfter` of when its oldest post leaves the window.
  */
 export class ThreadsFeed implements FeedChannel {
   readonly type = 'threads';
@@ -96,9 +172,18 @@ export class ThreadsFeed implements FeedChannel {
     await this.account.connect();
   }
 
-  async publish(post: FeedPost, options: { signal?: AbortSignal } = {}): Promise<PublishedPost> {
+  /** A key of the time it is made and a random part, see `FeedPublishOptions`. */
+  idempotencyKey(): string {
+    return `${Date.now()}.${nanoid()}`;
+  }
+
+  async publish(post: FeedPost, options: FeedPublishOptions = {}): Promise<PublishedPost> {
     const topicTag = this.validate(post);
-    const { signal } = options;
+    const { signal, idempotencyKey } = options;
+    if (idempotencyKey !== undefined) {
+      const earlier = await this.findEarlier(post, keyTime(idempotencyKey), signal);
+      if (earlier) return earlier;
+    }
     if (this.checkQuota) await this.assertQuota(Boolean(post.replyTo), signal);
     const user = this.account.userId;
     const shared: ThreadsParams = {
@@ -235,13 +320,106 @@ export class ThreadsFeed implements FeedChannel {
     );
     const entry = limit.data?.[0];
     const usage = reply ? entry?.reply_quota_usage : entry?.quota_usage;
-    const total = reply ? entry?.reply_config?.quota_total : entry?.config?.quota_total;
-    if (usage !== undefined && total !== undefined && usage >= total) {
-      throw new FeedError(
-        'threads',
-        'quota_exceeded',
-        `The account used its ${total} ${reply ? 'replies' : 'posts'} for the last 24 hours`
+    const config = reply ? entry?.reply_config : entry?.config;
+    const total = config?.quota_total;
+    if (usage === undefined || total === undefined || usage < total) return;
+    const window = config?.quota_duration ?? QUOTA_WINDOW;
+    const retryAfter = await this.quotaFreesIn(reply, window, signal);
+    throw new FeedError(
+      'threads',
+      'quota_exceeded',
+      `The account used its ${total} ${reply ? 'replies' : 'posts'} for the last ${Math.round(window / 3600)} hours, one frees up in about ${Math.ceil(retryAfter / 60_000)} min`,
+      { retryAfter }
+    );
+  }
+
+  /**
+   * How long until the oldest post (or reply) inside the quota window of
+   * `window` seconds leaves it, plus a margin. An hour when that cannot be
+   * found out.
+   */
+  private async quotaFreesIn(
+    reply: boolean,
+    window: number,
+    signal?: AbortSignal
+  ): Promise<number> {
+    const now = Date.now();
+    const start = now - window * 1000;
+    let oldest: number | undefined;
+    try {
+      const pages = this.pages<ListedPost>(
+        `${this.account.userId}/${reply ? 'replies' : 'threads'}`,
+        { since: Math.floor(start / 1000), fields: 'timestamp', limit: 100 },
+        QUOTA_PAGES,
+        signal
       );
+      for await (const posts of pages) {
+        for (const listed of posts) {
+          const time = dateOf(listed.timestamp)?.getTime();
+          if (time !== undefined && time >= start && (oldest === undefined || time < oldest)) {
+            oldest = time;
+          }
+        }
+      }
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      return HOUR;
+    }
+    if (oldest === undefined) return HOUR;
+    return Math.max(0, oldest + window * 1000 - now) + QUOTA_MARGIN;
+  }
+
+  /**
+   * The post an earlier attempt with the same key made: the account's posts
+   * (or replies to `post.replyTo`) since `since`, less the clock skew, with
+   * the same text.
+   */
+  private async findEarlier(
+    post: FeedPost,
+    since: number,
+    signal?: AbortSignal
+  ): Promise<PublishedPost | undefined> {
+    const parent = post.replyTo;
+    const text = normalized(post.text);
+    const pages = this.pages<ListedPost>(
+      `${this.account.userId}/${parent ? 'replies' : 'threads'}`,
+      {
+        since: Math.floor((since - CLOCK_SKEW) / 1000),
+        fields: `id,text,timestamp,permalink${parent ? ',replied_to' : ''}`,
+        limit: 50,
+      },
+      LOOKUP_PAGES,
+      signal
+    );
+    for await (const posts of pages) {
+      const match = posts.find(
+        (listed) =>
+          normalized(listed.text) === text && (!parent || listed.replied_to?.id === parent)
+      );
+      if (match) {
+        return {
+          feed: this.type,
+          id: match.id,
+          url: match.permalink ?? '',
+          publishedAt: dateOf(match.timestamp) ?? new Date(),
+        };
+      }
+    }
+    return undefined;
+  }
+
+  /** The items of a listing, page by page, following its cursors for `maxPages` at most. */
+  private async *pages<T>(
+    path: string,
+    params: ThreadsParams,
+    maxPages: number,
+    signal?: AbortSignal
+  ): AsyncGenerator<T[]> {
+    let query: ThreadsParams | undefined = params;
+    for (let page = 0; page < maxPages && query; page++) {
+      const response: Page<T> = await this.account.get<Page<T>>(path, query, signal);
+      yield response.data ?? [];
+      query = nextQuery(response, query);
     }
   }
 

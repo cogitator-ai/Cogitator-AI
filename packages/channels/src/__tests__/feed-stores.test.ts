@@ -78,6 +78,18 @@ describe('FileTokenStore', () => {
     expect(await new FileTokenStore({ path }).get('k7')).toEqual({ value: 'v7', issuedAt: 7 });
   });
 
+  it('keeps the writes of two stores on the same file', async () => {
+    const path = join(temp(), 'tokens.json');
+    const bluesky = new FileTokenStore({ path });
+    const threads = new FileTokenStore({ path });
+    await Promise.all(
+      Array.from({ length: 10 }, (_, i) =>
+        (i % 2 ? bluesky : threads).set(`k${i}`, { value: `v${i}`, issuedAt: i })
+      )
+    );
+    expect(Object.keys(JSON.parse(readFileSync(path, 'utf-8')))).toHaveLength(10);
+  });
+
   it('refuses a file that is not a token file and skips entries that are not tokens', async () => {
     const path = join(temp(), 'tokens.json');
     writeFileSync(path, '[]');
@@ -142,35 +154,59 @@ describe.each([
     expect((await store.list()).map((j) => j.id)).toEqual(['a']);
   });
 
-  it('claims due jobs, oldest due first, and not the ones held or not yet due', async () => {
+  const A = { owner: 'worker-a', ttl: 100 };
+  const B = { owner: 'worker-b', ttl: 100 };
+
+  it('claims the next due job, oldest due first, and not the ones held or not yet due', async () => {
     fresh();
     await store.add(job('late', 900));
     await store.add(job('early', 100));
     await store.add(job('future', 5_000));
-    const claimed = await store.claimDue(1_000, { limit: 10, ttl: 100 });
-    expect(claimed.map((j) => j.id)).toEqual(['early', 'late']);
-    expect(await store.claimDue(1_000, { limit: 10, ttl: 100 })).toEqual([]);
-    expect(await store.claim('early', 100)).toBe(false);
+    expect((await store.claimNext(1_000, A))?.id).toBe('early');
+    expect((await store.claimNext(1_000, B))?.id).toBe('late');
+    expect(await store.claimNext(1_000, A)).toBeUndefined();
+    expect(await store.claim('early', B)).toBe(false);
     clock = 1_200;
-    expect((await store.claimDue(1_200, { limit: 1, ttl: 100 })).map((j) => j.id)).toEqual([
-      'early',
-    ]);
+    expect((await store.claimNext(1_200, B))?.id).toBe('early');
+  });
+
+  it("saves and extends only while the claim is the owner's", async () => {
+    fresh();
+    await store.add(job('a', 100));
+    expect(await store.claim('a', A)).toBe(true);
+    const held = await store.get('a');
+    if (!held) throw new Error('missing job');
+    held.deliveries[0].status = 'published';
+
+    expect(await store.save(held, 'worker-b')).toBe(false);
+    expect(await store.extend('a', B)).toBe(false);
+    clock = 1_050;
+    expect(await store.extend('a', A)).toBe(true);
+    clock = 1_120;
+    expect(await store.claim('a', B)).toBe(false);
+    clock = 1_200;
+    expect(await store.save(held, 'worker-a')).toBe(false);
+    expect(await store.extend('a', A)).toBe(false);
+    expect(await store.claim('a', B)).toBe(true);
+    await store.release('a', 'worker-a');
+    expect(await store.claim('a', A)).toBe(false);
+    expect((await store.get('a'))?.deliveries[0].status).toBe('pending');
   });
 
   it('releases claims, saves changes and lists by status', async () => {
     fresh();
     await store.add(job('a', 100));
-    expect(await store.claim('a', 1_000)).toBe(true);
+    expect(await store.claim('a', { owner: 'worker-a', ttl: 1_000 })).toBe(true);
     expect(await store.remove('a')).toBe(false);
     const held = await store.get('a');
     if (!held) throw new Error('missing job');
     held.deliveries[0].status = 'published';
-    await store.save(held);
-    await store.release('a');
+    expect(await store.save(held, 'worker-a')).toBe(true);
+    await store.release('a', 'worker-a');
     expect(nextDueAt((await store.get('a')) ?? held)).toBeUndefined();
     expect(await store.list({ pending: true })).toEqual([]);
     expect((await store.list({ pending: false })).map((j) => j.id)).toEqual(['a']);
-    expect(await store.claimDue(10_000, { limit: 10, ttl: 100 })).toEqual([]);
+    expect(await store.claimNext(10_000, A)).toBeUndefined();
     expect(await store.remove('a')).toBe(true);
     expect(await store.get('a')).toBeUndefined();
   });

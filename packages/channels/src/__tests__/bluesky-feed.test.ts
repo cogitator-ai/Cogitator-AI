@@ -17,7 +17,10 @@ const state = vi.hoisted(() => ({
   uploads: [] as Array<{ size: number; encoding: string }>,
   deleted: [] as string[],
   existing: new Map<string, { uri: string; cid: string; record: unknown }>(),
+  records: new Map<string, { uri: string; cid: string; value: Record<string, unknown> }>(),
+  appViewReads: 0,
   failPost: undefined as unknown,
+  expireOnPost: false,
   badResume: false,
 }));
 
@@ -32,7 +35,7 @@ vi.mock('@atproto/api', () => {
     async login(opts: { identifier: string; password: string }) {
       state.logins.push(opts);
       this.session = {
-        did: 'did:plc:newsroom',
+        did: 'did:plc:mybot',
         handle: opts.identifier,
         accessJwt: 'access-1',
         refreshJwt: 'refresh-1',
@@ -53,14 +56,52 @@ vi.mock('@atproto/api', () => {
     get did() {
       return this.sessionManager.session?.did;
     }
-    async post(record: Record<string, unknown>) {
-      if (state.failPost) throw state.failPost;
-      state.posts.push(record);
-      return {
-        uri: `at://did:plc:newsroom/app.bsky.feed.post/rkey${state.posts.length}`,
-        cid: 'cid',
-      };
-    }
+    readonly com = {
+      atproto: {
+        repo: {
+          createRecord: async (input: {
+            repo: string;
+            collection: string;
+            rkey?: string;
+            record: Record<string, unknown>;
+          }) => {
+            if (state.expireOnPost) {
+              state.expireOnPost = false;
+              this.sessionManager.session = undefined;
+              await this.sessionManager.persist('expired');
+              throw Object.assign(new Error('Token has expired'), {
+                status: 400,
+                error: 'ExpiredToken',
+              });
+            }
+            if (state.failPost) throw state.failPost;
+            const rkey = input.rkey ?? `rkey${state.posts.length + 1}`;
+            if (state.records.has(rkey)) {
+              throw Object.assign(new Error('Record already exists'), {
+                status: 400,
+                error: 'InvalidRequest',
+              });
+            }
+            const { createdAt, ...record } = input.record;
+            expect(typeof createdAt).toBe('string');
+            state.posts.push(record);
+            const uri = `at://${input.repo}/${input.collection}/${rkey}`;
+            state.records.set(rkey, { uri, cid: `cid-${rkey}`, value: input.record });
+            return { data: { uri, cid: `cid-${rkey}` } };
+          },
+          getRecord: async (input: { repo: string; collection: string; rkey: string }) => {
+            const record = state.records.get(input.rkey);
+            if (!record) {
+              throw Object.assign(new Error(`Could not locate record: ${input.rkey}`), {
+                status: 400,
+                error: 'RecordNotFound',
+              });
+            }
+            return { data: record };
+          },
+        },
+      },
+    };
     async deletePost(uri: string) {
       state.deleted.push(uri);
     }
@@ -69,6 +110,7 @@ vi.mock('@atproto/api', () => {
       return { data: { blob: { ref: `blob${state.uploads.length}`, mimeType: opts.encoding } } };
     }
     async getPosts({ uris }: { uris: string[] }) {
+      state.appViewReads += 1;
       return { data: { posts: uris.map((uri) => state.existing.get(uri)).filter(Boolean) } };
     }
   }
@@ -101,7 +143,7 @@ const png = (size: number) => ({
 });
 
 function feed(store = new MemoryTokenStore()) {
-  return new BlueskyFeed({ identifier: 'newsroom.bsky.social', appPassword: 'app-pass', store });
+  return new BlueskyFeed({ identifier: 'mybot.bsky.social', appPassword: 'app-pass', store });
 }
 
 beforeEach(() => {
@@ -111,7 +153,10 @@ beforeEach(() => {
   state.uploads.length = 0;
   state.deleted.length = 0;
   state.existing.clear();
+  state.records.clear();
+  state.appViewReads = 0;
   state.failPost = undefined;
+  state.expireOnPost = false;
   state.badResume = false;
 });
 
@@ -121,9 +166,9 @@ describe('BlueskyFeed', () => {
     const first = feed(store);
     await first.publish({ text: 'one' });
     await first.publish({ text: 'two' });
-    expect(state.logins).toEqual([{ identifier: 'newsroom.bsky.social', password: 'app-pass' }]);
-    const saved = await store.get('bluesky:newsroom.bsky.social');
-    expect(JSON.parse(saved?.value ?? '{}')).toMatchObject({ did: 'did:plc:newsroom' });
+    expect(state.logins).toEqual([{ identifier: 'mybot.bsky.social', password: 'app-pass' }]);
+    const saved = await store.get('bluesky:mybot.bsky.social');
+    expect(JSON.parse(saved?.value ?? '{}')).toMatchObject({ did: 'did:plc:mybot' });
 
     await feed(store).publish({ text: 'after a restart' });
     expect(state.logins).toHaveLength(1);
@@ -132,7 +177,7 @@ describe('BlueskyFeed', () => {
 
   it('signs in again when the stored session cannot be resumed', async () => {
     const store = new MemoryTokenStore();
-    await store.set('bluesky:newsroom.bsky.social', { value: '{"did":"x"}', issuedAt: 1 });
+    await store.set('bluesky:mybot.bsky.social', { value: '{"did":"x"}', issuedAt: 1 });
     state.badResume = true;
     await feed(store).publish({ text: 'hello' });
     expect(state.logins).toHaveLength(1);
@@ -153,8 +198,8 @@ describe('BlueskyFeed', () => {
     });
     expect(published).toMatchObject({
       feed: 'bluesky',
-      id: 'at://did:plc:newsroom/app.bsky.feed.post/rkey1',
-      url: 'https://bsky.app/profile/did:plc:newsroom/post/rkey1',
+      id: 'at://did:plc:mybot/app.bsky.feed.post/rkey1',
+      url: 'https://bsky.app/profile/did:plc:mybot/post/rkey1',
     });
   });
 
@@ -206,7 +251,7 @@ describe('BlueskyFeed', () => {
       async () => new Response(new Uint8Array(500), { headers: { 'content-length': '500' } })
     );
     const withFetch = new BlueskyFeed({
-      identifier: 'newsroom.bsky.social',
+      identifier: 'mybot.bsky.social',
       appPassword: 'app-pass',
       fetch: fetchImpl as unknown as typeof fetch,
     });
@@ -320,16 +365,61 @@ describe('BlueskyFeed', () => {
   });
 
   it('deletes a post and builds post URLs from URIs', async () => {
-    await feed().delete('at://did:plc:newsroom/app.bsky.feed.post/abc');
-    expect(state.deleted).toEqual(['at://did:plc:newsroom/app.bsky.feed.post/abc']);
+    await feed().delete('at://did:plc:mybot/app.bsky.feed.post/abc');
+    expect(state.deleted).toEqual(['at://did:plc:mybot/app.bsky.feed.post/abc']);
     expect(() => blueskyPostUrl('https://bsky.app')).toThrow('Not a Bluesky post URI');
   });
 
+  it('publishes with an idempotency key once, as the record key', async () => {
+    const bluesky = feed();
+    const keys = [bluesky.idempotencyKey(), bluesky.idempotencyKey()];
+    for (const key of keys) expect(key).toMatch(/^[234567a-j][234567a-z]{12}$/);
+    expect(keys[1] > keys[0]).toBe(true);
+
+    const first = await bluesky.publish({ text: 'once' }, { idempotencyKey: keys[0] });
+    expect(first.id).toBe(`at://did:plc:mybot/app.bsky.feed.post/${keys[0]}`);
+    const again = await feed().publish({ text: 'once' }, { idempotencyKey: keys[0] });
+    expect(again.id).toBe(first.id);
+    expect(state.posts).toHaveLength(1);
+
+    await expect(
+      bluesky.publish({ text: 'x' }, { idempotencyKey: 'not-a-tid' })
+    ).rejects.toMatchObject({ code: 'invalid_post' });
+  });
+
+  it('threads replies to its own new posts without waiting for the AppView', async () => {
+    const bluesky = feed();
+    const top = await bluesky.publish({ text: 'top' });
+    const second = await bluesky.publish({ text: 'second', replyTo: top.id });
+    await bluesky.publish({ text: 'third', replyTo: second.id });
+    expect(state.posts[2].reply).toEqual({
+      root: { uri: top.id, cid: 'cid-rkey1' },
+      parent: { uri: second.id, cid: 'cid-rkey2' },
+    });
+
+    const restarted = feed();
+    await restarted.publish({ text: 'fourth', replyTo: second.id });
+    expect(state.posts[3].reply).toEqual({
+      root: { uri: top.id, cid: 'cid-rkey1' },
+      parent: { uri: second.id, cid: 'cid-rkey2' },
+    });
+    expect(state.appViewReads).toBe(0);
+  });
+
+  it('signs in again and finishes the post when the session expires on the way', async () => {
+    const bluesky = feed();
+    await bluesky.publish({ text: 'before' });
+    state.expireOnPost = true;
+    const published = await bluesky.publish({ text: 'after' });
+    expect(published.id).toBe('at://did:plc:mybot/app.bsky.feed.post/rkey2');
+    expect(state.logins).toHaveLength(2);
+  });
+
   it('shares one session between feeds of one account', async () => {
-    const account = new BlueskyAccount({ identifier: 'newsroom.bsky.social', appPassword: 'p' });
+    const account = new BlueskyAccount({ identifier: 'mybot.bsky.social', appPassword: 'p' });
     await new BlueskyFeed({ account }).publish({ text: 'a' });
     await new BlueskyFeed({ account }).publish({ text: 'b' });
     expect(state.logins).toHaveLength(1);
-    expect(await account.did()).toBe('did:plc:newsroom');
+    expect(await account.did()).toBe('did:plc:mybot');
   });
 });

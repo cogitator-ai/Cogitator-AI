@@ -2,25 +2,39 @@ import { describe, expect, it, vi } from 'vitest';
 import type { FeedChannel, FeedPost, PublishedPost } from '@cogitator-ai/types';
 import { FeedError } from '../feeds/errors';
 import { FeedPublisher, type FeedFailedEvent } from '../feeds/publisher';
-import { MemoryPublishStore } from '../feeds/publish-store';
+import { MemoryPublishStore, type PublishJob } from '../feeds/publish-store';
 import { graphemeLength } from '../feeds/text';
 
 interface FakeFeed extends FeedChannel {
   sent: FeedPost[];
+  keys: Array<string | undefined>;
   failWith: Error[];
+  /** Runs inside each publish call, before it succeeds or fails. */
+  during?: () => Promise<void>;
 }
 
-function fakeFeed(type: string, maxLength = 300): FakeFeed {
+function fakeFeed(type: string, maxLength = 300, maxBytes?: number): FakeFeed {
+  let issued = 0;
   const feed: FakeFeed = {
     type,
     sent: [],
+    keys: [],
     failWith: [],
-    limits: { maxLength, maxImages: 4, maxImageBytes: 1_000_000, maxTags: 8 },
+    limits: {
+      maxLength,
+      ...(maxBytes !== undefined && { maxBytes }),
+      maxImages: 4,
+      maxImageBytes: 1_000_000,
+      maxTags: 8,
+    },
     measure: graphemeLength,
     connect: async () => undefined,
     close: async () => undefined,
     delete: async () => undefined,
-    publish: async (post): Promise<PublishedPost> => {
+    idempotencyKey: () => `${type}-key-${++issued}`,
+    publish: async (post, options): Promise<PublishedPost> => {
+      feed.keys.push(options?.idempotencyKey);
+      await feed.during?.();
       const error = feed.failWith.shift();
       if (error) throw error;
       feed.sent.push(post);
@@ -194,6 +208,106 @@ describe('FeedPublisher', () => {
     expect(bluesky.sent).toEqual([]);
     expect(published).toEqual(['bluesky', 'threads']);
     expect(outcome.job.deliveries[0].post?.id).toMatch(/^dry-run:/);
+  });
+
+  it('keeps one idempotency key per delivery from before its first attempt until it is published', async () => {
+    const { publisher, bluesky, threads, advance } = setup();
+    let saved: PublishJob | undefined;
+    bluesky.during = async () => {
+      saved ??= (await publisher.list())[0];
+    };
+    bluesky.failWith.push(new FeedError('bluesky', 'unavailable', 'lost the answer'));
+    const outcome = await publisher.publish({ text: 'Exactly once' });
+    expect(saved?.deliveries[0]?.idempotencyKey).toBe('bluesky-key-1');
+    advance(1_000);
+    await publisher.tick();
+    expect(bluesky.keys).toEqual(['bluesky-key-1', 'bluesky-key-1']);
+    expect(threads.keys).toEqual(['threads-key-1']);
+    const done = await publisher.get(outcome.job.id);
+    expect(done?.deliveries.map((d) => [d.status, d.idempotencyKey])).toEqual([
+      ['published', undefined],
+      ['published', undefined],
+    ]);
+  });
+
+  it('waits for a full quota without spending attempts on it', async () => {
+    const { publisher, threads, advance } = setup();
+    for (let i = 0; i < 5; i++) {
+      threads.failWith.push(
+        new FeedError('threads', 'quota_exceeded', 'quota used', { retryAfter: 3_600_000 })
+      );
+    }
+    const outcome = await publisher.publish({ text: 'Tomorrow maybe' }, { feeds: ['threads'] });
+    for (let i = 0; i < 5; i++) {
+      const job = await publisher.get(outcome.job.id);
+      expect(job?.deliveries[0]).toMatchObject({ status: 'pending', attempts: 0 });
+      advance(3_600_000);
+      await publisher.tick();
+    }
+    const done = await publisher.get(outcome.job.id);
+    expect(done?.deliveries[0]).toMatchObject({ status: 'published', attempts: 1 });
+  });
+
+  it('cuts a text to a limit in bytes as well', async () => {
+    const bluesky = fakeFeed('bluesky', 300, 100);
+    const publisher = new FeedPublisher({ feeds: [bluesky] });
+    await publisher.publish({ text: `${'🙂 '.repeat(60)}end` });
+    const sent = bluesky.sent[0]?.text ?? '';
+    expect(new TextEncoder().encode(sent).length).toBeLessThanOrEqual(100);
+    expect(sent.endsWith('…')).toBe(true);
+  });
+
+  it('keeps dry runs apart from real publications with the same key', async () => {
+    const store = new MemoryPublishStore();
+    const bluesky = fakeFeed('bluesky');
+    await new FeedPublisher({ feeds: [bluesky], store, dryRun: true }).publish(
+      { text: 'Rehearsal' },
+      { key: 'launch' }
+    );
+    const real = await new FeedPublisher({ feeds: [bluesky], store }).publish(
+      { text: 'Rehearsal' },
+      { key: 'launch' }
+    );
+    expect(real.duplicate).toBe(false);
+    expect(bluesky.sent).toHaveLength(1);
+  });
+
+  it('extends its claim while a slow feed publishes, so no other worker takes the job', async () => {
+    const store = new MemoryPublishStore();
+    const bluesky = fakeFeed('bluesky');
+    const publisher = new FeedPublisher({ feeds: [bluesky], store, claimTtl: 60 });
+    let takenOver: boolean | undefined;
+    bluesky.during = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const [job] = await store.list();
+      takenOver = job ? await store.claim(job.id, { owner: 'other-worker', ttl: 60 }) : undefined;
+    };
+    const outcome = await publisher.publish({ text: 'Slow' });
+    expect(takenOver).toBe(false);
+    expect(outcome.job.deliveries[0]?.status).toBe('published');
+    expect((await store.get(outcome.job.id))?.deliveries[0]?.status).toBe('published');
+  });
+
+  it('stops, without overwriting, once another worker took the job over', async () => {
+    class LosingStore extends MemoryPublishStore {
+      lose = false;
+      override async save(job: PublishJob, owner: string): Promise<boolean> {
+        return this.lose ? false : super.save(job, owner);
+      }
+    }
+    const store = new LosingStore();
+    const bluesky = fakeFeed('bluesky');
+    const threads = fakeFeed('threads');
+    bluesky.during = async () => {
+      store.lose = true;
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const publisher = new FeedPublisher({ feeds: [bluesky, threads], store });
+    await publisher.publish({ text: 'Contested' });
+    expect(bluesky.sent).toHaveLength(1);
+    expect(threads.sent).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('another worker took it over'));
+    warn.mockRestore();
   });
 
   it('refuses feeds it cannot tell apart', () => {

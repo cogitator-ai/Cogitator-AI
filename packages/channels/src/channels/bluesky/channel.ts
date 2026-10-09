@@ -10,6 +10,8 @@ const CHAT_SERVICE = 'did:web:api.bsky.chat';
 const MAX_TRACKED = 1000;
 const POST_LIMIT = 300;
 const MESSAGE_LIMIT = 1000;
+const MAX_NOTIFICATION_PAGES = 10;
+const MAX_UNREAD_MESSAGES = 500;
 
 export type BlueskyChannelConfig = ({ account: BlueskyAccount } | BlueskyConnectionConfig) & {
   /** How often to look for mentions, replies and messages, in ms (default 15 000). */
@@ -21,7 +23,7 @@ export type BlueskyChannelConfig = ({ account: BlueskyAccount } | BlueskyConnect
    * with "Allow access to your direct messages".
    */
   directMessages?: boolean;
-  /** Answers what arrived while the channel was stopped (default true); false starts from now. */
+  /** Answers what arrived while the channel was stopped (default true), false starts from now. */
   catchUp?: boolean;
 };
 
@@ -76,7 +78,7 @@ export class BlueskyChannel implements Channel {
   private polling?: Promise<void>;
   private readonly seen = new Map<string, true>();
   private readonly requests = new Set<string>();
-  private chatAgent?: Agent;
+  private chatOf?: { agent: Agent; chat: Agent };
   private ownDid?: string;
   private running = false;
 
@@ -97,11 +99,9 @@ export class BlueskyChannel implements Channel {
     if (this.running) return;
     const agent = await connectionOf(this.account).agent();
     this.ownDid = await this.account.did();
-    if (this.directMessages) this.chatAgent = agent.withProxy('bsky_chat', CHAT_SERVICE);
     if (!this.catchUp) await this.skipBacklog(agent);
     this.running = true;
     this.timer = setInterval(() => void this.poll(), this.interval);
-    this.timer.unref?.();
     await this.poll();
   }
 
@@ -112,12 +112,12 @@ export class BlueskyChannel implements Channel {
     await this.polling;
   }
 
-  /** Looks for new mentions, replies and messages once; `start()` does this on a timer. */
+  /** Looks for new mentions, replies and messages once. `start()` does this on a timer. */
   poll(): Promise<void> {
     this.polling ??= (async () => {
       try {
         if (this.posts) await this.pollPosts();
-        if (this.chatAgent) await this.pollMessages();
+        if (this.directMessages) await this.pollMessages();
       } catch (error) {
         console.error('[bluesky] Polling failed:', error);
       }
@@ -176,11 +176,13 @@ export class BlueskyChannel implements Channel {
     await this.feed.delete(messageId);
   }
 
+  /** The chat service agent of the current session, made again after a new sign-in. */
   private async chat(): Promise<Agent> {
-    if (this.chatAgent) return this.chatAgent;
     const agent = await connectionOf(this.account).agent();
-    this.chatAgent = agent.withProxy('bsky_chat', CHAT_SERVICE);
-    return this.chatAgent;
+    if (this.chatOf?.agent !== agent) {
+      this.chatOf = { agent, chat: agent.withProxy('bsky_chat', CHAT_SERVICE) };
+    }
+    return this.chatOf.chat;
   }
 
   private remember(id: string): boolean {
@@ -198,35 +200,57 @@ export class BlueskyChannel implements Channel {
       if (this.posts) {
         await agent.app.bsky.notification.updateSeen({ seenAt: new Date().toISOString() });
       }
-      if (this.chatAgent) await this.chatAgent.chat.bsky.convo.updateAllRead({});
+      if (this.directMessages) await (await this.chat()).chat.bsky.convo.updateAllRead({});
     } catch (error) {
       throw blueskyError(error, 'Skipping what arrived before the start');
     }
   }
 
+  /**
+   * Answers the unread mentions, replies and quotes, oldest first, paging back
+   * to the first one already seen, then marks them seen.
+   */
   private async pollPosts(): Promise<void> {
     const agent = await connectionOf(this.account).agent();
-    let notifications: NotificationPost[];
+    const unread: NotificationPost[] = [];
+    let cursor: string | undefined;
     try {
-      const response = await agent.app.bsky.notification.listNotifications({
-        reasons: ['mention', 'reply', 'quote'],
-        limit: 50,
-      });
-      notifications = response.data.notifications as NotificationPost[];
+      for (let page = 0; page < MAX_NOTIFICATION_PAGES; page++) {
+        const response = await agent.app.bsky.notification.listNotifications({
+          reasons: ['mention', 'reply', 'quote'],
+          limit: 100,
+          ...(cursor && { cursor }),
+        });
+        const notifications = response.data.notifications as NotificationPost[];
+        unread.push(...notifications.filter((notification) => !notification.isRead));
+        cursor = response.data.cursor;
+        if (!cursor || notifications.length === 0 || notifications.some((item) => item.isRead)) {
+          cursor = undefined;
+          break;
+        }
+      }
     } catch (error) {
       throw blueskyError(error, 'Listing notifications');
     }
-    const fresh = notifications
-      .filter((notification) => !notification.isRead && notification.author.did !== this.ownDid)
+    if (cursor) {
+      console.warn(
+        `[bluesky] More than ${MAX_NOTIFICATION_PAGES * 100} unread notifications: answering the newest`
+      );
+    }
+    const fresh = unread
+      .filter((notification) => notification.author.did !== this.ownDid)
       .sort((a, b) => a.indexedAt.localeCompare(b.indexedAt));
     for (const notification of fresh) {
       if (!this.remember(notification.uri)) continue;
       await this.deliver(this.postMessage(notification));
     }
-    const newest = fresh.at(-1);
+    const newest = unread
+      .map((notification) => notification.indexedAt)
+      .sort()
+      .at(-1);
     if (newest) {
       try {
-        await agent.app.bsky.notification.updateSeen({ seenAt: newest.indexedAt });
+        await agent.app.bsky.notification.updateSeen({ seenAt: newest });
       } catch (error) {
         console.error('[bluesky] Could not mark notifications seen:', error);
       }
@@ -269,13 +293,18 @@ export class BlueskyChannel implements Channel {
     }
     for (const convo of convos) {
       if (convo.unreadCount <= 0) continue;
-      let messages: ChatMessage[];
+      const messages: ChatMessage[] = [];
       try {
-        const response = await chat.chat.bsky.convo.getMessages({
-          convoId: convo.id,
-          limit: Math.min(convo.unreadCount, 100),
-        });
-        messages = response.data.messages as ChatMessage[];
+        let cursor: string | undefined;
+        do {
+          const response = await chat.chat.bsky.convo.getMessages({
+            convoId: convo.id,
+            limit: Math.min(convo.unreadCount - messages.length, 100),
+            ...(cursor && { cursor }),
+          });
+          messages.push(...(response.data.messages as ChatMessage[]));
+          cursor = response.data.cursor;
+        } while (cursor && messages.length < Math.min(convo.unreadCount, MAX_UNREAD_MESSAGES));
       } catch (error) {
         console.error(`[bluesky] Could not read conversation ${convo.id}:`, error);
         continue;

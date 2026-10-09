@@ -1,7 +1,6 @@
 import { mkdir, readdir, readFile, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { nanoid } from 'nanoid';
 import type { FeedPost } from '@cogitator-ai/types';
 import type { FeedErrorCode } from './errors';
 import {
@@ -17,7 +16,10 @@ import {
 export interface FeedDelivery {
   feed: string;
   status: 'pending' | 'published' | 'failed';
+  /** Attempts that could have published: a wait for a full quota is not one. */
   attempts: number;
+  /** The feed's idempotency key, kept from before the first attempt until it is published. */
+  idempotencyKey?: string;
   /** When to try next, in ms since the epoch, while pending. */
   nextAttemptAt: number;
   post?: { id: string; url: string; publishedAt: number };
@@ -47,24 +49,35 @@ export function nextDueAt(job: PublishJob): number | undefined {
   return due.length > 0 ? Math.min(...due) : undefined;
 }
 
-/** Where a publisher keeps its jobs, so scheduled and retried posts survive a restart. */
+/** A worker's hold on a job: who holds it, and for how long a claim or an extension lasts. */
+export interface JobClaim {
+  owner: string;
+  /** In ms. */
+  ttl: number;
+}
+
+/**
+ * Where a publisher keeps its jobs, so scheduled and retried posts survive a
+ * restart. A worker claims a job before it publishes it, extends the claim
+ * while it works, and can save the job only while the claim is its own, so
+ * a worker that lost its claim never overwrites the one that took over.
+ */
 export interface PublishStore {
   /** Adds `job`, unless one with the same key exists: that one is returned instead. */
   add(job: PublishJob): Promise<PublishJob>;
   get(id: string): Promise<PublishJob | undefined>;
-  /**
-   * Claims up to `limit` jobs with a delivery due by `now` for `ttl` ms, so
-   * no other worker takes them meanwhile.
-   */
-  claimDue(now: number, options: { limit: number; ttl: number }): Promise<PublishJob[]>;
-  /** Claims one job for `ttl` ms; `false` when another worker holds it. */
-  claim(id: string, ttl: number): Promise<boolean>;
-  /** Saves a job this store's worker holds, keeping the claim. */
-  save(job: PublishJob): Promise<void>;
-  /** Releases this worker's claim on a job. */
-  release(id: string): Promise<void>;
+  /** Claims the job with the earliest delivery due by `now` that no one holds. */
+  claimNext(now: number, claim: JobClaim): Promise<PublishJob | undefined>;
+  /** Claims one job, `false` when someone holds it or it is missing. */
+  claim(id: string, claim: JobClaim): Promise<boolean>;
+  /** Extends `claim.owner`'s claim by `claim.ttl` from now, `false` when it lost it. */
+  extend(id: string, claim: JobClaim): Promise<boolean>;
+  /** Saves a job while `owner` holds it, `false` when the claim was lost and nothing was saved. */
+  save(job: PublishJob, owner: string): Promise<boolean>;
+  /** Releases `owner`'s claim on a job. */
+  release(id: string, owner: string): Promise<void>;
   list(filter?: { pending?: boolean }): Promise<PublishJob[]>;
-  /** Removes a job no worker holds; `false` when it is missing or held. */
+  /** Removes a job no worker holds, `false` when it is missing or held. */
   remove(id: string): Promise<boolean>;
 }
 
@@ -88,76 +101,100 @@ export function decodeJob(json: string | unknown): PublishJob {
   ) as PublishJob;
 }
 
-interface Held {
-  job: PublishJob;
-  claimedUntil: number;
+const copyOf = (job: PublishJob): PublishJob => decodeJob(encodeJob(job));
+
+/** Claims held by one process, for the in-memory and file stores. */
+class LocalClaims {
+  private readonly claims = new Map<string, { owner: string; until: number }>();
+
+  constructor(private readonly now: () => number) {}
+
+  held(id: string): boolean {
+    return (this.claims.get(id)?.until ?? 0) > this.now();
+  }
+
+  holds(id: string, owner: string): boolean {
+    const claim = this.claims.get(id);
+    return claim?.owner === owner && claim.until > this.now();
+  }
+
+  take(id: string, claim: JobClaim): void {
+    this.claims.set(id, { owner: claim.owner, until: this.now() + claim.ttl });
+  }
+
+  release(id: string, owner: string): void {
+    if (this.claims.get(id)?.owner === owner) this.claims.delete(id);
+  }
+
+  drop(id: string): void {
+    this.claims.delete(id);
+  }
 }
 
 /** Jobs in memory, for tests and a publisher that needs no restart safety. */
 export class MemoryPublishStore implements PublishStore {
-  private readonly jobs = new Map<string, Held>();
+  private readonly jobs = new Map<string, PublishJob>();
+  private readonly claims: LocalClaims;
 
-  constructor(private readonly now: () => number = Date.now) {}
+  constructor(now: () => number = Date.now) {
+    this.claims = new LocalClaims(now);
+  }
 
   async add(job: PublishJob): Promise<PublishJob> {
-    const existing = job.key ? this.byKey(job.key) : undefined;
-    if (existing) return decodeJob(encodeJob(existing.job));
-    this.jobs.set(job.id, { job: decodeJob(encodeJob(job)), claimedUntil: 0 });
-    return decodeJob(encodeJob(job));
+    const existing = job.key
+      ? [...this.jobs.values()].find((candidate) => candidate.key === job.key)
+      : undefined;
+    if (existing) return copyOf(existing);
+    this.jobs.set(job.id, copyOf(job));
+    return copyOf(job);
   }
 
   async get(id: string): Promise<PublishJob | undefined> {
-    const held = this.jobs.get(id);
-    return held ? decodeJob(encodeJob(held.job)) : undefined;
+    const job = this.jobs.get(id);
+    return job ? copyOf(job) : undefined;
   }
 
-  async claimDue(now: number, options: { limit: number; ttl: number }): Promise<PublishJob[]> {
-    const due = [...this.jobs.values()]
-      .filter((held) => held.claimedUntil <= this.now())
-      .filter((held) => (nextDueAt(held.job) ?? Infinity) <= now)
-      .sort((a, b) => (nextDueAt(a.job) ?? 0) - (nextDueAt(b.job) ?? 0))
-      .slice(0, options.limit);
-    for (const held of due) held.claimedUntil = this.now() + options.ttl;
-    return due.map((held) => decodeJob(encodeJob(held.job)));
+  async claimNext(now: number, claim: JobClaim): Promise<PublishJob | undefined> {
+    const [next] = [...this.jobs.values()]
+      .filter((job) => !this.claims.held(job.id) && (nextDueAt(job) ?? Infinity) <= now)
+      .sort((a, b) => (nextDueAt(a) ?? 0) - (nextDueAt(b) ?? 0));
+    if (!next) return undefined;
+    this.claims.take(next.id, claim);
+    return copyOf(next);
   }
 
-  async claim(id: string, ttl: number): Promise<boolean> {
-    const held = this.jobs.get(id);
-    if (!held || held.claimedUntil > this.now()) return false;
-    held.claimedUntil = this.now() + ttl;
+  async claim(id: string, claim: JobClaim): Promise<boolean> {
+    if (!this.jobs.has(id) || this.claims.held(id)) return false;
+    this.claims.take(id, claim);
     return true;
   }
 
-  async save(job: PublishJob): Promise<void> {
-    const held = this.jobs.get(job.id);
-    this.jobs.set(job.id, {
-      job: decodeJob(encodeJob(job)),
-      claimedUntil: held?.claimedUntil ?? 0,
-    });
+  async extend(id: string, claim: JobClaim): Promise<boolean> {
+    if (!this.claims.holds(id, claim.owner)) return false;
+    this.claims.take(id, claim);
+    return true;
   }
 
-  async release(id: string): Promise<void> {
-    const held = this.jobs.get(id);
-    if (held) held.claimedUntil = 0;
+  async save(job: PublishJob, owner: string): Promise<boolean> {
+    if (!this.claims.holds(job.id, owner)) return false;
+    this.jobs.set(job.id, copyOf(job));
+    return true;
+  }
+
+  async release(id: string, owner: string): Promise<void> {
+    this.claims.release(id, owner);
   }
 
   async list(filter: { pending?: boolean } = {}): Promise<PublishJob[]> {
     return [...this.jobs.values()]
-      .map((held) => held.job)
       .filter((job) => filter.pending === undefined || isPending(job) === filter.pending)
       .sort((a, b) => a.createdAt - b.createdAt)
-      .map((job) => decodeJob(encodeJob(job)));
+      .map(copyOf);
   }
 
   async remove(id: string): Promise<boolean> {
-    const held = this.jobs.get(id);
-    if (!held || held.claimedUntil > this.now()) return false;
+    if (this.claims.held(id)) return false;
     return this.jobs.delete(id);
-  }
-
-  private byKey(key: string): Held | undefined {
-    for (const held of this.jobs.values()) if (held.job.key === key) return held;
-    return undefined;
   }
 }
 
@@ -174,13 +211,11 @@ export interface FilePublishStoreOptions {
 export class FilePublishStore implements PublishStore {
   readonly directory: string;
   private readonly queue = new SerialQueue();
-  private readonly claims = new Map<string, number>();
+  private readonly claims: LocalClaims;
 
-  constructor(
-    options: FilePublishStoreOptions = {},
-    private readonly now: () => number = Date.now
-  ) {
+  constructor(options: FilePublishStoreOptions = {}, now: () => number = Date.now) {
     this.directory = options.directory ?? join(homedir(), '.cogitator', 'feed-jobs');
+    this.claims = new LocalClaims(now);
   }
 
   async add(job: PublishJob): Promise<PublishJob> {
@@ -190,7 +225,7 @@ export class FilePublishStore implements PublishStore {
         if (existing) return existing;
       }
       await this.write(job);
-      return decodeJob(encodeJob(job));
+      return copyOf(job);
     });
   }
 
@@ -198,32 +233,42 @@ export class FilePublishStore implements PublishStore {
     return this.queue.run(() => this.read(id));
   }
 
-  async claimDue(now: number, options: { limit: number; ttl: number }): Promise<PublishJob[]> {
+  async claimNext(now: number, claim: JobClaim): Promise<PublishJob | undefined> {
     return this.queue.run(async () => {
-      const due = (await this.readAll())
-        .filter((job) => (this.claims.get(job.id) ?? 0) <= this.now())
-        .filter((job) => (nextDueAt(job) ?? Infinity) <= now)
-        .sort((a, b) => (nextDueAt(a) ?? 0) - (nextDueAt(b) ?? 0))
-        .slice(0, options.limit);
-      for (const job of due) this.claims.set(job.id, this.now() + options.ttl);
-      return due;
+      const [next] = (await this.readAll())
+        .filter((job) => !this.claims.held(job.id) && (nextDueAt(job) ?? Infinity) <= now)
+        .sort((a, b) => (nextDueAt(a) ?? 0) - (nextDueAt(b) ?? 0));
+      if (next) this.claims.take(next.id, claim);
+      return next;
     });
   }
 
-  async claim(id: string, ttl: number): Promise<boolean> {
+  async claim(id: string, claim: JobClaim): Promise<boolean> {
     return this.queue.run(async () => {
-      if ((this.claims.get(id) ?? 0) > this.now() || !(await this.read(id))) return false;
-      this.claims.set(id, this.now() + ttl);
+      if (this.claims.held(id) || !(await this.read(id))) return false;
+      this.claims.take(id, claim);
       return true;
     });
   }
 
-  async save(job: PublishJob): Promise<void> {
-    await this.queue.run(() => this.write(job));
+  async extend(id: string, claim: JobClaim): Promise<boolean> {
+    return this.queue.run(async () => {
+      if (!this.claims.holds(id, claim.owner)) return false;
+      this.claims.take(id, claim);
+      return true;
+    });
   }
 
-  async release(id: string): Promise<void> {
-    this.claims.delete(id);
+  async save(job: PublishJob, owner: string): Promise<boolean> {
+    return this.queue.run(async () => {
+      if (!this.claims.holds(job.id, owner)) return false;
+      await this.write(job);
+      return true;
+    });
+  }
+
+  async release(id: string, owner: string): Promise<void> {
+    await this.queue.run(async () => this.claims.release(id, owner));
   }
 
   async list(filter: { pending?: boolean } = {}): Promise<PublishJob[]> {
@@ -236,9 +281,9 @@ export class FilePublishStore implements PublishStore {
 
   async remove(id: string): Promise<boolean> {
     return this.queue.run(async () => {
-      if ((this.claims.get(id) ?? 0) > this.now() || !(await this.read(id))) return false;
+      if (this.claims.held(id) || !(await this.read(id))) return false;
       await rm(this.fileOf(id), { force: true });
-      this.claims.delete(id);
+      this.claims.drop(id);
       return true;
     });
   }
@@ -277,19 +322,18 @@ export class FilePublishStore implements PublishStore {
 
 export interface PostgresPublishStoreOptions {
   client: PgClient;
-  /** Table name (default `cogitator_feed_jobs`); created on first use. */
+  /** Table name (default `cogitator_feed_jobs`), created on first use. */
   table?: string;
 }
 
 /**
  * Jobs in a Postgres table. Claims are leases on the database clock, taken
  * with `FOR UPDATE SKIP LOCKED`, so several publishing workers split the due
- * jobs between them and never post one twice at the same time.
+ * jobs between them, and a worker saves a job only while its lease holds.
  */
 export class PostgresPublishStore implements PublishStore {
   private readonly client: PgClient;
   private readonly table: string;
-  private readonly owner = nanoid();
   private ready?: Promise<void>;
 
   constructor(options: PostgresPublishStoreOptions) {
@@ -322,52 +366,67 @@ export class PostgresPublishStore implements PublishStore {
     return rows[0] ? decodeJob(fromJson(rows[0].data)) : undefined;
   }
 
-  async claimDue(now: number, options: { limit: number; ttl: number }): Promise<PublishJob[]> {
-    await this.ensureTable();
-    const { rows } = await this.client.query(
-      `UPDATE ${this.table}
-          SET claimed_until = now() + $3::double precision * interval '1 millisecond',
-              claimed_by = $4
-        WHERE id IN (
-          SELECT id FROM ${this.table}
-           WHERE next_due_at IS NOT NULL AND next_due_at <= $1
-             AND (claimed_until IS NULL OR claimed_until < now())
-           ORDER BY next_due_at
-           LIMIT $2
-           FOR UPDATE SKIP LOCKED)
-        RETURNING data`,
-      [now, options.limit, options.ttl, this.owner]
-    );
-    return rows.map((row) => decodeJob(fromJson(row.data)));
-  }
-
-  async claim(id: string, ttl: number): Promise<boolean> {
+  async claimNext(now: number, claim: JobClaim): Promise<PublishJob | undefined> {
     await this.ensureTable();
     const { rows } = await this.client.query(
       `UPDATE ${this.table}
           SET claimed_until = now() + $2::double precision * interval '1 millisecond',
               claimed_by = $3
-        WHERE id = $1 AND (claimed_until IS NULL OR claimed_until < now() OR claimed_by = $3)
+        WHERE id = (
+          SELECT id FROM ${this.table}
+           WHERE next_due_at IS NOT NULL AND next_due_at <= $1
+             AND (claimed_until IS NULL OR claimed_until < now())
+           ORDER BY next_due_at
+           LIMIT 1
+           FOR UPDATE SKIP LOCKED)
+        RETURNING data`,
+      [now, claim.ttl, claim.owner]
+    );
+    return rows[0] ? decodeJob(fromJson(rows[0].data)) : undefined;
+  }
+
+  async claim(id: string, claim: JobClaim): Promise<boolean> {
+    await this.ensureTable();
+    const { rows } = await this.client.query(
+      `UPDATE ${this.table}
+          SET claimed_until = now() + $2::double precision * interval '1 millisecond',
+              claimed_by = $3
+        WHERE id = $1 AND (claimed_until IS NULL OR claimed_until < now())
         RETURNING id`,
-      [id, ttl, this.owner]
+      [id, claim.ttl, claim.owner]
     );
     return rows.length > 0;
   }
 
-  async save(job: PublishJob): Promise<void> {
+  async extend(id: string, claim: JobClaim): Promise<boolean> {
     await this.ensureTable();
-    await this.client.query(
-      `UPDATE ${this.table} SET data = $2::jsonb, next_due_at = $3 WHERE id = $1`,
-      [job.id, encodeJob(job), nextDueAt(job) ?? null]
+    const { rows } = await this.client.query(
+      `UPDATE ${this.table}
+          SET claimed_until = now() + $2::double precision * interval '1 millisecond'
+        WHERE id = $1 AND claimed_by = $3 AND claimed_until > now()
+        RETURNING id`,
+      [id, claim.ttl, claim.owner]
     );
+    return rows.length > 0;
   }
 
-  async release(id: string): Promise<void> {
+  async save(job: PublishJob, owner: string): Promise<boolean> {
+    await this.ensureTable();
+    const { rows } = await this.client.query(
+      `UPDATE ${this.table} SET data = $2::jsonb, next_due_at = $3
+        WHERE id = $1 AND claimed_by = $4 AND claimed_until > now()
+        RETURNING id`,
+      [job.id, encodeJob(job), nextDueAt(job) ?? null, owner]
+    );
+    return rows.length > 0;
+  }
+
+  async release(id: string, owner: string): Promise<void> {
     await this.ensureTable();
     await this.client.query(
       `UPDATE ${this.table} SET claimed_until = NULL, claimed_by = NULL
         WHERE id = $1 AND claimed_by = $2`,
-      [id, this.owner]
+      [id, owner]
     );
   }
 

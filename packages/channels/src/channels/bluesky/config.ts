@@ -1,7 +1,7 @@
 import type { TokenStore } from '@cogitator-ai/types';
 
 export interface BlueskyConnectionConfig {
-  /** The account's handle (`newsroom.bsky.social`) or DID. */
+  /** The account's handle (`mybot.bsky.social`) or DID. */
   identifier: string;
   /** An app password from Settings → Privacy and security → App passwords, not the account password. */
   appPassword: string;

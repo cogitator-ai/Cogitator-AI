@@ -35,6 +35,7 @@ function countingFeed(sent: FeedPost[]): FeedChannel {
     connect: async () => undefined,
     close: async () => undefined,
     delete: async () => undefined,
+    idempotencyKey: () => `key-${Date.now()}`,
     publish: async (post): Promise<PublishedPost> => {
       sent.push(post);
       await new Promise((resolve) => setTimeout(resolve, 20));
@@ -126,18 +127,45 @@ describePostgres('Postgres feed stores', () => {
     const workers = [0, 1, 2].map(() => new PostgresPublishStore({ client: pool, table: name }));
     await workers[0].list();
     for (let i = 0; i < 12; i++) await workers[0].add(job(`job-${i}`, 100 + i));
-    const claims = await Promise.all(
-      workers.map((store) => store.claimDue(10_000, { limit: 5, ttl: 60_000 }))
+    const claimed = await Promise.all(
+      workers.map(async (store, index) => {
+        const ids: string[] = [];
+        for (;;) {
+          const next = await store.claimNext(10_000, { owner: `worker-${index}`, ttl: 60_000 });
+          if (!next) return ids;
+          ids.push(next.id);
+        }
+      })
     );
-    const ids = claims.flat().map((j) => j.id);
+    const ids = claimed.flat();
     expect(ids).toHaveLength(12);
     expect(new Set(ids).size).toBe(12);
-    const held = claims[0][0].id;
-    expect(await workers[1].claim(held, 60_000)).toBe(false);
-    expect(await workers[0].claim(held, 60_000)).toBe(true);
+    const held = claimed.find((list) => list.length > 0)?.[0] ?? '';
+    const holder = claimed.findIndex((list) => list.includes(held));
+    const owner = { owner: `worker-${holder}`, ttl: 60_000 };
+    const other = { owner: 'someone-else', ttl: 60_000 };
+    expect(await workers[1].claim(held, other)).toBe(false);
+    expect(await workers[1].extend(held, other)).toBe(false);
+    expect(await workers[0].extend(held, owner)).toBe(true);
+    const stored = await workers[0].get(held);
+    if (!stored) throw new Error('missing job');
+    expect(await workers[1].save(stored, 'someone-else')).toBe(false);
+    expect(await workers[0].save(stored, owner.owner)).toBe(true);
     expect(await workers[1].remove(held)).toBe(false);
-    await workers[0].release(held);
+    await workers[0].release(held, owner.owner);
     expect(await workers[1].remove(held)).toBe(true);
+  });
+
+  it('lets a worker save only until its lease runs out on the database clock', async () => {
+    const store = new PostgresPublishStore({ client: pool, table: table('feed_jobs') });
+    await store.add(job('short', 100));
+    expect(await store.claim('short', { owner: 'a', ttl: 50 })).toBe(true);
+    const held = await store.get('short');
+    if (!held) throw new Error('missing job');
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(await store.save(held, 'a')).toBe(false);
+    expect(await store.extend('short', { owner: 'a', ttl: 50 })).toBe(false);
+    expect(await store.claim('short', { owner: 'b', ttl: 60_000 })).toBe(true);
   });
 
   it('publishes a post once when two publishers run the same due job', async () => {

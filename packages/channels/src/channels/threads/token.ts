@@ -9,7 +9,7 @@ const HOUR = 60 * 60 * 1000;
 export interface ThreadsTokenOptions {
   /** A long-lived token to start from when the store holds none. */
   accessToken?: string;
-  /** When `accessToken` expires, where known; otherwise the first renewal finds out. */
+  /** When `accessToken` expires, where known. Otherwise the first renewal finds out. */
   accessTokenExpiresAt?: Date | number;
   /** Where the token is kept and renewed (default in memory). */
   store?: TokenStore;
@@ -24,10 +24,13 @@ export interface ThreadsTokenOptions {
 
 /**
  * A Threads long-lived token kept fresh. Threads renews a token that is at
- * least a day old and not yet expired, for sixty days; one left alone
+ * least a day old and not yet expired, for sixty days. One left alone
  * expires and cannot be renewed. The manager renews it `renewBefore` its
  * end, checks daily once started, and before each use. A token whose expiry
- * is unknown is renewed at the first chance, which reveals it.
+ * is unknown is renewed at the first chance, which reveals it. Calls made at
+ * the same time share one renewal. Before renewing, the manager rereads the
+ * store, so a token another process renewed is used as it is. Two processes
+ * renewing at the same moment both get valid tokens.
  */
 export class ThreadsTokenManager {
   private readonly store: TokenStore;
