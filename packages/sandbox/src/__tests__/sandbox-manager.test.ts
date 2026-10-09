@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { SandboxManager } from '../sandbox-manager';
 import type {
   SandboxConfig,
@@ -112,6 +114,9 @@ describe('SandboxManager', () => {
 
   describe('docker fallback', () => {
     it('falls back to native when docker unavailable', async () => {
+      const offline = new SandboxManager({
+        docker: { socketPath: join(tmpdir(), 'cogitator-no-docker.sock') },
+      });
       const request: SandboxExecutionRequest = {
         command: ['echo', 'fallback test'],
       };
@@ -121,9 +126,14 @@ describe('SandboxManager', () => {
         image: 'alpine:3.19',
       };
 
-      const result = await manager.execute(request, config);
-      assertSuccess(result);
-      expect(result.data.stdout.trim()).toBe('fallback test');
+      try {
+        expect(await offline.isDockerAvailable()).toBe(false);
+        const result = await offline.execute(request, config);
+        assertSuccess(result);
+        expect(result.data.stdout.trim()).toBe('fallback test');
+      } finally {
+        await offline.shutdown();
+      }
     });
   });
 
