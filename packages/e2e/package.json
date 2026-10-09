@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@ai-sdk/google": "^4.0.87",
+    "@atproto/api": "0.24.0",
     "@cogitator-ai/a2a": "workspace:*",
     "@cogitator-ai/ai-sdk": "workspace:*",
     "@cogitator-ai/browser": "workspace:*",

@@ -697,6 +697,9 @@ importers:
       '@ai-sdk/google':
         specifier: ^4.0.87
         version: 4.0.87(zod@4.6.5)
+      '@atproto/api':
+        specifier: 0.24.0
+        version: 0.24.0
       '@cogitator-ai/a2a':
         specifier: workspace:*
         version: link:../a2a
