@@ -38,5 +38,7 @@ export * from './rag';
 export * from './voice';
 export * from './session';
 export * from './channel';
+export * from './feed';
+export * from './decision';
 export * from './skill';
 export * from './web';

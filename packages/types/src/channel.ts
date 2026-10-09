@@ -7,7 +7,8 @@ import type { CompactionConfig, CompactionResult, Session, SessionManager } from
 import type { MemoryAdapter } from './memory';
 import type { ToolApprovalDecision, ToolApprovalRequest } from './runtime';
 
-export type ChannelType = 'telegram' | 'discord' | 'slack' | 'whatsapp' | 'webchat' | (string & {});
+export type ChannelType =
+  'telegram' | 'discord' | 'slack' | 'whatsapp' | 'webchat' | 'bluesky' | 'threads' | (string & {});
 
 export type AttachmentType = 'image' | 'file' | 'audio' | 'video';
 
