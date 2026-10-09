@@ -114,6 +114,7 @@ export { adaptMarkdown, chunkMessage, getPlatformLimit } from './formatters/mark
 export { chunkDiscordText } from './formatters/discord-chunker';
 export type { ChunkDiscordTextOpts } from './formatters/discord-chunker';
 export { markdownToWhatsApp } from './formatters/whatsapp-markdown';
+export { markdownToPlainText } from './formatters/plain-text';
 
 export type {
   Channel,

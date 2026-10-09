@@ -7,3 +7,4 @@ export {
   blueskyPostUrl,
   type BlueskyFeedConfig,
 } from './feed';
+export { BlueskyChannel, blueskyChannel, type BlueskyChannelConfig } from './channel';

@@ -285,3 +285,37 @@ describe('Gateway', () => {
     );
   });
 });
+
+describe('Gateway with a channel that cannot edit', () => {
+  it('sends the finished answer once instead of streaming it into edits', async () => {
+    const channel = { ...createMockChannel(), editable: false };
+    const cogitator = {
+      run: vi.fn(
+        async (_agent: unknown, options: { stream?: boolean; onToken?: (t: string) => void }) => {
+          expect(options.stream).toBeFalsy();
+          return { output: 'The whole answer', usage: { totalTokens: 10 } };
+        }
+      ),
+      close: vi.fn(),
+    };
+    const gateway = new Gateway({
+      agent: {
+        name: 'test',
+        id: 'a1',
+        model: 'test/m',
+        instructions: 'hi',
+        tools: [],
+        config: {},
+      } as never,
+      channels: [channel],
+      cogitator: cogitator as never,
+      stream: { flushInterval: 10, minChunkSize: 1 },
+    });
+    await gateway.start();
+    await channel.triggerMessage(createTestMessage());
+    expect(channel.sendText).toHaveBeenCalledTimes(1);
+    expect(channel.sendText).toHaveBeenCalledWith('ch_1', 'The whole answer', expect.anything());
+    expect(channel.editText).not.toHaveBeenCalled();
+    await gateway.stop();
+  });
+});

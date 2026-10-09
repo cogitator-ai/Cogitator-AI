@@ -1,5 +1,6 @@
 import type { ChannelType } from '@cogitator-ai/types';
 import { markdownToWhatsApp } from './whatsapp-markdown';
+import { markdownToPlainText } from './plain-text';
 import { protectCode } from './code-protect';
 
 const PLATFORM_LIMITS: Record<string, number> = {
@@ -8,6 +9,8 @@ const PLATFORM_LIMITS: Record<string, number> = {
   slack: 40000,
   whatsapp: 65536,
   webchat: Infinity,
+  bluesky: Infinity,
+  threads: Infinity,
 };
 
 const DEFAULT_LIMIT = 4096;
@@ -25,6 +28,9 @@ export function adaptMarkdown(text: string, channelType: ChannelType): string {
       return toSlackMarkdown(text);
     case 'whatsapp':
       return markdownToWhatsApp(text);
+    case 'bluesky':
+    case 'threads':
+      return markdownToPlainText(text);
     default:
       return text;
   }
