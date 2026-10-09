@@ -81,6 +81,8 @@ export type { CapabilitiesInput } from './capabilities';
 export { RuntimeBuilder, RESTART_EXIT_CODE } from './runtime-builder';
 export type { AssistantConfig, BuiltRuntime, RuntimeBuilderOpts } from './runtime-builder';
 
+export * from './feeds/index';
+
 export { SimpleTimerStore } from './simple-timer-store';
 export type { TimerStoreOptions } from './simple-timer-store';
 
@@ -128,4 +130,12 @@ export type {
   DebounceConfig,
   EnvelopeConfig,
   QueueMode,
+  FeedChannel,
+  FeedImage,
+  FeedLimits,
+  FeedLink,
+  FeedPost,
+  PublishedPost,
+  StoredToken,
+  TokenStore,
 } from '@cogitator-ai/types';
