@@ -13,6 +13,9 @@ export function createCogitator(overrides: Partial<CogitatorConfig> = {}) {
         ...(process.env.ANTHROPIC_API_KEY && {
           anthropic: { apiKey: process.env.ANTHROPIC_API_KEY },
         }),
+        ...(process.env.OPENROUTER_API_KEY && {
+          openrouter: { apiKey: process.env.OPENROUTER_API_KEY },
+        }),
         ollama: {
           baseUrl: process.env.OLLAMA_URL || 'http://localhost:11434',
         },

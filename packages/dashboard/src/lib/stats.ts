@@ -16,6 +16,7 @@ export const LLM_PROVIDERS = [
   'Groq',
   'Together',
   'DeepSeek',
+  'OpenRouter',
 ] as const;
 
 /** Adapters in `packages/memory/src/adapters` (`createMemoryAdapter` plus the Qdrant embedding adapter). */
@@ -40,7 +41,15 @@ export const SWARM_STRATEGIES = [
 ] as const;
 
 /** Messaging platforms in `packages/channels/src/channels`; the local terminal channel is not counted. */
-export const CHANNELS = ['Telegram', 'Discord', 'Slack', 'WhatsApp', 'WebChat'] as const;
+export const CHANNELS = [
+  'Telegram',
+  'Discord',
+  'Slack',
+  'WhatsApp',
+  'WebChat',
+  'Bluesky',
+  'Threads',
+] as const;
 
 /** Length of `builtinTools` in `packages/core/src/tools/index.ts`. */
 export const BUILTIN_TOOL_COUNT = 26;
@@ -49,4 +58,4 @@ export const BUILTIN_TOOL_COUNT = 26;
 export const NPM_PACKAGE_COUNT = 33;
 
 /** Runnable examples under `examples/`, counted per category like the root README. */
-export const EXAMPLE_COUNT = 74;
+export const EXAMPLE_COUNT = 77;

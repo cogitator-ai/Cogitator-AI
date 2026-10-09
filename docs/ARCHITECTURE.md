@@ -8,43 +8,43 @@ Cogitator is a library-first runtime: everything runs inside your Node.js (or Bu
 
 The monorepo has 35 packages: 32 published `@cogitator-ai/*` packages, the `create-cogitator-app` scaffolder, and two private ones (the website and the end-to-end suite):
 
-| Layer              | Package                        | Description                                                                     |
-| ------------------ | ------------------------------ | ------------------------------------------------------------------------------- |
-| **Core**           | `@cogitator-ai/types`          | Shared TypeScript interfaces, error codes and defaults                          |
-|                    | `@cogitator-ai/core`           | Main runtime — `Cogitator`, `Agent`, `tool()`, LLM backends, built-in tools     |
-|                    | `@cogitator-ai/models`         | Dynamic model registry with pricing                                             |
-|                    | `@cogitator-ai/config`         | `cogitator.yml` and environment loading with Zod validation                     |
-| **Memory**         | `@cogitator-ai/memory`         | Memory adapters (in-memory, Redis, Postgres, SQLite, MongoDB), Qdrant vectors   |
-| **Execution**      | `@cogitator-ai/sandbox`        | Docker, WASM and native execution                                               |
-|                    | `@cogitator-ai/wasm-tools`     | 14 pre-built WASM tools (calc, hash, regex, CSV, XML, …)                        |
-|                    | `@cogitator-ai/worker`         | BullMQ distributed job queue for agent execution                                |
-|                    | `@cogitator-ai/browser`        | Browser automation (Playwright, stealth, vision)                                |
-| **Orchestration**  | `@cogitator-ai/workflows`      | DAG engine with sagas, map-reduce, human-in-the-loop, timers, scheduling        |
-|                    | `@cogitator-ai/swarms`         | 7 swarm strategies (hierarchical, round-robin, consensus, auction, pipeline, …) |
-| **Protocols**      | `@cogitator-ai/a2a`            | Agent-to-Agent Protocol v0.3                                                    |
-|                    | `@cogitator-ai/mcp`            | Model Context Protocol client and server                                        |
-|                    | `@cogitator-ai/openai-compat`  | OpenAI Assistants API compatibility layer                                       |
-| **Integrations**   | `@cogitator-ai/ai-sdk`         | Vercel AI SDK adapter                                                           |
-|                    | `@cogitator-ai/express`        | Express.js server adapter                                                       |
-|                    | `@cogitator-ai/fastify`        | Fastify plugin                                                                  |
-|                    | `@cogitator-ai/hono`           | Hono app (Node.js, Bun, Deno, Cloudflare Workers)                               |
-|                    | `@cogitator-ai/koa`            | Koa router                                                                      |
-|                    | `@cogitator-ai/tetsu`          | Tetsu controller on Bun (SSE, WebSocket, OpenAPI)                               |
-|                    | `@cogitator-ai/next`           | Next.js App Router handlers                                                     |
-|                    | `@cogitator-ai/server-shared`  | Shared REST/SSE/WebSocket protocol and OpenAPI generation                       |
-|                    | `@cogitator-ai/channels`       | Messaging channels (Telegram, Discord, Slack, WhatsApp, WebChat)                |
-| **Advanced**       | `@cogitator-ai/self-modifying` | Runtime tool generation                                                         |
-|                    | `@cogitator-ai/neuro-symbolic` | Prolog-style logic, SAT/SMT                                                     |
-|                    | `@cogitator-ai/rag`            | RAG pipeline (loaders, chunkers, retrieval, reranking)                          |
-|                    | `@cogitator-ai/evals`          | Eval framework (metrics, A/B testing, assertions)                               |
-|                    | `@cogitator-ai/voice`          | Voice/Realtime agents (STT, TTS, VAD)                                           |
-| **Infrastructure** | `@cogitator-ai/redis`          | Redis client (standalone + cluster)                                             |
-|                    | `@cogitator-ai/deploy`         | Docker & Fly.io deployment                                                      |
-|                    | `@cogitator-ai/cli`            | The `cogitator` command (init, up, run, deploy, …)                              |
-| **Support**        | `@cogitator-ai/test-utils`     | Testing utilities                                                               |
-|                    | `create-cogitator-app`         | Interactive project scaffolder                                                  |
-|                    | `@cogitator-ai/dashboard`      | Private: the website — landing page, docs (Fumadocs) and cookbook               |
-|                    | `@cogitator-ai/e2e`            | Private: end-to-end test suite                                                  |
+| Layer              | Package                        | Description                                                                                         |
+| ------------------ | ------------------------------ | --------------------------------------------------------------------------------------------------- |
+| **Core**           | `@cogitator-ai/types`          | Shared TypeScript interfaces, error codes and defaults                                              |
+|                    | `@cogitator-ai/core`           | Main runtime - `Cogitator`, `Agent`, `tool()`, LLM backends, built-in tools                         |
+|                    | `@cogitator-ai/models`         | Dynamic model registry with pricing                                                                 |
+|                    | `@cogitator-ai/config`         | `cogitator.yml` and environment loading with Zod validation                                         |
+| **Memory**         | `@cogitator-ai/memory`         | Memory adapters (in-memory, Redis, Postgres, SQLite, MongoDB), Qdrant vectors                       |
+| **Execution**      | `@cogitator-ai/sandbox`        | Docker, WASM and native execution                                                                   |
+|                    | `@cogitator-ai/wasm-tools`     | 14 pre-built WASM tools (calc, hash, regex, CSV, XML, …)                                            |
+|                    | `@cogitator-ai/worker`         | BullMQ distributed job queue for agent execution                                                    |
+|                    | `@cogitator-ai/browser`        | Browser automation (Playwright, stealth, vision)                                                    |
+| **Orchestration**  | `@cogitator-ai/workflows`      | DAG engine with sagas, map-reduce, human-in-the-loop, timers, scheduling                            |
+|                    | `@cogitator-ai/swarms`         | 7 swarm strategies (hierarchical, round-robin, consensus, auction, pipeline, …)                     |
+| **Protocols**      | `@cogitator-ai/a2a`            | Agent-to-Agent Protocol v0.3                                                                        |
+|                    | `@cogitator-ai/mcp`            | Model Context Protocol client and server                                                            |
+|                    | `@cogitator-ai/openai-compat`  | OpenAI Assistants API compatibility layer                                                           |
+| **Integrations**   | `@cogitator-ai/ai-sdk`         | Vercel AI SDK adapter                                                                               |
+|                    | `@cogitator-ai/express`        | Express.js server adapter                                                                           |
+|                    | `@cogitator-ai/fastify`        | Fastify plugin                                                                                      |
+|                    | `@cogitator-ai/hono`           | Hono app (Node.js, Bun, Deno, Cloudflare Workers)                                                   |
+|                    | `@cogitator-ai/koa`            | Koa router                                                                                          |
+|                    | `@cogitator-ai/tetsu`          | Tetsu controller on Bun (SSE, WebSocket, OpenAPI)                                                   |
+|                    | `@cogitator-ai/next`           | Next.js App Router handlers                                                                         |
+|                    | `@cogitator-ai/server-shared`  | Shared REST/SSE/WebSocket protocol and OpenAPI generation                                           |
+|                    | `@cogitator-ai/channels`       | Messaging channels (Telegram, Discord, Slack, WhatsApp, WebChat, Bluesky, Threads) and social feeds |
+| **Advanced**       | `@cogitator-ai/self-modifying` | Runtime tool generation                                                                             |
+|                    | `@cogitator-ai/neuro-symbolic` | Prolog-style logic, SAT/SMT                                                                         |
+|                    | `@cogitator-ai/rag`            | RAG pipeline (loaders, chunkers, retrieval, reranking)                                              |
+|                    | `@cogitator-ai/evals`          | Eval framework (metrics, A/B testing, assertions)                                                   |
+|                    | `@cogitator-ai/voice`          | Voice/Realtime agents (STT, TTS, VAD)                                                               |
+| **Infrastructure** | `@cogitator-ai/redis`          | Redis client (standalone + cluster)                                                                 |
+|                    | `@cogitator-ai/deploy`         | Docker & Fly.io deployment                                                                          |
+|                    | `@cogitator-ai/cli`            | The `cogitator` command (init, up, run, deploy, …)                                                  |
+| **Support**        | `@cogitator-ai/test-utils`     | Testing utilities                                                                                   |
+|                    | `create-cogitator-app`         | Interactive project scaffolder                                                                      |
+|                    | `@cogitator-ai/dashboard`      | Private: the website - landing page, docs (Fumadocs) and cookbook                                   |
+|                    | `@cogitator-ai/e2e`            | Private: end-to-end test suite                                                                      |
 
 ---
 

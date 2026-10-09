@@ -39,7 +39,7 @@ pnpm dev
 
 Templates: `basic`, `memory`, `swarm`, `workflow`, `api-server`, `nextjs`. Without flags the scaffolder asks for everything interactively. See [Project Scaffolding](https://cogitator.app/docs/getting-started/scaffolding).
 
-The `@cogitator-ai/cli` package (`cogitator` command) covers the rest of the lifecycle: `cogitator init <name>` scaffolds a personal assistant connected to messaging channels (Telegram, Discord, Slack, WebChat), `cogitator up` starts the assistant from `cogitator.yml` or the Docker Compose services in the current directory, and `cogitator run`, `status`, `logs`, `down`, `deploy` and `models` do what they say. See [CLI](https://cogitator.app/docs/cli).
+The `@cogitator-ai/cli` package (`cogitator` command) covers the rest of the lifecycle: `cogitator init <name>` scaffolds a personal assistant connected to messaging channels (Telegram, Discord, Slack, WebChat, Bluesky, Threads), `cogitator up` starts the assistant from `cogitator.yml` or the Docker Compose services in the current directory, and `cogitator run`, `status`, `logs`, `down`, `deploy` and `models` do what they say. See [CLI](https://cogitator.app/docs/cli).
 
 ---
 

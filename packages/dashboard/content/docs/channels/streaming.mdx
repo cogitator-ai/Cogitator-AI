@@ -53,6 +53,10 @@ const gateway = new Gateway({
 | WhatsApp | Yes (message edit)              | —             | 65,536 chars |
 | WebChat  | Yes (WebSocket `edit` event)    | No limit      | No limit     |
 | Terminal | Yes (output rewritten in place) | No limit      | No limit     |
+| Bluesky  | No (sent finished)              | -             | 300 per post |
+| Threads  | No (sent finished)              | -             | 500 per post |
+
+A channel that cannot edit what it sent says so with `editable: false`, as Bluesky and Threads do: the Gateway then sends its answers finished, as with streaming off, and the channel splits a long one into a thread of posts.
 
 `RuntimeBuilder` streams with `flushInterval: 600` and `minChunkSize: 30` unless `stream` in `cogitator.yml` overrides them. Telegram streams through rich drafts (`sendRichMessageDraft`, Markdown rendered as written) with a stop button, and falls back to `editMessageText` in groups or if a draft fails; a press of the stop button stops the run and keeps what was written as the reply (`stream.stopButton: false` turns it off); Discord edits keep their continuation messages in sync when an answer grows past 2,000 chars.
 

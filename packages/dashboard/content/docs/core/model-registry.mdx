@@ -152,7 +152,7 @@ The registry includes provider entries (`BUILTIN_PROVIDERS`) for 16 providers:
 
 OpenAI (`openai`), Anthropic (`anthropic`), Google (`google`), Ollama (`ollama`), Azure OpenAI (`azure`), AWS Bedrock (`aws`), Mistral AI (`mistral`), Cohere (`cohere`), Groq (`groq`), Together AI (`together`), Fireworks AI (`fireworks`), DeepInfra (`deepinfra`), Perplexity (`perplexity`), Replicate (`replicate`), xAI (`xai`), OpenRouter (`openrouter`).
 
-Built-in model data covers OpenAI, Anthropic and Google; models of the other providers, and additional providers, come from LiteLLM data once it is fetched. `getProvider(id).models` lists the model ids loaded for a provider.
+Built-in model data covers OpenAI, Anthropic, Google and the decision models of OpenRouter. Models of the other providers, and additional providers, come from LiteLLM data once it is fetched. `getProvider(id).models` lists the model ids loaded for a provider.
 
 ## Built-in Models
 
@@ -173,6 +173,17 @@ const cheapToolModels = BUILTIN_MODELS.filter(
   (model) =>
     model.capabilities?.supportsTools && (model.pricing.input + model.pricing.output) / 2 <= 5
 );
+```
+
+### Decision Models
+
+`kind` says what a model does: `chat` (when unset) answers messages, `decision` answers typed questions through [`cog.decide()`](/docs/core/decisions) and cannot chat. `OPENROUTER_MODELS` has TypeSafe's Jev (`openrouter/typesafe/jev-1.13`, also `~typesafe/jev-latest`) at $0.042 per million input tokens with free output and a 32 000 token context. `isDecisionModel(id)` tells them apart, which the runtime uses to refuse a chat run on one.
+
+```typescript
+import { isDecisionModel } from '@cogitator-ai/models';
+
+isDecisionModel('openrouter/typesafe/jev-1.13'); // true
+isDecisionModel('openai/gpt-6-luna'); // false
 ```
 
 ## Caching

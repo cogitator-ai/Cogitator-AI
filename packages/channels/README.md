@@ -15,10 +15,11 @@ pnpm add discord.js                # Discord
 pnpm add @slack/bolt               # Slack
 pnpm add @whiskeysockets/baileys   # WhatsApp, 6.x or 7.x (+ qrcode-terminal to print the pairing QR)
 pnpm add ws                        # WebChat
+pnpm add @atproto/api              # Bluesky (Threads needs no SDK)
 
 # RuntimeBuilder (`cogitator up`)
 pnpm add better-sqlite3            # SQLite memory, knowledge graph and core facts (always needed)
-pnpm add pg                        # memory.adapter: postgres
+pnpm add pg                        # memory.adapter: postgres, PostgresPublishStore, PostgresTokenStore
 ```
 
 All adapters are optional peer dependencies, loaded only when the channel starts; a missing one fails `start()` with an install hint. RuntimeBuilder capabilities load `@cogitator-ai/browser`, `@cogitator-ai/rag`, `@cogitator-ai/mcp` and `@cogitator-ai/models` (vision detection) on demand. `LocalWhisper` needs `@huggingface/transformers` and `ogg-opus-decoder`, and installs them with `npm install --no-save` when missing.
@@ -187,19 +188,99 @@ terminalChannel({ userName: 'Alice', prompt: '> ', onExit: () => shutdown() });
 
 Ctrl+C, Ctrl+D, `/quit`, `/exit` and `exit` call `onExit` (default: raise `SIGINT` so the host app shuts down gracefully); `stop()` closes readline without exiting the process. Docs: [Terminal](https://cogitator.app/docs/channels/terminal).
 
+### Bluesky
+
+```bash
+pnpm add @atproto/api
+```
+
+```typescript
+import { blueskyChannel, FileTokenStore } from '@cogitator-ai/channels';
+
+const bluesky = blueskyChannel({
+  identifier: process.env.BLUESKY_HANDLE!, // yourbot.bsky.social
+  appPassword: process.env.BLUESKY_APP_PASSWORD!, // Settings → Privacy and security → App passwords
+  store: new FileTokenStore(), // keeps the session across restarts
+});
+```
+
+The agent answers mentions, replies and quotes in their thread, and direct messages (the app password needs "Allow access to your direct messages"). The channel polls and keeps what it has seen on Bluesky itself, so it answers what arrived while it was stopped (`catchUp: false` starts from now). Bluesky cannot edit posts (`editable: false`), so answers go out finished, as a thread of 300-grapheme posts when long. A message's `channelId` is `post:<at-uri>`, `dm:<convoId>`, or `feed` for a new post. Docs: [Bluesky](https://cogitator.app/docs/channels/bluesky).
+
+### Threads
+
+```typescript
+import { threadsChannel, FileTokenStore } from '@cogitator-ai/channels';
+
+const threads = threadsChannel({
+  accessToken: process.env.THREADS_ACCESS_TOKEN!, // a long-lived token, renewed before it expires
+  store: new FileTokenStore(),
+  webhook: {
+    appSecret: process.env.THREADS_APP_SECRET!,
+    verifyToken: process.env.THREADS_VERIFY_TOKEN!,
+    port: 3200, // or mount threads.handleWebhook in your own server
+  },
+});
+```
+
+The agent answers replies to the bot's posts and mentions of it, from Meta's webhooks (verification and `X-Hub-Signature-256` checked) or, without `webhook`, by polling, which skips replies people make to each other. Answers go out finished, as a chain of 500-character replies when long. The Threads API has no direct messages. Docs: [Threads](https://cogitator.app/docs/channels/threads).
+
 ## Platform Comparison
 
-| Feature            | Telegram     | Discord | Slack     | WhatsApp | WebChat   |
-| ------------------ | ------------ | ------- | --------- | -------- | --------- |
-| Streaming (edit)   | ✅           | ✅      | ✅        | ✅       | ✅        |
-| Reactions          | ✅           | ✅      | ✅        | ❌       | ❌        |
-| Typing indicator   | ✅           | ✅      | ❌        | ✅       | ✅        |
-| Photos → vision    | ✅           | ✅      | ✅        | ✅       | ❌        |
-| Voice → STT        | ✅           | ✅      | ✅        | ✅       | ❌        |
-| Max message length | 4096         | 2000    | 40000     | 65536    | unlimited |
-| Public URL needed  | webhook only | no      | HTTP only | no       | no        |
+| Feature            | Telegram     | Discord | Slack     | WhatsApp | WebChat   | Bluesky            | Threads            |
+| ------------------ | ------------ | ------- | --------- | -------- | --------- | ------------------ | ------------------ |
+| Streaming (edit)   | ✅           | ✅      | ✅        | ✅       | ✅        | ❌ (sent finished) | ❌ (sent finished) |
+| Reactions          | ✅           | ✅      | ✅        | ❌       | ❌        | ❌                 | ❌                 |
+| Typing indicator   | ✅           | ✅      | ❌        | ✅       | ✅        | ❌                 | ❌                 |
+| Photos → vision    | ✅           | ✅      | ✅        | ✅       | ❌        | ❌                 | ❌                 |
+| Voice → STT        | ✅           | ✅      | ✅        | ✅       | ❌        | ❌                 | ❌                 |
+| Max message length | 4096         | 2000    | 40000     | 65536    | unlimited | 300 per post       | 500 per post       |
+| Public URL needed  | webhook only | no      | HTTP only | no       | no        | no                 | webhooks only      |
 
 Outbound calls (`sendText`, `editText`, `sendFile`, `deleteMessage`) throw when the channel is not started, the target chat is unavailable or the platform rejects the request — wrap direct calls in `try/catch`. WebChat is the exception: only `sendText` throws for a disconnected client, the other calls are dropped. `sendText` returns the platform message id (for Discord, the id of the first chunk; continuation chunks are edited and deleted with it).
+
+## Social Feeds
+
+Feeds publish posts instead of answering people. `BlueskyFeed` and `ThreadsFeed` publish text with a link card, images with alt text, tags and replies. `FeedPublisher` sends one post to several feeds, now or at `publishAt`:
+
+```typescript
+import {
+  BlueskyFeed,
+  FeedPublisher,
+  FilePublishStore,
+  FileTokenStore,
+  ThreadsFeed,
+} from '@cogitator-ai/channels';
+
+const tokens = new FileTokenStore();
+const publisher = new FeedPublisher({
+  feeds: [
+    new BlueskyFeed({
+      identifier: process.env.BLUESKY_HANDLE!,
+      appPassword: process.env.BLUESKY_APP_PASSWORD!,
+      store: tokens,
+    }),
+    new ThreadsFeed({ accessToken: process.env.THREADS_ACCESS_TOKEN!, store: tokens }),
+  ],
+  store: new FilePublishStore(), // scheduled posts and retries survive a restart
+});
+
+const { job } = await publisher.publish(
+  {
+    text: 'A new open model runs on a laptop:',
+    link: { url: 'https://example.com/story' },
+    tags: ['AI'],
+  },
+  { key: 'story-42' } // publishing twice with one key publishes once
+);
+publisher.start(); // publishes scheduled posts and retries when they are due
+```
+
+- Each feed is tried on its own and each outcome saved as soon as it is known. A delivery keeps the feed's idempotency key from before its first attempt, so an attempt after a crash or a lost answer finds the post instead of publishing it twice (Bluesky publishes under that record key, Threads looks the post up). Retries wait as long as the feed asked or back off from one minute to an hour, and a full Threads quota is waited out without spending attempts.
+- Text is measured as each feed counts it (`graphemeLength` on Bluesky, with its 3000-byte limit too, `threadsLength` on Threads with emoji as their UTF-8 bytes) and fitted to each feed with an ellipsis (`overflow: 'fail'` fails instead). Each feed checks its rules before sending (images, links, tags) and fails with a `FeedError` that says whether retrying helps.
+- Jobs live in `MemoryPublishStore`, `FilePublishStore` or `PostgresPublishStore` (several workers, claims with `FOR UPDATE SKIP LOCKED`). A worker takes one due job at a time, extends its claim while it works and saves only while the claim is its own. Sessions and tokens live in `MemoryTokenStore`, `FileTokenStore` (owner-only file, shared safely by the stores of one process) or `PostgresTokenStore`.
+- The Threads token renews itself a week before its 60 days end. `BlueskyAccount` and `ThreadsAccount` share one session between a feed and a channel.
+
+Docs: [Social Feeds](https://cogitator.app/docs/channels/feeds).
 
 ## Gateway
 
@@ -535,7 +616,7 @@ await runtime.cleanup();
 
 For a parsed YAML file, validate it first with `new RuntimeBuilder(AssistantConfigSchema.parse(yamlObject), process.env)` (the schema is exported, along with the `AssistantConfigInput` / `AssistantConfigOutput` types).
 
-- **Channels:** the terminal REPL plus `channels.telegram` (`TG_TOKEN` or `TELEGRAM_TOKEN`), `channels.discord` (`DISCORD_TOKEN`) and `channels.slack` (`SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, optional `SLACK_APP_TOKEN` / `SLACK_PORT`). A configured channel without its token is skipped with a warning. `channels.whatsapp` (`{ ownerIds?, sessionPath? }`; owner ids are phone numbers without `@s.whatsapp.net`, the session defaults to `~/.cogitator/whatsapp-session`) needs `@whiskeysockets/baileys`. `channels.webchat` (`{ port?, path? }`, default `8080` and `/ws`, no `ownerIds`) needs `ws` and starts only with `WEBCHAT_TOKEN` set; clients connect with `?token=<WEBCHAT_TOKEN>`.
+- **Channels:** the terminal REPL plus `channels.telegram` (`TG_TOKEN` or `TELEGRAM_TOKEN`), `channels.discord` (`DISCORD_TOKEN`) and `channels.slack` (`SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, optional `SLACK_APP_TOKEN` / `SLACK_PORT`). A configured channel without its token is skipped with a warning. `channels.whatsapp` (`{ ownerIds?, sessionPath? }`, owner ids are phone numbers without `@s.whatsapp.net`, the session defaults to `~/.cogitator/whatsapp-session`) needs `@whiskeysockets/baileys`. `channels.webchat` (`{ port?, path? }`, default `8080` and `/ws`, no `ownerIds`) needs `ws` and starts only with `WEBCHAT_TOKEN` set, and clients connect with `?token=<WEBCHAT_TOKEN>`. `channels.bluesky` (`{ ownerIds?, posts?, directMessages?, pollInterval?, tokenPath? }`, owner ids are DIDs) needs `@atproto/api` and starts with `BLUESKY_HANDLE` and `BLUESKY_APP_PASSWORD`. `channels.threads` (`{ ownerIds?, webhook?: { port, path? }, pollInterval?, tokenPath? }`, owner ids are usernames) starts with `THREADS_ACCESS_TOKEN`, and with `THREADS_APP_SECRET` and `THREADS_VERIFY_TOKEN` for webhooks. Both keep their session or token in `tokenPath` (default `~/.cogitator/tokens.json`).
 
 - **Memory:** `memory.adapter: sqlite` (default, `memory.path`, default `~/.cogitator/memory.db`) or `postgres` (`memory.connectionString`, `DATABASE_URL` or `POSTGRES_URL`; requires `pg`). Core facts always live in the SQLite file. The knowledge graph (`memory.knowledgeGraph`) and auto-extraction (`memory.autoExtract`) are on by default; `memory.compaction.threshold` enables history compaction.
 - **Fresh context:** the gateway builds an agent per message — instructions (current date/time and known user facts) and the `/model` override are resolved each time. `runtime.agent` is the base agent.
@@ -569,6 +650,15 @@ DATABASE_URL=postgres://user:pass@localhost:5432/cogitator   # or POSTGRES_URL
 
 # WebChat
 WEBCHAT_TOKEN=your-secret        # required by channels.webchat in cogitator.yml
+
+# Bluesky (session kept in ~/.cogitator/tokens.json)
+BLUESKY_HANDLE=yourbot.bsky.social
+BLUESKY_APP_PASSWORD=...         # an app password, with DM access to answer messages
+
+# Threads (token renewed in ~/.cogitator/tokens.json)
+THREADS_ACCESS_TOKEN=...         # a long-lived token
+THREADS_APP_SECRET=...           # webhooks only
+THREADS_VERIFY_TOKEN=...         # webhooks only
 
 # STT (optional, for voice messages — pick one)
 DEEPGRAM_API_KEY=...         # highest priority

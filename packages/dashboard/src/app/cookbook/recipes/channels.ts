@@ -207,5 +207,98 @@ process.on('SIGINT', async () => {
         },
       ],
     },
+    {
+      id: 'social-feeds',
+      title: 'Publish to Bluesky and Threads',
+      difficulty: 'medium',
+      time: '15 min',
+      problem:
+        'You want to post the same announcement to Bluesky and Threads, now or on a schedule, without posting it twice after a crash and without renewing tokens by hand.',
+      points: [
+        'One `FeedPublisher` sends a post to every feed and tracks each delivery on its own',
+        'Text longer than a feed takes is cut at a word for that feed: 300 graphemes on Bluesky, 500 characters on Threads',
+        'The same `key` publishes once, and `publishAt` schedules a post in a store that survives restarts',
+        'The Bluesky session and the Threads token live in a `TokenStore`, and the Threads token renews itself before it expires',
+      ],
+      file: 'social-publisher.ts',
+      code: `import { BlueskyFeed, FeedPublisher, FilePublishStore, FileTokenStore, ThreadsFeed } from '@cogitator-ai/channels';
+
+const tokens = new FileTokenStore();
+
+const publisher = new FeedPublisher({
+  feeds: [
+    new BlueskyFeed({
+      identifier: process.env.BLUESKY_HANDLE!,
+      appPassword: process.env.BLUESKY_APP_PASSWORD!,
+      store: tokens,
+    }),
+    new ThreadsFeed({ accessToken: process.env.THREADS_ACCESS_TOKEN!, store: tokens }),
+  ],
+  store: new FilePublishStore(),
+  dryRun: process.env.PUBLISH !== '1',
+  onPublished: ({ feed, post }) => console.log(\`\${feed}: \${post.url || post.id}\`),
+  onFailed: ({ feed, error, final }) =>
+    console.log(\`\${feed}: \${final ? 'failed' : 'will retry'}: \${error.message}\`),
+});
+
+const today = new Date().toISOString().slice(0, 10);
+
+const { job, duplicate } = await publisher.publish(
+  {
+    text: 'Open models now run on an ordinary laptop. What changed, and what it means for you:',
+    link: { url: 'https://example.com/story', title: 'Open models on laptops' },
+    tags: ['AI'],
+    langs: ['en'],
+  },
+  { key: \`story-\${today}\` }
+);
+console.log(duplicate ? 'Already published today' : \`Job \${job.id}\`);
+
+await publisher.publish(
+  { text: 'Good morning! Three things worth reading today:', link: { url: 'https://example.com/brief' } },
+  { publishAt: Date.now() + 60_000, key: \`brief-\${today}\` }
+);
+
+publisher.start();
+
+process.on('SIGINT', async () => {
+  await publisher.stop();
+  process.exit(0);
+});`,
+      install: 'pnpm add @cogitator-ai/channels @atproto/api',
+      env: [
+        'BLUESKY_HANDLE',
+        'BLUESKY_APP_PASSWORD',
+        'THREADS_ACCESS_TOKEN',
+        'PUBLISH (optional, 1 posts for real)',
+      ],
+      run: 'npx tsx social-publisher.ts',
+      repoRun: 'npx tsx examples/channels/04-social-publisher.ts',
+      notes: [
+        {
+          type: 'tip',
+          text: 'Bluesky bots sign in with an app password from Settings, Privacy and security, App passwords. Threads needs a long-lived token, which lasts 60 days and is renewed from then on.',
+        },
+        {
+          type: 'info',
+          text: 'Rate limits, a used Threads quota and a feed that is down are retried with backoff. Several workers can share jobs and tokens through `PostgresPublishStore` and `PostgresTokenStore`.',
+        },
+      ],
+      example: 'channels/04-social-publisher.ts',
+      docs: [
+        {
+          href: '/docs/channels/feeds',
+          label: 'Social Feeds',
+        },
+        {
+          href: '/docs/channels/bluesky',
+          label: 'Bluesky',
+        },
+        {
+          href: '/docs/channels/threads',
+          label: 'Threads',
+        },
+      ],
+    },
   ],
 };

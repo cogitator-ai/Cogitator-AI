@@ -103,6 +103,19 @@ const KNOWN_ENV: Record<string, { description: string; example?: string }> = {
   OWNER_TG_ID: { description: 'Your Telegram user id, the owner of the bot' },
   WEBCHAT_TOKEN: { description: 'Token WebChat clients authenticate with' },
   WEBCHAT_PORT: { description: 'Port of the WebChat server', example: '8080' },
+  OPENROUTER_API_KEY: {
+    description:
+      'OpenRouter API key, for decision models and models of every provider (https://openrouter.ai/keys)',
+  },
+  BLUESKY_HANDLE: {
+    description: 'Bluesky handle of the bot account',
+    example: 'yourbot.bsky.social',
+  },
+  BLUESKY_APP_PASSWORD: {
+    description: 'Bluesky app password (Settings, Privacy and security, App passwords)',
+  },
+  THREADS_ACCESS_TOKEN: { description: 'Threads long-lived access token, renewed automatically' },
+  PUBLISH: { description: 'Set to 1 to publish for real instead of a dry run', example: '0' },
   DEEPGRAM_API_KEY: { description: 'Deepgram API key for speech to text' },
   ELEVENLABS_API_KEY: { description: 'ElevenLabs API key for text to speech' },
 };

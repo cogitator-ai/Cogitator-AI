@@ -83,7 +83,7 @@ const cog = new Cogitator({
 
 ```yaml
 llm:
-  defaultProvider: openai # ollama | openai | anthropic | google | azure | bedrock | vllm | mistral | groq | together | deepseek
+  defaultProvider: openai # ollama | openai | anthropic | google | azure | bedrock | vllm | mistral | groq | together | deepseek | openrouter
   defaultModel: gpt-6.1-sol
   providers:
     ollama:
@@ -115,6 +115,8 @@ llm:
     together:
       apiKey: xxx
     deepseek:
+      apiKey: xxx
+    openrouter: # chat models of every provider, and decision models through cog.decide()
       apiKey: xxx
   retry: # or `false`; default: 2 retries with exponential backoff
     maxRetries: 3
@@ -451,6 +453,8 @@ Supported provider, limits, and deploy settings can be set via environment varia
 | `COGITATOR_GROQ_API_KEY`               | Groq API key          |
 | `COGITATOR_TOGETHER_API_KEY`           | Together API key      |
 | `COGITATOR_DEEPSEEK_API_KEY`           | DeepSeek API key      |
+| `COGITATOR_OPENROUTER_API_KEY`         | OpenRouter API key    |
+| `COGITATOR_OPENROUTER_BASE_URL`        | OpenRouter API base   |
 | `COGITATOR_LIMITS_MAX_CONCURRENT_RUNS` | Max concurrent runs   |
 | `COGITATOR_LIMITS_DEFAULT_TIMEOUT`     | Default timeout (ms)  |
 | `COGITATOR_LIMITS_MAX_TOKENS_PER_RUN`  | Max tokens per run    |
@@ -474,6 +478,7 @@ MISTRAL_API_KEY=xxx
 GROQ_API_KEY=xxx
 TOGETHER_API_KEY=xxx
 DEEPSEEK_API_KEY=xxx
+OPENROUTER_API_KEY=xxx        # or OPENROUTER_BASE_URL for a proxy
 ```
 
 When `OLLAMA_API_KEY` is set without any Ollama URL (from env or YAML), the Ollama base URL defaults to `https://ollama.com`; otherwise it defaults to `http://localhost:11434`. An API key in the environment never replaces a `baseUrl` configured in YAML.
