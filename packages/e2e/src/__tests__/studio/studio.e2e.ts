@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -121,6 +121,17 @@ describe.skipIf(!browserReady)('Cogitator Studio on a generated project', () => 
     await page.goto(url);
     await page.getByTestId('agent-assistant').waitFor({ timeout: 60_000 });
   }, 600_000);
+
+  beforeEach(({ onTestFailed }) => {
+    onTestFailed(async () => {
+      const runs = await page
+        ?.evaluate(async () => (await fetch('/api/runs')).text())
+        .catch((error: unknown) => String(error));
+      console.error(
+        `The studio said:\n${output.join('').slice(-4000)}\nIts runs:\n${runs?.slice(0, 4000)}`
+      );
+    });
+  });
 
   afterAll(async () => {
     await browser?.close();
