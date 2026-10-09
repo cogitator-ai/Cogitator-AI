@@ -82,6 +82,7 @@ export { RuntimeBuilder, RESTART_EXIT_CODE } from './runtime-builder';
 export type { AssistantConfig, BuiltRuntime, RuntimeBuilderOpts } from './runtime-builder';
 
 export * from './feeds/index';
+export * from './channels/bluesky/index';
 
 export { SimpleTimerStore } from './simple-timer-store';
 export type { TimerStoreOptions } from './simple-timer-store';
