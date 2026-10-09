@@ -12,6 +12,7 @@ const BUILTIN_PROVIDERS: Readonly<Record<LLMProvider, true>> = {
   groq: true,
   together: true,
   deepseek: true,
+  openrouter: true,
 };
 
 /** Whether `name` is a provider built into Cogitator. */

@@ -34,6 +34,19 @@ export {
 } from './tool-content';
 export { defineSkill, validateSkill, mergeSkillsIntoAgent } from './skill';
 export { agentAsTool } from './agent-tool';
+export {
+  decisionTool,
+  type DecisionToolConfig,
+  type DecisionToolParams,
+  type DecisionToolResult,
+} from './decisions/tool';
+export {
+  OpenRouterDecisionBackend,
+  OPENROUTER_DECISIONS_URL,
+  decisionsUrlFor,
+  type OpenRouterDecisionConfig,
+} from './decisions/openrouter';
+export { validateDecision } from './decisions/decide';
 export type { AgentAsToolOptions, AgentToolResult } from './agent-tool';
 export { ToolRegistry } from './registry';
 
@@ -267,6 +280,9 @@ export {
   RetryingBackend,
   withLLMRetry,
   DEFAULT_LLM_RETRY,
+  LLMRetryPolicy,
+  retryLLMCall,
+  OPENROUTER_API,
   LLMDebugWrapper,
   withDebug,
   llmPluginRegistry,
@@ -586,4 +602,26 @@ export type {
   ContextState,
   CompressionContext,
   CompressionStrategyHandler,
+} from '@cogitator-ai/types';
+
+export type {
+  ChoiceAnswer,
+  ChoiceQuestion,
+  DecideOptions,
+  DecisionAnswer,
+  DecisionAnswerOf,
+  DecisionAnswers,
+  DecisionBackend,
+  DecisionContent,
+  DecisionQuestion,
+  DecisionQuestions,
+  DecisionRequest,
+  DecisionResponse,
+  DecisionResult,
+  DecisionUsage,
+  NoulAnswer,
+  NoulQuestion,
+  RawDecisionAnswer,
+  ScoreAnswer,
+  ScoreQuestion,
 } from '@cogitator-ai/types';

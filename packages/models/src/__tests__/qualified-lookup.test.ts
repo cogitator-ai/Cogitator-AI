@@ -237,3 +237,20 @@ describe('pricing helpers', () => {
     ).toBeCloseTo(1.74, 10);
   });
 });
+
+describe('decision models', () => {
+  it('knows Jev on OpenRouter as a decision model, priced on input only', async () => {
+    const { getModel, isDecisionModel, calculateCost } = await import('../index');
+    expect(getModel('openrouter/typesafe/jev-1.13')).toMatchObject({
+      kind: 'decision',
+      contextWindow: 32_000,
+      pricing: { input: 0.042, output: 0 },
+    });
+    expect(isDecisionModel('openrouter/typesafe/jev-1.13')).toBe(true);
+    expect(isDecisionModel('openrouter/~typesafe/jev-latest')).toBe(true);
+    expect(isDecisionModel('openai/gpt-6-luna')).toBe(false);
+    expect(
+      calculateCost('openrouter/typesafe/jev-1.13', { inputTokens: 1_000_000, outputTokens: 50 })
+    ).toBeCloseTo(0.042);
+  });
+});

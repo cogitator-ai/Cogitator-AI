@@ -93,6 +93,14 @@ export const PROVIDER_ENV: Readonly<Record<LLMProvider, readonly ProviderEnvSett
   deepseek: [
     { field: 'apiKey', env: ['COGITATOR_DEEPSEEK_API_KEY', 'DEEPSEEK_API_KEY'], required: true },
   ],
+  openrouter: [
+    {
+      field: 'apiKey',
+      env: ['COGITATOR_OPENROUTER_API_KEY', 'OPENROUTER_API_KEY'],
+      required: true,
+    },
+    { field: 'baseUrl', env: ['COGITATOR_OPENROUTER_BASE_URL', 'OPENROUTER_BASE_URL'] },
+  ],
 };
 
 /** Every variable that provides `setting`, in the order they take precedence. */

@@ -41,6 +41,12 @@ export const ModelInfoSchema = z.object({
   capabilities: ModelCapabilitiesSchema.optional(),
   deprecated: z.boolean().optional(),
   aliases: z.array(z.string()).optional(),
+  /**
+   * What the model does: `chat` (the default) answers messages, `decision`
+   * answers typed questions with probabilities through `cog.decide()` and
+   * cannot chat.
+   */
+  kind: z.enum(['chat', 'decision']).optional(),
 });
 
 export type ModelInfo = z.infer<typeof ModelInfoSchema>;

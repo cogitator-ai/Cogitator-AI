@@ -57,7 +57,16 @@ import { BedrockBackend } from './bedrock';
 import { isLLMProvider } from './providers';
 
 export { isLLMProvider } from './providers';
-export { RetryingBackend, withLLMRetry, DEFAULT_LLM_RETRY } from './retry';
+export {
+  RetryingBackend,
+  withLLMRetry,
+  DEFAULT_LLM_RETRY,
+  LLMRetryPolicy,
+  retryLLMCall,
+} from './retry';
+
+/** The OpenRouter API base. */
+export const OPENROUTER_API = 'https://openrouter.ai/api/v1';
 
 /**
  * Create an LLM backend from configuration.
@@ -171,6 +180,18 @@ export function createLLMBackend(
         apiKey: providers.deepseek.apiKey,
         baseUrl: 'https://api.deepseek.com/v1',
         provider,
+        maxRetries: 0,
+      });
+
+    case 'openrouter':
+      if (!providers.openrouter?.apiKey) {
+        throw new Error('OpenRouter API key is required');
+      }
+      return new OpenAIBackend({
+        apiKey: providers.openrouter.apiKey,
+        baseUrl: providers.openrouter.baseUrl ?? OPENROUTER_API,
+        provider,
+        api: 'chat-completions',
         maxRetries: 0,
       });
 

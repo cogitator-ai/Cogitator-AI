@@ -16,28 +16,23 @@ export const DEFAULT_LLM_RETRY = {
   maxRetryAfter: 60_000,
 } as const satisfies Required<Omit<LLMRetryConfig, 'onRetry' | 'requestTimeout'>>;
 
+type ResolvedRetryConfig = Required<Omit<LLMRetryConfig, 'onRetry' | 'requestTimeout'>> &
+  Pick<LLMRetryConfig, 'onRetry' | 'requestTimeout'>;
+
 /**
- * An LLM backend that retries the calls of another one on retryable errors.
- *
- * A provider's `Retry-After` is honoured up to `maxRetryAfter`; without one
- * the delay grows exponentially from `baseDelay` up to `maxDelay`. A stream is
- * retried only before its first chunk: after that the caller has already seen
- * part of the answer, so the error is passed on. The request's `signal` stops
- * both the calls and the waits between them. With `requestTimeout`, a call that
- * has not answered in time is aborted and retried as `LLM_TIMEOUT`, and a
- * stream gets that long for each chunk.
+ * The retry policy of LLM calls: retryable errors are retried, a provider's
+ * `Retry-After` honoured up to `maxRetryAfter`, otherwise the delay grows
+ * exponentially from `baseDelay` up to `maxDelay`. The caller's `signal` stops
+ * both the calls and the waits between them. With `requestTimeout`, a call
+ * that has not answered in time is aborted and retried as `LLM_TIMEOUT`.
  */
-export class RetryingBackend implements LLMBackend {
-  readonly provider: LLMBackendProvider;
-  readonly complete?: LLMBackend['complete'];
-  private readonly config: Required<Omit<LLMRetryConfig, 'onRetry' | 'requestTimeout'>> &
-    Pick<LLMRetryConfig, 'onRetry' | 'requestTimeout'>;
+export class LLMRetryPolicy {
+  readonly config: ResolvedRetryConfig;
 
   constructor(
-    readonly inner: LLMBackend,
+    readonly provider: LLMBackendProvider,
     config: LLMRetryConfig = {}
   ) {
-    this.provider = inner.provider;
     this.config = {
       maxRetries: config.maxRetries ?? DEFAULT_LLM_RETRY.maxRetries,
       baseDelay: config.baseDelay ?? DEFAULT_LLM_RETRY.baseDelay,
@@ -46,38 +41,10 @@ export class RetryingBackend implements LLMBackend {
       onRetry: config.onRetry,
       requestTimeout: config.requestTimeout,
     };
-    const complete = inner.complete?.bind(inner);
-    if (complete) {
-      this.complete = (request) =>
-        this.retrying(request.model ?? '', request.signal, (signal) =>
-          complete(withSignal(request, signal))
-        );
-    }
   }
 
-  chat(request: ChatRequest): Promise<ChatResponse> {
-    return this.retrying(request.model, request.signal, (signal) =>
-      this.inner.chat(withSignal(request, signal))
-    );
-  }
-
-  async *chatStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk> {
-    for (let attempt = 1; ; attempt++) {
-      let started = false;
-      try {
-        for await (const chunk of this.timedStream(request)) {
-          started = true;
-          yield chunk;
-        }
-        return;
-      } catch (error) {
-        if (started) throw error;
-        await this.beforeRetry(error, attempt, request.model, request.signal);
-      }
-    }
-  }
-
-  private async retrying<T>(
+  /** Runs `call` until it succeeds, fails for good or runs out of retries. */
+  async run<T>(
     model: string,
     signal: AbortSignal | undefined,
     call: (signal: AbortSignal | undefined) => Promise<T>
@@ -92,7 +59,7 @@ export class RetryingBackend implements LLMBackend {
   }
 
   /** One call, aborted with a retryable `LLM_TIMEOUT` when it outlasts `requestTimeout`. */
-  private async timed<T>(
+  async timed<T>(
     model: string,
     signal: AbortSignal | undefined,
     call: (signal: AbortSignal | undefined) => Promise<T>
@@ -110,37 +77,12 @@ export class RetryingBackend implements LLMBackend {
     }
   }
 
-  /** The inner stream, with `requestTimeout` for each chunk. */
-  private async *timedStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk> {
-    const limit = this.config.requestTimeout;
-    if (limit === undefined) {
-      yield* this.inner.chatStream(request);
-      return;
-    }
-    const attempt = new AttemptSignal(request.signal);
-    const chunks = this.inner.chatStream(withSignal(request, attempt.signal));
-    try {
-      for (;;) {
-        const next = await Promise.race([
-          chunks.next(),
-          attempt.expire(limit, this.timeoutError(request.model, limit)),
-        ]);
-        attempt.settle();
-        if (next.done) return;
-        yield next.value;
-      }
-    } finally {
-      attempt.dispose();
-      chunks.return(undefined).catch(() => undefined);
-    }
-  }
-
-  private timeoutError(model: string, limit: number): LLMError {
+  timeoutError(model: string, limit: number): LLMError {
     return llmTimeout({ provider: this.provider, model }, limit);
   }
 
   /** Waits out the delay before retry number `attempt`, or rethrows `error` when it should not be retried. */
-  private async beforeRetry(
+  async beforeRetry(
     error: unknown,
     attempt: number,
     model: string,
@@ -163,6 +105,93 @@ export class RetryingBackend implements LLMBackend {
     }
     const backoff = Math.min(this.config.baseDelay * 2 ** (attempt - 1), this.config.maxDelay);
     return Math.round(backoff * (0.8 + Math.random() * 0.4));
+  }
+}
+
+/**
+ * Runs a provider call that is not chat, such as a decision model, with the
+ * retry policy LLM backends get; `false` calls it once.
+ */
+export function retryLLMCall<T>(
+  config: LLMRetryConfig | false | undefined,
+  target: { provider: LLMBackendProvider; model: string; signal?: AbortSignal },
+  call: (signal: AbortSignal | undefined) => Promise<T>
+): Promise<T> {
+  if (config === false) return call(target.signal);
+  return new LLMRetryPolicy(target.provider, config).run(target.model, target.signal, call);
+}
+
+/**
+ * An LLM backend that retries the calls of another one on retryable errors,
+ * by `LLMRetryPolicy`. A stream is retried only before its first chunk: after
+ * that the caller has already seen part of the answer, so the error is passed
+ * on. With `requestTimeout`, a stream gets that long for each chunk.
+ */
+export class RetryingBackend implements LLMBackend {
+  readonly provider: LLMBackendProvider;
+  readonly complete?: LLMBackend['complete'];
+  private readonly policy: LLMRetryPolicy;
+
+  constructor(
+    readonly inner: LLMBackend,
+    config: LLMRetryConfig = {}
+  ) {
+    this.provider = inner.provider;
+    this.policy = new LLMRetryPolicy(inner.provider, config);
+    const complete = inner.complete?.bind(inner);
+    if (complete) {
+      this.complete = (request) =>
+        this.policy.run(request.model ?? '', request.signal, (signal) =>
+          complete(withSignal(request, signal))
+        );
+    }
+  }
+
+  chat(request: ChatRequest): Promise<ChatResponse> {
+    return this.policy.run(request.model, request.signal, (signal) =>
+      this.inner.chat(withSignal(request, signal))
+    );
+  }
+
+  async *chatStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk> {
+    for (let attempt = 1; ; attempt++) {
+      let started = false;
+      try {
+        for await (const chunk of this.timedStream(request)) {
+          started = true;
+          yield chunk;
+        }
+        return;
+      } catch (error) {
+        if (started) throw error;
+        await this.policy.beforeRetry(error, attempt, request.model, request.signal);
+      }
+    }
+  }
+
+  /** The inner stream, with `requestTimeout` for each chunk. */
+  private async *timedStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk> {
+    const limit = this.policy.config.requestTimeout;
+    if (limit === undefined) {
+      yield* this.inner.chatStream(request);
+      return;
+    }
+    const attempt = new AttemptSignal(request.signal);
+    const chunks = this.inner.chatStream(withSignal(request, attempt.signal));
+    try {
+      for (;;) {
+        const next = await Promise.race([
+          chunks.next(),
+          attempt.expire(limit, this.policy.timeoutError(request.model, limit)),
+        ]);
+        attempt.settle();
+        if (next.done) return;
+        yield next.value;
+      }
+    } finally {
+      attempt.dispose();
+      chunks.return(undefined).catch(() => undefined);
+    }
   }
 }
 

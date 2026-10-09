@@ -119,6 +119,32 @@ describe('StudioStore', () => {
     expect(s.getRun('r')?.usage).toMatchObject({ cost: 0.25, priced: true });
   });
 
+  it('shows a decision model call as a model call, priced at the run provider', () => {
+    const { store: s } = store((model) =>
+      model === 'openrouter/typesafe/jev-1.13' ? 0.042 : null
+    );
+    s.apply({ ...started('d', 'd', 1), model: 'openrouter/typesafe/jev-1.13' });
+    s.apply({
+      type: 'run.span',
+      runId: 'd',
+      span: {
+        id: 'sp',
+        traceId: 't',
+        name: 'llm.decide',
+        status: 'ok',
+        startTime: 1,
+        endTime: 2,
+        duration: 1,
+        attributes: {
+          'llm.model': 'typesafe/jev-1.13',
+          'llm.input_tokens': 1000,
+          'llm.output_tokens': 0,
+        },
+      },
+    });
+    expect(s.getRun('d')?.spans[0]).toMatchObject({ kind: 'llm', inputTokens: 1000 });
+  });
+
   it('marks runs a stopped studio left running as failed when it loads again', () => {
     const { store: first, dir } = store();
     first.apply(started('r', 'r', 0));

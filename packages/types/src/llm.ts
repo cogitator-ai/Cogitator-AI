@@ -22,7 +22,8 @@ export type LLMProvider =
   | 'mistral'
   | 'groq'
   | 'together'
-  | 'deepseek';
+  | 'deepseek'
+  | 'openrouter';
 
 /**
  * The provider name a backend reports: a built-in {@link LLMProvider}, or the
@@ -308,6 +309,13 @@ export interface DeepSeekProviderConfig {
   apiKey: string;
 }
 
+/** OpenRouter: chat models of every provider, and decision models through `cog.decide()`. */
+export interface OpenRouterProviderConfig {
+  apiKey: string;
+  /** The API base (default `https://openrouter.ai/api/v1`). */
+  baseUrl?: string;
+}
+
 /**
  * Map of provider names to their config types
  */
@@ -323,6 +331,7 @@ export interface ProviderConfigMap {
   groq: GroqProviderConfig;
   together: TogetherProviderConfig;
   deepseek: DeepSeekProviderConfig;
+  openrouter: OpenRouterProviderConfig;
 }
 
 /**
