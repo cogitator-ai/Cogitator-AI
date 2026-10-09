@@ -538,10 +538,13 @@ describe('web_scrape tool', () => {
     }
 
     /**
-     * How much longer eight times the input takes. The input grows until a run takes about 20 ms
+     * How much longer sixteen times the input takes. The input grows until a run takes about 20 ms
      * of CPU, after a warm-up and each size measured twice, so a parser not yet compiled does not
-     * stop it early: a slow machine measures a smaller page and a fast one a bigger. A linear parser grows about 8 times, a
-     * quadratic one towards 64. Small and large runs alternate, best of three.
+     * stop it early: a slow machine measures a smaller page and a fast one a bigger. A linear parser
+     * grows about 16 times, a quadratic one towards 256, and the test fails above 64, halfway
+     * between them on a log scale: a CI runner busy with other workers inflates the CPU time of a
+     * run by a factor of two or so, which a factor of eight between the sizes did not leave room
+     * for. Small and large runs alternate, best of three.
      */
     async function growth(build: (n: number) => string): Promise<number> {
       for (let run = 0; run < 5; run++) await scrapeOnce(build(1_000));
@@ -553,7 +556,7 @@ describe('web_scrape tool', () => {
       let large = Infinity;
       for (let run = 0; run < 3; run++) {
         small = Math.min(small, await scrapeOnce(build(n)));
-        large = Math.min(large, await scrapeOnce(build(8 * n)));
+        large = Math.min(large, await scrapeOnce(build(16 * n)));
       }
       return large / Math.max(small, 5);
     }
@@ -568,7 +571,7 @@ describe('web_scrape tool', () => {
     ])(
       'cleans hostile markup with %s in linear time',
       async (_name, build) => {
-        expect(await growth(build)).toBeLessThan(20);
+        expect(await growth(build)).toBeLessThan(64);
       },
       60_000
     );
