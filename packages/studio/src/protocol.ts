@@ -115,6 +115,11 @@ export interface RunRecord {
   output?: string;
   reasoning?: string;
   status: RunStatus;
+  /**
+   * Bumped on every change of the run, so a client keeps the newest copy of
+   * it whatever order snapshots and events reach it in.
+   */
+  revision: number;
   error?: string;
   startedAt: number;
   endedAt?: number;
@@ -285,8 +290,8 @@ export interface RawSpan {
 export type StudioEvent =
   | { type: 'host'; status: HostStatus }
   | { type: 'run'; run: RunRecord }
-  | { type: 'token'; runId: string; text: string }
-  | { type: 'reasoning'; runId: string; text: string }
+  | { type: 'token'; runId: string; text: string; revision: number }
+  | { type: 'reasoning'; runId: string; text: string; revision: number }
   | { type: 'thread'; thread: ThreadRecord };
 
 export type HostStatus =

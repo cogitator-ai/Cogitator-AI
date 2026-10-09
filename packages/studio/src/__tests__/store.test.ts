@@ -1,8 +1,8 @@
-import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { HostEvent, RawSpan } from '../protocol.js';
+import type { HostEvent, RawSpan, RunRecord } from '../protocol.js';
 import { reloadsProject } from '../server/host-manager.js';
 import { StudioStore } from '../server/store.js';
 
@@ -162,6 +162,50 @@ describe('StudioStore', () => {
       { role: 'assistant', content: 'ok' },
     ]);
     expect(() => s.touchThread('t', 'writer', 'x')).toThrow('belongs to the agent "assistant"');
+  });
+});
+
+describe('StudioStore revisions', () => {
+  it('give every change of a run a higher revision, streamed text included', () => {
+    const { store: s } = store();
+    const seen: number[] = [];
+    const record = (runId: string) => seen.push(s.getRun(runId)?.revision ?? -1);
+    s.apply(started('r1', 'r1', 1));
+    record('r1');
+    const token = s.apply({ type: 'run.token', runId: 'r1', text: 'Hel' }).token;
+    expect(token?.revision).toBe(s.getRun('r1')?.revision);
+    record('r1');
+    s.apply({ type: 'run.reasoning', runId: 'r1', text: 'thinking' });
+    record('r1');
+    s.apply(done('r1', 2));
+    record('r1');
+    expect(seen).toEqual([...seen].sort((a, b) => a - b));
+    expect(new Set(seen).size).toBe(seen.length);
+  });
+
+  it('write a run with the revision its last change took', () => {
+    const { store: s, dir } = store();
+    s.apply(started('r1', 'r1', 1));
+    s.apply(done('r1', 2));
+    const saved = JSON.parse(readFileSync(join(dir, 'runs', 'r1.json'), 'utf-8')) as RunRecord;
+    expect(saved.revision).toBe(s.getRun('r1')?.revision);
+  });
+
+  it('go on above what a page saw before a restart, for a run the restart failed', () => {
+    const { store: first, dir } = store();
+    first.apply(started('r1', 'r1', 1));
+    let seen = 0;
+    for (let i = 0; i < 50; i++) {
+      seen = first.apply({ type: 'run.token', runId: 'r1', text: 'x' }).token?.revision ?? 0;
+    }
+    vi.useFakeTimers({ now: Date.now() + 2_000 });
+    try {
+      const reloaded = new StudioStore(dir, () => 0.5).getRun('r1');
+      expect(reloaded?.status).toBe('failed');
+      expect(reloaded?.revision).toBeGreaterThan(seen);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
