@@ -473,3 +473,41 @@ describe('reloading', () => {
     }
   });
 });
+
+describe('a run whose fork steps cannot be recorded', () => {
+  it('still completes, without steps, and says why', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cogitator-studio-steps-'));
+    writeFileSync(join(dir, 'checkpoints'), 'a file where the checkpoints directory goes');
+    const lines: string[] = [];
+    const broken = await startStudio({
+      projectDir: FIXTURE,
+      studioDir: dir,
+      port: 0,
+      watch: false,
+      price: () => PRICE,
+      log: (line) => lines.push(line),
+    });
+    try {
+      await broken.ready();
+      const url = broken.url.replace(/\/$/, '').replace('localhost', '127.0.0.1');
+      const response = await fetch(`${url}/api/chat`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ agent: 'assistant', input: 'hello' }),
+      });
+      const { runId } = (await response.json()) as { runId: string };
+      const finished = await waitFor(async () => {
+        const tree = (await (await fetch(`${url}/api/runs/${runId}`)).json()) as {
+          run: RunRecord;
+        };
+        return tree.run.status === 'running' ? undefined : tree.run;
+      });
+      expect(finished.status).toBe('completed');
+      expect(finished.steps).toBeUndefined();
+      expect(lines.join('\n')).toContain(`could not record the steps of run ${runId}`);
+    } finally {
+      await broken.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

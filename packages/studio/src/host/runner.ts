@@ -362,6 +362,14 @@ export class StudioHost {
             });
             return;
           }
+          let steps: StepRecord[] | undefined;
+          try {
+            steps = await this.steps(result);
+          } catch (error) {
+            console.error(
+              `[studio host] could not record the steps of run ${runId}, it cannot be forked: ${message(error)}`
+            );
+          }
           this.emit({
             type: 'run.completed',
             runId,
@@ -369,7 +377,7 @@ export class StudioHost {
             usage: usageOf(result),
             endedAt: Date.now(),
             toolCalls: toolCallsOf(result),
-            steps: await this.steps(result),
+            ...(steps && { steps }),
           });
         },
         (error: unknown) =>
