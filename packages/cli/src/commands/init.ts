@@ -27,7 +27,16 @@ import {
   type SetupProvider,
 } from '../utils/provider-models.js';
 
-export type InitChannel = 'telegram' | 'discord' | 'slack' | 'webchat';
+export type InitChannel = 'telegram' | 'discord' | 'slack' | 'webchat' | 'bluesky' | 'threads';
+
+const INIT_CHANNELS: readonly InitChannel[] = [
+  'telegram',
+  'discord',
+  'slack',
+  'webchat',
+  'bluesky',
+  'threads',
+];
 export type InitMemory = 'memory' | 'sqlite' | 'postgres';
 
 export interface InitAnswers {
@@ -42,6 +51,9 @@ export interface InitAnswers {
   slackToken?: string;
   slackSigningSecret?: string;
   slackAppToken?: string;
+  blueskyHandle?: string;
+  blueskyAppPassword?: string;
+  threadsAccessToken?: string;
   memory: InitMemory;
   databaseUrl?: string;
 }
@@ -84,6 +96,9 @@ export function initSecrets(answers: InitAnswers): Record<string, string> {
   if (answers.slackToken) secrets.SLACK_BOT_TOKEN = answers.slackToken;
   if (answers.slackSigningSecret) secrets.SLACK_SIGNING_SECRET = answers.slackSigningSecret;
   if (answers.slackAppToken) secrets.SLACK_APP_TOKEN = answers.slackAppToken;
+  if (answers.blueskyHandle) secrets.BLUESKY_HANDLE = answers.blueskyHandle;
+  if (answers.blueskyAppPassword) secrets.BLUESKY_APP_PASSWORD = answers.blueskyAppPassword;
+  if (answers.threadsAccessToken) secrets.THREADS_ACCESS_TOKEN = answers.threadsAccessToken;
   if (
     answers.memory === 'postgres' &&
     answers.databaseUrl &&
@@ -158,12 +173,14 @@ async function collectAnswers(nameArg?: string): Promise<InitAnswers> {
         { value: 'discord', label: 'Discord' },
         { value: 'slack', label: 'Slack' },
         { value: 'webchat', label: 'WebChat (localhost)', hint: 'no setup needed' },
+        { value: 'bluesky', label: 'Bluesky', hint: 'mentions, replies and DMs' },
+        { value: 'threads', label: 'Threads', hint: 'replies and mentions' },
       ],
       required: false,
     })
   );
-  const channels = channelChoice.filter(
-    (c): c is InitChannel => c === 'telegram' || c === 'discord' || c === 'slack' || c === 'webchat'
+  const channels = channelChoice.filter((c): c is InitChannel =>
+    INIT_CHANNELS.some((channel) => channel === c)
   );
 
   const telegramToken = channels.includes('telegram')
@@ -184,6 +201,25 @@ async function collectAnswers(nameArg?: string): Promise<InitAnswers> {
           message: 'Slack app token for Socket Mode (xapp-..., leave blank for HTTP mode):',
         })
       ).trim() || undefined
+    : undefined;
+
+  const blueskyHandle = channels.includes('bluesky')
+    ? answer(
+        await p.text({
+          message: 'Bluesky handle of the bot account:',
+          placeholder: 'yourbot.bsky.social',
+          validate: (v) => (!v?.trim() ? 'Handle is required' : undefined),
+        })
+      ).trim()
+    : undefined;
+  const blueskyAppPassword = channels.includes('bluesky')
+    ? await askSecret(
+        'Bluesky app password (Settings, Privacy and security, App passwords; allow direct messages):',
+        'App password is required'
+      )
+    : undefined;
+  const threadsAccessToken = channels.includes('threads')
+    ? await askSecret('Threads long-lived access token:', 'Token is required')
     : undefined;
 
   const memoryChoice = answer(
@@ -222,6 +258,9 @@ async function collectAnswers(nameArg?: string): Promise<InitAnswers> {
     slackToken,
     slackSigningSecret,
     slackAppToken,
+    blueskyHandle,
+    blueskyAppPassword,
+    threadsAccessToken,
     memory,
     databaseUrl,
   };
@@ -238,7 +277,9 @@ function clackLogger(): ScaffoldLogger {
 }
 
 export const initCommand = new Command('init')
-  .description('Create a messaging assistant project (Telegram, Discord, Slack, WebChat)')
+  .description(
+    'Create a messaging assistant project (Telegram, Discord, Slack, WebChat, Bluesky, Threads)'
+  )
   .argument('[name]', 'Project name')
   .option('--no-install', 'Skip dependency installation')
   .option('--no-git', 'Skip creating a git repository')

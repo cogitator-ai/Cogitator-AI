@@ -19,7 +19,11 @@ export const APP_CHOICES: Choice<AppKind>[] = [
   { value: 'script', label: 'Script', hint: 'an agent you run from the terminal' },
   { value: 'server', label: 'HTTP server', hint: 'agents behind a REST, SSE and WebSocket API' },
   { value: 'next', label: 'Next.js app', hint: 'a streaming chat UI with server-side agents' },
-  { value: 'channels', label: 'Messaging bot', hint: 'Telegram, Discord, Slack or WebChat' },
+  {
+    value: 'channels',
+    label: 'Messaging bot',
+    hint: 'Telegram, Discord, Slack, WebChat, Bluesky or Threads',
+  },
   { value: 'worker', label: 'Queue worker', hint: 'agents run as BullMQ jobs on Redis' },
 ];
 
@@ -80,6 +84,8 @@ export const CHANNEL_CHOICES: Choice<ChannelKind>[] = [
   { value: 'telegram', label: 'Telegram', hint: 'needs a bot token from @BotFather' },
   { value: 'discord', label: 'Discord', hint: 'needs a bot token' },
   { value: 'slack', label: 'Slack', hint: 'needs a bot token and signing secret' },
+  { value: 'bluesky', label: 'Bluesky', hint: 'mentions, replies and DMs; needs an app password' },
+  { value: 'threads', label: 'Threads', hint: 'replies and mentions; needs a long-lived token' },
 ];
 
 export const CODING_AGENT_CHOICES: Choice<CodingAgent>[] = [

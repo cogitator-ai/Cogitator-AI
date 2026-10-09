@@ -22,7 +22,7 @@ export const FEATURES = [
 export const DEPLOY_TARGETS = ['none', 'docker', 'fly'] as const;
 export const CODING_AGENTS = ['claude', 'cursor', 'codex'] as const;
 export const PACKAGE_MANAGERS = ['pnpm', 'npm', 'yarn', 'bun'] as const;
-export const CHANNELS = ['telegram', 'discord', 'slack', 'webchat'] as const;
+export const CHANNELS = ['telegram', 'discord', 'slack', 'webchat', 'bluesky', 'threads'] as const;
 
 export type LLMProvider = (typeof PROVIDERS)[number];
 export type AppKind = (typeof APP_KINDS)[number];
