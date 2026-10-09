@@ -110,7 +110,7 @@ export class LLMRetryPolicy {
 
 /**
  * Runs a provider call that is not chat, such as a decision model, with the
- * retry policy LLM backends get; `false` calls it once.
+ * retry policy LLM backends get. `false` calls it once.
  */
 export function retryLLMCall<T>(
   config: LLMRetryConfig | false | undefined,

@@ -13,10 +13,13 @@ import { createToolContext } from './helpers/tool-context';
 const JEV = 'openrouter/typesafe/jev-1.13';
 
 const questions = {
-  desk: {
+  team: {
     type: 'choice',
-    instructions: 'Which desk should cover this topic?',
-    criteria: { tech: 'Software, AI and hardware', world: 'Politics and world news' },
+    instructions: 'Which team should answer this message?',
+    criteria: {
+      technical: 'Bugs, errors and how the product works',
+      billing: 'Payments, invoices and refunds',
+    },
   },
   spam: {
     type: 'noul',
@@ -37,11 +40,11 @@ function answerBody(overrides: Record<string, unknown> = {}) {
     model: 'typesafe/jev-1.13',
     provider: 'TypeSafe',
     answers: {
-      desk: {
+      team: {
         type: 'choice',
-        choice: 'tech',
+        choice: 'technical',
         confidence: 0.91,
-        probabilities: { tech: 0.91, world: 0.09 },
+        probabilities: { technical: 0.91, billing: 0.09 },
       },
       spam: { type: 'noul', noul: 0.12 },
       urgency: {
@@ -98,7 +101,7 @@ describe('OpenRouterDecisionBackend', () => {
     const backend = new OpenRouterDecisionBackend({ apiKey: 'or-key', fetch });
     const response = await backend.decide({
       model: 'typesafe/jev-1.13',
-      state: { topic: 'A new open model' },
+      state: { message: 'The app crashes on start' },
       questions,
       sessionId: 'session-1',
       user: 'reader-7',
@@ -107,7 +110,7 @@ describe('OpenRouterDecisionBackend', () => {
     expect(new Headers(calls[0].init.headers).get('authorization')).toBe('Bearer or-key');
     expect(JSON.parse(String(calls[0].init.body))).toEqual({
       model: 'typesafe/jev-1.13',
-      state: { topic: 'A new open model' },
+      state: { message: 'The app crashes on start' },
       questions: JSON.parse(JSON.stringify(questions)),
       session_id: 'session-1',
       user: 'reader-7',
@@ -165,11 +168,11 @@ describe('cog.decide', () => {
       questions,
       threshold: 0.1,
     });
-    expect(result.answers.desk).toEqual({
+    expect(result.answers.team).toEqual({
       type: 'choice',
-      choice: 'tech',
+      choice: 'technical',
       confidence: 0.91,
-      probabilities: { tech: 0.91, world: 0.09 },
+      probabilities: { technical: 0.91, billing: 0.09 },
     });
     expect(result.answers.spam).toEqual({ type: 'noul', probability: 0.12, value: true });
     expect(result.answers.urgency).toMatchObject({ type: 'score', score: 2 });
@@ -181,7 +184,7 @@ describe('cog.decide', () => {
     });
     expect(result).toMatchObject({ model: 'typesafe/jev-1.13', id: 'gen-1', provider: 'TypeSafe' });
 
-    expectTypeOf(result.answers.desk.choice).toEqualTypeOf<'tech' | 'world'>();
+    expectTypeOf(result.answers.team.choice).toEqualTypeOf<'technical' | 'billing'>();
     expectTypeOf(result.answers.spam.value).toEqualTypeOf<boolean>();
     expectTypeOf(result.answers.urgency.score).toEqualTypeOf<number>();
   });
@@ -208,7 +211,7 @@ describe('cog.decide', () => {
       questions,
     });
     expect(calls).toHaveLength(2);
-    expect(result.answers.desk.choice).toBe('tech');
+    expect(result.answers.team.choice).toBe('technical');
   });
 
   it.each([
@@ -238,7 +241,7 @@ describe('cog.decide', () => {
   });
 
   it.each([
-    ['leaves a question unanswered', { desk: undefined }, 'unanswered'],
+    ['leaves a question unanswered', { team: undefined }, 'unanswered'],
     [
       'answers in another type',
       { spam: { type: 'choice', choice: 'yes' } },
@@ -246,7 +249,7 @@ describe('cog.decide', () => {
     ],
     [
       'picks an option the question does not have',
-      { desk: { type: 'choice', choice: 'sports' } },
+      { team: { type: 'choice', choice: 'sports' } },
       'not one of its options',
     ],
   ])('fails when the model %s', async (_name, answers, message) => {
@@ -296,7 +299,7 @@ describe('cog.decide', () => {
       attributes: {
         'llm.model': 'typesafe/jev-1.13',
         'llm.input_tokens': 1200,
-        'decision.questions': 'desk,spam,urgency',
+        'decision.questions': 'team,spam,urgency',
       },
     });
   });
@@ -346,7 +349,7 @@ describe('cog.decide', () => {
 describe('a decision model in a chat run', () => {
   it('fails clearly instead of a 400 from chat completions', async () => {
     const cog = new Cogitator({ llm: { providers: { openrouter: { apiKey: 'k' } } } });
-    const agent = new Agent({ name: 'router', model: JEV, instructions: 'Route topics.' });
+    const agent = new Agent({ name: 'router', model: JEV, instructions: 'Route messages.' });
     await expect(cog.run(agent, { input: 'hello' })).rejects.toMatchObject({
       code: ErrorCode.CONFIGURATION_ERROR,
       message: expect.stringContaining('is a decision model'),
@@ -359,18 +362,18 @@ describe('decisionTool', () => {
   it('asks the fixed questions about the state the agent passes', async () => {
     const { calls, fetch } = api([{ body: answerBody() }]);
     const tool = decisionTool(cogitator(fetch), {
-      name: 'route_topic',
-      description: 'Decide which desk covers a topic',
+      name: 'route_ticket',
+      description: 'Decide which team answers a support message',
       model: JEV,
       questions,
     });
-    expect(tool.name).toBe('route_topic');
-    expect(tool.parameters.safeParse({ state: { topic: 'x' } }).success).toBe(true);
+    expect(tool.name).toBe('route_ticket');
+    expect(tool.parameters.safeParse({ state: { message: 'x' } }).success).toBe(true);
     expect(tool.parameters.safeParse({ state: 42 }).success).toBe(false);
     const result = await tool.execute({ state: 'A new chip' }, createToolContext());
-    expect(result.answers.desk.choice).toBe('tech');
+    expect(result.answers.team.choice).toBe('technical');
     expect(result.cost).toBeCloseTo(0.0000504);
     expect(JSON.parse(String(calls[0].init.body)).state).toBe('A new chip');
-    expectTypeOf(result.answers.desk.choice).toEqualTypeOf<'tech' | 'world'>();
+    expectTypeOf(result.answers.team.choice).toEqualTypeOf<'technical' | 'billing'>();
   });
 });

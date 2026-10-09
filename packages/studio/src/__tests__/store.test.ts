@@ -25,7 +25,8 @@ function started(
   runId: string,
   rootRunId: string,
   startedAt: number,
-  target = 'assistant'
+  target = 'assistant',
+  model = 'openai/gpt-x'
 ): HostEvent {
   return {
     type: 'run.started',
@@ -36,7 +37,7 @@ function started(
     input: 'go',
     rootRunId,
     startedAt,
-    model: 'openai/gpt-x',
+    model,
   };
 }
 
@@ -123,7 +124,7 @@ describe('StudioStore', () => {
     const { store: s } = store((model) =>
       model === 'openrouter/typesafe/jev-1.13' ? 0.042 : null
     );
-    s.apply({ ...started('d', 'd', 1), model: 'openrouter/typesafe/jev-1.13' });
+    s.apply(started('d', 'd', 1, 'decide', 'openrouter/typesafe/jev-1.13'));
     s.apply({
       type: 'run.span',
       runId: 'd',

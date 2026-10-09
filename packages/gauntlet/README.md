@@ -39,7 +39,7 @@ Stages run on OpenRouter, registered as a custom backend (`openrouter/<vendor>/<
 | Second  | `openai/gpt-6-luna`        |
 | Third   | `z-ai/glm-5.3-flash`       |
 
-The model matrix stage also runs `xiaomi/mimo-v2.6-flash` and `qwen/qwen3.8-flash`. Override the three with `GAUNTLET_MODELS=vendor/model,vendor/model,...` (primary first). The cost shown is what OpenRouter reports for every call. OpenRouter spreads a model across providers whose prices differ several times over, so the catalogue price is only the fallback for a call that reports none.
+The model matrix stage also runs `xiaomi/mimo-v2.6-flash` and `qwen/qwen3.8-flash`. The decisions stage asks TypeSafe's Jev (`typesafe/jev-1.13`), a decision model, through `cog.decide()` on OpenRouter's Decisions API and as a tool of an agent. Override the three with `GAUNTLET_MODELS=vendor/model,vendor/model,...` (primary first). The cost shown is what OpenRouter reports for every call. OpenRouter spreads a model across providers whose prices differ several times over, so the catalogue price is only the fallback for a call that reports none.
 
 ## Local model lane
 

@@ -5,26 +5,26 @@ const apiKey = process.env.OPENROUTER_API_KEY;
 const JEV = 'openrouter/typesafe/jev-1.13';
 
 const questions = {
-  desk: {
+  team: {
     type: 'choice',
-    instructions: 'Which desk of a newsroom should cover this topic?',
+    instructions: 'Which support team should answer this message?',
     criteria: {
-      tech: 'Software, AI, chips and other technology',
-      world: 'Politics, diplomacy and world events',
-      culture: 'Books, film, music and art',
+      billing: 'Payments, invoices, charges and refunds',
+      technical: 'Bugs, crashes, errors and how the product works',
+      sales: 'Plans, pricing and buying more seats',
     },
   },
   spam: {
     type: 'noul',
-    instructions: 'Is this message spam rather than a reader writing in?',
+    instructions: 'Is this message spam rather than a customer writing in?',
     criteria: {
       true: 'Advertising, scams or nonsense',
-      false: 'A real reader with a real question',
+      false: 'A real customer with a real question',
     },
   },
   urgency: {
     type: 'score',
-    instructions: 'How urgently should the desk look at it?',
+    instructions: 'How urgently should the team answer it?',
     criteria: ['can wait', 'this week', 'today'],
   },
 } as const;
@@ -35,11 +35,12 @@ describe.skipIf(!apiKey)('decision models on OpenRouter', () => {
   it('answers every type of question with probabilities and a cost', async () => {
     const result = await cog.decide({
       model: JEV,
-      state: 'A reader asks when the new open-weights model from a big lab will run on laptops.',
+      state:
+        'I was charged twice for my subscription this month, please refund one of the payments.',
       questions,
     });
-    expect(['tech', 'world', 'culture']).toContain(result.answers.desk.choice);
-    expect(result.answers.desk.choice).toBe('tech');
+    expect(['billing', 'technical', 'sales']).toContain(result.answers.team.choice);
+    expect(result.answers.team.choice).toBe('billing');
     expect(result.answers.spam.probability).toBeGreaterThanOrEqual(0);
     expect(result.answers.spam.probability).toBeLessThanOrEqual(1);
     expect(result.answers.spam.value).toBe(false);
@@ -66,15 +67,15 @@ describe.skipIf(!apiKey)('decision models on OpenRouter', () => {
 
   it('serves a decision tool', async () => {
     const tool = decisionTool(cog, {
-      name: 'route_topic',
-      description: 'Pick the desk for a topic',
+      name: 'route_ticket',
+      description: 'Pick the team for a support message',
       model: JEV,
-      questions: { desk: questions.desk },
+      questions: { team: questions.team },
     });
     const result = await tool.execute(
-      { state: 'A new novel wins a major literary prize' },
+      { state: 'The app crashes every time I open the settings page' },
       { agentId: 'a', runId: 'r', signal: new AbortController().signal }
     );
-    expect(result.answers.desk.choice).toBe('culture');
+    expect(result.answers.team.choice).toBe('technical');
   }, 60_000);
 });

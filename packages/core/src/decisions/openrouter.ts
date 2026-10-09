@@ -13,8 +13,8 @@ export const OPENROUTER_DECISIONS_URL = 'https://openrouter.ai/api/alpha/decisio
 export interface OpenRouterDecisionConfig {
   apiKey: string;
   /**
-   * The Decisions endpoint (default `https://openrouter.ai/api/alpha/decisions`);
-   * an OpenRouter `baseUrl` ending in `/v1` points next to it.
+   * The Decisions endpoint (default `https://openrouter.ai/api/alpha/decisions`).
+   * An OpenRouter `baseUrl` ending in `/v1` points next to it.
    */
   url?: string;
   /** The fetch to call it with, for tests and proxies. */
