@@ -28,6 +28,31 @@ export function threadsErrorCode(status: number, error: GraphError): FeedErrorCo
 
 export type ThreadsParams = Record<string, string | number | boolean | undefined>;
 
+/** One page of a Graph API listing. */
+export interface ThreadsPage<T> {
+  data?: T[];
+  paging?: { cursors?: { before?: string; after?: string }; next?: string; previous?: string };
+}
+
+/** The query of the page after `page`, or none when it was the last. */
+export function nextPageQuery<T>(
+  page: ThreadsPage<T>,
+  query: ThreadsParams
+): ThreadsParams | undefined {
+  const count = page.data?.length ?? 0;
+  if (count === 0) return undefined;
+  const { cursors, next } = page.paging ?? {};
+  if (!next && typeof query.limit === 'number' && count < query.limit) return undefined;
+  if (cursors?.after && cursors.after !== query.after) return { ...query, after: cursors.after };
+  if (!next) return undefined;
+  try {
+    const params = [...new URL(next).searchParams].filter(([name]) => name !== 'access_token');
+    return params.length > 0 ? { ...query, ...Object.fromEntries(params) } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Calls the Threads Graph API with a token, turning its errors into `FeedError`s. */
 export class ThreadsClient {
   constructor(private readonly options: { base?: string; fetch?: typeof fetch } = {}) {}

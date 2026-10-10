@@ -71,7 +71,7 @@ Each feed checks a post against its rules before it sends anything and fails wit
 `FeedPublisher` publishes a post to every feed it has, or to `feeds: ['bluesky']`, now or at `publishAt`:
 
 - **Each feed on its own.** One failing feed does not stop the others. Each outcome is saved as soon as it is known.
-- **Exactly once.** Before the first attempt at a feed, the delivery saves a key from the feed's `idempotencyKey()` and passes it on every attempt. Bluesky publishes the post under that record key, and Threads looks for the post an earlier attempt made, so an attempt after a crash, or after an error whose outcome was unknown, finds the post instead of publishing it again.
+- **Exactly once.** Before the first attempt at a feed, the delivery saves a key from the feed's `idempotencyKey()` and passes it on every attempt, with `retry: true` on every attempt after the first. Bluesky publishes the post under that record key, and Threads looks for the post an earlier attempt made, so an attempt after a crash, or after an error whose outcome was unknown, finds the post instead of publishing it again.
 - **Retries.** A feed that can succeed later (a rate limit, a feed that is down, an image host that failed) is tried again after the wait it asked for, or after a backoff that doubles from `retry.baseDelay` (one minute) up to `retry.maxDelay` (one hour), up to `retry.maxAttempts` (5). A full Threads quota is waited out until it frees up, without spending attempts. Other errors fail that feed at once.
 - **Idempotency.** Publishing with the same `key` twice publishes once: the second call returns the first job, with `duplicate: true`.
 - **Fitting.** A text longer than a feed takes is cut at a word with an ellipsis for that feed, so one text serves Bluesky's 300 graphemes and 3000 bytes and Threads' 500. `overflow: 'fail'` fails that feed instead.
@@ -103,7 +103,7 @@ A publisher takes one due job at a time and holds a claim on it for `claimTtl` (
 
 ## Errors
 
-A feed of your own implements `FeedChannel`: its `limits` and `measure`, `publish` with the `idempotencyKey` option, `idempotencyKey()`, `delete`, `connect` and `close`.
+A feed of your own implements `FeedChannel`: its `limits` and `measure`, `publish` with the `idempotencyKey` and `retry` options, `idempotencyKey()`, `delete`, `connect` and `close`.
 
 Feeds fail with `FeedError`. Its `code` says what happened (`auth`, `token_expired`, `rate_limited`, `quota_exceeded`, `invalid_post`, `not_found`, `unavailable`), `retryable` whether trying later can help, and `retryAfter` how long the feed asked to wait.
 

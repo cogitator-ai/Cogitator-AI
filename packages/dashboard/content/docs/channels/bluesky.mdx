@@ -50,7 +50,7 @@ A post holds 300 graphemes and 3000 bytes, up to four images of 2 MB with alt te
 
 The session is kept in the `store` (in memory by default) and resumed after a restart. A session that cannot be resumed, or that expires while the bot runs, is replaced by a new sign-in, and the post being published goes out after it.
 
-With an idempotency key from `idempotencyKey()` (which `FeedPublisher` passes), the post is published under that key as its record key, so publishing again with the key returns the post instead of a second one.
+With an idempotency key from `idempotencyKey()` (which `FeedPublisher` passes), the post is published under that key as its record key, so publishing again with the key, as a retry, returns the post instead of a second one.
 
 ## Answering People
 

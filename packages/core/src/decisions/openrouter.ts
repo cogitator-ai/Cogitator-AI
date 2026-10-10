@@ -55,7 +55,10 @@ const ResponseSchema = z.object({
 /** The Decisions endpoint next to an OpenRouter API base. */
 export function decisionsUrlFor(baseUrl: string | undefined): string {
   if (!baseUrl) return OPENROUTER_DECISIONS_URL;
-  return `${baseUrl.replace(/\/+$/, '').replace(/\/v1$/, '')}/alpha/decisions`;
+  let end = baseUrl.length;
+  while (end > 0 && baseUrl.charCodeAt(end - 1) === 47) end--;
+  const base = baseUrl.slice(0, end);
+  return `${base.endsWith('/v1') ? base.slice(0, -3) : base}/alpha/decisions`;
 }
 
 /**

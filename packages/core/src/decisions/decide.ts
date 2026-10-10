@@ -59,6 +59,10 @@ export function validateDecision(options: DecideOptions): void {
   }
 }
 
+function isProbability(value: number): boolean {
+  return Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
 /** The answers of `response` to `questions`, checked against them, yes or no by `threshold`. */
 export function toDecisionAnswers<TQuestions extends DecisionQuestions>(
   questions: TQuestions,
@@ -76,6 +80,21 @@ export function toDecisionAnswers<TQuestions extends DecisionQuestions>(
         context,
         `Question "${id}" is ${question.type}, the decision model answered it as ${raw.type}`
       );
+    }
+    const probabilities = raw.type === 'noul' ? undefined : raw.probabilities;
+    const outOfRange = [
+      ...(raw.type === 'noul' ? [raw.noul] : []),
+      ...(raw.type !== 'noul' && raw.confidence !== undefined ? [raw.confidence] : []),
+      ...Object.values(probabilities ?? {}),
+    ].find((value) => !isProbability(value));
+    if (outOfRange !== undefined) {
+      throw llmInvalidResponse(
+        context,
+        `Question "${id}" got a probability of ${outOfRange}, outside 0 to 1`
+      );
+    }
+    if (raw.type === 'score' && !Number.isFinite(raw.score)) {
+      throw llmInvalidResponse(context, `Question "${id}" got a score of ${raw.score}`);
     }
     if (raw.type === 'noul') {
       answers[id] = { type: 'noul', probability: raw.noul, value: raw.noul >= threshold };

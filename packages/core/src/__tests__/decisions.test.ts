@@ -252,6 +252,23 @@ describe('cog.decide', () => {
       { team: { type: 'choice', choice: 'sports' } },
       'not one of its options',
     ],
+    ['gives a probability above 1', { spam: { type: 'noul', noul: 2 } }, 'outside 0 to 1'],
+    [
+      'gives a negative option probability',
+      {
+        team: {
+          type: 'choice',
+          choice: 'technical',
+          probabilities: { technical: 1.1, billing: -0.1 },
+        },
+      },
+      'outside 0 to 1',
+    ],
+    [
+      'gives a confidence above 1',
+      { urgency: { type: 'score', score: 1, confidence: 1.5 } },
+      'outside 0 to 1',
+    ],
   ])('fails when the model %s', async (_name, answers, message) => {
     const body = answerBody();
     const merged = { ...body.answers, ...answers };

@@ -293,26 +293,31 @@ export class BlueskyChannel implements Channel {
     }
     for (const convo of convos) {
       if (convo.unreadCount <= 0) continue;
+      const unread = Math.min(convo.unreadCount, MAX_UNREAD_MESSAGES);
       const messages: ChatMessage[] = [];
+      const fromOthers: ChatMessage[] = [];
       try {
         let cursor: string | undefined;
         do {
           const response = await chat.chat.bsky.convo.getMessages({
             convoId: convo.id,
-            limit: Math.min(convo.unreadCount - messages.length, 100),
+            limit: 100,
             ...(cursor && { cursor }),
           });
-          messages.push(...(response.data.messages as ChatMessage[]));
-          cursor = response.data.cursor;
-        } while (cursor && messages.length < Math.min(convo.unreadCount, MAX_UNREAD_MESSAGES));
+          const page = response.data.messages as ChatMessage[];
+          messages.push(...page);
+          fromOthers.push(
+            ...page.filter((message) => message.sender && message.sender.did !== this.ownDid)
+          );
+          cursor = page.length > 0 ? response.data.cursor : undefined;
+        } while (cursor && fromOthers.length < unread);
       } catch (error) {
         console.error(`[bluesky] Could not read conversation ${convo.id}:`, error);
         continue;
       }
-      const incoming = messages
-        .filter(
-          (message) => typeof message.text === 'string' && message.sender?.did !== this.ownDid
-        )
+      const incoming = fromOthers
+        .slice(0, unread)
+        .filter((message) => typeof message.text === 'string')
         .sort((a, b) => (a.sentAt ?? '').localeCompare(b.sentAt ?? ''));
       for (const message of incoming) {
         if (!this.remember(`${convo.id}:${message.id}`)) continue;
@@ -327,7 +332,8 @@ export class BlueskyChannel implements Channel {
           raw: { convo, message },
         });
       }
-      const newest = [...messages]
+      const newest = messages
+        .filter((message) => message.sentAt !== undefined)
         .sort((a, b) => (a.sentAt ?? '').localeCompare(b.sentAt ?? ''))
         .at(-1);
       try {

@@ -42,11 +42,13 @@ console.log(post.url); // the post's permalink
 - **Replies** use `replyTo` with the media id they answer.
 - **Limits.** A post holds 500 characters, with emoji counted by their UTF-8 bytes, and up to five links. The feed checks this before it sends anything.
 - **Quota.** Before posting it reads the account's 24-hour quota (250 posts, 1000 replies). A full quota fails with a `FeedError` of code `quota_exceeded` whose `retryAfter` holds the time until the oldest post (or reply) in the window leaves it, plus a minute, or an hour when that cannot be found out. `FeedPublisher` waits that long and does not count the wait as an attempt. `checkQuota: false` skips the check.
-- **No double posts.** Threads takes no client-chosen ids, so a publication with an idempotency key (from `threads.idempotencyKey()`, which `FeedPublisher` passes on every attempt) first looks for the post an earlier attempt made: one of the account's posts, or replies to the same post, since the key was made, with the same text. When it finds one it returns it instead of posting again, so a retry after a crash or a lost answer does not post twice.
+- **No double posts.** Threads takes no client-chosen ids, so a publication with an idempotency key (from `threads.idempotencyKey()`, which `FeedPublisher` passes on every attempt) looks for the post an earlier attempt made before it posts again: one of the account's posts, or replies to the same post, made since the key, of the same kind and with the same text, link card, topic tag and alt text. When it finds one it returns it, so a retry after a crash or a lost answer does not post twice. `retry: false` says no earlier attempt was made, and skips the lookup.
 
 ```typescript
 const key = threads.idempotencyKey(); // keep it with the post until it is published
-const post = await threads.publish({ text: 'Hello' }, { idempotencyKey: key });
+const post = await threads.publish({ text: 'Hello' }, { idempotencyKey: key, retry: false });
+// after a crash or a lost answer, try again with the same key
+await threads.publish({ text: 'Hello' }, { idempotencyKey: key, retry: true });
 ```
 
 ## The Token

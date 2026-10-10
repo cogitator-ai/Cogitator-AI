@@ -3,9 +3,11 @@ import { createServer, type IncomingMessage, type Server } from 'node:http';
 import type { Attachment, Channel, ChannelMessage, SendOptions } from '@cogitator-ai/types';
 import { splitText, threadsLength } from '../../feeds/text';
 import { threadsAccountOf, type ThreadsAccount, type ThreadsAccountConfig } from './account';
+import type { ThreadsParams } from './client';
 import { ThreadsFeed } from './feed';
 
 const MAX_TRACKED = 1000;
+const MAX_POLL_PAGES = 10;
 const POST_LIMIT = 500;
 const POST_FIELDS = 'id,text,username,timestamp,permalink,replied_to,root_post,is_reply';
 
@@ -223,21 +225,20 @@ export class ThreadsChannel implements Channel {
       try {
         await this.identify();
         const user = this.account.userId;
-        const mentions = await this.account.get<{ data?: ThreadsPost[] }>(`${user}/mentions`, {
-          fields: POST_FIELDS,
-          limit: 25,
-        });
+        const mentions = await this.newest(`${user}/mentions`, { fields: POST_FIELDS, limit: 25 });
         const own = await this.account.get<{ data?: ThreadsPost[] }>(`${user}/threads`, {
           fields: 'id,timestamp',
           limit: this.config.watchPosts ?? 10,
         });
         const conversations: ThreadsPost[] = [];
         for (const post of own.data ?? []) {
-          const conversation = await this.account.get<{ data?: ThreadsPost[] }>(
-            `${post.id}/conversation`,
-            { fields: POST_FIELDS, limit: 50 }
+          conversations.push(
+            ...(await this.newest(`${post.id}/conversation`, {
+              fields: POST_FIELDS,
+              limit: 50,
+              reverse: true,
+            }))
           );
-          conversations.push(...(conversation.data ?? []));
         }
         const botPosts = new Set((own.data ?? []).map((post) => post.id));
         for (const post of conversations) if (this.isOwn(post)) botPosts.add(post.id);
@@ -247,7 +248,7 @@ export class ThreadsChannel implements Channel {
             this.mentionsBot(post.text)
         );
         await this.receive(
-          [...(mentions.data ?? []), ...replies].filter(
+          [...mentions, ...replies].filter(
             (post) => post.timestamp === undefined || Date.parse(post.timestamp) >= this.since
           )
         );
@@ -258,6 +259,25 @@ export class ThreadsChannel implements Channel {
       this.polling = undefined;
     });
     return this.polling;
+  }
+
+  /**
+   * The posts of a listing that runs newest first, paging back until a page
+   * reaches a post already answered or older than the start, so a burst of
+   * replies between two polls is read in full.
+   */
+  private async newest(path: string, params: ThreadsParams): Promise<ThreadsPost[]> {
+    const posts: ThreadsPost[] = [];
+    for await (const page of this.account.pages<ThreadsPost>(path, params, MAX_POLL_PAGES)) {
+      posts.push(...page);
+      const reachedKnown = page.some(
+        (post) =>
+          this.seen.has(post.id) ||
+          (post.timestamp !== undefined && Date.parse(post.timestamp) < this.since)
+      );
+      if (reachedKnown) break;
+    }
+    return posts;
   }
 
   async sendText(channelId: string, text: string, options?: SendOptions): Promise<string> {

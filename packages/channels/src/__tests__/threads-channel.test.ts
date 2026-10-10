@@ -29,13 +29,25 @@ function graph(
     const json = (body: unknown) => Response.json(body);
     if (path === 'me' && params.fields === 'id,username')
       return json({ id: '1', username: 'mybot' });
-    if (path === 'me/mentions') return json({ data: data.mentions ?? [] });
+    const paged = (items: unknown[]) => {
+      const start = Number(params.after ?? 0);
+      const limit = Number(params.limit ?? 25);
+      const page = items.slice(start, start + limit);
+      const end = start + page.length;
+      return json({
+        data: page,
+        paging: {
+          cursors: { before: String(start), after: String(end) },
+          ...(end < items.length && {
+            next: `https://graph.threads.net/v1.0/${path}?after=${end}`,
+          }),
+        },
+      });
+    };
+    if (path === 'me/mentions') return paged(data.mentions ?? []);
     if (path === 'me/threads' && method === 'GET') return json({ data: data.own ?? [] });
     if (path.endsWith('/conversation'))
-      return json({
-        data: data.conversations?.[path.split('/')[0]] ?? [],
-        paging: { cursors: { before: 'QVFIUmx1', after: 'QVFIUnB4' } },
-      });
+      return paged(data.conversations?.[path.split('/')[0]] ?? []);
     if (path === 'me/threads_publishing_limit')
       return json({
         data: [
@@ -243,6 +255,35 @@ describe('ThreadsChannel without webhooks', () => {
     await channel.poll();
     expect(received.map((m) => m.id).sort()).toEqual(['c1', 'm1']);
     expect(api.calls.find((c) => c.path === 'me/mentions')?.params.fields).toContain('replied_to');
+  });
+
+  it('pages back through a burst of mentions and replies between two polls', async () => {
+    const at = later();
+    const mention = (n: number) => ({
+      id: `m${n}`,
+      text: `@mybot question ${n}`,
+      username: 'fan',
+      timestamp: at,
+    });
+    const reply = (n: number) => ({
+      id: `r${n}`,
+      text: `reply ${n}`,
+      username: 'reader',
+      timestamp: at,
+      replied_to: { id: 'post-1' },
+      root_post: { id: 'post-1' },
+    });
+    const api = graph({
+      mentions: Array.from({ length: 60 }, (_, n) => mention(n)),
+      own: [{ id: 'post-1', timestamp: at }],
+      conversations: { 'post-1': Array.from({ length: 120 }, (_, n) => reply(n)) },
+    });
+    const { channel, received } = await started(api);
+    await channel.poll();
+    expect(received.filter((m) => m.id.startsWith('m'))).toHaveLength(60);
+    expect(received.filter((m) => m.id.startsWith('r'))).toHaveLength(120);
+    expect(api.calls.filter((c) => c.path === 'me/mentions')).toHaveLength(3);
+    expect(api.calls.find((c) => c.path === 'post-1/conversation')?.params.reverse).toBe('true');
   });
 
   it('takes replies to its posts and mentions from a conversation, not what people answer each other', async () => {

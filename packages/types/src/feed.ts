@@ -73,6 +73,12 @@ export interface FeedPublishOptions {
    * posting it twice.
    */
   idempotencyKey?: string;
+  /**
+   * Whether an earlier attempt with `idempotencyKey` may have reached the
+   * feed. A feed that has to look up the post of that attempt does so only
+   * then, so a first attempt never takes another post for its own.
+   */
+  retry?: boolean;
 }
 
 /** A social feed a post can be published to. */

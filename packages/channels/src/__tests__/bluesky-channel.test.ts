@@ -44,9 +44,25 @@ vi.mock('@atproto/api', () => {
             },
           }),
           listConvoRequests: async () => ({ data: { requests: state.requests } }),
-          getMessages: async ({ convoId, limit }: { convoId: string; limit: number }) => ({
-            data: { messages: (state.messages.get(convoId) ?? []).slice(0, limit) },
-          }),
+          getMessages: async ({
+            convoId,
+            limit,
+            cursor,
+          }: {
+            convoId: string;
+            limit: number;
+            cursor?: string;
+          }) => {
+            const all = state.messages.get(convoId) ?? [];
+            const start = Number(cursor ?? 0);
+            const end = start + limit;
+            return {
+              data: {
+                messages: all.slice(start, end),
+                ...(end < all.length && { cursor: String(end) }),
+              },
+            };
+          },
           updateRead: async (input: { convoId: string; messageId?: string }) => {
             state.read.push(input);
             const convo = [...state.convos, ...state.requests].find((c) => c.id === input.convoId);
@@ -353,6 +369,60 @@ describe('BlueskyChannel', () => {
         buffer: new Uint8Array(1),
       })
     ).rejects.toThrow('cannot carry files');
+    await channel.stop();
+  });
+
+  it('reads back past its own, deleted and system messages to every unread one', async () => {
+    state.convos.push({
+      id: 'convo-3',
+      unreadCount: 3,
+      members: [
+        { did: 'did:plc:bot', handle: 'news.bsky.social' },
+        { did: 'did:plc:reader', handle: 'reader.bsky.social' },
+      ],
+    });
+    const at = (minute: number) => `2026-10-09T10:${String(minute).padStart(2, '0')}:00Z`;
+    const ownMessages = Array.from({ length: 120 }, (_, n) => ({
+      $type: 'chat.bsky.convo.defs#messageView',
+      id: `own-${n}`,
+      text: `answer part ${n}`,
+      sender: { did: 'did:plc:bot' },
+      sentAt: at(50),
+    }));
+    state.messages.set('convo-3', [
+      {
+        $type: 'chat.bsky.convo.defs#messageView',
+        id: 'u3',
+        text: 'third',
+        sender: { did: 'did:plc:reader' },
+        sentAt: at(52),
+      },
+      { $type: 'chat.bsky.convo.defs#systemMessageView', id: 'sys', sentAt: at(51) },
+      ...ownMessages,
+      {
+        $type: 'chat.bsky.convo.defs#deletedMessageView',
+        id: 'u2',
+        sender: { did: 'did:plc:reader' },
+        sentAt: at(45),
+      },
+      {
+        $type: 'chat.bsky.convo.defs#messageView',
+        id: 'u1',
+        text: 'first',
+        sender: { did: 'did:plc:reader' },
+        sentAt: at(40),
+      },
+      {
+        $type: 'chat.bsky.convo.defs#messageView',
+        id: 'old',
+        text: 'already read',
+        sender: { did: 'did:plc:reader' },
+        sentAt: at(10),
+      },
+    ]);
+    const { channel, received } = await started({ catchUp: true });
+    expect(received.map((m) => m.text)).toEqual(['first', 'third']);
+    expect(state.read).toEqual([{ convoId: 'convo-3', messageId: 'u3' }]);
     await channel.stop();
   });
 

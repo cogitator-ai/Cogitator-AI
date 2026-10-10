@@ -22,6 +22,9 @@ interface Listed {
   permalink?: string;
   replied_to?: { id: string };
   media_type?: string;
+  link_attachment_url?: string;
+  topic_tag?: string;
+  alt_text?: string;
 }
 
 /** A time as the Threads API writes it, like `2026-10-09T10:00:00+0000`. */
@@ -420,7 +423,7 @@ describe('ThreadsFeed', () => {
     const lookups = api.calls.filter((call) => call.path === 'me/threads');
     expect(lookups).toHaveLength(2);
     expect(lookups[0].params).toMatchObject({
-      fields: 'id,text,timestamp,permalink',
+      fields: 'id,text,timestamp,permalink,media_type,link_attachment_url,topic_tag,alt_text',
       since: String(Math.floor((keyTime - 60_000) / 1000)),
     });
   });
@@ -449,7 +452,10 @@ describe('ThreadsFeed', () => {
     });
     expect(api.calls[0]).toMatchObject({
       path: 'me/replies',
-      params: { fields: 'id,text,timestamp,permalink,replied_to' },
+      params: {
+        fields:
+          'id,text,timestamp,permalink,media_type,link_attachment_url,topic_tag,alt_text,replied_to',
+      },
     });
     expect(api.calls.some((call) => call.method === 'POST')).toBe(false);
   });
@@ -473,6 +479,55 @@ describe('ThreadsFeed', () => {
       { idempotencyKey: key }
     );
     expect(published.id).toBe('img-1');
+  });
+
+  it('looks for an earlier post on a retry only', async () => {
+    const threads = feed({ expiresAt: farFuture() });
+    const key = threads.idempotencyKey();
+    api.threads = [{ id: 'same', text: 'Hello', timestamp: iso(Number(key.split('.')[0]) + 1000) }];
+    const published = await threads.publish(
+      { text: 'Hello' },
+      { idempotencyKey: key, retry: false }
+    );
+    expect(published.id).toBe('media-1');
+    expect(api.calls.some((call) => call.path === 'me/threads' && call.method === 'GET')).toBe(
+      false
+    );
+  });
+
+  it('does not take a post of another kind, image or link for its own', async () => {
+    const threads = feed({ expiresAt: farFuture() });
+    const key = threads.idempotencyKey();
+    const at = iso(Number(key.split('.')[0]) + 1000);
+    api.threads = [
+      { id: 'carousel', timestamp: at, media_type: 'CAROUSEL_ALBUM' },
+      { id: 'other-alt', timestamp: at, media_type: 'IMAGE', alt_text: 'A dog' },
+      {
+        id: 'other-link',
+        text: 'Read this',
+        timestamp: at,
+        media_type: 'TEXT_POST',
+        link_attachment_url: 'https://example.com/other',
+      },
+    ];
+    const image = await threads.publish(
+      {
+        text: '',
+        images: [
+          {
+            image: { type: 'image', mimeType: 'image/jpeg', url: 'https://cdn/cat.jpg' },
+            alt: 'A cat',
+          },
+        ],
+      },
+      { idempotencyKey: key }
+    );
+    expect(image.id).toMatch(/^media-/);
+    const link = await threads.publish(
+      { text: 'Read this', link: { url: 'https://example.com/story/' } },
+      { idempotencyKey: threads.idempotencyKey() }
+    );
+    expect(link.id).toMatch(/^media-/);
   });
 
   it('posts when no earlier post matches the key, and refuses a key it did not make', async () => {

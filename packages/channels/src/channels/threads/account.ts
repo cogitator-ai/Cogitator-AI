@@ -1,4 +1,4 @@
-import { ThreadsClient, type ThreadsParams } from './client';
+import { nextPageQuery, ThreadsClient, type ThreadsPage, type ThreadsParams } from './client';
 import { ThreadsTokenManager, type ThreadsTokenOptions } from './token';
 
 export interface ThreadsAccountConfig extends ThreadsTokenOptions {
@@ -47,6 +47,21 @@ export class ThreadsAccount {
 
   async get<T>(path: string, params?: ThreadsParams, signal?: AbortSignal): Promise<T> {
     return this.client.get<T>(path, await this.tokens.token(), params, signal);
+  }
+
+  /** The items of a listing, page by page, following its cursors for `maxPages` at most. */
+  async *pages<T>(
+    path: string,
+    params: ThreadsParams,
+    maxPages: number,
+    signal?: AbortSignal
+  ): AsyncGenerator<T[]> {
+    let query: ThreadsParams | undefined = params;
+    for (let page = 0; page < maxPages && query; page++) {
+      const response: ThreadsPage<T> = await this.get<ThreadsPage<T>>(path, query, signal);
+      yield response.data ?? [];
+      query = nextPageQuery(response, query);
+    }
   }
 
   async post<T>(path: string, params?: ThreadsParams, signal?: AbortSignal): Promise<T> {

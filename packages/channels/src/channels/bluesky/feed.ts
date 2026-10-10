@@ -107,7 +107,7 @@ export class BlueskyFeed implements FeedChannel {
 
   async publish(post: FeedPost, options: FeedPublishOptions = {}): Promise<PublishedPost> {
     this.validate(post);
-    const { signal, idempotencyKey: rkey } = options;
+    const { signal, idempotencyKey: rkey, retry = true } = options;
     if (rkey !== undefined && !TID_PATTERN.test(rkey)) {
       throw new FeedError(
         'bluesky',
@@ -120,7 +120,7 @@ export class BlueskyFeed implements FeedChannel {
     const created = await connection.use(async (agent): Promise<PublishedRef> => {
       const did = agent.did;
       if (!did) throw new FeedError('bluesky', 'auth', 'The Bluesky session has no DID');
-      if (rkey) {
+      if (rkey && retry) {
         const existing = await this.findRecord(agent, did, rkey);
         if (existing) return existing;
       }

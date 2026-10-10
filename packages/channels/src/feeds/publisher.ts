@@ -244,11 +244,12 @@ export class FeedPublisher {
     for (const delivery of job.deliveries) {
       if (delivery.status !== 'pending' || delivery.nextAttemptAt > this.now()) continue;
       const feed = this.feeds.get(delivery.feed);
-      if (feed && !this.options.dryRun && !delivery.idempotencyKey) {
+      const retry = delivery.idempotencyKey !== undefined;
+      if (feed && !this.options.dryRun && !retry) {
         delivery.idempotencyKey = feed.idempotencyKey();
         if (!(await this.save(job, signal))) break;
       }
-      await this.attempt(job, delivery, feed, signal);
+      await this.attempt(job, delivery, feed, retry, signal);
       if (!(await this.save(job, signal))) break;
     }
     return job;
@@ -265,12 +266,13 @@ export class FeedPublisher {
     job: PublishJob,
     delivery: FeedDelivery,
     feed: FeedChannel | undefined,
+    retry: boolean,
     signal: AbortSignal
   ): Promise<void> {
     delivery.attempts += 1;
     try {
       if (!feed) throw new FeedError(delivery.feed, 'unknown', 'The publisher has no such feed');
-      const published = await this.send(feed, job.post, delivery.idempotencyKey, signal);
+      const published = await this.send(feed, job.post, delivery.idempotencyKey, retry, signal);
       delivery.status = 'published';
       delivery.post = {
         id: published.id,
@@ -287,7 +289,7 @@ export class FeedPublisher {
       const error = caught instanceof Error ? caught : new Error(String(caught));
       const quota = error instanceof FeedError && error.code === 'quota_exceeded';
       if (quota) delivery.attempts -= 1;
-      const retry =
+      const again =
         error instanceof FeedError &&
         error.retryable &&
         (quota || delivery.attempts < this.retry.maxAttempts);
@@ -295,7 +297,7 @@ export class FeedPublisher {
         code: error instanceof FeedError ? error.code : 'unknown',
         message: error.message,
       };
-      if (retry) {
+      if (again) {
         const wait = quota
           ? (error.retryAfter ?? this.retry.maxDelay)
           : Math.max(error.retryAfter ?? 0, this.backoff(delivery.attempts));
@@ -304,7 +306,7 @@ export class FeedPublisher {
         delivery.status = 'failed';
       }
       await this.notify(() =>
-        this.options.onFailed?.({ job, feed: delivery.feed, error, final: !retry })
+        this.options.onFailed?.({ job, feed: delivery.feed, error, final: !again })
       );
     }
   }
@@ -313,6 +315,7 @@ export class FeedPublisher {
     feed: FeedChannel,
     post: FeedPost,
     idempotencyKey: string | undefined,
+    retry: boolean,
     signal: AbortSignal
   ): Promise<PublishedPost> {
     const measure = lengthOf(feed);
@@ -338,7 +341,7 @@ export class FeedPublisher {
     }
     return feed.publish(text === post.text ? post : { ...post, text }, {
       signal,
-      ...(idempotencyKey && { idempotencyKey }),
+      ...(idempotencyKey && { idempotencyKey, retry }),
     });
   }
 

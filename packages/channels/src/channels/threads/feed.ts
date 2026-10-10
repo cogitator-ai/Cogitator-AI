@@ -57,12 +57,51 @@ interface ListedPost {
   text?: string;
   timestamp?: string;
   permalink?: string;
+  media_type?: string;
+  link_attachment_url?: string;
+  topic_tag?: string;
+  alt_text?: string;
   replied_to?: { id: string };
 }
 
-interface Page<T> {
-  data?: T[];
-  paging?: { cursors?: { before?: string; after?: string }; next?: string; previous?: string };
+const LOOKUP_FIELDS =
+  'id,text,timestamp,permalink,media_type,link_attachment_url,topic_tag,alt_text';
+
+/** A URL as compared with the one Threads lists: no trailing slashes. */
+function comparableUrl(url: string): string {
+  let end = url.length;
+  while (end > 0 && url.charCodeAt(end - 1) === 47) end--;
+  return url.slice(0, end);
+}
+
+/**
+ * Whether a listed post is `post` as published: its kind, text, link card,
+ * topic tag, alt text of a single image and the post it answers, where
+ * Threads lists them.
+ */
+function samePost(listed: ListedPost, post: FeedPost, topicTag: string | undefined): boolean {
+  const images = post.images ?? [];
+  const mediaType =
+    images.length === 0 ? 'TEXT_POST' : images.length === 1 ? 'IMAGE' : 'CAROUSEL_ALBUM';
+  if (listed.media_type !== undefined && listed.media_type !== mediaType) return false;
+  if (normalized(listed.text) !== normalized(post.text)) return false;
+  if (post.replyTo && listed.replied_to?.id !== post.replyTo) return false;
+  if (
+    post.link &&
+    listed.link_attachment_url !== undefined &&
+    comparableUrl(listed.link_attachment_url) !== comparableUrl(post.link.url)
+  ) {
+    return false;
+  }
+  if (
+    topicTag &&
+    listed.topic_tag !== undefined &&
+    listed.topic_tag.toLowerCase() !== topicTag.toLowerCase()
+  ) {
+    return false;
+  }
+  const alt = images.length === 1 ? images[0]?.alt : undefined;
+  return !alt || listed.alt_text === undefined || listed.alt_text === alt;
 }
 
 interface PublishingLimit {
@@ -72,6 +111,15 @@ interface PublishingLimit {
     reply_quota_usage?: number;
     reply_config?: { quota_total?: number; quota_duration?: number };
   }>;
+}
+
+const TRAILING_PUNCTUATION = new Set(['.', ',', ';', ':', '!', '?', ')']);
+
+/** `text` without the run of `characters` it ends with, in linear time. */
+function withoutTrailing(text: string, characters: ReadonlySet<string>): string {
+  let end = text.length;
+  while (end > 0 && characters.has(text.charAt(end - 1))) end--;
+  return text.slice(0, end);
 }
 
 /** Text as compared between a post and the one Threads lists: trimmed, whitespace runs as one space. */
@@ -96,22 +144,6 @@ function keyTime(key: string): number {
     );
   }
   return time;
-}
-
-/** The query of the page after `page`, or none when it was the last. */
-function nextQuery<T>(page: Page<T>, query: ThreadsParams): ThreadsParams | undefined {
-  const count = page.data?.length ?? 0;
-  if (count === 0) return undefined;
-  const { cursors, next } = page.paging ?? {};
-  if (!next && typeof query.limit === 'number' && count < query.limit) return undefined;
-  if (cursors?.after && cursors.after !== query.after) return { ...query, after: cursors.after };
-  if (!next) return undefined;
-  try {
-    const params = [...new URL(next).searchParams].filter(([name]) => name !== 'access_token');
-    return params.length > 0 ? { ...query, ...Object.fromEntries(params) } : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 function abortError(signal: AbortSignal): Error {
@@ -179,10 +211,13 @@ export class ThreadsFeed implements FeedChannel {
 
   async publish(post: FeedPost, options: FeedPublishOptions = {}): Promise<PublishedPost> {
     const topicTag = this.validate(post);
-    const { signal, idempotencyKey } = options;
+    const { signal, idempotencyKey, retry = true } = options;
     if (idempotencyKey !== undefined) {
-      const earlier = await this.findEarlier(post, keyTime(idempotencyKey), signal);
-      if (earlier) return earlier;
+      const since = keyTime(idempotencyKey);
+      if (retry) {
+        const earlier = await this.findEarlier(post, topicTag, since, signal);
+        if (earlier) return earlier;
+      }
     }
     if (this.checkQuota) await this.assertQuota(Boolean(post.replyTo), signal);
     const user = this.account.userId;
@@ -295,7 +330,7 @@ export class ThreadsFeed implements FeedChannel {
     }
     const links = new Set(
       [...post.text.matchAll(URL_PATTERN), ...(post.link ? [[post.link.url]] : [])].map((match) =>
-        match[0].replace(/[.,;:!?)]+$/u, '')
+        withoutTrailing(match[0], TRAILING_PUNCTUATION)
       )
     );
     if (links.size > THREADS_LIMITS.maxLinks) {
@@ -347,7 +382,7 @@ export class ThreadsFeed implements FeedChannel {
     const start = now - window * 1000;
     let oldest: number | undefined;
     try {
-      const pages = this.pages<ListedPost>(
+      const pages = this.account.pages<ListedPost>(
         `${this.account.userId}/${reply ? 'replies' : 'threads'}`,
         { since: Math.floor(start / 1000), fields: 'timestamp', limit: 100 },
         QUOTA_PAGES,
@@ -376,26 +411,23 @@ export class ThreadsFeed implements FeedChannel {
    */
   private async findEarlier(
     post: FeedPost,
+    topicTag: string | undefined,
     since: number,
     signal?: AbortSignal
   ): Promise<PublishedPost | undefined> {
     const parent = post.replyTo;
-    const text = normalized(post.text);
-    const pages = this.pages<ListedPost>(
+    const pages = this.account.pages<ListedPost>(
       `${this.account.userId}/${parent ? 'replies' : 'threads'}`,
       {
         since: Math.floor((since - CLOCK_SKEW) / 1000),
-        fields: `id,text,timestamp,permalink${parent ? ',replied_to' : ''}`,
+        fields: `${LOOKUP_FIELDS}${parent ? ',replied_to' : ''}`,
         limit: 50,
       },
       LOOKUP_PAGES,
       signal
     );
     for await (const posts of pages) {
-      const match = posts.find(
-        (listed) =>
-          normalized(listed.text) === text && (!parent || listed.replied_to?.id === parent)
-      );
+      const match = posts.find((listed) => samePost(listed, post, topicTag));
       if (match) {
         return {
           feed: this.type,
@@ -406,21 +438,6 @@ export class ThreadsFeed implements FeedChannel {
       }
     }
     return undefined;
-  }
-
-  /** The items of a listing, page by page, following its cursors for `maxPages` at most. */
-  private async *pages<T>(
-    path: string,
-    params: ThreadsParams,
-    maxPages: number,
-    signal?: AbortSignal
-  ): AsyncGenerator<T[]> {
-    let query: ThreadsParams | undefined = params;
-    for (let page = 0; page < maxPages && query; page++) {
-      const response: Page<T> = await this.account.get<Page<T>>(path, query, signal);
-      yield response.data ?? [];
-      query = nextQuery(response, query);
-    }
   }
 
   private async ready(id: string, signal?: AbortSignal): Promise<void> {

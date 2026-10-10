@@ -8,6 +8,7 @@ import { graphemeLength } from '../feeds/text';
 interface FakeFeed extends FeedChannel {
   sent: FeedPost[];
   keys: Array<string | undefined>;
+  retries: Array<boolean | undefined>;
   failWith: Error[];
   /** Runs inside each publish call, before it succeeds or fails. */
   during?: () => Promise<void>;
@@ -19,6 +20,7 @@ function fakeFeed(type: string, maxLength = 300, maxBytes?: number): FakeFeed {
     type,
     sent: [],
     keys: [],
+    retries: [],
     failWith: [],
     limits: {
       maxLength,
@@ -34,6 +36,7 @@ function fakeFeed(type: string, maxLength = 300, maxBytes?: number): FakeFeed {
     idempotencyKey: () => `${type}-key-${++issued}`,
     publish: async (post, options): Promise<PublishedPost> => {
       feed.keys.push(options?.idempotencyKey);
+      feed.retries.push(options?.retry);
       await feed.during?.();
       const error = feed.failWith.shift();
       if (error) throw error;
@@ -222,6 +225,7 @@ describe('FeedPublisher', () => {
     advance(1_000);
     await publisher.tick();
     expect(bluesky.keys).toEqual(['bluesky-key-1', 'bluesky-key-1']);
+    expect(bluesky.retries).toEqual([false, true]);
     expect(threads.keys).toEqual(['threads-key-1']);
     const done = await publisher.get(outcome.job.id);
     expect(done?.deliveries.map((d) => [d.status, d.idempotencyKey])).toEqual([
