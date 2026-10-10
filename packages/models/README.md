@@ -159,6 +159,7 @@ import {
   getPrice,
   getPricing,
   calculateCost,
+  isDecisionModel,
   listModels,
   getModelRegistry,
   shutdownModels,
@@ -179,6 +180,8 @@ const cost = calculateCost('claude-sonnet-5-5', {
   cacheWriteTokens: 0,
   cacheWrite1hTokens: 0, // part of cacheWriteTokens written with the 1-hour TTL
 }); // null when the model's price is unknown
+
+isDecisionModel('openrouter/typesafe/jev-1.13'); // true: it answers through cog.decide(), not chat
 
 const registry = getModelRegistry();
 const count = registry.getModelCount();
@@ -204,6 +207,7 @@ interface ModelInfo {
   capabilities?: ModelCapabilities;
   deprecated?: boolean;
   aliases?: string[];
+  kind?: 'chat' | 'decision'; // decision models answer typed questions through cog.decide()
 }
 
 interface ModelPricing {
@@ -353,8 +357,11 @@ import {
   OPENAI_MODELS,
   ANTHROPIC_MODELS,
   GOOGLE_MODELS,
+  OPENROUTER_MODELS,
 } from '@cogitator-ai/models';
 ```
+
+`OPENROUTER_MODELS` has the models only OpenRouter serves, which the LiteLLM catalogue does not describe: TypeSafe's Jev (`typesafe/jev-1.13`, `kind: 'decision'`), $0.042 per million input tokens, free output, 32 000 tokens of context.
 
 Deprecated entries stay in the registry (with `deprecated: true`) so pricing and lookups keep working for existing configs; use `excludeDeprecated: true` to hide them.
 

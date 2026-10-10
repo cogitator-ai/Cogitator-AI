@@ -368,3 +368,37 @@ describe('deploy', () => {
     expect(dockerfile).toContain('USER bun');
   });
 });
+
+describe('a messaging bot on Bluesky and Threads', () => {
+  const plan = planProject(specFor('channels', 'openai', { channels: ['bluesky', 'threads'] }));
+
+  it('builds both channels with their sessions and tokens kept out of git', () => {
+    const gateway = file(plan, 'src/gateway.ts');
+    expect(gateway).toContain(
+      "import { Gateway, blueskyChannel, FileTokenStore, threadsChannel } from '@cogitator-ai/channels';"
+    );
+    expect(gateway).toContain('identifier: env.BLUESKY_HANDLE');
+    expect(gateway).toContain('accessToken: env.THREADS_ACCESS_TOKEN');
+    expect(
+      gateway.match(/new FileTokenStore\(\{ path: '\.cogitator\/tokens\.json' \}\)/g)
+    ).toHaveLength(2);
+    expect(syntaxErrors('src/gateway.ts', gateway)).toEqual([]);
+    expect(file(plan, '.gitignore')).toContain('.cogitator/tokens.json');
+  });
+
+  it('asks for their secrets and installs the Bluesky SDK', () => {
+    const env = file(plan, '.env.example');
+    for (const name of ['BLUESKY_HANDLE', 'BLUESKY_APP_PASSWORD', 'THREADS_ACCESS_TOKEN']) {
+      expect(env).toContain(`${name}=`);
+    }
+    const manifest = JSON.parse(file(plan, 'package.json')) as {
+      dependencies: Record<string, string>;
+    };
+    expect(manifest.dependencies['@atproto/api']).toMatch(/^\^0\.24/);
+  });
+
+  it('keeps tokens out of git only when a channel stores them', () => {
+    const webchat = planProject(specFor('channels', 'openai', { channels: ['webchat'] }));
+    expect(file(webchat, '.gitignore')).not.toContain('tokens.json');
+  });
+});

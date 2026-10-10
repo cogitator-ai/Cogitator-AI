@@ -84,6 +84,24 @@ describe('initSecrets', () => {
     });
   });
 
+  it('writes the Bluesky handle and app password and the Threads token', () => {
+    expect(
+      initSecrets(
+        answers({
+          channels: ['bluesky', 'threads'],
+          blueskyHandle: 'bot.bsky.social',
+          blueskyAppPassword: 'app-pass',
+          threadsAccessToken: 'th-token',
+        })
+      )
+    ).toEqual({
+      OPENAI_API_KEY: 'sk-test',
+      BLUESKY_HANDLE: 'bot.bsky.social',
+      BLUESKY_APP_PASSWORD: 'app-pass',
+      THREADS_ACCESS_TOKEN: 'th-token',
+    });
+  });
+
   it('writes DATABASE_URL only when it differs from the compose default', () => {
     expect(initSecrets(answers({ memory: 'postgres', databaseUrl: DEFAULT_POSTGRES_URL }))).toEqual(
       {

@@ -28,6 +28,7 @@ cp .env.example .env  # add GOOGLE_API_KEY at minimum
 | 13  | `13-model-registry.ts`    | Model registry: pricing, filtering, provider discovery             |
 | 14  | `14-approvals.ts`         | Pause before a sensitive tool, resume after a person decides       |
 | 15  | `15-handoffs.ts`          | A triage agent hands the conversation to billing or tech support   |
+| 16  | `16-decisions.ts`         | Decision models: typed answers with probabilities, a routing tool  |
 
 ## Running
 

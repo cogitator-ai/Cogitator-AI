@@ -85,7 +85,7 @@ Basic evals, LLM-as-judge scoring, A/B comparison testing.
 
 ### [`channels/`](./channels/) — Messaging Channels
 
-Telegram assistant with owner commands, YAML-style super assistant built with `RuntimeBuilder` (terminal + Telegram, scheduler, memory), WebChat bot with a browser client (`webchat-client.html`).
+Telegram assistant with owner commands, YAML-style super assistant built with `RuntimeBuilder` (terminal + Telegram, scheduler, memory), WebChat bot with a browser client (`webchat-client.html`), one post published to Bluesky and Threads with a scheduled follow-up (a dry run unless `PUBLISH=1`), and an agent that answers mentions, replies and DMs there.
 
 ### [`voice/`](./voice/) — Voice & Realtime Agents
 

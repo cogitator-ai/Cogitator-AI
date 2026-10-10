@@ -2,15 +2,18 @@ import type { ModelInfo } from '../types';
 import { OPENAI_MODELS } from './openai';
 import { ANTHROPIC_MODELS } from './anthropic';
 import { GOOGLE_MODELS } from './google';
+import { OPENROUTER_MODELS } from './openrouter';
 
 export { OPENAI_MODELS } from './openai';
 export { ANTHROPIC_MODELS } from './anthropic';
 export { GOOGLE_MODELS } from './google';
+export { OPENROUTER_MODELS } from './openrouter';
 
 export const BUILTIN_MODELS: ModelInfo[] = [
   ...OPENAI_MODELS,
   ...ANTHROPIC_MODELS,
   ...GOOGLE_MODELS,
+  ...OPENROUTER_MODELS,
 ];
 
 export const BUILTIN_PROVIDERS = [

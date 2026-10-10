@@ -44,6 +44,15 @@ import { normalizeTurn } from './llm/turn';
 import { PiiMasker, withPiiMasking } from './security/pii';
 import { createLoggerFromConfig, getLogger, setLogger } from './logger';
 import { RunCostMeter } from './cogitator/run-cost';
+import { isDecisionModel } from '@cogitator-ai/models';
+import type {
+  DecideOptions,
+  DecisionBackend,
+  DecisionQuestions,
+  DecisionResult,
+} from '@cogitator-ai/types';
+import { runDecision, validateDecision } from './decisions/decide';
+import { decisionsUrlFor, OpenRouterDecisionBackend } from './decisions/openrouter';
 import {
   type InitializerState,
   initializeMemory,
@@ -179,6 +188,7 @@ export class Cogitator implements ToolInvoker {
   private config: CogitatorConfig;
   private observers: RunObserver[];
   private backends = new Map<string, LLMBackend>();
+  private readonly decisionBackends = new Map<string, DecisionBackend>();
   private processCheckpoints?: InMemoryRunCheckpointStore;
   private promptRegistry?: PromptRegistry;
   private threadCheckpoints?: { memory: MemoryAdapter; store: ThreadRunCheckpointStore };
@@ -1653,7 +1663,69 @@ export class Cogitator implements ToolInvoker {
    */
   route(modelString: string, explicitProvider?: string): ModelRoute {
     const { provider, model } = this.resolveRoute(modelString, explicitProvider);
+    if (isDecisionModel(`${provider}/${model}`)) {
+      throw new CogitatorError({
+        message: `${provider}/${model} is a decision model: it answers typed questions through cog.decide(), not chat`,
+        code: ErrorCode.CONFIGURATION_ERROR,
+      });
+    }
     return { backend: this.backendFor(provider), model };
+  }
+
+  /**
+   * Asks a decision model typed questions about `state`, such as TypeSafe's
+   * Jev on OpenRouter (`openrouter/typesafe/jev-1.13`), and returns typed
+   * answers with probabilities instead of text: a yes or no question answers
+   * with how likely it holds, a choice with one of its options, a score with
+   * a position on its scale. The call is retried like LLM calls, priced, and
+   * reported to the observers as a run with one `llm.decide` span.
+   *
+   * @throws CogitatorError (`VALIDATION_ERROR`) for questions no model can answer,
+   *   (`CONFIGURATION_ERROR`) for a provider without decision models or a key
+   */
+  async decide<const TQuestions extends DecisionQuestions>(
+    options: DecideOptions<TQuestions>
+  ): Promise<DecisionResult<TQuestions>> {
+    validateDecision(options);
+    const { provider, model } = this.resolveRoute(options.model);
+    return runDecision(
+      {
+        backend: this.decisionBackendFor(provider),
+        provider,
+        model,
+        retry: this.config.llm?.retry,
+        observers: [...this.observers],
+        recordCost: (record) => this.getCostRouter()?.recordCost(record),
+      },
+      options
+    );
+  }
+
+  private decisionBackendFor(provider: string): DecisionBackend {
+    const custom = this.config.llm?.decisionBackends?.[provider];
+    if (custom) return custom;
+    const cached = this.decisionBackends.get(provider);
+    if (cached) return cached;
+    if (provider !== 'openrouter') {
+      throw new CogitatorError({
+        message: `There are no decision models on provider "${provider}": they run on OpenRouter (openrouter/typesafe/jev-1.13), or set llm.decisionBackends.${provider}`,
+        code: ErrorCode.CONFIGURATION_ERROR,
+      });
+    }
+    const config = this.config.llm?.providers?.openrouter;
+    if (!config?.apiKey) {
+      throw new CogitatorError({
+        message:
+          'Decision models on OpenRouter need llm.providers.openrouter.apiKey (OPENROUTER_API_KEY)',
+        code: ErrorCode.CONFIGURATION_ERROR,
+      });
+    }
+    const backend = new OpenRouterDecisionBackend({
+      apiKey: config.apiKey,
+      url: decisionsUrlFor(config.baseUrl),
+    });
+    this.decisionBackends.set(provider, backend);
+    return backend;
   }
 
   private resolveRoute(
@@ -1689,9 +1761,10 @@ export class Cogitator implements ToolInvoker {
 
   /**
    * Whether `name` is a provider this instance routes to: a backend in
-   * `llm.backends`, a built-in provider or a registered plugin. A model string
-   * `name/model` runs on that provider (see {@link route}), any other prefix
-   * stays part of the model name on `llm.defaultProvider`.
+   * `llm.backends` or `llm.decisionBackends`, a built-in provider or a
+   * registered plugin. A model string `name/model` runs on that provider
+   * (see {@link route}), any other prefix stays part of the model name on
+   * `llm.defaultProvider`.
    *
    * Credentials are not checked: a built-in provider counts even when
    * `llm.providers` has no key for it, as a run would still be sent there.
@@ -1699,6 +1772,7 @@ export class Cogitator implements ToolInvoker {
   knowsProvider(name: string): boolean {
     return (
       Object.hasOwn(this.config.llm?.backends ?? {}, name) ||
+      Object.hasOwn(this.config.llm?.decisionBackends ?? {}, name) ||
       isLLMProvider(name) ||
       hasLLMPlugin(name)
     );

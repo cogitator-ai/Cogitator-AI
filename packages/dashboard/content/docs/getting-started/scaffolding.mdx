@@ -1,6 +1,6 @@
 ---
 title: Project Scaffolding
-description: "Create a Cogitator project from a preset or your own stack, grow it with cogitator add, or start from an example or a GitHub template."
+description: 'Create a Cogitator project from a preset or your own stack, grow it with cogitator add, or start from an example or a GitHub template.'
 ---
 
 Scaffolder for [Cogitator](https://cogitator.app): a working TypeScript agent project in one command, from a preset or a stack you pick, with tests on a mocked model, a registry of agents, Cogitator Studio, coding-agent setup and a production Dockerfile.
@@ -33,54 +33,54 @@ Requires Node.js 22.12+.
 
 ## Presets
 
-| Preset             | What you get                                                               |
-| ------------------ | -------------------------------------------------------------------------- |
-| `basic`            | One agent with real tools in your terminal, the best place to start        |
-| `assistant`        | Workspace files with approvals, long-term memory, a scheduler and evals    |
-| `memory`           | Conversations that survive restarts, in SQLite                             |
-| `api-server`       | Express with Swagger UI, token auth and persistent threads                 |
-| `hono`             | Agents behind a small, fast HTTP API                                       |
-| `tetsu`            | Bun-native controller with OpenAPI and WebSocket                           |
-| `nextjs`           | Streaming chat with tool calls, approvals and saved threads                |
-| `channels`         | One assistant on Telegram, Discord, Slack or WebChat                       |
-| `rag`              | Answers grounded in the files of `docs/`                                   |
-| `mcp`              | Tools from an MCP server, your agents served over MCP                      |
-| `swarm`            | A researcher and a writer under a reviewing supervisor                     |
-| `workflow`         | A multi-step pipeline of agents                                            |
-| `durable-workflow` | A saga with compensation, an approval step and crash recovery              |
-| `a2a`              | An agent other frameworks call over the Agent-to-Agent protocol            |
-| `voice-realtime`   | Speech in, speech out over WebSocket                                       |
-| `evals`            | Measure an agent on a dataset and gate CI on the score                     |
+| Preset             | What you get                                                            |
+| ------------------ | ----------------------------------------------------------------------- |
+| `basic`            | One agent with real tools in your terminal, the best place to start     |
+| `assistant`        | Workspace files with approvals, long-term memory, a scheduler and evals |
+| `memory`           | Conversations that survive restarts, in SQLite                          |
+| `api-server`       | Express with Swagger UI, token auth and persistent threads              |
+| `hono`             | Agents behind a small, fast HTTP API                                    |
+| `tetsu`            | Bun-native controller with OpenAPI and WebSocket                        |
+| `nextjs`           | Streaming chat with tool calls, approvals and saved threads             |
+| `channels`         | One assistant on Telegram, Discord, Slack, WebChat, Bluesky or Threads  |
+| `rag`              | Answers grounded in the files of `docs/`                                |
+| `mcp`              | Tools from an MCP server, your agents served over MCP                   |
+| `swarm`            | A researcher and a writer under a reviewing supervisor                  |
+| `workflow`         | A multi-step pipeline of agents                                         |
+| `durable-workflow` | A saga with compensation, an approval step and crash recovery           |
+| `a2a`              | An agent other frameworks call over the Agent-to-Agent protocol         |
+| `voice-realtime`   | Speech in, speech out over WebSocket                                    |
+| `evals`            | Measure an agent on a dataset and gate CI on the score                  |
 
 `--list-templates` prints them, `--template <name>` is an alias of `--preset`. A preset is only a starting point: every flag below changes it.
 
 ## Flags
 
-| Flag                          | What it does                                                                                     |
-| ----------------------------- | ------------------------------------------------------------------------------------------------ |
-| `[directory]`                 | Where the project goes; its last segment becomes the package name                                |
-| `-t, --preset <name>`         | A preset from the table above                                                                    |
-| `--template <name\|repo>`     | A preset, or `github:owner/repo[/path][#ref]` to copy a repository                               |
-| `--example <name[#ref]>`      | A runnable example of the Cogitator repository, see `--list-examples`                            |
-| `--app <kind>`                | `script`, `server`, `next`, `channels`, `worker`                                                 |
-| `--server <framework>`        | `hono`, `express`, `fastify`, `koa`, `tetsu`                                                     |
-| `--channels <list>`           | `telegram`, `discord`, `slack`, `webchat`                                                        |
-| `--memory <kind>`             | `none`, `memory`, `sqlite`, `postgres`, `redis`, `mongodb`                                       |
-| `--vector-store <store>`      | For RAG: `memory`, `postgres`, `qdrant`                                                          |
-| `--features <list>`           | Add-ons: `harness`, `mcp`, `rag`, `workflows`, `durable`, `swarms`, `evals`, `otel`, `langfuse`, `voice`, `sandbox`, `a2a` |
-| `--deploy <target>`           | `none`, `docker`, `fly`                                                                          |
-| `--[no-]docker`               | `docker-compose.yml` for the local services (default on)                                         |
-| `-p, --provider <name>`       | `ollama`, `openai`, `anthropic`, `google`                                                        |
-| `-m, --model <id>`            | The model at the provider, the provider's default otherwise                                      |
-| `--api-key <key>`             | Written to `.env` and checked against the provider                                               |
-| `--pm <name>`                 | `pnpm`, `npm`, `yarn`, `bun` (default: the one running the scaffolder)                           |
-| `--agent <list>`              | Coding-agent setup: `claude`, `cursor`, `codex`, `none`                                          |
-| `--[no-]git`, `--[no-]install`| Create the git repository, install the dependencies (both on by default)                         |
-| `--no-telemetry`              | Send no anonymous usage event, see [Telemetry](/docs/getting-started/telemetry) |
-| `-y, --yes`                   | Ask nothing                                                                                      |
-| `--dry-run`                   | Show the files, dependencies, services and variables without writing anything                  |
-| `--json`                      | Machine-readable output, implies `--yes`                                                         |
-| `--list-templates`, `--list-examples` | List the presets or the examples                                                        |
+| Flag                                  | What it does                                                                                                               |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `[directory]`                         | Where the project goes, its last segment becomes the package name                                                          |
+| `-t, --preset <name>`                 | A preset from the table above                                                                                              |
+| `--template <name\|repo>`             | A preset, or `github:owner/repo[/path][#ref]` to copy a repository                                                         |
+| `--example <name[#ref]>`              | A runnable example of the Cogitator repository, see `--list-examples`                                                      |
+| `--app <kind>`                        | `script`, `server`, `next`, `channels`, `worker`                                                                           |
+| `--server <framework>`                | `hono`, `express`, `fastify`, `koa`, `tetsu`                                                                               |
+| `--channels <list>`                   | `telegram`, `discord`, `slack`, `webchat`                                                                                  |
+| `--memory <kind>`                     | `none`, `memory`, `sqlite`, `postgres`, `redis`, `mongodb`                                                                 |
+| `--vector-store <store>`              | For RAG: `memory`, `postgres`, `qdrant`                                                                                    |
+| `--features <list>`                   | Add-ons: `harness`, `mcp`, `rag`, `workflows`, `durable`, `swarms`, `evals`, `otel`, `langfuse`, `voice`, `sandbox`, `a2a` |
+| `--deploy <target>`                   | `none`, `docker`, `fly`                                                                                                    |
+| `--[no-]docker`                       | `docker-compose.yml` for the local services (default on)                                                                   |
+| `-p, --provider <name>`               | `ollama`, `openai`, `anthropic`, `google`                                                                                  |
+| `-m, --model <id>`                    | The model at the provider, the provider's default otherwise                                                                |
+| `--api-key <key>`                     | Written to `.env` and checked against the provider                                                                         |
+| `--pm <name>`                         | `pnpm`, `npm`, `yarn`, `bun` (default: the one running the scaffolder)                                                     |
+| `--agent <list>`                      | Coding-agent setup: `claude`, `cursor`, `codex`, `none`                                                                    |
+| `--[no-]git`, `--[no-]install`        | Create the git repository, install the dependencies (both on by default)                                                   |
+| `--no-telemetry`                      | Send no anonymous usage event, see [Telemetry](/docs/getting-started/telemetry)                                            |
+| `-y, --yes`                           | Ask nothing                                                                                                                |
+| `--dry-run`                           | Show the files, dependencies, services and variables without writing anything                                              |
+| `--json`                              | Machine-readable output, implies `--yes`                                                                                   |
+| `--list-templates`, `--list-examples` | List the presets or the examples                                                                                           |
 
 Combinations that cannot work are refused before anything is written, with how to fix them: a Tetsu server needs Bun, voice needs a provider with realtime speech, A2A needs a server or Next.js, and so on.
 

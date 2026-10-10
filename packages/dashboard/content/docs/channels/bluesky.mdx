@@ -1,0 +1,132 @@
+---
+title: Bluesky
+description: Publish posts to Bluesky and answer mentions, replies and direct messages with your agent.
+---
+
+## Setup
+
+```bash
+pnpm add @atproto/api
+```
+
+## Create an App Password
+
+Bluesky bots sign in with an app password, never the account password:
+
+1. Sign in to the bot's account on [bsky.app](https://bsky.app)
+2. Open **Settings**, then **Privacy and security**, then **App passwords**, and add one
+3. Tick **Allow access to your direct messages** if the agent should answer DMs
+4. Save the handle as `BLUESKY_HANDLE=yourbot.bsky.social` and the password as `BLUESKY_APP_PASSWORD=...`
+
+## Publishing
+
+`BlueskyFeed` publishes posts. Links, mentions and hashtags in the text become facets, so they are clickable. A link card gets its preview image uploaded first, and replies are placed in the thread of the post they answer.
+
+```typescript
+import { BlueskyFeed, FileTokenStore } from '@cogitator-ai/channels';
+
+const bluesky = new BlueskyFeed({
+  identifier: process.env.BLUESKY_HANDLE!,
+  appPassword: process.env.BLUESKY_APP_PASSWORD!,
+  store: new FileTokenStore(),
+});
+
+const post = await bluesky.publish({
+  text: 'The model that fits on a laptop, explained',
+  link: {
+    url: 'https://example.com/story',
+    title: 'Open models on laptops',
+    description: 'What changed and why it matters',
+    image: { type: 'image', mimeType: 'image/jpeg', url: 'https://example.com/cover.jpg' },
+  },
+  tags: ['AI'],
+  langs: ['en'],
+});
+
+console.log(post.url); // https://bsky.app/profile/did:plc:.../post/...
+```
+
+A post holds 300 graphemes and 3000 bytes, up to four images of 2 MB with alt text, or one link card with a preview up to 1 MB. The feed checks this before it sends anything. To publish to several feeds with retries and schedules, see [Social Feeds](/docs/channels/feeds).
+
+The session is kept in the `store` (in memory by default) and resumed after a restart. A session that cannot be resumed, or that expires while the bot runs, is replaced by a new sign-in, and the post being published goes out after it.
+
+With an idempotency key from `idempotencyKey()` (which `FeedPublisher` passes), the post is published under that key as its record key, so publishing again with the key, as a retry, returns the post instead of a second one.
+
+## Answering People
+
+`BlueskyChannel` lets an agent answer on Bluesky through the [Gateway](/docs/channels/gateway):
+
+```typescript
+import { Gateway, blueskyChannel, FileTokenStore } from '@cogitator-ai/channels';
+
+const gateway = new Gateway({
+  cogitator,
+  agent,
+  channels: [
+    blueskyChannel({
+      identifier: process.env.BLUESKY_HANDLE!,
+      appPassword: process.env.BLUESKY_APP_PASSWORD!,
+      store: new FileTokenStore(),
+    }),
+  ],
+});
+
+await gateway.start();
+```
+
+- **Mentions, replies and quotes** of the bot's posts reach the agent, without the bot's handle in front. The answer goes into that thread.
+- **Direct messages** reach it too, conversation requests included, which are accepted when the agent answers.
+- **Long answers** go out as a thread of posts within 300 graphemes, or several messages within 1000.
+- **Formatting.** Markdown becomes plain text, since Bluesky shows text as written, and links stay visible and become clickable.
+- **No edits.** Bluesky cannot edit posts, so the gateway sends each answer once it is finished instead of streaming it.
+
+The channel polls every `pollInterval` (15 seconds), which keeps the process running until `stop()`. It keeps what it has seen on Bluesky itself, the notifications' seen time and each conversation's read state, so it needs no state of its own and answers what arrived while it was stopped, paging back through up to a thousand notifications. `catchUp: false` starts from now instead.
+
+### Channel ids
+
+A message's `channelId` says where an answer goes:
+
+| `channelId`     | Sends                          |
+| --------------- | ------------------------------ |
+| `post:<at-uri>` | a reply under that post        |
+| `dm:<convoId>`  | a message in that conversation |
+| `feed`          | a new post on the bot's feed   |
+
+So `gateway.injectMessage` and the scheduler can post to the feed with `channelId: 'feed'`.
+
+## One Account for Both
+
+A feed and a channel of the same account share a session through `BlueskyAccount`, so they sign in once:
+
+```typescript
+import { BlueskyAccount, BlueskyFeed, blueskyChannel } from '@cogitator-ai/channels';
+
+const account = new BlueskyAccount({
+  identifier: process.env.BLUESKY_HANDLE!,
+  appPassword: process.env.BLUESKY_APP_PASSWORD!,
+});
+
+const feed = new BlueskyFeed({ account });
+const channel = blueskyChannel({ account, directMessages: false });
+```
+
+## Configuration
+
+```typescript
+interface BlueskyConnectionConfig {
+  identifier: string; // handle or DID
+  appPassword: string;
+  service?: string; // the PDS, default https://bsky.social
+  store?: TokenStore; // where the session is kept, default in memory
+  storeKey?: string; // default `bluesky:<identifier>`
+}
+
+type BlueskyChannelConfig = ({ account: BlueskyAccount } | BlueskyConnectionConfig) & {
+  pollInterval?: number; // default 15 000 ms
+  posts?: boolean; // answer mentions, replies and quotes, default true
+  directMessages?: boolean; // answer DMs, default true
+  catchUp?: boolean; // answer what arrived while stopped, default true
+};
+```
+
+In `cogitator.yml`, `channels.bluesky` takes `ownerIds` (DIDs), `posts`, `directMessages`, `pollInterval` and `tokenPath`, and reads `BLUESKY_HANDLE` and `BLUESKY_APP_PASSWORD` from the environment.

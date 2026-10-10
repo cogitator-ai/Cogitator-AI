@@ -209,6 +209,14 @@ function loadProviderConfigs(): ProvidersConfig {
   const deepseek = readProvider('deepseek').apiKey;
   if (deepseek) providers.deepseek = { apiKey: deepseek };
 
+  const openrouter = readProvider('openrouter');
+  if (openrouter.apiKey) {
+    providers.openrouter = {
+      apiKey: openrouter.apiKey,
+      ...(openrouter.baseUrl ? { baseUrl: openrouter.baseUrl } : {}),
+    };
+  }
+
   return providers;
 }
 

@@ -239,7 +239,14 @@ A run observer sees every run of a runtime, also the runs agent tools start on i
 
 ```typescript
 interface RunObserver {
-  onRunStart?(event: { runId: string; agentId: string; agentName: string; input: string; threadId: string; model?: string }): void;
+  onRunStart?(event: {
+    runId: string;
+    agentId: string;
+    agentName: string;
+    input: string;
+    threadId: string;
+    model?: string;
+  }): void;
   onSpan?(span: Span, run: { runId: string }): void; // each span as it finishes
   onRunComplete?(result: RunResult): void;
   onRunError?(error: Error, runId: string): void;
@@ -289,6 +296,7 @@ const memory = await cog.getMemory(); // undefined when memory is not configured
 | `getGuardrails()` / `setConstitution(constitution)`      | The [Constitutional AI](/docs/advanced/constitutional-ai) instance, or replace its rules; usable before the first run when `guardrails.model` or `llm.defaultModel` is set |
 | `getInsights(agentId)` / `getReflectionSummary(agentId)` | [Reflection](/docs/advanced/reflection) insights and summary                                                                                                               |
 | `reflectionEngine`                                       | The reflection engine, when reflection is enabled                                                                                                                          |
+| `decide({ model, state, questions })`                    | Typed answers with probabilities from a [decision model](/docs/core/decisions), such as `openrouter/typesafe/jev-1.13`                                                     |
 
 ## Cleanup
 

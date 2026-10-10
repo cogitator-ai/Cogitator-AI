@@ -22,6 +22,32 @@ vi.mock('../channels/slack', () => ({
   },
 }));
 
+const socialConfigs = vi.hoisted(() => ({
+  bluesky: [] as Array<Record<string, unknown>>,
+  threads: [] as Array<Record<string, unknown>>,
+}));
+
+const stubChannel = (type: string) => ({
+  type,
+  onMessage: () => undefined,
+  start: async () => undefined,
+  stop: async () => undefined,
+});
+
+vi.mock('../channels/bluesky/channel', () => ({
+  blueskyChannel: (config: Record<string, unknown>) => {
+    socialConfigs.bluesky.push(config);
+    return stubChannel('bluesky');
+  },
+}));
+
+vi.mock('../channels/threads/channel', () => ({
+  threadsChannel: (config: Record<string, unknown>) => {
+    socialConfigs.threads.push(config);
+    return stubChannel('threads');
+  },
+}));
+
 const whatsappConfigs = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 const webchatConfigs = vi.hoisted(
   () => [] as Array<{ port: number; path?: string; auth?: (token: string) => boolean }>
@@ -329,6 +355,64 @@ describe('RuntimeBuilder', () => {
     expect(slackConfigs).toEqual([
       { token: 'xoxb-1', signingSecret: 'secret', appToken: 'xapp-1', port: 3105 },
     ]);
+    await built.cleanup();
+  });
+
+  it('builds Bluesky and Threads channels from the env, keeping their sessions in one token file', async () => {
+    socialConfigs.bluesky.length = 0;
+    socialConfigs.threads.length = 0;
+    const config: AssistantConfigInput = {
+      ...minimalConfig,
+      channels: {
+        bluesky: { directMessages: false, tokenPath: '~/bot/tokens.json' },
+        threads: { webhook: { port: 3200 }, pollInterval: 30_000 },
+      },
+    };
+    const built = await new RuntimeBuilder(config, {
+      GOOGLE_API_KEY: 'test-key',
+      BLUESKY_HANDLE: 'news.bsky.social',
+      BLUESKY_APP_PASSWORD: 'app-pass',
+      THREADS_ACCESS_TOKEN: 'th-token',
+      THREADS_APP_SECRET: 'secret',
+      THREADS_VERIFY_TOKEN: 'verify',
+    }).build();
+    expect(socialConfigs.bluesky).toEqual([
+      expect.objectContaining({
+        identifier: 'news.bsky.social',
+        appPassword: 'app-pass',
+        directMessages: false,
+        store: expect.objectContaining({ path: join(homedir(), 'bot', 'tokens.json') }),
+      }),
+    ]);
+    expect(socialConfigs.threads).toEqual([
+      expect.objectContaining({
+        accessToken: 'th-token',
+        webhook: { appSecret: 'secret', verifyToken: 'verify', port: 3200 },
+        pollInterval: 30_000,
+        store: expect.objectContaining({ path: join(homedir(), '.cogitator', 'tokens.json') }),
+      }),
+    ]);
+    await built.cleanup();
+  });
+
+  it('warns instead of building Bluesky and Threads without their secrets', async () => {
+    socialConfigs.bluesky.length = 0;
+    socialConfigs.threads.length = 0;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const config: AssistantConfigInput = {
+      ...minimalConfig,
+      channels: { bluesky: {}, threads: { webhook: { port: 3200 } } },
+    };
+    const built = await new RuntimeBuilder(config, {
+      GOOGLE_API_KEY: 'test-key',
+      THREADS_ACCESS_TOKEN: 'th-token',
+    }).build();
+    expect(socialConfigs.bluesky).toEqual([]);
+    expect(socialConfigs.threads).toEqual([]);
+    const warnings = warn.mock.calls.map((call) => String(call[0]));
+    expect(warnings.some((w) => w.includes('BLUESKY_APP_PASSWORD'))).toBe(true);
+    expect(warnings.some((w) => w.includes('THREADS_APP_SECRET'))).toBe(true);
+    warn.mockRestore();
     await built.cleanup();
   });
 

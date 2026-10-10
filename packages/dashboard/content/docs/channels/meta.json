@@ -11,6 +11,9 @@
     "whatsapp",
     "webchat",
     "terminal",
+    "bluesky",
+    "threads",
+    "feeds",
     "middleware",
     "streaming",
     "owner-commands"

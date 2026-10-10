@@ -15,6 +15,7 @@ export const LLMProviderSchema = z.enum([
   'groq',
   'together',
   'deepseek',
+  'openrouter',
 ]);
 
 export const ProvidersConfigSchema = z.object({
@@ -57,6 +58,7 @@ export const ProvidersConfigSchema = z.object({
   groq: z.object({ apiKey: z.string() }).optional(),
   together: z.object({ apiKey: z.string() }).optional(),
   deepseek: z.object({ apiKey: z.string() }).optional(),
+  openrouter: z.object({ apiKey: z.string(), baseUrl: z.string().optional() }).optional(),
 });
 
 export const LLMRetryConfigSchema = z.union([

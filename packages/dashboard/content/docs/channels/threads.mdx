@@ -1,0 +1,142 @@
+---
+title: Threads
+description: Publish posts to Threads and answer replies and mentions with your agent, with a token that renews itself.
+---
+
+## Setup
+
+Threads needs no SDK: the channel calls the Graph API with `fetch`.
+
+## Create a Threads App
+
+1. Create an app with the **Threads** use case on [developers.facebook.com](https://developers.facebook.com/apps)
+2. Add the permissions the bot needs: `threads_basic`, `threads_content_publish` to post, `threads_manage_replies` and `threads_read_replies` to answer, `threads_manage_mentions` for mentions, `threads_delete` to delete
+3. Sign in with the bot's Threads account and get a token, then exchange it for a **long-lived token**: it lasts 60 days
+4. Save it as `THREADS_ACCESS_TOKEN=...`
+
+The token renews itself (see below), so this is done once.
+
+## Publishing
+
+`ThreadsFeed` publishes in the two steps Threads asks for: a media container, then its publication once Threads reports the container ready.
+
+```typescript
+import { FileTokenStore, ThreadsFeed } from '@cogitator-ai/channels';
+
+const threads = new ThreadsFeed({
+  accessToken: process.env.THREADS_ACCESS_TOKEN!,
+  store: new FileTokenStore(),
+});
+
+const post = await threads.publish({
+  text: 'The model that fits on a laptop, explained',
+  link: { url: 'https://example.com/story' },
+  tags: ['AI'],
+});
+
+console.log(post.url); // the post's permalink
+```
+
+- **Text posts** carry a link card (`link_attachment`) and a topic tag (the first of `tags`).
+- **Images** go out as one image or a carousel of up to 20, from public URLs: Threads fetches them itself, so an image needs a `url`.
+- **Replies** use `replyTo` with the media id they answer.
+- **Limits.** A post holds 500 characters, with emoji counted by their UTF-8 bytes, and up to five links. The feed checks this before it sends anything.
+- **Quota.** Before posting it reads the account's 24-hour quota (250 posts, 1000 replies). A full quota fails with a `FeedError` of code `quota_exceeded` whose `retryAfter` holds the time until the oldest post (or reply) in the window leaves it, plus a minute, or an hour when that cannot be found out. `FeedPublisher` waits that long and does not count the wait as an attempt. `checkQuota: false` skips the check.
+- **No double posts.** Threads takes no client-chosen ids, so a publication with an idempotency key (from `threads.idempotencyKey()`, which `FeedPublisher` passes on every attempt) looks for the post an earlier attempt made before it posts again: one of the account's posts, or replies to the same post, made since the key, of the same kind and with the same text, link card, topic tag and alt text. When it finds one it returns it, so a retry after a crash or a lost answer does not post twice. Anything missing or different makes it another post, and posts the feed published itself for other attempts never count. Threads lists no comparable form of an image, so an image post with neither text nor alt text is never looked up, and two posts the same in everything Threads lists, published within that minute by other processes, cannot be told apart. `retry: false` says no earlier attempt was made, and skips the lookup.
+
+```typescript
+const key = threads.idempotencyKey(); // keep it with the post until it is published
+const post = await threads.publish({ text: 'Hello' }, { idempotencyKey: key, retry: false });
+// after a crash or a lost answer, try again with the same key
+await threads.publish({ text: 'Hello' }, { idempotencyKey: key, retry: true });
+```
+
+## The Token
+
+A long-lived token lasts 60 days and can be renewed once it is a day old. One left alone expires and cannot be renewed. `ThreadsFeed` and `ThreadsChannel` keep it in the `store` and renew it:
+
+- a week before it expires (`renewBefore`), once it is at least a day old,
+- at the first chance when its expiry is unknown, which reveals it (pass `accessTokenExpiresAt` if you know it),
+- once for calls made at the same time in one process,
+- after rereading the store, so a token another process sharing a `PostgresTokenStore` renewed is used as it is. Two processes renewing at the same moment both get valid tokens,
+- daily once connected, and before each call.
+
+A failed renewal keeps the current token and tries again an hour later. `onTokenRenewed` sees each new token. An expired token fails with a `FeedError` of code `token_expired`: get a new long-lived token.
+
+## Answering People
+
+`ThreadsChannel` lets an agent answer replies to the bot's posts and mentions of it through the [Gateway](/docs/channels/gateway). The Threads API has no direct messages.
+
+### With webhooks
+
+Webhooks deliver replies and mentions as they happen. In the app dashboard, subscribe to the **replies** and **mentions** fields of the Threads webhook with a callback URL and a verify token, and give the channel the app secret that signs the deliveries:
+
+```typescript
+import { Gateway, threadsChannel, FileTokenStore } from '@cogitator-ai/channels';
+
+const threads = threadsChannel({
+  accessToken: process.env.THREADS_ACCESS_TOKEN!,
+  store: new FileTokenStore(),
+  webhook: {
+    appSecret: process.env.THREADS_APP_SECRET!,
+    verifyToken: process.env.THREADS_VERIFY_TOKEN!,
+    port: 3200, // its own server, at /threads/webhook unless `path` says otherwise
+  },
+});
+```
+
+The channel answers the verification request Meta sends for the callback URL and accepts only deliveries whose `X-Hub-Signature-256` matches the app secret. Without `port`, mount `handleWebhook` in your own server. It needs the body exactly as received, and works before `start()` too: the first delivery loads the bot's username, so the bot never answers its own replies:
+
+```typescript
+app.all('/threads/webhook', express.raw({ type: '*/*' }), async (req, res) => {
+  const response = await threads.handleWebhook({
+    method: req.method,
+    query: req.query as Record<string, string>,
+    headers: req.headers,
+    rawBody: req.body,
+  });
+  res.status(response.status).send(response.body);
+});
+```
+
+### Without webhooks
+
+Without `webhook`, the channel polls every `pollInterval` (one minute): the bot's mentions and the conversations of its latest `watchPosts` (10) posts, answering what arrived since it started. From a conversation it takes replies to the bot's posts and posts that mention `@<bot username>`, not what people answer each other. The polling timer keeps the process alive until `stop()`.
+
+### Answers
+
+Long answers go out as a chain of replies within 500 characters. Markdown becomes plain text. Threads cannot edit posts, so the gateway sends each answer once it is finished. A message's `channelId` is `post:<media id>` to answer under that post, or `feed` for a new post.
+
+## One Account for Both
+
+A feed and a channel share a token through `ThreadsAccount`, so they renew it once:
+
+```typescript
+import { ThreadsAccount, ThreadsFeed, threadsChannel } from '@cogitator-ai/channels';
+
+const account = new ThreadsAccount({ accessToken: process.env.THREADS_ACCESS_TOKEN! });
+const feed = new ThreadsFeed({ account });
+const channel = threadsChannel({ account });
+```
+
+## Configuration
+
+```typescript
+interface ThreadsAccountConfig {
+  accessToken?: string; // the long-lived token to start from
+  accessTokenExpiresAt?: Date | number;
+  store?: TokenStore; // default in memory
+  storeKey?: string; // default `threads`
+  renewBefore?: number; // default 7 days
+  onTokenRenewed?: (token: StoredToken) => void | Promise<void>;
+  userId?: string; // default `me`
+}
+
+type ThreadsChannelConfig = ({ account: ThreadsAccount } | ThreadsAccountConfig) & {
+  webhook?: { appSecret: string; verifyToken: string; port?: number; path?: string; host?: string };
+  pollInterval?: number; // without webhooks, default 60 000 ms
+  watchPosts?: number; // default 10
+};
+```
+
+In `cogitator.yml`, `channels.threads` takes `ownerIds` (usernames), `webhook` (`port`, `path`), `pollInterval` and `tokenPath`, and reads `THREADS_ACCESS_TOKEN`, plus `THREADS_APP_SECRET` and `THREADS_VERIFY_TOKEN` for webhooks.

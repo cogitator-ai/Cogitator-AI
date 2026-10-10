@@ -1,0 +1,123 @@
+---
+title: Decision Models
+description: Ask decision models typed questions with cog.decide() and get typed answers with probabilities instead of text.
+---
+
+Decision models answer questions about a state instead of writing text: which team should answer a message, is it spam, how urgent is it. They return typed values with probabilities, so code can act on them without parsing prose. TypeSafe's Jev is one, served by OpenRouter on its Decisions API, and chat completions refuse it.
+
+```typescript
+import { Cogitator } from '@cogitator-ai/core';
+
+const cog = new Cogitator({
+  llm: { providers: { openrouter: { apiKey: process.env.OPENROUTER_API_KEY! } } },
+});
+
+const result = await cog.decide({
+  model: 'openrouter/typesafe/jev-1.13',
+  state: 'I was charged twice for my subscription this month, please refund one of them.',
+  questions: {
+    team: {
+      type: 'choice',
+      instructions: 'Which team should answer this message?',
+      criteria: {
+        billing: 'Payments, invoices and refunds',
+        technical: 'Bugs, errors and how the product works',
+        sales: 'Plans, pricing and buying more',
+      },
+    },
+    spam: {
+      type: 'noul',
+      instructions: 'Is this message spam?',
+      criteria: { true: 'Advertising, scams or nonsense', false: 'A real customer writing in' },
+    },
+    urgency: {
+      type: 'score',
+      instructions: 'How urgent is it?',
+      criteria: ['can wait', 'this week', 'today'],
+    },
+  },
+});
+
+result.answers.team.choice; // 'billing' | 'technical' | 'sales'
+result.answers.spam.value; // false
+result.answers.spam.probability; // 0.04
+result.answers.urgency.score; // the level on the scale
+result.usage.cost; // in USD
+```
+
+## Questions
+
+Each question has a `type`, `instructions` (text, or structured data the model reads as is) and `criteria`:
+
+| Type     | Asks                    | `criteria`                                             | Answer                                                               |
+| -------- | ----------------------- | ------------------------------------------------------ | -------------------------------------------------------------------- |
+| `noul`   | Does this hold?         | `{ true, false }`: what makes each answer right        | `probability` from 0 to 1, and `value` by the threshold              |
+| `choice` | Which of these options? | each option with what makes it the answer, two or more | `choice`, one of the options, with `confidence` and `probabilities`  |
+| `score`  | Where on this scale?    | the levels, lowest first                               | `score`, with `confidence`, `probabilities` per level and a `legend` |
+
+The answers are typed by the questions: a choice answers with a union of its own options, so `result.answers.team.choice` above is `'billing' | 'technical' | 'sales'`. `threshold` (0.5 unless set) decides when a `noul` answer's `value` is true.
+
+The `state` is what the questions are about: text, an object or an array, up to the model's context (32 000 tokens for Jev).
+
+## Checks
+
+`decide()` checks the request before it calls the model and fails with `VALIDATION_ERROR` for questions no model can answer: no questions, a choice with fewer than two options, a yes or no question without both criteria, a threshold outside 0 to 1. It checks the answer after: every question answered, in its type, with one of its options. Anything else fails with `LLM_INVALID_RESPONSE` rather than handing back an answer code would trust.
+
+## Retries, Cost and Traces
+
+A decision goes through the same retry policy as LLM calls (`llm.retry`): rate limits wait as long as OpenRouter asks, server errors are retried with backoff, `requestTimeout` aborts a slow attempt, and `signal` stops it all.
+
+`result.usage` has the tokens, the `duration`, and the `cost`: what OpenRouter reported, otherwise the model registry's price, which knows Jev at $0.042 per million input tokens with free output. A decision is recorded with the cost router and reported to [run observers](/docs/core/cogitator#run-observers) as a run of its own with one `llm.decide` span, so Studio, Langfuse and OpenTelemetry show it with its tokens and cost.
+
+## In an Agent
+
+`decisionTool()` turns fixed questions into a tool: the agent passes the state, the tool returns the typed answers and their cost.
+
+```typescript
+import { Agent, decisionTool } from '@cogitator-ai/core';
+
+const routeTicket = decisionTool(cog, {
+  name: 'route_ticket',
+  description: 'Decide which team answers a support message',
+  model: 'openrouter/typesafe/jev-1.13',
+  questions: {
+    team: {
+      type: 'choice',
+      instructions: 'Which team should answer this message?',
+      criteria: {
+        billing: 'Payments and refunds',
+        technical: 'Bugs and errors',
+        sales: 'Plans and pricing',
+      },
+    },
+  },
+});
+
+const support = new Agent({
+  name: 'support-lead',
+  model: 'openrouter/anthropic/claude-sonnet-5.5',
+  instructions: 'Route each message to a team with route_ticket, then explain why.',
+  tools: [routeTicket],
+});
+```
+
+A chat agent on a decision model fails at once with `CONFIGURATION_ERROR` ("is a decision model"), instead of OpenRouter's 400 from chat completions. The model registry tells them apart: `isDecisionModel(id)` from `@cogitator-ai/models`, and `kind: 'decision'` on the model.
+
+## Other Providers
+
+OpenRouter is built in, from `llm.providers.openrouter` (or `OPENROUTER_API_KEY` through `@cogitator-ai/config`). A provider of your own implements `DecisionBackend` and goes in `llm.decisionBackends`:
+
+```typescript
+import type { DecisionBackend } from '@cogitator-ai/core';
+
+const judge: DecisionBackend = {
+  provider: 'acme',
+  async decide({ model, state, questions, signal }) {
+    const answers = await callAcme(model, state, questions, signal);
+    return { model, answers, usage: { inputTokens: 0, outputTokens: 0 } };
+  },
+};
+
+const cog = new Cogitator({ llm: { decisionBackends: { acme: judge } } });
+await cog.decide({ model: 'acme/judge-1', state, questions });
+```

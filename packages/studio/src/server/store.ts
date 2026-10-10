@@ -53,7 +53,7 @@ function str(value: unknown): string | undefined {
 }
 
 function spanKind(name: string): SpanRecord['kind'] {
-  if (name === 'llm.chat') return 'llm';
+  if (name === 'llm.chat' || name === 'llm.decide') return 'llm';
   if (name.startsWith('tool.')) return 'tool';
   if (name === 'agent.run') return 'agent';
   if (name === 'agent.handoff') return 'handoff';

@@ -721,7 +721,7 @@ export class Gateway {
     signal: AbortSignal | undefined,
     invoke: RunInvocation
   ): Promise<void> {
-    if (this.config.stream) {
+    if (this.config.stream && channel.editable !== false) {
       await this.runStreaming(agent, msg, channel, threadId, signal, invoke);
     } else {
       await this.runDirect(agent, msg, channel, threadId, signal, invoke);

@@ -75,6 +75,7 @@ export const VERSIONS = {
   discord: '^14.27.0',
   slackBolt: '^5.1.0',
   ws: '^8.22.0',
+  atprotoApi: '^0.24.0',
   langfuse: '^3.39.2',
   modelContextProtocol: '^1.32.1',
 } as const;

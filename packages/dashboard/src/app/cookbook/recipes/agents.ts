@@ -390,5 +390,98 @@ shutdownModels();`,
         },
       ],
     },
+    {
+      id: 'decision-models',
+      title: 'Typed Decisions with Probabilities',
+      difficulty: 'easy',
+      time: '5 min',
+      problem:
+        'You need a yes or no, one of a few options or a level on a scale, with how sure the model is, and you do not want to parse prose to get it.',
+      points: [
+        '`cog.decide()` asks a decision model typed questions about a state: `noul` (yes or no), `choice` and `score`',
+        "Answers are typed by the questions, so `answers.team.choice` is `'billing' | 'technical' | 'sales'`",
+        'Probabilities come with every answer, and `threshold` decides when a yes or no answer is true',
+        '`decisionTool()` gives an agent the same questions as a tool',
+      ],
+      file: 'decisions.ts',
+      code: `import { Agent, Cogitator, decisionTool } from '@cogitator-ai/core';
+
+const cog = new Cogitator({
+  llm: { providers: { openrouter: { apiKey: process.env.OPENROUTER_API_KEY! } } },
+});
+
+const JEV = 'openrouter/typesafe/jev-1.13';
+
+const questions = {
+  team: {
+    type: 'choice',
+    instructions: 'Which team should answer this message?',
+    criteria: {
+      billing: 'Payments, invoices and refunds',
+      technical: 'Bugs, errors and how the product works',
+      sales: 'Plans, pricing and buying more',
+    },
+  },
+  spam: {
+    type: 'noul',
+    instructions: 'Is this message spam?',
+    criteria: { true: 'Advertising, scams or nonsense', false: 'A real customer writing in' },
+  },
+  urgency: {
+    type: 'score',
+    instructions: 'How urgently should the team answer?',
+    criteria: ['can wait', 'this week', 'today'],
+  },
+} as const;
+
+const triage = await cog.decide({
+  model: JEV,
+  state: 'I was charged twice for my subscription this month, can you refund one?',
+  questions,
+});
+
+if (triage.answers.spam.value) {
+  console.log(\`Spam (p = \${triage.answers.spam.probability.toFixed(2)})\`);
+} else {
+  console.log(\`To \${triage.answers.team.choice}, urgency level \${triage.answers.urgency.score}\`);
+}
+console.log(\`Cost: $\${triage.usage.cost.toFixed(6)}\`);
+
+const routeTicket = decisionTool(cog, {
+  name: 'route_ticket',
+  description: 'Decide which team answers a support message',
+  model: JEV,
+  questions: { team: questions.team },
+});
+
+const support = new Agent({
+  name: 'support-lead',
+  model: 'openrouter/anthropic/claude-sonnet-5.5',
+  instructions: 'Route each message with route_ticket, then say in one sentence which team takes it and why.',
+  tools: [routeTicket],
+});
+
+const run = await cog.run(support, { input: 'The app crashes every time I open the settings page.' });
+console.log(run.output);
+
+await cog.close();`,
+      install: 'pnpm add @cogitator-ai/core',
+      env: ['OPENROUTER_API_KEY'],
+      run: 'npx tsx decisions.ts',
+      repoRun: 'npx tsx examples/core/16-decisions.ts',
+      notes: [
+        {
+          type: 'info',
+          text: "TypeSafe's Jev answers on OpenRouter's Decisions API for $0.042 per million input tokens with free output. A chat agent on a decision model fails at once with `CONFIGURATION_ERROR`.",
+        },
+      ],
+      example: 'core/16-decisions.ts',
+      docs: [
+        {
+          href: '/docs/core/decisions',
+          label: 'Decision Models',
+        },
+      ],
+    },
   ],
 };

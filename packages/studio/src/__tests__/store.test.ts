@@ -25,7 +25,8 @@ function started(
   runId: string,
   rootRunId: string,
   startedAt: number,
-  target = 'assistant'
+  target = 'assistant',
+  model = 'openai/gpt-x'
 ): HostEvent {
   return {
     type: 'run.started',
@@ -36,7 +37,7 @@ function started(
     input: 'go',
     rootRunId,
     startedAt,
-    model: 'openai/gpt-x',
+    model,
   };
 }
 
@@ -117,6 +118,32 @@ describe('StudioStore', () => {
       cost: 0.25,
     });
     expect(s.getRun('r')?.usage).toMatchObject({ cost: 0.25, priced: true });
+  });
+
+  it('shows a decision model call as a model call, priced at the run provider', () => {
+    const { store: s } = store((model) =>
+      model === 'openrouter/typesafe/jev-1.13' ? 0.042 : null
+    );
+    s.apply(started('d', 'd', 1, 'decide', 'openrouter/typesafe/jev-1.13'));
+    s.apply({
+      type: 'run.span',
+      runId: 'd',
+      span: {
+        id: 'sp',
+        traceId: 't',
+        name: 'llm.decide',
+        status: 'ok',
+        startTime: 1,
+        endTime: 2,
+        duration: 1,
+        attributes: {
+          'llm.model': 'typesafe/jev-1.13',
+          'llm.input_tokens': 1000,
+          'llm.output_tokens': 0,
+        },
+      },
+    });
+    expect(s.getRun('d')?.spans[0]).toMatchObject({ kind: 'llm', inputTokens: 1000 });
   });
 
   it('marks runs a stopped studio left running as failed when it loads again', () => {

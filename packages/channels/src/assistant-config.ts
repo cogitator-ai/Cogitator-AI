@@ -24,6 +24,28 @@ const AssistantChannelsSchema = z.object({
       path: z.string().optional(),
     })
     .optional(),
+  bluesky: z
+    .object({
+      ownerIds: OwnerIdsSchema,
+      posts: z.boolean().optional(),
+      directMessages: z.boolean().optional(),
+      pollInterval: z.number().int().positive().optional(),
+      tokenPath: z.string().optional(),
+    })
+    .optional(),
+  threads: z
+    .object({
+      ownerIds: OwnerIdsSchema,
+      webhook: z
+        .object({
+          port: z.number().int().positive(),
+          path: z.string().optional(),
+        })
+        .optional(),
+      pollInterval: z.number().int().positive().optional(),
+      tokenPath: z.string().optional(),
+    })
+    .optional(),
 });
 
 const ApprovalsSchema = z

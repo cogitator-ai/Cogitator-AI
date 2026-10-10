@@ -49,6 +49,9 @@ import { slackChannel } from './channels/slack';
 import { terminalChannel } from './channels/terminal';
 import { whatsappChannel } from './channels/whatsapp';
 import { webchatChannel } from './channels/webchat';
+import { blueskyChannel } from './channels/bluesky/channel';
+import { threadsChannel } from './channels/threads/channel';
+import { FileTokenStore } from './feeds/token-store';
 import type { GatewayApprovalsConfig } from './approvals';
 import { ownerCommands } from './middleware/owner-commands';
 import { rateLimit } from './middleware/rate-limit';
@@ -912,6 +915,68 @@ export class RuntimeBuilder {
       } else {
         console.warn(
           '[RuntimeBuilder] WebChat configured but WEBCHAT_TOKEN not found in env; clients authenticate with ?token=<WEBCHAT_TOKEN>'
+        );
+      }
+    }
+
+    const tokenStore = (path: string | undefined) =>
+      new FileTokenStore({
+        path: expandHome(path ?? join(homedir(), '.cogitator', 'tokens.json')),
+      });
+
+    const bluesky = this.config.channels.bluesky;
+    if (bluesky) {
+      const identifier = this.env.BLUESKY_HANDLE;
+      const appPassword = this.env.BLUESKY_APP_PASSWORD;
+      if (identifier && appPassword) {
+        channels.push(
+          blueskyChannel({
+            identifier,
+            appPassword,
+            ...(this.env.BLUESKY_SERVICE && { service: this.env.BLUESKY_SERVICE }),
+            store: tokenStore(bluesky.tokenPath),
+            ...(bluesky.posts !== undefined && { posts: bluesky.posts }),
+            ...(bluesky.directMessages !== undefined && { directMessages: bluesky.directMessages }),
+            ...(bluesky.pollInterval !== undefined && { pollInterval: bluesky.pollInterval }),
+          })
+        );
+      } else {
+        console.warn(
+          '[RuntimeBuilder] Bluesky configured but BLUESKY_HANDLE/BLUESKY_APP_PASSWORD not found in env'
+        );
+      }
+    }
+
+    const threads = this.config.channels.threads;
+    if (threads) {
+      const accessToken = this.env.THREADS_ACCESS_TOKEN;
+      const appSecret = this.env.THREADS_APP_SECRET;
+      const verifyToken = this.env.THREADS_VERIFY_TOKEN;
+      if (!accessToken) {
+        console.warn(
+          '[RuntimeBuilder] Threads configured but THREADS_ACCESS_TOKEN not found in env'
+        );
+      } else if (threads.webhook && !(appSecret && verifyToken)) {
+        console.warn(
+          '[RuntimeBuilder] Threads webhooks configured but THREADS_APP_SECRET/THREADS_VERIFY_TOKEN not found in env'
+        );
+      } else {
+        channels.push(
+          threadsChannel({
+            accessToken,
+            store: tokenStore(threads.tokenPath),
+            ...(threads.webhook &&
+              appSecret &&
+              verifyToken && {
+                webhook: {
+                  appSecret,
+                  verifyToken,
+                  port: threads.webhook.port,
+                  ...(threads.webhook.path && { path: threads.webhook.path }),
+                },
+              }),
+            ...(threads.pollInterval !== undefined && { pollInterval: threads.pollInterval }),
+          })
         );
       }
     }

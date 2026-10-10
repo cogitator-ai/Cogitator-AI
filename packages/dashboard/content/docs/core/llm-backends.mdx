@@ -181,7 +181,7 @@ Claude models on Bedrock follow the same sampling-parameter and forced-tool-choi
 
 ### OpenAI-Compatible Providers
 
-Mistral, Groq, Together, DeepSeek, and vLLM use the OpenAI SDK under the hood with a provider-specific base URL. Hosted providers only need an API key; vLLM needs the base URL of your OpenAI-compatible server.
+Mistral, Groq, Together, DeepSeek, OpenRouter and vLLM use the OpenAI SDK under the hood with a provider-specific base URL. Hosted providers only need an API key, vLLM needs the base URL of your OpenAI-compatible server. OpenRouter reaches the models of every provider through one key (`OPENROUTER_API_KEY` through `@cogitator-ai/config`), and its decision models through [`cog.decide()`](/docs/core/decisions).
 
 ```typescript
 providers: {
@@ -189,6 +189,7 @@ providers: {
   groq: { apiKey: process.env.GROQ_API_KEY! },
   together: { apiKey: process.env.TOGETHER_API_KEY! },
   deepseek: { apiKey: process.env.DEEPSEEK_API_KEY! },
+  openrouter: { apiKey: process.env.OPENROUTER_API_KEY! },
   vllm: { baseUrl: 'http://localhost:8000/v1' },
 }
 ```
@@ -198,6 +199,7 @@ model: 'mistral/mistral-large-latest';
 model: 'groq/llama-3.3-70b-versatile';
 model: 'together/meta-llama/Llama-3.3-70B-Instruct-Turbo';
 model: 'deepseek/deepseek-chat';
+model: 'openrouter/anthropic/claude-sonnet-5.5';
 model: 'vllm/mistral-7b';
 ```
 

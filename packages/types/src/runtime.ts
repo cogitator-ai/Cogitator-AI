@@ -20,6 +20,7 @@ import type { GuardrailConfig } from './constitutional';
 import type { CostRoutingConfig } from './cost-routing';
 import type { PiiConfig, PromptInjectionConfig } from './security';
 import type { DeployConfig } from './deploy';
+import type { DecisionBackend } from './decision';
 import type { ContextManagerConfig } from './context';
 import type { LoggingConfig } from './logging';
 import type { ABTestStore, ABTestVariant, InstructionVersionStore } from './prompt-optimization';
@@ -55,6 +56,11 @@ export interface CogitatorConfig {
      * `provider: 'name'`) runs on it. A name of a built-in provider replaces it.
      */
     backends?: Record<string, LLMBackend>;
+    /**
+     * Decision model providers of your own, by provider name, for
+     * `cog.decide()`. OpenRouter is built in, from `providers.openrouter`.
+     */
+    decisionBackends?: Record<string, DecisionBackend>;
     /** Configuration passed to backend plugins registered with `registerLLMBackend`, by provider name. */
     plugins?: Record<string, unknown>;
     /**

@@ -80,7 +80,7 @@ cogitator init my-assistant            # prompts for provider, model, channels, 
 cogitator init my-assistant --no-install --no-git --no-telemetry
 ```
 
-The prompts cover the LLM provider (Anthropic, OpenAI, Google or Ollama) and model, channels (Telegram, Discord, Slack, WebChat) with their tokens, and the memory adapter (SQLite, in-memory or Postgres). Tokens and keys go to `.env` (mode 600). The project is the same as `npx create-cogitator-app my-assistant --preset channels`: the registry in `src/cogitator.ts`, tests on a mocked model, `cogitator.yml`, `AGENTS.md`, Cogitator Studio and the rest. The assistant is `src/gateway.ts`, the `gateway` export that `cogitator assistant`, `cogitator build` and `cogitator daemon` run, and `src/index.ts` starts it for `dev` and `start`.
+The prompts cover the LLM provider (Anthropic, OpenAI, Google or Ollama) and model, channels (Telegram, Discord, Slack, WebChat, Bluesky, Threads) with their tokens, and the memory adapter (SQLite, in-memory or Postgres). Tokens and keys go to `.env` (mode 600). The project is the same as `npx create-cogitator-app my-assistant --preset channels`: the registry in `src/cogitator.ts`, tests on a mocked model, `cogitator.yml`, `AGENTS.md`, Cogitator Studio and the rest. The assistant is `src/gateway.ts`, the `gateway` export that `cogitator assistant`, `cogitator build` and `cogitator daemon` run, and `src/index.ts` starts it for `dev` and `start`.
 
 ---
 
@@ -159,7 +159,7 @@ cogitator wizard          # create cogitator.yml (+ .env)
 cogitator wizard --edit   # edit an existing cogitator.yml, pre-filling current values
 ```
 
-The wizard asks for your name and the assistant's name, the LLM provider and model (models are fetched live from the provider registry or your Ollama server), channels (Telegram, Discord, Slack with owner IDs), capabilities (web search, file system, GitHub, device tools, browser, scheduler, RAG, self-config, self-tools), MCP servers (quoted arguments are supported), the SQLite memory path and the assistant's personality. A terminal channel is always available.
+The wizard asks for your name and the assistant's name, the LLM provider and model (models are fetched live from the provider registry or your Ollama server), channels (Telegram, Discord, Slack, Bluesky, Threads with owner IDs), capabilities (web search, file system, GitHub, device tools, browser, scheduler, RAG, self-config, self-tools), MCP servers (quoted arguments are supported), the SQLite memory path and the assistant's personality. A terminal channel is always available.
 
 Secrets are merged into `.env` without touching your other variables or comments. In `--edit` mode, leaving a secret blank keeps the current value, and existing MCP servers and advanced settings (security, rate limits, …) are preserved. The wizard does not ask about WhatsApp, WebChat or Postgres memory, but keeps them: `channels.whatsapp` / `channels.webchat` entries stay as they are, and a `memory.adapter: postgres` config is kept (the SQLite path prompt is skipped).
 

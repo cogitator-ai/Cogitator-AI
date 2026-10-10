@@ -5,7 +5,7 @@ description: Route messages from messaging platforms to AI agents with sessions,
 
 ## Overview
 
-The `Gateway` is the central class of `@cogitator-ai/channels`. It connects messaging channels (Telegram, Discord, Slack, WhatsApp, WebChat) to your AI agents, handling sessions, middleware, streaming, and message formatting.
+The `Gateway` is the central class of `@cogitator-ai/channels`. It connects messaging channels (Telegram, Discord, Slack, WhatsApp, WebChat, Bluesky, Threads) to your AI agents, handling sessions, middleware, streaming, and message formatting.
 
 ```bash
 pnpm add @cogitator-ai/channels
@@ -231,16 +231,16 @@ const gateway = new Gateway({
 
 ## Platform Comparison
 
-| Feature            | Telegram     | Discord   | Slack          | WhatsApp | WebChat   |
-| ------------------ | ------------ | --------- | -------------- | -------- | --------- |
-| Streaming (edit)   | ✅           | ✅        | ✅             | ✅       | ✅        |
-| Reactions          | ✅           | ✅        | ✅             | ❌       | ❌        |
-| Typing indicator   | ✅           | ✅        | ❌             | ✅       | ✅        |
-| Media (vision)     | ✅           | ✅        | ✅             | ✅       | ❌        |
-| Voice (STT)        | ✅           | ✅        | ✅             | ✅       | ❌        |
-| Max message length | 4096         | 2000      | 40000          | 65536    | unlimited |
-| Public URL needed  | webhook only | no        | HTTP mode only | no       | no        |
-| Auth model         | Bot token    | Bot token | 3 tokens       | QR code  | custom    |
+| Feature            | Telegram     | Discord   | Slack          | WhatsApp | WebChat   | Bluesky                | Threads               |
+| ------------------ | ------------ | --------- | -------------- | -------- | --------- | ---------------------- | --------------------- |
+| Streaming (edit)   | ✅           | ✅        | ✅             | ✅       | ✅        | ❌ (sent finished)     | ❌ (sent finished)    |
+| Reactions          | ✅           | ✅        | ✅             | ❌       | ❌        | ❌                     | ❌                    |
+| Typing indicator   | ✅           | ✅        | ❌             | ✅       | ✅        | ❌                     | ❌                    |
+| Media (vision)     | ✅           | ✅        | ✅             | ✅       | ❌        | ❌                     | ❌                    |
+| Voice (STT)        | ✅           | ✅        | ✅             | ✅       | ❌        | ❌                     | ❌                    |
+| Max message length | 4096         | 2000      | 40000          | 65536    | unlimited | 300 per post, threaded | 500 per post, chained |
+| Public URL needed  | webhook only | no        | HTTP mode only | no       | no        | no                     | webhooks only         |
+| Auth model         | Bot token    | Bot token | 3 tokens       | QR code  | custom    | App password           | Long-lived token      |
 
 ## Approvals
 

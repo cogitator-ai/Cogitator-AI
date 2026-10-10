@@ -465,6 +465,11 @@ export function getModel(modelId: string): ModelInfo | null {
   return getModelRegistry().getModel(modelId);
 }
 
+/** Whether `modelId` is a decision model, which answers through `cog.decide()` instead of chat. */
+export function isDecisionModel(modelId: string): boolean {
+  return getModel(modelId)?.kind === 'decision';
+}
+
 export function listModels(filter?: ModelFilter): ModelInfo[] {
   return getModelRegistry().listModels(filter);
 }

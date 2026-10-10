@@ -19,7 +19,7 @@ import {
 } from '../utils/provider-models.js';
 
 type AssistantConfig = AssistantConfigOutput;
-type ChannelName = 'telegram' | 'discord' | 'slack';
+type ChannelName = 'telegram' | 'discord' | 'slack' | 'bluesky' | 'threads';
 type Capabilities = AssistantConfig['capabilities'];
 type McpServers = NonNullable<AssistantConfig['mcpServers']>;
 
@@ -27,9 +27,39 @@ export const CHANNEL_TOKEN_ENV: Record<ChannelName, string> = {
   telegram: 'TG_TOKEN',
   discord: 'DISCORD_TOKEN',
   slack: 'SLACK_BOT_TOKEN',
+  bluesky: 'BLUESKY_APP_PASSWORD',
+  threads: 'THREADS_ACCESS_TOKEN',
 };
 
-const CHANNELS: readonly ChannelName[] = ['telegram', 'discord', 'slack'];
+const CHANNEL_LABELS: Record<ChannelName, string> = {
+  telegram: 'Telegram',
+  discord: 'Discord',
+  slack: 'Slack',
+  bluesky: 'Bluesky',
+  threads: 'Threads',
+};
+
+const TOKEN_PROMPTS: Record<ChannelName, string> = {
+  telegram: 'Telegram bot token:',
+  discord: 'Discord bot token:',
+  slack: 'Slack bot token:',
+  bluesky: 'Bluesky app password (create it with direct messages allowed):',
+  threads: 'Threads long-lived access token:',
+};
+
+const OWNER_PROMPTS: Record<ChannelName, string> = {
+  telegram: 'Telegram owner user ID(s), comma-separated (for admin commands)',
+  discord: 'Discord owner user ID(s), comma-separated (for admin commands)',
+  slack: 'Slack owner user ID(s), comma-separated (for admin commands)',
+  bluesky: 'Bluesky owner DID(s), comma-separated (did:plc:..., for admin commands)',
+  threads: 'Threads owner username(s), comma-separated (for admin commands)',
+};
+
+const CHANNELS: readonly ChannelName[] = ['telegram', 'discord', 'slack', 'bluesky', 'threads'];
+
+function isChannelName(value: unknown): value is ChannelName {
+  return CHANNELS.some((channel) => channel === value);
+}
 const DEFAULT_MEMORY_PATH = '~/.cogitator/memory.db';
 const NOTE_STYLE = { format: (line: string) => chalk.dim(line) };
 
@@ -324,22 +354,30 @@ export const wizardCommand = new Command('wizard')
     const selectedChannels = prompt(
       await p.multiselect({
         message: 'Channels (terminal is always available)',
-        options: [
-          { value: 'telegram', label: 'Telegram' },
-          { value: 'discord', label: 'Discord' },
-          { value: 'slack', label: 'Slack' },
-        ],
+        options: CHANNELS.map((value) => ({ value, label: CHANNEL_LABELS[value] })),
         ...(existingChannels.length > 0 ? { initialValues: existingChannels } : {}),
         required: false,
       })
-    ).filter((c): c is ChannelName => c === 'telegram' || c === 'discord' || c === 'slack');
+    ).filter(isChannelName);
 
     const channelsConfig = channelsKeptOnEdit(existing.channels);
 
     for (const ch of selectedChannels) {
       const tokenEnv = CHANNEL_TOKEN_ENV[ch];
+      if (ch === 'bluesky') {
+        const handle = prompt(
+          await p.text({
+            message: 'Bluesky handle of the bot account',
+            placeholder: 'yourbot.bsky.social',
+            ...(existingEnv.BLUESKY_HANDLE ? { initialValue: existingEnv.BLUESKY_HANDLE } : {}),
+            validate: (v) => (!v?.trim() ? 'Handle is required' : undefined),
+          })
+        ).trim();
+        envUpdates.set('BLUESKY_HANDLE', handle);
+      }
+
       const token = await askSecret({
-        message: `${ch} bot token:`,
+        message: TOKEN_PROMPTS[ch],
         current: existingEnv[tokenEnv],
         required: 'Token is required',
       });
@@ -348,7 +386,7 @@ export const wizardCommand = new Command('wizard')
       const existingOwners = existing.channels?.[ch]?.ownerIds?.join(', ');
       const ownerIdsRaw = prompt(
         await p.text({
-          message: `${ch} owner user ID(s), comma-separated (for admin commands)`,
+          message: OWNER_PROMPTS[ch],
           placeholder: 'your user ID',
           ...(existingOwners ? { initialValue: existingOwners } : {}),
           validate: (v) =>
@@ -374,7 +412,11 @@ export const wizardCommand = new Command('wizard')
         if (appToken) envUpdates.set('SLACK_APP_TOKEN', appToken);
       }
 
-      channelsConfig[ch] = { ownerIds: parsePathList(ownerIdsRaw) };
+      const ownerIds = parsePathList(ownerIdsRaw);
+      if (ch === 'bluesky') channelsConfig.bluesky = { ...existing.channels?.bluesky, ownerIds };
+      else if (ch === 'threads')
+        channelsConfig.threads = { ...existing.channels?.threads, ownerIds };
+      else channelsConfig[ch] = { ownerIds };
     }
 
     const existingCaps = Object.entries(existing.capabilities ?? {})

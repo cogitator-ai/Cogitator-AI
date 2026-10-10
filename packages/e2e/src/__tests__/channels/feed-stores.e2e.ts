@@ -1,0 +1,193 @@
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import pg from 'pg';
+import {
+  FeedPublisher,
+  PostgresPublishStore,
+  PostgresTokenStore,
+  ThreadsAccount,
+  graphemeLength,
+  type PublishJob,
+} from '@cogitator-ai/channels';
+import type { FeedChannel, FeedPost, PublishedPost } from '@cogitator-ai/types';
+
+const describePostgres = process.env.TEST_POSTGRES_URL ? describe : describe.skip;
+
+function job(id: string, dueAt: number, key?: string): PublishJob {
+  return {
+    id,
+    ...(key ? { key } : {}),
+    post: {
+      text: `post ${id}`,
+      images: [
+        { image: { type: 'image', mimeType: 'image/png', buffer: new Uint8Array([1, 2, 3]) } },
+      ],
+    },
+    createdAt: dueAt,
+    deliveries: [{ feed: 'bluesky', status: 'pending', attempts: 0, nextAttemptAt: dueAt }],
+  };
+}
+
+function countingFeed(sent: FeedPost[]): FeedChannel {
+  return {
+    type: 'bluesky',
+    limits: { maxLength: 300, maxImages: 4, maxImageBytes: 2_000_000, maxTags: 8 },
+    measure: graphemeLength,
+    connect: async () => undefined,
+    close: async () => undefined,
+    delete: async () => undefined,
+    idempotencyKey: () => `key-${Date.now()}`,
+    publish: async (post): Promise<PublishedPost> => {
+      sent.push(post);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return {
+        feed: 'bluesky',
+        id: `at://${sent.length}`,
+        url: 'https://bsky.app',
+        publishedAt: new Date(),
+      };
+    },
+  };
+}
+
+describePostgres('Postgres feed stores', () => {
+  let pool: pg.Pool;
+  const tables: string[] = [];
+  const table = (name: string) => {
+    const unique = `${name}_${Date.now()}_${tables.length}`;
+    tables.push(unique);
+    return unique;
+  };
+
+  beforeAll(() => {
+    pool = new pg.Pool({ connectionString: process.env.TEST_POSTGRES_URL });
+  });
+
+  afterAll(async () => {
+    for (const name of tables) await pool.query(`DROP TABLE IF EXISTS ${name}`);
+    await pool.end();
+  });
+
+  it('keeps tokens with their lifetimes, shared between store instances', async () => {
+    const name = table('feed_tokens');
+    const first = new PostgresTokenStore({ client: pool, table: name });
+    const second = new PostgresTokenStore({ client: pool, table: name });
+    await Promise.all([first.get('warm-up'), second.get('warm-up')]);
+    await first.set('threads', { value: 'token-1', issuedAt: 1, expiresAt: 2 });
+    expect(await second.get('threads')).toEqual({ value: 'token-1', issuedAt: 1, expiresAt: 2 });
+    await second.set('threads', { value: 'token-2', issuedAt: 3 });
+    expect(await first.get('threads')).toEqual({ value: 'token-2', issuedAt: 3 });
+    await first.delete('threads');
+    expect(await second.get('threads')).toBeUndefined();
+  });
+
+  it('keeps a renewed Threads token for every process that shares the table', async () => {
+    const name = table('feed_tokens');
+    const day = 24 * 60 * 60 * 1000;
+    const seeded = new PostgresTokenStore({ client: pool, table: name });
+    await seeded.set('threads', {
+      value: 'old-token',
+      issuedAt: Date.now() - 55 * day,
+      expiresAt: Date.now() + 5 * day,
+    });
+    const refreshes: string[] = [];
+    const graph = (async (input: string | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/refresh_access_token')) {
+        refreshes.push(url.searchParams.get('access_token') ?? '');
+        return Response.json({
+          access_token: 'new-token',
+          token_type: 'bearer',
+          expires_in: 5_184_000,
+        });
+      }
+      return Response.json({ id: url.searchParams.get('access_token') });
+    }) as typeof fetch;
+    const account = new ThreadsAccount({ store: seeded, fetch: graph });
+    expect(await account.get<{ id: string }>('me')).toEqual({ id: 'new-token' });
+    expect(refreshes).toEqual(['old-token']);
+    const other = new PostgresTokenStore({ client: pool, table: name });
+    expect(await other.get('threads')).toMatchObject({ value: 'new-token' });
+    const second = new ThreadsAccount({ store: other, fetch: graph });
+    expect(await second.get<{ id: string }>('me')).toEqual({ id: 'new-token' });
+    expect(refreshes).toHaveLength(1);
+  });
+
+  it('adds a job once per key and keeps attachment bytes', async () => {
+    const store = new PostgresPublishStore({ client: pool, table: table('feed_jobs') });
+    const first = await store.add(job('a', 100, 'story-1'));
+    const again = await store.add(job('b', 100, 'story-1'));
+    expect(again.id).toBe(first.id);
+    const stored = await store.get('a');
+    expect([...(stored?.post.images?.[0]?.image.buffer ?? [])]).toEqual([1, 2, 3]);
+    expect((await store.list()).map((j) => j.id)).toEqual(['a']);
+  });
+
+  it('splits due jobs between workers that claim at the same time', async () => {
+    const name = table('feed_jobs');
+    const workers = [0, 1, 2].map(() => new PostgresPublishStore({ client: pool, table: name }));
+    await workers[0].list();
+    for (let i = 0; i < 12; i++) await workers[0].add(job(`job-${i}`, 100 + i));
+    const claimed = await Promise.all(
+      workers.map(async (store, index) => {
+        const ids: string[] = [];
+        for (;;) {
+          const next = await store.claimNext(10_000, { owner: `worker-${index}`, ttl: 60_000 });
+          if (!next) return ids;
+          ids.push(next.id);
+        }
+      })
+    );
+    const ids = claimed.flat();
+    expect(ids).toHaveLength(12);
+    expect(new Set(ids).size).toBe(12);
+    const held = claimed.find((list) => list.length > 0)?.[0] ?? '';
+    const holder = claimed.findIndex((list) => list.includes(held));
+    const owner = { owner: `worker-${holder}`, ttl: 60_000 };
+    const other = { owner: 'someone-else', ttl: 60_000 };
+    expect(await workers[1].claim(held, other)).toBe(false);
+    expect(await workers[1].extend(held, other)).toBe(false);
+    expect(await workers[0].extend(held, owner)).toBe(true);
+    const stored = await workers[0].get(held);
+    if (!stored) throw new Error('missing job');
+    expect(await workers[1].save(stored, 'someone-else')).toBe(false);
+    expect(await workers[0].save(stored, owner.owner)).toBe(true);
+    expect(await workers[1].remove(held)).toBe(false);
+    await workers[0].release(held, owner.owner);
+    expect(await workers[1].remove(held)).toBe(true);
+  });
+
+  it('lets a worker save only until its lease runs out on the database clock', async () => {
+    const store = new PostgresPublishStore({ client: pool, table: table('feed_jobs') });
+    await store.add(job('short', 100));
+    expect(await store.claim('short', { owner: 'a', ttl: 50 })).toBe(true);
+    const held = await store.get('short');
+    if (!held) throw new Error('missing job');
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(await store.save(held, 'a')).toBe(false);
+    expect(await store.extend('short', { owner: 'a', ttl: 50 })).toBe(false);
+    expect(await store.claim('short', { owner: 'b', ttl: 60_000 })).toBe(true);
+  });
+
+  it('publishes a post once when two publishers run the same due job', async () => {
+    const name = table('feed_jobs');
+    const sent: FeedPost[] = [];
+    const publishers = [0, 1].map(
+      () =>
+        new FeedPublisher({
+          feeds: [countingFeed(sent)],
+          store: new PostgresPublishStore({ client: pool, table: name }),
+        })
+    );
+    const scheduled = await publishers[0].publish(
+      { text: 'Once only' },
+      { publishAt: Date.now() + 100 }
+    );
+    expect(scheduled.pending).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    await Promise.all(publishers.map((publisher) => publisher.tick()));
+    expect(sent).toHaveLength(1);
+    const done = await publishers[1].get(scheduled.job.id);
+    expect(done?.deliveries[0]).toMatchObject({ status: 'published', attempts: 1 });
+    expect(await publishers[1].list({ pending: true })).toEqual([]);
+  });
+});

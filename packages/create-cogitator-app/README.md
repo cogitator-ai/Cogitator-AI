@@ -41,7 +41,7 @@ Requires Node.js 22.12+.
 | `hono`             | Agents behind a small, fast HTTP API                                    |
 | `tetsu`            | Bun-native controller with OpenAPI and WebSocket                        |
 | `nextjs`           | Streaming chat with tool calls, approvals and saved threads             |
-| `channels`         | One assistant on Telegram, Discord, Slack or WebChat                    |
+| `channels`         | One assistant on Telegram, Discord, Slack, WebChat, Bluesky or Threads  |
 | `rag`              | Answers grounded in the files of `docs/`                                |
 | `mcp`              | Tools from an MCP server, your agents served over MCP                   |
 | `swarm`            | A researcher and a writer under a reviewing supervisor                  |

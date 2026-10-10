@@ -26,6 +26,7 @@ export {
   calculateCost,
   type TokenUsageForCost,
   getModel,
+  isDecisionModel,
   listModels,
   shutdownModels,
 } from './registry';
@@ -40,4 +41,5 @@ export {
   OPENAI_MODELS,
   ANTHROPIC_MODELS,
   GOOGLE_MODELS,
+  OPENROUTER_MODELS,
 } from './providers/index';

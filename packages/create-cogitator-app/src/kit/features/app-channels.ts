@@ -7,8 +7,13 @@ import type { FeatureModule } from './types.js';
 
 export const WEBCHAT_PORT = 18789;
 
+/** Where Bluesky sessions and Threads tokens are kept, out of git. */
+const TOKENS_PATH = '.cogitator/tokens.json';
+
 interface ChannelSetup {
   factory: string;
+  /** Other names the gateway imports from `@cogitator-ai/channels`. */
+  imports?: string[];
   expression: string;
   packages: Array<[string, string]>;
   env: Array<{ name: string; description: string; required: boolean }>;
@@ -65,6 +70,50 @@ const CHANNEL_SETUP: Record<ChannelKind, ChannelSetup> = {
     packages: [['ws', VERSIONS.ws]],
     env: [],
   },
+  bluesky: {
+    factory: 'blueskyChannel',
+    imports: ['FileTokenStore'],
+    expression: code`
+      blueskyChannel({
+        identifier: env.BLUESKY_HANDLE,
+        appPassword: env.BLUESKY_APP_PASSWORD,
+        store: new FileTokenStore({ path: '${TOKENS_PATH}' }),
+      })
+    `,
+    packages: [['@atproto/api', VERSIONS.atprotoApi]],
+    env: [
+      {
+        name: 'BLUESKY_HANDLE',
+        description: 'Bluesky handle of the bot account, such as yourbot.bsky.social',
+        required: true,
+      },
+      {
+        name: 'BLUESKY_APP_PASSWORD',
+        description:
+          'Bluesky app password (Settings, Privacy and security, App passwords), with direct messages allowed',
+        required: true,
+      },
+    ],
+  },
+  threads: {
+    factory: 'threadsChannel',
+    imports: ['FileTokenStore'],
+    expression: code`
+      threadsChannel({
+        accessToken: env.THREADS_ACCESS_TOKEN,
+        store: new FileTokenStore({ path: '${TOKENS_PATH}' }),
+      })
+    `,
+    packages: [],
+    env: [
+      {
+        name: 'THREADS_ACCESS_TOKEN',
+        description:
+          'Threads long-lived access token; it is renewed automatically and kept in .cogitator/tokens.json',
+        required: true,
+      },
+    ],
+  },
 };
 
 /** A messaging bot: one Gateway that answers on every chosen channel with the assistant. */
@@ -79,6 +128,11 @@ export const appChannelsFeature: FeatureModule = {
       const setup = CHANNEL_SETUP[channel];
       for (const [name, version] of setup.packages) project.dependency(name, version);
       for (const variable of setup.env) project.envVar({ ...variable, secret: true });
+    }
+    if (
+      spec.channels.some((channel) => CHANNEL_SETUP[channel].imports?.includes('FileTokenStore'))
+    ) {
+      project.ignore(TOKENS_PATH);
     }
     if (spec.channels.includes('webchat')) {
       project.envVar({
@@ -111,7 +165,7 @@ export const appChannelsFeature: FeatureModule = {
     project.file(
       'src/gateway.ts',
       code`
-        import { Gateway, ${channels.map((c) => c.factory).join(', ')} } from '@cogitator-ai/channels';
+        import { Gateway, ${[...new Set(channels.flatMap((c) => [c.factory, ...(c.imports ?? [])]))].join(', ')} } from '@cogitator-ai/channels';
         import { agents, cogitator } from './cogitator.js';
         import { loadEnv } from './env.js';
         ${startupImports(project)}

@@ -1,0 +1,110 @@
+---
+title: Social Feeds
+description: Publish posts to Bluesky and Threads, now or on a schedule, with retries, idempotency and tokens that renew themselves.
+---
+
+Channels answer people in a chat. Feeds publish posts: a story with its link card, a chart with alt text, an announcement at nine in the morning. `@cogitator-ai/channels` has two feeds, `BlueskyFeed` and `ThreadsFeed`, and `FeedPublisher`, which sends one post to several feeds and keeps track of each.
+
+```typescript
+import {
+  BlueskyFeed,
+  FeedPublisher,
+  FilePublishStore,
+  FileTokenStore,
+  ThreadsFeed,
+} from '@cogitator-ai/channels';
+
+const tokens = new FileTokenStore();
+
+const publisher = new FeedPublisher({
+  feeds: [
+    new BlueskyFeed({
+      identifier: process.env.BLUESKY_HANDLE!,
+      appPassword: process.env.BLUESKY_APP_PASSWORD!,
+      store: tokens,
+    }),
+    new ThreadsFeed({ accessToken: process.env.THREADS_ACCESS_TOKEN!, store: tokens }),
+  ],
+  store: new FilePublishStore(),
+});
+
+const { job } = await publisher.publish(
+  {
+    text: 'A new open model runs on a laptop. What it means for you:',
+    link: { url: 'https://example.com/story', title: 'Open models on laptops' },
+    tags: ['AI'],
+  },
+  { key: 'story-2026-10-09' }
+);
+
+for (const delivery of job.deliveries)
+  console.log(delivery.feed, delivery.status, delivery.post?.url);
+```
+
+## Posts
+
+A `FeedPost` is what every feed understands:
+
+| Field     | What it is                                                                                                                    |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `text`    | The text of the post                                                                                                          |
+| `link`    | A link card: `url`, `title`, `description`, and a preview `image` (Bluesky uploads it, Threads builds the card from the page) |
+| `images`  | Images with `alt` text and `aspectRatio`. A post has images or a link card, not both                                          |
+| `tags`    | Topics. Threads takes the first as its topic tag, Bluesky adds them as hashtags outside the text                              |
+| `langs`   | Languages of the text, as BCP 47 tags                                                                                         |
+| `replyTo` | The id of a post of the same feed this post answers                                                                           |
+
+Each feed checks a post against its rules before it sends anything and fails with a `FeedError` of code `invalid_post` when it breaks one.
+
+|              | Bluesky                      | Threads                                            |
+| ------------ | ---------------------------- | -------------------------------------------------- |
+| Text         | 300 graphemes and 3000 bytes | 500 characters, emoji counted by their UTF-8 bytes |
+| Images       | up to 4, 2 MB each, uploaded | 1, or a carousel of up to 20, from public URLs     |
+| Link preview | up to 1 MB, uploaded         | fetched by Threads                                 |
+| Links        |                              | up to 5                                            |
+| Tags         | up to 8, 64 graphemes each   | 1 topic tag, 1 to 50 characters, no `.` or `&`     |
+
+`measure(text)` gives the length of a text as the feed counts it. `graphemeLength`, `threadsLength`, `fitText` and `splitText` are exported too, so a text can be checked or cut the same way anywhere.
+
+## The publisher
+
+`FeedPublisher` publishes a post to every feed it has, or to `feeds: ['bluesky']`, now or at `publishAt`:
+
+- **Each feed on its own.** One failing feed does not stop the others. Each outcome is saved as soon as it is known.
+- **Exactly once.** Before the first attempt at a feed, the delivery saves a key from the feed's `idempotencyKey()` and passes it on every attempt, with `retry: true` on every attempt after the first. Bluesky publishes the post under that record key, and Threads looks for the post an earlier attempt made, so an attempt after a crash, or after an error whose outcome was unknown, finds the post instead of publishing it again.
+- **Retries.** A feed that can succeed later (a rate limit, a feed that is down, an image host that failed) is tried again after the wait it asked for, or after a backoff that doubles from `retry.baseDelay` (one minute) up to `retry.maxDelay` (one hour), up to `retry.maxAttempts` (5). A full Threads quota is waited out until it frees up, without spending attempts. Other errors fail that feed at once.
+- **Idempotency.** Publishing with the same `key` twice publishes once: the second call returns the first job, with `duplicate: true`.
+- **Fitting.** A text longer than a feed takes is cut at a word with an ellipsis for that feed, so one text serves Bluesky's 300 graphemes and 3000 bytes and Threads' 500. `overflow: 'fail'` fails that feed instead.
+- **Dry runs.** `dryRun: true` goes through every step but publishing. Its keys are kept apart, so a dry run never makes the real publication a duplicate.
+
+Scheduled posts and retries wait in the store until `start()`, which looks for due jobs every `pollInterval` (15 seconds) and keeps the process running until `stop()`, or until you call `tick()` yourself. `cancel(id)` drops a job before it goes out, `get(id)` and `list({ pending })` read them.
+
+```typescript
+publisher.start();
+
+await publisher.publish(
+  { text: 'Good morning! Today in AI:', link: { url: 'https://example.com/brief' } },
+  { publishAt: new Date('2026-10-10T09:00:00+02:00'), key: 'brief-2026-10-10' }
+);
+```
+
+`onPublished` and `onFailed` (with `final: true` when a feed gave up) see every outcome.
+
+## Stores
+
+Jobs and tokens have to survive a restart, so both have stores:
+
+|        | In memory                      | File                                                   | Postgres                                  |
+| ------ | ------------------------------ | ------------------------------------------------------ | ----------------------------------------- |
+| Jobs   | `MemoryPublishStore` (default) | `FilePublishStore`: one JSON file per job, one process | `PostgresPublishStore`: several workers   |
+| Tokens | `MemoryTokenStore` (default)   | `FileTokenStore`: one JSON file, owner-only            | `PostgresTokenStore`: shared by processes |
+
+A publisher takes one due job at a time and holds a claim on it for `claimTtl` (five minutes), extended every third of that while it works, so a job whose worker died is taken over once its claim runs out. A worker saves a job only while the claim is its own, so one that lost its claim never overwrites the worker that took over, and the idempotency keys keep the post from going out twice. `PostgresPublishStore` takes claims with `FOR UPDATE SKIP LOCKED` on the database clock, so several publishing processes split the work. Both Postgres stores take a `pg` Pool or Client and create their table on first use (`cogitator_feed_jobs`, `cogitator_tokens`, or `table`).
+
+## Errors
+
+A feed of your own implements `FeedChannel`: its `limits` and `measure`, `publish` with the `idempotencyKey` and `retry` options, `idempotencyKey()`, `delete`, `connect` and `close`.
+
+Feeds fail with `FeedError`. Its `code` says what happened (`auth`, `token_expired`, `rate_limited`, `quota_exceeded`, `invalid_post`, `not_found`, `unavailable`), `retryable` whether trying later can help, and `retryAfter` how long the feed asked to wait.
+
+See [Bluesky](/docs/channels/bluesky) and [Threads](/docs/channels/threads) for each feed, and how an agent answers people there.

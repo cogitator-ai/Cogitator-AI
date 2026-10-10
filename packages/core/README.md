@@ -98,6 +98,7 @@ const agent = new Agent({
   // model: 'openai/gpt-6.1-sol'
   // model: 'anthropic/claude-sonnet-5-5'
   // model: 'google/gemini-3.8-flash'
+  // model: 'openrouter/deepseek/deepseek-v4-pro'
   // model: 'vllm/mistral-7b'
 });
 ```
@@ -122,6 +123,9 @@ const cog = new Cogitator({
       },
       google: {
         apiKey: process.env.GOOGLE_API_KEY!,
+      },
+      openrouter: {
+        apiKey: process.env.OPENROUTER_API_KEY!, // chat models of every provider, and decision models
       },
       vllm: {
         baseUrl: 'http://localhost:8000/v1',
@@ -1999,6 +2003,50 @@ const result = await cog.run(agent, {
 Both exporters do nothing unless `enabled: true` is set, so you can build them unconditionally and switch them per environment. They are not attached automatically; wire them to the run callbacks as above. See [Observability](https://cogitator.app/docs/deployment/observability).
 
 ---
+
+## Decision Models
+
+Decision models answer typed questions about a state with probabilities instead of text. `cog.decide()` asks them, such as TypeSafe's Jev on OpenRouter's Decisions API:
+
+```typescript
+const result = await cog.decide({
+  model: 'openrouter/typesafe/jev-1.13',
+  state: 'I was charged twice for my subscription this month, please refund one of them.',
+  questions: {
+    team: {
+      type: 'choice',
+      instructions: 'Which team should answer this message?',
+      criteria: {
+        billing: 'Payments and refunds',
+        technical: 'Bugs and errors',
+        sales: 'Plans and pricing',
+      },
+    },
+    spam: {
+      type: 'noul',
+      instructions: 'Is this message spam?',
+      criteria: { true: 'Advertising or nonsense', false: 'A real customer' },
+    },
+    urgency: {
+      type: 'score',
+      instructions: 'How urgent is it?',
+      criteria: ['later', 'this week', 'today'],
+    },
+  },
+});
+
+result.answers.team.choice; // 'billing' | 'technical' | 'sales', typed from the question
+result.answers.spam; // { type: 'noul', probability: 0.04, value: false }
+result.usage.cost; // USD, reported by OpenRouter or priced from the registry
+```
+
+- `noul` asks yes or no and answers with a `probability` and a `value` by `threshold` (0.5), `choice` answers with one of its options, `confidence` and `probabilities`, `score` with a position on its ordered levels.
+- The request is checked before the call (`VALIDATION_ERROR`) and the answer after (`LLM_INVALID_RESPONSE` for a missing answer, another type or an option the question does not have).
+- It is retried by the same policy as LLM calls (`llm.retry`, with `LLMRetryPolicy` and `retryLLMCall` exported for calls of your own), recorded with the cost router, and reported to run observers as a run with one `llm.decide` span.
+- `decisionTool(cog, { name, description, model, questions })` gives an agent a tool that asks fixed questions about the state it passes.
+- A chat agent on a decision model fails with `CONFIGURATION_ERROR` instead of OpenRouter's 400. `llm.decisionBackends` takes a `DecisionBackend` of another provider.
+
+OpenRouter is a built-in provider (`llm.providers.openrouter`, `OPENROUTER_API_KEY` through `@cogitator-ai/config`). Docs: [Decision Models](https://cogitator.app/docs/core/decisions).
 
 ## Agent as Tool
 

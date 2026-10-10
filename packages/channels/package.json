@@ -14,7 +14,10 @@
     "whatsapp",
     "webchat",
     "gateway",
-    "streaming"
+    "streaming",
+    "bluesky",
+    "threads",
+    "social"
   ],
   "type": "module",
   "main": "./dist/index.js",
@@ -47,6 +50,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@atproto/api": "0.24.0",
     "@types/node": "^22.20.4",
     "@types/ws": "^8.18.2",
     "@whiskeysockets/baileys": "7.0.0-rc14",
@@ -56,20 +60,21 @@
     "ws": "^8.22.0"
   },
   "peerDependencies": {
-    "grammy": ">=1.20.0",
-    "discord.js": ">=14.0.0",
-    "@slack/bolt": ">=3.0.0",
-    "ws": ">=8.0.0",
-    "@whiskeysockets/baileys": "^6.0.0 || >=7.0.0-0",
     "@cogitator-ai/browser": "workspace:>=0.4.13",
-    "@cogitator-ai/rag": "workspace:>=0.6.3",
     "@cogitator-ai/mcp": "workspace:^19.3.3",
     "@cogitator-ai/models": "workspace:^18.3.0",
+    "@cogitator-ai/rag": "workspace:>=0.6.3",
     "@huggingface/transformers": ">=3.0.0",
+    "@slack/bolt": ">=3.0.0",
+    "@whiskeysockets/baileys": "^6.0.0 || >=7.0.0-0",
+    "better-sqlite3": "^11.0.0 || ^12.0.0 || ^13.0.0",
+    "discord.js": ">=14.0.0",
+    "grammy": ">=1.20.0",
     "ogg-opus-decoder": ">=1.0.0",
-    "qrcode-terminal": ">=0.12.0",
     "pg": ">=8.0.0",
-    "better-sqlite3": "^11.0.0 || ^12.0.0 || ^13.0.0"
+    "qrcode-terminal": ">=0.12.0",
+    "ws": ">=8.0.0",
+    "@atproto/api": ">=0.24.0"
   },
   "peerDependenciesMeta": {
     "grammy": {
@@ -112,6 +117,9 @@
       "optional": true
     },
     "better-sqlite3": {
+      "optional": true
+    },
+    "@atproto/api": {
       "optional": true
     }
   },
