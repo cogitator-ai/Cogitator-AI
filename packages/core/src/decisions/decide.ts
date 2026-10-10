@@ -59,6 +59,19 @@ export function validateDecision(options: DecideOptions): void {
   }
 }
 
+/** Fails with `LLM_INVALID_RESPONSE` on token counts or a cost no call can have. */
+function assertUsage(usage: DecisionResponse['usage'], context: LLMErrorContext): void {
+  const counts = { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens };
+  for (const [name, value] of Object.entries(counts)) {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw llmInvalidResponse(context, `The decision model reported ${value} ${name}`);
+    }
+  }
+  if (usage.cost !== undefined && !(Number.isFinite(usage.cost) && usage.cost >= 0)) {
+    throw llmInvalidResponse(context, `The decision model reported a cost of ${usage.cost}`);
+  }
+}
+
 function isProbability(value: number): boolean {
   return Number.isFinite(value) && value >= 0 && value <= 1;
 }
@@ -195,6 +208,7 @@ export async function runDecision<TQuestions extends DecisionQuestions>(
           ...(options.user && { user: options.user }),
         })
     );
+    assertUsage(response.usage, context);
     const answers = toDecisionAnswers(
       options.questions,
       response,

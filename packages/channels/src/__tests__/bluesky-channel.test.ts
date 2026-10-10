@@ -263,6 +263,29 @@ describe('BlueskyChannel', () => {
     await channel.stop();
   });
 
+  it('reads a backlog longer than one poll on the next poll, marking it seen only at its end', async () => {
+    const at = (n: number) => new Date(Date.UTC(2026, 9, 9, 8, 0, 0, n)).toISOString();
+    for (let index = 0; index < 1100; index++) {
+      state.notifications.push(
+        mention(`at://did:plc:reader/app.bsky.feed.post/n${index}`, `question ${index}`, at(index))
+      );
+    }
+    const read = mention('at://did:plc:reader/app.bsky.feed.post/old', 'answered', at(-1));
+    state.notifications.push({ ...read, isRead: true });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { channel, received } = await started({ directMessages: false });
+    expect(received).toHaveLength(1000);
+    expect(state.seenAt).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('the next poll reads on'));
+
+    await channel.poll();
+    expect(received).toHaveLength(1100);
+    expect(new Set(received.map((m) => m.text)).size).toBe(1100);
+    expect(state.seenAt).toEqual([at(1099)]);
+    warn.mockRestore();
+    await channel.stop();
+  });
+
   it('skips its own posts and what arrived before the start when told not to catch up', async () => {
     state.notifications.push(
       {
@@ -375,7 +398,7 @@ describe('BlueskyChannel', () => {
   it('reads back past its own, deleted and system messages to every unread one', async () => {
     state.convos.push({
       id: 'convo-3',
-      unreadCount: 3,
+      unreadCount: 2,
       members: [
         { did: 'did:plc:bot', handle: 'news.bsky.social' },
         { did: 'did:plc:reader', handle: 'reader.bsky.social' },

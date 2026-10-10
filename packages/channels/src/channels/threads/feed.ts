@@ -40,6 +40,7 @@ const CLOCK_SKEW = 60_000;
 const QUOTA_MARGIN = 60_000;
 const QUOTA_WINDOW = 86_400;
 const LOOKUP_PAGES = 4;
+const MAX_PUBLISHED = 1000;
 const QUOTA_PAGES = 12;
 
 interface Container {
@@ -74,34 +75,40 @@ function comparableUrl(url: string): string {
   return url.slice(0, end);
 }
 
+/** The media type Threads lists for `post`. */
+function mediaTypeOf(post: FeedPost): string {
+  const images = post.images?.length ?? 0;
+  return images === 0 ? 'TEXT_POST' : images === 1 ? 'IMAGE' : 'CAROUSEL_ALBUM';
+}
+
 /**
- * Whether a listed post is `post` as published: its kind, text, link card,
- * topic tag, alt text of a single image and the post it answers, where
- * Threads lists them.
+ * Whether a listed post is `post` as published: the same kind, text, link
+ * card, topic tag, alt text of a single image and the post it answers.
+ * Anything missing or different makes it another post, since posting twice
+ * shows, while a post taken for another one is lost without a trace.
  */
 function samePost(listed: ListedPost, post: FeedPost, topicTag: string | undefined): boolean {
   const images = post.images ?? [];
-  const mediaType =
-    images.length === 0 ? 'TEXT_POST' : images.length === 1 ? 'IMAGE' : 'CAROUSEL_ALBUM';
-  if (listed.media_type !== undefined && listed.media_type !== mediaType) return false;
-  if (normalized(listed.text) !== normalized(post.text)) return false;
-  if (post.replyTo && listed.replied_to?.id !== post.replyTo) return false;
-  if (
-    post.link &&
-    listed.link_attachment_url !== undefined &&
-    comparableUrl(listed.link_attachment_url) !== comparableUrl(post.link.url)
-  ) {
-    return false;
-  }
-  if (
-    topicTag &&
-    listed.topic_tag !== undefined &&
-    listed.topic_tag.toLowerCase() !== topicTag.toLowerCase()
-  ) {
-    return false;
-  }
-  const alt = images.length === 1 ? images[0]?.alt : undefined;
-  return !alt || listed.alt_text === undefined || listed.alt_text === alt;
+  const alt = images.length === 1 ? (images[0]?.alt ?? '') : '';
+  const link = post.link ? comparableUrl(post.link.url) : '';
+  return (
+    listed.media_type === mediaTypeOf(post) &&
+    normalized(listed.text) === normalized(post.text) &&
+    listed.replied_to?.id === post.replyTo &&
+    (listed.link_attachment_url ? comparableUrl(listed.link_attachment_url) : '') === link &&
+    (listed.topic_tag ?? '').toLowerCase() === (topicTag ?? '').toLowerCase() &&
+    (images.length === 1 ? (listed.alt_text ?? '') === alt : true)
+  );
+}
+
+/**
+ * Whether `post` can be told apart from other posts by what Threads lists:
+ * its text, or the alt text of its single image. Images themselves are not
+ * listed in a comparable form, so posts without either are never looked up.
+ */
+function identifiable(post: FeedPost): boolean {
+  const images = post.images ?? [];
+  return normalized(post.text) !== '' || (images.length === 1 && Boolean(images[0]?.alt?.trim()));
 }
 
 interface PublishingLimit {
@@ -186,6 +193,7 @@ export class ThreadsFeed implements FeedChannel {
   private readonly timeout: number;
   private readonly delays: readonly number[];
   private readonly checkQuota: boolean;
+  private readonly published = new Set<string>();
 
   constructor(config: ThreadsFeedConfig) {
     this.account = threadsAccountOf(config);
@@ -214,7 +222,7 @@ export class ThreadsFeed implements FeedChannel {
     const { signal, idempotencyKey, retry = true } = options;
     if (idempotencyKey !== undefined) {
       const since = keyTime(idempotencyKey);
-      if (retry) {
+      if (retry && identifiable(post)) {
         const earlier = await this.findEarlier(post, topicTag, since, signal);
         if (earlier) return earlier;
       }
@@ -291,6 +299,11 @@ export class ThreadsFeed implements FeedChannel {
       url = details.permalink ?? '';
     } catch (error) {
       console.warn(`[threads] Published ${published.id} but could not read its permalink:`, error);
+    }
+    this.published.add(published.id);
+    if (this.published.size > MAX_PUBLISHED) {
+      const oldest = this.published.values().next().value;
+      if (oldest !== undefined) this.published.delete(oldest);
     }
     return { feed: this.type, id: published.id, url, publishedAt: new Date() };
   }
@@ -405,9 +418,11 @@ export class ThreadsFeed implements FeedChannel {
   }
 
   /**
-   * The post an earlier attempt with the same key made: the account's posts
-   * (or replies to `post.replyTo`) since `since`, less the clock skew, with
-   * the same text.
+   * The post an earlier attempt with the same key made: one of the account's
+   * posts (or replies to `post.replyTo`) since `since`, less the clock skew,
+   * that is the same post and that this feed did not publish for another
+   * attempt. Two posts the same in all Threads lists, published by other
+   * processes within that minute, cannot be told apart.
    */
   private async findEarlier(
     post: FeedPost,
@@ -427,7 +442,9 @@ export class ThreadsFeed implements FeedChannel {
       signal
     );
     for await (const posts of pages) {
-      const match = posts.find((listed) => samePost(listed, post, topicTag));
+      const match = posts.find(
+        (listed) => !this.published.has(listed.id) && samePost(listed, post, topicTag)
+      );
       if (match) {
         return {
           feed: this.type,

@@ -406,6 +406,7 @@ describe('ThreadsFeed', () => {
         timestamp: iso(keyTime - 30_000),
         permalink: 'https://www.threads.net/@mybot/post/DBig',
         media_type: 'TEXT_POST',
+        link_attachment_url: 'https://example.com/story',
       },
     ];
     const published = await threads.publish(
@@ -433,11 +434,18 @@ describe('ThreadsFeed', () => {
     const key = threads.idempotencyKey();
     const at = iso(Number(key.split('.')[0]) + 2000);
     api.replies = [
-      { id: 'r-other-parent', text: 'Thanks!', timestamp: at, replied_to: { id: '555' } },
+      {
+        id: 'r-other-parent',
+        text: 'Thanks!',
+        timestamp: at,
+        media_type: 'TEXT_POST',
+        replied_to: { id: '555' },
+      },
       {
         id: 'r-match',
         text: 'Thanks!',
         timestamp: at,
+        media_type: 'TEXT_POST',
         permalink: 'https://www.threads.net/@mybot/post/DReply',
         replied_to: { id: '17890' },
       },
@@ -460,7 +468,7 @@ describe('ThreadsFeed', () => {
     expect(api.calls.some((call) => call.method === 'POST')).toBe(false);
   });
 
-  it('matches an image post without text on its empty text', async () => {
+  it('finds an image post by its alt text, and never looks up one it cannot tell apart', async () => {
     const threads = feed({ expiresAt: farFuture() });
     const key = threads.idempotencyKey();
     api.threads = [
@@ -469,16 +477,44 @@ describe('ThreadsFeed', () => {
         timestamp: iso(Number(key.split('.')[0]) + 1000),
         permalink: 'https://www.threads.net/@mybot/post/DImg',
         media_type: 'IMAGE',
+        alt_text: 'A cat on a laptop',
       },
     ];
-    const published = await threads.publish(
-      {
-        text: '',
-        images: [{ image: { type: 'image', mimeType: 'image/jpeg', url: 'https://cdn/1.jpg' } }],
-      },
-      { idempotencyKey: key }
+    const image = (alt?: string) => ({
+      text: '',
+      images: [
+        {
+          image: { type: 'image' as const, mimeType: 'image/jpeg', url: 'https://cdn/1.jpg' },
+          ...(alt && { alt }),
+        },
+      ],
+    });
+    const found = await threads.publish(image('A cat on a laptop'), { idempotencyKey: key });
+    expect(found.id).toBe('img-1');
+
+    api.calls.length = 0;
+    const bare = await threads.publish(image(), { idempotencyKey: threads.idempotencyKey() });
+    expect(bare.id).toMatch(/^media-/);
+    expect(api.calls.some((call) => call.method === 'GET' && call.path === 'me/threads')).toBe(
+      false
     );
-    expect(published.id).toBe('img-1');
+  });
+
+  it('never takes a post it published itself for another attempt', async () => {
+    const threads = feed({ expiresAt: farFuture() });
+    const first = await threads.publish({ text: 'Same words' });
+    const key = threads.idempotencyKey();
+    api.threads = [
+      {
+        id: first.id,
+        text: 'Same words',
+        timestamp: iso(Number(key.split('.')[0]) + 1000),
+        media_type: 'TEXT_POST',
+      },
+    ];
+    api.calls.length = 0;
+    await threads.publish({ text: 'Same words' }, { idempotencyKey: key });
+    expect(api.calls.some((call) => call.path === 'me/threads_publish')).toBe(true);
   });
 
   it('looks for an earlier post on a retry only', async () => {

@@ -79,6 +79,7 @@ export class BlueskyChannel implements Channel {
   private readonly seen = new Map<string, true>();
   private readonly requests = new Set<string>();
   private chatOf?: { agent: Agent; chat: Agent };
+  private backlog?: { cursor: string; newest?: string };
   private ownDid?: string;
   private running = false;
 
@@ -207,13 +208,17 @@ export class BlueskyChannel implements Channel {
   }
 
   /**
-   * Answers the unread mentions, replies and quotes, oldest first, paging back
-   * to the first one already seen, then marks them seen.
+   * Answers the unread mentions, replies and quotes, oldest first of each
+   * batch, paging back to the first one already seen, then marks them seen.
+   * A backlog longer than one poll reads is carried on from where the last
+   * poll stopped, and nothing is marked seen until it is read to the end,
+   * since marking a time seen also marks everything older.
    */
   private async pollPosts(): Promise<void> {
     const agent = await connectionOf(this.account).agent();
     const unread: NotificationPost[] = [];
-    let cursor: string | undefined;
+    let cursor = this.backlog?.cursor;
+    let reachedSeen = false;
     try {
       for (let page = 0; page < MAX_NOTIFICATION_PAGES; page++) {
         const response = await agent.app.bsky.notification.listNotifications({
@@ -225,16 +230,21 @@ export class BlueskyChannel implements Channel {
         unread.push(...notifications.filter((notification) => !notification.isRead));
         cursor = response.data.cursor;
         if (!cursor || notifications.length === 0 || notifications.some((item) => item.isRead)) {
-          cursor = undefined;
+          reachedSeen = true;
           break;
         }
       }
     } catch (error) {
       throw blueskyError(error, 'Listing notifications');
     }
-    if (cursor) {
+    const newest = [this.backlog?.newest, ...unread.map((notification) => notification.indexedAt)]
+      .filter((time): time is string => time !== undefined)
+      .sort()
+      .at(-1);
+    this.backlog = reachedSeen || !cursor ? undefined : { cursor, ...(newest && { newest }) };
+    if (this.backlog) {
       console.warn(
-        `[bluesky] More than ${MAX_NOTIFICATION_PAGES * 100} unread notifications: answering the newest`
+        `[bluesky] More than ${MAX_NOTIFICATION_PAGES * 100} unread notifications: the next poll reads on`
       );
     }
     const fresh = unread
@@ -244,11 +254,7 @@ export class BlueskyChannel implements Channel {
       if (!this.remember(notification.uri)) continue;
       await this.deliver(this.postMessage(notification));
     }
-    const newest = unread
-      .map((notification) => notification.indexedAt)
-      .sort()
-      .at(-1);
-    if (newest) {
+    if (newest && !this.backlog) {
       try {
         await agent.app.bsky.notification.updateSeen({ seenAt: newest });
       } catch (error) {
@@ -307,7 +313,12 @@ export class BlueskyChannel implements Channel {
           const page = response.data.messages as ChatMessage[];
           messages.push(...page);
           fromOthers.push(
-            ...page.filter((message) => message.sender && message.sender.did !== this.ownDid)
+            ...page.filter(
+              (message) =>
+                typeof message.text === 'string' &&
+                message.sender !== undefined &&
+                message.sender.did !== this.ownDid
+            )
           );
           cursor = page.length > 0 ? response.data.cursor : undefined;
         } while (cursor && fromOthers.length < unread);
@@ -317,7 +328,6 @@ export class BlueskyChannel implements Channel {
       }
       const incoming = fromOthers
         .slice(0, unread)
-        .filter((message) => typeof message.text === 'string')
         .sort((a, b) => (a.sentAt ?? '').localeCompare(b.sentAt ?? ''));
       for (const message of incoming) {
         if (!this.remember(`${convo.id}:${message.id}`)) continue;

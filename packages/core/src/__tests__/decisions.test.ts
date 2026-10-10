@@ -343,6 +343,38 @@ describe('cog.decide', () => {
     expect(result.usage).toMatchObject({ cost: 0, priced: false });
   });
 
+  it.each([
+    ['negative input tokens', { inputTokens: -5, outputTokens: 0 }, '-5 inputTokens'],
+    ['fractional output tokens', { inputTokens: 5, outputTokens: 0.5 }, '0.5 outputTokens'],
+    ['a negative cost', { inputTokens: 5, outputTokens: 0, cost: -1 }, 'cost of -1'],
+    [
+      'a cost that is not a number',
+      { inputTokens: 5, outputTokens: 0, cost: Number.NaN },
+      'cost of NaN',
+    ],
+  ])('refuses %s instead of recording it', async (_name, usage, message) => {
+    const backend: DecisionBackend = {
+      provider: 'acme',
+      decide: async (request) => ({
+        model: request.model,
+        answers: { spam: { type: 'noul' as const, noul: 0.9 } },
+        usage,
+      }),
+    };
+    const onRunError = vi.fn();
+    const cog = new Cogitator({
+      llm: { backends: {}, decisionBackends: { acme: backend }, retry: false },
+      observers: [{ onRunError }],
+    });
+    await expect(
+      cog.decide({ model: 'acme/judge-1', state: 'x', questions: { spam: questions.spam } })
+    ).rejects.toMatchObject({
+      code: ErrorCode.LLM_INVALID_RESPONSE,
+      message: expect.stringContaining(message),
+    });
+    expect(onRunError).toHaveBeenCalledOnce();
+  });
+
   it('says where decision models run and that they need a key', async () => {
     await expect(
       new Cogitator({ llm: { providers: { openai: { apiKey: 'k' } } } }).decide({
