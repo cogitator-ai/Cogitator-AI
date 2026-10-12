@@ -193,7 +193,10 @@ export class ThreadsFeed implements FeedChannel {
   private readonly timeout: number;
   private readonly delays: readonly number[];
   private readonly checkQuota: boolean;
-  private readonly published = new Set<string>();
+  /** The posts this feed published, by id, with the key each was published under. */
+  private readonly published = new Map<string, string | undefined>();
+  /** The post each key was published as, so a retry in this process needs no lookup. */
+  private readonly byKey = new Map<string, PublishedPost>();
 
   constructor(config: ThreadsFeedConfig) {
     this.account = threadsAccountOf(config);
@@ -222,8 +225,10 @@ export class ThreadsFeed implements FeedChannel {
     const { signal, idempotencyKey, retry = true } = options;
     if (idempotencyKey !== undefined) {
       const since = keyTime(idempotencyKey);
+      const known = this.byKey.get(idempotencyKey);
+      if (known) return known;
       if (retry && identifiable(post)) {
-        const earlier = await this.findEarlier(post, topicTag, since, signal);
+        const earlier = await this.findEarlier(post, topicTag, idempotencyKey, since, signal);
         if (earlier) return earlier;
       }
     }
@@ -300,12 +305,14 @@ export class ThreadsFeed implements FeedChannel {
     } catch (error) {
       console.warn(`[threads] Published ${published.id} but could not read its permalink:`, error);
     }
-    this.published.add(published.id);
-    if (this.published.size > MAX_PUBLISHED) {
-      const oldest = this.published.values().next().value;
-      if (oldest !== undefined) this.published.delete(oldest);
-    }
-    return { feed: this.type, id: published.id, url, publishedAt: new Date() };
+    const result: PublishedPost = {
+      feed: this.type,
+      id: published.id,
+      url,
+      publishedAt: new Date(),
+    };
+    this.remember(result, idempotencyKey);
+    return result;
   }
 
   async delete(id: string): Promise<void> {
@@ -420,13 +427,14 @@ export class ThreadsFeed implements FeedChannel {
   /**
    * The post an earlier attempt with the same key made: one of the account's
    * posts (or replies to `post.replyTo`) since `since`, less the clock skew,
-   * that is the same post and that this feed did not publish for another
-   * attempt. Two posts the same in all Threads lists, published by other
+   * that is the same post and that this feed did not publish under another
+   * key. Two posts the same in all Threads lists, published by other
    * processes within that minute, cannot be told apart.
    */
   private async findEarlier(
     post: FeedPost,
     topicTag: string | undefined,
+    key: string,
     since: number,
     signal?: AbortSignal
   ): Promise<PublishedPost | undefined> {
@@ -443,7 +451,9 @@ export class ThreadsFeed implements FeedChannel {
     );
     for await (const posts of pages) {
       const match = posts.find(
-        (listed) => !this.published.has(listed.id) && samePost(listed, post, topicTag)
+        (listed) =>
+          (!this.published.has(listed.id) || this.published.get(listed.id) === key) &&
+          samePost(listed, post, topicTag)
       );
       if (match) {
         return {
@@ -455,6 +465,17 @@ export class ThreadsFeed implements FeedChannel {
       }
     }
     return undefined;
+  }
+
+  /** Keeps a post this feed published, under the key it was published with. */
+  private remember(post: PublishedPost, key: string | undefined): void {
+    this.published.set(post.id, key);
+    if (key !== undefined) this.byKey.set(key, post);
+    if (this.published.size > MAX_PUBLISHED) {
+      const [oldest, oldestKey] = this.published.entries().next().value ?? [];
+      if (oldest !== undefined) this.published.delete(oldest);
+      if (oldestKey !== undefined) this.byKey.delete(oldestKey);
+    }
   }
 
   private async ready(id: string, signal?: AbortSignal): Promise<void> {

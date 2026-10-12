@@ -500,6 +500,22 @@ describe('ThreadsFeed', () => {
     );
   });
 
+  it('returns the post it published under the same key when a retry comes to it', async () => {
+    const threads = feed({ expiresAt: farFuture() });
+    const key = threads.idempotencyKey();
+    const first = await threads.publish(
+      { text: 'Lost answer' },
+      { idempotencyKey: key, retry: false }
+    );
+    api.calls.length = 0;
+    const again = await threads.publish(
+      { text: 'Lost answer' },
+      { idempotencyKey: key, retry: true }
+    );
+    expect(again).toEqual(first);
+    expect(api.calls).toEqual([]);
+  });
+
   it('never takes a post it published itself for another attempt', async () => {
     const threads = feed({ expiresAt: farFuture() });
     const first = await threads.publish({ text: 'Same words' });

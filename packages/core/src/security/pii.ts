@@ -1,15 +1,22 @@
-import type {
-  ChatRequest,
-  ChatResponse,
-  ChatStreamChunk,
-  ContentPart,
-  LLMBackend,
-  LLMBackendProvider,
-  Message,
-  PiiConfig,
-  PiiFinding,
-  PiiType,
-  ToolCall,
+import {
+  CogitatorError,
+  ErrorCode,
+  type ChatRequest,
+  type ChatResponse,
+  type ChatStreamChunk,
+  type ContentPart,
+  type DecisionBackend,
+  type DecisionQuestion,
+  type DecisionQuestions,
+  type DecisionRequest,
+  type DecisionResponse,
+  type LLMBackend,
+  type LLMBackendProvider,
+  type Message,
+  type PiiConfig,
+  type PiiFinding,
+  type PiiType,
+  type ToolCall,
 } from '@cogitator-ai/types';
 
 interface Detector {
@@ -235,6 +242,72 @@ export class PiiMaskingBackend implements LLMBackend {
 export function withPiiMasking(backend: LLMBackend, config: PiiConfig | undefined): LLMBackend {
   if (!config || config.mode === 'block') return backend;
   return new PiiMaskingBackend(backend, config);
+}
+
+/**
+ * `backend` with no personal data in its requests, per `config`: masked in
+ * the state and the questions' instructions and criteria (`mask`, `redact`),
+ * with the real values put back in the answers in `mask` mode, or refused
+ * with `PII_DETECTED` (`block`). Option names of choice questions are what
+ * the answers name, so they are checked in `block` mode and left as written
+ * otherwise.
+ */
+export function withPiiDecisions(
+  backend: DecisionBackend,
+  config: PiiConfig | undefined
+): DecisionBackend {
+  if (!config) return backend;
+  const masker = new PiiMasker(config);
+  const mode = config.mode ?? 'mask';
+  return {
+    provider: backend.provider,
+    async decide(request: DecisionRequest): Promise<DecisionResponse> {
+      const vault = new PiiVault();
+      const state = maskValue(request.state, masker, vault) as DecisionRequest['state'];
+      const questions: DecisionQuestions = {};
+      const options: string[] = [];
+      for (const [id, question] of Object.entries(request.questions)) {
+        if (question.type === 'choice') options.push(...Object.keys(question.criteria));
+        questions[id] = {
+          ...question,
+          instructions: maskValue(question.instructions, masker, vault),
+          criteria: maskCriteria(question.criteria, masker, vault),
+        } as DecisionQuestion;
+      }
+      const findings = [
+        ...vault.findings,
+        ...(mode === 'block' ? options.flatMap((option) => masker.find(option)) : []),
+      ];
+      if (findings.length > 0) {
+        config.onDetect?.(summarize(findings));
+        if (mode === 'block') {
+          const types = [...new Set(findings.map((finding) => finding.type))];
+          throw new CogitatorError({
+            message: `The decision request contains personal data: ${types.join(', ')}`,
+            code: ErrorCode.PII_DETECTED,
+            details: { types },
+          });
+        }
+      }
+      const response = await backend.decide({ ...request, state, questions });
+      if (mode !== 'mask' || vault.size === 0) return response;
+      return {
+        ...response,
+        answers: vault.restoreValue(response.answers) as DecisionResponse['answers'],
+      };
+    },
+  };
+}
+
+/** Criteria with their texts masked and the names they are keyed by kept. */
+function maskCriteria(criteria: unknown, masker: PiiMasker, vault: PiiVault): unknown {
+  if (Array.isArray(criteria)) return criteria.map((item) => maskValue(item, masker, vault));
+  if (criteria !== null && typeof criteria === 'object') {
+    return Object.fromEntries(
+      Object.entries(criteria).map(([key, item]) => [key, maskValue(item, masker, vault)])
+    );
+  }
+  return maskValue(criteria, masker, vault);
 }
 
 /** Counts per type, for audit logs that must not hold the values themselves. */

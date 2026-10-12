@@ -69,6 +69,10 @@ A decision goes through the same retry policy as LLM calls (`llm.retry`): rate l
 
 `result.usage` has the tokens, the `duration`, and the `cost`: what OpenRouter reported, otherwise the model registry's price, which knows Jev at $0.042 per million input tokens with free output. A decision is checked against the cost-routing budgets before it is sent (spending already at a limit, or its estimated cost taking spending past one, fails with `BUDGET_EXCEEDED`), recorded with the cost router, and reported to [run observers](/docs/core/cogitator#run-observers) as a run of its own with one `llm.decide` span, so Studio, Langfuse and OpenTelemetry show it with its tokens and cost.
 
+## Personal Data
+
+With `security.pii` set, decisions get the same protection as LLM requests. Personal data in the state and in the questions' instructions and criteria is masked before it is sent (`mask`, `redact`), and in `mask` mode put back into the answers. In `block` mode a decision that holds any fails with `PII_DETECTED` before it is sent. Option names of choice questions are what the answers name, so they are checked in `block` mode and sent as written otherwise.
+
 ## In an Agent
 
 `decisionTool()` turns fixed questions into a tool: the agent passes the state, the tool returns the typed answers and their cost.

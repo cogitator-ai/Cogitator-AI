@@ -398,6 +398,75 @@ describe('cog.decide', () => {
     expect(decide).toHaveBeenCalledOnce();
   });
 
+  it('records what an answer cost even when the answer is invalid', async () => {
+    const decide = vi.fn(async (request: DecisionRequest) => ({
+      model: request.model,
+      answers: {},
+      usage: { inputTokens: 5, outputTokens: 0, cost: 0.002 },
+    }));
+    const cog = new Cogitator({
+      llm: { backends: {}, decisionBackends: { acme: { provider: 'acme', decide } }, retry: false },
+      costRouting: { enabled: true, budget: { maxCostPerHour: 0.001 } },
+    });
+    const ask = () =>
+      cog.decide({ model: 'acme/judge-1', state: 'x', questions: { spam: questions.spam } });
+    await expect(ask()).rejects.toMatchObject({ code: ErrorCode.LLM_INVALID_RESPONSE });
+    await expect(ask()).rejects.toMatchObject({ code: ErrorCode.BUDGET_EXCEEDED });
+    expect(decide).toHaveBeenCalledOnce();
+  });
+
+  it('masks personal data in decisions and puts it back in the answers', async () => {
+    const seen: DecisionRequest[] = [];
+    const onDetect = vi.fn();
+    const decide = vi.fn(async (request: DecisionRequest) => {
+      seen.push(request);
+      return {
+        model: request.model,
+        answers: {
+          urgency: {
+            type: 'score' as const,
+            score: 2,
+            legend: { '2': 'about [EMAIL_1]' },
+          },
+        },
+        usage: { inputTokens: 5, outputTokens: 0 },
+      };
+    });
+    const backend: DecisionBackend = { provider: 'acme', decide };
+    const cog = new Cogitator({
+      llm: { backends: {}, decisionBackends: { acme: backend } },
+      security: { pii: { mode: 'mask', onDetect } },
+    });
+    const result = await cog.decide({
+      model: 'acme/judge-1',
+      state: { from: 'jane@example.com', text: 'Refund please' },
+      questions: {
+        urgency: {
+          type: 'score',
+          instructions: 'How urgent is the mail from jane@example.com?',
+          criteria: ['later', 'today'],
+        },
+      },
+    });
+    expect(JSON.stringify(seen[0])).not.toContain('jane@example.com');
+    expect(seen[0]?.state).toEqual({ from: '[EMAIL_1]', text: 'Refund please' });
+    expect(result.answers.urgency.legend).toEqual({ '2': 'about jane@example.com' });
+    expect(onDetect).toHaveBeenCalledWith({ email: 1 });
+
+    const blocking = new Cogitator({
+      llm: { backends: {}, decisionBackends: { acme: backend }, retry: false },
+      security: { pii: { mode: 'block' } },
+    });
+    await expect(
+      blocking.decide({
+        model: 'acme/judge-1',
+        state: 'Mail from jane@example.com',
+        questions: { spam: questions.spam },
+      })
+    ).rejects.toMatchObject({ code: ErrorCode.PII_DETECTED });
+    expect(decide).toHaveBeenCalledOnce();
+  });
+
   it('says where decision models run and that they need a key', async () => {
     await expect(
       new Cogitator({ llm: { providers: { openai: { apiKey: 'k' } } } }).decide({

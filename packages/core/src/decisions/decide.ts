@@ -224,12 +224,6 @@ export async function runDecision<TQuestions extends DecisionQuestions>(
         })
     );
     assertUsage(response.usage, context);
-    const answers = toDecisionAnswers(
-      options.questions,
-      response,
-      options.threshold ?? 0.5,
-      context
-    );
     const ended = Date.now();
     const priced = response.usage.cost ?? calculateCost(qualified, response.usage);
     const usage = {
@@ -239,6 +233,20 @@ export async function runDecision<TQuestions extends DecisionQuestions>(
       priced: priced !== null,
       duration: ended - started,
     };
+    run.recordCost?.({
+      runId,
+      agentId: 'decide',
+      model: qualified,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      cost: usage.cost,
+    });
+    const answers = toDecisionAnswers(
+      options.questions,
+      response,
+      options.threshold ?? 0.5,
+      context
+    );
     const span: Span = createSpan(
       'llm.decide',
       traceId,
@@ -259,14 +267,6 @@ export async function runDecision<TQuestions extends DecisionQuestions>(
       'client'
     );
     notify(run.observers, 'onSpan', (observer) => observer.onSpan?.(span, { runId }));
-    run.recordCost?.({
-      runId,
-      agentId: 'decide',
-      model: qualified,
-      inputTokens: usage.inputTokens,
-      outputTokens: usage.outputTokens,
-      cost: usage.cost,
-    });
     const result: RunResult = {
       output: JSON.stringify(answers),
       structured: answers,

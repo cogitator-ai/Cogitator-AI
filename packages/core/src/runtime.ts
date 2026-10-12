@@ -41,7 +41,7 @@ import { isLLMProvider } from './llm/providers';
 import { createLLMBackendFromPlugin, hasLLMPlugin } from './llm/plugin';
 import { withLLMRetry } from './llm/retry';
 import { normalizeTurn } from './llm/turn';
-import { PiiMasker, withPiiMasking } from './security/pii';
+import { PiiMasker, withPiiDecisions, withPiiMasking } from './security/pii';
 import { createLoggerFromConfig, getLogger, setLogger } from './logger';
 import { RunCostMeter } from './cogitator/run-cost';
 import { isDecisionModel } from '@cogitator-ai/models';
@@ -1707,7 +1707,7 @@ export class Cogitator implements ToolInvoker {
     const { provider, model } = this.resolveRoute(options.model);
     return runDecision(
       {
-        backend: this.decisionBackendFor(provider),
+        backend: withPiiDecisions(this.decisionBackendFor(provider), this.config.security?.pii),
         provider,
         model,
         retry: this.config.llm?.retry,
