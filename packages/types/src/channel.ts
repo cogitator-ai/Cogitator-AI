@@ -125,6 +125,12 @@ export interface Channel {
   start(): Promise<void>;
   stop(): Promise<void>;
 
+  /**
+   * Hands every incoming message to `handler`. A message counts as received
+   * once handed over: a handler that throws is logged and the message is not
+   * delivered again, since it may have been answered already. The Gateway
+   * catches its own errors and reports them through `onError`.
+   */
   onMessage(handler: (msg: ChannelMessage) => Promise<void>): void;
 
   sendText(channelId: string, text: string, options?: SendOptions): Promise<string>;
