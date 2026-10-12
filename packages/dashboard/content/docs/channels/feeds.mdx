@@ -77,7 +77,7 @@ Each feed checks a post against its rules before it sends anything and fails wit
 - **Fitting.** A text longer than a feed takes is cut at a word with an ellipsis for that feed, so one text serves Bluesky's 300 graphemes and 3000 bytes and Threads' 500. `overflow: 'fail'` fails that feed instead.
 - **Dry runs.** `dryRun: true` goes through every step but publishing. Its keys are kept apart, so a dry run never makes the real publication a duplicate.
 
-Scheduled posts and retries wait in the store until `start()`, which looks for due jobs every `pollInterval` (15 seconds) and keeps the process running until `stop()`, or until you call `tick()` yourself. `cancel(id)` drops a job before it goes out, `get(id)` and `list({ pending })` read them.
+Scheduled posts and retries wait in the store until `start()`, which looks for due jobs every `pollInterval` (15 seconds) and keeps the process running until `stop()`, or until you call `tick()` yourself. `start()` and every scheduled post connect their feeds, so a Threads token keeps renewing until the post is due. A claim that cannot be extended stops the job being published, since another worker may take it over. `cancel(id)` drops a job before it goes out, `get(id)` and `list({ pending })` read them.
 
 ```typescript
 publisher.start();

@@ -19,6 +19,7 @@ export class ThreadsAccount {
   readonly userId: string;
   private readonly client: ThreadsClient;
   private readonly tokens: ThreadsTokenManager;
+  private readonly holders = new Set<object>();
 
   constructor(config: ThreadsAccountConfig) {
     this.userId = config.userId ?? 'me';
@@ -29,15 +30,21 @@ export class ThreadsAccount {
     this.tokens = new ThreadsTokenManager(this.client, config);
   }
 
-  /** Loads the token, renewing it if due, and checks it daily from now on. */
-  async connect(): Promise<void> {
+  /**
+   * Loads the token, renewing it if due, and checks it daily while anyone
+   * holds the account. `holder` is who holds it, the caller unless said: a
+   * feed and a channel sharing the account each hold it.
+   */
+  async connect(holder: object = this): Promise<void> {
     await this.tokens.token();
+    this.holders.add(holder);
     this.tokens.start();
   }
 
-  /** Stops the daily token check. */
-  close(): void {
-    this.tokens.stop();
+  /** Lets `holder` go. The daily token check stops once no one holds the account. */
+  close(holder: object = this): void {
+    this.holders.delete(holder);
+    if (this.holders.size === 0) this.tokens.stop();
   }
 
   /** Renews the token now, whatever its age. */

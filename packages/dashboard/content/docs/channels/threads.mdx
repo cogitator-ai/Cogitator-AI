@@ -109,7 +109,7 @@ Long answers go out as a chain of replies within 500 characters. Markdown become
 
 ## One Account for Both
 
-A feed and a channel share a token through `ThreadsAccount`, so they renew it once:
+A feed and a channel share a token through `ThreadsAccount`, so they renew it once. Each holds the account while connected, and the daily renewal stops only when the last one closes:
 
 ```typescript
 import { ThreadsAccount, ThreadsFeed, threadsChannel } from '@cogitator-ai/channels';

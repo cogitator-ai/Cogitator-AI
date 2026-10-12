@@ -57,8 +57,11 @@ interface ThreadsPost {
   is_reply?: boolean;
 }
 
+/** A header by its name in any letter case, as HTTP header names are. */
 function header(headers: ThreadsWebhookRequest['headers'], name: string): string | undefined {
-  const value = headers[name] ?? headers[name.toLowerCase()];
+  const wanted = name.toLowerCase();
+  const key = Object.keys(headers).find((candidate) => candidate.toLowerCase() === wanted);
+  const value = key === undefined ? undefined : headers[key];
   return Array.isArray(value) ? value[0] : value;
 }
 
@@ -142,7 +145,7 @@ export class ThreadsChannel implements Channel {
 
   async start(): Promise<void> {
     if (this.running) return;
-    await this.account.connect();
+    await this.account.connect(this);
     await this.identify();
     this.since = Date.now();
     this.running = true;
@@ -162,7 +165,7 @@ export class ThreadsChannel implements Channel {
     this.server = undefined;
     if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
     await this.polling;
-    this.account.close();
+    this.account.close(this);
   }
 
   /**

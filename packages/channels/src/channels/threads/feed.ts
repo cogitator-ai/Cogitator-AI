@@ -212,7 +212,7 @@ export class ThreadsFeed implements FeedChannel {
   }
 
   async connect(): Promise<void> {
-    await this.account.connect();
+    await this.account.connect(this);
   }
 
   /** A key of the time it is made and a random part, see `FeedPublishOptions`. */
@@ -320,7 +320,7 @@ export class ThreadsFeed implements FeedChannel {
   }
 
   async close(): Promise<void> {
-    this.account.close();
+    this.account.close(this);
   }
 
   /** Checks the post against Threads' rules and returns its topic tag. */

@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHmac } from 'node:crypto';
 import { createServer } from 'node:net';
 import type { ChannelMessage } from '@cogitator-ai/types';
+import { ThreadsAccount } from '../channels/threads/account';
 import { ThreadsChannel, verifyThreadsSignature } from '../channels/threads/channel';
+import { ThreadsFeed } from '../channels/threads/feed';
 
 const SECRET = 'app-secret';
 const later = () => new Date(Date.now() + 60_000).toISOString();
@@ -304,6 +306,39 @@ describe('ThreadsChannel without webhooks', () => {
     await channel.poll();
     expect(new Set(received.map((m) => m.id)).size).toBe(300);
     warn.mockRestore();
+  });
+
+  it('reads the webhook signature header in any letter case', async () => {
+    const { channel, received } = await started(graph(), {});
+    const delivery = signed({ values: { value: reply('h1', 'hi @mybot'), field: 'mentions' } });
+    const response = await channel.handleWebhook({
+      ...delivery,
+      headers: { 'X-Hub-Signature-256': delivery.headers['x-hub-signature-256'] },
+    });
+    expect(response.status).toBe(200);
+    await vi.waitFor(() => expect(received.map((m) => m.id)).toEqual(['h1']));
+  });
+
+  it('keeps renewing a shared token while a feed still holds the account', async () => {
+    vi.useFakeTimers();
+    try {
+      const api = graph();
+      const account = new ThreadsAccount({
+        accessToken: 'token',
+        accessTokenExpiresAt: Date.now() + 30 * 24 * 3600_000,
+        fetch: api.fetch,
+      });
+      const feed = new ThreadsFeed({ account });
+      const channel = new ThreadsChannel({ account, pollInterval: 60_000 });
+      await feed.connect();
+      await channel.start();
+      await channel.stop();
+      expect(vi.getTimerCount()).toBe(1);
+      await feed.close();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('takes replies to its posts and mentions from a conversation, not what people answer each other', async () => {

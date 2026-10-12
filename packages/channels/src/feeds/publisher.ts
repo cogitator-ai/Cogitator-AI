@@ -100,6 +100,7 @@ export class FeedPublisher {
   private timer?: ReturnType<typeof setInterval>;
   private ticking?: Promise<void>;
   private stopping = false;
+  private readonly connected = new Set<FeedChannel>();
 
   constructor(private readonly options: FeedPublisherOptions) {
     if (options.feeds.length === 0) throw new Error('FeedPublisher needs at least one feed');
@@ -134,6 +135,9 @@ export class FeedPublisher {
         : typeof options.publishAt === 'number'
           ? options.publishAt
           : options.publishAt.getTime();
+    if (!Number.isFinite(publishAt)) {
+      throw new Error(`publishAt must be a valid time, got ${String(options.publishAt)}`);
+    }
     const key = options.key && (this.options.dryRun ? `dry-run:${options.key}` : options.key);
     const job: PublishJob = {
       id: `feedjob_${nanoid(12)}`,
@@ -149,6 +153,7 @@ export class FeedPublisher {
     };
     const stored = await this.store.add(job);
     const duplicate = stored.id !== job.id;
+    if (publishAt > now) this.connect(feeds);
     if (duplicate || publishAt > now || !(await this.store.claim(stored.id, this.claimOf()))) {
       return { job: stored, pending: stored.deliveries.some(isWaiting), duplicate };
     }
@@ -159,6 +164,7 @@ export class FeedPublisher {
   /** Looks for due jobs every `pollInterval` until `stop()`: scheduled posts and retries. */
   start(): void {
     if (this.timer) return;
+    this.connect([...this.feeds.keys()]);
     this.timer = setInterval(() => void this.tick(), this.pollInterval);
     void this.tick();
   }
@@ -213,6 +219,24 @@ export class FeedPublisher {
     return this.store.remove(id);
   }
 
+  /**
+   * Connects feeds that will publish later, so a feed that keeps a token
+   * renews it until then instead of finding it expired when the post is due.
+   * A feed that cannot connect now is tried again the next time.
+   */
+  private connect(types: readonly string[]): void {
+    if (this.options.dryRun) return;
+    for (const type of types) {
+      const feed = this.feeds.get(type);
+      if (!feed || this.connected.has(feed)) continue;
+      this.connected.add(feed);
+      feed.connect().catch((error: unknown) => {
+        this.connected.delete(feed);
+        console.error(`[feeds] Could not connect the ${type} feed:`, error);
+      });
+    }
+  }
+
   private claimOf(): JobClaim {
     return { owner: this.owner, ttl: this.claimTtl };
   }
@@ -226,7 +250,10 @@ export class FeedPublisher {
           (held) => {
             if (!held) lost.abort(new Error(`Lost the claim on feed job ${job.id}`));
           },
-          (error: unknown) => console.error('[feeds] Extending a job claim failed:', error)
+          (error: unknown) => {
+            console.error(`[feeds] Could not extend the claim on feed job ${job.id}:`, error);
+            lost.abort(new Error(`Could not extend the claim on feed job ${job.id}`));
+          }
         );
       },
       Math.max(1, Math.floor(this.claimTtl / 3))

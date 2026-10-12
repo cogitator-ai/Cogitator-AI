@@ -9,6 +9,7 @@ interface FakeFeed extends FeedChannel {
   sent: FeedPost[];
   keys: Array<string | undefined>;
   retries: Array<boolean | undefined>;
+  connects: number;
   failWith: Error[];
   /** Runs inside each publish call, before it succeeds or fails. */
   during?: () => Promise<void>;
@@ -21,6 +22,7 @@ function fakeFeed(type: string, maxLength = 300, maxBytes?: number): FakeFeed {
     sent: [],
     keys: [],
     retries: [],
+    connects: 0,
     failWith: [],
     limits: {
       maxLength,
@@ -30,7 +32,9 @@ function fakeFeed(type: string, maxLength = 300, maxBytes?: number): FakeFeed {
       maxTags: 8,
     },
     measure: graphemeLength,
-    connect: async () => undefined,
+    connect: async () => {
+      feed.connects += 1;
+    },
     close: async () => undefined,
     delete: async () => undefined,
     idempotencyKey: () => `${type}-key-${++issued}`,
@@ -312,6 +316,56 @@ describe('FeedPublisher', () => {
     expect(threads.sent).toEqual([]);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('another worker took it over'));
     warn.mockRestore();
+  });
+
+  it('stops publishing when its claim cannot be extended', async () => {
+    class FailingStore extends MemoryPublishStore {
+      override async extend(): Promise<boolean> {
+        throw new Error('database is down');
+      }
+    }
+    const store = new FailingStore();
+    const bluesky = fakeFeed('bluesky');
+    const threads = fakeFeed('threads');
+    bluesky.during = () => new Promise((resolve) => setTimeout(resolve, 100));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const publisher = new FeedPublisher({ feeds: [bluesky, threads], store, claimTtl: 30 });
+    const outcome = await publisher.publish({ text: 'Unsure' });
+    expect(threads.sent).toEqual([]);
+    expect((await store.get(outcome.job.id))?.deliveries.map((d) => d.status)).toEqual([
+      'pending',
+      'pending',
+    ]);
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('Could not extend the claim'),
+      expect.any(Error)
+    );
+    error.mockRestore();
+    warn.mockRestore();
+  });
+
+  it('connects the feeds of a scheduled post, and every feed once started', async () => {
+    const { publisher, bluesky, threads, now } = setup();
+    await publisher.publish({ text: 'Later' }, { publishAt: now() + 60_000, feeds: ['threads'] });
+    expect(threads.connects).toBe(1);
+    expect(bluesky.connects).toBe(0);
+    publisher.start();
+    await publisher.stop();
+    expect(bluesky.connects).toBe(1);
+    expect(threads.connects).toBe(1);
+  });
+
+  it('refuses a time to publish at that is not a time', async () => {
+    const { publisher, bluesky } = setup();
+    await expect(publisher.publish({ text: 'x' }, { publishAt: Number.NaN })).rejects.toThrow(
+      'publishAt must be a valid time'
+    );
+    await expect(
+      publisher.publish({ text: 'x' }, { publishAt: new Date('not a date') })
+    ).rejects.toThrow('publishAt must be a valid time');
+    expect(await publisher.list()).toEqual([]);
+    expect(bluesky.sent).toEqual([]);
   });
 
   it('refuses feeds it cannot tell apart', () => {
