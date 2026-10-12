@@ -16,7 +16,12 @@ interface Call {
 }
 
 function graph(
-  data: { mentions?: unknown[]; own?: unknown[]; conversations?: Record<string, unknown[]> } = {}
+  data: {
+    mentions?: unknown[];
+    own?: unknown[];
+    conversations?: Record<string, unknown[]>;
+    mentionsForbidden?: boolean;
+  } = {}
 ) {
   const calls: Call[] = [];
   let containers = 0;
@@ -46,6 +51,19 @@ function graph(
         },
       });
     };
+    if (path === 'me/mentions' && data.mentionsForbidden) {
+      return Response.json(
+        {
+          error: {
+            message: 'Application does not have permission for this action',
+            type: 'OAuthException',
+            code: 10,
+            fbtrace_id: 'A1b2C3',
+          },
+        },
+        { status: 403 }
+      );
+    }
     if (path === 'me/mentions') return paged(data.mentions ?? []);
     if (path === 'me/threads' && method === 'GET') return json({ data: data.own ?? [] });
     if (path.endsWith('/conversation'))
@@ -305,6 +323,23 @@ describe('ThreadsChannel without webhooks', () => {
     expect(received).toHaveLength(250);
     await channel.poll();
     expect(new Set(received.map((m) => m.id)).size).toBe(300);
+    warn.mockRestore();
+  });
+
+  it('still answers replies when the app may not read mentions, saying so once', async () => {
+    const api = graph({
+      mentionsForbidden: true,
+      own: [{ id: 'root-post' }],
+      conversations: { 'root-post': [reply('c1', 'a reply')] },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { channel, received } = await started(api);
+    await channel.poll();
+    await channel.poll();
+    expect(received.map((m) => m.id)).toEqual(['c1']);
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn.mock.calls[0]?.[0]).toContain('threads_manage_mentions');
+    expect(api.calls.filter((c) => c.path === 'me/mentions')).toHaveLength(1);
     warn.mockRestore();
   });
 

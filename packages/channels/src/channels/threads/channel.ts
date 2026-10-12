@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import type { Attachment, Channel, ChannelMessage, SendOptions } from '@cogitator-ai/types';
+import { FeedError } from '../../feeds/errors';
 import { splitText, threadsLength } from '../../feeds/text';
 import { threadsAccountOf, type ThreadsAccount, type ThreadsAccountConfig } from './account';
 import { nextPageQuery, type ThreadsPage, type ThreadsParams } from './client';
@@ -125,6 +126,7 @@ export class ThreadsChannel implements Channel {
   private handler: ((msg: ChannelMessage) => Promise<void>) | null = null;
   private readonly seen = new Map<string, true>();
   private readonly backlogs = new Map<string, ThreadsParams>();
+  private mentionsAllowed = true;
   private server?: Server;
   private timer?: ReturnType<typeof setInterval>;
   private polling?: Promise<void>;
@@ -229,7 +231,7 @@ export class ThreadsChannel implements Channel {
       try {
         await this.identify();
         const user = this.account.userId;
-        const mentions = await this.newest(`${user}/mentions`, { fields: POST_FIELDS, limit: 25 });
+        const mentions = await this.pollMentions(user);
         const own = await this.account.get<{ data?: ThreadsPost[] }>(`${user}/threads`, {
           fields: 'id,timestamp',
           limit: this.config.watchPosts ?? 10,
@@ -263,6 +265,28 @@ export class ThreadsChannel implements Channel {
       this.polling = undefined;
     });
     return this.polling;
+  }
+
+  /**
+   * The bot's new mentions. An app without the `threads_manage_mentions`
+   * permission cannot read them: that is said once and mentions are left
+   * out from then on, while replies under the bot's posts are still read.
+   */
+  private async pollMentions(user: string): Promise<ThreadsPost[]> {
+    if (!this.mentionsAllowed) return [];
+    try {
+      return await this.newest(`${user}/mentions`, { fields: POST_FIELDS, limit: 25 });
+    } catch (error) {
+      if (error instanceof FeedError && error.code === 'auth') {
+        this.mentionsAllowed = false;
+        console.warn(
+          `[threads] Mentions are not read: the app lacks the threads_manage_mentions permission (${error.message})`
+        );
+      } else {
+        console.error('[threads] Reading mentions failed:', error);
+      }
+      return [];
+    }
   }
 
   /**
