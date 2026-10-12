@@ -449,6 +449,37 @@ describe('BlueskyChannel', () => {
     await channel.stop();
   });
 
+  it('reads a conversation longer than one poll on the next poll, marking it read at its end', async () => {
+    state.convos.push({
+      id: 'convo-big',
+      unreadCount: 700,
+      members: [{ did: 'did:plc:reader', handle: 'reader.bsky.social' }],
+    });
+    const sentAt = (n: number) => new Date(Date.UTC(2026, 9, 9, 8, 0, 0, n)).toISOString();
+    state.messages.set(
+      'convo-big',
+      Array.from({ length: 700 }, (_, index) => {
+        const n = 699 - index;
+        return {
+          id: `d${n}`,
+          text: `message ${n}`,
+          sender: { did: 'did:plc:reader' },
+          sentAt: sentAt(n),
+        };
+      })
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { channel, received } = await started({});
+    expect(received).toHaveLength(500);
+    expect(state.read).toEqual([]);
+
+    await channel.poll();
+    expect(new Set(received.map((m) => m.id)).size).toBe(700);
+    expect(state.read).toEqual([{ convoId: 'convo-big', messageId: 'd699' }]);
+    warn.mockRestore();
+    await channel.stop();
+  });
+
   it('marks every conversation read at the start when told not to catch up', async () => {
     state.convos.push({ id: 'c', unreadCount: 3, members: [] });
     const { channel, received } = await started({ catchUp: false });

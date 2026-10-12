@@ -286,6 +286,26 @@ describe('ThreadsChannel without webhooks', () => {
     expect(api.calls.find((c) => c.path === 'post-1/conversation')?.params.reverse).toBe('true');
   });
 
+  it('reads on from where a poll stopped when a burst is longer than one poll reads', async () => {
+    const at = later();
+    const api = graph({
+      mentions: Array.from({ length: 300 }, (_, n) => ({
+        id: `m${n}`,
+        text: `@mybot question ${n}`,
+        username: 'fan',
+        timestamp: at,
+      })),
+      own: [],
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { channel, received } = await started(api);
+    await channel.poll();
+    expect(received).toHaveLength(250);
+    await channel.poll();
+    expect(new Set(received.map((m) => m.id)).size).toBe(300);
+    warn.mockRestore();
+  });
+
   it('takes replies to its posts and mentions from a conversation, not what people answer each other', async () => {
     const api = graph({
       own: [{ id: 'root-post' }],

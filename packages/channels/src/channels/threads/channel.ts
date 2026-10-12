@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type Server } from 'node:http';
 import type { Attachment, Channel, ChannelMessage, SendOptions } from '@cogitator-ai/types';
 import { splitText, threadsLength } from '../../feeds/text';
 import { threadsAccountOf, type ThreadsAccount, type ThreadsAccountConfig } from './account';
-import type { ThreadsParams } from './client';
+import { nextPageQuery, type ThreadsPage, type ThreadsParams } from './client';
 import { ThreadsFeed } from './feed';
 
 const MAX_TRACKED = 1000;
@@ -121,6 +121,7 @@ export class ThreadsChannel implements Channel {
   private readonly config: ThreadsChannelConfig;
   private handler: ((msg: ChannelMessage) => Promise<void>) | null = null;
   private readonly seen = new Map<string, true>();
+  private readonly backlogs = new Map<string, ThreadsParams>();
   private server?: Server;
   private timer?: ReturnType<typeof setInterval>;
   private polling?: Promise<void>;
@@ -264,18 +265,34 @@ export class ThreadsChannel implements Channel {
   /**
    * The posts of a listing that runs newest first, paging back until a page
    * reaches a post already answered or older than the start, so a burst of
-   * replies between two polls is read in full.
+   * replies between two polls is read in full. A burst longer than one poll
+   * reads is carried on from where this poll stopped by the next one, before
+   * that listing is read from its newest post again.
    */
   private async newest(path: string, params: ThreadsParams): Promise<ThreadsPost[]> {
     const posts: ThreadsPost[] = [];
-    for await (const page of this.account.pages<ThreadsPost>(path, params, MAX_POLL_PAGES)) {
-      posts.push(...page);
-      const reachedKnown = page.some(
+    let query: ThreadsParams | undefined = this.backlogs.get(path) ?? params;
+    for (let page = 0; page < MAX_POLL_PAGES && query; page++) {
+      const response: ThreadsPage<ThreadsPost> = await this.account.get<ThreadsPage<ThreadsPost>>(
+        path,
+        query
+      );
+      const items = response.data ?? [];
+      posts.push(...items);
+      const reachedKnown = items.some(
         (post) =>
           this.seen.has(post.id) ||
           (post.timestamp !== undefined && Date.parse(post.timestamp) < this.since)
       );
-      if (reachedKnown) break;
+      query = reachedKnown ? undefined : nextPageQuery(response, query);
+    }
+    if (query) {
+      this.backlogs.set(path, query);
+      console.warn(
+        `[threads] More new posts under ${path} than one poll reads: the next poll reads on`
+      );
+    } else {
+      this.backlogs.delete(path);
     }
     return posts;
   }

@@ -72,6 +72,18 @@ function assertUsage(usage: DecisionResponse['usage'], context: LLMErrorContext)
   }
 }
 
+/**
+ * What a decision is likely to cost before it is sent: its state and
+ * questions at about four characters a token, priced from the model
+ * registry, nothing when the price is unknown.
+ */
+function estimatedCost(model: string, options: DecideOptions): number {
+  const inputTokens = Math.ceil(
+    JSON.stringify({ state: options.state, questions: options.questions }).length / 4
+  );
+  return calculateCost(model, { inputTokens, outputTokens: 0 }) ?? 0;
+}
+
 function isProbability(value: number): boolean {
   return Number.isFinite(value) && value >= 0 && value <= 1;
 }
@@ -146,6 +158,8 @@ export interface DecisionRun {
   retry: LLMRetryConfig | false | undefined;
   observers: readonly RunObserver[];
   recordCost?: (record: Omit<CostRecord, 'timestamp'>) => void;
+  /** Fails when a call estimated to cost this much would break a budget, before it is sent. */
+  checkBudget?: (estimatedCost: number) => void;
 }
 
 function notify(
@@ -191,6 +205,7 @@ export async function runDecision<TQuestions extends DecisionQuestions>(
     })
   );
   try {
+    run.checkBudget?.(estimatedCost(qualified, options));
     const response = await retryLLMCall(
       run.retry,
       {

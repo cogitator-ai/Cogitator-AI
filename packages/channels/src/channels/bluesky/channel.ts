@@ -11,7 +11,7 @@ const MAX_TRACKED = 1000;
 const POST_LIMIT = 300;
 const MESSAGE_LIMIT = 1000;
 const MAX_NOTIFICATION_PAGES = 10;
-const MAX_UNREAD_MESSAGES = 500;
+const MAX_MESSAGE_PAGES = 5;
 
 export type BlueskyChannelConfig = ({ account: BlueskyAccount } | BlueskyConnectionConfig) & {
   /** How often to look for mentions, replies and messages, in ms (default 15 000). */
@@ -80,6 +80,10 @@ export class BlueskyChannel implements Channel {
   private readonly requests = new Set<string>();
   private chatOf?: { agent: Agent; chat: Agent };
   private backlog?: { cursor: string; newest?: string };
+  private readonly conversations = new Map<
+    string,
+    { cursor: string; found: number; newest?: { id: string; sentAt: string } }
+  >();
   private ownDid?: string;
   private running = false;
 
@@ -299,61 +303,87 @@ export class BlueskyChannel implements Channel {
     }
     for (const convo of convos) {
       if (convo.unreadCount <= 0) continue;
-      const unread = Math.min(convo.unreadCount, MAX_UNREAD_MESSAGES);
-      const messages: ChatMessage[] = [];
-      const fromOthers: ChatMessage[] = [];
-      try {
-        let cursor: string | undefined;
-        do {
-          const response = await chat.chat.bsky.convo.getMessages({
-            convoId: convo.id,
-            limit: 100,
-            ...(cursor && { cursor }),
-          });
-          const page = response.data.messages as ChatMessage[];
-          messages.push(...page);
-          fromOthers.push(
-            ...page.filter(
-              (message) =>
-                typeof message.text === 'string' &&
-                message.sender !== undefined &&
-                message.sender.did !== this.ownDid
-            )
-          );
-          cursor = page.length > 0 ? response.data.cursor : undefined;
-        } while (cursor && fromOthers.length < unread);
-      } catch (error) {
-        console.error(`[bluesky] Could not read conversation ${convo.id}:`, error);
-        continue;
-      }
-      const incoming = fromOthers
-        .slice(0, unread)
-        .sort((a, b) => (a.sentAt ?? '').localeCompare(b.sentAt ?? ''));
-      for (const message of incoming) {
-        if (!this.remember(`${convo.id}:${message.id}`)) continue;
-        const sender = convo.members.find((member) => member.did === message.sender?.did);
-        await this.deliver({
-          id: message.id,
-          channelType: this.type,
-          channelId: `dm:${convo.id}`,
-          userId: message.sender?.did ?? '',
-          ...(sender && { userName: sender.displayName || sender.handle }),
-          text: message.text ?? '',
-          raw: { convo, message },
-        });
-      }
-      const newest = messages
-        .filter((message) => message.sentAt !== undefined)
-        .sort((a, b) => (a.sentAt ?? '').localeCompare(b.sentAt ?? ''))
-        .at(-1);
-      try {
-        await chat.chat.bsky.convo.updateRead({
+      await this.readConversation(chat, convo);
+    }
+  }
+
+  /**
+   * Answers a conversation's unread messages, then marks it read. History
+   * runs newest first and holds the bot's own, deleted and system messages
+   * too, so it is read back until as many messages from others as are
+   * unread were found. A conversation with more than one poll reads is
+   * carried on by the next poll from where this one stopped, and marked
+   * read only at the end, since marking a message read marks all before it.
+   */
+  private async readConversation(chat: Agent, convo: Convo): Promise<void> {
+    const backlog = this.conversations.get(convo.id);
+    const fromOthers: ChatMessage[] = [];
+    let newest = backlog?.newest;
+    let cursor = backlog?.cursor;
+    let found = backlog?.found ?? 0;
+    try {
+      for (let page = 0; page < MAX_MESSAGE_PAGES; page++) {
+        const response = await chat.chat.bsky.convo.getMessages({
           convoId: convo.id,
-          ...(newest && { messageId: newest.id }),
+          limit: 100,
+          ...(cursor && { cursor }),
         });
-      } catch (error) {
-        console.error(`[bluesky] Could not mark conversation ${convo.id} read:`, error);
+        const messages = response.data.messages as ChatMessage[];
+        for (const message of messages) {
+          if (message.sentAt !== undefined && (!newest || message.sentAt > newest.sentAt)) {
+            newest = { id: message.id, sentAt: message.sentAt };
+          }
+        }
+        const deliverable = messages
+          .filter(
+            (message) =>
+              typeof message.text === 'string' &&
+              message.sender !== undefined &&
+              message.sender.did !== this.ownDid
+          )
+          .slice(0, Math.max(0, convo.unreadCount - found));
+        fromOthers.push(...deliverable);
+        found += deliverable.length;
+        cursor = messages.length > 0 ? response.data.cursor : undefined;
+        if (!cursor || found >= convo.unreadCount) {
+          cursor = undefined;
+          break;
+        }
       }
+    } catch (error) {
+      console.error(`[bluesky] Could not read conversation ${convo.id}:`, error);
+      return;
+    }
+    if (cursor) {
+      this.conversations.set(convo.id, { cursor, found, ...(newest && { newest }) });
+      console.warn(
+        `[bluesky] Conversation ${convo.id} has more unread messages than one poll reads: the next poll reads on`
+      );
+    } else {
+      this.conversations.delete(convo.id);
+    }
+    const incoming = fromOthers.sort((a, b) => (a.sentAt ?? '').localeCompare(b.sentAt ?? ''));
+    for (const message of incoming) {
+      if (!this.remember(`${convo.id}:${message.id}`)) continue;
+      const sender = convo.members.find((member) => member.did === message.sender?.did);
+      await this.deliver({
+        id: message.id,
+        channelType: this.type,
+        channelId: `dm:${convo.id}`,
+        userId: message.sender?.did ?? '',
+        ...(sender && { userName: sender.displayName || sender.handle }),
+        text: message.text ?? '',
+        raw: { convo, message },
+      });
+    }
+    if (cursor) return;
+    try {
+      await chat.chat.bsky.convo.updateRead({
+        convoId: convo.id,
+        ...(newest && { messageId: newest.id }),
+      });
+    } catch (error) {
+      console.error(`[bluesky] Could not mark conversation ${convo.id} read:`, error);
     }
   }
 

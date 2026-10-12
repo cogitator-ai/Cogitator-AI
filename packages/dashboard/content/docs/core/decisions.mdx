@@ -67,7 +67,7 @@ The `state` is what the questions are about: text, an object or an array, up to 
 
 A decision goes through the same retry policy as LLM calls (`llm.retry`): rate limits wait as long as OpenRouter asks, server errors are retried with backoff, `requestTimeout` aborts a slow attempt, and `signal` stops it all.
 
-`result.usage` has the tokens, the `duration`, and the `cost`: what OpenRouter reported, otherwise the model registry's price, which knows Jev at $0.042 per million input tokens with free output. A decision is recorded with the cost router and reported to [run observers](/docs/core/cogitator#run-observers) as a run of its own with one `llm.decide` span, so Studio, Langfuse and OpenTelemetry show it with its tokens and cost.
+`result.usage` has the tokens, the `duration`, and the `cost`: what OpenRouter reported, otherwise the model registry's price, which knows Jev at $0.042 per million input tokens with free output. A decision is checked against the cost-routing budgets before it is sent (spending already at a limit, or its estimated cost taking spending past one, fails with `BUDGET_EXCEEDED`), recorded with the cost router, and reported to [run observers](/docs/core/cogitator#run-observers) as a run of its own with one `llm.decide` span, so Studio, Langfuse and OpenTelemetry show it with its tokens and cost.
 
 ## In an Agent
 

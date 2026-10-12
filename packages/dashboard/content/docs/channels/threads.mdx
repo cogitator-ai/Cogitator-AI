@@ -101,7 +101,7 @@ app.all('/threads/webhook', express.raw({ type: '*/*' }), async (req, res) => {
 
 ### Without webhooks
 
-Without `webhook`, the channel polls every `pollInterval` (one minute): the bot's mentions and the conversations of its latest `watchPosts` (10) posts, answering what arrived since it started. From a conversation it takes replies to the bot's posts and posts that mention `@<bot username>`, not what people answer each other. The polling timer keeps the process alive until `stop()`.
+Without `webhook`, the channel polls every `pollInterval` (one minute): the bot's mentions and the conversations of its latest `watchPosts` (10) posts, answering what arrived since it started. From a conversation it takes replies to the bot's posts and posts that mention `@<bot username>`, not what people answer each other. A poll pages back to what it already answered, and a burst longer than one poll reads is read on by the next poll. The polling timer keeps the process alive until `stop()`.
 
 ### Answers
 

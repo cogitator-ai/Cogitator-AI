@@ -80,7 +80,7 @@ await gateway.start();
 - **Formatting.** Markdown becomes plain text, since Bluesky shows text as written, and links stay visible and become clickable.
 - **No edits.** Bluesky cannot edit posts, so the gateway sends each answer once it is finished instead of streaming it.
 
-The channel polls every `pollInterval` (15 seconds), which keeps the process running until `stop()`. It keeps what it has seen on Bluesky itself, the notifications' seen time and each conversation's read state, so it needs no state of its own and answers what arrived while it was stopped, paging back through up to a thousand notifications. `catchUp: false` starts from now instead.
+The channel polls every `pollInterval` (15 seconds), which keeps the process running until `stop()`. It keeps what it has seen on Bluesky itself, the notifications' seen time and each conversation's read state, so it needs no state of its own and answers what arrived while it was stopped, paging back to the first one already seen. A backlog longer than one poll reads (a thousand notifications, or five hundred messages of a conversation) is read on by the next poll, and marked seen or read only at its end. `catchUp: false` starts from now instead.
 
 ### Channel ids
 

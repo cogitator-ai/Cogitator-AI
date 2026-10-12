@@ -1549,6 +1549,23 @@ export class Cogitator implements ToolInvoker {
     return this.runLimiter.acquire(signal);
   }
 
+  /**
+   * Stops a decision before it is sent when spending already reached a
+   * cost-routing budget, or its estimated cost would take spending past one.
+   */
+  private assertDecisionBudget(estimatedCost: number): void {
+    const router = this.getCostRouter();
+    if (!router) return;
+    for (const check of [router.checkSpent(0), router.checkBudget(estimatedCost)]) {
+      if (check.allowed) continue;
+      throw new CogitatorError({
+        message: `Budget exceeded: ${check.reason}`,
+        code: ErrorCode.BUDGET_EXCEEDED,
+        details: { estimatedCost },
+      });
+    }
+  }
+
   /** Stops a run whose real spending reached a cost-routing budget, before its next model call. */
   private assertCostBudget(runCost: number): void {
     const check = this.state.costRouter?.checkSpent(runCost);
@@ -1696,6 +1713,7 @@ export class Cogitator implements ToolInvoker {
         retry: this.config.llm?.retry,
         observers: [...this.observers],
         recordCost: (record) => this.getCostRouter()?.recordCost(record),
+        checkBudget: (estimatedCost) => this.assertDecisionBudget(estimatedCost),
       },
       options
     );

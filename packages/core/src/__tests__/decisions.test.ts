@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
-import { ErrorCode, type DecisionBackend, type RunObserver, type Span } from '@cogitator-ai/types';
+import {
+  ErrorCode,
+  type DecisionBackend,
+  type DecisionRequest,
+  type RunObserver,
+  type Span,
+} from '@cogitator-ai/types';
 import { Agent } from '../agent';
 import { Cogitator } from '../cogitator';
 import {
@@ -373,6 +379,23 @@ describe('cog.decide', () => {
       message: expect.stringContaining(message),
     });
     expect(onRunError).toHaveBeenCalledOnce();
+  });
+
+  it('stops before the request once spending reached a budget', async () => {
+    const decide = vi.fn(async (request: DecisionRequest) => ({
+      model: request.model,
+      answers: { spam: { type: 'noul' as const, noul: 0.9 } },
+      usage: { inputTokens: 5, outputTokens: 0, cost: 0.002 },
+    }));
+    const cog = new Cogitator({
+      llm: { backends: {}, decisionBackends: { acme: { provider: 'acme', decide } } },
+      costRouting: { enabled: true, budget: { maxCostPerHour: 0.001 } },
+    });
+    const ask = () =>
+      cog.decide({ model: 'acme/judge-1', state: 'x', questions: { spam: questions.spam } });
+    await ask();
+    await expect(ask()).rejects.toMatchObject({ code: ErrorCode.BUDGET_EXCEEDED });
+    expect(decide).toHaveBeenCalledOnce();
   });
 
   it('says where decision models run and that they need a key', async () => {
