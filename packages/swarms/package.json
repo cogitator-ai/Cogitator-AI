@@ -41,7 +41,7 @@
     "@cogitator-ai/workflows": "workspace:*",
     "@types/node": "^22.20.4",
     "ioredis": "^6.0.0",
-    "nanoid": "^6.0.1",
+    "nanoid": "^6.0.2",
     "zod": "^4.6.5"
   },
   "devDependencies": {

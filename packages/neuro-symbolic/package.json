@@ -54,7 +54,7 @@
   "dependencies": {
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
-    "nanoid": "^6.0.1",
+    "nanoid": "^6.0.2",
     "zod": "^4.6.5"
   },
   "optionalDependencies": {

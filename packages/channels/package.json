@@ -45,12 +45,12 @@
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/memory": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
-    "cron-parser": "^5.10.1",
-    "nanoid": "^6.0.1",
+    "cron-parser": "^5.10.2",
+    "nanoid": "^6.0.2",
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@atproto/api": "0.24.0",
+    "@atproto/api": "0.24.3",
     "@types/node": "^22.20.4",
     "@types/ws": "^8.18.2",
     "@whiskeysockets/baileys": "7.0.0-rc14",
