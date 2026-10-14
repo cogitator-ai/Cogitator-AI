@@ -29,12 +29,14 @@ export class FeedError extends Error {
   readonly status?: number;
   /** How long to wait before trying again, in ms, where the feed said. */
   readonly retryAfter?: number;
+  /** The platform's finer error code where it gives one, such as a Graph API `error_subcode`. */
+  readonly subcode?: number;
 
   constructor(
     feed: string,
     code: FeedErrorCode,
     message: string,
-    options: { status?: number; retryAfter?: number; cause?: unknown } = {}
+    options: { status?: number; retryAfter?: number; subcode?: number; cause?: unknown } = {}
   ) {
     super(`[${feed}] ${message}`, { cause: options.cause });
     this.name = 'FeedError';
@@ -42,6 +44,7 @@ export class FeedError extends Error {
     this.code = code;
     if (options.status !== undefined) this.status = options.status;
     if (options.retryAfter !== undefined) this.retryAfter = options.retryAfter;
+    if (options.subcode !== undefined) this.subcode = options.subcode;
   }
 
   /** Whether publishing again later can succeed. */

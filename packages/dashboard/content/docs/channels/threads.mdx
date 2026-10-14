@@ -37,7 +37,7 @@ const post = await threads.publish({
 console.log(post.url); // the post's permalink
 ```
 
-- **Text posts** carry a link card (`link_attachment`) and a topic tag (the first of `tags`).
+- **Text posts** carry a link card (`link_attachment`) and a topic tag (the first of `tags`). Threads can block an account that tags many posts from tagging for a while (error subcode 2207051): the feed then publishes the post without its tag and says so in a warning.
 - **Images** go out as one image or a carousel of up to 20, from public URLs: Threads fetches them itself, so an image needs a `url`.
 - **Replies** use `replyTo` with the media id they answer.
 - **Limits.** A post holds 500 characters, with emoji counted by their UTF-8 bytes, and up to five links. The feed checks this before it sends anything.

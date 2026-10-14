@@ -40,6 +40,12 @@ const CLOCK_SKEW = 60_000;
 const QUOTA_MARGIN = 60_000;
 const QUOTA_WINDOW = 86_400;
 const LOOKUP_PAGES = 4;
+/**
+ * The Graph API error subcode of a post Threads refuses for its topic tag:
+ * an account that tags many posts can be blocked from tagging for a while,
+ * while the same post without the tag goes out.
+ */
+const TOPIC_TAG_BLOCKED = 2207051;
 const MAX_PUBLISHED = 1000;
 const QUOTA_PAGES = 12;
 
@@ -96,7 +102,8 @@ function samePost(listed: ListedPost, post: FeedPost, topicTag: string | undefin
     normalized(listed.text) === normalized(post.text) &&
     listed.replied_to?.id === post.replyTo &&
     (listed.link_attachment_url ? comparableUrl(listed.link_attachment_url) : '') === link &&
-    (listed.topic_tag ?? '').toLowerCase() === (topicTag ?? '').toLowerCase() &&
+    (listed.topic_tag === undefined ||
+      listed.topic_tag.toLowerCase() === (topicTag ?? '').toLowerCase()) &&
     (images.length === 1 ? (listed.alt_text ?? '') === alt : true)
   );
 }
@@ -233,6 +240,54 @@ export class ThreadsFeed implements FeedChannel {
       }
     }
     if (this.checkQuota) await this.assertQuota(Boolean(post.replyTo), signal);
+    let published: Container;
+    try {
+      published = await this.publishContainer(post, topicTag, signal);
+    } catch (error) {
+      if (!topicTag || !(error instanceof FeedError) || error.subcode !== TOPIC_TAG_BLOCKED) {
+        throw error;
+      }
+      console.warn(
+        `[threads] Threads blocked the topic tag "${topicTag}" for this account, publishing without it`
+      );
+      published = await this.publishContainer(post, undefined, signal);
+    }
+    let url = '';
+    try {
+      const details = await this.account.get<{ permalink?: string }>(published.id, {
+        fields: 'permalink',
+      });
+      url = details.permalink ?? '';
+    } catch (error) {
+      console.warn(`[threads] Published ${published.id} but could not read its permalink:`, error);
+    }
+    const result: PublishedPost = {
+      feed: this.type,
+      id: published.id,
+      url,
+      publishedAt: new Date(),
+    };
+    this.remember(result, idempotencyKey);
+    return result;
+  }
+
+  async delete(id: string): Promise<void> {
+    await this.account.delete(id);
+  }
+
+  async close(): Promise<void> {
+    this.account.close(this);
+  }
+
+  /**
+   * Makes the post's media container, waits until Threads has it ready and
+   * publishes it, with `topicTag` as its topic tag where given.
+   */
+  private async publishContainer(
+    post: FeedPost,
+    topicTag: string | undefined,
+    signal?: AbortSignal
+  ): Promise<Container> {
     const user = this.account.userId;
     const shared: ThreadsParams = {
       ...(topicTag && { topic_tag: topicTag }),
@@ -291,36 +346,11 @@ export class ThreadsFeed implements FeedChannel {
       );
     }
     await this.ready(container.id, signal);
-    const published = await this.account.post<Container>(
+    return this.account.post<Container>(
       `${user}/threads_publish`,
       { creation_id: container.id },
       signal
     );
-    let url = '';
-    try {
-      const details = await this.account.get<{ permalink?: string }>(published.id, {
-        fields: 'permalink',
-      });
-      url = details.permalink ?? '';
-    } catch (error) {
-      console.warn(`[threads] Published ${published.id} but could not read its permalink:`, error);
-    }
-    const result: PublishedPost = {
-      feed: this.type,
-      id: published.id,
-      url,
-      publishedAt: new Date(),
-    };
-    this.remember(result, idempotencyKey);
-    return result;
-  }
-
-  async delete(id: string): Promise<void> {
-    await this.account.delete(id);
-  }
-
-  async close(): Promise<void> {
-    this.account.close(this);
   }
 
   /** Checks the post against Threads' rules and returns its topic tag. */

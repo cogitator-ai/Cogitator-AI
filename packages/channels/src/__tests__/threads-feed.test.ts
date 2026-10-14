@@ -83,6 +83,7 @@ function graph() {
     threads: [] as Listed[],
     replies: [] as Listed[],
     listingFails: false,
+    blockTopicTags: false,
     renewed: { access_token: 'token-2', token_type: 'bearer', expires_in: 60 * 24 * 60 * 60 },
     error: undefined as { status: number; body: unknown } | undefined,
     checks: new Map<string, number>(),
@@ -111,8 +112,25 @@ function graph() {
           return json({ error: { message: 'An unknown error occurred', code: 1 } }, 500);
         return json(listing(path === 'me/threads' ? api.threads : api.replies, params, path));
       }
-      if (path.endsWith('/threads') && method === 'POST')
+      if (path.endsWith('/threads') && method === 'POST') {
+        if (api.blockTopicTags && params.topic_tag !== undefined) {
+          return json(
+            {
+              error: {
+                message: 'Action is blocked',
+                type: 'OAuthException',
+                code: 10,
+                error_subcode: 2207051,
+                error_user_title: 'Action blocked',
+                error_user_msg: 'We restrict certain activity to protect our community.',
+                fbtrace_id: 'AbCdEf',
+              },
+            },
+            400
+          );
+        }
         return json({ id: `container-${calls.length}` });
+      }
       if (path.endsWith('/threads_publish')) return json({ id: 'media-1' });
       if (method === 'DELETE') return json({ success: true });
       if (params.fields === 'status,error_message') {
@@ -608,6 +626,52 @@ describe('ThreadsFeed', () => {
       });
     }
     expect(api.calls).toEqual([]);
+  });
+
+  it('publishes without the topic tag when Threads blocks tagging for the account', async () => {
+    api.blockTopicTags = true;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const published = await feed({ expiresAt: farFuture() }).publish({
+      text: 'Tagged news',
+      tags: ['News'],
+    });
+    expect(published.id).toBe('media-1');
+    const containers = api.calls.filter(
+      (call) => call.method === 'POST' && call.path === 'me/threads'
+    );
+    expect(containers.map((call) => call.params.topic_tag)).toEqual(['News', undefined]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('blocked the topic tag "News"'));
+    warn.mockRestore();
+  });
+
+  it('keeps the Graph API subcode on a refused post without a tag to drop', async () => {
+    api.error = {
+      status: 400,
+      body: { error: { message: 'Action is blocked', code: 10, error_subcode: 2207051 } },
+    };
+    const error = (await feed({ expiresAt: farFuture(), checkQuota: false })
+      .publish({ text: 'Untagged' })
+      .catch((caught: unknown) => caught)) as FeedError;
+    expect(error).toBeInstanceOf(FeedError);
+    expect(error.subcode).toBe(2207051);
+  });
+
+  it('takes an earlier post published without its blocked tag for its own', async () => {
+    const threads = feed({ expiresAt: farFuture() });
+    const key = threads.idempotencyKey();
+    api.threads = [
+      {
+        id: 'untagged',
+        text: 'Tagged news',
+        timestamp: iso(Number(key.split('.')[0]) + 1000),
+        media_type: 'TEXT_POST',
+      },
+    ];
+    const found = await threads.publish(
+      { text: 'Tagged news', tags: ['News'] },
+      { idempotencyKey: key }
+    );
+    expect(found.id).toBe('untagged');
   });
 
   it('deletes a post', async () => {

@@ -123,7 +123,12 @@ export class ThreadsClient {
         'threads',
         threadsErrorCode(response.status, graph),
         `${init.method} ${path} failed: ${graph.error_user_msg ?? graph.message ?? `HTTP ${response.status}`}`,
-        { status: response.status, ...(retryAfter !== undefined && { retryAfter }), cause: body }
+        {
+          status: response.status,
+          ...(retryAfter !== undefined && { retryAfter }),
+          ...(graph.error_subcode !== undefined && { subcode: graph.error_subcode }),
+          cause: body,
+        }
       );
     }
     return body as T;
