@@ -197,9 +197,10 @@ export interface WebLoaderOptions {
   maxResponseBytes?: number;
   /**
    * What to do with a page over `maxResponseBytes`: `fail` (default), or
-   * `truncate` to keep its first `maxResponseBytes` and load those. A page
-   * whose text comes before heavy scripts still loads that way, and its
-   * document is marked `truncated: true` in its metadata.
+   * `truncate` to keep its first `maxResponseBytes` and load those, marking
+   * the document `truncated: true` in its metadata. A safety net rather than
+   * a way to lower the limit: the first part holds the text only when the
+   * page puts it there, and many pages put megabytes of scripts first.
    */
   onTooLarge?: 'fail' | 'truncate';
   /**

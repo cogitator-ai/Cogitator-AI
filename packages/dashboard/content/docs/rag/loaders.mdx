@@ -184,6 +184,8 @@ const docs = await loader.load('https://example.com/docs/getting-started');
 | `allowPrivateNetwork` | boolean                  | `false`  | Allow loopback/private hosts (e.g. intranet wikis)                                                                                             |
 | `robots`              | `RobotsChecker`          | -        | Check robots.txt before every fetch and redirect                                                                                               |
 
+`truncate` keeps a page over the limit from failing, but its first part holds the text only when the page puts it there. Many news pages put megabytes of scripts before their article, so keep `maxResponseBytes` above the pages you load and use `truncate` as a safety net.
+
 ### SSRF protection
 
 By default `WebLoader` refuses loopback, private (RFC 1918), link-local, CGNAT, multicast and cloud-metadata targets — including IPv4-mapped / NAT64 IPv6 literals, numeric host forms such as `http://2130706433/`, and hostnames that **resolve** to such addresses. Resolution is checked at connect time for every redirect hop, so DNS rebinding cannot bypass the check. Set `allowPrivateNetwork: true` only for trusted URLs.
