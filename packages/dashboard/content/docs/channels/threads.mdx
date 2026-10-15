@@ -18,7 +18,7 @@ The token renews itself (see below), so this is done once.
 
 ## Publishing
 
-`ThreadsFeed` publishes in the two steps Threads asks for: a media container, then its publication once Threads reports the container ready.
+`ThreadsFeed` publishes in the two steps Threads asks for: a media container, then its publication once Threads reports the container ready. Threads sometimes answers that a container it just reported ready cannot be found (code 24) and takes it seconds later, so the feed tries again after `publishRetryDelays` (2, 5 and 10 seconds). Before each try it reads the container's status, and a container that did go out is looked up instead of being published twice. A container still not found fails as `unavailable`, which `FeedPublisher` tries again later.
 
 ```typescript
 import { FileTokenStore, ThreadsFeed } from '@cogitator-ai/channels';

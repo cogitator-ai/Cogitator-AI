@@ -10,7 +10,7 @@ import { assertImage } from '../../feeds/attachments';
 import { FeedError } from '../../feeds/errors';
 import { threadsLength } from '../../feeds/text';
 import { threadsAccountOf, type ThreadsAccount, type ThreadsAccountConfig } from './account';
-import type { ThreadsParams } from './client';
+import { MEDIA_NOT_FOUND, type ThreadsParams } from './client';
 
 export type ThreadsFeedConfig = ({ account: ThreadsAccount } | ThreadsAccountConfig) & {
   /** How long to wait for Threads to get a post ready, in ms (default five minutes). */
@@ -19,6 +19,11 @@ export type ThreadsFeedConfig = ({ account: ThreadsAccount } | ThreadsAccountCon
   pollDelays?: readonly number[];
   /** Checks the 24-hour publishing quota before each post (default true). */
   checkQuota?: boolean;
+  /**
+   * The waits before publishing a ready post again when Threads answers that
+   * it cannot find it, in ms (default 2, 5 and 10 seconds).
+   */
+  publishRetryDelays?: readonly number[];
 };
 
 /** What a Threads post accepts. */
@@ -204,6 +209,7 @@ export class ThreadsFeed implements FeedChannel {
   private readonly timeout: number;
   private readonly delays: readonly number[];
   private readonly checkQuota: boolean;
+  private readonly publishRetryDelays: readonly number[];
   /** The posts this feed published, by id, with the key each was published under. */
   private readonly published = new Map<string, string | undefined>();
   /** The post each key was published as, so a retry in this process needs no lookup. */
@@ -216,6 +222,7 @@ export class ThreadsFeed implements FeedChannel {
       ? config.pollDelays
       : [1000, 2000, 4000, 8000, 15000, 30000];
     this.checkQuota = config.checkQuota ?? true;
+    this.publishRetryDelays = config.publishRetryDelays ?? [2000, 5000, 10000];
   }
 
   measure(text: string): number {
@@ -246,7 +253,7 @@ export class ThreadsFeed implements FeedChannel {
     if (this.checkQuota) await this.assertQuota(Boolean(post.replyTo), signal);
     let published: Container;
     try {
-      published = await this.publishContainer(post, topicTag, signal);
+      published = await this.publishContainer(post, topicTag, idempotencyKey, signal);
     } catch (error) {
       if (!topicTag || !(error instanceof FeedError) || error.subcode !== TOPIC_TAG_BLOCKED) {
         throw error;
@@ -254,7 +261,7 @@ export class ThreadsFeed implements FeedChannel {
       console.warn(
         `[threads] Threads blocked the topic tag "${topicTag}" for this account, publishing without it`
       );
-      published = await this.publishContainer(post, undefined, signal);
+      published = await this.publishContainer(post, undefined, idempotencyKey, signal);
     }
     let url = '';
     try {
@@ -290,6 +297,7 @@ export class ThreadsFeed implements FeedChannel {
   private async publishContainer(
     post: FeedPost,
     topicTag: string | undefined,
+    key: string | undefined,
     signal?: AbortSignal
   ): Promise<Container> {
     const user = this.account.userId;
@@ -351,11 +359,88 @@ export class ThreadsFeed implements FeedChannel {
       );
     }
     await this.ready(container.id, signal);
-    return this.account.post<Container>(
-      `${user}/threads_publish`,
-      { creation_id: container.id },
-      signal
-    );
+    return this.publishReady(post, topicTag, key, container.id, signal);
+  }
+
+  /**
+   * Publishes a ready container. Threads sometimes answers that a container
+   * it just reported FINISHED cannot be found (Graph API code 24) and takes
+   * it seconds later, so that answer is tried again after the waits of
+   * `publishRetryDelays`. Before each try the container's status is read:
+   * PUBLISHED means an earlier call did publish it, so the post is looked up
+   * among the account's posts instead of going out twice. A container still
+   * not found after the last wait fails as `unavailable`, for the publisher
+   * to try the post again later.
+   */
+  private async publishReady(
+    post: FeedPost,
+    topicTag: string | undefined,
+    key: string | undefined,
+    containerId: string,
+    signal?: AbortSignal
+  ): Promise<Container> {
+    const since = Date.now();
+    let wentOut = false;
+    let lastError: FeedError | undefined;
+    for (let attempt = 0; ; attempt++) {
+      if (wentOut) {
+        const found = await this.findEarlier(post, topicTag, key, since, signal);
+        if (found) return { id: found.id };
+      } else {
+        try {
+          return await this.account.post<Container>(
+            `${this.account.userId}/threads_publish`,
+            { creation_id: containerId },
+            signal
+          );
+        } catch (error) {
+          if (!(error instanceof FeedError) || error.platformCode !== MEDIA_NOT_FOUND) throw error;
+          lastError = error;
+        }
+      }
+      const wait = this.publishRetryDelays[attempt];
+      if (wait === undefined) {
+        throw new FeedError(
+          'threads',
+          'unavailable',
+          wentOut
+            ? `Threads published container ${containerId} but does not list the post yet`
+            : `Threads could not find the ready container ${containerId} to publish it`,
+          {
+            ...(lastError?.status !== undefined && { status: lastError.status }),
+            platformCode: MEDIA_NOT_FOUND,
+            cause: lastError,
+          }
+        );
+      }
+      await sleep(wait, signal);
+      if (!wentOut) wentOut = (await this.containerStatus(containerId, signal)) === 'PUBLISHED';
+    }
+  }
+
+  /**
+   * A container's status, failing as `invalid_post` when Threads gave up on
+   * it, and unknown while Threads cannot find it either.
+   */
+  private async containerStatus(id: string, signal?: AbortSignal): Promise<string | undefined> {
+    try {
+      const { status, error_message } = await this.account.get<ContainerStatus>(
+        id,
+        { fields: 'status,error_message' },
+        signal
+      );
+      if (status === 'ERROR' || status === 'EXPIRED') {
+        throw new FeedError(
+          'threads',
+          'invalid_post',
+          `Threads could not prepare the post (${status}${error_message ? `: ${error_message}` : ''})`
+        );
+      }
+      return status;
+    } catch (error) {
+      if (error instanceof FeedError && error.platformCode === MEDIA_NOT_FOUND) return undefined;
+      throw error;
+    }
   }
 
   /** Checks the post against Threads' rules and returns its topic tag. */
@@ -472,7 +557,7 @@ export class ThreadsFeed implements FeedChannel {
   private async findEarlier(
     post: FeedPost,
     topicTag: string | undefined,
-    key: string,
+    key: string | undefined,
     since: number,
     signal?: AbortSignal
   ): Promise<PublishedPost | undefined> {

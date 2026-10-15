@@ -13,6 +13,8 @@ interface GraphError {
 }
 
 const RATE_LIMIT_CODES = new Set([4, 17, 32, 613]);
+/** The Graph API code of an object that cannot be found, such as a media container. */
+export const MEDIA_NOT_FOUND = 24;
 
 /** The feed error code a Graph API error means. */
 export function threadsErrorCode(status: number, error: GraphError): FeedErrorCode {
@@ -23,6 +25,7 @@ export function threadsErrorCode(status: number, error: GraphError): FeedErrorCo
     return text.includes('LINK_LIMIT_EXCEEDED') ? 'invalid_post' : 'quota_exceeded';
   }
   if (error.code === 10 || error.code === 200) return 'auth';
+  if (error.code === MEDIA_NOT_FOUND) return 'not_found';
   return feedErrorCode(status);
 }
 
@@ -126,6 +129,7 @@ export class ThreadsClient {
         {
           status: response.status,
           ...(retryAfter !== undefined && { retryAfter }),
+          ...(graph.code !== undefined && { platformCode: graph.code }),
           ...(graph.error_subcode !== undefined && { subcode: graph.error_subcode }),
           cause: body,
         }

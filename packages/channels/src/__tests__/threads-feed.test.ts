@@ -85,6 +85,8 @@ function graph() {
     replies: [] as Listed[],
     listingFails: false,
     blockTopicTags: false,
+    publishNotFound: 0,
+    statusAfterNotFound: undefined as string | undefined,
     renewed: { access_token: 'token-2', token_type: 'bearer', expires_in: 60 * 24 * 60 * 60 },
     error: undefined as { status: number; body: unknown } | undefined,
     checks: new Map<string, number>(),
@@ -132,7 +134,25 @@ function graph() {
         }
         return json({ id: `container-${calls.length}` });
       }
-      if (path.endsWith('/threads_publish')) return json({ id: 'media-1' });
+      if (path.endsWith('/threads_publish')) {
+        if (api.publishNotFound > 0) {
+          api.publishNotFound -= 1;
+          if (api.statusAfterNotFound) api.containerStatus = api.statusAfterNotFound;
+          return json(
+            {
+              error: {
+                message: `The media with id ${params.creation_id} cannot be found`,
+                type: 'OAuthException',
+                code: 24,
+                error_subcode: 4279009,
+                fbtrace_id: 'AbCdEf',
+              },
+            },
+            400
+          );
+        }
+        return json({ id: 'media-1' });
+      }
       if (method === 'DELETE') return json({ success: true });
       if (params.fields === 'status,error_message') {
         const seen = (api.checks.get(path) ?? 0) + 1;
@@ -169,6 +189,7 @@ function feed(
     store: options.store ?? new MemoryTokenStore(),
     fetch: api.fetch as unknown as typeof fetch,
     pollDelays: [0],
+    publishRetryDelays: [1, 1, 1],
     ...(options.checkQuota !== undefined && { checkQuota: options.checkQuota }),
   });
 }
@@ -733,6 +754,50 @@ describe('ThreadsFeed', () => {
     await expect(
       threads.publish({ text: 'x', quote: 'https://www.threads.net/@a/post/abc' })
     ).rejects.toMatchObject({ code: 'invalid_post' });
+  });
+
+  it('publishes again when Threads cannot find a container it reported ready', async () => {
+    api.publishNotFound = 2;
+    const published = await feed({ expiresAt: farFuture(), checkQuota: false }).publish({
+      text: 'Ready, then not found',
+    });
+    expect(published.id).toBe('media-1');
+    const steps = api.calls
+      .filter(
+        (call) =>
+          call.path.endsWith('threads_publish') || call.params.fields === 'status,error_message'
+      )
+      .map((call) => (call.path.endsWith('threads_publish') ? 'publish' : 'status'));
+    expect(steps).toEqual(['status', 'publish', 'status', 'publish', 'status', 'publish']);
+  });
+
+  it('looks the post up instead of publishing it twice when the container went out', async () => {
+    api.publishNotFound = 1;
+    api.statusAfterNotFound = 'PUBLISHED';
+    api.threads = [
+      {
+        id: 'went-out',
+        text: 'Published after all',
+        timestamp: iso(Date.now()),
+        permalink: 'https://www.threads.net/@mybot/post/DOut',
+        media_type: 'TEXT_POST',
+      },
+    ];
+    const published = await feed({ expiresAt: farFuture(), checkQuota: false }).publish({
+      text: 'Published after all',
+    });
+    expect(published).toMatchObject({ id: 'went-out' });
+    expect(api.calls.filter((call) => call.path.endsWith('threads_publish'))).toHaveLength(1);
+  });
+
+  it('fails as unavailable when Threads keeps not finding the container', async () => {
+    api.publishNotFound = 10;
+    const error = (await feed({ expiresAt: farFuture(), checkQuota: false })
+      .publish({ text: 'Never found' })
+      .catch((caught: unknown) => caught)) as FeedError;
+    expect(error).toBeInstanceOf(FeedError);
+    expect(error).toMatchObject({ code: 'unavailable', retryable: true, platformCode: 24 });
+    expect(api.calls.filter((call) => call.path.endsWith('threads_publish'))).toHaveLength(4);
   });
 
   it('deletes a post', async () => {

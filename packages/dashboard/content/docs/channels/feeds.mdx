@@ -118,6 +118,6 @@ A publisher takes one due job at a time and holds a claim on it for `claimTtl` (
 
 A feed of your own implements `FeedChannel`: its `limits` and `measure`, `publish` with the `idempotencyKey` and `retry` options, `idempotencyKey()`, `delete`, `connect` and `close`.
 
-Feeds fail with `FeedError`. Its `code` says what happened (`auth`, `token_expired`, `rate_limited`, `quota_exceeded`, `invalid_post`, `not_found`, `unavailable`), `retryable` whether trying later can help, `retryAfter` how long the feed asked to wait, and `subcode` the platform's finer error code where it gives one, such as a Graph API `error_subcode`.
+Feeds fail with `FeedError`. Its `code` says what happened (`auth`, `token_expired`, `rate_limited`, `quota_exceeded`, `invalid_post`, `not_found`, `unavailable`), `retryable` whether trying later can help, `retryAfter` how long the feed asked to wait, and `platformCode` and `subcode` the platform's own codes where it gives them, such as a Graph API `code` and `error_subcode`.
 
 See [Bluesky](/docs/channels/bluesky) and [Threads](/docs/channels/threads) for each feed, and how an agent answers people there.
