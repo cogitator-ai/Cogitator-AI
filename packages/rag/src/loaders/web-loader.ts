@@ -196,6 +196,13 @@ export interface WebLoaderOptions {
   timeoutMs?: number;
   maxResponseBytes?: number;
   /**
+   * What to do with a page over `maxResponseBytes`: `fail` (default), or
+   * `truncate` to keep its first `maxResponseBytes` and load those. A page
+   * whose text comes before heavy scripts still loads that way, and its
+   * document is marked `truncated: true` in its metadata.
+   */
+  onTooLarge?: 'fail' | 'truncate';
+  /**
    * Allow fetching loopback / private-network hosts (e.g. an intranet wiki).
    * Disabled by default to prevent SSRF when URLs come from untrusted input.
    */
@@ -220,6 +227,8 @@ interface FetchedPage {
   url: string;
   contentType: string;
   body: string;
+  /** Whether the body was cut at `maxResponseBytes`. */
+  truncated?: boolean;
 }
 
 /**
@@ -233,6 +242,7 @@ export class WebLoader implements DocumentLoader {
   private readonly headers?: Record<string, string>;
   private readonly timeoutMs: number;
   private readonly maxResponseBytes: number;
+  private readonly onTooLarge: 'fail' | 'truncate';
   private readonly allowPrivateNetwork: boolean;
   private readonly robots?: RobotsChecker;
   private readonly lookup = createGuardedLookup();
@@ -242,6 +252,7 @@ export class WebLoader implements DocumentLoader {
     this.headers = options?.headers;
     this.timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.maxResponseBytes = options?.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
+    this.onTooLarge = options?.onTooLarge ?? 'fail';
     this.allowPrivateNetwork = options?.allowPrivateNetwork ?? false;
     this.robots = options?.robots;
   }
@@ -249,11 +260,20 @@ export class WebLoader implements DocumentLoader {
   async load(source: string): Promise<RAGDocument[]> {
     const page = await this.fetchPage(source);
     const mime = page.contentType.split(';')[0]!.trim().toLowerCase();
+    const truncated = page.truncated ? { truncated: true } : {};
 
     if (mime === '' || mime.includes('html') || mime.endsWith('/xml') || mime.endsWith('+xml')) {
       const doc = await this.htmlLoader.parseHTML(page.body, source, 'web');
       return [
-        { ...doc, metadata: { ...doc.metadata, url: page.url, contentType: mime || 'text/html' } },
+        {
+          ...doc,
+          metadata: {
+            ...doc.metadata,
+            url: page.url,
+            contentType: mime || 'text/html',
+            ...truncated,
+          },
+        },
       ];
     }
 
@@ -264,7 +284,7 @@ export class WebLoader implements DocumentLoader {
           content: page.body,
           source,
           sourceType: 'web',
-          metadata: { url: page.url, contentType: mime },
+          metadata: { url: page.url, contentType: mime, ...truncated },
         },
       ];
     }
@@ -302,8 +322,13 @@ export class WebLoader implements DocumentLoader {
       }
 
       const contentType = response.headers['content-type'] ?? '';
-      const body = await this.readBody(response, current.href);
-      return { url: current.href, contentType, body: decodeBody(body, contentType) };
+      const { body, truncated } = await this.readBody(response, current.href);
+      return {
+        url: current.href,
+        contentType,
+        body: decodeBody(body, contentType),
+        ...(truncated && { truncated }),
+      };
     }
 
     throw new Error(`WebLoader: too many redirects (max ${MAX_REDIRECTS}) for ${source}`);
@@ -337,9 +362,16 @@ export class WebLoader implements DocumentLoader {
     });
   }
 
-  private readBody(response: IncomingMessage, url: string): Promise<Buffer> {
+  /**
+   * The response body, decompressed, up to `maxResponseBytes`: past it the
+   * download stops, and the load fails or keeps what came, per `onTooLarge`.
+   */
+  private readBody(
+    response: IncomingMessage,
+    url: string
+  ): Promise<{ body: Buffer; truncated: boolean }> {
     const stream = decompress(response);
-    return new Promise<Buffer>((resolve, reject) => {
+    return new Promise((resolve, reject) => {
       const chunks: Buffer[] = [];
       let total = 0;
       stream.on('data', (chunk: Buffer) => {
@@ -347,6 +379,11 @@ export class WebLoader implements DocumentLoader {
         if (total > this.maxResponseBytes) {
           response.destroy();
           stream.destroy();
+          if (this.onTooLarge === 'truncate') {
+            chunks.push(chunk.subarray(0, chunk.length - (total - this.maxResponseBytes)));
+            resolve({ body: Buffer.concat(chunks), truncated: true });
+            return;
+          }
           reject(
             new Error(
               `WebLoader: response from ${url} exceeds ${this.maxResponseBytes} bytes limit`
@@ -356,7 +393,7 @@ export class WebLoader implements DocumentLoader {
         }
         chunks.push(chunk);
       });
-      stream.once('end', () => resolve(Buffer.concat(chunks)));
+      stream.once('end', () => resolve({ body: Buffer.concat(chunks), truncated: false }));
       stream.once('error', (err: Error) => {
         reject(new Error(`WebLoader: failed to read response from ${url}: ${err.message}`));
       });

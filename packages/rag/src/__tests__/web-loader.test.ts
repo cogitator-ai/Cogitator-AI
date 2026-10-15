@@ -58,6 +58,12 @@ beforeAll(async () => {
     res.writeHead(200, { 'content-type': 'text/plain; charset=iso-8859-1' });
     res.end(Buffer.from([0x63, 0x61, 0x66, 0xe9]));
   });
+  routes.set('/heavy', (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    res.end(
+      `<html><body><article><p>The story starts here</p></article><script>${'x'.repeat(100_000)}</script></body></html>`
+    );
+  });
   routes.set('/big', (_req, res) => {
     res.writeHead(200, { 'content-type': 'text/plain' });
     res.end('x'.repeat(10_000));
@@ -140,6 +146,29 @@ describe('WebLoader (local server, allowPrivateNetwork)', () => {
   it('decodes the declared charset', async () => {
     const [doc] = await loader().load(`${base}/latin1`);
     expect(doc!.content).toBe('café');
+  });
+
+  it('loads the first bytes of a page over the limit when told to truncate', async () => {
+    const [doc] = await new WebLoader({
+      allowPrivateNetwork: true,
+      maxResponseBytes: 2000,
+      onTooLarge: 'truncate',
+    }).load(`${base}/heavy`);
+    expect(doc!.content).toContain('The story starts here');
+    expect(doc!.metadata).toMatchObject({ truncated: true, contentType: 'text/html' });
+
+    const [text] = await new WebLoader({
+      allowPrivateNetwork: true,
+      maxResponseBytes: 1000,
+      onTooLarge: 'truncate',
+    }).load(`${base}/big`);
+    expect(text!.content).toHaveLength(1000);
+
+    const [small] = await new WebLoader({
+      allowPrivateNetwork: true,
+      onTooLarge: 'truncate',
+    }).load(`${base}/heavy`);
+    expect(small!.metadata).not.toHaveProperty('truncated');
   });
 
   it('enforces the response size limit', async () => {

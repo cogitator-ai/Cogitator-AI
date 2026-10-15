@@ -174,14 +174,15 @@ const loader = new WebLoader({
 const docs = await loader.load('https://example.com/docs/getting-started');
 ```
 
-| Option                | Type                     | Default | Description                                        |
-| --------------------- | ------------------------ | ------- | -------------------------------------------------- |
-| `selector`            | string                   | `body`  | CSS selector for content extraction                |
-| `headers`             | Record\<string, string\> | —       | Custom HTTP headers for the request                |
-| `timeoutMs`           | number                   | `30000` | Per-request timeout                                |
-| `maxResponseBytes`    | number                   | 50MB    | Maximum (decompressed) response size               |
-| `allowPrivateNetwork` | boolean                  | `false` | Allow loopback/private hosts (e.g. intranet wikis) |
-| `robots`              | `RobotsChecker`          | —       | Check robots.txt before every fetch and redirect   |
+| Option                | Type                     | Default  | Description                                                                                                                                    |
+| --------------------- | ------------------------ | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `selector`            | string                   | `body`   | CSS selector for content extraction                                                                                                            |
+| `headers`             | Record\<string, string\> | -        | Custom HTTP headers for the request                                                                                                            |
+| `timeoutMs`           | number                   | `30000`  | Per-request timeout                                                                                                                            |
+| `maxResponseBytes`    | number                   | 50MB     | Maximum (decompressed) response size                                                                                                           |
+| `onTooLarge`          | `'fail' \| 'truncate'`   | `'fail'` | A page over `maxResponseBytes` fails the load, or with `truncate` loads its first `maxResponseBytes`, marked `truncated: true` in its metadata |
+| `allowPrivateNetwork` | boolean                  | `false`  | Allow loopback/private hosts (e.g. intranet wikis)                                                                                             |
+| `robots`              | `RobotsChecker`          | -        | Check robots.txt before every fetch and redirect                                                                                               |
 
 ### SSRF protection
 

@@ -104,7 +104,7 @@ const loader = new WebLoader({
 });
 ```
 
-Responses are decompressed (gzip, deflate, br), decoded using the declared charset, and limited to `maxResponseBytes` (50MB by default). Non-text content types are rejected.
+Responses are decompressed (gzip, deflate, br), decoded using the declared charset, and limited to `maxResponseBytes` (50MB by default). A page over the limit fails the load, or with `onTooLarge: 'truncate'` loads its first `maxResponseBytes` and is marked `truncated: true` in its metadata, which keeps a page whose text comes before megabytes of scripts. Non-text content types are rejected.
 
 ```typescript
 import { MarkdownLoader, WebLoader, CSVLoader, PDFLoader, JSONLoader } from '@cogitator-ai/rag';
