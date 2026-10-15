@@ -25,7 +25,7 @@
     "node": ">=22.12.0"
   },
   "dependencies": {
-    "@ai-sdk/provider": "^4.0.21"
+    "@ai-sdk/provider": "^4.0.27"
   },
   "peerDependencies": {
     "@cogitator-ai/core": "workspace:>=0.39.0",
@@ -35,12 +35,12 @@
   "devDependencies": {
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
-    "ai": "^7.0.127",
+    "ai": "^7.0.138",
     "ai-v4": "npm:ai@^4.3.19",
     "ai-v5": "npm:ai@^5.0.271",
     "ai-v6": "npm:ai@^6.0.300",
     "typescript": "^6.0.3",
-    "zod": "^4.6.5"
+    "zod": "^4.6.7"
   },
   "repository": {
     "type": "git",
