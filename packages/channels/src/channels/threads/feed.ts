@@ -368,7 +368,9 @@ export class ThreadsFeed implements FeedChannel {
    * it seconds later, so that answer is tried again after the waits of
    * `publishRetryDelays`. Before each try the container's status is read:
    * PUBLISHED means an earlier call did publish it, so the post is looked up
-   * among the account's posts instead of going out twice. A container still
+   * among the account's posts instead of going out twice. A post with neither
+   * text nor alt text cannot be told apart there, so it fails as `unknown`
+   * rather than going out twice or taking another post's id. A container still
    * not found after the last wait fails as `unavailable`, for the publisher
    * to try the post again later.
    */
@@ -384,6 +386,14 @@ export class ThreadsFeed implements FeedChannel {
     let lastError: FeedError | undefined;
     for (let attempt = 0; ; attempt++) {
       if (wentOut) {
+        if (!identifiable(post)) {
+          throw new FeedError(
+            'threads',
+            'unknown',
+            `Threads published container ${containerId}, but a post with neither text nor alt text cannot be told apart among the account's posts, so its id is unknown`,
+            { platformCode: MEDIA_NOT_FOUND, ...(lastError && { cause: lastError }) }
+          );
+        }
         const found = await this.findEarlier(post, topicTag, key, since, signal);
         if (found) return { id: found.id };
       } else {
@@ -551,7 +561,7 @@ export class ThreadsFeed implements FeedChannel {
    * The post an earlier attempt with the same key made: one of the account's
    * posts (or replies to `post.replyTo`) since `since`, less the clock skew,
    * that is the same post and that this feed did not publish under another
-   * key. Two posts the same in all Threads lists, published by other
+   * key, or at all when there is no key. Two posts the same in all Threads lists, published by other
    * processes within that minute, cannot be told apart.
    */
   private async findEarlier(
@@ -575,7 +585,8 @@ export class ThreadsFeed implements FeedChannel {
     for await (const posts of pages) {
       const match = posts.find(
         (listed) =>
-          (!this.published.has(listed.id) || this.published.get(listed.id) === key) &&
+          (!this.published.has(listed.id) ||
+            (key !== undefined && this.published.get(listed.id) === key)) &&
           samePost(listed, post, topicTag)
       );
       if (match) {

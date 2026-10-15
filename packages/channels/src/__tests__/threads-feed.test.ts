@@ -790,6 +790,38 @@ describe('ThreadsFeed', () => {
     expect(api.calls.filter((call) => call.path.endsWith('threads_publish'))).toHaveLength(1);
   });
 
+  it('does not guess the id of a post it cannot tell apart once it went out', async () => {
+    api.publishNotFound = 1;
+    api.statusAfterNotFound = 'PUBLISHED';
+    api.threads = [{ id: 'someone-else', timestamp: iso(Date.now()), media_type: 'IMAGE' }];
+    const error = (await feed({ expiresAt: farFuture(), checkQuota: false })
+      .publish({
+        text: '',
+        images: [{ image: { type: 'image', mimeType: 'image/jpeg', url: 'https://cdn/1.jpg' } }],
+      })
+      .catch((caught: unknown) => caught)) as FeedError;
+    expect(error).toMatchObject({ code: 'unknown', retryable: false });
+    expect(api.calls.filter((call) => call.path.endsWith('threads_publish'))).toHaveLength(1);
+    expect(api.calls.some((call) => call.method === 'GET' && call.path === 'me/threads')).toBe(
+      false
+    );
+  });
+
+  it('never takes a post it published before without a key for a later one', async () => {
+    const threads = feed({ expiresAt: farFuture(), checkQuota: false });
+    const first = await threads.publish({ text: 'Same words' });
+    api.publishNotFound = 1;
+    api.statusAfterNotFound = 'PUBLISHED';
+    api.threads = [
+      { id: first.id, text: 'Same words', timestamp: iso(Date.now()), media_type: 'TEXT_POST' },
+    ];
+    const error = (await threads
+      .publish({ text: 'Same words' })
+      .catch((caught: unknown) => caught)) as FeedError;
+    expect(error).toMatchObject({ code: 'unavailable' });
+    expect(error.message).toContain('does not list the post yet');
+  });
+
   it('fails as unavailable when Threads keeps not finding the container', async () => {
     api.publishNotFound = 10;
     const error = (await feed({ expiresAt: farFuture(), checkQuota: false })
