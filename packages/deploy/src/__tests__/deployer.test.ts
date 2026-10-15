@@ -5,6 +5,20 @@ import { tmpdir } from 'node:os';
 import type { DeployConfig, GeneratedArtifacts } from '@cogitator-ai/types';
 import { Deployer } from '../deployer';
 import { DockerProvider } from '../providers/docker';
+import { isCommandAvailable, run } from '../utils/exec';
+
+vi.mock('../utils/exec', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../utils/exec')>();
+  return { ...actual, run: vi.fn(), isCommandAvailable: vi.fn() };
+});
+
+const runMock = vi.mocked(run);
+const commandAvailable = vi.mocked(isCommandAvailable);
+
+beforeEach(() => {
+  commandAvailable.mockReset().mockReturnValue(true);
+  runMock.mockReset().mockReturnValue({ success: true, output: '27.0.0' });
+});
 
 describe('Deployer', () => {
   it('resolves docker provider', () => {
@@ -110,6 +124,11 @@ describe('Deployer.deploy', () => {
 
     expect(dockerfile).toContain('http://127.0.0.1:3000/api/health');
     expect(flyToml).toContain('path = "/api/health"');
+    expect(runMock).toHaveBeenCalledWith(
+      'docker',
+      ['info', '--format', '{{.ServerVersion}}'],
+      expect.anything()
+    );
   });
 
   it('builds the Dockerfile from the detected package manager and start command', async () => {
