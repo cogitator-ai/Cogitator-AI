@@ -69,11 +69,12 @@ interface ListedPost {
   link_attachment_url?: string;
   topic_tag?: string;
   alt_text?: string;
+  quoted_post?: { id: string };
   replied_to?: { id: string };
 }
 
 const LOOKUP_FIELDS =
-  'id,text,timestamp,permalink,media_type,link_attachment_url,topic_tag,alt_text';
+  'id,text,timestamp,permalink,media_type,link_attachment_url,topic_tag,alt_text,quoted_post';
 
 /** A URL as compared with the one Threads lists: no trailing slashes. */
 function comparableUrl(url: string): string {
@@ -90,18 +91,20 @@ function mediaTypeOf(post: FeedPost): string {
 
 /**
  * Whether a listed post is `post` as published: the same kind, text, link
- * card, topic tag, alt text of a single image and the post it answers.
+ * card, topic tag, alt text of a single image, and the posts it answers and
+ * quotes. A quote post carries no link card, since Threads drops it.
  * Anything missing or different makes it another post, since posting twice
  * shows, while a post taken for another one is lost without a trace.
  */
 function samePost(listed: ListedPost, post: FeedPost, topicTag: string | undefined): boolean {
   const images = post.images ?? [];
   const alt = images.length === 1 ? (images[0]?.alt ?? '') : '';
-  const link = post.link ? comparableUrl(post.link.url) : '';
+  const link = post.link && !post.quote ? comparableUrl(post.link.url) : '';
   return (
     listed.media_type === mediaTypeOf(post) &&
     normalized(listed.text) === normalized(post.text) &&
     listed.replied_to?.id === post.replyTo &&
+    listed.quoted_post?.id === post.quote &&
     (listed.link_attachment_url ? comparableUrl(listed.link_attachment_url) : '') === link &&
     (listed.topic_tag === undefined ||
       listed.topic_tag.toLowerCase() === (topicTag ?? '').toLowerCase()) &&
@@ -303,7 +306,7 @@ export class ThreadsFeed implements FeedChannel {
         {
           media_type: 'TEXT',
           text: post.text,
-          ...(post.link && { link_attachment: post.link.url }),
+          ...(post.link && !post.quote && { link_attachment: post.link.url }),
           ...shared,
         },
         signal

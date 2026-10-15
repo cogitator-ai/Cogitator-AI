@@ -25,6 +25,7 @@ interface Listed {
   link_attachment_url?: string;
   topic_tag?: string;
   alt_text?: string;
+  quoted_post?: { id: string };
 }
 
 /** A time as the Threads API writes it, like `2026-10-09T10:00:00+0000`. */
@@ -442,7 +443,8 @@ describe('ThreadsFeed', () => {
     const lookups = api.calls.filter((call) => call.path === 'me/threads');
     expect(lookups).toHaveLength(2);
     expect(lookups[0].params).toMatchObject({
-      fields: 'id,text,timestamp,permalink,media_type,link_attachment_url,topic_tag,alt_text',
+      fields:
+        'id,text,timestamp,permalink,media_type,link_attachment_url,topic_tag,alt_text,quoted_post',
       since: String(Math.floor((keyTime - 60_000) / 1000)),
     });
   });
@@ -480,7 +482,7 @@ describe('ThreadsFeed', () => {
       path: 'me/replies',
       params: {
         fields:
-          'id,text,timestamp,permalink,media_type,link_attachment_url,topic_tag,alt_text,replied_to',
+          'id,text,timestamp,permalink,media_type,link_attachment_url,topic_tag,alt_text,quoted_post,replied_to',
       },
     });
     expect(api.calls.some((call) => call.method === 'POST')).toBe(false);
@@ -674,12 +676,44 @@ describe('ThreadsFeed', () => {
     expect(found.id).toBe('untagged');
   });
 
+  it('finds an earlier quote post by the post it quotes', async () => {
+    const threads = feed({ expiresAt: farFuture() });
+    const key = threads.idempotencyKey();
+    const at = iso(Number(key.split('.')[0]) + 1000);
+    api.threads = [
+      {
+        id: 'other-quote',
+        text: 'Worth a look',
+        timestamp: at,
+        media_type: 'TEXT_POST',
+        quoted_post: { id: '111' },
+      },
+      {
+        id: 'our-quote',
+        text: 'Worth a look',
+        timestamp: at,
+        media_type: 'TEXT_POST',
+        quoted_post: { id: '17890' },
+      },
+    ];
+    const found = await threads.publish(
+      { text: 'Worth a look', link: { url: 'https://example.com/story' }, quote: '17890' },
+      { idempotencyKey: key }
+    );
+    expect(found.id).toBe('our-quote');
+  });
+
   it('quotes a post in a text, image or carousel post, and refuses an id that is not one', async () => {
     const threads = feed({ expiresAt: farFuture(), checkQuota: false });
     const image = (n: number) => ({
       image: { type: 'image' as const, mimeType: 'image/jpeg', url: `https://cdn/${n}.jpg` },
     });
-    await threads.publish({ text: 'Worth a look', quote: '17890', replyTo: '17777' });
+    await threads.publish({
+      text: 'Worth a look',
+      link: { url: 'https://example.com/story' },
+      quote: '17890',
+      replyTo: '17777',
+    });
     await threads.publish({ text: 'A chart', images: [image(1)], quote: '17890' });
     await threads.publish({ text: 'Charts', images: [image(1), image(2)], quote: '17890' });
     const containers = api.calls.filter(
@@ -692,6 +726,7 @@ describe('ThreadsFeed', () => {
       ['CAROUSEL', '17890'],
     ]);
     expect(containers[0]?.params.reply_to_id).toBe('17777');
+    expect(containers[0]?.params.link_attachment).toBeUndefined();
     const items = api.calls.filter((call) => call.params.is_carousel_item === 'true');
     expect(items.every((call) => call.params.quote_post_id === undefined)).toBe(true);
 
