@@ -94,11 +94,17 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish to npm
+        id: npm
         # Needs the NPM_TOKEN repository secret (granular token with publish
         # rights that bypasses 2FA); skipped when it is not configured.
         # provenance=true signs each package with this workflow's OIDC token
         # (id-token: write above) and records it in the public transparency
         # log, so npm shows where and from which commit it was built.
+        # pnpm stops at the first package npm refuses, and npm can refuse a
+        # version it is still staging from an attempt whose answer was lost
+        # (409), so the publish is tried up to three times: each attempt skips
+        # the versions npm already has, and the summaries of all attempts are
+        # merged for the release step.
         run: |
           if [ -z "$NPM_TOKEN" ]; then
             echo "NPM_TOKEN is not set, skipping npm publish"
@@ -110,14 +116,40 @@ jobs:
             '@cogitator-ai:registry=https://registry.npmjs.org/' \
             '//registry.npmjs.org/:_authToken=${NPM_TOKEN}' \
             'provenance=true' > "$npmrc"
-          NPM_CONFIG_USERCONFIG="$npmrc" pnpm publish -r --access public --no-git-checks --report-summary
+          published="$RUNNER_TEMP/published.json"
+          echo '{"publishedPackages":[]}' > "$published"
+          collect() {
+            [ -f pnpm-publish-summary.json ] || return 0
+            node -e '
+              const fs = require("fs");
+              const [all, last] = process.argv.slice(1).map((file) => JSON.parse(fs.readFileSync(file, "utf8")));
+              all.publishedPackages.push(...(last.publishedPackages ?? []));
+              fs.writeFileSync(process.argv[1], JSON.stringify(all));
+            ' "$published" pnpm-publish-summary.json
+            rm pnpm-publish-summary.json
+          }
+          status=1
+          for attempt in 1 2 3; do
+            if NPM_CONFIG_USERCONFIG="$npmrc" pnpm publish -r --access public --no-git-checks --report-summary; then
+              status=0
+            fi
+            collect
+            [ "$status" -eq 0 ] && break
+            echo "npm publish attempt $attempt failed, trying the remaining packages again"
+            [ "$attempt" -lt 3 ] && sleep 60
+          done
+          cp "$published" pnpm-publish-summary.json
+          exit "$status"
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Create GitHub releases
         # Tags and releases every version just published (from the publish
         # summary) or already served by npm that has no release yet, with that
-        # version's CHANGELOG section as the notes.
+        # version's CHANGELOG section as the notes. It runs after a failed npm
+        # publish too, for the packages that did reach npm, but not when the
+        # publish never ran, since the version commit may not be on main then.
+        if: ${{ !cancelled() && (steps.npm.outcome == 'success' || steps.npm.outcome == 'failure') }}
         run: npx tsx scripts/github-releases.ts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
