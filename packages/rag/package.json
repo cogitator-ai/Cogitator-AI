@@ -39,7 +39,7 @@
   },
   "dependencies": {
     "@cogitator-ai/types": "workspace:*",
-    "zod": "^4.6.5"
+    "zod": "^4.6.7"
   },
   "peerDependencies": {
     "@cogitator-ai/memory": "workspace:>=0.12.5"
