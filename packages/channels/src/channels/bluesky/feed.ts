@@ -1,4 +1,11 @@
-import type { AppBskyFeedPost, Agent, BlobRef } from '@atproto/api';
+import type {
+  $Typed,
+  AppBskyEmbedExternal,
+  AppBskyEmbedImages,
+  AppBskyFeedPost,
+  Agent,
+  BlobRef,
+} from '@atproto/api';
 import type {
   FeedChannel,
   FeedLimits,
@@ -38,6 +45,7 @@ const encoder = new TextEncoder();
 const POST_COLLECTION = 'app.bsky.feed.post';
 const TID_CHARS = '234567abcdefghijklmnopqrstuvwxyz';
 const TID_PATTERN = /^[234567abcdefghij][234567abcdefghijklmnopqrstuvwxyz]{12}$/;
+const POST_URI = /^at:\/\/([^/]+)\/app\.bsky\.feed\.post\/([^/]+)$/;
 const MAX_REFS = 500;
 
 let lastTidMicros = 0;
@@ -68,7 +76,7 @@ interface PublishedRef extends StrongRef {
 
 /** The public URL of a post from its `at://` URI. */
 export function blueskyPostUrl(uri: string): string {
-  const match = /^at:\/\/([^/]+)\/app\.bsky\.feed\.post\/([^/]+)$/.exec(uri);
+  const match = POST_URI.exec(uri);
   if (!match) throw new FeedError('bluesky', 'invalid_post', `Not a Bluesky post URI: ${uri}`);
   return `https://bsky.app/profile/${match[1]}/post/${match[2]}`;
 }
@@ -180,6 +188,9 @@ export class BlueskyFeed implements FeedChannel {
         `The post has ${images.length} images, Bluesky takes ${BLUESKY_LIMITS.maxImages}`
       );
     }
+    if (post.quote !== undefined && !POST_URI.test(post.quote)) {
+      throw invalid(`The post to quote must be an at:// post URI, got "${post.quote}"`);
+    }
     if (images.length > 0 && post.link) {
       throw invalid('Bluesky shows either images or a link card: put the link in the text');
     }
@@ -210,7 +221,23 @@ export class BlueskyFeed implements FeedChannel {
     }
   }
 
+  /**
+   * The post's embed: its images or link card, the post it quotes, or the
+   * quote with its media.
+   */
   private async embed(agent: Agent, post: FeedPost): Promise<AppBskyFeedPost.Record['embed']> {
+    const media = await this.media(agent, post);
+    if (!post.quote) return media;
+    const quoted = (await this.locate(agent, post.quote, 'quote')).ref;
+    const record = { $type: 'app.bsky.embed.record' as const, record: quoted };
+    return media ? { $type: 'app.bsky.embed.recordWithMedia', record, media } : record;
+  }
+
+  /** The post's images, or its link card with an uploaded preview. */
+  private async media(
+    agent: Agent,
+    post: FeedPost
+  ): Promise<$Typed<AppBskyEmbedImages.Main> | $Typed<AppBskyEmbedExternal.Main> | undefined> {
     if (post.images?.length) {
       const images = await Promise.all(
         post.images.map(async (image, index) => ({
@@ -318,25 +345,39 @@ export class BlueskyFeed implements FeedChannel {
    * never waits for it.
    */
   private async replyRef(agent: Agent, uri: string): Promise<AppBskyFeedPost.ReplyRef> {
+    const { ref, root } = await this.locate(agent, uri, 'reply to');
+    return { root, parent: ref };
+  }
+
+  /**
+   * A post as a strong reference, with the root of the thread it is in:
+   * from the posts this feed published, from the account's own PDS for its
+   * other posts, otherwise from the AppView.
+   */
+  private async locate(
+    agent: Agent,
+    uri: string,
+    purpose: 'reply to' | 'quote'
+  ): Promise<{ ref: StrongRef; root: StrongRef }> {
     const known = this.refs.get(uri);
-    if (known) return { root: known.root, parent: { uri, cid: known.cid } };
-    const match = /^at:\/\/([^/]+)\/app\.bsky\.feed\.post\/([^/]+)$/.exec(uri);
+    if (known) return { ref: { uri, cid: known.cid }, root: known.root };
+    const match = POST_URI.exec(uri);
     if (match?.[1] && match[2] && match[1] === agent.did) {
       const own = await this.findRecord(agent, match[1], match[2]);
-      if (!own) throw new FeedError('bluesky', 'not_found', `No post ${uri} to reply to`);
-      const parent = { uri: own.uri, cid: own.cid };
-      return { root: own.reply?.root ?? parent, parent };
+      if (!own) throw new FeedError('bluesky', 'not_found', `No post ${uri} to ${purpose}`);
+      const ref = { uri: own.uri, cid: own.cid };
+      return { ref, root: own.reply?.root ?? ref };
     }
-    let parent: { uri: string; cid: string; record: unknown } | undefined;
+    let found: { uri: string; cid: string; record: unknown } | undefined;
     try {
       const response = await agent.getPosts({ uris: [uri] });
-      parent = response.data.posts[0];
+      found = response.data.posts[0];
     } catch (error) {
-      throw blueskyError(error, 'Loading the post to reply to');
+      throw blueskyError(error, `Loading the post to ${purpose}`);
     }
-    if (!parent) throw new FeedError('bluesky', 'not_found', `No post ${uri} to reply to`);
-    const root = replyRootOf(parent.record) ?? { uri: parent.uri, cid: parent.cid };
-    return { root, parent: { uri: parent.uri, cid: parent.cid } };
+    if (!found) throw new FeedError('bluesky', 'not_found', `No post ${uri} to ${purpose}`);
+    const ref = { uri: found.uri, cid: found.cid };
+    return { ref, root: replyRootOf(found.record) ?? ref };
   }
 
   /** Keeps where a published post sits, so replies to it need no lookup. */

@@ -20,7 +20,7 @@ Bluesky bots sign in with an app password, never the account password:
 
 ## Publishing
 
-`BlueskyFeed` publishes posts. Links, mentions and hashtags in the text become facets, so they are clickable. A link card gets its preview image uploaded first, and replies are placed in the thread of the post they answer.
+`BlueskyFeed` publishes posts. Links, mentions and hashtags in the text become facets, so they are clickable. A link card gets its preview image uploaded first, and replies are placed in the thread of the post they answer. `quote` embeds the post it names, on its own or together with the images or link card (`app.bsky.embed.recordWithMedia`), and a quote can be a reply too.
 
 ```typescript
 import { BlueskyFeed, FileTokenStore } from '@cogitator-ai/channels';

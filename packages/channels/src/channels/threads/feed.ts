@@ -40,6 +40,7 @@ const CLOCK_SKEW = 60_000;
 const QUOTA_MARGIN = 60_000;
 const QUOTA_WINDOW = 86_400;
 const LOOKUP_PAGES = 4;
+const MEDIA_ID = /^\d+$/;
 /**
  * The Graph API error subcode of a post Threads refuses for its topic tag:
  * an account that tags many posts can be blocked from tagging for a while,
@@ -292,6 +293,7 @@ export class ThreadsFeed implements FeedChannel {
     const shared: ThreadsParams = {
       ...(topicTag && { topic_tag: topicTag }),
       ...(post.replyTo && { reply_to_id: post.replyTo }),
+      ...(post.quote && { quote_post_id: post.quote }),
     };
     const images = post.images ?? [];
     let container: Container;
@@ -361,6 +363,9 @@ export class ThreadsFeed implements FeedChannel {
       throw invalid(`The text is ${length} long, Threads takes ${THREADS_LIMITS.maxLength}`);
     }
     const images = post.images ?? [];
+    if (post.quote !== undefined && !MEDIA_ID.test(post.quote)) {
+      throw invalid(`The post to quote must be a Threads media id, got "${post.quote}"`);
+    }
     if (images.length > 0 && post.link) {
       throw invalid('Threads shows either images or a link card: put the link in the text');
     }

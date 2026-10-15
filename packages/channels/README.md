@@ -240,7 +240,7 @@ Outbound calls (`sendText`, `editText`, `sendFile`, `deleteMessage`) throw when 
 
 ## Social Feeds
 
-Feeds publish posts instead of answering people. `BlueskyFeed` and `ThreadsFeed` publish text with a link card, images with alt text, tags and replies. `FeedPublisher` sends one post to several feeds, now or at `publishAt`:
+Feeds publish posts instead of answering people. `BlueskyFeed` and `ThreadsFeed` publish text with a link card, images with alt text, tags, replies and quotes of other posts. `FeedPublisher` sends one post to several feeds, now or at `publishAt`:
 
 ```typescript
 import {

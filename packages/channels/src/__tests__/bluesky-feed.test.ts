@@ -415,6 +415,65 @@ describe('BlueskyFeed', () => {
     expect(state.logins).toHaveLength(2);
   });
 
+  it('quotes a post it just published without asking the AppView', async () => {
+    const bluesky = feed();
+    const original = await bluesky.publish({ text: 'The story' });
+    await bluesky.publish({ text: 'Worth a second look', quote: original.id });
+    expect(state.posts[1].embed).toEqual({
+      $type: 'app.bsky.embed.record',
+      record: { uri: original.id, cid: 'cid-rkey1' },
+    });
+    expect(state.appViewReads).toBe(0);
+  });
+
+  it("quotes another account's post with images or a link card, and in a reply", async () => {
+    const quoted = 'at://did:plc:x/app.bsky.feed.post/q1';
+    state.existing.set(quoted, { uri: quoted, cid: 'q1-cid', record: { text: 'theirs' } });
+    state.existing.set('at://did:plc:x/app.bsky.feed.post/top', {
+      uri: 'at://did:plc:x/app.bsky.feed.post/top',
+      cid: 'top-cid',
+      record: { text: 'top' },
+    });
+    const bluesky = feed();
+    await bluesky.publish({
+      text: 'With a chart',
+      images: [{ image: png(10), alt: 'A chart' }],
+      quote: quoted,
+    });
+    await bluesky.publish({
+      text: 'With a card',
+      link: { url: 'https://example.com/story', title: 'Story' },
+      quote: quoted,
+      replyTo: 'at://did:plc:x/app.bsky.feed.post/top',
+    });
+    const record = { $type: 'app.bsky.embed.record', record: { uri: quoted, cid: 'q1-cid' } };
+    expect(state.posts[0].embed).toEqual({
+      $type: 'app.bsky.embed.recordWithMedia',
+      record,
+      media: {
+        $type: 'app.bsky.embed.images',
+        images: [{ image: { ref: 'blob1', mimeType: 'image/png' }, alt: 'A chart' }],
+      },
+    });
+    expect(state.posts[1].embed).toMatchObject({
+      $type: 'app.bsky.embed.recordWithMedia',
+      record,
+      media: { $type: 'app.bsky.embed.external', external: { uri: 'https://example.com/story' } },
+    });
+    expect(state.posts[1].reply).toMatchObject({
+      parent: { uri: 'at://did:plc:x/app.bsky.feed.post/top' },
+    });
+
+    await expect(
+      bluesky.publish({ text: 'x', quote: 'https://bsky.app/profile/x/post/1' })
+    ).rejects.toMatchObject({
+      code: 'invalid_post',
+    });
+    await expect(
+      bluesky.publish({ text: 'x', quote: 'at://did:plc:x/app.bsky.feed.post/gone' })
+    ).rejects.toMatchObject({ code: 'not_found' });
+  });
+
   it('shares one session between feeds of one account', async () => {
     const account = new BlueskyAccount({ identifier: 'mybot.bsky.social', appPassword: 'p' });
     await new BlueskyFeed({ account }).publish({ text: 'a' });

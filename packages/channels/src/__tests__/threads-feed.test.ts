@@ -674,6 +674,32 @@ describe('ThreadsFeed', () => {
     expect(found.id).toBe('untagged');
   });
 
+  it('quotes a post in a text, image or carousel post, and refuses an id that is not one', async () => {
+    const threads = feed({ expiresAt: farFuture(), checkQuota: false });
+    const image = (n: number) => ({
+      image: { type: 'image' as const, mimeType: 'image/jpeg', url: `https://cdn/${n}.jpg` },
+    });
+    await threads.publish({ text: 'Worth a look', quote: '17890', replyTo: '17777' });
+    await threads.publish({ text: 'A chart', images: [image(1)], quote: '17890' });
+    await threads.publish({ text: 'Charts', images: [image(1), image(2)], quote: '17890' });
+    const containers = api.calls.filter(
+      (call) =>
+        call.method === 'POST' && call.path === 'me/threads' && !call.params.is_carousel_item
+    );
+    expect(containers.map((call) => [call.params.media_type, call.params.quote_post_id])).toEqual([
+      ['TEXT', '17890'],
+      ['IMAGE', '17890'],
+      ['CAROUSEL', '17890'],
+    ]);
+    expect(containers[0]?.params.reply_to_id).toBe('17777');
+    const items = api.calls.filter((call) => call.params.is_carousel_item === 'true');
+    expect(items.every((call) => call.params.quote_post_id === undefined)).toBe(true);
+
+    await expect(
+      threads.publish({ text: 'x', quote: 'https://www.threads.net/@a/post/abc' })
+    ).rejects.toMatchObject({ code: 'invalid_post' });
+  });
+
   it('deletes a post', async () => {
     await feed({ expiresAt: farFuture() }).delete('media-1');
     expect(api.calls).toMatchObject([{ method: 'DELETE', path: 'media-1' }]);

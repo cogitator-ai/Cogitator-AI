@@ -45,14 +45,15 @@ for (const delivery of job.deliveries)
 
 A `FeedPost` is what every feed understands:
 
-| Field     | What it is                                                                                                                    |
-| --------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `text`    | The text of the post                                                                                                          |
-| `link`    | A link card: `url`, `title`, `description`, and a preview `image` (Bluesky uploads it, Threads builds the card from the page) |
-| `images`  | Images with `alt` text and `aspectRatio`. A post has images or a link card, not both                                          |
-| `tags`    | Topics. Threads takes the first as its topic tag, Bluesky adds them as hashtags outside the text                              |
-| `langs`   | Languages of the text, as BCP 47 tags                                                                                         |
-| `replyTo` | The id of a post of the same feed this post answers                                                                           |
+| Field     | What it is                                                                                                                        |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `text`    | The text of the post                                                                                                              |
+| `link`    | A link card: `url`, `title`, `description`, and a preview `image` (Bluesky uploads it, Threads builds the card from the page)     |
+| `images`  | Images with `alt` text and `aspectRatio`. A post has images or a link card, not both                                              |
+| `tags`    | Topics. Threads takes the first as its topic tag, Bluesky adds them as hashtags outside the text                                  |
+| `langs`   | Languages of the text, as BCP 47 tags                                                                                             |
+| `replyTo` | The id of a post of the same feed this post answers                                                                               |
+| `quote`   | The id of a post of the same feed this post quotes, shown inside it. It goes with text, images or a link card, and with `replyTo` |
 
 Each feed checks a post against its rules before it sends anything and fails with a `FeedError` of code `invalid_post` when it breaks one.
 

@@ -38,6 +38,11 @@ export interface FeedPost {
   langs?: string[];
   /** The id of a post of the same feed this post answers. */
   replyTo?: string;
+  /**
+   * The id of a post of the same feed this post quotes, shown inside it.
+   * A quote goes with text, images or a link card, and with `replyTo`.
+   */
+  quote?: string;
 }
 
 export interface PublishedPost {
