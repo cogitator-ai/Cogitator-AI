@@ -256,7 +256,7 @@ interface RunOptions {
   onToolResult?: (result: ToolResult) => void;
   onRunStart?: (data: { runId: string; agentId: string; input: string; threadId: string }) => void;
   onRunComplete?: (result: RunResult) => void;
-  onRunError?: (error: Error, runId: string) => void;
+  onRunError?: (error: Error, runId: string, usage?: RunUsage) => void; // usage of the finished model calls
   onSpan?: (span: Span) => void;
   onMemoryError?: (error: Error, operation: 'save' | 'load') => void;
 }
@@ -1248,7 +1248,7 @@ try {
 
 String enum (each value equals its name); `ERROR_STATUS_CODES` maps each to an HTTP status (`RUN_TIMEOUT` 504, `BUDGET_EXCEEDED` 429, `LLM_CONTENT_FILTERED` 400).
 
-`cog.run()` throws a `CogitatorError` when the run hits its `timeout` (`Run timed out after <n>ms` → `RUN_TIMEOUT`), when cost routing finds the budget exceeded (`Budget exceeded: …` → `BUDGET_EXCEEDED`), and when guardrails block the input or output (`Input blocked: …` / `Output blocked: …` → `LLM_CONTENT_FILTERED`, with `details.harmScores`), so server adapters answer with that status and message.
+`cog.run()` throws a `CogitatorError` when the run hits its `timeout` (`Run timed out after <n>ms` → `RUN_TIMEOUT`, with what the finished model calls used and cost in `details.usage`), when cost routing finds the budget exceeded (`Budget exceeded: …` → `BUDGET_EXCEEDED`), and when guardrails block the input or output (`Input blocked: …` / `Output blocked: …` → `LLM_CONTENT_FILTERED`, with `details.harmScores`), so server adapters answer with that status and message.
 
 ```typescript
 enum ErrorCode {

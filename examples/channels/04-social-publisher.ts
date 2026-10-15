@@ -10,8 +10,9 @@ import {
 
 /**
  * One post to Bluesky and Threads: each feed gets the text fitted to its
- * limit, the publication is idempotent by key, and a second post waits
- * for its time in a store that survives restarts. Runs as a dry run unless
+ * limit, the publication is idempotent by key, each feed quotes the post it
+ * got, and a second post waits for its time in a store that survives
+ * restarts. Runs as a dry run unless
  * PUBLISH=1, so trying it posts nothing.
  */
 const tokens = new FileTokenStore({ path: '.cogitator/tokens.json' });
@@ -63,6 +64,16 @@ const { job, duplicate } = await publisher.publish(
 console.log(duplicate ? '  Already published under this key.' : `  Job ${job.id}:`);
 for (const delivery of job.deliveries) {
   console.log(`  - ${delivery.feed}: ${delivery.status}`);
+}
+
+console.log('\n  Quoting the story on each feed it reached:');
+for (const delivery of job.deliveries) {
+  if (delivery.status !== 'published' || !delivery.post) continue;
+  const quoted = await publisher.publish(
+    { text: 'In case you missed it this morning:', quote: delivery.post.id },
+    { feeds: [delivery.feed], key: `example-quote-${delivery.feed}-${today}` }
+  );
+  console.log(`  - ${delivery.feed}: ${quoted.job.deliveries[0]?.status}`);
 }
 
 const scheduled = await publisher.publish(

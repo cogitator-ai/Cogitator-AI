@@ -57,6 +57,18 @@ A `FeedPost` is what every feed understands:
 
 Each feed checks a post against its rules before it sends anything and fails with a `FeedError` of code `invalid_post` when it breaks one.
 
+`replyTo` and `quote` name a post of one feed, so a reply or a quote goes to that feed only. With `FeedPublisher`, take the id from the delivery of that feed and publish with `feeds: [delivery.feed]`:
+
+```typescript
+for (const delivery of job.deliveries) {
+  if (!delivery.post) continue;
+  await publisher.publish(
+    { text: 'In case you missed it:', quote: delivery.post.id },
+    { feeds: [delivery.feed], key: `quote-${delivery.feed}-${today}` }
+  );
+}
+```
+
 |              | Bluesky                      | Threads                                            |
 | ------------ | ---------------------------- | -------------------------------------------------- |
 | Text         | 300 graphemes and 3000 bytes | 500 characters, emoji counted by their UTF-8 bytes |

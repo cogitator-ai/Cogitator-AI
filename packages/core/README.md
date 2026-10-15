@@ -811,7 +811,7 @@ const result = await cog.run(agent, {
   onSpan: (span) => console.log('Span:', span.name),
   onRunStart: ({ runId }) => console.log('Started:', runId),
   onRunComplete: (result) => console.log('Completed'),
-  onRunError: (error) => console.error('Error:', error),
+  onRunError: (error, runId, usage) => console.error('Error:', error, 'spent', usage?.cost),
   onMemoryError: (error, op) => console.warn(`Memory ${op} failed`),
 });
 ```
@@ -2246,7 +2246,7 @@ try {
 }
 ```
 
-Runs that hit their `timeout` throw `RUN_TIMEOUT` (HTTP 504, `Run timed out after <n>ms`), runs over the cost-routing budget `BUDGET_EXCEEDED` (429), and input or output blocked by guardrails (`Input blocked: …` / `Output blocked: …`) `LLM_CONTENT_FILTERED` (400), so server adapters return those statuses and messages.
+Runs that hit their `timeout` throw `RUN_TIMEOUT` (HTTP 504, `Run timed out after <n>ms`), runs over the cost-routing budget `BUDGET_EXCEEDED` (429), and input or output blocked by guardrails (`Input blocked: …` / `Output blocked: …`) `LLM_CONTENT_FILTERED` (400), so server adapters return those statuses and messages. A failed run still reports what its finished model calls used and cost: `onRunError` gets it as its third argument, a `RUN_TIMEOUT` error carries it in `details.usage`, and each `llm.chat` span has its call's cost in `llm.cost`.
 
 ---
 

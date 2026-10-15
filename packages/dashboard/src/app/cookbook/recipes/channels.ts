@@ -218,6 +218,7 @@ process.on('SIGINT', async () => {
         'One `FeedPublisher` sends a post to every feed and tracks each delivery on its own',
         'Text longer than a feed takes is cut at a word for that feed: 300 graphemes on Bluesky, 500 characters on Threads',
         'The same `key` publishes once, and `publishAt` schedules a post in a store that survives restarts',
+        'A post quotes another with `quote`: its id belongs to one feed, so the quote goes to that feed only',
         'The Bluesky session and the Threads token live in a `TokenStore`, and the Threads token renews itself before it expires',
       ],
       file: 'social-publisher.ts',
@@ -253,6 +254,14 @@ const { job, duplicate } = await publisher.publish(
   { key: \`story-\${today}\` }
 );
 console.log(duplicate ? 'Already published today' : \`Job \${job.id}\`);
+
+for (const delivery of job.deliveries) {
+  if (!delivery.post) continue;
+  await publisher.publish(
+    { text: 'In case you missed it:', quote: delivery.post.id },
+    { feeds: [delivery.feed], key: \`quote-\${delivery.feed}-\${today}\` }
+  );
+}
 
 await publisher.publish(
   { text: 'Good morning! Three things worth reading today:', link: { url: 'https://example.com/brief' } },
