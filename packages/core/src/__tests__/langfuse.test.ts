@@ -197,6 +197,24 @@ describe('LangfuseExporter', () => {
   });
 
   describe('onRunError', () => {
+    it('keeps what a failed run spent in the trace metadata', () => {
+      exporter.onRunStart({ runId: 'run-3', agentId: 'agent-1', agentName: 'Test', input: 'Hi' });
+      const usage = {
+        inputTokens: 100,
+        outputTokens: 20,
+        totalTokens: 120,
+        cost: 0.01,
+        duration: 80,
+      };
+
+      exporter.observer().onRunError?.(new Error('timed out'), 'run-3', usage);
+
+      expect(mockClient._mockTrace.update).toHaveBeenCalledWith({
+        output: { error: { name: 'Error', message: 'timed out' } },
+        metadata: { status: 'error', error: { name: 'Error', message: 'timed out' }, usage },
+      });
+    });
+
     it('marks the trace failed, ends what is open as ERROR and drops the run', () => {
       exporter.onRunStart({ runId: 'run-1', agentId: 'agent-1', agentName: 'Test', input: 'Hi' });
       exporter.onToolCall('run-1', { id: 'call-1', name: 'search', arguments: {} });

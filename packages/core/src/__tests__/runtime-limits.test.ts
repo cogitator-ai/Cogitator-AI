@@ -86,6 +86,61 @@ describe('llm.defaultModel', () => {
   });
 });
 
+describe('a run cut short', () => {
+  it('reports what its finished model calls used and cost', async () => {
+    let calls = 0;
+    const { backend } = scriptedBackend((request) => {
+      calls += 1;
+      if (calls === 1) {
+        return Promise.resolve({
+          id: 'r1',
+          content: '',
+          toolCalls: [{ id: 'c1', name: 'lookup', arguments: {} }],
+          finishReason: 'tool_calls',
+          usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120, cost: 0.01 },
+        });
+      }
+      return new Promise((_resolve, reject) => {
+        request.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+      });
+    });
+    await useBackend(backend);
+    const observed = vi.fn();
+    const spans: Array<{ name: string; attributes: Record<string, unknown> }> = [];
+    const cog = new Cogitator({ observers: [{ onRunError: observed }] });
+    const lookup = tool({
+      name: 'lookup',
+      description: 'Looks something up',
+      parameters: z.object({}),
+      execute: async () => 'found',
+    });
+    const onRunError = vi.fn();
+
+    const error = await cog
+      .run(new Agent({ name: 'a', model: 'openai/x', instructions: 'x', tools: [lookup] }), {
+        input: 'hi',
+        timeout: 80,
+        onRunError,
+        onSpan: (span) => void spans.push(span),
+      })
+      .catch((e: unknown) => e);
+
+    const usage = expect.objectContaining({
+      inputTokens: 100,
+      outputTokens: 20,
+      totalTokens: 120,
+      cost: 0.01,
+    });
+    expect(error).toBeInstanceOf(CogitatorError);
+    expect((error as CogitatorError).code).toBe(ErrorCode.RUN_TIMEOUT);
+    expect((error as CogitatorError).details).toEqual({ timeout: 80, usage });
+    expect(onRunError).toHaveBeenCalledWith(error, expect.any(String), usage);
+    expect(observed).toHaveBeenCalledWith(error, expect.any(String), usage);
+    expect(spans.find((span) => span.name === 'llm.chat')?.attributes['llm.cost']).toBe(0.01);
+    await cog.close();
+  });
+});
+
 describe('limits.defaultTimeout', () => {
   it('times out runs whose agent sets no timeout', async () => {
     const { backend } = scriptedBackend(

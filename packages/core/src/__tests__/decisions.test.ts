@@ -399,6 +399,7 @@ describe('cog.decide', () => {
   });
 
   it('records what an answer cost even when the answer is invalid', async () => {
+    const onRunError = vi.fn();
     const decide = vi.fn(async (request: DecisionRequest) => ({
       model: request.model,
       answers: {},
@@ -407,10 +408,16 @@ describe('cog.decide', () => {
     const cog = new Cogitator({
       llm: { backends: {}, decisionBackends: { acme: { provider: 'acme', decide } }, retry: false },
       costRouting: { enabled: true, budget: { maxCostPerHour: 0.001 } },
+      observers: [{ onRunError }],
     });
     const ask = () =>
       cog.decide({ model: 'acme/judge-1', state: 'x', questions: { spam: questions.spam } });
     await expect(ask()).rejects.toMatchObject({ code: ErrorCode.LLM_INVALID_RESPONSE });
+    expect(onRunError).toHaveBeenCalledWith(
+      expect.objectContaining({ code: ErrorCode.LLM_INVALID_RESPONSE }),
+      expect.any(String),
+      expect.objectContaining({ inputTokens: 5, outputTokens: 0, cost: 0.002 })
+    );
     await expect(ask()).rejects.toMatchObject({ code: ErrorCode.BUDGET_EXCEEDED });
     expect(decide).toHaveBeenCalledOnce();
   });

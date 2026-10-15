@@ -41,7 +41,11 @@ export interface RunObserver {
   /** A finished span of the run, with the id of the run it belongs to. */
   onSpan?(span: Span, run: { runId: string }): void;
   onRunComplete?(result: RunResult): void;
-  onRunError?(error: Error, runId: string): void;
+  /**
+   * A run that failed, with what its finished model calls used and cost:
+   * a run cut short by its timeout or an abort still spent them.
+   */
+  onRunError?(error: Error, runId: string, usage?: RunUsage): void;
   /** Called by `cogitator.close()`: send what is still buffered and release resources. */
   close?(): Promise<void> | void;
 }
@@ -185,8 +189,8 @@ export interface RunOptions {
   onRunStart?: (data: { runId: string; agentId: string; input: string; threadId: string }) => void;
   /** Callback when run completes */
   onRunComplete?: (result: RunResult) => void;
-  /** Callback when run fails */
-  onRunError?: (error: Error, runId: string) => void;
+  /** Callback when run fails, with what its finished model calls used and cost */
+  onRunError?: (error: Error, runId: string, usage?: RunUsage) => void;
   /** Callback when a span is created */
   onSpan?: (span: Span) => void;
   /** Callback when memory operation fails */
@@ -396,6 +400,9 @@ export interface ResumeOptions extends Omit<
 
 /** Why the model's last answer in a run was withheld; see `RunResult.blocked`. */
 export type RunBlockReason = 'content_filter' | 'refusal';
+
+/** What a run's model calls used and cost, so far or in all. */
+export type RunUsage = RunResult['usage'];
 
 export interface RunResult {
   readonly output: string;

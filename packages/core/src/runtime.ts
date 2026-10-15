@@ -4,6 +4,7 @@ import type {
   RunObserver,
   RunOptions,
   RunResult,
+  RunUsage,
   RunBlockReason,
   Message,
   ToolCall,
@@ -460,9 +461,9 @@ export class Cogitator implements ToolInvoker {
         options.onRunComplete?.(result);
         notify('onRunComplete', (observer) => observer.onRunComplete?.(result));
       },
-      onRunError: (error, id) => {
-        options.onRunError?.(error, id);
-        notify('onRunError', (observer) => observer.onRunError?.(error, id));
+      onRunError: (error, id, usage) => {
+        options.onRunError?.(error, id, usage);
+        notify('onRunError', (observer) => observer.onRunError?.(error, id, usage));
       },
     };
   }
@@ -491,6 +492,7 @@ export class Cogitator implements ToolInvoker {
       this.config.limits?.defaultTimeout ??
       DEFAULT_RUN_TIMEOUT;
     const abortController = new AbortController();
+    let usageSoFar: () => RunUsage | undefined = () => undefined;
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     let removeParentAbortListener: (() => void) | undefined;
 
@@ -511,11 +513,12 @@ export class Cogitator implements ToolInvoker {
 
     if (timeout && timeout > 0 && timeout <= MAX_TIMER_DELAY_MS) {
       timeoutId = setTimeout(() => {
+        const usage = usageSoFar();
         abortController.abort(
           new CogitatorError({
             message: `Run timed out after ${timeout}ms`,
             code: ErrorCode.RUN_TIMEOUT,
-            details: { timeout },
+            details: { timeout, ...(usage && { usage }) },
           })
         );
       }, timeout);
@@ -655,6 +658,16 @@ export class Cogitator implements ToolInvoker {
       let reasoningTokens = checkpoint?.usage.reasoningTokens ?? 0;
       const costMeter = new RunCostMeter(checkpoint?.usage.cost, checkpoint?.usage);
       const costModel = effectiveModel;
+      usageSoFar = () => ({
+        inputTokens: totalInputTokens,
+        outputTokens: totalOutputTokens,
+        totalTokens: totalInputTokens + totalOutputTokens,
+        cost: costMeter.total(costModel),
+        duration: Date.now() - startTime,
+        ...(reasoningTokens > 0 && { reasoningTokens }),
+        ...(cachedInputTokens > 0 && { cachedInputTokens }),
+        ...(cacheWriteTokens > 0 && { cacheWriteTokens }),
+      });
       const reasoningParts: string[] = [...(checkpoint?.reasoning ?? [])];
       let reasoning = options.reasoning ?? active.config.reasoning;
       const promptCache = this.config.llm?.promptCache ?? {};
@@ -1037,6 +1050,10 @@ export class Cogitator implements ToolInvoker {
         }
         response = normalizeTurn(response);
 
+        const spentBefore = costMeter.total(costModel);
+        costMeter.add(response.usage, effectiveModel);
+        const callCost = costMeter.total(costModel) - spentBefore;
+
         const llmSpan = createSpan(
           'llm.chat',
           traceId,
@@ -1048,6 +1065,7 @@ export class Cogitator implements ToolInvoker {
             'llm.iteration': iterations,
             'llm.input_tokens': response.usage.inputTokens,
             'llm.output_tokens': response.usage.outputTokens,
+            'llm.cost': callCost,
             ...(response.usage.cachedInputTokens && {
               'llm.cached_input_tokens': response.usage.cachedInputTokens,
             }),
@@ -1068,8 +1086,6 @@ export class Cogitator implements ToolInvoker {
         cacheWriteTokens += response.usage.cacheWriteTokens ?? 0;
         reasoningTokens += response.usage.reasoningTokens ?? 0;
         lastFinishReason = response.finishReason;
-        const spentBefore = costMeter.total(costModel);
-        costMeter.add(response.usage, effectiveModel);
         if (response.usage.cost === undefined) {
           this.state.costRouter?.noteUnreportedCost(effectiveModel);
         }
@@ -1080,7 +1096,7 @@ export class Cogitator implements ToolInvoker {
           model: effectiveModel,
           inputTokens: response.usage.inputTokens,
           outputTokens: response.usage.outputTokens,
-          cost: costMeter.total(costModel) - spentBefore,
+          cost: callCost,
         });
         if (response.reasoning) reasoningParts.push(response.reasoning);
 
@@ -1356,7 +1372,11 @@ export class Cogitator implements ToolInvoker {
       );
       spans.unshift(errorSpan);
 
-      options.onRunError?.(error instanceof Error ? error : new Error(String(error)), runId);
+      options.onRunError?.(
+        error instanceof Error ? error : new Error(String(error)),
+        runId,
+        usageSoFar()
+      );
 
       throw error;
     } finally {

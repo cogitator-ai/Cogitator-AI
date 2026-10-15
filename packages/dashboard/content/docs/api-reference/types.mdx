@@ -85,7 +85,7 @@ interface RunOptions {
   saveHistory?: boolean; // default: true
   onRunStart?: (data: { runId: string; agentId: string; input: string; threadId: string }) => void;
   onRunComplete?: (result: RunResult) => void;
-  onRunError?: (error: Error, runId: string) => void;
+  onRunError?: (error: Error, runId: string, usage?: RunUsage) => void;
   onSpan?: (span: Span) => void;
   onMemoryError?: (error: Error, operation: 'save' | 'load') => void;
   parallelToolCalls?: boolean; // default: false

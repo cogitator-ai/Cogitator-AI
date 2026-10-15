@@ -2,6 +2,7 @@ import type {
   Span,
   RunObserver,
   RunResult,
+  RunUsage,
   ToolCall,
   ToolResult,
   Message,
@@ -103,16 +104,20 @@ export class LangfuseExporter {
 
   /**
    * Marks the run's trace as failed: an ERROR event with the message, the
-   * error as its output, and every span and generation still open ended as
-   * ERROR. The run's state is dropped, as on completion.
+   * error as its output, what the finished model calls used and cost in its
+   * metadata, and every span and generation still open ended as ERROR. The
+   * run's state is dropped, as on completion.
    */
-  onRunError(error: Error, runId: string): void {
+  onRunError(error: Error, runId: string, usage?: RunUsage): void {
     const trace = this.activeTraces.get(runId);
     if (!trace) return;
 
     const failure = { name: error.name, message: error.message };
     trace.event({ name: 'run-error', level: 'ERROR', statusMessage: error.message });
-    trace.update({ output: { error: failure }, metadata: { status: 'error', error: failure } });
+    trace.update({
+      output: { error: failure },
+      metadata: { status: 'error', error: failure, ...(usage && { usage }) },
+    });
 
     for (const [spanId, ownerRunId] of this.spanRunIds) {
       if (ownerRunId === runId)
@@ -141,7 +146,7 @@ export class LangfuseExporter {
         this.onSpanEnd(span);
       },
       onRunComplete: (result) => this.onRunComplete(result),
-      onRunError: (error, runId) => this.onRunError(error, runId),
+      onRunError: (error, runId, usage) => this.onRunError(error, runId, usage),
       close: () => this.shutdown(),
     };
   }

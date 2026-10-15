@@ -13,12 +13,12 @@ Both exporters are **off unless you pass `enabled: true`**; a disabled exporter 
 
 Every run produces spans, returned in `result.trace.spans` and streamed one by one to `onSpan` as they finish:
 
-| Span            | Kind       | Attributes                                                                                                                                      |
-| --------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `agent.run`     | `server`   | `agent.id`, `agent.name`, `agent.model`, `run.id`, `run.thread_id`, `run.iterations`, `run.tool_calls`, `run.input_tokens`, `run.output_tokens` |
-| `llm.chat`      | `client`   | `llm.model`, `llm.iteration`, `llm.input_tokens`, `llm.output_tokens`, `llm.cached_input_tokens`, `llm.reasoning_tokens`, `llm.finish_reason`   |
-| `tool.<name>`   | `internal` | `tool.name`, `tool.call_id`, `tool.arguments`, `tool.success`, `tool.error`                                                                     |
-| `agent.handoff` | `internal` | `handoff.from`, `handoff.to`                                                                                                                    |
+| Span            | Kind       | Attributes                                                                                                                                                |
+| --------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent.run`     | `server`   | `agent.id`, `agent.name`, `agent.model`, `run.id`, `run.thread_id`, `run.iterations`, `run.tool_calls`, `run.input_tokens`, `run.output_tokens`           |
+| `llm.chat`      | `client`   | `llm.model`, `llm.iteration`, `llm.input_tokens`, `llm.output_tokens`, `llm.cost`, `llm.cached_input_tokens`, `llm.reasoning_tokens`, `llm.finish_reason` |
+| `tool.<name>`   | `internal` | `tool.name`, `tool.call_id`, `tool.arguments`, `tool.success`, `tool.error`                                                                               |
+| `agent.handoff` | `internal` | `handoff.from`, `handoff.to`                                                                                                                              |
 
 The root `agent.run` span is emitted last (when the run ends); a failed run emits it with status `error` and an `error` attribute.
 

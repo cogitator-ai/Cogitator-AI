@@ -582,7 +582,11 @@ describe('Cogitator', () => {
           })
         ).rejects.toThrow('start callback failed');
 
-        expect(onRunError).toHaveBeenCalledWith(startError, expect.stringMatching(/^run_/));
+        expect(onRunError).toHaveBeenCalledWith(
+          startError,
+          expect.stringMatching(/^run_/),
+          undefined
+        );
         expect(mockBackendHelper.backend.chat).not.toHaveBeenCalled();
 
         await cog.close();
@@ -623,7 +627,11 @@ describe('Cogitator', () => {
         await expect(cog.run(agent, { input: 'Test', onRunError })).rejects.toThrow('API Error');
 
         expect(onRunError).toHaveBeenCalledTimes(1);
-        expect(onRunError).toHaveBeenCalledWith(expect.any(Error), expect.stringMatching(/^run_/));
+        expect(onRunError).toHaveBeenCalledWith(
+          expect.any(Error),
+          expect.stringMatching(/^run_/),
+          expect.objectContaining({ inputTokens: 0, outputTokens: 0, cost: 0 })
+        );
 
         await cog.close();
       });

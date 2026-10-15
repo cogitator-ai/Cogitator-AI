@@ -14,6 +14,7 @@ import {
   type LLMRetryConfig,
   type RunObserver,
   type RunResult,
+  type RunUsage,
   type Span,
 } from '@cogitator-ai/types';
 import { llmInvalidResponse, type LLMErrorContext } from '../llm/errors';
@@ -204,6 +205,7 @@ export async function runDecision<TQuestions extends DecisionQuestions>(
       model: qualified,
     })
   );
+  let spent: RunUsage | undefined;
   try {
     run.checkBudget?.(estimatedCost(qualified, options));
     const response = await retryLLMCall(
@@ -241,6 +243,13 @@ export async function runDecision<TQuestions extends DecisionQuestions>(
       outputTokens: usage.outputTokens,
       cost: usage.cost,
     });
+    spent = {
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      totalTokens: usage.inputTokens + usage.outputTokens,
+      cost: usage.cost,
+      duration: usage.duration,
+    };
     const answers = toDecisionAnswers(
       options.questions,
       response,
@@ -295,7 +304,7 @@ export async function runDecision<TQuestions extends DecisionQuestions>(
     };
   } catch (caught) {
     const error = caught instanceof Error ? caught : new Error(String(caught));
-    notify(run.observers, 'onRunError', (observer) => observer.onRunError?.(error, runId));
+    notify(run.observers, 'onRunError', (observer) => observer.onRunError?.(error, runId, spent));
     throw error;
   }
 }
