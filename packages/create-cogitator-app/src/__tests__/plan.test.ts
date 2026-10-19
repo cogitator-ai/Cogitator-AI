@@ -196,6 +196,43 @@ describe('CI workflow', () => {
   });
 });
 
+describe('next steps around the compose services', () => {
+  const commands = (
+    overrides: Partial<ProjectSpecInput>,
+    state: { servicesStarted?: boolean; modelPulling?: boolean; modelReady?: boolean } = {}
+  ) =>
+    planProject(specFor('basic', 'ollama', overrides))
+      .nextSteps({ installed: true, keyWritten: true, modelReady: false, ...state })
+      .map((step) => step.command);
+
+  it('starts the services with docker compose until they are started', () => {
+    expect(commands({ memory: 'redis' })).toContain('docker compose up -d');
+    expect(commands({ memory: 'redis' }, { servicesStarted: true })).not.toContain(
+      'docker compose up -d'
+    );
+  });
+
+  it('follows the pull in the Ollama container while it runs, and pulls by hand otherwise', () => {
+    const model = defaultModel('ollama');
+    const pulling = commands({}, { servicesStarted: true, modelPulling: true });
+    expect(pulling).toContain('docker compose logs -f ollama-pull');
+    expect(pulling).not.toContain(`ollama pull ${model}`);
+    const native = commands({}, { servicesStarted: true });
+    expect(native).toContain(`ollama pull ${model}`);
+    expect(native).not.toContain('docker compose logs -f ollama-pull');
+    expect(
+      commands({}, { servicesStarted: true, modelPulling: true, modelReady: true })
+    ).not.toContain('docker compose logs -f ollama-pull');
+  });
+
+  it('marks the model pull of compose as one-shot', () => {
+    const plan = planProject(specFor('basic', 'ollama', { memory: 'redis' }));
+    expect(plan.services).toEqual(expect.arrayContaining(['ollama', 'ollama-pull', 'redis']));
+    expect(plan.oneShotServices).toEqual(['ollama-pull']);
+    expect(planProject(specFor('basic', 'ollama', { compose: false })).oneShotServices).toEqual([]);
+  });
+});
+
 describe('Yarn', () => {
   const plan = (packageManagerSpec?: string) =>
     planProject(specFor('basic', 'openai', { packageManager: 'yarn' }), { packageManagerSpec });

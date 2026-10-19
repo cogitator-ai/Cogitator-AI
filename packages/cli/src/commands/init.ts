@@ -7,10 +7,13 @@ import {
   detectPackageManagerSpec,
   firstRunNotice,
   installFailure,
+  isInteractive,
+  offerServices,
   parseSpec,
   payloadFor,
   scaffold,
   sendTelemetry,
+  servicesToStart,
   telemetryDisabledReason,
   validateProjectName,
   type ProjectSpecInput,
@@ -335,11 +338,17 @@ export const initCommand = new Command('init')
       }
       if (telemetry) await sendTelemetry(payloadFor(result.plan.spec, installFailure(result)));
 
+      const services = isInteractive({ yes: false, json: false })
+        ? await servicesToStart(result.plan)
+        : undefined;
+      const servicesStarted = services !== undefined && (await offerServices(directory, services));
       const steps = result.plan.nextSteps({
         directory: answers.projectName,
         installed: result.install.status === 'done',
         keyWritten: true,
         modelReady: answers.provider !== 'ollama',
+        servicesStarted,
+        modelPulling: servicesStarted && services.services.includes('ollama'),
       });
       p.note(
         steps.map((step) => `${step.command}${step.note ? `  # ${step.note}` : ''}`).join('\n'),

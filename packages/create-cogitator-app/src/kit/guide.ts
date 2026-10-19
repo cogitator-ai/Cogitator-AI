@@ -18,6 +18,10 @@ export interface SetupState {
   keyWritten: boolean;
   /** Whether the Ollama model is known to be pulled. */
   modelReady: boolean;
+  /** Whether the compose services were started already. */
+  servicesStarted?: boolean;
+  /** Whether the Ollama container compose started is pulling the model. */
+  modelPulling?: boolean;
 }
 
 function quoteDirectory(directory: string): string {
@@ -42,15 +46,22 @@ export function nextSteps(project: ProjectBuilder, state: SetupState): NextStep[
     steps.push({ command: 'cp .env.example .env', note: `then set ${info.envKey} in .env` });
   }
   if (spec.provider === 'ollama' && !state.modelReady) {
-    steps.push({
-      command: `ollama pull ${bareModel(spec)}`,
-      note: spec.compose
-        ? 'or let `docker compose up -d` pull it into the Ollama container'
-        : 'download the model the agents use',
-    });
+    steps.push(
+      spec.compose && state.modelPulling
+        ? {
+            command: 'docker compose logs -f ollama-pull',
+            note: `the Ollama container is pulling ${bareModel(spec)}, wait for it to finish`,
+          }
+        : {
+            command: `ollama pull ${bareModel(spec)}`,
+            note: spec.compose
+              ? 'or let `docker compose up -d` pull it into the Ollama container'
+              : 'download the model the agents use',
+          }
+    );
   }
   const services = backingServices(project);
-  if (spec.compose && services.length > 0) {
+  if (spec.compose && services.length > 0 && !state.servicesStarted) {
     steps.push({ command: 'docker compose up -d', note: `starts ${services.join(', ')}` });
   }
   steps.push(...project.nextSteps);

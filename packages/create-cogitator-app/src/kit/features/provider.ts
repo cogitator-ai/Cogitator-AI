@@ -42,6 +42,7 @@ export const providerFeature: FeatureModule = {
         environment: { OLLAMA_HOST: 'http://ollama:11434' },
         entrypoint: ['/bin/sh', '-c', models.map((model) => `ollama pull ${model}`).join(' && ')],
         restart: 'no',
+        oneShot: true,
       });
     }
 

@@ -53,6 +53,13 @@ export type {
   StepResult,
 } from './kit/scaffold.js';
 export { planProject, MANIFEST_KEY } from './kit/plan.js';
+export {
+  dockerComposeAvailable,
+  longRunningServices,
+  startServices,
+  SERVICES_WAIT_SECONDS,
+} from './kit/services.js';
+export { offerServices, servicesToStart } from './cli/services.js';
 export type { ProjectPlan, PlanOptions, ScaffoldManifest } from './kit/plan.js';
 export {
   ProjectSpecSchema,
@@ -155,4 +162,4 @@ export {
 export type { FailedStep, ScaffoldFailure, TelemetryPayload } from './kit/telemetry.js';
 export { CodedError } from './kit/errors.js';
 export { run } from './cli/main.js';
-export { closest } from './cli/args.js';
+export { closest, isInteractive } from './cli/args.js';

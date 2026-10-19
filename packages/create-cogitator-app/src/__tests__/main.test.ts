@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
@@ -145,5 +145,36 @@ describe('create-cogitator-app CLI', () => {
     expect(result.stderr).toContain('pnpm dev:studio');
     expect(result.stderr).not.toContain('cp .env.example .env');
     expect(result.stderr).not.toContain('sk-test');
+  });
+
+  it('never starts the compose services without a person to ask', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cca-cli-'));
+    roots.push(root);
+    const calls = join(root, 'docker-calls.log');
+    const docker = join(root, 'docker');
+    writeFileSync(docker, `#!/bin/sh\necho "$*" >> "${calls}"\nexit 0\n`);
+    chmodSync(docker, 0o755);
+    const path = process.env.PATH;
+    process.env.PATH = `${root}:${path ?? ''}`;
+    try {
+      const base = [
+        '--memory',
+        'redis',
+        '-p',
+        'openai',
+        '--pm',
+        'pnpm',
+        '--no-install',
+        '--no-git',
+      ];
+      const created = await cli([join(root, 'yes'), '-y', ...base]);
+      expect(created.code).toBe(0);
+      expect(created.stderr).toContain('docker compose up -d');
+      expect((await cli([join(root, 'json'), '--json', ...base])).code).toBe(0);
+      expect((await cli([join(root, 'dry'), '--dry-run', ...base])).code).toBe(0);
+      expect(existsSync(calls) ? readFileSync(calls, 'utf-8') : '').toBe('');
+    } finally {
+      process.env.PATH = path;
+    }
   });
 });

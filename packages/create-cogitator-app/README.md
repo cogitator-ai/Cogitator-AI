@@ -28,6 +28,8 @@ Anything the flags leave out is asked for at a terminal. With `--yes`, `--json`,
 
 After writing the files the scaffolder installs the dependencies, formats the code with the project's Biome, writes `.cogitator/scaffold.json` (hashes of what it generated, for `cogitator add`) and commits everything to a new git repository, unless the project is inside one already. With Ollama it offers to pull a missing model, with a cloud provider it checks the key you pass with `--api-key` (written to `.env`, mode 600, never printed).
 
+When the stack has compose services and Docker is running, it offers to start them with `docker compose up --wait`, so Postgres, Redis or MongoDB are healthy before the first run. The Ollama container starts too and pulls the model in the background (`docker compose logs -f ollama-pull` follows it), unless an Ollama already answers at `OLLAMA_BASE_URL`: the project uses that one, and a second one could not take its port. With `--yes`, `--json`, without a TTY, in CI or in a dry run nothing is started, and the next steps say `docker compose up -d`.
+
 Requires Node.js 22.12+.
 
 ## Presets
@@ -144,9 +146,9 @@ const result = await scaffold(spec, { directory: './my-agent', install: true, gi
 if (result.install.status === 'failed') console.error(result.install.error.message);
 ```
 
-`planProject(spec)` is pure: it validates the spec, refuses combinations that cannot work (`IncompatibleSpecError` with the issues) and returns the files, dependencies, scripts, environment, services and the command that recreates the project. `scaffold(spec, options)` writes the plan, installs, formats, writes the lock and commits; the `log` option replaces the CLI's spinners, and a failed install, format or git step is reported in the result (`{ status: 'done' | 'skipped' | 'failed' }`) instead of thrown.
+`planProject(spec)` is pure: it validates the spec, refuses combinations that cannot work (`IncompatibleSpecError` with the issues) and returns the files, dependencies, scripts, environment, services (`oneShotServices` names the ones that run a task and exit) and the command that recreates the project. `scaffold(spec, options)` writes the plan, installs, formats, writes the lock and commits; the `log` option replaces the CLI's spinners, and a failed install, format or git step is reported in the result (`{ status: 'done' | 'skipped' | 'failed' }`) instead of thrown.
 
-Also exported: `planAdd` and `addToProject` behind `cogitator add`, `createFromExample` and `createFromTemplate`, the catalogs (`PRESETS`, `FEATURE_CHOICES` and the rest), `compatibilityIssues`, `checkApiKey`, the Ollama helpers and the telemetry functions.
+Also exported: `planAdd` and `addToProject` behind `cogitator add`, `createFromExample` and `createFromTemplate`, the catalogs (`PRESETS`, `FEATURE_CHOICES` and the rest), `compatibilityIssues`, `checkApiKey`, `startServices` and `dockerComposeAvailable` behind the offer to start the services, the Ollama helpers and the telemetry functions.
 
 ## License
 

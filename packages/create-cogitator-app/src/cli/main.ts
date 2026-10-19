@@ -33,7 +33,7 @@ import {
   type TelemetryPayload,
 } from '../kit/telemetry.js';
 import { scaffolderVersion } from '../kit/versions.js';
-import { DOCS_URL } from '../kit/guide.js';
+import { DOCS_URL, type SetupState } from '../kit/guide.js';
 import { examples, exampleTarget } from '../kit/examples.js';
 import { describeTemplate } from '../kit/remote.js';
 import {
@@ -45,6 +45,7 @@ import {
 import { CliError, isInteractive, parseCliArgs, type CliArgs } from './args.js';
 import { exampleList, helpText, presetList } from './help.js';
 import { askDirectory, askMissing, CancelledError } from './interactive.js';
+import { offerServices, servicesToStart } from './services.js';
 import { DEFAULT_DIRECTORY, resolveDirectory, specFromArgs } from './resolve.js';
 
 interface Io {
@@ -141,7 +142,10 @@ function describeDryRun(plan: ProjectPlan, directory: string): string {
   ].join('\n');
 }
 
-/** Pulls the project's Ollama model when it is missing and the user agrees, or reports it. */
+/**
+ * Pulls the project's Ollama model when it is missing and the user agrees, or
+ * reports it. With `interactive` false it only checks whether the model is there.
+ */
 async function prepareOllama(plan: ProjectPlan, interactive: boolean): Promise<boolean> {
   const model = bareModel(plan.spec);
   const baseUrl = resolveOllamaUrl();
@@ -175,13 +179,17 @@ async function prepareOllama(plan: ProjectPlan, interactive: boolean): Promise<b
   }
 }
 
-function outro(result: ScaffoldResult, args: CliArgs, modelReady: boolean): string {
+function outro(
+  result: ScaffoldResult,
+  args: CliArgs,
+  state: Pick<SetupState, 'modelReady' | 'servicesStarted' | 'modelPulling'>
+): string {
   const directory = relative(process.cwd(), result.directory);
   const steps = result.plan.nextSteps({
     directory: directory || undefined,
     installed: result.install.status === 'done',
     keyWritten: args.apiKey !== undefined,
-    modelReady,
+    ...state,
   });
   return [
     `${pc.green('Your project is ready.')} Next:`,
@@ -324,8 +332,15 @@ export async function run(
     reported = true;
     await report(telemetry, deps, payloadFor(result.plan.spec, installFailure(result)));
 
+    const services = interactive ? await servicesToStart(result.plan) : undefined;
+    const servicesStarted =
+      services !== undefined && (await offerServices(result.directory, services));
+    const pullingInCompose = servicesStarted && services.services.includes('ollama');
     const modelReady =
-      result.plan.spec.provider === 'ollama' ? await prepareOllama(result.plan, interactive) : true;
+      result.plan.spec.provider === 'ollama'
+        ? await prepareOllama(result.plan, interactive && !pullingInCompose)
+        : true;
+    const setup = { modelReady, servicesStarted, modelPulling: pullingInCompose && !modelReady };
 
     const key = envKey ? (args.apiKey ?? process.env[envKey]) : undefined;
     const provider = result.plan.spec.provider;
@@ -364,8 +379,8 @@ export async function run(
       );
     }
     for (const warning of result.plan.warnings) p.log.warn(warning);
-    if (interactive) p.outro(outro(result, args, modelReady));
-    else io.stderr(`${outro(result, args, modelReady)}\n`);
+    if (interactive) p.outro(outro(result, args, setup));
+    else io.stderr(`${outro(result, args, setup)}\n`);
     return 0;
   } catch (error) {
     if (error instanceof CancelledError) {

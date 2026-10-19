@@ -39,6 +39,8 @@ export interface ProjectPlan {
   env: EnvVar[];
   /** Compose services the project starts locally. */
   services: string[];
+  /** The services among them that run a task and exit, such as pulling the Ollama models. */
+  oneShotServices: string[];
   warnings: string[];
   /** The command that creates this project again. */
   command: string;
@@ -109,6 +111,9 @@ export function planProject(input: unknown, options: PlanOptions = {}): ProjectP
     scripts: Object.fromEntries(project.scripts),
     env: [...project.env.values()],
     services: spec.compose ? [...project.services.keys()] : [],
+    oneShotServices: spec.compose
+      ? [...project.services.values()].filter((service) => service.oneShot).map((s) => s.name)
+      : [],
     warnings: [...project.warnings],
     command,
     nextSteps: (state) => nextSteps(project, state),

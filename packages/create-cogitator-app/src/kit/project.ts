@@ -30,6 +30,8 @@ export interface ComposeService {
   dependsOn?: Record<string, 'service_started' | 'service_healthy'>;
   healthcheck?: { test: string[]; interval: string; timeout: string; retries: number };
   restart?: 'no' | 'unless-stopped';
+  /** Runs a task and exits, such as pulling models, so starting the stack does not wait for it. */
+  oneShot?: boolean;
 }
 
 /** A section of the generated AGENTS.md, which coding agents read before they touch the project. */
