@@ -4,12 +4,12 @@ import {
   createTestAgent,
   createTestTools,
   createTestJudge,
-  isOllamaRunning,
+  ollamaSkipReason,
 } from '../../helpers/setup';
 import { setJudge } from '../../helpers/assertions';
 import type { Cogitator, RunResult } from '@cogitator-ai/core';
 
-const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+const describeE2E = describe.skipIf((await ollamaSkipReason()) !== null);
 
 async function runUntilToolCalled(
   cogitator: Cogitator,
@@ -30,8 +30,6 @@ describeE2E('Core: Agent Tool Execution', () => {
   const tools = createTestTools();
 
   beforeAll(async () => {
-    const available = await isOllamaRunning();
-    if (!available) throw new Error('Ollama not running');
     cogitator = createTestCogitator();
     setJudge(createTestJudge());
   });

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { loadConfig, loadDotenvFile } from '@cogitator-ai/config';
 import { Agent, Cogitator } from '@cogitator-ai/core';
-import { getOllamaUrl, getTestModel, isOllamaRunning } from '../../helpers/setup';
+import { getOllamaUrl, getTestModel, ollamaSkipReason } from '../../helpers/setup';
 
 describe('Config: YAML file → runtime config', () => {
   let dir: string;
@@ -72,7 +72,7 @@ describe('Config: YAML file → runtime config', () => {
   });
 });
 
-const describeOllama = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+const describeOllama = describe.skipIf((await ollamaSkipReason()) !== null);
 
 describeOllama('Config: YAML-configured Cogitator runs against Ollama', () => {
   let dir: string;
@@ -87,9 +87,7 @@ describeOllama('Config: YAML-configured Cogitator runs against Ollama', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('answers a prompt using only values from cogitator.yml', async ({ skip }) => {
-    if (!(await isOllamaRunning())) skip();
-
+  it('answers a prompt using only values from cogitator.yml', async () => {
     for (const key of Object.keys(process.env)) {
       if (key.startsWith('COGITATOR_') || key.startsWith('OLLAMA_')) delete process.env[key];
     }

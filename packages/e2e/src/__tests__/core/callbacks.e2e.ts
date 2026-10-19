@@ -3,21 +3,19 @@ import {
   createTestCogitator,
   createTestAgent,
   createTestTools,
-  isOllamaRunning,
+  ollamaSkipReason,
 } from '../../helpers/setup';
 import type { Cogitator, RunResult, Span, ToolCall, ToolResult } from '@cogitator-ai/core';
 import { tool } from '@cogitator-ai/core';
 import { z } from 'zod';
 
-const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+const describeE2E = describe.skipIf((await ollamaSkipReason()) !== null);
 
 describeE2E('Core: Callbacks & Run Metadata', () => {
   let cogitator: Cogitator;
   const tools = createTestTools();
 
   beforeAll(async () => {
-    const available = await isOllamaRunning();
-    if (!available) throw new Error('Ollama not running');
     cogitator = createTestCogitator();
   });
 

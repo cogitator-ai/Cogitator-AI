@@ -3,24 +3,12 @@ import { InMemoryAdapter } from '@cogitator-ai/memory';
 import { WorkflowBuilder } from '@cogitator-ai/workflows';
 import type { Workflow, WorkflowState } from '@cogitator-ai/types';
 import { z } from 'zod';
-import { getOllamaUrl, getTestModel } from './setup';
+import { getOllamaUrl, getTestModel, ollamaHasModel } from './setup';
 
 export interface TestLLM {
   provider: 'ollama' | 'google';
   model: string;
   createCogitator(): Cogitator;
-}
-
-async function ollamaHasModel(model: string): Promise<boolean> {
-  try {
-    const res = await fetch(`${getOllamaUrl()}/api/tags`);
-    if (!res.ok) return false;
-    const body = (await res.json()) as { models?: Array<{ name: string }> };
-    const wanted = model.includes(':') ? model : `${model}:latest`;
-    return (body.models ?? []).some((m) => m.name === wanted || m.name === model);
-  } catch {
-    return false;
-  }
 }
 
 export async function resolveTestLLM(): Promise<TestLLM | null> {

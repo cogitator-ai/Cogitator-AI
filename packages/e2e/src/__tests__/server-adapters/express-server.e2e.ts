@@ -10,7 +10,9 @@ import {
   parseSSEEvents,
   type ServerFactory,
 } from '../../helpers/server-test-utils';
-import { createTestCogitator, createTestAgent, isOllamaRunning } from '../../helpers/setup';
+import { createTestCogitator, createTestAgent, ollamaSkipReason } from '../../helpers/setup';
+
+const ollamaSkip = await ollamaSkipReason();
 import {
   createFailingWorkflow,
   createOfflineCogitator,
@@ -50,10 +52,8 @@ describe('Express adapter: streaming and WebSocket', () => {
   let server: Server;
   let base: string;
   let wsUrl: string;
-  let ollamaAvailable = false;
 
   beforeAll(async () => {
-    ollamaAvailable = await isOllamaRunning();
     cogitator = createTestCogitator();
     const app = express();
     const cogitatorServer = new CogitatorServer({
@@ -77,9 +77,7 @@ describe('Express adapter: streaming and WebSocket', () => {
     await cogitator?.close();
   });
 
-  it('streams model tokens over SSE until finish', async () => {
-    if (!ollamaAvailable) return;
-
+  it.skipIf(ollamaSkip !== null)('streams model tokens over SSE until finish', async () => {
     const res = await fetch(`${base}/agents/TestAgent/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -99,9 +97,7 @@ describe('Express adapter: streaming and WebSocket', () => {
     expect(events.at(-1)?.data).toBe('[DONE]');
   });
 
-  it('runs an agent over WebSocket', async () => {
-    if (!ollamaAvailable) return;
-
+  it.skipIf(ollamaSkip !== null)('runs an agent over WebSocket', async () => {
     const socket = new WebSocket(wsUrl);
     const payloadTypes: string[] = [];
     const done = new Promise<void>((resolve, reject) => {

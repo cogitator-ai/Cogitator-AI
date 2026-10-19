@@ -6,9 +6,9 @@ import { z } from 'zod';
 import { Cogitator, CogitatorError, ErrorCode, tool } from '@cogitator-ai/core';
 import { CogitatorServer } from '@cogitator-ai/express';
 import { MCPClient, MCPServer } from '@cogitator-ai/mcp';
-import { createTestAgent, createTestCogitator, isOllamaRunning } from '../../helpers/setup';
+import { createTestAgent, createTestCogitator, ollamaSkipReason } from '../../helpers/setup';
 
-const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+const describeE2E = describe.skipIf((await ollamaSkipReason()) !== null);
 
 describeE2E('Core: one agent, many users', () => {
   let cogitator: Cogitator;
@@ -18,7 +18,6 @@ describeE2E('Core: one agent, many users', () => {
   });
 
   beforeAll(async () => {
-    if (!(await isOllamaRunning())) throw new Error('Ollama not running');
     cogitator = createTestCogitator({ memory: true });
   });
 

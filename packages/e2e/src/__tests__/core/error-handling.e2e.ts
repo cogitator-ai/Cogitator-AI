@@ -1,15 +1,13 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { OllamaBackend } from '@cogitator-ai/core';
-import { createOllamaBackend, isOllamaRunning, getTestModel } from '../../helpers/setup';
+import { createOllamaBackend, ollamaSkipReason, getTestModel } from '../../helpers/setup';
 
-const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+const describeE2E = describe.skipIf((await ollamaSkipReason()) !== null);
 
 describeE2E('Core: Error Handling', () => {
   let backend: OllamaBackend;
 
   beforeAll(async () => {
-    const available = await isOllamaRunning();
-    if (!available) throw new Error('Ollama not running');
     backend = createOllamaBackend();
   });
 

@@ -1,18 +1,16 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { createTestCogitator, createTestAgent, isOllamaRunning } from '../../helpers/setup';
+import { createTestCogitator, createTestAgent, ollamaSkipReason } from '../../helpers/setup';
 import { Cogitator, Agent, tool } from '@cogitator-ai/core';
 import type { RunResult } from '@cogitator-ai/core';
 import { z } from 'zod';
 
-const describeOllama = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+const describeOllama = describe.skipIf((await ollamaSkipReason()) !== null);
 const describeGoogle = process.env.GOOGLE_API_KEY ? describe : describe.skip;
 
 describeOllama('Core: runtime integrity (Ollama)', () => {
   let cogitator: Cogitator;
 
   beforeAll(async () => {
-    const available = await isOllamaRunning();
-    if (!available) throw new Error('Ollama not running');
     cogitator = createTestCogitator({ memory: true });
   });
 

@@ -4,21 +4,19 @@ import {
   createTestAgent,
   createTestTools,
   createOllamaBackend,
-  isOllamaRunning,
+  ollamaSkipReason,
   getTestModel,
 } from '../../helpers/setup';
 import type { Cogitator, RunResult } from '@cogitator-ai/core';
 import type { OllamaBackend } from '@cogitator-ai/core';
 
-const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+const describeE2E = describe.skipIf((await ollamaSkipReason()) !== null);
 
 describeE2E('Core: Streaming', () => {
   let backend: OllamaBackend;
   let cogitator: Cogitator;
 
   beforeAll(async () => {
-    const available = await isOllamaRunning();
-    if (!available) throw new Error('Ollama not running');
     backend = createOllamaBackend();
     cogitator = createTestCogitator();
   });

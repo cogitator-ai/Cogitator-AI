@@ -2,9 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
 import { Agent } from '@cogitator-ai/core';
 import { processWorkflowJob, serializeAgent } from '@cogitator-ai/worker';
-import { createTestCogitator, getTestModel } from '../../helpers/setup';
+import { createTestCogitator, getTestModel, ollamaSkipReason } from '../../helpers/setup';
 
-const describeOllama = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+const describeOllama = describe.skipIf((await ollamaSkipReason()) !== null);
 
 describeOllama('Worker: agents travel whole', () => {
   it(

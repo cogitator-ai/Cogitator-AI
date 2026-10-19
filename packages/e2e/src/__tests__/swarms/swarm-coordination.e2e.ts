@@ -3,18 +3,16 @@ import {
   createTestCogitator,
   createTestAgent,
   createTestTools,
-  isOllamaRunning,
+  ollamaSkipReason,
 } from '../../helpers/setup';
 import type { Cogitator } from '@cogitator-ai/core';
 import { Swarm, SwarmTimeoutError } from '@cogitator-ai/swarms';
-const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+const describeE2E = describe.skipIf((await ollamaSkipReason()) !== null);
 
 describeE2E('Swarms: Multi-Agent Coordination', () => {
   let cogitator: Cogitator;
 
   beforeAll(async () => {
-    const available = await isOllamaRunning();
-    if (!available) throw new Error('Ollama not running');
     cogitator = createTestCogitator();
   });
 

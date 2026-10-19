@@ -10,9 +10,9 @@ import {
   createMetricsCollector,
 } from '@cogitator-ai/workflows';
 import type { Cogitator } from '@cogitator-ai/core';
-import { createTestAgent, createTestCogitator, isOllamaRunning } from '../../helpers/setup';
+import { createTestAgent, createTestCogitator, ollamaSkipReason } from '../../helpers/setup';
 
-const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+const describeE2E = describe.skipIf((await ollamaSkipReason()) !== null);
 
 type JoinState = { a?: string; b?: string; b2?: string; merged?: string };
 type ChildState = { question: string; answer?: string };
@@ -22,7 +22,6 @@ describeE2E('Workflows: advanced execution with real agents', () => {
   let cogitator: Cogitator;
 
   beforeAll(async () => {
-    if (!(await isOllamaRunning())) throw new Error('Ollama not running');
     cogitator = createTestCogitator();
   });
 

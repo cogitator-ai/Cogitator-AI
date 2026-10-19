@@ -5,13 +5,13 @@ import {
   createTestAgent,
   createTestTools,
   createTestJudge,
-  isOllamaRunning,
+  ollamaSkipReason,
 } from '../../helpers/setup';
 import { expectJudge, setJudge } from '../../helpers/assertions';
 import { asTask, startTestA2AServer, type TestA2AServer } from '../../helpers/a2a-server';
 import type { Cogitator } from '@cogitator-ai/core';
 
-const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+const describeE2E = describe.skipIf((await ollamaSkipReason()) !== null);
 
 describeE2E('Cross-Package: Cogitator via A2A', () => {
   let cogitator: Cogitator;
@@ -19,8 +19,6 @@ describeE2E('Cross-Package: Cogitator via A2A', () => {
   let client: A2AClient;
 
   beforeAll(async () => {
-    const available = await isOllamaRunning();
-    if (!available) throw new Error('Ollama not running');
     cogitator = createTestCogitator();
     setJudge(createTestJudge());
 

@@ -2,35 +2,21 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { Agent, OllamaBackend, tool } from '@cogitator-ai/core';
 import { SelfModifyingAgent } from '@cogitator-ai/self-modifying';
 import { z } from 'zod';
+import { getOllamaUrl, getTestModel, ollamaSkipReason } from '../../helpers/setup';
 
 const hasOllamaCloud = !!process.env.OLLAMA_API_KEY;
-const useLocalOllama = process.env.TEST_OLLAMA === 'true';
-const describeLocal = useLocalOllama ? describe : describe.skip;
+const describeLocal = describe.skipIf((await ollamaSkipReason()) !== null);
 const describeCloud = hasOllamaCloud ? describe : describe.skip;
 
-const LOCAL_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
-const LOCAL_MODEL = process.env.TEST_MODEL || 'gpt-oss:20b';
+const LOCAL_URL = getOllamaUrl();
+const LOCAL_MODEL = getTestModel();
 const CLOUD_URL = process.env.OLLAMA_URL || 'https://ollama.com';
 const CLOUD_MODEL = process.env.TOOL_GEN_MODEL || 'gpt-oss:20b';
-
-async function isReachable(url: string): Promise<boolean> {
-  try {
-    const res = await fetch(`${url}/api/tags`, {
-      headers: process.env.OLLAMA_API_KEY
-        ? { Authorization: `Bearer ${process.env.OLLAMA_API_KEY}` }
-        : undefined,
-    });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
 
 describeLocal('self-modifying: agent run pipeline (Ollama)', () => {
   let llm: OllamaBackend;
 
   beforeAll(async () => {
-    if (!(await isReachable(LOCAL_URL))) throw new Error('Ollama not running');
     llm = new OllamaBackend({ baseUrl: LOCAL_URL, apiKey: process.env.OLLAMA_API_KEY });
   });
 

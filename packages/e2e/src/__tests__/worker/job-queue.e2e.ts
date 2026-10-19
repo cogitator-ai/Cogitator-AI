@@ -15,7 +15,7 @@ import {
   createTestCogitator,
   createTestTools,
   getTestModel,
-  isOllamaRunning,
+  ollamaSkipReason,
 } from '../../helpers/setup';
 
 const describeRedis = process.env.TEST_REDIS === 'true' ? describe : describe.skip;
@@ -225,10 +225,9 @@ describeRedis('Worker: JobQueue', () => {
   });
 });
 
-const describeRedisOllama =
-  process.env.TEST_REDIS === 'true' && process.env.TEST_OLLAMA === 'true'
-    ? describe
-    : describe.skip;
+const describeRedisOllama = describe.skipIf(
+  process.env.TEST_REDIS !== 'true' || (await ollamaSkipReason()) !== null
+);
 
 describeRedisOllama('Worker: job processing with Ollama', () => {
   const model = `ollama/${getTestModel()}`;
@@ -252,7 +251,6 @@ describeRedisOllama('Worker: job processing with Ollama', () => {
   };
 
   beforeAll(async () => {
-    if (!(await isOllamaRunning())) throw new Error('Ollama not running');
     queue = new JobQueue({ name: queueName, redis, defaultJobOptions: { attempts: 1 } });
     pool = new WorkerPool(
       {

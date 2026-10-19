@@ -12,9 +12,9 @@ import {
 import { InMemoryAdapter } from '@cogitator-ai/memory';
 import type { Cogitator } from '@cogitator-ai/core';
 import type { Channel, ChannelMessage } from '@cogitator-ai/types';
-import { createTestAgent, createTestCogitator, isOllamaRunning } from '../../helpers/setup';
+import { createTestAgent, createTestCogitator, ollamaSkipReason } from '../../helpers/setup';
 
-const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+const describeE2E = describe.skipIf((await ollamaSkipReason()) !== null);
 
 interface RecordingChannel extends Channel {
   trigger(msg: ChannelMessage): Promise<void>;
@@ -80,7 +80,6 @@ describeE2E('Channels E2E: Live LLM through Gateway', () => {
   let cogitator: Cogitator;
 
   beforeAll(async () => {
-    if (!(await isOllamaRunning())) throw new Error('Ollama not running');
     cogitator = createTestCogitator();
   });
 

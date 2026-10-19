@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { createTestCogitator, createTestAgent, isOllamaRunning } from '../../helpers/setup';
+import { createTestCogitator, createTestAgent, ollamaSkipReason } from '../../helpers/setup';
 import { Agent, Cogitator, tool } from '@cogitator-ai/core';
 import { z } from 'zod';
 
-const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+const describeE2E = describe.skipIf((await ollamaSkipReason()) !== null);
 
 function extractJSON(text: string): string {
   const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(text);
@@ -15,8 +15,6 @@ describeE2E('Core: Structured Output', () => {
   let cogitator: Cogitator;
 
   beforeAll(async () => {
-    const available = await isOllamaRunning();
-    if (!available) throw new Error('Ollama not running');
     cogitator = createTestCogitator();
   });
 

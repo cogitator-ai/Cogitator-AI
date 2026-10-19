@@ -9,13 +9,13 @@ import {
   createTestCogitator,
   createTestAgent,
   createTestJudge,
-  isOllamaRunning,
+  ollamaSkipReason,
 } from '../../helpers/setup';
 import { expectJudge, setJudge } from '../../helpers/assertions';
 import type { Cogitator } from '@cogitator-ai/core';
 import type { WorkflowState } from '@cogitator-ai/types';
 
-const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+const describeE2E = describe.skipIf((await ollamaSkipReason()) !== null);
 
 interface AgentWorkflowState extends WorkflowState {
   input: string;
@@ -35,8 +35,6 @@ describeE2E('Workflows: Agent Nodes', () => {
   let cogitator: Cogitator;
 
   beforeAll(async () => {
-    const available = await isOllamaRunning();
-    if (!available) throw new Error('Ollama not running');
     cogitator = createTestCogitator();
     setJudge(createTestJudge());
   });

@@ -4,11 +4,11 @@ import {
   WorkflowExecutor,
   InMemoryCheckpointStore,
 } from '@cogitator-ai/workflows';
-import { createTestCogitator, isOllamaRunning } from '../../helpers/setup';
+import { createTestCogitator, ollamaSkipReason } from '../../helpers/setup';
 import type { Cogitator } from '@cogitator-ai/core';
 import type { WorkflowState } from '@cogitator-ai/types';
 
-const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+const describeE2E = describe.skipIf((await ollamaSkipReason()) !== null);
 
 interface TestState extends WorkflowState {
   steps: string[];
@@ -28,8 +28,6 @@ describeE2E('Workflows: DAG Execution', () => {
   let cogitator: Cogitator;
 
   beforeAll(async () => {
-    const available = await isOllamaRunning();
-    if (!available) throw new Error('Ollama not running');
     cogitator = createTestCogitator();
   });
 

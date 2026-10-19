@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getOllamaUrl, getTestModel, isOllamaRunning } from '../../helpers/setup';
+import { getOllamaUrl, getTestModel, ollamaSkipReason } from '../../helpers/setup';
 
 const CLI = fileURLToPath(new URL('../../../../cli/dist/index.js', import.meta.url));
 const CLI_PKG = fileURLToPath(new URL('../../../../cli/package.json', import.meta.url));
@@ -217,15 +217,13 @@ export const gateway = {
   });
 });
 
-const describeOllama = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+const describeOllama = describe.skipIf((await ollamaSkipReason()) !== null);
 
 describeOllama('CLI with Ollama', () => {
   let workDir: string;
-  let ollamaUp = false;
   const ollamaEnv = { OLLAMA_URL: getOllamaUrl(), OLLAMA_HOST: '', OLLAMA_API_KEY: '' };
 
   beforeAll(async () => {
-    ollamaUp = await isOllamaRunning();
     mkdirSync(SCRATCH_ROOT, { recursive: true });
     workDir = mkdtempSync(join(SCRATCH_ROOT, 'ollama-'));
   });
@@ -234,15 +232,13 @@ describeOllama('CLI with Ollama', () => {
     rmSync(SCRATCH_ROOT, { recursive: true, force: true });
   });
 
-  it('lists the test model', ({ skip }) => {
-    if (!ollamaUp) skip();
+  it('lists the test model', () => {
     const result = cli(['models'], workDir, ollamaEnv);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain(getTestModel());
   });
 
-  it('runs a one-shot prompt without streaming', ({ skip }) => {
-    if (!ollamaUp) skip();
+  it('runs a one-shot prompt without streaming', () => {
     const result = cli(
       ['run', '--no-stream', '-m', `ollama/${getTestModel()}`, 'Reply with the single word: pong'],
       workDir,
@@ -252,8 +248,7 @@ describeOllama('CLI with Ollama', () => {
     expect(result.stdout.trim().length).toBeGreaterThan(0);
   });
 
-  it('streams tokens and uses llm.defaultModel from cogitator.yml', ({ skip }) => {
-    if (!ollamaUp) skip();
+  it('streams tokens and uses llm.defaultModel from cogitator.yml', () => {
     writeFileSync(
       join(workDir, 'cogitator.yml'),
       `llm:\n  defaultModel: ollama/${getTestModel()}\n`

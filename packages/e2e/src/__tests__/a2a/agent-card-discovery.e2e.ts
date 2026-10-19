@@ -4,20 +4,18 @@ import {
   createTestCogitator,
   createTestAgent,
   createTestTools,
-  isOllamaRunning,
+  ollamaSkipReason,
 } from '../../helpers/setup';
 import { startTestA2AServer, type TestA2AServer } from '../../helpers/a2a-server';
 import type { Cogitator } from '@cogitator-ai/core';
 
-const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+const describeE2E = describe.skipIf((await ollamaSkipReason()) !== null);
 
 describeE2E('A2A: Agent Card Discovery', () => {
   let cogitator: Cogitator;
   let testServer: TestA2AServer;
 
   beforeAll(async () => {
-    const available = await isOllamaRunning();
-    if (!available) throw new Error('Ollama not running');
     cogitator = createTestCogitator();
 
     const tools = createTestTools();

@@ -5,7 +5,8 @@ export {
   createTestTools,
   createTestJudge,
   createOllamaBackend,
-  isOllamaRunning,
+  ollamaHasModel,
+  ollamaSkipReason,
   getTestModel,
 } from './helpers/setup';
 export { expectJudge, expectValidTimestamp, setJudge } from './helpers/assertions';

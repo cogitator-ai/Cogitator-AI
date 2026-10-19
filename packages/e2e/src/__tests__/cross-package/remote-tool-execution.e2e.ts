@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { A2AClient } from '@cogitator-ai/a2a';
 import { Cogitator } from '@cogitator-ai/core';
-import { createTestCogitator, createTestAgent, isOllamaRunning } from '../../helpers/setup';
+import { createTestCogitator, createTestAgent, ollamaSkipReason } from '../../helpers/setup';
 import { startTestA2AServer, type TestA2AServer } from '../../helpers/a2a-server';
 
-const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+const describeE2E = describe.skipIf((await ollamaSkipReason()) !== null);
 const describeHeavy = process.env.OLLAMA_API_KEY ? describe : describe.skip;
 
 const HEAVY_MODEL = 'gpt-oss:20b';
@@ -14,8 +14,6 @@ describeE2E('Cross-Package: Remote Tool Execution', () => {
   let cogitator: Cogitator;
 
   beforeAll(async () => {
-    const available = await isOllamaRunning();
-    if (!available) throw new Error('Ollama not running');
     cogitator = createTestCogitator();
   });
 

@@ -1,9 +1,9 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { Cogitator } from '@cogitator-ai/core';
 import { InMemoryAdapter } from '@cogitator-ai/memory';
-import { createTestCogitator, createTestAgent, isOllamaRunning } from '../../helpers/setup';
+import { createTestCogitator, createTestAgent, ollamaSkipReason } from '../../helpers/setup';
 
-const describeOllama = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+const describeOllama = describe.skipIf((await ollamaSkipReason()) !== null);
 
 function getHeapMB(): number {
   global.gc?.();
@@ -11,13 +11,6 @@ function getHeapMB(): number {
 }
 
 describeOllama('Reliability: Memory Stability (Ollama)', () => {
-  let ollamaAvailable: boolean;
-
-  beforeAll(async () => {
-    ollamaAvailable = await isOllamaRunning();
-    if (!ollamaAvailable) throw new Error('Ollama not running');
-  });
-
   it('agent loop does not leak memory over 30 runs', async () => {
     const cogitator = createTestCogitator();
     const agent = createTestAgent({ maxIterations: 1 });

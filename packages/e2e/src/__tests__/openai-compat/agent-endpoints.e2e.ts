@@ -6,10 +6,10 @@ import {
   createTestAgent,
   createTestCogitator,
   getTestModel,
-  isOllamaRunning,
+  ollamaSkipReason,
 } from '../../helpers/setup';
 
-const describeOllama = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+const describeOllama = describe.skipIf((await ollamaSkipReason()) !== null);
 
 const POLL = { pollIntervalMs: 200 };
 
@@ -32,7 +32,6 @@ describeOllama('Chat Completions and Responses over a registered agent', () => {
   let client: OpenAI;
 
   beforeAll(async () => {
-    if (!(await isOllamaRunning())) throw new Error('Ollama not running');
     cogitator = createTestCogitator();
     server = createOpenAIServer(cogitator, {
       port: 0,

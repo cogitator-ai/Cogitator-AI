@@ -8,14 +8,13 @@ import {
 } from '@cogitator-ai/memory';
 import { Cogitator } from '@cogitator-ai/core';
 import type { MemoryAdapter, Message } from '@cogitator-ai/types';
-import { createTestAgent, getOllamaUrl, getTestModel, isOllamaRunning } from '../../helpers/setup';
+import { createTestAgent, getOllamaUrl, getTestModel, ollamaSkipReason } from '../../helpers/setup';
 
 const describeRedis = process.env.TEST_REDIS === 'true' ? describe : describe.skip;
-const describeRedisOllama =
-  process.env.TEST_REDIS === 'true' && process.env.TEST_OLLAMA === 'true'
-    ? describe
-    : describe.skip;
-const describeOllama = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+const describeRedisOllama = describe.skipIf(
+  process.env.TEST_REDIS !== 'true' || (await ollamaSkipReason()) !== null
+);
+const describeOllama = describe.skipIf((await ollamaSkipReason()) !== null);
 
 const user = (content: string): Message => ({ role: 'user', content });
 
@@ -101,7 +100,6 @@ describeRedisOllama('Memory: agent with Redis memory', () => {
   const keyPrefix = `cogitator-agent-e2e-${Date.now()}:`;
 
   beforeAll(async () => {
-    if (!(await isOllamaRunning())) throw new Error('Ollama not running');
     cogitator = new Cogitator({
       llm: { defaultModel: `ollama/${getTestModel()}` },
       memory: {
@@ -143,7 +141,6 @@ describeRedisOllama('Memory: agent with Redis memory', () => {
 
 describeOllama('Memory: relevant context with Ollama embeddings', () => {
   it('builds relevant-strategy context from real embeddings', { timeout: 120_000 }, async () => {
-    if (!(await isOllamaRunning())) throw new Error('Ollama not running');
     const adapter = new SQLiteAdapter({ provider: 'sqlite', path: ':memory:' });
     await adapter.connect();
     await adapter.createThread('agent', {}, 'thread');

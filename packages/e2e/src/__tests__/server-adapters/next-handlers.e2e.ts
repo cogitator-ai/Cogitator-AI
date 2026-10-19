@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { createTestCogitator, createTestAgent, isOllamaRunning } from '../../helpers/setup';
+import { createTestCogitator, createTestAgent, ollamaSkipReason } from '../../helpers/setup';
+
+const ollamaSkip = await ollamaSkipReason();
 import { parseSSEEvents } from '../../helpers/server-test-utils';
 import { createChatHandler, createAgentHandler } from '@cogitator-ai/next';
 import type { Cogitator, Agent } from '@cogitator-ai/core';
@@ -7,10 +9,8 @@ import type { Cogitator, Agent } from '@cogitator-ai/core';
 describe('Next.js Handlers', () => {
   let cogitator: Cogitator;
   let agent: Agent;
-  let ollamaAvailable = false;
 
   beforeAll(async () => {
-    ollamaAvailable = await isOllamaRunning();
     cogitator = createTestCogitator();
     agent = createTestAgent();
   });
@@ -19,70 +19,74 @@ describe('Next.js Handlers', () => {
     await cogitator?.close();
   });
 
-  it('createAgentHandler returns agent output', async () => {
-    if (!ollamaAvailable) return;
+  it.skipIf(ollamaSkip !== null)(
+    'createAgentHandler returns agent output',
+    async () => {
+      const handler = createAgentHandler(cogitator, agent);
 
-    const handler = createAgentHandler(cogitator, agent);
+      const request = new Request('http://localhost/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input: 'What is 2+2?' }),
+      });
 
-    const request = new Request('http://localhost/test', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input: 'What is 2+2?' }),
-    });
+      const response = await handler(request);
 
-    const response = await handler(request);
+      expect(response.status).toBe(200);
 
-    expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(typeof body.output).toBe('string');
+      expect(body.output.length).toBeGreaterThan(0);
+      expect(body.usage.totalTokens).toBeGreaterThan(0);
+    },
+    60_000
+  );
 
-    const body = await response.json();
-    expect(typeof body.output).toBe('string');
-    expect(body.output.length).toBeGreaterThan(0);
-    expect(body.usage.totalTokens).toBeGreaterThan(0);
-  }, 60_000);
+  it.skipIf(ollamaSkip !== null)(
+    'createChatHandler streams SSE response',
+    async () => {
+      const handler = createChatHandler(cogitator, agent);
 
-  it('createChatHandler streams SSE response', async () => {
-    if (!ollamaAvailable) return;
+      const request = new Request('http://localhost/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: [{ role: 'user', content: 'Say hello' }],
+        }),
+      });
 
-    const handler = createChatHandler(cogitator, agent);
+      const response = await handler(request);
 
-    const request = new Request('http://localhost/test', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        messages: [{ role: 'user', content: 'Say hello' }],
-      }),
-    });
+      const contentType = response.headers.get('content-type') ?? '';
+      expect(contentType).toContain('text/event-stream');
 
-    const response = await handler(request);
+      const text = await response.text();
+      const events = parseSSEEvents(text);
+      const payloads = events
+        .map((e) => e.data)
+        .filter((d): d is Record<string, unknown> => typeof d === 'object' && d !== null);
+      const types = payloads.map((d) => d.type);
 
-    const contentType = response.headers.get('content-type') ?? '';
-    expect(contentType).toContain('text/event-stream');
+      expect(types[0]).toBe('start');
+      expect(types).not.toContain('error');
 
-    const text = await response.text();
-    const events = parseSSEEvents(text);
-    const payloads = events
-      .map((e) => e.data)
-      .filter((d): d is Record<string, unknown> => typeof d === 'object' && d !== null);
-    const types = payloads.map((d) => d.type);
+      const streamed = payloads
+        .filter((d) => d.type === 'text-delta')
+        .map((d) => String(d.delta))
+        .join('');
+      expect(streamed.trim().length).toBeGreaterThan(0);
 
-    expect(types[0]).toBe('start');
-    expect(types).not.toContain('error');
+      const textStarts = payloads.filter((d) => d.type === 'text-start').map((d) => d.id);
+      const textEnds = payloads.filter((d) => d.type === 'text-end').map((d) => d.id);
+      expect(textEnds).toEqual(textStarts);
 
-    const streamed = payloads
-      .filter((d) => d.type === 'text-delta')
-      .map((d) => String(d.delta))
-      .join('');
-    expect(streamed.trim().length).toBeGreaterThan(0);
-
-    const textStarts = payloads.filter((d) => d.type === 'text-start').map((d) => d.id);
-    const textEnds = payloads.filter((d) => d.type === 'text-end').map((d) => d.id);
-    expect(textEnds).toEqual(textStarts);
-
-    const finish = payloads.find((d) => d.type === 'finish');
-    expect(finish).toBeDefined();
-    expect(typeof finish?.threadId).toBe('string');
-    expect(events.at(-1)?.data).toBe('[DONE]');
-  }, 60_000);
+      const finish = payloads.find((d) => d.type === 'finish');
+      expect(finish).toBeDefined();
+      expect(typeof finish?.threadId).toBe('string');
+      expect(events.at(-1)?.data).toBe('[DONE]');
+    },
+    60_000
+  );
 
   it('createChatHandler rejects requests without a user message', async () => {
     const handler = createChatHandler(cogitator, agent);

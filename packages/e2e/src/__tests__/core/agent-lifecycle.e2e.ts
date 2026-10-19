@@ -3,21 +3,19 @@ import {
   createTestCogitator,
   createTestAgent,
   createTestTools,
-  isOllamaRunning,
+  ollamaSkipReason,
 } from '../../helpers/setup';
 import { Agent, ToolRegistry, tool, AgentDeserializationError } from '@cogitator-ai/core';
 import type { Cogitator, RunResult } from '@cogitator-ai/core';
 import { z } from 'zod';
 
-const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+const describeE2E = describe.skipIf((await ollamaSkipReason()) !== null);
 
 describeE2E('Core: Agent Lifecycle', () => {
   let cogitator: Cogitator;
   const tools = createTestTools();
 
   beforeAll(async () => {
-    const available = await isOllamaRunning();
-    if (!available) throw new Error('Ollama not running');
     cogitator = createTestCogitator();
   });
 

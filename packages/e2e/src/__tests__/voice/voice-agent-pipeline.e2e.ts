@@ -13,10 +13,9 @@ import {
   type TranscribeResult,
   type VoiceAgentRunner,
 } from '@cogitator-ai/voice';
+import { getTestModel, ollamaSkipReason } from '../../helpers/setup';
 
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
-const USE_OLLAMA = process.env.TEST_OLLAMA === 'true';
-const TEST_MODEL = process.env.TEST_MODEL || 'gpt-oss:20b';
 
 const SAMPLE_RATE = 16000;
 const CHUNK_SAMPLES = 320;
@@ -193,13 +192,13 @@ describe('Voice: VoiceAgent pipeline over WebSocket (deterministic STT/TTS)', ()
   });
 });
 
-const describeLLM = GOOGLE_API_KEY || USE_OLLAMA ? describe : describe.skip;
+const describeLLM = describe.skipIf(!GOOGLE_API_KEY && (await ollamaSkipReason()) !== null);
 
 describeLLM('Voice: VoiceAgent pipeline with a real Cogitator agent', () => {
   let cogitator: Cogitator;
   let voice: VoiceAgent | undefined;
   let ws: WebSocket | undefined;
-  const model = GOOGLE_API_KEY ? 'google/gemini-3.5-flash-lite' : `ollama/${TEST_MODEL}`;
+  const model = GOOGLE_API_KEY ? 'google/gemini-3.5-flash-lite' : `ollama/${getTestModel()}`;
 
   beforeAll(() => {
     cogitator = new Cogitator({

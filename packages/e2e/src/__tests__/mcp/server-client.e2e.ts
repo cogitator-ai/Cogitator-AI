@@ -4,9 +4,9 @@ import { z } from 'zod';
 import { Cogitator, tool } from '@cogitator-ai/core';
 import { MCPClient, MCPServer, MCPToolError, connectMCPServer } from '@cogitator-ai/mcp';
 import type { Tool } from '@cogitator-ai/types';
-import { createTestCogitator, createTestAgent, isOllamaRunning } from '../../helpers/setup';
+import { createTestCogitator, createTestAgent, ollamaSkipReason } from '../../helpers/setup';
 
-const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+const describeE2E = describe.skipIf((await ollamaSkipReason()) !== null);
 const describeHeavy = process.env.OLLAMA_API_KEY ? describe : describe.skip;
 
 const HEAVY_MODEL = 'gpt-oss:20b';
@@ -214,8 +214,6 @@ describeE2E('MCP: Agent using MCP tools (Ollama)', () => {
   const inventory = createInventoryTools();
 
   beforeAll(async () => {
-    const available = await isOllamaRunning();
-    if (!available) throw new Error('Ollama not running');
     cogitator = createTestCogitator();
     const started = await startHttpServer(inventory.tools);
     server = started.server;

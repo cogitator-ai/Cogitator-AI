@@ -22,7 +22,7 @@ import {
 import { SandboxManager } from '@cogitator-ai/sandbox';
 import { Agent, Cogitator } from '@cogitator-ai/core';
 import type { Tool, ToolContext } from '@cogitator-ai/types';
-import { getTestModel, isOllamaRunning } from '../../helpers/setup';
+import { getTestModel, ollamaSkipReason } from '../../helpers/setup';
 
 function wasmBuilt(): boolean {
   try {
@@ -231,15 +231,12 @@ describeIfWasm('WASM Tools: execution through @cogitator-ai/sandbox', () => {
   });
 });
 
-const describeIfAgent =
-  wasmBuilt() && process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+const describeIfAgent = describe.skipIf(!wasmBuilt() || (await ollamaSkipReason()) !== null);
 
 describeIfAgent('WASM Tools: agent integration (Ollama)', () => {
   let cogitator: Cogitator;
-  let available = false;
 
   beforeAll(async () => {
-    available = await isOllamaRunning();
     cogitator = new Cogitator({ llm: { defaultModel: `ollama/${getTestModel()}` } });
   });
 
@@ -248,7 +245,6 @@ describeIfAgent('WASM Tools: agent integration (Ollama)', () => {
   });
 
   it('agent calls the WASM calculator and receives its real result', async () => {
-    if (!available) return;
     const agent = new Agent({
       name: 'wasm-calculator',
       model: `ollama/${getTestModel()}`,

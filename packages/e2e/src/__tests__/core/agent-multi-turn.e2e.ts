@@ -4,13 +4,13 @@ import {
   createTestAgent,
   createTestTools,
   createTestJudge,
-  isOllamaRunning,
+  ollamaSkipReason,
 } from '../../helpers/setup';
 import { setJudge } from '../../helpers/assertions';
 import { Cogitator } from '@cogitator-ai/core';
 import type { RunResult } from '@cogitator-ai/core';
 
-const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+const describeE2E = describe.skipIf((await ollamaSkipReason()) !== null);
 const describeHeavy = process.env.OLLAMA_API_KEY ? describe : describe.skip;
 
 const HEAVY_MODEL = 'gpt-oss:20b';
@@ -35,8 +35,6 @@ describeE2E('Core: Agent Multi-Turn', () => {
   let cogitator: Cogitator;
 
   beforeAll(async () => {
-    const available = await isOllamaRunning();
-    if (!available) throw new Error('Ollama not running');
     cogitator = createTestCogitator({ memory: true });
     setJudge(createTestJudge());
   });

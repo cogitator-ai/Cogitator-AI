@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer } from 'net';
 import { createOpenAIServer, type OpenAIServer } from '@cogitator-ai/openai-compat';
-import { createTestCogitator, isOllamaRunning, getTestModel } from '../../helpers/setup';
+import { createTestCogitator, ollamaSkipReason, getTestModel } from '../../helpers/setup';
 import type { Cogitator } from '@cogitator-ai/core';
 
 function getRandomPort(): Promise<number> {
@@ -119,7 +119,7 @@ describe('OpenAI-Compatible Server', () => {
   });
 });
 
-const describeOllama = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+const describeOllama = describe.skipIf((await ollamaSkipReason()) !== null);
 
 describeOllama('OpenAI-Compatible Server (with Ollama)', () => {
   let cogitator: Cogitator;
@@ -130,9 +130,6 @@ describeOllama('OpenAI-Compatible Server (with Ollama)', () => {
   let threadId: string;
 
   beforeAll(async () => {
-    const available = await isOllamaRunning();
-    if (!available) throw new Error('Ollama not running');
-
     cogitator = createTestCogitator();
     const port = await getRandomPort();
     server = createOpenAIServer(cogitator, { port, host: '127.0.0.1', logging: false });

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { Cogitator, Agent } from '@cogitator-ai/core';
-import { createTestCogitator, createTestAgent, isOllamaRunning } from './setup';
+import { createTestCogitator, createTestAgent, ollamaSkipReason } from './setup';
 
 export interface ServerFactory {
   start(cogitator: Cogitator, agents: Record<string, Agent>): Promise<{ port: number }>;
@@ -46,10 +46,10 @@ export function describeServerAdapter(name: string, factory: ServerFactory): voi
   describe(`Server Adapter: ${name}`, () => {
     let port: number;
     let cogitator: Cogitator;
-    let ollamaAvailable = false;
+    let ollamaSkip: string | null = null;
 
     beforeAll(async () => {
-      ollamaAvailable = await isOllamaRunning();
+      ollamaSkip = await ollamaSkipReason();
       cogitator = createTestCogitator();
       const agent = createTestAgent();
       const result = await factory.start(cogitator, { TestAgent: agent });
@@ -77,8 +77,8 @@ export function describeServerAdapter(name: string, factory: ServerFactory): voi
       expect(names).toContain('TestAgent');
     });
 
-    it('runs agent and returns output', async () => {
-      if (!ollamaAvailable) return;
+    it('runs agent and returns output', async ({ skip }) => {
+      skip(ollamaSkip !== null, ollamaSkip ?? undefined);
 
       const res = await fetch(`http://localhost:${port}/cogitator/agents/TestAgent/run`, {
         method: 'POST',
@@ -93,8 +93,8 @@ export function describeServerAdapter(name: string, factory: ServerFactory): voi
       expect(body.usage.totalTokens).toBeGreaterThan(0);
     });
 
-    it('streams agent response via SSE', async () => {
-      if (!ollamaAvailable) return;
+    it('streams agent response via SSE', async ({ skip }) => {
+      skip(ollamaSkip !== null, ollamaSkip ?? undefined);
 
       const res = await fetch(`http://localhost:${port}/cogitator/agents/TestAgent/stream`, {
         method: 'POST',

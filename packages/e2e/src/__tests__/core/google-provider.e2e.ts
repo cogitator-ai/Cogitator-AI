@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { createTestCogitator } from '../../helpers/setup';
+import { createTestCogitator, getTestModel, ollamaSkipReason } from '../../helpers/setup';
 import { Cogitator, Agent, tool } from '@cogitator-ai/core';
 import type { RunResult } from '@cogitator-ai/core';
 import { z } from 'zod';
 
 const describeGoogle = process.env.GOOGLE_API_KEY ? describe : describe.skip;
+const ollamaReady = (await ollamaSkipReason()) === null;
 
 describeGoogle('Core: Google Provider E2E', () => {
   let cogitator: Cogitator;
@@ -161,13 +162,12 @@ describeGoogle('Core: Multi-Provider Consistency', () => {
     },
   ];
 
-  const ollamaAvailable = process.env.TEST_OLLAMA === 'true';
-  if (ollamaAvailable) {
+  if (ollamaReady) {
     providers.push({
       name: 'ollama',
       available: true,
       create: () => createTestCogitator(),
-      model: `ollama/${process.env.TEST_MODEL || 'gpt-oss:20b'}`,
+      model: `ollama/${getTestModel()}`,
     });
   }
 

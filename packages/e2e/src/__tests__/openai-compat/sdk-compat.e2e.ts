@@ -3,9 +3,9 @@ import OpenAI from 'openai';
 import { z } from 'zod';
 import { Cogitator, tool } from '@cogitator-ai/core';
 import { createOpenAIServer, type OpenAIServer } from '@cogitator-ai/openai-compat';
-import { createTestCogitator, isOllamaRunning, getTestModel } from '../../helpers/setup';
+import { createTestCogitator, ollamaSkipReason, getTestModel } from '../../helpers/setup';
 
-const describeOllama = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+const describeOllama = describe.skipIf((await ollamaSkipReason()) !== null);
 const describeHeavy = process.env.OLLAMA_API_KEY ? describe : describe.skip;
 
 const HEAVY_MODEL = 'gpt-oss:20b';
@@ -109,7 +109,6 @@ describeOllama('OpenAI SDK with a local Ollama model', () => {
   let assistantId: string;
 
   beforeAll(async () => {
-    if (!(await isOllamaRunning())) throw new Error('Ollama not running');
     cogitator = createTestCogitator();
     ({ server, client } = await startServer(cogitator, `ollama/${getTestModel()}`));
     const assistant = await client.beta.assistants.create({
