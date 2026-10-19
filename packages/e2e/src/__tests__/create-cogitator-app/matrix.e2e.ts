@@ -262,13 +262,14 @@ describe.each(combos)('$presetId with $id', ({ presetId, id, pm, packageManagerS
 
   beforeAll(async () => {
     if (!available.get(pm)) {
-      skipped = pm === 'yarn' ? 'corepack is not installed' : `${pm} is not installed`;
+      skipped =
+        pm === 'yarn' ? 'corepack and its Yarn are not available' : `${pm} is not installed`;
       return;
     }
     await scaffold(spec, { directory: dir, install: false, git: false, packageManagerSpec });
     if (packageManagerSpec) {
       const version = await mustExec(pm, ['--version'], { cwd: dir });
-      expect(`${pm}@${version.trim()}`).toBe(packageManagerSpec);
+      expect(`${pm}@${version.trim().split('\n').at(-1)}`).toBe(packageManagerSpec);
     }
     useTarballs(dir, pm, await packed(dir), { strict: true });
     await mustExec(pm, installArgs(pm), {

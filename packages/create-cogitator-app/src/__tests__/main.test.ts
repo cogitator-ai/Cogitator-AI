@@ -148,12 +148,15 @@ describe('create-cogitator-app CLI', () => {
     expect(result.stderr).not.toContain('sk-test');
   });
 
-  it('never starts the compose services without a person to ask', async () => {
+  it('offers the compose services only to a person at a terminal', async () => {
     const root = mkdtempSync(join(tmpdir(), 'cca-cli-'));
     roots.push(root);
     const calls = join(root, 'docker-calls.log');
     const docker = join(root, 'docker');
-    writeFileSync(docker, `#!/bin/sh\necho "$*" >> "${calls}"\nexit 0\n`);
+    writeFileSync(
+      docker,
+      `#!/bin/sh\necho "$*" >> "${calls}"\ncase "$1" in info) exit 1 ;; esac\nexit 0\n`
+    );
     chmodSync(docker, 0o755);
     const path = process.env.PATH;
     process.env.PATH = `${root}:${path ?? ''}`;
@@ -167,6 +170,8 @@ describe('create-cogitator-app CLI', () => {
         'pnpm',
         '--no-install',
         '--no-git',
+        '--agent',
+        'none',
       ];
       const fetcher = async () => new Response('{}');
       const tty = { stdin: { isTTY: true }, env: { ...process.env, CI: undefined } };
@@ -180,7 +185,19 @@ describe('create-cogitator-app CLI', () => {
       expect((await cli([join(root, 'dry'), '--dry-run', '-y', ...base], fetcher, tty)).code).toBe(
         0
       );
-      expect(existsSync(calls) ? readFileSync(calls, 'utf-8') : '').toBe('');
+      const logged = () => (existsSync(calls) ? readFileSync(calls, 'utf-8') : '');
+      expect(logged()).toBe('');
+
+      const asked = await cli(
+        [join(root, 'tty'), '-t', 'basic', ...base, '-m', 'gpt-test', '--api-key', 'sk-test'],
+        fetcher,
+        tty
+      );
+      expect(asked.code).toBe(0);
+      expect(logged().trim().split('\n')).toEqual([
+        'compose version',
+        'info --format {{.ServerVersion}}',
+      ]);
     } finally {
       process.env.PATH = path;
     }

@@ -48,7 +48,7 @@ export async function offerServices(directory: string, plan: ComposeServices): P
     spinner.stop(`Started ${list}`);
     return true;
   }
-  spinner.error(`Not all of ${list} started, run "docker compose up -d" once the cause is fixed`);
+  spinner.error('Not every service started, run "docker compose up -d" once the cause is fixed');
   if (started.status === 'failed') p.log.warn(started.error.message);
   return false;
 }
