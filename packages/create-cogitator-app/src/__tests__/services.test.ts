@@ -211,7 +211,7 @@ describe('offerServices', () => {
     prompts.confirm.mockResolvedValue(true);
     expect(await offerServices(tempRoot(), ollamaStack)).toBe(false);
     expect(prompts.spinner.error).toHaveBeenCalledWith(
-      'Could not start redis, ollama, run "docker compose up -d" once it is fixed'
+      'Not all of redis, ollama started, run "docker compose up -d" once the cause is fixed'
     );
     expect(prompts.warn).toHaveBeenCalledWith(expect.stringContaining('port is already allocated'));
   });

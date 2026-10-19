@@ -34,15 +34,20 @@ export function longRunningServices(
 }
 
 async function composeUp(directory: string, args: readonly string[]): Promise<StepResult> {
+  const started = Date.now();
   try {
     const result = await runCommand('docker', ['compose', 'up', '--detach', ...args], {
       cwd: directory,
       timeoutMs: START_TIMEOUT_MS,
     });
     if (result.code === 0) return { status: 'done' };
+    const reason =
+      Date.now() - started >= START_TIMEOUT_MS
+        ? `did not finish within ${START_TIMEOUT_MS / 60_000} minutes`
+        : `exited with ${result.code}`;
     return {
       status: 'failed',
-      error: new Error(`docker compose up exited with ${result.code}:\n${tail(result.output)}`),
+      error: new Error(`docker compose up ${reason}:\n${tail(result.output)}`),
     };
   } catch (error) {
     return { status: 'failed', error: error instanceof Error ? error : new Error(String(error)) };

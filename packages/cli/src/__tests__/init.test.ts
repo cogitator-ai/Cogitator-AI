@@ -3,6 +3,7 @@ import { planProject } from 'create-cogitator-app';
 import {
   DEFAULT_POSTGRES_URL,
   initSecrets,
+  initServices,
   initSpec,
   validateProjectName,
   type InitAnswers,
@@ -122,5 +123,32 @@ describe('cogitator init telemetry', () => {
   it('can be turned off with --no-telemetry', async () => {
     const { initCommand } = await import('../commands/init.js');
     expect(initCommand.options.map((option) => option.long)).toContain('--no-telemetry');
+  });
+});
+
+describe('initServices', () => {
+  const planFor = (overrides: Partial<InitAnswers>) => {
+    const chosen = answers(overrides);
+    return { chosen, plan: planProject(initSpec(chosen, 'pnpm')) };
+  };
+
+  it('offers the Postgres of compose when the project uses it', () => {
+    const { chosen, plan } = planFor({ memory: 'postgres', databaseUrl: DEFAULT_POSTGRES_URL });
+    expect(plan.services).toContain('postgres');
+    expect(initServices(plan, chosen).services).toContain('postgres');
+  });
+
+  it('leaves Postgres out when the project connects to a database of its own', () => {
+    const { chosen, plan } = planFor({
+      memory: 'postgres',
+      databaseUrl: 'postgres://db.internal/app',
+      provider: 'ollama',
+      apiKey: '',
+    });
+    expect(initServices(plan, chosen)).toEqual({
+      services: plan.services.filter((name) => name !== 'postgres'),
+      oneShotServices: plan.oneShotServices,
+    });
+    expect(initServices(plan, chosen).services).toContain('ollama');
   });
 });
