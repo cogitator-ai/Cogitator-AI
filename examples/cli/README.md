@@ -31,7 +31,7 @@ pnpm dev:studio           # chat with the agents in Cogitator Studio
 ## Run in the background
 
 ```bash
-cogitator build                 # optional: bundle src/gateway.ts → dist/cogitator.mjs (needs esbuild)
+cogitator build                 # optional: bundle src/gateway.ts → dist/cogitator.mjs
 cogitator daemon start          # auto-detects dist/cogitator.mjs, cogitator.yml or src/gateway.ts
 cogitator daemon status
 cogitator daemon logs -f

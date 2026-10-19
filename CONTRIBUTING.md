@@ -286,7 +286,7 @@ pnpm add -w -D typescript                     # workspace tooling
 ### Creating a New Package
 
 1. Copy the layout of a small existing package (for example `packages/redis`): `package.json`, `tsconfig.json`, `src/index.ts`, `src/__tests__/`, `README.md`.
-2. Name it `@cogitator-ai/<name>`; the workspace picks it up automatically. Declare `"sideEffects": false` unless a module runs code at import time that must not be dropped (registrations into shared state, global or process changes, CSS).
+2. Name it `@cogitator-ai/<name>`, the workspace picks it up automatically. Declare `"sideEffects": false` unless a module runs code at import time that must not be dropped (registrations into shared state, global or process changes, CSS).
 3. Add it to the package table and examples in the root `README.md`, add a docs section in `packages/dashboard/content/docs/`, and add e2e tests in `packages/e2e/src/__tests__/<name>/`.
 
 ## Where Help Is Welcome
