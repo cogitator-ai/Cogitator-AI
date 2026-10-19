@@ -204,8 +204,13 @@ export function emitEnvModule(project: ProjectBuilder): void {
   );
 }
 
+/** `value` with `$` doubled, so docker compose keeps it instead of interpolating a variable. */
+function composeLiteral(value: string): string {
+  return value.replaceAll('$', '$$$$');
+}
+
 function yamlList(items: readonly string[]): string {
-  return `[${items.map((item) => JSON.stringify(item)).join(', ')}]`;
+  return `[${items.map((item) => JSON.stringify(composeLiteral(item))).join(', ')}]`;
 }
 
 function composeService(service: ComposeService): string[] {
@@ -216,7 +221,9 @@ function composeService(service: ComposeService): string[] {
   if (service.environment) {
     lines.push(
       '    environment:',
-      ...Object.entries(service.environment).map(([k, v]) => `      ${k}: ${yamlString(v)}`)
+      ...Object.entries(service.environment).map(
+        ([k, v]) => `      ${k}: ${yamlString(composeLiteral(v))}`
+      )
     );
   }
   if (service.volumes?.length) {

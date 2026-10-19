@@ -122,15 +122,21 @@ describe('generated configuration', () => {
   });
 
   it('pulls a model with an unusual name as one shell word, never as a command', () => {
-    const model = "x; echo injected #'";
+    const model = "x; echo $HOME injected #'";
     const compose = parse(
       file(planProject(specFor('basic', 'ollama', { model })), 'docker-compose.yml')
     ) as { services: Record<string, { entrypoint?: string[] }> };
     const [shell, flag, command] = compose.services['ollama-pull']?.entrypoint ?? [];
     expect([shell, flag]).toEqual(['/bin/sh', '-c']);
-    const args = execFileSync('/bin/sh', ['-c', `ollama() { printf '%s\\n' "$@"; }; ${command}`], {
-      encoding: 'utf-8',
-    });
+    expect(command).toContain('$$HOME');
+    const interpolated = command?.replaceAll('$$', '$');
+    const args = execFileSync(
+      '/bin/sh',
+      ['-c', `ollama() { printf '%s\\n' "$@"; }; ${interpolated}`],
+      {
+        encoding: 'utf-8',
+      }
+    );
     expect(args).toBe(`pull\n${model}\n`);
   });
 
