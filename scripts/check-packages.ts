@@ -34,20 +34,31 @@ interface PackageReport {
   suggestions: string[];
 }
 
-function publicPackageDirs(): string[] {
+interface PackageSelection {
+  dirs: string[];
+  /** Directories named on the command line that hold no package.json. */
+  missing: string[];
+}
+
+function selectPackages(): PackageSelection {
   const requested = process.argv.slice(2);
-  const dirs =
+  const candidates =
     requested.length > 0
       ? requested.map((dir) => resolve(process.cwd(), dir))
       : readdirSync(PACKAGES_DIR, { withFileTypes: true })
           .filter((entry) => entry.isDirectory())
           .map((entry) => join(PACKAGES_DIR, entry.name));
-  return dirs.filter((dir) => {
+  const selection: PackageSelection = { dirs: [], missing: [] };
+  for (const dir of candidates) {
     const manifestPath = join(dir, 'package.json');
-    if (!existsSync(manifestPath)) return false;
+    if (!existsSync(manifestPath)) {
+      if (requested.length > 0) selection.missing.push(dir);
+      continue;
+    }
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as PackageJson;
-    return manifest.private !== true && Boolean(manifest.name);
-  });
+    if (manifest.private !== true && manifest.name) selection.dirs.push(dir);
+  }
+  return selection;
 }
 
 function outputOf(error: unknown): string {
@@ -55,13 +66,22 @@ function outputOf(error: unknown): string {
   return [stdout?.trim(), stderr?.trim()].filter(Boolean).join('\n') || message;
 }
 
+/**
+ * Packs into a directory of its own and takes the one tarball there: lifecycle
+ * scripts print to the same stdout, so the output of `pnpm pack` cannot be
+ * parsed reliably.
+ */
 async function pack(packageDir: string, destination: string): Promise<string> {
-  const { stdout } = await run('pnpm', ['pack', '--pack-destination', destination, '--json'], {
+  const outDir = mkdtempSync(join(destination, 'pack-'));
+  await run('pnpm', ['pack', '--pack-destination', outDir], {
     cwd: packageDir,
     maxBuffer: 64 * 1024 * 1024,
   });
-  const { filename } = JSON.parse(stdout) as { filename: string };
-  return filename;
+  const tarballs = readdirSync(outDir).filter((file) => file.endsWith('.tgz'));
+  if (tarballs.length !== 1) {
+    throw new Error(`expected one tarball in ${outDir}, found ${tarballs.length}`);
+  }
+  return join(outDir, tarballs[0]);
 }
 
 async function lintWithPublint(tarballPath: string, report: PackageReport): Promise<void> {
@@ -99,13 +119,24 @@ async function checkPackage(packageDir: string, destination: string): Promise<Pa
     report.problems.push(`pnpm pack failed:\n${outputOf(error)}`);
     return report;
   }
-  await lintWithPublint(tarballPath, report);
+  try {
+    await lintWithPublint(tarballPath, report);
+  } catch (error: unknown) {
+    report.problems.push(
+      `publint failed: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
   await lintWithAttw(tarballPath, report);
   return report;
 }
 
 async function main(): Promise<void> {
-  const dirs = publicPackageDirs();
+  const { dirs, missing } = selectPackages();
+  if (missing.length > 0) {
+    console.error(`No package.json in:\n${missing.map((dir) => `- ${dir}`).join('\n')}`);
+    process.exitCode = 1;
+    return;
+  }
   const destination = mkdtempSync(join(tmpdir(), 'cogitator-package-checks-'));
   const reports: PackageReport[] = [];
   try {
@@ -135,7 +166,8 @@ async function main(): Promise<void> {
       for (const problem of report.problems) console.error(problem.replace(/^/gm, '    '));
       console.error('');
     }
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
 
   console.log(`Checked ${reports.length} package(s) with publint and arethetypeswrong`);

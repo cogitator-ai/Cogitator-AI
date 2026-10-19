@@ -80,6 +80,20 @@ describe('release: package checks', () => {
     expect(result.output).toMatch(/publint FILE_DOES_NOT_EXIST/);
   }, 120_000);
 
+  it('fails on a publint error even when the types are fine', async () => {
+    const dir = fixture('fixture-missing-main', {
+      manifest: manifest('fixture-missing-main', { main: './dist/missing.js' }),
+    });
+
+    const result = await check(dir);
+
+    expect(result.code).toBe(1);
+    const failures = result.output.slice(result.output.indexOf('not ready to publish'));
+    expect(failures).toContain('fixture-missing-main:');
+    expect(failures).toMatch(/publint FILE_DOES_NOT_EXIST/);
+    expect(failures).not.toContain('arethetypeswrong:');
+  }, 120_000);
+
   it('fails when a declaration file imports a module that does not resolve', async () => {
     const dir = fixture('fixture-broken-types', {
       manifest: manifest('fixture-broken-types'),
@@ -95,6 +109,29 @@ describe('release: package checks', () => {
     expect(result.output).toContain('fixture-broken-types:');
     expect(result.output).toContain('arethetypeswrong:');
     expect(result.output).toContain('Internal resolution error');
+  }, 120_000);
+
+  it('packs packages whose lifecycle scripts print to stdout', async () => {
+    const dir = fixture('fixture-noisy-pack', {
+      manifest: manifest('fixture-noisy-pack', {
+        scripts: { prepack: 'echo preparing the package', postpack: 'echo packed' },
+      }),
+    });
+
+    const result = await check(dir);
+
+    expect(result.code, result.output).toBe(0);
+    expect(result.output).toContain('Checked 1 package(s)');
+  }, 120_000);
+
+  it('fails for a directory named on the command line that holds no package', async () => {
+    const valid = fixture('fixture-next-to-typo', {});
+    const typo = join(root, 'fixture-typo');
+
+    const result = await check(valid, typo);
+
+    expect(result.code).toBe(1);
+    expect(result.output).toContain(`No package.json in:\n- ${typo}`);
   }, 120_000);
 
   it('skips private packages', async () => {
