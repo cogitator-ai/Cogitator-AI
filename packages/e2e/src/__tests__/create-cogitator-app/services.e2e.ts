@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -82,16 +82,19 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
-  if (!skipped) {
-    await exec('docker', ['compose', 'down', '--volumes', '--remove-orphans'], {
-      cwd: dir,
-      env,
-      timeoutMs: 120_000,
-    });
+  try {
+    if (!skipped && existsSync(dir)) {
+      await exec('docker', ['compose', 'down', '--volumes', '--remove-orphans'], {
+        cwd: dir,
+        env,
+        timeoutMs: 120_000,
+      });
+    }
+  } finally {
+    delete process.env.COMPOSE_PROJECT_NAME;
+    rmSync(root, { recursive: true, force: true });
   }
-  delete process.env.COMPOSE_PROJECT_NAME;
-  rmSync(root, { recursive: true, force: true });
-});
+}, 150_000);
 
 describe('starting the compose services of a new project', () => {
   it('waits for Redis to be healthy and lets the one-shot service run to the end', async (context) => {

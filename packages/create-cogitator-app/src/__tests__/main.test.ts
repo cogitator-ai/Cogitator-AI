@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
-import { run } from '../cli/main.js';
+import { run, type RunDeps } from '../cli/main.js';
 
 interface Captured {
   code: number;
@@ -13,7 +13,8 @@ interface Captured {
 
 async function cli(
   argv: string[],
-  fetcher: typeof fetch = async () => new Response('{}')
+  fetcher: typeof fetch = async () => new Response('{}'),
+  terminal: Pick<RunDeps, 'env' | 'stdin'> = {}
 ): Promise<Captured> {
   let stdout = '';
   let stderr = '';
@@ -23,7 +24,7 @@ async function cli(
       stdout: (text) => (stdout += stripVTControlCharacters(text)),
       stderr: (text) => (stderr += stripVTControlCharacters(text)),
     },
-    { fetch: fetcher }
+    { fetch: fetcher, ...terminal }
   );
   return { code, stdout, stderr };
 }
@@ -167,11 +168,18 @@ describe('create-cogitator-app CLI', () => {
         '--no-install',
         '--no-git',
       ];
-      const created = await cli([join(root, 'yes'), '-y', ...base]);
+      const fetcher = async () => new Response('{}');
+      const tty = { stdin: { isTTY: true }, env: { ...process.env, CI: undefined } };
+      const ci = { stdin: { isTTY: true }, env: { ...process.env, CI: 'true' } };
+      const created = await cli([join(root, 'yes'), '-y', ...base], fetcher, tty);
       expect(created.code).toBe(0);
       expect(created.stderr).toContain('docker compose up -d');
-      expect((await cli([join(root, 'json'), '--json', ...base])).code).toBe(0);
-      expect((await cli([join(root, 'dry'), '--dry-run', ...base])).code).toBe(0);
+      expect((await cli([join(root, 'json'), '--json', ...base], fetcher, tty)).code).toBe(0);
+      expect((await cli([join(root, 'ci'), '-t', 'basic', ...base], fetcher, ci)).code).toBe(0);
+      expect((await cli([join(root, 'pipe'), '-t', 'basic', ...base])).code).toBe(0);
+      expect((await cli([join(root, 'dry'), '--dry-run', '-y', ...base], fetcher, tty)).code).toBe(
+        0
+      );
       expect(existsSync(calls) ? readFileSync(calls, 'utf-8') : '').toBe('');
     } finally {
       process.env.PATH = path;

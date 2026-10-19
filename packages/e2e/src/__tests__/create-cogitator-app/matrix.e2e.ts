@@ -81,24 +81,34 @@ beforeAll(async () => {
     const input = [...messages].reverse().find((message) => message.role === 'user')?.content ?? '';
     return { content: `Hello: ${input.slice(0, 60)}` };
   });
-  if (PMS.some((entry) => entry.pm === 'yarn')) await useCorepackYarn();
-  for (const binary of ['pnpm', 'npm', 'bun', 'yarn', 'docker'])
+  for (const binary of ['pnpm', 'npm', 'bun', 'docker'])
     available.set(binary, await hasBinary(binary));
+  available.set(
+    'yarn',
+    PMS.some((entry) => entry.pm === 'yarn') &&
+      (await useCorepackYarn()) &&
+      (await hasBinary('yarn'))
+  );
 }, 120_000);
 
 /**
  * Puts corepack's `yarn` first on PATH, so every Yarn the matrix starts,
  * also the one a package.json script calls, is the version the project's
- * `packageManager` pins.
+ * `packageManager` pins. Without corepack the Yarn rows are skipped, and
+ * fail in CI, where they must run.
  */
-async function useCorepackYarn(): Promise<void> {
-  if (!(await hasBinary('corepack'))) return;
+async function useCorepackYarn(): Promise<boolean> {
+  if (!(await hasBinary('corepack'))) {
+    if (process.env.CI) throw new Error('The Yarn rows of the matrix need corepack');
+    return false;
+  }
   const bin = join(root, 'corepack-bin');
   mkdirSync(bin);
   await mustExec('corepack', ['enable', '--install-directory', bin, 'yarn'], { cwd: root });
   process.env.PATH = `${bin}${delimiter}${process.env.PATH ?? ''}`;
   process.env.COREPACK_ENABLE_DOWNLOAD_PROMPT = '0';
   process.env.COREPACK_ENABLE_AUTO_PIN = '0';
+  return true;
 }
 
 afterAll(async () => {
@@ -252,10 +262,14 @@ describe.each(combos)('$presetId with $id', ({ presetId, id, pm, packageManagerS
 
   beforeAll(async () => {
     if (!available.get(pm)) {
-      skipped = `${pm} is not installed`;
+      skipped = pm === 'yarn' ? 'corepack is not installed' : `${pm} is not installed`;
       return;
     }
     await scaffold(spec, { directory: dir, install: false, git: false, packageManagerSpec });
+    if (packageManagerSpec) {
+      const version = await mustExec(pm, ['--version'], { cwd: dir });
+      expect(`${pm}@${version.trim()}`).toBe(packageManagerSpec);
+    }
     useTarballs(dir, pm, await packed(dir), { strict: true });
     await mustExec(pm, installArgs(pm), {
       cwd: dir,

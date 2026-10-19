@@ -210,6 +210,8 @@ function outro(
 export interface RunDeps {
   fetch?: typeof fetch;
   env?: NodeJS.ProcessEnv;
+  /** The terminal input, which decides with `env` whether anything is asked. */
+  stdin?: { isTTY?: boolean };
   /** Where telemetry goes, the release's Umami website by default. */
   telemetry?: { websiteId?: string; host?: string; fetch?: typeof fetch };
 }
@@ -261,8 +263,8 @@ export async function run(
     return 0;
   }
 
-  const interactive = isInteractive(args);
   const env = deps.env ?? process.env;
+  const interactive = isInteractive(args, env, deps.stdin ?? process.stdin);
   const telemetry =
     telemetryDisabledReason({
       flag: args.telemetry,

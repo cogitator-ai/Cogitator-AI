@@ -29,8 +29,9 @@ function tempRoot(): string {
 
 /**
  * Puts a `docker` on PATH that records its arguments and answers like Docker:
- * `DOCKER_INFO_EXIT` fails the daemon check, `DOCKER_WAIT_FAIL` fails the
- * waiting start the way a taken port does.
+ * `DOCKER_COMPOSE_EXIT` fails the compose plugin check, `DOCKER_INFO_EXIT`
+ * the daemon check, `DOCKER_WAIT_FAIL` fails the waiting start the way a
+ * taken port does.
  */
 function fakeDocker(): { calls: () => string[] } {
   const bin = tempRoot();
@@ -42,6 +43,7 @@ function fakeDocker(): { calls: () => string[] } {
       '#!/bin/sh',
       `echo "$*" >> "${log}"`,
       'case "$*" in',
+      '  "compose version") exit "${DOCKER_COMPOSE_EXIT:-0}" ;;',
       '  info*) exit "${DOCKER_INFO_EXIT:-0}" ;;',
       '  *--wait*)',
       '    if [ -n "$DOCKER_WAIT_FAIL" ]; then',
@@ -91,6 +93,13 @@ describe('dockerComposeAvailable', () => {
     fakeDocker();
     vi.stubEnv('DOCKER_INFO_EXIT', '1');
     expect(await dockerComposeAvailable(tempRoot())).toBe(false);
+  });
+
+  it('is false without the compose plugin, before asking the daemon', async () => {
+    const docker = fakeDocker();
+    vi.stubEnv('DOCKER_COMPOSE_EXIT', '1');
+    expect(await dockerComposeAvailable(tempRoot())).toBe(false);
+    expect(docker.calls()).toEqual(['compose version']);
   });
 
   it('is false without Docker', async () => {
