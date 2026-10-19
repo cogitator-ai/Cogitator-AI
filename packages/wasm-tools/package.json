@@ -22,6 +22,7 @@
     },
     "./wasm/*": "./dist/wasm/*"
   },
+  "sideEffects": false,
   "files": [
     "dist"
   ],
@@ -50,7 +51,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/cogitator-ai/Cogitator-AI.git",
+    "url": "git+https://github.com/cogitator-ai/Cogitator-AI.git",
     "directory": "packages/wasm-tools"
   },
   "publishConfig": {
