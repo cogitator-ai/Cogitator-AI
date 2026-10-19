@@ -17,18 +17,18 @@ afterEach(() => {
 });
 
 describe('resolveOllamaUrl', () => {
-  it('uses the variable the generated code reads, then OLLAMA_HOST, then the default', () => {
+  it('uses the variable the generated project reads, then the default', () => {
     expect(resolveOllamaUrl({ OLLAMA_BASE_URL: 'http://gpu:11434/' })).toBe('http://gpu:11434');
-    expect(resolveOllamaUrl({ OLLAMA_HOST: '0.0.0.0:11500' })).toBe('http://localhost:11500');
-    expect(resolveOllamaUrl({})).toBe('http://localhost:11434');
-  });
-
-  it('reads a host without a port the way Ollama does, on port 11434', () => {
-    expect(resolveOllamaUrl({ OLLAMA_HOST: '0.0.0.0' })).toBe('http://localhost:11434');
-    expect(resolveOllamaUrl({ OLLAMA_HOST: 'gpu-box' })).toBe('http://gpu-box:11434');
     expect(resolveOllamaUrl({ OLLAMA_BASE_URL: 'https://ollama.example.com' })).toBe(
       'https://ollama.example.com'
     );
+    expect(resolveOllamaUrl({ OLLAMA_BASE_URL: 'gpu-box' })).toBe('http://gpu-box:11434');
+    expect(resolveOllamaUrl({})).toBe('http://localhost:11434');
+  });
+
+  it('ignores OLLAMA_HOST, where the server listens and which the project never reads', () => {
+    expect(resolveOllamaUrl({ OLLAMA_HOST: '0.0.0.0' })).toBe('http://localhost:11434');
+    expect(resolveOllamaUrl({ OLLAMA_HOST: 'gpu-box:11500' })).toBe('http://localhost:11434');
   });
 
   it('reads a URL with a long run of slashes in linear time', () => {

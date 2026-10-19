@@ -11,17 +11,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * The Ollama server the generated code talks to: `OLLAMA_BASE_URL`, which it
- * reads, then `OLLAMA_HOST`, which the Ollama CLI reads, then the local
- * default. Each is read the way Ollama reads `OLLAMA_HOST` and the generated
- * project's config does: a bare host gets port 11434, `0.0.0.0` means localhost.
+ * The Ollama server the generated project talks to: `OLLAMA_BASE_URL`, which
+ * its `cogitator.yml` reads, else the local default. `OLLAMA_HOST` is where
+ * the Ollama server listens, often `0.0.0.0`, and the project never reads it.
+ * A bare host gets port 11434, the way Ollama reads its own address.
  */
 export function resolveOllamaUrl(env: Record<string, string | undefined> = process.env): string {
-  return (
-    resolveOllamaHost(env.OLLAMA_BASE_URL) ??
-    resolveOllamaHost(env.OLLAMA_HOST) ??
-    DEFAULT_OLLAMA_URL
-  );
+  return resolveOllamaHost(env.OLLAMA_BASE_URL) ?? DEFAULT_OLLAMA_URL;
 }
 
 /** The models installed in the Ollama at `baseUrl`, or `undefined` when it does not answer. */

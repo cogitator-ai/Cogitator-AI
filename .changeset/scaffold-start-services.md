@@ -7,4 +7,4 @@ The scaffolder offers to start the project's compose services once the project i
 
 `startServices`, `dockerComposeAvailable`, `servicesToStart`, `offerServices` and `isInteractive` are exported. `offerServices` asks at the terminal, so programmatic callers check `isInteractive` first. `ProjectPlan.oneShotServices` names the services that run a task and exit.
 
-`resolveOllamaUrl` reads `OLLAMA_BASE_URL` and `OLLAMA_HOST` the way Ollama and the generated project's config do: a host without a port gets 11434 and `0.0.0.0` means localhost. `OLLAMA_HOST=0.0.0.0` used to resolve to port 80, so a running Ollama looked missing.
+`resolveOllamaUrl` now answers with the Ollama the generated project talks to: `OLLAMA_BASE_URL`, which its `cogitator.yml` reads, else `http://localhost:11434`. It no longer reads `OLLAMA_HOST`, the address the Ollama server listens on, which the project ignores. With the common `OLLAMA_HOST=0.0.0.0` the scaffolder used to look for Ollama on port 80 and report a running one as missing.
