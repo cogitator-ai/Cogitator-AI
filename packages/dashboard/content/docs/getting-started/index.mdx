@@ -95,15 +95,15 @@ Some providers and adapters load optional peer dependencies on demand: `@aws-sdk
 
 Projects scaffolded with Docker Compose (the default answer, or `--docker`) get a `docker-compose.yml` with:
 
-- **Redis** (port 6379) — short-term memory, pub/sub, job queues
-- **Postgres** (port 5432) — long-term memory (user, password and database `cogitator` unless `POSTGRES_*` variables are set)
-- **Ollama** (port 11434) — local LLM inference, only when Ollama is the chosen provider
+- **Redis** (port 6379) - short-term memory, pub/sub, job queues, when Redis memory or the queue worker needs it
+- **Postgres** (port 5432) - long-term memory (user, password and database `cogitator` unless `POSTGRES_*` variables are set), with Postgres memory or the pgvector store
+- **Ollama** (port 11434) - local LLM inference, only when Ollama is the chosen provider
 
 ```bash
 docker compose up -d
 ```
 
-At a terminal the scaffolder offers to start them for you right after it creates the project, and waits until they are healthy.
+At a terminal with Docker running, the scaffolder offers to start them right after it creates the project and waits until they are healthy. The Ollama container pulls the model after that, in the background: `docker compose logs -f ollama-pull` shows when it is done.
 
 The `postgres:16-alpine` image has no pgvector extension. For semantic search in Postgres, switch the image to `pgvector/pgvector:pg16`.
 

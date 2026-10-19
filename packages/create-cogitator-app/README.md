@@ -96,7 +96,7 @@ Every project, whatever the stack:
 - `AGENTS.md` with a managed block of rules for coding agents and `CLAUDE.md` pointing at it, and the Cogitator docs of the installed version in `node_modules/@cogitator-ai/core/docs/`.
 - Scripts: `dev`, `build`, `start`, `test`, `typecheck`, `lint`, `format`, `doctor` and `dev:studio`.
 - With `--deploy`, a production Dockerfile from `@cogitator-ai/deploy` (multi-stage, lockfile install, non-root user, only production dependencies) and `fly.toml` for Fly.io.
-- With Yarn 2 or later, a `.yarnrc.yml` with `nodeLinker: node-modules`, since tsx, vitest and Cogitator Studio expect a `node_modules` folder, and the `.gitignore` entries Yarn recommends for `.yarn/`. Yarn 1 never reads the file, so a project pinned to it gets none. `cogitator doctor` and `cogitator deploy` still handle Plug'n'Play if you switch the linker yourself.
+- With Yarn 2 or later, a `.yarnrc.yml` with `nodeLinker: node-modules`, since tsx, vitest and Cogitator Studio expect a `node_modules` folder, and the `.gitignore` entries Yarn recommends for `.yarn/`. Yarn 1 never reads the file, so a project pinned to it gets none, while `--example` projects, which pin no version, always get it. `cogitator doctor` and `cogitator deploy` still handle Plug'n'Play if you switch the linker yourself.
 - With `--agent`, the `cogitator` MCP server and a skill for Claude Code (`.mcp.json`, `.claude/skills`), Cursor (`.cursor/mcp.json`, `.cursor/skills`) or Codex (`.codex/config.toml`, `.agents/skills`).
 
 The `@cogitator-ai/*` packages are pinned with a caret to the versions released with the scaffolder, and `package.json` records the spec and the command that recreate the project under `cogitator`.
@@ -146,9 +146,9 @@ const result = await scaffold(spec, { directory: './my-agent', install: true, gi
 if (result.install.status === 'failed') console.error(result.install.error.message);
 ```
 
-`planProject(spec)` is pure: it validates the spec, refuses combinations that cannot work (`IncompatibleSpecError` with the issues) and returns the files, dependencies, scripts, environment, services (`oneShotServices` names the ones that run a task and exit) and the command that recreates the project. `scaffold(spec, options)` writes the plan, installs, formats, writes the lock and commits; the `log` option replaces the CLI's spinners, and a failed install, format or git step is reported in the result (`{ status: 'done' | 'skipped' | 'failed' }`) instead of thrown.
+`planProject(spec)` is pure: it validates the spec, refuses combinations that cannot work (`IncompatibleSpecError` with the issues) and returns the files, dependencies, scripts, environment, services (`oneShotServices` names the ones that run a task and exit) and the command that recreates the project. `scaffold(spec, options)` writes the plan, installs, formats, writes the lock and commits, the `log` option replaces the CLI's spinners, and a failed install, format or git step is reported in the result (`{ status: 'done' | 'skipped' | 'failed' }`) instead of thrown.
 
-Also exported: `planAdd` and `addToProject` behind `cogitator add`, `createFromExample` and `createFromTemplate`, the catalogs (`PRESETS`, `FEATURE_CHOICES` and the rest), `compatibilityIssues`, `checkApiKey`, `startServices` and `dockerComposeAvailable` behind the offer to start the services, the Ollama helpers and the telemetry functions.
+Also exported: `planAdd` and `addToProject` behind `cogitator add`, `createFromExample` and `createFromTemplate`, the catalogs (`PRESETS`, `FEATURE_CHOICES` and the rest), `compatibilityIssues`, `checkApiKey`, `startServices`, `dockerComposeAvailable`, `servicesToStart` and `offerServices` behind the offer to start the services (`offerServices` asks at the terminal, so check `isInteractive` first), the Ollama helpers and the telemetry functions.
 
 ## License
 

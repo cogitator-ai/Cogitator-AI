@@ -74,7 +74,7 @@ cd my-agents && npm run dev
 npm run dev:studio     # Cogitator Studio: chat, traces and costs, approvals, workflows, forks
 ```
 
-It prints what the first run needs: `ollama pull` for the local model, or `cp .env.example .env` and the key for a cloud provider.
+It prints what the first run needs: `ollama pull` for the local model, or `cp .env.example .env` and the key for a cloud provider. With Docker running it offers to start the stack's services first (Postgres, Redis, the Ollama container that pulls the model) and waits until they are healthy.
 
 Start from one of 16 presets (agent, personal assistant, memory, Express, Hono or Tetsu API, Next.js chat, messaging bot, RAG, MCP, swarm, workflow, durable workflow, A2A, realtime voice, evals) or pick the stack yourself with flags, from any example of this repository (`--example core/basic-agent`) or from a GitHub template. Every project has a registry of its agents, tests on a mocked model, `AGENTS.md` and the docs bundled for coding agents, and grows later with `npx cogitator add rag`.
 

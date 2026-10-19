@@ -30,9 +30,10 @@ The fastest way to start is the project scaffolder:
 npx create-cogitator-app my-agents --template basic --provider ollama --docker
 cd my-agents
 
-# Start Redis, Postgres (and Ollama, for the ollama provider),
-# unless you let the scaffolder start them when it asked
+# Start the Ollama container, which pulls the model (plus Redis or Postgres
+# when the memory needs them), unless you let the scaffolder start them
 docker compose up -d
+docker compose logs -f ollama-pull   # wait for the model to finish pulling
 
 # Run your first agent
 pnpm dev
