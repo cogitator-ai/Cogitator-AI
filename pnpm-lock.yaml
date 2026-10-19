@@ -473,6 +473,9 @@ importers:
       create-cogitator-app:
         specifier: workspace:^
         version: link:../create-cogitator-app
+      esbuild:
+        specifier: ^0.28.2
+        version: 0.28.2
       ora:
         specifier: ^9.4.1
         version: 9.4.1

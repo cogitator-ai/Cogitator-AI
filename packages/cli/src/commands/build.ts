@@ -2,34 +2,10 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { existsSync, mkdirSync, statSync } from 'node:fs';
 import { dirname, resolve, relative } from 'node:path';
+import type { BuildOptions, BuildResult } from 'esbuild';
 import { log, printBanner } from '../utils/logger.js';
 import { CommandError, errorMessage, examplesHelp } from '../utils/cli.js';
-import { importOptionalPackage } from '../utils/module-loader.js';
 import { BUNDLE_MARKER } from '../utils/daemon.js';
-
-interface EsbuildBuildResult {
-  metafile?: { inputs: Record<string, unknown> };
-}
-
-interface EsbuildApi {
-  build(options: Record<string, unknown>): Promise<EsbuildBuildResult>;
-}
-
-function isEsbuildApi(value: unknown): value is EsbuildApi {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    'build' in value &&
-    typeof value.build === 'function'
-  );
-}
-
-async function loadEsbuild(projectDir: string): Promise<EsbuildApi | null> {
-  const mod = await importOptionalPackage('esbuild', projectDir);
-  if (!mod) return null;
-  if (isEsbuildApi(mod)) return mod;
-  return isEsbuildApi(mod.default) ? mod.default : null;
-}
 
 export function createGatewayEntry(configPath: string): string {
   return `import * as entry from ${JSON.stringify(configPath)};
@@ -77,7 +53,9 @@ export interface GatewayBuildOptions {
  * sandbox) and optional drivers loaded on demand, which a bundle cannot
  * carry, so the bundle runs next to the project's node_modules.
  */
-export function gatewayBuildOptions(options: GatewayBuildOptions): Record<string, unknown> {
+type GatewayBuildConfig = BuildOptions & { metafile: true };
+
+export function gatewayBuildOptions(options: GatewayBuildOptions): GatewayBuildConfig {
   return {
     stdin: {
       contents: createGatewayEntry(options.configPath),
@@ -149,19 +127,14 @@ export const buildCommand = new Command('build')
         });
       }
 
-      const esbuild = await loadEsbuild(cwd);
-      if (!esbuild) {
-        throw new CommandError('esbuild is required for building. Install it:', {
-          hints: ['  pnpm add -D esbuild'],
-        });
-      }
+      const esbuild = await import('esbuild');
 
       mkdirSync(dirname(outfile), { recursive: true });
 
       log.step(`Bundling ${chalk.dim(relative(cwd, configPath))}`);
       const startTime = performance.now();
 
-      let result: EsbuildBuildResult;
+      let result: BuildResult<GatewayBuildConfig>;
       try {
         result = await esbuild.build(
           gatewayBuildOptions({
@@ -187,10 +160,8 @@ export const buildCommand = new Command('build')
       console.log(`  ${chalk.bold('Size')}     ${sizeStr}`);
       console.log(`  ${chalk.bold('Target')}   ${options.target}`);
 
-      if (result.metafile) {
-        const inputs = Object.keys(result.metafile.inputs).length;
-        console.log(`  ${chalk.bold('Modules')}  ${inputs} files bundled`);
-      }
+      const inputs = Object.keys(result.metafile.inputs).length;
+      console.log(`  ${chalk.bold('Modules')}  ${inputs} files bundled`);
 
       console.log();
       log.dim(`Run: node ${relative(cwd, outfile)}`);

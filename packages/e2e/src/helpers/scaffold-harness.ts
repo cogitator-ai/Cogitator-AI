@@ -16,6 +16,18 @@ export interface CommandResult {
   output: string;
 }
 
+/**
+ * The environment of a command run in a generated project. The pnpm bin shims
+ * of vitest and tsx put the monorepo's own node_modules on NODE_PATH, and a
+ * project inheriting it resolves packages it never installed, which hides a
+ * dependency the project or a published package forgot to declare.
+ */
+export function projectEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...extra };
+  delete env.NODE_PATH;
+  return env;
+}
+
 /** Runs a command without a shell, capturing its output; never throws for a non-zero exit. */
 export function exec(
   command: string,
@@ -25,7 +37,7 @@ export function exec(
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
-      env: { ...process.env, ...options.env },
+      env: projectEnv(options.env),
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: options.timeoutMs ?? 600_000,
     });
@@ -164,12 +176,16 @@ export async function packWorkspace(roots: readonly string[]): Promise<Record<st
  *
  * pnpm 11 refuses packages published less than a day ago. The harness installs
  * against the newest releases, sometimes hours old, so it turns the wait off.
+ *
+ * `strict` turns pnpm's hidden hoisting off: a package then sees only the
+ * dependencies it declares, the way Yarn PnP or a global install would, so a
+ * published package that leans on a dependency of a dependency fails here.
  */
 export function useTarballs(
   projectDir: string,
   pm: PackageManager,
   tarballs: Record<string, string>,
-  options: { vendor?: boolean } = {}
+  options: { vendor?: boolean; strict?: boolean } = {}
 ): void {
   const manifestPath = join(projectDir, 'package.json');
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as Record<string, unknown>;
@@ -195,6 +211,7 @@ export function useTarballs(
     );
     doc.set('overrides', overrides);
     doc.set('minimumReleaseAge', 0);
+    if (options.strict) doc.set('hoist', false);
     writeFileSync(workspacePath, doc.toString());
   } else if (pm === 'yarn') {
     manifest.resolutions = overrides;

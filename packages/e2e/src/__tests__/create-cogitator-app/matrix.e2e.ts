@@ -20,6 +20,7 @@ import {
   installArgs,
   mustExec,
   packWorkspace,
+  projectEnv,
   regenerateDockerfile,
   runArgs,
   useTarballs,
@@ -29,7 +30,9 @@ import {
  * Every preset with every package manager, installed from the workspace
  * tarballs the way npm would ship them: type-checked, tested on the mocked
  * model, linted and built; servers probed over HTTP against a scripted
- * Ollama; deploys planned; images built when Docker is there.
+ * Ollama; deploys planned; images built when Docker is there. pnpm installs
+ * without hidden hoisting, so a package that uses a dependency it does not
+ * declare fails here instead of working by accident.
  *
  * MATRIX_PRESETS and MATRIX_PMS (comma-separated) narrow it down.
  */
@@ -152,7 +155,7 @@ function startProject(
 ) {
   const child = spawn(command, args, {
     cwd: dir,
-    env: { ...process.env, ...env },
+    env: projectEnv(env),
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
   });
@@ -210,7 +213,7 @@ describe.each(combos)('$presetId with $pm', ({ presetId, pm }) => {
       return;
     }
     await scaffold(spec, { directory: dir, install: false, git: false });
-    useTarballs(dir, pm, await packed(dir));
+    useTarballs(dir, pm, await packed(dir), { strict: true });
     await mustExec(pm, installArgs(pm), { cwd: dir, timeoutMs: 900_000, env: { CI: '1' } });
     const formatted = await formatProject(dir);
     if (formatted.status === 'failed') throw formatted.error;
@@ -319,6 +322,35 @@ describe.each(combos)('$presetId with $pm', ({ presetId, pm }) => {
       await app.stop();
     }
   }, 120_000);
+
+  it('bundles src/gateway.ts with cogitator build and runs the bundle', async (context) => {
+    if (skipped) return context.skip(skipped);
+    if (spec.app !== 'channels') return context.skip('the preset has no gateway');
+    const cli = join(dir, 'node_modules', '.bin', 'cogitator');
+    const outfile = join('dist', 'gateway-bundle.mjs');
+    const built = await exec(cli, ['build', '--quiet', '--outfile', outfile], {
+      cwd: dir,
+      timeoutMs: 120_000,
+    });
+    expect(built.code, built.output.split('\n').slice(-40).join('\n')).toBe(0);
+    expect(existsSync(join(dir, outfile))).toBe(true);
+
+    const port = await freePort();
+    const app = startProject(dir, pm, { WEBCHAT_PORT: String(port), OLLAMA_BASE_URL: model.url }, [
+      process.execPath,
+      [outfile],
+    ]);
+    try {
+      await waitForWebChat(port);
+    } catch (error) {
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)}\n${app.output().slice(-3000)}`,
+        { cause: error }
+      );
+    } finally {
+      await app.stop();
+    }
+  }, 180_000);
 
   it('plans a deploy with its secrets, services and warnings', async (context) => {
     if (skipped) return context.skip(skipped);

@@ -11,6 +11,7 @@ import {
   installArgs,
   mustExec,
   packWorkspace,
+  projectEnv,
   useTarballs,
 } from '../../helpers/scaffold-harness';
 
@@ -94,7 +95,7 @@ describe.skipIf(!browserReady)('Cogitator Studio on a generated project', () => 
 
     studio = spawn('pnpm', ['exec', 'cogitator', 'dev', '--port', '0', '--no-open', '--no-watch'], {
       cwd: dir,
-      env: { ...process.env, OLLAMA_BASE_URL: model.url, CI: '1', FORCE_COLOR: '0' },
+      env: projectEnv({ OLLAMA_BASE_URL: model.url, CI: '1', FORCE_COLOR: '0' }),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     url = await new Promise<string>((resolve, reject) => {

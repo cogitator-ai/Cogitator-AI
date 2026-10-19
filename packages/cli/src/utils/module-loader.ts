@@ -44,22 +44,3 @@ export async function importUserModule(
   }
   return Object.fromEntries(Object.entries(mod));
 }
-
-export async function importOptionalPackage(
-  name: string,
-  projectDir: string
-): Promise<Record<string, unknown> | null> {
-  for (const base of [join(projectDir, 'package.json'), import.meta.url]) {
-    let entry: string;
-    try {
-      entry = createRequire(base).resolve(name);
-    } catch {
-      continue;
-    }
-    const mod: unknown = await import(pathToFileURL(entry).href);
-    if (typeof mod === 'object' && mod !== null) {
-      return Object.fromEntries(Object.entries(mod));
-    }
-  }
-  return null;
-}

@@ -54,6 +54,7 @@
     "chalk": "^6.0.1",
     "commander": "^15.0.0",
     "create-cogitator-app": "workspace:^",
+    "esbuild": "^0.28.2",
     "ora": "^9.4.1",
     "yaml": "^2.9.1",
     "zod": "^4.6.5"

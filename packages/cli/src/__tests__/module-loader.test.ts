@@ -2,11 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import {
-  importOptionalPackage,
-  importUserModule,
-  isTypeScriptFile,
-} from '../utils/module-loader.js';
+import { importUserModule, isTypeScriptFile } from '../utils/module-loader.js';
 
 describe('isTypeScriptFile', () => {
   it('matches ts, mts, cts and tsx', () => {
@@ -35,17 +31,5 @@ describe('importUserModule', () => {
     const file = join(dir, 'broken.mjs');
     writeFileSync(file, 'throw new Error("boom");');
     await expect(importUserModule(file)).rejects.toThrow('boom');
-  });
-});
-
-describe('importOptionalPackage', () => {
-  it('returns null for packages that are not installed', async () => {
-    expect(await importOptionalPackage('definitely-missing-pkg-xyz', tmpdir())).toBeNull();
-  });
-
-  it('resolves packages available to the CLI', async () => {
-    const mod = await importOptionalPackage('yaml', tmpdir());
-    expect(mod).not.toBeNull();
-    expect(typeof mod?.parse).toBe('function');
   });
 });
