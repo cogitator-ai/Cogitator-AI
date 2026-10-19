@@ -240,10 +240,9 @@ Interactive commands: `/model [name]`, `/clear`, `/help`, `exit` / `quit` (Ctrl+
 
 ### cogitator build
 
-Bundles a gateway module with [esbuild](https://esbuild.github.io) into a single self-starting ES module. The bundle starts the exported `gateway` and stops it gracefully on `SIGINT`/`SIGTERM`.
+Bundles a gateway module with [esbuild](https://esbuild.github.io) into a single self-starting ES module. The bundle starts the exported `gateway` and stops it gracefully on `SIGINT`/`SIGTERM`. esbuild ships with the CLI, so the project needs no extra dependency.
 
 ```bash
-pnpm add -D esbuild
 cogitator build                     # src/gateway.ts → dist/cogitator.mjs
 cogitator build -c src/gw.ts -o out/bot.mjs --minify --no-sourcemap
 node dist/cogitator.mjs

@@ -112,6 +112,12 @@ Start in [GitHub Discussions](https://github.com/cogitator-ai/Cogitator-AI/discu
    pnpm lint
    ```
 
+   If you changed a package's `package.json`, exports or build, also check what npm will receive:
+
+   ```bash
+   pnpm build && pnpm check:packages   # publint and arethetypeswrong on the packed tarballs
+   ```
+
 4. **Add a changeset** if a published package changes (see [Changesets](#changesets)).
 
 5. **Update the docs**: the package README, the MDX page on the website and the examples if behaviour or API changed.
@@ -204,6 +210,8 @@ pnpm lint         # lint package sources
   | `TEST_BROWSER=true`                      | Browser automation (Playwright)           |
   | `DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY` | Voice providers                           |
 
+  The Ollama suites run only when Ollama answers at `OLLAMA_URL` (default `http://localhost:11434`) and `TEST_MODEL` is pulled. Otherwise they are skipped and the reason is printed, for example `model qwen2.5:0.5b is not pulled, run: ollama pull qwen2.5:0.5b`.
+
 - Use `@cogitator-ai/test-utils` (`MockLLMBackend`, `MockMemoryAdapter`, fixtures) instead of calling real providers in unit tests.
 - Regression tests for every bug fix; describe behaviour in the test name.
 
@@ -278,7 +286,7 @@ pnpm add -w -D typescript                     # workspace tooling
 ### Creating a New Package
 
 1. Copy the layout of a small existing package (for example `packages/redis`): `package.json`, `tsconfig.json`, `src/index.ts`, `src/__tests__/`, `README.md`.
-2. Name it `@cogitator-ai/<name>`; the workspace picks it up automatically.
+2. Name it `@cogitator-ai/<name>`; the workspace picks it up automatically. Declare `"sideEffects": false` unless a module runs code at import time that must not be dropped (registrations into shared state, global or process changes, CSS).
 3. Add it to the package table and examples in the root `README.md`, add a docs section in `packages/dashboard/content/docs/`, and add e2e tests in `packages/e2e/src/__tests__/<name>/`.
 
 ## Where Help Is Welcome
