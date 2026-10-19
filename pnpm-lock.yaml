@@ -590,6 +590,9 @@ importers:
       '@clack/prompts':
         specifier: ^1.8.1
         version: 1.8.1
+      '@cogitator-ai/config':
+        specifier: workspace:^
+        version: link:../config
       '@cogitator-ai/deploy':
         specifier: workspace:^
         version: link:../deploy
