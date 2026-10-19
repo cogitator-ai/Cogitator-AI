@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import ts from 'typescript';
+import { parse } from 'yaml';
 import { compatibilityIssues } from '../kit/compat.js';
 import { planProject, type ProjectPlan } from '../kit/plan.js';
 import { PRESETS } from '../kit/presets.js';
@@ -117,6 +119,19 @@ describe('generated configuration', () => {
     expect(postgres).not.toContain(':latest');
     expect(postgres).not.toContain('redis');
     expect(postgres).toContain('healthcheck:');
+  });
+
+  it('pulls a model with an unusual name as one shell word, never as a command', () => {
+    const model = "x; echo injected #'";
+    const compose = parse(
+      file(planProject(specFor('basic', 'ollama', { model })), 'docker-compose.yml')
+    ) as { services: Record<string, { entrypoint?: string[] }> };
+    const [shell, flag, command] = compose.services['ollama-pull']?.entrypoint ?? [];
+    expect([shell, flag]).toEqual(['/bin/sh', '-c']);
+    const args = execFileSync('/bin/sh', ['-c', `ollama() { printf '%s\\n' "$@"; }; ${command}`], {
+      encoding: 'utf-8',
+    });
+    expect(args).toBe(`pull\n${model}\n`);
   });
 
   it('writes no compose file with --no-docker', () => {

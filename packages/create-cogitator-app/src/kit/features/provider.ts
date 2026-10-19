@@ -4,6 +4,11 @@ import { bareModel, hasFeature } from '../spec.js';
 import { IMAGES } from '../versions.js';
 import type { FeatureModule } from './types.js';
 
+/** `value` as one word of a POSIX shell command, quoted unless it is a plain model name. */
+function shellWord(value: string): string {
+  return /^[\w.:/@+-]+$/.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
 /**
  * Ollama in compose starts with an empty volume, so a one-shot `ollama-pull`
  * service downloads the models the project uses once the server is healthy.
@@ -40,7 +45,11 @@ export const providerFeature: FeatureModule = {
         image: IMAGES.ollama,
         dependsOn: { ollama: 'service_healthy' },
         environment: { OLLAMA_HOST: 'http://ollama:11434' },
-        entrypoint: ['/bin/sh', '-c', models.map((model) => `ollama pull ${model}`).join(' && ')],
+        entrypoint: [
+          '/bin/sh',
+          '-c',
+          models.map((model) => `ollama pull ${shellWord(model)}`).join(' && '),
+        ],
         restart: 'no',
         oneShot: true,
       });
