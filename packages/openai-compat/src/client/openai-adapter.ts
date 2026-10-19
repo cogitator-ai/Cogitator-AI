@@ -34,6 +34,7 @@ import type {
   CreateRunRequest,
   ResponseFormat,
   SubmitToolOutputsRequest,
+  Thread,
   ToolCall,
 } from '../types/openai-types';
 
@@ -348,15 +349,18 @@ export class OpenAIAdapter {
     };
   }
 
-  async createThread(metadata?: Record<string, string>) {
+  async createThread(metadata?: Record<string, string>): Promise<Thread> {
     return this.threadManager.createThread(metadata);
   }
 
-  async getThread(id: string) {
+  async getThread(id: string): Promise<Thread | undefined> {
     return this.threadManager.getThread(id);
   }
 
-  async updateThread(id: string, updates: { metadata?: Record<string, string> }) {
+  async updateThread(
+    id: string,
+    updates: { metadata?: Record<string, string> }
+  ): Promise<Thread | undefined> {
     return this.threadManager.updateThread(id, updates);
   }
 
