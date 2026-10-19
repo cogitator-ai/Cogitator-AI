@@ -216,6 +216,12 @@ export function installErrorCode(output: string, exitCode: number): string {
   return /\bYN0001:/.test(output) ? 'YN0001' : `EXIT_${exitCode}`;
 }
 
+/** The major version of Yarn a `packageManager` spec such as `yarn@4.9.1` names, if it names one. */
+export function yarnMajor(packageManagerSpec: string | undefined): number | undefined {
+  const major = /^yarn@(\d+)/.exec(packageManagerSpec ?? '')?.[1];
+  return major === undefined ? undefined : Number.parseInt(major, 10);
+}
+
 /**
  * The install command CI runs: reproducible from the lockfile. Yarn 2 and
  * later spell it `--immutable`, Yarn 1 `--frozen-lockfile`, which is also what
@@ -227,10 +233,10 @@ export function ciInstallCommand(pm: PackageManager, packageManagerSpec?: string
       return 'pnpm install --frozen-lockfile';
     case 'npm':
       return 'npm ci';
-    case 'yarn': {
-      const major = Number.parseInt(/^yarn@(\d+)/.exec(packageManagerSpec ?? '')?.[1] ?? '1', 10);
-      return major >= 2 ? 'yarn install --immutable' : 'yarn install --frozen-lockfile';
-    }
+    case 'yarn':
+      return (yarnMajor(packageManagerSpec) ?? 1) >= 2
+        ? 'yarn install --immutable'
+        : 'yarn install --frozen-lockfile';
     case 'bun':
       return 'bun install --frozen-lockfile';
   }

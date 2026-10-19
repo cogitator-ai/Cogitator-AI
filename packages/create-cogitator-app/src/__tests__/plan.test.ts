@@ -196,6 +196,33 @@ describe('CI workflow', () => {
   });
 });
 
+describe('Yarn', () => {
+  const plan = (packageManagerSpec?: string) =>
+    planProject(specFor('basic', 'openai', { packageManager: 'yarn' }), { packageManagerSpec });
+  const paths = (p: ProjectPlan) => p.files.map((f) => f.path);
+
+  it.each([
+    ['Yarn 4', 'yarn@4.18.1'],
+    ['Yarn 3', 'yarn@3.8.7'],
+    ['a Yarn of unknown version', undefined],
+  ])('asks %s for node_modules instead of Plug and Play', (_name, packageManagerSpec) => {
+    const project = plan(packageManagerSpec);
+    expect(file(project, '.yarnrc.yml')).toBe('nodeLinker: node-modules\n');
+    const gitignore = file(project, '.gitignore').split('\n');
+    expect(gitignore).toEqual(expect.arrayContaining(['.yarn/*', '!.yarn/releases', '.pnp.*']));
+  });
+
+  it('writes no .yarnrc.yml for Yarn 1, which never reads it', () => {
+    const project = plan('yarn@1.22.22');
+    expect(paths(project)).not.toContain('.yarnrc.yml');
+    expect(file(project, '.gitignore')).not.toContain('.yarn/');
+  });
+
+  it('writes no .yarnrc.yml for other package managers', () => {
+    expect(paths(planProject(specFor('basic', 'openai')))).not.toContain('.yarnrc.yml');
+  });
+});
+
 describe('AGENTS.md', () => {
   it('keeps the Cogitator rules in a managed block and points CLAUDE.md at it', () => {
     const plan = planProject(specFor('basic', 'openai'));

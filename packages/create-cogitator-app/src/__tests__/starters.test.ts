@@ -115,6 +115,26 @@ describe('--example', () => {
       expect(workspace).toContain(`${declined}: false`);
   });
 
+  it('asks Yarn for node_modules, which tsx needs, and keeps its .yarn folder out of git', () => {
+    const plan = (packageManager: 'yarn' | 'npm') =>
+      planExample(findExample('core/basic-agent'), {
+        name: 'tutor',
+        packageManager,
+        version: '0.5.0',
+        ref: 'create-cogitator-app@0.5.0',
+      });
+    const content = (files: { path: string; content: string }[], path: string) =>
+      files.find((file) => file.path === path)?.content;
+    const yarn = plan('yarn').files;
+    expect(content(yarn, '.yarnrc.yml')).toBe('nodeLinker: node-modules\n');
+    expect(content(yarn, '.gitignore')?.split('\n')).toEqual(
+      expect.arrayContaining(['node_modules/', '.yarn/*', '!.yarn/releases'])
+    );
+    const npm = plan('npm').files;
+    expect(content(npm, '.yarnrc.yml')).toBeUndefined();
+    expect(content(npm, '.gitignore')).not.toContain('.yarn');
+  });
+
   it('runs a Bun example with Bun', () => {
     const plan = planExample(findExample('integrations/tetsu-server'), {
       name: 'tetsu',

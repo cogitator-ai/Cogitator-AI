@@ -94,6 +94,7 @@ Every project, whatever the stack:
 - `AGENTS.md` with a managed block of rules for coding agents and `CLAUDE.md` pointing at it, and the Cogitator docs of the installed version in `node_modules/@cogitator-ai/core/docs/`.
 - Scripts: `dev`, `build`, `start`, `test`, `typecheck`, `lint`, `format`, `doctor` and `dev:studio`.
 - With `--deploy`, a production Dockerfile from `@cogitator-ai/deploy` (multi-stage, lockfile install, non-root user, only production dependencies) and `fly.toml` for Fly.io.
+- With Yarn 2 or later, a `.yarnrc.yml` with `nodeLinker: node-modules`, since tsx, vitest and Cogitator Studio expect a `node_modules` folder, and the `.gitignore` entries Yarn recommends for `.yarn/`. Yarn 1 never reads the file, so a project pinned to it gets none. `cogitator doctor` and `cogitator deploy` still handle Plug'n'Play if you switch the linker yourself.
 - With `--agent`, the `cogitator` MCP server and a skill for Claude Code (`.mcp.json`, `.claude/skills`), Cursor (`.cursor/mcp.json`, `.cursor/skills`) or Codex (`.codex/config.toml`, `.agents/skills`).
 
 The `@cogitator-ai/*` packages are pinned with a caret to the versions released with the scaffolder, and `package.json` records the spec and the command that recreate the project under `cogitator`.

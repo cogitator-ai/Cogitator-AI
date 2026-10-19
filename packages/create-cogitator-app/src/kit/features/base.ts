@@ -232,7 +232,8 @@ export const baseFeature: FeatureModule = {
       .devDependency('@cogitator-ai/test-utils', cogitatorVersion('@cogitator-ai/test-utils'))
       .devDependency('@biomejs/biome', VERSIONS.biome)
       .devDependency('tsx', VERSIONS.tsx)
-      .devDependency('vitest', VERSIONS.vitest);
+      .devDependency('vitest', VERSIONS.vitest)
+      .devDependency('vite', VERSIONS.vite);
 
     if (bun) {
       project.devDependency('@types/bun', VERSIONS.typesBun);

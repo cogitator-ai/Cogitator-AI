@@ -260,7 +260,9 @@ export async function initGit(directory: string): Promise<StepResult> {
 /**
  * Installs the dependencies with `pm`: the one that launched the scaffolder
  * when it is `pm`, else the one on PATH. A failed install resolves with its
- * error and the code it names its cause with, it never throws.
+ * error and the code it names its cause with, it never throws. Yarn 2 and
+ * later refuse to write a lockfile under CI, and this install is the one that
+ * creates it, so immutable installs are turned off for it.
  */
 export async function installDependencies(
   directory: string,
@@ -280,6 +282,7 @@ export async function installDependencies(
     const result = await runCommand(invocation.command, invocation.args, {
       cwd: directory,
       inherit,
+      ...(pm === 'yarn' && { env: { ...process.env, YARN_ENABLE_IMMUTABLE_INSTALLS: 'false' } }),
       ...(!invocation.fromPath && { shell: false }),
     });
     if (result.code !== 0) {

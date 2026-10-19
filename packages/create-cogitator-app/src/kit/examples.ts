@@ -1,4 +1,4 @@
-import { pnpmWorkspaceYaml } from './emit.js';
+import { pnpmWorkspaceYaml, wantsYarnrc, YARN_GITIGNORE, YARNRC_YML } from './emit.js';
 import { CodedError } from './errors.js';
 import type { GeneratedFile } from './project.js';
 import type { PackageManager } from './spec.js';
@@ -260,13 +260,22 @@ export function planExample(example: ExampleEntry, options: ExamplePlanOptions):
   };
 
   const secrets = Object.entries(options.secrets ?? {}).filter(([, value]) => value !== '');
+  const yarnrc = wantsYarnrc(pm, undefined);
   const files: GeneratedFile[] = [
     { path: 'package.json', content: JSON.stringify(manifest, null, 2) + '\n' },
     { path: 'tsconfig.json', content: JSON.stringify(tsconfig, null, 2) + '\n' },
     { path: 'README.md', content: readme },
     {
       path: '.gitignore',
-      content: ['node_modules/', 'dist/', '.env', '*.log', '.DS_Store', ''].join('\n'),
+      content: [
+        'node_modules/',
+        'dist/',
+        '.env',
+        '*.log',
+        '.DS_Store',
+        ...(yarnrc ? YARN_GITIGNORE : []),
+        '',
+      ].join('\n'),
     },
     ...(env.length > 0 ? [{ path: '.env.example', content: envExample }] : []),
     ...(secrets.length > 0
@@ -286,6 +295,7 @@ export function planExample(example: ExampleEntry, options: ExamplePlanOptions):
           },
         ]
       : []),
+    ...(yarnrc ? [{ path: '.yarnrc.yml', content: YARNRC_YML }] : []),
   ];
 
   return { example, ref, files, remoteFiles: example.files, command, scripts };

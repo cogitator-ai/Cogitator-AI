@@ -1,7 +1,8 @@
 import { code, tsKey, tsString, yamlString } from './code.js';
+import { yarnMajor } from './package-manager.js';
 import type { ComposeService, EnvVar, ProjectBuilder, RegistryEntry } from './project.js';
 import { DEFAULT_OLLAMA_URL } from './providers.js';
-import { qualifiedModel, runsOnBun } from './spec.js';
+import { qualifiedModel, runsOnBun, type PackageManager } from './spec.js';
 import { BUN_ENGINES, NODE_ENGINES } from './versions.js';
 
 /** Where each script goes in package.json; the rest follow alphabetically. */
@@ -90,6 +91,38 @@ export function pnpmWorkspaceYaml(nativeBuilds: Iterable<string>): string {
 export function emitPnpmWorkspace(project: ProjectBuilder): void {
   if (project.spec.packageManager !== 'pnpm') return;
   project.file('pnpm-workspace.yaml', pnpmWorkspaceYaml([...project.nativeBuilds, 'esbuild']));
+}
+
+/**
+ * Yarn 2 and later install with Plug'n'Play unless told otherwise, while tsx,
+ * vitest and Cogitator Studio expect a `node_modules` folder: the
+ * `.yarnrc.yml` that asks for one.
+ */
+export const YARNRC_YML = 'nodeLinker: node-modules\n';
+
+/** The `.gitignore` entries Yarn recommends for its `.yarn` folder when installs are not committed. */
+export const YARN_GITIGNORE = [
+  '.yarn/*',
+  '!.yarn/patches',
+  '!.yarn/plugins',
+  '!.yarn/releases',
+  '!.yarn/sdks',
+  '!.yarn/versions',
+  '.pnp.*',
+] as const;
+
+/**
+ * Whether a Yarn project gets the `.yarnrc.yml`: Yarn 1 never reads the file,
+ * so it is left out only for a project pinned to Yarn 1.
+ */
+export function wantsYarnrc(pm: PackageManager, packageManagerSpec: string | undefined): boolean {
+  return pm === 'yarn' && yarnMajor(packageManagerSpec) !== 1;
+}
+
+export function emitYarnrc(project: ProjectBuilder): void {
+  if (!wantsYarnrc(project.spec.packageManager, project.packageManagerSpec)) return;
+  project.file('.yarnrc.yml', YARNRC_YML);
+  project.ignore(...YARN_GITIGNORE);
 }
 
 function envExampleLine(variable: EnvVar): string[] {

@@ -40,6 +40,8 @@ export const VERSIONS = {
   typesNode: '^24.19.1',
   tsx: '^4.23.15',
   vitest: '^5.0.3',
+  /** A peer vitest requires and Yarn, unlike npm, pnpm and Bun, does not install by itself. */
+  vite: '^8.3.4',
   biome: '^2.5.15',
   express: '^5.2.1',
   typesExpress: '^5.0.6',

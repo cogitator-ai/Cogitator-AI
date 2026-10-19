@@ -190,4 +190,18 @@ describe('scaffold', () => {
       process.env.PATH = path;
     }
   });
+
+  it('lets Yarn write the lockfile even under CI, where Yarn 2 and later refuse to', async () => {
+    const launcher = join(tempRoot(), 'yarn.cjs');
+    writeFileSync(
+      launcher,
+      "require('node:fs').writeFileSync('immutable', String(process.env.YARN_ENABLE_IMMUTABLE_INSTALLS));\n"
+    );
+    const directory = tempRoot();
+    vi.stubEnv('CI', 'true');
+    vi.stubEnv('npm_execpath', launcher);
+    vi.stubEnv('npm_config_user_agent', 'yarn/4.18.1 npm/? node/v24.0.0 linux x64');
+    expect(await installDependencies(directory, 'yarn', false)).toEqual({ status: 'done' });
+    expect(readFileSync(join(directory, 'immutable'), 'utf-8')).toBe('false');
+  });
 });

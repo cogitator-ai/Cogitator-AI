@@ -12,6 +12,7 @@ import {
   emitPnpmWorkspace,
   emitRegistry,
   emitToolsIndex,
+  emitYarnrc,
 } from './emit.js';
 import { emitAssistant } from './features/base.js';
 import { emitDeployArtifacts } from './features/deploy.js';
@@ -84,6 +85,7 @@ export function planProject(input: unknown, options: PlanOptions = {}): ProjectP
   emitCompose(project);
   emitCogitatorYml(project);
   emitPnpmWorkspace(project);
+  emitYarnrc(project);
   emitGitignore(project);
   emitAgentsMd(project);
   emitReadme(project);

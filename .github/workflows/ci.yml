@@ -145,8 +145,8 @@ jobs:
           NODE_OPTIONS: '--max-old-space-size=4096'
 
   # Every preset installed from the workspace tarballs, checked, run and built
-  # into a Docker image, one package manager per job. The model is scripted,
-  # so it needs no Ollama.
+  # into a Docker image, one package manager per job. Yarn 1 and Yarn 4 run
+  # through the corepack of Node. The model is scripted, so it needs no Ollama.
   scaffold-matrix:
     name: Scaffold matrix (${{ matrix.pm }})
     runs-on: ubuntu-latest
@@ -155,7 +155,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pm: [pnpm, npm, bun]
+        pm: [pnpm, npm, bun, yarn1, yarn4]
     steps:
       - uses: actions/checkout@v7
 
