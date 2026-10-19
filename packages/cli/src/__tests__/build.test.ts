@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type MockInstance } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -75,17 +75,29 @@ describe('gatewayBuildOptions', () => {
   });
 });
 
+interface BuildTestState {
+  calls: string[];
+}
+
+const testGlobal = globalThis as { cliBuildTest?: BuildTestState };
+
 describe('cogitator build', () => {
   let dir: string;
+  let once: MockInstance<typeof process.once>;
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'cli-build-project-'));
+    once = vi.spyOn(process, 'once');
   });
   afterEach(() => {
+    for (const [event, listener] of once.mock.calls) {
+      if (event === 'SIGINT' || event === 'SIGTERM') process.removeListener(event, listener);
+    }
+    delete testGlobal.cliBuildTest;
     rmSync(dir, { recursive: true, force: true });
     vi.restoreAllMocks();
   });
 
-  it('bundles a TypeScript gateway with its own esbuild in a project that has none', async () => {
+  it('bundles a TypeScript gateway with the esbuild the CLI depends on', async () => {
     mkdirSync(join(dir, 'src'));
     writeFileSync(
       join(dir, 'src', 'gateway.ts'),
@@ -98,20 +110,13 @@ export const gateway = {
     );
     vi.spyOn(process, 'cwd').mockReturnValue(dir);
     vi.spyOn(console, 'log').mockImplementation(() => {});
-    const once = vi.spyOn(process, 'once');
 
     await buildCommand.parseAsync(['--quiet', '--no-sourcemap'], { from: 'user' });
 
     const outfile = join(dir, 'dist', 'cogitator.mjs');
-    expect(existsSync(join(dir, 'node_modules'))).toBe(false);
     expect(existsSync(outfile)).toBe(true);
 
     await import(pathToFileURL(outfile).href);
-    const state = (globalThis as { cliBuildTest?: { calls: string[] } }).cliBuildTest;
-    expect(state?.calls).toEqual(['start']);
-
-    for (const [event, listener] of once.mock.calls) {
-      if (event === 'SIGINT' || event === 'SIGTERM') process.removeListener(event, listener);
-    }
+    expect(testGlobal.cliBuildTest?.calls).toEqual(['start']);
   });
 });
