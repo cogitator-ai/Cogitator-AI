@@ -125,7 +125,7 @@ A failing node does not reject `execute()`: the result carries it in `error`.
 
 ## End-to-End Tests
 
-Unit tests live next to each package (`packages/<pkg>/src/__tests__/*.test.ts`); tests against real providers live in `packages/e2e/src/__tests__/<pkg>/*.e2e.ts` and need `GOOGLE_API_KEY`, `OPENAI_API_KEY` and/or a local Ollama. The Ollama suites run with `TEST_OLLAMA=true` once Ollama answers at `OLLAMA_URL` and the `TEST_MODEL` model is pulled, otherwise they are skipped and print why, for example `model qwen2.5:0.5b is not pulled, run: ollama pull qwen2.5:0.5b`. When a test uses Google, pass the key through `providers`:
+Unit tests live next to each package (`packages/<pkg>/src/__tests__/*.test.ts`); tests against real providers live in `packages/e2e/src/__tests__/<pkg>/*.e2e.ts` and need `GOOGLE_API_KEY`, `OPENAI_API_KEY` and/or a local Ollama. The Ollama suites run with `TEST_OLLAMA=true` once Ollama answers at `OLLAMA_URL` and the `TEST_MODEL` model is pulled, otherwise they are skipped and print why, for example `model qwen2.5:0.5b is not pulled, run: ollama pull qwen2.5:0.5b`. In CI (`CI=true`) they fail instead of skipping. When a test uses Google, pass the key through `providers`:
 
 ```typescript
 const cog = new Cogitator({

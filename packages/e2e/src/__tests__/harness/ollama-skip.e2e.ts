@@ -5,33 +5,61 @@ import type { AddressInfo } from 'node:net';
 interface TagsServer {
   url: string;
   tagRequests: number;
+  authorization: string | undefined;
   close(): Promise<void>;
 }
 
 async function startTagsServer(answer: { status?: number; body: string }): Promise<TagsServer> {
-  const state = { tagRequests: 0 };
+  const state: { tagRequests: number; authorization: string | undefined } = {
+    tagRequests: 0,
+    authorization: undefined,
+  };
   const server: Server = createServer((req, res) => {
-    if (req.method === 'GET' && req.url === '/api/tags') state.tagRequests++;
+    if (req.method === 'GET' && req.url === '/api/tags') {
+      state.tagRequests++;
+      state.authorization = req.headers.authorization;
+    }
     res.writeHead(answer.status ?? 200, { 'content-type': 'application/json' });
     res.end(answer.body);
   });
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const { port } = server.address() as AddressInfo;
+  const url = await listen(server);
   return {
-    url: `http://127.0.0.1:${port}`,
+    url,
     get tagRequests() {
       return state.tagRequests;
     },
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    get authorization() {
+      return state.authorization;
+    },
+    close: () => close(server),
   };
+}
+
+async function listen(server: Server): Promise<string> {
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  return `http://127.0.0.1:${port}`;
+}
+
+function close(server: Server): Promise<void> {
+  server.closeAllConnections();
+  return new Promise<void>((resolve) => server.close(() => resolve()));
 }
 
 function tags(...names: string[]): { body: string } {
   return { body: JSON.stringify({ models: names.map((name) => ({ name, model: name })) }) };
 }
 
-async function loadSetup(env: { TEST_OLLAMA?: string; OLLAMA_URL: string; TEST_MODEL?: string }) {
+async function loadSetup(env: {
+  TEST_OLLAMA?: string;
+  OLLAMA_URL: string;
+  TEST_MODEL?: string;
+  OLLAMA_API_KEY?: string;
+  CI?: string;
+}) {
   vi.resetModules();
+  vi.stubEnv('CI', env.CI ?? '');
+  vi.stubEnv('OLLAMA_API_KEY', env.OLLAMA_API_KEY ?? '');
   vi.stubEnv('TEST_OLLAMA', env.TEST_OLLAMA ?? 'true');
   vi.stubEnv('OLLAMA_URL', env.OLLAMA_URL);
   vi.stubEnv('TEST_MODEL', env.TEST_MODEL ?? 'qwen2.5:0.5b');
@@ -40,7 +68,8 @@ async function loadSetup(env: { TEST_OLLAMA?: string; OLLAMA_URL: string; TEST_M
 
 describe('e2e harness: Ollama skip reason', () => {
   const servers: TagsServer[] = [];
-  let closedUrl: string;
+  let hangUp: Server;
+  let unreachableUrl: string;
 
   const serve = async (answer: { status?: number; body: string }) => {
     const server = await startTagsServer(answer);
@@ -49,9 +78,9 @@ describe('e2e harness: Ollama skip reason', () => {
   };
 
   beforeAll(async () => {
-    const gone = await startTagsServer(tags());
-    closedUrl = gone.url;
-    await gone.close();
+    hangUp = createServer();
+    hangUp.on('connection', (socket) => socket.destroy());
+    unreachableUrl = await listen(hangUp);
   });
 
   afterEach(() => {
@@ -60,7 +89,7 @@ describe('e2e harness: Ollama skip reason', () => {
   });
 
   afterAll(async () => {
-    await Promise.all(servers.map((s) => s.close()));
+    await Promise.all([...servers.map((s) => s.close()), close(hangUp)]);
   });
 
   it('runs when the test model is pulled', async () => {
@@ -95,9 +124,9 @@ describe('e2e harness: Ollama skip reason', () => {
 
   it('skips when Ollama is not reachable', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const { ollamaSkipReason } = await loadSetup({ OLLAMA_URL: closedUrl });
+    const { ollamaSkipReason } = await loadSetup({ OLLAMA_URL: unreachableUrl });
 
-    expect(await ollamaSkipReason()).toBe(`Ollama is not reachable at ${closedUrl}`);
+    expect(await ollamaSkipReason()).toBe(`Ollama is not reachable at ${unreachableUrl}`);
   });
 
   it('skips when /api/tags fails or answers something that is not JSON', async () => {
@@ -137,6 +166,48 @@ describe('e2e harness: Ollama skip reason', () => {
     expect(reasons[0]).toBe(reasons[1]);
     expect(server.tagRequests).toBe(1);
     expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends OLLAMA_API_KEY to an Ollama that asks for one, and nothing otherwise', async () => {
+    const server = await serve(tags('qwen2.5:0.5b'));
+
+    const keyed = await loadSetup({ OLLAMA_URL: server.url, OLLAMA_API_KEY: 'test-key' });
+    expect(await keyed.ollamaSkipReason()).toBeNull();
+    expect(server.authorization).toBe('Bearer test-key');
+
+    const open = await loadSetup({ OLLAMA_URL: server.url });
+    expect(await open.ollamaSkipReason()).toBeNull();
+    expect(server.authorization).toBeUndefined();
+  });
+
+  it('fails instead of skipping when CI asked for the Ollama e2e and cannot run them', async () => {
+    const server = await serve(tags('llama3.2:latest'));
+    const { ollamaSkipReason } = await loadSetup({ OLLAMA_URL: server.url, CI: 'true' });
+
+    await expect(ollamaSkipReason()).rejects.toThrow(
+      'TEST_OLLAMA is "true" in CI, but model qwen2.5:0.5b is not pulled'
+    );
+  });
+
+  it('still skips quietly in CI when TEST_OLLAMA is off', async () => {
+    const { ollamaSkipReason } = await loadSetup({
+      TEST_OLLAMA: '',
+      OLLAMA_URL: unreachableUrl,
+      CI: 'true',
+    });
+
+    expect(await ollamaSkipReason()).toBe('TEST_OLLAMA is not "true"');
+  });
+
+  it('keeps credentials in OLLAMA_URL out of the reason', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const credentialed = unreachableUrl.replace('http://', 'http://user:secret@');
+    const { ollamaSkipReason } = await loadSetup({ OLLAMA_URL: credentialed });
+
+    const reason = await ollamaSkipReason();
+
+    expect(reason).toBe(`Ollama is not reachable at ${unreachableUrl}`);
+    expect(reason).not.toContain('secret');
   });
 
   it('ollamaHasModel checks any model regardless of TEST_OLLAMA', async () => {

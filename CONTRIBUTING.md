@@ -210,7 +210,7 @@ pnpm lint         # lint package sources
   | `TEST_BROWSER=true`                      | Browser automation (Playwright)           |
   | `DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY` | Voice providers                           |
 
-  The Ollama suites run only when Ollama answers at `OLLAMA_URL` (default `http://localhost:11434`) and `TEST_MODEL` is pulled. Otherwise they are skipped and the reason is printed, for example `model qwen2.5:0.5b is not pulled, run: ollama pull qwen2.5:0.5b`.
+  The Ollama suites run only when Ollama answers at `OLLAMA_URL` (default `http://localhost:11434`) and `TEST_MODEL` is pulled. Otherwise they are skipped and the reason is printed, for example `model qwen2.5:0.5b is not pulled, run: ollama pull qwen2.5:0.5b`. In CI (`CI=true`) that run fails instead, so a job that sets up Ollama cannot pass with those suites skipped.
 
 - Use `@cogitator-ai/test-utils` (`MockLLMBackend`, `MockMemoryAdapter`, fixtures) instead of calling real providers in unit tests.
 - Regression tests for every bug fix; describe behaviour in the test name.

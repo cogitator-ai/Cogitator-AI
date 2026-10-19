@@ -20,6 +20,18 @@ const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
 
 const OLLAMA_PROBE_TIMEOUT_MS = 5_000;
 
+/** OLLAMA_URL for messages, without the credentials a URL may carry. */
+function displayOllamaUrl(): string {
+  try {
+    const url = new URL(OLLAMA_URL);
+    url.username = '';
+    url.password = '';
+    return url.origin + url.pathname.replace(/\/$/, '');
+  } catch {
+    return '<invalid OLLAMA_URL>';
+  }
+}
+
 interface OllamaTagsResponse {
   models?: Array<{ name?: string; model?: string }>;
 }
@@ -30,20 +42,29 @@ async function listOllamaModels(): Promise<OllamaModels> {
   let res: Response;
   try {
     res = await fetch(`${OLLAMA_URL}/api/tags`, {
+      headers: process.env.OLLAMA_API_KEY
+        ? { authorization: `Bearer ${process.env.OLLAMA_API_KEY}` }
+        : undefined,
       signal: AbortSignal.timeout(OLLAMA_PROBE_TIMEOUT_MS),
     });
   } catch {
-    return { ok: false, reason: `Ollama is not reachable at ${OLLAMA_URL}` };
+    return { ok: false, reason: `Ollama is not reachable at ${displayOllamaUrl()}` };
   }
   if (!res.ok) {
-    return { ok: false, reason: `Ollama at ${OLLAMA_URL} answered /api/tags with ${res.status}` };
+    return {
+      ok: false,
+      reason: `Ollama at ${displayOllamaUrl()} answered /api/tags with ${res.status}`,
+    };
   }
   try {
     const body = (await res.json()) as OllamaTagsResponse;
     const names = (body.models ?? []).flatMap((m) => [m.name, m.model]);
     return { ok: true, names: names.filter((n): n is string => typeof n === 'string') };
   } catch {
-    return { ok: false, reason: `Ollama at ${OLLAMA_URL} answered /api/tags with invalid JSON` };
+    return {
+      ok: false,
+      reason: `Ollama at ${displayOllamaUrl()} answered /api/tags with invalid JSON`,
+    };
   }
 }
 
@@ -75,13 +96,16 @@ let ollamaProbe: Promise<string | null> | undefined;
  * Why the local Ollama e2e cannot run here, or null when they can: TEST_OLLAMA is "true",
  * Ollama answers at OLLAMA_URL and TEST_MODEL is pulled. Probed once per test file, and the
  * reason is printed when TEST_OLLAMA asked for these tests, the way the Studio e2e reports a
- * missing Chromium.
+ * missing Chromium. In CI a run that asked for them fails instead: a job that set up Ollama
+ * must not go green with every Ollama suite skipped.
  */
 export function ollamaSkipReason(): Promise<string | null> {
   ollamaProbe ??= probeOllama().then((reason) => {
-    if (reason !== null && process.env.TEST_OLLAMA === 'true') {
-      console.warn(`Skipping the Ollama e2e: ${reason}`);
+    if (reason === null || process.env.TEST_OLLAMA !== 'true') return reason;
+    if (process.env.CI === 'true') {
+      throw new Error(`TEST_OLLAMA is "true" in CI, but ${reason}`);
     }
+    console.warn(`Skipping the Ollama e2e: ${reason}`);
     return reason;
   });
   return ollamaProbe;
