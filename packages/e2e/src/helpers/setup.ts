@@ -22,14 +22,16 @@ const OLLAMA_PROBE_TIMEOUT_MS = 5_000;
 
 /** OLLAMA_URL for messages, without the credentials a URL may carry. */
 function displayOllamaUrl(): string {
+  let url: URL;
   try {
-    const url = new URL(OLLAMA_URL);
-    url.username = '';
-    url.password = '';
-    return url.origin + url.pathname.replace(/\/$/, '');
+    url = new URL(OLLAMA_URL);
   } catch {
-    return '<invalid OLLAMA_URL>';
+    return OLLAMA_URL;
   }
+  if (!url.username && !url.password) return OLLAMA_URL;
+  url.username = '';
+  url.password = '';
+  return url.href.replace(/\/$/, '');
 }
 
 interface OllamaTagsResponse {
@@ -42,9 +44,6 @@ async function listOllamaModels(): Promise<OllamaModels> {
   let res: Response;
   try {
     res = await fetch(`${OLLAMA_URL}/api/tags`, {
-      headers: process.env.OLLAMA_API_KEY
-        ? { authorization: `Bearer ${process.env.OLLAMA_API_KEY}` }
-        : undefined,
       signal: AbortSignal.timeout(OLLAMA_PROBE_TIMEOUT_MS),
     });
   } catch {

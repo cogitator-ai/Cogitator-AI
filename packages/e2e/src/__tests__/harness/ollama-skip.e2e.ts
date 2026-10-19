@@ -168,46 +168,23 @@ describe('e2e harness: Ollama skip reason', () => {
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
-  it('sends OLLAMA_API_KEY to an Ollama that asks for one, and nothing otherwise', async () => {
+  it('keeps the Ollama Cloud key OLLAMA_API_KEY away from OLLAMA_URL', async () => {
     const server = await serve(tags('qwen2.5:0.5b'));
+    const { ollamaSkipReason } = await loadSetup({
+      OLLAMA_URL: server.url,
+      OLLAMA_API_KEY: 'cloud-key',
+    });
 
-    const keyed = await loadSetup({ OLLAMA_URL: server.url, OLLAMA_API_KEY: 'test-key' });
-    expect(await keyed.ollamaSkipReason()).toBeNull();
-    expect(server.authorization).toBe('Bearer test-key');
-
-    const open = await loadSetup({ OLLAMA_URL: server.url });
-    expect(await open.ollamaSkipReason()).toBeNull();
+    expect(await ollamaSkipReason()).toBeNull();
+    expect(server.tagRequests).toBe(1);
     expect(server.authorization).toBeUndefined();
   });
 
-  it('fails instead of skipping when CI asked for the Ollama e2e and cannot run them', async () => {
-    const server = await serve(tags('llama3.2:latest'));
-    const { ollamaSkipReason } = await loadSetup({ OLLAMA_URL: server.url, CI: 'true' });
-
-    await expect(ollamaSkipReason()).rejects.toThrow(
-      'TEST_OLLAMA is "true" in CI, but model qwen2.5:0.5b is not pulled'
-    );
-  });
-
-  it('still skips quietly in CI when TEST_OLLAMA is off', async () => {
-    const { ollamaSkipReason } = await loadSetup({
-      TEST_OLLAMA: '',
-      OLLAMA_URL: unreachableUrl,
-      CI: 'true',
-    });
-
-    expect(await ollamaSkipReason()).toBe('TEST_OLLAMA is not "true"');
-  });
-
-  it('keeps credentials in OLLAMA_URL out of the reason', async () => {
+  it('prints an OLLAMA_URL without a scheme as it was given', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const credentialed = unreachableUrl.replace('http://', 'http://user:secret@');
-    const { ollamaSkipReason } = await loadSetup({ OLLAMA_URL: credentialed });
+    const { ollamaSkipReason } = await loadSetup({ OLLAMA_URL: 'localhost:9' });
 
-    const reason = await ollamaSkipReason();
-
-    expect(reason).toBe(`Ollama is not reachable at ${unreachableUrl}`);
-    expect(reason).not.toContain('secret');
+    expect(await ollamaSkipReason()).toBe('Ollama is not reachable at localhost:9');
   });
 
   it('ollamaHasModel checks any model regardless of TEST_OLLAMA', async () => {

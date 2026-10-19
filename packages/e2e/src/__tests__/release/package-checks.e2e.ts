@@ -134,6 +134,17 @@ describe('release: package checks', () => {
     expect(result.output).toContain(`No package.json in:\n- ${typo}`);
   }, 120_000);
 
+  it('fails when every package it was given is private', async () => {
+    const hidden = fixture('fixture-only-private', {
+      manifest: manifest('fixture-only-private', { private: true }),
+    });
+
+    const result = await check(hidden);
+
+    expect(result.code).toBe(1);
+    expect(result.output).toContain('No public package to check');
+  }, 120_000);
+
   it('skips private packages', async () => {
     const valid = fixture('fixture-public', {});
     const hidden = fixture('fixture-private', {

@@ -137,6 +137,11 @@ async function main(): Promise<void> {
     process.exitCode = 1;
     return;
   }
+  if (dirs.length === 0) {
+    console.error('No public package to check: every package found is private or unnamed');
+    process.exitCode = 1;
+    return;
+  }
   const destination = mkdtempSync(join(tmpdir(), 'cogitator-package-checks-'));
   const reports: PackageReport[] = [];
   try {
