@@ -6,7 +6,7 @@
   "description": "The Sovereign AI Agent Runtime - Self-hosted, production-grade orchestration for LLM swarms and autonomous agents",
   "repository": {
     "type": "git",
-    "url": "https://github.com/cogitator-ai/Cogitator-AI.git"
+    "url": "git+https://github.com/cogitator-ai/Cogitator-AI.git"
   },
   "license": "MIT",
   "author": "Your Name",
@@ -25,6 +25,7 @@
     "format:check": "prettier --check \"**/*.{ts,tsx,md,json}\"",
     "typecheck": "turbo run typecheck",
     "check:esm": "tsx scripts/check-esm-imports.ts",
+    "check:packages": "tsx scripts/check-packages.ts",
     "clean": "turbo run clean && rm -rf node_modules",
     "prepare": "node -e \"try { if (process.env.CI !== 'true' && process.env.VERCEL !== '1') require('husky').install() } catch(e) {}\"",
     "changeset": "changeset",
@@ -46,6 +47,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.5",
     "@changesets/changelog-github": "^1.0.1",
     "@changesets/cli": "^3.0.3",
     "@eslint/js": "^10.0.1",
@@ -57,6 +59,7 @@
     "husky": "^9.1.7",
     "lint-staged": "^17.6.0",
     "prettier": "3.9.9",
+    "publint": "^0.3.25",
     "supertest": "^7.3.0",
     "tsx": "^4.23.15",
     "turbo": "^2.11.6",

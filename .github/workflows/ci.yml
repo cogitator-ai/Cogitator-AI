@@ -76,6 +76,11 @@ jobs:
 
       - run: pnpm check:esm
 
+      # Packs every public package and lints it the way npm receives it:
+      # publint for package.json against the packed files, arethetypeswrong
+      # for types and exports.
+      - run: pnpm check:packages
+
       # The test jobs run on this build instead of building again. tar keeps the
       # executable bits of the CLI entries, which an artifact alone would drop.
       - run: tar -czf build.tgz packages/*/dist packages/core/docs

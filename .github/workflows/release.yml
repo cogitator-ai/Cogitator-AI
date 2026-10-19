@@ -79,6 +79,11 @@ jobs:
       - name: Check the scaffolder build
         run: pnpm exec tsx scripts/check-scaffolder-build.ts
 
+      - name: Check the packages
+        # The tarballs about to be published, with the bumped versions, go
+        # through publint and arethetypeswrong before anything is pushed.
+        run: pnpm check:packages
+
       - name: Push the version commit
         if: steps.changesets.outputs.has_changesets == 'true'
         run: git push
