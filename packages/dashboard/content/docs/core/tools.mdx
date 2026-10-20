@@ -217,7 +217,7 @@ const readLog = tool({
 });
 ```
 
-A longer result keeps its start (three quarters of the budget) and its end (one quarter), where a command's last lines or an error usually are, with a note in the middle such as `[... 1000 of 2000 characters of this tool result were left out ...]`. Error messages are cut the same way. For a [`toolContent()`](#media-results-with-toolcontent) result the text parts share the budget in proportion to their length, and images are never cut. Only what the model reads is cut: `onToolResult` still gets the whole result, while `RunResult.messages` and the thread history keep what the model read. `truncateToolResultText(text, maxLength)` applies the same cut to text of your own.
+A longer result keeps its start (three quarters of the budget) and its end (one quarter), where a command's last lines or an error usually are, with a note in the middle such as `[... 1000 of 2000 characters of this tool result were left out ...]`. Error messages are cut the same way. For a [`toolContent()`](#media-results-with-toolcontent) result the text parts are cut as one text, so a short first part survives and parts in the middle are left out, and images are never cut. Only what the model reads is cut: `onToolResult` still gets the whole result, while `RunResult.messages` and the thread history keep what the model read. `truncateToolResultText(text, maxLength)` applies the same cut to text of your own.
 
 ## Typed Tool Sets
 
