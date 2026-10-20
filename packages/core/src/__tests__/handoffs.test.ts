@@ -169,4 +169,28 @@ describe('handoffs', () => {
     expect(names.every((name) => name.startsWith('transfer_to_Enterprise'))).toBe(true);
     expect(new Set(names).size).toBe(2);
   });
+
+  it('keeps handoffs to agents whose names come out the same apart', () => {
+    const named = (name: string) => new Agent({ name, model: 'mock/m', instructions: 'x' });
+    const desk = new Agent({
+      name: 'desk',
+      model: 'mock/m',
+      instructions: 'x',
+      handoffs: [named('Анна'), named('Олег'), named('Billing EU'), named('Billing/EU'), billing],
+    });
+
+    const { tools, targets } = handoffTools(desk);
+    const names = tools.map((t) => t.name);
+
+    expect(new Set(names).size).toBe(5);
+    expect(names.every(isProviderSafeToolName)).toBe(true);
+    expect(names[4]).toBe('transfer_to_billing');
+    expect([...targets.values()].map((agent) => agent.name)).toEqual([
+      'Анна',
+      'Олег',
+      'Billing EU',
+      'Billing/EU',
+      'billing',
+    ]);
+  });
 });
