@@ -81,7 +81,7 @@ describe('aborting a sandbox execution', () => {
       try {
         await executor.execute(
           {
-            command: [`touch ${base}.started && sleep 3 && touch ${base}.finished`],
+            command: [`touch ${base}.started; (sleep 3; touch ${base}.finished) & wait`],
             signal: abortAfter(300),
           },
           config
@@ -249,6 +249,34 @@ describe('aborting a sandbox execution', () => {
 
       finishFetch();
       await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
+    });
+
+    it('closes a plugin whose module arrives after a disconnect', async () => {
+      const { call, close } = await extism();
+      call.mockResolvedValueOnce(new TextEncoder().encode('{}'));
+      let finishFetch!: () => void;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          () =>
+            new Promise<Response>(
+              (resolve) =>
+                (finishFetch = () =>
+                  resolve(new Response(new Uint8Array([0x00, 0x61, 0x73, 0x6d, 1, 0, 0, 0]))))
+            )
+        )
+      );
+
+      const run = executor.execute(
+        { command: [], stdin: '{}' },
+        { type: 'wasm', wasmModule: 'https://example.com/late.wasm' }
+      );
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      await executor.disconnect();
+      finishFetch();
+      await run;
+
+      expect(close).toHaveBeenCalledTimes(1);
     });
 
     it('closes the plugin, which ends its worker, and fails', async () => {

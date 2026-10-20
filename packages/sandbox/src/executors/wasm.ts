@@ -134,6 +134,7 @@ export class WasmSandboxExecutor extends BaseSandboxExecutor {
       allowedHosts,
     };
 
+    const generation = this.generation;
     const acquiring = this.acquire(spec);
     let plugin: ExtismPlugin | undefined;
     try {
@@ -152,7 +153,6 @@ export class WasmSandboxExecutor extends BaseSandboxExecutor {
       return this.failure(abortMessage(request.signal!));
     }
 
-    const generation = this.generation;
     const outcome = await this.callWithTimeout(
       plugin,
       functionName,

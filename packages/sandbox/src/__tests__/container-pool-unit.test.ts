@@ -155,6 +155,24 @@ describe('ContainerPool (unit, mocked Docker)', () => {
     expect(late.remove).toHaveBeenCalledWith({ force: true });
   });
 
+  it('refuses to hand out a container once the pool is shut down', async () => {
+    const idle = new ContainerPool(docker, {
+      maxSize: 3,
+      idleTimeoutMs: 60_000,
+      reuseContainers: true,
+    });
+    const container = await idle.acquire('alpine:3.19', { networkMode: 'none' });
+    await idle.release(container);
+    const created = vi.mocked(docker.createContainer).mock.calls.length;
+
+    await idle.destroyAll();
+
+    await expect(idle.acquire('alpine:3.19', { networkMode: 'none' })).rejects.toThrow(
+      'Container pool is shut down'
+    );
+    expect(vi.mocked(docker.createContainer).mock.calls.length).toBe(created);
+  });
+
   it('creates new container for different image', async () => {
     const c1 = await pool.acquire('alpine:3.19', { networkMode: 'none' });
     const c2 = await pool.acquire('node:20', { networkMode: 'none' });

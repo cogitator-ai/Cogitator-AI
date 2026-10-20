@@ -80,6 +80,7 @@ export class ContainerPool {
   }
 
   async acquire(image: string, options: ContainerCreateOptions): Promise<DockerContainer> {
+    if (this.closed) throw new Error('Container pool is shut down');
     const key = poolKey(image, options);
     const index = this.idle.findIndex((c) => c.key === key);
     if (index !== -1) {
