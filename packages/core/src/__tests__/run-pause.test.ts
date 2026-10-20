@@ -319,6 +319,30 @@ describe('Cogitator.invokeTool', () => {
     await cog.close();
   });
 
+  it('warns once when the guardrails have no model to run with', async () => {
+    const warn = vi.fn();
+    const cog = new Cogitator({ guardrails: { enabled: true }, logging: { level: 'warn' } });
+    const logger = (await import('../logger')).getLogger();
+    const spy = vi.spyOn(logger, 'warn').mockImplementation(warn);
+    try {
+      await cog.invokeTool(
+        refund,
+        { order: 'A-1' },
+        { onApproval: async () => ({ approved: true }) }
+      );
+      await cog.invokeTool(
+        refund,
+        { order: 'A-2' },
+        { onApproval: async () => ({ approved: true }) }
+      );
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toContain('invokeTool skip them');
+    } finally {
+      spy.mockRestore();
+      await cog.close();
+    }
+  });
+
   it('does not run a call whose signal aborted before it started', async () => {
     refundImpl.mockClear();
     const cog = newCogitator();

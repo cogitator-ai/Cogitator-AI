@@ -285,6 +285,61 @@ describe('createRealtimeTools', () => {
 
   afterEach(() => deleteFile.mockClear());
 
+  it('refuses a Gemini call that needs approval nobody gives, like an OpenAI one', async () => {
+    const cogitator = new Cogitator();
+    closers.push(() => cogitator.close());
+    await connectGemini(createRealtimeTools(cogitator, [deleteTool]));
+
+    mockWs.emit(
+      'message',
+      JSON.stringify({
+        toolCall: { functionCalls: [{ id: 'g9', name: 'delete_file', args: { path: '/x' } }] },
+      })
+    );
+    await vi.waitFor(() => expect(mockWs.send).toHaveBeenCalledTimes(1));
+
+    expect(deleteFile).not.toHaveBeenCalled();
+    expect(sent()[0]).toEqual({
+      toolResponse: {
+        functionResponses: [
+          {
+            id: 'g9',
+            name: 'delete_file',
+            response: { error: 'Tool "delete_file" needs approval, and nobody approved this call' },
+          },
+        ],
+      },
+    });
+  });
+
+  it('does not run a Gemini call cancelled while its approval waits', async () => {
+    const cogitator = new Cogitator();
+    closers.push(() => cogitator.close());
+    let approve: (() => void) | undefined;
+    await connectGemini(
+      createRealtimeTools(cogitator, [deleteTool], {
+        onApproval: () =>
+          new Promise((resolve) => {
+            approve = () => resolve({ approved: true });
+          }),
+      })
+    );
+
+    mockWs.emit(
+      'message',
+      JSON.stringify({
+        toolCall: { functionCalls: [{ id: 'g10', name: 'delete_file', args: { path: '/x' } }] },
+      })
+    );
+    await vi.waitFor(() => expect(approve).toBeDefined());
+    mockWs.emit('message', JSON.stringify({ toolCallCancellation: { ids: ['g10'] } }));
+    approve!();
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(deleteFile).not.toHaveBeenCalled();
+    expect(mockWs.send).not.toHaveBeenCalled();
+  });
+
   it('describes each tool with its JSON schema and result limit', () => {
     const [realtimeTool] = createRealtimeTools(new Cogitator(), [deleteTool]);
     expect(realtimeTool).toMatchObject({

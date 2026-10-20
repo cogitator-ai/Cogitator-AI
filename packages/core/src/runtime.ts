@@ -213,6 +213,7 @@ export class Cogitator implements ToolInvoker {
   private initPromise?: Promise<void>;
   private memoryInit?: Promise<void>;
   private runLimiter?: RunLimiter;
+  private warnedGuardrailsWithoutModel = false;
   private constitution?: Constitution;
 
   /**
@@ -354,6 +355,7 @@ export class Cogitator implements ToolInvoker {
     };
     this.ensureGuardrails();
     const constitutionalAI = this.state.constitutionalAI;
+    if (!constitutionalAI) this.warnGuardrailsWithoutModel();
     const signal = options.signal;
     const aborted = (): ToolInvocationResult => ({
       callId: toolCall.id,
@@ -1697,6 +1699,18 @@ export class Cogitator implements ToolInvoker {
    * the model of the agent being run, else `llm.defaultModel` — so they exist
    * before the first run whenever one of the configured models names them.
    */
+  /**
+   * Guardrails need a model, which a run takes from its agent. `invokeTool` has no agent, so
+   * without `guardrails.model` or `llm.defaultModel` its calls skip the guardrails: say so once.
+   */
+  private warnGuardrailsWithoutModel(): void {
+    if (this.warnedGuardrailsWithoutModel || !this.config.guardrails?.enabled) return;
+    this.warnedGuardrailsWithoutModel = true;
+    getLogger().warn(
+      'Guardrails are enabled but tool calls made with invokeTool skip them: set guardrails.model or llm.defaultModel'
+    );
+  }
+
   private ensureGuardrails(agentModel?: string): void {
     if (this.state.guardrailsInitialized || !this.config.guardrails) return;
     const model = agentModel ?? this.config.guardrails.model ?? this.config.llm?.defaultModel;
