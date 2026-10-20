@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
-import { ModelRegistry, transformLiteLLMData, BUILTIN_MODELS } from '@cogitator-ai/models';
+import {
+  ModelRegistry,
+  transformLiteLLMData,
+  BUILTIN_MODELS,
+  LITELLM_SNAPSHOT,
+} from '@cogitator-ai/models';
 
 type LiteLLMEntry = {
   max_tokens?: number;
@@ -38,10 +43,13 @@ describe('Models: ModelRegistry', () => {
     globalThis.fetch = originalFetch;
   });
 
-  it('initializes with builtin data', () => {
+  it('initializes offline with the built-in models and the bundled LiteLLM copy', () => {
     expect(registry.isInitialized()).toBe(true);
-    expect(registry.getModelCount()).toBeGreaterThan(0);
-    expect(registry.getModelCount()).toBe(BUILTIN_MODELS.length);
+    expect(registry.getModelCount()).toBeGreaterThan(BUILTIN_MODELS.length);
+    expect(registry.getModelCount()).toBeGreaterThan(
+      Object.keys(LITELLM_SNAPSHOT.models).length / 2
+    );
+    expect(registry.getPricing('azure_ai/deepseek-v4-pro')?.input).toBeGreaterThan(0);
   });
 
   it('getModel returns model info for known model', () => {
@@ -60,10 +68,10 @@ describe('Models: ModelRegistry', () => {
   });
 
   it('getModel resolves aliases', () => {
-    const model = registry.getModel('gpt-4.1');
+    const model = registry.getModel('gemini-flash');
     expect(model).not.toBeNull();
-    expect(model!.id).toBe('gpt-4.1-2025-04-14');
-    expect(model!.provider).toBe('openai');
+    expect(model!.id).toBe('gemini-3.8-flash');
+    expect(model!.provider).toBe('google');
   });
 
   it('getModel normalizes provider prefix in id', () => {
