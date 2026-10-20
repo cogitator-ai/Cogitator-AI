@@ -360,8 +360,10 @@ describe('ContextBuilderConfigSchema', () => {
     }
   });
 
-  it('rejects missing maxTokens', () => {
-    expect(() => ContextBuilderConfigSchema.parse({ strategy: 'recent' })).toThrow();
+  it('accepts a config without maxTokens, for a budget given to build()', () => {
+    expect(ContextBuilderConfigSchema.parse({ strategy: 'recent' })).toEqual({
+      strategy: 'recent',
+    });
   });
 
   it('rejects missing strategy', () => {

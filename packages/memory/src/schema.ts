@@ -75,7 +75,7 @@ export const MemoryAdapterConfigSchema = z.discriminatedUnion('provider', [
 export const ContextStrategySchema = z.enum(['recent', 'relevant', 'hybrid']);
 
 export const ContextBuilderConfigSchema = z.object({
-  maxTokens: z.number().positive(),
+  maxTokens: z.number().positive().optional(),
   reserveTokens: z.number().positive().optional(),
   strategy: ContextStrategySchema,
   includeSystemPrompt: z.boolean().optional(),
