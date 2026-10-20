@@ -42,7 +42,7 @@ export const OpenAICompatibleProfileSchema = z.union([
     server: OpenAICompatibleServerSchema.optional(),
     maxTokensField: z.enum(['max_tokens', 'max_completion_tokens']).optional(),
     streamUsage: z.boolean().optional(),
-    reasoningEffort: z.union([z.boolean(), z.array(ReasoningEffortSchema).min(1)]).optional(),
+    reasoningEffort: z.union([z.boolean(), z.array(ReasoningEffortSchema)]).optional(),
   }),
 ]);
 
