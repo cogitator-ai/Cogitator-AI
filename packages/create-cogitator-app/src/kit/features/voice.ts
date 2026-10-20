@@ -254,8 +254,9 @@ const VOICE_TEST_TS = code`
     it('runs a call through the runtime and validates its arguments', async () => {
       const { cogitator } = mockCogitator();
       const calculator = realtimeTools(cogitator, tools).find((tool) => tool.name === 'calculator');
-      expect(await calculator?.execute({ expression: '6 * 7' })).toEqual({ expression: '6 * 7', result: 42 });
-      expect(await calculator?.execute({ expression: 42 })).toMatchObject({ error: expect.any(String) });
+      const call = { callId: 'call_1', signal: new AbortController().signal };
+      expect(await calculator?.execute({ expression: '6 * 7' }, call)).toEqual({ expression: '6 * 7', result: 42 });
+      await expect(calculator?.execute({ expression: 42 }, call)).rejects.toThrow();
       await cogitator.close();
     });
   });
