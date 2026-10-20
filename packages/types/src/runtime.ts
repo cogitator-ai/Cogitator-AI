@@ -8,6 +8,7 @@ import type {
   LLMBackend,
   LLMProvider,
   LLMProvidersConfig,
+  ModelPriceConfig,
   LLMRetryConfig,
   PromptCacheConfig,
   ReasoningConfig,
@@ -72,6 +73,14 @@ export interface CogitatorConfig {
      * turns them off. On by default: 2 retries with exponential backoff.
      */
     retry?: LLMRetryConfig | false;
+    /**
+     * Prices of your own, in USD per million tokens, by model: for a fine-tune, a model the
+     * catalogue does not list yet, a negotiated rate or a self-hosted model you want to cost.
+     * They win over the model registry for calls whose provider reports no cost. A key is the
+     * model string a run uses or its tail after any `/`: `openai/gpt-4o` prices that model at
+     * OpenAI only, `gpt-4o` at every provider that serves it under that name.
+     */
+    pricing?: Record<string, ModelPriceConfig>;
     /**
      * Prompt caching for agent runs; `false` turns it off. On by default:
      * Anthropic requests mark their stable prefix for caching, and every

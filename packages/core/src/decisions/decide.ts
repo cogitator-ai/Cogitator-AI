@@ -1,5 +1,5 @@
 import { nanoid } from 'nanoid';
-import { calculateCost } from '@cogitator-ai/models';
+import { calculateCost, type TokenUsageForCost } from '@cogitator-ai/models';
 import {
   CogitatorError,
   ErrorCode,
@@ -75,14 +75,14 @@ function assertUsage(usage: DecisionResponse['usage'], context: LLMErrorContext)
 
 /**
  * What a decision is likely to cost before it is sent: its state and
- * questions at about four characters a token, priced from the model
- * registry, nothing when the price is unknown.
+ * questions at about four characters a token, priced by `llm.pricing` or
+ * the model registry, nothing when the price is unknown.
  */
-function estimatedCost(model: string, options: DecideOptions): number {
+function estimatedCost(run: DecisionRun, model: string, options: DecideOptions): number {
   const inputTokens = Math.ceil(
     JSON.stringify({ state: options.state, questions: options.questions }).length / 4
   );
-  return calculateCost(model, { inputTokens, outputTokens: 0 }) ?? 0;
+  return (run.price ?? calculateCost)(model, { inputTokens, outputTokens: 0 }) ?? 0;
 }
 
 function isProbability(value: number): boolean {
@@ -159,6 +159,8 @@ export interface DecisionRun {
   retry: LLMRetryConfig | false | undefined;
   observers: readonly RunObserver[];
   recordCost?: (record: Omit<CostRecord, 'timestamp'>) => void;
+  /** USD for `usage` on `model` (`provider/model`), `null` when its price is unknown; the model registry's by default. */
+  price?: (model: string, usage: TokenUsageForCost) => number | null;
   /** Fails when a call estimated to cost this much would break a budget, before it is sent. */
   checkBudget?: (estimatedCost: number) => void;
 }
@@ -207,7 +209,7 @@ export async function runDecision<TQuestions extends DecisionQuestions>(
   );
   let spent: RunUsage | undefined;
   try {
-    run.checkBudget?.(estimatedCost(qualified, options));
+    run.checkBudget?.(estimatedCost(run, qualified, options));
     const response = await retryLLMCall(
       run.retry,
       {
@@ -227,7 +229,7 @@ export async function runDecision<TQuestions extends DecisionQuestions>(
     );
     assertUsage(response.usage, context);
     const ended = Date.now();
-    const priced = response.usage.cost ?? calculateCost(qualified, response.usage);
+    const priced = response.usage.cost ?? (run.price ?? calculateCost)(qualified, response.usage);
     const usage = {
       inputTokens: response.usage.inputTokens,
       outputTokens: response.usage.outputTokens,

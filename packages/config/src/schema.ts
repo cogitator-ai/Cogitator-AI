@@ -86,11 +86,22 @@ export const LLMRetryConfigSchema = z.union([
   }),
 ]);
 
+const PriceSchema = z.number().nonnegative();
+
+export const ModelPriceSchema = z.object({
+  input: PriceSchema,
+  output: PriceSchema,
+  inputCached: PriceSchema.optional(),
+  inputCacheWrite: PriceSchema.optional(),
+  inputCacheWrite1h: PriceSchema.optional(),
+});
+
 export const LLMConfigSchema = z.object({
   defaultProvider: LLMProviderSchema.optional(),
   defaultModel: z.string().optional(),
   providers: ProvidersConfigSchema.optional(),
   retry: LLMRetryConfigSchema.optional(),
+  pricing: z.record(z.string(), ModelPriceSchema).optional(),
   promptCache: z
     .union([
       z.literal(false),

@@ -5,7 +5,7 @@ import type {
   CostRecord,
   CostSummary,
 } from '@cogitator-ai/types';
-import { calculateCost, getPricing } from '@cogitator-ai/models';
+import { costOf, getPricing, type ModelPricing } from '@cogitator-ai/models';
 import { getLogger } from '../logger';
 import { TaskAnalyzer } from './task-analyzer';
 import { ModelSelector, TASK_TOKEN_ESTIMATES } from './model-selector';
@@ -14,6 +14,8 @@ import { BudgetEnforcer, type BudgetCheckResult } from './budget-enforcer';
 
 export interface CostAwareRouterOptions {
   config?: Partial<CostRoutingConfig>;
+  /** The price of a model; the model registry's by default. A runtime passes its `llm.pricing` over the registry. */
+  pricing?: (model: string) => ModelPricing | null;
 }
 
 const DEFAULT_CONFIG: CostRoutingConfig = {
@@ -31,12 +33,14 @@ export class CostAwareRouter {
   private budgetEnforcer?: BudgetEnforcer;
   private config: CostRoutingConfig;
   private readonly unpricedModels = new Set<string>();
+  private readonly pricing: (model: string) => ModelPricing | null;
 
   constructor(options: CostAwareRouterOptions = {}) {
     this.config = { ...DEFAULT_CONFIG, ...options.config };
     this.taskAnalyzer = new TaskAnalyzer();
     this.modelSelector = new ModelSelector(this.config);
     this.costTracker = new CostTracker();
+    this.pricing = options.pricing ?? getPricing;
 
     if (this.config.budget) {
       this.budgetEnforcer = new BudgetEnforcer(this.config.budget, this.costTracker);
@@ -79,7 +83,8 @@ export class CostAwareRouter {
   checkRunBudget(input: string, model: string): BudgetCheckResult {
     if (!this.budgetEnforcer) return { allowed: true };
     const tokens = TASK_TOKEN_ESTIMATES[this.analyzeTask(input).complexity];
-    return this.budgetEnforcer.checkBudget(calculateCost(model, tokens) ?? 0);
+    const pricing = this.pricing(model);
+    return this.budgetEnforcer.checkBudget(pricing ? costOf(pricing, tokens) : 0);
   }
 
   checkBudget(estimatedCost: number): BudgetCheckResult {
@@ -115,9 +120,9 @@ export class CostAwareRouter {
   noteUnreportedCost(model: string): void {
     if (!this.budgetEnforcer || this.unpricedModels.has(model)) return;
     this.unpricedModels.add(model);
-    if (getPricing(model)) return;
+    if (this.pricing(model)) return;
     getLogger().warn(
-      `No price is known for ${model}, so the cost-routing budget counts its calls as $0. Load the full model catalogue with initializeModels() from @cogitator-ai/models at startup, or use a provider that reports its cost.`,
+      `No price is known for ${model}, so the cost-routing budget counts its calls as $0. Set its price in llm.pricing, load the current model catalogue with initializeModels() from @cogitator-ai/models at startup, or use a provider that reports its cost.`,
       { model }
     );
   }

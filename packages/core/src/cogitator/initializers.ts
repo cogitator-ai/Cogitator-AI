@@ -1,3 +1,4 @@
+import type { ModelPricing } from '@cogitator-ai/models';
 import type {
   CogitatorConfig,
   Constitution,
@@ -340,10 +341,14 @@ export function initializeGuardrails(
   state.guardrailsInitialized = true;
 }
 
-export function initializeCostRouting(config: CogitatorConfig, state: InitializerState): void {
+export function initializeCostRouting(
+  config: CogitatorConfig,
+  state: InitializerState,
+  pricing?: (model: string) => ModelPricing | null
+): void {
   if (state.costRoutingInitialized || !config.costRouting?.enabled) return;
 
-  state.costRouter = new CostAwareRouter({ config: config.costRouting });
+  state.costRouter = new CostAwareRouter({ config: config.costRouting, pricing });
   state.costRoutingInitialized = true;
 }
 

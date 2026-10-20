@@ -232,6 +232,21 @@ export interface LLMRetryEvent {
 }
 
 /**
+ * The price of a model in USD per million tokens, for `llm.pricing`. Cache prices default to
+ * the input price.
+ */
+export interface ModelPriceConfig {
+  input: number;
+  output: number;
+  /** Input served from the provider's prompt cache */
+  inputCached?: number;
+  /** Input written to the prompt cache, with the default 5-minute TTL */
+  inputCacheWrite?: number;
+  /** Input written to the prompt cache with the 1-hour TTL */
+  inputCacheWrite1h?: number;
+}
+
+/**
  * Type-safe provider configuration interfaces
  */
 

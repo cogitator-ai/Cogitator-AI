@@ -3,7 +3,7 @@ import { calculateCost } from '@cogitator-ai/models';
 import type { ChatRequest, ChatResponse, ChatStreamChunk, LLMBackend } from '@cogitator-ai/types';
 import { Agent } from '../agent';
 import { Cogitator } from '../cogitator';
-import { RunCostMeter } from '../cogitator/run-cost';
+import { CallPricer, RunCostMeter } from '../cogitator/run-cost';
 import { getLogger } from '../logger';
 
 const PRICED = 'openai/gpt-4o-mini';
@@ -20,7 +20,7 @@ const registryPrice = (inputTokens: number, outputTokens: number) =>
 
 describe('RunCostMeter', () => {
   it('uses the cost providers report', () => {
-    const meter = new RunCostMeter();
+    const meter = new RunCostMeter(new CallPricer());
     meter.add({ ...tokens(1000, 100), cost: 0.0021 }, PRICED);
     meter.add({ ...tokens(500, 50), cost: 0.0004 }, PRICED);
 
@@ -28,7 +28,7 @@ describe('RunCostMeter', () => {
   });
 
   it('prices only the calls that report nothing from the registry', () => {
-    const meter = new RunCostMeter();
+    const meter = new RunCostMeter(new CallPricer());
     meter.add({ ...tokens(1000, 100), cost: 0.01 }, PRICED);
     meter.add(tokens(2000, 300), PRICED);
 
@@ -37,25 +37,25 @@ describe('RunCostMeter', () => {
   });
 
   it('is 0 for a model the registry does not know and calls without a reported cost', () => {
-    const meter = new RunCostMeter();
+    const meter = new RunCostMeter(new CallPricer());
     meter.add(tokens(1000, 100), 'local/my-finetune-that-nobody-prices');
 
     expect(meter.total('local/my-finetune-that-nobody-prices')).toBe(0);
   });
 
   it('continues from the state a paused run saved', () => {
-    const before = new RunCostMeter();
+    const before = new RunCostMeter(new CallPricer());
     before.add({ ...tokens(100, 10), cost: 0.003 }, PRICED);
     before.add(tokens(400, 40), PRICED);
 
-    const after = new RunCostMeter(before.state());
+    const after = new RunCostMeter(new CallPricer(), before.state());
     after.add({ ...tokens(100, 10), cost: 0.002 }, PRICED);
 
     expect(after.total(PRICED)).toBeCloseTo(0.005 + registryPrice(400, 40), 10);
   });
 
   it('prices every token of a checkpoint saved without cost state from the registry', () => {
-    const meter = new RunCostMeter(undefined, {
+    const meter = new RunCostMeter(new CallPricer(), undefined, {
       inputTokens: 1000,
       outputTokens: 100,
       cachedInputTokens: 0,
@@ -67,7 +67,7 @@ describe('RunCostMeter', () => {
   });
 
   it('prices each call on the model that answered it, whichever model the run is on', () => {
-    const meter = new RunCostMeter();
+    const meter = new RunCostMeter(new CallPricer());
     meter.add(tokens(10_000, 1000), EXPENSIVE);
     meter.add(tokens(10_000, 1000), PRICED);
 
@@ -76,12 +76,12 @@ describe('RunCostMeter', () => {
     expect(meter.total(PRICED)).toBeCloseTo(expected, 10);
     expect(meter.total(EXPENSIVE)).toBeCloseTo(expected, 10);
 
-    const resumed = new RunCostMeter(meter.state());
+    const resumed = new RunCostMeter(new CallPricer(), meter.state());
     expect(resumed.total(PRICED)).toBeCloseTo(expected, 10);
   });
 
   it('prices the tokens of a checkpoint saved before costs were kept per model on the run model', () => {
-    const meter = new RunCostMeter({
+    const meter = new RunCostMeter(new CallPricer(), {
       reportedUsd: 0.001,
       unreported: {
         inputTokens: 1000,
@@ -101,7 +101,7 @@ describe('RunCostMeter', () => {
 
 describe('1-hour cache writes', () => {
   it('prices them at their own rate', () => {
-    const meter = new RunCostMeter();
+    const meter = new RunCostMeter(new CallPricer());
     meter.add(
       { ...tokens(1_000_000, 0), cacheWriteTokens: 1_000_000, cacheWrite1hTokens: 400_000 },
       'anthropic/claude-opus-5-5'
@@ -111,14 +111,13 @@ describe('1-hour cache writes', () => {
       (600_000 * 5 + 400_000 * 8) / 1e6,
       10
     );
-    expect(new RunCostMeter(meter.state()).total('anthropic/claude-opus-5-5')).toBeCloseTo(
-      (600_000 * 5 + 400_000 * 8) / 1e6,
-      10
-    );
+    expect(
+      new RunCostMeter(new CallPricer(), meter.state()).total('anthropic/claude-opus-5-5')
+    ).toBeCloseTo((600_000 * 5 + 400_000 * 8) / 1e6, 10);
   });
 });
 
-describe('a budget on a model without a price', () => {
+describe('a model without a price', () => {
   const unpriced = (cost?: number): LLMBackend => ({
     provider: 'local',
     chat: vi.fn(async (): Promise<ChatResponse> => ({
@@ -166,13 +165,78 @@ describe('a budget on a model without a price', () => {
     await cog.close();
   });
 
-  it('stays quiet without a budget', async () => {
+  it('warns without a budget too, since the run cost counts it as $0', async () => {
     const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
     const cog = new Cogitator({ llm: { backends: { local: unpriced() } } });
 
-    await cog.run(agent, { input: 'hi' });
+    const result = await cog.run(agent, { input: 'hi' });
 
+    const warnings = warn.mock.calls.filter(([m]) => m.includes('local/my-finetune'));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0][0]).toContain("llm.pricing['local/my-finetune']");
+    expect(result.usage.cost).toBe(0);
+    await cog.close();
+  });
+
+  it('prices it by llm.pricing and stays quiet', async () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const cog = new Cogitator({
+      llm: {
+        backends: { local: unpriced() },
+        pricing: { 'local/my-finetune': { input: 2, output: 8 } },
+      },
+    });
+
+    const result = await cog.run(agent, { input: 'hi' });
+
+    expect(result.usage.cost).toBeCloseTo((100 * 2 + 10 * 8) / 1_000_000, 12);
     expect(warn.mock.calls.filter(([m]) => m.includes('local/my-finetune'))).toHaveLength(0);
+    await cog.close();
+  });
+
+  it('matches a price of llm.pricing by the tail of the model string', () => {
+    const pricer = new CallPricer({ 'my-finetune': { input: 1, output: 1 } });
+
+    expect(pricer.cost('local/my-finetune', tokens(1_000_000, 0))).toBe(1);
+    expect(pricer.cost('LOCAL/My-Finetune', tokens(0, 1_000_000))).toBe(1);
+    expect(pricer.cost('local/other', tokens(1_000_000, 0))).toBe(0);
+  });
+
+  it('lets llm.pricing win over the registry price', () => {
+    const pricer = new CallPricer({ [PRICED]: { input: 100, output: 100 } });
+
+    expect(pricer.cost(PRICED, tokens(1_000_000, 0))).toBe(100);
+    expect(new CallPricer().cost(PRICED, tokens(1_000_000, 0))).toBe(registryPrice(1_000_000, 0));
+  });
+
+  it('stays quiet for a self-hosted provider', async () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const local = { ...unpriced(), provider: 'ollama' };
+    const cog = new Cogitator({ llm: { backends: { ollama: local } } });
+
+    await cog.run(new Agent({ name: 'o', model: 'ollama/my-local-model', instructions: 'Hi.' }), {
+      input: 'hi',
+    });
+
+    expect(warn.mock.calls.filter(([m]) => m.includes('my-local-model'))).toHaveLength(0);
+    await cog.close();
+  });
+
+  it('counts llm.pricing against a budget', async () => {
+    const cog = new Cogitator({
+      llm: {
+        backends: { local: unpriced() },
+        pricing: { 'local/my-finetune': { input: 1_000_000, output: 0 } },
+      },
+      costRouting: { enabled: true, budget: { maxCostPerHour: 50 } },
+    });
+
+    await expect(cog.run(agent, { input: 'hi' })).resolves.toMatchObject({
+      usage: { cost: 100 },
+    });
+    await expect(cog.run(agent, { input: 'again' })).rejects.toMatchObject({
+      code: 'BUDGET_EXCEEDED',
+    });
     await cog.close();
   });
 });

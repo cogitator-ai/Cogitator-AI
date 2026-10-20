@@ -60,6 +60,20 @@ describe('CogitatorConfigSchema', () => {
     expect(result.llm?.providers?.google?.headers).toEqual({ 'x-team': 'research' });
   });
 
+  it('accepts prices of your own per million tokens and rejects negative ones', () => {
+    const pricing = {
+      'ollama/llama3.3:70b': { input: 0.1, output: 0.1 },
+      'my-finetune': { input: 2, output: 8, inputCached: 0.5 },
+    };
+    expect(CogitatorConfigSchema.parse({ llm: { pricing } }).llm?.pricing).toEqual(pricing);
+    expect(
+      CogitatorConfigSchema.safeParse({ llm: { pricing: { m: { input: -1, output: 1 } } } }).success
+    ).toBe(false);
+    expect(CogitatorConfigSchema.safeParse({ llm: { pricing: { m: { input: 1 } } } }).success).toBe(
+      false
+    );
+  });
+
   it('rejects headers that are not strings', () => {
     const result = CogitatorConfigSchema.safeParse({
       llm: { providers: { anthropic: { apiKey: 'sk-ant-xxx', headers: { 'x-retries': 3 } } } },
