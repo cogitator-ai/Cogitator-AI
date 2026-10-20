@@ -5,7 +5,7 @@ import {
   BENCH_MODEL,
   BENCH_PRICE,
   Budget,
-  BudgetExceededError,
+  budgetRefusal,
   callCost,
   LONG_PROMPT_TOKENS,
 } from './budget.js';
@@ -118,8 +118,8 @@ function probe(
   return {
     name: 'memory-bench-probe',
     wrapModelCall(call, next) {
-      const overBudget = memoryErrors.find((error) => error instanceof BudgetExceededError);
-      if (overBudget) throw overBudget;
+      const refusal = memoryErrors.map(budgetRefusal).find(Boolean);
+      if (refusal) throw refusal;
       record({
         messages: call.request.messages.length,
         tokens: countMessagesTokens(call.request.messages),
@@ -223,7 +223,8 @@ export async function answerConversation(
       try {
         await options.embedding.embedBatch(texts);
       } catch (error) {
-        if (error instanceof BudgetExceededError) throw error;
+        const refusal = budgetRefusal(error);
+        if (refusal) throw refusal;
         options.log(
           `  warming ${conversation.id}: ${error instanceof Error ? error.message : String(error)}`
         );
@@ -277,7 +278,8 @@ export async function answerConversation(
           }),
         });
       } catch (error) {
-        if (error instanceof BudgetExceededError) throw error;
+        const refusal = budgetRefusal(error);
+        if (refusal) throw refusal;
         options.log(`  ${question.id}: ${error instanceof Error ? error.message : String(error)}`);
         await options.onAnswer({
           ...base,

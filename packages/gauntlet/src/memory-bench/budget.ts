@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdir, rename, writeFile } from 'node:fs/promises';
+import { mkdir, open, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { ModelPriceConfig } from '@cogitator-ai/types';
 
@@ -40,14 +40,58 @@ interface LedgerEntry {
   usd: number;
 }
 
-/** A run went over the money it may spend. */
+/** A run went over the money it may spend. `ledger` names the budget that refused. */
 export class BudgetExceededError extends Error {
   constructor(
     readonly limitUsd: number,
-    readonly spentUsd: number
+    readonly spentUsd: number,
+    readonly ledger: string
   ) {
     super(`Budget of $${limitUsd.toFixed(2)} reached ($${spentUsd.toFixed(4)} spent)`);
     this.name = 'BudgetExceededError';
+  }
+}
+
+/**
+ * The budget refusal behind `error`, also when the runtime wrapped it as the `cause` of its own
+ * error (a memory error wraps what the embedding service threw).
+ */
+export function budgetRefusal(error: unknown): BudgetExceededError | undefined {
+  const seen = new Set<unknown>();
+  let current = error;
+  while (current instanceof Error && !seen.has(current)) {
+    if (current instanceof BudgetExceededError) return current;
+    seen.add(current);
+    current = current.cause;
+  }
+  return undefined;
+}
+
+/** How long a ledger lock may be held before another process takes it as left by a crash. */
+const STALE_LOCK_MS = 30_000;
+
+/**
+ * Runs `work` while holding `${path}.lock`, so processes sharing a ledger read and replace it one
+ * at a time.
+ */
+async function withLock<T>(path: string, work: () => Promise<T>): Promise<T> {
+  const lock = `${path}.lock`;
+  for (;;) {
+    try {
+      const handle = await open(lock, 'wx');
+      await handle.close();
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      const held = await stat(lock).catch(() => undefined);
+      if (held && Date.now() - held.mtimeMs > STALE_LOCK_MS) await rm(lock, { force: true });
+      else await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+  try {
+    return await work();
+  } finally {
+    await rm(lock, { force: true });
   }
 }
 
@@ -66,10 +110,11 @@ export class Budget {
   constructor(
     readonly limitUsd: number,
     private readonly run: string,
-    private readonly ledgerPath: string
+    /** Path of the ledger file, which also tells budgets apart */
+    readonly ledger: string
   ) {
-    this.entries = existsSync(ledgerPath)
-      ? (JSON.parse(readFileSync(ledgerPath, 'utf8')) as LedgerEntry[])
+    this.entries = existsSync(ledger)
+      ? (JSON.parse(readFileSync(ledger, 'utf8')) as LedgerEntry[])
       : [];
     this.spent = this.entries
       .filter((entry) => entry.run === run)
@@ -85,10 +130,18 @@ export class Budget {
     return this.entries.reduce((sum, entry) => sum + entry.usd, 0);
   }
 
+  /** The error that says this budget refuses more work. */
+  refusal(): BudgetExceededError {
+    return new BudgetExceededError(this.limitUsd, this.spent, this.ledger);
+  }
+
+  /** What is left to reserve: the limit less what was spent and what work in flight holds. */
+  get availableUsd(): number {
+    return Math.max(0, this.limitUsd - this.spent - this.reserved);
+  }
+
   reserve(estimateUsd: number): () => void {
-    if (this.spent + this.reserved + estimateUsd > this.limitUsd) {
-      throw new BudgetExceededError(this.limitUsd, this.spent);
-    }
+    if (this.spent + this.reserved + estimateUsd > this.limitUsd) throw this.refusal();
     this.reserved += estimateUsd;
     let released = false;
     return () => {
@@ -133,15 +186,17 @@ export class Budget {
   }
 
   private async write(): Promise<void> {
-    await mkdir(dirname(this.ledgerPath), { recursive: true });
-    const others = existsSync(this.ledgerPath)
-      ? (JSON.parse(readFileSync(this.ledgerPath, 'utf8')) as LedgerEntry[]).filter(
-          (entry) => entry.run !== this.run
-        )
-      : [];
-    const mine = this.entries.filter((entry) => entry.run === this.run);
-    const partial = `${this.ledgerPath}.${process.pid}.tmp`;
-    await writeFile(partial, `${JSON.stringify([...others, ...mine], null, 2)}\n`);
-    await rename(partial, this.ledgerPath);
+    await mkdir(dirname(this.ledger), { recursive: true });
+    await withLock(this.ledger, async () => {
+      const others = existsSync(this.ledger)
+        ? (JSON.parse(readFileSync(this.ledger, 'utf8')) as LedgerEntry[]).filter(
+            (entry) => entry.run !== this.run
+          )
+        : [];
+      const mine = this.entries.filter((entry) => entry.run === this.run);
+      const partial = `${this.ledger}.${process.pid}.tmp`;
+      await writeFile(partial, `${JSON.stringify([...others, ...mine], null, 2)}\n`);
+      await rename(partial, this.ledger);
+    });
   }
 }

@@ -1,9 +1,9 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import type { EmbeddingService } from '@cogitator-ai/types';
-import { Budget, BudgetExceededError, callCost } from '../budget.js';
+import { Budget, BudgetExceededError, budgetRefusal, callCost } from '../budget.js';
 import { JudgeStore } from '../judge.js';
 import { CachedEmbeddingService } from '../embeddings.js';
 import { bootstrapInterval, markdownReport, summarize } from '../report.js';
@@ -127,6 +127,29 @@ describe('Budget', () => {
     two.charge('judge', 2);
     await two.save();
     expect(new Budget(5, 'three', path).ledgerUsd).toBeCloseTo(3);
+  });
+
+  it('loses no run when runs write the ledger at the same time', async () => {
+    const path = join(tempDir(), 'ledger.json');
+    const runs = Array.from({ length: 6 }, (_, i) => new Budget(5, `run-${i}`, path));
+    for (let round = 0; round < 5; round++) {
+      for (const run of runs) run.charge('answers', 0.01);
+    }
+    await Promise.all(runs.map((run) => run.save()));
+    const ledger = new Budget(5, 'reader', path);
+    expect(ledger.ledgerUsd).toBeCloseTo(0.3);
+    expect(existsSync(`${path}.lock`)).toBe(false);
+  });
+
+  it('finds a refusal the runtime wrapped as a cause', () => {
+    const budget = new Budget(0, 'run', join(tempDir(), 'ledger.json'));
+    const refusal = budget.refusal();
+    const wrapped = new Error('Memory context (relevance) could not be loaded', {
+      cause: refusal,
+    });
+    expect(budgetRefusal(wrapped)).toBe(refusal);
+    expect(budgetRefusal(new Error('other'))).toBeUndefined();
+    expect(refusal.ledger).toBe(budget.ledger);
   });
 });
 
@@ -298,6 +321,18 @@ describe('report', () => {
       evidenceRecall: 1,
     });
     expect(markdownReport(rows)).toContain('| longmemeval-s | recent | 2 | 50.0%');
+  });
+
+  it('counts answers still waiting for the judge in their own rows', () => {
+    const { score: _score, judgeCostUsd: _cost, ...waiting } = score('relevant', 'b', 0);
+    const rows = summarize([score('relevant', 'a', 1)], [waiting]);
+    const overall = rows.find((r) => r.strategy === 'relevant' && r.category === undefined);
+    const b = rows.find((r) => r.strategy === 'relevant' && r.category === 'b');
+    expect(overall).toMatchObject({ questions: 1, unjudged: 1, accuracy: 1 });
+    expect(b).toMatchObject({ questions: 0, unjudged: 1 });
+    const markdown = markdownReport(rows);
+    expect(markdown).toContain('| longmemeval-s | relevant | 1 (1 unjudged) | 100.0%');
+    expect(markdown).toContain('| b | n/a (n=0, 1 unjudged) |');
   });
 
   it('bootstraps an interval around the mean, wider when questions share a conversation', () => {

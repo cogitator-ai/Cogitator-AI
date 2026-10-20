@@ -161,6 +161,29 @@ describe('answerConversation', () => {
     for (const answer of answers) expect(answer.error).toMatch(/^memory: .*fell back/);
   });
 
+  it('stops when the embedding budget refuses while the context is built', async () => {
+    const requests = stubModel(() => 'Miso');
+    const spent = budget(0);
+    const inner = new HashedWordsEmbedding();
+    const refusing: EmbeddingService = {
+      model: inner.model,
+      dimensions: inner.dimensions,
+      embed: async () => {
+        throw spent.refusal();
+      },
+      embedBatch: (texts) => inner.embedBatch(texts),
+    };
+    const { options: opts, answers } = options({
+      strategy: { name: 'relevant', contextTokens: 2000 },
+      embedding: refusing,
+    });
+    await expect(answerConversation(conversation, opts)).rejects.toBeInstanceOf(
+      BudgetExceededError
+    );
+    expect(answers).toEqual([]);
+    expect(requests).toEqual([]);
+  });
+
   it('measures a strategy that works without an error', async () => {
     stubModel(() => 'Miso');
     const { options: opts, answers } = options({

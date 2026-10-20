@@ -9,7 +9,7 @@ import {
   BENCH_MODEL,
   BENCH_PRICE,
   Budget,
-  BudgetExceededError,
+  budgetRefusal,
   callCost,
   EMBEDDING_PRICE,
 } from './budget.js';
@@ -49,7 +49,8 @@ Usage: pnpm memory-bench [options]
   --concurrency <n>      questions answered at once per conversation, four conversations at
                          a time (default 6)
   --seed <n>             sample seed (default 42)
-  --run <name>           results directory under the cache, reused to resume (default: now)
+  --run <name>           results directory under the cache, reused to resume, lowercase
+                         letters, digits, '.', '_' and '-' (default: now)
   --no-batch             judge one request at a time instead of Message Batches
   --estimate             print the questions, tokens and cost the run would take, and exit
   --consistency-only     only the fork and rewind suite (no API calls)
@@ -136,9 +137,9 @@ async function main(): Promise<number> {
   const anthropicLimit = positive('anthropic-budget', values['anthropic-budget']);
   const embeddingLimit = positive('budget', values.budget);
   const concurrency = positive('concurrency', values.concurrency, true);
-  if (values.run !== undefined && !/^(?!\.{1,2}$)[\w.-]+$/.test(values.run)) {
+  if (values.run !== undefined && !/^(?!\.{1,2}$)[a-z0-9._-]+$/.test(values.run)) {
     throw new UsageError(
-      `--run takes a name of letters, digits, '.', '_' and '-', not ${values.run}`
+      `--run takes a name of lowercase letters, digits, '.', '_' and '-', not ${values.run}`
     );
   }
 
@@ -194,7 +195,7 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  const run = values.run ?? new Date().toISOString().replace(/[:.]/g, '-');
+  const run = values.run ?? new Date().toISOString().replace(/[:.]/g, '-').toLowerCase();
   const runDir = join(cacheDir(), 'runs', run);
   await mkdir(runDir, { recursive: true });
   const answersPath = join(runDir, 'answers.jsonl');
@@ -263,8 +264,9 @@ async function main(): Promise<number> {
       }
     }
   } catch (error) {
-    if (!(error instanceof BudgetExceededError)) throw error;
-    stopped = error.message;
+    const refusal = budgetRefusal(error);
+    if (!refusal) throw error;
+    stopped = `${refusal.ledger === embeddingBudget.ledger ? 'embeddings' : 'answers and the judge'}: ${refusal.message}`;
     log(`Stopped: ${stopped}`);
   }
 
@@ -314,29 +316,29 @@ async function main(): Promise<number> {
       join(runDir, 'judge-replies.jsonl'),
       join(runDir, 'judge-batches.json')
     );
-    if (!stopped) log(`Judging ${pending.length} answers`);
+    log(`Judging ${pending.length} answers`);
     try {
-      if (!stopped)
-        await judge(
-          pending.flatMap((item) => item.requests),
-          {
-            client: new Anthropic({
-              apiKey: anthropicApiKey,
-              maxRetries: 6,
-              ...(anthropicWorkspace && {
-                defaultHeaders: { 'anthropic-workspace-id': anthropicWorkspace },
-              }),
+      await judge(
+        pending.flatMap((item) => item.requests),
+        {
+          client: new Anthropic({
+            apiKey: anthropicApiKey,
+            maxRetries: 6,
+            ...(anthropicWorkspace && {
+              defaultHeaders: { 'anthropic-workspace-id': anthropicWorkspace },
             }),
-            batch: !values['no-batch'],
-            budget,
-            store,
-            concurrency,
-            log,
-          }
-        );
+          }),
+          batch: !values['no-batch'],
+          budget,
+          store,
+          concurrency,
+          log,
+        }
+      );
     } catch (error) {
-      if (!(error instanceof BudgetExceededError)) throw error;
-      stopped = error.message;
+      const refusal = budgetRefusal(error);
+      if (!refusal) throw error;
+      stopped = `the judge: ${refusal.message}`;
       log(`Stopped while judging: ${stopped}`);
     }
     for (const item of pending) {
@@ -359,9 +361,13 @@ async function main(): Promise<number> {
     const score = scores.get(answerKey(answer.dataset, answer.questionId, answer.strategy));
     return score ? [score] : [];
   });
-  const unjudged = answered.length - final.length;
+  const waiting = answered.filter(
+    (answer) =>
+      !answer.error && !scores.has(answerKey(answer.dataset, answer.questionId, answer.strategy))
+  );
+  const unjudged = waiting.length;
   if (unjudged > 0) log(`${unjudged} answers are not judged yet: run again with --run ${run}`);
-  const rows = summarize(final);
+  const rows = summarize(final, waiting);
   const report = {
     run,
     finishedAt: new Date().toISOString(),

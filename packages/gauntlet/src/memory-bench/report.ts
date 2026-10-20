@@ -1,6 +1,6 @@
 import { mean, percentile } from '@cogitator-ai/evals';
 import { seededRandom } from './sample.js';
-import type { BenchScore } from './types.js';
+import type { BenchAnswer, BenchScore } from './types.js';
 
 /** The figures of one group of answers (a dataset and strategy, or one category of them). */
 export interface BenchRow {
@@ -8,8 +8,12 @@ export interface BenchRow {
   strategy: string;
   /** The category of the questions, absent on the row of the whole dataset and strategy */
   category?: string;
+  /** Judged questions, the ones the figures cover */
   questions: number;
+  /** Answers that failed, each counted as wrong */
   errors: number;
+  /** Answers still waiting for the judge, left out of the figures */
+  unjudged: number;
   /** Mean score, 0 to 1, and its 95% bootstrap interval */
   accuracy: number;
   ciLow: number;
@@ -25,7 +29,8 @@ export interface BenchRow {
   evidenceRecall?: number;
   /**
    * Accuracy minus that of `recent` on the same questions, with its 95% interval, for the other
-   * strategies when `recent` answered them too
+   * strategies when `recent` answered them too, a failed answer counted as wrong on either side
+   * as in the accuracy
    */
   vsRecent?: { delta: number; ciLow: number; ciHigh: number; questions: number };
   costUsd: number;
@@ -72,7 +77,7 @@ function row(
   category: string | undefined,
   scores: BenchScore[],
   recent: ReadonlyMap<string, BenchScore>
-): BenchRow {
+): Omit<BenchRow, 'unjudged'> {
   const answered = scores.filter((score) => !score.error);
   const values = scores.map((score) => score.score);
   const [ciLow, ciHigh] = bootstrapInterval(
@@ -125,7 +130,7 @@ function pairedDelta(
   const clusters: string[] = [];
   for (const score of scores) {
     const baseline = recent.get(`${score.dataset}\u0000${score.questionId}`);
-    if (!baseline || score.error || baseline.error) continue;
+    if (!baseline) continue;
     deltas.push(score.score - baseline.score);
     clusters.push(score.conversationId);
   }
@@ -136,9 +141,13 @@ function pairedDelta(
 
 /**
  * Rows for every dataset and strategy in `scores` (without a category), each followed by a row
- * per category of it.
+ * per category of it. `unjudged` are answers the judge has not scored yet: each row counts its
+ * own, and a group with nothing judged still gets a row so it is not silently missing.
  */
-export function summarize(scores: readonly BenchScore[]): BenchRow[] {
+export function summarize(
+  scores: readonly BenchScore[],
+  unjudged: readonly BenchAnswer[] = []
+): BenchRow[] {
   const recent = new Map(
     scores
       .filter((score) => score.strategy === 'recent')
@@ -146,23 +155,28 @@ export function summarize(scores: readonly BenchScore[]): BenchRow[] {
   );
   const groups = new Map<
     string,
-    { dataset: string; strategy: string; category?: string; scores: BenchScore[] }
+    { dataset: string; strategy: string; category?: string; scores: BenchScore[]; unjudged: number }
   >();
-  for (const score of scores) {
-    for (const category of [undefined, score.category]) {
-      const key = JSON.stringify([score.dataset, score.strategy, category ?? null]);
+  const groupsOf = (answer: BenchAnswer) =>
+    [undefined, answer.category].map((category) => {
+      const key = JSON.stringify([answer.dataset, answer.strategy, category ?? null]);
       const group = groups.get(key) ?? {
-        dataset: score.dataset,
-        strategy: score.strategy,
+        dataset: answer.dataset,
+        strategy: answer.strategy,
         ...(category !== undefined && { category }),
         scores: [],
+        unjudged: 0,
       };
-      group.scores.push(score);
       groups.set(key, group);
-    }
-  }
+      return group;
+    });
+  for (const score of scores) for (const group of groupsOf(score)) group.scores.push(score);
+  for (const answer of unjudged) for (const group of groupsOf(answer)) group.unjudged++;
   return [...groups.values()]
-    .map((group) => row(group.dataset, group.strategy, group.category, group.scores, recent))
+    .map((group) => ({
+      ...row(group.dataset, group.strategy, group.category, group.scores, recent),
+      unjudged: group.unjudged,
+    }))
     .sort(
       (a, b) =>
         a.dataset.localeCompare(b.dataset) ||
@@ -174,6 +188,17 @@ export function summarize(scores: readonly BenchScore[]): BenchRow[] {
 
 const pct = (value: number) => `${(value * 100).toFixed(1)}%`;
 
+function questionsCell(r: BenchRow): string {
+  const notes = [
+    r.errors > 0 && `${r.errors} failed`,
+    r.unjudged > 0 && `${r.unjudged} unjudged`,
+  ].filter(Boolean);
+  return `${r.questions}${notes.length > 0 ? ` (${notes.join(', ')})` : ''}`;
+}
+
+const accuracyCell = (r: BenchRow) =>
+  r.questions === 0 ? 'n/a' : `${pct(r.accuracy)} (${pct(r.ciLow)} to ${pct(r.ciHigh)})`;
+
 /** `rows` as Markdown tables: one of the datasets and strategies, one per dataset by category. */
 export function markdownReport(rows: readonly BenchRow[]): string {
   const overall = rows.filter((r) => r.category === undefined);
@@ -182,7 +207,7 @@ export function markdownReport(rows: readonly BenchRow[]): string {
     '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
     ...overall.map(
       (r) =>
-        `| ${r.dataset} | ${r.strategy} | ${r.questions}${r.errors ? ` (${r.errors} failed)` : ''} | ${pct(r.accuracy)} (${pct(r.ciLow)} to ${pct(r.ciHigh)}) | ${r.vsRecent ? `${r.vsRecent.delta >= 0 ? '+' : ''}${pct(r.vsRecent.delta)} (${pct(r.vsRecent.ciLow)} to ${pct(r.vsRecent.ciHigh)})` : ''} | ${Math.round(r.inputTokensPerQuery)} | ${pct(r.cacheHitRate)} | ${r.evidenceRecall === undefined ? 'n/a' : pct(r.evidenceRecall)} | ${Math.round(r.latencyP50Ms)}/${Math.round(r.latencyP95Ms)} ms | ${Math.round(r.contextP50Ms)}/${Math.round(r.contextP95Ms)} ms | $${r.costUsd.toFixed(3)} |`
+        `| ${r.dataset} | ${r.strategy} | ${questionsCell(r)} | ${accuracyCell(r)} | ${r.vsRecent ? `${r.vsRecent.delta >= 0 ? '+' : ''}${pct(r.vsRecent.delta)} (${pct(r.vsRecent.ciLow)} to ${pct(r.vsRecent.ciHigh)})` : ''} | ${Math.round(r.inputTokensPerQuery)} | ${pct(r.cacheHitRate)} | ${r.evidenceRecall === undefined ? 'n/a' : pct(r.evidenceRecall)} | ${Math.round(r.latencyP50Ms)}/${Math.round(r.latencyP95Ms)} ms | ${Math.round(r.contextP50Ms)}/${Math.round(r.contextP95Ms)} ms | $${r.costUsd.toFixed(3)} |`
     ),
   ];
   for (const dataset of [...new Set(rows.map((r) => r.dataset))]) {
@@ -198,7 +223,9 @@ export function markdownReport(rows: readonly BenchRow[]): string {
       ...categories.map((category) => {
         const cells = strategies.map((strategy) => {
           const r = byCategory.find((x) => x.strategy === strategy && x.category === category);
-          return r ? `${pct(r.accuracy)} (n=${r.questions})` : '';
+          if (!r) return '';
+          const unjudged = r.unjudged > 0 ? `, ${r.unjudged} unjudged` : '';
+          return `${r.questions === 0 ? 'n/a' : pct(r.accuracy)} (n=${r.questions}${unjudged})`;
         });
         return `| ${category} | ${cells.join(' | ')} |`;
       })

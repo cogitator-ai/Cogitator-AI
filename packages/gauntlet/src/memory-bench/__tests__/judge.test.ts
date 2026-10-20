@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import Anthropic from '@anthropic-ai/sdk';
-import { Budget, callCost } from '../budget.js';
+import { Budget, BudgetExceededError, callCost } from '../budget.js';
 import { judge, JudgeStore } from '../judge.js';
 import { latest, parseSample, pick, positive, readJsonl, UsageError } from '../options.js';
 import type { JudgeRequest } from '../scoring.js';
@@ -186,6 +186,54 @@ describe('judge', () => {
     expect(store.replies.get('a')?.text).toBe('yes');
     expect(store.replies.get('done')?.text).toBe('no');
     expect(store.openBatches).toEqual([]);
+  });
+});
+
+describe('judge within the budget', () => {
+  it('never charges again for a reply an open batch holds that is already stored', async () => {
+    const { dir, budget, log } = setup();
+    const { client, batches } = fakeClient({ answer: () => 'yes' });
+    batches.set('earlier', [
+      { custom_id: 'j0', result: { type: 'succeeded', message: message('no') } },
+      { custom_id: 'j1', result: { type: 'succeeded', message: message('yes') } },
+    ]);
+    const first = new JudgeStore(join(dir, 'replies.jsonl'), join(dir, 'batches.json'));
+    first.addBatch({ id: 'earlier', requests: { j0: 'a', j1: 'b' }, done: false });
+    first.record('a', { text: 'yes', costUsd: 0.5 });
+
+    const store = new JudgeStore(join(dir, 'replies.jsonl'), join(dir, 'batches.json'));
+    await judge([request('a'), request('b')], {
+      client,
+      batch: true,
+      budget,
+      store,
+      concurrency: 1,
+      log,
+      pollMs: 0,
+    });
+    expect(store.replies.get('a')).toEqual({ text: 'yes', costUsd: 0.5 });
+    expect(budget.spentUsd).toBeCloseTo(callCost(1000, 10, true));
+  });
+
+  it('judges what the budget left covers and then refuses the rest', async () => {
+    const { dir, store, log } = setup();
+    const one = callCost(Math.ceil(30 / 3.5), 16);
+    const budget = new Budget(one * 2.5, 'test', join(dir, 'small-ledger.json'));
+    const { client, calls } = fakeClient({ answer: () => 'yes' });
+    const prompt = 'x'.repeat(30);
+    await expect(
+      judge([request('a', prompt), request('b', prompt), request('c', prompt)], {
+        client,
+        batch: false,
+        budget,
+        store,
+        concurrency: 1,
+        log,
+      })
+    ).rejects.toBeInstanceOf(BudgetExceededError);
+    expect(calls.direct).toHaveLength(2);
+    expect(store.replies.size).toBe(2);
+    await budget.save();
   });
 });
 

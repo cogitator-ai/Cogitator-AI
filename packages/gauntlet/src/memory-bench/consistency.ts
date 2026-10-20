@@ -195,9 +195,11 @@ export async function runConsistencySuite(
         'the latest turn did not reach the model before the rewind'
       );
       check(
-        'rewind: a rewound turn does not come back',
-        !afterRewind.includes('crimson'),
-        'the rewound turn reached the model'
+        'rewind: a rewound turn does not come back, the rest of the thread does',
+        !afterRewind.includes('crimson') && fillersIn(afterRewind) > 0,
+        afterRewind.includes('crimson')
+          ? 'the rewound turn reached the model'
+          : 'nothing of the thread reached the model after the rewind'
       );
       check('memory: no errors, no fallback', memoryErrors.length === 0, memoryErrors.join('; '));
     } catch (error) {
