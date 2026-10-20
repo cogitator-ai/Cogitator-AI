@@ -452,7 +452,10 @@ describe('model fallback in a run', () => {
             const signal = request.signal;
             signal?.addEventListener(
               'abort',
-              () => reject(signal.reason instanceof Error ? signal.reason : new Error('aborted')),
+              () => {
+                const reason: unknown = signal.reason;
+                reject(reason instanceof Error ? reason : new Error('aborted'));
+              },
               { once: true }
             );
             setTimeout(() => controller.abort(new Error('user left')), 1);
