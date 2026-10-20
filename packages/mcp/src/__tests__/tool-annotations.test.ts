@@ -199,7 +199,7 @@ describe('MCPServer tool metadata over HTTP', () => {
       annotations: { destructiveHint: true },
       execute: async ({ table }) => `dropped ${table}`,
     }) as Tool,
-    tool({
+    tool<unknown, unknown>({
       name: 'get_user',
       description: 'Get a user',
       parameters: z.object({}),
