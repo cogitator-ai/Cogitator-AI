@@ -142,6 +142,25 @@ describe('aborting a sandbox execution', () => {
       expect(box.remove).toHaveBeenCalledWith({ force: true });
     });
 
+    it('never starts the command when the abort comes while the exec is being created', async () => {
+      const controller = new AbortController();
+      const exec = { start: vi.fn(), inspect: vi.fn() };
+      const box = container(exec);
+      box.exec.mockImplementation(async () => {
+        controller.abort(new Error('gone'));
+        return exec;
+      });
+      mockDocker.createContainer.mockResolvedValueOnce(box);
+
+      const result = await executor.execute(
+        { command: ['rm', '-rf', '/data'], signal: controller.signal },
+        config
+      );
+
+      expect(result).toEqual({ success: false, error: 'Execution aborted: gone' });
+      expect(exec.start).not.toHaveBeenCalled();
+    });
+
     it('stops waiting for a container that is still starting, and removes it once it is up', async () => {
       const box = container({ start: vi.fn(), inspect: vi.fn() });
       let created!: (value: typeof box) => void;

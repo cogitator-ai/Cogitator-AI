@@ -196,6 +196,17 @@ export class DockerSandboxExecutor extends BaseSandboxExecutor {
     aborted: boolean;
     containerCorrupted: boolean;
   }> {
+    if (signal?.aborted) {
+      return {
+        stdout: '',
+        stderr: '',
+        exitCode: 124,
+        timedOut: false,
+        aborted: true,
+        containerCorrupted: false,
+      };
+    }
+
     const stdout = new OutputCollector(MAX_OUTPUT_SIZE);
     const stderr = new OutputCollector(MAX_OUTPUT_SIZE);
     const demuxer = new DockerStreamDemuxer(

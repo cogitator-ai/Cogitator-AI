@@ -72,7 +72,8 @@ function withoutDataUrlPrefix(part: ToolContentPart): ToolContentPart {
 /**
  * The content of the tool message for a result made of parts: text, with each image as an image
  * part when the model can take it, and a description in place of each file, binary resource
- * and image in other formats. A string when there is no image to attach. The text parts are cut
+ * and image in other formats, without empty text parts, which some providers refuse next to an
+ * image. A string when there is no image to attach. The text parts are cut
  * to `maxLength` characters in all as one text (see `truncateToolResultText`): the start and the
  * end are kept, parts in between are left out, images stay.
  */
@@ -95,7 +96,10 @@ export function toolPartsToMessageContent(
     const text = content.map((part) => (part.type === 'text' ? part.text : '')).join('\n');
     return truncateToolResultText(text, maxLength);
   }
-  return cutTextParts(content, maxLength);
+  return cutTextParts(
+    content.filter((part) => part.type !== 'text' || part.text !== ''),
+    maxLength
+  );
 }
 
 function cutTextParts(content: ContentPart[], maxLength: number): ContentPart[] {

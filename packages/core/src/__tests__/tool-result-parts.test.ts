@@ -195,6 +195,15 @@ describe('the size of a tool result the model reads', () => {
     expect(cut).toBe('a\n\n[... 9 of 10 characters of this tool result were left out ...]');
   });
 
+  it('drops empty text parts next to an image, which providers refuse', () => {
+    expect(
+      toolPartsToMessageContent([
+        { type: 'text', text: '' },
+        { type: 'image', data: PNG, mediaType: 'image/png' },
+      ])
+    ).toEqual([{ type: 'image_base64', image_base64: { data: PNG, media_type: 'image/png' } }]);
+  });
+
   it('leaves a short media result as it is', () => {
     const parts = toolPartsToMessageContent([
       { type: 'text', text: 'Screenshot' },
