@@ -101,7 +101,7 @@ To see or rewrite streamed text, hand `next` a call with a stream sink of your o
 
 ### afterModel
 
-`afterModel({ response, messages, model }, context)` sees each answer before the run uses it. Return `{ content }` to replace its text, `{ toolCalls }` to replace the calls it makes (an empty list turns it into the final answer). Text a streamed run already sent to `onToken` cannot be taken back: set `holdsStream: true` on the middleware and the run holds each turn's text until the `afterModel` hooks saw it, then sends the final text in one piece.
+`afterModel({ response, messages, model }, context)` sees each answer before the run uses it. Return `{ content }` to replace its text, `{ toolCalls }` to replace the calls it makes (an empty list turns it into the final answer). Text a streamed run already sent to `onToken` cannot be taken back: set `holdsStream: true` on the middleware and the run holds each turn's text until the turn is done and the hooks saw it, then sends the final text in one piece. The same goes for a `wrapModelCall` hook that retries a call or blocks its answer: without `holdsStream` the text of every call it sends streams as it arrives.
 
 ```typescript
 const noEmails: RunMiddleware = {
@@ -155,7 +155,7 @@ try {
 }
 ```
 
-Any other error a hook throws fails the run as it is, and a hook still running when the run is cancelled or times out is no longer waited for. Outside a run, `invokeTool()` throws an error its `wrapToolCall` middleware throws, a tripwire among them, while a failing tool still comes back in the result's `error`. A hook inside `wrapModelCall` that throws a provider error (`LLM_UNAVAILABLE` and the like) moves the turn to the next fallback model, as the model's own failure would.
+A tripwire raised inside a tool, such as a nested run of an [agent used as a tool](/docs/tools/agent-as-tool), stops the outer run too instead of reaching its model as a tool error. Any other error a hook throws fails the run as it is, and a hook still running when the run is cancelled or times out is no longer waited for. Outside a run, `invokeTool()` throws an error its `wrapToolCall` middleware throws, a tripwire among them, while a failing tool still comes back in the result's `error`. A hook inside `wrapModelCall` that throws a provider error (`LLM_UNAVAILABLE` and the like) moves the turn to the next fallback model, as the model's own failure would.
 
 ## Built-in Middleware
 
@@ -168,7 +168,7 @@ The runtime's own features are middleware too, added from the config closest to 
 | `cogitator:guardrails`       | `guardrails`                | `beforeRun`, `afterModel` (holds the stream), `wrapToolCall` |
 | `cogitator:compaction`       | `context`                   | `beforeModel`                                            |
 
-Because PII masking is the innermost layer, it also masks whatever your middleware adds to a request, while your middleware sees the real values. `piiMiddleware(config)`, `promptInjectionMiddleware(detector)`, `guardrailsMiddleware(constitutionalAI)` and `compactionMiddleware(contextManager)` build them, to give a feature to one agent only:
+Because PII masking is the innermost layer, it also masks whatever your middleware adds to a request, while your middleware sees the real values. The guardrails check the model's answer and a tool's result before your hooks see them: what your `afterModel` or `wrapToolCall` hooks change afterwards is not checked again. `piiMiddleware(config)`, `promptInjectionMiddleware(detector)`, `guardrailsMiddleware(constitutionalAI)` and `compactionMiddleware(contextManager)` build them, to give a feature to one agent only:
 
 ```typescript
 import { piiMiddleware } from '@cogitator-ai/core';

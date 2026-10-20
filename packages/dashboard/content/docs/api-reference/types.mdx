@@ -193,7 +193,7 @@ interface RunCheckpointStore {
 ```typescript
 interface RunMiddleware<TDeps = unknown> {
   readonly name: string;
-  readonly holdsStream?: boolean; // with afterModel: a streamed turn's text waits for the hooks
+  readonly holdsStream?: boolean; // a streamed turn's text waits until the turn is done
   beforeRun?(event: RunInputEvent, context: RunMiddlewareContext<TDeps>): void | Promise<void>;
   beforeModel?(
     event: ModelTurnEvent,

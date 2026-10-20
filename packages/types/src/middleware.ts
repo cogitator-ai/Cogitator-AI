@@ -130,9 +130,9 @@ export interface RunMiddleware<TDeps = unknown> {
   /** Names the middleware in errors and logs */
   readonly name: string;
   /**
-   * With `afterModel`, a streamed run holds each turn's text back until the turn is done and
-   * the hooks have seen it, then hands `onToken` the final text in one piece, so text a hook
-   * replaces or blocks never reaches a listener.
+   * A streamed run holds each turn's text back until the turn is done and the hooks have seen
+   * it, then hands `onToken` the final text in one piece, so text a hook retries, blocks or
+   * replaces (in `wrapModelCall` or `afterModel`) never reaches a listener.
    */
   readonly holdsStream?: boolean;
   /**

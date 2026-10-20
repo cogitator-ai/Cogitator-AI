@@ -1148,10 +1148,13 @@ export class Cogitator implements ToolInvoker {
         const recordCall = (
           answer: ChatResponse,
           candidate: ModelCandidate,
+          sentModel: string,
           startedAt: number
         ): void => {
+          const rerouted = sentModel !== candidate.model;
+          const priced = rerouted ? sentModelName(candidate, sentModel) : candidate.name;
           const spentBefore = costMeter.total(costModel);
-          costMeter.add(answer.usage, candidate.name);
+          costMeter.add(answer.usage, priced);
           const callCost = costMeter.total(costModel) - spentBefore;
           spans.push(
             createSpan(
@@ -1161,7 +1164,7 @@ export class Cogitator implements ToolInvoker {
               startedAt,
               Date.now(),
               {
-                'llm.model': candidate.model,
+                'llm.model': sentModel,
                 'llm.iteration': iterations,
                 'llm.input_tokens': answer.usage.inputTokens,
                 'llm.output_tokens': answer.usage.outputTokens,
@@ -1184,12 +1187,12 @@ export class Cogitator implements ToolInvoker {
           cachedInputTokens += answer.usage.cachedInputTokens ?? 0;
           cacheWriteTokens += answer.usage.cacheWriteTokens ?? 0;
           reasoningTokens += answer.usage.reasoningTokens ?? 0;
-          if (answer.usage.cost === undefined) this.pricer.noteUnpriced(candidate.name);
+          if (answer.usage.cost === undefined) this.pricer.noteUnpriced(priced);
           this.state.costRouter?.recordCost({
             runId,
             agentId: agent.id,
             threadId,
-            model: candidate === candidates[0] ? effectiveModel : candidate.name,
+            model: candidate === candidates[0] && !rerouted ? effectiveModel : priced,
             inputTokens: answer.usage.inputTokens,
             outputTokens: answer.usage.outputTokens,
             cost: callCost,
@@ -1259,7 +1262,9 @@ export class Cogitator implements ToolInvoker {
                         ? await streamChatRequest(candidate.backend, sent.request, sent.stream)
                         : await candidate.backend.chat(sent.request)
                     );
-                    recordCall(sentAnswer, candidate, startedAt);
+                    if (!abortController.signal.aborted) {
+                      recordCall(sentAnswer, candidate, sent.request.model, startedAt);
+                    }
                     return sentAnswer;
                   },
                   middlewareContext()
@@ -2366,6 +2371,17 @@ function throwIfAborted(signal: AbortSignal): void {
   if (signal.aborted) {
     throw toAbortError(signal.reason, 'Run aborted');
   }
+}
+
+/**
+ * `provider/model` of a call a middleware sent to `model` instead of `candidate`'s model, on the
+ * candidate's provider: `candidate.name` is `provider/model` of the candidate.
+ */
+function sentModelName(candidate: ModelCandidate, model: string): string {
+  const suffix = `/${candidate.model}`;
+  return candidate.name.endsWith(suffix)
+    ? `${candidate.name.slice(0, -suffix.length)}/${model}`
+    : model;
 }
 
 function waitForAbortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {

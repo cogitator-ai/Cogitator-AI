@@ -225,9 +225,13 @@ export function fromAgentWireResponseFormat(
   return { type: 'json_schema', schema: z.fromJSONSchema(format.schema) };
 }
 
+/** Agents `toAgentWire` already warned about: one warning per agent, not one per job. */
+const warnedMiddleware = new WeakSet<IAgent>();
+
 function agentToWire(agent: IAgent, options: ToAgentWireOptions): AgentWireAgent {
   const { config } = agent;
-  if (config.middleware?.length) {
+  if (config.middleware?.length && !warnedMiddleware.has(agent)) {
+    warnedMiddleware.add(agent);
     getLogger().warn(
       'The agent wire format does not carry middleware: the receiving side runs the agent with its own',
       { agent: agent.name, middleware: config.middleware.map((layer) => layer.name) }

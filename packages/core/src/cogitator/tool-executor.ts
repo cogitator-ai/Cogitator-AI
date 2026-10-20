@@ -17,6 +17,7 @@ import type { ConstitutionalAI } from '../constitutional/index';
 import { createLinkedAbortController } from '../utils/abort';
 import { guardrailsMiddleware } from '../middleware/builtins';
 import { MiddlewarePipeline, type ToolArgumentsParser } from '../middleware/pipeline';
+import { isTripwire } from '../middleware/tripwire';
 import {
   DEFAULT_TOOL_RESULT_MAX_LENGTH,
   toolPartsToMessageContent,
@@ -76,7 +77,10 @@ export async function runToolCall(execution: ToolCallExecution): Promise<ToolRes
     };
   }
 
-  const parsed = parseToolArguments({ toolCall, tool, args: toolCall.arguments, approved: false });
+  const parsed = parseToolArguments(
+    { toolCall, tool, args: toolCall.arguments, approved: false },
+    false
+  );
   if (!parsed.ok) {
     return { callId: toolCall.id, name: toolCall.name, result: null, error: parsed.error };
   }
@@ -85,7 +89,7 @@ export async function runToolCall(execution: ToolCallExecution): Promise<ToolRes
     { toolCall, tool, args: parsed.args, approved: execution.approved },
     (call) => runTool(call, execution),
     execution.context,
-    parseChangedToolArguments
+    parseCallArguments
   );
 }
 
@@ -115,17 +119,16 @@ const parseToolArguments: ToolArgumentsParser = ({ tool, toolCall }) => {
 };
 
 /**
- * Arguments a middleware gave a call, read like the model's, and refused when the tool needs an
- * approval for them: nobody approved these arguments.
+ * Arguments of a call as `parseToolArguments` reads them, and refused when a middleware changed
+ * them into ones the tool needs an approval for: nobody approved these arguments.
  */
-const parseChangedToolArguments: ToolArgumentsParser = (call) => {
-  if (needsApproval(call.tool, call.toolCall.arguments)) {
-    return {
-      ok: false,
-      error: `Tool "${call.tool.name}" needs approval for the arguments a middleware gave it, and nobody approved them`,
-    };
-  }
-  return parseToolArguments(call);
+const parseCallArguments: ToolArgumentsParser = (call, changed) => {
+  const parsed = parseToolArguments(call, changed);
+  if (!parsed.ok || !changed || !needsApproval(call.tool, call.toolCall.arguments)) return parsed;
+  return {
+    ok: false,
+    error: `Tool "${call.tool.name}" needs approval for these arguments, and nobody approved them`,
+  };
 };
 
 function runTool(call: ToolCallRequest, execution: ToolCallExecution): Promise<ToolResult> {
@@ -229,6 +232,7 @@ async function executeNatively(
       result,
     };
   } catch (error) {
+    if (isTripwire(error)) throw error;
     return {
       callId: toolCall.id,
       name: toolCall.name,

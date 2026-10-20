@@ -104,11 +104,10 @@ describe('MiddlewarePipeline', () => {
     expect(counter.calls).toBe(1);
   });
 
-  it('holds the stream only for a middleware that also has afterModel', () => {
-    expect(new MiddlewarePipeline([{ name: 'a', holdsStream: true }]).holdsStream).toBe(false);
+  it('holds the stream when any middleware asks for it', () => {
+    expect(new MiddlewarePipeline([{ name: 'a' }]).holdsStream).toBe(false);
     expect(
-      new MiddlewarePipeline([{ name: 'a', holdsStream: true, afterModel: () => undefined }])
-        .holdsStream
+      new MiddlewarePipeline([{ name: 'a' }, { name: 'b', holdsStream: true }]).holdsStream
     ).toBe(true);
   });
 

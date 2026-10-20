@@ -3,6 +3,7 @@ import type { Agent } from './agent';
 import type { Cogitator } from './runtime';
 import { tool } from './tool';
 import { z } from 'zod';
+import { isTripwire } from './middleware/tripwire';
 
 export interface AgentAsToolOptions {
   name: string;
@@ -103,6 +104,7 @@ export function agentAsTool<TDeps = unknown>(
           }),
         };
       } catch (error) {
+        if (isTripwire(error)) throw error;
         return {
           output: '',
           success: false,
