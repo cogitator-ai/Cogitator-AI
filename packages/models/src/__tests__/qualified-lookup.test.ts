@@ -207,13 +207,21 @@ describe('bare model names', () => {
   });
 });
 
-describe('built-in models', () => {
-  it('follow the same rules before the catalogue loads', () => {
+describe('offline catalogue', () => {
+  it('follows the same rules before the catalogue loads', () => {
     const registry = new ModelRegistry();
 
     expect(registry.getModel('openai/gpt-6-luna')?.id).toBe('gpt-6-luna');
     expect(registry.getModel('openrouter/openai/gpt-6-luna')?.id).toBe('gpt-6-luna');
-    expect(registry.getModel('openrouter/deepseek/deepseek-v4-pro')).toBeNull();
+    expect(registry.getModel('openrouter/deepseek/no-such-model')).toBeNull();
+  });
+
+  it('prices models of the bundled LiteLLM copy without the network', () => {
+    const registry = new ModelRegistry();
+
+    expect(registry.isInitialized()).toBe(false);
+    expect(registry.getModel('azure_ai/deepseek-v4-pro')?.provider).toBe('azure');
+    expect(registry.getPricing('azure_ai/deepseek-v4-pro')?.input).toBeGreaterThan(0);
   });
 });
 

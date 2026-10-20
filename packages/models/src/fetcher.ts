@@ -1,6 +1,6 @@
 import type { LiteLLMModelData, LiteLLMModelEntry, ModelInfo, ModelPricing } from './types';
 
-const LITELLM_URL =
+export const LITELLM_URL =
   'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json';
 
 const FETCH_TIMEOUT = 10_000;

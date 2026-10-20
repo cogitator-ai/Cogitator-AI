@@ -8,6 +8,7 @@ import {
   shutdownModels,
 } from '../registry';
 import { BUILTIN_MODELS } from '../providers/index';
+import { LITELLM_SNAPSHOT } from '../snapshot';
 
 describe('ModelRegistry', () => {
   let registry: ModelRegistry;
@@ -35,7 +36,7 @@ describe('ModelRegistry', () => {
       expect(model?.id).toBe('gemini-3.1-pro-preview');
       expect(model?.deprecated).toBeFalsy();
 
-      const oldPreview = registry.getModel('gemini-3-pro-preview');
+      const oldPreview = registry.getModel('google/gemini-3-pro-preview');
       expect(oldPreview?.deprecated).toBe(true);
     });
 
@@ -46,7 +47,7 @@ describe('ModelRegistry', () => {
       ['gemini-3-flash-lite', 'gemini-3.5-flash-lite'],
       ['gemini-pro', 'gemini-3.1-pro-preview'],
       ['claude-sonnet-5.5', 'claude-sonnet-5-5'],
-      ['claude-haiku-4-5', 'claude-haiku-4-5-20251001'],
+      ['claude-haiku-4.5', 'claude-haiku-4-5-20251001'],
     ])('should resolve alias %s to %s', (alias, id) => {
       expect(registry.getModel(alias)?.id).toBe(id);
     });
@@ -205,6 +206,16 @@ describe('ModelRegistry initialization', () => {
     expect(reg.getModelCount()).toBeGreaterThan(0);
   });
 
+  it('falls back to the bundled LiteLLM copy when the network fails', async () => {
+    globalThis.fetch = vi.fn().mockRejectedValue(new Error('Network error'));
+
+    const reg = new ModelRegistry({ cache: { ttl: 60_000, storage: 'memory' } });
+    await reg.initialize();
+
+    expect(reg.getModelCount()).toBeGreaterThan(Object.keys(LITELLM_SNAPSHOT.models).length / 2);
+    expect(reg.getPricing('groq/openai/gpt-oss-120b')?.input).toBeGreaterThan(0);
+  });
+
   it('should throw when fallbackToBuiltin is false and network fails', async () => {
     globalThis.fetch = vi.fn().mockRejectedValue(new Error('Network error'));
 
@@ -226,12 +237,12 @@ describe('ModelRegistry initialization', () => {
     reg.shutdown();
   });
 
-  it('loads the full catalogue even after a lookup fell back to the built-in models', async () => {
+  it('loads the full catalogue even after a lookup fell back to the offline one', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: () =>
         Promise.resolve({
-          'deepseek/deepseek-chat': {
+          'deepseek/deepseek-v9-preview': {
             max_tokens: 8192,
             input_cost_per_token: 0.00000028,
             output_cost_per_token: 0.00000042,
@@ -241,13 +252,13 @@ describe('ModelRegistry initialization', () => {
     });
     const reg = new ModelRegistry({ cache: { ttl: 60_000, storage: 'memory' } });
 
-    expect(reg.getPrice('deepseek/deepseek-chat')).toBeNull();
+    expect(reg.getPrice('deepseek/deepseek-v9-preview')).toBeNull();
     expect(reg.isInitialized()).toBe(false);
 
     await reg.initialize();
 
     expect(reg.isInitialized()).toBe(true);
-    expect(reg.getPrice('deepseek/deepseek-chat')).toEqual({ input: 0.28, output: 0.42 });
+    expect(reg.getPrice('deepseek/deepseek-v9-preview')).toEqual({ input: 0.28, output: 0.42 });
     expect(reg.getModel('gpt-4o')).not.toBeNull();
   });
 

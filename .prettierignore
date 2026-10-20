@@ -5,3 +5,4 @@ pnpm-lock.yaml
 coverage
 .turbo
 packages/gauntlet/reports
+packages/models/src/data/litellm-snapshot.json

@@ -24,6 +24,7 @@ export {
   getPrice,
   getPricing,
   calculateCost,
+  costOf,
   type TokenUsageForCost,
   getModel,
   isDecisionModel,
@@ -31,9 +32,13 @@ export {
   shutdownModels,
 } from './registry';
 
+export { ModelPricer, type PricingOverrides } from './pricer';
+
 export { ModelCache } from './cache';
 
 export { fetchLiteLLMData, transformLiteLLMData } from './fetcher';
+
+export { LITELLM_SNAPSHOT, type LiteLLMSnapshot } from './snapshot';
 
 export {
   BUILTIN_MODELS,
