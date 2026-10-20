@@ -463,7 +463,12 @@ describe('GeminiRealtimeAdapter', () => {
         })
       );
 
-      await vi.waitFor(() => expect(executeFn).toHaveBeenCalledWith({ city: 'London' }));
+      await vi.waitFor(() =>
+        expect(executeFn).toHaveBeenCalledWith(
+          { city: 'London' },
+          { callId: 'call_gem_123', signal: expect.any(AbortSignal) }
+        )
+      );
 
       expect(toolCallHandler).toHaveBeenCalledWith('get_weather', { city: 'London' });
 

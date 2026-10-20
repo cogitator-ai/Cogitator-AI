@@ -83,6 +83,23 @@ export interface VoicePipelineConfig {
   sampleRate?: number;
 }
 
+/** What a realtime tool call gets besides its arguments. */
+export interface RealtimeToolContext {
+  /** The provider's id of the call */
+  callId: string;
+  /**
+   * Aborted when the session closes or loses its connection, or when the provider cancels the
+   * call (Gemini cancels pending calls when the user interrupts)
+   */
+  signal: AbortSignal;
+  /** The session's `sessionId`: the client's id in a `VoiceAgent` */
+  sessionId?: string;
+}
+
+/**
+ * A tool a realtime session runs for the model. `createRealtimeTools()` builds them from
+ * Cogitator tools, run through `cogitator.invokeTool` like in an agent run.
+ */
 export interface RealtimeTool {
   name: string;
   description: string;
@@ -92,7 +109,7 @@ export interface RealtimeTool {
    * object with a base64 `image`) reaches the model as the text of its parts, images and files
    * described, see `toolImages` for sending the images themselves.
    */
-  execute: (args: unknown) => Promise<unknown>;
+  execute: (args: unknown, context: RealtimeToolContext) => Promise<unknown>;
   /** Most characters of the tool's result the model reads (default 100 000) */
   maxResultLength?: number;
 }
@@ -103,6 +120,8 @@ export interface RealtimeSessionConfig {
   apiKey: string;
   instructions?: string;
   tools?: RealtimeTool[];
+  /** Id of the session, handed to tools in `RealtimeToolContext.sessionId` */
+  sessionId?: string;
   /**
    * Send the images that tools return to the model, for a model that takes images: with OpenAI
    * as a user message with `input_image` parts after the tool outputs (`gpt-realtime`,
@@ -139,7 +158,11 @@ export interface VoiceAgentConfig {
   realtimeModel?: string;
   /** Realtime-mode system instructions. Falls back to `agent.instructions`. */
   instructions?: string;
-  /** Realtime-mode tools executed by the session on behalf of the model. */
+  /**
+   * Realtime-mode tools executed by the session on behalf of the model. Build them with
+   * `createRealtimeTools(cogitator, tools)` so calls get approval, guardrails, the sandbox and
+   * timeouts like in an agent run.
+   */
   tools?: RealtimeTool[];
   /** Realtime mode: send the images tools return to the model (see `RealtimeSessionConfig.toolImages`). */
   toolImages?: boolean;

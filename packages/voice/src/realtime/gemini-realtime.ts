@@ -46,10 +46,18 @@ interface GeminiFunctionCall {
   args?: Record<string, unknown>;
 }
 
+interface GeminiFunctionResponse {
+  id: string;
+  name: string;
+  response: { result: unknown } | { error: string };
+  parts?: Array<{ inlineData: { mimeType: string; data: string } }>;
+}
+
 interface GeminiMessage {
   setupComplete?: Record<string, never>;
   serverContent?: GeminiServerContent;
   toolCall?: { functionCalls?: GeminiFunctionCall[] };
+  toolCallCancellation?: { ids?: string[] };
   error?: { code?: number; message?: string; status?: string };
 }
 
@@ -73,6 +81,8 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
   private userTranscript = '';
   private assistantTranscript = '';
   private assistantText = '';
+  private calls: AbortController | null = null;
+  private readonly runningCalls = new Map<string, AbortController>();
 
   constructor(config: RealtimeSessionConfig) {
     super();
@@ -90,6 +100,7 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
       throw new Error('Already connected or connecting — call close() first');
     }
 
+    this.calls = new AbortController();
     return new Promise<void>((resolve, reject) => {
       let settled = false;
       const settle = (err?: Error) => {
@@ -149,6 +160,10 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
         if (msg.toolCall?.functionCalls?.length) {
           void this.handleToolCalls(msg.toolCall.functionCalls);
         }
+
+        for (const id of msg.toolCallCancellation?.ids ?? []) {
+          this.runningCalls.get(id)?.abort(new Error('Gemini cancelled this tool call'));
+        }
       });
 
       ws.on('error', (err: Error) => {
@@ -162,6 +177,7 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
         const wasConnected = this.connected;
         this.resetTurn();
         this.connected = false;
+        this.abortCalls(`Realtime connection closed (code ${code})`);
         settle(new Error(`WebSocket closed before connect (code ${code}): ${reasonStr}`));
         if (wasConnected) this.emit('disconnected', code, reasonStr);
       });
@@ -195,6 +211,7 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
     const ws = this.ws;
     this.connected = false;
     this.resetTurn();
+    this.abortCalls('Realtime session closed');
     if (!ws) return;
     this.ws = null;
     ws.removeAllListeners();
@@ -300,47 +317,83 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
     this.assistantText = '';
   }
 
+  /**
+   * Runs the calls of one `toolCall` message and answers them in one `toolResponse`. A call
+   * Gemini cancels (`toolCallCancellation`, sent when the user interrupts) has its signal aborted
+   * and gets no answer.
+   */
   private async handleToolCalls(calls: GeminiFunctionCall[]): Promise<void> {
     const ws = this.ws;
-    const functionResponses = await Promise.all(
+    const session = this.calls?.signal ?? AbortSignal.abort();
+    const answers = await Promise.all(
       calls.map(async (call, index) => {
-        const id = call.id ?? `${call.name}-${index}`;
-        const args = call.args ?? {};
-        this.emit('tool_call', call.name, args);
-
-        const tool = this.config.tools?.find((t) => t.name === call.name);
-        if (!tool) {
-          return { id, name: call.name, response: { error: `Unknown tool: ${call.name}` } };
-        }
-
+        const cancel = new AbortController();
+        if (call.id !== undefined) this.runningCalls.set(call.id, cancel);
         try {
-          const output = await tool.execute(args);
-          const parts = realtimeToolParts(output, tool);
-          if (!parts)
-            return { id, name: call.name, response: { result: realtimeToolValue(output, tool) } };
-          const images = this.config.toolImages ? parts.images : [];
-          return {
-            id,
-            name: call.name,
-            response: { result: parts.text },
-            ...(images.length > 0 && {
-              parts: images.map((image) => ({
-                inlineData: { mimeType: image.mediaType, data: image.data },
-              })),
-            }),
-          };
-        } catch (err) {
-          return {
-            id,
-            name: call.name,
-            response: { error: realtimeToolError(err, tool) },
-          };
+          const response = await this.executeToolCall(
+            call,
+            call.id ?? `${call.name}-${index}`,
+            AbortSignal.any([session, cancel.signal])
+          );
+          return { response, cancelled: cancel.signal.aborted };
+        } finally {
+          if (call.id !== undefined && this.runningCalls.get(call.id) === cancel) {
+            this.runningCalls.delete(call.id);
+          }
         }
       })
     );
 
     if (this.ws !== ws) return;
+    const functionResponses = answers
+      .filter((answer) => !answer.cancelled)
+      .map((answer) => answer.response);
+    if (functionResponses.length === 0) return;
     this.send({ toolResponse: { functionResponses } });
+  }
+
+  private async executeToolCall(
+    call: GeminiFunctionCall,
+    id: string,
+    signal: AbortSignal
+  ): Promise<GeminiFunctionResponse> {
+    const args = call.args ?? {};
+    this.emit('tool_call', call.name, args);
+
+    const tool = this.config.tools?.find((t) => t.name === call.name);
+    if (!tool) {
+      return { id, name: call.name, response: { error: `Unknown tool: ${call.name}` } };
+    }
+
+    try {
+      const output = await tool.execute(args, {
+        callId: id,
+        signal,
+        ...(this.config.sessionId !== undefined && { sessionId: this.config.sessionId }),
+      });
+      const parts = realtimeToolParts(output, tool);
+      if (!parts)
+        return { id, name: call.name, response: { result: realtimeToolValue(output, tool) } };
+      const images = this.config.toolImages ? parts.images : [];
+      return {
+        id,
+        name: call.name,
+        response: { result: parts.text },
+        ...(images.length > 0 && {
+          parts: images.map((image) => ({
+            inlineData: { mimeType: image.mediaType, data: image.data },
+          })),
+        }),
+      };
+    } catch (err) {
+      return { id, name: call.name, response: { error: realtimeToolError(err, tool) } };
+    }
+  }
+
+  /** Cancels the tool calls still running, whose answers have no session to go to. */
+  private abortCalls(reason: string): void {
+    this.calls?.abort(new Error(reason));
+    this.calls = null;
   }
 
   private send(data: Record<string, unknown>): void {

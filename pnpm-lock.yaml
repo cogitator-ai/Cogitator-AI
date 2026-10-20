@@ -1760,9 +1760,6 @@ importers:
 
   packages/voice:
     dependencies:
-      '@cogitator-ai/core':
-        specifier: workspace:>=0.41.0
-        version: link:../core
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
@@ -1779,6 +1776,9 @@ importers:
         specifier: ^4.6.5
         version: 4.6.5
     devDependencies:
+      '@cogitator-ai/core':
+        specifier: workspace:*
+        version: link:../core
       '@types/ws':
         specifier: ^8.18.2
         version: 8.18.2

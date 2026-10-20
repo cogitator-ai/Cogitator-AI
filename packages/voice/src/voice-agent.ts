@@ -223,6 +223,7 @@ export class VoiceAgent extends EventEmitter<VoiceAgentEvents> {
       voice: this.config.voice,
       instructions: this.config.instructions ?? this.config.agent.instructions,
       tools: this.config.tools,
+      sessionId: entry.client.id,
       toolImages: this.config.toolImages,
     });
     entry.realtimeSession = session;

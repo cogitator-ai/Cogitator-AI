@@ -274,6 +274,7 @@ describe('VoiceAgent control protocol and realtime wiring', () => {
         voice: 'Kore',
         instructions: 'from agent',
         tools,
+        sessionId: expect.any(String),
         toolImages: true,
       });
     });

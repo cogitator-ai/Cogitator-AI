@@ -18,6 +18,7 @@ export type {
   VoiceRunContext,
   RealtimeSessionConfig,
   RealtimeTool,
+  RealtimeToolContext,
   WebSocketTransportConfig,
   VerifyClientResult,
   VoiceAgentConfig,
@@ -56,6 +57,8 @@ export {
 export { OpenAIRealtimeAdapter } from './realtime/index.js';
 export { GeminiRealtimeAdapter } from './realtime/index.js';
 export { RealtimeSession } from './realtime/index.js';
+export { createRealtimeTools } from './realtime/index.js';
+export type { RealtimeToolsOptions } from './realtime/index.js';
 
 export {
   WebSocketTransport,

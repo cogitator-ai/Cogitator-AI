@@ -60,6 +60,7 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
   private ws: WebSocket | null = null;
   private connected = false;
   private responseActive = false;
+  private calls: AbortController | null = null;
 
   constructor(config: RealtimeSessionConfig) {
     super();
@@ -78,6 +79,7 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
     }
 
     const url = `${BASE_URL}?model=${encodeURIComponent(this.model)}`;
+    this.calls = new AbortController();
 
     return new Promise<void>((resolve, reject) => {
       let settled = false;
@@ -127,6 +129,7 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
         const wasConnected = this.connected;
         this.connected = false;
         this.responseActive = false;
+        this.abortCalls(`Realtime connection closed (code ${code})`);
         settle(new Error(`WebSocket closed before connect (code ${code}): ${reasonStr}`));
         if (wasConnected) this.emit('disconnected', code, reasonStr);
       });
@@ -161,6 +164,7 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
     const ws = this.ws;
     this.connected = false;
     this.responseActive = false;
+    this.abortCalls('Realtime session closed');
     if (!ws) return;
     this.ws = null;
     ws.removeAllListeners();
@@ -293,7 +297,8 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
 
   private async handleToolCalls(calls: FunctionCallItem[]): Promise<void> {
     const ws = this.ws;
-    const outputs = await Promise.all(calls.map((call) => this.executeToolCall(call)));
+    const signal = this.calls?.signal ?? AbortSignal.abort();
+    const outputs = await Promise.all(calls.map((call) => this.executeToolCall(call, signal)));
     if (this.ws !== ws) return;
 
     for (const { callId, output } of outputs) {
@@ -324,7 +329,10 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
     this.send({ type: 'response.create' });
   }
 
-  private async executeToolCall(call: FunctionCallItem): Promise<ToolCallOutput> {
+  private async executeToolCall(
+    call: FunctionCallItem,
+    signal: AbortSignal
+  ): Promise<ToolCallOutput> {
     const failed = (error: string): ToolCallOutput => ({
       callId: call.callId,
       name: call.name,
@@ -345,7 +353,11 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
     if (!tool) return failed(`Unknown tool: ${call.name}`);
 
     try {
-      const result = await tool.execute(args);
+      const result = await tool.execute(args, {
+        callId: call.callId,
+        signal,
+        ...(this.config.sessionId !== undefined && { sessionId: this.config.sessionId }),
+      });
       const parts = realtimeToolParts(result, tool);
       return parts
         ? { callId: call.callId, name: call.name, output: parts.text, images: parts.images }
@@ -358,6 +370,12 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
     } catch (err) {
       return failed(realtimeToolError(err, tool));
     }
+  }
+
+  /** Cancels the tool calls still running, whose answers have no session to go to. */
+  private abortCalls(reason: string): void {
+    this.calls?.abort(new Error(reason));
+    this.calls = null;
   }
 
   private send(data: Record<string, unknown>): void {

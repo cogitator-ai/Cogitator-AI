@@ -377,7 +377,12 @@ describe('OpenAIRealtimeAdapter', () => {
         functionCallsDone([['get_weather', 'call_abc123', '{"city":"London"}']])
       );
 
-      await vi.waitFor(() => expect(executeFn).toHaveBeenCalledWith({ city: 'London' }));
+      await vi.waitFor(() =>
+        expect(executeFn).toHaveBeenCalledWith(
+          { city: 'London' },
+          { callId: 'call_abc123', signal: expect.any(AbortSignal) }
+        )
+      );
 
       expect(toolCallHandler).toHaveBeenCalledWith('get_weather', { city: 'London' });
 
