@@ -1,7 +1,12 @@
 import { EventEmitter } from 'node:events';
 import { WebSocket } from 'ws';
 import type { RealtimeSessionConfig } from '../types.js';
-import { realtimeToolParts, realtimeToolValue } from './tool-output.js';
+import {
+  assertRealtimeTools,
+  realtimeToolError,
+  realtimeToolParts,
+  realtimeToolValue,
+} from './tool-output.js';
 
 const DEFAULT_MODEL = 'gemini-3.8-live';
 const DEFAULT_VOICE = 'Puck';
@@ -71,6 +76,7 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
 
   constructor(config: RealtimeSessionConfig) {
     super();
+    assertRealtimeTools(config.tools);
     this.config = config;
     this.model = config.model ?? DEFAULT_MODEL;
   }
@@ -327,7 +333,7 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
           return {
             id,
             name: call.name,
-            response: { error: err instanceof Error ? err.message : String(err) },
+            response: { error: realtimeToolError(err, tool) },
           };
         }
       })

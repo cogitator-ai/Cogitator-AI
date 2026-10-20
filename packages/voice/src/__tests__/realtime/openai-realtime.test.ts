@@ -476,6 +476,42 @@ describe('OpenAIRealtimeAdapter', () => {
         expect(response!.type).toBe('response.create');
       });
 
+      it('cuts a huge error message like a result', async () => {
+        const tools = [
+          {
+            name: 'boom',
+            description: 'Boom',
+            parameters: {},
+            maxResultLength: 200,
+            execute: vi.fn().mockRejectedValue(new Error(`stderr: ${'e'.repeat(10_000)}`)),
+          },
+        ];
+        adapter = new OpenAIRealtimeAdapter(createConfig({ tools }));
+        await adapter.connect();
+        mockWs.send.mockClear();
+
+        mockWs.emit('message', functionCallsDone([['boom', 'call_boom', '{}']]));
+        await vi.waitFor(() => expect(mockWs.send).toHaveBeenCalledTimes(2));
+
+        const output = JSON.parse((sentEvents()[0]!.item as { output: string }).output) as {
+          error: string;
+        };
+        expect(output.error.length).toBeLessThan(300);
+        expect(output.error).toContain('were left out');
+      });
+
+      it.each([0, -1, 2.5, Number.NaN])(
+        'refuses a tool with maxResultLength %s when the session is created',
+        (maxResultLength) => {
+          const tools = [
+            { name: 't', description: 'd', parameters: {}, execute: vi.fn(), maxResultLength },
+          ];
+          expect(() => new OpenAIRealtimeAdapter(createConfig({ tools }))).toThrow(
+            /maxResultLength of realtime tool "t" must be a positive integer/
+          );
+        }
+      );
+
       it('answers null for a result JSON cannot hold', async () => {
         const tools = [
           {

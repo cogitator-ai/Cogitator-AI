@@ -48,6 +48,31 @@ export function realtimeToolValue(result: unknown, tool: RealtimeTool): unknown 
   return json.length > max ? truncateToolResultText(json, max) : (JSON.parse(json) as unknown);
 }
 
+/** The message of a failed tool call, cut like a result: a stack or a stderr dump can be huge. */
+export function realtimeToolError(error: unknown, tool?: RealtimeTool): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return truncateToolResultText(
+    message,
+    tool ? maxResultLength(tool) : DEFAULT_TOOL_RESULT_MAX_LENGTH
+  );
+}
+
+/**
+ * Throws for a tool whose `maxResultLength` is not a positive integer (or `Infinity`): a
+ * negative or `NaN` limit would mean no limit, and `0` a result reduced to the note.
+ */
+export function assertRealtimeTools(tools: readonly RealtimeTool[] | undefined): void {
+  for (const tool of tools ?? []) {
+    const limit = tool.maxResultLength;
+    if (limit === undefined || limit === Infinity || (Number.isInteger(limit) && limit > 0)) {
+      continue;
+    }
+    throw new TypeError(
+      `maxResultLength of realtime tool "${tool.name}" must be a positive integer, got ${String(limit)}`
+    );
+  }
+}
+
 function maxResultLength(tool: RealtimeTool): number {
   return tool.maxResultLength ?? DEFAULT_TOOL_RESULT_MAX_LENGTH;
 }

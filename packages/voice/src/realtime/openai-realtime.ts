@@ -2,7 +2,12 @@ import { EventEmitter } from 'node:events';
 import { WebSocket } from 'ws';
 import type { ToolImagePart } from '@cogitator-ai/types';
 import type { RealtimeSessionConfig } from '../types.js';
-import { realtimeToolParts, realtimeToolText } from './tool-output.js';
+import {
+  assertRealtimeTools,
+  realtimeToolError,
+  realtimeToolParts,
+  realtimeToolText,
+} from './tool-output.js';
 
 const DEFAULT_MODEL = 'gpt-realtime-2.1-mini';
 const DEFAULT_VOICE = 'marin';
@@ -58,6 +63,7 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
 
   constructor(config: RealtimeSessionConfig) {
     super();
+    assertRealtimeTools(config.tools);
     this.config = config;
     this.model = config.model ?? DEFAULT_MODEL;
   }
@@ -350,7 +356,7 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
             images: [],
           };
     } catch (err) {
-      return failed(err instanceof Error ? err.message : String(err));
+      return failed(realtimeToolError(err, tool));
     }
   }
 
