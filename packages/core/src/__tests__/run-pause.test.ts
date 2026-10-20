@@ -291,6 +291,50 @@ describe('Cogitator.invokeTool', () => {
     expect(seen?.elicit).toBe(elicit);
     await cog.close();
   });
+
+  it('does not run a call cancelled while its approval is being decided', async () => {
+    refundImpl.mockClear();
+    const cog = newCogitator();
+    const controller = new AbortController();
+    let approve: (() => void) | undefined;
+
+    const pending = cog.invokeTool(
+      refund,
+      { order: 'A-1' },
+      {
+        signal: controller.signal,
+        onApproval: () =>
+          new Promise((resolve) => {
+            approve = () => resolve({ approved: true });
+          }),
+      }
+    );
+    await vi.waitFor(() => expect(approve).toBeDefined());
+    controller.abort(new Error('The caller hung up'));
+    approve!();
+
+    const result = await pending;
+    expect(result.error).toBe('The caller hung up');
+    expect(refundImpl).not.toHaveBeenCalled();
+    await cog.close();
+  });
+
+  it('does not run a call whose signal aborted before it started', async () => {
+    refundImpl.mockClear();
+    const cog = newCogitator();
+    const onApproval = vi.fn(async () => ({ approved: true as const }));
+
+    const result = await cog.invokeTool(
+      refund,
+      { order: 'A-1' },
+      { signal: AbortSignal.abort(), onApproval }
+    );
+
+    expect(result.error).toContain('aborted');
+    expect(onApproval).not.toHaveBeenCalled();
+    expect(refundImpl).not.toHaveBeenCalled();
+    await cog.close();
+  });
 });
 
 describe('onApproval leaving a call to the default', () => {

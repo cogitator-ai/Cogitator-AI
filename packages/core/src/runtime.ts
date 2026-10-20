@@ -331,7 +331,8 @@ export class Cogitator implements ToolInvoker {
    * against the tool's schema, approval asked for a call that needs it (`options.onApproval`,
    * else `guardrails.onToolApproval`), the guardrails applied, sandboxed tools run in this
    * runtime's sandbox and `tool.timeout` kept. A call that needs approval nobody gives does not
-   * run: there is no run to pause, so it is refused with the request in `pendingApproval`.
+   * run: there is no run to pause, so it is refused with the request in `pendingApproval`. A call
+   * whose `signal` aborts, even while its approval is being decided, does not run either.
    *
    * @example
    * ```ts
@@ -353,6 +354,14 @@ export class Cogitator implements ToolInvoker {
     };
     this.ensureGuardrails();
     const constitutionalAI = this.state.constitutionalAI;
+    const signal = options.signal;
+    const aborted = (): ToolInvocationResult => ({
+      callId: toolCall.id,
+      name: tool.name,
+      result: null,
+      error: toAbortError(signal?.reason, `Tool "${tool.name}" aborted`).message,
+    });
+    if (signal?.aborted) return aborted();
 
     let approvedByUser = false;
     if (
@@ -366,7 +375,15 @@ export class Cogitator implements ToolInvoker {
         description: tool.description,
         ...(tool.sideEffects && { sideEffects: [...tool.sideEffects] }),
       };
-      const decision = await this.decideApproval(request, options.onApproval);
+      const deciding = this.decideApproval(request, options.onApproval);
+      let decision: Awaited<typeof deciding>;
+      try {
+        decision = await (signal ? waitForAbortable(deciding, signal) : deciding);
+      } catch (error) {
+        if (signal?.aborted) return aborted();
+        throw error;
+      }
+      if (signal?.aborted) return aborted();
       if (decision === 'pause') {
         return {
           callId: toolCall.id,

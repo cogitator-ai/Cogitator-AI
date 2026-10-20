@@ -365,8 +365,10 @@ export class MCPServer {
 
   /**
    * The result of a tool with an output schema: `structuredContent`, with its JSON as text for
-   * clients that read only `content`. A result the schema rejects is a tool error that says why,
-   * since MCP requires structured content to match the advertised schema.
+   * clients that read only `content`. It is the result as the schema parses it, so defaults are
+   * filled in and unknown keys dropped the way the advertised JSON Schema expects. A result the
+   * schema rejects is a tool error that says why, since MCP requires structured content to match
+   * the advertised schema.
    */
   private async structuredResult(
     tool: Tool,
@@ -381,8 +383,8 @@ export class MCPServer {
       );
     }
     return {
-      content: resultToMCPContent(value).map(toServerContent),
-      structuredContent: value as Record<string, unknown>,
+      content: resultToMCPContent(parsed.data).map(toServerContent),
+      structuredContent: parsed.data,
     };
   }
 

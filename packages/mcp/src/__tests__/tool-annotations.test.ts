@@ -200,6 +200,13 @@ describe('MCPServer tool metadata over HTTP', () => {
       execute: async ({ table }) => `dropped ${table}`,
     }) as Tool,
     tool({
+      name: 'get_user',
+      description: 'Get a user',
+      parameters: z.object({}),
+      outputSchema: z.object({ id: z.string(), role: z.string().default('member') }),
+      execute: async () => ({ id: 'u1', password: 'secret' }),
+    }) as Tool,
+    tool({
       name: 'count',
       description: 'Count things',
       parameters: z.object({}),
@@ -261,6 +268,20 @@ describe('MCPServer tool metadata over HTTP', () => {
       celsius: 21,
       city: 'Oslo',
     });
+  });
+
+  it('sends the result as the output schema parses it, so SDK clients accept it', async () => {
+    const raw = new Client({ name: 'raw', version: '1.0.0' });
+    await raw.connect(new StreamableHTTPClientTransport(new URL(url)));
+    try {
+      await raw.listTools();
+      const result = await raw.callTool({ name: 'get_user', arguments: {} });
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toEqual({ id: 'u1', role: 'member' });
+      expect(JSON.stringify(result.content)).not.toContain('secret');
+    } finally {
+      await raw.close();
+    }
   });
 
   it('reports a result that breaks the output schema as a tool error', async () => {
