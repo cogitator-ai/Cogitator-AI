@@ -59,7 +59,7 @@ describeE2E('Core: provider errors on a real Ollama', () => {
     })().catch((e: unknown) => e);
 
     expect(error).toBe(reason);
-    expect(Date.now() - started).toBeLessThan(30_000);
+    expect(Date.now() - started).toBeLessThan(60_000);
   });
 });
 

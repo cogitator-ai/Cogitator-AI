@@ -385,6 +385,10 @@ export const RUN_FAILURES = {
     400,
     'The model, a tool or a guardrail refused the request (context too long, content filtered, invalid tool arguments, prompt injection)'
   ),
+  402: failureEnvelope(
+    402,
+    'The model provider account is out of credits or over a quota, retrying soon does not help'
+  ),
   409: failureEnvelope(409, 'The agent is already running'),
   429: failureEnvelope(429, 'The model provider is rate limiting requests; see Retry-After'),
   500: failureEnvelope(500, 'A tool, a workflow step or the sandbox failed'),

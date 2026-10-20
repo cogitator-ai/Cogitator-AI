@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import type { ChatRequest, ChatResponse, ChatStreamChunk, LLMBackend } from '@cogitator-ai/types';
+import {
+  CogitatorError,
+  ErrorCode,
+  type ChatRequest,
+  type ChatResponse,
+  type ChatStreamChunk,
+  type LLMBackend,
+} from '@cogitator-ai/types';
 import {
   backendConformanceCases,
   CONFORMANCE_FIXTURE,
@@ -8,34 +15,43 @@ import {
   type BackendConformanceTarget,
 } from '../conformance';
 
-/** A backend that answers every request with the same text, whatever the provider says. */
-function cannedBackend(options: { ignoreSignal?: boolean } = {}): LLMBackend {
+/**
+ * A backend that sends each request to the fake provider and answers with the same text,
+ * whatever the provider says.
+ */
+function cannedBackend(url: string, options: { ignoreSignal?: boolean } = {}): LLMBackend {
   const response: ChatResponse = {
     id: 'canned',
     content: CONFORMANCE_FIXTURE.text,
     finishReason: 'stop',
     usage: { ...CONFORMANCE_FIXTURE.usage, totalTokens: 17 },
   };
+  const call = (signal: AbortSignal | undefined) =>
+    fetch(`${url}/v1/chat/completions`, {
+      method: 'POST',
+      body: '{}',
+      ...(signal && !options.ignoreSignal && { signal }),
+    });
   return {
     provider: 'canned',
     chat: (request: ChatRequest) =>
       new Promise((resolve, reject) => {
-        if (options.ignoreSignal) return;
+        if (options.ignoreSignal) {
+          call(undefined).catch(() => undefined);
+          return;
+        }
         request.signal?.addEventListener('abort', () =>
           reject(
             request.signal?.reason instanceof Error ? request.signal.reason : new Error('aborted')
           )
         );
-        void fetch(`${String(request.model)}/v1/chat/completions`, {
-          method: 'POST',
-          body: '{}',
-          ...(request.signal && { signal: request.signal }),
-        }).then(
+        void call(request.signal).then(
           () => resolve(response),
           () => undefined
         );
       }),
-    async *chatStream(): AsyncGenerator<ChatStreamChunk> {
+    async *chatStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk> {
+      await (await call(request.signal)).text();
       yield { id: 'canned', delta: { content: response.content } };
       yield { id: 'canned', delta: {}, finishReason: 'stop', usage: response.usage };
     },
@@ -57,7 +73,7 @@ function caseOf(t: BackendConformanceTarget, name: string) {
 
 describe('backendConformanceCases', () => {
   it('lists every scenario in both modes, stream-error in streams only', () => {
-    const names = backendConformanceCases(target(() => cannedBackend())).map((c) => c.name);
+    const names = backendConformanceCases(target((url) => cannedBackend(url))).map((c) => c.name);
 
     expect(names).toContain('tool-call-with-stop (chat)');
     expect(names).toContain('tool-call-with-stop (stream)');
@@ -68,7 +84,7 @@ describe('backendConformanceCases', () => {
 
   it('skips a scenario the wire has no answer for, saying why', () => {
     const cases = backendConformanceCases({
-      ...target(() => cannedBackend()),
+      ...target((url) => cannedBackend(url)),
       wire: { name: 'Plain', reply: () => undefined },
     });
     expect(cases.every((c) => c.skip === 'Plain has no such case')).toBe(true);
@@ -77,7 +93,7 @@ describe('backendConformanceCases', () => {
   it('passes a backend that does what the scenario asks', async () => {
     await expect(
       caseOf(
-        target(() => cannedBackend()),
+        target((url) => cannedBackend(url)),
         'text (stream)'
       ).run()
     ).resolves.toBe(undefined);
@@ -86,16 +102,37 @@ describe('backendConformanceCases', () => {
   it('fails a backend that misses the tool call', async () => {
     await expect(
       caseOf(
-        target(() => cannedBackend()),
+        target((url) => cannedBackend(url)),
         'tool-call (stream)'
       ).run()
     ).rejects.toThrow(/canned: tool-call \(stream\): a tool turn/);
   });
 
+  it('fails a backend whose SDK retries an error that is not retryable', async () => {
+    const retrying = (url: string): LLMBackend => {
+      const backend = cannedBackend(url);
+      return {
+        ...backend,
+        chat: async () => {
+          await fetch(`${url}/v1/chat/completions`, { method: 'POST', body: '{}' });
+          await fetch(`${url}/v1/chat/completions`, { method: 'POST', body: '{}' });
+          throw new CogitatorError({
+            message: 'quota',
+            code: ErrorCode.LLM_QUOTA_EXCEEDED,
+            details: { kind: 'quota' },
+          });
+        },
+      };
+    };
+    await expect(caseOf(target(retrying), 'quota (chat)').run()).rejects.toThrow(
+      /not retried, by the backend or its SDK/
+    );
+  });
+
   it('fails a backend that does not turn a provider error into a CogitatorError', async () => {
     await expect(
       caseOf(
-        target(() => cannedBackend()),
+        target((url) => cannedBackend(url)),
         'quota (stream)'
       ).run()
     ).rejects.toThrow(/the call fails/);
@@ -103,13 +140,10 @@ describe('backendConformanceCases', () => {
 
   it('fails a backend that never gives up after an abort', async () => {
     const run = caseOf(
-      target((url) => {
-        const backend = cannedBackend({ ignoreSignal: true });
-        return { ...backend, chat: (request) => backend.chat({ ...request, model: url }) };
-      }),
+      target((url) => cannedBackend(url, { ignoreSignal: true })),
       'abort (chat)'
     ).run();
-    await expect(run).rejects.toThrow(/request reaches the provider|gives up after the abort/);
+    await expect(run).rejects.toThrow(/gives up after the abort/);
   }, 10_000);
 });
 

@@ -102,6 +102,15 @@ describe('CogitatorConfigSchema', () => {
     ).toBe(false);
   });
 
+  it('rejects a header value with a line break, which no HTTP client would send', () => {
+    const result = CogitatorConfigSchema.safeParse({
+      llm: {
+        providers: { anthropic: { apiKey: 'k', headers: { 'x-key': 'secret\nX-Other: 1' } } },
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+
   it('rejects headers that are not strings', () => {
     const result = CogitatorConfigSchema.safeParse({
       llm: { providers: { anthropic: { apiKey: 'sk-ant-xxx', headers: { 'x-retries': 3 } } } },

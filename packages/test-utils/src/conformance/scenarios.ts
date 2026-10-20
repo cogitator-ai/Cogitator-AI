@@ -237,7 +237,7 @@ async function runCase(
       const outcome = await callBackend(backend, conformanceRequest(target.model), mode);
       checkOutcome(scenario, mode, outcome, label);
     }
-    checkRequests(target, provider, mode, label);
+    checkRequests(target, provider, scenario, mode, label);
   } finally {
     await provider.close();
   }
@@ -416,10 +416,19 @@ async function checkAbort(
 function checkRequests(
   target: BackendConformanceTarget,
   provider: FakeProvider,
+  scenario: ConformanceScenario,
   mode: ConformanceMode,
   label: string
 ) {
   assert.ok(provider.requests.length > 0, `${label}: the backend called the provider`);
+  const expected = ERROR_EXPECTATIONS[scenario];
+  if (expected && !expected.retryable) {
+    assert.equal(
+      provider.requests.length,
+      1,
+      `${label}: an error that is not retryable is not retried, by the backend or its SDK`
+    );
+  }
   const path = target.wire.path?.(mode);
   if (path) {
     for (const request of provider.requests) {

@@ -104,7 +104,21 @@ export async function startFakeProvider(options: FakeProviderOptions = {}): Prom
       };
       requests.push(request);
       waiting.splice(0).forEach((resolve) => resolve(request));
-      answer(res, closed, handler(request));
+      let reply: FakeProviderReply;
+      try {
+        reply = handler(request);
+      } catch (error) {
+        reply = {
+          type: 'json',
+          status: 500,
+          body: {
+            error: {
+              message: `The fake provider's handler failed: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          },
+        };
+      }
+      answer(res, closed, reply);
     });
   };
 

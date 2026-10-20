@@ -18,7 +18,12 @@ export const LLMProviderSchema = z.enum([
   'openrouter',
 ]);
 
-const ProviderHeadersSchema = z.record(z.string(), z.string());
+const ProviderHeadersSchema = z.record(
+  z.string(),
+  z.string().refine((value) => !/[\r\n]/.test(value), {
+    message: 'A header value cannot contain a line break',
+  })
+);
 
 export const OpenAICompatibleServerSchema = z.enum([
   'openai',
