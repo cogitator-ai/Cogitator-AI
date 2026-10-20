@@ -62,11 +62,23 @@ export class ContextManager {
     return modelContextWindow(modelString);
   }
 
-  checkState(messages: Message[], modelString: string): ContextState {
+  /**
+   * Tokens the messages of a turn on `modelString` may take before they are compressed, or
+   * `undefined` when compression is off.
+   */
+  compressionThreshold(modelString: string): number | undefined {
+    return this.config.enabled ? this.limits(modelString).threshold : undefined;
+  }
+
+  private limits(modelString: string): { maxTokens: number; threshold: number } {
     const contextLimit = this.getModelContextLimit(modelString);
     const outputReserve = Math.floor(contextLimit * this.config.outputReserve);
     const maxTokens = contextLimit - outputReserve;
-    const threshold = Math.floor(maxTokens * this.config.compressionThreshold);
+    return { maxTokens, threshold: Math.floor(maxTokens * this.config.compressionThreshold) };
+  }
+
+  checkState(messages: Message[], modelString: string): ContextState {
+    const { maxTokens, threshold } = this.limits(modelString);
 
     const currentTokens = countMessagesTokens(messages);
     const utilizationPercent = (currentTokens / maxTokens) * 100;

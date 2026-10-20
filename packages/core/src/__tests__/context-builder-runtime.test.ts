@@ -4,11 +4,15 @@ import { InMemoryAdapter } from '@cogitator-ai/memory';
 import { Cogitator } from '../cogitator';
 import { Agent } from '../agent';
 import { getLogger } from '../logger';
+import { ContextManager } from '../context/context-manager';
 
-function recordingBackend(): { backend: LLMBackend; requests: ChatRequest[] } {
+function recordingBackend(provider: LLMBackend['provider'] = 'openai'): {
+  backend: LLMBackend;
+  requests: ChatRequest[];
+} {
   const requests: ChatRequest[] = [];
   const backend: LLMBackend = {
-    provider: 'openai',
+    provider,
     chat: vi.fn(async (request: ChatRequest) => {
       requests.push(structuredClone(request));
       return {
@@ -126,13 +130,28 @@ describe('runs with memory.contextBuilder', () => {
     const longTurn = (i: number) =>
       `Turn ${i}: ${'the shipment moved through another depot. '.repeat(40)}`;
 
-    async function seededRun(model: string, contextBuilder: { maxTokens?: number }) {
-      const { backend, requests } = recordingBackend();
+    async function seededRun(
+      model: string,
+      contextBuilder: { maxTokens?: number },
+      setup: {
+        provider?: LLMBackend['provider'];
+        agentMaxTokens?: number;
+        compression?: boolean;
+      } = {}
+    ) {
+      const { backend, requests } = recordingBackend(setup.provider);
       const cog = new Cogitator({
         llm: { backends: { mock: backend } },
         memory: { adapter: 'memory', contextBuilder: { strategy: 'recent', ...contextBuilder } },
+        ...(setup.compression && { context: { enabled: true, strategy: 'truncate' as const } }),
       });
-      const agent = new Agent({ id: 'agent', name: 'a', model, instructions: 'Track shipments.' });
+      const agent = new Agent({
+        id: 'agent',
+        name: 'a',
+        model,
+        instructions: 'Track shipments.',
+        ...(setup.agentMaxTokens !== undefined && { maxTokens: setup.agentMaxTokens }),
+      });
       await cog.run(agent, { input: 'warm up', threadId: 'thread-warmup' });
       const memory = cog.memory!;
       await memory.createThread('agent', {}, 'thread-long');
@@ -168,6 +187,33 @@ describe('runs with memory.contextBuilder', () => {
       expect(history.length).toBeGreaterThan(0);
       expect(history.length).toBeLessThan(30);
       expect(history.at(-1)?.content).toBe(longTurn(29));
+    });
+
+    it('leaves room for the answer the agent asks for', async () => {
+      const roomy = await seededRun('mock/house-model', {});
+      const longAnswer = await seededRun('mock/house-model', {}, { agentMaxTokens: 4000 });
+
+      expect(longAnswer.length).toBeLessThan(roomy.length);
+    });
+
+    it('keeps a local Ollama model within the context Ollama serves by default', async () => {
+      const elsewhere = await seededRun('mock/gpt-4o', {});
+      const local = await seededRun('mock/gpt-4o', {}, { provider: 'ollama' });
+      const cloud = await seededRun('mock/gpt-4o:cloud', {}, { provider: 'ollama' });
+
+      expect(elsewhere).toHaveLength(30);
+      expect(local.length).toBeGreaterThan(0);
+      expect(local.length).toBeLessThan(10);
+      expect(cloud).toHaveLength(30);
+    });
+
+    it('stays below the point where the context manager compresses', async () => {
+      const compress = vi.spyOn(ContextManager.prototype, 'compress');
+
+      const history = await seededRun('mock/house-model', {}, { compression: true });
+
+      expect(history.length).toBeGreaterThan(0);
+      expect(compress).not.toHaveBeenCalled();
     });
 
     it('falls back to a window of 8192 tokens for a model nobody knows', async () => {

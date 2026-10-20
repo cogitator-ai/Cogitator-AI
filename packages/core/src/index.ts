@@ -618,7 +618,7 @@ export type {
 } from '@cogitator-ai/types';
 export { DEFAULT_INJECTION_CONFIG } from '@cogitator-ai/types';
 
-export { ContextManager } from './context/index';
+export { ContextManager, modelContextWindow } from './context/index';
 export {
   TruncateStrategy,
   SlidingWindowStrategy,

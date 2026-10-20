@@ -285,9 +285,13 @@ export interface ContextBuildError {
   error: Error;
 }
 
-/** What a built context left out because it did not fit the token budget. */
+/** What a built context left out. */
 export interface DroppedContext {
-  /** History entries left out, in conversation order */
+  /**
+   * History entries left out, in conversation order: those the budget had no room for, and with
+   * the `relevant` and `hybrid` strategies also those the selection passed over (entries scored
+   * too low, tool entries, entries older than the newest 200 it scores)
+   */
   entries: MemoryEntry[];
   /** Facts visible to the user that did not fit */
   facts: Fact[];
@@ -307,7 +311,7 @@ export interface BuiltContext {
   tokenCount: number;
   /** Whether history entries were left out, see `dropped.entries` */
   truncated: boolean;
-  /** What did not fit the budget and was left out */
+  /** What was left out of the context */
   dropped: DroppedContext;
   /** Parts of the context that failed to load and were left out */
   errors?: ContextBuildError[];

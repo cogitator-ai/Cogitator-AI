@@ -44,6 +44,7 @@ import { createLLMBackendFromPlugin, hasLLMPlugin } from './llm/plugin';
 import { withLLMRetry } from './llm/retry';
 import { ModelFallbackChain, type ModelCandidate } from './llm/model-fallback';
 import { modelContextWindow } from './context/model-window';
+import { countTokens } from '@cogitator-ai/memory';
 import { normalizeTurn } from './llm/turn';
 import { PiiMasker, withPiiDecisions, withPiiMasking } from './security/pii';
 import { createLoggerFromConfig, getLogger, setLogger } from './logger';
@@ -691,7 +692,13 @@ export class Cogitator implements ToolInvoker {
         }
 
         await this.abandonPausedRun(agent, runOptions, threadId);
-        messages = await this.prepareMessages(agent, runOptions, input, threadId, effectiveModel);
+        messages = await this.prepareMessages(
+          agent,
+          runOptions,
+          input,
+          threadId,
+          this.historyBudget(agent, effectiveModel, { backend, model }, registry, input)
+        );
       }
 
       let candidates = this.modelCandidates(active, effectiveModel, routeProvider, {
@@ -1495,15 +1502,15 @@ export class Cogitator implements ToolInvoker {
   /**
    * The messages a new run starts with: the thread's history and the input,
    * once the input passed the injection and constitutional checks, with the
-   * input saved to memory. Without `memory.contextBuilder.maxTokens`, the
-   * history fills the context window of `model`, the model the run starts on.
+   * input saved to memory. `historyBudget` is the context builder's budget
+   * for this run, when `memory.contextBuilder.maxTokens` sets none.
    */
   private async prepareMessages(
     agent: Agent,
     options: RunOptions,
     input: string,
     threadId: string,
-    model: string
+    historyBudget: number | undefined
   ): Promise<Message[]> {
     const messages = await buildInitialMessages(
       agent,
@@ -1511,9 +1518,7 @@ export class Cogitator implements ToolInvoker {
       threadId,
       this.state.memoryAdapter,
       this.state.contextBuilder,
-      this.config.memory?.contextBuilder?.maxTokens === undefined
-        ? modelContextWindow(model)
-        : undefined
+      historyBudget
     );
 
     const pii = this.config.security?.pii;
@@ -1807,6 +1812,34 @@ export class Cogitator implements ToolInvoker {
     if (this.config.costRouting?.enabled && !this.state.costRoutingInitialized) {
       initializeCostRouting(this.config, this.state, (model) => this.pricer.pricing(model));
     }
+  }
+
+  /**
+   * The context builder's budget for a run of `agent` on `modelString`, when
+   * `memory.contextBuilder.maxTokens` sets none: the model's context window,
+   * minus room for the answer (`agent.maxTokens`, else 15% of the window), the
+   * tool schemas and the input, and no more than the context manager lets a
+   * turn grow before it compresses. A model on a local Ollama gets at most
+   * the 4096 tokens Ollama serves by default, whatever the model supports.
+   */
+  private historyBudget(
+    agent: Agent,
+    modelString: string,
+    route: ModelRoute,
+    registry: ToolRegistry,
+    input: string
+  ): number | undefined {
+    if (!this.state.contextBuilder || this.config.memory?.contextBuilder?.maxTokens !== undefined) {
+      return undefined;
+    }
+    const window = servesFullWindow(route)
+      ? modelContextWindow(modelString)
+      : Math.min(modelContextWindow(modelString), OLLAMA_DEFAULT_CONTEXT);
+    const answer = agent.config.maxTokens ?? Math.floor(window * 0.15);
+    const fixed = countTokens(JSON.stringify(registry.getSchemas())) + countTokens(input);
+    const compressAt = this.state.contextManager?.compressionThreshold(modelString);
+    const budget = Math.min(window - answer, compressAt ?? Infinity) - fixed;
+    return Math.max(MIN_HISTORY_BUDGET, budget);
   }
 
   /**
@@ -2257,6 +2290,20 @@ type InvocationArgs<TDeps> = unknown extends TDeps
 function failureReason(error: Error): string {
   if (error instanceof LLMError && error.kind) return error.kind;
   return error instanceof CogitatorError ? error.code : error.name;
+}
+
+/** The context Ollama serves a model with unless its server is told otherwise (`OLLAMA_CONTEXT_LENGTH`). */
+const OLLAMA_DEFAULT_CONTEXT = 4096;
+
+/** The smallest history budget a run hands the context builder, which keeps the instructions anyway. */
+const MIN_HISTORY_BUDGET = 256;
+
+/**
+ * Whether a model runs with its whole context window: anything but a local Ollama model,
+ * which gets Ollama's default context. Ollama cloud models (`...:cloud`, `...-cloud`) get theirs.
+ */
+function servesFullWindow(route: ModelRoute): boolean {
+  return route.backend.provider !== 'ollama' || route.model.endsWith('cloud');
 }
 
 interface PausedTurn {

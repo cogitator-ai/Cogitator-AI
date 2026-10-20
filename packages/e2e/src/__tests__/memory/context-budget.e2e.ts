@@ -3,9 +3,10 @@ import { Agent, Cogitator } from '@cogitator-ai/core';
 import { ContextBuilder, InMemoryAdapter } from '@cogitator-ai/memory';
 import { startFakeOllama, type FakeOllama } from '../../helpers/fake-ollama';
 
-const MODEL = 'qwen2.5:0.5b';
+const LOCAL_MODEL = 'qwen2.5:0.5b';
+const CLOUD_MODEL = 'qwen3.5:cloud';
 const turn = (i: number) =>
-  `Turn ${i}: ${'the parcel passed another sorting depot today. '.repeat(25)}`;
+  `Turn ${i}: ${'the parcel passed another sorting depot today. '.repeat(20)}`;
 
 let fake: FakeOllama | undefined;
 let cogitator: Cogitator | undefined;
@@ -17,8 +18,11 @@ afterEach(async () => {
   fake = undefined;
 });
 
-async function runOnLongThread(contextBuilder: { maxTokens?: number }): Promise<string[]> {
-  fake = await startFakeOllama(() => ({ content: 'Still in transit.' }), [MODEL]);
+async function runOnLongThread(
+  contextBuilder: { maxTokens?: number },
+  model = CLOUD_MODEL
+): Promise<string[]> {
+  fake = await startFakeOllama(() => ({ content: 'Still in transit.' }), [model]);
   cogitator = new Cogitator({
     llm: { providers: { ollama: { baseUrl: fake.url } } },
     memory: { adapter: 'memory', contextBuilder: { strategy: 'recent', ...contextBuilder } },
@@ -26,7 +30,7 @@ async function runOnLongThread(contextBuilder: { maxTokens?: number }): Promise<
   const agent = new Agent({
     id: 'tracker',
     name: 'tracker',
-    model: `ollama/${MODEL}`,
+    model: `ollama/${model}`,
     instructions: 'Track parcels.',
   });
   await cogitator.run(agent, { input: 'start', threadId: 'warmup' });
@@ -59,8 +63,16 @@ describe('Memory: context budget of a run', () => {
     expect(history).toHaveLength(24);
   });
 
+  it('keeps a local Ollama model within the context Ollama serves by default', async () => {
+    const history = await runOnLongThread({}, LOCAL_MODEL);
+
+    expect(history.length).toBeGreaterThan(0);
+    expect(history.length).toBeLessThan(24);
+    expect(history.at(-1)).toBe(turn(23));
+  });
+
   it('keeps to an explicit maxTokens', async () => {
-    const history = await runOnLongThread({ maxTokens: 2000 });
+    const history = await runOnLongThread({ maxTokens: 2000 }, LOCAL_MODEL);
 
     expect(history.length).toBeGreaterThan(0);
     expect(history.length).toBeLessThan(24);
