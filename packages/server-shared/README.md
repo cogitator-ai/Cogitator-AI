@@ -13,9 +13,9 @@ This package is intended for **adapter authors** and developers building **custo
 ## Installation
 
 ```bash
-pnpm add @cogitator-ai/server-shared @cogitator-ai/types
+pnpm add @cogitator-ai/server-shared
 # or
-npm install @cogitator-ai/server-shared @cogitator-ai/types
+npm install @cogitator-ai/server-shared
 ```
 
 ## Quick Start: SSE Encoding
@@ -85,7 +85,7 @@ Standardized Server-Sent Events protocol for agent runs, workflow runs, swarm ru
 - `createToolCallEndEvent(id)`: Closes a tool call invocation.
 - `createToolResultEvent(id, toolCallId, result)`: Emits the result of an executed tool call linked by `toolCallId`.
 - `createApprovalRequiredEvent(threadId, approvals)`: Emits an `approval-required` event when tool calls require human-in-the-loop review, pausing the run.
-- `createErrorEvent(message, code?)`: Emits a masked, safe error event on run failure.
+- `createErrorEvent(message, code?)`: Builds an `error` stream event (`{ type: 'error', message, code }`).
 - `createFinishEvent(messageId, usage?, details?)`: Emits the terminal `finish` event containing sanitized token counts and run completion details (`AgentRunOutcome`).
 - `createWorkflowEvent(event, data)`: Emits workflow execution events (`node_started`, `node_completed`, `node_error`, `node_progress`, `workflow_completed`).
 - `createSwarmEvent(event, data)`: Emits multi-agent swarm coordination events (`agent_start`, `agent_complete`, `agent_error`, `message`, `swarm_completed`).
@@ -220,8 +220,8 @@ Resource safety helpers for multi-agent swarm orchestration.
 
 Dynamic documentation generators reflecting registered agents, tools, workflows, and swarms.
 
-- `generateOpenAPISpec(context, config?)`: Builds an OpenAPI 3.0 specification from registered agents, tools (with JSON schemas), workflows, and swarms.
-- `generateSwaggerHTML(specUrl, config?)`: Generates a standalone HTML page embedding Swagger UI from CDN for `/docs`.
+- `generateOpenAPISpec(context, config)`: Builds an OpenAPI 3.0 specification from registered agents, tools (with JSON schemas), workflows, and swarms.
+- `generateSwaggerHTML(spec)`: Generates a standalone HTML page embedding Swagger UI from CDN with the OpenAPI `spec` object embedded inline for `/docs`.
 - `OpenAPISpec`: TypeScript interface for the generated OpenAPI 3.0 document.
 - `SwaggerConfig`: Customization options for Swagger UI and OpenAPI generation (title, version, base path, auth).
 - `OpenAPIContext`: Context containing the registered agents, workflows, and swarms.
@@ -230,7 +230,7 @@ Dynamic documentation generators reflecting registered agents, tools, workflows,
 
 Shared conformance test cases and mock runtime ensuring all adapters behave identically.
 
-- `checkConformance(options)`: Automated test suite runner that executes standardized requests against an adapter and asserts identical HTTP statuses, error codes, and response bodies.
+- `checkConformance(testCase, response, runtime, check?)`: Compares a response the adapter already returned against the test case and runtime state, returning a list of mismatches (an empty array means the adapter conforms).
 - `ConformanceRuntime`: Mock runtime tracking runs, resumes, streaming callbacks, and memory operations.
 - `CONFORMANCE_CASES`: Collection of standardized test cases covering input validation, context policy, thread isolation, and error conditions.
 - `CONFORMANCE_ROUTES`: Standard test route mapping (`/agents/:name/run`, `/threads/:id/messages`, etc.).
@@ -243,7 +243,7 @@ Shared conformance test cases and mock runtime ensuring all adapters behave iden
 - `conformancePausedResult()`: Generates mock paused `RunResult` with pending tool approvals.
 - `parseSseEvents(text)`: Parses raw SSE wire text into structured event objects for test assertions.
 - `ConformanceCase`: Interface defining a test case.
-- `ConformanceCheckOptions`: Options for running `checkConformance`.
+- `ConformanceCheckOptions`: Custom status code and error code mapping options for `checkConformance` (e.g. for adapters following framework-specific error conventions).
 - `ConformanceResponse`: Standardized response representation for adapter fetchers.
 - `ConformanceRoute`: Union of supported conformance route names.
 - `ConformanceServerOptions`: Adapter server options required by specific conformance test cases.
@@ -252,16 +252,16 @@ Shared conformance test cases and mock runtime ensuring all adapters behave iden
 
 The following adapters and integrations build on `@cogitator-ai/server-shared`:
 
-| Package                                                     | Description                                                                             | Documentation                        |
-| ----------------------------------------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------ |
-| [`@cogitator-ai/express`](../express/README.md)             | Express.js server adapter with REST endpoints, SSE streaming, WebSocket, and Swagger UI | [README](../express/README.md)       |
-| [`@cogitator-ai/fastify`](../fastify/README.md)             | Fastify server adapter leveraging schema compilation and hooks                          | [README](../fastify/README.md)       |
-| [`@cogitator-ai/hono`](../hono/README.md)                   | Multi-runtime Hono adapter (Node.js, Bun, Deno, Cloudflare Workers, AWS Lambda)         | [README](../hono/README.md)          |
-| [`@cogitator-ai/koa`](../koa/README.md)                     | Koa server adapter with middleware pipeline and SSE streaming                           | [README](../koa/README.md)           |
-| [`@cogitator-ai/next`](../next/README.md)                   | Next.js App Router streaming handlers and React client hooks                            | [README](../next/README.md)          |
-| [`@cogitator-ai/tetsu`](../tetsu/README.md)                 | Tetsu framework adapter for Bun with automatic OpenAPI generation                       | [README](../tetsu/README.md)         |
-| [`@cogitator-ai/openai-compat`](../openai-compat/README.md) | OpenAI-compatible server (`/v1/chat/completions`, `/v1/responses`, `/v1/assistants`)    | [README](../openai-compat/README.md) |
-| [`@cogitator-ai/a2a`](../a2a/README.md)                     | Agent2Agent (A2A) protocol v0.3 server and client implementation                        | [README](../a2a/README.md)           |
+| Package | Description | Documentation |
+| --- | --- | --- |
+| [`@cogitator-ai/express`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/express) | Express.js server adapter with REST endpoints, SSE streaming, WebSocket, and Swagger UI | [README](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/express) |
+| [`@cogitator-ai/fastify`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/fastify) | Fastify server adapter leveraging schema compilation and hooks | [README](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/fastify) |
+| [`@cogitator-ai/hono`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/hono) | Multi-runtime Hono adapter (Node.js, Bun, Deno, Cloudflare Workers, AWS Lambda) | [README](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/hono) |
+| [`@cogitator-ai/koa`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/koa) | Koa server adapter with middleware pipeline and SSE streaming | [README](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/koa) |
+| [`@cogitator-ai/next`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/next) | Next.js App Router streaming handlers and React client hooks | [README](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/next) |
+| [`@cogitator-ai/tetsu`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/tetsu) | Tetsu framework adapter for Bun with automatic OpenAPI generation | [README](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/tetsu) |
+| [`@cogitator-ai/openai-compat`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/openai-compat) | OpenAI-compatible server (`/v1/chat/completions`, `/v1/responses`, `/v1/assistants`) | [README](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/openai-compat) |
+| [`@cogitator-ai/a2a`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/a2a) | Agent2Agent (A2A) protocol v0.3 server and client implementation | [README](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/a2a) |
 
 ## Documentation
 
