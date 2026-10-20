@@ -216,6 +216,22 @@ describe('ModelRegistry initialization', () => {
     expect(reg.getPricing('groq/openai/gpt-oss-120b')?.input).toBeGreaterThan(0);
   });
 
+  it('bundles only priced models, with the MIT notice of the catalogue', () => {
+    const entries = Object.values(LITELLM_SNAPSHOT.models);
+
+    expect(
+      entries.every(
+        (entry) =>
+          entry.input_cost_per_token !== undefined ||
+          entry.output_cost_per_token !== undefined ||
+          entry.input_cost_per_character !== undefined ||
+          entry.output_cost_per_character !== undefined
+      )
+    ).toBe(true);
+    expect(LITELLM_SNAPSHOT.license).toContain('Permission is hereby granted');
+    expect(LITELLM_SNAPSHOT.license).toContain('Copyright (c) 2023 Berri AI');
+  });
+
   it('should throw when fallbackToBuiltin is false and network fails', async () => {
     globalThis.fetch = vi.fn().mockRejectedValue(new Error('Network error'));
 

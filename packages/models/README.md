@@ -205,7 +205,7 @@ shutdownModels();
 
 ### Prices of Your Own
 
-`ModelPricer` prices model calls from prices of your own first and the registry second, the way `@cogitator-ai/core` does with `llm.pricing`. A key matches the model string or its tail after any `/`, the longest match first, case-insensitively: `openai/gpt-4o` prices that model at OpenAI only, `gpt-4o` at every provider that serves it under that name.
+`ModelPricer` prices model calls from prices of your own first and the registry second, the way `@cogitator-ai/core` does with `llm.pricing`. A key matches the model string or its tail after any `/`, the longest match first, case-insensitively: `openai/gpt-4o` prices that model string and the ones that end in it, such as `openrouter/openai/gpt-4o`, `gpt-4o` the model at every provider that serves it under that name.
 
 ```typescript
 import { ModelPricer, costOf, getPricing, type PricingOverrides } from '@cogitator-ai/models';
