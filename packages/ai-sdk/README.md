@@ -239,7 +239,7 @@ const { text } = await generateText({
 });
 ```
 
-- A call the AI SDK approval flow approved (ai@6, ai@7: an approving `tool-approval-response` for the call in the messages) runs without being asked again.
+- A call the AI SDK asks approval for (the tool's `requiresApproval` holds for its input) and that the AI SDK approval flow approved (ai@6, ai@7: an approving `tool-approval-response` for the call in the last message, as the AI SDK reads it) runs without being asked again. In most apps those messages come from the client, so set the AI SDK's `experimental_toolApprovalSecret` to have it refuse approvals your server did not sign. An approval in the messages for a call the AI SDK never asks about counts for nothing.
 - Any other call that needs approval, every one on ai@4 and ai@5, or one the guardrails want approved, goes to `onApproval`, then to `guardrails.onToolApproval`. A call nobody decides fails with `Tool "refund" needs approval, and nobody approved this call`, a declined one with its reason, and the model reads the error.
 - ai@7 can also decide approval for a whole call with `toolApproval`, which leaves no approval response in the messages: with an invoker, decide those calls in `onApproval`.
 - The AI SDK already parsed the arguments with the tool's schema, so they are not parsed again and transforms apply once.

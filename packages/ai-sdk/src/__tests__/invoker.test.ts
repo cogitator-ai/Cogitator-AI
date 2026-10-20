@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { z } from 'zod';
 import { Cogitator, tool } from '@cogitator-ai/core';
 import type { ToolContext, ToolInvoker } from '@cogitator-ai/types';
+import * as ai4 from 'ai-v4';
+import { MockLanguageModelV1 } from 'ai-v4/test';
 import * as ai5 from 'ai-v5';
 import * as ai6 from 'ai-v6';
 import * as ai7 from 'ai';
@@ -331,6 +333,155 @@ describe('toAISDKTool with an invoker', () => {
     await converted.execute({ order: 'A-7' }, { toolCallId: 'tc1', messages });
 
     expect(invokeTool.mock.calls[0]![2]?.onApproval).toBe(onApproval);
+  });
+});
+
+describe('approvals the invoker takes from the AI SDK', () => {
+  const approvalFor = (toolCallId: string) => [
+    {
+      role: 'assistant',
+      content: [
+        { type: 'tool-call', toolCallId, toolName: 'x', input: {} },
+        { type: 'tool-approval-request', approvalId: 'ap', toolCallId },
+      ],
+    },
+    {
+      role: 'tool',
+      content: [{ type: 'tool-approval-response', approvalId: 'ap', approved: true }],
+    },
+  ];
+
+  function capture() {
+    const invokeTool = vi.fn<ToolInvoker['invokeTool']>(async (t) => ({
+      callId: 'tc1',
+      name: t.name,
+      result: 'ok',
+    }));
+    return invokeTool;
+  }
+
+  it('ignores an approval in the messages for a tool the AI SDK never asks about', async () => {
+    const invokeTool = capture();
+    const onApproval = vi.fn();
+    const wipe = tool({
+      name: 'wipe',
+      description: 'Wipe a path',
+      parameters: z.object({ path: z.string() }),
+      sideEffects: ['filesystem'],
+      execute: async () => 'wiped',
+    });
+
+    await toAISDKTool(wipe, { invoker: { invokeTool }, onApproval }).execute(
+      { path: '/' },
+      { toolCallId: 'tc1', messages: approvalFor('tc1') }
+    );
+
+    expect(invokeTool.mock.calls[0]![2]?.onApproval).toBe(onApproval);
+  });
+
+  it('ignores an approval when the input is one the tool does not ask about', async () => {
+    const invokeTool = capture();
+    const pay = tool({
+      name: 'pay',
+      description: 'Pay',
+      parameters: z.object({ amount: z.number() }),
+      requiresApproval: ({ amount }) => (amount as number) > 100,
+      execute: async () => 'paid',
+    });
+    const converted = toAISDKTool(pay, { invoker: { invokeTool } });
+
+    await converted.execute({ amount: 5 }, { toolCallId: 'tc1', messages: approvalFor('tc1') });
+    await converted.execute({ amount: 500 }, { toolCallId: 'tc1', messages: approvalFor('tc1') });
+
+    expect(invokeTool.mock.calls[0]![2]?.onApproval).toBeUndefined();
+    expect(invokeTool.mock.calls[1]![2]?.onApproval).toBeTypeOf('function');
+  });
+
+  it('reads the approval only from the last message, as the AI SDK does', async () => {
+    const invokeTool = capture();
+    const converted = toAISDKTool(refund, { invoker: { invokeTool } });
+    const stale = [...approvalFor('tc1'), { role: 'user', content: 'and once more' }];
+    const fromUser = [
+      approvalFor('tc1')[0]!,
+      {
+        role: 'user',
+        content: [{ type: 'tool-approval-response', approvalId: 'ap', approved: true }],
+      },
+    ];
+
+    await converted.execute({ order: 'A' }, { toolCallId: 'tc1', messages: stale });
+    await converted.execute({ order: 'A' }, { toolCallId: 'tc1', messages: fromUser });
+    await converted.execute({ order: 'A' }, { toolCallId: 'tc1', messages: approvalFor('tc1') });
+
+    expect(invokeTool.mock.calls[0]![2]?.onApproval).toBeUndefined();
+    expect(invokeTool.mock.calls[1]![2]?.onApproval).toBeUndefined();
+    expect(invokeTool.mock.calls[2]![2]?.onApproval).toBeTypeOf('function');
+  });
+
+  it('asks onApproval on ai@4, which never asks', async () => {
+    let step = 0;
+    const model = new MockLanguageModelV1({
+      doGenerate: async () =>
+        step++ === 0
+          ? {
+              rawCall: { rawPrompt: null, rawSettings: {} },
+              finishReason: 'tool-calls',
+              usage: { promptTokens: 1, completionTokens: 1 },
+              toolCalls: [
+                {
+                  toolCallType: 'function',
+                  toolCallId: 'tc1',
+                  toolName: 'refund',
+                  args: '{"order":"C-1"}',
+                },
+              ],
+            }
+          : {
+              rawCall: { rawPrompt: null, rawSettings: {} },
+              finishReason: 'stop',
+              usage: { promptTokens: 1, completionTokens: 1 },
+              text: 'done',
+            },
+    });
+    const onApproval = vi.fn(async () => ({ approved: true as const }));
+
+    const result = await ai4.generateText({
+      model,
+      tools: convertToolsToAISDK([refund], { invoker: cogitator, onApproval }),
+      maxSteps: 2,
+      prompt: 'Refund C-1',
+    });
+
+    expect(onApproval).toHaveBeenCalledTimes(1);
+    expect(refundImpl).toHaveBeenCalledTimes(1);
+    expect(result.steps[0]!.toolResults[0]!.result).toEqual({ refunded: 'C-1' });
+  });
+
+  it('refuses the call on ai@4 when nobody approves it', async () => {
+    const model = new MockLanguageModelV1({
+      doGenerate: async () => ({
+        rawCall: { rawPrompt: null, rawSettings: {} },
+        finishReason: 'tool-calls',
+        usage: { promptTokens: 1, completionTokens: 1 },
+        toolCalls: [
+          {
+            toolCallType: 'function',
+            toolCallId: 'tc1',
+            toolName: 'refund',
+            args: '{"order":"C-2"}',
+          },
+        ],
+      }),
+    });
+
+    await expect(
+      ai4.generateText({
+        model,
+        tools: convertToolsToAISDK([refund], { invoker: cogitator }),
+        prompt: 'Refund C-2',
+      })
+    ).rejects.toThrow('needs approval');
+    expect(refundImpl).not.toHaveBeenCalled();
   });
 });
 

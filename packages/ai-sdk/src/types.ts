@@ -377,8 +377,9 @@ export interface AISDKToolOptions {
   invoker?: ToolInvoker;
   /**
    * With an `invoker`, decides a call that needs approval the AI SDK has not approved, as
-   * `RunOptions.onApproval` does in a run. A call approved through the AI SDK approval flow (a
-   * `tool-approval-response` in the messages, ai@6 and ai@7) runs without asking again. Others,
+   * `RunOptions.onApproval` does in a run. A call the AI SDK asks about (`requiresApproval`) and
+   * approved through its approval flow (a `tool-approval-response` in the last message, ai@6 and
+   * ai@7) runs without asking again. Others,
    * such as every call on ai@4 and ai@5 or one the guardrails want approved, go to this, then to
    * `guardrails.onToolApproval`, and a call nobody decides fails with an error saying it needs
    * approval
