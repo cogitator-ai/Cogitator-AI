@@ -214,6 +214,7 @@ describe('answerConversation', () => {
       opts
     );
     expect(requests).toHaveLength(1);
+    expect(batches[1]).toEqual([conversation.questions[0].question]);
     const [warmUp] = batches;
     for (let i = 1; i < 20; i++) expect(warmUp).toContain(turns[i].content);
   });

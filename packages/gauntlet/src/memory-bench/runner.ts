@@ -191,10 +191,12 @@ export async function ingest(
 }
 
 /**
- * Embeds the history the strategy will score before the questions run, so every strategy's
- * context build is measured on a warm cache. A context builder of the same strategy and budget
- * builds the thread's context once: it embeds exactly the entries the runtime's builder will
- * score (its order, filters and limits), and the vectors land in the shared embedding cache.
+ * Embeds the history the strategy will score and every question before the questions run, so
+ * each strategy's context build is measured on a warm cache, the provider's embedding latency
+ * left out alike for all of them (a strategy that runs later must not find the questions cached
+ * by an earlier one). A context builder of the same strategy and budget builds the thread's
+ * context once: it embeds exactly the entries the runtime's builder will score (its order,
+ * filters and limits), and the vectors land in the shared embedding cache.
  */
 async function warm(
   cog: Cogitator,
@@ -214,7 +216,17 @@ async function warm(
     agentId: agent.id,
     currentInput: conversation.questions[0]?.question ?? 'warm-up',
   });
-  for (const { error } of context.errors ?? []) {
+  const errors = (context.errors ?? []).map(({ error }) => error);
+  if (options.embedding) {
+    try {
+      await options.embedding.embedBatch(
+        conversation.questions.map((question) => question.question)
+      );
+    } catch (error) {
+      errors.push(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+  for (const error of errors) {
     const refusal = budgetRefusal(error);
     if (refusal) throw refusal;
     options.log(`  warming ${conversation.id}: ${error.message}`);
