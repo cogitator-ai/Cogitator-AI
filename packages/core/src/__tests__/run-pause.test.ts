@@ -321,7 +321,10 @@ describe('Cogitator.invokeTool', () => {
 
   it('warns once when the guardrails have no model to run with', async () => {
     const warn = vi.fn();
-    const cog = new Cogitator({ guardrails: { enabled: true }, logging: { level: 'warn' } });
+    const cog = new Cogitator({
+      guardrails: { filterToolCalls: true },
+      logging: { level: 'warn' },
+    });
     const logger = (await import('../logger')).getLogger();
     const spy = vi.spyOn(logger, 'warn').mockImplementation(warn);
     try {

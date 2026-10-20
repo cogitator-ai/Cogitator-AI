@@ -103,7 +103,7 @@ The run result wire format (`toAgentWireRunResult`, used by queue jobs and distr
 
 ## Tool Calls Outside a Run
 
-Code that runs tools without an agent run, like an MCP server or a self-modifying agent, uses `cogitator.invokeTool()` to treat them the way a run does: the arguments are validated against the schema, a call that needs approval is decided by `onApproval` (else `guardrails.onToolApproval`), the guardrails apply, sandboxed tools run in the runtime's sandbox and `tool.timeout` holds. There is no run to pause, so a call nobody approves does not run: the result's `error` says so and `pendingApproval` holds the request. The guardrails need a model, which a run takes from its agent: set `guardrails.model` or `llm.defaultModel`, or calls through `invokeTool` skip them (the runtime warns once).
+Code that runs tools without an agent run, like an MCP server or a self-modifying agent, uses `cogitator.invokeTool()` to treat them the way a run does: the arguments are validated against the schema, a call that needs approval is decided by `onApproval` (else `guardrails.onToolApproval`), the guardrails apply, sandboxed tools run in the runtime's sandbox and `tool.timeout` holds. There is no run to pause, so a call nobody approves does not run: the result's `error` says so and `pendingApproval` holds the request. The guardrails need a model, which a run takes from its agent: set `guardrails.model` or `llm.defaultModel`, or calls through `invokeTool` skip them until a run has built the guardrails with its agent's model (the runtime warns once).
 
 ```typescript
 const result = await cog.invokeTool(

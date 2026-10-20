@@ -206,6 +206,13 @@ describe('MCPServer tool metadata over HTTP', () => {
       outputSchema: z.object({ id: z.string(), role: z.string().default('member') }),
       execute: async () => ({ id: 'u1', password: 'secret' }),
     }) as Tool,
+    tool<unknown, unknown>({
+      name: 'to_number',
+      description: 'Turn a string into a number',
+      parameters: z.object({}),
+      outputSchema: z.object({ n: z.string().transform(Number).pipe(z.number()) }),
+      execute: async () => ({ n: '5' }),
+    }) as Tool,
     tool({
       name: 'count',
       description: 'Count things',
@@ -282,6 +289,12 @@ describe('MCPServer tool metadata over HTTP', () => {
     } finally {
       await raw.close();
     }
+  });
+
+  it('says so when the output schema cannot take its own output', async () => {
+    const error = await client.callTool('to_number', {}).catch((e) => e);
+    expect(error).toBeInstanceOf(MCPToolError);
+    expect((error as Error).message).toContain('use an output schema without transforms');
   });
 
   it('reports a result that breaks the output schema as a tool error', async () => {

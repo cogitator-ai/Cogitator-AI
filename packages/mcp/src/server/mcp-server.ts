@@ -382,6 +382,14 @@ export class MCPServer {
         `The result does not match the tool's outputSchema: ${z.prettifyError(parsed.error)}`
       );
     }
+    const reparsed = await outputSchema.safeParseAsync(parsed.data);
+    if (!reparsed.success) {
+      return this.toolError(
+        tool,
+        "The tool's outputSchema rejects what it parses itself (a transform changes the value), " +
+          'and MCP checks structured content against it again: use an output schema without transforms'
+      );
+    }
     return {
       content: resultToMCPContent(parsed.data).map(toServerContent),
       structuredContent: parsed.data,

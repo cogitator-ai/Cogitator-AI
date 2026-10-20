@@ -1695,22 +1695,24 @@ export class Cogitator implements ToolInvoker {
   }
 
   /**
-   * Builds the guardrails once their model is known: `guardrails.model`, else
-   * the model of the agent being run, else `llm.defaultModel` — so they exist
-   * before the first run whenever one of the configured models names them.
-   */
-  /**
    * Guardrails need a model, which a run takes from its agent. `invokeTool` has no agent, so
-   * without `guardrails.model` or `llm.defaultModel` its calls skip the guardrails: say so once.
+   * without `guardrails.model` or `llm.defaultModel`, and before a run built them with its agent's
+   * model, its calls skip the guardrails: say so once.
    */
   private warnGuardrailsWithoutModel(): void {
-    if (this.warnedGuardrailsWithoutModel || !this.config.guardrails?.enabled) return;
+    if (this.warnedGuardrailsWithoutModel) return;
+    if (!this.config.guardrails || this.config.guardrails.enabled === false) return;
     this.warnedGuardrailsWithoutModel = true;
     getLogger().warn(
       'Guardrails are enabled but tool calls made with invokeTool skip them: set guardrails.model or llm.defaultModel'
     );
   }
 
+  /**
+   * Builds the guardrails once their model is known: `guardrails.model`, else
+   * the model of the agent being run, else `llm.defaultModel` — so they exist
+   * before the first run whenever one of the configured models names them.
+   */
   private ensureGuardrails(agentModel?: string): void {
     if (this.state.guardrailsInitialized || !this.config.guardrails) return;
     const model = agentModel ?? this.config.guardrails.model ?? this.config.llm?.defaultModel;
