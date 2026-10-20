@@ -13,16 +13,6 @@ const SELF_HOSTED_PROVIDERS: ReadonlySet<string> = new Set(['ollama', 'vllm']);
 
 const FREE: ModelPricing = { input: 0, output: 0 };
 
-/**
- * The model string a call is priced by: `model` as a run names it, with the provider that served
- * it in front when the name does not start with it (`llama3.3` on Ollama is `ollama/llama3.3`).
- * A backend of your own that names no provider leaves the model string as it is.
- */
-export function pricedModel(model: string, provider: string | undefined): string {
-  if (!provider || model.toLowerCase().startsWith(`${provider.toLowerCase()}/`)) return model;
-  return `${provider}/${model}`;
-}
-
 function isSelfHosted(model: string): boolean {
   const slash = model.indexOf('/');
   return slash !== -1 && SELF_HOSTED_PROVIDERS.has(model.slice(0, slash).toLowerCase());
@@ -69,16 +59,17 @@ export class CallPricer {
   }
 
   /**
-   * Warns once per model when a call to `model` on `provider` reported no cost and nothing
-   * prices it, so run costs and budgets count it as $0.
+   * Warns once per model when a call to `model`, the model string it is priced by
+   * (`provider/model`), reported no cost and nothing prices it, so run costs and budgets count
+   * it as $0.
    */
-  noteUnpriced(model: string, provider: string | undefined): void {
+  noteUnpriced(model: string): void {
     if (this.warned.has(model)) return;
     this.warned.add(model);
-    if ((provider && SELF_HOSTED_PROVIDERS.has(provider)) || this.pricing(model)) return;
+    if (this.pricing(model)) return;
     getLogger().warn(
       `No price is known for ${model}, so its calls count as $0 in run costs and budgets. Set its price per million tokens in llm.pricing (for example llm.pricing['${model}'] = { input: 0.5, output: 1.5 }), or load the current model catalogue with initializeModels() from @cogitator-ai/models at startup.`,
-      { model, provider }
+      { model }
     );
   }
 }

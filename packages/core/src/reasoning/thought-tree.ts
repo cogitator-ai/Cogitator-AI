@@ -1,4 +1,3 @@
-import { pricedModel } from '../cogitator/run-cost';
 import { nanoid } from 'nanoid';
 import type {
   ToTConfig,
@@ -77,7 +76,7 @@ export class ThoughtTreeExecutor {
     this.modelString = this.cogitator.resolveModel(agent);
     const route = this.cogitator.route(this.modelString, agent.config.provider);
     this.model = route.model;
-    this.priceKey = pricedModel(this.modelString, route.backend.provider);
+    this.priceKey = this.cogitator.pricedModel(this.modelString, agent.config.provider);
     this.llm = this.trackUsage(route.backend);
 
     this.branchGenerator = new BranchGenerator(this.llm, this.model);

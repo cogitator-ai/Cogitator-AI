@@ -3,7 +3,7 @@ import { calculateCost } from '@cogitator-ai/models';
 import type { ChatRequest, ChatResponse, ChatStreamChunk, LLMBackend } from '@cogitator-ai/types';
 import { Agent } from '../agent';
 import { Cogitator } from '../cogitator';
-import { CallPricer, RunCostMeter, pricedModel } from '../cogitator/run-cost';
+import { CallPricer, RunCostMeter } from '../cogitator/run-cost';
 import { getLogger } from '../logger';
 
 const PRICED = 'openai/gpt-4o-mini';
@@ -219,11 +219,37 @@ describe('a model without a price', () => {
     expect(pricer.cost('vllm/Qwen/Qwen3-32B', tokens(1_000_000, 0))).toBe(1);
   });
 
-  it('prices a call by the provider that served it when the model string has none', () => {
-    expect(pricedModel('llama3.3', 'ollama')).toBe('ollama/llama3.3');
-    expect(pricedModel('ollama/llama3.3', 'ollama')).toBe('ollama/llama3.3');
-    expect(pricedModel('local/my-finetune', 'local')).toBe('local/my-finetune');
-    expect(pricedModel('gpt-4o', 'openai')).toBe('openai/gpt-4o');
+  it('prices a call by the provider it routes to, by the name it is registered under', () => {
+    const cog = new Cogitator({
+      llm: { defaultProvider: 'ollama', backends: { vllm: { ...unpriced(), provider: 'openai' } } },
+    });
+
+    expect(cog.pricedModel('llama3.3')).toBe('ollama/llama3.3');
+    expect(cog.pricedModel('ollama/llama3.3')).toBe('ollama/llama3.3');
+    expect(cog.pricedModel('gpt-4o', 'openai')).toBe('openai/gpt-4o');
+    expect(cog.pricedModel('vllm/meta-llama/Llama-3.3-70B-Instruct')).toBe(
+      'vllm/meta-llama/Llama-3.3-70B-Instruct'
+    );
+  });
+
+  it('keeps a self-hosted backend of your own free whatever provider it reports', async () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const cog = new Cogitator({
+      llm: { backends: { vllm: { ...unpriced(), provider: 'openai' } } },
+    });
+
+    const result = await cog.run(
+      new Agent({
+        name: 'v',
+        model: 'vllm/meta-llama/Llama-3.3-70B-Instruct',
+        instructions: 'Hi.',
+      }),
+      { input: 'hi' }
+    );
+
+    expect(result.usage.cost).toBe(0);
+    expect(warn.mock.calls.filter(([m]) => m.includes('No price'))).toHaveLength(0);
+    await cog.close();
   });
 
   it('stays quiet for a self-hosted provider', async () => {
@@ -239,21 +265,36 @@ describe('a model without a price', () => {
     await cog.close();
   });
 
-  it('counts llm.pricing against a budget', async () => {
+  it('checks a budget before the run by llm.pricing', async () => {
+    const backend = unpriced();
+    const cog = new Cogitator({
+      llm: {
+        backends: { local: backend },
+        pricing: { 'local/my-finetune': { input: 1_000_000, output: 0 } },
+      },
+      costRouting: { enabled: true, budget: { maxCostPerRun: 50 } },
+    });
+
+    await expect(cog.run(agent, { input: 'hi' })).rejects.toMatchObject({
+      code: 'BUDGET_EXCEEDED',
+    });
+    expect(backend.chat).not.toHaveBeenCalled();
+    await cog.close();
+  });
+
+  it('records the cost llm.pricing gives a run against the budget', async () => {
     const cog = new Cogitator({
       llm: {
         backends: { local: unpriced() },
-        pricing: { 'local/my-finetune': { input: 1_000_000, output: 0 } },
+        pricing: { 'local/my-finetune': { input: 1, output: 1 } },
       },
       costRouting: { enabled: true, budget: { maxCostPerHour: 50 } },
     });
 
-    await expect(cog.run(agent, { input: 'hi' })).resolves.toMatchObject({
-      usage: { cost: 100 },
-    });
-    await expect(cog.run(agent, { input: 'again' })).rejects.toMatchObject({
-      code: 'BUDGET_EXCEEDED',
-    });
+    const result = await cog.run(agent, { input: 'hi' });
+
+    expect(result.usage.cost).toBeCloseTo(110 / 1_000_000, 12);
+    expect(cog.getCostSummary()?.totalCost).toBeCloseTo(110 / 1_000_000, 12);
     await cog.close();
   });
 });
