@@ -252,16 +252,16 @@ Shared conformance test cases and mock runtime ensuring all adapters behave iden
 
 The following adapters and integrations build on `@cogitator-ai/server-shared`:
 
-| Package | Description | Documentation |
-| --- | --- | --- |
-| [`@cogitator-ai/express`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/express) | Express.js server adapter with REST endpoints, SSE streaming, WebSocket, and Swagger UI | [README](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/express) |
-| [`@cogitator-ai/fastify`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/fastify) | Fastify server adapter leveraging schema compilation and hooks | [README](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/fastify) |
-| [`@cogitator-ai/hono`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/hono) | Multi-runtime Hono adapter (Node.js, Bun, Deno, Cloudflare Workers, AWS Lambda) | [README](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/hono) |
-| [`@cogitator-ai/koa`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/koa) | Koa server adapter with middleware pipeline and SSE streaming | [README](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/koa) |
-| [`@cogitator-ai/next`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/next) | Next.js App Router streaming handlers and React client hooks | [README](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/next) |
-| [`@cogitator-ai/tetsu`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/tetsu) | Tetsu framework adapter for Bun with automatic OpenAPI generation | [README](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/tetsu) |
-| [`@cogitator-ai/openai-compat`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/openai-compat) | OpenAI-compatible server (`/v1/chat/completions`, `/v1/responses`, `/v1/assistants`) | [README](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/openai-compat) |
-| [`@cogitator-ai/a2a`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/a2a) | Agent2Agent (A2A) protocol v0.3 server and client implementation | [README](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/a2a) |
+| Package                                                                                                        | Description                                                                             | Documentation                                                                           |
+| -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| [`@cogitator-ai/express`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/express)             | Express.js server adapter with REST endpoints, SSE streaming, WebSocket, and Swagger UI | [README](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/express)       |
+| [`@cogitator-ai/fastify`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/fastify)             | Fastify server adapter leveraging schema compilation and hooks                          | [README](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/fastify)       |
+| [`@cogitator-ai/hono`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/hono)                   | Multi-runtime Hono adapter (Node.js, Bun, Deno, Cloudflare Workers, AWS Lambda)         | [README](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/hono)          |
+| [`@cogitator-ai/koa`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/koa)                     | Koa server adapter with middleware pipeline and SSE streaming                           | [README](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/koa)           |
+| [`@cogitator-ai/next`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/next)                   | Next.js App Router streaming handlers and React client hooks                            | [README](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/next)          |
+| [`@cogitator-ai/tetsu`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/tetsu)                 | Tetsu framework adapter for Bun with automatic OpenAPI generation                       | [README](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/tetsu)         |
+| [`@cogitator-ai/openai-compat`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/openai-compat) | OpenAI-compatible server (`/v1/chat/completions`, `/v1/responses`, `/v1/assistants`)    | [README](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/openai-compat) |
+| [`@cogitator-ai/a2a`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/a2a)                     | Agent2Agent (A2A) protocol v0.3 server and client implementation                        | [README](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/a2a)           |
 
 ## Documentation
 
