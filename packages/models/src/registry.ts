@@ -25,7 +25,8 @@ function compareText(a: string, b: string): number {
 }
 
 /**
- * Orders the models a name could mean, best first: active before deprecated,
+ * Orders the models a name could mean, best first: active before deprecated, a listing with a
+ * price before one without,
  * a first-party listing (a built-in model or an unprefixed catalogue key)
  * before resellers, then {@link PREFERRED_PROVIDERS}, then a model named
  * exactly so before one it is the tail of, then the shorter id, then
@@ -34,6 +35,7 @@ function compareText(a: string, b: string): number {
 function compareCandidates(name: string, a: ModelInfo, b: ModelInfo): number {
   return (
     Number(a.deprecated ?? false) - Number(b.deprecated ?? false) ||
+    Number(a.priceUnknown ?? false) - Number(b.priceUnknown ?? false) ||
     Number(!isFirstParty(a)) - Number(!isFirstParty(b)) ||
     providerRank(a.provider) - providerRank(b.provider) ||
     Number(a.id.toLowerCase() !== name) - Number(b.id.toLowerCase() !== name) ||
@@ -70,7 +72,7 @@ function mergeCatalogue(fetched: ModelInfo[]): ModelInfo[] {
       modelMap.set(key, {
         ...existing,
         ...(model.catalogId !== undefined && { catalogId: model.catalogId }),
-        pricing: model.pricing,
+        pricing: model.priceUnknown ? existing.pricing : model.pricing,
         contextWindow: model.contextWindow ?? existing.contextWindow,
         maxOutputTokens: model.maxOutputTokens ?? existing.maxOutputTokens,
         capabilities: mergeCapabilities(existing.capabilities, model.capabilities),
@@ -210,12 +212,13 @@ export class ModelRegistry {
 
   getPrice(id: string): { input: number; output: number } | null {
     const model = this.getModel(id);
-    if (!model?.pricing) return null;
+    if (!model?.pricing || model.priceUnknown) return null;
     return { input: model.pricing.input, output: model.pricing.output };
   }
 
   getPricing(id: string): ModelPricing | null {
-    return this.getModel(id)?.pricing ?? null;
+    const model = this.getModel(id);
+    return model && !model.priceUnknown ? model.pricing : null;
   }
 
   listModels(filter?: ModelFilter): ModelInfo[] {
@@ -251,6 +254,7 @@ export class ModelRegistry {
         }
 
         if (filter.maxPricePerMillion !== undefined) {
+          if (model.priceUnknown) return false;
           const avgPrice = (model.pricing.input + model.pricing.output) / 2;
           if (avgPrice > filter.maxPricePerMillion) {
             return false;

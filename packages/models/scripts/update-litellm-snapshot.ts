@@ -1,12 +1,14 @@
 import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { fetchLiteLLMData, LITELLM_URL } from '../src/fetcher';
+import { fetchLiteLLMData, isPriced } from '../src/fetcher';
 import type { LiteLLMModelData, LiteLLMModelEntry } from '../src/types';
 
 /**
  * Refreshes `src/data/litellm-snapshot.json`, the copy of the LiteLLM catalogue the registry
- * prices models from when it cannot fetch the catalogue. Keeps the priced models that answer
- * text and the fields the registry reads, with the catalogue's MIT license. Run with `pnpm --filter @cogitator-ai/models snapshot`.
+ * prices models from when it cannot fetch the catalogue. Copies the catalogue at the commit
+ * `main` is at, keeps the priced models that answer text and the fields the registry reads,
+ * checked for their types, with the catalogue's MIT license, one model per line so a refresh
+ * reads as a diff. Run with `pnpm --filter @cogitator-ai/models snapshot`.
  */
 
 const MODES = new Set(['chat', 'completion', 'responses', 'embedding']);
@@ -54,37 +56,84 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 `;
 
-/** Whether the catalogue gives a price at all: an entry without one would price its model at $0. */
-function isPriced(entry: LiteLLMModelEntry): boolean {
-  return (
-    (entry.input_cost_per_token ?? entry.input_cost_per_character) !== undefined ||
-    (entry.output_cost_per_token ?? entry.output_cost_per_character) !== undefined
-  );
+const NUMBER_FIELDS = new Set<string>([
+  'max_tokens',
+  'max_input_tokens',
+  'max_output_tokens',
+  'input_cost_per_token',
+  'output_cost_per_token',
+  'input_cost_per_character',
+  'output_cost_per_character',
+  'cache_read_input_token_cost',
+  'cache_creation_input_token_cost',
+  'cache_creation_input_token_cost_above_1hr',
+]);
+
+const BOOLEAN_FIELDS = new Set<string>([
+  'supports_function_calling',
+  'supports_tool_choice',
+  'supports_vision',
+  'supports_response_schema',
+]);
+
+/** A field value of the type the registry reads, or `undefined` for anything else. */
+function checked(field: string, value: unknown): unknown {
+  if (NUMBER_FIELDS.has(field)) {
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+  }
+  if (BOOLEAN_FIELDS.has(field)) return typeof value === 'boolean' ? value : undefined;
+  return typeof value === 'string' ? value : undefined;
 }
 
 function trim(data: LiteLLMModelData): LiteLLMModelData {
   const models: LiteLLMModelData = {};
   for (const id of Object.keys(data).sort()) {
     const entry = data[id];
-    if (id === 'sample_spec' || !entry?.mode || !MODES.has(entry.mode) || !isPriced(entry)) {
+    if (
+      id === 'sample_spec' ||
+      !entry ||
+      typeof entry.mode !== 'string' ||
+      !MODES.has(entry.mode)
+    ) {
       continue;
     }
     const kept: Record<string, unknown> = {};
     for (const field of FIELDS) {
-      if (entry[field] !== undefined) kept[field] = entry[field];
+      const value = checked(field, entry[field]);
+      if (value !== undefined) kept[field] = value;
     }
-    models[id] = kept as LiteLLMModelEntry;
+    if (isPriced(kept as LiteLLMModelEntry)) models[id] = kept as LiteLLMModelEntry;
   }
   return models;
 }
 
-const models = trim(await fetchLiteLLMData());
-const snapshot = {
-  source: LITELLM_URL,
+/** The commit `main` of the LiteLLM repository is at, so the snapshot names the exact catalogue it copies. */
+async function latestCommit(): Promise<string> {
+  const response = await fetch('https://api.github.com/repos/BerriAI/litellm/commits/main', {
+    headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Cogitator' },
+  });
+  if (!response.ok) throw new Error(`GitHub answered ${response.status} for the LiteLLM commit`);
+  const { sha } = (await response.json()) as { sha?: unknown };
+  if (typeof sha !== 'string' || !/^[0-9a-f]{40}$/.test(sha)) {
+    throw new Error('GitHub gave no commit for LiteLLM main');
+  }
+  return sha;
+}
+
+const commit = await latestCommit();
+const source = `https://raw.githubusercontent.com/BerriAI/litellm/${commit}/model_prices_and_context_window.json`;
+const models = trim(await fetchLiteLLMData(source));
+const header = {
+  source,
   license: LICENSE,
   fetchedAt: new Date().toISOString().slice(0, 10),
-  models,
 };
+const lines = Object.entries(models).map(
+  ([id, entry]) => `${JSON.stringify(id)}:${JSON.stringify(entry)}`
+);
 const target = fileURLToPath(new URL('../src/data/litellm-snapshot.json', import.meta.url));
-writeFileSync(target, `${JSON.stringify(snapshot)}\n`);
-console.log(`Wrote ${Object.keys(models).length} models to ${target}`);
+writeFileSync(
+  target,
+  `${JSON.stringify(header).slice(0, -1)},"models":{\n${lines.join(',\n')}\n}}\n`
+);
+console.log(`Wrote ${lines.length} models from LiteLLM ${commit.slice(0, 12)} to ${target}`);

@@ -409,6 +409,12 @@ describe('ModelRegistry filters', () => {
         Promise.resolve({
           'ollama/free-model': {
             max_tokens: 4096,
+            input_cost_per_token: 0,
+            output_cost_per_token: 0,
+            litellm_provider: 'ollama',
+          },
+          'ollama/unlisted-price': {
+            max_tokens: 8192,
             litellm_provider: 'ollama',
           },
         }),
@@ -424,6 +430,15 @@ describe('ModelRegistry filters', () => {
       const freeModels = reg.listModels({ maxPricePerMillion: 0 });
       expect(freeModels.map((m) => m.id)).toContain('free-model');
       expect(freeModels.every((m) => (m.pricing.input + m.pricing.output) / 2 <= 0)).toBe(true);
+      expect(freeModels.map((m) => m.id)).not.toContain('unlisted-price');
+
+      expect(reg.getModel('ollama/unlisted-price')).toMatchObject({
+        priceUnknown: true,
+        contextWindow: 8192,
+      });
+      expect(reg.getPricing('ollama/unlisted-price')).toBeNull();
+      expect(reg.getPrice('ollama/unlisted-price')).toBeNull();
+      expect(reg.getPricing('ollama/free-model')).toMatchObject({ input: 0, output: 0 });
     } finally {
       globalThis.fetch = originalFetch;
     }

@@ -5,12 +5,13 @@ export const LITELLM_URL =
 
 const FETCH_TIMEOUT = 10_000;
 
-export async function fetchLiteLLMData(): Promise<LiteLLMModelData> {
+/** The LiteLLM catalogue, from `url` (the latest on `main` by default). */
+export async function fetchLiteLLMData(url: string = LITELLM_URL): Promise<LiteLLMModelData> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
 
   try {
-    const response = await fetch(LITELLM_URL, {
+    const response = await fetch(url, {
       signal: controller.signal,
       headers: {
         Accept: 'application/json',
@@ -218,9 +219,23 @@ function calculatePricing(entry: LiteLLMModelEntry): ModelPricing {
 }
 
 /**
- * Turns the LiteLLM catalogue into registry models: one model per provider
- * and name, keeping the catalogue key as `catalogId`. When a provider lists
- * a model under several keys (`deepseek-v4-pro` and `deepseek/deepseek-v4-pro`),
+ * Whether a catalogue entry gives a price at all. One without would price its model at $0, so a
+ * call to it would count as free instead of as a model with no known price.
+ */
+export function isPriced(entry: LiteLLMModelEntry): boolean {
+  const prices = [
+    entry.input_cost_per_token,
+    entry.output_cost_per_token,
+    entry.input_cost_per_character,
+    entry.output_cost_per_character,
+  ];
+  return prices.some((price) => typeof price === 'number' && Number.isFinite(price) && price >= 0);
+}
+
+/**
+ * Turns the LiteLLM catalogue into registry models: one model per provider and name, keeping
+ * the catalogue key as `catalogId`, and `priceUnknown` on an entry without a price. When a
+ * provider lists a model under several keys (`deepseek-v4-pro` and `deepseek/deepseek-v4-pro`),
  * the shortest key wins and the others become aliases, whatever the catalogue order.
  */
 export function transformLiteLLMData(data: LiteLLMModelData): ModelInfo[] {
@@ -257,6 +272,7 @@ export function transformLiteLLMData(data: LiteLLMModelData): ModelInfo[] {
         supportsJson: entry.supports_response_schema,
       },
       deprecated: isDeprecated,
+      ...(!isPriced(entry) && { priceUnknown: true }),
     };
 
     const existing = byModel.get(key);

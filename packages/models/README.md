@@ -121,14 +121,14 @@ interface CacheOptions {
 
 ### Offline Catalogue
 
-The offline catalogue is the built-in models plus every model of the copy of the LiteLLM catalogue bundled with the package (`LITELLM_SNAPSHOT`, MIT licensed like LiteLLM), the built-in models priced and sized from that copy. It answers lookups before `initializeModels()` and when both the fetch and the cache fail, so DeepSeek, Mistral, Bedrock and the rest are priced without the network.
+The offline catalogue is the built-in models plus every priced model of the copy of the LiteLLM catalogue bundled with the package (`LITELLM_SNAPSHOT`, with LiteLLM's MIT notice), the built-in models priced and sized from that copy. A model the live catalogue lists without a price keeps its context window and capabilities but carries `priceUnknown: true`, and `getPrice`, `getPricing` and `calculateCost` answer `null` for it instead of a price of zero. It answers lookups before `initializeModels()` and when both the fetch and the cache fail, so DeepSeek, Mistral, Bedrock and the rest are priced without the network.
 
 ```typescript
 import { getPricing, LITELLM_SNAPSHOT } from '@cogitator-ai/models';
 
 getPricing('deepseek/deepseek-chat'); // from the bundled copy, before initializeModels()
 LITELLM_SNAPSHOT.fetchedAt; // the day the copy was made, 'YYYY-MM-DD'
-LITELLM_SNAPSHOT.source; // the LiteLLM catalogue URL
+LITELLM_SNAPSHOT.source; // the LiteLLM catalogue URL at the commit the copy was made from
 ```
 
 `pnpm --filter @cogitator-ai/models snapshot` refreshes the copy in the repository, keeping the models that answer text and the fields the registry reads.
