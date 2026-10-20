@@ -452,6 +452,49 @@ describe('OpenAIRealtimeAdapter', () => {
         expect(response!.type).toBe('response.create');
       });
 
+      it('keeps images in formats a model does not take out of the input_image parts', async () => {
+        const tools = [
+          {
+            name: 'draw',
+            description: 'Draw',
+            parameters: {},
+            execute: vi.fn().mockResolvedValue({
+              type: 'tool-content',
+              content: [{ type: 'image', data: 'PHN2Zz4=', mediaType: 'image/svg+xml' }],
+            }),
+          },
+        ];
+        adapter = new OpenAIRealtimeAdapter(createConfig({ tools, toolImages: true }));
+        await adapter.connect();
+        mockWs.send.mockClear();
+
+        mockWs.emit('message', functionCallsDone([['draw', 'call_svg', '{}']]));
+        await vi.waitFor(() => expect(mockWs.send).toHaveBeenCalledTimes(2));
+
+        const [output, response] = sentEvents();
+        expect((output!.item as { output: string }).output).toBe('[image/svg+xml image, 5 B]');
+        expect(response!.type).toBe('response.create');
+      });
+
+      it('answers null for a result JSON cannot hold', async () => {
+        const tools = [
+          {
+            name: 'odd',
+            description: 'Odd',
+            parameters: {},
+            execute: vi.fn().mockResolvedValue(() => 'a function'),
+          },
+        ];
+        adapter = new OpenAIRealtimeAdapter(createConfig({ tools }));
+        await adapter.connect();
+        mockWs.send.mockClear();
+
+        mockWs.emit('message', functionCallsDone([['odd', 'call_odd', '{}']]));
+        await vi.waitFor(() => expect(mockWs.send).toHaveBeenCalledTimes(2));
+
+        expect((sentEvents()[0]!.item as { output: string }).output).toBe('null');
+      });
+
       it("cuts a long result to the tool's maxResultLength", async () => {
         const tools = [
           {

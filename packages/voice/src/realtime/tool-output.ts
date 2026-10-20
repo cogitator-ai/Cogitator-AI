@@ -12,7 +12,7 @@ import type { RealtimeTool } from '../types.js';
 export interface RealtimeToolParts {
   /** What the model reads: text, JSON and text resources, with images and files described */
   text: string;
-  /** The images of the result, for a session that sends them to the model */
+  /** The PNG, JPEG, GIF and WebP images of the result, for a session that sends them */
   images: ToolImagePart[];
 }
 
@@ -35,7 +35,7 @@ export function realtimeToolParts(
 
 /** A tool result without parts as JSON text, cut to the tool's `maxResultLength`. */
 export function realtimeToolText(result: unknown, tool: RealtimeTool): string {
-  return truncateToolResultText(JSON.stringify(result ?? null), maxResultLength(tool));
+  return truncateToolResultText(toJson(result), maxResultLength(tool));
 }
 
 /**
@@ -43,17 +43,27 @@ export function realtimeToolText(result: unknown, tool: RealtimeTool): string {
  * itself, or its JSON text cut to the tool's `maxResultLength` when that text is longer.
  */
 export function realtimeToolValue(result: unknown, tool: RealtimeTool): unknown {
-  const value = result ?? null;
-  const json = JSON.stringify(value);
-  return json.length > maxResultLength(tool)
-    ? truncateToolResultText(json, maxResultLength(tool))
-    : value;
+  const json = toJson(result);
+  const max = maxResultLength(tool);
+  return json.length > max ? truncateToolResultText(json, max) : (JSON.parse(json) as unknown);
 }
 
 function maxResultLength(tool: RealtimeTool): number {
   return tool.maxResultLength ?? DEFAULT_TOOL_RESULT_MAX_LENGTH;
 }
 
+/** JSON text of a result, `null` for what JSON cannot hold (a function, `undefined`). */
+function toJson(result: unknown): string {
+  return JSON.stringify(result ?? null) ?? 'null';
+}
+
+const MODEL_IMAGE_TYPES: ReadonlySet<string> = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+]);
+
 function isImagePart(part: ToolContentPart): part is ToolImagePart {
-  return part.type === 'image';
+  return part.type === 'image' && MODEL_IMAGE_TYPES.has(part.mediaType);
 }
