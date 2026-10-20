@@ -249,6 +249,9 @@ import type {
   ChatStreamChunk,
   ChatUsage,
   OpenAIProviderConfig,
+  OpenAICompatibleProfile,
+  OpenAICompatibleServer,
+  ModelPriceConfig,
   ReasoningConfig,
   PromptCacheConfig,
 } from '@cogitator-ai/types';
@@ -310,6 +313,17 @@ const openaiConfig: OpenAIProviderConfig = {
   api: 'chat-completions', // force a wire API: 'responses' | 'chat-completions'
 };
 
+// An OpenAI-compatible server: what it takes (OpenAICompatibleProfile over an OpenAICompatibleServer preset)
+const lmStudio: OpenAIProviderConfig = {
+  apiKey: 'lm-studio',
+  baseUrl: 'http://localhost:1234/v1',
+  profile: { server: 'lmstudio', reasoningEffort: ['low', 'medium', 'high'] },
+  headers: { 'X-Team': 'search' }, // sent with every request
+};
+
+// A price of your own for CogitatorConfig.llm.pricing, USD per million tokens
+const price: ModelPriceConfig = { input: 0.6, output: 0.6, inputCached: 0.06 };
+
 // Reasoning effort, mapped per provider (Anthropic effort / thinking, OpenAI reasoning.effort, Gemini thinking, Ollama think)
 const reasoning: ReasoningConfig = { effort: 'high', budgetTokens: 8000, summary: true };
 // effort: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
@@ -317,6 +331,8 @@ const reasoning: ReasoningConfig = { effort: 'high', budgetTokens: 8000, summary
 // Prompt caching for agent runs (CogitatorConfig.llm.promptCache)
 const promptCache: PromptCacheConfig = { ttl: '1h' }; // '5m' (default) | '1h'
 ```
+
+`AnthropicProviderConfig` and `GoogleProviderConfig` take `baseUrl` and `headers` (Google's `baseUrl` includes the API version), `VLLMProviderConfig` takes `profile` and `headers`, `OpenRouterProviderConfig` takes `headers`, and `BedrockProviderConfig` takes `endpoint` for a VPC endpoint or a proxy.
 
 `LLMRetryConfig` (`maxRetries`, `baseDelay`, `maxDelay`, `maxRetryAfter`, `requestTimeout`, `onRetry`) types `CogitatorConfig.llm.retry`; `ModelRoute` is what `cog.route()` resolves a model string to.
 
@@ -479,17 +495,19 @@ console.log(ERROR_STATUS_CODES[ErrorCode.LLM_RATE_LIMITED]); // 429
 
 ### Error Codes
 
-| Domain   | Codes                                                                                                                                              |
-| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| LLM      | `LLM_UNAVAILABLE`, `LLM_RATE_LIMITED`, `LLM_TIMEOUT`, `LLM_INVALID_RESPONSE`, `LLM_CONTEXT_LENGTH_EXCEEDED`, `LLM_CONTENT_FILTERED`                |
-| Sandbox  | `SANDBOX_UNAVAILABLE`, `SANDBOX_TIMEOUT`, `SANDBOX_OOM`, `SANDBOX_EXECUTION_FAILED`, `SANDBOX_INVALID_MODULE`                                      |
-| Tool     | `TOOL_NOT_FOUND`, `TOOL_INVALID_ARGS`, `TOOL_EXECUTION_FAILED`, `TOOL_TIMEOUT`                                                                     |
-| Memory   | `MEMORY_UNAVAILABLE`, `MEMORY_WRITE_FAILED`, `MEMORY_READ_FAILED`, `THREAD_ACCESS_DENIED`                                                          |
-| Agent    | `AGENT_NOT_FOUND`, `AGENT_ALREADY_RUNNING`, `AGENT_MAX_ITERATIONS`, `RUN_TOKEN_LIMIT_EXCEEDED`, `RUN_NOT_PAUSED`, `RUN_TIMEOUT`, `BUDGET_EXCEEDED` |
-| Workflow | `WORKFLOW_NOT_FOUND`, `WORKFLOW_STEP_FAILED`, `WORKFLOW_CYCLE_DETECTED`                                                                            |
-| Swarm    | `SWARM_NO_WORKERS`, `SWARM_CONSENSUS_FAILED`                                                                                                       |
-| Security | `PROMPT_INJECTION_DETECTED`, `PII_DETECTED`                                                                                                        |
-| General  | `VALIDATION_ERROR`, `CONFIGURATION_ERROR`, `INTERNAL_ERROR`, `NOT_IMPLEMENTED`, `CIRCUIT_OPEN`                                                     |
+| Domain   | Codes                                                                                                                                                     |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| LLM      | `LLM_UNAVAILABLE`, `LLM_RATE_LIMITED`, `LLM_QUOTA_EXCEEDED`, `LLM_TIMEOUT`, `LLM_INVALID_RESPONSE`, `LLM_CONTEXT_LENGTH_EXCEEDED`, `LLM_CONTENT_FILTERED` |
+| Sandbox  | `SANDBOX_UNAVAILABLE`, `SANDBOX_TIMEOUT`, `SANDBOX_OOM`, `SANDBOX_EXECUTION_FAILED`, `SANDBOX_INVALID_MODULE`                                             |
+| Tool     | `TOOL_NOT_FOUND`, `TOOL_INVALID_ARGS`, `TOOL_EXECUTION_FAILED`, `TOOL_TIMEOUT`                                                                            |
+| Memory   | `MEMORY_UNAVAILABLE`, `MEMORY_WRITE_FAILED`, `MEMORY_READ_FAILED`, `THREAD_ACCESS_DENIED`                                                                 |
+| Agent    | `AGENT_NOT_FOUND`, `AGENT_ALREADY_RUNNING`, `AGENT_MAX_ITERATIONS`, `RUN_TOKEN_LIMIT_EXCEEDED`, `RUN_NOT_PAUSED`, `RUN_TIMEOUT`, `BUDGET_EXCEEDED`        |
+| Workflow | `WORKFLOW_NOT_FOUND`, `WORKFLOW_STEP_FAILED`, `WORKFLOW_CYCLE_DETECTED`                                                                                   |
+| Swarm    | `SWARM_NO_WORKERS`, `SWARM_CONSENSUS_FAILED`                                                                                                              |
+| Security | `PROMPT_INJECTION_DETECTED`, `PII_DETECTED`                                                                                                               |
+| General  | `VALIDATION_ERROR`, `CONFIGURATION_ERROR`, `INTERNAL_ERROR`, `NOT_IMPLEMENTED`, `CIRCUIT_OPEN`                                                            |
+
+`LLMErrorKind` says why a model provider call failed, finer than the code: `rate_limit`, `quota`, `authentication`, `permission`, `not_found`, `invalid_request`, `context_overflow`, `content_filter`, `overloaded`, `server_error`, `timeout`, `network` or `invalid_response`. An `LLMError` of `@cogitator-ai/core` carries it as `kind` and `details.kind`. `LLM_QUOTA_EXCEEDED` (HTTP 503) is an account out of credits or over a quota that waiting a moment will not lift, and is never retried.
 
 The runtime throws `RUN_TIMEOUT` (HTTP 504) for a run that hits its timeout (`Run timed out after <n>ms`), `BUDGET_EXCEEDED` (429) for a run over its cost-routing budget, and `LLM_CONTENT_FILTERED` (400) when guardrails block the input or output (`Input blocked: …` / `Output blocked: …`).
 

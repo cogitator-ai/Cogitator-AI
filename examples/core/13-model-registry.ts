@@ -6,12 +6,12 @@ import {
   listModels,
   getModelRegistry,
   shutdownModels,
-  BUILTIN_MODELS,
+  LITELLM_SNAPSHOT,
 } from '@cogitator-ai/models';
 
 header('Model Registry');
 
-section('Built-in models (no network needed)');
+section('Offline catalogue (no network needed)');
 const gptLuna = getModel('gpt-6-luna');
 console.log(
   `${gptLuna?.displayName}: ${gptLuna?.contextWindow} context, $${gptLuna?.pricing.input}/M input`
@@ -20,6 +20,11 @@ console.log(
 const claude = getModel('claude-sonnet-5-5');
 console.log(
   `${claude?.displayName}: ${claude?.contextWindow} context, $${claude?.pricing.input}/M input`
+);
+
+const deepseek = getModel('deepseek/deepseek-chat');
+console.log(
+  `${deepseek?.id} (${deepseek?.provider}): $${deepseek?.pricing.input}/M input, from the LiteLLM copy of ${LITELLM_SNAPSHOT.fetchedAt}`
 );
 
 section('Pricing lookup');
@@ -39,7 +44,7 @@ const cheapTools = listModels({
 });
 for (const m of cheapTools.slice(0, 5)) {
   const avg = ((m.pricing.input + m.pricing.output) / 2).toFixed(2);
-  console.log(`  ${m.id} (${m.provider}) — avg $${avg}/M`);
+  console.log(`  ${m.id} (${m.provider}) - avg $${avg}/M`);
 }
 
 section('Filter: vision models with large context');
@@ -48,26 +53,29 @@ const visionModels = listModels({
   minContextWindow: 200_000,
   excludeDeprecated: true,
 });
-for (const m of visionModels) {
-  console.log(`  ${m.id} — ${m.contextWindow.toLocaleString()} tokens`);
+console.log(`${visionModels.length} models, the first five:`);
+for (const m of visionModels.slice(0, 5)) {
+  console.log(`  ${m.id} - ${m.contextWindow.toLocaleString()} tokens`);
 }
 
-section('Providers');
+section('Providers with the most models');
 const registry = getModelRegistry();
-for (const provider of registry.listProviders()) {
-  const active = registry.listModels({ provider: provider.id }).length;
-  console.log(`  ${provider.name}: ${active} models`);
+const providers = registry
+  .listProviders()
+  .map((provider) => ({
+    name: provider.name,
+    count: registry.listModels({ provider: provider.id }).length,
+  }))
+  .sort((a, b) => b.count - a.count);
+console.log(`${providers.length} providers, ${registry.getModelCount()} models`);
+for (const { name, count } of providers.slice(0, 8)) {
+  console.log(`  ${name}: ${count} models`);
 }
 
-section('Fetch latest data from LiteLLM');
-try {
-  await initializeModels();
-  const reg = getModelRegistry();
-  console.log(`Total models after fetch: ${reg.getModelCount()}`);
-  console.log(`(Built-in: ${BUILTIN_MODELS.length})`);
-} catch {
-  console.log('Network fetch failed, using built-in data');
-}
+section('Load the current catalogue from LiteLLM');
+await initializeModels();
+console.log(`Models after initializeModels(): ${getModelRegistry().getModelCount()}`);
+console.log('(it falls back to the offline catalogue when LiteLLM and the cache are unreachable)');
 
 shutdownModels();
 console.log('\nDone.');

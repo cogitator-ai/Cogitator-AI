@@ -11,6 +11,7 @@ Model output is non-deterministic, but almost everything around it is not. Test 
 - **Agent behaviour** — script the LLM with a mock backend and assert on tool calls, output and the requests sent
 - **Workflow logic** — run DAGs of function nodes; no LLM needed
 - **Error handling** — make the mock throw and check how the run fails or recovers
+- **Backends of your own** - hold them to the contract of the built-in ones with the [conformance kit](/docs/testing/backend-conformance)
 - **Real providers** — a smaller end-to-end suite against Google, OpenAI or Ollama
 
 ## Unit Testing Tools

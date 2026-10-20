@@ -34,13 +34,48 @@ cog.getCostRouter()?.getBudgetStatus();
 
 With `enabled: true`, the `budget` is checked twice. Before a run starts, its estimated cost is checked, so a run that would clearly go over never makes a call. Then, before **every model call**, what has really been spent is checked: the run's own cost against `maxCostPerRun`, and every run's spending over the last hour and day against `maxCostPerHour` and `maxCostPerDay`. A run that reaches a limit stops before its next call with a `CogitatorError` whose code is `BUDGET_EXCEEDED` (`statusCode` 429) and whose message is `Budget exceeded: <reason>`. A call already in flight can take spending past a limit by its own cost, never further.
 
-The cost of each model call is recorded as soon as it is answered, from the cost the provider reports or, when it reports none, from the model's price. A call with neither counts as $0, so the runtime warns once per such model that the budget cannot count it: call `initializeModels()` from `@cogitator-ai/models` at startup to load prices beyond the built-in models (DeepSeek, Groq, Mistral, Together, Bedrock and the rest of the LiteLLM catalogue). So a run that fails or is cancelled still counts toward the hourly and daily budget, and runs side by side see each other's spending at once. Costs are recorded unless `trackCosts: false`, a `budget` keeps its records either way, since its limits are read from them.
+The cost of each model call is recorded as soon as it is answered, from the cost the provider reports or, when it reports none, from the model's price in `llm.pricing` or the model registry (see [Prices of Your Own](#prices-of-your-own)). So a run that fails or is cancelled still counts toward the hourly and daily budget, and runs side by side see each other's spending at once. Costs are recorded unless `trackCosts: false`, a `budget` keeps its records either way, since its limits are read from them.
 
 With `autoSelectModel: true`, the router analyzes the input and picks a model from the [model registry](/docs/core/model-registry), considering only providers the runtime can call: a backend in `llm.backends`, a registered plugin, `llm.defaultProvider`, the provider of the agent's own model, or a built-in provider configured in `llm.providers` with its credentials. The budget is then checked against that model's estimated cost. When no callable provider has a fitting model, the run keeps the agent's model. `preferLocal` (on by default) favours local models such as Ollama's.
 
 Without `autoSelectModel`, the run uses the agent's model, and the budget check estimates the run's cost from the input's complexity and that model's price (0 when the price is unknown, so the hourly and daily limits still hold against what was already spent).
 
 `getCostRouter()` and `getCostSummary()` work before the first run; they return `undefined` only without `costRouting.enabled`.
+
+## Prices of Your Own
+
+A call whose provider reports no cost is priced from the [model registry](/docs/core/model-registry), which knows the LiteLLM catalogue, offline from the copy bundled with `@cogitator-ai/models`. For a fine-tune, a model the catalogue does not list yet, a negotiated rate or a self-hosted model you want to cost, set its price in `llm.pricing`, in USD per million tokens:
+
+```typescript
+const cog = new Cogitator({
+  llm: {
+    pricing: {
+      'openai/ft:gpt-4o-mini:acme': { input: 0.3, output: 1.2 },
+      'llama3.3:70b': { input: 0.6, output: 0.6, inputCached: 0.06 },
+    },
+  },
+});
+```
+
+```yaml title="cogitator.yml"
+llm:
+  pricing:
+    llama3.3:70b:
+      input: 0.6
+      output: 0.6
+```
+
+- **Keys.** A key matches the model string a run uses or its tail after any `/`, case-insensitively: `openai/gpt-4o` prices that model at OpenAI only, `gpt-4o` at every provider that serves it under that name, `llama3.3:70b` on Ollama and vLLM alike.
+- **Fields.** `input` and `output`, and optionally `inputCached`, `inputCacheWrite` and `inputCacheWrite1h` for prompt-cache reads and writes, which default to the input price.
+- **Precedence.** A price in `llm.pricing` wins over the registry. A cost the provider reports, as OpenRouter does, wins over both.
+- **Where it counts.** Run cost (`result.usage.cost`), the budgets and cost records of cost routing, [Tree of Thoughts](/docs/advanced/reasoning), [`cog.decide()`](/docs/core/decisions) and `cog.estimateCost()`, which also prices a local model you set a price for.
+
+A call with no reported cost and no known price counts as $0, so the runtime logs one warning per model that names the `llm.pricing` key to set. Ollama and vLLM run on your own hardware: their calls are free unless `llm.pricing` says otherwise, and they never warn. `cog.pricer` (a `CallPricer`) prices a model string the way runs do:
+
+```typescript
+cog.pricer.pricing('openai/ft:gpt-4o-mini:acme'); // { input: 0.3, output: 1.2 }
+cog.pricer.cost('openai/gpt-4o', { inputTokens: 10_000, outputTokens: 500 }); // USD, 0 when unknown
+```
 
 `cog.estimateCost()` predicts a run's cost before you start it (see [Cost Estimation](#cost-estimation)):
 

@@ -419,13 +419,37 @@ interface OpenAIProviderConfig {
   apiKey: string;
   baseUrl?: string;
   api?: OpenAIWireApi; // default: 'responses' for api.openai.com, 'chat-completions' for other base URLs
+  profile?: OpenAICompatibleServer | OpenAICompatibleProfile; // default: 'openai' for api.openai.com, else 'generic'
+  headers?: Record<string, string>; // sent with every request
 }
 type OpenAIWireApi = 'responses' | 'chat-completions';
+type OpenAICompatibleServer =
+  | 'openai'
+  | 'generic'
+  | 'vllm'
+  | 'ollama'
+  | 'lmstudio'
+  | 'llamacpp'
+  | 'groq'
+  | 'together'
+  | 'deepseek'
+  | 'mistral'
+  | 'openrouter';
+interface OpenAICompatibleProfile {
+  server?: OpenAICompatibleServer; // the preset the other fields override
+  maxTokensField?: 'max_tokens' | 'max_completion_tokens';
+  streamUsage?: boolean; // send stream_options: { include_usage: true }
+  reasoningEffort?: boolean | readonly ReasoningEffort[]; // the efforts the server takes
+}
 interface AnthropicProviderConfig {
   apiKey: string;
+  baseUrl?: string; // default 'https://api.anthropic.com'
+  headers?: Record<string, string>;
 }
 interface GoogleProviderConfig {
   apiKey: string;
+  baseUrl?: string; // with the version, default 'https://generativelanguage.googleapis.com/v1beta'
+  headers?: Record<string, string>;
 }
 interface AzureProviderConfig {
   endpoint: string;
@@ -438,9 +462,19 @@ interface BedrockProviderConfig {
   region?: string;
   accessKeyId?: string;
   secretAccessKey?: string;
+  sessionToken?: string;
+  profile?: string; // a named profile of the shared AWS config files
+  endpoint?: string; // a VPC endpoint or a proxy, default: the region's
 }
 interface VLLMProviderConfig {
   baseUrl: string;
+  profile?: OpenAICompatibleServer | OpenAICompatibleProfile; // default 'vllm'
+  headers?: Record<string, string>;
+}
+interface OpenRouterProviderConfig {
+  apiKey: string;
+  baseUrl?: string; // default 'https://openrouter.ai/api/v1'
+  headers?: Record<string, string>; // e.g. HTTP-Referer and X-Title app attribution
 }
 // MistralProviderConfig, GroqProviderConfig, TogetherProviderConfig, DeepSeekProviderConfig: { apiKey: string }
 ```
@@ -457,6 +491,7 @@ interface CogitatorConfig {
     plugins?: Record<string, unknown>; // config for registerLLMBackend plugins, by provider
     retry?: LLMRetryConfig | false; // on by default
     promptCache?: PromptCacheConfig | false; // on by default
+    pricing?: Record<string, ModelPriceConfig>; // USD per million tokens, by model string or its tail after any '/'
   };
   runCheckpoints?: RunCheckpointStore; // where paused runs wait
   prompts?: PromptsConfig; // instruction versions and A/B tests
@@ -523,6 +558,14 @@ interface MemoryConfig {
 }
 
 type EmbeddingServiceConfig = OpenAIEmbeddingConfig | OllamaEmbeddingConfig | GoogleEmbeddingConfig;
+
+interface ModelPriceConfig {
+  input: number;
+  output: number;
+  inputCached?: number; // prompt-cache reads, default: the input price
+  inputCacheWrite?: number; // prompt-cache writes with the 5-minute TTL
+  inputCacheWrite1h?: number; // prompt-cache writes with the 1-hour TTL
+}
 ```
 
 Every adapter method returns a `MemoryResult`; `unwrap(result)` from `@cogitator-ai/memory` returns `data` or throws. `MemoryAdapter`, `Thread`, `MemoryEntry`, `Fact`, `Embedding` and the search and graph types are listed on the [Memory API](/docs/api-reference/memory) page.
@@ -549,6 +592,7 @@ enum ErrorCode {
   LLM_INVALID_RESPONSE = 'LLM_INVALID_RESPONSE',
   LLM_CONTEXT_LENGTH_EXCEEDED = 'LLM_CONTEXT_LENGTH_EXCEEDED',
   LLM_CONTENT_FILTERED = 'LLM_CONTENT_FILTERED',
+  LLM_QUOTA_EXCEEDED = 'LLM_QUOTA_EXCEEDED', // out of credits or over a quota, never retried
   SANDBOX_UNAVAILABLE = 'SANDBOX_UNAVAILABLE',
   SANDBOX_TIMEOUT = 'SANDBOX_TIMEOUT',
   SANDBOX_OOM = 'SANDBOX_OOM',
@@ -586,7 +630,28 @@ enum ErrorCode {
 
 `cog.run()` throws a `CogitatorError` when a run hits its `timeout` (`Run timed out after <n>ms`, `RUN_TIMEOUT`), when cost routing finds the budget exceeded (`Budget exceeded: …`, `BUDGET_EXCEEDED`), and when guardrails block the input or output (`Input blocked: …` / `Output blocked: …`, `LLM_CONTENT_FILTERED`, with `details.harmScores`), so server adapters answer with that status and message.
 
-`ERROR_STATUS_CODES` maps each code to an HTTP status (for example `RUN_TIMEOUT` → 504, `BUDGET_EXCEEDED` → 429, `LLM_CONTENT_FILTERED` → 400); `isRetryableError(error)` and `getRetryDelay(error, defaultDelay = 1000)` read `retryable` / `retryAfter` (and treat plain errors mentioning timeouts, connection resets, rate limits, 429 or 503 as retryable).
+`ERROR_STATUS_CODES` maps each code to an HTTP status (for example `RUN_TIMEOUT` → 504, `BUDGET_EXCEEDED` → 429, `LLM_CONTENT_FILTERED` → 400, `LLM_QUOTA_EXCEEDED` → 503), `isRetryableError(error)` and `getRetryDelay(error, defaultDelay = 1000)` read `retryable` / `retryAfter` (and treat plain errors mentioning timeouts, connection resets, rate limits, 429 or 503 as retryable).
+
+An `LLMError` (from `@cogitator-ai/core`) carries why the provider call failed as `kind`, also in `details.kind`:
+
+```typescript
+type LLMErrorKind =
+  | 'rate_limit' // retrying after a wait helps
+  | 'quota' // out of credits or over a daily or billing quota
+  | 'authentication'
+  | 'permission'
+  | 'not_found'
+  | 'invalid_request'
+  | 'context_overflow'
+  | 'content_filter'
+  | 'overloaded'
+  | 'server_error'
+  | 'timeout'
+  | 'network'
+  | 'invalid_response';
+```
+
+See [Error Kinds](/docs/core/llm-backends#error-kinds) for the code each kind maps to and how each provider is read.
 
 ## Other Modules
 

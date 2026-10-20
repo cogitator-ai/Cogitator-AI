@@ -5,7 +5,7 @@ description: Dynamic model registry with pricing, capabilities, and multi-provid
 
 ## Overview
 
-The `@cogitator-ai/models` package provides a dynamic model registry that tracks pricing, context windows, and capabilities for LLM models across all major providers. It fetches data from [LiteLLM](https://github.com/BerriAI/litellm) and includes built-in fallbacks.
+The `@cogitator-ai/models` package provides a dynamic model registry that tracks pricing, context windows, and capabilities for LLM models across all major providers. It fetches data from [LiteLLM](https://github.com/BerriAI/litellm) and works offline from built-in models and a copy of the LiteLLM catalogue bundled with the package.
 
 ```typescript
 import { initializeModels, getModel, getPrice, listModels } from '@cogitator-ai/models';
@@ -43,7 +43,7 @@ A lookup resolves in this order:
 2. When that provider does not list the model, the prefix is dropped and the rest is looked up, so `openai/deepseek/deepseek-v4-pro` (an OpenAI-compatible server) is priced as `deepseek/deepseek-v4-pro`.
 3. A bare name (`deepseek-v4-pro`) picks one listing by fixed rules, never by catalogue order: active models before deprecated ones, the vendor's own listing (a built-in model or an unprefixed LiteLLM key) before resellers, then the providers in `BUILTIN_PROVIDERS` order, then the shorter id, then alphabetically.
 
-Pass the full model string your agent runs on to get that provider's price. The built-in models follow the same rules before `initializeModels()` runs.
+Pass the full model string your agent runs on to get that provider's price. The offline catalogue follows the same rules before `initializeModels()` runs.
 
 ## Pricing and Cost
 
@@ -64,7 +64,36 @@ const cost = calculateCost('claude-sonnet-5-5', {
 // 0.0156 (USD), or null when the model's price is unknown
 ```
 
-Cache reads and writes are charged at `inputCached` / `inputCacheWrite` where the model has them, and at the input price otherwise. Writes made with Anthropic's 1-hour TTL (`cacheWrite1hTokens`, a part of `cacheWriteTokens`) are charged at `inputCacheWrite1h`, twice the input price, instead of the 5-minute write price. `RunResult.usage.cost` adds up the cost of each model call. When the provider reports what a call cost (OpenRouter does, in `usage.cost`), the runtime takes that price, which also reflects which upstream served the call. Other calls are priced with `calculateCost()` on the shared registry, using the full model string the agent runs on, so a model the registry does not know and whose provider reports nothing costs `0`. Call `initializeModels()` at startup to price more than the built-in models: lookups made before it use the built-in models without counting as initialization, so it still loads the full catalogue whenever it runs. With a cost-routing `budget`, the runtime warns once per model whose calls it cannot price.
+Cache reads and writes are charged at `inputCached` / `inputCacheWrite` where the model has them, and at the input price otherwise. Writes made with Anthropic's 1-hour TTL (`cacheWrite1hTokens`, a part of `cacheWriteTokens`) are charged at `inputCacheWrite1h`, twice the input price, instead of the 5-minute write price. `RunResult.usage.cost` adds up the cost of each model call. When the provider reports what a call cost (OpenRouter does, in `usage.cost`), the runtime takes that price, which also reflects which upstream served the call. Other calls are priced by [`llm.pricing`](/docs/advanced/cost-routing#prices-of-your-own) first, then from the shared registry, using the full model string the agent runs on, so a model neither knows and whose provider reports nothing costs `0`, and the runtime warns once per such model (models on Ollama and vLLM are free and stay quiet). Lookups made before `initializeModels()` use the offline catalogue without counting as initialization, so `initializeModels()` at startup still loads the current one whenever it runs.
+
+### Offline Catalogue
+
+Without the network the registry still knows the built-in models and every model of the LiteLLM catalogue copy bundled with the package (`LITELLM_SNAPSHOT`, MIT licensed like LiteLLM), so DeepSeek, Mistral, Bedrock and the rest are priced before `initializeModels()` and when both the fetch and the cache fail. The built-in models take their prices and limits from the copy, as they do from fetched data. `LITELLM_SNAPSHOT.fetchedAt` says how old it is, and `pnpm --filter @cogitator-ai/models snapshot` refreshes it in the repository.
+
+```typescript
+import { getPricing, LITELLM_SNAPSHOT } from '@cogitator-ai/models';
+
+getPricing('deepseek/deepseek-chat'); // priced offline from the bundled copy
+LITELLM_SNAPSHOT.fetchedAt; // 'YYYY-MM-DD'
+```
+
+### ModelPricer
+
+`ModelPricer` prices model calls from prices of your own first and the registry second, the way the runtime does with `llm.pricing`. A key matches the full model string or its tail after any `/`, the longest match first, case-insensitively: `openai/gpt-4o` prices only that model at OpenAI, `gpt-4o` prices it at every provider that serves it under that name.
+
+```typescript
+import { ModelPricer, costOf, getPricing } from '@cogitator-ai/models';
+
+const pricer = new ModelPricer({ 'my-finetune': { input: 0.3, output: 1.2 } });
+
+pricer.pricing('openai/my-finetune'); // { input: 0.3, output: 1.2 }
+pricer.cost('openai/my-finetune', { inputTokens: 10_000, outputTokens: 500 }); // 0.0036, null when unknown
+pricer.hasOverride('gpt-4o'); // false, priced from the registry
+
+costOf(getPricing('claude-sonnet-5-5')!, { inputTokens: 1000, outputTokens: 100 }); // USD at a given price
+```
+
+`PricingOverrides` is the type of the prices it takes, `Record<string, ModelPricing>`.
 
 ## ModelRegistry
 
@@ -96,11 +125,11 @@ await registry.initialize();
 | `cache.filePath`    | `~/.cogitator/models-cache.json` | File path for file-based cache (in memory where there is no file system, e.g. edge runtimes) |
 | `autoRefresh`       | `false`                          | Automatically refresh data in background                                                     |
 | `refreshInterval`   | 24 hours                         | Refresh interval in milliseconds                                                             |
-| `fallbackToBuiltin` | `true`                           | Use built-in models when fetch fails                                                         |
+| `fallbackToBuiltin` | `true`                           | Use the offline catalogue when fetch and cache fail                                          |
 
 ### Methods
 
-`initialize()` loads a fresh cache if there is one (and refreshes it in the background), otherwise fetches LiteLLM data, on failure it falls back to built-in models (or throws when `fallbackToBuiltin` is `false`). Lookups before `initialize()` use the built-in models without counting as initialization, so a later `initialize()` still loads the full catalogue. Overlapping `initialize()` calls share one load.
+`initialize()` loads a fresh cache if there is one (and refreshes it in the background), otherwise fetches LiteLLM data, on failure it falls back to a stale cache, then to the offline catalogue (or throws when `fallbackToBuiltin` is `false`). Lookups before `initialize()` use the offline catalogue without counting as initialization, so a later `initialize()` still loads the full catalogue. Overlapping `initialize()` calls share one load.
 
 ```typescript
 registry.getModel('gpt-6.1-sol');
@@ -152,7 +181,7 @@ The registry includes provider entries (`BUILTIN_PROVIDERS`) for 16 providers:
 
 OpenAI (`openai`), Anthropic (`anthropic`), Google (`google`), Ollama (`ollama`), Azure OpenAI (`azure`), AWS Bedrock (`aws`), Mistral AI (`mistral`), Cohere (`cohere`), Groq (`groq`), Together AI (`together`), Fireworks AI (`fireworks`), DeepInfra (`deepinfra`), Perplexity (`perplexity`), Replicate (`replicate`), xAI (`xai`), OpenRouter (`openrouter`).
 
-Built-in model data covers OpenAI, Anthropic, Google and the decision models of OpenRouter. Models of the other providers, and additional providers, come from LiteLLM data once it is fetched. `getProvider(id).models` lists the model ids loaded for a provider.
+Built-in model data covers OpenAI, Anthropic, Google and the decision models of OpenRouter. Models of the other providers, and additional providers, come from LiteLLM data, the bundled copy until the catalogue is fetched. `getProvider(id).models` lists the model ids loaded for a provider.
 
 ## Built-in Models
 
@@ -200,7 +229,7 @@ new ModelRegistry({
 });
 ```
 
-The cache supports stale-while-revalidate: if a refresh fails, the registry falls back to stale cached data before using built-in models. Fetched data is merged over the built-in entries, so built-in models keep their display names and aliases with fresh prices.
+The cache supports stale-while-revalidate: if a refresh fails, the registry falls back to stale cached data before using the offline catalogue. Fetched data is merged over the built-in entries, so built-in models keep their display names and aliases with fresh prices.
 
 `ModelCache` is exported for direct use (`get()`, `getStale()`, `set(models)`, `clear()`).
 
@@ -256,4 +285,4 @@ listModels({ provider: 'google' });
 shutdownModels();
 ```
 
-These functions auto-initialize with built-in data on first use, so `initializeModels()` is optional but recommended for fetching latest data. The shared registry (`getModelRegistry()`) caches to the file `~/.cogitator/models-cache.json` for 24 hours; `shutdownModels()` stops it and discards it, so the next call creates a new one.
+These functions use the offline catalogue until the first `initializeModels()`, so it is optional but recommended for the latest data. The shared registry (`getModelRegistry()`) caches to the file `~/.cogitator/models-cache.json` for 24 hours; `shutdownModels()` stops it and discards it, so the next call creates a new one.

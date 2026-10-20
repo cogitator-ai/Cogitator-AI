@@ -28,12 +28,27 @@ interface CogitatorConfig {
     defaultModel?: string; // used by agents without a `model`
     providers?: {
       ollama?: { baseUrl: string; apiKey?: string };
-      openai?: { apiKey: string; baseUrl?: string; api?: 'responses' | 'chat-completions' };
-      anthropic?: { apiKey: string };
-      google?: { apiKey: string };
+      openai?: {
+        apiKey: string;
+        baseUrl?: string;
+        api?: 'responses' | 'chat-completions';
+        profile?: OpenAICompatibleServer | OpenAICompatibleProfile; // what the server at baseUrl takes
+        headers?: Record<string, string>;
+      };
+      anthropic?: { apiKey: string; baseUrl?: string; headers?: Record<string, string> };
+      google?: { apiKey: string; baseUrl?: string; headers?: Record<string, string> }; // baseUrl with the API version
       azure?: { endpoint: string; apiKey: string; apiVersion?: string; deployment?: string };
-      bedrock?: { region?: string; accessKeyId?: string; secretAccessKey?: string };
-      vllm?: { baseUrl: string };
+      bedrock?: {
+        region?: string;
+        accessKeyId?: string;
+        secretAccessKey?: string;
+        endpoint?: string;
+      };
+      vllm?: {
+        baseUrl: string;
+        profile?: OpenAICompatibleServer | OpenAICompatibleProfile;
+        headers?: Record<string, string>;
+      };
       mistral?: { apiKey: string };
       groq?: { apiKey: string };
       together?: { apiKey: string };
@@ -48,6 +63,9 @@ interface CogitatorConfig {
     retry?: LLMRetryConfig | false;
     // Prompt caching (on by default); false turns it off
     promptCache?: PromptCacheConfig | false;
+    // Prices of your own in USD per million tokens, by model string or its tail after any '/',
+    // over the model registry: { input, output, inputCached?, inputCacheWrite?, inputCacheWrite1h? }
+    pricing?: Record<string, ModelPriceConfig>;
   };
 
   memory?: MemoryConfig; // see "Memory configuration" below
@@ -1236,6 +1254,9 @@ try {
       case ErrorCode.LLM_RATE_LIMITED:
         if (error.retryable) console.log('Retry after', error.retryAfter, 'ms');
         break;
+      case ErrorCode.LLM_QUOTA_EXCEEDED:
+        console.log('Out of credits or over a quota:', error.details?.kind);
+        break;
       case ErrorCode.THREAD_ACCESS_DENIED:
         console.log('Thread belongs to another user');
         break;
@@ -1246,7 +1267,9 @@ try {
 
 #### ErrorCode
 
-String enum (each value equals its name); `ERROR_STATUS_CODES` maps each to an HTTP status (`RUN_TIMEOUT` 504, `BUDGET_EXCEEDED` 429, `LLM_CONTENT_FILTERED` 400).
+String enum (each value equals its name), `ERROR_STATUS_CODES` maps each to an HTTP status (`RUN_TIMEOUT` 504, `BUDGET_EXCEEDED` 429, `LLM_CONTENT_FILTERED` 400, `LLM_QUOTA_EXCEEDED` 503).
+
+Errors of model provider calls are `LLMError`s with a `kind` (also `details.kind`, type `LLMErrorKind`): `rate_limit`, `quota`, `authentication`, `permission`, `not_found`, `invalid_request`, `context_overflow`, `content_filter`, `overloaded`, `server_error`, `timeout`, `network` or `invalid_response`, read from the provider's own error codes. A `quota` error is `LLM_QUOTA_EXCEEDED` and never retried. A call the caller aborts fails with the abort reason.
 
 `cog.run()` throws a `CogitatorError` when the run hits its `timeout` (`Run timed out after <n>ms` → `RUN_TIMEOUT`, with what the finished model calls used and cost in `details.usage`), when cost routing finds the budget exceeded (`Budget exceeded: …` → `BUDGET_EXCEEDED`), and when guardrails block the input or output (`Input blocked: …` / `Output blocked: …` → `LLM_CONTENT_FILTERED`, with `details.harmScores`), so server adapters answer with that status and message.
 
@@ -1259,6 +1282,7 @@ enum ErrorCode {
   LLM_INVALID_RESPONSE,
   LLM_CONTEXT_LENGTH_EXCEEDED,
   LLM_CONTENT_FILTERED,
+  LLM_QUOTA_EXCEEDED,
 
   // Sandbox
   SANDBOX_UNAVAILABLE,

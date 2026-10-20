@@ -9,6 +9,8 @@ pnpm install && pnpm build
 cp .env.example .env  # add GOOGLE_API_KEY at minimum
 ```
 
+`17-provider-surface.ts` needs no API key: it runs on a local Ollama (`OLLAMA_URL`, model `OLLAMA_MODEL`, default `qwen2.5:0.5b`).
+
 ## Examples
 
 | #   | File                      | Description                                                        |
@@ -29,6 +31,7 @@ cp .env.example .env  # add GOOGLE_API_KEY at minimum
 | 14  | `14-approvals.ts`         | Pause before a sensitive tool, resume after a person decides       |
 | 15  | `15-handoffs.ts`          | A triage agent hands the conversation to billing or tech support   |
 | 16  | `16-decisions.ts`         | Decision models: typed answers with probabilities, a routing tool  |
+| 17  | `17-provider-surface.ts`  | `llm.pricing`, OpenAI-compatible server profiles, `error.kind`     |
 
 ## Running
 

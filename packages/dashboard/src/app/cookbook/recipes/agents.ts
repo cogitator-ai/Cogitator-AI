@@ -344,7 +344,7 @@ console.log('gemini-3.8-flash window:', limits.getModelContextLimit('google:gemi
       points: [
         'Look up a model and its pricing with `getModel()` and `getPrice()`',
         'Filter with `listModels()`',
-        'Refresh the data from LiteLLM with `initializeModels()`, falling back to the built-in list offline',
+        'Work offline from the built-in models and the bundled LiteLLM copy, refresh with `initializeModels()`',
       ],
       file: 'model-registry.ts',
       code: `import { getModel, getModelRegistry, getPrice, initializeModels, listModels, shutdownModels } from '@cogitator-ai/models';
@@ -370,12 +370,10 @@ for (const model of cheapToolModels.slice(0, 5)) {
 const visionModels = listModels({ supportsVision: true, minContextWindow: 200_000, excludeDeprecated: true });
 console.log('Vision models with 200k+ context:', visionModels.map((model) => model.id).join(', '));
 
-try {
-  await initializeModels();
-  console.log('Models after fetching LiteLLM data:', getModelRegistry().getModelCount());
-} catch {
-  console.log('Offline: using the built-in model list');
-}
+console.log('Priced offline:', getPrice('deepseek/deepseek-chat'));
+
+await initializeModels();
+console.log('Models after initializeModels():', getModelRegistry().getModelCount());
 
 shutdownModels();`,
       install: 'pnpm add @cogitator-ai/models',

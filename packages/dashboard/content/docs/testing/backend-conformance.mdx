@@ -1,0 +1,111 @@
+---
+title: Backend Conformance
+description: Hold an LLM backend of your own to the contract every built-in backend meets, against a fake provider that speaks the real wire format.
+---
+
+Every built-in backend turns its provider's answers into the same results: the same `finishReason` for a tool turn, no tool calls on a cut-off turn, the same error code, `kind` and `retryable` for a rate limit or an exhausted quota, the abort reason for an aborted call. `@cogitator-ai/test-utils` ships the cases that check this, so a backend or [plugin](/docs/core/llm-backends#plugin-system) of your own can be held to the same contract.
+
+```bash
+pnpm add -D @cogitator-ai/test-utils
+```
+
+## Running the Cases
+
+A target names the backend, the wire format of the provider it talks to and the model to ask for. `backendConformanceCases(target)` returns one case per scenario and mode, each run against a fresh fake provider. The cases are framework-agnostic and throw an `AssertionError` when the backend breaks the contract:
+
+```typescript
+import { describe, it } from 'vitest';
+import {
+  backendConformanceCases,
+  openAIChatWire,
+  type BackendConformanceTarget,
+} from '@cogitator-ai/test-utils';
+import { MyGatewayBackend } from '../src/my-gateway-backend';
+
+const target: BackendConformanceTarget = {
+  name: 'My gateway',
+  wire: openAIChatWire,
+  model: 'conformance-model',
+  headers: { 'x-gateway-key': 'test' },
+  createBackend: (url) => new MyGatewayBackend({ baseUrl: `${url}/v1`, apiKey: 'test' }),
+};
+
+describe('My gateway backend conformance', () => {
+  for (const c of backendConformanceCases(target)) {
+    if (c.skip) it.skip(`${c.name}: ${c.skip}`, () => undefined);
+    else it(c.name, () => c.run(), 10_000);
+  }
+});
+```
+
+| Target field    | What it is                                                                                    |
+| --------------- | --------------------------------------------------------------------------------------------- |
+| `name`          | Name in the case titles                                                                       |
+| `wire`          | How the provider answers, one of the wires below or your own `ProviderWire`                   |
+| `createBackend` | `(providerUrl) => LLMBackend`, the backend under test sending its requests to the fake server |
+| `model`         | The model the requests name                                                                   |
+| `headers`       | Headers the backend is set to send, checked on every request                                  |
+| `skip`          | Scenarios to leave out, with the reason, `{ 'content-filter': 'no safety system' }`           |
+| `http2`         | The fake provider speaks HTTP/2 (h2c), for clients that only speak it, such as Bedrock's      |
+
+`@cogitator-ai/core` runs the same cases for every built-in backend, in `packages/core/src/__tests__/backend-conformance.test.ts`.
+
+## Wires
+
+A wire answers each scenario the way its provider's API does, streamed or not:
+
+| Wire                  | Provider API                                       |
+| --------------------- | -------------------------------------------------- |
+| `openAIChatWire`      | OpenAI Chat Completions and compatible servers     |
+| `openAIResponsesWire` | OpenAI Responses API                               |
+| `anthropicWire`       | Anthropic Messages                                 |
+| `geminiWire`          | Gemini `generateContent` / `streamGenerateContent` |
+| `ollamaWire`          | Ollama `/api/chat`                                 |
+| `bedrockConverseWire` | Bedrock Runtime `Converse` / `ConverseStream`      |
+
+A scenario a provider has no such case for (Ollama has no content filter) makes the wire return `undefined`, and the case is skipped with that reason. For a wire of your own, implement `ProviderWire` (`name` and `reply(scenario, mode, request)`) and build stream bodies with `sse()`, `ndjson()` and `awsEventStreamMessage()`.
+
+## Scenarios
+
+Every scenario runs in `chat` and `stream` mode, `stream-error` in `stream` only. The request is `conformanceRequest(model)`: a question and the one tool `get_weather` the model may call. The data the wires answer with is `CONFORMANCE_FIXTURE`.
+
+| Scenario                                                                        | The backend must                                                                                                                              |
+| ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `text`                                                                          | Return the text with `finishReason: 'stop'`, no tool calls and the reported usage                                                             |
+| `tool-call`, `tool-call-with-stop`                                              | Return one complete `get_weather` call as a `tool_calls` turn, also when the provider reported a stop                                         |
+| `truncated-tool-call`                                                           | Report `length` and drop the call cut off halfway through its arguments                                                                       |
+| `content-filter`                                                                | Report `content_filter` or `refusal` with no tool calls                                                                                       |
+| `stream-error`                                                                  | Pass on the text streamed before the provider failed, then fail as a retryable `overloaded` error                                             |
+| `abort`                                                                         | Fail at once with the caller's abort reason and close the connection, so the provider stops generating                                        |
+| `rate-limit`, `quota`, `auth`, `overloaded`, `server-error`, `context-overflow` | Fail with the error code, `details.kind` and `retryable` of that failure, and `retryAfter` from the provider's `retry-after` for a rate limit |
+
+The errors are the ones each kind maps to in [Error Kinds](/docs/core/llm-backends#error-kinds): a `quota` failure is `LLM_QUOTA_EXCEEDED` and not retryable, even where the provider sends it as a 429.
+
+## Fake Provider
+
+`startFakeProvider({ http2? })` is the HTTP server the cases run against, also usable on its own to test how a backend handles a reply you script:
+
+```typescript
+import { createLLMBackend } from '@cogitator-ai/core';
+import { startFakeProvider } from '@cogitator-ai/test-utils';
+
+const provider = await startFakeProvider();
+provider.reply(() => ({
+  type: 'json',
+  status: 429,
+  body: { error: { code: 'insufficient_quota', message: 'You exceeded your current quota' } },
+}));
+
+const backend = createLLMBackend('openai', {
+  providers: { openai: { apiKey: 'test', baseUrl: `${provider.url}/v1` } },
+});
+const error = await backend
+  .chat({ model: 'gpt-test', messages: [{ role: 'user', content: 'Hi' }] })
+  .catch((e: unknown) => e);
+// error.kind === 'quota', error.retryable === false
+
+provider.requests[0]?.headers; // what the backend sent, header names in lower case
+await provider.close();
+```
+
+A reply is `{ type: 'json', status?, body, headers? }`, `{ type: 'stream', status?, contentType, chunks, headers?, hang? }` with each chunk flushed on its own, or `{ type: 'hang' }` for a request that never answers. `nextRequest()` resolves when a request arrives and `latestClosed()` when its connection closes.

@@ -51,6 +51,7 @@ interface CogitatorConfig {
     plugins?: Record<string, unknown>; // config for registerLLMBackend() plugins
     retry?: LLMRetryConfig | false; // default: 2 retries with backoff
     promptCache?: PromptCacheConfig | false; // default: on
+    pricing?: Record<string, ModelPriceConfig>; // prices of your own, USD per million tokens, over the registry
   };
   limits?: {
     maxConcurrentRuns?: number; // runs over the limit wait in order
@@ -164,7 +165,7 @@ interface RunResult {
     inputTokens: number;
     outputTokens: number;
     totalTokens: number;
-    cost: number; // USD, from the model registry's prices
+    cost: number; // USD, reported by the provider or priced by llm.pricing and the model registry
     duration: number; // ms
     reasoningTokens?: number;
     cachedInputTokens?: number;

@@ -9,16 +9,17 @@ description: '@cogitator-ai/test-utils — a scriptable mock LLM backend, a reco
 pnpm add -D @cogitator-ai/test-utils
 ```
 
-| Export                                                  | What it is                                                                     |
-| ------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `MockLLMBackend`, `createMockLLMBackend()`              | An `LLMBackend` that answers with scripted responses and records every request |
-| `MockMemoryAdapter`, `createMockMemoryAdapter()`        | An in-process `MemoryAdapter` that records every method call                   |
-| `createTestAgentConfig()`, `createTestAgent()`          | Agent configs and agent-shaped objects with test defaults                      |
-| `createUserMessage()`, `createToolCall()`, …            | Message, tool call and tool result fixtures                                    |
-| `createTestTool()`, `createCalculatorTool()`, …         | Tool-shaped fixtures with JSON Schema parameters                               |
-| `createMockRunResult()`, …                              | `RunResult` fixtures for code that consumes run results                        |
-| `collectStreamContent()`, …                             | Drain `ChatStreamChunk` streams                                                |
-| `waitFor()`, `eventually()`, `delay()`, `withTimeout()` | Async test helpers                                                             |
+| Export                                                    | What it is                                                                                |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `MockLLMBackend`, `createMockLLMBackend()`                | An `LLMBackend` that answers with scripted responses and records every request            |
+| `MockMemoryAdapter`, `createMockMemoryAdapter()`          | An in-process `MemoryAdapter` that records every method call                              |
+| `createTestAgentConfig()`, `createTestAgent()`            | Agent configs and agent-shaped objects with test defaults                                 |
+| `createUserMessage()`, `createToolCall()`, …              | Message, tool call and tool result fixtures                                               |
+| `createTestTool()`, `createCalculatorTool()`, …           | Tool-shaped fixtures with JSON Schema parameters                                          |
+| `createMockRunResult()`, …                                | `RunResult` fixtures for code that consumes run results                                   |
+| `collectStreamContent()`, …                               | Drain `ChatStreamChunk` streams                                                           |
+| `waitFor()`, `eventually()`, `delay()`, `withTimeout()`   | Async test helpers                                                                        |
+| `backendConformanceCases()`, `startFakeProvider()`, wires | The [backend conformance](/docs/testing/backend-conformance) kit for backends of your own |
 
 ## MockLLMBackend
 

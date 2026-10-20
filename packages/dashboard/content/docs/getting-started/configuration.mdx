@@ -67,7 +67,7 @@ const config = loadConfig({
 
 | Section       | What it configures                                                                                                        |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `llm`         | `defaultProvider`, `defaultModel`, `providers`, `retry`, `promptCache`, `plugins`                                         |
+| `llm`         | `defaultProvider`, `defaultModel`, `providers`, `retry`, `promptCache`, `pricing`, `plugins`                              |
 | `prompts`     | `autoDeployWinner` for [prompt A/B tests](/docs/advanced/prompt-versions)                                                 |
 | `limits`      | `maxConcurrentRuns`, `defaultTimeout` (ms), `maxTokensPerRun` — see [Cogitator](/docs/core/cogitator#defaults-and-limits) |
 | `memory`      | Adapter, its connection, `embedding` and `contextBuilder`                                                                 |
@@ -158,8 +158,8 @@ Cogitator reads environment variables with the `COGITATOR_` prefix:
 | `COGITATOR_LLM_DEFAULT_MODEL`                                                                    | `llm.defaultModel`                |
 | `COGITATOR_OLLAMA_BASE_URL`, `COGITATOR_OLLAMA_API_KEY`                                          | `llm.providers.ollama.*`          |
 | `COGITATOR_OPENAI_API_KEY`, `COGITATOR_OPENAI_BASE_URL`                                          | `llm.providers.openai.*`          |
-| `COGITATOR_ANTHROPIC_API_KEY`                                                                    | `llm.providers.anthropic.apiKey`  |
-| `COGITATOR_GOOGLE_API_KEY`                                                                       | `llm.providers.google.apiKey`     |
+| `COGITATOR_ANTHROPIC_API_KEY`, `COGITATOR_ANTHROPIC_BASE_URL`                                    | `llm.providers.anthropic.*`       |
+| `COGITATOR_GOOGLE_API_KEY`, `COGITATOR_GOOGLE_BASE_URL`                                          | `llm.providers.google.*`          |
 | `COGITATOR_AZURE_API_KEY`, `_ENDPOINT`, `_API_VERSION`, `_DEPLOYMENT`                            | `llm.providers.azure.*`           |
 | `COGITATOR_BEDROCK_REGION`, `_ACCESS_KEY_ID`, `_SECRET_ACCESS_KEY`, `_SESSION_TOKEN`, `_PROFILE` | `llm.providers.bedrock.*`         |
 | `COGITATOR_VLLM_BASE_URL`                                                                        | `llm.providers.vllm.baseUrl`      |
@@ -173,6 +173,7 @@ Standard provider variables work too; a `COGITATOR_*` variable wins over its sta
 OPENAI_API_KEY=sk-xxx
 OPENAI_BASE_URL=https://proxy.example.com/v1
 ANTHROPIC_API_KEY=sk-ant-xxx
+ANTHROPIC_BASE_URL=https://gateway.example.com/anthropic   # optional proxy or gateway
 GOOGLE_API_KEY=xxx            # or GEMINI_API_KEY
 OLLAMA_URL=http://localhost:11434   # or OLLAMA_BASE_URL / OLLAMA_HOST, read like Ollama reads OLLAMA_HOST
 OLLAMA_API_KEY=xxx            # Ollama Cloud; URL defaults to https://ollama.com unless set in env or YAML
@@ -184,7 +185,7 @@ TOGETHER_API_KEY=xxx
 DEEPSEEK_API_KEY=xxx
 ```
 
-Azure is configured from the environment only when both the key and the endpoint are set.
+Azure is configured from the environment only when both the key and the endpoint are set, and a base URL of Anthropic or Google only applies together with its API key.
 
 `OLLAMA_BASE_URL`, `OLLAMA_URL` and `OLLAMA_HOST` are read the way Ollama reads `OLLAMA_HOST`: without a scheme the port is 11434, and `0.0.0.0` (often set so `ollama serve` listens on every interface) is reached as `localhost`. They only apply when `cogitator.yml` sets no `llm.providers.ollama.baseUrl`, while `COGITATOR_OLLAMA_BASE_URL` overrides it.
 
@@ -272,9 +273,12 @@ llm:
       apiKey: sk-xxx
       baseUrl: https://api.openai.com/v1 # optional, for proxies
       api: responses # optional: responses | chat-completions
+      profile: lmstudio # optional: what the server at baseUrl takes
+      headers: # optional, sent with every request
+        X-Gateway-Key: xxx
 ```
 
-The official endpoint uses the OpenAI Responses API by default; a `baseUrl` pointing at another OpenAI-compatible server uses Chat Completions. Set `api` to force either wire API. Requests with stop sequences always go through Chat Completions.
+The official endpoint uses the OpenAI Responses API by default, a `baseUrl` pointing at another OpenAI-compatible server uses Chat Completions. Set `api` to force either wire API. Requests with stop sequences always go through Chat Completions. `profile` names the server (`openai`, `generic`, `vllm`, `ollama`, `lmstudio`, `llamacpp`, `groq`, `together`, `deepseek`, `mistral`, `openrouter`) or sets `server`, `maxTokensField`, `streamUsage` and `reasoningEffort` over a preset, see [Server Profiles](/docs/core/llm-backends#server-profiles). Without it the official endpoint gets `openai` and any other server `generic`.
 
 ### Anthropic
 
@@ -283,6 +287,9 @@ llm:
   providers:
     anthropic:
       apiKey: sk-ant-xxx
+      baseUrl: https://gateway.example.com/anthropic # optional, default https://api.anthropic.com
+      headers: # optional, sent with every request
+        X-Team: search
 ```
 
 ### Google Gemini
@@ -292,7 +299,12 @@ llm:
   providers:
     google:
       apiKey: xxx
+      baseUrl: https://gateway.example.com/gemini/v1beta # optional, with the API version
+      headers: # optional
+        X-Team: search
 ```
+
+The default `baseUrl` is `https://generativelanguage.googleapis.com/v1beta`.
 
 ### Azure OpenAI
 
@@ -316,6 +328,7 @@ llm:
       region: us-east-1 # optional, can use AWS config chain
       accessKeyId: xxx # optional, uses AWS credentials chain
       secretAccessKey: xxx # optional
+      endpoint: https://vpce-0abc.bedrock-runtime.us-east-1.vpce.amazonaws.com # optional: a VPC endpoint or a proxy
 ```
 
 Bedrock needs the optional `@aws-sdk/client-bedrock-runtime` package.
@@ -335,11 +348,21 @@ llm:
       apiKey: xxx
     vllm:
       baseUrl: http://localhost:8000/v1
+      profile: vllm # optional, the default for vllm
+      headers: # optional
+        Authorization: Bearer xxx
+    openrouter:
+      apiKey: xxx
+      headers: # optional, OpenRouter app attribution
+        HTTP-Referer: https://example.com
+        X-Title: My App
 ```
+
+Mistral, Groq, Together and DeepSeek use their own [server profile](/docs/core/llm-backends#server-profiles).
 
 ### Retries
 
-Failed LLM calls (rate limits, 5xx, timeouts, dropped connections) are retried with exponential backoff and the provider's `Retry-After`. The defaults are below; `retry: false` turns retries off. See [LLM Backends](/docs/core/llm-backends#retries) for how streams and cancellation are handled.
+Failed LLM calls (rate limits, 5xx, timeouts, dropped connections) are retried with exponential backoff and the provider's `Retry-After`. An exhausted quota (`LLM_QUOTA_EXCEEDED`) is not. The defaults are below, `retry: false` turns retries off. See [LLM Backends](/docs/core/llm-backends#retries) for how streams and cancellation are handled.
 
 ```yaml
 llm:
@@ -361,6 +384,22 @@ llm:
     ttl: 1h # Anthropic keeps the cache for an hour instead of 5 minutes
     # conversation: true - also mark single turns for the next one (default: with tools or history)
   # promptCache: false   — turn it off
+```
+
+### Pricing
+
+Prices of your own, in USD per million tokens, by model, for calls whose provider reports no cost. A key is the model string a run uses or its tail after any `/`, and it wins over the model registry (see [Cost Routing](/docs/advanced/cost-routing#prices-of-your-own)):
+
+```yaml
+llm:
+  pricing:
+    openai/gpt-4o: # this model at OpenAI only
+      input: 2.5
+      output: 10
+      inputCached: 1.25 # optional, also inputCacheWrite and inputCacheWrite1h
+    llama3.3:70b: # at every provider that serves it under that name
+      input: 0.6
+      output: 0.6
 ```
 
 ### PII Masking

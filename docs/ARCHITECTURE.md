@@ -618,7 +618,7 @@ const bedrock = new BedrockBackend({
 });
 ```
 
-Every backend the runtime uses is wrapped with retries for rate limits, 5xx, timeouts and dropped connections (`llm.retry`, 2 retries by default; `false` turns them off).
+Every backend the runtime uses is wrapped with retries for rate limits, 5xx, timeouts and dropped connections (`llm.retry`, 2 retries by default, `false` turns them off). Provider errors carry a `kind` read from the provider's own error codes, and an exhausted quota (`LLM_QUOTA_EXCEEDED`) is never retried.
 
 #### Supported Providers
 

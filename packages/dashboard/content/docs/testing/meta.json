@@ -1,4 +1,4 @@
 {
   "title": "Testing",
-  "pages": ["index", "test-utils"]
+  "pages": ["index", "test-utils", "backend-conformance"]
 }
