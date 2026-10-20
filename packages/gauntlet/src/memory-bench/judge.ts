@@ -45,12 +45,20 @@ async function direct(
   options: JudgeOptions,
   replies: Map<string, JudgeReply>
 ): Promise<void> {
+  let failures = 0;
   await mapConcurrent(requests, options.concurrency, async (request) => {
-    const message = await options.client.messages.create(params(request));
-    const costUsd = callCost(message.usage.input_tokens, message.usage.output_tokens);
-    options.budget.charge('judge', costUsd);
-    replies.set(request.id, { text: textOf(message), costUsd });
+    try {
+      const message = await options.client.messages.create(params(request));
+      const costUsd = callCost(message.usage.input_tokens, message.usage.output_tokens);
+      options.budget.charge('judge', costUsd);
+      replies.set(request.id, { text: textOf(message), costUsd });
+    } catch (error) {
+      if (error instanceof Anthropic.AuthenticationError) throw error;
+      failures++;
+    }
   });
+  if (failures > 0)
+    options.log(`  ${failures} judge requests failed, judged again on the next run`);
 }
 
 async function batched(
@@ -95,7 +103,8 @@ async function batched(
 
 /**
  * The judge's replies to `requests`, by request id: as Message Batches when `batch` is set, with
- * any request a batch did not answer sent again one by one.
+ * any request a batch did not answer sent again one by one. A request that still fails has no
+ * reply, so its answer stays unjudged for the next run.
  */
 export async function judge(
   requests: readonly JudgeRequest[],

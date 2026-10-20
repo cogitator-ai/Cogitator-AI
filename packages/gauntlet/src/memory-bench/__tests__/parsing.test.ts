@@ -156,16 +156,15 @@ describe('LongMemEval-V2', () => {
     ],
   };
 
-  it('turns a trajectory into the task, pages and steps, the trees cut', () => {
+  it('turns a trajectory into log notes, one per step, the trees cut', () => {
     const turns = trajectoryTurns(trajectory);
-    expect(turns[0].content).toBe(
-      'Task in workarena (success): Open incidents\nStart page: https://x/start'
-    );
+    const session = '[Log of an earlier session in workarena, task: Open incidents (success)]';
+    expect(turns.every((turn) => turn.role === 'user')).toBe(true);
+    expect(turns[0].content).toBe(`${session}\nStarted at https://x/start.`);
     expect(turns[1].content.endsWith('[...]')).toBe(true);
-    expect(turns.at(-1)).toEqual({
-      role: 'assistant',
-      content: 'Step 1: Thought: go\nAction: click(1)',
-    });
+    expect(turns.at(-1)?.content).toBe(
+      `${session}\nStep 1 at https://x/b\nThought: go\nAction: click(1)\nPage:\ntree`
+    );
   });
 
   it('groups questions by shared haystack and leaves out questions with a screenshot', () => {

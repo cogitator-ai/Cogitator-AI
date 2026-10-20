@@ -292,6 +292,7 @@ async function main(): Promise<number> {
         {
           client: new Anthropic({
             apiKey: anthropicApiKey,
+            maxRetries: 6,
             ...(anthropicWorkspace && {
               defaultHeaders: { 'anthropic-workspace-id': anthropicWorkspace },
             }),
@@ -303,6 +304,7 @@ async function main(): Promise<number> {
         }
       );
       for (const item of pending) {
+        if (item.requests.some((request) => !replies.has(request.id))) continue;
         const results = item.requests.map((request) => {
           const reply = replies.get(request.id);
           return { score: reply ? request.read(reply.text) : 0, cost: reply?.costUsd ?? 0 };

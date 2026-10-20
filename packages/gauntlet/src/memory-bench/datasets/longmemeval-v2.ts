@@ -40,29 +40,28 @@ const trajectorySchema = z.object({
 export type LmeV2Question = z.infer<typeof questionSchema>;
 export type LmeV2Trajectory = z.infer<typeof trajectorySchema>;
 
-/** A trajectory as turns: the task, then each step the agent took and the page it saw. */
+/**
+ * A trajectory as turns of a log the memory holds: one per step, each naming the session's task,
+ * what the agent thought and did, and the page it saw. They go in as notes, not as turns of the
+ * assistant, so the model reads them as records of earlier work rather than things it said.
+ */
 export function trajectoryTurns(trajectory: LmeV2Trajectory): BenchTurn[] {
+  const session = `[Log of an earlier session in ${trajectory.environment}, task: ${trajectory.goal} (${trajectory.outcome})]`;
   const turns: BenchTurn[] = [
     {
       role: 'user',
-      content: `Task in ${trajectory.environment} (${trajectory.outcome}): ${trajectory.goal}${
-        trajectory.start_url ? `\nStart page: ${trajectory.start_url}` : ''
-      }`,
+      content: `${session}\nStarted at ${trajectory.start_url ?? 'an unknown page'}.`,
     },
   ];
   for (const state of trajectory.states) {
     const tree = state.accessibility_tree?.trim();
-    if (tree) {
-      const page = tree.length > TREE_CHARS ? `${tree.slice(0, TREE_CHARS)}\n[...]` : tree;
-      turns.push({ role: 'user', content: `Page ${state.url ?? ''}:\n${page}` });
-    }
     const parts = [
+      `Step ${state.state_index} at ${state.url ?? 'an unknown page'}`,
       state.thought?.trim() && `Thought: ${state.thought.trim()}`,
       state.action?.trim() && `Action: ${state.action.trim()}`,
+      tree && `Page:\n${tree.length > TREE_CHARS ? `${tree.slice(0, TREE_CHARS)}\n[...]` : tree}`,
     ].filter((part): part is string => Boolean(part));
-    if (parts.length > 0) {
-      turns.push({ role: 'assistant', content: `Step ${state.state_index}: ${parts.join('\n')}` });
-    }
+    turns.push({ role: 'user', content: `${session}\n${parts.join('\n')}` });
   }
   return turns;
 }
