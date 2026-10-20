@@ -60,6 +60,8 @@ export class ContainerPool {
   private idle: PooledContainer[] = [];
   private active = new Map<string, PooledContainer>();
   private warming = new Set<Promise<void>>();
+  private destroying = new WeakMap<DockerContainer, Promise<void>>();
+  private pendingDestroys = new Set<Promise<void>>();
   private maxSize: number;
   private idleTimeoutMs: number;
   private reuseContainers: boolean;
@@ -176,7 +178,22 @@ export class ContainerPool {
     return container;
   }
 
-  private async destroyContainer(container: DockerContainer): Promise<void> {
+  /**
+   * Stops and removes a container, once: a container that an aborted execution releases while
+   * the pool shuts down is removed by whichever comes first, and the other waits for it.
+   */
+  private destroyContainer(container: DockerContainer): Promise<void> {
+    const pending = this.destroying.get(container);
+    if (pending) return pending;
+    const destroy = this.stopAndRemove(container).finally(() =>
+      this.pendingDestroys.delete(destroy)
+    );
+    this.destroying.set(container, destroy);
+    this.pendingDestroys.add(destroy);
+    return destroy;
+  }
+
+  private async stopAndRemove(container: DockerContainer): Promise<void> {
     try {
       await container.stop({ t: 1 });
     } catch (error) {
@@ -213,5 +230,6 @@ export class ContainerPool {
     this.idle = [];
     this.active.clear();
     await Promise.all(containers.map((container) => this.destroyContainer(container)));
+    await Promise.all([...this.pendingDestroys]);
   }
 }

@@ -94,6 +94,47 @@ describe('ContainerPool (unit, mocked Docker)', () => {
     expect(container.remove).toHaveBeenCalled();
   });
 
+  it('removes a container once when it is released while the pool shuts down', async () => {
+    const container = await pool.acquire('alpine:3.19', { networkMode: 'none' });
+    let finishStop!: () => void;
+    vi.mocked(container.stop).mockImplementationOnce(
+      () => new Promise<void>((resolve) => (finishStop = resolve))
+    );
+
+    const shutdown = pool.destroyAll();
+    const release = pool.release(container, { corrupted: true });
+    let shutDown = false;
+    void shutdown.then(() => (shutDown = true));
+    await Promise.resolve();
+    expect(shutDown).toBe(false);
+
+    finishStop();
+    await Promise.all([shutdown, release]);
+
+    expect(container.stop).toHaveBeenCalledTimes(1);
+    expect(container.remove).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits on destroyAll for a container a release is still removing', async () => {
+    const container = await pool.acquire('alpine:3.19', { networkMode: 'none' });
+    let finishRemove!: () => void;
+    vi.mocked(container.remove).mockImplementationOnce(
+      () => new Promise<void>((resolve) => (finishRemove = resolve))
+    );
+
+    const release = pool.release(container, { corrupted: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    let shutDown = false;
+    const shutdown = pool.destroyAll().then(() => (shutDown = true));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(shutDown).toBe(false);
+
+    finishRemove();
+    await Promise.all([release, shutdown]);
+    expect(shutDown).toBe(true);
+    expect(container.remove).toHaveBeenCalledTimes(1);
+  });
+
   it('creates new container for different image', async () => {
     const c1 = await pool.acquire('alpine:3.19', { networkMode: 'none' });
     const c2 = await pool.acquire('node:20', { networkMode: 'none' });
