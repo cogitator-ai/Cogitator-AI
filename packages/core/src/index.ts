@@ -5,6 +5,7 @@
  */
 
 export { Cogitator } from './runtime';
+export { CallPricer } from './cogitator/run-cost';
 export { Agent, AgentDeserializationError } from './agent';
 export {
   toAgentWire,
@@ -277,6 +278,11 @@ export {
   llmNotImplemented,
   providerErrorIn,
   retryAfterFromHeaders,
+  abortReason,
+  classifyProviderError,
+  OPENAI_COMPATIBLE_PROFILES,
+  resolveOpenAICompatibleProfile,
+  reasoningEffortFor,
   RetryingBackend,
   withLLMRetry,
   DEFAULT_LLM_RETRY,
@@ -298,6 +304,8 @@ export {
 export type {
   TurnEnd,
   LLMErrorContext,
+  LLMErrorOptions,
+  ResolvedOpenAICompatibleProfile,
   LLMDebugOptions,
   LLMDebugLogger,
   LLMBackendFactory,

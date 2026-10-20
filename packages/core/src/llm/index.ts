@@ -31,8 +31,17 @@ export {
   llmNotImplemented,
   providerErrorIn,
   retryAfterFromHeaders,
+  abortReason,
   type LLMErrorContext,
+  type LLMErrorOptions,
 } from './errors';
+export { classifyProviderError } from './error-tables';
+export {
+  OPENAI_COMPATIBLE_PROFILES,
+  resolveOpenAICompatibleProfile,
+  reasoningEffortFor,
+  type ResolvedOpenAICompatibleProfile,
+} from './openai-profiles';
 export { LLMDebugWrapper, withDebug, type LLMDebugOptions, type LLMDebugLogger } from './debug';
 export {
   llmPluginRegistry,
