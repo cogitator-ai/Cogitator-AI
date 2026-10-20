@@ -132,6 +132,12 @@ export const LLMRetryConfigSchema = z.union([
   }),
 ]);
 
+export const ModelCircuitBreakerConfigSchema = z.object({
+  failureThreshold: z.number().int().positive().optional(),
+  resetTimeout: z.number().nonnegative().optional(),
+  halfOpenRequests: z.number().int().positive().optional(),
+});
+
 const PriceSchema = z.number().nonnegative();
 
 export const ModelPriceSchema = z.object({
@@ -154,6 +160,7 @@ export const LLMConfigSchema = z.object({
       z.object({ ttl: z.enum(['5m', '1h']).optional(), conversation: z.boolean().optional() }),
     ])
     .optional(),
+  modelCircuitBreaker: ModelCircuitBreakerConfigSchema.optional(),
   plugins: z.record(z.string(), z.unknown()).optional(),
 });
 

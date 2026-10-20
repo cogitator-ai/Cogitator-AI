@@ -9,6 +9,7 @@ export {
   CogitatorConfigSchema,
   LLMConfigSchema,
   LLMRetryConfigSchema,
+  ModelCircuitBreakerConfigSchema,
   LimitsConfigSchema,
   ProvidersConfigSchema,
   ModelPriceSchema,

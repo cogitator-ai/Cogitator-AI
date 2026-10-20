@@ -215,6 +215,17 @@ describe('CogitatorConfigSchema', () => {
     ).toEqual({ ttl: '1h', conversation: false });
   });
 
+  it('keeps the circuit breaker settings of fallback models', () => {
+    const breaker = { failureThreshold: 3, resetTimeout: 60_000, halfOpenRequests: 1 };
+    expect(
+      CogitatorConfigSchema.parse({ llm: { modelCircuitBreaker: breaker } }).llm
+        ?.modelCircuitBreaker
+    ).toEqual(breaker);
+    expect(() =>
+      CogitatorConfigSchema.parse({ llm: { modelCircuitBreaker: { failureThreshold: 0 } } })
+    ).toThrow();
+  });
+
   it('reads PII masking settings, compiling custom patterns given as strings', () => {
     const pii = CogitatorConfigSchema.parse({
       security: {
