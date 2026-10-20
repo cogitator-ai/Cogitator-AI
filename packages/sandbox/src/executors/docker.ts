@@ -14,7 +14,7 @@ import { BaseSandboxExecutor } from './base';
 import { ContainerPool } from '../pool/container-pool';
 import { parseMemory } from '../utils/parse-resources';
 import { OutputCollector } from '../utils/output-collector';
-import { abortMessage } from '../utils/abort';
+import { abortMessage, untilAborted } from '../utils/abort';
 import { dockerConnectionCandidates } from '../utils/docker-connection';
 import type { Docker, DockerExec, DockerStream } from '../docker-types';
 
@@ -284,23 +284,6 @@ export class DockerSandboxExecutor extends BaseSandboxExecutor {
       if (onAbort) signal?.removeEventListener('abort', onAbort);
     }
   }
-}
-
-/**
- * `promise`'s value, or `undefined` as soon as `signal` aborts (an image pull or a container
- * start can take minutes, and a cancelled execution should not wait for it).
- */
-function untilAborted<T>(
-  promise: Promise<T>,
-  signal: AbortSignal | undefined
-): Promise<T | undefined> {
-  if (!signal) return promise;
-  if (signal.aborted) return Promise.resolve(undefined);
-  return new Promise<T | undefined>((resolve, reject) => {
-    const onAbort = () => resolve(undefined);
-    signal.addEventListener('abort', onAbort, { once: true });
-    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
-  });
 }
 
 /**

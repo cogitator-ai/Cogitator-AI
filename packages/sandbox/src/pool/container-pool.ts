@@ -62,6 +62,7 @@ export class ContainerPool {
   private warming = new Set<Promise<void>>();
   private destroying = new WeakMap<DockerContainer, Promise<void>>();
   private pendingDestroys = new Set<Promise<void>>();
+  private acquiring = new Set<Promise<void>>();
   private maxSize: number;
   private idleTimeoutMs: number;
   private reuseContainers: boolean;
@@ -81,13 +82,38 @@ export class ContainerPool {
   async acquire(image: string, options: ContainerCreateOptions): Promise<DockerContainer> {
     const key = poolKey(image, options);
     const index = this.idle.findIndex((c) => c.key === key);
-    const pooled =
-      index === -1
-        ? { container: await this.createContainer(image, options), key, image, options }
-        : this.idle.splice(index, 1)[0];
+    if (index !== -1) {
+      const pooled = this.idle.splice(index, 1)[0];
+      this.active.set(pooled.container.id, { ...pooled, lastUsed: Date.now() });
+      return pooled.container;
+    }
 
-    this.active.set(pooled.container.id, { ...pooled, lastUsed: Date.now() });
-    return pooled.container;
+    const acquiring = this.createActive(image, options, key);
+    const settled = acquiring.then(
+      () => undefined,
+      () => undefined
+    );
+    this.acquiring.add(settled);
+    void settled.finally(() => this.acquiring.delete(settled));
+    return acquiring;
+  }
+
+  /**
+   * A new container, marked active. One that comes up after `destroyAll` began is removed at
+   * once, and `destroyAll` waits for that, so no container outlives the pool.
+   */
+  private async createActive(
+    image: string,
+    options: ContainerCreateOptions,
+    key: string
+  ): Promise<DockerContainer> {
+    const container = await this.createContainer(image, options);
+    if (this.closed) {
+      await this.destroyContainer(container);
+      throw new Error('Container pool is shut down');
+    }
+    this.active.set(container.id, { container, key, image, options, lastUsed: Date.now() });
+    return container;
   }
 
   async release(container: DockerContainer, options?: { corrupted?: boolean }): Promise<void> {
@@ -225,7 +251,7 @@ export class ContainerPool {
       clearInterval(this.cleanupInterval);
     }
 
-    await Promise.all([...this.warming]);
+    await Promise.all([...this.warming, ...this.acquiring]);
     const containers = [...this.idle, ...this.active.values()].map((c) => c.container);
     this.idle = [];
     this.active.clear();

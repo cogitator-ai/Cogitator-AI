@@ -5,3 +5,20 @@ export function abortMessage(signal: AbortSignal): string {
     reason instanceof Error ? reason.message : reason === undefined ? '' : String(reason);
   return detail ? `Execution aborted: ${detail}` : 'Execution aborted';
 }
+
+/**
+ * `promise`'s value, or `undefined` as soon as `signal` aborts (an image pull, a container start
+ * or a module download can take minutes, and a cancelled execution should not wait for it).
+ */
+export function untilAborted<T>(
+  promise: Promise<T>,
+  signal: AbortSignal | undefined
+): Promise<T | undefined> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.resolve(undefined);
+  return new Promise<T | undefined>((resolve, reject) => {
+    const onAbort = () => resolve(undefined);
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
+}

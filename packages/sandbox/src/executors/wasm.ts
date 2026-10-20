@@ -13,7 +13,7 @@ import type {
   SandboxWasmConfig,
 } from '@cogitator-ai/types';
 import { BaseSandboxExecutor } from './base';
-import { abortMessage } from '../utils/abort';
+import { abortMessage, untilAborted } from '../utils/abort';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -134,11 +134,22 @@ export class WasmSandboxExecutor extends BaseSandboxExecutor {
       allowedHosts,
     };
 
-    let plugin: ExtismPlugin;
+    const acquiring = this.acquire(spec);
+    let plugin: ExtismPlugin | undefined;
     try {
-      plugin = await this.acquire(spec);
+      plugin = await untilAborted(acquiring, request.signal);
     } catch (error) {
       return this.failure(`WASM execution failed: ${describeError(error)}`);
+    }
+    if (!plugin) {
+      acquiring.then(
+        async (late) => {
+          this.activePlugins.delete(late);
+          await this.closePlugin(late);
+        },
+        () => undefined
+      );
+      return this.failure(abortMessage(request.signal!));
     }
 
     const generation = this.generation;

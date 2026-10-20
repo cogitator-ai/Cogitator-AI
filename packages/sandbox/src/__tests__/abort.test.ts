@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { SandboxConfig } from '@cogitator-ai/types';
@@ -77,13 +77,22 @@ describe('aborting a sandbox execution', () => {
     });
 
     it('kills the children of a shell command too', async () => {
-      const marker = join(tmpdir(), `abort-${process.pid}-${Date.now()}`);
-      await executor.execute(
-        { command: [`sleep 3 && touch ${marker}`], signal: abortAfter(50) },
-        config
-      );
-      await new Promise((resolve) => setTimeout(resolve, 3500));
-      expect(existsSync(marker)).toBe(false);
+      const base = join(tmpdir(), `abort-${process.pid}-${Date.now()}`);
+      try {
+        await executor.execute(
+          {
+            command: [`touch ${base}.started && sleep 3 && touch ${base}.finished`],
+            signal: abortAfter(300),
+          },
+          config
+        );
+        expect(existsSync(`${base}.started`)).toBe(true);
+        await new Promise((resolve) => setTimeout(resolve, 4000));
+        expect(existsSync(`${base}.finished`)).toBe(false);
+      } finally {
+        rmSync(`${base}.started`, { force: true });
+        rmSync(`${base}.finished`, { force: true });
+      }
     }, 10_000);
 
     it('runs nothing when the signal is already aborted', async () => {
@@ -213,6 +222,33 @@ describe('aborting a sandbox execution', () => {
     afterEach(async () => {
       await executor.disconnect();
       vi.unstubAllGlobals();
+    });
+
+    it('stops waiting for a module that is still downloading, and closes its plugin later', async () => {
+      const { close } = await extism();
+      let finishFetch!: () => void;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          () =>
+            new Promise<Response>(
+              (resolve) =>
+                (finishFetch = () =>
+                  resolve(new Response(new Uint8Array([0x00, 0x61, 0x73, 0x6d, 1, 0, 0, 0]))))
+            )
+        )
+      );
+
+      const started = Date.now();
+      const result = await executor.execute(
+        { command: [], stdin: '{}', signal: abortAfter(30, 'gone') },
+        { type: 'wasm', wasmModule: 'https://example.com/slow.wasm' }
+      );
+      expect(result).toEqual({ success: false, error: 'Execution aborted: gone' });
+      expect(Date.now() - started).toBeLessThan(1000);
+
+      finishFetch();
+      await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
     });
 
     it('closes the plugin, which ends its worker, and fails', async () => {
