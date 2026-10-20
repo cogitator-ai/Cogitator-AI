@@ -375,6 +375,16 @@ cd Cogitator-AI && pnpm install && pnpm dev
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
 
+### Contributors
+
+Thanks to everyone who has contributed to Cogitator!
+
+<a href="https://github.com/cogitator-ai/Cogitator-AI/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=cogitator-ai/Cogitator-AI" alt="Contributors" />
+</a>
+
+Want to join them? Pick an issue labeled [good first issue or help wanted](https://github.com/cogitator-ai/Cogitator-AI/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22good%20first%20issue%22%2C%22help%20wanted%22).
+
 ---
 
 <details>
