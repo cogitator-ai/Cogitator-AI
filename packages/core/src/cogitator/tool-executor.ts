@@ -259,15 +259,26 @@ async function executeInSandbox(
         command: [],
         stdin: JSON.stringify(args),
         timeout: tool.timeout,
+        signal,
       }
     : {
         command: ['sh', '-c', String(args.command ?? '')],
         cwd: args.cwd as string | undefined,
         env: args.env as Record<string, string> | undefined,
         timeout: tool.timeout,
+        signal,
       };
 
   const result = await manager.execute(request, sandboxConfig);
+
+  if (signal?.aborted) {
+    return {
+      callId: toolCall.id,
+      name: toolCall.name,
+      result: null,
+      error: toError(signal.reason, `Tool "${tool.name}" aborted`).message,
+    };
+  }
 
   if (!result.success) {
     return {

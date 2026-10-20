@@ -15,6 +15,7 @@ import type {
 } from '@cogitator-ai/types';
 import { BaseSandboxExecutor } from './base';
 import { OutputCollector } from '../utils/output-collector';
+import { abortMessage } from '../utils/abort';
 
 const DEFAULT_TIMEOUT = 30_000;
 const MAX_OUTPUT_SIZE = 50_000;
@@ -67,6 +68,10 @@ export class NativeSandboxExecutor extends BaseSandboxExecutor {
       return this.failure('Command array is empty');
     }
 
+    if (request.signal?.aborted) {
+      return this.failure(abortMessage(request.signal));
+    }
+
     const [file, ...args] = request.command;
     const useShell = request.command.length === 1;
     const startTime = Date.now();
@@ -82,6 +87,7 @@ export class NativeSandboxExecutor extends BaseSandboxExecutor {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        request.signal?.removeEventListener('abort', onAbort);
         if (extraStderr) stderr.push(extraStderr);
         resolve(
           this.success({
@@ -106,8 +112,7 @@ export class NativeSandboxExecutor extends BaseSandboxExecutor {
         shell: useShell,
       });
 
-      const timer = setTimeout(() => {
-        timedOut = true;
+      const kill = () => {
         try {
           if (useProcessGroup && child.pid !== undefined) {
             process.kill(-child.pid, 'SIGKILL');
@@ -119,8 +124,22 @@ export class NativeSandboxExecutor extends BaseSandboxExecutor {
         }
         child.stdout.destroy();
         child.stderr.destroy();
+      };
+
+      const timer = setTimeout(() => {
+        timedOut = true;
+        kill();
         finish(124);
       }, timeout);
+
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        kill();
+        resolve(this.failure(abortMessage(request.signal!)));
+      };
+      request.signal?.addEventListener('abort', onAbort, { once: true });
 
       child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
       child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));

@@ -70,6 +70,11 @@ export interface SandboxExecutionRequest {
   env?: Record<string, string>;
   /** Execution timeout (overrides config) */
   timeout?: number;
+  /**
+   * Stops the execution when aborted: the process is killed (its container removed, its WASM
+   * plugin closed) and the result is a failure. Aborted before the start, nothing runs.
+   */
+  signal?: AbortSignal;
 }
 
 export interface SandboxExecutionResult {

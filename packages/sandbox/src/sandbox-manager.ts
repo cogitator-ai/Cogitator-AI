@@ -14,6 +14,7 @@ import { type BaseSandboxExecutor } from './executors/base';
 import { DockerSandboxExecutor } from './executors/docker';
 import { NativeSandboxExecutor } from './executors/native';
 import { WasmSandboxExecutor } from './executors/wasm';
+import { abortMessage } from './utils/abort';
 
 export class SandboxManager {
   private executors = new Map<SandboxType, BaseSandboxExecutor>();
@@ -71,6 +72,9 @@ export class SandboxManager {
     request: SandboxExecutionRequest,
     config: SandboxConfig
   ): Promise<SandboxResult<SandboxExecutionResult>> {
+    if (request.signal?.aborted) {
+      return { success: false, error: abortMessage(request.signal) };
+    }
     await this.initialize();
 
     const mergedConfig: SandboxConfig = {

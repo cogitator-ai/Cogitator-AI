@@ -14,6 +14,7 @@ import { BaseSandboxExecutor } from './base';
 import { ContainerPool } from '../pool/container-pool';
 import { parseMemory } from '../utils/parse-resources';
 import { OutputCollector } from '../utils/output-collector';
+import { abortMessage } from '../utils/abort';
 import { dockerConnectionCandidates } from '../utils/docker-connection';
 import type { Docker, DockerExec, DockerStream } from '../docker-types';
 
@@ -104,6 +105,10 @@ export class DockerSandboxExecutor extends BaseSandboxExecutor {
       );
     }
 
+    if (request.signal?.aborted) {
+      return this.failure(abortMessage(request.signal));
+    }
+
     const startTime = Date.now();
     const timeout = request.timeout ?? config.timeout ?? DEFAULT_TIMEOUT;
     const image = config.image ?? DEFAULT_IMAGE;
@@ -137,6 +142,11 @@ export class DockerSandboxExecutor extends BaseSandboxExecutor {
       });
 
       try {
+        if (request.signal?.aborted) {
+          containerCorrupted = false;
+          return this.failure(abortMessage(request.signal));
+        }
+
         const exec = await container.exec({
           Cmd: request.command,
           Env: Object.entries({ ...config.env, ...request.env }).map(([k, v]) => `${k}=${v}`),
@@ -146,8 +156,11 @@ export class DockerSandboxExecutor extends BaseSandboxExecutor {
           AttachStdin: !!request.stdin,
         });
 
-        const result = await this.runWithTimeout(exec, request.stdin, timeout);
+        const result = await this.runWithTimeout(exec, request.stdin, timeout, request.signal);
         containerCorrupted = result.containerCorrupted;
+        if (result.aborted) {
+          return this.failure(abortMessage(request.signal!));
+        }
 
         return this.success({
           stdout: result.stdout,
@@ -169,12 +182,14 @@ export class DockerSandboxExecutor extends BaseSandboxExecutor {
   private async runWithTimeout(
     exec: DockerExec,
     stdin: string | undefined,
-    timeoutMs: number
+    timeoutMs: number,
+    signal: AbortSignal | undefined
   ): Promise<{
     stdout: string;
     stderr: string;
     exitCode: number;
     timedOut: boolean;
+    aborted: boolean;
     containerCorrupted: boolean;
   }> {
     const stdout = new OutputCollector(MAX_OUTPUT_SIZE);
@@ -213,37 +228,45 @@ export class DockerSandboxExecutor extends BaseSandboxExecutor {
     })();
 
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let onAbort: (() => void) | undefined;
 
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
+    const stopped = new Promise<'timeout' | 'abort'>((resolve) => {
+      const stop = (reason: 'timeout' | 'abort') => {
         if (stream) stream.end();
-        reject(new Error('TIMEOUT'));
-      }, timeoutMs);
+        resolve(reason);
+      };
+      timer = setTimeout(() => stop('timeout'), timeoutMs);
+      if (signal) {
+        onAbort = () => stop('abort');
+        if (signal.aborted) onAbort();
+        else signal.addEventListener('abort', onAbort, { once: true });
+      }
     });
 
     try {
-      const exitCode = await Promise.race([executionPromise, timeoutPromise]);
-      return {
-        stdout: stdout.toString(),
-        stderr: stderr.toString(),
-        exitCode,
-        timedOut: false,
-        containerCorrupted: false,
-      };
-    } catch (error) {
-      if (error instanceof Error && error.message === 'TIMEOUT') {
-        executionPromise.catch(() => undefined);
+      const outcome = await Promise.race([executionPromise, stopped]);
+      if (typeof outcome === 'number') {
         return {
           stdout: stdout.toString(),
           stderr: stderr.toString(),
-          exitCode: 124,
-          timedOut: true,
-          containerCorrupted: true,
+          exitCode: outcome,
+          timedOut: false,
+          aborted: false,
+          containerCorrupted: false,
         };
       }
-      throw error;
+      executionPromise.catch(() => undefined);
+      return {
+        stdout: stdout.toString(),
+        stderr: stderr.toString(),
+        exitCode: 124,
+        timedOut: outcome === 'timeout',
+        aborted: outcome === 'abort',
+        containerCorrupted: true,
+      };
     } finally {
       if (timer) clearTimeout(timer);
+      if (onAbort) signal?.removeEventListener('abort', onAbort);
     }
   }
 }

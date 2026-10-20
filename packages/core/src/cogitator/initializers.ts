@@ -37,6 +37,7 @@ export type SandboxManager = {
       cwd?: string;
       env?: Record<string, string>;
       timeout?: number;
+      signal?: AbortSignal;
     },
     config: {
       type: string;

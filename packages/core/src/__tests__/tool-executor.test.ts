@@ -270,6 +270,52 @@ describe('executeTool', () => {
     expect(result.result).toMatchObject({ stdout: 'hi\n', exitCode: 0, command: 'echo hi' });
   });
 
+  it('hands the run signal to the sandbox and reports an abort with its reason', async () => {
+    const registry = new ToolRegistry();
+    registry.register(
+      tool({
+        name: 'shell',
+        description: 'Run shell',
+        parameters: z.object({ command: z.string() }),
+        sandbox: { type: 'docker', image: 'alpine:latest' },
+        execute: async () => ({ native: true }),
+      })
+    );
+
+    const controller = new AbortController();
+    const execute = vi.fn(async (request: { signal?: AbortSignal }) => {
+      controller.abort(new Error('Run cancelled by the user'));
+      expect(request.signal?.aborted).toBe(true);
+      return { success: false as const, error: 'Execution aborted: Run cancelled by the user' };
+    });
+    const manager: SandboxManager = {
+      initialize: async () => undefined,
+      execute,
+      isDockerAvailable: async () => true,
+      shutdown: async () => undefined,
+    };
+
+    const result = await executeTool(
+      registry,
+      { id: 'tc_1', name: 'shell', arguments: { command: 'sleep 100' } },
+      'run_1',
+      'agent_1',
+      manager,
+      undefined,
+      false,
+      async () => manager,
+      controller.signal
+    );
+
+    expect(execute.mock.calls[0]![0].signal).toBe(controller.signal);
+    expect(result).toEqual({
+      callId: 'tc_1',
+      name: 'shell',
+      result: null,
+      error: 'Run cancelled by the user',
+    });
+  });
+
   it('enforces the per-tool timeout and aborts the tool signal', async () => {
     const registry = new ToolRegistry();
     let observedSignal: AbortSignal | undefined;
