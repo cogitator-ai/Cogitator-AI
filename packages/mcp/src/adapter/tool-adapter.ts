@@ -5,9 +5,14 @@
  * Enables bidirectional interoperability.
  */
 
-import { createHash } from 'node:crypto';
 import { z, type ZodTypeAny, type ZodObject } from 'zod';
-import { toToolParameters, toolContent, toolResultParts } from '@cogitator-ai/core';
+import {
+  normalizeToolName,
+  normalizeToolNames,
+  toToolParameters,
+  toolContent,
+  toolResultParts,
+} from '@cogitator-ai/core';
 import type { Tool, ToolSchema, ToolContext, ToolContentPart } from '@cogitator-ai/types';
 import type { MCPToolDefinition, MCPToolContent, ToolAdapterOptions } from '../types';
 import type { MCPClient } from '../client/mcp-client';
@@ -320,27 +325,15 @@ export function toolSchemaToMCP(schema: ToolSchema): MCPToolDefinition {
   };
 }
 
-const TOOL_NAME_LIMIT = 64;
-const PROVIDER_SAFE_NAME = /^[a-zA-Z_][a-zA-Z0-9_-]{0,63}$/;
-
 /**
- * A tool name every LLM provider accepts: letters, digits, `_` and `-`, starting with a letter or
- * `_`, at most 64 characters (the strictest of the OpenAI, Anthropic, Gemini and Bedrock rules).
- * A valid name is kept as it is. Other characters, such as the dots of `admin.list_users`,
- * become `_`, and a name too long is cut and ends with a hash of the full name, so different
- * names stay different.
+ * A tool name every LLM provider accepts, the same as `normalizeToolName` from
+ * `@cogitator-ai/core`: letters, digits, `_` and `-`, starting with a letter or `_`, at most 64
+ * characters. A valid name is kept as it is. Other characters, such as the dots of
+ * `admin.list_users`, become `_`, and a name too long is cut and ends with a hash of the full
+ * name, so different names stay different.
  */
 export function normalizeMCPToolName(name: string): string {
-  if (PROVIDER_SAFE_NAME.test(name)) return name;
-  let safe = name.replace(/[^a-zA-Z0-9_-]/g, '_');
-  if (!/^[a-zA-Z_]/.test(safe)) safe = `_${safe}`;
-  if (safe.length <= TOOL_NAME_LIMIT) return safe;
-  return withHash(safe, name);
-}
-
-function withHash(safe: string, original: string): string {
-  const suffix = `_${createHash('sha256').update(original).digest('hex').slice(0, 8)}`;
-  return `${safe.slice(0, TOOL_NAME_LIMIT - suffix.length)}${suffix}`;
+  return normalizeToolName(name);
 }
 
 /**
@@ -348,21 +341,8 @@ function withHash(safe: string, original: string): string {
  * (`a.b` and `a_b`) are told apart by a hash of the original name on the one that was changed.
  */
 function toolNames(definitions: readonly MCPToolDefinition[], prefix: string): Map<string, string> {
-  const names = new Map<string, string>();
-  const owners = new Map<string, string[]>();
-  for (const def of definitions) {
-    const name = normalizeMCPToolName(`${prefix}${def.name}`);
-    names.set(def.name, name);
-    owners.set(name, [...(owners.get(name) ?? []), def.name]);
-  }
-  for (const [name, originals] of owners) {
-    if (originals.length < 2) continue;
-    for (const original of originals) {
-      const full = `${prefix}${original}`;
-      if (full !== name) names.set(original, withHash(name, full));
-    }
-  }
-  return names;
+  const names = normalizeToolNames(definitions.map((def) => `${prefix}${def.name}`));
+  return new Map(definitions.map((def, index) => [def.name, names[index]!]));
 }
 
 /**

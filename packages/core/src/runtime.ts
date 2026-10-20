@@ -587,9 +587,10 @@ export class Cogitator implements ToolInvoker {
 
       const buildRegistry = (owner: Agent) => {
         const ownerRegistry = new ToolRegistry();
-        ownerRegistry.registerMany(this.tools.getAll());
-        if (owner.tools.length > 0) ownerRegistry.registerMany(owner.tools);
         const handoff = handoffTools(owner);
+        const own = new Set([...owner.tools, ...handoff.tools].map((t) => t.name));
+        ownerRegistry.registerMany(this.tools.getAll().filter((t) => !own.has(t.name)));
+        ownerRegistry.registerMany(owner.tools);
         ownerRegistry.registerMany(handoff.tools);
         return { registry: ownerRegistry, targets: handoff.targets };
       };

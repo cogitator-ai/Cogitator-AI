@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { z } from 'zod';
 import type { Tool } from '@cogitator-ai/types';
 import { ToolRegistry } from '../registry';
 import { tool } from '../tool';
+import { getLogger } from '../logger';
 
 describe('ToolRegistry', () => {
   let registry: ToolRegistry;
@@ -41,6 +42,54 @@ describe('ToolRegistry', () => {
 
       const retrieved = registry.get('same-name');
       expect(retrieved?.description).toBe('Updated description');
+    });
+
+    describe('replacing a tool', () => {
+      afterEach(() => vi.restoreAllMocks());
+
+      const replacementWarnings = (warn: ReturnType<typeof vi.spyOn>) =>
+        warn.mock.calls.filter(([message]) => String(message).includes('replaces another tool'));
+
+      it('warns when a different tool takes the name', () => {
+        const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+        registry.register(createMockTool('search'));
+        registry.register(createMockTool('search'));
+
+        const warnings = replacementWarnings(warn);
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]![0]).toContain('Tool "search"');
+        expect(warnings[0]![1]).toEqual({ tool: 'search' });
+      });
+
+      it('stays quiet when the same tool is registered again', () => {
+        const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+        const search = createMockTool('search');
+        registry.register(search);
+        registry.register(search);
+
+        expect(replacementWarnings(warn)).toHaveLength(0);
+      });
+
+      it('stays quiet with replace: true, and the new tool wins', () => {
+        const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+        const replacement = createMockTool('search');
+        registry.register(createMockTool('search'));
+        registry.register(replacement, { replace: true });
+
+        expect(replacementWarnings(warn)).toHaveLength(0);
+        expect(registry.get('search')).toBe(replacement);
+      });
+
+      it('warns for a clash inside one registerMany call and against earlier tools', () => {
+        const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+        registry.register(createMockTool('a'));
+        registry.registerMany([createMockTool('a'), createMockTool('b'), createMockTool('b')]);
+
+        expect(replacementWarnings(warn).map(([, meta]) => meta)).toEqual([
+          { tool: 'a' },
+          { tool: 'b' },
+        ]);
+      });
     });
   });
 

@@ -3,6 +3,11 @@ import { toolToSchema } from './tool';
 import { toToolParameters } from './tool-schema';
 import { getLogger } from './logger';
 
+export interface ToolRegisterOptions {
+  /** Replace a tool registered under the same name without a warning */
+  replace?: boolean;
+}
+
 /**
  * Registry for managing and organizing tools available to agents.
  *
@@ -31,35 +36,33 @@ export class ToolRegistry {
   private tools = new Map<string, Tool>();
 
   /**
-   * Register a single tool in the registry.
-   * If a tool with the same name exists, it will be replaced.
+   * Register a single tool in the registry. A tool with the same name is replaced, with a
+   * warning when it is a different tool: the model can only ever call one of them, so a clash
+   * is usually a mistake. Pass `{ replace: true }` when replacing it is the intent.
    *
    * @param tool - Tool to register
+   * @param options - `replace: true` replaces a tool of the same name without a warning
    */
-  register(tool: Tool): void {
+  register(tool: Tool, options?: ToolRegisterOptions): void {
+    const existing = this.tools.get(tool.name);
+    if (existing && existing !== tool && !options?.replace) {
+      getLogger().warn(
+        `Tool "${tool.name}" replaces another tool registered under the same name, so the model can only call the later one. Give them distinct names (for MCP tools, a namePrefix per server), or register with { replace: true } to replace it on purpose.`,
+        { tool: tool.name }
+      );
+    }
     this.tools.set(tool.name, tool);
   }
 
   /**
-   * Register multiple tools at once. When two different tools in the list share a name, the
-   * later one wins, as with `register`, and a warning names the clash: the model could only
-   * ever call one of them.
+   * Register multiple tools at once, each as `register` does: a different tool of the same name,
+   * earlier in the list or already registered, is replaced with a warning.
    *
    * @param tools - Array of tools to register
+   * @param options - `replace: true` replaces tools of the same name without a warning
    */
-  registerMany(tools: Tool[]): void {
-    const seen = new Map<string, Tool>();
-    for (const tool of tools) {
-      const earlier = seen.get(tool.name);
-      if (earlier && earlier !== tool) {
-        getLogger().warn(
-          `Two tools are named "${tool.name}"; only the later one is available to the model. Give them distinct names (for MCP tools, a namePrefix per server).`,
-          { tool: tool.name }
-        );
-      }
-      seen.set(tool.name, tool);
-      this.register(tool);
-    }
+  registerMany(tools: Tool[], options?: ToolRegisterOptions): void {
+    for (const tool of tools) this.register(tool, options);
   }
 
   /**

@@ -385,6 +385,24 @@ describe('A2AClient', () => {
       expect(tool.name).toBe('test-agent');
       expect(tool.description).toContain('test agent');
     });
+
+    it('turns a card name meant for people into a tool name providers accept', async () => {
+      const client = new A2AClient(baseUrl);
+      const card = await client.agentCard();
+      expect(client.asToolFromCard({ ...card, name: 'Research Agent v2.1' }).name).toBe(
+        'Research_Agent_v2_1'
+      );
+      expect(client.asToolFromCard({ ...card, name: '3D Printer' }).name).toBe('_3D_Printer');
+      const long = client.asToolFromCard({ ...card, name: `Agent ${'x'.repeat(80)}` }).name;
+      expect(long).toMatch(/^Agent_x+_[0-9a-f]{8}$/);
+      expect(long).toHaveLength(64);
+    });
+
+    it('keeps an explicit name as given', async () => {
+      const client = new A2AClient(baseUrl);
+      const card = await client.agentCard();
+      expect(client.asToolFromCard(card, { name: 'researcher' }).name).toBe('researcher');
+    });
   });
 
   describe('task output edge cases', () => {

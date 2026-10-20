@@ -1,12 +1,17 @@
 import type { Tool, ToolConfig, ToolSchema, ApprovalCheck } from '@cogitator-ai/types';
 import { z, type ZodType } from 'zod';
 import { toToolParameters } from './tool-schema';
+import { assertToolName } from './tool-name';
 
 /**
  * Create a type-safe tool for agent use.
  *
  * Tools enable agents to interact with external systems, APIs, databases,
  * or perform computations. Parameters are validated using Zod schemas.
+ *
+ * The name must be one every LLM provider accepts: letters, digits, `_` and `-`, starting with a
+ * letter or `_`, at most 64 characters. Any other name throws here, instead of failing later as a
+ * provider error; `normalizeToolName()` turns a name such as `weather.get` into one that fits.
  *
  * @typeParam TParams - Type of parameters the tool accepts
  * @typeParam TResult - Type of result the tool returns
@@ -46,6 +51,7 @@ import { toToolParameters } from './tool-schema';
 export function tool<TParams, TResult>(
   config: ToolConfig<TParams, TResult>
 ): Tool<TParams, TResult> {
+  assertToolName(config.name);
   return {
     name: config.name,
     description: config.description,

@@ -1,5 +1,5 @@
 import type { Tool, ToolApprovalRequest, ToolContext, ToolSchema } from '@cogitator-ai/types';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type {
   AgentCard,
@@ -53,6 +53,22 @@ export interface A2ARequestOptions {
   signal?: AbortSignal;
   /** Overrides the client timeout for this request; for streams it is the idle timeout between events */
   timeout?: number;
+}
+
+const TOOL_NAME_MAX_LENGTH = 64;
+const PROVIDER_SAFE_NAME = /^[a-zA-Z_][a-zA-Z0-9_-]{0,63}$/;
+
+/**
+ * A tool name LLM providers accept, made from an Agent Card's name, which is meant for people
+ * ("Research Agent"): the same rule and result as `normalizeToolName` from `@cogitator-ai/core`.
+ */
+function toolNameFromCard(name: string): string {
+  if (PROVIDER_SAFE_NAME.test(name)) return name;
+  let safe = name.replace(/[^a-zA-Z0-9_-]/g, '_');
+  if (!/^[a-zA-Z_]/.test(safe)) safe = `_${safe}`;
+  if (safe.length <= TOOL_NAME_MAX_LENGTH) return safe;
+  const suffix = `_${createHash('sha256').update(name).digest('hex').slice(0, 8)}`;
+  return `${safe.slice(0, TOOL_NAME_MAX_LENGTH - suffix.length)}${suffix}`;
 }
 
 function combineSignals(a: AbortSignal, b: AbortSignal): AbortSignal {
@@ -364,7 +380,7 @@ export class A2AClient {
 
   asToolFromCard(card: AgentCard, options?: A2AToolOptions): Tool<{ task: string }, A2AToolResult> {
     return this.asTool({
-      name: options?.name ?? card.name,
+      name: options?.name ?? toolNameFromCard(card.name),
       description: options?.description ?? card.description ?? `Remote A2A agent: ${card.name}`,
       timeout: options?.timeout,
     });
