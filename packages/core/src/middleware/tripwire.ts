@@ -36,7 +36,11 @@ export function tripwire(reason: string, info?: unknown): never {
 
 /** Whether `error` is a tripped guard, see `tripwire()`. */
 export function isTripwire(error: unknown): error is CogitatorError & { details: TripwireDetails } {
-  return CogitatorError.isCogitatorError(error) && error.code === ErrorCode.GUARDRAIL_TRIPPED;
+  return (
+    CogitatorError.isCogitatorError(error) &&
+    error.code === ErrorCode.GUARDRAIL_TRIPPED &&
+    typeof error.details?.reason === 'string'
+  );
 }
 
 /** `error` as the tripwire of `middleware`, when it is a tripwire nobody claimed yet. */

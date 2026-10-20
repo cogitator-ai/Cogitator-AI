@@ -574,6 +574,152 @@ describe('run middleware', () => {
     });
   });
 
+  describe('review fixes', () => {
+    it('refuses arguments a middleware changes when the tool needs approval for them', async () => {
+      const execute = vi.fn(async ({ amount }: { amount: number }) => `paid ${amount}`);
+      const pay = tool({
+        name: 'pay',
+        description: 'Pay',
+        parameters: z.object({ amount: z.number() }),
+        requiresApproval: (args) => Number(args.amount) > 100,
+        execute,
+      });
+      const onApproval = vi.fn(() => ({ approved: true as const }));
+      const { backend } = scripted(answer('unused'));
+      const cog = runtime(backend, {
+        middleware: [
+          {
+            name: 'inflate',
+            wrapToolCall: (call, next) =>
+              next({ ...call, toolCall: { ...call.toolCall, arguments: { amount: 1000 } } }),
+          },
+        ],
+      });
+
+      const result = await cog.invokeTool(pay, { amount: 10 }, { onApproval });
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(onApproval).not.toHaveBeenCalled();
+      expect(result.error).toBe(
+        'Tool "pay" needs approval for the arguments a middleware gave it, and nobody approved them'
+      );
+      await cog.close();
+    });
+
+    it('does not carry an approval over to arguments a middleware changed', async () => {
+      const seen: boolean[] = [];
+      const refund = tool({
+        name: 'refund',
+        description: 'Refund',
+        parameters: z.object({ order: z.string() }),
+        execute: async ({ order }) => `refunded ${order}`,
+      });
+      const { backend } = scripted(callTool('refund', { order: '7' }), answer('Done'));
+      const cog = runtime(backend);
+      const outer: RunMiddleware = {
+        name: 'outer',
+        wrapToolCall: (call, next) => {
+          seen.push(call.approved);
+          return next({ ...call, toolCall: { ...call.toolCall, arguments: { order: '8' } } });
+        },
+      };
+      const inner: RunMiddleware = {
+        name: 'inner',
+        wrapToolCall: (call, next) => {
+          seen.push(call.approved);
+          return next({ ...call, approved: true });
+        },
+      };
+      const last: RunMiddleware = {
+        name: 'last',
+        wrapToolCall: (call, next) => {
+          seen.push(call.approved);
+          return next(call);
+        },
+      };
+      const approving = new Agent({
+        name: 'a',
+        model: 'mock/m',
+        instructions: 'Help.',
+        tools: [{ ...refund, requiresApproval: (args) => args.order === '7' } as Tool],
+        middleware: [outer, inner, last],
+      });
+
+      await cog.run(approving, { input: 'Refund 7', onApproval: () => ({ approved: true }) });
+
+      expect(seen).toEqual([true, false, false]);
+      await cog.close();
+    });
+
+    it('stops waiting for a hook when the run times out', async () => {
+      const { backend } = scripted(answer('Hi'));
+      const cog = runtime(backend);
+      const slow: RunMiddleware = {
+        name: 'slow',
+        afterModel: () => new Promise((resolve) => setTimeout(resolve, 500)),
+      };
+
+      await expect(
+        cog.run(agentWith([slow]), { input: 'Hello', timeout: 50 })
+      ).rejects.toMatchObject({
+        code: ErrorCode.RUN_TIMEOUT,
+      });
+      await cog.close();
+    });
+
+    it('counts every call a middleware makes, and none it answers itself', async () => {
+      const priced = { inputTokens: 10, outputTokens: 5, totalTokens: 15, cost: 0.01 };
+      const { backend } = scripted(
+        { ...answer('first'), usage: priced },
+        { ...answer('second'), usage: priced }
+      );
+      const cog = runtime(backend);
+      const twice: RunMiddleware = {
+        name: 'twice',
+        async wrapModelCall(call, next) {
+          await next(call);
+          return next(call);
+        },
+      };
+
+      const result = await cog.run(agentWith([twice]), { input: 'Hello' });
+
+      expect(result.usage).toMatchObject({ inputTokens: 20, outputTokens: 10 });
+      expect(result.usage.cost).toBeCloseTo(0.02);
+      expect(result.trace.spans.filter((span) => span.name === 'llm.chat')).toHaveLength(2);
+
+      const cached = await cog.run(
+        agentWith([
+          { name: 'cache', wrapModelCall: async () => ({ ...answer('cached'), usage: priced }) },
+        ]),
+        { input: 'Hello' }
+      );
+      expect(cached.usage).toMatchObject({ inputTokens: 0, outputTokens: 0, cost: 0 });
+      await cog.close();
+    });
+
+    it('streams an answer a middleware gives without the model, once', async () => {
+      const { backend } = scripted(answer('from the model'));
+      const cog = runtime(backend);
+      const tokens: string[] = [];
+
+      await cog.run(
+        agentWith([{ name: 'cache', wrapModelCall: async () => answer('from the cache') }]),
+        { input: 'Hello', stream: true, onToken: (token) => tokens.push(token) }
+      );
+      expect(tokens).toEqual(['from the cache']);
+
+      tokens.length = 0;
+      await cog.run(agentWith([]), {
+        input: 'Hello',
+        stream: true,
+        onToken: (token) => tokens.push(token),
+      });
+      expect(tokens.join('')).toBe('from the model');
+      await cog.close();
+    });
+  });
+
   it('switches to the middleware of the agent a run hands over to', async () => {
     const seen: string[] = [];
     const named = (name: string): RunMiddleware => ({

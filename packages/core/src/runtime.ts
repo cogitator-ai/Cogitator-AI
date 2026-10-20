@@ -91,7 +91,7 @@ import {
   addContextToMessages,
 } from './cogitator/message-builder';
 import { createSpan, getTextContent } from './cogitator/span-factory';
-import { runToolCall, createToolMessage } from './cogitator/tool-executor';
+import { runToolCall, createToolMessage, needsApproval } from './cogitator/tool-executor';
 import { DEFAULT_TOOL_RESULT_MAX_LENGTH, toolResultLengthError } from './tool-content';
 import { streamChatRequest } from './cogitator/streaming';
 import { RunLimiter } from './cogitator/run-limiter';
@@ -772,7 +772,11 @@ export class Cogitator implements ToolInvoker {
           runOptions,
           threadId,
           this.historyBudget(agent, effectiveModel, routeProvider, registry, input),
-          (initial) => pipeline.beforeRun({ input, messages: initial }, middlewareContext())
+          (initial) =>
+            waitForAbortable(
+              pipeline.beforeRun({ input, messages: initial }, middlewareContext()),
+              abortController.signal
+            )
         );
       }
 
@@ -1129,9 +1133,9 @@ export class Cogitator implements ToolInvoker {
         this.assertCostBudget(costMeter.total(costModel));
 
         iterations++;
-        const changed = await pipeline.beforeModel(
-          { messages, model: effectiveModel },
-          middlewareContext()
+        const changed = await waitForAbortable(
+          pipeline.beforeModel({ messages, model: effectiveModel }, middlewareContext()),
+          abortController.signal
         );
         if (changed) {
           messages.length = 0;
@@ -1141,8 +1145,11 @@ export class Cogitator implements ToolInvoker {
         agentContext.iterationIndex = iterations - 1;
         agentContext.previousActions = [...allActions];
 
-        const llmSpanStart = Date.now();
-        const recordCall = (answer: ChatResponse, candidate: ModelCandidate): void => {
+        const recordCall = (
+          answer: ChatResponse,
+          candidate: ModelCandidate,
+          startedAt: number
+        ): void => {
           const spentBefore = costMeter.total(costModel);
           costMeter.add(answer.usage, candidate.name);
           const callCost = costMeter.total(costModel) - spentBefore;
@@ -1151,7 +1158,7 @@ export class Cogitator implements ToolInvoker {
               'llm.chat',
               traceId,
               rootSpanId,
-              llmSpanStart,
+              startedAt,
               Date.now(),
               {
                 'llm.model': candidate.model,
@@ -1194,10 +1201,12 @@ export class Cogitator implements ToolInvoker {
 
         const holdsStream = streaming && pipeline.holdsStream;
         let streamed = false;
+        let streamedText = false;
         const turnStream = holdsStream
           ? () => undefined
           : (token: string) => {
               streamed = true;
+              streamedText = true;
               onToken(token);
             };
         const onReasoning = options.onReasoning;
@@ -1243,17 +1252,20 @@ export class Cogitator implements ToolInvoker {
               const answer = normalizeTurn(
                 await turnPipeline.callModel(
                   call,
-                  async (sent) =>
-                    normalizeTurn(
+                  async (sent) => {
+                    const startedAt = Date.now();
+                    const sentAnswer = normalizeTurn(
                       sent.stream
                         ? await streamChatRequest(candidate.backend, sent.request, sent.stream)
                         : await candidate.backend.chat(sent.request)
-                    ),
+                    );
+                    recordCall(sentAnswer, candidate, startedAt);
+                    return sentAnswer;
+                  },
                   middlewareContext()
                 )
               );
               if (answer.finishReason !== 'error') return answer;
-              recordCall(answer, candidate);
               throw llmInvalidResponse(
                 { provider: candidate.backend.provider, model: candidate.model },
                 `The model ended its turn with an error${answer.finishMessage ? `: ${answer.finishMessage}` : ''}`
@@ -1295,7 +1307,6 @@ export class Cogitator implements ToolInvoker {
         const answeredBy = turn.candidate;
         fellBackTo = answeredBy === candidates[0] ? undefined : answeredBy.name;
         let response = turn.result;
-        recordCall(response, answeredBy);
         lastFinishReason = response.finishReason;
         if (response.reasoning) reasoningParts.push(response.reasoning);
 
@@ -1313,12 +1324,15 @@ export class Cogitator implements ToolInvoker {
           continue;
         }
 
-        response = await turnPipeline.afterModel(
-          { response, messages, model: answeredBy.name },
-          middlewareContext()
+        response = await waitForAbortable(
+          turnPipeline.afterModel(
+            { response, messages, model: answeredBy.name },
+            middlewareContext()
+          ),
+          abortController.signal
         );
         const outputContent = response.content;
-        if (holdsStream && outputContent) onToken(outputContent);
+        if (streaming && outputContent && (holdsStream || !streamedText)) onToken(outputContent);
 
         const requestsTools = !limit.closingTurn && Boolean(response.toolCalls?.length);
         const assistantMessage = requestsTools
@@ -2333,6 +2347,7 @@ export class Cogitator implements ToolInvoker {
     await this.closeObservers();
     await cleanupState(this.state);
     this.backends.clear();
+    this.turnBackends.clear();
     this.initPromise = undefined;
   }
 }
@@ -2421,15 +2436,4 @@ interface PausedTurn {
 
 function isArgumentRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/** Whether a call to `tool` with `args` needs approval; a check that throws counts as yes. */
-function needsApproval(tool: Tool, args: Record<string, unknown>): boolean {
-  const check = tool.requiresApproval;
-  if (typeof check !== 'function') return check === true;
-  try {
-    return check(args);
-  } catch {
-    return true;
-  }
 }

@@ -33,7 +33,10 @@ export interface RunMiddlewareContext<TDeps = unknown> {
   readonly state: Map<string, unknown>;
 }
 
-/** The input of a new run, before it is saved or sent to a model. */
+/**
+ * The input of a new run, before it is saved to memory and before the first model turn. Audio
+ * input is already transcribed into `input`.
+ */
 export interface RunInputEvent {
   readonly input: string;
   /** The messages the first turn starts from: the system prompt, the history and the input */
@@ -43,7 +46,10 @@ export interface RunInputEvent {
 /** The conversation as the next model turn is about to send it. */
 export interface ModelTurnEvent {
   readonly messages: readonly Message[];
-  /** `provider/model` of the run's model for this turn (before any fallback) */
+  /**
+   * The model the turn is for, as the agent names it (or as cost routing picked it), before any
+   * fallback: `provider/model`, or a bare model name on `llm.defaultProvider`
+   */
   readonly model: string;
 }
 
@@ -92,8 +98,10 @@ export interface ModelResponseUpdate {
 
 /**
  * One tool call about to run, its arguments already checked against the tool's schema. To change
- * the arguments, hand `next` a `toolCall` with new ones: they are checked again, and `args` of
- * the layers inside is what the schema made of them.
+ * the arguments, hand `next` a `toolCall` with new ones: they are checked against the schema and
+ * the tool's `requiresApproval` again, `args` of the layers inside is what the schema made of
+ * them, and `approved` is false there, since nobody approved the new ones. The other fields stay
+ * as they came. `onToolCall`, `RunResult.toolCalls` and spans keep the call as the model made it.
  */
 export interface ToolCallRequest {
   readonly toolCall: ToolCall;
@@ -127,7 +135,10 @@ export interface RunMiddleware<TDeps = unknown> {
    * replaces or blocks never reaches a listener.
    */
   readonly holdsStream?: boolean;
-  /** Checks a new run's input before anything is saved or sent. Not called for `resume()` */
+  /**
+   * Checks a new run's input before it is saved to memory and before the first model turn. Not
+   * called for `resume()`
+   */
   beforeRun?(event: RunInputEvent, context: RunMiddlewareContext<TDeps>): void | Promise<void>;
   /** Before each model turn: return `{ messages }` to change the conversation from now on */
   beforeModel?(
@@ -150,7 +161,7 @@ export interface RunMiddleware<TDeps = unknown> {
   ): void | ModelResponseUpdate | Promise<void | ModelResponseUpdate>;
   /**
    * Around each tool call that passed approval: call `next` to run it, or return a result of
-   * your own. Also wraps calls made with `invokeTool()`.
+   * your own. The Cogitator's middleware also wraps calls made with `invokeTool()`.
    */
   wrapToolCall?(
     call: ToolCallRequest,

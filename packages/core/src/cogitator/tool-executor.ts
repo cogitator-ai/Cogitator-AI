@@ -78,30 +78,54 @@ export async function runToolCall(execution: ToolCallExecution): Promise<ToolRes
 
   const parsed = parseToolArguments({ toolCall, tool, args: toolCall.arguments, approved: false });
   if (!parsed.ok) {
-    return {
-      callId: toolCall.id,
-      name: toolCall.name,
-      result: null,
-      error: `Invalid arguments: ${parsed.error}`,
-    };
+    return { callId: toolCall.id, name: toolCall.name, result: null, error: parsed.error };
   }
 
   return execution.middleware.callTool(
     { toolCall, tool, args: parsed.args, approved: execution.approved },
     (call) => runTool(call, execution),
     execution.context,
-    parseToolArguments
+    parseChangedToolArguments
   );
+}
+
+/**
+ * Whether a call of `tool` with `args` waits for a person: its `requiresApproval`, or that
+ * function's answer for `args`. A check that throws asks for approval.
+ */
+export function needsApproval(tool: Tool, args: Record<string, unknown>): boolean {
+  const check = tool.requiresApproval;
+  if (typeof check !== 'function') return check === true;
+  try {
+    return check(args);
+  } catch {
+    return true;
+  }
 }
 
 /** The arguments of `call` as its tool's Zod schema reads them, or as they are without one. */
 const parseToolArguments: ToolArgumentsParser = ({ tool, toolCall }) => {
-  if (typeof tool.parameters.safeParse !== 'function')
+  if (typeof tool.parameters.safeParse !== 'function') {
     return { ok: true, args: toolCall.arguments };
+  }
   const result = tool.parameters.safeParse(toolCall.arguments);
   return result.success
     ? { ok: true, args: result.data }
-    : { ok: false, error: result.error.message };
+    : { ok: false, error: `Invalid arguments: ${result.error.message}` };
+};
+
+/**
+ * Arguments a middleware gave a call, read like the model's, and refused when the tool needs an
+ * approval for them: nobody approved these arguments.
+ */
+const parseChangedToolArguments: ToolArgumentsParser = (call) => {
+  if (needsApproval(call.tool, call.toolCall.arguments)) {
+    return {
+      ok: false,
+      error: `Tool "${call.tool.name}" needs approval for the arguments a middleware gave it, and nobody approved them`,
+    };
+  }
+  return parseToolArguments(call);
 };
 
 function runTool(call: ToolCallRequest, execution: ToolCallExecution): Promise<ToolResult> {

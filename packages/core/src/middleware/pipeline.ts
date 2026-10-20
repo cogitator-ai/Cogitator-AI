@@ -12,11 +12,12 @@ import type {
   ToolCallRequest,
   ToolResult,
 } from '@cogitator-ai/types';
+import { getLogger } from '../logger';
 import { claimTripwire } from './tripwire';
 
 /**
- * How a tool call's new arguments are read: what the tool's schema made of them, or why they do
- * not fit it.
+ * How a tool call's new arguments are read: what the tool's schema made of them, or the error the
+ * call answers with when they do not fit it or would need an approval nobody gave.
  */
 export type ToolArgumentsParser = (
   call: ToolCallRequest
@@ -95,9 +96,10 @@ export class MiddlewarePipeline<TDeps = unknown> {
   }
 
   /**
-   * `call` through every `wrapToolCall` hook, `run` running the tool at the end. A layer that
-   * hands on new arguments has them read by `parse` first, and a call they do not fit answers
-   * with the reason instead of going on.
+   * `call` through every `wrapToolCall` hook, `run` running the tool at the end. A layer can
+   * change only the arguments of the call: new ones are read by `parse` first, a call they do not
+   * fit answers with the reason instead of going on, and an approval given for the old ones does
+   * not carry over. The tool, the call's id and name and its approval stay as they came.
    */
   callTool(
     call: ToolCallRequest,
@@ -106,21 +108,29 @@ export class MiddlewarePipeline<TDeps = unknown> {
     parse: ToolArgumentsParser
   ): Promise<ToolResult> {
     const checked =
-      (handler: ToolCallHandler, seen: ToolCallRequest): ToolCallHandler =>
+      (handler: ToolCallHandler, seen: ToolCallRequest, layer: string): ToolCallHandler =>
       async (current) => {
-        if (current.toolCall.arguments === seen.toolCall.arguments) {
-          return handler(current.args === seen.args ? current : { ...current, args: seen.args });
+        const { arguments: args } = current.toolCall;
+        if (args === seen.toolCall.arguments) {
+          if (current.args !== seen.args) {
+            getLogger().warn(
+              'A middleware changed the parsed args of a tool call, which it cannot: change toolCall.arguments instead',
+              { middleware: layer, tool: seen.tool.name }
+            );
+          }
+          const unchanged =
+            current.tool === seen.tool &&
+            current.toolCall === seen.toolCall &&
+            current.args === seen.args &&
+            current.approved === seen.approved;
+          return handler(unchanged ? current : seen);
         }
-        const parsed = parse(current);
+        const toolCall = { ...seen.toolCall, arguments: args };
+        const parsed = parse({ ...seen, toolCall, approved: false });
         if (!parsed.ok) {
-          return {
-            callId: current.toolCall.id,
-            name: current.toolCall.name,
-            result: null,
-            error: `Invalid arguments: ${parsed.error}`,
-          };
+          return { callId: toolCall.id, name: toolCall.name, result: null, error: parsed.error };
         }
-        return handler({ ...current, args: parsed.args });
+        return handler({ toolCall, tool: seen.tool, args: parsed.args, approved: false });
       };
     const through = (index: number): ToolCallHandler => {
       const layer = this.layers[index];
@@ -129,7 +139,9 @@ export class MiddlewarePipeline<TDeps = unknown> {
       const wrap = layer.wrapToolCall;
       if (!wrap) return inner;
       return (current) =>
-        claimed(layer.name, () => wrap.call(layer, current, checked(inner, current), context));
+        claimed(layer.name, () =>
+          wrap.call(layer, current, checked(inner, current, layer.name), context)
+        );
     };
     return through(0)(call);
   }

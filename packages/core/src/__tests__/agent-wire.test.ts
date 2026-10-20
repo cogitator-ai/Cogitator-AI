@@ -13,6 +13,7 @@ import { Agent } from '../agent';
 import { Cogitator } from '../cogitator';
 import { tool } from '../tool';
 import { defineSkill } from '../skill';
+import { getLogger } from '../logger';
 import {
   AGENT_CONFIG_WIRE_FIELDS,
   AgentWireError,
@@ -106,6 +107,25 @@ function project(key: keyof AgentConfig, config: AgentConfig): unknown {
 }
 
 describe('agent wire format', () => {
+  it('warns that middleware stays behind', () => {
+    const warn = vi.spyOn(getLogger(), 'warn');
+    const guarded = new Agent({
+      name: 'guarded',
+      model: 'openai/gpt-6-luna',
+      instructions: 'Help.',
+      middleware: [{ name: 'guard', beforeRun: () => undefined }],
+    });
+
+    const wire = toAgentWire(guarded);
+
+    expect(JSON.stringify(wire)).not.toContain('guard"');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('does not carry middleware'), {
+      agent: 'guarded',
+      middleware: ['guard'],
+    });
+    warn.mockRestore();
+  });
+
   it('carries every AgentConfig field', () => {
     const escalation = new Agent({
       name: 'escalation',

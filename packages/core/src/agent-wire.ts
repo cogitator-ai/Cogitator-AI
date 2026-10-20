@@ -16,6 +16,7 @@ import type {
   ToolSchema,
 } from '@cogitator-ai/types';
 import { Agent, MAX_FALLBACK_MODELS } from './agent';
+import { getLogger } from './logger';
 
 /**
  * How each `AgentConfig` field travels in the agent wire format. Adding a field to
@@ -226,6 +227,12 @@ export function fromAgentWireResponseFormat(
 
 function agentToWire(agent: IAgent, options: ToAgentWireOptions): AgentWireAgent {
   const { config } = agent;
+  if (config.middleware?.length) {
+    getLogger().warn(
+      'The agent wire format does not carry middleware: the receiving side runs the agent with its own',
+      { agent: agent.name, middleware: config.middleware.map((layer) => layer.name) }
+    );
+  }
   const model = config.model || options.resolveModel?.(agent);
   if (!model) {
     throw new AgentWireError(

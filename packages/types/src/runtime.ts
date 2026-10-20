@@ -373,7 +373,11 @@ export interface ToolInvocationResult extends ToolResult {
  * outside a run (an MCP server, a self-modifying agent) takes it to honor all of that.
  */
 export interface ToolInvoker {
-  /** Never throws for a failing tool: the error is in the result's `error` */
+  /**
+   * Never throws for a failing tool: the error is in the result's `error`. An error a
+   * `wrapToolCall` middleware of the Cogitator throws, a `tripwire()` among them, is thrown, as it
+   * would fail a run.
+   */
   invokeTool(
     tool: Tool,
     args: unknown,

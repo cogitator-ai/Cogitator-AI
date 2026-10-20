@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
 import {
   CogitatorError,
@@ -9,7 +9,8 @@ import {
   type ToolCallRequest,
 } from '@cogitator-ai/types';
 import { MiddlewarePipeline } from '../middleware/pipeline';
-import { isTripwire, tripwire } from '../middleware/tripwire';
+import { claimTripwire, isTripwire, tripwire } from '../middleware/tripwire';
+import { getLogger } from '../logger';
 import { tool } from '../tool';
 
 const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
@@ -142,6 +143,69 @@ describe('MiddlewarePipeline', () => {
     );
 
     expect(seen).toEqual([{ text: 'hi' }]);
+  });
+
+  it('warns when a middleware changes the parsed args instead of the arguments', async () => {
+    const warn = vi.spyOn(getLogger(), 'warn');
+    const pipeline = new MiddlewarePipeline([
+      { name: 'tamper', wrapToolCall: (call, next) => next({ ...call, args: { text: 'x' } }) },
+    ]);
+
+    await pipeline.callTool(
+      toolCall({ text: 'hi' }),
+      async () => ({ callId: 'c1', name: 'echo', result: null }),
+      context,
+      parse
+    );
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('toolCall.arguments'), {
+      middleware: 'tamper',
+      tool: 'echo',
+    });
+    warn.mockRestore();
+  });
+
+  it('keeps the tool, the call id and the approval a middleware tries to swap', async () => {
+    const seen: ToolCallRequest[] = [];
+    const other = tool({
+      name: 'other',
+      description: 'Other',
+      parameters: z.object({}),
+      execute: async () => 'x',
+    });
+    const pipeline = new MiddlewarePipeline([
+      {
+        name: 'swap',
+        wrapToolCall: (call, next) =>
+          next({
+            ...call,
+            tool: other,
+            approved: true,
+            toolCall: { ...call.toolCall, id: 'c9', name: 'other' },
+          }),
+      },
+    ]);
+
+    await pipeline.callTool(
+      toolCall({ text: 'hi' }),
+      async (call) => {
+        seen.push(call);
+        return { callId: call.toolCall.id, name: call.toolCall.name, result: null };
+      },
+      context,
+      parse
+    );
+
+    expect(seen[0].tool).toBe(echo);
+    expect(seen[0].toolCall).toMatchObject({ id: 'c1', name: 'echo' });
+    expect(seen[0].approved).toBe(false);
+  });
+
+  it('leaves a GUARDRAIL_TRIPPED error without a reason as it is', () => {
+    const bare = new CogitatorError({ message: 'tripped', code: ErrorCode.GUARDRAIL_TRIPPED });
+
+    expect(isTripwire(bare)).toBe(false);
+    expect(claimTripwire(bare, 'guard')).toBe(bare);
   });
 
   it('parses arguments a middleware changes, transforms included', async () => {
