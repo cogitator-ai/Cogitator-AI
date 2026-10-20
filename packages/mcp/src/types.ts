@@ -244,21 +244,29 @@ export interface MCPServerConfig {
 
 export interface MCPToolDefinition {
   name: string;
+  /** Name of the tool for people */
+  title?: string;
   description: string;
   /** JSON Schema of the arguments, with any `$defs` / `definitions` its refs point to */
-  inputSchema: {
-    type: 'object';
-    properties: Record<string, unknown>;
-    required?: string[];
-    [keyword: string]: unknown;
-  };
+  inputSchema: MCPObjectSchema;
+  /** JSON Schema of the tool's `structuredContent`, which the server promises to follow */
+  outputSchema?: MCPObjectSchema;
   /** Hints the server gives about the tool's behavior */
   annotations?: MCPToolAnnotations;
 }
 
+/** A JSON Schema whose root is an object, as MCP takes for tool input and output */
+export interface MCPObjectSchema {
+  type: 'object';
+  properties: Record<string, unknown>;
+  required?: string[];
+  [keyword: string]: unknown;
+}
+
 /**
  * Hints an MCP server gives about a tool (MCP `ToolAnnotations`). They are not guarantees, but
- * a tool marked `readOnlyHint` or `idempotentHint` can safely be called again after a timeout.
+ * a tool marked `readOnlyHint` or `idempotentHint` can safely be called again after a timeout,
+ * and one marked `destructiveHint` needs approval by default (`ToolAdapterOptions.requiresApproval`).
  */
 export interface MCPToolAnnotations {
   title?: string;
@@ -308,4 +316,12 @@ export interface ToolAdapterOptions {
 
   /** Transform tool description */
   descriptionTransform?: (description: string) => string;
+
+  /**
+   * Which of the server's tools need approval before they run (`Tool.requiresApproval`).
+   * Default: the tools the server marks destructive, `destructiveHint: true` without
+   * `readOnlyHint: true` (see `isDestructiveMCPTool`). `false` lets every tool run without
+   * approval, `true` asks for every call
+   */
+  requiresApproval?: boolean | ((tool: MCPToolDefinition) => boolean);
 }

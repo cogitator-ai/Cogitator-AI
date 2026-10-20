@@ -60,10 +60,13 @@ export function tool<TParams, TResult>(
   if (lengthError) throw new TypeError(lengthError);
   return {
     name: config.name,
+    title: config.title,
     description: config.description,
     category: config.category,
     tags: config.tags,
     parameters: config.parameters,
+    outputSchema: config.outputSchema,
+    annotations: config.annotations,
     execute: config.execute,
     sideEffects: config.sideEffects,
     requiresApproval:

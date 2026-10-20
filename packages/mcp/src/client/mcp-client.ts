@@ -428,8 +428,12 @@ export class MCPClient {
         for (const tool of result.tools) {
           tools.push({
             name: tool.name,
+            ...(tool.title !== undefined && { title: tool.title }),
             description: tool.description ?? '',
             inputSchema: tool.inputSchema as MCPToolDefinition['inputSchema'],
+            ...(tool.outputSchema && {
+              outputSchema: tool.outputSchema as MCPToolDefinition['outputSchema'],
+            }),
             ...(tool.annotations && { annotations: tool.annotations }),
           });
         }

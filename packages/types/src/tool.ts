@@ -21,10 +21,20 @@ export type SideEffectType = 'filesystem' | 'network' | 'database' | 'process' |
 
 export interface ToolConfig<TParams = unknown, TResult = unknown> {
   name: string;
+  /** Name of the tool for people, such as an MCP client shows (the model sees `name`) */
+  title?: string;
   description: string;
   category?: ToolCategory;
   tags?: string[];
   parameters: ZodType<TParams>;
+  /**
+   * Schema of the tool's result. Nothing checks it in a run, it describes the result: an MCP
+   * server advertises it and returns the result as `structuredContent`, tools imported from an
+   * MCP server get the server's output schema here
+   */
+  outputSchema?: ZodType<TResult>;
+  /** How the tool behaves, as MCP tool annotations describe it */
+  annotations?: ToolAnnotations;
   execute: (params: TParams, context: ToolContext) => Promise<TResult>;
   sideEffects?: SideEffectType[];
   requiresApproval?: boolean | ((params: TParams) => boolean);
@@ -40,10 +50,20 @@ export interface ToolConfig<TParams = unknown, TResult = unknown> {
 
 export interface Tool<TParams = unknown, TResult = unknown> {
   name: string;
+  /** Name of the tool for people, such as an MCP client shows (the model sees `name`) */
+  title?: string;
   description: string;
   category?: ToolCategory;
   tags?: string[];
   parameters: ZodType<TParams>;
+  /**
+   * Schema of the tool's result. Nothing checks it in a run, it describes the result: an MCP
+   * server advertises it and returns the result as `structuredContent`, tools imported from an
+   * MCP server get the server's output schema here
+   */
+  outputSchema?: ZodType<TResult>;
+  /** How the tool behaves, as MCP tool annotations describe it */
+  annotations?: ToolAnnotations;
   execute(params: TParams, context: ToolContext): Promise<TResult>;
   sideEffects?: SideEffectType[];
   requiresApproval?: boolean | ApprovalCheck;
@@ -56,6 +76,25 @@ export interface Tool<TParams = unknown, TResult = unknown> {
    */
   maxResultLength?: number;
   toJSON(): ToolSchema;
+}
+
+/**
+ * Hints about how a tool behaves, the MCP `ToolAnnotations` without `title` (see `Tool.title`).
+ * An MCP server exports them with the tool, and tools imported from an MCP server carry the
+ * server's hints, which are only as trustworthy as the server.
+ */
+export interface ToolAnnotations {
+  /** The tool does not change its environment (default false) */
+  readOnlyHint?: boolean;
+  /**
+   * The tool may make destructive updates, not only additive ones. Meaningful only when
+   * `readOnlyHint` is false (MCP default: true)
+   */
+  destructiveHint?: boolean;
+  /** Calling the tool again with the same arguments has no further effect (default false) */
+  idempotentHint?: boolean;
+  /** The tool reaches an open world of external entities, such as the web (default true) */
+  openWorldHint?: boolean;
 }
 
 export type ApprovalCheck = (params: Record<string, unknown>) => boolean;

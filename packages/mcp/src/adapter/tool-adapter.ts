@@ -15,7 +15,12 @@ import {
   toolResultParts,
 } from '@cogitator-ai/core';
 import type { Tool, ToolSchema, ToolContext, ToolContentPart } from '@cogitator-ai/types';
-import type { MCPToolDefinition, MCPToolContent, ToolAdapterOptions } from '../types';
+import type {
+  MCPObjectSchema,
+  MCPToolDefinition,
+  MCPToolContent,
+  ToolAdapterOptions,
+} from '../types';
 import type { MCPClient } from '../client/mcp-client';
 
 /**
@@ -308,10 +313,24 @@ function compilePattern(pattern: string): RegExp | undefined {
 }
 
 /**
- * Convert a Cogitator Tool to MCP tool definition format
+ * Convert a Cogitator Tool to MCP tool definition format, with its `title`, `annotations` and
+ * `outputSchema`. An output schema whose root is not an object is left out: MCP takes only
+ * object output schemas.
  */
 export function cogitatorToMCP(tool: Tool): MCPToolDefinition {
-  return toolSchemaToMCP(tool.toJSON());
+  const outputSchema = tool.outputSchema && outputSchemaToMCP(tool.outputSchema);
+  return {
+    ...toolSchemaToMCP(tool.toJSON()),
+    ...(tool.title !== undefined && { title: tool.title }),
+    ...(outputSchema && { outputSchema }),
+    ...(tool.annotations && { annotations: { ...tool.annotations } }),
+  };
+}
+
+/** The JSON Schema of a tool's output schema for MCP, `undefined` when its root is not an object. */
+function outputSchemaToMCP(schema: ZodTypeAny): MCPObjectSchema | undefined {
+  const jsonSchema: Record<string, unknown> = zodToJsonSchema(schema);
+  return jsonSchema.type === 'object' ? toToolParameters(jsonSchema) : undefined;
 }
 
 /**
@@ -352,7 +371,8 @@ function toolNames(definitions: readonly MCPToolDefinition[], prefix: string): M
  * The resulting tool will execute calls through the provided MCPClient, under the tool's original
  * name. The Cogitator name is `namePrefix` plus the MCP name, normalized for LLM providers (see
  * `normalizeMCPToolName`). Calls are retried after a timeout only when the server marks the tool
- * read-only or idempotent.
+ * read-only or idempotent. The tool keeps the server's `title`, `outputSchema` and annotations,
+ * and needs approval when the server marks it destructive (see `requiresApproval`).
  */
 export function mcpToCogitator(
   mcpTool: MCPToolDefinition,
@@ -370,13 +390,26 @@ export function mcpToCogitator(
 
   const inputSchema = mcpTool.inputSchema as Parameters<typeof jsonSchemaToZod>[0];
   const parameters = jsonSchemaToZod({ ...inputSchema, type: 'object' });
-  const annotations = mcpTool.annotations;
-  const idempotent = annotations?.readOnlyHint === true || annotations?.idempotentHint === true;
+  const outputSchema =
+    mcpTool.outputSchema &&
+    jsonSchemaToZod({
+      ...(mcpTool.outputSchema as Parameters<typeof jsonSchemaToZod>[0]),
+      type: 'object',
+    });
+  const { title: annotationTitle, ...hints } = mcpTool.annotations ?? {};
+  const title = mcpTool.title ?? annotationTitle;
+  const annotations = Object.keys(hints).length > 0 ? hints : undefined;
+  const idempotent = hints.readOnlyHint === true || hints.idempotentHint === true;
+  const requiresApproval = approvalOf(mcpTool, options?.requiresApproval);
 
   const tool: Tool = {
     name,
+    ...(title !== undefined && { title }),
     description,
     parameters,
+    ...(outputSchema && { outputSchema }),
+    ...(annotations && { annotations }),
+    ...(requiresApproval && { requiresApproval }),
 
     execute: async (params: unknown, context: ToolContext): Promise<unknown> => {
       return client.callTool(mcpTool.name, (params ?? {}) as Record<string, unknown>, {
@@ -393,6 +426,24 @@ export function mcpToCogitator(
   };
 
   return tool;
+}
+
+/**
+ * Whether an MCP server marks a tool destructive: `destructiveHint: true` on a tool that is not
+ * `readOnlyHint: true`. Tools from `getTools()` / `wrapMCPTools()` that are need approval by
+ * default (`ToolAdapterOptions.requiresApproval`). A tool without the hint is not taken as
+ * destructive, though MCP's own default for a missing hint is `true`: that would ask approval for
+ * every tool of most servers.
+ */
+export function isDestructiveMCPTool(tool: MCPToolDefinition): boolean {
+  return tool.annotations?.readOnlyHint !== true && tool.annotations?.destructiveHint === true;
+}
+
+function approvalOf(
+  tool: MCPToolDefinition,
+  requiresApproval: ToolAdapterOptions['requiresApproval'] = isDestructiveMCPTool
+): boolean {
+  return typeof requiresApproval === 'function' ? requiresApproval(tool) : requiresApproval;
 }
 
 /**

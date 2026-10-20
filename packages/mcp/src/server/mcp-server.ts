@@ -85,6 +85,15 @@ function errorMessageOf(error: unknown): string {
 
 const PERMISSIVE_INPUT_SCHEMA = z.looseObject({});
 
+/**
+ * The output schema MCP can advertise for a tool: only an object schema, as MCP takes for
+ * `outputSchema`. A tool with another output schema returns its result as `content` only.
+ */
+function objectOutputSchema(tool: Tool): z.ZodObject | undefined {
+  const schema: unknown = tool.outputSchema;
+  return schema instanceof z.ZodObject ? schema : undefined;
+}
+
 /** Arguments the MCP SDK already parsed with the tool's own schema: taken as they are. */
 const SDK_PARSED_ARGUMENTS = z.custom<unknown>(() => true);
 
@@ -300,14 +309,18 @@ export class MCPServer {
    * Register a tool with the MCP server
    */
   private registerMCPTool(server: McpServer, tool: Tool, caller?: MCPCaller): void {
+    const outputSchema = objectOutputSchema(tool);
     server.registerTool(
       tool.name,
       {
+        ...(tool.title !== undefined && { title: tool.title }),
         description: tool.description,
         inputSchema: this.buildInputSchema(tool),
+        ...(outputSchema && { outputSchema }),
+        ...(tool.annotations && { annotations: { ...tool.annotations } }),
       },
       async (args: unknown, extra: ToolHandlerExtra): Promise<MCPCallToolResult> => {
-        return this.executeTool(tool, args, extra, caller);
+        return this.executeTool(tool, args, extra, caller, outputSchema);
       }
     );
   }
@@ -342,7 +355,8 @@ export class MCPServer {
     tool: Tool,
     args: unknown,
     extra: ToolHandlerExtra,
-    caller?: MCPCaller
+    caller: MCPCaller | undefined,
+    outputSchema: z.ZodObject | undefined
   ): Promise<MCPCallToolResult> {
     const elicit: MCPToolContext['elicit'] = this.canElicit()
       ? (request) => this.elicit(extra, request)
@@ -367,10 +381,34 @@ export class MCPServer {
         );
       }
       if (result.error !== undefined) return this.toolError(tool, result.error);
+      if (outputSchema) return await this.structuredResult(tool, outputSchema, result.result);
       return { content: resultToMCPContent(result.result).map(toServerContent) };
     } catch (error) {
       return this.toolError(tool, errorMessageOf(error));
     }
+  }
+
+  /**
+   * The result of a tool with an output schema: `structuredContent`, with its JSON as text for
+   * clients that read only `content`. A result the schema rejects is a tool error that says why,
+   * since MCP requires structured content to match the advertised schema.
+   */
+  private async structuredResult(
+    tool: Tool,
+    outputSchema: z.ZodObject,
+    value: unknown
+  ): Promise<MCPCallToolResult> {
+    const parsed = await outputSchema.safeParseAsync(value);
+    if (!parsed.success) {
+      return this.toolError(
+        tool,
+        `The result does not match the tool's outputSchema: ${z.prettifyError(parsed.error)}`
+      );
+    }
+    return {
+      content: resultToMCPContent(value).map(toServerContent),
+      structuredContent: value as Record<string, unknown>,
+    };
   }
 
   private toolError(tool: Tool, message: string): MCPCallToolResult {
