@@ -5,6 +5,7 @@ import type {
   AgentConfig,
   AgentWireAgent,
   AgentWireConfig,
+  AgentWireFallbackModel,
   AgentWireHandoff,
   AgentWireResponseFormat,
   AgentWireRunResult,
@@ -27,6 +28,7 @@ export const AGENT_CONFIG_WIRE_FIELDS = {
   description: 'carried',
   provider: 'carried, and as the prefix of model so the route stays the same',
   model: 'carried, the sender resolving a missing one',
+  fallbackModels: 'carried, each routed like model',
   instructions: 'carried',
   tools: 'carried as schemas, resolved by name on the receiving side',
   skills: 'merged into tools and instructions by the Agent constructor',
@@ -88,6 +90,9 @@ const agentShape = {
   instructions: z.string(),
   model: z.string().min(1),
   provider: z.string().min(1).optional(),
+  fallbackModels: z
+    .array(z.strictObject({ model: z.string().min(1), provider: z.string().min(1).optional() }))
+    .optional(),
   temperature: z.number().optional(),
   topP: z.number().optional(),
   maxTokens: z.number().int().positive().optional(),
@@ -226,6 +231,14 @@ function agentToWire(agent: IAgent, options: ToAgentWireOptions): AgentWireAgent
     );
   }
   const provider = config.provider;
+  const fallbackModels = (config.fallbackModels ?? []).map((fallback): AgentWireFallbackModel =>
+    typeof fallback === 'string'
+      ? { model: fallback }
+      : {
+          model: fallback.provider ? `${fallback.provider}/${fallback.model}` : fallback.model,
+          ...(fallback.provider && { provider: fallback.provider }),
+        }
+  );
   const responseFormat = toAgentWireResponseFormat(config.responseFormat);
   const handoffs = (config.handoffs ?? []).map(toHandoff).map((handoff): AgentWireHandoff => ({
     agent: handoff.agent.name,
@@ -240,6 +253,7 @@ function agentToWire(agent: IAgent, options: ToAgentWireOptions): AgentWireAgent
     instructions: config.instructions,
     model: provider ? `${provider}/${model}` : model,
     ...(provider && { provider }),
+    ...(fallbackModels.length > 0 && { fallbackModels }),
     ...(config.temperature !== undefined && { temperature: config.temperature }),
     ...(config.topP !== undefined && { topP: config.topP }),
     ...(config.maxTokens !== undefined && { maxTokens: config.maxTokens }),
@@ -361,6 +375,16 @@ export function fromAgentWire(value: unknown, runtime: AgentWireRuntime): Agent 
         instructions: item.instructions,
         model: route.model,
         ...(route.provider !== undefined && { provider: route.provider }),
+        ...(item.fallbackModels && {
+          fallbackModels: item.fallbackModels.map((fallback) => {
+            const routed = routeAgentWireModel(
+              fallback.model,
+              fallback.provider,
+              runtime.cogitator
+            );
+            return routed.provider === undefined ? routed.model : routed;
+          }),
+        }),
         ...(item.temperature !== undefined && { temperature: item.temperature }),
         ...(item.topP !== undefined && { topP: item.topP }),
         ...(item.maxTokens !== undefined && { maxTokens: item.maxTokens }),

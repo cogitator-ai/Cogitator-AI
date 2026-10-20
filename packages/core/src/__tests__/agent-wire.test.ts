@@ -117,6 +117,10 @@ describe('agent wire format', () => {
       description: 'Decides what runs',
       provider: 'openrouter',
       model: 'openai/gpt-6-luna',
+      fallbackModels: [
+        'anthropic/claude-sonnet-5-5',
+        { model: 'deepseek/deepseek-v4-pro', provider: 'openrouter' },
+      ],
       instructions: 'Decide whether the pitch runs.',
       tools: [search],
       skills: [

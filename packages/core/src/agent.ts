@@ -148,6 +148,11 @@ export class Agent implements IAgent {
       config: {
         model: this.config.model,
         provider: this.config.provider,
+        ...(this.config.fallbackModels?.length && {
+          fallbackModels: this.config.fallbackModels.map((m) =>
+            typeof m === 'string' ? m : { ...m }
+          ),
+        }),
         instructions: this.config.instructions,
         tools: this.tools.map((t) => t.name),
         description: this.config.description,
@@ -216,6 +221,7 @@ export class Agent implements IAgent {
       description: snapshot.config.description,
       model: snapshot.config.model,
       provider: snapshot.config.provider,
+      ...(snapshot.config.fallbackModels && { fallbackModels: snapshot.config.fallbackModels }),
       instructions: snapshot.config.instructions,
       tools: resolvedTools,
       temperature: snapshot.config.temperature,

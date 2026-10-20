@@ -15,6 +15,16 @@ export interface AgentConfig {
   provider?: string;
   /** `provider/model`. Falls back to `llm.defaultModel` of the Cogitator that runs the agent. */
   model?: string;
+  /**
+   * Models a turn moves to, in order, when `model` fails in a way another model may not: the
+   * provider is down, overloaded or timing out once its retries are spent (`llm.retry`), the
+   * account is out of quota, the key is rejected, or the model is gone. A request the provider
+   * refuses as such (`content_filter`, `invalid_request`) and an aborted run do not move. A model
+   * that keeps failing is skipped for a while (`llm.modelCircuitBreaker`). Each turn starts again
+   * from `model`, `RunOptions.onModelFallback` reports every move, and a run whose models all
+   * failed ends with `LLM_UNAVAILABLE`, the failures in `details.attempts`.
+   */
+  fallbackModels?: FallbackModel[];
   instructions: string;
   tools?: Tool[];
   skills?: Skill[];
@@ -41,6 +51,9 @@ export interface AgentConfig {
   onIterationLimit?: 'answer' | 'stop';
   timeout?: number;
 }
+
+/** A model to fall back to: `provider/model`, or a model name with the provider to run it on. */
+export type FallbackModel = string | { model: string; provider?: string };
 
 export interface Handoff {
   agent: Agent;
@@ -84,6 +97,7 @@ export interface AgentSnapshotMetadata {
 export interface SerializedAgentConfig {
   model?: string;
   provider?: string;
+  fallbackModels?: FallbackModel[];
   instructions: string;
   tools: string[];
   description?: string;

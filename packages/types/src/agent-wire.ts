@@ -52,6 +52,8 @@ export interface AgentWireAgent {
    * the receiving Cogitator's `llm.defaultProvider`, and a provider it cannot route to fails
    */
   provider?: LLMBackendProvider;
+  /** Models to fall back to, as in `AgentConfig.fallbackModels`, each routed like `model` */
+  fallbackModels?: AgentWireFallbackModel[];
   temperature?: number;
   topP?: number;
   maxTokens?: number;
@@ -69,6 +71,12 @@ export interface AgentWireAgent {
   tools: ToolSchema[];
   /** Agents this one can hand the conversation over to */
   handoffs?: AgentWireHandoff[];
+}
+
+/** A fallback model on the wire, routed like `AgentWireAgent.model` and `provider`. */
+export interface AgentWireFallbackModel {
+  model: string;
+  provider?: LLMBackendProvider;
 }
 
 /**

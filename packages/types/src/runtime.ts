@@ -88,6 +88,13 @@ export interface CogitatorConfig {
      * provider's cache hits lower the run's cost.
      */
     promptCache?: PromptCacheConfig | false;
+    /**
+     * When a model an agent falls back from (`fallbackModels`) is skipped. Each model has its
+     * own breaker, shared by every run of this runtime: after `failureThreshold` failures in a
+     * row, or at once for an out-of-quota account, a rejected key or a missing model, turns go
+     * straight to the next model for `resetTimeout` ms, and then try it again.
+     */
+    modelCircuitBreaker?: ModelCircuitBreakerConfig;
   };
   /**
    * Where paused runs are kept. Defaults to the memory adapter's threads (so
@@ -140,6 +147,26 @@ export interface CogitatorConfig {
   deploy?: DeployConfig;
 }
 
+/** See `CogitatorConfig.llm.modelCircuitBreaker`. */
+export interface ModelCircuitBreakerConfig {
+  /** Failures in a row that make a model be skipped (default 5) */
+  failureThreshold?: number;
+  /** How long a failing model is skipped, in ms (default 30 000) */
+  resetTimeout?: number;
+  /** Calls that must succeed after `resetTimeout` before the model counts as healthy (default 3) */
+  halfOpenRequests?: number;
+}
+
+/** A turn of a run moved from one model to the next of the agent's `fallbackModels`. */
+export interface ModelFallbackEvent {
+  /** The model that failed, as `provider/model` */
+  from: string;
+  /** The model the turn goes on with, as `provider/model` */
+  to: string;
+  /** Why `from` failed: its error, or a `CIRCUIT_OPEN` error when it was skipped */
+  error: Error;
+}
+
 export type ImageInput =
   string | { data: string; mimeType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp' };
 
@@ -167,6 +194,8 @@ export interface RunOptions {
   onReasoning?: (delta: string) => void;
   /** Called when an agent hands the conversation over to another */
   onHandoff?: (handoff: HandoffEvent) => void;
+  /** Called when a turn moves from a failing model to the next of the agent's `fallbackModels` */
+  onModelFallback?: (event: ModelFallbackEvent) => void;
   /** Overrides the agent's `reasoning` for this run */
   reasoning?: ReasoningConfig;
   /**
@@ -433,7 +462,10 @@ export interface RunResult {
   readonly runId: string;
   readonly agentId: string;
   readonly threadId: string;
-  /** Actual model used (may differ from agent.model if cost routing is enabled) */
+  /**
+   * The model that gave the final answer, as `provider/model`, when it may differ from the
+   * agent's `model`: cost routing picked it, or the turn fell back to one of `fallbackModels`
+   */
   readonly modelUsed?: string;
   readonly usage: {
     readonly inputTokens: number;

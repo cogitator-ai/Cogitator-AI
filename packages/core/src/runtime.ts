@@ -41,6 +41,7 @@ import { llmInvalidResponse } from './llm/errors';
 import { isLLMProvider } from './llm/providers';
 import { createLLMBackendFromPlugin, hasLLMPlugin } from './llm/plugin';
 import { withLLMRetry } from './llm/retry';
+import { ModelFallbackChain, type ModelCandidate } from './llm/model-fallback';
 import { normalizeTurn } from './llm/turn';
 import { PiiMasker, withPiiDecisions, withPiiMasking } from './security/pii';
 import { createLoggerFromConfig, getLogger, setLogger } from './logger';
@@ -192,6 +193,7 @@ export class Cogitator implements ToolInvoker {
   /** Prices model calls whose provider reports no cost: by `llm.pricing`, then by the model registry. */
   readonly pricer: CallPricer;
   private backends = new Map<string, LLMBackend>();
+  private modelChain?: ModelFallbackChain;
   private readonly decisionBackends = new Map<string, DecisionBackend>();
   private processCheckpoints?: InMemoryRunCheckpointStore;
   private promptRegistry?: PromptRegistry;
@@ -685,6 +687,11 @@ export class Cogitator implements ToolInvoker {
         messages = await this.prepareMessages(agent, runOptions, input, threadId);
       }
 
+      let candidates = this.modelCandidates(active, effectiveModel, routeProvider, {
+        backend,
+        model,
+      });
+      let fellBackTo: string | undefined;
       const allToolCalls: ToolCall[] = [...(checkpoint?.toolCalls ?? [])];
       let totalInputTokens = checkpoint?.usage.inputTokens ?? 0;
       let totalOutputTokens = checkpoint?.usage.outputTokens ?? 0;
@@ -766,6 +773,10 @@ export class Cogitator implements ToolInvoker {
         effectiveModel = this.resolveModel(target);
         routeProvider = target.config.provider;
         ({ backend, model } = this.route(effectiveModel, routeProvider));
+        candidates = this.modelCandidates(target, effectiveModel, routeProvider, {
+          backend,
+          model,
+        });
         reasoning = options.reasoning ?? target.config.reasoning;
         responseFormat = toLLMResponseFormat(target.config.responseFormat);
         lastToolCallSig = '';
@@ -1047,52 +1058,94 @@ export class Cogitator implements ToolInvoker {
           ? 'none'
           : toolChoiceForTurn(requestedToolChoice, allToolCalls.length > 0, registry);
 
-        let response: ChatResponse;
-        if (streaming) {
-          response = await waitForAbortable(
-            streamChat(
-              backend,
-              model,
-              messages,
-              registry,
-              active,
-              turnTokens,
-              abortController.signal,
-              responseFormat,
-              {
-                reasoning,
-                cache: promptCache,
-                cachePrefix: active.instructions,
-                onReasoning: options.onReasoning,
-                ...(turnToolChoice && { toolChoice: turnToolChoice }),
-              }
-            ),
-            abortController.signal
-          );
-        } else {
-          response = await waitForAbortable(
-            backend.chat({
-              model,
-              messages,
-              tools: registry.getSchemas(),
-              ...(turnToolChoice && { toolChoice: turnToolChoice }),
-              temperature: active.config.temperature,
-              topP: active.config.topP,
-              maxTokens: active.config.maxTokens,
-              stop: active.config.stopSequences,
-              responseFormat,
-              reasoning,
-              cache: promptCache,
-              cachePrefix: active.instructions,
+        let streamed = false;
+        const turnStream = holdsTokensForOutputFilter
+          ? turnTokens
+          : (token: string) => {
+              streamed = true;
+              turnTokens(token);
+            };
+        const onReasoning = options.onReasoning;
+        const turn = await waitForAbortable(
+          this.fallbackChain().run<ChatResponse>(
+            candidates,
+            (candidate) =>
+              streaming
+                ? streamChat(
+                    candidate.backend,
+                    candidate.model,
+                    messages,
+                    registry,
+                    active,
+                    turnStream,
+                    abortController.signal,
+                    responseFormat,
+                    {
+                      reasoning,
+                      cache: promptCache,
+                      cachePrefix: active.instructions,
+                      ...(onReasoning && {
+                        onReasoning: (delta: string) => {
+                          streamed = true;
+                          onReasoning(delta);
+                        },
+                      }),
+                      ...(turnToolChoice && { toolChoice: turnToolChoice }),
+                    }
+                  )
+                : candidate.backend.chat({
+                    model: candidate.model,
+                    messages,
+                    tools: registry.getSchemas(),
+                    ...(turnToolChoice && { toolChoice: turnToolChoice }),
+                    temperature: active.config.temperature,
+                    topP: active.config.topP,
+                    maxTokens: active.config.maxTokens,
+                    stop: active.config.stopSequences,
+                    responseFormat,
+                    reasoning,
+                    cache: promptCache,
+                    cachePrefix: active.instructions,
+                    signal: abortController.signal,
+                  }),
+            {
               signal: abortController.signal,
-            }),
-            abortController.signal
-          );
-        }
-        response = normalizeTurn(response);
+              canSwitch: () => !streamed,
+              onFallback: (event) => {
+                getLogger().warn('Model failed, falling back to the next model', {
+                  from: event.from,
+                  to: event.to,
+                  error: event.error.message,
+                });
+                spans.push(
+                  createSpan(
+                    'llm.fallback',
+                    traceId,
+                    rootSpanId,
+                    Date.now(),
+                    Date.now(),
+                    {
+                      'llm.fallback.from': event.from,
+                      'llm.fallback.to': event.to,
+                      'llm.fallback.error': event.error.message,
+                    },
+                    'error',
+                    'internal',
+                    options.onSpan
+                  )
+                );
+                options.onModelFallback?.(event);
+              },
+            }
+          ),
+          abortController.signal
+        );
+        const answeredBy = turn.candidate;
+        fellBackTo = answeredBy === candidates[0] ? undefined : answeredBy.name;
+        let response = normalizeTurn(turn.result);
 
         const spentBefore = costMeter.total(costModel);
-        const callModel = this.pricedModel(effectiveModel, routeProvider);
+        const callModel = answeredBy.name;
         costMeter.add(response.usage, callModel);
         const callCost = costMeter.total(costModel) - spentBefore;
 
@@ -1103,7 +1156,7 @@ export class Cogitator implements ToolInvoker {
           llmSpanStart,
           Date.now(),
           {
-            'llm.model': model,
+            'llm.model': answeredBy.model,
             'llm.iteration': iterations,
             'llm.input_tokens': response.usage.inputTokens,
             'llm.output_tokens': response.usage.outputTokens,
@@ -1135,7 +1188,7 @@ export class Cogitator implements ToolInvoker {
           runId,
           agentId: agent.id,
           threadId,
-          model: effectiveModel,
+          model: fellBackTo ?? effectiveModel,
           inputTokens: response.usage.inputTokens,
           outputTokens: response.usage.outputTokens,
           cost: callCost,
@@ -1144,7 +1197,7 @@ export class Cogitator implements ToolInvoker {
 
         if (response.finishReason === 'error') {
           throw llmInvalidResponse(
-            { provider: backend.provider, model },
+            { provider: answeredBy.backend.provider, model: answeredBy.model },
             `The model ended its turn with an error${response.finishMessage ? `: ${response.finishMessage}` : ''}`
           );
         }
@@ -1156,7 +1209,7 @@ export class Cogitator implements ToolInvoker {
         ) {
           emptyAnswerRetries++;
           getLogger().warn('Model returned an empty answer, asking again', {
-            model,
+            model: answeredBy.model,
             iteration: iterations,
             attempt: emptyAnswerRetries,
           });
@@ -1359,7 +1412,7 @@ export class Cogitator implements ToolInvoker {
         runId,
         agentId: agent.id,
         threadId,
-        modelUsed: this.config.costRouting?.enabled ? effectiveModel : undefined,
+        modelUsed: fellBackTo ?? (this.config.costRouting?.enabled ? effectiveModel : undefined),
         usage: {
           inputTokens: totalInputTokens,
           outputTokens: totalOutputTokens,
@@ -1740,6 +1793,35 @@ export class Cogitator implements ToolInvoker {
     if (this.config.costRouting?.enabled && !this.state.costRoutingInitialized) {
       initializeCostRouting(this.config, this.state, (model) => this.pricer.pricing(model));
     }
+  }
+
+  /**
+   * The models a turn of `owner` runs on: its model as already routed, then its
+   * `fallbackModels`, each once. Every fallback is routed here, so a misconfigured
+   * one fails the run at its start rather than in the middle of an outage.
+   */
+  private modelCandidates(
+    owner: Agent,
+    modelString: string,
+    explicitProvider: string | undefined,
+    primary: ModelRoute
+  ): ModelCandidate[] {
+    const candidates: ModelCandidate[] = [
+      { name: this.pricedModel(modelString, explicitProvider), ...primary },
+    ];
+    for (const fallback of owner.config.fallbackModels ?? []) {
+      const [fallbackModel, fallbackProvider] =
+        typeof fallback === 'string' ? [fallback, undefined] : [fallback.model, fallback.provider];
+      const name = this.pricedModel(fallbackModel, fallbackProvider);
+      if (candidates.some((candidate) => candidate.name === name)) continue;
+      candidates.push({ name, ...this.route(fallbackModel, fallbackProvider) });
+    }
+    return candidates;
+  }
+
+  private fallbackChain(): ModelFallbackChain {
+    this.modelChain ??= new ModelFallbackChain(this.config.llm?.modelCircuitBreaker);
+    return this.modelChain;
   }
 
   private getBackend(modelString: string, explicitProvider?: string): LLMBackend {
