@@ -80,6 +80,7 @@ interface CogitatorConfig {
     maxConcurrentRuns?: number;
     defaultTimeout?: number; // ms; default 120000
     maxTokensPerRun?: number;
+    maxToolResultLength?: number; // characters of a tool result the model reads, default 100000
   };
 
   sandbox?: SandboxManagerConfig; // from @cogitator-ai/sandbox
@@ -172,7 +173,9 @@ class Cogitator {
     options?: ResumeOptions // run options plus { decisions?, defaultDecision?, userId? }
   ): Promise<RunResult>;
 
-  // Tool registry shared across all runs
+  // Tool registry shared across all runs. register(tool, { replace? }) and registerMany(tools, { replace? })
+  // warn when a different tool takes a registered name, unless replace: true. An agent's own tool
+  // of the same name wins in its runs, without a warning
   readonly tools: ToolRegistry;
 
   // Memory adapter, connecting it on first use (undefined when not configured or it failed to connect)
@@ -471,8 +474,29 @@ interface ToolConfig<TParams = unknown, TResult = unknown> {
   requiresApproval?: boolean | ((params: TParams) => boolean);
   timeout?: number;
   sandbox?: SandboxConfig; // from @cogitator-ai/sandbox
+  maxResultLength?: number; // overrides limits.maxToolResultLength for this tool
 }
 ```
+
+`name` must be one every LLM provider accepts: letters, digits, `_` and `-`, starting with a letter or `_`, at most 64 characters. `tool()` throws a `TypeError` for any other name, with a suggested name in the message. `isProviderSafeToolName(name)`, `normalizeToolName(name)`, `normalizeToolNames(names)` and `TOOL_NAME_MAX_LENGTH` from `@cogitator-ai/core` check a name or make one that fits.
+
+#### Tool results with parts
+
+```typescript
+import { toolContent } from '@cogitator-ai/core';
+
+return toolContent(
+  { type: 'text', text: 'Rendered the chart' },
+  { type: 'image', data: pngBase64, mediaType: 'image/png' }, // the model sees the image
+  { type: 'file', data: mp3Base64, mediaType: 'audio/mpeg', filename: 'speech.mp3' }, // stays with the app
+  { type: 'json', value: { points: 42 } }, // the model reads JSON text
+  { type: 'resource', uri: 'file:///repo/README.md', mediaType: 'text/markdown', text: readme }
+);
+```
+
+A `resource` part has `uri`, `name?`, `description?`, `mediaType?` and at most one of `text` and base64 `data`. The model reads a text resource after a line naming it, and only that line (with the size) for a binary one. `isToolContentResult`, `toolResultParts`, `toolPartsToText`, `truncateToolResultText` and `DEFAULT_TOOL_RESULT_MAX_LENGTH` come from `@cogitator-ai/types` and are re-exported by core.
+
+The model reads at most `limits.maxToolResultLength` characters of a result (default 100 000), or the tool's `maxResultLength`. A longer result, or error, keeps its start and end with a note of how much was left out in the middle, and `onToolResult` and `RunResult` still get the whole result.
 
 #### ToolContext
 
@@ -1379,6 +1403,8 @@ import type {
   ToolConfig,
   ToolContext,
   ToolSchema,
+  ToolContentResult, // what toolContent() returns
+  ToolContentPart, // text, image, file, json or resource
 
   // Runs
   CogitatorConfig,

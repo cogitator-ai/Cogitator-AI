@@ -152,6 +152,8 @@ interface ToolContext {
 | `ApprovalCheck`                | `(params) => boolean` form of `requiresApproval`                                                                              |
 | `ToolSchema`                   | JSON Schema representation for LLM                                                                                            |
 | `ToolCategory`                 | `'math' \| 'text' \| 'file' \| 'network' \| 'system' \| 'utility' \| 'web' \| 'database' \| 'communication' \| 'development'` |
+| `ToolContentResult`            | A result made of parts, built with `toolContent()` of `@cogitator-ai/core`                                                    |
+| `ToolContentPart`              | `ToolTextPart \| ToolImagePart \| ToolFilePart \| ToolJsonPart \| ToolResourcePart`                                           |
 
 ### Tool Options
 
@@ -177,8 +179,21 @@ const advancedTool: ToolConfig<{ path: string; content: string }, void> = {
   requiresApproval: true, // or (params) => params.path.includes('/etc')
   timeout: 10000,
   sandbox: { type: 'docker', image: 'node:20' },
+  maxResultLength: 20_000, // characters of the result the model reads
 };
 ```
+
+### Reading Tool Results
+
+A few dependency-free helpers read tool results the way a run does, so packages that do not depend on `@cogitator-ai/core` (voice sessions, adapters) treat them the same. `@cogitator-ai/core` re-exports them.
+
+| Function                            | Description                                                                                    |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `isToolContentResult(value)`        | Whether a result is a `ToolContentResult`                                                      |
+| `toolResultParts(value)`            | The parts of a result with media (a `toolContent()` result or an object with a base64 `image`) |
+| `toolPartsToText(parts)`            | The text of the parts, images, files and binary resources described, JSON as JSON text         |
+| `truncateToolResultText(text, max)` | `text` cut to `max` characters, start and end kept, with a note of how much was left out       |
+| `DEFAULT_TOOL_RESULT_MAX_LENGTH`    | `100_000`, the characters of a result a model reads unless configured otherwise                |
 
 ---
 

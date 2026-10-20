@@ -46,6 +46,23 @@ if (result.success) {
 await sandbox.shutdown();
 ```
 
+### Cancelling an Execution
+
+Pass an `AbortSignal` as `signal` in the request to stop an execution from outside, for example when the user cancels:
+
+```typescript
+const controller = new AbortController();
+const pending = sandbox.execute(
+  { command: ['sh', '-c', 'sleep 60'], signal: controller.signal },
+  { type: 'docker', image: 'alpine:3.19' }
+);
+
+controller.abort(new Error('cancelled by user'));
+const result = await pending; // { success: false, error: 'Execution aborted: cancelled by user' }
+```
+
+Aborting kills the work, not just the wait for it: the native executor kills the process (its whole process group outside Windows), the Docker executor ends the exec and removes its container, which is never reused, and the WASM executor closes the plugin, so its worker thread ends. The result is `{ success: false, error: 'Execution aborted: <reason>' }`, with the message of the signal's reason (`controller.abort()` without one gives the platform's `This operation was aborted`). A signal that is already aborted runs nothing.
+
 ## Sandboxed Tools
 
 Give `Cogitator` a `sandbox` config and declare `sandbox` on a tool to run it in isolation. The runtime creates one `SandboxManager` on first use and shuts it down in `cog.close()`:
@@ -69,6 +86,8 @@ const shell = tool({
 ```
 
 For a `docker` tool, the runtime does not call `execute`: it runs `sh -c <args.command>` in the container (with `args.cwd` and `args.env` when present) and returns `{ stdout, stderr, exitCode, timedOut, duration, command }`. For a `wasm` tool, the arguments are passed as JSON on the module's input and its stdout is parsed as JSON when possible. The runtime passes `sandbox.allowNativeFallback` on: when Docker is unavailable — or `@cogitator-ai/sandbox` is not installed or fails to start — a `docker` tool runs its `execute` function unsandboxed on the host with a warning, unless `allowNativeFallback: false` turns the call into a tool error. A `wasm` tool whose WASM executor is unavailable fails; it runs its own `execute` function only when `@cogitator-ai/sandbox` is missing or fails to start. See [Custom Tools](/docs/tools/custom-tools) for the tool side.
+
+The runtime passes the run's abort signal with every sandboxed call, so cancelling a run (`RunOptions.signal`) stops a sandboxed command that is still running, and the call fails with the abort reason, as a native tool's call does.
 
 ## DockerSandboxExecutor
 

@@ -37,7 +37,7 @@ function tool<TParams, TResult>(config: ToolConfig<TParams, TResult>): Tool<TPar
 
 | Field              | Type                                    | Description                                                                                                                     |
 | ------------------ | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `name`             | `string`                                | Unique tool name (used in LLM function calling)                                                                                 |
+| `name`             | `string`                                | Unique tool name (used in LLM function calling), see [Tool Names](#tool-names)                                                  |
 | `description`      | `string`                                | What the tool does (sent to the LLM)                                                                                            |
 | `parameters`       | `ZodType`                               | Zod schema defining accepted parameters                                                                                         |
 | `execute`          | `(params, context) => Promise<TResult>` | Implementation function                                                                                                         |
@@ -47,6 +47,35 @@ function tool<TParams, TResult>(config: ToolConfig<TParams, TResult>): Tool<TPar
 | `requiresApproval` | `boolean \| (params) => boolean`        | Require human approval before execution ([Approvals](/docs/tools/approvals))                                                    |
 | `timeout`          | `number`                                | Per-call timeout in milliseconds                                                                                                |
 | `sandbox`          | `SandboxConfig`                         | Run in an isolated environment (see below)                                                                                      |
+| `maxResultLength`  | `number`                                | Most characters of a result the model reads, over `limits.maxToolResultLength` ([Result Size](#result-size))                    |
+
+### Tool Names
+
+A tool name must be one every LLM provider accepts: letters, digits, `_` and `-`, starting with a letter or `_`, at most 64 characters (`/^[a-zA-Z_][a-zA-Z0-9_-]{0,63}$/`, the strictest of the OpenAI, Anthropic, Gemini and Bedrock rules). `tool()` throws a `TypeError` for any other name, so a bad name fails where the tool is defined instead of as a provider error in the middle of a run. The message names the rule and suggests a name that fits:
+
+```typescript
+tool({ name: 'weather.get', ... });
+// TypeError: Invalid tool name "weather.get": LLM providers accept letters, digits, "_" and "-",
+// starting with a letter or "_", at most 64 characters. For example "weather_get".
+```
+
+For names that come from elsewhere (a config file, a remote service), `@cogitator-ai/core` exports the same rule:
+
+```typescript
+import {
+  TOOL_NAME_MAX_LENGTH, // 64
+  isProviderSafeToolName,
+  normalizeToolName,
+  normalizeToolNames,
+} from '@cogitator-ai/core';
+
+isProviderSafeToolName('get_weather'); // true
+normalizeToolName('admin.list_users'); // 'admin_list_users'
+normalizeToolName('2fa-check'); // '_2fa-check'
+normalizeToolNames(['a.b', 'a_b']); // ['a_b_<hash>', 'a_b']
+```
+
+`normalizeToolName` keeps a valid name as it is, turns every other character into `_`, adds a leading `_` when the name does not start with a letter or `_`, and cuts a name longer than 64 characters so it ends with `_` and 8 hex characters of a SHA-256 hash of the full name, so different long names stay different. `normalizeToolNames` does the same for a list, in order, and keeps the names distinct: when two of them normalize to the same name, each one that had to change gets the hash of its original name. MCP tools and A2A agent cards are named with the same function.
 
 ### Tool Context
 
@@ -128,7 +157,7 @@ Each backend places the image where its API allows: inside the tool result for A
 
 ### Media Results with toolContent
 
-For results made of several parts, or with media other than images, return `toolContent()`. Text and images reach the model as the tool message's content. File parts (audio, PDFs and other binary data) stay with the result for your application, in `onToolResult` and `RunResult.toolCalls`, and the model sees only a one-line description such as `[audio/mpeg file "speech.mp3", 46.9 KB, delivered to the application, not shown here]`, so the bytes never fill the context:
+For results made of several parts, or with media other than images, return `toolContent()`. Text and images reach the model as the tool message's content. JSON and resource parts are described below. File parts (audio, PDFs and other binary data) stay with the result for your application, in `onToolResult` and `RunResult.toolCalls`, and the model sees only a one-line description such as `[audio/mpeg file "speech.mp3", 46.9 KB, delivered to the application, not shown here]`, so the bytes never fill the context:
 
 ```typescript
 import { tool, toolContent } from '@cogitator-ai/core';
@@ -148,6 +177,47 @@ const screenshotPage = tool({
 ```
 
 Images in formats the providers do not take (anything but PNG, JPEG, GIF and WebP) are described like files. Guardrails that filter tool results read the text and the descriptions, never the base64 data. MCP tools that return image or audio content and AI SDK tools come through as the same parts.
+
+Two more parts carry structured data and resources:
+
+- `{ type: 'json', value }` keeps a value as it is for your application, and the model reads it as JSON text.
+- `{ type: 'resource', uri, name?, description?, mediaType?, text?, data? }` names a resource the tool read or points to, such as a file or a web page. Set at most one of `text` and `data` (base64). With `text` the model reads a line naming the resource, `[resource "name" uri (mediaType) - description]`, and the text on the next line. With `data` it reads that line with the size, and the bytes stay with your application like a file. With neither it reads only the line.
+
+```typescript
+execute: async ({ path }) => {
+  const text = await readFile(path, 'utf-8');
+  return toolContent(
+    { type: 'json', value: { path, lines: text.split('\n').length } },
+    {
+      type: 'resource',
+      uri: `file://${path}`,
+      name: basename(path),
+      mediaType: 'text/markdown',
+      text,
+    }
+  );
+};
+```
+
+`isToolContentResult`, `toolResultParts` (the parts of any result, including an object with a base64 `image`) and `toolPartsToText` (the text the model reads, with every image and file described) are exported from `@cogitator-ai/core` and from `@cogitator-ai/types`, for code that reads results without the runtime. When an MCP tool's result carries media, its text resources come through as resource parts.
+
+### Result Size
+
+The model reads at most `limits.maxToolResultLength` characters of a tool result (default 100 000, about 25 000 tokens, `DEFAULT_TOOL_RESULT_MAX_LENGTH`), so one huge output, such as a long log or a scraped page, cannot fill the context. A tool's own `maxResultLength` overrides the limit:
+
+```typescript
+const cog = new Cogitator({ limits: { maxToolResultLength: 20_000 } });
+
+const readLog = tool({
+  name: 'read_log',
+  description: 'Read the build log',
+  parameters: z.object({}),
+  maxResultLength: 5_000,
+  execute: async () => readFile('build.log', 'utf-8'),
+});
+```
+
+A longer result keeps its start (three quarters of the budget) and its end (one quarter), where a command's last lines or an error usually are, with a note in the middle such as `[... 1000 of 2000 characters of this tool result were left out ...]`. Error messages are cut the same way. For a [`toolContent()`](#media-results-with-toolcontent) result the text parts share the budget in proportion to their length, and images are never cut. Only what the model reads is cut: `onToolResult` and `RunResult.toolCalls` still get the whole result. `truncateToolResultText(text, maxLength)` applies the same cut to text of your own.
 
 ## Typed Tool Sets
 
@@ -236,9 +306,16 @@ registry.getAll(); // Tool[]
 registry.clear();
 ```
 
-Registering a tool under a name that already exists replaces it.
+Registering a tool under a name that already exists replaces it. When the new tool is a different one, the registry logs a warning, since the model can only ever call one of them and a clash is usually a mistake (two MCP servers with a `search` tool, for example). Pass `{ replace: true }` when replacing is the intent:
 
-The Cogitator runtime uses `ToolRegistry` internally to resolve tool calls from the LLM.
+```typescript
+registry.register(getWeatherV2, { replace: true });
+registry.registerMany([calculator, datetime], { replace: true });
+```
+
+Registering the same tool object again is not a clash and never warns.
+
+The Cogitator runtime uses `ToolRegistry` internally to resolve tool calls from the LLM. In a run, an agent's own tool replaces a global tool (`cogitator.tools`) of the same name without a warning.
 
 ## Tool Schema Conversion
 
@@ -291,7 +368,9 @@ const runPython = tool({
 });
 ```
 
-The container is managed by the runtime (configure it with `sandbox` on the `Cogitator`). Two fallbacks log a warning and run without isolation: when `@cogitator-ai/sandbox` cannot be loaded, the runtime calls `execute` natively, so keep `execute` harmless; when Docker is not available, the sandbox manager runs the command on the host shell. Both are allowed by `sandbox.allowNativeFallback` (default `true`); set it to `false` on the `Cogitator` when untrusted commands must never reach the host, and such calls fail instead — see [Sandbox](/docs/deployment/sandbox#fallback).
+The container is managed by the runtime (configure it with `sandbox` on the `Cogitator`). Two fallbacks log a warning and run without isolation: when `@cogitator-ai/sandbox` cannot be loaded, the runtime calls `execute` natively, so keep `execute` harmless. When Docker is not available, the sandbox manager runs the command on the host shell. Both are allowed by `sandbox.allowNativeFallback` (default `true`). Set it to `false` on the `Cogitator` when untrusted commands must never reach the host, and such calls fail instead - see [Sandbox](/docs/deployment/sandbox#fallback).
+
+The run's abort signal reaches the sandbox: cancelling a run (`RunOptions.signal`) stops a sandboxed command that is still running, killing its process, container or WASM plugin, and the call fails with the abort reason, as a native tool's call does.
 
 ## Tool Caching
 

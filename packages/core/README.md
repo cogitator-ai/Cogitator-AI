@@ -400,7 +400,9 @@ const weatherTool = tool({
 });
 ```
 
-`tool()` also takes `category`, `tags`, `sideEffects`, `requiresApproval`, `timeout` and `sandbox`. A parameter with `.default()` is optional in the JSON Schema the model sees; `execute` receives the default when the model leaves it out. Tools passed to `new Agent({ tools })` lose their individual parameter types in a plain array; `toolset(...tools)` keeps them as a typed tuple that agents still accept:
+`tool()` also takes `category`, `tags`, `sideEffects`, `requiresApproval`, `timeout`, `sandbox` and `maxResultLength`.
+
+The name must be one every provider accepts: letters, digits, `_` and `-`, starting with a letter or `_`, at most 64 characters (the strictest of the OpenAI, Anthropic, Gemini and Bedrock rules). `tool()` throws a `TypeError` for any other name, with a name that fits, instead of the run failing later with a provider error. `normalizeToolName('weather.get')` gives `weather_get` for names built from data, `normalizeToolNames(names)` keeps a whole set distinct, and `isProviderSafeToolName(name)` checks one. A parameter with `.default()` is optional in the JSON Schema the model sees; `execute` receives the default when the model leaves it out. Tools passed to `new Agent({ tools })` lose their individual parameter types in a plain array; `toolset(...tools)` keeps them as a typed tuple that agents still accept:
 
 ```typescript
 import { tool, toolset } from '@cogitator-ai/core';
@@ -449,6 +451,18 @@ execute: async ({ text }) =>
     { type: 'file', data: mp3.toString('base64'), mediaType: 'audio/mpeg', filename: 'speech.mp3' }
   );
 ```
+
+A `json` part carries structured data: the application gets the value as it is, the model reads it as JSON. A `resource` part names a file, document or page by its `uri`, with an optional `name`, `description` and `mediaType`. With `text` the model reads the contents under a line naming the resource, with `data` (base64) it reads a description and the application gets the bytes, with neither it reads just the line, as a link:
+
+```typescript
+execute: async ({ id }) =>
+  toolContent(
+    { type: 'json', value: { id, status: 'shipped', carrier: 'DHL' } },
+    { type: 'resource', uri: `file:///orders/${id}.md`, mediaType: 'text/markdown', text: notes }
+  );
+```
+
+The model reads at most `limits.maxToolResultLength` characters of a result (default 100 000, about 25 000 tokens), so one huge output cannot fill the context. A longer result keeps its start and its end, with a note in the middle of how much was left out, and a tool's own `maxResultLength` overrides the limit. `onToolResult` and `RunResult` still get the whole result.
 
 Tool parameter schemas reach every provider self-contained: definitions recursive `z.lazy()` schemas refer to travel in `parameters.$defs`, other refs are inlined (`toToolParameters` does this for any JSON Schema).
 
@@ -558,7 +572,7 @@ A Docker-sandboxed tool does not call `execute`: the sandbox runs the `command` 
 
 When Docker is unavailable (or `@cogitator-ai/sandbox` is missing), a Docker-sandboxed tool runs its command directly on the host with a warning; set `sandbox.allowNativeFallback: false` to make those calls fail instead. WASM tools never fall back to the host: they run their own `execute` only when `@cogitator-ai/sandbox` is missing or fails to start, and a WASM sandbox that cannot load the module returns an error. Each Docker execution gets a fresh container (the pool keeps them warm); `sandbox.pool.reuseContainers: true` reuses containers between executions with the same settings, which is faster but lets files and processes leak from one execution to the next.
 
-`timeout` is enforced for every tool: native tools get an aborted `context.signal` and the model receives a `Tool "<name>" timed out after <ms>ms` error; sandboxed tools forward it to the sandbox executor. The sandbox is initialized lazily on the first sandboxed call, and that call already runs inside it.
+`timeout` is enforced for every tool: native tools get an aborted `context.signal` and the model receives a `Tool "<name>" timed out after <ms>ms` error; sandboxed tools forward it to the sandbox executor. Cancelling a run (`signal` in the run options) stops a sandboxed command too: the process is killed, its container removed or its WASM plugin closed, and the call fails with the abort reason. The sandbox is initialized lazily on the first sandboxed call, and that call already runs inside it.
 
 ### Tool Registry
 
@@ -574,6 +588,8 @@ const tool = registry.get('calculator');
 const names = registry.getNames();
 const schemas = registry.getSchemas();
 ```
+
+Registering a different tool under a name that is taken replaces it with a warning, since the model can only ever call one of them. Pass `{ replace: true }` to `register` or `registerMany` when replacing is the intent. In a run, a tool of the agent replaces a tool of the same name in `cogitator.tools` without a warning.
 
 ### Built-in Tools
 

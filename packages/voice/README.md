@@ -339,6 +339,8 @@ Native speech-to-speech without the STT/TTS pipeline. The LLM directly processes
 
 Audio and text sent before `connect()` resolves are queued and flushed once the session is ready. Tools are executed by the session and their results sent back to the model automatically.
 
+A result made of parts (`toolContent()` from `@cogitator-ai/core`, or an object with a base64 `image`) reaches the model as the text of its parts, with images and files described, instead of a JSON string full of base64. The text is cut to the tool's `maxResultLength` (default 100 000 characters). With `toolImages: true` the session also sends the images to a model that takes them: OpenAI gets a user message with `input_image` parts after the tool outputs (`gpt-realtime`, `gpt-realtime-2`), Gemini gets `inlineData` parts in the function response (Gemini 3 models). Other results are sent as before, as JSON to OpenAI and as `{ result }` to Gemini, and one whose JSON is longer than `maxResultLength` is cut the same way.
+
 ### OpenAI Realtime
 
 ```typescript
@@ -593,6 +595,7 @@ if (format) audioMimeType(format); // e.g. 'audio/wav'
 | `realtimeModel`    | `string`                   | No            | Model override                                            |
 | `instructions`     | `string`                   | No            | Realtime instructions (defaults to `agent.instructions`)  |
 | `tools`            | `RealtimeTool[]`           | No            | Realtime tools executed by the session                    |
+| `toolImages`       | `boolean`                  | No            | Realtime: send images tools return to the model           |
 | `voice`            | `string`                   | No            | Voice for realtime                                        |
 | `transport`        | `WebSocketTransportConfig` | No            | Transport options                                         |
 

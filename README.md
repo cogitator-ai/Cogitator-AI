@@ -194,7 +194,7 @@ Install only what you need. Everything is a separate npm package.
 
 | Package                                                                                      | What it does                                                                                         | Example                                                              |
 | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| [`@cogitator-ai/core`](https://www.npmjs.com/package/@cogitator-ai/core)                     | Agents, tools, LLM backends, streaming, everything you need to start                                 | [17 core examples](./examples/core/)                                 |
+| [`@cogitator-ai/core`](https://www.npmjs.com/package/@cogitator-ai/core)                     | Agents, tools, LLM backends, streaming, everything you need to start                                 | [18 core examples](./examples/core/)                                 |
 | [`@cogitator-ai/memory`](https://www.npmjs.com/package/@cogitator-ai/memory)                 | Your agents remember things. Redis, Postgres, SQLite, MongoDB, Qdrant, in-memory                     | [4 memory examples](./examples/memory/)                              |
 | [`@cogitator-ai/models`](https://www.npmjs.com/package/@cogitator-ai/models)                 | Dynamic model registry with pricing, capabilities, provider metadata                                 | [model registry example](./examples/core/13-model-registry.ts)       |
 | [`@cogitator-ai/swarms`](https://www.npmjs.com/package/@cogitator-ai/swarms)                 | 7 swarm strategies - hierarchy, round-robin, consensus, pipeline, debate, auction, negotiation       | [4 swarm examples](./examples/swarms/)                               |
@@ -331,7 +331,7 @@ All with Swagger docs, SSE streaming, and WebSocket support, built on the shared
 
 ---
 
-## 79 Runnable Examples
+## 80 Runnable Examples
 
 Every major feature has a working example you can run right now.
 
@@ -341,7 +341,7 @@ npx tsx examples/core/01-basic-agent.ts
 
 | Category                                                    | Count | What you'll learn                                                                                                                                                                                                                 |
 | ----------------------------------------------------------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`core/`](./examples/core/)                                 | 17    | Agents, tools, streaming, caching, tree-of-thought, reflection, optimization, time-travel, cost routing, constitutional AI, prompt injection, causal reasoning, approvals, handoffs, decision models, provider errors and pricing |
+| [`core/`](./examples/core/)                                 | 18    | Agents, tools, streaming, caching, tree-of-thought, reflection, optimization, time-travel, cost routing, constitutional AI, prompt injection, causal reasoning, approvals, handoffs, decision models, provider errors and pricing, the tool contract |
 | [`memory/`](./examples/memory/)                             | 4     | In-memory storage, context building, semantic search, knowledge graphs                                                                                                                                                            |
 | [`swarms/`](./examples/swarms/)                             | 4     | Debate, pipeline, hierarchical coordination, negotiation                                                                                                                                                                          |
 | [`workflows/`](./examples/workflows/)                       | 3     | DAG workflows, human-in-the-loop, map-reduce                                                                                                                                                                                      |

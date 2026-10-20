@@ -323,7 +323,23 @@ interface SandboxExecutionRequest {
   timeout?: number;
   cwd?: string;
   env?: Record<string, string>;
+  signal?: AbortSignal;
 }
+```
+
+### Cancelling an Execution
+
+Aborting `signal` stops the execution right away: the native executor kills the process group, the Docker executor ends the exec and removes its container (an aborted container is never reused), and the WASM executor closes the plugin, which ends its worker. The result is a failure that names the reason, and a signal that is already aborted runs nothing. Cogitator passes the run's signal, so cancelling a run stops its sandboxed tools.
+
+```typescript
+const controller = new AbortController();
+setTimeout(() => controller.abort(new Error('user cancelled')), 1000);
+
+const result = await manager.execute(
+  { command: ['sleep', '30'], signal: controller.signal },
+  { type: 'docker', image: 'alpine:3.19' }
+);
+// { success: false, error: 'Execution aborted: user cancelled' }
 ```
 
 ## Execution Result
@@ -335,6 +351,7 @@ interface SandboxExecutionResult {
   exitCode: number;
   timedOut: boolean;
   duration: number;
+  truncated?: boolean;
 }
 ```
 

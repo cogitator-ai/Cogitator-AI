@@ -239,14 +239,17 @@ Each WebSocket client gets its own `RealtimeSession`. The session instructions c
 
 ## RealtimeSessionConfig
 
-| Field          | Type                   | Required | Description                                                 |
-| -------------- | ---------------------- | -------- | ----------------------------------------------------------- |
-| `provider`     | `'openai' \| 'gemini'` | Yes      | Realtime API provider                                       |
-| `apiKey`       | `string`               | Yes      | API key                                                     |
-| `model`        | `string`               | No       | Model override                                              |
-| `instructions` | `string`               | No       | System instructions                                         |
-| `voice`        | `string`               | No       | Voice name (default: `marin` for OpenAI, `Puck` for Gemini) |
-| `tools`        | `Array<RealtimeTool>`  | No       | Tools the model can invoke                                  |
+| Field          | Type                   | Required | Description                                                                                     |
+| -------------- | ---------------------- | -------- | ----------------------------------------------------------------------------------------------- |
+| `provider`     | `'openai' \| 'gemini'` | Yes      | Realtime API provider                                                                           |
+| `apiKey`       | `string`               | Yes      | API key                                                                                         |
+| `model`        | `string`               | No       | Model override                                                                                  |
+| `instructions` | `string`               | No       | System instructions                                                                             |
+| `voice`        | `string`               | No       | Voice name (default: `marin` for OpenAI, `Puck` for Gemini)                                     |
+| `tools`        | `Array<RealtimeTool>`  | No       | Tools the model can invoke                                                                      |
+| `toolImages`   | `boolean`              | No       | Send images that tools return to the model (default `false`), see [Tool Results](#tool-results) |
+
+`VoiceAgentConfig` takes `toolImages` too and passes it to every realtime session it opens.
 
 ### RealtimeTool
 
@@ -256,5 +259,35 @@ interface RealtimeTool {
   description: string;
   parameters: Record<string, unknown>;
   execute: (args: unknown) => Promise<unknown>;
+  maxResultLength?: number; // characters of the result the model reads (default 100000)
 }
 ```
+
+### Tool Results
+
+A plain result reaches the model as a JSON string with OpenAI and as `{ result: value }` in the function response with Gemini. A result made of parts, a [`toolContent()`](/docs/core/tools#media-results-with-toolcontent) result or an object with a base64 `image` such as a browser screenshot, reaches the model as the text of its parts instead of a JSON string full of base64: text, JSON and text resources as they are, every image and file as a one-line description such as `[image/png image, 182.4 KB]`. The text is cut to the tool's `maxResultLength` (default 100 000 characters) the way a run cuts it, keeping the start and the end (see [Result Size](/docs/core/tools#result-size)), and a plain result whose JSON is longer than that is cut the same way, sent to Gemini as the cut JSON text.
+
+```typescript
+import { toolContent } from '@cogitator-ai/core';
+
+const lookAtScreen: RealtimeTool = {
+  name: 'look_at_screen',
+  description: 'Take a screenshot of the shared screen',
+  parameters: { type: 'object', properties: {} },
+  execute: async () =>
+    toolContent(
+      { type: 'text', text: 'The shared screen right now' },
+      { type: 'image', data: await captureScreen(), mediaType: 'image/png' }
+    ),
+};
+
+const session = new RealtimeSession({
+  provider: 'openai',
+  apiKey: process.env.OPENAI_API_KEY!,
+  model: 'gpt-realtime-2',
+  tools: [lookAtScreen],
+  toolImages: true,
+});
+```
+
+With `toolImages: true` the model also gets the images themselves, for a model that takes images as input. OpenAI gets a user message with `input_image` parts right after the turn's tool outputs (`gpt-realtime` and `gpt-realtime-2` take images), Gemini gets them as `parts: [{ inlineData: { mimeType, data } }]` of the function response (Gemini 3 models). Leave it off for models without image input, which then read only the descriptions.

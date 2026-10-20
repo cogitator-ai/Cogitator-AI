@@ -460,6 +460,8 @@ if (result.success) {
 }
 ```
 
+A request can carry an `AbortSignal` as `signal`. Aborting it kills the work: the native process group, the Docker exec and its container (removed, never reused) or the WASM plugin and its worker. The result is then `{ success: false, error: 'Execution aborted: <reason>' }`, and a signal that is already aborted runs nothing.
+
 #### Three Execution Modes
 
 ```
@@ -834,6 +836,8 @@ const runShell = tool({
 ```
 
 If the sandbox cannot be initialized at all, a Docker-sandboxed tool runs its command natively with a warning (or fails with `sandbox.allowNativeFallback: false`) and a WASM tool runs its own `execute`; `SandboxManager` itself falls back from Docker to native execution under the same setting when Docker is unavailable (see [Three Execution Modes](#three-execution-modes)).
+
+The runtime passes the run's abort signal with every sandboxed call, so cancelling a run (`RunOptions.signal`) stops a sandboxed command that is still running, and the call fails with the abort reason like a native tool's call.
 
 ### Tool Approvals
 

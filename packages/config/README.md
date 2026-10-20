@@ -425,6 +425,7 @@ limits:
   maxConcurrentRuns: 10 # runs over the limit wait in order
   defaultTimeout: 120000 # ms, for runs and agents that set no timeout
   maxTokensPerRun: 100000 # checked before each model call
+  maxToolResultLength: 100000 # characters of a tool result the model reads
 ```
 
 ### Logging Configuration
@@ -445,40 +446,41 @@ A `Cogitator` created with `logging` installs it as the process-wide logger (the
 
 Supported provider, limits, and deploy settings can be set via environment variables with the `COGITATOR_` prefix:
 
-| Variable                               | Description           |
-| -------------------------------------- | --------------------- |
-| `COGITATOR_LLM_DEFAULT_PROVIDER`       | Default LLM provider  |
-| `COGITATOR_LLM_DEFAULT_MODEL`          | Default model         |
-| `COGITATOR_OLLAMA_BASE_URL`            | Ollama base URL       |
-| `COGITATOR_OLLAMA_API_KEY`             | Ollama API key        |
-| `COGITATOR_OPENAI_API_KEY`             | OpenAI API key        |
-| `COGITATOR_OPENAI_BASE_URL`            | OpenAI base URL       |
-| `COGITATOR_ANTHROPIC_API_KEY`          | Anthropic API key     |
-| `COGITATOR_ANTHROPIC_BASE_URL`         | Anthropic API base    |
-| `COGITATOR_GOOGLE_API_KEY`             | Google API key        |
-| `COGITATOR_GOOGLE_BASE_URL`            | Gemini API base       |
-| `COGITATOR_VLLM_BASE_URL`              | vLLM base URL         |
-| `COGITATOR_AZURE_API_KEY`              | Azure OpenAI API key  |
-| `COGITATOR_AZURE_ENDPOINT`             | Azure OpenAI endpoint |
-| `COGITATOR_AZURE_API_VERSION`          | Azure API version     |
-| `COGITATOR_AZURE_DEPLOYMENT`           | Azure deployment name |
-| `COGITATOR_BEDROCK_REGION`             | AWS Bedrock region    |
-| `COGITATOR_BEDROCK_ACCESS_KEY_ID`      | AWS access key ID     |
-| `COGITATOR_BEDROCK_SECRET_ACCESS_KEY`  | AWS secret access key |
-| `COGITATOR_BEDROCK_SESSION_TOKEN`      | AWS session token     |
-| `COGITATOR_BEDROCK_PROFILE`            | AWS named profile     |
-| `COGITATOR_MISTRAL_API_KEY`            | Mistral API key       |
-| `COGITATOR_GROQ_API_KEY`               | Groq API key          |
-| `COGITATOR_TOGETHER_API_KEY`           | Together API key      |
-| `COGITATOR_DEEPSEEK_API_KEY`           | DeepSeek API key      |
-| `COGITATOR_OPENROUTER_API_KEY`         | OpenRouter API key    |
-| `COGITATOR_OPENROUTER_BASE_URL`        | OpenRouter API base   |
-| `COGITATOR_LIMITS_MAX_CONCURRENT_RUNS` | Max concurrent runs   |
-| `COGITATOR_LIMITS_DEFAULT_TIMEOUT`     | Default timeout (ms)  |
-| `COGITATOR_LIMITS_MAX_TOKENS_PER_RUN`  | Max tokens per run    |
-| `COGITATOR_DEPLOY_TARGET`              | Deploy target         |
-| `COGITATOR_DEPLOY_PORT`                | Deploy port           |
-| `COGITATOR_DEPLOY_REGISTRY`            | Container registry    |
+| Variable                                  | Description                                     |
+| ----------------------------------------- | ----------------------------------------------- |
+| `COGITATOR_LLM_DEFAULT_PROVIDER`          | Default LLM provider                            |
+| `COGITATOR_LLM_DEFAULT_MODEL`             | Default model                                   |
+| `COGITATOR_OLLAMA_BASE_URL`               | Ollama base URL                                 |
+| `COGITATOR_OLLAMA_API_KEY`                | Ollama API key                                  |
+| `COGITATOR_OPENAI_API_KEY`                | OpenAI API key                                  |
+| `COGITATOR_OPENAI_BASE_URL`               | OpenAI base URL                                 |
+| `COGITATOR_ANTHROPIC_API_KEY`             | Anthropic API key                               |
+| `COGITATOR_ANTHROPIC_BASE_URL`            | Anthropic API base                              |
+| `COGITATOR_GOOGLE_API_KEY`                | Google API key                                  |
+| `COGITATOR_GOOGLE_BASE_URL`               | Gemini API base                                 |
+| `COGITATOR_VLLM_BASE_URL`                 | vLLM base URL                                   |
+| `COGITATOR_AZURE_API_KEY`                 | Azure OpenAI API key                            |
+| `COGITATOR_AZURE_ENDPOINT`                | Azure OpenAI endpoint                           |
+| `COGITATOR_AZURE_API_VERSION`             | Azure API version                               |
+| `COGITATOR_AZURE_DEPLOYMENT`              | Azure deployment name                           |
+| `COGITATOR_BEDROCK_REGION`                | AWS Bedrock region                              |
+| `COGITATOR_BEDROCK_ACCESS_KEY_ID`         | AWS access key ID                               |
+| `COGITATOR_BEDROCK_SECRET_ACCESS_KEY`     | AWS secret access key                           |
+| `COGITATOR_BEDROCK_SESSION_TOKEN`         | AWS session token                               |
+| `COGITATOR_BEDROCK_PROFILE`               | AWS named profile                               |
+| `COGITATOR_MISTRAL_API_KEY`               | Mistral API key                                 |
+| `COGITATOR_GROQ_API_KEY`                  | Groq API key                                    |
+| `COGITATOR_TOGETHER_API_KEY`              | Together API key                                |
+| `COGITATOR_DEEPSEEK_API_KEY`              | DeepSeek API key                                |
+| `COGITATOR_OPENROUTER_API_KEY`            | OpenRouter API key                              |
+| `COGITATOR_OPENROUTER_BASE_URL`           | OpenRouter API base                             |
+| `COGITATOR_LIMITS_MAX_CONCURRENT_RUNS`    | Max concurrent runs                             |
+| `COGITATOR_LIMITS_DEFAULT_TIMEOUT`        | Default timeout (ms)                            |
+| `COGITATOR_LIMITS_MAX_TOKENS_PER_RUN`     | Max tokens per run                              |
+| `COGITATOR_LIMITS_MAX_TOOL_RESULT_LENGTH` | Max characters of a tool result the model reads |
+| `COGITATOR_DEPLOY_TARGET`                 | Deploy target                                   |
+| `COGITATOR_DEPLOY_PORT`                   | Deploy port                                     |
+| `COGITATOR_DEPLOY_REGISTRY`               | Container registry                              |
 
 Standard provider env vars are also supported:
 

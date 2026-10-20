@@ -39,7 +39,7 @@ function tool<TParams, TResult>(config: ToolConfig<TParams, TResult>): Tool<TPar
 
 | Field              | Type                                    | Required | Description                                       |
 | ------------------ | --------------------------------------- | -------- | ------------------------------------------------- |
-| `name`             | `string`                                | Yes      | Unique tool name (used in LLM function calling)   |
+| `name`             | `string`                                | Yes      | Unique tool name, see [Tool Names](#tool-names)   |
 | `description`      | `string`                                | Yes      | What the tool does (shown to the LLM)             |
 | `parameters`       | `ZodType<TParams>`                      | Yes      | Zod schema for input validation                   |
 | `execute`          | `(params, context) => Promise<TResult>` | Yes      | The function that runs when the tool is called    |
@@ -49,6 +49,11 @@ function tool<TParams, TResult>(config: ToolConfig<TParams, TResult>): Tool<TPar
 | `requiresApproval` | `boolean \| (params) => boolean`        | No       | Require human approval before execution           |
 | `timeout`          | `number`                                | No       | Execution timeout in milliseconds                 |
 | `sandbox`          | `SandboxConfig`                         | No       | Run in Docker or WASM sandbox                     |
+| `maxResultLength`  | `number`                                | No       | Most characters of a result the model reads       |
+
+### Tool Names
+
+The name must be one every LLM provider accepts: letters, digits, `_` and `-`, starting with a letter or `_`, at most 64 characters. `tool()` throws a `TypeError` for any other name, with the rule and a suggested name in the message, so `weather.get` fails where it is defined and the message suggests `weather_get`. `normalizeToolName(name)` from `@cogitator-ai/core` makes a fitting name from any string, see [Tool Names](/docs/core/tools#tool-names).
 
 ---
 
@@ -184,6 +189,8 @@ To show the model an image, return it base64-encoded in an `image` or `imageBase
 return { width: 1280, height: 720, image: screenshot.toString('base64') };
 ```
 
+By default the model reads at most 100 000 characters of a result, which `limits.maxToolResultLength` on the `Cogitator` or `maxResultLength` on the tool changes. A longer one keeps its start and end with a note of how much was left out in the middle, while `onToolResult` and `RunResult` get all of it (see [Result Size](/docs/core/tools#result-size)). A tool that can return a lot, such as a log reader, does better returning the part that matters, with a field like `truncated` that tells the model there is more.
+
 ---
 
 ## Error Handling
@@ -307,6 +314,8 @@ const runPython = tool({
 
 When `@cogitator-ai/sandbox` is not installed or cannot start, the runtime logs a warning and calls `execute` on the host instead — make `execute` safe for that case, as above; when Docker is unreachable, the command runs on the host shell. `sandbox.allowNativeFallback: false` on the `Cogitator` makes both fail instead. See [Sandbox](/docs/deployment/sandbox) for the configuration.
 
+Cancelling the run (`RunOptions.signal`) stops a sandboxed command that is still running, and the call fails with the abort reason.
+
 For lightweight computation, use WASM sandboxing instead (or [`defineWasmTool()`](/docs/tools/wasm-tools), which sets this up):
 
 ```typescript
@@ -382,7 +391,7 @@ This conversion happens automatically when the agent sends tools to the LLM back
 
 ## Registering Tools Globally
 
-`cogitator.tools` is a `ToolRegistry` (`register`, `registerMany`, `get`, `has`, `getAll`, `getNames`, `getSchemas`, `clear`). Tools registered there are offered to every agent this `Cogitator` runs, next to the agent's own `tools` (an agent tool with the same name wins):
+`cogitator.tools` is a `ToolRegistry` (`register`, `registerMany`, `get`, `has`, `getAll`, `getNames`, `getSchemas`, `clear`). Tools registered there are offered to every agent this `Cogitator` runs, next to the agent's own `tools` (an agent tool with the same name wins, without a warning). Registering a different tool under a name the registry already holds replaces it and logs a warning, `register(tool, { replace: true })` replaces it on purpose without one:
 
 ```typescript
 cog.tools.register(weatherTool);

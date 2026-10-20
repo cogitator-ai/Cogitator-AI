@@ -151,7 +151,7 @@ Tool calls are only retried when sending them twice is harmless. After a timeout
 
 ### Tool Results and Errors
 
-`callTool` returns `structuredContent` when the server provides it, otherwise the unwrapped content (text blocks are JSON-parsed when possible, a single block is returned on its own, an empty result is `null`). Content with images, audio or binary resources comes back as a [`toolContent()`](/docs/core/tools#media-results-with-toolcontent) result, so the model sees a screenshot as an image and audio stays out of the context. A tool result with `isError: true` throws `MCPToolError`, so MCP failures show up as ordinary tool errors inside agent runs. Pass an `AbortSignal` to cancel a call, and tools created by `getTools()` forward the run's signal automatically.
+`callTool` returns `structuredContent` when the server provides it, otherwise the unwrapped content (text blocks are JSON-parsed when possible, a single block is returned on its own, an empty result is `null`). Content with images, audio or binary resources comes back as a [`toolContent()`](/docs/core/tools#media-results-with-toolcontent) result, so the model sees a screenshot as an image and audio stays out of the context. Text resources in such a result become `resource` parts with their URI, media type and text. A tool result with `isError: true` throws `MCPToolError`, so MCP failures show up as ordinary tool errors inside agent runs. Pass an `AbortSignal` to cancel a call, and tools created by `getTools()` forward the run's signal automatically.
 
 ```typescript
 import { MCPToolError } from '@cogitator-ai/mcp';
@@ -225,6 +225,8 @@ const server = new MCPServer({
 ```
 
 `serveMCPTools(tools, config)` does the same in one call and returns the started server. Tools, resources and prompts can be added one by one (`registerTool`, `registerResource`, `registerPrompt`) or in batches (`registerTools`, `registerResources`, `registerPrompts`), removed with the matching `unregister*` methods and listed with `getRegisteredTools()` / `getRegisteredResources()` / `getRegisteredPrompts()`.
+
+A served tool that returns [`toolContent()`](/docs/core/tools#media-results-with-toolcontent) answers with MCP content blocks instead of JSON text: text parts as text, images as image blocks, audio files as audio blocks, other files as embedded resources, `json` parts as their JSON text, and `resource` parts with `text` or `data` as embedded resources under their own URI (a resource part with neither becomes the line that names it).
 
 ### HTTP Transport
 
@@ -421,7 +423,7 @@ const cogTool = mcpToCogitator(mcpToolDefinition, client, {
 const allTools = await wrapMCPTools(client, { namePrefix: 'fs_' });
 ```
 
-Tool names are normalized to what every LLM provider accepts (letters, digits, `_` and `-`, at most 64 characters), while calls still go to the server under the original name: `admin.list_users` becomes `admin_list_users`, a longer name is cut and ends with a hash, and names of one server that would collide get a hash on the changed one (`normalizeMCPToolName` shows the result). Give each server its own `namePrefix` when an agent uses several, as two servers can both have a `search` tool. Input schemas with `$ref` keep their `$defs`, so the model sees nested models (such as FastMCP's Pydantic ones) in full.
+Tool names are normalized to what every LLM provider accepts (letters, digits, `_` and `-`, starting with a letter or `_`, at most 64 characters), while calls still go to the server under the original name: `admin.list_users` becomes `admin_list_users`, a longer name is cut and ends with a hash, and names of one server that would collide get a hash on the changed one. `normalizeMCPToolName` shows the result, and is the same function as `normalizeToolName` from `@cogitator-ai/core` (see [Tool Names](/docs/core/tools#tool-names)). Give each server its own `namePrefix` when an agent uses several, as two servers can both have a `search` tool. Input schemas with `$ref` keep their `$defs`, so the model sees nested models (such as FastMCP's Pydantic ones) in full.
 
 ### Schema Conversion
 

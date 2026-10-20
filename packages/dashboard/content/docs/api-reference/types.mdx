@@ -180,6 +180,7 @@ interface Tool<TParams = unknown, TResult = unknown> {
   requiresApproval?: boolean | ApprovalCheck;
   timeout?: number;
   sandbox?: SandboxConfig;
+  maxResultLength?: number; // characters of a result the model reads, over limits.maxToolResultLength
   toJSON(): ToolSchema;
 }
 
@@ -194,6 +195,7 @@ interface ToolConfig<TParams = unknown, TResult = unknown> {
   requiresApproval?: boolean | ((params: TParams) => boolean);
   timeout?: number;
   sandbox?: SandboxConfig;
+  maxResultLength?: number;
 }
 
 type ApprovalCheck = (params: Record<string, unknown>) => boolean;
@@ -252,6 +254,53 @@ interface ToolSchema {
   };
 }
 ```
+
+A tool that returns media or more than one value returns a `ToolContentResult`, built with `toolContent()` from `@cogitator-ai/core` (see [Media Results](/docs/core/tools#media-results-with-toolcontent)):
+
+```typescript
+interface ToolContentResult {
+  type: 'tool-content';
+  content: ToolContentPart[];
+}
+
+type ToolContentPart =
+  ToolTextPart | ToolImagePart | ToolFilePart | ToolJsonPart | ToolResourcePart;
+
+interface ToolTextPart {
+  type: 'text';
+  text: string;
+}
+
+interface ToolImagePart {
+  type: 'image';
+  data: string; // base64, without a data: URL prefix
+  mediaType: string; // e.g. image/png
+}
+
+interface ToolFilePart {
+  type: 'file';
+  data: string; // base64, the model reads only a description
+  mediaType: string; // e.g. audio/mpeg
+  filename?: string;
+}
+
+interface ToolJsonPart {
+  type: 'json';
+  value: unknown; // the model reads it as JSON text
+}
+
+interface ToolResourcePart {
+  type: 'resource';
+  uri: string; // e.g. file:///repo/README.md
+  name?: string;
+  description?: string;
+  mediaType?: string;
+  text?: string; // the model reads it
+  data?: string; // base64, stays with the application, at most one of text and data
+}
+```
+
+The package also holds the helpers that read such results, with no dependencies, so packages without `@cogitator-ai/core` read them the same way a run does: `isToolContentResult(value)`, `toolResultParts(result)` (the parts of a `ToolContentResult` or of an object with a base64 `image` or `imageBase64`), `toolPartsToText(parts)` (the text the model reads, images and files described), `truncateToolResultText(text, maxLength)` and `DEFAULT_TOOL_RESULT_MAX_LENGTH` (100 000). Core re-exports all of them.
 
 The tool cache types (`WithCacheOptions`, `CachedTool`, `CacheStats`, `ToolCacheStorage`, `RedisClientLike`, `DurationString`) are described on [Tool Caching](/docs/tools/tool-caching).
 
@@ -499,6 +548,7 @@ interface CogitatorConfig {
     maxConcurrentRuns?: number;
     defaultTimeout?: number;
     maxTokensPerRun?: number;
+    maxToolResultLength?: number; // characters of a tool result the model reads (default 100000)
   };
   memory?: MemoryConfig;
   sandbox?: SandboxManagerConfig;
@@ -661,7 +711,7 @@ The package also defines the types of the other packages, among them:
 | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Workflows                                                        | `Workflow`, `WorkflowState`, `WorkflowNode`, `NodeContext`, `NodeResult`, `WorkflowResult`, `CheckpointStore`, `ApprovalStore`, `TimerStore`, `RunStore` — see [Workflows API](/docs/api-reference/workflows) |
 | Swarms                                                           | `SwarmConfig`, `SwarmRunOptions`, `StrategyResult`, `MessageBus`, `Blackboard`, `SwarmEvent` — see [Swarms API](/docs/api-reference/swarms)                                                                   |
-| Sandbox                                                          | `SandboxConfig`, `SandboxManagerConfig`, `SandboxExecutionRequest`, `SandboxExecutionResult`                                                                                                                  |
+| Sandbox                                                          | `SandboxConfig`, `SandboxManagerConfig`, `SandboxExecutionRequest` (with `signal` to stop it), `SandboxExecutionResult` - see [Sandbox](/docs/deployment/sandbox)                                             |
 | Reflection, learning, time travel                                | `ReflectionConfig`, `Insight`, `ExecutionTrace`, `ToTConfig`, `ExecutionCheckpoint`, `TraceDiff`                                                                                                              |
 | Guardrails, cost routing, security                               | `GuardrailConfig`, `Constitution`, `CostRoutingConfig`, `BudgetConfig`, `PromptInjectionConfig`, `PiiType`                                                                                                    |
 | Prompt optimization                                              | `InstructionVersion`, `InstructionVersionStore`, `ABTest`, `ABTestStore`                                                                                                                                      |

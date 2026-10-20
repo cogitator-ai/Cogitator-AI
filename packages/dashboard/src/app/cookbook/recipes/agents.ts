@@ -481,5 +481,75 @@ await cog.close();`,
         },
       ],
     },
+    {
+      id: 'tool-results',
+      title: 'Structured Tool Results',
+      difficulty: 'easy',
+      time: '5 min',
+      problem:
+        'Your tools return structured data, documents and long logs, and you want the model to read them well without one huge result filling its context.',
+      points: [
+        'Return `json` and `resource` parts with `toolContent()`, the application keeps the values',
+        "Cap what the model reads with `limits.maxToolResultLength` or a tool's `maxResultLength`, start and end are kept",
+        'Turn names from data into ones every provider accepts with `normalizeToolName()`',
+      ],
+      file: 'tool-results.ts',
+      code: `import { Agent, Cogitator, normalizeToolName, tool, toolContent } from '@cogitator-ai/core';
+import { z } from 'zod';
+
+const cog = new Cogitator({ limits: { maxToolResultLength: 20_000 } });
+
+const lookupOrder = tool({
+  name: normalizeToolName('orders.lookup'),
+  description: 'Look up an order by its id',
+  parameters: z.object({ id: z.string() }),
+  execute: async ({ id }) =>
+    toolContent(
+      { type: 'json', value: { id, status: 'shipped', carrier: 'DHL' } },
+      { type: 'resource', uri: \`file:///orders/\${id}.md\`, mediaType: 'text/markdown', text: 'Fragile, handle with care.' }
+    ),
+});
+
+const readLog = tool({
+  name: 'read_log',
+  description: 'Read the full deploy log',
+  parameters: z.object({}),
+  maxResultLength: 4_000,
+  execute: async () => \`\${'step ok\\n'.repeat(10_000)}deploy finished: 3 warnings\`,
+});
+
+const agent = new Agent({
+  name: 'support',
+  model: 'ollama/qwen2.5:0.5b',
+  instructions: 'Use your tools before you answer.',
+  tools: [lookupOrder, readLog],
+});
+
+const result = await cog.run(agent, {
+  input: 'Who ships order A-17, and how did the last deploy end?',
+  onToolResult: (call) => console.log(\`\${call.name}: the application got the whole result\`),
+});
+console.log(result.output);
+
+await cog.close();`,
+      install: 'pnpm add @cogitator-ai/core zod',
+      setup: 'ollama pull qwen2.5:0.5b',
+      env: [],
+      run: 'npx tsx tool-results.ts',
+      repoRun: 'npx tsx examples/core/18-tool-contract.ts',
+      notes: [
+        {
+          type: 'info',
+          text: '`tool()` throws for a name a provider would refuse, such as `orders.lookup`, and suggests one that fits.',
+        },
+      ],
+      example: 'core/18-tool-contract.ts',
+      docs: [
+        {
+          href: '/docs/core/tools',
+          label: 'Tools',
+        },
+      ],
+    },
   ],
 };

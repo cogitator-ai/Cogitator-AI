@@ -848,9 +848,12 @@ const cog = new Cogitator({
     maxConcurrentRuns: 10, // further runs wait for a slot
     defaultTimeout: 120_000, // for agents and runs without a timeout
     maxTokensPerRun: 200_000, // fails the run with RUN_TOKEN_LIMIT_EXCEEDED
+    maxToolResultLength: 50_000, // characters of each tool result the model reads (default 100000)
   },
 });
 ```
+
+A tool result longer than `maxToolResultLength` keeps its start and end, with a note in the middle of how much was left out, so one huge output cannot fill the context. A tool's own `maxResultLength` overrides it, and `onToolResult` and `RunResult` still get the whole result.
 
 ---
 

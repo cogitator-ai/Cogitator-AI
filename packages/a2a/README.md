@@ -138,6 +138,8 @@ const result = await cogitator.run(orchestrator, {
 });
 ```
 
+`asToolFromCard` names the tool after the card, made into a name every LLM provider accepts (`Research Agent` becomes `Research_Agent`). Pass `{ name }` to choose it yourself.
+
 The tool returns `{ output, success, error?, taskId?, state?, pendingApprovals? }`. `output` is the remote agent's answer: the text of the task's status message, else of its last agent message, else of its artifacts. When the remote task waits on the client (`state: 'input-required'`), `success` is `false`, `output` carries the remote agent's question and `taskId` lets you answer with `client.continueTask()`. A remote task waiting for [tool approvals](#tool-approvals) lists the calls in `pendingApprovals`. The run's abort signal and the tool timeout are forwarded to the HTTP request.
 
 ## Authentication

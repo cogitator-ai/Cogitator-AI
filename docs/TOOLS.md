@@ -57,7 +57,21 @@ const getWeather = tool({
 });
 ```
 
-`execute` receives the validated parameters and a `ToolContext` (`agentId`, `runId`, `signal`, and — when known — `threadId`, `userId`, `channelType`, `channelId`). Other `ToolConfig` fields: `category`, `tags`, `sideEffects`, `requiresApproval`, `timeout` (ms) and `sandbox`.
+`execute` receives the validated parameters and a `ToolContext` (`agentId`, `runId`, `signal`, and, when known, `threadId`, `userId`, `channelType`, `channelId`). Other `ToolConfig` fields: `category`, `tags`, `sideEffects`, `requiresApproval`, `timeout` (ms), `sandbox` and `maxResultLength` (see [Result Size](#result-size)).
+
+### Tool Names
+
+The name must be one every LLM provider accepts: letters, digits, `_` and `-`, starting with a letter or `_`, at most 64 characters (`/^[a-zA-Z_][a-zA-Z0-9_-]{0,63}$/`, the strictest of the OpenAI, Anthropic, Gemini and Bedrock rules). `tool()` throws a `TypeError` for any other name, naming the rule and a name that fits, so `tool({ name: 'weather.get', ... })` fails where it is defined and suggests `weather_get`, instead of failing later as a provider error.
+
+```typescript
+import { isProviderSafeToolName, normalizeToolName, normalizeToolNames } from '@cogitator-ai/core';
+
+isProviderSafeToolName('weather.get'); // false
+normalizeToolName('weather.get'); // 'weather_get'
+normalizeToolNames(['a.b', 'a_b']); // ['a_b_<hash>', 'a_b'], kept distinct
+```
+
+`normalizeToolName` turns other characters into `_`, adds a leading `_` when needed, and cuts a name longer than `TOOL_NAME_MAX_LENGTH` (64) so it ends with `_` and 8 hex characters of a SHA-256 hash of the full name. MCP tool names and A2A agent cards are normalized the same way.
 
 A parameter with `.default()` is optional in the JSON Schema the model sees, and `execute` gets the default when the model leaves it out (`units` above).
 
@@ -78,6 +92,37 @@ const renderChart = tool({
 ```
 
 Each backend places the image where its API allows: inside the tool result for Anthropic, Bedrock and the OpenAI Responses API, after the function responses of the turn for Google, in the tool message's `images` for Ollama, and in a user message right after the turn's tool messages for Chat Completions (OpenAI-compatible `baseUrl`, Azure). The image-generation tool (`imageBase64`) and the browser screenshot tools (`image`) use this.
+
+### Results with Several Parts
+
+`toolContent()` builds a result of several parts. Text, JSON and text resources reach the model as text, images as images, and files (audio, PDFs) and binary resources stay with the result for the application (`onToolResult`, `RunResult.toolCalls`), the model reading a one-line description:
+
+```typescript
+import { tool, toolContent } from '@cogitator-ai/core';
+
+const readDoc = tool({
+  name: 'read_doc',
+  description: 'Read a markdown document',
+  parameters: z.object({ path: z.string() }),
+  execute: async ({ path }) => {
+    const text = await readFile(path, 'utf-8');
+    return toolContent(
+      { type: 'json', value: { path, bytes: Buffer.byteLength(text) } },
+      { type: 'resource', uri: `file://${path}`, mediaType: 'text/markdown', text }
+    );
+  },
+});
+```
+
+Part types: `text` (`text`), `image` and `file` (base64 `data`, `mediaType`, a file's `filename?`), `json` (`value`, read by the model as JSON text) and `resource` (`uri`, `name?`, `description?`, `mediaType?`, and at most one of `text` and base64 `data`). A text resource reaches the model as `[resource "name" uri (mediaType) - description]` with its text on the next line, a binary one as that line with its size, one with neither as the line alone. `isToolContentResult`, `toolResultParts`, `toolPartsToText` and `truncateToolResultText` live in `@cogitator-ai/types` and are re-exported by core.
+
+### Result Size
+
+The model reads at most `limits.maxToolResultLength` characters of a tool result (default 100 000, about 25 000 tokens, env `COGITATOR_LIMITS_MAX_TOOL_RESULT_LENGTH`). A tool's own `maxResultLength` overrides it. A longer result keeps its start (three quarters of the budget) and end (one quarter), with a note in the middle such as `[... 1000 of 2000 characters of this tool result were left out ...]`. Errors are cut the same way, the text parts of a `toolContent()` result share the budget in proportion to their length, and images are never cut. `onToolResult` and `RunResult` still get the whole result.
+
+```typescript
+const cog = new Cogitator({ limits: { maxToolResultLength: 20_000 } });
+```
 
 ### Tool with Complex Schema
 
@@ -398,6 +443,8 @@ registry.clear();
 
 `getSchemas()` returns `ToolSchema[]` (`{ name, description, parameters }`) for LLM function calling; a single tool converts with `tool.toJSON()`.
 
+Registering a different tool under a name the registry already holds replaces it and logs a warning, since the model can only call one of them. `register(tool, { replace: true })` and `registerMany(tools, { replace: true })` replace on purpose without one. Registering the same tool object again never warns. In a run, an agent's own tool replaces a global tool (`cogitator.tools`) of the same name without a warning.
+
 ---
 
 ## Sandboxed Execution
@@ -441,6 +488,8 @@ const cog = new Cogitator({
 ```
 
 `SandboxConfig` also accepts `workdir`, `env`, `user` and `resources.cpus`. See [Sandboxed Execution](https://cogitator.app/docs/deployment/sandbox).
+
+The run's abort signal reaches the sandbox: cancelling a run (`RunOptions.signal`) kills a sandboxed command that is still running (its process group, container or WASM plugin), and the call fails with the abort reason, like a native tool's call. `SandboxManager.execute()` takes the same `signal` in its request.
 
 ### WASM Sandbox
 
@@ -708,6 +757,8 @@ tool({
 ```
 
 `timeout` aborts the call's `context.signal` and reports a timeout error to the model.
+
+A tool that can return a lot (logs, scraped pages) can set `maxResultLength` to read less than `limits.maxToolResultLength` allows.
 
 ### 4. Idempotency
 

@@ -234,7 +234,7 @@ const result = await cogitator.run(orchestrator, {
 });
 ```
 
-The orchestrator calls the remote agent like any tool with a single `task` string parameter. `asToolFromCard` names and describes the tool from the card unless you override them, `client.asTool({ name?, description?, timeout? })` does the same without a card (default name `a2a_remote_agent`). The tool is marked with the `external` side effect and forwards the run's abort signal.
+The orchestrator calls the remote agent like any tool with a single `task` string parameter. `asToolFromCard` names and describes the tool from the card unless you override them, `client.asTool({ name?, description?, timeout? })` does the same without a card (default name `a2a_remote_agent`). A card's name is meant for people, so it is turned into a name every LLM provider accepts, as [`normalizeToolName`](/docs/core/tools#tool-names) does: a card named `Research Agent` gives the tool `Research_Agent`. A `name` you pass is used as it is, so keep it to letters, digits, `_` and `-`. The tool is marked with the `external` side effect and forwards the run's abort signal.
 
 The tool result is `{ output, success, error?, taskId?, state?, pendingApprovals? }`. `output` is the text of the task's status message, else of its last agent message, else of its artifacts. When the remote agent asks a question (`state: 'input-required'`), `output` holds the question and `taskId` lets you answer. When it waits for [tool approvals](#tool-approvals), `pendingApprovals` lists the calls.
 
