@@ -17,6 +17,7 @@ export const protocols: Section = {
       points: [
         'Connect over stdio with `MCPClient.connect()`',
         'Call tools directly, or convert them with `getTools()` and give them to an agent',
+        'Tools the server marks destructive need approval before an agent runs them',
       ],
       file: 'mcp-client.ts',
       code: `import { Agent, Cogitator } from '@cogitator-ai/core';

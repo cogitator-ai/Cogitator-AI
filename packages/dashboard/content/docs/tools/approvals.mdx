@@ -115,4 +115,14 @@ const result = await cog.invokeTool(
 );
 ```
 
-A `Cogitator` is a `ToolInvoker` (`invokeTool(tool, args, options)`), the interface those packages take.
+A `Cogitator` is a `ToolInvoker` (`invokeTool(tool, args, options)`), the interface those packages take. Every path that runs tools for a model outside a run goes through it:
+
+| Path                                                         | Who decides a call that needs approval                                                       |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| [MCPServer](/docs/integrations/mcp#exposing-cogitator-tools) | The person at the MCP client, through elicitation                                            |
+| [Realtime voice](/docs/voice/realtime#cogitator-tools)       | `createRealtimeTools(cogitator, tools, { onApproval })`                                      |
+| [AI SDK tools](/docs/integrations/ai-sdk)                    | The AI SDK approval flow (ai@6, ai@7), else `onApproval` of `toAISDKTool(tool, { invoker })` |
+
+Tools imported from an MCP server need approval when the server marks them destructive, see [Approval for Destructive Tools](/docs/integrations/mcp#approval-for-destructive-tools).
+
+When the arguments were already parsed with the tool's own schema (by the MCP SDK or the AI SDK), pass `withParsedArguments(tool)` from `@cogitator-ai/core`: the call keeps the tool's approval, sandbox, timeout and limits, and the schema's transforms apply once instead of twice.

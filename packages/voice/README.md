@@ -337,7 +337,41 @@ Native speech-to-speech without the STT/TTS pipeline. The LLM directly processes
 | `openai` | `gpt-realtime-2.1-mini` | PCM16 24kHz mono | PCM16 24kHz mono | Realtime API (GA), server VAD, `marin` voice, `gpt-live-transcribe` input transcription |
 | `gemini` | `gemini-3.8-live`       | PCM16 16kHz mono | PCM16 24kHz mono | Gemini Live API, input + output transcriptions                                          |
 
-Audio and text sent before `connect()` resolves are queued and flushed once the session is ready. Tools are executed by the session and their results sent back to the model automatically.
+Audio and text sent before `connect()` resolves are queued and flushed once the session is ready. Tools are executed by the session and their results sent back to the model automatically. `execute(args, context)` gets the provider's `callId`, the session's `sessionId` (the client id in a `VoiceAgent`) and a `signal` that aborts when the session closes or loses its connection, and with Gemini also when Gemini cancels the call because the user interrupted. A cancelled call gets no answer.
+
+### Cogitator tools in a realtime session
+
+`createRealtimeTools(cogitator, tools, options)` turns Cogitator tools into realtime tools whose calls run through `cogitator.invokeTool`, the way an agent run executes them: arguments checked against the tool's schema, approval asked for calls that need it, the guardrails applied, sandboxed tools run in the sandbox and `tool.timeout` kept. A call that needs approval goes to `options.onApproval`, then to `guardrails.onToolApproval`, and one nobody approves does not run: the model gets an error saying it needs approval and can tell the user.
+
+```typescript
+import { Cogitator, tool } from '@cogitator-ai/core';
+import { createRealtimeTools, RealtimeSession } from '@cogitator-ai/voice';
+import { z } from 'zod';
+
+const cogitator = new Cogitator();
+const unlock = tool({
+  name: 'unlock_door',
+  description: 'Unlock the door of a room',
+  parameters: z.object({ room: z.string() }),
+  requiresApproval: true,
+  execute: async ({ room }) => ({ unlocked: room }),
+});
+
+const session = new RealtimeSession({
+  provider: 'openai',
+  apiKey: process.env.OPENAI_API_KEY!,
+  tools: createRealtimeTools(cogitator, [unlock], {
+    onApproval: async (request) => ({ approved: await askOperator(request) }),
+  }),
+});
+```
+
+| Option       | Description                                                                                 |
+| ------------ | ------------------------------------------------------------------------------------------- |
+| `onApproval` | Decides calls that need approval, as `RunOptions.onApproval` does in a run                  |
+| `agentId`    | Agent id the tools see in their context (default `'voice'`)                                 |
+| `threadId`   | Thread id for the tools, from the call context (default `voice:<sessionId>`, as the runner) |
+| `userId`     | The user the calls act for                                                                  |
 
 A result made of parts (`toolContent()` from `@cogitator-ai/core`, or an object with a base64 `image`) reaches the model as the text of its parts, with images and files described, instead of a JSON string full of base64. The text, and the message of a tool that throws, is cut to the tool's `maxResultLength` (default 100 000 characters, a positive integer, the session refuses anything else). With `toolImages: true` the session also sends the PNG, JPEG, GIF and WebP images to a model that takes them: OpenAI gets a user message with `input_image` parts after the tool outputs (`gpt-realtime`, `gpt-realtime-2`), Gemini gets `inlineData` parts in the function response (Gemini 3 models). Other results are sent as before, as JSON to OpenAI and as `{ result }` to Gemini, and one whose JSON is longer than `maxResultLength` is cut the same way.
 
@@ -492,14 +526,7 @@ const voiceAgent = new VoiceAgent({
   realtimeProvider: 'gemini',
   realtimeApiKey: process.env.GOOGLE_API_KEY!,
   voice: 'Puck',
-  tools: [
-    {
-      name: 'get_time',
-      description: 'Current server time',
-      parameters: { type: 'object', properties: {} },
-      execute: async () => ({ time: new Date().toISOString() }),
-    },
-  ],
+  tools: createRealtimeTools(cogitator, agent.tools),
 });
 
 await voiceAgent.listen(8080);
@@ -594,7 +621,7 @@ if (format) audioMimeType(format); // e.g. 'audio/wav'
 | `realtimeApiKey`   | `string`                   | Realtime only | API key for realtime provider                             |
 | `realtimeModel`    | `string`                   | No            | Model override                                            |
 | `instructions`     | `string`                   | No            | Realtime instructions (defaults to `agent.instructions`)  |
-| `tools`            | `RealtimeTool[]`           | No            | Realtime tools executed by the session                    |
+| `tools`            | `RealtimeTool[]`           | No            | Realtime tools, e.g. from `createRealtimeTools(...)`      |
 | `toolImages`       | `boolean`                  | No            | Realtime: send images tools return to the model           |
 | `voice`            | `string`                   | No            | Voice for realtime                                        |
 | `transport`        | `WebSocketTransportConfig` | No            | Transport options                                         |

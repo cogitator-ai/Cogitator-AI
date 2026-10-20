@@ -221,6 +221,29 @@ A tool result with media (`toolContent()` of `@cogitator-ai/core`, or an object 
 
 Approval flags survive both ways: `toAISDKTool()` sets `needsApproval` from `requiresApproval`, so ai@6 and ai@7 ask before running the tool, and `fromAISDKTool()` sets `requiresApproval` from `needsApproval`, so a Cogitator run pauses (a `needsApproval` function that answers with a promise counts as "needs approval").
 
+### Running converted tools through Cogitator
+
+Without options the AI SDK calls the tool's `execute` directly, so the tool runs without the guardrails, the sandbox of a sandboxed tool or `tool.timeout`, and ai@4 and ai@5, which do not read `needsApproval`, run a tool that needs approval without asking. Pass your `Cogitator` as `invoker` and every call goes through `cogitator.invokeTool`, the way an agent run executes it:
+
+```typescript
+import { generateText } from 'ai';
+import { convertToolsToAISDK } from '@cogitator-ai/ai-sdk';
+
+const { text } = await generateText({
+  model,
+  tools: convertToolsToAISDK([refund, lookupOrder], {
+    invoker: cogitator,
+    onApproval: async (request) => ({ approved: await askUser(request) }),
+  }),
+  prompt: 'Refund order A-1',
+});
+```
+
+- A call the AI SDK approval flow approved (ai@6, ai@7: an approving `tool-approval-response` for the call in the messages) runs without being asked again.
+- Any other call that needs approval, every one on ai@4 and ai@5, or one the guardrails want approved, goes to `onApproval`, then to `guardrails.onToolApproval`. A call nobody decides fails with `Tool "refund" needs approval, and nobody approved this call`, a declined one with its reason, and the model reads the error.
+- ai@7 can also decide approval for a whole call with `toolApproval`, which leaves no approval response in the messages: with an invoker, decide those calls in `onApproval`.
+- The AI SDK already parsed the arguments with the tool's schema, so they are not parsed again and transforms apply once.
+
 `fromAISDKTool()` accepts zod 4 schemas, Standard JSON Schemas, `jsonSchema()` / `zodSchema()` schemas from any AI SDK major and plain JSON Schema objects. Non-zod schemas are converted to JSON Schema and validated before the AI SDK `execute` runs. It also resolves ai@7 dynamic descriptions and the final value of streaming (`async function*`) `execute` functions, and passes the Cogitator context to the AI SDK tool as `context` / `experimental_context`. Zod 3 schemas cannot be converted to JSON Schema here — wrap them with `zodSchema()` from `ai`. The tool name (the second argument, else the tool's own `name`) must be one every LLM provider accepts, as for `tool()` of `@cogitator-ai/core`: `fromAISDKTool()` throws a `TypeError` otherwise, and `normalizeToolName()` of core turns an object key such as `weather.get` into `weather_get`.
 
 ## API Reference
@@ -278,10 +301,19 @@ function fromAISDKTool<TParams, TResult>(
   toolName?: string
 ): Tool<TParams, TResult>;
 function toAISDKTool<TParams, TResult>(
-  cogTool: Tool<TParams, TResult>
+  cogTool: Tool<TParams, TResult>,
+  options?: AISDKToolOptions
 ): AISDKTool<TParams, TResult>;
 function convertToolsFromAISDK(aiTools: Record<string, AISDKToolLike>): Tool[];
-function convertToolsToAISDK(cogTools: Tool[]): Record<string, AISDKTool>;
+function convertToolsToAISDK(
+  cogTools: Tool[],
+  options?: AISDKToolOptions
+): Record<string, AISDKTool>;
+
+interface AISDKToolOptions {
+  invoker?: ToolInvoker; // a Cogitator: calls go through invokeTool
+  onApproval?: RunOptions['onApproval']; // decides calls the AI SDK did not approve
+}
 ```
 
 ## Migrating from 0.2.x

@@ -57,7 +57,7 @@ const getWeather = tool({
 });
 ```
 
-`execute` receives the validated parameters and a `ToolContext` (`agentId`, `runId`, `signal`, and, when known, `threadId`, `userId`, `channelType`, `channelId`). Other `ToolConfig` fields: `category`, `tags`, `sideEffects`, `requiresApproval`, `timeout` (ms), `sandbox` and `maxResultLength` (see [Result Size](#result-size)).
+`execute` receives the validated parameters and a `ToolContext` (`agentId`, `runId`, `signal`, and, when known, `threadId`, `userId`, `channelType`, `channelId`). Other `ToolConfig` fields: `category`, `tags`, `sideEffects`, `requiresApproval`, `timeout` (ms), `sandbox`, `maxResultLength` (see [Result Size](#result-size)), and `title`, `outputSchema` and `annotations`, which an MCP server sends to its clients (see [Serving Tools over MCP](#serving-tools-over-mcp)).
 
 ### Tool Names
 
@@ -384,6 +384,8 @@ await remote.close();
 
 The client also exposes `listResources()`, `readResource()`, `listPrompts()`, `getPrompt()` and `callTool()`.
 
+Imported tools keep the server's `title`, hints (`annotations`) and `outputSchema`. A tool the server marks `destructiveHint: true` (and not `readOnlyHint`) needs approval, so a run pauses before it: `getTools({ requiresApproval })` takes `true`, `false` or a function of the MCP definition to decide otherwise.
+
 ### Serving Tools over MCP
 
 ```typescript
@@ -405,6 +407,8 @@ await serveMCPTools([calculator, webSearch], {
   port: 3333,
 });
 ```
+
+A tool's `title`, `annotations` and object `outputSchema` reach the clients, and the result of a tool with an output schema is sent as `structuredContent` with its JSON as text.
 
 ### Serving Agents over MCP
 

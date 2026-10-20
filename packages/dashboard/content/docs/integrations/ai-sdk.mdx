@@ -253,6 +253,29 @@ Converted tools work with the `tools` option of every AI SDK major:
 - `toModelOutput` shows the model a [media result](/docs/core/tools#media-results-with-toolcontent) as an image instead of base64 JSON.
 - `needsApproval` mirrors the tool's `requiresApproval` (`true`, or a function of the input where a throw counts as yes), so ai@6 and ai@7 ask for approval before they run it.
 
+### Running converted tools through Cogitator
+
+Without options the AI SDK calls the tool's `execute` directly, so the tool runs without the guardrails, the sandbox of a sandboxed tool or `tool.timeout`, and ai@4 and ai@5, which do not read `needsApproval`, run a tool that needs approval without asking. Pass your `Cogitator` as `invoker` and every call goes through `cogitator.invokeTool`, the way an agent run executes it:
+
+```typescript
+import { generateText } from 'ai';
+import { convertToolsToAISDK } from '@cogitator-ai/ai-sdk';
+
+const { text } = await generateText({
+  model,
+  tools: convertToolsToAISDK([refund, lookupOrder], {
+    invoker: cogitator,
+    onApproval: async (request) => ({ approved: await askUser(request) }),
+  }),
+  prompt: 'Refund order A-1',
+});
+```
+
+- A call the AI SDK approval flow approved (ai@6, ai@7: an approving `tool-approval-response` for the call in the messages) runs without being asked again.
+- Any other call that needs approval, every one on ai@4 and ai@5, or one the guardrails want approved, goes to `onApproval`, then to `guardrails.onToolApproval`. A call nobody decides fails with `Tool "refund" needs approval, and nobody approved this call`, a declined one with its reason, and the model reads the error.
+- ai@7 can also decide approval for a whole call with `toolApproval`, which leaves no approval response in the messages: with an invoker, decide those calls in `onApproval`.
+- The AI SDK already parsed the arguments with the tool's schema, so they are not parsed again and transforms apply once.
+
 ### AI SDK to Cogitator
 
 ```typescript

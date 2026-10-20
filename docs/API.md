@@ -475,6 +475,15 @@ interface ToolConfig<TParams = unknown, TResult = unknown> {
   timeout?: number;
   sandbox?: SandboxConfig; // from @cogitator-ai/sandbox
   maxResultLength?: number; // overrides limits.maxToolResultLength for this tool
+
+  title?: string; // name for people, such as an MCP client shows
+  outputSchema?: ZodType<TResult>; // advertised by MCPServer, results sent as structuredContent
+  annotations?: {
+    readOnlyHint?: boolean;
+    destructiveHint?: boolean;
+    idempotentHint?: boolean;
+    openWorldHint?: boolean;
+  };
 }
 ```
 

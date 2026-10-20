@@ -188,6 +188,7 @@ session.pushAudio(pcm16Chunk);
 - **Native audio generation** — model generates audio directly
 - **Transcription** — input and output audio transcription is enabled; streamed fragments are emitted as one `transcript` per turn (user first, then assistant). Model "thought" parts are never emitted
 - **Tool calling** — function declarations sent during setup, structured results (`{ result }` / `{ error }`) returned via `toolResponse`
+- **Tool call cancellation** - when the user interrupts, Gemini cancels pending calls with `toolCallCancellation`: their `signal` aborts and they get no answer
 - **Audio format** — PCM16 16kHz input (`realtimeInput.audio`), PCM16 24kHz output
 
 ### Gemini Voices
@@ -213,14 +214,7 @@ session.pushAudio(pcm16Chunk);
 Use `VoiceAgent` to expose a realtime session over WebSocket transport:
 
 ```typescript
-import { VoiceAgent, createCogitatorRunner, type RealtimeTool } from '@cogitator-ai/voice';
-
-const weatherTool: RealtimeTool = {
-  name: 'get_weather',
-  description: 'Get current weather for a city',
-  parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] },
-  execute: async (args) => ({ city: (args as { city: string }).city, temperature: 21, unit: 'C' }),
-};
+import { VoiceAgent, createCogitatorRunner, createRealtimeTools } from '@cogitator-ai/voice';
 
 const voiceAgent = new VoiceAgent({
   agent: createCogitatorRunner(cogitator, agent),
@@ -229,13 +223,13 @@ const voiceAgent = new VoiceAgent({
   realtimeApiKey: process.env.OPENAI_API_KEY!,
   realtimeModel: 'gpt-realtime-2.1-mini',
   voice: 'marin',
-  tools: [weatherTool],
+  tools: createRealtimeTools(cogitator, agent.tools),
 });
 
 await voiceAgent.listen(8080);
 ```
 
-Each WebSocket client gets its own `RealtimeSession`. The session instructions come from `instructions` or, if unset, from `agent.instructions`; `tools` are executed server-side. The model talks to the user directly — `agent.run()` is not called in realtime mode, so the Cogitator agent's tools and memory are not used; give the session its own `tools`. Audio from the client is forwarded to the realtime API, and audio/`transcript`/`speech_start`/`turn_end` events are forwarded back. Clients can send `{ type: 'text', text }` and `{ type: 'interrupt' }` control messages. If the provider connection fails or drops, the client is closed with code `1011`.
+Each WebSocket client gets its own `RealtimeSession`. The session instructions come from `instructions` or, if unset, from `agent.instructions`, and `tools` are executed server-side. The model talks to the user directly - `agent.run()` is not called in realtime mode, so the Cogitator agent's tools and memory are not used. Give the session its own `tools`, such as the agent's tools through [`createRealtimeTools`](#cogitator-tools). Audio from the client is forwarded to the realtime API, and audio/`transcript`/`speech_start`/`turn_end` events are forwarded back. Clients can send `{ type: 'text', text }` and `{ type: 'interrupt' }` control messages. If the provider connection fails or drops, the client is closed with code `1011`.
 
 ## RealtimeSessionConfig
 
@@ -247,6 +241,7 @@ Each WebSocket client gets its own `RealtimeSession`. The session instructions c
 | `instructions` | `string`               | No       | System instructions                                                                             |
 | `voice`        | `string`               | No       | Voice name (default: `marin` for OpenAI, `Puck` for Gemini)                                     |
 | `tools`        | `Array<RealtimeTool>`  | No       | Tools the model can invoke                                                                      |
+| `sessionId`    | `string`               | No       | Id handed to tools as `context.sessionId` (`VoiceAgent` sets the client id)                     |
 | `toolImages`   | `boolean`              | No       | Send images that tools return to the model (default `false`), see [Tool Results](#tool-results) |
 
 `VoiceAgentConfig` takes `toolImages` too and passes it to every realtime session it opens.
@@ -258,10 +253,54 @@ interface RealtimeTool {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
-  execute: (args: unknown) => Promise<unknown>;
+  execute: (args: unknown, context: RealtimeToolContext) => Promise<unknown>;
   maxResultLength?: number; // characters of the result the model reads (default 100000)
 }
+
+interface RealtimeToolContext {
+  callId: string; // the provider's id of the call
+  signal: AbortSignal; // aborts when the session closes or drops, or Gemini cancels the call
+  sessionId?: string; // RealtimeSessionConfig.sessionId
+}
 ```
+
+A call still running when the session closes or loses its connection has its `signal` aborted, and its answer is not sent.
+
+## Cogitator Tools
+
+`createRealtimeTools(cogitator, tools, options)` turns Cogitator tools into realtime tools whose calls run through `cogitator.invokeTool`, the way an agent run executes them: the arguments checked against the tool's schema, approval asked for calls that need it, the guardrails applied, sandboxed tools run in the sandbox and `tool.timeout` kept. The call's `signal` cancels it.
+
+```typescript
+import { Cogitator, tool } from '@cogitator-ai/core';
+import { createRealtimeTools, RealtimeSession } from '@cogitator-ai/voice';
+import { z } from 'zod';
+
+const cogitator = new Cogitator();
+const unlock = tool({
+  name: 'unlock_door',
+  description: 'Unlock the door of a room',
+  parameters: z.object({ room: z.string() }),
+  requiresApproval: true,
+  execute: async ({ room }) => ({ unlocked: room }),
+});
+
+const session = new RealtimeSession({
+  provider: 'gemini',
+  apiKey: process.env.GOOGLE_API_KEY!,
+  tools: createRealtimeTools(cogitator, [unlock], {
+    onApproval: async (request) => ({ approved: await askOperator(request) }),
+  }),
+});
+```
+
+A call that needs approval (`requiresApproval`, or the guardrails) goes to `onApproval`, then to `guardrails.onToolApproval`. A call nobody approves does not run: the model gets the error `Tool "unlock_door" needs approval, and nobody approved this call` and can say so. A declined call reaches the model with its reason.
+
+| Option       | Default             | Description                                                           |
+| ------------ | ------------------- | --------------------------------------------------------------------- |
+| `onApproval` | -                   | Decides calls that need approval, as `RunOptions.onApproval` in a run |
+| `agentId`    | `'voice'`           | Agent id the tools see in their context                               |
+| `threadId`   | `voice:<sessionId>` | Thread id for the tools, computed from the call context               |
+| `userId`     | -                   | The user the calls act for                                            |
 
 ### Tool Results
 

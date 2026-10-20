@@ -1,5 +1,5 @@
 import { createCogitator, DEFAULT_MODEL, header, section } from '../_shared/setup.js';
-import { Agent, calculator } from '@cogitator-ai/core';
+import { Agent, calculator, tool } from '@cogitator-ai/core';
 import { cogitatorModel, fromAISDK, fromAISDKTool, toAISDKTool } from '@cogitator-ai/ai-sdk';
 import { generateText, streamText, tool as aiTool } from 'ai';
 import { z } from 'zod';
@@ -64,7 +64,34 @@ async function main() {
   );
   console.log('AI SDK tool result:', calculation);
 
-  section('4. Tool conversion: AI SDK -> Cogitator');
+  section('4. Converted tools run through Cogitator');
+
+  const refund = tool({
+    name: 'refund',
+    description: 'Refund an order',
+    parameters: z.object({ order: z.string() }),
+    requiresApproval: true,
+    execute: async ({ order }) => ({ refunded: order }),
+  });
+
+  const unattended = toAISDKTool(refund, { invoker: cog });
+  await unattended
+    .execute({ order: 'A-1' }, { toolCallId: 'refund-1', messages: [] })
+    .catch((error: Error) => console.log('Without approval:', error.message));
+
+  const approved = toAISDKTool(refund, {
+    invoker: cog,
+    onApproval: async (request) => {
+      console.log(`Approving ${request.toolName}(${JSON.stringify(request.arguments)})`);
+      return { approved: true };
+    },
+  });
+  console.log(
+    'With approval:',
+    await approved.execute({ order: 'A-1' }, { toolCallId: 'refund-2', messages: [] })
+  );
+
+  section('5. Tool conversion: AI SDK -> Cogitator');
 
   const greet = aiTool({
     description: 'Generate a greeting',
@@ -76,7 +103,7 @@ async function main() {
   console.log('Cogitator tool name:', cogTool.name);
   console.log('Cogitator tool schema:', JSON.stringify(cogTool.toJSON().parameters));
 
-  section('5. fromAISDK — wrap AI SDK model for Cogitator');
+  section('6. fromAISDK — wrap AI SDK model for Cogitator');
 
   const wrappedBackend = fromAISDK(model);
   const response = await wrappedBackend.chat({

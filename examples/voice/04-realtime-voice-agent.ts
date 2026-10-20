@@ -1,6 +1,27 @@
 import { WebSocket } from 'ws';
+import { z } from 'zod';
+import { Cogitator, tool } from '@cogitator-ai/core';
 import { header, section } from '../_shared/setup.js';
-import { VoiceAgent } from '@cogitator-ai/voice';
+import { createRealtimeTools, VoiceAgent } from '@cogitator-ai/voice';
+
+const openingHours = tool({
+  name: 'get_opening_hours',
+  description: 'Opening hours of the office for a given weekday',
+  parameters: z.object({ day: z.string().describe('Weekday name') }),
+  execute: async ({ day }) => ({
+    day,
+    open: '09:00',
+    close: day.toLowerCase() === 'friday' ? '15:00' : '18:00',
+  }),
+});
+
+const bookRoom = tool({
+  name: 'book_meeting_room',
+  description: 'Book the meeting room for a weekday',
+  parameters: z.object({ day: z.string().describe('Weekday name') }),
+  requiresApproval: true,
+  execute: async ({ day }) => ({ booked: day }),
+});
 
 async function main() {
   header('04 — Realtime Voice Agent (Gemini Live over WebSocket)');
@@ -12,6 +33,7 @@ async function main() {
   }
 
   section('1. Start a realtime VoiceAgent');
+  const cogitator = new Cogitator();
   const voiceAgent = new VoiceAgent({
     mode: 'realtime',
     agent: {
@@ -21,21 +43,12 @@ async function main() {
     realtimeProvider: 'gemini',
     realtimeApiKey: apiKey,
     voice: 'Puck',
-    tools: [
-      {
-        name: 'get_opening_hours',
-        description: 'Opening hours of the office for a given weekday',
-        parameters: {
-          type: 'object',
-          properties: { day: { type: 'string', description: 'Weekday name' } },
-          required: ['day'],
-        },
-        execute: async (args) => {
-          const { day } = args as { day: string };
-          return { day, open: '09:00', close: day.toLowerCase() === 'friday' ? '15:00' : '18:00' };
-        },
+    tools: createRealtimeTools(cogitator, [openingHours, bookRoom], {
+      onApproval: async (request) => {
+        console.log(`  Approving ${request.toolName}(${JSON.stringify(request.arguments)})`);
+        return { approved: true };
       },
-    ],
+    }),
   });
   voiceAgent.on('error', (err) => console.error(`  Error: ${err.message}`));
   await voiceAgent.listen(0);
@@ -57,13 +70,19 @@ async function main() {
   });
   await new Promise<void>((resolve) => client.once('open', () => resolve()));
 
-  client.send(JSON.stringify({ type: 'text', text: 'When does the office close on Friday?' }));
+  client.send(
+    JSON.stringify({
+      type: 'text',
+      text: 'When does the office close on Friday? Book the meeting room for that day too.',
+    })
+  );
   await Promise.race([finished, new Promise((r) => setTimeout(r, 30_000))]);
 
   console.log(`  Received ${audioBytes} bytes of PCM16 24kHz audio`);
 
   client.close();
   await voiceAgent.close();
+  await cogitator.close();
   console.log('\nDone.');
 }
 

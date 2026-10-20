@@ -386,6 +386,23 @@ server.getPort(); // bound HTTP port, useful with port: 0
 await server.stop(); // also closes open HTTP connections
 ```
 
+### Tool Titles, Hints and Output Schemas
+
+A tool's `title`, `annotations` and `outputSchema` reach MCP clients with the tool. Clients show the title to people, read the hints (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) to decide how careful to be, and get the result of a tool with an object output schema as `structuredContent`, with its JSON as text for clients that read only `content`. A result the output schema rejects comes back as a tool error that says why. An output schema whose root is not an object is not advertised, since MCP takes only object output schemas.
+
+```typescript
+const getRepo = tool({
+  name: 'get_repo',
+  title: 'Repository details',
+  description: 'Get the details of a repository',
+  parameters: z.object({ repo: z.string() }),
+  outputSchema: z.object({ repo: z.string(), stars: z.number() }),
+  annotations: { readOnlyHint: true, openWorldHint: false },
+  execute: async ({ repo }) => ({ repo, stars: 42 }),
+});
+server.registerTool(getRepo);
+```
+
 ### Registering Resources
 
 Expose data to MCP clients via resources. Supports both static URIs and dynamic URI templates (`{name}` placeholders, passed to `read` as params). `read` may leave out `uri` — it defaults to the URI that was read — and may return several contents as an array.
@@ -739,6 +756,8 @@ const mcpDefinition = cogitatorToMCP(myTool);
 // }
 ```
 
+The definition carries the tool's `title`, `annotations` and an object `outputSchema` as JSON Schema when the tool has them.
+
 `toolSchemaToMCP(schema)` does the same for a plain `ToolSchema` (the output of `tool.toJSON()`).
 
 ### MCP → Cogitator
@@ -765,12 +784,27 @@ Tool names are made safe for every LLM provider (letters, digits, `_` and `-`, a
 
 Input schemas with `$ref` (such as a FastMCP tool with a nested Pydantic model) keep their definitions: the model sees the full schema and arguments are validated against it, recursive definitions included.
 
+Imported tools keep the server's `title` (or the title of its annotations), its hints as `annotations` and its `outputSchema` as a zod schema of the result. A tool the server marks destructive (`destructiveHint: true` without `readOnlyHint: true`) needs approval: a Cogitator run pauses before it runs, as for any `requiresApproval` tool. A tool without the hint is not taken as destructive, although MCP's own default for a missing hint is `true`, since that would ask approval for every tool of most servers. Hints are only as trustworthy as the server: they can add approval, never take it away from a tool you mark yourself.
+
+```typescript
+// Ask for every call of an untrusted server, or for none of a trusted one
+const strict = await client.getTools({ requiresApproval: true });
+const relaxed = await client.getTools({ requiresApproval: false });
+
+// Or decide per tool
+const tools = await client.getTools({
+  requiresApproval: (tool) => isDestructiveMCPTool(tool) || tool.name.startsWith('delete_'),
+});
+```
+
 ### Adapter Options
 
 ```typescript
 interface ToolAdapterOptions {
   namePrefix?: string;
   descriptionTransform?: (description: string) => string;
+  /** Default: the tools the server marks destructive (isDestructiveMCPTool) */
+  requiresApproval?: boolean | ((tool: MCPToolDefinition) => boolean);
 }
 ```
 

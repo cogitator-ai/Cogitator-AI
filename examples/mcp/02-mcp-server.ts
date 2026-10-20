@@ -7,14 +7,19 @@ const stock: Record<string, number> = { 'SKU-42': 137, 'SKU-7': 12 };
 
 const lookupStock = tool({
   name: 'lookup_stock',
+  title: 'Stock lookup',
   description: 'Look up how many units of a product SKU are in stock.',
   parameters: z.object({ sku: z.string().describe('Product SKU, e.g. "SKU-42"') }),
+  outputSchema: z.object({ sku: z.string(), units: z.number() }),
+  annotations: { readOnlyHint: true, openWorldHint: false },
   execute: async ({ sku }) => ({ sku, units: stock[sku] ?? 0 }),
 });
 
 const reserveUnits = tool({
   name: 'reserve_units',
+  title: 'Reserve stock',
   description: 'Reserve units of a product. Fails if not enough stock is available.',
+  annotations: { destructiveHint: false, openWorldHint: false },
   parameters: z.object({ sku: z.string(), units: z.number().int().positive() }),
   execute: async ({ sku, units }) => {
     const available = stock[sku] ?? 0;
@@ -61,7 +66,8 @@ async function main() {
     client = await MCPClient.connect({ transport: 'http', url });
     const definitions = await client.listToolDefinitions();
     for (const def of definitions) {
-      console.log(`  ${def.name}(${Object.keys(def.inputSchema.properties ?? {}).join(', ')})`);
+      const params = Object.keys(def.inputSchema.properties ?? {}).join(', ');
+      console.log(`  ${def.name}(${params}) "${def.title}"`, def.annotations ?? {});
     }
 
     section('3. Call tools and read resources directly');

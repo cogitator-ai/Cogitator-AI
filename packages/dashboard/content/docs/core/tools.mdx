@@ -48,6 +48,9 @@ function tool<TParams, TResult>(config: ToolConfig<TParams, TResult>): Tool<TPar
 | `timeout`          | `number`                                | Per-call timeout in milliseconds                                                                                                |
 | `sandbox`          | `SandboxConfig`                         | Run in an isolated environment (see below)                                                                                      |
 | `maxResultLength`  | `number`                                | Most characters of a result the model reads, over `limits.maxToolResultLength` ([Result Size](#result-size))                    |
+| `title`            | `string`                                | Name for people, such as an MCP client shows (the model sees `name`)                                                            |
+| `outputSchema`     | `ZodType`                               | Schema of the result. Not checked in a run: an [MCP server](/docs/integrations/mcp) advertises it and sends `structuredContent` |
+| `annotations`      | `ToolAnnotations`                       | MCP hints: `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`                                                 |
 
 ### Tool Names
 

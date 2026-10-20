@@ -165,6 +165,21 @@ try {
 }
 ```
 
+### Approval for Destructive Tools
+
+Tools from `getTools()` / `wrapMCPTools()` keep the server's `title`, its hints as `annotations` and its `outputSchema` as a zod schema of the result. A tool the server marks destructive (`destructiveHint: true` without `readOnlyHint: true`) gets `requiresApproval: true`, so an agent run [pauses for approval](/docs/tools/approvals) before it runs, and `cogitator.invokeTool()` asks `onApproval`. A tool without the hint is not taken as destructive, although MCP's own default for a missing `destructiveHint` is `true`: that would ask approval for every tool of most servers. Hints come from the server and are only as trustworthy as it is, so they only ever add approval.
+
+```typescript
+import { isDestructiveMCPTool } from '@cogitator-ai/mcp';
+
+const tools = await client.getTools(); // destructive tools need approval
+const everyCall = await client.getTools({ requiresApproval: true });
+const noneOfThem = await client.getTools({ requiresApproval: false });
+const custom = await client.getTools({
+  requiresApproval: (tool) => isDestructiveMCPTool(tool) || tool.name.startsWith('delete_'),
+});
+```
+
 ### Resources and Prompts
 
 Beyond tools, MCP servers can expose resources (data sources) and prompts (reusable prompt templates):
@@ -225,6 +240,20 @@ const server = new MCPServer({
 ```
 
 `serveMCPTools(tools, config)` does the same in one call and returns the started server. Tools, resources and prompts can be added one by one (`registerTool`, `registerResource`, `registerPrompt`) or in batches (`registerTools`, `registerResources`, `registerPrompts`), removed with the matching `unregister*` methods and listed with `getRegisteredTools()` / `getRegisteredResources()` / `getRegisteredPrompts()`.
+
+A tool's `title`, `annotations` and `outputSchema` reach the clients with it. The result of a tool with an object output schema is sent as `structuredContent`, with its JSON as text for clients that read only `content`, and a result the schema rejects comes back as an `isError` result that says why. An output schema whose root is not an object is not advertised, since MCP takes only object output schemas.
+
+```typescript
+const getRepo = tool({
+  name: 'get_repo',
+  title: 'Repository details',
+  description: 'Get the details of a repository',
+  parameters: z.object({ repo: z.string() }),
+  outputSchema: z.object({ repo: z.string(), stars: z.number() }),
+  annotations: { readOnlyHint: true, openWorldHint: false },
+  execute: async ({ repo }) => ({ repo, stars: 42 }),
+});
+```
 
 A served tool that returns [`toolContent()`](/docs/core/tools#media-results-with-toolcontent) answers with MCP content blocks instead of JSON text: text parts as text, images as image blocks, audio files as audio blocks, other files as embedded resources, `json` parts as their JSON text, and `resource` parts with `text` or `data` as embedded resources under their own URI (a resource part with neither becomes the line that names it).
 
@@ -410,6 +439,8 @@ import { cogitatorToMCP } from '@cogitator-ai/mcp';
 const mcpDef = cogitatorToMCP(calculator);
 ```
 
+The definition carries the tool's `title`, `annotations` and an object `outputSchema` as JSON Schema when it has them.
+
 ### MCP to Cogitator
 
 ```typescript
@@ -422,6 +453,8 @@ const cogTool = mcpToCogitator(mcpToolDefinition, client, {
 
 const allTools = await wrapMCPTools(client, { namePrefix: 'fs_' });
 ```
+
+Both take `requiresApproval` (see [Approval for Destructive Tools](#approval-for-destructive-tools)) next to `namePrefix` and `descriptionTransform`.
 
 Tool names are normalized to what every LLM provider accepts (letters, digits, `_` and `-`, starting with a letter or `_`, at most 64 characters), while calls still go to the server under the original name: `admin.list_users` becomes `admin_list_users`, a longer name is cut and ends with a hash, and names of one server that would collide get a hash on the changed one. `normalizeMCPToolName` shows the result, and is the same function as `normalizeToolName` from `@cogitator-ai/core` (see [Tool Names](/docs/core/tools#tool-names)). Give each server its own `namePrefix` when an agent uses several, as two servers can both have a `search` tool. Input schemas with `$ref` keep their `$defs`, so the model sees nested models (such as FastMCP's Pydantic ones) in full.
 
