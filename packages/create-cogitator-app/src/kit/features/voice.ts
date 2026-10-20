@@ -25,6 +25,7 @@ const REALTIME_TOOLS_TS = code`
         name: tool.name,
         description: tool.description,
         parameters: toolToSchema(tool).parameters,
+        ...(tool.maxResultLength !== undefined && { maxResultLength: tool.maxResultLength }),
         execute: async (args) => {
           const result = await runtime.invokeTool(tool, args, { agentId: 'voice' });
           return result.error ? { error: result.error } : result.result;
