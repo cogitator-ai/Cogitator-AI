@@ -496,7 +496,7 @@ return toolContent(
 
 A `resource` part has `uri`, `name?`, `description?`, `mediaType?` and at most one of `text` and base64 `data`. The model reads a text resource after a line naming it, and only that line (with the size) for a binary one. `isToolContentResult`, `toolResultParts`, `toolPartsToText`, `truncateToolResultText` and `DEFAULT_TOOL_RESULT_MAX_LENGTH` come from `@cogitator-ai/types` and are re-exported by core.
 
-The model reads at most `limits.maxToolResultLength` characters of a result (default 100 000), or the tool's `maxResultLength`. A longer result, or error, keeps its start and end with a note of how much was left out in the middle, and `onToolResult` and `RunResult` still get the whole result.
+The model reads at most `limits.maxToolResultLength` characters of a result (default 100 000), or the tool's `maxResultLength`. A longer result, or error, keeps its start and end with a note of how much was left out in the middle, and `onToolResult` still gets the whole result, while `RunResult.messages` and the thread history keep what the model read.
 
 #### ToolContext
 

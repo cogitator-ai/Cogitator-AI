@@ -157,7 +157,7 @@ Each backend places the image where its API allows: inside the tool result for A
 
 ### Media Results with toolContent
 
-For results made of several parts, or with media other than images, return `toolContent()`. Text and images reach the model as the tool message's content. JSON and resource parts are described below. File parts (audio, PDFs and other binary data) stay with the result for your application, in `onToolResult` and `RunResult.toolCalls`, and the model sees only a one-line description such as `[audio/mpeg file "speech.mp3", 46.9 KB, delivered to the application, not shown here]`, so the bytes never fill the context:
+For results made of several parts, or with media other than images, return `toolContent()`. Text and images reach the model as the tool message's content. JSON and resource parts are described below. File parts (audio, PDFs and other binary data) stay with the result for your application, in `onToolResult`, and the model sees only a one-line description such as `[audio/mpeg file "speech.mp3", 46.9 KB, delivered to the application, not shown here]`, so the bytes never fill the context:
 
 ```typescript
 import { tool, toolContent } from '@cogitator-ai/core';
@@ -217,7 +217,7 @@ const readLog = tool({
 });
 ```
 
-A longer result keeps its start (three quarters of the budget) and its end (one quarter), where a command's last lines or an error usually are, with a note in the middle such as `[... 1000 of 2000 characters of this tool result were left out ...]`. Error messages are cut the same way. For a [`toolContent()`](#media-results-with-toolcontent) result the text parts share the budget in proportion to their length, and images are never cut. Only what the model reads is cut: `onToolResult` and `RunResult.toolCalls` still get the whole result. `truncateToolResultText(text, maxLength)` applies the same cut to text of your own.
+A longer result keeps its start (three quarters of the budget) and its end (one quarter), where a command's last lines or an error usually are, with a note in the middle such as `[... 1000 of 2000 characters of this tool result were left out ...]`. Error messages are cut the same way. For a [`toolContent()`](#media-results-with-toolcontent) result the text parts share the budget in proportion to their length, and images are never cut. Only what the model reads is cut: `onToolResult` still gets the whole result, while `RunResult.messages` and the thread history keep what the model read. `truncateToolResultText(text, maxLength)` applies the same cut to text of your own.
 
 ## Typed Tool Sets
 

@@ -95,7 +95,7 @@ Each backend places the image where its API allows: inside the tool result for A
 
 ### Results with Several Parts
 
-`toolContent()` builds a result of several parts. Text, JSON and text resources reach the model as text, images as images, and files (audio, PDFs) and binary resources stay with the result for the application (`onToolResult`, `RunResult.toolCalls`), the model reading a one-line description:
+`toolContent()` builds a result of several parts. Text, JSON and text resources reach the model as text, images as images, and files (audio, PDFs) and binary resources stay with the result for the application (`onToolResult`), the model reading a one-line description:
 
 ```typescript
 import { tool, toolContent } from '@cogitator-ai/core';
@@ -118,7 +118,7 @@ Part types: `text` (`text`), `image` and `file` (base64 `data`, `mediaType`, a f
 
 ### Result Size
 
-The model reads at most `limits.maxToolResultLength` characters of a tool result (default 100 000, about 25 000 tokens, env `COGITATOR_LIMITS_MAX_TOOL_RESULT_LENGTH`). A tool's own `maxResultLength` overrides it. A longer result keeps its start (three quarters of the budget) and end (one quarter), with a note in the middle such as `[... 1000 of 2000 characters of this tool result were left out ...]`. Errors are cut the same way, the text parts of a `toolContent()` result share the budget in proportion to their length, and images are never cut. `onToolResult` and `RunResult` still get the whole result.
+The model reads at most `limits.maxToolResultLength` characters of a tool result (default 100 000, about 25 000 tokens, env `COGITATOR_LIMITS_MAX_TOOL_RESULT_LENGTH`). A tool's own `maxResultLength` overrides it. A longer result keeps its start (three quarters of the budget) and end (one quarter), with a note in the middle such as `[... 1000 of 2000 characters of this tool result were left out ...]`. Errors are cut the same way, the text parts of a `toolContent()` result share the budget in proportion to their length, and images are never cut. `onToolResult` still gets the whole result, while `RunResult.messages` and the thread history keep what the model read.
 
 ```typescript
 const cog = new Cogitator({ limits: { maxToolResultLength: 20_000 } });

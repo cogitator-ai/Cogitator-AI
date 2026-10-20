@@ -853,7 +853,7 @@ const cog = new Cogitator({
 });
 ```
 
-A tool result longer than `maxToolResultLength` keeps its start and end, with a note in the middle of how much was left out, so one huge output cannot fill the context. A tool's own `maxResultLength` overrides it, and `onToolResult` and `RunResult` still get the whole result.
+A tool result longer than `maxToolResultLength` keeps its start and end, with a note in the middle of how much was left out, so one huge output cannot fill the context. A tool's own `maxResultLength` overrides it, and `onToolResult` still gets the whole result, while `RunResult.messages` and the thread history keep what the model read.
 
 ---
 

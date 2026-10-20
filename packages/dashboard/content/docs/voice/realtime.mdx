@@ -290,4 +290,4 @@ const session = new RealtimeSession({
 });
 ```
 
-With `toolImages: true` the model also gets the images themselves, for a model that takes images as input. OpenAI gets a user message with `input_image` parts right after the turn's tool outputs (`gpt-realtime` and `gpt-realtime-2` take images), Gemini gets them as `parts: [{ inlineData: { mimeType, data } }]` of the function response (Gemini 3 models). Leave it off for models without image input, which then read only the descriptions.
+With `toolImages: true` the model also gets the PNG, JPEG, GIF and WebP images themselves, for a model that takes images as input. Images in other formats stay described. OpenAI gets a user message with `input_image` parts right after the turn's tool outputs (`gpt-realtime` and `gpt-realtime-2` take images), Gemini gets them as `parts: [{ inlineData: { mimeType, data } }]` of the function response (Gemini 3 models). Leave it off for models without image input, which then read only the descriptions.

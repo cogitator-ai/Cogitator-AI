@@ -189,7 +189,7 @@ To show the model an image, return it base64-encoded in an `image` or `imageBase
 return { width: 1280, height: 720, image: screenshot.toString('base64') };
 ```
 
-By default the model reads at most 100 000 characters of a result, which `limits.maxToolResultLength` on the `Cogitator` or `maxResultLength` on the tool changes. A longer one keeps its start and end with a note of how much was left out in the middle, while `onToolResult` and `RunResult` get all of it (see [Result Size](/docs/core/tools#result-size)). A tool that can return a lot, such as a log reader, does better returning the part that matters, with a field like `truncated` that tells the model there is more.
+By default the model reads at most 100 000 characters of a result, which `limits.maxToolResultLength` on the `Cogitator` or `maxResultLength` on the tool changes. A longer one keeps its start and end with a note of how much was left out in the middle, while `onToolResult` gets all of it (see [Result Size](/docs/core/tools#result-size)). A tool that can return a lot, such as a log reader, does better returning the part that matters, with a field like `truncated` that tells the model there is more.
 
 ---
 

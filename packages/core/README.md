@@ -402,7 +402,7 @@ const weatherTool = tool({
 
 `tool()` also takes `category`, `tags`, `sideEffects`, `requiresApproval`, `timeout`, `sandbox` and `maxResultLength`.
 
-The name must be one every provider accepts: letters, digits, `_` and `-`, starting with a letter or `_`, at most 64 characters (the strictest of the OpenAI, Anthropic, Gemini and Bedrock rules). `tool()` throws a `TypeError` for any other name, with a name that fits, instead of the run failing later with a provider error. `normalizeToolName('weather.get')` gives `weather_get` for names built from data, `normalizeToolNames(names)` keeps a whole set distinct, and `isProviderSafeToolName(name)` checks one. A parameter with `.default()` is optional in the JSON Schema the model sees; `execute` receives the default when the model leaves it out. Tools passed to `new Agent({ tools })` lose their individual parameter types in a plain array; `toolset(...tools)` keeps them as a typed tuple that agents still accept:
+The name must be one every provider accepts: letters, digits, `_` and `-`, starting with a letter or `_`, at most 64 characters (the strictest of the OpenAI, Anthropic, Gemini and Bedrock rules). `tool()` throws a `TypeError` for any other name, with a name that fits, instead of the run failing later with a provider error. `normalizeToolName('weather.get')` gives `weather_get` for names built from data, `normalizeToolNames(names)` keeps a whole set distinct, `isProviderSafeToolName(name)` checks one, and `assertToolName(name)` throws the same error for tools you build without `tool()`. A parameter with `.default()` is optional in the JSON Schema the model sees, and `execute` receives the default when the model leaves it out. Tools passed to `new Agent({ tools })` lose their individual parameter types in a plain array, while `toolset(...tools)` keeps them as a typed tuple that agents still accept:
 
 ```typescript
 import { tool, toolset } from '@cogitator-ai/core';
@@ -440,7 +440,7 @@ const screenshot = tool({
 });
 ```
 
-For results with several parts or other media, return `toolContent(...)`: text and images reach the model as content, file parts (audio, PDFs) stay with the result for the application (`onToolResult`, `RunResult.toolCalls`) and the model sees only a one-line description of each:
+For results with several parts or other media, return `toolContent(...)`: text and images reach the model as content, file parts (audio, PDFs) stay with the result for the application (`onToolResult`) and the model sees only a one-line description of each:
 
 ```typescript
 import { toolContent } from '@cogitator-ai/core';
@@ -462,7 +462,7 @@ execute: async ({ id }) =>
   );
 ```
 
-The model reads at most `limits.maxToolResultLength` characters of a result (default 100 000, about 25 000 tokens), so one huge output cannot fill the context. A longer result keeps its start and its end, with a note in the middle of how much was left out, and a tool's own `maxResultLength` overrides the limit. `onToolResult` and `RunResult` still get the whole result.
+The model reads at most `limits.maxToolResultLength` characters of a result (default 100 000, about 25 000 tokens), so one huge output cannot fill the context. A longer result keeps its start and its end, with a note in the middle of how much was left out, and a tool's own `maxResultLength` overrides the limit. `onToolResult` still gets the whole result, while `RunResult.messages` and the thread history keep what the model read.
 
 Tool parameter schemas reach every provider self-contained: definitions recursive `z.lazy()` schemas refer to travel in `parameters.$defs`, other refs are inlined (`toToolParameters` does this for any JSON Schema).
 
