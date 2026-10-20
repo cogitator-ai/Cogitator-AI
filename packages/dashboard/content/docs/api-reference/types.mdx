@@ -630,7 +630,7 @@ enum ErrorCode {
 
 `cog.run()` throws a `CogitatorError` when a run hits its `timeout` (`Run timed out after <n>ms`, `RUN_TIMEOUT`), when cost routing finds the budget exceeded (`Budget exceeded: …`, `BUDGET_EXCEEDED`), and when guardrails block the input or output (`Input blocked: …` / `Output blocked: …`, `LLM_CONTENT_FILTERED`, with `details.harmScores`), so server adapters answer with that status and message.
 
-`ERROR_STATUS_CODES` maps each code to an HTTP status (for example `RUN_TIMEOUT` → 504, `BUDGET_EXCEEDED` → 429, `LLM_CONTENT_FILTERED` → 400, `LLM_QUOTA_EXCEEDED` → 503), `isRetryableError(error)` and `getRetryDelay(error, defaultDelay = 1000)` read `retryable` / `retryAfter` (and treat plain errors mentioning timeouts, connection resets, rate limits, 429 or 503 as retryable).
+`ERROR_STATUS_CODES` maps each code to an HTTP status (for example `RUN_TIMEOUT` → 504, `BUDGET_EXCEEDED` → 429, `LLM_CONTENT_FILTERED` → 400, `LLM_QUOTA_EXCEEDED` → 402), `isRetryableError(error)` and `getRetryDelay(error, defaultDelay = 1000)` read `retryable` / `retryAfter` (and treat plain errors mentioning timeouts, connection resets, rate limits, 429 or 503 as retryable).
 
 An `LLMError` (from `@cogitator-ai/core`) carries why the provider call failed as `kind`, also in `details.kind`:
 

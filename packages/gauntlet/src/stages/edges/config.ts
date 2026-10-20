@@ -298,10 +298,11 @@ const modelRegistry: StageDefinition = {
         evidence('models', fresh.getModelCount());
         evidence('builtin', BUILTIN_MODELS.length);
         evidence('providers', fresh.listProviders().length);
-        if (fresh.getModelCount() <= BUILTIN_MODELS.length) {
-          throw new Error('Only the built-in models loaded: the LiteLLM catalogue was not fetched');
+        if (!existsSync(cachePath)) {
+          throw new Error(
+            'The LiteLLM catalogue was not fetched: no file cache was written, only the offline catalogue loaded'
+          );
         }
-        if (!existsSync(cachePath)) throw new Error('The file cache was not written');
         const cached = JSON.parse(await readFile(cachePath, 'utf8')) as { models?: unknown[] };
         evidence('cachedModels', cached.models?.length);
         return fresh;

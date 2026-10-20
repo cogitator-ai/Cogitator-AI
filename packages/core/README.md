@@ -163,7 +163,7 @@ A call whose provider reports no cost is priced from `@cogitator-ai/models`, whi
 const cog = new Cogitator({
   llm: {
     pricing: {
-      'openai/ft:gpt-4o-mini:acme': { input: 0.3, output: 1.2 }, // this model at OpenAI only
+      'openai/ft:gpt-4o-mini:acme': { input: 0.3, output: 1.2 }, // this model string and those ending in it
       'llama3.3:70b': { input: 0.6, output: 0.6, inputCached: 0.06 }, // at any provider
     },
   },
@@ -172,7 +172,7 @@ const cog = new Cogitator({
 cog.pricer.pricing('vllm/llama3.3:70b'); // { input: 0.6, output: 0.6, inputCached: 0.06 }
 ```
 
-A key matches the model string or its tail after any `/`, case-insensitively. A call with no reported cost and no known price counts as $0, and the runtime warns once per such model, naming the `llm.pricing` key to set. Ollama and vLLM calls are free and never warn. `cog.pricer` is a `CallPricer`.
+A key matches the model string or its tail after any `/`, case-insensitively. A call with no reported cost and no known price counts as $0, and the runtime warns once per such model, naming the `llm.pricing` key to set. Ollama and vLLM calls are free unless `llm.pricing` prices them, even when a reseller lists a model of the same name, and never warn. `cog.pricer` is a `CallPricer`.
 
 ### Direct Backend Usage
 
@@ -252,7 +252,7 @@ try {
 }
 ```
 
-`error.kind` (also `details.kind`) is one of `rate_limit`, `quota`, `authentication`, `permission`, `not_found`, `invalid_request`, `context_overflow`, `content_filter`, `overloaded`, `server_error`, `timeout`, `network` and `invalid_response` (`LLMErrorKind` in `@cogitator-ai/types`). It is read from the provider's own error codes first and the HTTP status second: OpenAI-compatible servers by `error.code` / `error.type`, Anthropic by `error.type`, Gemini by `status` and its `QuotaFailure` / `ErrorInfo` details, Bedrock by the AWS exception name, also for an error inside a stream that already began. An exhausted quota is `LLM_QUOTA_EXCEEDED` and never retried, even as a 429: OpenAI `insufficient_quota`, `credit_balance_exhausted` and spend or usage limits, Anthropic `billing_error` and a `rate_limit_error` about a usage or spend limit, Gemini `RESOURCE_EXHAUSTED` at 402 or on a per-day quota, Bedrock `ServiceQuotaExceededException`. A 504 is `LLM_TIMEOUT`. `classifyProviderError(provider, status, body)` returns the kind for backends of your own.
+`error.kind` (also `details.kind`) is one of `rate_limit`, `quota`, `authentication`, `permission`, `not_found`, `invalid_request`, `context_overflow`, `content_filter`, `overloaded`, `server_error`, `timeout`, `network` and `invalid_response` (`LLMErrorKind` in `@cogitator-ai/types`). It is read from the provider's own error codes first and the HTTP status second: OpenAI-compatible servers by `error.code` / `error.type`, Anthropic by `error.type`, Gemini by `status` and its `QuotaFailure` / `ErrorInfo` details, Bedrock by the AWS exception name, also for an error inside a stream that already began. An exhausted quota is `LLM_QUOTA_EXCEEDED` and never retried, even as a 429: OpenAI `insufficient_quota`, `credit_balance_exhausted` and spend or usage limits, Anthropic `billing_error` and an `invalid_request_error` or `rate_limit_error` about a credit balance or a usage limit, a 402 from OpenRouter, Gemini `RESOURCE_EXHAUSTED` at 402 or on a per-day quota, Bedrock `ServiceQuotaExceededException`. A 504 is `LLM_TIMEOUT`. `classifyProviderError(provider, status, body)` returns the kind for backends of your own.
 
 `error.message` always carries what the provider said (`[openai] Bad request: Unsupported parameter: ...`). `LLM_CONTEXT_LENGTH_EXCEEDED` is reported only for the providers' own context overflow errors, not for any bad request that mentions tokens.
 

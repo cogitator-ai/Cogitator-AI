@@ -14,7 +14,7 @@ import { BudgetEnforcer, type BudgetCheckResult } from './budget-enforcer';
 
 export interface CostAwareRouterOptions {
   config?: Partial<CostRoutingConfig>;
-  /** The price of a model; the model registry's by default. A runtime passes its `llm.pricing` over the registry. */
+  /** The price of a model, the model registry's by default. A runtime passes its `llm.pricing` over the registry. */
   pricing?: (model: string) => ModelPricing | null;
 }
 

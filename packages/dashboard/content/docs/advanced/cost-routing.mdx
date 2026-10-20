@@ -65,7 +65,7 @@ llm:
       output: 0.6
 ```
 
-- **Keys.** A key matches the model string a run uses or its tail after any `/`, case-insensitively: `openai/gpt-4o` prices that model at OpenAI only, `gpt-4o` at every provider that serves it under that name, `llama3.3:70b` on Ollama and vLLM alike.
+- **Keys.** A key matches the model string a run uses or its tail after any `/`, case-insensitively: `openai/gpt-4o` prices that model string and the ones that end in it, such as `openrouter/openai/gpt-4o`, `gpt-4o` the model at every provider that serves it under that name, `llama3.3:70b` on Ollama and vLLM alike.
 - **Fields.** `input` and `output`, and optionally `inputCached`, `inputCacheWrite` and `inputCacheWrite1h` for prompt-cache reads and writes, which default to the input price.
 - **Precedence.** A price in `llm.pricing` wins over the registry. A cost the provider reports, as OpenRouter does, wins over both.
 - **Where it counts.** Run cost (`result.usage.cost`), the budgets and cost records of cost routing, [Tree of Thoughts](/docs/advanced/reasoning), [`cog.decide()`](/docs/core/decisions) and `cog.estimateCost()`, which also prices a local model you set a price for.

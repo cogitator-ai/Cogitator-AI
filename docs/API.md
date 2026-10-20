@@ -1267,7 +1267,7 @@ try {
 
 #### ErrorCode
 
-String enum (each value equals its name), `ERROR_STATUS_CODES` maps each to an HTTP status (`RUN_TIMEOUT` 504, `BUDGET_EXCEEDED` 429, `LLM_CONTENT_FILTERED` 400, `LLM_QUOTA_EXCEEDED` 503).
+String enum (each value equals its name), `ERROR_STATUS_CODES` maps each to an HTTP status (`RUN_TIMEOUT` 504, `BUDGET_EXCEEDED` 429, `LLM_CONTENT_FILTERED` 400, `LLM_QUOTA_EXCEEDED` 402).
 
 Errors of model provider calls are `LLMError`s with a `kind` (also `details.kind`, type `LLMErrorKind`): `rate_limit`, `quota`, `authentication`, `permission`, `not_found`, `invalid_request`, `context_overflow`, `content_filter`, `overloaded`, `server_error`, `timeout`, `network` or `invalid_response`, read from the provider's own error codes. A `quota` error is `LLM_QUOTA_EXCEEDED` and never retried. A call the caller aborts fails with the abort reason.
 

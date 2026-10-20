@@ -150,7 +150,7 @@ model: 'google/gemini-3.1-pro-preview';
 model: 'google/gemini-3.5-flash-lite';
 ```
 
-Gemini has no `null` schema type, so `.nullable()` fields in tool parameters and response schemas are sent as `nullable: true`. A prompt Gemini blocks (`promptFeedback.blockReason`) fails with `LLM_CONTENT_FILTERED`. Gemini attaches a thought signature to function calls; it is stored on `ToolCall.thoughtSignature` (also in memory) and sent back with the call on the next request, which Gemini 3 models require for multi-step tool use. Thought-summary parts are excluded from the response text.
+Gemini has no `null` schema type, so `.nullable()` fields in tool parameters and response schemas are sent as `nullable: true`. A prompt Gemini blocks (`promptFeedback.blockReason`) fails with `LLM_CONTENT_FILTERED`. Gemini attaches a thought signature to function calls, stored on `ToolCall.thoughtSignature` (also in memory) and sent back with the call on the next request, which Gemini 3 models require for multi-step tool use. Thought-summary parts are excluded from the response text.
 
 ### Azure OpenAI
 
@@ -451,8 +451,8 @@ Error codes include `LLM_UNAVAILABLE`, `LLM_RATE_LIMITED`, `LLM_QUOTA_EXCEEDED`,
 
 The kind comes from the provider's own error codes first and the HTTP status second:
 
-- **OpenAI and OpenAI-compatible servers** by `error.code` and `error.type`. A 429 with `insufficient_quota`, `credit_balance_exhausted`, an organization or project spend limit or `organization_usage_limit_exceeded` is `quota`, not `rate_limit`.
-- **Anthropic** by `error.type`: `billing_error` (402) and a `rate_limit_error` about a usage or spend limit are `quota`, `overloaded_error` is `overloaded`.
+- **OpenAI and OpenAI-compatible servers** by `error.code` and `error.type`. A 429 with `insufficient_quota`, `credit_balance_exhausted`, an organization or project spend limit or `organization_usage_limit_exceeded` is `quota`, not `rate_limit`, and so is a 402, as OpenRouter answers when its credits run out. A numeric `code` of an error inside a stream (OpenRouter passing on the model provider's failure) counts as that HTTP status, and a Gemini error behind an OpenAI-compatible endpoint is read by the Gemini rules.
+- **Anthropic** by `error.type`: `billing_error` (402) and an `invalid_request_error` or `rate_limit_error` about a credit balance or a usage limit are `quota`, `overloaded_error` is `overloaded`.
 - **Gemini** by `status` and the `QuotaFailure` and `ErrorInfo` details: `RESOURCE_EXHAUSTED` is a rate limit at 429, and `quota` at 402 or when a quota counted per day ran out, which resets only at midnight Pacific time.
 - **Bedrock** by the AWS exception name: `ThrottlingException` is a retryable rate limit, `ServiceQuotaExceededException` is `quota`, `ModelTimeoutException` is a retryable `LLM_TIMEOUT`, `ValidationException` and `AccessDeniedException` are not retried.
 

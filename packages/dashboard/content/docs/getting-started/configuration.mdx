@@ -185,7 +185,7 @@ TOGETHER_API_KEY=xxx
 DEEPSEEK_API_KEY=xxx
 ```
 
-Azure is configured from the environment only when both the key and the endpoint are set, and a base URL of Anthropic or Google only applies together with its API key.
+Azure is configured from the environment only when both the key and the endpoint are set. A base URL of Anthropic or Google is read into the config along with that provider's API key from the environment, and the Anthropic SDK also reads `ANTHROPIC_BASE_URL` by itself whenever no `baseUrl` is configured.
 
 `OLLAMA_BASE_URL`, `OLLAMA_URL` and `OLLAMA_HOST` are read the way Ollama reads `OLLAMA_HOST`: without a scheme the port is 11434, and `0.0.0.0` (often set so `ollama serve` listens on every interface) is reached as `localhost`. They only apply when `cogitator.yml` sets no `llm.providers.ollama.baseUrl`, while `COGITATOR_OLLAMA_BASE_URL` overrides it.
 
@@ -393,7 +393,7 @@ Prices of your own, in USD per million tokens, by model, for calls whose provide
 ```yaml
 llm:
   pricing:
-    openai/gpt-4o: # this model at OpenAI only
+    openai/gpt-4o: # this model string and those ending in it
       input: 2.5
       output: 10
       inputCached: 1.25 # optional, also inputCacheWrite and inputCacheWrite1h

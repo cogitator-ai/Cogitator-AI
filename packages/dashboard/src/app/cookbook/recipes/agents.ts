@@ -368,7 +368,7 @@ for (const model of cheapToolModels.slice(0, 5)) {
 }
 
 const visionModels = listModels({ supportsVision: true, minContextWindow: 200_000, excludeDeprecated: true });
-console.log('Vision models with 200k+ context:', visionModels.map((model) => model.id).join(', '));
+console.log(\`Vision models with 200k+ context: \${visionModels.length}, for example\`, visionModels.slice(0, 5).map((model) => model.id).join(', '));
 
 console.log('Priced offline:', getPrice('deepseek/deepseek-chat'));
 

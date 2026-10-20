@@ -285,4 +285,4 @@ listModels({ provider: 'google' });
 shutdownModels();
 ```
 
-These functions use the offline catalogue until the first `initializeModels()`, so it is optional but recommended for the latest data. The shared registry (`getModelRegistry()`) caches to the file `~/.cogitator/models-cache.json` for 24 hours; `shutdownModels()` stops it and discards it, so the next call creates a new one.
+These functions use the offline catalogue until the first `initializeModels()`, so it is optional but recommended for the latest data. The shared registry (`getModelRegistry()`) caches to the file `~/.cogitator/models-cache.json` for 24 hours, and `shutdownModels()` stops it and discards it, so the next call creates a new one.

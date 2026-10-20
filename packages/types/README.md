@@ -507,7 +507,7 @@ console.log(ERROR_STATUS_CODES[ErrorCode.LLM_RATE_LIMITED]); // 429
 | Security | `PROMPT_INJECTION_DETECTED`, `PII_DETECTED`                                                                                                               |
 | General  | `VALIDATION_ERROR`, `CONFIGURATION_ERROR`, `INTERNAL_ERROR`, `NOT_IMPLEMENTED`, `CIRCUIT_OPEN`                                                            |
 
-`LLMErrorKind` says why a model provider call failed, finer than the code: `rate_limit`, `quota`, `authentication`, `permission`, `not_found`, `invalid_request`, `context_overflow`, `content_filter`, `overloaded`, `server_error`, `timeout`, `network` or `invalid_response`. An `LLMError` of `@cogitator-ai/core` carries it as `kind` and `details.kind`. `LLM_QUOTA_EXCEEDED` (HTTP 503) is an account out of credits or over a quota that waiting a moment will not lift, and is never retried.
+`LLMErrorKind` says why a model provider call failed, finer than the code: `rate_limit`, `quota`, `authentication`, `permission`, `not_found`, `invalid_request`, `context_overflow`, `content_filter`, `overloaded`, `server_error`, `timeout`, `network` or `invalid_response`. An `LLMError` of `@cogitator-ai/core` carries it as `kind` and `details.kind`. `LLM_QUOTA_EXCEEDED` (HTTP 402) is an account out of credits or over a quota that waiting a moment will not lift, and is never retried.
 
 The runtime throws `RUN_TIMEOUT` (HTTP 504) for a run that hits its timeout (`Run timed out after <n>ms`), `BUDGET_EXCEEDED` (429) for a run over its cost-routing budget, and `LLM_CONTENT_FILTERED` (400) when guardrails block the input or output (`Input blocked: …` / `Output blocked: …`).
 

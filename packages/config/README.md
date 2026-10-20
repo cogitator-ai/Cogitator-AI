@@ -500,7 +500,7 @@ DEEPSEEK_API_KEY=xxx
 OPENROUTER_API_KEY=xxx        # or OPENROUTER_BASE_URL for a proxy
 ```
 
-`ANTHROPIC_BASE_URL`, `COGITATOR_ANTHROPIC_BASE_URL` and `COGITATOR_GOOGLE_BASE_URL` apply only together with that provider's API key, and a `COGITATOR_` variable wins over `ANTHROPIC_BASE_URL`.
+`loadConfig` reads `COGITATOR_ANTHROPIC_BASE_URL`, `ANTHROPIC_BASE_URL` and `COGITATOR_GOOGLE_BASE_URL` into the config along with that provider's API key from the environment, over `cogitator.yml`, a `COGITATOR_` variable first. The Anthropic SDK also reads `ANTHROPIC_BASE_URL` by itself whenever no `baseUrl` is configured.
 
 When `OLLAMA_API_KEY` is set without any Ollama URL (from env or YAML), the Ollama base URL defaults to `https://ollama.com`; otherwise it defaults to `http://localhost:11434`. An API key in the environment never replaces a `baseUrl` configured in YAML.
 

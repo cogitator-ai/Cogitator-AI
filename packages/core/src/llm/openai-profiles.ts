@@ -18,8 +18,8 @@ const OPENAI_EFFORTS: readonly ReasoningEffort[] = [
 
 /**
  * What each known OpenAI-compatible server understands, from its API reference (2026-10):
- * Mistral rejects unknown fields, so it gets neither `stream_options` nor efforts it lacks;
- * Together streams usage without being asked; DeepSeek takes `none`, `low`, `high` and `max`.
+ * Mistral rejects unknown fields, so it gets neither `stream_options` nor efforts it lacks.
+ * Together streams usage without being asked, DeepSeek takes `none`, `low`, `high` and `max`.
  * vLLM keeps `max_tokens`, which every version takes.
  */
 export const OPENAI_COMPATIBLE_PROFILES: Readonly<

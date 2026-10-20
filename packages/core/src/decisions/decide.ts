@@ -159,7 +159,7 @@ export interface DecisionRun {
   retry: LLMRetryConfig | false | undefined;
   observers: readonly RunObserver[];
   recordCost?: (record: Omit<CostRecord, 'timestamp'>) => void;
-  /** USD for `usage` on `model` (`provider/model`), `null` when its price is unknown; the model registry's by default. */
+  /** USD for `usage` on `model` (`provider/model`), `null` when its price is unknown, the model registry's by default. */
   price?: (model: string, usage: TokenUsageForCost) => number | null;
   /** Fails when a call estimated to cost this much would break a budget, before it is sent. */
   checkBudget?: (estimatedCost: number) => void;
