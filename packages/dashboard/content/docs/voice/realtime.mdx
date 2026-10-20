@@ -188,7 +188,7 @@ session.pushAudio(pcm16Chunk);
 - **Native audio generation** — model generates audio directly
 - **Transcription** — input and output audio transcription is enabled; streamed fragments are emitted as one `transcript` per turn (user first, then assistant). Model "thought" parts are never emitted
 - **Tool calling** — function declarations sent during setup, structured results (`{ result }` / `{ error }`) returned via `toolResponse`
-- **Tool call cancellation** - when the user interrupts, Gemini cancels pending calls with `toolCallCancellation`: their `signal` aborts and they get no answer
+- **Tool call cancellation** - when the user talks over a turn with a pending call, Gemini cancels it with `toolCallCancellation`: its `signal` aborts and it gets no answer. The 2.5 native audio models do this. On the 3.x Live models a call blocks the turn and is never cancelled: the model answers what the user says next while the call keeps running, and its answer is sent when it is ready
 - **Audio format** — PCM16 16kHz input (`realtimeInput.audio`), PCM16 24kHz output
 
 ### Gemini Voices

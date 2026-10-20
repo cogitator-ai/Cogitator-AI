@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeAll } from 'vitest';
 import { WebSocket } from 'ws';
 import { z } from 'zod';
 import { Cogitator, tool } from '@cogitator-ai/core';
@@ -10,6 +10,8 @@ import {
   pcm16ToFloat32,
   resample,
   calculateRMS,
+  type RealtimeTool,
+  type RealtimeToolContext,
 } from '@cogitator-ai/voice';
 
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
@@ -255,6 +257,169 @@ describeGemini('Voice: Gemini Live realtime', () => {
       expect(messages.some((m) => m.type === 'turn_end')).toBe(true);
       expect(audioBytes).toBeGreaterThan(0);
       expect(messages.some((m) => m.type === 'transcript' && m.role === 'assistant')).toBe(true);
+    }
+  );
+});
+
+/**
+ * Gemini sends `toolCallCancellation` when the user talks over a turn with a pending call. Live
+ * models whose calls block (the 3.x ones) never cancel: the call simply waits for its answer, so
+ * this runs on a 2.5 native audio model, which does.
+ */
+const CANCELLING_MODEL = 'gemini-2.5-flash-native-audio-preview-09-2025';
+
+describeGemini('Voice: Gemini Live cancels a tool call the user talks over', () => {
+  const sessions: RealtimeSession[] = [];
+  let interruption: Buffer;
+
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  beforeAll(async () => {
+    const speaker = new RealtimeSession({
+      provider: 'gemini',
+      apiKey: GOOGLE_API_KEY!,
+      instructions: 'Repeat exactly what the user says, word for word, and nothing else.',
+    });
+    const audio: Buffer[] = [];
+    speaker.on('audio', (chunk) => audio.push(chunk));
+    await speaker.connect();
+    const spoken = nextTurnEnd(speaker);
+    speaker.sendText('Stop, stop. Never mind the weather. What is two plus two?');
+    await spoken;
+    speaker.close();
+    interruption = float32ToPcm16(resample(pcm16ToFloat32(Buffer.concat(audio)), 24000, 16000));
+  }, 90_000);
+
+  afterEach(() => {
+    for (const s of sessions) s.close();
+    sessions.length = 0;
+  });
+
+  function weatherSession(tools: RealtimeTool[]) {
+    const session = new RealtimeSession({
+      provider: 'gemini',
+      apiKey: GOOGLE_API_KEY!,
+      model: CANCELLING_MODEL,
+      instructions:
+        'When asked about the weather, first tell the user in three long sentences that you are going to look it up, and call get_weather while you are still talking.',
+      tools,
+    });
+    sessions.push(session);
+    return session;
+  }
+
+  /** Asks about the weather and talks over the answer as soon as the tool call arrives. */
+  async function askAndInterrupt(session: RealtimeSession): Promise<void> {
+    const called = new Promise<void>((resolve) => session.once('tool_call', () => resolve()));
+    await session.connect();
+    session.sendText('What is the weather in Oslo?');
+    await Promise.race([called, wait(30_000)]);
+    for (let offset = 0; offset < interruption.length; offset += 3200) {
+      session.pushAudio(interruption.subarray(offset, offset + 3200));
+      await wait(20);
+    }
+    for (let i = 0; i < 40; i++) {
+      session.pushAudio(Buffer.alloc(3200));
+      await wait(20);
+    }
+  }
+
+  const weatherParameters = {
+    type: 'object',
+    properties: { city: { type: 'string' } },
+    required: ['city'],
+  };
+
+  /**
+   * Runs the weather question in fresh sessions until Gemini cancels a call, up to three times:
+   * whether the turn with the call is still open when the user talks varies from run to run.
+   * Returns the context of the cancelled call.
+   */
+  async function cancelledCall(tools: () => RealtimeTool[]): Promise<RealtimeToolContext> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const contexts: RealtimeToolContext[] = [];
+      const session = weatherSession(
+        tools().map((realtimeTool) => ({
+          ...realtimeTool,
+          execute: (args: unknown, context: RealtimeToolContext) => {
+            contexts.push(context);
+            return realtimeTool.execute(args, context);
+          },
+        }))
+      );
+      await askAndInterrupt(session);
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline && !contexts.some((c) => c.signal.aborted)) await wait(100);
+      const cancelled = contexts.find((c) => c.signal.aborted);
+      if (cancelled) return cancelled;
+      session.close();
+    }
+    throw new Error('Gemini did not cancel the tool call in three attempts');
+  }
+
+  it('aborts the signal of the call Gemini cancels', { timeout: 180_000 }, async () => {
+    let finished = false;
+    const slowWeather = (): RealtimeTool[] => [
+      {
+        name: 'get_weather',
+        description: 'Weather of a city. It is slow.',
+        parameters: weatherParameters,
+        execute: (_args, context) =>
+          new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+              finished = true;
+              resolve({ celsius: 21 });
+            }, 20_000);
+            context.signal.addEventListener('abort', () => {
+              clearTimeout(timer);
+              reject(new Error('aborted'));
+            });
+          }),
+      },
+    ];
+
+    const cancelled = await cancelledCall(slowWeather);
+
+    expect((cancelled.signal.reason as Error).message).toBe('Gemini cancelled this tool call');
+    expect(finished).toBe(false);
+  });
+
+  it(
+    'never runs a call Gemini cancels while its approval waits, even once approved',
+    { timeout: 180_000 },
+    async () => {
+      const ran: string[] = [];
+      const approvals: Array<() => void> = [];
+      const lookup = tool({
+        name: 'get_weather',
+        description: 'Weather of a city. It is slow.',
+        parameters: z.object({ city: z.string() }),
+        requiresApproval: true,
+        execute: async ({ city }) => {
+          ran.push(city);
+          return { city, celsius: 21 };
+        },
+      });
+      const cogitator = new Cogitator();
+      try {
+        const cancelled = await cancelledCall(() =>
+          createRealtimeTools(cogitator, [lookup], {
+            onApproval: () =>
+              new Promise((resolve) => {
+                approvals.push(() => resolve({ approved: true }));
+              }),
+          })
+        );
+        expect(cancelled.signal.aborted).toBe(true);
+        expect(approvals.length).toBeGreaterThan(0);
+
+        for (const approve of approvals) approve();
+        await wait(2_000);
+
+        expect(ran).toEqual([]);
+      } finally {
+        await cogitator.close();
+      }
     }
   );
 });

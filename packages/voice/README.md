@@ -337,7 +337,7 @@ Native speech-to-speech without the STT/TTS pipeline. The LLM directly processes
 | `openai` | `gpt-realtime-2.1-mini` | PCM16 24kHz mono | PCM16 24kHz mono | Realtime API (GA), server VAD, `marin` voice, `gpt-live-transcribe` input transcription |
 | `gemini` | `gemini-3.8-live`       | PCM16 16kHz mono | PCM16 24kHz mono | Gemini Live API, input + output transcriptions                                          |
 
-Audio and text sent before `connect()` resolves are queued and flushed once the session is ready. Tools are executed by the session and their results sent back to the model automatically. `execute(args, context)` gets the provider's `callId`, the session's `sessionId` (the client id in a `VoiceAgent`) and a `signal` that aborts when the session closes or loses its connection, and with Gemini also when Gemini cancels the call because the user interrupted. A cancelled call gets no answer.
+Audio and text sent before `connect()` resolves are queued and flushed once the session is ready. Tools are executed by the session and their results sent back to the model automatically. `execute(args, context)` gets the provider's `callId`, the session's `sessionId` (the client id in a `VoiceAgent`) and a `signal` that aborts when the session closes or loses its connection, and with Gemini also when Gemini cancels the call because the user talked over it (the 2.5 native audio models do, the 3.x Live models never cancel a call). A cancelled call gets no answer.
 
 ### Cogitator tools in a realtime session
 
