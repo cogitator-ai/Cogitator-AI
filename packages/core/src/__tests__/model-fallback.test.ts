@@ -14,6 +14,7 @@ import { Agent } from '../agent';
 import { createLLMError } from '../llm/errors';
 import { fallsBackOn } from '../llm/model-fallback';
 import { tool } from '../tool';
+import { countMessagesTokens } from '@cogitator-ai/memory';
 import { z } from 'zod';
 
 type Step = ChatResponse | Error | 'stream-then-fail';
@@ -390,6 +391,76 @@ describe('model fallback in a run', () => {
         Agent.validateSnapshot({ ...snapshot, config: { ...snapshot.config, fallbackModels } })
       ).toBe(false);
     }
+  });
+
+  it('moves on from a turn the model ended with an error, counting its tokens', async () => {
+    const broken: ChatResponse = {
+      id: 'e',
+      content: '',
+      finishReason: 'error',
+      finishMessage: 'MALFORMED_FUNCTION_CALL',
+      usage: { inputTokens: 1000, outputTokens: 1000, totalTokens: 2000 },
+    };
+    const { cog, agent, primary, backup } = setup([broken]);
+    const spans: Span[] = [];
+
+    const result = await cog.run(agent, { input: 'Draft', onSpan: (span) => spans.push(span) });
+
+    expect(result.output).toBe('backup answer');
+    expect(primary.chat).toHaveBeenCalledTimes(1);
+    expect(backup.chat).toHaveBeenCalledTimes(1);
+    expect(result.usage.inputTokens).toBe(2000);
+    expect(result.usage.cost).toBeCloseTo(0.002 + 0.02, 6);
+    expect(spans.filter((span) => span.name === 'llm.chat').map((span) => span.status)).toEqual([
+      'error',
+      'ok',
+    ]);
+  });
+
+  it('cuts the history to the window of a smaller fallback model', async () => {
+    const longTurn = (i: number) =>
+      `Turn ${i}: ${'the shipment moved through another depot. '.repeat(40)}`;
+    const primary = scriptedBackend('primary', []);
+    const backup = scriptedBackend('backup', []);
+    const cog = new Cogitator({
+      llm: { backends: { primary: primary.backend, backup: backup.backend }, retry: false },
+      memory: { adapter: 'memory', contextBuilder: { strategy: 'recent' } },
+    });
+    const agent = new Agent({
+      id: 'tracker',
+      name: 'tracker',
+      model: 'primary/gpt-4o',
+      fallbackModels: ['backup/house-model'],
+      instructions: 'Track shipments.',
+    });
+    await cog.run(agent, { input: 'warm up', threadId: 'warm' });
+    await cog.memory!.createThread('tracker', {}, 'long');
+    for (let i = 0; i < 30; i++) {
+      await cog.memory!.addEntry({
+        threadId: 'long',
+        message: { role: i % 2 === 0 ? 'user' : 'assistant', content: longTurn(i) },
+        tokenCount: 0,
+      });
+    }
+    primary.chat.mockRejectedValueOnce(failure('openai', 503, 'overloaded'));
+
+    await cog.run(agent, { input: 'Where is it now?', threadId: 'long', threadAccess: 'shared' });
+    await cog.close();
+
+    const turns = (request: ChatRequest) =>
+      request.messages.filter(
+        (m) => typeof m.content === 'string' && m.content.startsWith('Turn ')
+      );
+    const sentToPrimary = turns(primary.chat.mock.calls.at(-1)![0]);
+    const backupRequest = backup.chat.mock.calls.at(-1)![0];
+    const sentToBackup = turns(backupRequest);
+    expect(sentToPrimary).toHaveLength(30);
+    expect(sentToBackup.length).toBeGreaterThan(0);
+    expect(sentToBackup.length).toBeLessThan(30);
+    expect(sentToBackup.at(-1)?.content).toBe(longTurn(29));
+    expect(backupRequest.messages[0].role).toBe('system');
+    expect(backupRequest.messages.at(-1)?.content).toBe('Where is it now?');
+    expect(countMessagesTokens(backupRequest.messages)).toBeLessThan(8192);
   });
 
   it('starts every turn from the primary model again', async () => {

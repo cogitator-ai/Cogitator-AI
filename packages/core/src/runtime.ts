@@ -44,7 +44,9 @@ import { createLLMBackendFromPlugin, hasLLMPlugin } from './llm/plugin';
 import { withLLMRetry } from './llm/retry';
 import { ModelFallbackChain, type ModelCandidate } from './llm/model-fallback';
 import { modelContextWindow } from './context/model-window';
-import { countTokens } from '@cogitator-ai/memory';
+import { countMessagesTokens, countTokens } from '@cogitator-ai/memory';
+import { TruncateStrategy } from './context/strategies/index';
+import { sanitizeToolHistory } from './utils/tool-history';
 import { normalizeTurn } from './llm/turn';
 import { PiiMasker, withPiiDecisions, withPiiMasking } from './security/pii';
 import { createLoggerFromConfig, getLogger, setLogger } from './logger';
@@ -1069,6 +1071,52 @@ export class Cogitator implements ToolInvoker {
         agentContext.previousActions = [...allActions];
 
         const llmSpanStart = Date.now();
+        const recordCall = (answer: ChatResponse, candidate: ModelCandidate): void => {
+          const spentBefore = costMeter.total(costModel);
+          costMeter.add(answer.usage, candidate.name);
+          const callCost = costMeter.total(costModel) - spentBefore;
+          spans.push(
+            createSpan(
+              'llm.chat',
+              traceId,
+              rootSpanId,
+              llmSpanStart,
+              Date.now(),
+              {
+                'llm.model': candidate.model,
+                'llm.iteration': iterations,
+                'llm.input_tokens': answer.usage.inputTokens,
+                'llm.output_tokens': answer.usage.outputTokens,
+                'llm.cost': callCost,
+                ...(answer.usage.cachedInputTokens && {
+                  'llm.cached_input_tokens': answer.usage.cachedInputTokens,
+                }),
+                ...(answer.usage.reasoningTokens && {
+                  'llm.reasoning_tokens': answer.usage.reasoningTokens,
+                }),
+                'llm.finish_reason': answer.finishReason,
+              },
+              answer.finishReason === 'error' ? 'error' : 'ok',
+              'client',
+              options.onSpan
+            )
+          );
+          totalInputTokens += answer.usage.inputTokens;
+          totalOutputTokens += answer.usage.outputTokens;
+          cachedInputTokens += answer.usage.cachedInputTokens ?? 0;
+          cacheWriteTokens += answer.usage.cacheWriteTokens ?? 0;
+          reasoningTokens += answer.usage.reasoningTokens ?? 0;
+          if (answer.usage.cost === undefined) this.pricer.noteUnpriced(candidate.name);
+          this.state.costRouter?.recordCost({
+            runId,
+            agentId: agent.id,
+            threadId,
+            model: candidate === candidates[0] ? effectiveModel : candidate.name,
+            inputTokens: answer.usage.inputTokens,
+            outputTokens: answer.usage.outputTokens,
+            cost: callCost,
+          });
+        };
         const turnToolChoice = limit.closingTurn
           ? 'none'
           : toolChoiceForTurn(requestedToolChoice, allToolCalls.length > 0, registry);
@@ -1084,45 +1132,58 @@ export class Cogitator implements ToolInvoker {
         const turn = await waitForAbortable(
           this.fallbackChain().run<ChatResponse>(
             candidates,
-            (candidate) =>
-              streaming
-                ? streamChat(
-                    candidate.backend,
-                    candidate.model,
-                    messages,
-                    registry,
-                    active,
-                    turnStream,
-                    abortController.signal,
-                    responseFormat,
-                    {
+            async (candidate) => {
+              const turnMessages =
+                candidate === candidates[0]
+                  ? messages
+                  : await this.fitToModel(messages, candidate.name, active, registry);
+              const answer = normalizeTurn(
+                await (streaming
+                  ? streamChat(
+                      candidate.backend,
+                      candidate.model,
+                      turnMessages,
+                      registry,
+                      active,
+                      turnStream,
+                      abortController.signal,
+                      responseFormat,
+                      {
+                        reasoning,
+                        cache: promptCache,
+                        cachePrefix: active.instructions,
+                        ...(onReasoning && {
+                          onReasoning: (delta: string) => {
+                            streamed = true;
+                            onReasoning(delta);
+                          },
+                        }),
+                        ...(turnToolChoice && { toolChoice: turnToolChoice }),
+                      }
+                    )
+                  : candidate.backend.chat({
+                      model: candidate.model,
+                      messages: turnMessages,
+                      tools: registry.getSchemas(),
+                      ...(turnToolChoice && { toolChoice: turnToolChoice }),
+                      temperature: active.config.temperature,
+                      topP: active.config.topP,
+                      maxTokens: active.config.maxTokens,
+                      stop: active.config.stopSequences,
+                      responseFormat,
                       reasoning,
                       cache: promptCache,
                       cachePrefix: active.instructions,
-                      ...(onReasoning && {
-                        onReasoning: (delta: string) => {
-                          streamed = true;
-                          onReasoning(delta);
-                        },
-                      }),
-                      ...(turnToolChoice && { toolChoice: turnToolChoice }),
-                    }
-                  )
-                : candidate.backend.chat({
-                    model: candidate.model,
-                    messages,
-                    tools: registry.getSchemas(),
-                    ...(turnToolChoice && { toolChoice: turnToolChoice }),
-                    temperature: active.config.temperature,
-                    topP: active.config.topP,
-                    maxTokens: active.config.maxTokens,
-                    stop: active.config.stopSequences,
-                    responseFormat,
-                    reasoning,
-                    cache: promptCache,
-                    cachePrefix: active.instructions,
-                    signal: abortController.signal,
-                  }),
+                      signal: abortController.signal,
+                    }))
+              );
+              if (answer.finishReason !== 'error') return answer;
+              recordCall(answer, candidate);
+              throw llmInvalidResponse(
+                { provider: candidate.backend.provider, model: candidate.model },
+                `The model ended its turn with an error${answer.finishMessage ? `: ${answer.finishMessage}` : ''}`
+              );
+            },
             {
               signal: abortController.signal,
               canSwitch: () => !streamed,
@@ -1158,65 +1219,10 @@ export class Cogitator implements ToolInvoker {
         );
         const answeredBy = turn.candidate;
         fellBackTo = answeredBy === candidates[0] ? undefined : answeredBy.name;
-        let response = normalizeTurn(turn.result);
-
-        const spentBefore = costMeter.total(costModel);
-        const callModel = answeredBy.name;
-        costMeter.add(response.usage, callModel);
-        const callCost = costMeter.total(costModel) - spentBefore;
-
-        const llmSpan = createSpan(
-          'llm.chat',
-          traceId,
-          rootSpanId,
-          llmSpanStart,
-          Date.now(),
-          {
-            'llm.model': answeredBy.model,
-            'llm.iteration': iterations,
-            'llm.input_tokens': response.usage.inputTokens,
-            'llm.output_tokens': response.usage.outputTokens,
-            'llm.cost': callCost,
-            ...(response.usage.cachedInputTokens && {
-              'llm.cached_input_tokens': response.usage.cachedInputTokens,
-            }),
-            ...(response.usage.reasoningTokens && {
-              'llm.reasoning_tokens': response.usage.reasoningTokens,
-            }),
-            'llm.finish_reason': response.finishReason,
-          },
-          'ok',
-          'client',
-          options.onSpan
-        );
-        spans.push(llmSpan);
-
-        totalInputTokens += response.usage.inputTokens;
-        totalOutputTokens += response.usage.outputTokens;
-        cachedInputTokens += response.usage.cachedInputTokens ?? 0;
-        cacheWriteTokens += response.usage.cacheWriteTokens ?? 0;
-        reasoningTokens += response.usage.reasoningTokens ?? 0;
+        let response = turn.result;
+        recordCall(response, answeredBy);
         lastFinishReason = response.finishReason;
-        if (response.usage.cost === undefined) {
-          this.pricer.noteUnpriced(callModel);
-        }
-        this.state.costRouter?.recordCost({
-          runId,
-          agentId: agent.id,
-          threadId,
-          model: fellBackTo ?? effectiveModel,
-          inputTokens: response.usage.inputTokens,
-          outputTokens: response.usage.outputTokens,
-          cost: callCost,
-        });
         if (response.reasoning) reasoningParts.push(response.reasoning);
-
-        if (response.finishReason === 'error') {
-          throw llmInvalidResponse(
-            { provider: answeredBy.backend.provider, model: answeredBy.model },
-            `The model ended its turn with an error${response.finishMessage ? `: ${response.finishMessage}` : ''}`
-          );
-        }
 
         if (
           isEmptyAnswer(response) &&
@@ -1833,11 +1839,8 @@ export class Cogitator implements ToolInvoker {
     if (!this.state.contextBuilder || this.config.memory?.contextBuilder?.maxTokens !== undefined) {
       return undefined;
     }
-    const known = modelContextWindow(modelString);
-    const window = this.servesFullWindow(modelString, explicitProvider)
-      ? known
-      : Math.min(known, OLLAMA_DEFAULT_CONTEXT);
-    const answer = Math.min(agent.config.maxTokens ?? Math.floor(window * 0.15), window / 2);
+    const window = this.servedWindow(modelString, explicitProvider);
+    const answer = answerRoom(agent, window);
     const fixed = countTokens(JSON.stringify(registry.getSchemas())) + countTokens(input);
     const compressAt = this.state.contextManager?.compressionThreshold(modelString);
     const budget = Math.floor(Math.min(window - answer, compressAt ?? Infinity) - fixed);
@@ -1848,6 +1851,40 @@ export class Cogitator implements ToolInvoker {
       { agent: agent.name, model: modelString, window, answer, fixed }
     );
     return MIN_HISTORY_BUDGET;
+  }
+
+  /** The context window `modelString` runs with: its own, or Ollama's default context. */
+  private servedWindow(modelString: string, explicitProvider?: string): number {
+    const known = modelContextWindow(modelString);
+    return this.servesFullWindow(modelString, explicitProvider)
+      ? known
+      : Math.min(known, OLLAMA_DEFAULT_CONTEXT);
+  }
+
+  /**
+   * `messages` cut to what a fallback model has room for, its context window minus the answer
+   * and the tool schemas, when they are more: the system prompt and the newest messages stay,
+   * and no tool result is left without its call. A turn that falls back to a model with a
+   * smaller window than the agent's model, whose history was sized to the latter, still fits.
+   */
+  private async fitToModel(
+    messages: Message[],
+    modelString: string,
+    agent: Agent,
+    registry: ToolRegistry
+  ): Promise<Message[]> {
+    const window = this.servedWindow(modelString);
+    const room =
+      window - answerRoom(agent, window) - countTokens(JSON.stringify(registry.getSchemas()));
+    const current = countMessagesTokens(messages);
+    if (current <= room) return messages;
+    const cut = await new TruncateStrategy().compress({
+      messages,
+      targetTokens: Math.max(room, 1),
+      currentTokens: current,
+      windowSize: window,
+    });
+    return sanitizeToolHistory(cut.messages);
   }
 
   /**
@@ -2321,6 +2358,11 @@ const OLLAMA_DEFAULT_CONTEXT = 4096;
 
 /** The smallest history budget a run hands the context builder, which keeps the instructions anyway. */
 const MIN_HISTORY_BUDGET = 256;
+
+/** Tokens of a context window kept for the answer: the agent's `maxTokens`, else 15%, at most half. */
+function answerRoom(agent: Agent, window: number): number {
+  return Math.min(agent.config.maxTokens ?? Math.floor(window * 0.15), window / 2);
+}
 
 function isOllamaCloud(baseUrl: string): boolean {
   try {
