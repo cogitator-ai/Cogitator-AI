@@ -366,7 +366,6 @@ export interface AISDKSchema<T = unknown> {
   };
 }
 
-/** AI SDK tool produced by `toAISDKTool()`; works with `tools` of ai@4 – ai@7. */
 /** Options of `toAISDKTool()` and `convertToolsToAISDK()`. */
 export interface AISDKToolOptions {
   /**
@@ -387,6 +386,7 @@ export interface AISDKToolOptions {
   onApproval?: ToolInvocationOptions['onApproval'];
 }
 
+/** AI SDK tool produced by `toAISDKTool()`; works with `tools` of ai@4 – ai@7. */
 export interface AISDKTool<TInput = unknown, TOutput = unknown> {
   description: string;
   /** Input schema read by ai@5, ai@6 and ai@7: the Cogitator tool's zod schema. */

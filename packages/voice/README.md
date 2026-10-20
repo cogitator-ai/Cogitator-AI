@@ -11,7 +11,7 @@ pnpm add @cogitator-ai/voice
 
 # Optional
 pnpm add openai                    # OpenAISTT / OpenAITTS
-pnpm add @cogitator-ai/core        # run Cogitator agents via createCogitatorRunner()
+pnpm add @cogitator-ai/core        # Cogitator agents (createCogitatorRunner) and tools (createRealtimeTools)
 pnpm add onnxruntime-node          # Silero VAD (neural network-based)
 ```
 

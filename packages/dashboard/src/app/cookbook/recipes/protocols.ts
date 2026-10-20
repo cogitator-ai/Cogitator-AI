@@ -98,6 +98,7 @@ try {
         'Your inventory tools should be usable from any MCP client — Claude Desktop, Cursor or another agent.',
       points: [
         'Register Cogitator tools and a resource template on `MCPServer`',
+        'Clients see each tool with its title, hints and output schema',
         'Serve over HTTP; a thrown error reaches the client as `MCPToolError`',
       ],
       file: 'mcp-server.ts',
@@ -112,14 +113,19 @@ const stock: Record<string, number> = { 'SKU-42': 137, 'SKU-7': 12 };
 
 const lookupStock = tool({
   name: 'lookup_stock',
+  title: 'Stock lookup',
   description: 'Look up how many units of a product SKU are in stock.',
   parameters: z.object({ sku: z.string().describe('Product SKU, e.g. "SKU-42"') }),
+  outputSchema: z.object({ sku: z.string(), units: z.number() }),
+  annotations: { readOnlyHint: true, openWorldHint: false },
   execute: async ({ sku }) => ({ sku, units: stock[sku] ?? 0 }),
 });
 
 const reserveUnits = tool({
   name: 'reserve_units',
+  title: 'Reserve stock',
   description: 'Reserve units of a product. Fails if not enough stock is available.',
+  annotations: { destructiveHint: false, openWorldHint: false },
   parameters: z.object({ sku: z.string(), units: z.number().int().positive() }),
   execute: async ({ sku, units }) => {
     const available = stock[sku] ?? 0;

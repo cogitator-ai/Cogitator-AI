@@ -171,10 +171,13 @@ interface RunCheckpointStore {
 ```typescript
 interface Tool<TParams = unknown, TResult = unknown> {
   name: string;
+  title?: string; // name for people, such as an MCP client shows
   description: string;
   category?: ToolCategory;
   tags?: string[];
   parameters: ZodType<TParams>;
+  outputSchema?: ZodType<TResult>; // not checked in a run, MCPServer advertises it
+  annotations?: ToolAnnotations;
   execute(params: TParams, context: ToolContext): Promise<TResult>;
   sideEffects?: SideEffectType[];
   requiresApproval?: boolean | ApprovalCheck;
@@ -186,10 +189,13 @@ interface Tool<TParams = unknown, TResult = unknown> {
 
 interface ToolConfig<TParams = unknown, TResult = unknown> {
   name: string;
+  title?: string;
   description: string;
   category?: ToolCategory;
   tags?: string[];
   parameters: ZodType<TParams>;
+  outputSchema?: ZodType<TResult>;
+  annotations?: ToolAnnotations;
   execute: (params: TParams, context: ToolContext) => Promise<TResult>;
   sideEffects?: SideEffectType[];
   requiresApproval?: boolean | ((params: TParams) => boolean);
@@ -199,6 +205,14 @@ interface ToolConfig<TParams = unknown, TResult = unknown> {
 }
 
 type ApprovalCheck = (params: Record<string, unknown>) => boolean;
+
+// MCP tool annotations without the title, see Tool.title
+interface ToolAnnotations {
+  readOnlyHint?: boolean; // does not change its environment
+  destructiveHint?: boolean; // may make destructive updates (when not read-only)
+  idempotentHint?: boolean; // a repeated call with the same arguments has no further effect
+  openWorldHint?: boolean; // reaches external entities, such as the web
+}
 
 type ToolCategory =
   | 'math'

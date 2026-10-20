@@ -212,15 +212,38 @@ process.on('SIGINT', async () => {
       problem: 'The same WebSocket server, but backed by a realtime model with server-side tools.',
       points: [
         'Run `VoiceAgent` in `realtime` mode on Gemini Live',
+        'Give it Cogitator tools with `createRealtimeTools`, approval included',
         'Talk to it from a WebSocket client',
       ],
       file: 'realtime-voice-agent.ts',
-      code: `import { VoiceAgent } from '@cogitator-ai/voice';
+      code: `import { Cogitator, tool } from '@cogitator-ai/core';
+import { createRealtimeTools, VoiceAgent } from '@cogitator-ai/voice';
 import { WebSocket } from 'ws';
+import { z } from 'zod';
 
 const apiKey = process.env.GOOGLE_API_KEY;
 if (!apiKey) throw new Error('Set GOOGLE_API_KEY');
 
+const openingHours = tool({
+  name: 'get_opening_hours',
+  description: 'Opening hours of the office for a given weekday',
+  parameters: z.object({ day: z.string().describe('Weekday name') }),
+  execute: async ({ day }) => ({
+    day,
+    open: '09:00',
+    close: day.toLowerCase() === 'friday' ? '15:00' : '18:00',
+  }),
+});
+
+const bookRoom = tool({
+  name: 'book_meeting_room',
+  description: 'Book the meeting room for a weekday',
+  parameters: z.object({ day: z.string().describe('Weekday name') }),
+  requiresApproval: true,
+  execute: async ({ day }) => ({ booked: day }),
+});
+
+const cogitator = new Cogitator();
 const voiceAgent = new VoiceAgent({
   mode: 'realtime',
   agent: {
@@ -230,21 +253,12 @@ const voiceAgent = new VoiceAgent({
   realtimeProvider: 'gemini',
   realtimeApiKey: apiKey,
   voice: 'Puck',
-  tools: [
-    {
-      name: 'get_opening_hours',
-      description: 'Opening hours of the office for a given weekday',
-      parameters: {
-        type: 'object',
-        properties: { day: { type: 'string', description: 'Weekday name' } },
-        required: ['day'],
-      },
-      execute: async (args) => {
-        const { day } = args as { day: string };
-        return { day, open: '09:00', close: day.toLowerCase() === 'friday' ? '15:00' : '18:00' };
-      },
+  tools: createRealtimeTools(cogitator, [openingHours, bookRoom], {
+    onApproval: async (request) => {
+      console.log(\`Approving \${request.toolName}(\${JSON.stringify(request.arguments)})\`);
+      return { approved: true };
     },
-  ],
+  }),
 });
 voiceAgent.on('error', (error) => console.error(error.message));
 await voiceAgent.listen(0);
@@ -264,13 +278,19 @@ const answered = new Promise<void>((resolve) => {
 });
 await new Promise<void>((resolve) => client.once('open', () => resolve()));
 
-client.send(JSON.stringify({ type: 'text', text: 'When does the office close on Friday?' }));
+client.send(
+  JSON.stringify({
+    type: 'text',
+    text: 'When does the office close on Friday? Book the meeting room for that day too.',
+  })
+);
 await Promise.race([answered, new Promise((resolve) => setTimeout(resolve, 30_000))]);
 console.log(\`Received \${audioBytes} bytes of PCM16 24kHz audio\`);
 
 client.close();
-await voiceAgent.close();`,
-      install: 'pnpm add @cogitator-ai/voice ws ws',
+await voiceAgent.close();
+await cogitator.close();`,
+      install: 'pnpm add @cogitator-ai/core @cogitator-ai/voice ws zod',
       env: ['GOOGLE_API_KEY'],
       run: 'GOOGLE_API_KEY=your-key npx tsx realtime-voice-agent.ts',
       repoRun: 'npx tsx examples/voice/04-realtime-voice-agent.ts',

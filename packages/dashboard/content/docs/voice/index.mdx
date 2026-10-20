@@ -91,7 +91,7 @@ const voiceAgent = new VoiceAgent({
 await voiceAgent.listen(8080);
 ```
 
-Give the session its own `tools`: they run in the session, and results made of parts (such as screenshots) reach the model as text, with the images themselves only when `toolImages: true`. See [Realtime](/docs/voice/realtime#tool-results).
+Give the session its own `tools`, such as Cogitator tools through [`createRealtimeTools`](/docs/voice/realtime#cogitator-tools), which keeps approval, guardrails and timeouts: they run in the session, and results made of parts (such as screenshots) reach the model as text, with the images themselves only when `toolImages: true`. See [Realtime](/docs/voice/realtime#tool-results).
 
 ## Components
 

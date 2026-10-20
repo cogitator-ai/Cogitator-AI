@@ -41,7 +41,7 @@ npx tsx examples/voice/03-voice-agent.ts
 
 ### 04 — Realtime Voice Agent (WebSocket)
 
-`VoiceAgent` in realtime mode backed by Gemini Live with a server-side tool. Starts the server, connects a WebSocket client, asks a question via the `text` control message, and prints the transcript of the spoken reply.
+`VoiceAgent` in realtime mode backed by Gemini Live, with Cogitator tools from `createRealtimeTools`, one of them approved through `onApproval` before it runs. Starts the server, connects a WebSocket client, asks a question via the `text` control message, and prints the transcript of the spoken reply.
 
 ```bash
 npx tsx examples/voice/04-realtime-voice-agent.ts

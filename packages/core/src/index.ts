@@ -374,6 +374,7 @@ export type {
   ResponseFormat,
   Tool,
   ApprovalCheck,
+  ToolAnnotations,
   ToolConfig,
   ToolContext,
   ToolSchema,
