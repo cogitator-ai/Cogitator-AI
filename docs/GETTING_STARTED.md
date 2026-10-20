@@ -498,14 +498,14 @@ npx tsx examples/core/01-basic-agent.ts
 
 ## Next Steps
 
-| Topic            | Description                                | Guide                                |
-| ---------------- | ------------------------------------------ | ------------------------------------ |
-| **Agents**       | Agent patterns, configuration, lifecycle   | [AGENTS.md](./AGENTS.md)             |
-| **Tools**        | Building custom tools, MCP compatibility   | [TOOLS.md](./TOOLS.md)               |
-| **Memory**       | Hybrid memory, semantic search             | [MEMORY.md](./MEMORY.md)             |
-| **Workflows**    | DAG-based orchestration, human-in-the-loop | [WORKFLOWS.md](./WORKFLOWS.md)       |
-| **Swarms**       | Multi-agent coordination strategies        | [SWARMS.md](./SWARMS.md)             |
-| **Architecture** | System design deep dive                    | [ARCHITECTURE.md](./ARCHITECTURE.md) |
+| Topic            | Description                                | Guide                                      |
+| ---------------- | ------------------------------------------ | ------------------------------------------ |
+| **Agents**       | Agent patterns, configuration, lifecycle   | [BUILDING_AGENTS.md](./BUILDING_AGENTS.md) |
+| **Tools**        | Building custom tools, MCP compatibility   | [TOOLS.md](./TOOLS.md)                     |
+| **Memory**       | Hybrid memory, semantic search             | [MEMORY.md](./MEMORY.md)                   |
+| **Workflows**    | DAG-based orchestration, human-in-the-loop | [WORKFLOWS.md](./WORKFLOWS.md)             |
+| **Swarms**       | Multi-agent coordination strategies        | [SWARMS.md](./SWARMS.md)                   |
+| **Architecture** | System design deep dive                    | [ARCHITECTURE.md](./ARCHITECTURE.md)       |
 
 ---
 

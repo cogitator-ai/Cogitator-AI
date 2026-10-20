@@ -72,7 +72,7 @@ scripts/test-scheduler.ts
 packages/dashboard/next-env.d.ts
 
 # Local agent instructions
-/AGENTS.md
+/AGENTS.override.md
 pnpm-publish-summary.json
 
 # Docs bundled into @cogitator-ai/core at build time
