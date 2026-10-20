@@ -25,10 +25,14 @@ export interface ModelChainResult<T> {
   candidate: ModelCandidate;
 }
 
-/** One model that failed a turn, for `details.attempts` of the error a chain fails with. */
+/**
+ * One model that failed a turn, for `details.attempts` of the error a chain fails with. Only
+ * `details` holds the failures' messages: the error's own message, which servers pass on to
+ * their clients, names the models and why they failed, never what an error of a backend said.
+ */
 export interface ModelAttempt {
   model: string;
-  code?: string;
+  code?: ErrorCode;
   kind?: LLMErrorKind;
   message: string;
 }
@@ -80,6 +84,34 @@ function failsLasting(error: unknown): boolean {
   return kind !== undefined && LASTING_KINDS.has(kind);
 }
 
+/**
+ * Whether a failure of a model call counts against the model's breaker: one that falls back,
+ * except a prompt too long for the model, which says nothing of the model's health.
+ */
+function countsAgainstModel(error: unknown): boolean {
+  return (
+    !(error instanceof CallerAbort) && fallsBackOn(error) && kindOf(error) !== 'context_overflow'
+  );
+}
+
+/** A call that failed because the caller aborted it, which no breaker should count. */
+class CallerAbort extends Error {
+  constructor(readonly original: unknown) {
+    super('The call was aborted');
+  }
+}
+
+/** The error code every attempt failed with, when they all share one, else `LLM_UNAVAILABLE`. */
+function commonCode(attempts: readonly ModelAttempt[]): ErrorCode {
+  const [first] = attempts;
+  const shared = first?.code;
+  return shared !== undefined &&
+    shared !== ErrorCode.CIRCUIT_OPEN &&
+    attempts.every((attempt) => attempt.code === shared)
+    ? shared
+    : ErrorCode.LLM_UNAVAILABLE;
+}
+
 function describe(error: unknown): ModelAttempt['message'] {
   return error instanceof Error ? error.message : String(error);
 }
@@ -99,7 +131,7 @@ export class ModelFallbackChain {
       failureThreshold: config.failureThreshold,
       resetTimeout: config.resetTimeout,
       halfOpenRequests: config.halfOpenRequests,
-      isFailure: fallsBackOn,
+      isFailure: countsAgainstModel,
     });
   }
 
@@ -132,9 +164,18 @@ export class ModelFallbackChain {
       const candidate = candidates[i];
       const breaker = this.breakers.get(candidate.name);
       try {
-        return { result: await breaker.execute(() => call(candidate)), candidate };
+        const result = await breaker.execute(async () => {
+          try {
+            return await call(candidate);
+          } catch (error) {
+            throw options.signal?.aborted ? new CallerAbort(error) : error;
+          }
+        });
+        return { result, candidate };
       } catch (error) {
-        const aborted = abortReason(options.signal);
+        const aborted =
+          abortReason(options.signal) ??
+          (error instanceof CallerAbort ? error.original : undefined);
         if (aborted) throw aborted;
         if (!fallsBackOn(error) || (options.canSwitch && !options.canSwitch())) throw error;
         if (failsLasting(error)) breaker.open();
@@ -158,8 +199,8 @@ export class ModelFallbackChain {
     }
 
     throw new CogitatorError({
-      message: `Every model of the turn failed: ${attempts.map((a) => `${a.model} (${a.message})`).join('; ')}`,
-      code: ErrorCode.LLM_UNAVAILABLE,
+      message: `Every model of the turn failed: ${attempts.map((a) => `${a.model} (${a.kind ?? a.code ?? 'error'})`).join(', ')}`,
+      code: commonCode(attempts),
       cause: errors.find((e): e is Error => e instanceof Error),
       retryable: errors.some(isRetryableError),
       details: { attempts },

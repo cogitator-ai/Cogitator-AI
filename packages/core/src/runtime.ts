@@ -38,7 +38,7 @@ import type {
 import { type Agent } from './agent';
 import { ToolRegistry } from './registry';
 import { createLLMBackend } from './llm/index';
-import { llmInvalidResponse } from './llm/errors';
+import { LLMError, llmInvalidResponse } from './llm/errors';
 import { isLLMProvider } from './llm/providers';
 import { createLLMBackendFromPlugin, hasLLMPlugin } from './llm/plugin';
 import { withLLMRetry } from './llm/retry';
@@ -1120,10 +1120,11 @@ export class Cogitator implements ToolInvoker {
               signal: abortController.signal,
               canSwitch: () => !streamed,
               onFallback: (event) => {
+                const reason = failureReason(event.error);
                 getLogger().warn('Model failed, falling back to the next model', {
                   from: event.from,
                   to: event.to,
-                  error: event.error.message,
+                  reason,
                 });
                 spans.push(
                   createSpan(
@@ -1135,7 +1136,7 @@ export class Cogitator implements ToolInvoker {
                     {
                       'llm.fallback.from': event.from,
                       'llm.fallback.to': event.to,
-                      'llm.fallback.error': event.error.message,
+                      'llm.fallback.reason': reason,
                     },
                     'error',
                     'internal',
@@ -2243,6 +2244,15 @@ function waitForAbortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<
 type ResumeArgs<TDeps> = unknown extends TDeps
   ? [options?: ResumeOptions]
   : [options: ResumeOptions<TDeps> & { deps: TDeps }];
+
+/**
+ * Why a model failed, for logs and spans: its error kind or code, never the error's text, which
+ * may carry what a backend put in it.
+ */
+function failureReason(error: Error): string {
+  if (error instanceof LLMError && error.kind) return error.kind;
+  return error instanceof CogitatorError ? error.code : error.name;
+}
 
 interface PausedTurn {
   toolCalls: ToolCall[];

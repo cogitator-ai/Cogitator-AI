@@ -371,6 +371,7 @@ export type { ErrorDetails, CogitatorErrorOptions } from '@cogitator-ai/types';
 
 export type {
   AgentConfig,
+  FallbackModel,
   ResponseFormat,
   Tool,
   ApprovalCheck,
@@ -392,6 +393,8 @@ export type {
   FinishReason,
   CogitatorConfig,
   RunOptions,
+  ModelFallbackEvent,
+  ModelCircuitBreakerConfig,
   RunObserver,
   RunResult,
   RunBlockReason,

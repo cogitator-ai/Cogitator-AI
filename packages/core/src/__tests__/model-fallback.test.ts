@@ -13,6 +13,8 @@ import { Cogitator } from '../cogitator';
 import { Agent } from '../agent';
 import { createLLMError } from '../llm/errors';
 import { fallsBackOn } from '../llm/model-fallback';
+import { tool } from '../tool';
+import { z } from 'zod';
 
 type Step = ChatResponse | Error | 'stream-then-fail';
 
@@ -187,6 +189,203 @@ describe('model fallback in a run', () => {
 
     expect(primary.chat).toHaveBeenCalledTimes(2);
     expect(backup.chat).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not hold a prompt too long for the model against its breaker', async () => {
+    const primary = scriptedBackend('primary', [failure('openai', 400, 'context_overflow')]);
+    const backup = scriptedBackend('backup', []);
+    const cog = new Cogitator({
+      llm: {
+        backends: { primary: primary.backend, backup: backup.backend },
+        retry: false,
+        modelCircuitBreaker: { failureThreshold: 1 },
+      },
+    });
+
+    const first = await cog.run(writer(), { input: 'A very long thread' });
+    const second = await cog.run(writer(), { input: 'A short one' });
+
+    expect(first.modelUsed).toBe('backup/steady');
+    expect(second.modelUsed).toBeUndefined();
+    expect(primary.chat).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not hold a call the caller aborted against the model', async () => {
+    const hanging: LLMBackend = {
+      provider: 'openai',
+      chat: vi.fn(
+        (request: ChatRequest) =>
+          new Promise<ChatResponse>((_, reject) => {
+            const signal = request.signal;
+            signal?.addEventListener(
+              'abort',
+              () => reject(new Error('The operation was aborted due to timeout')),
+              { once: true }
+            );
+          })
+      ),
+      chatStream: vi.fn(async function* (): AsyncGenerator<ChatStreamChunk> {}),
+    };
+    const backup = scriptedBackend('backup', []);
+    const cog = new Cogitator({
+      llm: {
+        backends: { primary: hanging, backup: backup.backend },
+        retry: false,
+        modelCircuitBreaker: { failureThreshold: 1 },
+      },
+    });
+
+    await expect(
+      cog.run(writer(), { input: 'One', signal: AbortSignal.timeout(20) })
+    ).rejects.toThrow();
+    vi.mocked(hanging.chat).mockResolvedValueOnce(answer('primary is fine'));
+    const next = await cog.run(writer(), { input: 'Two' });
+
+    expect(next.output).toBe('primary is fine');
+    expect(backup.chat).not.toHaveBeenCalled();
+  });
+
+  it('keeps the error code every model failed with', async () => {
+    const { cog, agent } = setup(
+      [failure('openai', 429, 'quota')],
+      [failure('openai', 402, 'quota')]
+    );
+
+    const error = await cog.run(agent, { input: 'Draft' }).catch((e: unknown) => e);
+
+    expect((error as CogitatorError).code).toBe(ErrorCode.LLM_QUOTA_EXCEEDED);
+    expect((error as CogitatorError).details?.attempts).toHaveLength(2);
+  });
+
+  it('names the failures in its message without what a backend error said', async () => {
+    const cog = new Cogitator({
+      llm: {
+        backends: {
+          primary: scriptedBackend('primary', [
+            new Error('connect ECONNREFUSED postgres://admin:hunter2@10.0.0.5:5432'),
+          ]).backend,
+          backup: scriptedBackend('backup', [failure('openai', 503, 'overloaded')]).backend,
+        },
+        retry: false,
+      },
+    });
+
+    const error = (await cog
+      .run(writer(), { input: 'Draft' })
+      .catch((e: unknown) => e)) as CogitatorError;
+
+    expect(error.message).not.toContain('hunter2');
+    expect(error.message).toBe(
+      'Every model of the turn failed: primary/fast (error), backup/steady (overloaded)'
+    );
+    expect(JSON.stringify(error.details?.attempts)).toContain('hunter2');
+  });
+
+  it('moves on from a rate limit once its retries are spent', async () => {
+    const limited = () => failure('openai', 429, 'rate_limit');
+    const { cog, agent, primary, backup } = setup([limited(), limited(), limited()]);
+
+    const result = await cog.run(agent, { input: 'Draft' });
+
+    expect(primary.chat).toHaveBeenCalledTimes(3);
+    expect(backup.chat).toHaveBeenCalledTimes(1);
+    expect(result.modelUsed).toBe('backup/steady');
+  });
+
+  it('tries a skipped model again once its breaker resets', async () => {
+    const primary = scriptedBackend('primary', [failure('openai', 401, 'authentication')]);
+    const backup = scriptedBackend('backup', []);
+    const cog = new Cogitator({
+      llm: {
+        backends: { primary: primary.backend, backup: backup.backend },
+        retry: false,
+        modelCircuitBreaker: { resetTimeout: 30, halfOpenRequests: 1 },
+      },
+    });
+
+    await cog.run(writer(), { input: 'One' });
+    const skipped = await cog.run(writer(), { input: 'Two' });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const recovered = await cog.run(writer(), { input: 'Three' });
+
+    expect(skipped.modelUsed).toBe('backup/steady');
+    expect(recovered.modelUsed).toBeUndefined();
+    expect(primary.chat).toHaveBeenCalledTimes(2);
+  });
+
+  it('starts the next turn of the same run from the primary model', async () => {
+    const lookup = tool({
+      name: 'lookup',
+      description: 'Look up',
+      parameters: z.object({}),
+      execute: async () => 'found',
+    });
+    const primary = scriptedBackend('primary', [failure('openai', 504, 'timeout')]);
+    const backup = scriptedBackend('backup', [
+      {
+        id: 't',
+        content: '',
+        finishReason: 'tool_calls',
+        toolCalls: [{ id: 'c1', name: 'lookup', arguments: {} }],
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      },
+    ]);
+    const cog = new Cogitator({
+      llm: { backends: { primary: primary.backend, backup: backup.backend }, retry: false },
+    });
+    const agent = new Agent({
+      name: 'looker',
+      model: 'primary/fast',
+      fallbackModels: ['backup/steady'],
+      instructions: 'Look things up.',
+      tools: [lookup],
+    });
+
+    const result = await cog.run(agent, { input: 'Find it' });
+
+    expect(backup.chat).toHaveBeenCalledTimes(1);
+    expect(primary.chat).toHaveBeenCalledTimes(2);
+    expect(result.output).toBe('primary answer');
+    expect(result.modelUsed).toBeUndefined();
+  });
+
+  it('tries a model named again in its fallbacks only once', async () => {
+    const { cog, primary, backup } = setup([failure('openai', 401, 'authentication')]);
+    const agent = new Agent({
+      name: 'writer',
+      model: 'primary/fast',
+      fallbackModels: ['primary/fast', 'backup/steady'],
+      instructions: 'Write.',
+    });
+
+    await cog.run(agent, { input: 'Draft' });
+
+    expect(primary.chat).toHaveBeenCalledTimes(1);
+    expect(backup.chat).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps fallback models through serialization, and refuses broken ones', () => {
+    const agent = new Agent({
+      name: 'writer',
+      model: 'primary/fast',
+      fallbackModels: ['backup/steady', { model: 'steady', provider: 'backup' }],
+      instructions: 'Write.',
+    });
+
+    const snapshot = JSON.parse(JSON.stringify(agent.serialize())) as unknown;
+
+    expect(Agent.validateSnapshot(snapshot)).toBe(true);
+    if (!Agent.validateSnapshot(snapshot)) return;
+    expect(Agent.deserialize(snapshot).config.fallbackModels).toEqual(agent.config.fallbackModels);
+    expect(
+      Agent.validateSnapshot({ ...snapshot, config: { ...snapshot.config, fallbackModels: 5 } })
+    ).toBe(false);
+    expect(
+      Agent.validateSnapshot({
+        ...snapshot,
+        config: { ...snapshot.config, fallbackModels: [{ provider: 'backup' }] },
+      })
+    ).toBe(false);
   });
 
   it('starts every turn from the primary model again', async () => {

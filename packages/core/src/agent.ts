@@ -264,9 +264,24 @@ export class Agent<TDeps = unknown> implements IAgent<TDeps> {
     if (typeof config.instructions !== 'string') return false;
     if (!Array.isArray(config.tools)) return false;
     if (!config.tools.every((toolName) => typeof toolName === 'string')) return false;
+    if (config.fallbackModels !== undefined && !isFallbackList(config.fallbackModels)) return false;
 
     return true;
   }
+}
+
+function isFallbackList(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (entry: unknown) =>
+        (typeof entry === 'string' && entry.length > 0) ||
+        (typeof entry === 'object' &&
+          entry !== null &&
+          typeof (entry as Record<string, unknown>).model === 'string' &&
+          ['string', 'undefined'].includes(typeof (entry as Record<string, unknown>).provider))
+    )
+  );
 }
 
 function serializeResponseFormat(

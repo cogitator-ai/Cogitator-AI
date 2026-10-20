@@ -83,6 +83,9 @@ const handoffSchema = z.strictObject({
   description: z.string().optional(),
 });
 
+/** Most fallback models an agent on the wire may name: each one can cost a call per turn. */
+const MAX_FALLBACK_MODELS = 16;
+
 const agentShape = {
   id: z.string().min(1).optional(),
   name: z.string().min(1),
@@ -92,6 +95,7 @@ const agentShape = {
   provider: z.string().min(1).optional(),
   fallbackModels: z
     .array(z.strictObject({ model: z.string().min(1), provider: z.string().min(1).optional() }))
+    .max(MAX_FALLBACK_MODELS)
     .optional(),
   temperature: z.number().optional(),
   topP: z.number().optional(),

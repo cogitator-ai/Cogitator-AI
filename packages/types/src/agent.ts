@@ -9,7 +9,7 @@ import type { ReasoningConfig } from './llm';
 
 /**
  * An agent's configuration. `TDeps` is the type of the `deps` its runs pass (`RunOptions.deps`):
- * with it set, the agent only takes tools whose deps it provides, and runs must pass them.
+ * with it set, runs must pass them and tools with an unrelated deps type are refused.
  */
 export interface AgentConfig<TDeps = unknown> {
   id?: string;
@@ -22,11 +22,13 @@ export interface AgentConfig<TDeps = unknown> {
   /**
    * Models a turn moves to, in order, when `model` fails in a way another model may not: the
    * provider is down, overloaded or timing out once its retries are spent (`llm.retry`), the
-   * account is out of quota, the key is rejected, or the model is gone. A request the provider
-   * refuses as such (`content_filter`, `invalid_request`) and an aborted run do not move. A model
-   * that keeps failing is skipped for a while (`llm.modelCircuitBreaker`). Each turn starts again
-   * from `model`, `RunOptions.onModelFallback` reports every move, and a run whose models all
-   * failed ends with `LLM_UNAVAILABLE`, the failures in `details.attempts`.
+   * account is out of quota, the key is rejected, the model is gone, the prompt does not fit
+   * its context window, or its answer could not be read. A request the provider refuses as such
+   * (`content_filter`, `invalid_request`) and an aborted run do not move. A model that keeps
+   * failing is skipped for a while (`llm.modelCircuitBreaker`). Each turn starts again from
+   * `model`, `RunOptions.onModelFallback` reports every move, and a run whose models all failed
+   * ends with `LLM_UNAVAILABLE` (or the error code every model failed with), the failures in
+   * `details.attempts`.
    */
   fallbackModels?: FallbackModel[];
   instructions: string;
