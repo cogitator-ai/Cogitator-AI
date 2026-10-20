@@ -10,11 +10,11 @@ export const ANSWER_INSTRUCTIONS =
   'hold the answer, say that you do not know. Follow any answer format the question asks for.';
 
 /**
- * Turns the `relevant` and `hybrid` strategies score at most (`MAX_SCORED_ENTRIES` of the
- * context builder). Their embeddings are computed before the questions, so the context build
- * time of every strategy is measured on a warm cache.
+ * Newest turns whose embeddings are computed before the questions, so the context build time of
+ * every strategy is measured on a warm cache: the 200 the context builder scores at most
+ * (`MAX_SCORED_ENTRIES`), and the 10 newest `hybrid` keeps as they are and scores the 200 before.
  */
-const SCORED_ENTRIES = 200;
+const WARMED_ENTRIES = 210;
 
 /** Tokens a model turn may write, thinking included. */
 const ANSWER_MAX_TOKENS = 4096;
@@ -207,13 +207,13 @@ export async function answerConversation(
     const threadId = await ingest(cog, agent, conversation);
     if (options.embedding) {
       await options.embedding.embedBatch(
-        conversation.turns.slice(-SCORED_ENTRIES).map((turn) => turn.content)
+        conversation.turns.slice(-WARMED_ENTRIES).map((turn) => turn.content)
       );
     }
     await mapConcurrent(pending, options.concurrency, async (question) => {
       const estimate = callCost(
         options.strategy.contextTokens + countTokens(question.question),
-        1500
+        ANSWER_MAX_TOKENS
       );
       const release = options.budget.reserve(estimate);
       let seen: Probe | undefined;

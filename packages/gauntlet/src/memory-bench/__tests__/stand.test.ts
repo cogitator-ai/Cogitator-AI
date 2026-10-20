@@ -106,6 +106,14 @@ describe('Budget', () => {
     expect(budget.byStage()).toEqual({ answers: expect.closeTo(0.8) });
   });
 
+  it('writes the ledger whole when charges come at once', async () => {
+    const path = join(tempDir(), 'ledger.json');
+    const budget = new Budget(5, 'run', path);
+    for (let i = 0; i < 20; i++) budget.charge(`stage-${i % 4}`, 0.01);
+    await Promise.all([budget.save(), budget.save(), budget.save()]);
+    expect(new Budget(5, 'run', path).spentUsd).toBeCloseTo(0.2);
+  });
+
   it('keeps what another run wrote to the ledger meanwhile', async () => {
     const path = join(tempDir(), 'ledger.json');
     const one = new Budget(5, 'one', path);

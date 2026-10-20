@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { ModelPriceConfig } from '@cogitator-ai/types';
 
@@ -60,6 +60,7 @@ export class BudgetExceededError extends Error {
 export class Budget {
   private spent: number;
   private reserved = 0;
+  private saving: Promise<void> = Promise.resolve();
   private readonly entries: LedgerEntry[];
 
   constructor(
@@ -97,12 +98,14 @@ export class Budget {
     };
   }
 
+  /** Records a cost and writes the ledger, so a run stopped right after still counts it. */
   charge(stage: string, usd: number): void {
     if (usd <= 0) return;
     this.spent += usd;
     const last = this.entries.at(-1);
     if (last?.run === this.run && last.stage === stage) last.usd += usd;
     else this.entries.push({ at: new Date().toISOString(), run: this.run, stage, usd });
+    void this.save();
   }
 
   byStage(): Record<string, number> {
@@ -115,9 +118,18 @@ export class Budget {
 
   /**
    * Writes this run's entries into the ledger, keeping whatever other runs wrote to it since it
-   * was read, so runs going at once do not erase each other.
+   * was read, so runs going at once do not erase each other. Writes go one at a time and replace
+   * the file whole, so a reader never sees it half written.
    */
-  async save(): Promise<void> {
+  save(): Promise<void> {
+    this.saving = this.saving.then(
+      () => this.write(),
+      () => this.write()
+    );
+    return this.saving;
+  }
+
+  private async write(): Promise<void> {
     await mkdir(dirname(this.ledgerPath), { recursive: true });
     const others = existsSync(this.ledgerPath)
       ? (JSON.parse(readFileSync(this.ledgerPath, 'utf8')) as LedgerEntry[]).filter(
@@ -125,6 +137,8 @@ export class Budget {
         )
       : [];
     const mine = this.entries.filter((entry) => entry.run === this.run);
-    await writeFile(this.ledgerPath, `${JSON.stringify([...others, ...mine], null, 2)}\n`);
+    const partial = `${this.ledgerPath}.${process.pid}.tmp`;
+    await writeFile(partial, `${JSON.stringify([...others, ...mine], null, 2)}\n`);
+    await rename(partial, this.ledgerPath);
   }
 }
