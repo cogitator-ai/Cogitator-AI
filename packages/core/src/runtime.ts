@@ -1966,7 +1966,9 @@ export class Cogitator implements ToolInvoker {
     model?: string;
   }): Promise<CostEstimate> {
     if (!this.costEstimator) {
-      this.costEstimator = new CostEstimator();
+      this.costEstimator = new CostEstimator({
+        ownPricing: (model) => this.pricer.ownPricing(model),
+      });
     }
     return this.costEstimator.estimate({
       ...params,

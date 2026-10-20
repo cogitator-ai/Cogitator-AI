@@ -1,6 +1,6 @@
 # @cogitator-ai/models
 
-Dynamic model registry with pricing information for Cogitator. Fetches up-to-date model data from LiteLLM and provides built-in fallbacks for major providers.
+Dynamic model registry with pricing information for Cogitator. Fetches up-to-date model data from LiteLLM and works offline from built-in models and a bundled copy of the LiteLLM catalogue.
 
 ## Installation
 
@@ -8,16 +8,16 @@ Dynamic model registry with pricing information for Cogitator. Fetches up-to-dat
 pnpm add @cogitator-ai/models
 ```
 
-`@cogitator-ai/core` uses this registry to price runs (`result.usage.cost`) and to pick models for cost-aware routing. See [Model Registry](https://cogitator.app/docs/core/model-registry) on the website.
+`@cogitator-ai/core` uses this registry to price runs (`result.usage.cost`), under the prices of your own in `llm.pricing`, and to pick models for cost-aware routing. See [Model Registry](https://cogitator.app/docs/core/model-registry) on the website.
 
 ## Features
 
 - **Dynamic Data** - Fetches latest model info from LiteLLM
-- **Pricing Information** - Input, output and prompt-cache costs per million tokens; `calculateCost()` prices token usage
+- **Pricing Information** - Input, output and prompt-cache costs per million tokens, `calculateCost()` prices token usage, `ModelPricer` puts prices of your own over the registry
 - **Capability Tracking** - Vision, tools, streaming, JSON mode support
 - **Multi-Provider** - OpenAI, Anthropic, Google, Ollama, Azure, AWS, and more
 - **Caching** - Memory or file-based cache with configurable TTL
-- **Fallback** - Built-in models when external data unavailable
+- **Offline Catalogue** - Built-in models and a bundled LiteLLM snapshot when external data is unavailable
 - **Filtering** - Query models by provider, capabilities, price
 
 ---
@@ -43,7 +43,7 @@ const toolModels = listModels({
 });
 ```
 
-Lookups are case-insensitive and resolve aliases. Calling them before `initializeModels()` works too: the registry then uses the built-in models, with the same lookup rules, and `initializeModels()` still loads the full catalogue whenever it runs.
+Lookups are case-insensitive and resolve aliases. Calling them before `initializeModels()` works too: the registry then uses the offline catalogue, with the same lookup rules, and `initializeModels()` still loads the current one whenever it runs.
 
 ### Provider-qualified ids
 
@@ -115,9 +115,23 @@ interface CacheOptions {
 | `cache.filePath`    | `~/.cogitator/models-cache.json` | File path for file-based cache       |
 | `autoRefresh`       | `false`                          | Enable automatic background refresh  |
 | `refreshInterval`   | 24 hours                         | Refresh interval in milliseconds     |
-| `fallbackToBuiltin` | `true`                           | Use built-in models on fetch failure |
+| `fallbackToBuiltin` | `true`                           | Use the offline catalogue on failure |
 
-`initialize()` uses a fresh cache when there is one (and refreshes from LiteLLM in the background), otherwise fetches LiteLLM data; fetched models are merged with the built-in ones. When the fetch fails it falls back to a stale cache, then to the built-in models (or throws with `fallbackToBuiltin: false`).
+`initialize()` uses a fresh cache when there is one (and refreshes from LiteLLM in the background), otherwise fetches LiteLLM data, fetched models are merged with the built-in ones. When the fetch fails it falls back to a stale cache, then to the offline catalogue (or throws with `fallbackToBuiltin: false`).
+
+### Offline Catalogue
+
+The offline catalogue is the built-in models plus every model of the copy of the LiteLLM catalogue bundled with the package (`LITELLM_SNAPSHOT`, MIT licensed like LiteLLM), the built-in models priced and sized from that copy. It answers lookups before `initializeModels()` and when both the fetch and the cache fail, so DeepSeek, Mistral, Bedrock and the rest are priced without the network.
+
+```typescript
+import { getPricing, LITELLM_SNAPSHOT } from '@cogitator-ai/models';
+
+getPricing('deepseek/deepseek-chat'); // from the bundled copy, before initializeModels()
+LITELLM_SNAPSHOT.fetchedAt; // the day the copy was made, 'YYYY-MM-DD'
+LITELLM_SNAPSHOT.source; // the LiteLLM catalogue URL
+```
+
+`pnpm --filter @cogitator-ai/models snapshot` refreshes the copy in the repository, keeping the models that answer text and the fields the registry reads.
 
 ### Registry Methods
 
@@ -150,7 +164,7 @@ registry.shutdown();
 
 ## Global Functions
 
-For convenience, the package provides global functions that use a default registry (file cache at `~/.cogitator/models-cache.json`, 24 h TTL, built-in fallback):
+For convenience, the package provides global functions that use a default registry (file cache at `~/.cogitator/models-cache.json`, 24 h TTL, offline fallback):
 
 ```typescript
 import {
@@ -187,6 +201,23 @@ const registry = getModelRegistry();
 const count = registry.getModelCount();
 
 shutdownModels();
+```
+
+### Prices of Your Own
+
+`ModelPricer` prices model calls from prices of your own first and the registry second, the way `@cogitator-ai/core` does with `llm.pricing`. A key matches the model string or its tail after any `/`, the longest match first, case-insensitively: `openai/gpt-4o` prices that model at OpenAI only, `gpt-4o` at every provider that serves it under that name.
+
+```typescript
+import { ModelPricer, costOf, getPricing, type PricingOverrides } from '@cogitator-ai/models';
+
+const overrides: PricingOverrides = { 'my-finetune': { input: 0.3, output: 1.2 } };
+const pricer = new ModelPricer(overrides);
+
+pricer.pricing('openai/my-finetune'); // { input: 0.3, output: 1.2 }
+pricer.cost('openai/my-finetune', { inputTokens: 10_000, outputTokens: 500 }); // 0.0036, null when unknown
+pricer.hasOverride('claude-sonnet-5-5'); // false: priced from the registry
+
+costOf(getPricing('claude-sonnet-5-5')!, { inputTokens: 1000, outputTokens: 100 }); // USD at a given price
 ```
 
 ---
@@ -349,7 +380,7 @@ console.log(openai?.models.length);
 
 ## Built-in Models
 
-Fallback models are available when LiteLLM data cannot be fetched:
+The built-in models carry display names and aliases, and are part of the offline catalogue:
 
 ```typescript
 import {

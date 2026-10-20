@@ -28,6 +28,11 @@ export class CallPricer {
     return this.pricer.pricing(model);
   }
 
+  /** The price `llm.pricing` sets for `model`, when it sets one. */
+  ownPricing(model: string): ModelPricing | undefined {
+    return this.pricer.override(model);
+  }
+
   /** USD for `usage` on `model`, `0` when its price is unknown. */
   cost(model: string, usage: TokenUsageForCost): number {
     return this.costOrNull(model, usage) ?? 0;

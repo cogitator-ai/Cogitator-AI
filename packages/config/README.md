@@ -92,10 +92,17 @@ llm:
       apiKey: sk-xxx
       baseUrl: https://api.openai.com/v1 # optional, for proxies
       api: responses # optional: responses (default for api.openai.com) | chat-completions
+      profile: lmstudio # optional: what the server at baseUrl takes, a preset or { server, maxTokensField, streamUsage, reasoningEffort }
+      headers: # optional, sent with every request
+        X-Gateway-Key: xxx
     anthropic:
       apiKey: sk-ant-xxx
+      baseUrl: https://gateway.example.com/anthropic # optional, default https://api.anthropic.com
+      headers: # optional
+        X-Team: search
     google:
       apiKey: xxx
+      baseUrl: https://gateway.example.com/gemini/v1beta # optional, with the API version
     azure:
       apiKey: xxx
       endpoint: https://xxx.openai.azure.com
@@ -106,8 +113,10 @@ llm:
       region: us-east-1 # optional, can use AWS config chain
       accessKeyId: xxx # optional, uses AWS credentials chain
       secretAccessKey: xxx # optional
+      endpoint: https://vpce-0abc.bedrock-runtime.us-east-1.vpce.amazonaws.com # optional: a VPC endpoint or a proxy
     vllm:
       baseUrl: http://localhost:8000
+      profile: vllm # optional, the default
     mistral:
       apiKey: xxx
     groq:
@@ -118,6 +127,13 @@ llm:
       apiKey: xxx
     openrouter: # chat models of every provider, and decision models through cog.decide()
       apiKey: xxx
+      headers: # optional, e.g. HTTP-Referer and X-Title app attribution
+        X-Title: My App
+  pricing: # prices of your own in USD per million tokens, by model string or its tail after any '/'
+    llama3.3:70b:
+      input: 0.6
+      output: 0.6
+      inputCached: 0.06 # optional, also inputCacheWrite and inputCacheWrite1h
   retry: # or `false`; default: 2 retries with exponential backoff
     maxRetries: 3
     baseDelay: 1000
@@ -438,7 +454,9 @@ Supported provider, limits, and deploy settings can be set via environment varia
 | `COGITATOR_OPENAI_API_KEY`             | OpenAI API key        |
 | `COGITATOR_OPENAI_BASE_URL`            | OpenAI base URL       |
 | `COGITATOR_ANTHROPIC_API_KEY`          | Anthropic API key     |
+| `COGITATOR_ANTHROPIC_BASE_URL`         | Anthropic API base    |
 | `COGITATOR_GOOGLE_API_KEY`             | Google API key        |
+| `COGITATOR_GOOGLE_BASE_URL`            | Gemini API base       |
 | `COGITATOR_VLLM_BASE_URL`              | vLLM base URL         |
 | `COGITATOR_AZURE_API_KEY`              | Azure OpenAI API key  |
 | `COGITATOR_AZURE_ENDPOINT`             | Azure OpenAI endpoint |
@@ -467,6 +485,7 @@ Standard provider env vars are also supported:
 ```bash
 OPENAI_API_KEY=sk-xxx
 ANTHROPIC_API_KEY=sk-ant-xxx
+ANTHROPIC_BASE_URL=https://gateway.example.com/anthropic   # optional proxy or gateway
 GOOGLE_API_KEY=xxx            # or GEMINI_API_KEY
 OLLAMA_URL=http://localhost:11434   # or OLLAMA_BASE_URL / OLLAMA_HOST, see below
 OLLAMA_API_KEY=xxx            # Ollama Cloud / authenticated Ollama
@@ -480,6 +499,8 @@ TOGETHER_API_KEY=xxx
 DEEPSEEK_API_KEY=xxx
 OPENROUTER_API_KEY=xxx        # or OPENROUTER_BASE_URL for a proxy
 ```
+
+`ANTHROPIC_BASE_URL`, `COGITATOR_ANTHROPIC_BASE_URL` and `COGITATOR_GOOGLE_BASE_URL` apply only together with that provider's API key, and a `COGITATOR_` variable wins over `ANTHROPIC_BASE_URL`.
 
 When `OLLAMA_API_KEY` is set without any Ollama URL (from env or YAML), the Ollama base URL defaults to `https://ollama.com`; otherwise it defaults to `http://localhost:11434`. An API key in the environment never replaces a `baseUrl` configured in YAML.
 

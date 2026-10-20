@@ -465,3 +465,34 @@ describe('CostEstimator', () => {
     });
   });
 });
+
+describe('cost estimates with llm.pricing', () => {
+  const agent = (model: string) => new Agent({ name: 'priced', model, instructions: 'Answer.' });
+
+  it('prices a model by llm.pricing over the registry', async () => {
+    const { Cogitator } = await import('../cogitator');
+    const cog = new Cogitator({
+      llm: { pricing: { 'openai/gpt-4o-mini': { input: 1000, output: 1000 } } },
+    });
+
+    const estimate = await cog.estimateCost({ agent: agent('openai/gpt-4o-mini'), input: 'Hi' });
+
+    expect(estimate.breakdown.pricePerMInputTokens).toBe(1000);
+    expect(estimate.breakdown.pricePerMOutputTokens).toBe(1000);
+    expect(estimate.expectedCost).toBeGreaterThan(0);
+    await cog.close();
+  });
+
+  it('prices a local model llm.pricing sets a price for, and keeps others free', async () => {
+    const estimator = new CostEstimator({
+      ownPricing: (model) => (model === 'ollama/priced' ? { input: 5, output: 5 } : undefined),
+    });
+
+    const priced = await estimator.estimate({ agent: agent('ollama/priced'), input: 'Hi' });
+    const free = await estimator.estimate({ agent: agent('ollama/free'), input: 'Hi' });
+
+    expect(priced.breakdown.pricePerMInputTokens).toBe(5);
+    expect(priced.expectedCost).toBeGreaterThan(0);
+    expect(free.expectedCost).toBe(0);
+  });
+});

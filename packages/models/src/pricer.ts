@@ -32,13 +32,8 @@ export class ModelPricer {
     return this.override(model) !== undefined;
   }
 
-  /** Cost in USD of `usage` on `model`, `null` when its price is unknown. */
-  cost(model: string, usage: TokenUsageForCost): number | null {
-    const pricing = this.pricing(model);
-    return pricing ? costOf(pricing, usage) : null;
-  }
-
-  private override(model: string): ModelPricing | undefined {
+  /** Your own price of `model`, when one matches. */
+  override(model: string): ModelPricing | undefined {
     if (this.overrides.size === 0) return undefined;
     let name = model.trim().toLowerCase();
     for (;;) {
@@ -48,5 +43,11 @@ export class ModelPricer {
       if (slash === -1) return undefined;
       name = name.slice(slash + 1);
     }
+  }
+
+  /** Cost in USD of `usage` on `model`, `null` when its price is unknown. */
+  cost(model: string, usage: TokenUsageForCost): number | null {
+    const pricing = this.pricing(model);
+    return pricing ? costOf(pricing, usage) : null;
   }
 }

@@ -135,7 +135,7 @@ const cog = new Cogitator({
 });
 ```
 
-The runtime does not read provider keys from the environment: pass them under `providers` (or build the config with `loadConfig()` from `@cogitator-ai/config`, which reads `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and the rest). Ollama defaults to `http://localhost:11434`. A model string without a known provider prefix runs on `llm.defaultProvider` (Ollama when unset). An agent without `model` uses `llm.defaultModel`. `llm.backends` registers backends of your own by name (`model: 'my-backend/some-model'`), and `llm.retry` (2 retries with exponential backoff by default, `false` to disable) applies to every backend the runtime creates. Azure (`endpoint`, `apiKey`, `apiVersion`, `deployment`), Bedrock (`region`, credentials) and Mistral / Groq / Together / DeepSeek (`apiKey`) are configured the same way under `providers`.
+The runtime does not read provider keys from the environment: pass them under `providers` (or build the config with `loadConfig()` from `@cogitator-ai/config`, which reads `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and the rest). Ollama defaults to `http://localhost:11434`. A model string without a known provider prefix runs on `llm.defaultProvider` (Ollama when unset). An agent without `model` uses `llm.defaultModel`. `llm.backends` registers backends of your own by name (`model: 'my-backend/some-model'`), and `llm.retry` (2 retries with exponential backoff by default, `false` to disable) applies to every backend the runtime creates. Azure (`endpoint`, `apiKey`, `apiVersion`, `deployment`), Bedrock (`region`, credentials, `endpoint` for a VPC endpoint or a proxy) and Mistral / Groq / Together / DeepSeek (`apiKey`) are configured the same way under `providers`. Anthropic and Google take a `baseUrl` for a proxy or gateway (Google's includes the API version, default `https://generativelanguage.googleapis.com/v1beta`), and `anthropic`, `google`, `openai`, `openrouter` and `vllm` take `headers` sent with every request.
 
 See [LLM Backends](https://cogitator.app/docs/core/llm-backends) for every provider's options.
 
@@ -145,7 +145,34 @@ See [LLM Backends](https://cogitator.app/docs/core/llm-backends) for every provi
 - **Azure** - a deployment serving a reasoning model gets no `temperature` / `top_p` and `max_completion_tokens`, told by its name (`azure/gpt-5`) or by `providers.azure.model` when the name is your own. `apiVersion` defaults to `2025-04-01-preview`.
 - **Anthropic** — defaults to `claude-sonnet-5-5`. Sampling params are omitted for Claude 4.7+, 5.x and Fable (they reject non-default values); Claude 4.0 – 4.6 get at most one of `temperature` / `top_p` (`temperature` wins). `json_schema` uses native structured outputs on Claude 4.5+. Forced tool choice falls back to `auto` with a system-prompt instruction and a one-time warning on Opus/Sonnet 5.5 and Fable.
 - **Bedrock** — Claude models follow the same sampling and tool-choice rules; `json_object` and `json_schema` response formats are supported (schema enforced via `outputConfig.textFormat` on Claude 4.5 – 4.6, system-prompt instruction otherwise).
-- **Google** — Gemini has no `null` schema type, so `.nullable()` fields in response schemas and tool parameters are sent as `nullable: true`.
+- **Google** - Gemini has no `null` schema type, so `.nullable()` fields in response schemas and tool parameters are sent as `nullable: true`. A prompt Gemini blocks fails with `LLM_CONTENT_FILTERED`.
+- **OpenAI-compatible servers** - `profile` on `providers.openai` and `providers.vllm` says what the server takes: a preset (`openai`, `generic`, `vllm`, `ollama`, `lmstudio`, `llamacpp`, `groq`, `together`, `deepseek`, `mistral`, `openrouter`) or `{ server?, maxTokensField?, streamUsage?, reasoningEffort? }` over one. It decides `max_tokens` or `max_completion_tokens`, whether streams send `stream_options.include_usage`, and which `reasoning_effort` values go out (the nearest one the server takes, ties go higher). Mistral, Groq, Together and DeepSeek use their own preset, any other server `generic`, the request as before. See [Server Profiles](https://cogitator.app/docs/core/llm-backends#server-profiles).
+
+```typescript
+providers: {
+  openai: { apiKey: 'lm-studio', baseUrl: 'http://localhost:1234/v1', profile: 'lmstudio' },
+  vllm: { baseUrl: 'http://gpu-box:8000/v1', profile: { server: 'vllm', reasoningEffort: false } },
+}
+```
+
+### Pricing
+
+A call whose provider reports no cost is priced from `@cogitator-ai/models`, which knows the LiteLLM catalogue offline too. `llm.pricing` sets prices of your own in USD per million tokens, for a fine-tune, a model the catalogue lacks or a negotiated rate, and wins over the registry in run cost, cost-routing budgets, `cog.estimateCost()`, Tree of Thoughts and `cog.decide()`:
+
+```typescript
+const cog = new Cogitator({
+  llm: {
+    pricing: {
+      'openai/ft:gpt-4o-mini:acme': { input: 0.3, output: 1.2 }, // this model at OpenAI only
+      'llama3.3:70b': { input: 0.6, output: 0.6, inputCached: 0.06 }, // at any provider
+    },
+  },
+});
+
+cog.pricer.pricing('vllm/llama3.3:70b'); // { input: 0.6, output: 0.6, inputCached: 0.06 }
+```
+
+A key matches the model string or its tail after any `/`, case-insensitively. A call with no reported cost and no known price counts as $0, and the runtime warns once per such model, naming the `llm.pricing` key to set. Ollama and vLLM calls are free and never warn. `cog.pricer` is a `CallPricer`.
 
 ### Direct Backend Usage
 
@@ -218,13 +245,18 @@ try {
   if (error instanceof LLMError) {
     console.log('Provider:', error.provider, error.model);
     console.log('Code:', error.code); // ErrorCode, e.g. LLM_RATE_LIMITED
+    console.log('Kind:', error.kind); // why it failed, e.g. 'rate_limit' or 'quota'
     console.log('HTTP status from the provider:', error.details?.statusCode);
     console.log('Retryable:', error.retryable, 'after', error.retryAfter, 'ms');
   }
 }
 ```
 
-`error.message` always carries what the provider said (`[openai] Bad request: Unsupported parameter: ...`). `LLM_CONTEXT_LENGTH_EXCEEDED` is reported only for the providers' own context overflow errors, not for any bad request that mentions tokens, and Bedrock errors are classified by their AWS exception name and HTTP status.
+`error.kind` (also `details.kind`) is one of `rate_limit`, `quota`, `authentication`, `permission`, `not_found`, `invalid_request`, `context_overflow`, `content_filter`, `overloaded`, `server_error`, `timeout`, `network` and `invalid_response` (`LLMErrorKind` in `@cogitator-ai/types`). It is read from the provider's own error codes first and the HTTP status second: OpenAI-compatible servers by `error.code` / `error.type`, Anthropic by `error.type`, Gemini by `status` and its `QuotaFailure` / `ErrorInfo` details, Bedrock by the AWS exception name, also for an error inside a stream that already began. An exhausted quota is `LLM_QUOTA_EXCEEDED` and never retried, even as a 429: OpenAI `insufficient_quota`, `credit_balance_exhausted` and spend or usage limits, Anthropic `billing_error` and a `rate_limit_error` about a usage or spend limit, Gemini `RESOURCE_EXHAUSTED` at 402 or on a per-day quota, Bedrock `ServiceQuotaExceededException`. A 504 is `LLM_TIMEOUT`. `classifyProviderError(provider, status, body)` returns the kind for backends of your own.
+
+`error.message` always carries what the provider said (`[openai] Bad request: Unsupported parameter: ...`). `LLM_CONTEXT_LENGTH_EXCEEDED` is reported only for the providers' own context overflow errors, not for any bad request that mentions tokens.
+
+A call the caller aborts fails with the abort reason (`signal.reason`) instead of a retryable LLM error, on every backend and also for a stream that already began, including the OpenAI and Bedrock streams whose SDKs used to end quietly. `abortReason(signal)` returns that error.
 
 `llmUnavailable`, `llmTimeout`, `llmInvalidResponse`, `llmConfigError` and `wrapSDKError` build these errors in your own backends, and `providerErrorIn` reads the error a router such as OpenRouter puts in the body of a successful response; `withLLMRetry(backend, options)` / `RetryingBackend` add retries with `Retry-After` support to any backend.
 
@@ -1466,7 +1498,7 @@ const hypotheses = await generator.generateFromFailure(trace, { agentId: 'agent-
 
 ### Retrying LLM Calls
 
-Agent runs retry failed LLM calls on their own: rate limits, 5xx, timeouts and dropped connections, with exponential backoff and the provider's `Retry-After`. Streams are retried only before the first chunk. Tune or turn this off with `llm.retry`:
+Agent runs retry failed LLM calls on their own: rate limits, 5xx, timeouts and dropped connections, with exponential backoff and the provider's `Retry-After`. An exhausted quota (`LLM_QUOTA_EXCEEDED`) is not retried. Streams are retried only before the first chunk. Tune or turn this off with `llm.retry`:
 
 ```typescript
 import { Cogitator, GoogleBackend, withLLMRetry } from '@cogitator-ai/core';
@@ -2037,7 +2069,7 @@ const result = await cog.decide({
 
 result.answers.team.choice; // 'billing' | 'technical' | 'sales', typed from the question
 result.answers.spam; // { type: 'noul', probability: 0.04, value: false }
-result.usage.cost; // USD, reported by OpenRouter or priced from the registry
+result.usage.cost; // USD, reported by OpenRouter or priced by llm.pricing and the registry
 ```
 
 - `noul` asks yes or no and answers with a `probability` and a `value` by `threshold` (0.5), `choice` answers with one of its options, `confidence` and `probabilities`, `score` with a position on its ordered levels.

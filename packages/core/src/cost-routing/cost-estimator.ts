@@ -7,7 +7,7 @@ import type {
   ToolSchema,
 } from '@cogitator-ai/types';
 import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
-import { getModelRegistry } from '@cogitator-ai/models';
+import { getModelRegistry, type ModelPricing } from '@cogitator-ai/models';
 import type { Agent } from '../agent';
 import { TaskAnalyzer } from './task-analyzer';
 import { TokenEstimator } from './token-estimator';
@@ -17,13 +17,20 @@ const DEFAULT_PRICING = { input: 0.15, output: 0.6 };
 
 const LOCAL_PROVIDER_PREFIXES = ['ollama/'];
 
+export interface CostEstimatorOptions {
+  /** Prices of your own by model (a runtime passes `llm.pricing`), over the model registry and a local model being free */
+  ownPricing?: (model: string) => ModelPricing | undefined;
+}
+
 export class CostEstimator {
   private taskAnalyzer: TaskAnalyzer;
   private tokenEstimator: TokenEstimator;
+  private readonly ownPricing?: (model: string) => ModelPricing | undefined;
 
-  constructor() {
+  constructor(options: CostEstimatorOptions = {}) {
     this.taskAnalyzer = new TaskAnalyzer();
     this.tokenEstimator = new TokenEstimator();
+    this.ownPricing = options.ownPricing;
   }
 
   async estimate(params: {
@@ -46,17 +53,19 @@ export class CostEstimator {
     const parsed = parseModel(modelString);
     const modelId = parsed.model;
     const provider = parsed.provider ?? 'unknown';
+    const own = this.ownPricing?.(modelString);
     const isLocal = this.isLocalModel(modelString);
 
-    if (isLocal) {
+    if (isLocal && !own) {
       return this.createLocalModelEstimate(modelId, provider, warnings);
     }
 
-    const registry = getModelRegistry();
-    await registry.initialize();
-
-    const modelInfo = registry.getModel(modelString);
-    const pricing = modelInfo?.pricing ?? null;
+    let pricing: ModelPricing | null = own ?? null;
+    if (!pricing) {
+      const registry = getModelRegistry();
+      await registry.initialize();
+      pricing = registry.getModel(modelString)?.pricing ?? null;
+    }
 
     if (!pricing) {
       warnings.push('Model pricing not available, using estimates');
