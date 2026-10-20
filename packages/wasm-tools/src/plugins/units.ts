@@ -37,9 +37,9 @@ const UNITS: Record<string, UnitDefinition> = {
   oz: { category: 'mass', factor: 28.349523125 },
   lb: { category: 'mass', factor: 453.59237 },
 
-  C: { category: 'temperature', factor: 1, offset: 273.15 },
-  F: { category: 'temperature', factor: 5 / 9, offset: 459.67 },
-  K: { category: 'temperature', factor: 1, offset: 0 },
+  C: { category: 'temperature', factor: 1, offset: 0 },
+  F: { category: 'temperature', factor: 5 / 9, offset: -32 },
+  K: { category: 'temperature', factor: 1, offset: -273.15 },
 
   ml: { category: 'volume', factor: 0.001 },
   l: { category: 'volume', factor: 1 },
@@ -145,14 +145,14 @@ const ALIASES: Record<string, string> = {
   'us gallon': 'US gallon',
   'us gallons': 'US gallon',
   'US gallons': 'US gallon',
-  'us_gal': 'US gallon',
-  'us_gallon': 'US gallon',
+  us_gal: 'US gallon',
+  us_gallon: 'US gallon',
   'imp gal': 'imperial gallon',
   'imp gallon': 'imperial gallon',
   'imperial gal': 'imperial gallon',
   'imperial gallons': 'imperial gallon',
-  'imp_gal': 'imperial gallon',
-  'imperial_gallon': 'imperial gallon',
+  imp_gal: 'imperial gallon',
+  imperial_gallon: 'imperial gallon',
   'uk gal': 'imperial gallon',
   'uk gallon': 'imperial gallon',
   'UK gallon': 'imperial gallon',
@@ -164,32 +164,22 @@ const ALIASES: Record<string, string> = {
   kt: 'knot',
   knots: 'knot',
 
-  b: 'B',
   byte: 'B',
   bytes: 'B',
-  kb: 'KB',
-  kB: 'KB',
   kilobyte: 'KB',
   kilobytes: 'KB',
-  mb: 'MB',
   megabyte: 'MB',
   megabytes: 'MB',
-  gb: 'GB',
   gigabyte: 'GB',
   gigabytes: 'GB',
-  tb: 'TB',
   terabyte: 'TB',
   terabytes: 'TB',
-  kib: 'KiB',
   kibibyte: 'KiB',
   kibibytes: 'KiB',
-  mib: 'MiB',
   mebibyte: 'MiB',
   mebibytes: 'MiB',
-  gib: 'GiB',
   gibibyte: 'GiB',
   gibibytes: 'GiB',
-  tib: 'TiB',
   tebibyte: 'TiB',
   tebibytes: 'TiB',
 };
@@ -213,15 +203,22 @@ function supportedUnitsSummary(category?: UnitCategory): string {
     .join('; ');
 }
 
+function roundResult(n: number): number {
+  if (!Number.isFinite(n) || n === 0) return 0;
+  if (Number.isSafeInteger(n)) return n;
+  const rounded = Number(n.toPrecision(12));
+  return Object.is(rounded, -0) ? 0 : rounded;
+}
+
 function convert(value: number, fromDef: UnitDefinition, toDef: UnitDefinition): number {
-  if (fromDef === toDef) return value;
+  if (fromDef === toDef) return roundResult(value);
   const fromOffset = fromDef.offset ?? 0;
   const toOffset = toDef.offset ?? 0;
   if (fromOffset !== 0 || toOffset !== 0) {
-    const base = (value + fromOffset) * fromDef.factor;
-    return base / toDef.factor - toOffset;
+    const base = roundResult((value + fromOffset) * fromDef.factor);
+    return roundResult(roundResult(base / toDef.factor) - toOffset);
   }
-  return (value * fromDef.factor) / toDef.factor;
+  return roundResult((value * fromDef.factor) / toDef.factor);
 }
 
 export function units(): number {
@@ -238,19 +235,19 @@ export function units(): number {
       throw new Error('value must be a finite number');
     }
     if (typeof input.from !== 'string' || input.from.trim().length === 0) {
-      throw new Error(`Unknown unit "${input.from}". Supported units — ${supportedUnitsSummary()}`);
+      throw new Error(`Unknown unit "${input.from}". Supported units: ${supportedUnitsSummary()}`);
     }
     if (typeof input.to !== 'string' || input.to.trim().length === 0) {
-      throw new Error(`Unknown unit "${input.to}". Supported units — ${supportedUnitsSummary()}`);
+      throw new Error(`Unknown unit "${input.to}". Supported units: ${supportedUnitsSummary()}`);
     }
 
     const fromDef = resolveUnit(input.from);
     if (!fromDef) {
-      throw new Error(`Unknown unit "${input.from}". Supported units — ${supportedUnitsSummary()}`);
+      throw new Error(`Unknown unit "${input.from}". Supported units: ${supportedUnitsSummary()}`);
     }
     const toDef = resolveUnit(input.to);
     if (!toDef) {
-      throw new Error(`Unknown unit "${input.to}". Supported units — ${supportedUnitsSummary()}`);
+      throw new Error(`Unknown unit "${input.to}". Supported units: ${supportedUnitsSummary()}`);
     }
 
     if (fromDef.category !== toDef.category) {

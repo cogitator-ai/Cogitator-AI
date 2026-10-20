@@ -210,6 +210,7 @@ describe('units plugin', () => {
     [100, 'cm', 'm', 1],
     [1, 'km', 'm', 1000],
     [12, 'in', 'ft', 1],
+    [1, 'ft', 'in', 12],
     [3, 'ft', 'yd', 1],
     [1, 'mi', 'ft', 5280],
     [1, 'in', 'cm', 2.54],
@@ -219,7 +220,7 @@ describe('units plugin', () => {
     expect(out.category).toBe('length');
     expect(out.from).toBe(from);
     expect(out.to).toBe(to);
-    expect(out.value).toBeCloseTo(expected, 9);
+    expect(out.value).toBe(expected);
   });
 
   it.each([
@@ -231,7 +232,7 @@ describe('units plugin', () => {
   ])('converts mass: %d %s -> %s = %d', (value, from, to, expected) => {
     const out = units({ value, from, to });
     expect(out.category).toBe('mass');
-    expect(out.value).toBeCloseTo(expected, 9);
+    expect(out.value).toBe(expected);
   });
 
   it.each([
@@ -250,7 +251,7 @@ describe('units plugin', () => {
   ])('converts temperature with offsets: %d %s -> %s = %d', (value, from, to, expected) => {
     const out = units({ value, from, to });
     expect(out.category).toBe('temperature');
-    expect(out.value).toBeCloseTo(expected, 9);
+    expect(out.value).toBe(expected);
   });
 
   it.each([
@@ -260,11 +261,11 @@ describe('units plugin', () => {
     [16, 'cup', 'US gallon', 1],
     [1, 'US gallon', 'l', 3.785411784],
     [1, 'imperial gallon', 'l', 4.54609],
-    [1, 'imperial gallon', 'US gallon', 4.54609 / 3.785411784],
+    [1, 'imperial gallon', 'US gallon', 1.2009499255],
   ])('converts volume: %d %s -> %s = %d', (value, from, to, expected) => {
     const out = units({ value, from, to });
     expect(out.category).toBe('volume');
-    expect(out.value).toBeCloseTo(expected, 9);
+    expect(out.value).toBe(expected);
   });
 
   it.each([
@@ -275,7 +276,7 @@ describe('units plugin', () => {
   ])('converts speed: %d %s -> %s = %d', (value, from, to, expected) => {
     const out = units({ value, from, to });
     expect(out.category).toBe('speed');
-    expect(out.value).toBeCloseTo(expected, 9);
+    expect(out.value).toBe(expected);
   });
 
   it.each([
@@ -288,11 +289,26 @@ describe('units plugin', () => {
     [1, 'TB', 'GB', 1000],
     [1, 'TiB', 'GiB', 1024],
     [1, 'GiB', 'GB', 1.073741824],
-    [1000, 'MB', 'GiB', 1e9 / 1073741824],
-  ])('distinguishes decimal and binary data units: %d %s -> %s = %d', (value, from, to, expected) => {
-    const out = units({ value, from, to });
-    expect(out.category).toBe('data');
-    expect(out.value).toBeCloseTo(expected, 9);
+    [1000, 'MB', 'GiB', 0.931322574615],
+  ])(
+    'distinguishes decimal and binary data units: %d %s -> %s = %d',
+    (value, from, to, expected) => {
+      const out = units({ value, from, to });
+      expect(out.category).toBe('data');
+      expect(out.value).toBe(expected);
+    }
+  );
+
+  it('rejects lowercase or bit-style data abbreviations', () => {
+    for (const unit of ['b', 'Mb', 'mb', 'kb', 'gb', 'tb', 'kib', 'mib']) {
+      const res = runPlugin<{ error?: string }>('units', 'units', {
+        value: 1,
+        from: unit,
+        to: 'B',
+      });
+      expect(res.code).toBe(1);
+      expect(res.output.error).toContain(`Unknown unit "${unit}". Supported units:`);
+    }
   });
 
   it('rejects cross-category conversions and lists supported units', () => {
@@ -315,8 +331,7 @@ describe('units plugin', () => {
       to: 'm',
     });
     expect(res.code).toBe(1);
-    expect(res.output.error).toContain('Unknown unit');
-    expect(res.output.error).toContain('furlong');
+    expect(res.output.error).toContain('Unknown unit "furlong". Supported units:');
     expect(res.output.error).toContain('length');
     expect(res.output.error).toContain('temperature');
     expect(res.output.error).toContain('data');
