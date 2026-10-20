@@ -5,7 +5,7 @@ import { afterEach, describe, it, expect, vi } from 'vitest';
 import type { EmbeddingService } from '@cogitator-ai/types';
 import { Budget, BudgetExceededError, budgetRefusal, callCost } from '../budget.js';
 import { JudgeStore } from '../judge.js';
-import { CachedEmbeddingService } from '../embeddings.js';
+import { CachedEmbeddingService, RateLimitedEmbeddingService } from '../embeddings.js';
 import { bootstrapInterval, markdownReport, summarize } from '../report.js';
 import {
   answerInstructions,
@@ -197,6 +197,48 @@ describe('CachedEmbeddingService', () => {
     expect(inner.embedBatch).toHaveBeenCalledTimes(1);
     expect(second.embeddedTokens).toBe(0);
     second.close();
+  });
+});
+
+describe('RateLimitedEmbeddingService', () => {
+  it('waits out a rate limit and gives up on other errors at once', async () => {
+    let calls = 0;
+    const flaky: EmbeddingService = {
+      model: 'm',
+      dimensions: 1,
+      embed: async () => [1],
+      embedBatch: async (texts) => {
+        calls++;
+        if (calls < 3) throw new Error('Google batch embedding failed: {"error": {"code": 429}}');
+        return texts.map(() => [1]);
+      },
+    };
+    const service = new RateLimitedEmbeddingService(flaky, [0, 0, 0]);
+    expect(await service.embedBatch(['a'])).toEqual([[1]]);
+    expect(calls).toBe(3);
+
+    const broken: EmbeddingService = {
+      ...flaky,
+      embed: async () => {
+        calls++;
+        throw new Error('invalid argument');
+      },
+    };
+    calls = 0;
+    await expect(new RateLimitedEmbeddingService(broken, [0, 0]).embed('a')).rejects.toThrow(
+      'invalid argument'
+    );
+    expect(calls).toBe(1);
+
+    const limited: EmbeddingService = {
+      ...flaky,
+      embed: async () => {
+        throw new Error('RESOURCE_EXHAUSTED');
+      },
+    };
+    await expect(new RateLimitedEmbeddingService(limited, [0]).embed('a')).rejects.toThrow(
+      'RESOURCE_EXHAUSTED'
+    );
   });
 });
 

@@ -16,7 +16,7 @@ import {
 import { cacheDir } from './cache.js';
 import { runConsistencySuite, type ConsistencyCheck } from './consistency.js';
 import { DATASETS, loadDataset } from './datasets/index.js';
-import { CachedEmbeddingService } from './embeddings.js';
+import { CachedEmbeddingService, RateLimitedEmbeddingService } from './embeddings.js';
 import { judge, JudgeStore } from './judge.js';
 import { markdownReport, summarize } from './report.js';
 import { ANSWER_INSTRUCTIONS, answerConversation, answerKey, mapConcurrent } from './runner.js';
@@ -232,7 +232,7 @@ async function main(): Promise<number> {
   const embeddingBudget = new Budget(embeddingLimit, run, join(cacheDir(), 'ledger.json'));
   const embedding = embedded
     ? new CachedEmbeddingService(
-        new GoogleEmbeddingService({ apiKey: googleKey ?? '' }),
+        new RateLimitedEmbeddingService(new GoogleEmbeddingService({ apiKey: googleKey ?? '' })),
         join(cacheDir(), 'embeddings.sqlite'),
         (tokens) => {
           const usd = (tokens * EMBEDDING_PRICE) / 1e6;

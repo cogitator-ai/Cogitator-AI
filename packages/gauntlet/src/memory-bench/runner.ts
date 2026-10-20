@@ -129,6 +129,9 @@ function probe(
  */
 const BENCH_RETRY = { maxRetries: 8, maxDelay: 60_000 };
 
+/** Time a question's run may take: room for the retries to wait out rate limits. */
+const RUN_TIMEOUT_MS = 600_000;
+
 /** A runtime whose memory holds conversations for `strategy`, the bench model priced. */
 export function benchRuntime(
   options: Pick<AnswerOptions, 'strategy' | 'anthropicApiKey' | 'anthropicWorkspace' | 'embedding'>
@@ -166,6 +169,7 @@ export function benchAgent(instructions = ANSWER_INSTRUCTIONS): Agent {
     instructions,
     maxTokens: ANSWER_MAX_TOKENS,
     maxIterations: 1,
+    timeout: RUN_TIMEOUT_MS,
   });
 }
 

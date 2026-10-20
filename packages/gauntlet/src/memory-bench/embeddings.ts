@@ -129,3 +129,48 @@ export class CachedEmbeddingService implements EmbeddingService {
       .digest('hex');
   }
 }
+
+/** Waits before each retry of a rate-limited embedding request: the provider's quota is per minute. */
+const RATE_LIMIT_WAITS_MS = [15_000, 30_000, 60_000, 60_000, 60_000];
+
+const isRateLimit = (error: unknown): boolean =>
+  error instanceof Error && /\b429\b|RESOURCE_EXHAUSTED/.test(error.message);
+
+/**
+ * An embedding service that waits out the provider's per-minute rate limit: the service's own
+ * retries back off for seconds, while a quota spent for the minute needs up to a minute.
+ */
+export class RateLimitedEmbeddingService implements EmbeddingService {
+  constructor(
+    private readonly inner: EmbeddingService,
+    private readonly waitsMs: readonly number[] = RATE_LIMIT_WAITS_MS
+  ) {}
+
+  get model(): string {
+    return this.inner.model;
+  }
+
+  get dimensions(): number {
+    return this.inner.dimensions;
+  }
+
+  embed(text: string): Promise<number[]> {
+    return this.retry(() => this.inner.embed(text));
+  }
+
+  embedBatch(texts: string[]): Promise<number[][]> {
+    return this.retry(() => this.inner.embedBatch(texts));
+  }
+
+  private async retry<T>(call: () => Promise<T>): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await call();
+      } catch (error) {
+        const wait = this.waitsMs[attempt];
+        if (wait === undefined || !isRateLimit(error)) throw error;
+        await new Promise((resolve) => setTimeout(resolve, wait));
+      }
+    }
+  }
+}
