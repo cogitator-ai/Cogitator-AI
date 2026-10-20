@@ -1,6 +1,9 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { WebSocket } from 'ws';
+import { z } from 'zod';
+import { Cogitator, tool } from '@cogitator-ai/core';
 import {
+  createRealtimeTools,
   RealtimeSession,
   VoiceAgent,
   float32ToPcm16,
@@ -125,6 +128,53 @@ describeGemini('Voice: Gemini Live realtime', () => {
     expect(log.toolCalls[0]!.name).toBe('get_secret_code');
     expect(assistantText(log)).toContain('zebra');
   });
+
+  it(
+    'asks approval for a Cogitator tool that needs it before the call runs',
+    { timeout: 90_000 },
+    async () => {
+      const unlocked: string[] = [];
+      const asked: string[] = [];
+      const unlock = tool({
+        name: 'unlock_door',
+        description: 'Unlocks the door of the given room and returns its access code.',
+        parameters: z.object({ room: z.string().describe('Room name') }),
+        requiresApproval: true,
+        execute: async ({ room }) => {
+          unlocked.push(room);
+          return { room, code: 'zebra' };
+        },
+      });
+      const cogitator = new Cogitator();
+      try {
+        const session = createSession({
+          instructions:
+            'You are a voice assistant. When asked to unlock a room you MUST call unlock_door and read the access code back.',
+          tools: createRealtimeTools(cogitator, [unlock], {
+            onApproval: async (request) => {
+              asked.push(request.toolName);
+              return { approved: true };
+            },
+          }),
+        });
+        const log = record(session);
+        await session.connect();
+
+        session.sendText('Please unlock the lab.');
+        const deadline = Date.now() + 60_000;
+        while (Date.now() < deadline && !assistantText(log).includes('zebra')) {
+          await nextTurnEnd(session, deadline - Date.now()).catch(() => undefined);
+        }
+
+        expect(asked[0]).toBe('unlock_door');
+        expect(unlocked.length).toBeGreaterThanOrEqual(1);
+        expect(asked.length).toBe(unlocked.length);
+        expect(assistantText(log)).toContain('zebra');
+      } finally {
+        await cogitator.close();
+      }
+    }
+  );
 
   it('understands spoken audio input (16kHz PCM16)', { timeout: 120_000 }, async () => {
     const speaker = createSession({

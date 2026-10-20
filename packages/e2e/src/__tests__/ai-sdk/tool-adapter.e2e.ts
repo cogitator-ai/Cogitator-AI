@@ -218,6 +218,84 @@ describe('AI SDK: Tool Adapter', () => {
   });
 });
 
+describe('AI SDK: converted tools run through the Cogitator invoker', () => {
+  const refunds: string[] = [];
+  const refund = tool({
+    name: 'refund',
+    description: 'Refund an order',
+    parameters: z.object({ order: z.string() }),
+    requiresApproval: true,
+    execute: async ({ order }) => {
+      refunds.push(order);
+      return { refunded: order };
+    },
+  });
+
+  function approvalMessages(toolCallId: string, approved: boolean) {
+    return [
+      {
+        role: 'assistant',
+        content: [{ type: 'tool-approval-request', approvalId: 'ap-1', toolCallId }],
+      },
+      { role: 'tool', content: [{ type: 'tool-approval-response', approvalId: 'ap-1', approved }] },
+    ];
+  }
+
+  it('refuses a call nobody approved and runs one the AI SDK approval flow approved', async () => {
+    const cog = new Cogitator();
+    refunds.length = 0;
+    try {
+      const converted = toAISDKTool(refund, { invoker: cog });
+
+      await expect(
+        converted.execute({ order: 'A-1' }, { toolCallId: 'call-1', messages: [] })
+      ).rejects.toThrow('Tool "refund" needs approval, and nobody approved this call');
+      await expect(
+        converted.execute(
+          { order: 'A-1' },
+          { toolCallId: 'call-1', messages: approvalMessages('call-1', false) }
+        )
+      ).rejects.toThrow('needs approval');
+      expect(refunds).toEqual([]);
+
+      await expect(
+        converted.execute(
+          { order: 'A-1' },
+          { toolCallId: 'call-1', messages: approvalMessages('call-1', true) }
+        )
+      ).resolves.toEqual({ refunded: 'A-1' });
+      expect(refunds).toEqual(['A-1']);
+    } finally {
+      await cog.close();
+    }
+  });
+
+  it('asks the guardrails when the AI SDK did not approve the call', async () => {
+    const decisions: string[] = [];
+    const cog = new Cogitator({
+      guardrails: {
+        enabled: true,
+        onToolApproval: async (toolName) => {
+          decisions.push(toolName);
+          return false;
+        },
+      },
+    });
+    refunds.length = 0;
+    try {
+      const [converted] = Object.values(convertToolsToAISDK([refund], { invoker: cog }));
+
+      await expect(
+        converted!.execute({ order: 'B-2' }, { toolCallId: 'call-2', messages: [] })
+      ).rejects.toThrow('The user declined this tool call');
+      expect(decisions).toEqual(['refund']);
+      expect(refunds).toEqual([]);
+    } finally {
+      await cog.close();
+    }
+  });
+});
+
 const describeGoogle = process.env.GOOGLE_API_KEY ? describe : describe.skip;
 
 describeGoogle('AI SDK: Cogitator agents on an AI SDK model', () => {

@@ -309,13 +309,14 @@ describe('createRealtimeTools', () => {
   });
 
   it('lets the guardrails decide when no onApproval is given', async () => {
-    const onToolApproval = vi.fn(async () => ({ approved: true as const }));
+    const onToolApproval = vi.fn(async (_toolName: string) => true);
     await session({}, new Cogitator({ guardrails: { enabled: true, onToolApproval } }));
 
     mockWs.emit('message', openAICalls([['delete_file', 'call_4', { path: '/tmp/b' }]]));
     await vi.waitFor(() => expect(functionOutputs()).toHaveLength(1));
 
     expect(onToolApproval).toHaveBeenCalledTimes(1);
+    expect(onToolApproval.mock.calls[0]![0]).toBe('delete_file');
     expect(functionOutputs()[0]!.output).toBe('deleted /tmp/b');
   });
 

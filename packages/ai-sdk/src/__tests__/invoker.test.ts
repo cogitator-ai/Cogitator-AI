@@ -207,7 +207,7 @@ describe('toAISDKTool with an invoker', () => {
   });
 
   it('lets the guardrails decide when no onApproval is given', async () => {
-    const onToolApproval = vi.fn(async () => ({ approved: true as const }));
+    const onToolApproval = vi.fn(async (_toolName: string) => true);
     const guarded = new Cogitator({ guardrails: { enabled: true, onToolApproval } });
     try {
       await ai5.generateText({
@@ -221,6 +221,7 @@ describe('toAISDKTool with an invoker', () => {
     }
 
     expect(onToolApproval).toHaveBeenCalledTimes(1);
+    expect(onToolApproval.mock.calls[0]![0]).toBe('refund');
     expect(refundImpl).toHaveBeenCalledTimes(1);
   });
 
