@@ -374,6 +374,32 @@ describe('review regressions', () => {
     expect(error).toMatchObject({ kind: 'rate_limit', retryable: true });
   });
 
+  it('reads a Gemini error list the OpenAI SDK keeps whole by the Gemini rules', () => {
+    const body = (quotaId: string) => [
+      {
+        error: {
+          code: 429,
+          status: 'RESOURCE_EXHAUSTED',
+          message: 'You exceeded your current quota.',
+          details: [
+            { '@type': 'type.googleapis.com/google.rpc.QuotaFailure', violations: [{ quotaId }] },
+          ],
+        },
+      },
+    ];
+    const daily = wrapSDKError(
+      new APIError(429, body('GenerateRequestsPerDayPerProjectPerModel-FreeTier')),
+      { provider: 'openai' }
+    );
+    const perMinute = wrapSDKError(
+      new APIError(429, body('GenerateRequestsPerMinutePerProjectPerModel-FreeTier')),
+      { provider: 'openai' }
+    );
+
+    expect(daily).toMatchObject({ kind: 'quota', retryable: false });
+    expect(perMinute).toMatchObject({ kind: 'rate_limit', retryable: true });
+  });
+
   it('reads an Anthropic balance too low, sent as invalid_request_error, as quota', () => {
     const error = createLLMError(
       { provider: 'anthropic' },

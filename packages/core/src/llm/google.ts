@@ -298,6 +298,8 @@ export class GoogleBackend extends BaseLLMBackend {
     } finally {
       reader.cancel().catch(() => undefined);
     }
+    const aborted = abortReason(request.signal);
+    if (aborted) throw aborted;
   }
 
   /** POSTs `body` to the Gemini API, a failed response or connection made an `LLMError`. */

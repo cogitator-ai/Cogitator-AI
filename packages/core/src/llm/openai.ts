@@ -172,7 +172,10 @@ export class OpenAIBackend extends OpenAICompatibleBackend {
 
     const model = this.resolveModel(request);
     const ctx = this.errorContext(model);
-    const params = { ...buildResponsesParams(request, model), stream: false as const };
+    const params = {
+      ...buildResponsesParams(request, model, this.profile),
+      stream: false as const,
+    };
 
     let response: Response;
     try {
@@ -193,7 +196,7 @@ export class OpenAIBackend extends OpenAICompatibleBackend {
 
     const model = this.resolveModel(request);
     const ctx = this.errorContext(model);
-    const params = { ...buildResponsesParams(request, model), stream: true as const };
+    const params = { ...buildResponsesParams(request, model, this.profile), stream: true as const };
 
     let stream: AsyncIterable<ResponseStreamEvent>;
     try {

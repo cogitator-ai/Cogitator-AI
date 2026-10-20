@@ -243,9 +243,11 @@ function statusIn(body: unknown): number | undefined {
 
 /**
  * The error body an SDK kept, as JSON in the provider's own shape: the OpenAI SDK keeps the
- * inner `error` object, the Anthropic SDK the whole body.
+ * inner `error` object (or the whole body when it is a list, as Gemini's OpenAI-compatible
+ * endpoint sends it), the Anthropic SDK the whole body.
  */
 function sdkErrorBody(error: SDKAPIError): string | undefined {
+  if (Array.isArray(error.error)) return JSON.stringify(error.error);
   const kept = asRecord(error.error);
   if (!kept) return undefined;
   return JSON.stringify('error' in kept ? kept : { error: kept });

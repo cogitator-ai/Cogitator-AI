@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ChatRequest, ChatStreamChunk } from '@cogitator-ai/types';
 import { OpenAIBackend } from '../llm/openai';
+import { buildResponsesParams } from '../llm/openai-responses';
 import {
   OPENAI_COMPATIBLE_PROFILES,
   reasoningEffortFor,
@@ -156,8 +157,34 @@ describe('reasoningEffortFor', () => {
     ).toBeUndefined();
   });
 
-  it('keeps the official OpenAI efforts and maps max to xhigh', () => {
+  it('sends the official OpenAI API every effort as it is', () => {
     expect(reasoningEffortFor(OPENAI_COMPATIBLE_PROFILES.openai, 'none')).toBe('none');
-    expect(reasoningEffortFor(OPENAI_COMPATIBLE_PROFILES.openai, 'max')).toBe('xhigh');
+    expect(reasoningEffortFor(OPENAI_COMPATIBLE_PROFILES.openai, 'max')).toBe('max');
+  });
+});
+
+describe('the Responses API and server profiles', () => {
+  it('sends the reasoning effort the profile allows, nothing when it allows none', () => {
+    const request = {
+      model: 'gpt-5',
+      messages: [{ role: 'user' as const, content: 'Hi' }],
+      reasoning: { effort: 'max' as const },
+    };
+
+    expect(buildResponsesParams(request, 'gpt-5').reasoning).toEqual({ effort: 'max' });
+    expect(
+      buildResponsesParams(
+        request,
+        'gpt-5',
+        resolveOpenAICompatibleProfile('openai', { reasoningEffort: false })
+      ).reasoning
+    ).toEqual({});
+    expect(
+      buildResponsesParams(
+        request,
+        'gpt-5',
+        resolveOpenAICompatibleProfile('openai', { reasoningEffort: ['low', 'high'] })
+      ).reasoning
+    ).toEqual({ effort: 'high' });
   });
 });

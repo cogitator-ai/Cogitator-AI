@@ -7,15 +7,6 @@ import type {
 /** A profile with every field set. */
 export type ResolvedOpenAICompatibleProfile = Required<Omit<OpenAICompatibleProfile, 'server'>>;
 
-const OPENAI_EFFORTS: readonly ReasoningEffort[] = [
-  'none',
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-];
-
 /**
  * What each known OpenAI-compatible server understands, from its API reference (2026-10):
  * Mistral rejects unknown fields, so it gets neither `stream_options` nor efforts it lacks.
@@ -25,11 +16,7 @@ const OPENAI_EFFORTS: readonly ReasoningEffort[] = [
 export const OPENAI_COMPATIBLE_PROFILES: Readonly<
   Record<OpenAICompatibleServer, ResolvedOpenAICompatibleProfile>
 > = {
-  openai: {
-    maxTokensField: 'max_completion_tokens',
-    streamUsage: true,
-    reasoningEffort: OPENAI_EFFORTS,
-  },
+  openai: { maxTokensField: 'max_completion_tokens', streamUsage: true, reasoningEffort: true },
   generic: { maxTokensField: 'max_tokens', streamUsage: true, reasoningEffort: true },
   vllm: { maxTokensField: 'max_tokens', streamUsage: true, reasoningEffort: true },
   ollama: { maxTokensField: 'max_tokens', streamUsage: true, reasoningEffort: true },

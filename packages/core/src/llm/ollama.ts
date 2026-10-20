@@ -279,6 +279,8 @@ export class OllamaBackend extends BaseLLMBackend {
     } finally {
       reader.cancel().catch(() => undefined);
     }
+    const aborted = abortReason(request.signal);
+    if (aborted) throw aborted;
 
     if (validChunks === 0 && parseErrors > 0) {
       throw llmInvalidResponse(
