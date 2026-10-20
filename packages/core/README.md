@@ -589,7 +589,7 @@ const names = registry.getNames();
 const schemas = registry.getSchemas();
 ```
 
-Registering a different tool under a name that is taken replaces it with a warning, since the model can only ever call one of them. Pass `{ replace: true }` to `register` or `registerMany` when replacing is the intent. In a run, a tool of the agent replaces a tool of the same name in `cogitator.tools` without a warning.
+Registering a different tool under a name that is taken replaces it with a warning, since the model can only ever call one of them. Pass `{ replace: true }` to `register` or `registerMany` when replacing is the intent. In a run, a tool of the agent replaces a tool of the same name in `cogitator.tools` without a warning. A tool built without `tool()` whose `maxResultLength` is not a positive integer throws on `register`.
 
 ### Built-in Tools
 
