@@ -173,8 +173,9 @@ export class MiddlewarePipeline<TDeps = unknown> {
 /**
  * A copy of tool call arguments a middleware can edit without touching anyone else's: plain
  * objects, arrays, maps and sets are copied all the way down (cycles kept), anything else (a
- * `Buffer`, a `Date`, an instance of a class) is kept as it is, so a tool gets values of the
- * types it was called with. Keys are copied as data, so a `__proto__` key stays a key.
+ * `Buffer`, a `Date`, a `URL`, an instance of a class or of a subclass of `Map`) is kept as it is,
+ * so a tool gets values of the types it was called with. Keys are copied as data, so a
+ * `__proto__` key stays a key.
  */
 function copyArguments(args: Record<string, unknown>): Record<string, unknown> {
   return copyValue(args, new Map()) as Record<string, unknown>;
@@ -184,25 +185,26 @@ function copyValue(value: unknown, copies: Map<object, unknown>): unknown {
   if (value === null || typeof value !== 'object') return value;
   const done = copies.get(value);
   if (done !== undefined) return done;
-  if (Array.isArray(value)) {
+  const prototype: unknown = Object.getPrototypeOf(value);
+  if (prototype === Array.prototype) {
     const copy: unknown[] = [];
     copies.set(value, copy);
-    for (const item of value) copy.push(copyValue(item, copies));
+    for (const item of value as unknown[]) copy.push(copyValue(item, copies));
     return copy;
   }
-  if (value instanceof Map) {
+  if (prototype === Map.prototype) {
     const copy = new Map<unknown, unknown>();
     copies.set(value, copy);
-    for (const [key, item] of value) copy.set(copyValue(key, copies), copyValue(item, copies));
+    for (const [key, item] of value as Map<unknown, unknown>)
+      copy.set(key, copyValue(item, copies));
     return copy;
   }
-  if (value instanceof Set) {
+  if (prototype === Set.prototype) {
     const copy = new Set<unknown>();
     copies.set(value, copy);
-    for (const item of value) copy.add(copyValue(item, copies));
+    for (const item of value as Set<unknown>) copy.add(copyValue(item, copies));
     return copy;
   }
-  const prototype: unknown = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) return value;
   const copy: Record<string, unknown> = prototype === null ? Object.create(null) : {};
   copies.set(value, copy);
@@ -219,43 +221,59 @@ function copyValue(value: unknown, copies: Map<object, unknown>): unknown {
 
 /**
  * Tool call arguments as text that is the same exactly when their content is: key order aside,
- * with maps, sets, dates, binary data, `NaN`, `undefined` and cycles told apart.
+ * with maps, sets, dates, binary data, `NaN`, `-0`, `undefined` and cycles told apart. A value
+ * with `toJSON` (a `URL`, a `Buffer`) is read through it, another instance of a class by its own
+ * fields, so a change it keeps in private fields is not seen.
  */
 function canonicalArguments(value: unknown): string {
   const ancestors = new Set<object>();
+  const seen = new Map<object, string>();
   const walk = (item: unknown): string => {
     if (item === undefined) return 'undefined';
     if (item === null || typeof item === 'boolean') return String(item);
-    if (typeof item === 'number') return `number:${String(item)}`;
+    if (typeof item === 'number') return Object.is(item, -0) ? 'number:-0' : `number:${item}`;
     if (typeof item === 'bigint') return `bigint:${item.toString()}`;
     if (typeof item === 'string') return JSON.stringify(item);
     if (typeof item !== 'object') return typeof item;
     if (ancestors.has(item)) return 'circular';
+    const known = seen.get(item);
+    if (known !== undefined) return known;
     ancestors.add(item);
     try {
-      if (Array.isArray(item)) return `[${item.map(walk).join(',')}]`;
-      if (item instanceof Map) {
-        const entries = [...item].map(([key, entry]) => `${walk(key)}=>${walk(entry)}`);
-        return `Map{${entries.sort().join(',')}}`;
-      }
-      if (item instanceof Set) return `Set{${[...item].map(walk).sort().join(',')}}`;
-      if (item instanceof Date) return `Date(${item.getTime()})`;
-      if (ArrayBuffer.isView(item)) {
-        const bytes = new Uint8Array(item.buffer, item.byteOffset, item.byteLength);
-        return `${item.constructor.name}(${bytes.join(',')})`;
-      }
-      const record = item as Record<string, unknown>;
-      const fields = Object.keys(record)
-        .sort()
-        .map((key) => `${JSON.stringify(key)}:${walk(record[key])}`);
-      const kind = (Object.getPrototypeOf(item) as { constructor?: { name?: string } } | null)
-        ?.constructor?.name;
-      return `${kind ?? 'null'}{${fields.join(',')}}`;
+      const text = describe(item, walk);
+      seen.set(item, text);
+      return text;
     } finally {
       ancestors.delete(item);
     }
   };
   return walk(value);
+}
+
+function describe(item: object, walk: (value: unknown) => string): string {
+  if (Array.isArray(item)) return `[${item.map(walk).join(',')}]`;
+  if (item instanceof Map) {
+    const entries = [...item].map(([key, entry]) => `${walk(key)}=>${walk(entry)}`);
+    return `Map{${entries.sort().join(',')}}`;
+  }
+  if (item instanceof Set) return `Set{${[...item].map(walk).sort().join(',')}}`;
+  if (item instanceof Date) return `Date(${item.getTime()})`;
+  if (item instanceof ArrayBuffer) return `ArrayBuffer(${new Uint8Array(item).join(',')})`;
+  if (ArrayBuffer.isView(item)) {
+    const bytes = new Uint8Array(item.buffer, item.byteOffset, item.byteLength);
+    return `${item.constructor.name}(${bytes.join(',')})`;
+  }
+  const kind = (Object.getPrototypeOf(item) as { constructor?: { name?: string } } | null)
+    ?.constructor?.name;
+  const toJSON = (item as { toJSON?: unknown }).toJSON;
+  if (typeof toJSON === 'function') {
+    return `${kind ?? 'null'}(${walk((toJSON as () => unknown).call(item))})`;
+  }
+  const record = item as Record<string, unknown>;
+  const fields = Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${walk(record[key])}`);
+  return `${kind ?? 'null'}{${fields.join(',')}}`;
 }
 
 /** What `hook` returns, a tripwire it throws claimed for the middleware `name`. */

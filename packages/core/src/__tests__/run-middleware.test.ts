@@ -936,6 +936,38 @@ describe('run middleware', () => {
       await cog.close();
     });
 
+    it("streams a fallback model's answer once", async () => {
+      const failing: LLMBackend = {
+        provider: 'openai',
+        chat: vi.fn(),
+        chatStream: vi.fn(async function* (): AsyncGenerator<ChatStreamChunk> {
+          yield* [];
+          throw new CogitatorError({ message: 'down', code: ErrorCode.LLM_UNAVAILABLE });
+        }),
+      };
+      const { backend } = scripted(answer('from the backup'));
+      const cog = new Cogitator({
+        llm: { backends: { primary: failing, backup: backend }, retry: false },
+      });
+      const agent = new Agent({
+        name: 'a',
+        model: 'primary/m',
+        fallbackModels: ['backup/m'],
+        instructions: 'Help.',
+        middleware: [{ name: 'pass', wrapModelCall: (call, next) => next(call) }],
+      });
+      const tokens: string[] = [];
+
+      await cog.run(agent, {
+        input: 'Hello',
+        stream: true,
+        onToken: (token) => tokens.push(token),
+      });
+
+      expect(tokens.join('')).toBe('from the backup');
+      await cog.close();
+    });
+
     it('stops waiting for a hook when the run times out', async () => {
       const { backend } = scripted(answer('Hi'));
       const cog = runtime(backend);

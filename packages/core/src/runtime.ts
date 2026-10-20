@@ -1205,11 +1205,13 @@ export class Cogitator implements ToolInvoker {
 
         const holdsStream = streaming && pipeline.holdsStream;
         let streamed = false;
+        let streamedText = false;
         let reachedModel = false;
         const turnStream = holdsStream
           ? () => undefined
           : (token: string) => {
               streamed = true;
+              streamedText = true;
               onToken(token);
             };
         const onReasoning = options.onReasoning;
@@ -1337,7 +1339,8 @@ export class Cogitator implements ToolInvoker {
           abortController.signal
         );
         const outputContent = response.content;
-        if (streaming && outputContent && (holdsStream || !reachedModel)) onToken(outputContent);
+        const answeredAlone = !reachedModel && !streamedText;
+        if (streaming && outputContent && (holdsStream || answeredAlone)) onToken(outputContent);
 
         const requestsTools = !limit.closingTurn && Boolean(response.toolCalls?.length);
         const assistantMessage = requestsTools
