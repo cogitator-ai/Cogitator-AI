@@ -518,6 +518,33 @@ describe('GeminiRealtimeAdapter', () => {
         ]);
       });
 
+      it("cuts a plain result longer than the tool's maxResultLength", async () => {
+        const dump = [
+          {
+            name: 'dump',
+            description: 'Dump',
+            parameters: {},
+            maxResultLength: 100,
+            execute: vi.fn().mockResolvedValue({ rows: 'x'.repeat(5000) }),
+          },
+        ];
+        adapter = new GeminiRealtimeAdapter(createConfig({ tools: dump }));
+        await adapter.connect();
+        mockWs.send.mockClear();
+
+        mockWs.emit(
+          'message',
+          JSON.stringify({ toolCall: { functionCalls: [{ id: 'd', name: 'dump', args: {} }] } })
+        );
+        await vi.waitFor(() => expect(mockWs.send).toHaveBeenCalledTimes(1));
+
+        const result = JSON.parse(mockWs.send.mock.calls[0]![0] as string).toolResponse
+          .functionResponses[0].response.result as string;
+        expect(typeof result).toBe('string');
+        expect(result.length).toBeLessThan(200);
+        expect(result).toContain('characters of this tool result were left out');
+      });
+
       it('adds the images as inlineData parts with toolImages', async () => {
         adapter = new GeminiRealtimeAdapter(createConfig({ tools: tools(), toolImages: true }));
         await adapter.connect();

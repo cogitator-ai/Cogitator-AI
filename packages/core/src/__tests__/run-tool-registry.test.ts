@@ -36,7 +36,7 @@ const lookup = (answer: string) =>
     execute: async () => answer,
   });
 
-const replacementWarnings = (warn: ReturnType<typeof vi.spyOn>) =>
+const replacementWarnings = (warn: { mock: { calls: unknown[][] } }) =>
   warn.mock.calls.filter(([message]) => String(message).includes('replaces another tool'));
 
 describe('the tools of a run', () => {

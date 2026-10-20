@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { WebSocket } from 'ws';
 import type { RealtimeSessionConfig } from '../types.js';
-import { realtimeToolParts } from './tool-output.js';
+import { realtimeToolParts, realtimeToolValue } from './tool-output.js';
 
 const DEFAULT_MODEL = 'gemini-3.8-live';
 const DEFAULT_VOICE = 'Puck';
@@ -310,7 +310,8 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
         try {
           const output = await tool.execute(args);
           const parts = realtimeToolParts(output, tool);
-          if (!parts) return { id, name: call.name, response: { result: output ?? null } };
+          if (!parts)
+            return { id, name: call.name, response: { result: realtimeToolValue(output, tool) } };
           const images = this.config.toolImages ? parts.images : [];
           return {
             id,

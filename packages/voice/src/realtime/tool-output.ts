@@ -38,6 +38,18 @@ export function realtimeToolText(result: unknown, tool: RealtimeTool): string {
   return truncateToolResultText(JSON.stringify(result ?? null), maxResultLength(tool));
 }
 
+/**
+ * A tool result without parts as a value for a provider that takes JSON (Gemini): the value
+ * itself, or its JSON text cut to the tool's `maxResultLength` when that text is longer.
+ */
+export function realtimeToolValue(result: unknown, tool: RealtimeTool): unknown {
+  const value = result ?? null;
+  const json = JSON.stringify(value);
+  return json.length > maxResultLength(tool)
+    ? truncateToolResultText(json, maxResultLength(tool))
+    : value;
+}
+
 function maxResultLength(tool: RealtimeTool): number {
   return tool.maxResultLength ?? DEFAULT_TOOL_RESULT_MAX_LENGTH;
 }

@@ -47,7 +47,7 @@ describe('ToolRegistry', () => {
     describe('replacing a tool', () => {
       afterEach(() => vi.restoreAllMocks());
 
-      const replacementWarnings = (warn: ReturnType<typeof vi.spyOn>) =>
+      const replacementWarnings = (warn: { mock: { calls: unknown[][] } }) =>
         warn.mock.calls.filter(([message]) => String(message).includes('replaces another tool'));
 
       it('warns when a different tool takes the name', () => {
