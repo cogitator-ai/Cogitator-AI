@@ -110,6 +110,7 @@ interface RunOptions<TDeps = unknown> {
   onSpan?: (span: Span) => void;
   onMemoryError?: (error: Error, operation: 'save' | 'load') => void;
   parallelToolCalls?: boolean; // default: false
+  middleware?: RunMiddleware<TDeps>[]; // after the Cogitator's and the agent's, pass again to resume()
   userId?: string; // owns new threads, scopes facts, reaches tools as context.userId
   threadAccess?: 'owner' | 'shared'; // default: 'owner'
   channelType?: string;
@@ -224,7 +225,7 @@ interface ToolCallRequest {
   toolCall: ToolCall; // as the model made it
   tool: Tool;
   args: unknown; // as the tool's schema parsed them
-  approved: boolean; // a person approved the call
+  approved: boolean; // a person approved the call (false once a middleware changed the arguments)
 }
 ```
 
@@ -630,6 +631,7 @@ interface CogitatorConfig {
   };
   runCheckpoints?: RunCheckpointStore; // where paused runs wait
   prompts?: PromptsConfig; // instruction versions and A/B tests
+  middleware?: RunMiddleware[]; // hooks around every run's model and tool calls, and invokeTool()
   limits?: {
     maxConcurrentRuns?: number;
     defaultTimeout?: number;

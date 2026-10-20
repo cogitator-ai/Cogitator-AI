@@ -233,11 +233,11 @@ const restored = Agent.deserialize(saved, {
 
 Tools are stored by name in the snapshot. During deserialization, each tool name is resolved from `toolRegistry` (any `{ get(name) }`, such as a `ToolRegistry`) when given, otherwise from the `tools` array; a missing tool throws `AgentDeserializationError`. `overrides` replaces any config field of the restored agent.
 
-A snapshot keeps the model, `fallbackModels`, instructions, sampling parameters, `reasoning`, `maxIterations`, `onIterationLimit` and `timeout`, but not `handoffs` or `skills` (their tools are kept by name). A `json_schema` response format is saved by name only, so pass the Zod schema back as `overrides.responseFormat`. `Agent.validateSnapshot(value)` checks a parsed snapshot, it rejects snapshots without a `model`, so give agents you serialize an explicit model.
+A snapshot keeps the model, `fallbackModels`, instructions, sampling parameters, `reasoning`, `maxIterations`, `onIterationLimit` and `timeout`, but not `handoffs`, `skills` (their tools are kept by name) or `middleware`. A `json_schema` response format is saved by name only, so pass the Zod schema back as `overrides.responseFormat`. `Agent.validateSnapshot(value)` checks a parsed snapshot, it rejects snapshots without a `model`, so give agents you serialize an explicit model.
 
 ### Sending an agent to another process
 
-`agent.serialize()` is for storage. To run an agent in another process (a queue job, a workflow job, a distributed swarm turn), use the agent wire format, which keeps every setting:
+`agent.serialize()` is for storage. To run an agent in another process (a queue job, a workflow job, a distributed swarm turn), use the agent wire format, which keeps every setting but `middleware`:
 
 ```typescript
 import { toAgentWire, fromAgentWire } from '@cogitator-ai/core';
@@ -247,7 +247,7 @@ const wire = toAgentWire(agent); // plain JSON
 const received = fromAgentWire(JSON.parse(payload), { cogitator, tools: [searchWeb, readUrl] });
 ```
 
-`toAgentWire` carries the whole configuration: model and provider, fallback models (up to 16), instructions, sampling, `stopSequences`, `reasoning`, `responseFormat` (a Zod schema as JSON Schema, turned back into one on arrival), `maxIterations`, `onIterationLimit`, `timeout`, the tool schemas and every agent the agent can hand over to (handoff graphs with cycles included). Skills arrive merged into the tools and instructions. An explicit `provider` also prefixes the model, so the agent runs on the same route wherever it lands. Pass `resolveModel` for an agent without a model, e.g. `toAgentWire(agent, { resolveModel: (a) => cogitator.resolveModel(a) })`.
+`toAgentWire` carries the whole configuration: model and provider, fallback models (up to 16), instructions, sampling, `stopSequences`, `reasoning`, `responseFormat` (a Zod schema as JSON Schema, turned back into one on arrival), `maxIterations`, `onIterationLimit`, `timeout`, the tool schemas and every agent the agent can hand over to (handoff graphs with cycles included). Skills arrive merged into the tools and instructions. An explicit `provider` also prefixes the model, so the agent runs on the same route wherever it lands. Pass `resolveModel` for an agent without a model, e.g. `toAgentWire(agent, { resolveModel: (a) => cogitator.resolveModel(a) })`. [Middleware](/docs/core/middleware) is code and stays behind, `toAgentWire` warns when the agent has some: the receiving side runs the agent with its Cogitator's own middleware.
 
 `fromAgentWire` validates the payload (`agentWireSchema`, or `parseAgentWire` alone), refuses keys it does not know instead of dropping them, resolves the tools by name from `tools` and throws `AgentWireError` for a missing tool or a provider the receiving Cogitator cannot route to. `toAgentWireRunResult(result)` and `fromAgentWireRunResult(wire, { agentId })` carry a run's outcome the same way: answer, structured output, usage with cost and duration, tool calls with their outputs, and the `truncated`, `blocked` and `iterationLimitReached` flags. `@cogitator-ai/worker` and distributed swarms use both.
 

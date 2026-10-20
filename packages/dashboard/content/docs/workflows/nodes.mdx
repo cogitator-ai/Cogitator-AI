@@ -122,7 +122,7 @@ builder.addNode(
 
 ## toolNode
 
-Runs a single `Tool` without an agent, the way an agent run calls it: through the node context's `cogitator.invokeTool`, so the mapped arguments are validated against the tool's schema, a call that needs approval is asked for, the guardrails apply, a sandboxed tool runs in the runtime's sandbox and `tool.timeout` is kept.
+Runs a single `Tool` without an agent, the way an agent run calls it: through the node context's `cogitator.invokeTool`, so the mapped arguments are validated against the tool's schema, a call that needs approval is asked for, the guardrails apply, a sandboxed tool runs in the runtime's sandbox, `tool.timeout` is kept and the Cogitator's `wrapToolCall` middleware applies.
 
 ```typescript
 import { tool } from '@cogitator-ai/core';

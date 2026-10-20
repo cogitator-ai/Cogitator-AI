@@ -35,6 +35,7 @@ interface AgentConfig<TDeps = unknown> {
 
   maxIterations?: number; // Max tool-use loops, default 10
   timeout?: number; // Run timeout in ms; default limits.defaultTimeout, else 120000
+  middleware?: RunMiddleware<TDeps>[]; // Hooks around its model and tool calls
 }
 ```
 

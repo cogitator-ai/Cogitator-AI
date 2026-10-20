@@ -63,11 +63,11 @@ Every hook is optional. Each one gets the run's context as its last argument.
 
 ### beforeRun
 
-`beforeRun({ input, messages }, context)` sees the input of a new run and the messages its first turn starts from: the system prompt, the history and the input. Nothing is saved to memory or sent to a model before it returns, so it is the place for input guards.
+`beforeRun({ input, messages }, context)` sees the input of a new run and the messages its first turn starts from: the system prompt, the history and the input. The input is not saved to memory and no model turn starts before it returns, so it is the place for input guards. Audio input is already transcribed into `input` by then.
 
 ### beforeModel
 
-`beforeModel({ messages, model }, context)` runs before each turn. Return `{ messages }` and the run goes on with them, in this turn and every later one. The built-in compaction works this way.
+`beforeModel({ messages, model }, context)` runs before each turn, `model` as the agent names it (before any fallback). Return `{ messages }` and the run goes on with them, in this turn and every later one. The built-in compaction works this way.
 
 ```typescript
 const reminder: RunMiddleware = {
@@ -81,7 +81,7 @@ const reminder: RunMiddleware = {
 
 ### wrapModelCall
 
-`wrapModelCall(call, next, context)` wraps one call to one model. `call.request` is the `ChatRequest` the backend gets, `call.model` the `provider/model` it goes to, and `call.stream` where streamed text goes when the run streams. Hand `next` the call, or a changed copy of it, once or more, or return a `ChatResponse` of your own without calling it. When a turn falls back to one of the agent's `fallbackModels`, the hook runs again for that model.
+`wrapModelCall(call, next, context)` wraps one call to one model. `call.request` is the `ChatRequest` the backend gets, `call.model` the `provider/model` it goes to, and `call.stream` where streamed text goes when the run streams. Hand `next` the call, or a changed copy of it, once or more, or return a `ChatResponse` of your own without calling it. When a turn falls back to one of the agent's `fallbackModels`, the hook runs again for that model. Every call that reaches a backend counts toward the run's usage, cost and budgets and gets its `llm.chat` span, an answer the hook gives without calling the model counts nothing. In a streamed run such an answer reaches `onToken` in one piece.
 
 ```typescript
 const cache: RunMiddleware = {
@@ -115,7 +115,7 @@ const noEmails: RunMiddleware = {
 
 ### wrapToolCall
 
-`wrapToolCall(call, next, context)` wraps each tool call that passed approval, also the calls `invokeTool()` makes for the Cogitator's middleware. `call.toolCall` is the call as the model made it, `call.args` the arguments as the tool's schema parsed them, `call.approved` whether a person approved it. Change the arguments by handing `next` a `toolCall` with new ones: they are checked against the schema again, and a call they do not fit answers the model with the reason. Return a `ToolResult` of your own to answer for the tool.
+`wrapToolCall(call, next, context)` wraps each tool call that passed approval, also the calls `invokeTool()` makes for the Cogitator's middleware. `call.toolCall` is the call as the model made it, `call.args` the arguments as the tool's schema parsed them, `call.approved` whether a person approved it. Change the arguments by handing `next` a `toolCall` with new ones: they are checked against the schema and the tool's `requiresApproval` again, and a call they do not fit, or that would need an approval for them, answers the model with the reason. An approval never carries over to new arguments: the layers inside see `approved: false`. The tool, the call's id and name and `approved` cannot be changed, and `onToolCall`, `RunResult.toolCalls` and spans keep the call as the model made it. Return a `ToolResult` of your own to answer for the tool.
 
 ```typescript
 const normalizeIds: RunMiddleware = {
@@ -155,7 +155,7 @@ try {
 }
 ```
 
-Any other error a hook throws fails the run as it is. A hook inside `wrapModelCall` that throws a provider error (`LLM_UNAVAILABLE` and the like) moves the turn to the next fallback model, as the model's own failure would.
+Any other error a hook throws fails the run as it is, and a hook still running when the run is cancelled or times out is no longer waited for. Outside a run, `invokeTool()` throws an error its `wrapToolCall` middleware throws, a tripwire among them, while a failing tool still comes back in the result's `error`. A hook inside `wrapModelCall` that throws a provider error (`LLM_UNAVAILABLE` and the like) moves the turn to the next fallback model, as the model's own failure would.
 
 ## Built-in Middleware
 

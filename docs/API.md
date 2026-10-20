@@ -270,7 +270,7 @@ interface RunOptions<TDeps = unknown> {
   parallelToolCalls?: boolean;
 
   // Hooks around this run's model and tool calls, after the Cogitator's and the agent's
-  middleware?: RunMiddleware[];
+  middleware?: RunMiddleware<TDeps>[];
 
   // The user the run acts for: owns the threads it creates, reaches tools as context.userId
   userId?: string;
@@ -412,7 +412,7 @@ interface AgentConfig<TDeps = unknown> {
   maxIterations?: number; // default: 10
   timeout?: number; // ms; falls back to limits.defaultTimeout, then 120000
   // Hooks around this agent's model and tool calls, after the Cogitator's middleware
-  middleware?: RunMiddleware[];
+  middleware?: RunMiddleware<TDeps>[];
 }
 ```
 
