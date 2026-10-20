@@ -87,3 +87,11 @@ describe('the length of a tool result the model reads', () => {
     expect(sent).toBe(JSON.stringify(LOG));
   });
 });
+
+describe('limits.maxToolResultLength', () => {
+  it.each([0, -100, 2.5, Number.NaN])('refuses %s when the runtime is created', (value) => {
+    expect(() => new Cogitator({ limits: { maxToolResultLength: value } })).toThrow(
+      /limits.maxToolResultLength must be a positive integer/
+    );
+  });
+});

@@ -146,12 +146,53 @@ describe('the size of a tool result the model reads', () => {
       ],
       400
     );
-    expect(Array.isArray(parts)).toBe(true);
-    const [first, image, last] = parts as Array<{ type: string; text?: string }>;
-    expect(image?.type).toBe('image_base64');
-    expect(first?.text).toContain('of 3000 characters');
-    expect(last?.text).toContain('of 1000 characters');
-    expect(first!.text!.replace(/\[\.\.\..*\]/, '').replace(/\n/g, '')).toHaveLength(300);
+    expect(parts).toEqual([
+      {
+        type: 'text',
+        text: `${'a'.repeat(300)}\n\n[... 3600 of 4000 characters of this tool result were left out ...]`,
+      },
+      { type: 'image_base64', image_base64: { data: PNG, media_type: 'image/png' } },
+      { type: 'text', text: 'b'.repeat(100) },
+    ]);
+  });
+
+  it('cuts the text parts of a media result as one text, so a short first part survives', () => {
+    const status = 'Status: FAILED (exit 2)';
+    const parts = toolPartsToMessageContent(
+      [
+        { type: 'text', text: status },
+        { type: 'text', text: 'log '.repeat(250_000) },
+        { type: 'image', data: PNG, mediaType: 'image/png' },
+      ],
+      DEFAULT_TOOL_RESULT_MAX_LENGTH
+    ) as Array<{ type: string; text?: string }>;
+
+    expect(parts[0]).toEqual({ type: 'text', text: status });
+    expect(parts.at(-1)?.type).toBe('image_base64');
+    const text = parts.map((part) => part.text ?? '').join('');
+    expect(text.length).toBeLessThan(DEFAULT_TOOL_RESULT_MAX_LENGTH + 200);
+  });
+
+  it('leaves out whole parts in the middle with one note, never one note per part', () => {
+    const many = Array.from({ length: 2000 }, (_, id) => ({
+      type: 'json' as const,
+      value: { id, name: `item-${id}`, tags: ['a', 'b'] },
+    }));
+    const parts = toolPartsToMessageContent(
+      [...many, { type: 'image', data: PNG, mediaType: 'image/png' }],
+      10_000
+    ) as Array<{ type: string; text?: string }>;
+
+    const texts = parts.filter((part) => part.type === 'text').map((part) => part.text!);
+    expect(texts.filter((text) => text.includes('were left out'))).toHaveLength(1);
+    expect(texts.join('').length).toBeLessThan(10_200);
+    expect(texts[0]).toBe(JSON.stringify(many[0]!.value));
+    expect(parts.at(-1)?.type).toBe('image_base64');
+  });
+
+  it('rounds a fractional limit down and keeps the note honest', () => {
+    const cut = truncateToolResultText('abcdefghij', 1.5);
+    expect(cut).toBe('a\n\n[... 9 of 10 characters of this tool result were left out ...]');
   });
 
   it('leaves a short media result as it is', () => {

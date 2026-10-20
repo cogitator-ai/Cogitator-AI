@@ -121,19 +121,44 @@ function describeResource(part: ToolResourcePart): string {
 /**
  * `text` cut to `maxLength` characters when it is longer: the start and the end are kept (the
  * end often holds the outcome, such as a command's last lines or an error), and a note in the
- * middle tells the model how much was left out. A surrogate pair is never split.
+ * middle tells the model how much was left out. A surrogate pair is never split. A limit that
+ * is not a number of zero or more leaves the text whole, a fractional one is rounded down.
  */
 export function truncateToolResultText(text: string, maxLength: number): string {
-  if (!(maxLength >= 0) || text.length <= maxLength) return text;
-  let head = Math.ceil(maxLength * 0.75);
-  let tail = Math.floor(maxLength) - head;
-  if (head > 0 && isHighSurrogate(text.charCodeAt(head - 1))) head--;
-  if (tail > 0 && isLowSurrogate(text.charCodeAt(text.length - tail))) tail--;
-  const omitted = text.length - head - tail;
-  const note = `[... ${omitted} of ${text.length} characters of this tool result were left out ...]`;
-  const start = text.slice(0, head);
-  const end = tail > 0 ? text.slice(text.length - tail) : '';
-  return [start, note, end].filter(Boolean).join('\n\n');
+  const cut = toolResultCut([text], maxLength);
+  if (!cut) return text;
+  const start = text.slice(0, cut.start);
+  const end = text.slice(cut.end);
+  return [start, cut.note, end].filter(Boolean).join('\n\n');
+}
+
+/**
+ * Where to cut texts read one after another as a single text of their joined length, as
+ * {@link truncateToolResultText} cuts one: the characters from `start` to `end` (offsets into
+ * the joined text) are left out, and `note` says so. `undefined` when they fit in `maxLength`.
+ */
+export function toolResultCut(
+  texts: readonly string[],
+  maxLength: number
+): { start: number; end: number; note: string } | undefined {
+  const total = texts.reduce((sum, text) => sum + text.length, 0);
+  if (!(maxLength >= 0) || total <= maxLength) return undefined;
+  const limit = Math.floor(maxLength);
+  let start = Math.ceil(limit * 0.75);
+  let end = total - (limit - start);
+  if (start > 0 && isHighSurrogate(codeAt(texts, start - 1))) start--;
+  if (end < total && isLowSurrogate(codeAt(texts, end))) end++;
+  const note = `[... ${end - start} of ${total} characters of this tool result were left out ...]`;
+  return { start, end, note };
+}
+
+function codeAt(texts: readonly string[], index: number): number {
+  let offset = 0;
+  for (const text of texts) {
+    if (index < offset + text.length) return text.charCodeAt(index - offset);
+    offset += text.length;
+  }
+  return Number.NaN;
 }
 
 function isHighSurrogate(code: number): boolean {

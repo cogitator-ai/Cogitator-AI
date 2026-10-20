@@ -33,7 +33,7 @@ export interface ToolConfig<TParams = unknown, TResult = unknown> {
   /**
    * Most characters of this tool's result the model reads, overriding
    * `limits.maxToolResultLength` (default 100 000). A longer result is cut in the middle, with a
-   * note of how much was left out. The application still gets the whole result.
+   * note of how much was left out. `onToolResult` still gets the whole result.
    */
   maxResultLength?: number;
 }
@@ -52,7 +52,7 @@ export interface Tool<TParams = unknown, TResult = unknown> {
   /**
    * Most characters of this tool's result the model reads, overriding
    * `limits.maxToolResultLength` (default 100 000). A longer result is cut in the middle, with a
-   * note of how much was left out. The application still gets the whole result.
+   * note of how much was left out. `onToolResult` still gets the whole result.
    */
   maxResultLength?: number;
   toJSON(): ToolSchema;
@@ -98,8 +98,8 @@ export interface ToolParametersSchema {
  * image part, so a vision model sees it instead of its base64 text. `json` parts reach it as JSON
  * text and `resource` parts as their text, or a line naming the resource. `file` parts (audio,
  * PDFs and other binary data) and binary resources stay with the result for the application, in
- * `onToolResult` and `RunResult`, and reach the model only as a short description, so their
- * bytes never fill the context.
+ * `onToolResult`, and reach the model only as a short description, so their bytes never fill the
+ * context.
  */
 export interface ToolContentResult {
   type: 'tool-content';

@@ -2,6 +2,7 @@ import {
   DEFAULT_TOOL_RESULT_MAX_LENGTH,
   isToolContentResult,
   toolPartsToText,
+  toolResultCut,
   toolResultParts,
   truncateToolResultText,
   type ContentPart,
@@ -71,9 +72,9 @@ function withoutDataUrlPrefix(part: ToolContentPart): ToolContentPart {
 /**
  * The content of the tool message for a result made of parts: text, with each image as an image
  * part when the model can take it, and a description in place of each file, binary resource
- * and image in other formats. A string when there is no image to attach. The text is cut to
- * `maxLength` characters in all (see `truncateToolResultText`), shared between the text parts
- * in proportion to their length.
+ * and image in other formats. A string when there is no image to attach. The text parts are cut
+ * to `maxLength` characters in all as one text (see `truncateToolResultText`): the start and the
+ * end are kept, parts in between are left out, images stay.
  */
 export function toolPartsToMessageContent(
   parts: readonly ToolContentPart[],
@@ -94,20 +95,47 @@ export function toolPartsToMessageContent(
     const text = content.map((part) => (part.type === 'text' ? part.text : '')).join('\n');
     return truncateToolResultText(text, maxLength);
   }
-  const total = content.reduce(
-    (sum, part) => sum + (part.type === 'text' ? part.text.length : 0),
-    0
-  );
-  if (total <= maxLength) return content;
-  return content.map((part) =>
-    part.type === 'text'
-      ? {
-          type: 'text',
-          text: truncateToolResultText(
-            part.text,
-            Math.floor((maxLength * part.text.length) / total)
-          ),
-        }
-      : part
-  );
+  return cutTextParts(content, maxLength);
+}
+
+function cutTextParts(content: ContentPart[], maxLength: number): ContentPart[] {
+  const texts = content.map((part) => (part.type === 'text' ? part.text : ''));
+  const cut = toolResultCut(texts, maxLength);
+  if (!cut) return content;
+  const result: ContentPart[] = [];
+  let offset = 0;
+  let noted = false;
+  for (const part of content) {
+    if (part.type !== 'text') {
+      result.push(part);
+      continue;
+    }
+    const start = offset;
+    offset += part.text.length;
+    if (offset <= cut.start || start >= cut.end) {
+      result.push(part);
+      continue;
+    }
+    const head = part.text.slice(0, Math.max(0, cut.start - start));
+    const tail = part.text.slice(Math.min(part.text.length, cut.end - start));
+    const text = [head, noted ? '' : cut.note, tail].filter(Boolean).join('\n\n');
+    noted = true;
+    if (text) result.push({ type: 'text', text });
+  }
+  return result;
+}
+
+/**
+ * Why a limit on the characters of a result the model reads is invalid, or `undefined` when it is
+ * a positive integer (or `Infinity`). A negative or `NaN` limit would otherwise mean no limit at
+ * all, and `0` a result reduced to the note, without a word.
+ */
+export function toolResultLengthError(
+  value: number | undefined,
+  field: string
+): string | undefined {
+  if (value === undefined || value === Infinity || (Number.isInteger(value) && value > 0)) {
+    return undefined;
+  }
+  return `${field} must be a positive integer (characters of a tool result the model reads), got ${String(value)}`;
 }

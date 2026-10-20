@@ -94,3 +94,31 @@ describe('tool names', () => {
     });
   });
 });
+
+describe('maxResultLength', () => {
+  it.each([0, -1, 1.5, Number.NaN])('tool() refuses %s', (maxResultLength) => {
+    expect(() =>
+      tool({
+        name: 'dump',
+        description: 'Dump',
+        parameters: z.object({}),
+        execute: async () => '',
+        maxResultLength,
+      })
+    ).toThrow(/maxResultLength of tool "dump" must be a positive integer/);
+  });
+
+  it('takes a positive integer or Infinity', () => {
+    for (const maxResultLength of [1, 5000, Infinity]) {
+      expect(
+        tool({
+          name: 'dump',
+          description: 'Dump',
+          parameters: z.object({}),
+          execute: async () => '',
+          maxResultLength,
+        }).maxResultLength
+      ).toBe(maxResultLength);
+    }
+  });
+});

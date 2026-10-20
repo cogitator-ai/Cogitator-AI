@@ -75,7 +75,7 @@ import {
 } from './cogitator/message-builder';
 import { createSpan, getTextContent } from './cogitator/span-factory';
 import { executeTool, createToolMessage } from './cogitator/tool-executor';
-import { DEFAULT_TOOL_RESULT_MAX_LENGTH } from './tool-content';
+import { DEFAULT_TOOL_RESULT_MAX_LENGTH, toolResultLengthError } from './tool-content';
 import { streamChat } from './cogitator/streaming';
 import { RunLimiter } from './cogitator/run-limiter';
 import { findHandoffAgent, handoffTools } from './cogitator/handoffs';
@@ -229,6 +229,13 @@ export class Cogitator implements ToolInvoker {
    *   logger (`getLogger()`); the last runtime created with `logging` sets it
    */
   constructor(config: CogitatorConfig = {}) {
+    const lengthError = toolResultLengthError(
+      config.limits?.maxToolResultLength,
+      'limits.maxToolResultLength'
+    );
+    if (lengthError) {
+      throw new CogitatorError({ message: lengthError, code: ErrorCode.CONFIGURATION_ERROR });
+    }
     this.config = config;
     this.pricer = new CallPricer(config.llm?.pricing, (name) =>
       Object.hasOwn(config.llm?.backends ?? {}, name)
