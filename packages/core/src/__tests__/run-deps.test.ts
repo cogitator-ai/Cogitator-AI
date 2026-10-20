@@ -14,6 +14,7 @@ import { Cogitator } from '../cogitator';
 import { Agent } from '../agent';
 import { tool } from '../tool';
 import { agentAsTool } from '../agent-tool';
+import { getLogger } from '../logger';
 
 const SECRET = 'sk_live_deps_must_stay_out_of_the_model';
 
@@ -120,6 +121,13 @@ describe('run deps', () => {
       memory: { adapter: 'memory' },
     });
     const spans: Span[] = [];
+    const logged: unknown[] = [];
+    const logger = getLogger();
+    for (const level of ['debug', 'info', 'warn', 'error'] as const) {
+      vi.spyOn(logger, level).mockImplementation((...args: unknown[]) => {
+        logged.push(args);
+      });
+    }
 
     const result = await cog.run(support(), {
       input: 'Where is A-1?',
@@ -128,7 +136,9 @@ describe('run deps', () => {
     });
 
     expect(requests.length).toBeGreaterThan(0);
-    expect(JSON.stringify(requests.map((r) => r.messages))).not.toContain(SECRET);
+    expect(JSON.stringify(requests)).not.toContain(SECRET);
+    expect(JSON.stringify(logged)).not.toContain(SECRET);
+    vi.restoreAllMocks();
     const entries = await cog.memory!.getEntries({ threadId: result.threadId });
     expect(entries.success).toBe(true);
     expect(JSON.stringify(entries)).not.toContain(SECRET);
@@ -311,6 +321,21 @@ describe('run deps', () => {
       // @ts-expect-error a typed agent's resume needs deps
       cog.resume(typed, 'thread_1')
     );
+    check(() =>
+      // @ts-expect-error a tool that reads deps needs them outside a run too
+      cog.invokeTool(lookupOrder, { id: 'A-1' })
+    );
+    check(() => cog.invokeTool(plain, {}));
+    const delegate = agentAsTool(cog, support(), { name: 'ask_support', description: 'Ask' });
+    expect(
+      () =>
+        new Agent<{ smtp: string }>({
+          name: 'lead',
+          instructions: 'L.',
+          // @ts-expect-error a delegate whose deps the lead does not provide
+          tools: [delegate],
+        })
+    ).not.toThrow();
     check(() =>
       cog.run(new Agent({ name: 'u', instructions: 'U.', tools: [plain] }), { input: 'x' })
     );

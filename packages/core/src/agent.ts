@@ -19,6 +19,8 @@ export class AgentDeserializationError extends Error {
   }
 }
 
+const generatedIds = new WeakMap<Agent, string>();
+
 /**
  * AI agent that can execute tasks using LLM and tools.
  *
@@ -43,11 +45,11 @@ export class AgentDeserializationError extends Error {
  * ```
  *
  * `TDeps` is the type of the `deps` the agent's runs pass to its tools (`RunOptions.deps`). Set
- * it (`new Agent<AppDeps>(...)`) and the agent only takes tools whose deps it provides, and
- * `cogitator.run()` requires `deps`.
+ * it (`new Agent<AppDeps>(...)`) and `cogitator.run()` requires `deps`, and a tool whose deps
+ * type is unrelated to `AppDeps` is refused. Declare every field the agent's tools read in it:
+ * TypeScript compares tool methods loosely, so a tool reading a field `AppDeps` lacks still
+ * compiles.
  */
-const generatedIds = new WeakMap<Agent, string>();
-
 export class Agent<TDeps = unknown> implements IAgent<TDeps> {
   /** Human-readable name of the agent */
   readonly name: string;

@@ -351,10 +351,10 @@ export class Cogitator implements ToolInvoker {
    * if (result.error) console.error(result.error);
    * ```
    */
-  async invokeTool(
-    tool: Tool,
+  async invokeTool<TParams, TResult, TDeps = unknown>(
+    tool: Tool<TParams, TResult, TDeps>,
     args: unknown,
-    options: ToolInvocationOptions = {}
+    ...[options = {}]: InvocationArgs<TDeps>
   ): Promise<ToolInvocationResult> {
     const toolCall: ToolCall = {
       id: options.toolCallId ?? `call_${nanoid(12)}`,
@@ -2244,6 +2244,11 @@ function waitForAbortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<
 type ResumeArgs<TDeps> = unknown extends TDeps
   ? [options?: ResumeOptions]
   : [options: ResumeOptions<TDeps> & { deps: TDeps }];
+
+/** The options of `invokeTool()`: optional, unless the tool reads typed `deps`. */
+type InvocationArgs<TDeps> = unknown extends TDeps
+  ? [options?: ToolInvocationOptions]
+  : [options: ToolInvocationOptions & { deps: TDeps }];
 
 /**
  * Why a model failed, for logs and spans: its error kind or code, never the error's text, which
