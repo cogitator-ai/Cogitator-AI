@@ -137,7 +137,7 @@ describe('Core: tool contract', () => {
     const started = `${base}.started`;
     const finished = `${base}.finished`;
     const cog = await fakeCogitator(
-      callsToolOnce('shell', { command: `touch ${started} && sleep 3 && touch ${finished}` }),
+      callsToolOnce('shell', { command: `touch ${started}; (sleep 3; touch ${finished}) & wait` }),
       { sandbox: { docker: { socketPath: join(tmpdir(), 'no-docker-here.sock') } } }
     );
     const shell = tool({
