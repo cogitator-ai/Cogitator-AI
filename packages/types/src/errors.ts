@@ -55,6 +55,8 @@ export enum ErrorCode {
 
   PROMPT_INJECTION_DETECTED = 'PROMPT_INJECTION_DETECTED',
   PII_DETECTED = 'PII_DETECTED',
+  /** A guard (`tripwire()` in a run middleware) stopped the run */
+  GUARDRAIL_TRIPPED = 'GUARDRAIL_TRIPPED',
 
   VALIDATION_ERROR = 'VALIDATION_ERROR',
   CONFIGURATION_ERROR = 'CONFIGURATION_ERROR',
@@ -109,6 +111,7 @@ export const ERROR_STATUS_CODES: Record<ErrorCode, number> = {
 
   [ErrorCode.PROMPT_INJECTION_DETECTED]: 400,
   [ErrorCode.PII_DETECTED]: 400,
+  [ErrorCode.GUARDRAIL_TRIPPED]: 400,
 
   [ErrorCode.VALIDATION_ERROR]: 400,
   [ErrorCode.CONFIGURATION_ERROR]: 500,

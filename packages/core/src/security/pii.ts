@@ -174,21 +174,13 @@ export class PiiMaskingBackend implements LLMBackend {
   }
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
-    const { masked, vault } = this.maskRequest(request);
+    const { masked, vault } = maskChatRequest(request, this.masker, this.config);
     const response = await this.inner.chat(masked);
-    if (!this.restores) return response;
-    return {
-      ...response,
-      content: vault.restore(response.content),
-      ...(response.reasoning && { reasoning: vault.restore(response.reasoning) }),
-      ...(response.toolCalls && {
-        toolCalls: response.toolCalls.map((call) => restoreCall(call, vault)),
-      }),
-    };
+    return this.restores ? restoreChatResponse(response, vault) : response;
   }
 
   async *chatStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk> {
-    const { masked, vault } = this.maskRequest(request);
+    const { masked, vault } = maskChatRequest(request, this.masker, this.config);
     if (!this.restores || vault.size === 0) {
       yield* this.inner.chatStream(masked);
       return;
@@ -229,13 +221,33 @@ export class PiiMaskingBackend implements LLMBackend {
   private get restores(): boolean {
     return (this.config.mode ?? 'mask') === 'mask';
   }
+}
 
-  private maskRequest(request: ChatRequest): { masked: ChatRequest; vault: PiiVault } {
-    const vault = new PiiVault();
-    const messages = request.messages.map((message) => maskMessage(message, this.masker, vault));
-    if (vault.findings.length > 0) this.config.onDetect?.(summarize(vault.findings));
-    return { masked: { ...request, messages }, vault };
-  }
+/**
+ * `request` with the personal data in its messages replaced by placeholders, and the vault that
+ * puts the values back. What was found goes to `config.onDetect`, by type.
+ */
+export function maskChatRequest(
+  request: ChatRequest,
+  masker: PiiMasker,
+  config: PiiConfig
+): { masked: ChatRequest; vault: PiiVault } {
+  const vault = new PiiVault();
+  const messages = request.messages.map((message) => maskMessage(message, masker, vault));
+  if (vault.findings.length > 0) config.onDetect?.(summarize(vault.findings));
+  return { masked: { ...request, messages }, vault };
+}
+
+/** `response` with the values of `vault` back in its text, reasoning and tool call arguments. */
+export function restoreChatResponse(response: ChatResponse, vault: PiiVault): ChatResponse {
+  return {
+    ...response,
+    content: vault.restore(response.content),
+    ...(response.reasoning && { reasoning: vault.restore(response.reasoning) }),
+    ...(response.toolCalls && {
+      toolCalls: response.toolCalls.map((call) => restoreCall(call, vault)),
+    }),
+  };
 }
 
 /** `backend` behind PII masking per `config`, or `backend` itself without it. */
@@ -356,7 +368,7 @@ function restoreCall(call: ToolCall, vault: PiiVault): ToolCall {
  * Restores placeholders in streamed text, holding back a trailing `[...`
  * that could be the start of a placeholder until the next piece completes it.
  */
-class StreamRestorer {
+export class StreamRestorer {
   private pending = '';
 
   constructor(private readonly vault: PiiVault) {}

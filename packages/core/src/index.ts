@@ -332,6 +332,15 @@ export {
   withPiiMasking,
   PII_TYPES,
 } from './security/pii';
+export {
+  tripwire,
+  isTripwire,
+  piiMiddleware,
+  promptInjectionMiddleware,
+  guardrailsMiddleware,
+  compactionMiddleware,
+  type TripwireDetails,
+} from './middleware/index';
 export type { PromptTarget, StartABTestOptions, PromptResolution } from './cogitator/prompts';
 export { InMemoryInstructionVersionStore, InMemoryABTestStore } from './learning/prompt-stores';
 

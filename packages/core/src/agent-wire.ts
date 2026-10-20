@@ -42,6 +42,7 @@ export const AGENT_CONFIG_WIRE_FIELDS = {
   maxIterations: 'carried',
   onIterationLimit: 'carried',
   timeout: 'carried',
+  middleware: 'not carried: it is code, the receiving side runs its own (config middleware)',
 } as const satisfies Record<keyof AgentConfig, string>;
 
 /** Something wrong with an agent on the wire, or with what the receiving side can run. */

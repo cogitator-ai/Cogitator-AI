@@ -6,6 +6,7 @@ import type { Tool } from './tool';
 import type { Skill } from './skill';
 import type { ZodType } from 'zod';
 import type { ReasoningConfig } from './llm';
+import type { RunMiddleware } from './middleware';
 
 /**
  * An agent's configuration. `TDeps` is the type of the `deps` its runs pass (`RunOptions.deps`):
@@ -56,6 +57,12 @@ export interface AgentConfig<TDeps = unknown> {
    */
   onIterationLimit?: 'answer' | 'stop';
   timeout?: number;
+  /**
+   * Hooks around this agent's model and tool calls, after the Cogitator's middleware and
+   * before the run's (see `RunMiddleware`). After a handoff, the agent the run went on as
+   * brings its own.
+   */
+  middleware?: RunMiddleware<TDeps>[];
 }
 
 /** A model to fall back to: `provider/model`, or a model name with the provider to run it on. */

@@ -13,6 +13,7 @@ export * from './browser';
 export * from './llm';
 export * from './providers';
 export * from './runtime';
+export * from './middleware';
 export * from './memory';
 export * from './sandbox';
 export * from './workflow';

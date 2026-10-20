@@ -1,0 +1,665 @@
+import { describe, it, expect, vi } from 'vitest';
+import { z } from 'zod';
+import {
+  CogitatorError,
+  ErrorCode,
+  type Tool,
+  type ChatRequest,
+  type ChatResponse,
+  type ChatStreamChunk,
+  type LLMBackend,
+  type RunMiddleware,
+  type RunMiddlewareContext,
+} from '@cogitator-ai/types';
+import { Cogitator } from '../cogitator';
+import { Agent } from '../agent';
+import { tool } from '../tool';
+import { isTripwire, piiMiddleware, tripwire } from '../middleware/index';
+
+const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
+
+function answer(content: string): ChatResponse {
+  return { id: 'r', content, finishReason: 'stop', usage };
+}
+
+function callTool(name: string, args: Record<string, unknown>, id = 'c1'): ChatResponse {
+  return {
+    id: 'r',
+    content: '',
+    toolCalls: [{ id, name, arguments: args }],
+    finishReason: 'tool_calls',
+    usage,
+  };
+}
+
+/** A backend answering each request with the next response, streaming its text in three-character pieces. */
+function scripted(...responses: ChatResponse[]) {
+  const requests: ChatRequest[] = [];
+  let index = 0;
+  const next = () => responses[Math.min(index++, responses.length - 1)];
+  const backend: LLMBackend = {
+    provider: 'openai',
+    chat: vi.fn(async (request: ChatRequest) => {
+      requests.push({ ...request, messages: [...request.messages] });
+      return next();
+    }),
+    chatStream: vi.fn(async function* (request: ChatRequest): AsyncGenerator<ChatStreamChunk> {
+      requests.push({ ...request, messages: [...request.messages] });
+      const response = next();
+      for (const piece of response.content.match(/[\s\S]{1,3}/g) ?? []) {
+        yield { id: 's', delta: { content: piece } };
+      }
+      if (response.toolCalls) {
+        yield { id: 's', delta: { toolCalls: response.toolCalls } };
+      }
+      yield { id: 's', delta: {}, finishReason: response.finishReason, usage };
+    }),
+  };
+  return { backend, requests };
+}
+
+function runtime(backend: LLMBackend, extra: ConstructorParameters<typeof Cogitator>[0] = {}) {
+  return new Cogitator({ llm: { backends: { mock: backend } }, ...extra });
+}
+
+const lookup = tool({
+  name: 'lookup',
+  description: 'Look an order up',
+  parameters: z.object({ order: z.string(), limit: z.number().default(5) }),
+  execute: async ({ order, limit }) => ({ order, limit }),
+});
+
+function agentWith(middleware: RunMiddleware[] = [], tools: Tool[] = [lookup]) {
+  return new Agent({
+    name: 'support',
+    model: 'mock/m',
+    instructions: 'Help.',
+    tools,
+    middleware,
+  });
+}
+
+describe('run middleware', () => {
+  it('runs before hooks in order, nests wraps with the first outermost and runs afterModel in reverse', async () => {
+    const events: string[] = [];
+    const layer = (name: string): RunMiddleware => ({
+      name,
+      beforeRun: () => void events.push(`${name}.beforeRun`),
+      beforeModel: () => void events.push(`${name}.beforeModel`),
+      async wrapModelCall(call, next) {
+        events.push(`${name}.wrap>`);
+        const response = await next(call);
+        events.push(`${name}.wrap<`);
+        return response;
+      },
+      afterModel: () => void events.push(`${name}.afterModel`),
+    });
+    const { backend } = scripted(answer('Hi'));
+    const cog = runtime(backend, { middleware: [layer('config')] });
+
+    await cog.run(agentWith([layer('agent')]), { input: 'Hello', middleware: [layer('run')] });
+
+    expect(events).toEqual([
+      'config.beforeRun',
+      'agent.beforeRun',
+      'run.beforeRun',
+      'config.beforeModel',
+      'agent.beforeModel',
+      'run.beforeModel',
+      'config.wrap>',
+      'agent.wrap>',
+      'run.wrap>',
+      'run.wrap<',
+      'agent.wrap<',
+      'config.wrap<',
+      'run.afterModel',
+      'agent.afterModel',
+      'config.afterModel',
+    ]);
+    await cog.close();
+  });
+
+  it('gives every hook the run it works in, with state shared across hooks', async () => {
+    const seen: RunMiddlewareContext[] = [];
+    const record: RunMiddleware<{ tenant: string }> = {
+      name: 'record',
+      beforeRun(_event, context) {
+        seen.push(context);
+        context.state.set('started', true);
+      },
+      beforeModel: (_event, context) => void seen.push(context),
+      async wrapToolCall(call, next, context) {
+        seen.push(context);
+        expect(context.state.get('started')).toBe(true);
+        return next(call);
+      },
+    };
+    const { backend } = scripted(callTool('lookup', { order: '42' }), answer('Found it'));
+    const cog = runtime(backend);
+    const agent = new Agent<{ tenant: string }>({
+      name: 'support',
+      model: 'mock/m',
+      instructions: 'Help.',
+      tools: [lookup],
+      middleware: [record],
+    });
+
+    const result = await cog.run(agent, {
+      input: 'Where is order 42?',
+      threadId: 'thread_1',
+      userId: 'user_1',
+      channelType: 'web',
+      deps: { tenant: 'acme' },
+    });
+
+    expect(seen.map((context) => context.iteration)).toEqual([0, 1, 1, 2]);
+    for (const context of seen) {
+      expect(context).toMatchObject({
+        runId: result.runId,
+        threadId: 'thread_1',
+        agentId: agent.id,
+        agentName: 'support',
+        userId: 'user_1',
+        channelType: 'web',
+        deps: { tenant: 'acme' },
+      });
+      expect(context.signal).toBeInstanceOf(AbortSignal);
+      expect(context.state).toBe(seen[0].state);
+    }
+    await cog.close();
+  });
+
+  describe('beforeRun', () => {
+    it('stops a run with a tripwire before anything is saved or sent', async () => {
+      const { backend } = scripted(answer('never'));
+      const cog = runtime(backend, { memory: { adapter: 'memory' } });
+      const guard: RunMiddleware = {
+        name: 'topic-guard',
+        beforeRun({ input, messages }) {
+          expect(messages.at(-1)).toMatchObject({ role: 'user', content: input });
+          if (input.includes('homework')) tripwire('Homework is off topic', { topic: 'homework' });
+        },
+      };
+
+      const error = await cog
+        .run(agentWith([guard]), { input: 'Do my homework', threadId: 't1' })
+        .catch((e: unknown) => e);
+
+      expect(isTripwire(error)).toBe(true);
+      expect(error).toMatchObject({
+        code: ErrorCode.GUARDRAIL_TRIPPED,
+        statusCode: 400,
+        message: 'Guardrail "topic-guard" tripped: Homework is off topic',
+        details: {
+          reason: 'Homework is off topic',
+          middleware: 'topic-guard',
+          info: { topic: 'homework' },
+        },
+      });
+      expect(backend.chat).not.toHaveBeenCalled();
+      expect(await cog.memory?.getEntries({ threadId: 't1' })).toMatchObject({
+        success: true,
+        data: [],
+      });
+      await cog.close();
+    });
+
+    it('is not called again when a paused run resumes', async () => {
+      const beforeRun = vi.fn();
+      const refund = tool({
+        name: 'refund',
+        description: 'Refund an order',
+        parameters: z.object({ order: z.string() }),
+        requiresApproval: true,
+        execute: async ({ order }) => `refunded ${order}`,
+      });
+      const { backend } = scripted(callTool('refund', { order: '7' }), answer('Refunded'));
+      const cog = runtime(backend);
+      const agent = agentWith([{ name: 'count', beforeRun }], [refund]);
+
+      const paused = await cog.run(agent, { input: 'Refund 7' });
+      expect(paused.status).toBe('paused');
+      const result = await cog.resume(agent, paused.checkpoint!, {
+        decisions: { c1: { approved: true } },
+      });
+
+      expect(result.output).toBe('Refunded');
+      expect(beforeRun).toHaveBeenCalledTimes(1);
+      await cog.close();
+    });
+  });
+
+  describe('beforeModel', () => {
+    it('changes the conversation for this turn and every later one', async () => {
+      const { backend, requests } = scripted(callTool('lookup', { order: '1' }), answer('Done'));
+      const cog = runtime(backend);
+      const note: RunMiddleware = {
+        name: 'note',
+        beforeModel({ messages }, context) {
+          if (context.iteration !== 1) return;
+          return { messages: [...messages, { role: 'user', content: 'Answer in French.' }] };
+        },
+      };
+
+      const result = await cog.run(agentWith([note]), { input: 'Order 1?' });
+
+      expect(requests[0].messages.at(-1)).toEqual({ role: 'user', content: 'Answer in French.' });
+      expect(requests[1].messages.map((m) => m.content)).toContain('Answer in French.');
+      expect(result.messages.map((m) => m.content)).toContain('Answer in French.');
+      await cog.close();
+    });
+  });
+
+  describe('wrapModelCall', () => {
+    it('can change the request the backend gets', async () => {
+      const { backend, requests } = scripted(answer('Hi'));
+      const cog = runtime(backend);
+      const cold: RunMiddleware = {
+        name: 'cold',
+        wrapModelCall: (call, next) =>
+          next({ ...call, request: { ...call.request, temperature: 0 } }),
+      };
+
+      await cog.run(agentWith([cold]), { input: 'Hello' });
+
+      expect(requests[0].temperature).toBe(0);
+      await cog.close();
+    });
+
+    it('can answer without calling the model', async () => {
+      const { backend } = scripted(answer('from the model'));
+      const cog = runtime(backend);
+      const cache: RunMiddleware = {
+        name: 'cache',
+        wrapModelCall: async () => answer('from the cache'),
+      };
+
+      const result = await cog.run(agentWith([cache]), { input: 'Hello' });
+
+      expect(result.output).toBe('from the cache');
+      expect(backend.chat).not.toHaveBeenCalled();
+      await cog.close();
+    });
+
+    it('can call the model more than once', async () => {
+      const { backend } = scripted(answer('draft'), answer('final'));
+      const cog = runtime(backend);
+      const secondOpinion: RunMiddleware = {
+        name: 'second-opinion',
+        async wrapModelCall(call, next) {
+          await next(call);
+          return next(call);
+        },
+      };
+
+      const result = await cog.run(agentWith([secondOpinion]), { input: 'Hello' });
+
+      expect(result.output).toBe('final');
+      expect(backend.chat).toHaveBeenCalledTimes(2);
+      await cog.close();
+    });
+
+    it('wraps each model a turn tries, naming it', async () => {
+      const failing: LLMBackend = {
+        provider: 'openai',
+        chat: vi.fn(async () => {
+          throw new CogitatorError({ message: 'down', code: ErrorCode.LLM_UNAVAILABLE });
+        }),
+        chatStream: vi.fn(),
+      };
+      const { backend } = scripted(answer('from the fallback'));
+      const cog = new Cogitator({
+        llm: { backends: { primary: failing, backup: backend }, retry: false },
+      });
+      const models: string[] = [];
+      const agent = new Agent({
+        name: 'a',
+        model: 'primary/m',
+        fallbackModels: ['backup/m'],
+        instructions: 'Help.',
+        middleware: [
+          {
+            name: 'models',
+            wrapModelCall: (call, next) => {
+              models.push(call.model);
+              return next(call);
+            },
+          },
+        ],
+      });
+
+      const result = await cog.run(agent, { input: 'Hello' });
+
+      expect(result.output).toBe('from the fallback');
+      expect(models).toEqual(['primary/m', 'backup/m']);
+      await cog.close();
+    });
+
+    it('can rewrite what a streamed call sends to onToken', async () => {
+      const { backend } = scripted(answer('hello there'));
+      const cog = runtime(backend);
+      const shout: RunMiddleware = {
+        name: 'shout',
+        wrapModelCall: (call, next) =>
+          next({
+            ...call,
+            ...(call.stream && {
+              stream: { onToken: (token: string) => call.stream?.onToken(token.toUpperCase()) },
+            }),
+          }),
+      };
+      const tokens: string[] = [];
+
+      const result = await cog.run(agentWith([shout]), {
+        input: 'Hello',
+        stream: true,
+        onToken: (token) => tokens.push(token),
+      });
+
+      expect(tokens.join('')).toBe('HELLO THERE');
+      expect(result.output).toBe('hello there');
+      await cog.close();
+    });
+  });
+
+  describe('afterModel', () => {
+    it('replaces the answer the run uses', async () => {
+      const { backend } = scripted(answer('The code is 1234.'));
+      const cog = runtime(backend);
+      const redact: RunMiddleware = {
+        name: 'redact',
+        afterModel: ({ response }) => ({ content: response.content.replace(/\d/g, '*') }),
+      };
+
+      const result = await cog.run(agentWith([redact]), { input: 'Code?' });
+
+      expect(result.output).toBe('The code is ****.');
+      expect(result.messages.at(-1)).toMatchObject({
+        role: 'assistant',
+        content: 'The code is ****.',
+      });
+      await cog.close();
+    });
+
+    it('can drop the tool calls of a turn, making it the answer', async () => {
+      const execute = vi.fn(async () => 'ran');
+      const risky = tool({
+        name: 'risky',
+        description: 'Risky',
+        parameters: z.object({}),
+        execute,
+      });
+      const { backend } = scripted({ ...callTool('risky', {}), content: 'I would rather not.' });
+      const cog = runtime(backend);
+      const noRisk: RunMiddleware = {
+        name: 'no-risk',
+        afterModel: ({ response }) =>
+          response.toolCalls?.some((call) => call.name === 'risky') ? { toolCalls: [] } : undefined,
+      };
+
+      const result = await cog.run(agentWith([noRisk], [risky]), { input: 'Go' });
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(result.output).toBe('I would rather not.');
+      expect(result.toolCalls).toEqual([]);
+      await cog.close();
+    });
+
+    it('holds streamed text until the hooks saw it when a middleware holds the stream', async () => {
+      const { backend } = scripted(answer('secret plans'));
+      const cog = runtime(backend);
+      const censor: RunMiddleware = {
+        name: 'censor',
+        holdsStream: true,
+        afterModel: () => ({ content: '[withheld]' }),
+      };
+      const tokens: string[] = [];
+
+      const result = await cog.run(agentWith([censor]), {
+        input: 'Plans?',
+        stream: true,
+        onToken: (token) => tokens.push(token),
+      });
+
+      expect(tokens).toEqual(['[withheld]']);
+      expect(result.output).toBe('[withheld]');
+      await cog.close();
+    });
+  });
+
+  describe('wrapToolCall', () => {
+    it('sees the arguments as the schema read them and whether a person approved the call', async () => {
+      const calls: Array<{ args: unknown; approved: boolean }> = [];
+      const { backend } = scripted(callTool('lookup', { order: '9' }), answer('Done'));
+      const cog = runtime(backend);
+      const watch: RunMiddleware = {
+        name: 'watch',
+        wrapToolCall: (call, next) => {
+          calls.push({ args: call.args, approved: call.approved });
+          return next(call);
+        },
+      };
+
+      await cog.run(agentWith([watch]), { input: 'Order 9' });
+
+      expect(calls).toEqual([{ args: { order: '9', limit: 5 }, approved: false }]);
+      await cog.close();
+    });
+
+    it('checks arguments a middleware changes against the schema again', async () => {
+      const results: unknown[] = [];
+      const { backend } = scripted(callTool('lookup', { order: '9' }), answer('Done'));
+      const cog = runtime(backend);
+      const rewrite: RunMiddleware = {
+        name: 'rewrite',
+        wrapToolCall: (call, next) =>
+          next({ ...call, toolCall: { ...call.toolCall, arguments: { order: 'A-9', limit: 1 } } }),
+      };
+      const inner: RunMiddleware = {
+        name: 'inner',
+        wrapToolCall: async (call, next) => {
+          results.push(call.args);
+          return next(call);
+        },
+      };
+
+      await cog.run(agentWith([rewrite, inner]), {
+        input: 'Order 9',
+        onToolResult: (result) => results.push(result.result),
+      });
+
+      expect(results).toEqual([
+        { order: 'A-9', limit: 1 },
+        { order: 'A-9', limit: 1 },
+      ]);
+      await cog.close();
+    });
+
+    it('answers with the reason when changed arguments do not fit the schema', async () => {
+      const execute = vi.fn(async () => 'ran');
+      const strict = tool({
+        name: 'strict',
+        description: 'Strict',
+        parameters: z.object({ n: z.number() }),
+        execute,
+      });
+      const { backend } = scripted(callTool('strict', { n: 1 }), answer('Done'));
+      const cog = runtime(backend);
+      const breaker: RunMiddleware = {
+        name: 'breaker',
+        wrapToolCall: (call, next) =>
+          next({ ...call, toolCall: { ...call.toolCall, arguments: { n: 'one' } } }),
+      };
+      const errors: (string | undefined)[] = [];
+
+      await cog.run(agentWith([breaker], [strict]), {
+        input: 'Go',
+        onToolResult: (result) => errors.push(result.error),
+      });
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(errors[0]).toMatch(/^Invalid arguments: /);
+      await cog.close();
+    });
+
+    it('can answer for the tool, and the model reads that answer', async () => {
+      const execute = vi.fn(async () => 'live');
+      const quote = tool({
+        name: 'quote',
+        description: 'Quote',
+        parameters: z.object({}),
+        execute,
+      });
+      const { backend, requests } = scripted(callTool('quote', {}), answer('Done'));
+      const cog = runtime(backend);
+      const stub: RunMiddleware = {
+        name: 'stub',
+        wrapToolCall: async (call) => ({
+          callId: call.toolCall.id,
+          name: call.toolCall.name,
+          result: 'cached',
+        }),
+      };
+
+      await cog.run(agentWith([stub], [quote]), { input: 'Quote' });
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(requests[1].messages.at(-1)).toMatchObject({ role: 'tool', content: '"cached"' });
+      await cog.close();
+    });
+
+    it('stops the run with a tripwire instead of letting the model work around it', async () => {
+      const { backend } = scripted(callTool('lookup', { order: 'drop table' }), answer('Done'));
+      const cog = runtime(backend);
+      const sqlGuard: RunMiddleware = {
+        name: 'sql-guard',
+        wrapToolCall: async (call, next) => {
+          if (JSON.stringify(call.args).includes('drop')) tripwire('SQL in a tool argument');
+          return next(call);
+        },
+      };
+
+      await expect(cog.run(agentWith([sqlGuard]), { input: 'Order' })).rejects.toMatchObject({
+        code: ErrorCode.GUARDRAIL_TRIPPED,
+        details: { middleware: 'sql-guard', reason: 'SQL in a tool argument' },
+      });
+      expect(backend.chat).toHaveBeenCalledTimes(1);
+      await cog.close();
+    });
+
+    it("wraps invokeTool() calls with the Cogitator's middleware", async () => {
+      const wrapped = vi.fn();
+      const { backend } = scripted(answer('unused'));
+      const cog = runtime(backend, {
+        middleware: [
+          {
+            name: 'audit',
+            wrapToolCall: (call, next, context) => {
+              wrapped(call.args, context.runId, context.agentName, context.threadId);
+              return next(call);
+            },
+          },
+        ],
+      });
+
+      const result = await cog.invokeTool(
+        lookup,
+        { order: '3' },
+        { runId: 'run_x', agentId: 'voice', threadId: 'thread_x' }
+      );
+
+      expect(result.result).toEqual({ order: '3', limit: 5 });
+      expect(wrapped).toHaveBeenCalledWith({ order: '3', limit: 5 }, 'run_x', 'voice', 'thread_x');
+      await cog.close();
+    });
+  });
+
+  it('switches to the middleware of the agent a run hands over to', async () => {
+    const seen: string[] = [];
+    const named = (name: string): RunMiddleware => ({
+      name,
+      beforeModel: (_event, context) => void seen.push(`${name}:${context.agentName}`),
+    });
+    const billing = new Agent({
+      name: 'billing',
+      model: 'mock/m',
+      instructions: 'Billing.',
+      middleware: [named('billing-mw')],
+    });
+    const triage = new Agent({
+      name: 'triage',
+      model: 'mock/m',
+      instructions: 'Triage.',
+      handoffs: [billing],
+      middleware: [named('triage-mw')],
+    });
+    const { backend } = scripted(callTool('transfer_to_billing', {}), answer('Billing here'));
+    const cog = runtime(backend);
+
+    const result = await cog.run(triage, { input: 'Invoice question' });
+
+    expect(result.finalAgent).toBe('billing');
+    expect(seen).toEqual(['triage-mw:triage', 'billing-mw:billing']);
+    await cog.close();
+  });
+
+  it('fails the run with the error a hook throws', async () => {
+    const { backend } = scripted(answer('Hi'));
+    const cog = runtime(backend);
+    const broken: RunMiddleware = {
+      name: 'broken',
+      beforeModel: () => {
+        throw new Error('hook failed');
+      },
+    };
+    const onRunError = vi.fn();
+
+    await expect(cog.run(agentWith([broken]), { input: 'Hello', onRunError })).rejects.toThrow(
+      'hook failed'
+    );
+    expect(onRunError).toHaveBeenCalledOnce();
+    await cog.close();
+  });
+
+  describe('built-in PII masking', () => {
+    it('masks what other middleware add and still shows them the real values', async () => {
+      const { backend, requests } = scripted(answer('Wrote to [EMAIL_1]'));
+      const cog = runtime(backend, { security: { pii: {} } });
+      const sees: string[] = [];
+      const signature: RunMiddleware = {
+        name: 'signature',
+        async wrapModelCall(call, next) {
+          sees.push(JSON.stringify(call.request.messages));
+          const messages = [
+            ...call.request.messages,
+            { role: 'user' as const, content: 'cc ops@corp.io' },
+          ];
+          return next({ ...call, request: { ...call.request, messages } });
+        },
+      };
+
+      const result = await cog.run(agentWith([signature]), { input: 'Mail bob@corp.io' });
+
+      expect(sees[0]).toContain('bob@corp.io');
+      expect(JSON.stringify(requests)).not.toContain('@corp.io');
+      expect(result.output).toBe('Wrote to bob@corp.io');
+      await cog.close();
+    });
+
+    it('restores streamed placeholders split across chunks', async () => {
+      const { backend } = scripted(answer('Sent to [EMAIL_1] now'));
+      const cog = runtime(backend);
+      const tokens: string[] = [];
+
+      const result = await cog.run(agentWith([piiMiddleware({})]), {
+        input: 'Mail bob@corp.io',
+        stream: true,
+        onToken: (token) => tokens.push(token),
+      });
+
+      expect(tokens.join('')).toBe('Sent to bob@corp.io now');
+      expect(result.output).toBe('Sent to bob@corp.io now');
+      await cog.close();
+    });
+  });
+});

@@ -90,6 +90,8 @@ function project(key: keyof AgentConfig, config: AgentConfig): unknown {
       return config.tools?.map((t) => t.toJSON());
     case 'skills':
       return AGENT_CONFIG_WIRE_FIELDS.skills;
+    case 'middleware':
+      return AGENT_CONFIG_WIRE_FIELDS.middleware;
     case 'responseFormat': {
       const format = config.responseFormat;
       return format?.type === 'json_schema'
@@ -142,6 +144,7 @@ describe('agent wire format', () => {
       maxIterations: 7,
       onIterationLimit: 'stop',
       timeout: 600000,
+      middleware: [{ name: 'audit', afterModel: () => undefined }],
     };
     const original = new Agent(full);
 
