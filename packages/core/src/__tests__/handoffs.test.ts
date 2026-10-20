@@ -4,7 +4,8 @@ import { z } from 'zod';
 import { Cogitator } from '../cogitator';
 import { Agent } from '../agent';
 import { tool } from '../tool';
-import { findHandoffAgent } from '../cogitator/handoffs';
+import { findHandoffAgent, handoffTools } from '../cogitator/handoffs';
+import { isProviderSafeToolName } from '../tool-name';
 
 const refund = tool({
   name: 'refund',
@@ -145,5 +146,27 @@ describe('handoffs', () => {
 
     expect(findHandoffAgent(entry, 'b')).toBe(b);
     expect(findHandoffAgent(entry, 'missing')).toBeUndefined();
+  });
+
+  it('names the handoff to an agent with a long name in a form providers accept', () => {
+    const long = (suffix: string) =>
+      new Agent({
+        name: `Enterprise Customer Billing Escalations And Refunds Specialist ${suffix}`,
+        model: 'mock/m',
+        instructions: 'x',
+      });
+    const desk = new Agent({
+      name: 'desk',
+      model: 'mock/m',
+      instructions: 'x',
+      handoffs: [long('EU'), long('US')],
+    });
+
+    const names = handoffTools(desk).tools.map((t) => t.name);
+
+    expect(names).toHaveLength(2);
+    expect(names.every(isProviderSafeToolName)).toBe(true);
+    expect(names.every((name) => name.startsWith('transfer_to_Enterprise'))).toBe(true);
+    expect(new Set(names).size).toBe(2);
   });
 });

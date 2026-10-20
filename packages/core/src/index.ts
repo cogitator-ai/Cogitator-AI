@@ -28,6 +28,7 @@ export { tool, toolset, toolToSchema } from './tool';
 export { toToolParameters } from './tool-schema';
 export {
   TOOL_NAME_MAX_LENGTH,
+  assertToolName,
   isProviderSafeToolName,
   normalizeToolName,
   normalizeToolNames,

@@ -1,6 +1,7 @@
 import type { Agent as IAgent, Handoff, Tool } from '@cogitator-ai/types';
 import { z } from 'zod';
 import { tool } from '../tool';
+import { normalizeToolName } from '../tool-name';
 
 const handoffParameters = z.object({
   reason: z.string().optional().describe('Why the conversation goes to this agent'),
@@ -18,7 +19,7 @@ export function handoffTools(agent: IAgent): HandoffTools {
   const targets = new Map<string, IAgent>();
   for (const entry of agent.config.handoffs ?? []) {
     const { agent: target, toolName, description } = toHandoff(entry);
-    const name = toolName ?? `transfer_to_${toToolName(target.name)}`;
+    const name = toolName ?? normalizeToolName(`transfer_to_${toToolName(target.name)}`);
     targets.set(name, target);
     tools.push(
       tool({

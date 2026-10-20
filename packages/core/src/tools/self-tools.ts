@@ -3,6 +3,7 @@ import { join, basename, resolve, relative, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { tool } from '../tool';
+import { isProviderSafeToolName, normalizeToolName } from '../tool-name';
 import type { Tool } from '@cogitator-ai/types';
 
 async function importFresh(filePath: string): Promise<unknown> {
@@ -28,6 +29,12 @@ function validateToolShape(mod: unknown): { valid: boolean; error?: string } {
   const t = m?.default as Record<string, unknown> | undefined;
   if (!t) return { valid: false, error: 'File must have a default export' };
   if (typeof t.name !== 'string') return { valid: false, error: 'Tool must have a string "name"' };
+  if (!isProviderSafeToolName(t.name)) {
+    return {
+      valid: false,
+      error: `Tool name "${t.name}" is not accepted by LLM providers: use letters, digits, "_" and "-", starting with a letter or "_", at most 64 characters, such as "${normalizeToolName(t.name)}"`,
+    };
+  }
   if (typeof t.description !== 'string')
     return { valid: false, error: 'Tool must have a string "description"' };
   if (typeof t.execute !== 'function')

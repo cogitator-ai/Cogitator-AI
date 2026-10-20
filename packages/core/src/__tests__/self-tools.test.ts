@@ -60,6 +60,26 @@ describe('createSelfTools', () => {
     expect(existsSync(join(testDir, 'bad.mjs'))).toBe(false);
   });
 
+  it('create_tool rejects a tool name LLM providers refuse, and suggests one', async () => {
+    const tools = createSelfTools({ toolsDir: testDir });
+    const createTool = tools.find((t) => t.name === 'create_tool')!;
+
+    const code = `export default {
+  name: 'fetch.weather',
+  description: 'Weather',
+  parameters: { type: 'object', properties: {} },
+  execute: async () => ({ ok: true })
+};`;
+    const result = (await createTool.execute(
+      { name: 'fetch-weather', code },
+      createToolContext()
+    )) as Record<string, unknown>;
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('"fetch.weather" is not accepted by LLM providers');
+    expect(result.error).toContain('"fetch_weather"');
+    expect(existsSync(join(testDir, 'fetch-weather.mjs'))).toBe(false);
+  });
+
   it('create_tool rejects syntactically invalid code', async () => {
     const tools = createSelfTools({ toolsDir: testDir });
     const createTool = tools.find((t) => t.name === 'create_tool')!;
@@ -215,6 +235,15 @@ describe('loadCustomTools', () => {
     const tools = await loadCustomTools(testDir);
     expect(tools).toHaveLength(1);
     expect(tools[0].name).toBe('loaded');
+  });
+
+  it('skips a saved tool whose name LLM providers refuse', async () => {
+    writeFileSync(
+      join(testDir, 'dotted.mjs'),
+      "export default { name: 'fetch.weather', description: 'x', parameters: { type: 'object', properties: {} }, execute: async () => 1 };"
+    );
+
+    expect(await loadCustomTools(testDir)).toEqual([]);
   });
 
   it('skips invalid tool files', async () => {

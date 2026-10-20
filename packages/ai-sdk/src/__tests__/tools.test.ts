@@ -26,6 +26,14 @@ function makeCogitatorTool(execute = vi.fn().mockResolvedValue('result')) {
 }
 
 describe('fromAISDKTool', () => {
+  it('refuses a name LLM providers would reject, as tool() does', () => {
+    const aiTool = { description: 'x', inputSchema: z.object({}), execute: async () => 1 };
+    expect(() => fromAISDKTool(aiTool, 'weather.get')).toThrow(
+      /Invalid tool name "weather.get".*For example "weather_get"/
+    );
+    expect(fromAISDKTool(aiTool, 'weather_get').name).toBe('weather_get');
+  });
+
   it('keeps zod 4 schemas and passes the Cogitator context to execute', async () => {
     const executeFn = vi.fn().mockResolvedValue(42);
     const aiTool = {

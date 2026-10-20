@@ -1,5 +1,6 @@
 import {
   toToolParameters,
+  assertToolName,
   toolPartsToText,
   toolResultParts,
   toolToSchema,
@@ -241,6 +242,7 @@ export function fromAISDKTool<TParams = unknown, TResult = unknown>(
   toolName?: string
 ): Tool<TParams, TResult> {
   const name = toolName ?? aiTool.name ?? 'unnamed_tool';
+  assertToolName(name);
   const schema = aiTool.inputSchema ?? aiTool.parameters;
   if (schema === undefined || schema === null) {
     throw new Error('AI SDK tool must have parameters defined (inputSchema or parameters)');
