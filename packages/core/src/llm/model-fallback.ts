@@ -94,9 +94,9 @@ function countsAgainstModel(error: unknown): boolean {
   );
 }
 
-/** A call that failed because the caller aborted it, which no breaker should count. */
+/** A call that failed because the run was aborted or timed out, which no breaker should count. */
 class CallerAbort extends Error {
-  constructor(readonly original: unknown) {
+  constructor() {
     super('The call was aborted');
   }
 }
@@ -168,14 +168,12 @@ export class ModelFallbackChain {
           try {
             return await call(candidate);
           } catch (error) {
-            throw options.signal?.aborted ? new CallerAbort(error) : error;
+            throw options.signal?.aborted ? new CallerAbort() : error;
           }
         });
         return { result, candidate };
       } catch (error) {
-        const aborted =
-          abortReason(options.signal) ??
-          (error instanceof CallerAbort ? error.original : undefined);
+        const aborted = abortReason(options.signal);
         if (aborted) throw aborted;
         if (!fallsBackOn(error) || (options.canSwitch && !options.canSwitch())) throw error;
         if (failsLasting(error)) breaker.open();

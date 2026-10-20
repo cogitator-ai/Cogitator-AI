@@ -272,17 +272,24 @@ export class Agent<TDeps = unknown> implements IAgent<TDeps> {
   }
 }
 
+/** Most fallback models a snapshot or an agent on the wire may name: each can cost a call per turn. */
+export const MAX_FALLBACK_MODELS = 16;
+
 function isFallbackList(value: unknown): boolean {
   return (
     Array.isArray(value) &&
-    value.every(
-      (entry: unknown) =>
-        (typeof entry === 'string' && entry.length > 0) ||
-        (typeof entry === 'object' &&
-          entry !== null &&
-          typeof (entry as Record<string, unknown>).model === 'string' &&
-          ['string', 'undefined'].includes(typeof (entry as Record<string, unknown>).provider))
-    )
+    value.length <= MAX_FALLBACK_MODELS &&
+    value.every((entry: unknown) => {
+      if (typeof entry === 'string') return entry.length > 0;
+      if (typeof entry !== 'object' || entry === null) return false;
+      const { model, provider, ...rest } = entry as Record<string, unknown>;
+      return (
+        typeof model === 'string' &&
+        model.length > 0 &&
+        (provider === undefined || (typeof provider === 'string' && provider.length > 0)) &&
+        Object.keys(rest).length === 0
+      );
+    })
   );
 }
 

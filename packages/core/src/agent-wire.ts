@@ -15,7 +15,7 @@ import type {
   Tool,
   ToolSchema,
 } from '@cogitator-ai/types';
-import { Agent } from './agent';
+import { Agent, MAX_FALLBACK_MODELS } from './agent';
 
 /**
  * How each `AgentConfig` field travels in the agent wire format. Adding a field to
@@ -82,9 +82,6 @@ const handoffSchema = z.strictObject({
   toolName: z.string().min(1).optional(),
   description: z.string().optional(),
 });
-
-/** Most fallback models an agent on the wire may name: each one can cost a call per turn. */
-const MAX_FALLBACK_MODELS = 16;
 
 const agentShape = {
   id: z.string().min(1).optional(),

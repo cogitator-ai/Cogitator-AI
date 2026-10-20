@@ -207,6 +207,65 @@ describe('runs with memory.contextBuilder', () => {
       expect(cloud).toHaveLength(30);
     });
 
+    it('keeps room for history when the agent asks for an answer as long as the window', async () => {
+      const history = await seededRun('mock/house-model', {}, { agentMaxTokens: 9000 });
+
+      expect(history.length).toBeGreaterThan(0);
+    });
+
+    it('gives a model on Ollama Cloud its whole window', async () => {
+      const bodies: { messages: { content: string }[] }[] = [];
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (_url: string, init: RequestInit) => {
+          bodies.push(JSON.parse(String(init.body)) as { messages: { content: string }[] });
+          return new Response(
+            JSON.stringify({
+              model: 'gpt-4o',
+              message: { role: 'assistant', content: 'ok' },
+              done: true,
+              prompt_eval_count: 1,
+              eval_count: 1,
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } }
+          );
+        })
+      );
+      const historyOn = async (baseUrl: string) => {
+        bodies.length = 0;
+        const cog = new Cogitator({
+          llm: { providers: { ollama: { baseUrl, apiKey: 'test' } }, retry: false },
+          memory: { adapter: 'memory', contextBuilder: { strategy: 'recent' } },
+        });
+        const agent = new Agent({
+          id: 'agent',
+          name: 'a',
+          model: 'ollama/gpt-4o',
+          instructions: 'T.',
+        });
+        await cog.run(agent, { input: 'warm up', threadId: 'warm' });
+        await cog.memory!.createThread('agent', {}, 'long');
+        for (let i = 0; i < 30; i++) {
+          await cog.memory!.addEntry({
+            threadId: 'long',
+            message: { role: i % 2 === 0 ? 'user' : 'assistant', content: longTurn(i) },
+            tokenCount: 0,
+          });
+        }
+        bodies.length = 0;
+        await cog.run(agent, { input: 'Where?', threadId: 'long', threadAccess: 'shared' });
+        await cog.close();
+        return bodies[0].messages.filter((m) => m.content.startsWith('Turn '));
+      };
+
+      const cloud = await historyOn('https://ollama.com');
+      const local = await historyOn('http://localhost:11434');
+      vi.unstubAllGlobals();
+
+      expect(cloud).toHaveLength(30);
+      expect(local.length).toBeLessThan(10);
+    });
+
     it('stays below the point where the context manager compresses', async () => {
       const compress = vi.spyOn(ContextManager.prototype, 'compress');
 

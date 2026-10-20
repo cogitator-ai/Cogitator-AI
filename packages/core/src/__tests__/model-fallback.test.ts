@@ -380,12 +380,16 @@ describe('model fallback in a run', () => {
     expect(
       Agent.validateSnapshot({ ...snapshot, config: { ...snapshot.config, fallbackModels: 5 } })
     ).toBe(false);
-    expect(
-      Agent.validateSnapshot({
-        ...snapshot,
-        config: { ...snapshot.config, fallbackModels: [{ provider: 'backup' }] },
-      })
-    ).toBe(false);
+    for (const fallbackModels of [
+      [{ provider: 'backup' }],
+      [{ model: '' }],
+      [{ model: 'steady', provider: 'backup', priority: 1 }],
+      Array.from({ length: 17 }, (_, i) => `backup/model-${i}`),
+    ]) {
+      expect(
+        Agent.validateSnapshot({ ...snapshot, config: { ...snapshot.config, fallbackModels } })
+      ).toBe(false);
+    }
   });
 
   it('starts every turn from the primary model again', async () => {

@@ -697,7 +697,7 @@ export class Cogitator implements ToolInvoker {
           runOptions,
           input,
           threadId,
-          this.historyBudget(agent, effectiveModel, { backend, model }, registry, input)
+          this.historyBudget(agent, effectiveModel, routeProvider, registry, input)
         );
       }
 
@@ -1817,29 +1817,53 @@ export class Cogitator implements ToolInvoker {
   /**
    * The context builder's budget for a run of `agent` on `modelString`, when
    * `memory.contextBuilder.maxTokens` sets none: the model's context window,
-   * minus room for the answer (`agent.maxTokens`, else 15% of the window), the
-   * tool schemas and the input, and no more than the context manager lets a
-   * turn grow before it compresses. A model on a local Ollama gets at most
-   * the 4096 tokens Ollama serves by default, whatever the model supports.
+   * minus room for the answer (`agent.maxTokens`, else 15% of the window, at
+   * most half of it), the tool schemas and the input, and no more than the
+   * context manager lets a turn grow before it compresses. A model on Ollama
+   * gets at most the 4096 tokens Ollama serves by default, unless it runs on
+   * Ollama Cloud.
    */
   private historyBudget(
     agent: Agent,
     modelString: string,
-    route: ModelRoute,
+    explicitProvider: string | undefined,
     registry: ToolRegistry,
     input: string
   ): number | undefined {
     if (!this.state.contextBuilder || this.config.memory?.contextBuilder?.maxTokens !== undefined) {
       return undefined;
     }
-    const window = servesFullWindow(route)
-      ? modelContextWindow(modelString)
-      : Math.min(modelContextWindow(modelString), OLLAMA_DEFAULT_CONTEXT);
-    const answer = agent.config.maxTokens ?? Math.floor(window * 0.15);
+    const known = modelContextWindow(modelString);
+    const window = this.servesFullWindow(modelString, explicitProvider)
+      ? known
+      : Math.min(known, OLLAMA_DEFAULT_CONTEXT);
+    const answer = Math.min(agent.config.maxTokens ?? Math.floor(window * 0.15), window / 2);
     const fixed = countTokens(JSON.stringify(registry.getSchemas())) + countTokens(input);
     const compressAt = this.state.contextManager?.compressionThreshold(modelString);
-    const budget = Math.min(window - answer, compressAt ?? Infinity) - fixed;
-    return Math.max(MIN_HISTORY_BUDGET, budget);
+    const budget = Math.floor(Math.min(window - answer, compressAt ?? Infinity) - fixed);
+    if (budget > MIN_HISTORY_BUDGET) return budget;
+    getLogger().warn(
+      'No room for conversation history: the answer, the tools and the input take the context ' +
+        'window. Set memory.contextBuilder.maxTokens, or lower the agent maxTokens.',
+      { agent: agent.name, model: modelString, window, answer, fixed }
+    );
+    return MIN_HISTORY_BUDGET;
+  }
+
+  /**
+   * Whether `modelString` runs with its whole context window: anything but a model on Ollama,
+   * which serves a model with its default context, except Ollama Cloud (`https://ollama.com` as
+   * `llm.providers.ollama.baseUrl`, or a model tagged `cloud`).
+   */
+  private servesFullWindow(modelString: string, explicitProvider: string | undefined): boolean {
+    const { provider, model } = this.resolveRoute(modelString, explicitProvider);
+    const custom = Object.hasOwn(this.config.llm?.backends ?? {}, provider)
+      ? this.config.llm?.backends?.[provider]
+      : undefined;
+    if ((custom?.provider ?? provider) !== 'ollama' || model.endsWith('cloud')) return true;
+    if (custom) return false;
+    const baseUrl = this.config.llm?.providers?.ollama?.baseUrl;
+    return baseUrl !== undefined && isOllamaCloud(baseUrl);
   }
 
   /**
@@ -2298,12 +2322,13 @@ const OLLAMA_DEFAULT_CONTEXT = 4096;
 /** The smallest history budget a run hands the context builder, which keeps the instructions anyway. */
 const MIN_HISTORY_BUDGET = 256;
 
-/**
- * Whether a model runs with its whole context window: anything but a local Ollama model,
- * which gets Ollama's default context. Ollama cloud models (`...:cloud`, `...-cloud`) get theirs.
- */
-function servesFullWindow(route: ModelRoute): boolean {
-  return route.backend.provider !== 'ollama' || route.model.endsWith('cloud');
+function isOllamaCloud(baseUrl: string): boolean {
+  try {
+    const host = new URL(baseUrl).hostname;
+    return host === 'ollama.com' || host.endsWith('.ollama.com');
+  } catch {
+    return false;
+  }
 }
 
 interface PausedTurn {
