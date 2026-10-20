@@ -40,11 +40,10 @@ function cannedBackend(url: string, options: { ignoreSignal?: boolean } = {}): L
           call(undefined).catch(() => undefined);
           return;
         }
-        request.signal?.addEventListener('abort', () =>
-          reject(
-            request.signal?.reason instanceof Error ? request.signal.reason : new Error('aborted')
-          )
-        );
+        request.signal?.addEventListener('abort', () => {
+          const reason: unknown = request.signal?.reason;
+          reject(reason instanceof Error ? reason : new Error('aborted'));
+        });
         void call(request.signal).then(
           () => resolve(response),
           () => undefined

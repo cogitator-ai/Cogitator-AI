@@ -1,3 +1,4 @@
+import { trimTrailingSlashes } from '../utils/url';
 import { z } from 'zod';
 import { tool } from '../tool';
 import { createLinkedAbortController, getAbortErrorMessage } from '../utils/abort';
@@ -161,13 +162,6 @@ function configuredOllamaUrl(): string | undefined {
     if (value) return value;
   }
   return undefined;
-}
-
-/** `value` without the slashes it ends with, in linear time, unlike `replace(/\/+$/, '')`. */
-function trimTrailingSlashes(value: string): string {
-  let end = value.length;
-  while (end > 0 && value[end - 1] === '/') end--;
-  return value.slice(0, end);
 }
 
 function resolveOllamaBaseUrl(): string {

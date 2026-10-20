@@ -38,6 +38,7 @@ import {
   type LLMErrorContext,
 } from './errors';
 import { getLogger } from '../logger';
+import { trimTrailingSlashes } from '../utils/url';
 import { jsonInstruction } from './json-instruction';
 import { normalizeTurn } from './turn';
 
@@ -166,7 +167,7 @@ export class GoogleBackend extends BaseLLMBackend {
   constructor(config: GoogleConfig) {
     super();
     this.apiKey = config.apiKey;
-    this.baseUrl = (config.baseUrl ?? GEMINI_API).replace(/\/+$/, '');
+    this.baseUrl = trimTrailingSlashes(config.baseUrl ?? GEMINI_API);
     this.headers = config.headers ?? {};
   }
 
