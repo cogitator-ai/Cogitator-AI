@@ -71,11 +71,26 @@ async function add(memory: MemoryAdapter, threadId: string, content: string, at:
   return result.data;
 }
 
+/** Context budget of the suite: small enough that the history does not fit and each strategy picks. */
+const SUITE_TOKENS = 600;
+
+/** Filler turns of a history, together well over {@link SUITE_TOKENS}. */
+const FILLERS = 24;
+
+const filler = (i: number) =>
+  `Small talk number ${i} about the weather, the traffic downtown, the new bakery on the corner ` +
+  'and the football match last weekend.';
+
+const fillersIn = (context: string) => context.match(/Small talk number \d+ /g)?.length ?? 0;
+
 /**
  * Checks that a branch of a conversation never shows another branch's turns, and that rewound or
- * deleted turns never come back, for each memory strategy. A fork here is what the runtime offers
- * today: a new thread with the turns copied up to the fork point. The model is a stub that only
- * records what it was sent, so the suite costs nothing.
+ * deleted turns never come back, for each memory strategy. The history is longer than the
+ * context budget, so every strategy has to choose turns, and each absence is paired with a
+ * presence (the branch sees its own turn, the rewound turn was seen before the rewind) so an empty
+ * context cannot pass. A fork here is what the runtime offers today: a new thread with the turns
+ * copied up to the fork point. The model is a stub that only records what it was sent, so the
+ * suite costs nothing. A memory error fails the strategy: a fallback would test something else.
  */
 export async function runConsistencySuite(
   strategies: readonly ('recent' | 'relevant' | 'hybrid')[] = ['recent', 'relevant', 'hybrid']
@@ -83,6 +98,7 @@ export async function runConsistencySuite(
   const checks: ConsistencyCheck[] = [];
   for (const strategy of strategies) {
     const requests: ChatRequest[] = [];
+    const memoryErrors: string[] = [];
     const cog = new Cogitator({
       llm: {
         backends: { stub: recordingBackend(requests) },
@@ -91,7 +107,7 @@ export async function runConsistencySuite(
       memory: {
         adapter: 'memory',
         embedding: new HashedWordsEmbedding(),
-        contextBuilder: { strategy, maxTokens: 4000 },
+        contextBuilder: { strategy, maxTokens: SUITE_TOKENS },
       },
     });
     const agent = new Agent({ name: 'consistency', model: 'stub/m', instructions: 'Answer.' });
@@ -99,22 +115,25 @@ export async function runConsistencySuite(
     if (!memory) throw new Error('No memory');
     const ask = async (threadId: string, input: string) => {
       requests.length = 0;
-      await cog.run(agent, { input, threadId, saveHistory: false });
+      await cog.run(agent, {
+        input,
+        threadId,
+        saveHistory: false,
+        onMemoryError: (error) => memoryErrors.push(error.message),
+      });
       return textOf(requests[0]?.messages ?? []);
     };
     const check = (name: string, passed: boolean, detail: string) =>
-      checks.push({ name, strategy, passed, detail });
+      checks.push({ name, strategy, passed, detail: passed ? 'ok' : detail });
 
     try {
       await memory.createThread(agent.id, {}, 'main');
       const shared = [
-        'My sister lives in Lisbon.',
-        'Good to know.',
-        'I am planning a trip in May.',
-        'Where would you like to go?',
-        ...Array.from({ length: 12 }, (_, i) =>
-          i % 2 === 0 ? `Small talk about the weather, part ${i}.` : 'Sounds nice.'
+        ...Array.from({ length: FILLERS * 2 }, (_, i) =>
+          i % 2 === 0 ? filler(i) : 'Sounds nice.'
         ),
+        'I am planning a trip in May, my sister in Lisbon will host me on the way.',
+        'Where would you like to go after Lisbon?',
       ];
       for (const [index, content] of shared.entries()) await add(memory, 'main', content, index);
 
@@ -125,41 +144,62 @@ export async function runConsistencySuite(
         const content = typeof entry.message.content === 'string' ? entry.message.content : '';
         await add(memory, 'branch', content, index);
       }
-      await add(memory, 'branch', 'On this branch I chose Kyoto for the trip.', 10);
-      await add(memory, 'main', 'On the main line I chose Reykjavik for the trip.', 10);
+      await add(memory, 'branch', 'On this branch I chose Kyoto for the trip.', shared.length);
+      await add(memory, 'main', 'On the main line I chose Reykjavik for the trip.', shared.length);
 
       const onMain = await ask('main', 'Where is my trip going?');
+      const onBranch = await ask('branch', 'Where is my trip going?');
+      check(
+        'budget: the history does not fit, the strategy picks turns',
+        fillersIn(onMain) < FILLERS,
+        'every turn reached the model, the budget chose nothing'
+      );
+      check(
+        'fork: each line sees its own turn after the fork',
+        onMain.includes('Reykjavik') && onBranch.includes('Kyoto'),
+        'a line is missing its own latest turn'
+      );
       check(
         'fork: the main line does not see the branch',
         !onMain.includes('Kyoto'),
-        onMain.includes('Kyoto') ? 'the branch-only turn reached the main line' : 'ok'
+        'the branch-only turn reached the main line'
       );
-      const onBranch = await ask('branch', 'Where is my trip going?');
       check(
         'fork: the branch does not see the main line after the fork',
         !onBranch.includes('Reykjavik'),
-        onBranch.includes('Reykjavik') ? 'a main-line turn after the fork reached the branch' : 'ok'
+        'a main-line turn after the fork reached the branch'
       );
       check(
         'fork: the branch keeps the shared history',
         onBranch.includes('Lisbon'),
-        onBranch.includes('Lisbon') ? 'ok' : 'a turn before the fork is missing on the branch'
+        'a turn before the fork is missing on the branch'
       );
 
       await memory.createThread(agent.id, {}, 'rewind');
       await add(memory, 'rewind', 'My favourite colour is teal.', 0);
       await add(memory, 'rewind', 'Teal it is.', 1);
-      for (let i = 2; i < 14; i++) await add(memory, 'rewind', `Filler turn ${i}.`, i);
-      const doomed = await add(memory, 'rewind', 'Actually my favourite colour is crimson.', 14);
-      await ask('rewind', 'What is my favourite colour?');
+      for (let i = 0; i < FILLERS; i++) await add(memory, 'rewind', filler(i), i + 2);
+      const doomed = await add(
+        memory,
+        'rewind',
+        'Actually my favourite colour is crimson.',
+        FILLERS + 2
+      );
+      const beforeRewind = await ask('rewind', 'What is my favourite colour?');
       const deleted = await memory.deleteEntry(doomed.id);
       if (!deleted.success) throw new Error(deleted.error);
       const afterRewind = await ask('rewind', 'What is my favourite colour?');
       check(
+        'rewind: the turn is seen before the rewind',
+        beforeRewind.includes('crimson'),
+        'the latest turn did not reach the model before the rewind'
+      );
+      check(
         'rewind: a rewound turn does not come back',
         !afterRewind.includes('crimson'),
-        afterRewind.includes('crimson') ? 'the rewound turn reached the model' : 'ok'
+        'the rewound turn reached the model'
       );
+      check('memory: no errors, no fallback', memoryErrors.length === 0, memoryErrors.join('; '));
     } catch (error) {
       check('suite', false, error instanceof Error ? error.message : String(error));
     } finally {

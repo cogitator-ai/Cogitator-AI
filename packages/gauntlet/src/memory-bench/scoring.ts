@@ -381,9 +381,8 @@ export function scoringFor(question: BenchQuestion, output: string): Scoring {
         kind: 'judge',
         requests: scoring.rubric.map((item, index) => ({
           id: `${question.id}:${index}`,
-          prompt: BEAM_RUBRIC.replace('<rubric_item>', () => item).replace(
-            '<llm_response>',
-            () => output
+          prompt: BEAM_RUBRIC.replace(/<rubric_item>|<llm_response>/g, (slot) =>
+            slot === '<rubric_item>' ? item : output
           ),
           maxTokens: 512,
           read: readRubricScore,

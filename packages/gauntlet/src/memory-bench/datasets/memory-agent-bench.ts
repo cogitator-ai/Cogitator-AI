@@ -4,10 +4,14 @@ import { cachedDownload } from '../cache.js';
 import type { BenchConversation, BenchTurn } from '../types.js';
 
 const URL =
-  'https://huggingface.co/datasets/ai-hyz/MemoryAgentBench/resolve/main/data/Conflict_Resolution-00000-of-00001.parquet';
+  'https://huggingface.co/datasets/ai-hyz/MemoryAgentBench/resolve/7ea066982b140a19337e17e60d45d4076e042faf/data/Conflict_Resolution-00000-of-00001.parquet';
 
-/** Characters of facts per message the memory gets, about the 4096 tokens MemoryAgentBench uses. */
-const CHUNK_CHARS = 16000;
+/**
+ * Characters of facts per message the memory gets, about 2048 tokens: MemoryAgentBench uses up to
+ * 4096, but `gemini-embedding-001` reads 2048 tokens of an input, so a longer message would be
+ * found by its first half only.
+ */
+const CHUNK_CHARS = 8000;
 
 const rowSchema = z.object({
   context: z.string(),

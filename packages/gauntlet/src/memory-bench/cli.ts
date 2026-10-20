@@ -20,6 +20,7 @@ import { CachedEmbeddingService } from './embeddings.js';
 import { judge, JudgeStore } from './judge.js';
 import { markdownReport, summarize } from './report.js';
 import { ANSWER_INSTRUCTIONS, answerConversation, answerKey, mapConcurrent } from './runner.js';
+import { latest, parseSample, pick, positive, readJsonl, UsageError } from './options.js';
 import { stratifiedSample } from './sample.js';
 import { scoringFor, type JudgeRequest } from './scoring.js';
 import type {
@@ -45,7 +46,8 @@ Usage: pnpm memory-bench [options]
                          (default 5)
   --anthropic-budget <usd>
                          most the run may spend on answers and the judge (default 30)
-  --concurrency <n>      questions answered at once (default 6)
+  --concurrency <n>      questions answered at once per conversation, four conversations at
+                         a time (default 6)
   --seed <n>             sample seed (default 42)
   --run <name>           results directory under the cache, reused to resume (default: now)
   --no-batch             judge one request at a time instead of Message Batches
@@ -58,39 +60,16 @@ not scoped to a workspace), GOOGLE_API_KEY (embeddings for relevant
 and hybrid), MEMORY_BENCH_CACHE (default ~/.cache/cogitator/memory-bench). Read from the
 repository's .env too.`;
 
+/**
+ * Version of how datasets are rendered and scored: a run is resumed only by the same method, so
+ * answers and scores of different methods never mix in one report.
+ */
+const METHOD_VERSION = 3;
+
+const STRATEGIES = ['recent', 'relevant', 'hybrid'] as const;
+
 /** Conversations answered at once, each with its own runtime and its questions concurrent. */
 const CONVERSATIONS_AT_ONCE = 4;
-
-function parseSample(spec: string | undefined): Map<string, number> {
-  const sizes = new Map<string, number>();
-  for (const part of spec?.split(',') ?? []) {
-    const [id, size] = part.split('=');
-    if (id && size && Number.isInteger(Number(size))) sizes.set(id.trim(), Number(size));
-  }
-  return sizes;
-}
-
-/** The records of a JSONL file, a line cut short by a killed run skipped. */
-async function readJsonl<T>(path: string): Promise<T[]> {
-  if (!existsSync(path)) return [];
-  return (await readFile(path, 'utf8')).split('\n').flatMap((line) => {
-    if (!line.trim()) return [];
-    try {
-      return [JSON.parse(line) as T];
-    } catch {
-      return [];
-    }
-  });
-}
-
-/** The last record per key: a question answered again replaces its earlier answer. */
-function latest<T extends BenchAnswer>(records: readonly T[]): Map<string, T> {
-  const byKey = new Map<string, T>();
-  for (const record of records) {
-    byKey.set(answerKey(record.dataset, record.questionId, record.strategy), record);
-  }
-  return byKey;
-}
 
 /** Tokens the memory would embed for a conversation: the last 200 turns the strategies score. */
 function embeddingTokens(conversation: BenchConversation): number {
@@ -138,6 +117,31 @@ async function main(): Promise<number> {
     if (existsSync(envFile)) process.loadEnvFile(envFile);
   }
 
+  const datasets = pick<BenchDatasetId>('datasets', values.datasets, DATASETS);
+  const contextTokens = positive('context-tokens', values['context-tokens'], true);
+  const strategies: BenchStrategy[] = pick<BenchStrategy['name']>(
+    'strategies',
+    values.strategies,
+    STRATEGIES
+  ).map((name) => ({ name, contextTokens }));
+  const sizes = parseSample(values.sample);
+  for (const id of sizes.keys()) {
+    if (!(datasets as readonly string[]).includes(id)) {
+      throw new UsageError(`--sample names ${id}, which is not among --datasets`);
+    }
+  }
+  const seed = Number(values.seed);
+  if (!Number.isSafeInteger(seed))
+    throw new UsageError(`--seed takes an integer, not ${values.seed}`);
+  const anthropicLimit = positive('anthropic-budget', values['anthropic-budget']);
+  const embeddingLimit = positive('budget', values.budget);
+  const concurrency = positive('concurrency', values.concurrency, true);
+  if (values.run !== undefined && !/^(?!\.{1,2}$)[\w.-]+$/.test(values.run)) {
+    throw new UsageError(
+      `--run takes a name of letters, digits, '.', '_' and '-', not ${values.run}`
+    );
+  }
+
   log('Fork and rewind consistency');
   const consistency: ConsistencyCheck[] = await runConsistencySuite();
   for (const check of consistency) {
@@ -146,21 +150,6 @@ async function main(): Promise<number> {
     );
   }
   if (values['consistency-only']) return consistency.every((check) => check.passed) ? 0 : 1;
-
-  const datasets = values.datasets
-    .split(',')
-    .map((id) => id.trim())
-    .filter((id): id is BenchDatasetId => (DATASETS as readonly string[]).includes(id));
-  const contextTokens = Number(values['context-tokens']);
-  const strategies: BenchStrategy[] = values.strategies
-    .split(',')
-    .map((name) => name.trim())
-    .filter((name): name is BenchStrategy['name'] =>
-      ['recent', 'relevant', 'hybrid'].includes(name)
-    )
-    .map((name) => ({ name, contextTokens }));
-  const sizes = parseSample(values.sample);
-  const seed = Number(values.seed);
 
   const loaded = new Map<BenchDatasetId, BenchConversation[]>();
   for (const id of datasets) {
@@ -188,8 +177,8 @@ async function main(): Promise<number> {
   }
   log(
     `Estimated cost: answers $${answerEstimate.toFixed(3)}, judge $${judgeEstimate.toFixed(3)} ` +
-      `(Anthropic budget $${Number(values['anthropic-budget']).toFixed(2)}), embeddings ` +
-      `$${embeddingEstimate.toFixed(3)} (budget $${Number(values.budget).toFixed(2)})`
+      `(Anthropic budget $${anthropicLimit.toFixed(2)}), embeddings ` +
+      `$${embeddingEstimate.toFixed(3)} (budget $${embeddingLimit.toFixed(2)})`
   );
   if (values.estimate) return 0;
 
@@ -210,7 +199,13 @@ async function main(): Promise<number> {
   await mkdir(runDir, { recursive: true });
   const answersPath = join(runDir, 'answers.jsonl');
   const scoresPath = join(runDir, 'scores.jsonl');
-  const settings = { model: BENCH_MODEL, contextTokens, instructions: ANSWER_INSTRUCTIONS, seed };
+  const settings = {
+    method: METHOD_VERSION,
+    model: BENCH_MODEL,
+    contextTokens,
+    instructions: ANSWER_INSTRUCTIONS,
+    seed,
+  };
   const settingsPath = join(runDir, 'settings.json');
   if (existsSync(settingsPath)) {
     const saved = JSON.parse(await readFile(settingsPath, 'utf8')) as typeof settings;
@@ -224,12 +219,8 @@ async function main(): Promise<number> {
   } else {
     await writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
   }
-  const budget = new Budget(
-    Number(values['anthropic-budget']),
-    run,
-    join(cacheDir(), 'ledger-anthropic.json')
-  );
-  const embeddingBudget = new Budget(Number(values.budget), run, join(cacheDir(), 'ledger.json'));
+  const budget = new Budget(anthropicLimit, run, join(cacheDir(), 'ledger-anthropic.json'));
+  const embeddingBudget = new Budget(embeddingLimit, run, join(cacheDir(), 'ledger.json'));
   const embedding = embedded
     ? new CachedEmbeddingService(
         new GoogleEmbeddingService({ apiKey: googleKey ?? '' }),
@@ -258,7 +249,7 @@ async function main(): Promise<number> {
             ...(anthropicWorkspace && { anthropicWorkspace }),
             ...(strategy.name !== 'recent' && embedding && { embedding }),
             budget,
-            concurrency: Number(values.concurrency),
+            concurrency,
             done,
             log,
             onAnswer: async (answer) => {
@@ -318,30 +309,31 @@ async function main(): Promise<number> {
       });
     }
   }
-  if (pending.length > 0 && !stopped) {
-    log(`Judging ${pending.length} answers`);
+  if (pending.length > 0) {
     const store = new JudgeStore(
       join(runDir, 'judge-replies.jsonl'),
       join(runDir, 'judge-batches.json')
     );
+    if (!stopped) log(`Judging ${pending.length} answers`);
     try {
-      await judge(
-        pending.flatMap((item) => item.requests),
-        {
-          client: new Anthropic({
-            apiKey: anthropicApiKey,
-            maxRetries: 6,
-            ...(anthropicWorkspace && {
-              defaultHeaders: { 'anthropic-workspace-id': anthropicWorkspace },
+      if (!stopped)
+        await judge(
+          pending.flatMap((item) => item.requests),
+          {
+            client: new Anthropic({
+              apiKey: anthropicApiKey,
+              maxRetries: 6,
+              ...(anthropicWorkspace && {
+                defaultHeaders: { 'anthropic-workspace-id': anthropicWorkspace },
+              }),
             }),
-          }),
-          batch: !values['no-batch'],
-          budget,
-          store,
-          concurrency: Number(values.concurrency),
-          log,
-        }
-      );
+            batch: !values['no-batch'],
+            budget,
+            store,
+            concurrency,
+            log,
+          }
+        );
     } catch (error) {
       if (!(error instanceof BudgetExceededError)) throw error;
       stopped = error.message;
@@ -386,13 +378,18 @@ async function main(): Promise<number> {
     spentUsd: { anthropic: budget.spentUsd, embeddings: embeddingBudget.spentUsd },
     spentByStage: { ...budget.byStage(), ...embeddingBudget.byStage() },
     ...(stopped && { stopped }),
+    unjudged,
     consistency,
     rows,
   };
   const reportsDir = join(PACKAGE_DIR, 'reports', 'memory');
   await mkdir(reportsDir, { recursive: true });
   await writeFile(join(reportsDir, `${run}.json`), `${JSON.stringify(report, null, 2)}\n`);
-  const markdown = `# Memory benchmarks: ${run}\n\nModel ${BENCH_MODEL}, context budget ${contextTokens} tokens, spent $${budget.spentUsd.toFixed(3)} on answers and the judge and $${embeddingBudget.spentUsd.toFixed(3)} on embeddings.\n\n${markdownReport(rows)}`;
+  const notes = [
+    stopped && `Stopped early: ${stopped}.`,
+    unjudged > 0 && `${unjudged} answers are not judged yet and are left out of the tables.`,
+  ].filter(Boolean);
+  const markdown = `# Memory benchmarks: ${run}\n\nModel ${BENCH_MODEL}, context budget ${contextTokens} tokens, spent $${budget.spentUsd.toFixed(3)} on answers and the judge and $${embeddingBudget.spentUsd.toFixed(3)} on embeddings.${notes.length > 0 ? ` ${notes.join(' ')}` : ''}\n\n${markdownReport(rows)}`;
   await writeFile(join(reportsDir, `${run}.md`), markdown);
   log(markdown);
   log(`Report: ${join(reportsDir, `${run}.json`)}`);
@@ -404,6 +401,11 @@ main().then(
     process.exitCode = code;
   },
   (error: unknown) => {
+    if (error instanceof UsageError) {
+      process.stderr.write(`${error.message}\n\n${HELP}\n`);
+      process.exitCode = 64;
+      return;
+    }
     process.stderr.write(
       `${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`
     );

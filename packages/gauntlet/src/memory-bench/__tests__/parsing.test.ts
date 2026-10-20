@@ -12,7 +12,12 @@ import {
   conflictConversation,
   CONFLICT_INSTRUCTION,
 } from '../datasets/memory-agent-bench.js';
-import { trajectoryTurns, lmeV2Conversations, TREE_CHARS } from '../datasets/longmemeval-v2.js';
+import {
+  trajectoryTurns,
+  lmeV2Conversations,
+  parseTrajectory,
+  TREE_CHARS,
+} from '../datasets/longmemeval-v2.js';
 import { locomoConversation } from '../datasets/locomo.js';
 
 describe('parsePythonLiteral', () => {
@@ -165,7 +170,7 @@ describe('LongMemEval-V2', () => {
   };
 
   it('turns a trajectory into log notes, one per step, the trees cut', () => {
-    const turns = trajectoryTurns(trajectory);
+    const turns = trajectoryTurns(parseTrajectory(JSON.stringify(trajectory)));
     const session = '[Log of an earlier session in workarena, task: Open incidents (success)]';
     expect(turns.every((turn) => turn.role === 'user')).toBe(true);
     expect(turns[0].content).toBe(`${session}\nStarted at https://x/start.`);

@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
 import { BENCH_MODEL, Budget, callCost } from './budget.js';
 import { mapConcurrent } from './runner.js';
@@ -62,7 +62,9 @@ export class JudgeStore {
   }
 
   private save(): void {
-    writeFileSync(this.batchesPath, `${JSON.stringify(this.batches, null, 2)}\n`);
+    const partial = `${this.batchesPath}.tmp`;
+    writeFileSync(partial, `${JSON.stringify(this.batches, null, 2)}\n`);
+    renameSync(partial, this.batchesPath);
   }
 }
 
@@ -138,7 +140,9 @@ async function collect(batch: StoredBatch, options: JudgeOptions): Promise<void>
   }
   for await (const item of await options.client.messages.batches.results(batch.id)) {
     const requestId = batch.requests[item.custom_id];
-    if (!requestId || item.result.type !== 'succeeded') continue;
+    if (!requestId || item.result.type !== 'succeeded' || options.store.replies.has(requestId)) {
+      continue;
+    }
     const { usage } = item.result.message;
     const costUsd = callCost(usage.input_tokens, usage.output_tokens, true);
     options.budget.charge('judge', costUsd);

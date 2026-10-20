@@ -48,6 +48,7 @@ export class CachedEmbeddingService implements EmbeddingService {
     mkdirSync(dirname(path), { recursive: true });
     this.db = new Database(path);
     this.db.pragma('journal_mode = WAL');
+    this.db.pragma('busy_timeout = 5000');
     this.db.exec('CREATE TABLE IF NOT EXISTS vectors (key TEXT PRIMARY KEY, vector BLOB NOT NULL)');
     this.read = this.db.prepare('SELECT vector FROM vectors WHERE key = ?');
     this.write = this.db.prepare('INSERT OR REPLACE INTO vectors (key, vector) VALUES (?, ?)');

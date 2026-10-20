@@ -5,10 +5,17 @@ import { z } from 'zod';
 import { cachedDownload } from '../cache.js';
 import type { BenchConversation, BenchQuestion, BenchTurn } from '../types.js';
 
-const BASE = 'https://huggingface.co/datasets/xiaowu0162/longmemeval-v2/resolve/main';
+const BASE =
+  'https://huggingface.co/datasets/xiaowu0162/longmemeval-v2/resolve/f152293e235517d504809563c833d7190b8c713b';
 
 /** Characters of a page's accessibility tree the memory keeps: the trees run to megabytes. */
 export const TREE_CHARS = 4000;
+
+function cutTree(tree: string | null | undefined): string | undefined {
+  const text = tree?.trim();
+  if (!text) return undefined;
+  return text.length > TREE_CHARS ? `${text.slice(0, TREE_CHARS)}\n[...]` : text;
+}
 
 const questionSchema = z.object({
   id: z.string(),
@@ -25,7 +32,7 @@ const stateSchema = z.object({
   url: z.string().nullish(),
   action: z.string().nullish(),
   thought: z.string().nullish(),
-  accessibility_tree: z.string().nullish(),
+  accessibility_tree: z.string().nullish().transform(cutTree),
 });
 
 const trajectorySchema = z.object({
@@ -56,7 +63,15 @@ const DOMAIN_PROTOCOLS: Record<string, string> = {
     `well as a customized forum website based on reddit/postmill. ${ANSWER_RULES}`,
   enterprise: `You are an experienced colleague working in a customized ServiceNow environment. ${ANSWER_RULES}`,
 };
-export type LmeV2Trajectory = z.infer<typeof trajectorySchema>;
+export type LmeV2Trajectory = z.output<typeof trajectorySchema>;
+
+/**
+ * One line of `trajectories.jsonl`, its accessibility trees cut to `TREE_CHARS` as it is read so
+ * the hundreds of trajectories a haystack holds never sit in memory at full size.
+ */
+export function parseTrajectory(line: string): LmeV2Trajectory {
+  return trajectorySchema.parse(JSON.parse(line));
+}
 
 /**
  * A trajectory as turns of a log the memory holds: one per step, each naming the session's task,
@@ -72,12 +87,12 @@ export function trajectoryTurns(trajectory: LmeV2Trajectory): BenchTurn[] {
     },
   ];
   for (const state of trajectory.states) {
-    const tree = state.accessibility_tree?.trim();
+    const tree = state.accessibility_tree;
     const parts = [
       `Step ${state.state_index} at ${state.url ?? 'an unknown page'}`,
       state.thought?.trim() && `Thought: ${state.thought.trim()}`,
       state.action?.trim() && `Action: ${state.action.trim()}`,
-      tree && `Page:\n${tree.length > TREE_CHARS ? `${tree.slice(0, TREE_CHARS)}\n[...]` : tree}`,
+      tree && `Page:\n${tree}`,
     ].filter((part): part is string => Boolean(part));
     turns.push({ role: 'user', content: `${session}\n${parts.join('\n')}` });
   }
@@ -97,8 +112,8 @@ export function lmeV2Conversations(
   const groups = new Map<string, { ids: string[]; questions: BenchQuestion[] }>();
   for (const question of questions) {
     if (question.image) continue;
+    if (!Object.hasOwn(haystacks, question.id)) continue;
     const ids = haystacks[question.id];
-    if (!ids) continue;
     const key = ids.join(',');
     const group = groups.get(key) ?? { ids, questions: [] };
     group.questions.push({
@@ -115,7 +130,7 @@ export function lmeV2Conversations(
     return {
       id: `${domain}-${index}`,
       dataset: 'lme-v2-small' as const,
-      ...(DOMAIN_PROTOCOLS[domain] && { protocol: DOMAIN_PROTOCOLS[domain] }),
+      ...(Object.hasOwn(DOMAIN_PROTOCOLS, domain) && { protocol: DOMAIN_PROTOCOLS[domain] }),
       turns: group.ids.flatMap((id) => {
         const trajectory = trajectories.get(id);
         return trajectory ? trajectoryTurns(trajectory) : [];
@@ -152,7 +167,7 @@ export async function loadLongMemEvalV2Small(
     if (!line.trim()) continue;
     const leading = /^\{\s*"id"\s*:\s*"([^"]+)"/.exec(line)?.[1];
     if (leading !== undefined && !needed.has(leading)) continue;
-    const trajectory = trajectorySchema.parse(JSON.parse(line));
+    const trajectory = parseTrajectory(line);
     if (needed.has(trajectory.id)) trajectories.set(trajectory.id, trajectory);
   }
   return lmeV2Conversations(questions, haystacks, trajectories);

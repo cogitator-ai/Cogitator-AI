@@ -31,7 +31,7 @@ export async function cachedDownload(
   if (!response.ok || !response.body) {
     throw new Error(`Download of ${url} failed with HTTP ${response.status}`);
   }
-  const partial = `${path}.partial`;
+  const partial = `${path}.${process.pid}.partial`;
   try {
     await pipeline(response.body, createWriteStream(partial));
     await rename(partial, path);

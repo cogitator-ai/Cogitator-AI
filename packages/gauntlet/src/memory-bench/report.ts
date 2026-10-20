@@ -6,7 +6,8 @@ import type { BenchScore } from './types.js';
 export interface BenchRow {
   dataset: string;
   strategy: string;
-  category: string;
+  /** The category of the questions, absent on the row of the whole dataset and strategy */
+  category?: string;
   questions: number;
   errors: number;
   /** Mean score, 0 to 1, and its 95% bootstrap interval */
@@ -68,7 +69,7 @@ export function bootstrapInterval(
 function row(
   dataset: string,
   strategy: string,
-  category: string,
+  category: string | undefined,
   scores: BenchScore[],
   recent: ReadonlyMap<string, BenchScore>
 ): BenchRow {
@@ -86,7 +87,7 @@ function row(
   return {
     dataset,
     strategy,
-    category,
+    ...(category !== undefined && { category }),
     questions: scores.length,
     errors: scores.length - answered.length,
     accuracy: mean(values),
@@ -124,7 +125,7 @@ function pairedDelta(
   const clusters: string[] = [];
   for (const score of scores) {
     const baseline = recent.get(`${score.dataset}\u0000${score.questionId}`);
-    if (!baseline) continue;
+    if (!baseline || score.error || baseline.error) continue;
     deltas.push(score.score - baseline.score);
     clusters.push(score.conversationId);
   }
@@ -134,8 +135,8 @@ function pairedDelta(
 }
 
 /**
- * Rows for every dataset and strategy in `scores` (category `all`), followed by a row per
- * category of each.
+ * Rows for every dataset and strategy in `scores` (without a category), each followed by a row
+ * per category of it.
  */
 export function summarize(scores: readonly BenchScore[]): BenchRow[] {
   const recent = new Map(
@@ -143,26 +144,31 @@ export function summarize(scores: readonly BenchScore[]): BenchRow[] {
       .filter((score) => score.strategy === 'recent')
       .map((score) => [`${score.dataset}\u0000${score.questionId}`, score] as const)
   );
-  const groups = new Map<string, BenchScore[]>();
+  const groups = new Map<
+    string,
+    { dataset: string; strategy: string; category?: string; scores: BenchScore[] }
+  >();
   for (const score of scores) {
-    for (const category of ['all', score.category]) {
-      const key = `${score.dataset}\u0000${score.strategy}\u0000${category}`;
-      const group = groups.get(key) ?? [];
-      group.push(score);
+    for (const category of [undefined, score.category]) {
+      const key = JSON.stringify([score.dataset, score.strategy, category ?? null]);
+      const group = groups.get(key) ?? {
+        dataset: score.dataset,
+        strategy: score.strategy,
+        ...(category !== undefined && { category }),
+        scores: [],
+      };
+      group.scores.push(score);
       groups.set(key, group);
     }
   }
-  return [...groups]
-    .map(([key, group]) => {
-      const [dataset, strategy, category] = key.split('\u0000');
-      return row(dataset, strategy, category, group, recent);
-    })
+  return [...groups.values()]
+    .map((group) => row(group.dataset, group.strategy, group.category, group.scores, recent))
     .sort(
       (a, b) =>
         a.dataset.localeCompare(b.dataset) ||
         a.strategy.localeCompare(b.strategy) ||
-        Number(b.category === 'all') - Number(a.category === 'all') ||
-        a.category.localeCompare(b.category)
+        Number(a.category !== undefined) - Number(b.category !== undefined) ||
+        (a.category ?? '').localeCompare(b.category ?? '')
     );
 }
 
@@ -170,7 +176,7 @@ const pct = (value: number) => `${(value * 100).toFixed(1)}%`;
 
 /** `rows` as Markdown tables: one of the datasets and strategies, one per dataset by category. */
 export function markdownReport(rows: readonly BenchRow[]): string {
-  const overall = rows.filter((r) => r.category === 'all');
+  const overall = rows.filter((r) => r.category === undefined);
   const lines = [
     '| Dataset | Strategy | Questions | Accuracy (95% CI) | vs recent | Input tokens/query | Cache hit | Evidence in context | Latency p50/p95 | Context build p50/p95 | Cost |',
     '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
@@ -180,7 +186,7 @@ export function markdownReport(rows: readonly BenchRow[]): string {
     ),
   ];
   for (const dataset of [...new Set(rows.map((r) => r.dataset))]) {
-    const byCategory = rows.filter((r) => r.dataset === dataset && r.category !== 'all');
+    const byCategory = rows.filter((r) => r.dataset === dataset && r.category !== undefined);
     const strategies = [...new Set(byCategory.map((r) => r.strategy))];
     const categories = [...new Set(byCategory.map((r) => r.category))];
     lines.push(

@@ -3,7 +3,8 @@ import { z } from 'zod';
 import { cachedDownload } from '../cache.js';
 import type { BenchConversation, BenchTurn } from '../types.js';
 
-const URL = 'https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json';
+const URL =
+  'https://raw.githubusercontent.com/snap-research/locomo/3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376/data/locomo10.json';
 
 const CATEGORIES: Record<number, string> = {
   1: 'multi-hop',

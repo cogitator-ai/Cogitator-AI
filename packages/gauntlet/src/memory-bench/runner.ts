@@ -1,7 +1,14 @@
 import { Agent, Cogitator, type RunMiddleware } from '@cogitator-ai/core';
 import { countMessagesTokens, countTokens } from '@cogitator-ai/memory';
 import type { EmbeddingService, Message } from '@cogitator-ai/types';
-import { BENCH_MODEL, BENCH_PRICE, Budget, callCost, LONG_PROMPT_TOKENS } from './budget.js';
+import {
+  BENCH_MODEL,
+  BENCH_PRICE,
+  Budget,
+  BudgetExceededError,
+  callCost,
+  LONG_PROMPT_TOKENS,
+} from './budget.js';
 import type { BenchAnswer, BenchConversation, BenchQuestion, BenchStrategy } from './types.js';
 
 export const ANSWER_INSTRUCTIONS =
@@ -105,11 +112,14 @@ interface Probe {
 /** A middleware that records what each question's model call was sent. */
 function probe(
   evidence: readonly string[] | undefined,
-  record: (probe: Probe) => void
+  record: (probe: Probe) => void,
+  memoryErrors: readonly unknown[]
 ): RunMiddleware {
   return {
     name: 'memory-bench-probe',
     wrapModelCall(call, next) {
+      const overBudget = memoryErrors.find((error) => error instanceof BudgetExceededError);
+      if (overBudget) throw overBudget;
       record({
         messages: call.request.messages.length,
         tokens: countMessagesTokens(call.request.messages),
@@ -206,9 +216,18 @@ export async function answerConversation(
   try {
     const threadId = await ingest(cog, agent, conversation);
     if (options.embedding) {
-      await options.embedding.embedBatch(
-        conversation.turns.slice(-WARMED_ENTRIES).map((turn) => turn.content)
-      );
+      const texts = conversation.turns
+        .slice(-WARMED_ENTRIES)
+        .map((turn) => turn.content)
+        .filter((text) => text.trim());
+      try {
+        await options.embedding.embedBatch(texts);
+      } catch (error) {
+        if (error instanceof BudgetExceededError) throw error;
+        options.log(
+          `  warming ${conversation.id}: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
     }
     await mapConcurrent(pending, options.concurrency, async (question) => {
       const estimate = callCost(
@@ -217,7 +236,7 @@ export async function answerConversation(
       );
       const release = options.budget.reserve(estimate);
       let seen: Probe | undefined;
-      const memoryErrors: string[] = [];
+      const memoryErrors: Error[] = [];
       const base = {
         dataset: conversation.dataset,
         conversationId: conversation.id,
@@ -230,8 +249,8 @@ export async function answerConversation(
           input: question.question,
           threadId,
           saveHistory: false,
-          middleware: [probe(question.evidence, (value) => (seen = value))],
-          onMemoryError: (error) => memoryErrors.push(error.message),
+          middleware: [probe(question.evidence, (value) => (seen = value), memoryErrors)],
+          onMemoryError: (error) => memoryErrors.push(error),
         });
         const llmMs = result.trace.spans
           .filter((span) => span.name === 'llm.chat')
@@ -254,10 +273,11 @@ export async function answerConversation(
           contextTokens: seen?.tokens ?? 0,
           ...(seen?.recall !== undefined && { evidenceRecall: seen.recall }),
           ...(memoryErrors.length > 0 && {
-            error: `memory: ${memoryErrors.join('; ')} (the strategy fell back)`,
+            error: `memory: ${memoryErrors.map((error) => error.message).join(', ')} (the strategy fell back)`,
           }),
         });
       } catch (error) {
+        if (error instanceof BudgetExceededError) throw error;
         options.log(`  ${question.id}: ${error instanceof Error ? error.message : String(error)}`);
         await options.onAnswer({
           ...base,

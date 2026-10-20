@@ -136,7 +136,7 @@ export async function loadBeam(
   log?: (line: string) => void
 ): Promise<BenchConversation[]> {
   const path = await cachedDownload(
-    `https://huggingface.co/datasets/Mohammadta/BEAM/resolve/main/data/${tier}-00000-of-00001.parquet`,
+    `https://huggingface.co/datasets/Mohammadta/BEAM/resolve/3205395e897e7318c7b094ef4e6047b9b82dbb03/data/${tier}-00000-of-00001.parquet`,
     `beam-${tier}.parquet`,
     log
   );

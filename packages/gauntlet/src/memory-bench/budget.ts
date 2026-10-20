@@ -98,14 +98,17 @@ export class Budget {
     };
   }
 
-  /** Records a cost and writes the ledger, so a run stopped right after still counts it. */
+  /**
+   * Records a cost and writes the ledger, so a run stopped right after still counts it. A write
+   * that fails here is made again by the next one, and an awaited `save` reports it.
+   */
   charge(stage: string, usd: number): void {
     if (usd <= 0) return;
     this.spent += usd;
     const last = this.entries.at(-1);
     if (last?.run === this.run && last.stage === stage) last.usd += usd;
     else this.entries.push({ at: new Date().toISOString(), run: this.run, stage, usd });
-    void this.save();
+    this.save().catch(() => undefined);
   }
 
   byStage(): Record<string, number> {

@@ -4,7 +4,7 @@ import { cachedDownload } from '../cache.js';
 import type { BenchConversation, BenchTurn } from '../types.js';
 
 const URL =
-  'https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json';
+  'https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/98d7416c24c778c2fee6e6f3006e7a073259d48f/longmemeval_s_cleaned.json';
 
 const turnSchema = z.object({
   role: z.enum(['user', 'assistant']),

@@ -82,7 +82,11 @@ describe('stratifiedSample', () => {
 
   it('draws numbers in [0, 1)', () => {
     const random = seededRandom(3);
-    for (let i = 0; i < 100; i++) expect(random()).toBeGreaterThanOrEqual(0);
+    for (let i = 0; i < 1000; i++) {
+      const value = random();
+      expect(value).toBeGreaterThanOrEqual(0);
+      expect(value).toBeLessThan(1);
+    }
   });
 });
 
@@ -286,7 +290,7 @@ describe('report', () => {
       score('recent', 'b', 0),
       score('relevant', 'a', 1),
     ]);
-    const recent = rows.find((r) => r.strategy === 'recent' && r.category === 'all');
+    const recent = rows.find((r) => r.strategy === 'recent' && r.category === undefined);
     expect(recent).toMatchObject({
       questions: 2,
       accuracy: 0.5,
@@ -297,10 +301,10 @@ describe('report', () => {
   });
 
   it('bootstraps an interval around the mean, wider when questions share a conversation', () => {
-    const values = [0, 1, 1, 0, 1, 1, 1, 0];
+    const values = [0, 0, 0, 0, 1, 1, 1, 1];
     const [low, high] = bootstrapInterval(values);
-    expect(low).toBeLessThan(0.625);
-    expect(high).toBeGreaterThan(0.625);
+    expect(low).toBeLessThan(0.5);
+    expect(high).toBeGreaterThan(0.5);
     const [clusterLow, clusterHigh] = bootstrapInterval(values, [
       'a',
       'a',
@@ -311,7 +315,8 @@ describe('report', () => {
       'b',
       'b',
     ]);
-    expect(clusterHigh - clusterLow).toBeGreaterThanOrEqual(0);
+    expect([clusterLow, clusterHigh]).toEqual([0, 1]);
+    expect(clusterHigh - clusterLow).toBeGreaterThan(high - low);
     expect(bootstrapInterval([1, 1], ['a', 'a'])).toEqual([1, 1]);
   });
 
@@ -322,10 +327,10 @@ describe('report', () => {
       { ...score('hybrid', 'a', 1), questionId: 'q1' },
       { ...score('hybrid', 'a', 1), questionId: 'q2' },
     ]);
-    const hybrid = rows.find((r) => r.strategy === 'hybrid' && r.category === 'all');
+    const hybrid = rows.find((r) => r.strategy === 'hybrid' && r.category === undefined);
     expect(hybrid?.vsRecent).toMatchObject({ delta: 0.5, questions: 2 });
     expect(
-      rows.find((r) => r.strategy === 'recent' && r.category === 'all')?.vsRecent
+      rows.find((r) => r.strategy === 'recent' && r.category === undefined)?.vsRecent
     ).toBeUndefined();
   });
 });
@@ -333,7 +338,7 @@ describe('report', () => {
 describe('consistency suite', () => {
   it('passes on every strategy', { timeout: 30_000 }, async () => {
     const checks = await runConsistencySuite();
-    expect(checks.length).toBe(12);
+    expect(checks.length).toBe(24);
     expect(checks.filter((c) => !c.passed)).toEqual([]);
   });
 });
