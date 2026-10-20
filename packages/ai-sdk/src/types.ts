@@ -1,4 +1,4 @@
-import type { Tool } from '@cogitator-ai/types';
+import type { Tool, ToolInvocationOptions, ToolInvoker } from '@cogitator-ai/types';
 import type {
   LanguageModelV2,
   LanguageModelV2CallOptions,
@@ -367,6 +367,26 @@ export interface AISDKSchema<T = unknown> {
 }
 
 /** AI SDK tool produced by `toAISDKTool()`; works with `tools` of ai@4 – ai@7. */
+/** Options of `toAISDKTool()` and `convertToolsToAISDK()`. */
+export interface AISDKToolOptions {
+  /**
+   * Runs each call the way a Cogitator run does: pass your `Cogitator` so approval, the
+   * guardrails, the sandbox for sandboxed tools and `tool.timeout` apply. The AI SDK validated
+   * the arguments already, so they are not parsed a second time. Without it the AI SDK calls the
+   * tool's `execute` directly, and only ai@6 and ai@7 ask approval (through `needsApproval`)
+   */
+  invoker?: ToolInvoker;
+  /**
+   * With an `invoker`, decides a call that needs approval the AI SDK has not approved, as
+   * `RunOptions.onApproval` does in a run. A call approved through the AI SDK approval flow (a
+   * `tool-approval-response` in the messages, ai@6 and ai@7) runs without asking again. Others,
+   * such as every call on ai@4 and ai@5 or one the guardrails want approved, go to this, then to
+   * `guardrails.onToolApproval`, and a call nobody decides fails with an error saying it needs
+   * approval
+   */
+  onApproval?: ToolInvocationOptions['onApproval'];
+}
+
 export interface AISDKTool<TInput = unknown, TOutput = unknown> {
   description: string;
   /** Input schema read by ai@5, ai@6 and ai@7: the Cogitator tool's zod schema. */

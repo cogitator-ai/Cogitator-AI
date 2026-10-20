@@ -10,7 +10,7 @@ import type { IncomingMessage, Server as HttpServer, ServerResponse } from 'node
 import type { StreamableHTTPServerTransport as StreamableHTTPServerTransportType } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { Cogitator } from '@cogitator-ai/core';
+import { Cogitator, withParsedArguments } from '@cogitator-ai/core';
 import type { Tool, ToolInvoker } from '@cogitator-ai/types';
 import { ElicitResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
@@ -92,31 +92,6 @@ const PERMISSIVE_INPUT_SCHEMA = z.looseObject({});
 function objectOutputSchema(tool: Tool): z.ZodObject | undefined {
   const schema: unknown = tool.outputSchema;
   return schema instanceof z.ZodObject ? schema : undefined;
-}
-
-/** Arguments the MCP SDK already parsed with the tool's own schema: taken as they are. */
-const SDK_PARSED_ARGUMENTS = z.custom<unknown>(() => true);
-
-/**
- * The tool as the invoker runs it once the MCP SDK validated the call's arguments against the
- * tool's schema: everything that decides how it runs (approval, sandbox, timeout, side effects)
- * stays, and the arguments are not parsed a second time, so transforms apply exactly once.
- */
-function withSdkParsedArguments(tool: Tool): Tool {
-  return {
-    name: tool.name,
-    description: tool.description,
-    ...(tool.category !== undefined && { category: tool.category }),
-    ...(tool.tags !== undefined && { tags: tool.tags }),
-    parameters: SDK_PARSED_ARGUMENTS,
-    execute: (params, context) => tool.execute(params, context),
-    ...(tool.sideEffects !== undefined && { sideEffects: tool.sideEffects }),
-    ...(tool.requiresApproval !== undefined && { requiresApproval: tool.requiresApproval }),
-    ...(tool.timeout !== undefined && { timeout: tool.timeout }),
-    ...(tool.sandbox !== undefined && { sandbox: tool.sandbox }),
-    ...(tool.maxResultLength !== undefined && { maxResultLength: tool.maxResultLength }),
-    toJSON: () => tool.toJSON(),
-  };
 }
 
 /**
@@ -363,7 +338,7 @@ export class MCPServer {
       : undefined;
 
     try {
-      const result = await this.invoker().invokeTool(withSdkParsedArguments(tool), args ?? {}, {
+      const result = await this.invoker().invokeTool(withParsedArguments(tool), args ?? {}, {
         runId: `mcp_${randomUUID()}`,
         agentId: 'mcp-server',
         signal: extra.signal,

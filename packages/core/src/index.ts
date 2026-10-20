@@ -24,7 +24,7 @@ export {
 export type { ToAgentWireOptions, AgentWireRuntime } from './agent-wire';
 export { isPausedRun, AgentRunPausedError, findAgentRunPausedError } from './run-pause';
 export type { PausableRun, PausedRun, PausedRunInfo } from './run-pause';
-export { tool, toolset, toolToSchema } from './tool';
+export { tool, toolset, toolToSchema, withParsedArguments } from './tool';
 export { toToolParameters } from './tool-schema';
 export {
   TOOL_NAME_MAX_LENGTH,

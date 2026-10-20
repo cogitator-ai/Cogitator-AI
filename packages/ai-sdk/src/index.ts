@@ -9,6 +9,7 @@ export type {
   AISDKTool,
   AISDKToolExecutionOptions,
   AISDKToolLike,
+  AISDKToolOptions,
   CogitatorLanguageModel,
   CogitatorLanguageModelV2,
   CogitatorLanguageModelV3,

@@ -4,9 +4,17 @@ import {
   toolPartsToText,
   toolResultParts,
   toolToSchema,
+  withParsedArguments,
 } from '@cogitator-ai/core';
 import { defaultSpecificationVersion } from './ai-version.js';
-import type { ApprovalCheck, Tool, ToolContext, ToolSchema } from '@cogitator-ai/types';
+import type {
+  ApprovalCheck,
+  Tool,
+  ToolApprovalDecision,
+  ToolContext,
+  ToolInvoker,
+  ToolSchema,
+} from '@cogitator-ai/types';
 import { isRecord, toJSONValue } from './json.js';
 import type {
   AISDKJSONSchemaConverterOptions,
@@ -14,6 +22,7 @@ import type {
   AISDKSchemaValidation,
   AISDKTool,
   AISDKToolExecutionOptions,
+  AISDKToolOptions,
   AISDKToolLike,
   AISDKValidationIssue,
   AISDKValidationResult,
@@ -432,9 +441,22 @@ function toToolResultContent(output: unknown) {
  * fields of the AI SDK tool context (`agentId`, `runId`, `threadId`, `userId`, `channelType`,
  * `channelId`) are forwarded to the Cogitator `ToolContext`. A tool with `requiresApproval` gets
  * the same `needsApproval`, so ai@6 and ai@7 ask before they run it.
+ *
+ * Pass `options.invoker` (your `Cogitator`) to run the calls through `invokeTool`, with approval
+ * on every AI SDK version, the guardrails, the sandbox and `tool.timeout`, see `AISDKToolOptions`.
+ *
+ * @example
+ * ```ts
+ * const tools = convertToolsToAISDK(agent.tools, {
+ *   invoker: cogitator,
+ *   onApproval: async (request) => ({ approved: await askUser(request) }),
+ * });
+ * await generateText({ model, tools, prompt });
+ * ```
  */
 export function toAISDKTool<TParams = unknown, TResult = unknown>(
-  cogTool: Tool<TParams, TResult>
+  cogTool: Tool<TParams, TResult>,
+  options: AISDKToolOptions = {}
 ): AISDKTool<TParams, TResult> {
   const schema = createAISDKSchema(cogTool);
   const needsApproval = needsApprovalOf(cogTool);
@@ -444,7 +466,10 @@ export function toAISDKTool<TParams = unknown, TResult = unknown>(
       ? cogTool.parameters
       : (schema as unknown as Tool<TParams, TResult>['parameters']),
     parameters: schema,
-    execute: (input, options) => cogTool.execute(input, cogitatorContext(options)),
+    execute: (input, executeOptions) =>
+      options.invoker
+        ? invokeThrough(options.invoker, cogTool, input, executeOptions, options)
+        : cogTool.execute(input, cogitatorContext(executeOptions)),
     ...(needsApproval !== undefined && { needsApproval }),
   };
   return Object.assign(aiTool, {
@@ -457,10 +482,74 @@ export function convertToolsFromAISDK(aiTools: Record<string, AISDKToolLike>): T
   return Object.entries(aiTools).map(([name, aiTool]) => fromAISDKTool(aiTool, name));
 }
 
-export function convertToolsToAISDK(cogTools: Tool[]): Record<string, AISDKTool> {
+export function convertToolsToAISDK(
+  cogTools: Tool[],
+  options: AISDKToolOptions = {}
+): Record<string, AISDKTool> {
   const result: Record<string, AISDKTool> = {};
   for (const tool of cogTools) {
-    result[tool.name] = toAISDKTool(tool);
+    result[tool.name] = toAISDKTool(tool, options);
   }
   return result;
+}
+
+const APPROVED: ToolApprovalDecision = { approved: true };
+
+/**
+ * One call of a converted tool run through the invoker. The AI SDK parsed the arguments with the
+ * tool's own schema, so they are taken as they come. A call the AI SDK approval flow approved is
+ * not asked again.
+ */
+async function invokeThrough<TParams, TResult>(
+  invoker: ToolInvoker,
+  cogTool: Tool<TParams, TResult>,
+  input: TParams,
+  executeOptions: AISDKToolExecutionOptions,
+  options: AISDKToolOptions
+): Promise<TResult> {
+  const context = cogitatorContext(executeOptions);
+  const onApproval = approvedByAISDK(executeOptions) ? async () => APPROVED : options.onApproval;
+  const result = await invoker.invokeTool(withParsedArguments(cogTool), input, {
+    toolCallId: executeOptions.toolCallId,
+    runId: context.runId,
+    agentId: context.agentId,
+    signal: context.signal,
+    ...(context.threadId !== undefined && { threadId: context.threadId }),
+    ...(context.userId !== undefined && { userId: context.userId }),
+    ...(context.channelType !== undefined && { channelType: context.channelType }),
+    ...(context.channelId !== undefined && { channelId: context.channelId }),
+    ...(onApproval && { onApproval }),
+  });
+  if (result.error !== undefined) throw new Error(result.error);
+  return result.result as TResult;
+}
+
+/**
+ * Whether the AI SDK approval flow (ai@6, ai@7) approved this call: an assistant message holds a
+ * `tool-approval-request` for the call, and a tool message an approving `tool-approval-response`
+ * to that request, which is what the AI SDK executes an approved call for.
+ */
+function approvedByAISDK({ toolCallId, messages }: AISDKToolExecutionOptions): boolean {
+  const requested = new Set<string>();
+  const approved = new Set<string>();
+  for (const message of Array.isArray(messages) ? messages : []) {
+    if (!isRecord(message) || !Array.isArray(message.content)) continue;
+    for (const part of message.content) {
+      if (!isRecord(part) || typeof part.approvalId !== 'string') continue;
+      if (
+        message.role === 'assistant' &&
+        part.type === 'tool-approval-request' &&
+        part.toolCallId === toolCallId
+      ) {
+        requested.add(part.approvalId);
+      } else if (
+        message.role === 'tool' &&
+        part.type === 'tool-approval-response' &&
+        part.approved === true
+      ) {
+        approved.add(part.approvalId);
+      }
+    }
+  }
+  return [...requested].some((approvalId) => approved.has(approvalId));
 }

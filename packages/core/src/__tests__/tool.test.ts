@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
-import { tool, toolToSchema } from '../tool';
+import { tool, toolToSchema, withParsedArguments } from '../tool';
+import { Cogitator } from '../cogitator';
 
 describe('tool()', () => {
   it('creates a tool with required properties', () => {
@@ -126,5 +127,75 @@ describe('toolToSchema()', () => {
 
     expect(schema.parameters.properties).toHaveProperty('user');
     expect(schema.parameters.properties).toHaveProperty('tags');
+  });
+});
+
+describe('tool metadata', () => {
+  it('keeps title, outputSchema and annotations', () => {
+    const outputSchema = z.object({ celsius: z.number() });
+    const weather = tool({
+      name: 'weather',
+      title: 'Weather',
+      description: 'Weather of a city',
+      parameters: z.object({ city: z.string() }),
+      outputSchema,
+      annotations: { readOnlyHint: true, openWorldHint: true },
+      execute: async () => ({ celsius: 20 }),
+    });
+
+    expect(weather.title).toBe('Weather');
+    expect(weather.outputSchema).toBe(outputSchema);
+    expect(weather.annotations).toEqual({ readOnlyHint: true, openWorldHint: true });
+    expect(weather.toJSON()).not.toHaveProperty('outputSchema');
+  });
+});
+
+describe('withParsedArguments()', () => {
+  const double = tool({
+    name: 'double',
+    title: 'Double',
+    description: 'Double a number',
+    parameters: z.object({ count: z.string().transform((value) => Number(value)) }),
+    requiresApproval: true,
+    timeout: 1000,
+    maxResultLength: 50,
+    annotations: { idempotentHint: true },
+    execute: async ({ count }) => count * 2,
+  });
+
+  it('keeps everything that decides how the call runs', () => {
+    const parsed = withParsedArguments(double);
+    expect(parsed).toMatchObject({
+      name: 'double',
+      title: 'Double',
+      description: 'Double a number',
+      requiresApproval: true,
+      timeout: 1000,
+      maxResultLength: 50,
+      annotations: { idempotentHint: true },
+    });
+    expect(parsed.toJSON()).toEqual(double.toJSON());
+  });
+
+  it('runs already parsed arguments through invokeTool without parsing them again', async () => {
+    const cogitator = new Cogitator();
+    try {
+      const result = await cogitator.invokeTool(
+        withParsedArguments(double),
+        { count: 21 },
+        { onApproval: async () => ({ approved: true }) }
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.result).toBe(42);
+
+      const reparsed = await cogitator.invokeTool(
+        double,
+        { count: 21 },
+        { onApproval: async () => ({ approved: true }) }
+      );
+      expect(reparsed.error).toBeDefined();
+    } finally {
+      await cogitator.close();
+    }
   });
 });

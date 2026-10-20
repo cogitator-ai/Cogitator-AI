@@ -83,6 +83,34 @@ export function tool<TParams, TResult>(
 }
 
 /**
+ * The tool with its arguments taken as they come, for running through `invokeTool` a call whose
+ * arguments were already parsed with the tool's own schema, such as by the MCP SDK or the AI SDK.
+ * Everything that decides how the call runs (approval, sandbox, timeout, side effects, result
+ * limit) stays, and the schema's transforms apply once instead of twice.
+ */
+export function withParsedArguments<TParams, TResult>(
+  tool: Tool<TParams, TResult>
+): Tool<TParams, TResult> {
+  return {
+    name: tool.name,
+    ...(tool.title !== undefined && { title: tool.title }),
+    description: tool.description,
+    ...(tool.category !== undefined && { category: tool.category }),
+    ...(tool.tags !== undefined && { tags: tool.tags }),
+    parameters: z.custom<TParams>(() => true),
+    ...(tool.outputSchema !== undefined && { outputSchema: tool.outputSchema }),
+    ...(tool.annotations !== undefined && { annotations: tool.annotations }),
+    execute: (params, context) => tool.execute(params, context),
+    ...(tool.sideEffects !== undefined && { sideEffects: tool.sideEffects }),
+    ...(tool.requiresApproval !== undefined && { requiresApproval: tool.requiresApproval }),
+    ...(tool.timeout !== undefined && { timeout: tool.timeout }),
+    ...(tool.sandbox !== undefined && { sandbox: tool.sandbox }),
+    ...(tool.maxResultLength !== undefined && { maxResultLength: tool.maxResultLength }),
+    toJSON: () => tool.toJSON(),
+  };
+}
+
+/**
  * Convert a tool to JSON Schema format for LLM function calling.
  *
  * A Zod schema is converted to OpenAPI 3.0 compatible JSON Schema, a JSON Schema is taken as is.
