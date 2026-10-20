@@ -13,13 +13,16 @@ const DATASET_IDS: Record<BeamTier, BenchDatasetId> = {
 };
 
 const turnSchema = z.object({
-  id: z.number().nullish(),
+  id: z
+    .union([z.number(), z.bigint()])
+    .nullish()
+    .transform((id) => (id == null ? id : Number(id))),
   role: z.string(),
   content: z.string(),
   time_anchor: z.string().nullish(),
 });
 
-const rowSchema = z.object({
+export const beamRowSchema = z.object({
   conversation_id: z.string(),
   chat: z.array(z.array(turnSchema)),
   probing_questions: z.string(),
@@ -32,8 +35,16 @@ const probeSchema = z.looseObject({
   ideal_answer: z.unknown().optional(),
   ideal_response: z.unknown().optional(),
   ideal_summary: z.unknown().optional(),
-  source_chat_ids: z.array(z.number()).optional(),
+  source_chat_ids: z.unknown().optional().transform(chatIds),
 });
+
+/** Every turn id in BEAM's `source_chat_ids`, which comes as a list, or as lists by statement. */
+function chatIds(value: unknown): number[] {
+  if (typeof value === 'number' && Number.isInteger(value)) return [value];
+  if (Array.isArray(value)) return value.flatMap(chatIds);
+  if (value !== null && typeof value === 'object') return Object.values(value).flatMap(chatIds);
+  return [];
+}
 
 const MONTHS = [
   'january',
@@ -79,7 +90,7 @@ function referenceAnswer(probe: z.infer<typeof probeSchema>): string {
 
 /** One BEAM row as a conversation with its probing questions. */
 export function beamConversation(
-  row: z.infer<typeof rowSchema>,
+  row: z.infer<typeof beamRowSchema>,
   tier: BeamTier
 ): BenchConversation {
   const turns: BenchTurn[] = [];
@@ -99,7 +110,7 @@ export function beamConversation(
     .parse(parsePythonLiteral(row.probing_questions));
   const questions: BenchQuestion[] = Object.entries(probes).flatMap(([category, items]) =>
     items.map((probe, index) => {
-      const evidence = (probe.source_chat_ids ?? []).flatMap((id) => {
+      const evidence = probe.source_chat_ids.flatMap((id) => {
         const content = byId.get(id);
         return content ? [content] : [];
       });
@@ -134,7 +145,7 @@ export async function loadBeam(
     columns: ['conversation_id', 'chat', 'probing_questions'],
   });
   return z
-    .array(rowSchema)
+    .array(beamRowSchema)
     .parse(rows)
     .map((row) => beamConversation(row, tier));
 }

@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { parsePythonLiteral } from '../python-literal.js';
-import { parseBeamAnchor, stripBeamMarker, beamConversation } from '../datasets/beam.js';
+import {
+  beamConversation,
+  beamRowSchema,
+  parseBeamAnchor,
+  stripBeamMarker,
+} from '../datasets/beam.js';
 import { parseLongMemEvalDate, longMemEvalConversation } from '../datasets/longmemeval.js';
 import {
   chunkFacts,
@@ -48,16 +53,16 @@ describe('BEAM', () => {
 
   it('turns a row into turns and rubric questions', () => {
     const conversation = beamConversation(
-      {
+      beamRowSchema.parse({
         conversation_id: '7',
         chat: [
           [
             { id: 0, role: 'user', content: 'Hi ->-> 1,1', time_anchor: 'March-15-2024' },
-            { id: 1, role: 'assistant', content: 'Hello', time_anchor: null },
+            { id: 1n, role: 'assistant', content: 'Hello', time_anchor: null },
           ],
         ],
-        probing_questions: `{'knowledge_update': [{'question': 'Latency?', 'answer': '250ms', 'rubric': ['says 250ms'], 'source_chat_ids': [1, 9]}]}`,
-      },
+        probing_questions: `{'knowledge_update': [{'question': 'Latency?', 'answer': '250ms', 'rubric': ['says 250ms'], 'source_chat_ids': {'first': [1], 'second': [9]}}]}`,
+      }),
       '100K'
     );
     expect(conversation).toMatchObject({ id: '100K:7', dataset: 'beam-100k' });
