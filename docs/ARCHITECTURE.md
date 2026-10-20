@@ -416,7 +416,8 @@ const context = await builder.build({
   systemPrompt: 'You are a helpful assistant.',
   currentInput: 'What did we decide about the launch?',
 });
-// context.messages, context.facts, context.semanticResults, context.tokenCount, context.truncated
+// context.messages, context.facts, context.semanticResults, context.tokenCount, context.truncated,
+// context.dropped (what did not fit the budget)
 ```
 
 ---

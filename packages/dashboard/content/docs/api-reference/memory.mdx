@@ -106,7 +106,9 @@ See [Embeddings](/docs/memory/embeddings).
 | `countEntryTokens`, `countToolCallsTokens`  | `(entry: MemoryEntry)`, `(toolCalls: ToolCall[])`                                                     | Recount a stored entry, estimate tool calls                               |
 | `truncateToTokens`                          | `truncateToTokens(text: string, maxTokens: number): string`                                           | Cut text to a token budget                                                |
 
-`ContextBuilderConfig` is `{ maxTokens, strategy: 'recent' | 'relevant' | 'hybrid', reserveTokens?, includeSystemPrompt?, includeFacts?, includeSemanticContext?, includeGraphContext?, graphContextOptions? }`; `ContextBuilderDeps` is `{ memoryAdapter, factAdapter?, embeddingAdapter?, embeddingService?, graphContextBuilder? }`.
+`build()` also takes `maxTokens`, this build's budget in place of the builder's, such as the context window of the model it is built for. The result's `dropped` (`DroppedContext`) lists the history entries, facts, search results and graph nodes that did not fit, with their token count.
+
+`ContextBuilderConfig` is `{ maxTokens?, strategy: 'recent' | 'relevant' | 'hybrid', reserveTokens?, includeSystemPrompt?, includeFacts?, includeSemanticContext?, includeGraphContext?, graphContextOptions? }`; `ContextBuilderDeps` is `{ memoryAdapter, factAdapter?, embeddingAdapter?, embeddingService?, graphContextBuilder? }`.
 
 ## Core Facts, Sessions, Compaction
 
@@ -193,4 +195,4 @@ interface SearchResult {
 }
 ```
 
-Also re-exported: the adapter configs, `MemoryQueryOptions`, `SemanticSearchOptions`, `SearchOptions`, `SearchFilter`, `HybridSearchConfig`, `ContextBuilderConfig`, `BuiltContext`, `MemoryConfig`, the graph types (`GraphNode`, `GraphEdge`, `TraversalOptions`, `InferenceRule`, …) and the session types (`Session`, `SessionFilter`, `CompactionConfig`, `CompactionResult`; the interface is exported as `ISessionManager`).
+Also re-exported: the adapter configs, `MemoryQueryOptions`, `SemanticSearchOptions`, `SearchOptions`, `SearchFilter`, `HybridSearchConfig`, `ContextBuilderConfig`, `BuiltContext`, `DroppedContext`, `MemoryConfig`, the graph types (`GraphNode`, `GraphEdge`, `TraversalOptions`, `InferenceRule`, …) and the session types (`Session`, `SessionFilter`, `CompactionConfig`, `CompactionResult`; the interface is exported as `ISessionManager`).

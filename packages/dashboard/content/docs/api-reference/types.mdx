@@ -8,14 +8,15 @@ description: Key TypeScript type definitions from @cogitator-ai/types.
 ## Agent Types
 
 ```typescript
-interface AgentConfig {
+interface AgentConfig<TDeps = unknown> {
   id?: string;
   name: string;
   description?: string;
   provider?: string; // explicit provider, e.g. 'openai' for an OpenAI-compatible server
   model?: string; // 'provider/model'; falls back to llm.defaultModel of the Cogitator
+  fallbackModels?: FallbackModel[]; // tried in order when model fails, see LLM Backends
   instructions: string;
-  tools?: Tool[];
+  tools?: Tool<unknown, unknown, TDeps>[]; // with TDeps set, only tools whose deps it provides
   skills?: Skill[];
   temperature?: number; // Agent default: 0.7
   topP?: number;
@@ -27,6 +28,23 @@ interface AgentConfig {
   maxIterations?: number; // Agent default: 10
   timeout?: number; // ms; run default: limits.defaultTimeout, else 120000
 }
+
+type FallbackModel = string | { model: string; provider?: string };
+
+interface ModelFallbackEvent {
+  from: string; // 'provider/model' that failed
+  to: string; // 'provider/model' the turn goes on with
+  error: Error; // its error, or CIRCUIT_OPEN when it was skipped
+}
+
+interface ModelCircuitBreakerConfig {
+  failureThreshold?: number; // failures in a row before a model is skipped, default 5
+  resetTimeout?: number; // ms a failing model is skipped, default 30000
+  halfOpenRequests?: number; // successes needed afterwards, default 3
+}
+
+// deps as a run must pass them: required when the agent declares its deps type
+type RunDeps<TDeps> = unknown extends TDeps ? { deps?: unknown } : { deps: TDeps };
 
 interface Handoff {
   agent: Agent;
@@ -62,11 +80,12 @@ interface DeserializeOptions {
 ## Run Types
 
 ```typescript
-interface RunOptions {
+interface RunOptions<TDeps = unknown> {
   input: string;
   images?: ImageInput[]; // URLs, base64 or { data, mimeType }
   audio?: AudioInput[]; // transcribed and added to the input
-  context?: Record<string, unknown>;
+  context?: Record<string, unknown>; // added to the system prompt
+  deps?: TDeps; // tools get them as context.deps; never sent to the model, memory or checkpoints
   threadId?: string;
   timeout?: number;
   signal?: AbortSignal;
@@ -74,6 +93,7 @@ interface RunOptions {
   onToken?: (token: string) => void;
   onReasoning?: (delta: string) => void;
   onHandoff?: (handoff: HandoffEvent) => void;
+  onModelFallback?: (event: ModelFallbackEvent) => void; // { from, to, error }
   reasoning?: ReasoningConfig; // overrides the agent's
   onApproval?: (
     request: ToolApprovalRequest
@@ -101,7 +121,7 @@ interface RunResult {
   readonly runId: string;
   readonly agentId: string;
   readonly threadId: string;
-  readonly modelUsed?: string;
+  readonly modelUsed?: string; // model of the final answer, set with cost routing or a fallback
   readonly usage: {
     readonly inputTokens: number;
     readonly outputTokens: number;
@@ -169,7 +189,7 @@ interface RunCheckpointStore {
 ## Tool Types
 
 ```typescript
-interface Tool<TParams = unknown, TResult = unknown> {
+interface Tool<TParams = unknown, TResult = unknown, TDeps = unknown> {
   name: string;
   title?: string; // name for people, such as an MCP client shows
   description: string;
@@ -178,7 +198,7 @@ interface Tool<TParams = unknown, TResult = unknown> {
   parameters: ZodType<TParams>;
   outputSchema?: ZodType<TResult>; // not checked in a run, MCPServer advertises it
   annotations?: ToolAnnotations;
-  execute(params: TParams, context: ToolContext): Promise<TResult>;
+  execute(params: TParams, context: BaseToolContext<TDeps>): Promise<TResult>;
   sideEffects?: SideEffectType[];
   requiresApproval?: boolean | ApprovalCheck;
   timeout?: number;
@@ -187,7 +207,7 @@ interface Tool<TParams = unknown, TResult = unknown> {
   toJSON(): ToolSchema;
 }
 
-interface ToolConfig<TParams = unknown, TResult = unknown> {
+interface ToolConfig<TParams = unknown, TResult = unknown, TDeps = unknown> {
   name: string;
   title?: string;
   description: string;
@@ -196,7 +216,7 @@ interface ToolConfig<TParams = unknown, TResult = unknown> {
   parameters: ZodType<TParams>;
   outputSchema?: ZodType<TResult>;
   annotations?: ToolAnnotations;
-  execute: (params: TParams, context: ToolContext) => Promise<TResult>;
+  execute: (params: TParams, context: ToolContext<TDeps>) => Promise<TResult>;
   sideEffects?: SideEffectType[];
   requiresApproval?: boolean | ((params: TParams) => boolean);
   timeout?: number;
@@ -228,15 +248,22 @@ type ToolCategory =
 
 type SideEffectType = 'filesystem' | 'network' | 'database' | 'process' | 'external';
 
-interface ToolContext {
+interface BaseToolContext<TDeps = unknown> {
   agentId: string;
   runId: string;
   signal: AbortSignal;
+  toolCallId?: string;
   threadId?: string;
   userId?: string;
   channelType?: string;
   channelId?: string;
+  deps?: TDeps; // RunOptions.deps
 }
+
+// ToolContext<AppDeps> has deps present and typed, for tools that read them
+type ToolContext<TDeps = unknown> = unknown extends TDeps
+  ? BaseToolContext
+  : BaseToolContext<TDeps> & { deps: TDeps };
 
 interface ToolCall {
   id: string;
@@ -554,6 +581,7 @@ interface CogitatorConfig {
     plugins?: Record<string, unknown>; // config for registerLLMBackend plugins, by provider
     retry?: LLMRetryConfig | false; // on by default
     promptCache?: PromptCacheConfig | false; // on by default
+    modelCircuitBreaker?: ModelCircuitBreakerConfig; // when a failing fallbackModels model is skipped
     pricing?: Record<string, ModelPriceConfig>; // USD per million tokens, by model string or its tail after any '/'
   };
   runCheckpoints?: RunCheckpointStore; // where paused runs wait

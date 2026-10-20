@@ -258,6 +258,30 @@ try {
 
 A call the caller aborts fails with the abort reason (`signal.reason`) instead of a retryable LLM error, on every backend and also for a stream that already began, including the OpenAI and Bedrock streams whose SDKs used to end quietly. `abortReason(signal)` returns that error.
 
+### Fallback Models
+
+An agent with `fallbackModels` keeps answering when its model cannot. A turn moves to the next model, in order, when `model` is down, overloaded or timing out after its retries, out of quota, rejects the key or no longer exists. `content_filter` and `invalid_request` failures and an aborted run never move:
+
+```typescript
+const agent = new Agent({
+  name: 'support',
+  model: 'anthropic/claude-sonnet-5-5',
+  fallbackModels: [
+    'openai/gpt-6.1-sol',
+    { model: 'deepseek/deepseek-v4-pro', provider: 'openrouter' },
+  ],
+  instructions: 'Answer support questions.',
+});
+
+const result = await cog.run(agent, {
+  input,
+  onModelFallback: ({ from, to, error }) => console.warn(`${from} -> ${to}: ${error.message}`),
+});
+result.modelUsed; // 'openai/gpt-6.1-sol' when a fallback gave the final answer
+```
+
+Every turn starts from `model` again. Each model has a circuit breaker shared by the runtime's runs (`llm.modelCircuitBreaker`, default 5 failures in a row, 30 s), which opens at once on a lasting failure such as an exhausted quota. A stream moves only before its first token, a fallback turn is priced at the model that answered it and leaves an `llm.fallback` span, and when every model fails the run ends with `LLM_UNAVAILABLE`, the failures in `details.attempts`. Agents without `fallbackModels` behave as before.
+
 `llmUnavailable`, `llmTimeout`, `llmInvalidResponse`, `llmConfigError` and `wrapSDKError` build these errors in your own backends, and `providerErrorIn` reads the error a router such as OpenRouter puts in the body of a successful response; `withLLMRetry(backend, options)` / `RetryingBackend` add retries with `Retry-After` support to any backend.
 
 ---
@@ -272,6 +296,7 @@ const agent = new Agent({
   name: 'research-assistant',
   instructions: 'You research topics thoroughly',
   model: 'openai/gpt-6.1-sol',
+  fallbackModels: ['anthropic/claude-sonnet-5-5'], // see Fallback Models
   tools: [webSearch, calculator],
 
   temperature: 0.7,
@@ -538,12 +563,41 @@ interface ToolContext {
   agentId: string;
   runId: string;
   signal: AbortSignal; // aborted on run cancel or tool timeout
+  toolCallId?: string;
   threadId?: string;
   userId?: string; // the run's userId
   channelType?: string;
   channelId?: string;
+  deps?: unknown; // the run's deps, typed with ToolContext<YourDeps>
 }
 ```
+
+### Tool Dependencies
+
+Give tools a database client, an API key or the signed-in user without putting them in the prompt: pass them as `deps`, and annotate the tool's context with their type.
+
+```typescript
+import { Agent, tool, type ToolContext } from '@cogitator-ai/core';
+
+interface AppDeps {
+  db: Database;
+  userId: string;
+}
+
+const listOrders = tool({
+  name: 'list_orders',
+  description: "List the signed-in user's orders",
+  parameters: z.object({ limit: z.number().default(10) }),
+  execute: async ({ limit }, { deps }: ToolContext<AppDeps>) =>
+    deps.db.orders.findMany({ where: { userId: deps.userId }, take: limit }),
+});
+
+const agent = new Agent<AppDeps>({ name: 'support', instructions: '...', tools: [listOrders] });
+
+await cog.run(agent, { input: 'Where is my order?', deps: { db, userId: session.userId } });
+```
+
+`deps` reach every tool of the run, handed-over agents, agents run as tools and `cog.invokeTool(tool, args, { deps })`, and never the model, memory, spans, the result or a paused run's checkpoint: pass them again to `resume()`. `new Agent<AppDeps>` rejects tools whose deps it does not provide and makes `deps` required in `run()` and `resume()`.
 
 ### Sandboxed Tools
 
@@ -949,7 +1003,7 @@ const cog = new Cogitator({
       keyPrefix: 'cogitator:',
     },
     contextBuilder: {
-      maxTokens: 4000,
+      maxTokens: 4000, // optional: without it the history fills the run model's context window
       strategy: 'recent',
     },
   },

@@ -57,7 +57,7 @@ const getWeather = tool({
 });
 ```
 
-`execute` receives the validated parameters and a `ToolContext` (`agentId`, `runId`, `signal`, and, when known, `threadId`, `userId`, `channelType`, `channelId`). Other `ToolConfig` fields: `category`, `tags`, `sideEffects`, `requiresApproval`, `timeout` (ms), `sandbox`, `maxResultLength` (see [Result Size](#result-size)), and `title`, `outputSchema` and `annotations`, which an MCP server sends to its clients (see [Serving Tools over MCP](#serving-tools-over-mcp)).
+`execute` receives the validated parameters and a `ToolContext` (`agentId`, `runId`, `signal`, and, when known, `threadId`, `userId`, `channelType`, `channelId` and the run's `deps`). Annotate it as `ToolContext<YourDeps>` to read `deps` typed: they are values of your own the run passes (`RunOptions.deps`), such as a database client, and never reach the model (see [Agents: Dependencies for Tools](AGENTS.md#dependencies-for-tools)). Other `ToolConfig` fields: `category`, `tags`, `sideEffects`, `requiresApproval`, `timeout` (ms), `sandbox`, `maxResultLength` (see [Result Size](#result-size)), and `title`, `outputSchema` and `annotations`, which an MCP server sends to its clients (see [Serving Tools over MCP](#serving-tools-over-mcp)).
 
 ### Tool Names
 

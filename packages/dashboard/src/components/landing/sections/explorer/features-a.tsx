@@ -158,7 +158,7 @@ export async function featuresA(): Promise<ExplorerFeature[]> {
       pkg: '@cogitator-ai/memory',
       title: 'Memory & context',
       summary:
-        'Every run gets a context built to a token budget: recent history, long-term facts and semantic hits, on Postgres, Redis, SQLite, MongoDB or Qdrant.',
+        "Every run gets a context built to its model's window or your budget: recent history, long-term facts and semantic hits, on Postgres, Redis, SQLite, MongoDB or Qdrant.",
       href: '/docs/memory',
       code: memory,
     },

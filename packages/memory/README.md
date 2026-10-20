@@ -309,8 +309,8 @@ Build token-aware conversation context from memory.
 
 ```typescript
 interface ContextBuilderConfig {
-  maxTokens: number;
-  reserveTokens?: number;
+  maxTokens?: number; // without it, build() takes maxTokens from its options
+  reserveTokens?: number; // default 10% of the budget (at least 100)
   strategy: 'recent' | 'relevant' | 'hybrid';
   includeSystemPrompt?: boolean;
   includeFacts?: boolean;
@@ -352,7 +352,24 @@ const context = await builder.build({
 console.log(context.messages);
 console.log(context.tokenCount);
 console.log(context.truncated);
+console.log(context.dropped); // what did not fit: entries, facts, semanticResults, graphNodes, tokenCount
 ```
+
+### Budget per Build
+
+Leave `maxTokens` out of the config and pass it to `build()` instead, so one builder serves models of different sizes. A Cogitator run does this with the context window of the model it runs on when `memory.contextBuilder.maxTokens` is not set:
+
+```typescript
+const builder = new ContextBuilder({ strategy: 'recent' }, { memoryAdapter: memory });
+
+const context = await builder.build({
+  threadId: 'thread_123',
+  agentId: 'agent-1',
+  maxTokens: 128_000, // e.g. the model's context window
+});
+```
+
+A build without a budget from either side throws. `reserveTokens` defaults to 10% of the budget used (at least 100).
 
 ### With Facts and Semantic Search
 
@@ -396,7 +413,8 @@ interface BuiltContext {
   semanticResults: (Embedding & { score: number })[];
   graphContext?: GraphContext; // with includeGraphContext and a graph adapter
   tokenCount: number;
-  truncated: boolean;
+  truncated: boolean; // history entries were left out
+  dropped: DroppedContext; // what did not fit the budget
   errors?: ContextBuildError[]; // parts that failed to load and were left out
   warnings?: string[]; // budget problems, such as a system prompt over budget
   metadata: {
@@ -405,6 +423,14 @@ interface BuiltContext {
     factsIncluded: number;
     semanticResultsIncluded: number;
   };
+}
+
+interface DroppedContext {
+  entries: MemoryEntry[]; // history left out, in conversation order
+  facts: Fact[]; // facts visible to the user that did not fit
+  semanticResults: (Embedding & { score: number })[]; // search results that did not fit
+  graphNodes: GraphNode[]; // graph nodes cut from the graph context
+  tokenCount: number; // tokens of all of the above
 }
 
 interface ContextBuildError {

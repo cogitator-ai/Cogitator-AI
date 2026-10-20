@@ -63,6 +63,12 @@ interface CogitatorConfig {
     retry?: LLMRetryConfig | false;
     // Prompt caching (on by default); false turns it off
     promptCache?: PromptCacheConfig | false;
+    // When a model agents fall back from (fallbackModels) is skipped, per model, shared by all runs
+    modelCircuitBreaker?: {
+      failureThreshold?: number;
+      resetTimeout?: number;
+      halfOpenRequests?: number;
+    };
     // Prices of your own in USD per million tokens, by model string or its tail after any '/',
     // over the model registry: { input, output, inputCached?, inputCacheWrite?, inputCacheWrite1h? }
     pricing?: Record<string, ModelPriceConfig>;
@@ -223,7 +229,7 @@ Cogitator has no event emitter. For observability, use the `RunOptions` callback
 #### RunOptions
 
 ```typescript
-interface RunOptions {
+interface RunOptions<TDeps = unknown> {
   input: string;
 
   // Images (URLs or base64) and audio to transcribe
@@ -240,6 +246,9 @@ interface RunOptions {
 
   // Additional context injected into the system prompt
   context?: Record<string, unknown>;
+  // Your own values for the tools (context.deps): never sent to the model, memory, spans or
+  // checkpoints. Required when the agent declares its deps type (new Agent<Deps>(...))
+  deps?: TDeps;
 
   threadId?: string;
   timeout?: number; // overrides agent.timeout
@@ -273,6 +282,8 @@ interface RunOptions {
   onToken?: (token: string) => void;
   onReasoning?: (delta: string) => void;
   onHandoff?: (handoff: { from: string; to: string; reason?: string }) => void;
+  // A turn moved from a failing model to the next of the agent's fallbackModels
+  onModelFallback?: (event: { from: string; to: string; error: Error }) => void;
   onToolCall?: (call: ToolCall) => void;
   onToolResult?: (result: ToolResult) => void;
   onRunStart?: (data: { runId: string; agentId: string; input: string; threadId: string }) => void;
@@ -294,7 +305,7 @@ interface RunResult {
   readonly agentId: string;
   readonly threadId: string;
 
-  // Actual model used (may differ from agent.model with cost routing)
+  // The model of the final answer when it may differ from agent.model: cost routing or a fallback
   readonly modelUsed?: string;
 
   readonly usage: {
@@ -361,7 +372,7 @@ const agent = new Agent(config: AgentConfig);
 #### AgentConfig
 
 ```typescript
-interface AgentConfig {
+interface AgentConfig<TDeps = unknown> {
   id?: string; // stable id (generated when omitted)
   name: string;
   description?: string;
@@ -372,6 +383,9 @@ interface AgentConfig {
   model?: string;
   // Explicit provider override (useful for OpenRouter and similar proxies)
   provider?: string;
+  // Models a turn moves to, in order, when model is down, out of quota, rejects the key or is
+  // gone. Rate limits and server errors are retried on model first
+  fallbackModels?: Array<string | { model: string; provider?: string }>;
 
   temperature?: number; // default: 0.7
   topP?: number;
@@ -451,7 +465,7 @@ const tools = toolset(getWeather);
 #### ToolConfig
 
 ```typescript
-interface ToolConfig<TParams = unknown, TResult = unknown> {
+interface ToolConfig<TParams = unknown, TResult = unknown, TDeps = unknown> {
   name: string;
   description: string;
   category?:
@@ -468,7 +482,8 @@ interface ToolConfig<TParams = unknown, TResult = unknown> {
   tags?: string[];
 
   parameters: ZodType<TParams>;
-  execute: (params: TParams, context: ToolContext) => Promise<TResult>;
+  // Annotate context as ToolContext<Deps> to read the run's deps, typed
+  execute: (params: TParams, context: ToolContext<TDeps>) => Promise<TResult>;
 
   sideEffects?: ('filesystem' | 'network' | 'database' | 'process' | 'external')[];
   requiresApproval?: boolean | ((params: TParams) => boolean);
@@ -510,16 +525,25 @@ The model reads at most `limits.maxToolResultLength` characters of a result (def
 #### ToolContext
 
 ```typescript
-interface ToolContext {
+interface BaseToolContext<TDeps = unknown> {
   agentId: string;
   runId: string;
   signal: AbortSignal;
+  toolCallId?: string;
   threadId?: string;
   userId?: string;
   channelType?: string;
   channelId?: string;
+  deps?: TDeps; // RunOptions.deps
 }
+
+// With a deps type, deps is present and typed
+type ToolContext<TDeps = unknown> = unknown extends TDeps
+  ? BaseToolContext
+  : BaseToolContext<TDeps> & { deps: TDeps };
 ```
+
+`new Agent<AppDeps>(...)` only accepts tools whose deps `AppDeps` provides and makes `deps` required in `run()` and `resume()`. A paused run's checkpoint never holds `deps`, so `resume()` takes them again.
 
 #### Built-in Tools
 

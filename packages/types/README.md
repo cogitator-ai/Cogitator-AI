@@ -130,15 +130,22 @@ const calculatorConfig: ToolConfig<{ expression: string }, number> = {
 };
 
 // Tool context available during execution
-interface ToolContext {
+interface BaseToolContext<TDeps = unknown> {
   agentId: string;
   runId: string;
   signal: AbortSignal; // aborted on run cancel or tool timeout
+  toolCallId?: string;
   threadId?: string;
   userId?: string;
   channelType?: string;
   channelId?: string;
+  deps?: TDeps; // RunOptions.deps, never sent to the model
 }
+
+// ToolContext<AppDeps> has deps present and typed
+type ToolContext<TDeps = unknown> = unknown extends TDeps
+  ? BaseToolContext
+  : BaseToolContext<TDeps> & { deps: TDeps };
 ```
 
 ### Tool Interfaces
@@ -147,7 +154,7 @@ interface ToolContext {
 | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
 | `ToolConfig<TParams, TResult>` | Tool definition with execute function                                                                                         |
 | `Tool<TParams, TResult>`       | Full tool with toJSON() method                                                                                                |
-| `ToolContext`                  | Execution context with agentId, runId, signal, threadId, userId, channel                                                      |
+| `ToolContext`                  | Execution context with agentId, runId, signal, threadId, userId, channel and the run's `deps`                                 |
 | `SideEffectType`               | `'filesystem' \| 'network' \| 'database' \| 'process' \| 'external'`                                                          |
 | `ApprovalCheck`                | `(params) => boolean` form of `requiresApproval`                                                                              |
 | `ToolSchema`                   | JSON Schema representation for LLM                                                                                            |
@@ -245,7 +252,7 @@ const schemaFormat: ResponseFormat = {
 };
 ```
 
-`AgentConfig` also takes `id`, `provider` (an explicit backend name) and `skills` (`Skill` bundles of tools and instructions). `AgentSnapshot` / `SerializedAgentConfig` describe the JSON form of `agent.serialize()`.
+`AgentConfig` also takes `id`, `provider` (an explicit backend name), `skills` (`Skill` bundles of tools and instructions) and `fallbackModels` (`FallbackModel`: models a turn moves to when `model` fails). `AgentConfig<TDeps>` with a deps type only accepts tools whose deps it provides, and `RunOptions<TDeps>.deps` carries them to the tools (`RunDeps<TDeps>` makes them required). `AgentSnapshot` / `SerializedAgentConfig` describe the JSON form of `agent.serialize()`.
 
 ---
 
@@ -999,7 +1006,7 @@ Every module below is exported from the package root; the owning package documen
 
 | Module                               | Main types                                                                                                                                                                                                                                                                                                                                           | Used by                                                                                    |
 | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| Memory                               | `MemoryAdapter`, `MemoryResult`, `Thread`, `MemoryEntry`, `Fact`, `Embedding`, `EmbeddingService`, `ContextBuilderConfig`, `MemoryConfig`                                                                                                                                                                                                            | [@cogitator-ai/memory](https://www.npmjs.com/package/@cogitator-ai/memory)                 |
+| Memory                               | `MemoryAdapter`, `MemoryResult`, `Thread`, `MemoryEntry`, `Fact`, `Embedding`, `EmbeddingService`, `ContextBuilderConfig`, `BuiltContext`, `DroppedContext`, `MemoryConfig`                                                                                                                                                                          | [@cogitator-ai/memory](https://www.npmjs.com/package/@cogitator-ai/memory)                 |
 | Sandbox                              | `SandboxConfig`, `SandboxManagerConfig` (`allowNativeFallback`, default `true`: Docker-sandboxed commands run on the host when Docker is unavailable), `SandboxPoolConfig` (`reuseContainers`, default `false`: every execution gets a fresh container), `SandboxWasmConfig` (`memoryPages` caps the module's own memory), `SandboxExecutionRequest` | [@cogitator-ai/sandbox](https://www.npmjs.com/package/@cogitator-ai/sandbox)               |
 | Workflow                             | `WorkflowState`, `Workflow`, `CheckpointStore`, `RunStore`, `ApprovalStore`, `TimerStore` (optional `claimTtl`, `renew`, `release`), `WorkflowRunStats`                                                                                                                                                                                              | [@cogitator-ai/workflows](https://www.npmjs.com/package/@cogitator-ai/workflows)           |
 | Swarm, negotiation                   | `SwarmConfig`, `SwarmStrategy`, `SwarmResult`, negotiation types                                                                                                                                                                                                                                                                                     | [@cogitator-ai/swarms](https://www.npmjs.com/package/@cogitator-ai/swarms)                 |

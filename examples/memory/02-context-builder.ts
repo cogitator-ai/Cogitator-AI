@@ -114,6 +114,10 @@ async function main() {
   console.log('Original messages:', truncatedContext.metadata.originalMessageCount);
   console.log('Token count:', truncatedContext.tokenCount);
   console.log('Truncated:', truncatedContext.truncated);
+  console.log(
+    `Dropped: ${truncatedContext.dropped.entries.length} older messages, ` +
+      `${truncatedContext.dropped.tokenCount} tokens`
+  );
 
   console.log('\nIncluded messages (most recent):');
   for (const msg of truncatedContext.messages) {
@@ -121,20 +125,16 @@ async function main() {
     console.log(`  [${msg.role}] ${text.slice(0, 70)}${text.length > 70 ? '...' : ''}`);
   }
 
-  section('4. Compare different token budgets');
+  section('4. Compare different token budgets with one builder');
 
   const budgets = [100, 200, 400, 800, 2000, 8000];
 
   console.log('Budget  | Included | Total | Truncated');
   console.log('--------|----------|-------|---------');
 
+  const budgetBuilder = new ContextBuilder({ strategy: 'recent' }, { memoryAdapter: memory });
   for (const budget of budgets) {
-    const builder = new ContextBuilder(
-      { maxTokens: budget, strategy: 'recent' },
-      { memoryAdapter: memory }
-    );
-
-    const ctx = await builder.build({ threadId, agentId });
+    const ctx = await budgetBuilder.build({ threadId, agentId, maxTokens: budget });
     const included = ctx.metadata.includedMessageCount;
     const total = ctx.metadata.originalMessageCount;
     const padBudget = String(budget).padStart(5);

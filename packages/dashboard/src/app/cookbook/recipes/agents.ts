@@ -5,7 +5,7 @@ export const agents: Section = {
   title: 'Agents & Tools',
   icon: '🤖',
   description:
-    'Cache expensive tools, pause for approval, hand conversations between agents, keep long chats inside the context window.',
+    'Cache expensive tools, pause for approval, hand conversations between agents, keep long chats inside the context window, fall back to another model, give tools per-request deps.',
   recipes: [
     {
       id: 'tool-caching',
@@ -548,6 +548,124 @@ await cog.close();`,
         {
           href: '/docs/core/tools',
           label: 'Tools',
+        },
+      ],
+    },
+    {
+      id: 'model-fallback',
+      title: 'Fall Back to Another Model',
+      difficulty: 'easy',
+      time: '5 min',
+      problem:
+        'Your provider has an outage, the account runs out of credits or a model is retired, and every run fails with it. You want the turn answered by another model instead.',
+      points: [
+        'List `fallbackModels` on the agent: a failing turn moves to the next one',
+        'Rate limits are retried first, an exhausted quota or a missing model moves at once',
+        'A circuit breaker skips a model that keeps failing, `onModelFallback` reports each move',
+      ],
+      file: 'model-fallback.ts',
+      code: `import { Agent, Cogitator } from '@cogitator-ai/core';
+
+const cog = new Cogitator({
+  llm: { modelCircuitBreaker: { failureThreshold: 3, resetTimeout: 60_000 } },
+});
+
+const agent = new Agent({
+  name: 'support',
+  model: 'ollama/retired-model:7b',
+  fallbackModels: ['ollama/qwen2.5:0.5b'],
+  instructions: 'Answer in one short sentence.',
+});
+
+const result = await cog.run(agent, {
+  input: 'What is a circuit breaker in software?',
+  onModelFallback: ({ from, to, error }) => console.log(\`\${from} failed (\${error.message}), using \${to}\`),
+});
+console.log(result.modelUsed, result.output);
+
+await cog.close();`,
+      install: 'pnpm add @cogitator-ai/core',
+      setup: 'ollama pull qwen2.5:0.5b',
+      env: [],
+      run: 'npx tsx model-fallback.ts',
+      repoRun: 'npx tsx examples/core/19-model-fallback.ts',
+      notes: [
+        {
+          type: 'info',
+          text: 'A stream moves only before its first token. When every model fails, the run ends with `LLM_UNAVAILABLE` and the failures in `details.attempts`.',
+        },
+      ],
+      example: 'core/19-model-fallback.ts',
+      docs: [
+        {
+          href: '/docs/core/llm-backends#fallback-models',
+          label: 'Fallback Models',
+        },
+      ],
+    },
+    {
+      id: 'tool-deps',
+      title: 'Give Tools Per-Request Dependencies',
+      difficulty: 'easy',
+      time: '5 min',
+      problem:
+        "One agent serves many users, and its tools need each request's database client or signed-in user. Putting them in the prompt leaks them to the model, closures do not work for a shared agent.",
+      points: [
+        'Pass `deps` to `run()`, read them as `context.deps` in the tool',
+        '`ToolContext<Deps>` and `new Agent<Deps>` check both sides at compile time',
+        'deps never reach the model, memory, spans or paused checkpoints',
+      ],
+      file: 'tool-deps.ts',
+      code: `import { Agent, Cogitator, tool, type ToolContext } from '@cogitator-ai/core';
+import { z } from 'zod';
+
+interface ShopDeps {
+  orders: Map<string, string[]>;
+  userId: string;
+}
+
+const listOrders = tool({
+  name: 'list_orders',
+  description: "List the signed-in customer's orders",
+  parameters: z.object({}),
+  execute: async (_params, { deps }: ToolContext<ShopDeps>) => deps.orders.get(deps.userId) ?? [],
+});
+
+const agent = new Agent<ShopDeps>({
+  name: 'shop',
+  model: 'ollama/qwen2.5:0.5b',
+  instructions: 'You do not know any order until you call list_orders. Call it before every answer.',
+  tools: [listOrders],
+});
+
+const cog = new Cogitator();
+const orders = new Map([['alice', ['A-1 shipped']], ['bob', ['B-7 packing']]]);
+
+for (const userId of ['alice', 'bob']) {
+  const result = await cog.run(agent, {
+    input: 'Check my orders with list_orders and tell me their status.',
+    deps: { orders, userId },
+  });
+  console.log(userId, result.output);
+}
+
+await cog.close();`,
+      install: 'pnpm add @cogitator-ai/core zod',
+      setup: 'ollama pull qwen2.5:0.5b',
+      env: [],
+      run: 'npx tsx tool-deps.ts',
+      repoRun: 'npx tsx examples/core/20-tool-deps.ts',
+      notes: [
+        {
+          type: 'tip',
+          text: 'A paused run keeps no deps in its checkpoint: pass them again to `cog.resume(agent, checkpoint, { deps, decisions })`.',
+        },
+      ],
+      example: 'core/20-tool-deps.ts',
+      docs: [
+        {
+          href: '/docs/core/agents#dependencies-for-tools',
+          label: 'Dependencies for Tools',
         },
       ],
     },

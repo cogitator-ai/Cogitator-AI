@@ -20,14 +20,15 @@ const agent = new Agent({
 ## AgentConfig
 
 ```typescript
-interface AgentConfig {
+interface AgentConfig<TDeps = unknown> {
   id?: string;
   name: string;
   description?: string;
   model?: string; // default: llm.defaultModel of the Cogitator
   provider?: string;
+  fallbackModels?: Array<string | { model: string; provider?: string }>; // tried when model fails
   instructions: string;
-  tools?: Tool[];
+  tools?: Tool<unknown, unknown, TDeps>[];
   skills?: Skill[]; // bundles of tools + instructions, merged in
   temperature?: number; // default: 0.7
   topP?: number;
@@ -67,6 +68,51 @@ const agent = new Agent({
   instructions: '...',
 });
 ```
+
+### Fallback Models
+
+`fallbackModels` lists models a turn moves to, in order, when `model` is down, out of quota, rejects the key or no longer exists. Rate limits and server errors are retried on the same model first. A fallback answers one turn, the next starts from `model` again, and `result.modelUsed` names the model of the final answer when it was a fallback:
+
+```typescript
+const agent = new Agent({
+  name: 'support',
+  model: 'anthropic/claude-sonnet-5-5',
+  fallbackModels: ['openai/gpt-6.1-sol', 'google/gemini-3.8-flash'],
+  instructions: 'Answer support questions.',
+});
+```
+
+Which errors move a turn, the circuit breakers and streaming are covered in [Fallback Models](/docs/core/llm-backends#fallback-models).
+
+### Dependencies for Tools
+
+Tools often need things the model must never see: a database client, an API key, the signed-in user. Pass them as `deps` and read them from the tool's context. Typing the agent with its deps makes the compiler check both sides:
+
+```typescript
+import { Agent, tool, type ToolContext } from '@cogitator-ai/core';
+
+interface AppDeps {
+  db: Database;
+  userId: string;
+}
+
+const listOrders = tool({
+  name: 'list_orders',
+  description: "List the signed-in user's orders",
+  parameters: z.object({ limit: z.number().default(10) }),
+  execute: async ({ limit }, { deps }: ToolContext<AppDeps>) =>
+    deps.db.orders.findMany({ where: { userId: deps.userId }, take: limit }),
+});
+
+const agent = new Agent<AppDeps>({ name: 'support', instructions: '...', tools: [listOrders] });
+
+await cog.run(agent, { input: 'Where is my order?', deps: { db, userId: session.userId } });
+```
+
+- `deps` reach every tool of the run: tools of agents it hands over to, [agents run as tools](#agents-as-tools) and `cog.invokeTool(tool, args, { deps })`.
+- They never reach the model, the memory, spans, the run result or a paused run's checkpoint. Pass them again to `cog.resume(agent, checkpoint, { deps, decisions })`.
+- `new Agent<AppDeps>(...)` only accepts tools whose deps `AppDeps` provides, and makes `deps` required in `run()` and `resume()`. An agent without a deps type takes any tool, so a tool that reads `deps` gets `undefined` when the run passes none.
+- `RunOptions.context` is different: it is data for the model, added to the system prompt.
 
 ## Agent with Tools
 
@@ -185,7 +231,7 @@ const restored = Agent.deserialize(saved, {
 
 Tools are stored by name in the snapshot. During deserialization, each tool name is resolved from `toolRegistry` (any `{ get(name) }`, such as a `ToolRegistry`) when given, otherwise from the `tools` array; a missing tool throws `AgentDeserializationError`. `overrides` replaces any config field of the restored agent.
 
-A snapshot keeps the model, instructions, sampling parameters, `reasoning`, `maxIterations`, `onIterationLimit` and `timeout`, but not `handoffs` or `skills` (their tools are kept by name). A `json_schema` response format is saved by name only, so pass the Zod schema back as `overrides.responseFormat`. `Agent.validateSnapshot(value)` checks a parsed snapshot; it rejects snapshots without a `model`, so give agents you serialize an explicit model.
+A snapshot keeps the model, `fallbackModels`, instructions, sampling parameters, `reasoning`, `maxIterations`, `onIterationLimit` and `timeout`, but not `handoffs` or `skills` (their tools are kept by name). A `json_schema` response format is saved by name only, so pass the Zod schema back as `overrides.responseFormat`. `Agent.validateSnapshot(value)` checks a parsed snapshot, it rejects snapshots without a `model`, so give agents you serialize an explicit model.
 
 ### Sending an agent to another process
 
@@ -199,7 +245,7 @@ const wire = toAgentWire(agent); // plain JSON
 const received = fromAgentWire(JSON.parse(payload), { cogitator, tools: [searchWeb, readUrl] });
 ```
 
-`toAgentWire` carries the whole configuration: model and provider, instructions, sampling, `stopSequences`, `reasoning`, `responseFormat` (a Zod schema as JSON Schema, turned back into one on arrival), `maxIterations`, `onIterationLimit`, `timeout`, the tool schemas and every agent the agent can hand over to (handoff graphs with cycles included). Skills arrive merged into the tools and instructions. An explicit `provider` also prefixes the model, so the agent runs on the same route wherever it lands. Pass `resolveModel` for an agent without a model, e.g. `toAgentWire(agent, { resolveModel: (a) => cogitator.resolveModel(a) })`.
+`toAgentWire` carries the whole configuration: model and provider, fallback models, instructions, sampling, `stopSequences`, `reasoning`, `responseFormat` (a Zod schema as JSON Schema, turned back into one on arrival), `maxIterations`, `onIterationLimit`, `timeout`, the tool schemas and every agent the agent can hand over to (handoff graphs with cycles included). Skills arrive merged into the tools and instructions. An explicit `provider` also prefixes the model, so the agent runs on the same route wherever it lands. Pass `resolveModel` for an agent without a model, e.g. `toAgentWire(agent, { resolveModel: (a) => cogitator.resolveModel(a) })`.
 
 `fromAgentWire` validates the payload (`agentWireSchema`, or `parseAgentWire` alone), refuses keys it does not know instead of dropping them, resolves the tools by name from `tools` and throws `AgentWireError` for a missing tool or a provider the receiving Cogitator cannot route to. `toAgentWireRunResult(result)` and `fromAgentWireRunResult(wire, { agentId })` carry a run's outcome the same way: answer, structured output, usage with cost and duration, tool calls with their outputs, and the `truncated`, `blocked` and `iterationLimitReached` flags. `@cogitator-ai/worker` and distributed swarms use both.
 
@@ -249,7 +295,7 @@ const orchestrator = new Agent({
 });
 ```
 
-The tool takes a single `task` string and returns `{ output, success, error? }`; `includeUsage` and `includeToolCalls` add the inner run's usage and tool calls, and `timeout` limits it. The inner run inherits the caller's `userId` and abort signal. Calls of the inner agent that need approval are declined unless you pass `onApproval`, since nobody can answer them mid-delegation. See [Agent as Tool](/docs/tools/agent-as-tool).
+The tool takes a single `task` string and returns `{ output, success, error? }`. `includeUsage` and `includeToolCalls` add the inner run's usage and tool calls, and `timeout` limits it. The inner run inherits the caller's `userId`, `deps` and abort signal. Calls of the inner agent that need approval are declined unless you pass `onApproval`, since nobody can answer them mid-delegation. See [Agent as Tool](/docs/tools/agent-as-tool).
 
 ## Reasoning
 

@@ -91,6 +91,9 @@ normalizeToolNames(['a.b', 'a_b']); // ['a_b_<hash>', 'a_b']
 | `threadId`                 | The conversation                                                             |
 | `userId`                   | The user the run acts for (`RunOptions.userId`)                              |
 | `channelType`, `channelId` | Where the message came from, for channel gateways                            |
+| `deps`                     | The run's `deps` (`RunOptions.deps`), never shown to the model               |
+
+Annotate the context as `ToolContext<YourDeps>` to read `deps` typed, see [Dependencies for Tools](/docs/core/agents#dependencies-for-tools).
 
 When `timeout` is set, the runtime aborts `context.signal` once the limit is reached and reports `Tool "<name>" timed out after <ms>ms` to the model as the tool error. Long-running tools should pass `context.signal` to `fetch` and other cancellable APIs so the work actually stops.
 

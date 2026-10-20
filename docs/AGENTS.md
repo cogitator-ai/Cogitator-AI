@@ -13,20 +13,21 @@ An Agent in Cogitator is a configured LLM persona with:
 An `Agent` is only configuration: it has no `run()` method. Runs go through the `Cogitator` runtime (`cog.run(agent, { input })`), and memory, sandbox, guardrails, retries and context management are configured there, not on individual agents.
 
 ```typescript
-interface AgentConfig {
+interface AgentConfig<TDeps = unknown> {
   id?: string; // Stable id; generated when left out
   name: string;
   description?: string; // Describes the agent to agents that can hand off to it
 
   provider?: string; // Explicit provider override (e.g., 'openai' for OpenRouter)
   model?: string; // 'ollama/llama3.3', 'openai/gpt-6.1-sol'; default: llm.defaultModel
+  fallbackModels?: Array<string | { model: string; provider?: string }>; // tried when model fails
   temperature?: number; // default 0.7
   topP?: number;
   maxTokens?: number; // Max output tokens
   stopSequences?: string[];
 
   instructions: string; // System prompt
-  tools?: Tool[]; // Available tools
+  tools?: Tool<unknown, unknown, TDeps>[]; // Available tools, checked against TDeps
   skills?: Skill[]; // Bundles of tools + instructions merged into the agent
   responseFormat?: ResponseFormat; // Structured output
   reasoning?: ReasoningConfig; // Effort and summaries for reasoning models
@@ -342,6 +343,27 @@ bedrock/global.anthropic.claude-sonnet-5-5   AWS Bedrock
 
 Other built-in providers: `vllm`, `mistral`, `groq`, `together`, `deepseek`. A prefix that is not a known provider runs the whole string on `llm.defaultProvider` (Ollama when unset). Provider credentials go in `llm.providers`; your own `LLMBackend`s go in `llm.backends` (an agent with model `name/model` runs on the backend registered as `name`). An agent without `model` uses `llm.defaultModel`; a run with neither fails with `CONFIGURATION_ERROR`.
 
+### Fallback Models
+
+`fallbackModels` keeps an agent answering when its model cannot: a turn moves to the next model, in order, when `model` is down, out of quota, rejects the key or no longer exists. Rate limits and server errors are retried on the same model first (`llm.retry`), a content filter or a malformed request never moves:
+
+```typescript
+const agent = new Agent({
+  name: 'support',
+  model: 'anthropic/claude-sonnet-5-5',
+  fallbackModels: ['openai/gpt-6.1-sol', 'ollama/llama3.3'],
+  instructions: 'Answer support questions.',
+});
+
+const result = await cog.run(agent, {
+  input,
+  onModelFallback: ({ from, to, error }) => console.warn(`${from} -> ${to}: ${error.message}`),
+});
+result.modelUsed; // set when the final answer came from a fallback
+```
+
+Each turn starts from `model` again. A model that keeps failing is skipped for a while by its circuit breaker (`llm.modelCircuitBreaker`), a stream moves only before its first token, and a run whose models all failed ends with `LLM_UNAVAILABLE` and the failures in `details.attempts`.
+
 ### Reasoning
 
 Reasoning models think before they answer. `reasoning` sets how hard, in one vocabulary for every provider, and can ask for a readable summary:
@@ -464,6 +486,33 @@ function createGitHubTools(token: string) {
 const [listIssues, closeIssue] = createGitHubTools(process.env.GITHUB_TOKEN!);
 ```
 
+### Dependencies for Tools
+
+When one agent serves many users, closures over a token do not work: each run needs its own database client, user or key. Pass them as `deps`. Tools read them from their context, the model never sees them:
+
+```typescript
+import { Agent, tool, type ToolContext } from '@cogitator-ai/core';
+
+interface AppDeps {
+  db: Database;
+  userId: string;
+}
+
+const listOrders = tool({
+  name: 'list_orders',
+  description: "List the signed-in user's orders",
+  parameters: z.object({ limit: z.number().default(10) }),
+  execute: async ({ limit }, { deps }: ToolContext<AppDeps>) =>
+    deps.db.orders.findMany({ where: { userId: deps.userId }, take: limit }),
+});
+
+const agent = new Agent<AppDeps>({ name: 'support', instructions: '...', tools: [listOrders] });
+
+await cog.run(agent, { input: 'Where is my order?', deps: { db, userId: session.userId } });
+```
+
+`new Agent<AppDeps>` rejects tools that need deps it does not provide, and `run()` and `resume()` then require `deps`. They reach handed-over agents and agents run as tools too, and stay out of the prompt, memory, spans and checkpoints, so a resumed run passes them again.
+
 ### MCP Tool Servers
 
 Use `@cogitator-ai/mcp` to connect to external MCP servers:
@@ -555,6 +604,7 @@ const result = await cog.run(agent, {
   input: 'Analyze this data',
   images: ['https://example.com/chart.png'], // URLs or { data, mimeType }
   context: { plan: 'pro' }, // added to the system prompt
+  deps: { db, userId: 'alice' }, // for the tools only, never sent to the model
   threadId: 'thread-alice',
   userId: 'alice',
   timeout: 300_000,
@@ -566,6 +616,7 @@ const result = await cog.run(agent, {
   onToken: (token) => process.stdout.write(token),
   onToolCall: (call) => console.log(`Calling: ${call.name}`),
   onToolResult: (result) => console.log(`Result: ${result.name}`),
+  onModelFallback: ({ from, to }) => console.warn(`${from} failed, using ${to}`),
   onApproval: async (request) => ({ approved: true }), // see Human-in-the-Loop
   onRunStart: ({ runId, agentId }) => console.log(`Run ${runId} started`),
   onRunComplete: (result) => console.log(`Done: ${result.output}`),

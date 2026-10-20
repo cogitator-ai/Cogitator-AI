@@ -15,7 +15,7 @@ new Cogitator(config?: CogitatorConfig)
 
 | Member                 | Signature                                                                                            | Purpose                                                                                          |
 | ---------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `run`                  | `run(agent: Agent, options: RunOptions): Promise<RunResult>`                                         | Run an agent: LLM calls, tools, memory, guardrails, tracing                                      |
+| `run`                  | `run(agent: Agent<D>, options: RunOptions<D>): Promise<RunResult>`                                   | Run an agent: LLM calls, tools, memory, guardrails, tracing                                      |
 | `resume`               | `resume(agent: Agent, target: RunCheckpoint \| string, options?: ResumeOptions): Promise<RunResult>` | Continue a run paused for [approvals](/docs/tools/approvals), by checkpoint or thread id         |
 | `tools`                | `readonly tools: ToolRegistry`                                                                       | Tools offered to every agent this instance runs                                                  |
 | `prompts`              | `get prompts(): PromptRegistry`                                                                      | [Versioned instructions and A/B tests](/docs/advanced/prompt-versions)                           |
@@ -36,6 +36,8 @@ new Cogitator(config?: CogitatorConfig)
 | `getGuardrails`        | `getGuardrails(): ConstitutionalAI \| undefined`                                                     | The guardrails instance                                                                          |
 | `setConstitution`      | `setConstitution(constitution: Constitution): void`                                                  | Replace the guardrails constitution                                                              |
 | `close`                | `close(): Promise<void>`                                                                             | Disconnect memory, stop sandboxes, release resources                                             |
+
+`D` is the agent's deps type (`new Agent<D>(...)`, `unknown` by default): when it is set, `run()` and `resume()` require `deps`, which reach the tools as `context.deps` and never the model or a checkpoint (`RunDeps<D>`).
 
 See [Cogitator](/docs/core/cogitator) for the configuration.
 

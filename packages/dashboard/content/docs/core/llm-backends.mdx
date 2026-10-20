@@ -407,6 +407,48 @@ const cog = new Cogitator({
 
 `retry: false` turns retries off. To use a backend on its own with the same behaviour, wrap it with `withLLMRetry(backend, { maxRetries: 3 })`.
 
+## Fallback Models
+
+Retries keep a turn on the same model. When that model cannot answer at all, an agent with `fallbackModels` moves the turn to the next one, in order:
+
+```typescript
+const agent = new Agent({
+  name: 'support',
+  model: 'anthropic/claude-sonnet-5-5',
+  fallbackModels: [
+    'openai/gpt-6.1-sol',
+    { model: 'deepseek/deepseek-v4-pro', provider: 'openrouter' },
+  ],
+  instructions: 'Answer support questions.',
+});
+
+const result = await cog.run(agent, {
+  input,
+  onModelFallback: ({ from, to, error }) =>
+    console.warn(`${from} failed (${error.message}), using ${to}`),
+});
+result.modelUsed; // 'openai/gpt-6.1-sol' when the final answer came from a fallback
+```
+
+Whether a failure moves the turn follows the [error kind](#error-kinds):
+
+| Failure                                                          | What happens                                          |
+| ---------------------------------------------------------------- | ----------------------------------------------------- |
+| `rate_limit`, `overloaded`, `server_error`, `timeout`, `network` | Retried on the same model (`llm.retry`), then moves   |
+| `quota`, `authentication`, `permission`, `not_found`             | Moves at once, retrying would not help                |
+| `context_overflow`, `invalid_response`                           | Moves at once, a bigger or another model may fit      |
+| `content_filter`, `invalid_request`                              | Fails the turn: another model would refuse it as well |
+| The run was aborted or timed out                                 | Fails the turn                                        |
+
+- **Every turn starts again from `model`.** A fallback answers one turn, the next turn tries the primary model first.
+- **Circuit breakers.** Each model has a breaker shared by all runs of the runtime. After `failureThreshold` failures in a row, or at once for an out-of-quota account, a rejected key or a missing model, turns skip it for `resetTimeout` ms and then try it again. Configure them with `llm.modelCircuitBreaker: { failureThreshold: 5, resetTimeout: 30_000, halfOpenRequests: 3 }` (the defaults).
+- **Streaming.** A stream moves to the next model only before its first token reaches `onToken` or `onReasoning`. After that the caller has seen part of the answer, so the error is passed on.
+- **Cost and traces.** A fallback turn is priced at the model that answered it, its `llm.chat` span names that model, and every move adds an `llm.fallback` span with `llm.fallback.from`, `llm.fallback.to` and `llm.fallback.error`.
+- **All models failed.** The run ends with an `LLM_UNAVAILABLE` error whose `details.attempts` lists each model with its error `code`, `kind` and message, and whose `cause` is the first failure.
+- **Routing.** Each fallback is routed like `model`: `provider/model`, or `{ model, provider }` for a model whose name does not start with its provider. All of them are routed when the run starts, so a misconfigured fallback fails right away instead of in the middle of an outage. Handoffs use the fallback models of the agent that takes over.
+
+An agent without `fallbackModels` behaves exactly as before: its errors are thrown as they are, and no breaker is involved.
+
 ## Error Handling
 
 All backends throw typed `LLMError` instances with structured error codes:
