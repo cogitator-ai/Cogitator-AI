@@ -20,17 +20,21 @@ const LOCAL_PROVIDER_PREFIXES = ['ollama/', 'vllm/'];
 export interface CostEstimatorOptions {
   /** Prices of your own by model (a runtime passes `llm.pricing`), over the model registry and a local model being free */
   ownPricing?: (model: string) => ModelPricing | undefined;
+  /** The price of a model, `null` when unknown (a runtime passes its pricer), the model registry's by default */
+  pricing?: (model: string) => ModelPricing | null;
 }
 
 export class CostEstimator {
   private taskAnalyzer: TaskAnalyzer;
   private tokenEstimator: TokenEstimator;
   private readonly ownPricing?: (model: string) => ModelPricing | undefined;
+  private readonly pricing?: (model: string) => ModelPricing | null;
 
   constructor(options: CostEstimatorOptions = {}) {
     this.taskAnalyzer = new TaskAnalyzer();
     this.tokenEstimator = new TokenEstimator();
     this.ownPricing = options.ownPricing;
+    this.pricing = options.pricing;
   }
 
   async estimate(params: {
@@ -60,12 +64,10 @@ export class CostEstimator {
       return this.createLocalModelEstimate(modelId, provider, warnings);
     }
 
-    let pricing: ModelPricing | null = own ?? null;
-    if (!pricing) {
-      const registry = getModelRegistry();
-      await registry.initialize();
-      pricing = registry.getModel(modelString)?.pricing ?? null;
-    }
+    const registry = getModelRegistry();
+    await registry.initialize();
+    const pricing: ModelPricing | null =
+      own ?? (this.pricing ? this.pricing(modelString) : registry.getPricing(modelString));
 
     if (!pricing) {
       warnings.push('Model pricing not available, using estimates');

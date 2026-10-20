@@ -13,11 +13,6 @@ const SELF_HOSTED_PROVIDERS: ReadonlySet<string> = new Set(['ollama', 'vllm']);
 
 const FREE: ModelPricing = { input: 0, output: 0 };
 
-function isSelfHosted(model: string): boolean {
-  const slash = model.indexOf('/');
-  return slash !== -1 && SELF_HOSTED_PROVIDERS.has(model.slice(0, slash).toLowerCase());
-}
-
 /**
  * Prices the model calls of one runtime: by `llm.pricing` first, then by the model registry.
  * A model on a self-hosted provider (`ollama/...`, `vllm/...`) is free unless `llm.pricing`
@@ -27,9 +22,16 @@ function isSelfHosted(model: string): boolean {
 export class CallPricer {
   private readonly pricer: ModelPricer;
   private readonly warned = new Set<string>();
-  private readonly selfHosted = new Set<string>();
 
-  constructor(overrides?: PricingOverrides) {
+  /**
+   * @param overrides prices of your own, `llm.pricing`
+   * @param backendProvider the provider a backend of your own reports, by the name it is
+   *   registered under (`llm.backends`), so one on Ollama or vLLM under a name of your own is free
+   */
+  constructor(
+    overrides?: PricingOverrides,
+    private readonly backendProvider: (name: string) => string | undefined = () => undefined
+  ) {
     this.pricer = new ModelPricer(overrides);
   }
 
@@ -37,18 +39,18 @@ export class CallPricer {
   pricing(model: string): ModelPricing | null {
     const own = this.pricer.override(model);
     if (own) return own;
-    return isSelfHosted(model) || this.selfHosted.has(model.toLowerCase())
-      ? FREE
-      : this.pricer.pricing(model);
+    return this.isSelfHosted(model) ? FREE : this.pricer.pricing(model);
   }
 
-  /**
-   * Notes that `model` runs on a self-hosted provider under a name of your own, such as an
-   * `OllamaBackend` registered as `llm.backends.gpu2`, so its calls are free like those of
-   * `ollama/...` unless `llm.pricing` prices them.
-   */
-  markSelfHosted(model: string): void {
-    this.selfHosted.add(model.toLowerCase());
+  /** Whether `model` runs on Ollama or vLLM, directly or through a backend of your own. */
+  private isSelfHosted(model: string): boolean {
+    const slash = model.indexOf('/');
+    if (slash === -1) return false;
+    const name = model.slice(0, slash);
+    return (
+      CallPricer.isSelfHostedProvider(name) ||
+      CallPricer.isSelfHostedProvider(this.backendProvider(name))
+    );
   }
 
   /** Whether a backend that reports `provider` runs on your own hardware. */

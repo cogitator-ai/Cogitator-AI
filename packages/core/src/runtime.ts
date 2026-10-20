@@ -229,7 +229,11 @@ export class Cogitator implements ToolInvoker {
    */
   constructor(config: CogitatorConfig = {}) {
     this.config = config;
-    this.pricer = new CallPricer(config.llm?.pricing);
+    this.pricer = new CallPricer(config.llm?.pricing, (name) =>
+      Object.hasOwn(config.llm?.backends ?? {}, name)
+        ? config.llm?.backends?.[name]?.provider
+        : undefined
+    );
     this.observers = [...(config.observers ?? [])];
     if (config.logging) setLogger(createLoggerFromConfig(config.logging));
   }
@@ -1780,17 +1784,7 @@ export class Cogitator implements ToolInvoker {
    */
   pricedModel(modelString: string, explicitProvider?: string): string {
     const { provider, model } = this.resolveRoute(modelString, explicitProvider);
-    const priced = `${provider}/${model}`;
-    if (!CallPricer.isSelfHostedProvider(provider)) {
-      try {
-        if (CallPricer.isSelfHostedProvider(this.backendFor(provider).provider)) {
-          this.pricer.markSelfHosted(priced);
-        }
-      } catch {
-        return priced;
-      }
-    }
-    return priced;
+    return `${provider}/${model}`;
   }
 
   private resolveRoute(
@@ -1991,6 +1985,7 @@ export class Cogitator implements ToolInvoker {
     if (!this.costEstimator) {
       this.costEstimator = new CostEstimator({
         ownPricing: (model) => this.pricer.ownPricing(model),
+        pricing: (model) => this.pricer.pricing(model),
       });
     }
     return this.costEstimator.estimate({

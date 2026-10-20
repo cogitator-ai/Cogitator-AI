@@ -271,7 +271,7 @@ export class ModelSelector {
   }
 
   private isLocalModel(model: ModelInfo): boolean {
-    return model.provider === 'ollama';
+    return model.provider === 'ollama' || model.provider === 'vllm';
   }
 
   private isAdvancedModel(modelId: string): boolean {
