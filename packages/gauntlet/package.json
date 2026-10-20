@@ -6,9 +6,12 @@
   "type": "module",
   "scripts": {
     "start": "tsx src/cli.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "memory-bench": "tsx src/memory-bench/cli.ts",
+    "test": "vitest run"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.131.0",
     "@cogitator-ai/a2a": "workspace:*",
     "@cogitator-ai/ai-sdk": "workspace:*",
     "@cogitator-ai/browser": "workspace:*",
@@ -54,6 +57,7 @@
     "express": "^5.2.1",
     "fastify": "^5.12.5",
     "hono": "^4.13.12",
+    "hyparquet": "1.31.3",
     "ioredis": "^6.0.0",
     "koa": "^3.2.1",
     "mongodb": "^7.7.0",
@@ -64,11 +68,13 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
     "@types/express": "^5.0.6",
     "@types/koa": "^3.0.3",
     "@types/node": "^22.20.4",
     "@types/pg": "^8.23.1",
     "tsx": "^4.23.15",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vitest": "^5.0.3"
   }
 }
