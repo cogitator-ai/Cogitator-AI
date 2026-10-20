@@ -27,6 +27,7 @@ function isSelfHosted(model: string): boolean {
 export class CallPricer {
   private readonly pricer: ModelPricer;
   private readonly warned = new Set<string>();
+  private readonly selfHosted = new Set<string>();
 
   constructor(overrides?: PricingOverrides) {
     this.pricer = new ModelPricer(overrides);
@@ -34,7 +35,25 @@ export class CallPricer {
 
   /** The price of `model`, the full model string a run uses (`openai/gpt-4o`, `openrouter/vendor/model`). */
   pricing(model: string): ModelPricing | null {
-    return this.pricer.override(model) ?? (isSelfHosted(model) ? FREE : this.pricer.pricing(model));
+    const own = this.pricer.override(model);
+    if (own) return own;
+    return isSelfHosted(model) || this.selfHosted.has(model.toLowerCase())
+      ? FREE
+      : this.pricer.pricing(model);
+  }
+
+  /**
+   * Notes that `model` runs on a self-hosted provider under a name of your own, such as an
+   * `OllamaBackend` registered as `llm.backends.gpu2`, so its calls are free like those of
+   * `ollama/...` unless `llm.pricing` prices them.
+   */
+  markSelfHosted(model: string): void {
+    this.selfHosted.add(model.toLowerCase());
+  }
+
+  /** Whether a backend that reports `provider` runs on your own hardware. */
+  static isSelfHostedProvider(provider: string | undefined): boolean {
+    return provider !== undefined && SELF_HOSTED_PROVIDERS.has(provider.toLowerCase());
   }
 
   /** The price `llm.pricing` sets for `model`, when it sets one. */

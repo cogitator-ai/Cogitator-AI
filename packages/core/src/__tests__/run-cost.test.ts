@@ -252,6 +252,22 @@ describe('a model without a price', () => {
     await cog.close();
   });
 
+  it('keeps an Ollama backend registered under a name of your own free', async () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const gpu2 = { ...unpriced(), provider: 'ollama' };
+    const cog = new Cogitator({ llm: { backends: { gpu2 } } });
+
+    const result = await cog.run(
+      new Agent({ name: 'g', model: 'gpu2/llama-3.3-70b-instruct', instructions: 'Hi.' }),
+      { input: 'hi' }
+    );
+
+    expect(result.usage.cost).toBe(0);
+    expect(cog.pricer.pricing('gpu2/llama-3.3-70b-instruct')).toEqual({ input: 0, output: 0 });
+    expect(warn.mock.calls.filter(([m]) => m.includes('No price'))).toHaveLength(0);
+    await cog.close();
+  });
+
   it('stays quiet for a self-hosted provider', async () => {
     const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
     const local = { ...unpriced(), provider: 'ollama' };

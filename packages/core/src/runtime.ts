@@ -1775,11 +1775,22 @@ export class Cogitator implements ToolInvoker {
    * The model string a call to `modelString` is priced by: the provider it routes to, by the
    * name it is registered under (`llm.backends`, a plugin, a built-in provider), and the model,
    * so a bare `llama3.3` on Ollama is `ollama/llama3.3` and a backend of your own registered as
-   * `vllm` prices as `vllm/...` whatever provider name it reports.
+   * `vllm` prices as `vllm/...` whatever provider name it reports. A model on an Ollama or vLLM
+   * backend registered under a name of your own (`gpu2/llama3.3`) is free like `ollama/...`.
    */
   pricedModel(modelString: string, explicitProvider?: string): string {
     const { provider, model } = this.resolveRoute(modelString, explicitProvider);
-    return `${provider}/${model}`;
+    const priced = `${provider}/${model}`;
+    if (!CallPricer.isSelfHostedProvider(provider)) {
+      try {
+        if (CallPricer.isSelfHostedProvider(this.backendFor(provider).provider)) {
+          this.pricer.markSelfHosted(priced);
+        }
+      } catch {
+        return priced;
+      }
+    }
+    return priced;
   }
 
   private resolveRoute(

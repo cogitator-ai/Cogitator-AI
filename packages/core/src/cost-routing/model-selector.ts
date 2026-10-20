@@ -119,7 +119,8 @@ export class ModelSelector {
         minContextWindow: requirements.needsLongContext ? 32000 : undefined,
         excludeDeprecated: true,
       })
-      .filter((model) => !isProviderAvailable || isProviderAvailable(model.provider));
+      .filter((model) => !isProviderAvailable || isProviderAvailable(model.provider))
+      .filter((model) => !model.priceUnknown || this.isLocalModel(model));
 
     const scored = candidates
       .map((m) => this.scoreModel(m, requirements))
