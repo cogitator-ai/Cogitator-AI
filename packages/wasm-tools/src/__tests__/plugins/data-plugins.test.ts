@@ -311,6 +311,16 @@ describe('units plugin', () => {
     }
   });
 
+  it('refuses a result that overflows a number instead of answering 0', () => {
+    const res = runPlugin<{ error?: string }>('units', 'units', {
+      value: 1e300,
+      from: 'TiB',
+      to: 'B',
+    });
+    expect(res.code).toBe(1);
+    expect(res.output.error).toContain('out of the range');
+  });
+
   it('rejects cross-category conversions and lists supported units', () => {
     const res = runPlugin<{ error?: string }>('units', 'units', {
       value: 1,

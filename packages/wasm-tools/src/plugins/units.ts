@@ -204,7 +204,8 @@ function supportedUnitsSummary(category?: UnitCategory): string {
 }
 
 function roundResult(n: number): number {
-  if (!Number.isFinite(n) || n === 0) return 0;
+  if (!Number.isFinite(n)) return n;
+  if (n === 0) return 0;
   if (Number.isSafeInteger(n)) return n;
   const rounded = Number(n.toPrecision(12));
   return Object.is(rounded, -0) ? 0 : rounded;
@@ -259,6 +260,11 @@ export function units(): number {
     }
 
     const result = convert(input.value, fromDef, toDef);
+    if (!Number.isFinite(result)) {
+      throw new Error(
+        `${input.value} ${input.from} in ${input.to} is out of the range of a JavaScript number`
+      );
+    }
 
     const output: UnitsOutput = {
       value: result,
