@@ -18,7 +18,7 @@ export function classifyProviderError(
   const fromTable =
     provider === 'anthropic'
       ? anthropicKind(parsed, text)
-      : provider === 'google'
+      : provider === 'google' || isGoogleError(parsed)
         ? geminiKind(status, parsed)
         : openAIKind(status, parsed, text);
   return fromTable ?? kindOfStatus(status, text);
@@ -76,7 +76,6 @@ const CONTEXT_OVERFLOW_PATTERNS: readonly RegExp[] = [
 /** Phrases of an account out of credits or over a billing or usage cap, in lower case. */
 const QUOTA_PATTERNS: readonly RegExp[] = [
   /insufficient[_ ]quota/,
-  /exceeded your current quota/,
   /credit balance/,
   /spend(ing)? (limit|cap)/,
   /usage limit/,
@@ -159,14 +158,19 @@ function openAIKind(
   }
 }
 
-/** Anthropic's error types, from platform.claude.com/docs/en/api/errors. */
+/**
+ * Anthropic's error types, from platform.claude.com/docs/en/api/errors. A balance too low or a
+ * reached usage limit comes as an `invalid_request_error` or a `rate_limit_error` and is told
+ * apart by what it says.
+ */
 function anthropicKind(
   body: Record<string, unknown> | undefined,
   text: string
 ): LLMErrorKind | undefined {
   switch (stringOf(asRecord(body?.error)?.type)) {
     case 'invalid_request_error':
-      return isContextOverflow(text) ? 'context_overflow' : 'invalid_request';
+      if (isContextOverflow(text)) return 'context_overflow';
+      return QUOTA_PATTERNS.some((pattern) => pattern.test(text)) ? 'quota' : 'invalid_request';
     case 'request_too_large':
       return 'invalid_request';
     case 'authentication_error':
@@ -230,6 +234,16 @@ function geminiKind(
     default:
       return undefined;
   }
+}
+
+/**
+ * Whether an error body is in Google's shape, `{ error: { code, status: 'RESOURCE_EXHAUSTED' } }`,
+ * as Gemini's OpenAI-compatible endpoint and proxies in front of Gemini pass it on.
+ */
+function isGoogleError(body: Record<string, unknown> | undefined): boolean {
+  const error = asRecord(body?.error);
+  const status = stringOf(error?.status);
+  return typeof error?.code === 'number' && status !== undefined && /^[A-Z_]+$/.test(status);
 }
 
 /** Whether a `google.rpc.QuotaFailure` names a quota counted per day. */

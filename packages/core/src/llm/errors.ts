@@ -29,7 +29,7 @@ export class LLMError extends CogitatorError {
   readonly provider: string;
   readonly model?: string;
   readonly endpoint?: string;
-  /** Why the call failed, from the provider's error codes; absent for errors of the runtime's own, such as configuration */
+  /** Why the call failed, from the provider's error codes, absent for errors of the runtime's own, such as configuration */
   readonly kind?: LLMErrorKind;
 
   constructor(
@@ -211,8 +211,9 @@ export function wrapSDKError(error: unknown, ctx: LLMErrorContext): LLMError {
   if (error instanceof LLMError) return error;
   if (isSDKAPIError(error)) {
     const body = sdkErrorBody(error);
-    const kind = classifyProviderError(ctx.provider, error.status, body);
-    return createLLMError(ctx, error.status ?? statusOfKind(kind), body ?? error.message, {
+    const status = error.status ?? statusIn(error.error);
+    const kind = classifyProviderError(ctx.provider, status, body);
+    return createLLMError(ctx, status ?? statusOfKind(kind), body ?? error.message, {
       cause: error,
       retryAfterOverride: retryAfterFromHeaders(error.headers),
       kind,
@@ -228,6 +229,16 @@ export function wrapSDKError(error: unknown, ctx: LLMErrorContext): LLMError {
   }
 
   return new LLMError(`Unknown error: ${String(error)}`, ErrorCode.INTERNAL_ERROR, ctx);
+}
+
+/**
+ * The HTTP status a numeric `code` of an error body stands for, as routers such as OpenRouter
+ * report the failure of the model's own provider inside a stream.
+ */
+function statusIn(body: unknown): number | undefined {
+  const record = asRecord(body);
+  const code = (asRecord(record?.error) ?? record)?.code;
+  return typeof code === 'number' && code >= 400 && code < 600 ? code : undefined;
 }
 
 /**

@@ -73,7 +73,7 @@ export const ERROR_STATUS_CODES: Record<ErrorCode, number> = {
   [ErrorCode.LLM_INVALID_RESPONSE]: 502,
   [ErrorCode.LLM_CONTEXT_LENGTH_EXCEEDED]: 400,
   [ErrorCode.LLM_CONTENT_FILTERED]: 400,
-  [ErrorCode.LLM_QUOTA_EXCEEDED]: 503,
+  [ErrorCode.LLM_QUOTA_EXCEEDED]: 402,
 
   [ErrorCode.SANDBOX_UNAVAILABLE]: 503,
   [ErrorCode.SANDBOX_TIMEOUT]: 504,

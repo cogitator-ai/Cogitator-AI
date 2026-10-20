@@ -328,3 +328,74 @@ describe('abortReason', () => {
     });
   });
 });
+
+describe('review regressions', () => {
+  class APIError extends Error {
+    constructor(
+      readonly status: number | undefined,
+      readonly error: unknown
+    ) {
+      super(JSON.stringify(error));
+    }
+  }
+
+  it.each([
+    [429, 'rate_limit', true],
+    [400, 'invalid_request', false],
+    [401, 'authentication', false],
+    [402, 'quota', false],
+  ])('reads a numeric code %i of an OpenRouter error inside a stream', (code, kind, retryable) => {
+    const error = wrapSDKError(new APIError(undefined, { code, message: 'Upstream said no' }), {
+      provider: 'openrouter',
+    });
+    expect(error).toMatchObject({ kind, retryable, details: { statusCode: code } });
+  });
+
+  it('keeps a Gemini per-minute rate limit retryable behind an OpenAI-compatible endpoint', () => {
+    const error = createLLMError(
+      { provider: 'openai' },
+      429,
+      JSON.stringify([
+        {
+          error: {
+            code: 429,
+            status: 'RESOURCE_EXHAUSTED',
+            message: 'You exceeded your current quota, please check your plan and billing details.',
+            details: [
+              {
+                '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+                violations: [{ quotaId: 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier' }],
+              },
+            ],
+          },
+        },
+      ])
+    );
+    expect(error).toMatchObject({ kind: 'rate_limit', retryable: true });
+  });
+
+  it('reads an Anthropic balance too low, sent as invalid_request_error, as quota', () => {
+    const error = createLLMError(
+      { provider: 'anthropic' },
+      400,
+      JSON.stringify({
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          message: 'Your credit balance is too low to access the Anthropic API.',
+        },
+      })
+    );
+    expect(error).toMatchObject({ kind: 'quota', code: ErrorCode.LLM_QUOTA_EXCEEDED });
+  });
+
+  it('answers HTTP clients with 402 for an exhausted quota, which they do not retry', () => {
+    expect(
+      createLLMError(
+        { provider: 'openai' },
+        429,
+        JSON.stringify({ error: { code: 'insufficient_quota' } })
+      ).statusCode
+    ).toBe(402);
+  });
+});
