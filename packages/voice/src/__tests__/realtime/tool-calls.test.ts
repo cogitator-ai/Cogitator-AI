@@ -191,6 +191,40 @@ describe('realtime tool call context', () => {
     });
   });
 
+  it('leaves unanswered a Gemini call cancelled after it finished, while its batch still runs', async () => {
+    const contexts: RealtimeToolContext[] = [];
+    const quickDone = vi.fn();
+    const quick: RealtimeTool = {
+      name: 'quick',
+      description: 'quick tool',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => {
+        quickDone();
+        return 'done';
+      },
+    };
+    await connectGemini([hangingTool('wait', contexts), quick]);
+
+    mockWs.emit(
+      'message',
+      JSON.stringify({
+        toolCall: {
+          functionCalls: [
+            { id: 'g1', name: 'wait', args: {} },
+            { id: 'g2', name: 'quick', args: {} },
+          ],
+        },
+      })
+    );
+    await vi.waitFor(() => expect(quickDone).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    mockWs.emit('message', JSON.stringify({ toolCallCancellation: { ids: ['g1', 'g2'] } }));
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(contexts[0]!.signal.aborted).toBe(true);
+    expect(mockWs.send).not.toHaveBeenCalled();
+  });
+
   it('sends no Gemini toolResponse when every call of it was cancelled', async () => {
     const contexts: RealtimeToolContext[] = [];
     await connectGemini([hangingTool('wait', contexts)]);

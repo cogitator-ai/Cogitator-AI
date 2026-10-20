@@ -325,31 +325,31 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
   private async handleToolCalls(calls: GeminiFunctionCall[]): Promise<void> {
     const ws = this.ws;
     const session = this.calls?.signal ?? AbortSignal.abort();
-    const answers = await Promise.all(
-      calls.map(async (call, index) => {
-        const cancel = new AbortController();
-        if (call.id !== undefined) this.runningCalls.set(call.id, cancel);
-        try {
-          const response = await this.executeToolCall(
-            call,
-            call.id ?? `${call.name}-${index}`,
-            AbortSignal.any([session, cancel.signal])
-          );
-          return { response, cancelled: cancel.signal.aborted };
-        } finally {
-          if (call.id !== undefined && this.runningCalls.get(call.id) === cancel) {
-            this.runningCalls.delete(call.id);
-          }
-        }
-      })
-    );
+    const running = calls.map((call, index) => {
+      const cancel = new AbortController();
+      if (call.id !== undefined) this.runningCalls.set(call.id, cancel);
+      return { call, id: call.id ?? `${call.name}-${index}`, cancel };
+    });
 
-    if (this.ws !== ws) return;
-    const functionResponses = answers
-      .filter((answer) => !answer.cancelled)
-      .map((answer) => answer.response);
-    if (functionResponses.length === 0) return;
-    this.send({ toolResponse: { functionResponses } });
+    try {
+      const responses = await Promise.all(
+        running.map(({ call, id, cancel }) =>
+          this.executeToolCall(call, id, AbortSignal.any([session, cancel.signal]))
+        )
+      );
+      if (this.ws !== ws) return;
+      const functionResponses = responses.filter(
+        (_response, index) => !running[index]!.cancel.signal.aborted
+      );
+      if (functionResponses.length === 0) return;
+      this.send({ toolResponse: { functionResponses } });
+    } finally {
+      for (const { call, cancel } of running) {
+        if (call.id !== undefined && this.runningCalls.get(call.id) === cancel) {
+          this.runningCalls.delete(call.id);
+        }
+      }
+    }
   }
 
   private async executeToolCall(
