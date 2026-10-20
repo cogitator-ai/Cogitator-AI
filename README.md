@@ -213,7 +213,7 @@ Install only what you need. Everything is a separate npm package.
 | [`@cogitator-ai/channels`](https://www.npmjs.com/package/@cogitator-ai/channels)             | Personal AI assistant on Telegram, Discord, Slack, WhatsApp, Bluesky, Threads, posts to social feeds | [5 channel examples](./examples/channels/)                           |
 | [`@cogitator-ai/cli`](https://www.npmjs.com/package/@cogitator-ai/cli)                       | `cogitator init` / `add` / `dev` / `mcp` / `doctor` / `eval` / `up` / `deploy` from your terminal    | [CLI workflows](./examples/cli/README.md)                            |
 | [`@cogitator-ai/studio`](https://www.npmjs.com/package/@cogitator-ai/studio)                 | Cogitator Studio: chat with agents, traces and costs, approvals, workflow reruns, forks              | [studio guide](https://cogitator.app/docs/getting-started/studio)    |
-| [`@cogitator-ai/test-utils`](https://www.npmjs.com/package/@cogitator-ai/test-utils)         | Mock LLM backends, fixtures and helpers for testing your agents                                      | [testing docs](https://cogitator.app/docs/testing/test-utils)        |
+| [`@cogitator-ai/test-utils`](https://www.npmjs.com/package/@cogitator-ai/test-utils)         | Mock LLM backends, fixtures, helpers and a conformance kit for LLM backends                          | [testing docs](https://cogitator.app/docs/testing/test-utils)        |
 
 **Server adapters** - mount agents as REST APIs with one line:
 
@@ -414,7 +414,7 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
 | [@cogitator-ai/deploy](https://www.npmjs.com/package/@cogitator-ai/deploy)                 | Deployment engine (Docker, Fly.io)                            | [![npm](https://img.shields.io/npm/v/@cogitator-ai/deploy.svg)](https://www.npmjs.com/package/@cogitator-ai/deploy)                 |
 | [@cogitator-ai/channels](https://www.npmjs.com/package/@cogitator-ai/channels)             | Messaging channels and social feeds (Bluesky, Threads)        | [![npm](https://img.shields.io/npm/v/@cogitator-ai/channels.svg)](https://www.npmjs.com/package/@cogitator-ai/channels)             |
 | [@cogitator-ai/server-shared](https://www.npmjs.com/package/@cogitator-ai/server-shared)   | Shared protocol, validation, conformance for server adapters  | [![npm](https://img.shields.io/npm/v/@cogitator-ai/server-shared.svg)](https://www.npmjs.com/package/@cogitator-ai/server-shared)   |
-| [@cogitator-ai/test-utils](https://www.npmjs.com/package/@cogitator-ai/test-utils)         | Testing utilities: mock backends, fixtures, helpers           | [![npm](https://img.shields.io/npm/v/@cogitator-ai/test-utils.svg)](https://www.npmjs.com/package/@cogitator-ai/test-utils)         |
+| [@cogitator-ai/test-utils](https://www.npmjs.com/package/@cogitator-ai/test-utils)         | Testing utilities: mocks, fixtures, backend conformance kit   | [![npm](https://img.shields.io/npm/v/@cogitator-ai/test-utils.svg)](https://www.npmjs.com/package/@cogitator-ai/test-utils)         |
 
 Not published to npm: [`packages/dashboard`](./packages/dashboard) (the [cogitator.app](https://cogitator.app) website: landing, docs, cookbook), [`packages/e2e`](./packages/e2e) (end-to-end test suite) and [`packages/gauntlet`](./packages/gauntlet) (integration proving ground that runs every package together on real models).
 
