@@ -1,11 +1,19 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import Anthropic from '@anthropic-ai/sdk';
 import { Budget, BudgetExceededError, callCost } from '../budget.js';
 import { judge, JudgeStore } from '../judge.js';
-import { latest, parseSample, pick, positive, readJsonl, UsageError } from '../options.js';
+import {
+  latest,
+  parseSample,
+  pick,
+  positive,
+  readJsonl,
+  sealJsonl,
+  UsageError,
+} from '../options.js';
 import type { JudgeRequest } from '../scoring.js';
 import type { BenchAnswer } from '../types.js';
 
@@ -212,7 +220,7 @@ describe('judge within the budget', () => {
       pollMs: 0,
     });
     expect(store.replies.get('a')).toEqual({ text: 'yes', costUsd: 0.5 });
-    expect(budget.spentUsd).toBeCloseTo(callCost(1000, 10, true));
+    expect(budget.spentUsd).toBeCloseTo(0.5 + callCost(1000, 10, true), 9);
   });
 
   it('judges what the budget left covers and then refuses the rest', async () => {
@@ -233,6 +241,47 @@ describe('judge within the budget', () => {
     ).rejects.toBeInstanceOf(BudgetExceededError);
     expect(calls.direct).toHaveLength(2);
     expect(store.replies.size).toBe(2);
+    await budget.save();
+  });
+});
+
+describe('judge budget across steps', () => {
+  it('asks again one by one only what the budget covers at full price', async () => {
+    const { dir, store, log } = setup();
+    const prompt = 'x'.repeat(35);
+    const batchCost = callCost(10, 16, true);
+    const budget = new Budget(batchCost * 2 + callCost(10, 16) * 0.5, 'test', join(dir, 'b.json'));
+    const { client, calls } = fakeClient({
+      answer: () => 'yes',
+      batchResults: (requests) =>
+        requests.map((item) => ({ custom_id: item.custom_id, result: { type: 'errored' } })),
+    });
+    await expect(
+      judge([request('a', prompt), request('b', prompt)], {
+        client,
+        batch: true,
+        budget,
+        store,
+        concurrency: 1,
+        log,
+        pollMs: 0,
+      })
+    ).rejects.toBeInstanceOf(BudgetExceededError);
+    expect(calls.batches).toHaveLength(1);
+    expect(calls.direct).toHaveLength(1);
+    await budget.save();
+  });
+
+  it('counts stored replies whose charge never reached the ledger', async () => {
+    const { dir, budget, log } = setup();
+    const first = new JudgeStore(join(dir, 'replies.jsonl'), join(dir, 'batches.json'));
+    first.record('a', { text: 'yes', costUsd: 0.25 });
+    const store = new JudgeStore(join(dir, 'replies.jsonl'), join(dir, 'batches.json'));
+    const { client } = fakeClient({ answer: () => 'yes' });
+    await judge([request('a')], { client, batch: true, budget, store, concurrency: 1, log });
+    expect(budget.spentUsd).toBeCloseTo(0.25);
+    budget.reconcile('judge', 0.25);
+    expect(budget.spentUsd).toBeCloseTo(0.25);
     await budget.save();
   });
 });
@@ -286,5 +335,16 @@ describe('command line options', () => {
     expect(records).toHaveLength(2);
     expect([...latest(records).values()].map((record) => record.output)).toEqual(['Paris']);
     expect(await readJsonl(join(tempDir(), 'missing.jsonl'))).toEqual([]);
+  });
+
+  it('starts a new line after a record a killed run cut short', async () => {
+    const path = join(tempDir(), 'answers.jsonl');
+    writeFileSync(path, '{"questionId":"q1"}\n{"questionId":"q');
+    sealJsonl(path);
+    sealJsonl(path);
+    appendFileSync(path, '{"questionId":"q2"}\n');
+    const records = await readJsonl<{ questionId: string }>(path);
+    expect(records.map((record) => record.questionId)).toEqual(['q1', 'q2']);
+    expect(readFileSync(path, 'utf8').endsWith('q\n{"questionId":"q2"}\n')).toBe(true);
   });
 });

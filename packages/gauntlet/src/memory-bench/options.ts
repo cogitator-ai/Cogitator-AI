@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, openSync, readSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { answerKey } from './runner.js';
 import type { BenchAnswer } from './types.js';
@@ -64,4 +64,23 @@ export function latest<T extends BenchAnswer>(records: readonly T[]): Map<string
     byKey.set(answerKey(record.dataset, record.questionId, record.strategy), record);
   }
   return byKey;
+}
+
+/**
+ * Ends `path` with a line break when a killed run left its last line cut short, so the next
+ * record appended starts a line of its own instead of joining the broken one and being lost
+ * with it.
+ */
+export function sealJsonl(path: string): void {
+  if (!existsSync(path)) return;
+  const { size } = statSync(path);
+  if (size === 0) return;
+  const last = Buffer.alloc(1);
+  const fd = openSync(path, 'r');
+  try {
+    readSync(fd, last, 0, 1, size - 1);
+  } finally {
+    closeSync(fd);
+  }
+  if (last[0] !== 0x0a) appendFileSync(path, '\n');
 }

@@ -1,5 +1,5 @@
 import { Agent, Cogitator, type RunMiddleware } from '@cogitator-ai/core';
-import { countMessagesTokens, countTokens } from '@cogitator-ai/memory';
+import { ContextBuilder, countMessagesTokens, countTokens } from '@cogitator-ai/memory';
 import type { EmbeddingService, Message } from '@cogitator-ai/types';
 import {
   BENCH_MODEL,
@@ -15,13 +15,6 @@ export const ANSWER_INSTRUCTIONS =
   'You are a helpful assistant with a long-term memory of earlier conversations with the user. ' +
   'Answer the question from the conversation history you can see. If the history does not ' +
   'hold the answer, say that you do not know. Follow any answer format the question asks for.';
-
-/**
- * Newest turns whose embeddings are computed before the questions, so the context build time of
- * every strategy is measured on a warm cache: the 200 the context builder scores at most
- * (`MAX_SCORED_ENTRIES`), and the 10 newest `hybrid` keeps as they are and scores the 200 before.
- */
-const WARMED_ENTRIES = 210;
 
 /** Tokens a model turn may write, thinking included. */
 const ANSWER_MAX_TOKENS = 4096;
@@ -194,6 +187,37 @@ export async function ingest(
 }
 
 /**
+ * Embeds the history the strategy will score before the questions run, so every strategy's
+ * context build is measured on a warm cache. A context builder of the same strategy and budget
+ * builds the thread's context once: it embeds exactly the entries the runtime's builder will
+ * score (its order, filters and limits), and the vectors land in the shared embedding cache.
+ */
+async function warm(
+  cog: Cogitator,
+  agent: Agent,
+  threadId: string,
+  conversation: BenchConversation,
+  options: AnswerOptions
+): Promise<void> {
+  const memoryAdapter = await cog.getMemory();
+  if (!memoryAdapter) throw new Error('The bench runtime has no memory');
+  const builder = new ContextBuilder(
+    { strategy: options.strategy.name, maxTokens: options.strategy.contextTokens },
+    { memoryAdapter, ...(options.embedding && { embeddingService: options.embedding }) }
+  );
+  const context = await builder.build({
+    threadId,
+    agentId: agent.id,
+    currentInput: conversation.questions[0]?.question ?? 'warm-up',
+  });
+  for (const { error } of context.errors ?? []) {
+    const refusal = budgetRefusal(error);
+    if (refusal) throw refusal;
+    options.log(`  warming ${conversation.id}: ${error.message}`);
+  }
+}
+
+/**
  * Answers the questions of `conversation` from memory: the conversation goes into a thread
  * once, then each question runs as its own turn that is not saved, so questions do not see each
  * other. Every answer records the tokens, cost and time of its run, what reached the model and
@@ -215,21 +239,7 @@ export async function answerConversation(
   const agent = benchAgent();
   try {
     const threadId = await ingest(cog, agent, conversation);
-    if (options.embedding) {
-      const texts = conversation.turns
-        .slice(-WARMED_ENTRIES)
-        .map((turn) => turn.content)
-        .filter((text) => text.trim());
-      try {
-        await options.embedding.embedBatch(texts);
-      } catch (error) {
-        const refusal = budgetRefusal(error);
-        if (refusal) throw refusal;
-        options.log(
-          `  warming ${conversation.id}: ${error instanceof Error ? error.message : String(error)}`
-        );
-      }
-    }
+    if (options.embedding) await warm(cog, agent, threadId, conversation, options);
     await mapConcurrent(pending, options.concurrency, async (question) => {
       const estimate = callCost(
         options.strategy.contextTokens + countTokens(question.question),

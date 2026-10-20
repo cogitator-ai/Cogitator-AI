@@ -20,7 +20,15 @@ import { CachedEmbeddingService } from './embeddings.js';
 import { judge, JudgeStore } from './judge.js';
 import { markdownReport, summarize } from './report.js';
 import { ANSWER_INSTRUCTIONS, answerConversation, answerKey, mapConcurrent } from './runner.js';
-import { latest, parseSample, pick, positive, readJsonl, UsageError } from './options.js';
+import {
+  latest,
+  parseSample,
+  pick,
+  positive,
+  readJsonl,
+  sealJsonl,
+  UsageError,
+} from './options.js';
 import { stratifiedSample } from './sample.js';
 import { scoringFor, type JudgeRequest } from './scoring.js';
 import type {
@@ -234,7 +242,13 @@ async function main(): Promise<number> {
       )
     : undefined;
 
+  sealJsonl(answersPath);
+  sealJsonl(scoresPath);
   const answers = await readJsonl<BenchAnswer>(answersPath);
+  budget.reconcile(
+    'answers',
+    answers.reduce((sum, answer) => sum + answer.costUsd, 0)
+  );
   const done = new Set(
     [...latest(answers)].flatMap(([key, answer]) => (answer.error ? [] : [key]))
   );

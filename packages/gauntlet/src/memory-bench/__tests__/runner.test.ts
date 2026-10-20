@@ -184,6 +184,40 @@ describe('answerConversation', () => {
     expect(requests).toEqual([]);
   });
 
+  it('warms the entries the builder scores even when the dataset order is not by date', async () => {
+    const requests = stubModel(() => 'Miso');
+    const late = Date.UTC(2025, 0, 1);
+    const early = Date.UTC(2024, 0, 1);
+    const first = Date.UTC(2023, 0, 1);
+    const turns = Array.from({ length: 230 }, (_, i) => ({
+      role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+      content: `Turn ${i} talks about topic ${i} at some length.`,
+      at: new Date(i === 0 ? first : i < 20 ? late + i * 60_000 : early + i * 60_000),
+    }));
+    const inner = new HashedWordsEmbedding();
+    const batches: string[][] = [];
+    const recording: EmbeddingService = {
+      model: inner.model,
+      dimensions: inner.dimensions,
+      embed: (text) => inner.embed(text),
+      embedBatch: async (texts) => {
+        batches.push(texts);
+        return inner.embedBatch(texts);
+      },
+    };
+    const { options: opts } = options({
+      strategy: { name: 'relevant', contextTokens: 2000 },
+      embedding: recording,
+    });
+    await answerConversation(
+      { ...conversation, turns, questions: [conversation.questions[0]] },
+      opts
+    );
+    expect(requests).toHaveLength(1);
+    const [warmUp] = batches;
+    for (let i = 1; i < 20; i++) expect(warmUp).toContain(turns[i].content);
+  });
+
   it('measures a strategy that works without an error', async () => {
     stubModel(() => 'Miso');
     const { options: opts, answers } = options({

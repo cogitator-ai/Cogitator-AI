@@ -2,6 +2,7 @@ import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } f
 import Anthropic from '@anthropic-ai/sdk';
 import { BENCH_MODEL, Budget, callCost } from './budget.js';
 import { mapConcurrent } from './runner.js';
+import { sealJsonl } from './options.js';
 import type { JudgeRequest } from './scoring.js';
 
 /** What the judge said to one request. */
@@ -30,6 +31,7 @@ export class JudgeStore {
     private readonly repliesPath: string,
     private readonly batchesPath: string
   ) {
+    sealJsonl(repliesPath);
     if (existsSync(repliesPath)) {
       for (const line of readFileSync(repliesPath, 'utf8').split('\n')) {
         const record = parseLine(line);
@@ -39,6 +41,13 @@ export class JudgeStore {
     this.batches = existsSync(batchesPath)
       ? (JSON.parse(readFileSync(batchesPath, 'utf8')) as StoredBatch[])
       : [];
+  }
+
+  /** What the stored replies cost. */
+  get costUsd(): number {
+    let sum = 0;
+    for (const reply of this.replies.values()) sum += reply.costUsd;
+    return sum;
   }
 
   record(id: string, reply: JudgeReply): void {
@@ -174,57 +183,70 @@ async function batched(requests: readonly JudgeRequest[], options: JudgeOptions)
   }
 }
 
+/** The requests of `requests`, in order, whose estimated cost fits what the budget has left. */
+function affordable(
+  requests: readonly JudgeRequest[],
+  options: JudgeOptions,
+  batch: boolean
+): { requests: JudgeRequest[]; estimate: number } {
+  const available = options.budget.availableUsd;
+  let estimate = 0;
+  let fitting = 0;
+  for (const request of requests) {
+    const cost = callCost(Math.ceil(request.prompt.length / 3.5), request.maxTokens, batch);
+    if (estimate + cost > available) break;
+    estimate += cost;
+    fitting++;
+  }
+  return { requests: requests.slice(0, fitting), estimate };
+}
+
+/** Sends what the budget covers of `requests`, returning whether it covered them all. */
+async function within(
+  requests: readonly JudgeRequest[],
+  options: JudgeOptions,
+  batch: boolean
+): Promise<boolean> {
+  const fit = affordable(requests, options, batch);
+  if (fit.requests.length < requests.length) {
+    options.log(`  the budget covers ${fit.requests.length} of ${requests.length} judge requests`);
+  }
+  if (fit.requests.length === 0) return false;
+  const release = options.budget.reserve(fit.estimate);
+  try {
+    if (batch) await batched(fit.requests, options);
+    else await direct(fit.requests, options);
+  } finally {
+    release();
+  }
+  return fit.requests.length === requests.length;
+}
+
 /**
  * Gets the judge's reply to every request in `requests` into `options.store`: first from
  * batches an earlier run left open, then as Message Batches when `batch` is set, with any
- * request a batch did not answer sent again one by one. A request that still fails stays without
- * a reply, so its answer stays unjudged for the next run. When the budget left does not cover
- * every request, the ones that fit are judged and the budget's refusal is thrown after them.
- * A reply is stored before its cost is charged, so a run killed in between counts it on resume
- * at worst twice, never not at all.
+ * request a batch did not answer sent again one by one at full price. A request that still fails
+ * stays without a reply, so its answer stays unjudged for the next run. Each step sends what the
+ * budget left covers at its own price, and when that is not every request the budget's refusal
+ * is thrown after them. The run's judge spending is first brought up to what the stored replies
+ * cost, so a reply stored by a run killed before its charge reached the ledger still counts.
  */
 export async function judge(
   requests: readonly JudgeRequest[],
   options: JudgeOptions
 ): Promise<void> {
+  options.budget.reconcile('judge', options.store.costUsd);
   for (const batch of options.store.openBatches) {
     options.log(`  collecting judge batch ${batch.id} from an earlier run`);
     await collect(batch, options);
   }
-  const missing = requests.filter((request) => !options.store.replies.has(request.id));
-  if (missing.length === 0) return;
-  const available = options.budget.availableUsd;
-  let estimate = 0;
-  let fitting = 0;
-  for (const request of missing) {
-    const cost = callCost(Math.ceil(request.prompt.length / 3.5), request.maxTokens, options.batch);
-    if (estimate + cost > available) break;
-    estimate += cost;
-    fitting++;
+  const missing = () => requests.filter((request) => !options.store.replies.has(request.id));
+  if (missing().length === 0) return;
+  if (options.batch && !(await within(missing(), options, true))) {
+    throw options.budget.refusal();
   }
-  if (fitting === 0) throw options.budget.refusal();
-  const affordable = missing.slice(0, fitting);
-  if (fitting < missing.length) {
-    options.log(`  the budget covers ${fitting} of ${missing.length} judge requests`);
-  }
-  await judgeAll(affordable, estimate, options);
-  if (fitting < missing.length) throw options.budget.refusal();
-}
-
-async function judgeAll(
-  missing: readonly JudgeRequest[],
-  estimate: number,
-  options: JudgeOptions
-): Promise<void> {
-  const release = options.budget.reserve(estimate);
-  try {
-    if (options.batch) await batched(missing, options);
-    const rest = missing.filter((request) => !options.store.replies.has(request.id));
-    if (rest.length > 0) {
-      if (options.batch) options.log(`  ${rest.length} judge requests again one by one`);
-      await direct(rest, options);
-    }
-  } finally {
-    release();
-  }
+  const rest = missing();
+  if (rest.length === 0) return;
+  if (options.batch) options.log(`  ${rest.length} judge requests again one by one`);
+  if (!(await within(rest, options, false))) throw options.budget.refusal();
 }

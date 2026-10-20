@@ -164,6 +164,16 @@ export class Budget {
     this.save().catch(() => undefined);
   }
 
+  /**
+   * Brings this run's spending on `stage` up to `recordedUsd`, what the run's own records say it
+   * paid: a charge lost to a run killed before its ledger write is counted again, and nothing is
+   * counted twice.
+   */
+  reconcile(stage: string, recordedUsd: number): void {
+    const charged = this.byStage()[stage] ?? 0;
+    if (recordedUsd > charged + 1e-9) this.charge(stage, recordedUsd - charged);
+  }
+
   byStage(): Record<string, number> {
     const totals: Record<string, number> = {};
     for (const entry of this.entries) {
