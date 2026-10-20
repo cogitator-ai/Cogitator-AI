@@ -74,6 +74,34 @@ describe('CogitatorConfigSchema', () => {
     );
   });
 
+  it('accepts an OpenAI-compatible server profile by name or field by field', () => {
+    const result = CogitatorConfigSchema.parse({
+      llm: {
+        providers: {
+          openai: { apiKey: 'lm-studio', baseUrl: 'http://localhost:1234/v1', profile: 'lmstudio' },
+          vllm: {
+            baseUrl: 'http://gpu:8000/v1',
+            profile: { maxTokensField: 'max_completion_tokens', reasoningEffort: ['low', 'high'] },
+            headers: { authorization: 'Bearer internal' },
+          },
+          openrouter: { apiKey: 'or-xxx', headers: { 'X-Title': 'My app' } },
+        },
+      },
+    });
+
+    expect(result.llm?.providers?.openai?.profile).toBe('lmstudio');
+    expect(result.llm?.providers?.vllm?.profile).toEqual({
+      maxTokensField: 'max_completion_tokens',
+      reasoningEffort: ['low', 'high'],
+    });
+    expect(result.llm?.providers?.openrouter?.headers).toEqual({ 'X-Title': 'My app' });
+    expect(
+      CogitatorConfigSchema.safeParse({
+        llm: { providers: { openai: { apiKey: 'x', profile: 'unknown-server' } } },
+      }).success
+    ).toBe(false);
+  });
+
   it('rejects headers that are not strings', () => {
     const result = CogitatorConfigSchema.safeParse({
       llm: { providers: { anthropic: { apiKey: 'sk-ant-xxx', headers: { 'x-retries': 3 } } } },

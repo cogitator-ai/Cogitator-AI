@@ -23,6 +23,11 @@ import {
 import { jsonInstruction, withSystemInstruction } from './json-instruction';
 import type { CacheControl } from './prompt-cache';
 import {
+  OPENAI_COMPATIBLE_PROFILES,
+  reasoningEffortFor,
+  type ResolvedOpenAICompatibleProfile,
+} from './openai-profiles';
+import {
   finishRunsTools,
   normalizeTurn,
   parseToolCallArguments,
@@ -39,10 +44,11 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
   protected abstract client: OpenAI;
 
   /**
-   * The official OpenAI API rejects `max_tokens` for reasoning models and expects
-   * `max_completion_tokens`; most OpenAI-compatible servers only understand `max_tokens`.
+   * The request fields the server understands: the field of the output token limit, whether
+   * streams ask for usage, which reasoning efforts it takes. Servers differ, and some reject a
+   * field they do not know, so a request carries only what the server takes.
    */
-  protected readonly maxTokensField: 'max_tokens' | 'max_completion_tokens' = 'max_tokens';
+  protected readonly profile: ResolvedOpenAICompatibleProfile = OPENAI_COMPATIBLE_PROFILES.generic;
 
   /**
    * Whether `model` is an OpenAI reasoning model (o-series, GPT-5 and later), which rejects
@@ -80,7 +86,8 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
    */
   private requestParams(request: ChatRequest, model: string) {
     const reasoning = this.isReasoningModel(model);
-    const maxTokensField = reasoning ? 'max_completion_tokens' : this.maxTokensField;
+    const maxTokensField = reasoning ? 'max_completion_tokens' : this.profile.maxTokensField;
+    const effort = reasoningEffortFor(this.profile, request.reasoning?.effort);
     const { messages, response_format } = this.structuredOutput(request);
     return {
       model,
@@ -102,7 +109,7 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
         ? { max_completion_tokens: request.maxTokens }
         : { max_tokens: request.maxTokens }),
       stop: request.stop,
-      ...(request.reasoning?.effort && { reasoning_effort: request.reasoning.effort }),
+      ...(effort && { reasoning_effort: effort }),
       ...this.promptCacheParams(request, model),
     };
   }
@@ -210,7 +217,7 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
       const params = {
         ...this.requestParams(request, model),
         stream: true as const,
-        stream_options: { include_usage: true },
+        ...(this.profile.streamUsage && { stream_options: { include_usage: true } }),
       };
 
       stream = request.signal

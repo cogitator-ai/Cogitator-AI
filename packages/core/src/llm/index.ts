@@ -96,6 +96,8 @@ export function createLLMBackend(
         apiKey: providers.openai.apiKey,
         baseUrl: providers.openai.baseUrl,
         api: providers.openai.api,
+        profile: providers.openai.profile,
+        headers: providers.openai.headers,
         maxRetries: 0,
       });
 
@@ -194,6 +196,7 @@ export function createLLMBackend(
       return new OpenAIBackend({
         apiKey: providers.openrouter.apiKey,
         baseUrl: providers.openrouter.baseUrl ?? OPENROUTER_API,
+        headers: providers.openrouter.headers,
         provider,
         api: 'chat-completions',
         maxRetries: 0,
@@ -206,6 +209,8 @@ export function createLLMBackend(
       return new OpenAIBackend({
         apiKey: 'vllm',
         baseUrl: providers.vllm.baseUrl,
+        profile: providers.vllm.profile,
+        headers: providers.vllm.headers,
         provider,
         maxRetries: 0,
       });

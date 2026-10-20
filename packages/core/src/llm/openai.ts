@@ -5,6 +5,8 @@ import type {
   ChatResponse,
   ChatStreamChunk,
   LLMBackendProvider,
+  OpenAICompatibleProfile,
+  OpenAICompatibleServer,
   OpenAIWireApi,
 } from '@cogitator-ai/types';
 import { OpenAICompatibleBackend, type PromptCacheParams } from './openai-compatible-base';
@@ -15,6 +17,11 @@ import {
   type PromptCacheMarks,
 } from './prompt-cache';
 import { abortReason, type LLMErrorContext } from './errors';
+import {
+  OPENAI_COMPATIBLE_PROFILES,
+  resolveOpenAICompatibleProfile,
+  type ResolvedOpenAICompatibleProfile,
+} from './openai-profiles';
 import {
   DEFAULT_OPENAI_MODEL,
   buildResponsesParams,
@@ -33,6 +40,14 @@ interface OpenAIConfig {
    * Chat Completions for every other OpenAI-compatible server.
    */
   api?: OpenAIWireApi;
+  /**
+   * What the server understands, by name or field by field. Defaults to the provider's preset
+   * (`openai` for api.openai.com, `mistral`, `groq`, ... for those providers), and to `generic`
+   * for any other server.
+   */
+  profile?: OpenAICompatibleServer | OpenAICompatibleProfile;
+  /** Headers sent with every request. */
+  headers?: Record<string, string>;
   /** Retries the provider's SDK makes on its own; leave unset for the SDK default. The runtime passes 0 and retries itself. */
   maxRetries?: number;
 }
@@ -53,6 +68,13 @@ function isOfficialEndpoint(baseUrl: string | undefined): boolean {
   return !baseUrl || hostOf(baseUrl) === OFFICIAL_OPENAI_HOST;
 }
 
+/** The preset of a provider that has one, `generic` for any other OpenAI-compatible server. */
+function defaultServer(provider: LLMBackendProvider): OpenAICompatibleServer {
+  return provider !== 'openai' && provider in OPENAI_COMPATIBLE_PROFILES
+    ? (provider as OpenAICompatibleServer)
+    : 'generic';
+}
+
 /** A system text part carrying a cache breakpoint, as OpenRouter takes it for Claude. */
 type CacheMarkedTextPart = OpenAI.Chat.ChatCompletionContentPartText & {
   cache_control?: CacheControl;
@@ -67,7 +89,7 @@ export class OpenAIBackend extends OpenAICompatibleBackend {
   readonly provider: LLMBackendProvider;
   readonly api: OpenAIWireApi;
   protected client: OpenAI;
-  protected override readonly maxTokensField: 'max_tokens' | 'max_completion_tokens';
+  protected override readonly profile: ResolvedOpenAICompatibleProfile;
   private readonly official: boolean;
   private readonly openRouter: boolean;
 
@@ -76,12 +98,16 @@ export class OpenAIBackend extends OpenAICompatibleBackend {
     this.provider = config.provider ?? 'openai';
     this.official = this.provider === 'openai' && isOfficialEndpoint(config.baseUrl);
     this.openRouter = this.provider === 'openrouter' || hostOf(config.baseUrl) === OPENROUTER_HOST;
-    this.maxTokensField = this.official ? 'max_completion_tokens' : 'max_tokens';
+    this.profile = resolveOpenAICompatibleProfile(
+      this.official ? 'openai' : defaultServer(this.provider),
+      config.profile
+    );
     this.api = config.api ?? (this.official ? 'responses' : 'chat-completions');
     this.client = new OpenAI({
       apiKey: config.apiKey,
       baseURL: config.baseUrl,
       maxRetries: config.maxRetries,
+      ...(config.headers && { defaultHeaders: config.headers }),
     });
   }
 

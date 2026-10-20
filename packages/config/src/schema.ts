@@ -20,6 +20,32 @@ export const LLMProviderSchema = z.enum([
 
 const ProviderHeadersSchema = z.record(z.string(), z.string());
 
+export const OpenAICompatibleServerSchema = z.enum([
+  'openai',
+  'generic',
+  'vllm',
+  'ollama',
+  'lmstudio',
+  'llamacpp',
+  'groq',
+  'together',
+  'deepseek',
+  'mistral',
+  'openrouter',
+]);
+
+const ReasoningEffortSchema = z.enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+
+export const OpenAICompatibleProfileSchema = z.union([
+  OpenAICompatibleServerSchema,
+  z.object({
+    server: OpenAICompatibleServerSchema.optional(),
+    maxTokensField: z.enum(['max_tokens', 'max_completion_tokens']).optional(),
+    streamUsage: z.boolean().optional(),
+    reasoningEffort: z.union([z.boolean(), z.array(ReasoningEffortSchema).min(1)]).optional(),
+  }),
+]);
+
 export const ProvidersConfigSchema = z.object({
   ollama: z
     .object({ baseUrl: z.string().optional(), apiKey: z.string().optional() })
@@ -33,6 +59,8 @@ export const ProvidersConfigSchema = z.object({
       apiKey: z.string(),
       baseUrl: z.string().optional(),
       api: z.enum(['responses', 'chat-completions']).optional(),
+      profile: OpenAICompatibleProfileSchema.optional(),
+      headers: ProviderHeadersSchema.optional(),
     })
     .optional(),
   anthropic: z
@@ -67,12 +95,24 @@ export const ProvidersConfigSchema = z.object({
       profile: z.string().optional(),
     })
     .optional(),
-  vllm: z.object({ baseUrl: z.string() }).optional(),
+  vllm: z
+    .object({
+      baseUrl: z.string(),
+      profile: OpenAICompatibleProfileSchema.optional(),
+      headers: ProviderHeadersSchema.optional(),
+    })
+    .optional(),
   mistral: z.object({ apiKey: z.string() }).optional(),
   groq: z.object({ apiKey: z.string() }).optional(),
   together: z.object({ apiKey: z.string() }).optional(),
   deepseek: z.object({ apiKey: z.string() }).optional(),
-  openrouter: z.object({ apiKey: z.string(), baseUrl: z.string().optional() }).optional(),
+  openrouter: z
+    .object({
+      apiKey: z.string(),
+      baseUrl: z.string().optional(),
+      headers: ProviderHeadersSchema.optional(),
+    })
+    .optional(),
 });
 
 export const LLMRetryConfigSchema = z.union([
