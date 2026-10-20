@@ -52,12 +52,14 @@ export class BudgetExceededError extends Error {
 }
 
 /**
- * What a run may spend and what it spent, by stage, kept in a ledger file next to the results so
- * spending across runs adds up. `charge` records a cost, `reserve` refuses work its estimate
- * would take over the limit.
+ * What a run may spend and what it spent, by stage, kept in a ledger file so spending across
+ * runs adds up and a resumed run starts from what it already spent. `reserve` holds the estimate
+ * of work in flight and refuses work that would take the run over its limit, the returned
+ * function lets the hold go once the work's real cost is charged.
  */
 export class Budget {
-  private spent = 0;
+  private spent: number;
+  private reserved = 0;
   private readonly entries: LedgerEntry[];
 
   constructor(
@@ -68,6 +70,9 @@ export class Budget {
     this.entries = existsSync(ledgerPath)
       ? (JSON.parse(readFileSync(ledgerPath, 'utf8')) as LedgerEntry[])
       : [];
+    this.spent = this.entries
+      .filter((entry) => entry.run === run)
+      .reduce((sum, entry) => sum + entry.usd, 0);
   }
 
   get spentUsd(): number {
@@ -79,10 +84,17 @@ export class Budget {
     return this.entries.reduce((sum, entry) => sum + entry.usd, 0);
   }
 
-  reserve(estimateUsd: number): void {
-    if (this.spent + estimateUsd > this.limitUsd) {
+  reserve(estimateUsd: number): () => void {
+    if (this.spent + this.reserved + estimateUsd > this.limitUsd) {
       throw new BudgetExceededError(this.limitUsd, this.spent);
     }
+    this.reserved += estimateUsd;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.reserved -= estimateUsd;
+    };
   }
 
   charge(stage: string, usd: number): void {

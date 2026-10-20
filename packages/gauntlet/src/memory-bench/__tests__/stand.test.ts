@@ -82,6 +82,27 @@ describe('Budget', () => {
   });
 });
 
+describe('Budget reservations', () => {
+  it('holds work in flight against the limit until it is released', () => {
+    const budget = new Budget(1, 'run', join(tempDir(), 'ledger.json'));
+    const first = budget.reserve(0.6);
+    expect(() => budget.reserve(0.6)).toThrow(BudgetExceededError);
+    first();
+    first();
+    expect(() => budget.reserve(0.6)()).not.toThrow();
+  });
+
+  it('starts a resumed run from what it already spent', async () => {
+    const path = join(tempDir(), 'ledger.json');
+    const before = new Budget(1, 'run', path);
+    before.charge('answers', 0.7);
+    await before.save();
+    const resumed = new Budget(1, 'run', path);
+    expect(resumed.spentUsd).toBeCloseTo(0.7);
+    expect(() => resumed.reserve(0.5)).toThrow(BudgetExceededError);
+  });
+});
+
 describe('CachedEmbeddingService', () => {
   it('pays for a text once, across instances', async () => {
     const inner: EmbeddingService = {
@@ -105,6 +126,44 @@ describe('CachedEmbeddingService', () => {
     expect(inner.embedBatch).toHaveBeenCalledTimes(1);
     expect(second.embeddedTokens).toBe(0);
     second.close();
+  });
+});
+
+describe('CachedEmbeddingService under concurrency', () => {
+  it('sends a text once while concurrent calls wait for it', async () => {
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => (finish = resolve));
+    const embedBatch = vi.fn(async (texts: string[]) => {
+      await gate;
+      return texts.map(() => [1, 2]);
+    });
+    const service = new CachedEmbeddingService(
+      { model: 'm', dimensions: 2, embed: vi.fn(), embedBatch },
+      join(tempDir(), 'vectors.sqlite')
+    );
+    const calls = Array.from({ length: 6 }, () => service.embedBatch(['same text']));
+    finish();
+    expect(await Promise.all(calls)).toEqual(Array.from({ length: 6 }, () => [[1, 2]]));
+    expect(embedBatch).toHaveBeenCalledTimes(1);
+    service.close();
+  });
+
+  it('asks before each request to the provider, and fails the call when refused', async () => {
+    const embedBatch = vi.fn(async (texts: string[]) => texts.map(() => [1]));
+    const seen: number[] = [];
+    const service = new CachedEmbeddingService(
+      { model: 'm', dimensions: 1, embed: vi.fn(), embedBatch },
+      join(tempDir(), 'vectors.sqlite'),
+      (tokens) => {
+        seen.push(tokens);
+        if (seen.length > 1) throw new Error('budget');
+      }
+    );
+    await service.embedBatch(['first']);
+    await expect(service.embedBatch(['second'])).rejects.toThrow('budget');
+    expect(embedBatch).toHaveBeenCalledTimes(1);
+    expect(seen.every((tokens) => tokens > 0)).toBe(true);
+    service.close();
   });
 });
 

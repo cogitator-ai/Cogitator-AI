@@ -19,7 +19,7 @@ import { DATASETS, loadDataset } from './datasets/index.js';
 import { CachedEmbeddingService } from './embeddings.js';
 import { judge } from './judge.js';
 import { markdownReport, summarize } from './report.js';
-import { ANSWER_INSTRUCTIONS, answerConversation, answerKey } from './runner.js';
+import { ANSWER_INSTRUCTIONS, answerConversation, answerKey, mapConcurrent } from './runner.js';
 import { stratifiedSample } from './sample.js';
 import { scoringFor, type JudgeRequest } from './scoring.js';
 import type {
@@ -57,6 +57,9 @@ Environment: ANTHROPIC_API_KEY (answers and judge), ANTHROPIC_WORKSPACE_ID (for 
 not scoped to a workspace), GOOGLE_API_KEY (embeddings for relevant
 and hybrid), MEMORY_BENCH_CACHE (default ~/.cache/cogitator/memory-bench). Read from the
 repository's .env too.`;
+
+/** Conversations answered at once, each with its own runtime and its questions concurrent. */
+const CONVERSATIONS_AT_ONCE = 4;
 
 function parseSample(spec: string | undefined): Map<string, number> {
   const sizes = new Map<string, number>();
@@ -193,6 +196,20 @@ async function main(): Promise<number> {
   await mkdir(runDir, { recursive: true });
   const answersPath = join(runDir, 'answers.jsonl');
   const scoresPath = join(runDir, 'scores.jsonl');
+  const settings = { model: BENCH_MODEL, contextTokens, instructions: ANSWER_INSTRUCTIONS, seed };
+  const settingsPath = join(runDir, 'settings.json');
+  if (existsSync(settingsPath)) {
+    const saved = JSON.parse(await readFile(settingsPath, 'utf8')) as typeof settings;
+    const changed = (Object.keys(settings) as (keyof typeof settings)[]).filter(
+      (key) => saved[key] !== settings[key]
+    );
+    if (changed.length > 0) {
+      log(`Run ${run} was started with other ${changed.join(', ')}: start a new --run instead`);
+      return 1;
+    }
+  } else {
+    await writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
+  }
   const budget = new Budget(
     Number(values['anthropic-budget']),
     run,
@@ -202,7 +219,12 @@ async function main(): Promise<number> {
   const embedding = embedded
     ? new CachedEmbeddingService(
         new GoogleEmbeddingService({ apiKey: googleKey ?? '' }),
-        join(cacheDir(), 'embeddings.sqlite')
+        join(cacheDir(), 'embeddings.sqlite'),
+        (tokens) => {
+          const usd = (tokens * EMBEDDING_PRICE) / 1e6;
+          embeddingBudget.reserve(usd)();
+          embeddingBudget.charge('embeddings', usd);
+        }
       )
     : undefined;
 
@@ -213,11 +235,7 @@ async function main(): Promise<number> {
     for (const [id, conversations] of loaded) {
       for (const strategy of strategies) {
         log(`${id} / ${strategy.name}`);
-        for (const conversation of conversations) {
-          const embeddedBefore = embedding?.embeddedTokens ?? 0;
-          if (strategy.name !== 'recent') {
-            embeddingBudget.reserve((embeddingTokens(conversation) * EMBEDDING_PRICE) / 1e6);
-          }
+        await mapConcurrent(conversations, CONVERSATIONS_AT_ONCE, async (conversation) => {
           await answerConversation(conversation, {
             strategy,
             anthropicApiKey,
@@ -233,12 +251,8 @@ async function main(): Promise<number> {
               await appendFile(answersPath, `${JSON.stringify(answer)}\n`);
             },
           });
-          embeddingBudget.charge(
-            'embeddings',
-            (((embedding?.embeddedTokens ?? 0) - embeddedBefore) * EMBEDDING_PRICE) / 1e6
-          );
           await Promise.all([budget.save(), embeddingBudget.save()]);
-        }
+        });
       }
     }
   } catch (error) {

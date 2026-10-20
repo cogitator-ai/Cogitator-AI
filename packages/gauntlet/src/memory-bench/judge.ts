@@ -117,11 +117,15 @@ export async function judge(
       sum + callCost(Math.ceil(request.prompt.length / 3.5), request.maxTokens, options.batch),
     0
   );
-  options.budget.reserve(estimate);
-  const rest = options.batch ? await batched(requests, options, replies) : [...requests];
-  if (rest.length > 0) {
-    if (options.batch) options.log(`  ${rest.length} judge requests again one by one`);
-    await direct(rest, options, replies);
+  const release = options.budget.reserve(estimate);
+  try {
+    const rest = options.batch ? await batched(requests, options, replies) : [...requests];
+    if (rest.length > 0) {
+      if (options.batch) options.log(`  ${rest.length} judge requests again one by one`);
+      await direct(rest, options, replies);
+    }
+    return replies;
+  } finally {
+    release();
   }
-  return replies;
 }

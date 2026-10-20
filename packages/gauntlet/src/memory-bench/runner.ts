@@ -168,7 +168,9 @@ export async function ingest(
  * Answers the questions of `conversation` from memory: the conversation goes into a thread
  * once, then each question runs as its own turn that is not saved, so questions do not see each
  * other. Every answer records the tokens, cost and time of its run, what reached the model and
- * how much of the marked evidence did.
+ * how much of the marked evidence did. An answer whose context lost a part to a memory error
+ * (the embeddings failed, so the strategy fell back to the newest turns) is marked failed: it
+ * did not measure the strategy.
  */
 export async function answerConversation(
   conversation: BenchConversation,
@@ -189,8 +191,9 @@ export async function answerConversation(
         options.strategy.contextTokens + countTokens(question.question),
         1500
       );
-      options.budget.reserve(estimate);
+      const release = options.budget.reserve(estimate);
       let seen: Probe | undefined;
+      const memoryErrors: string[] = [];
       const base = {
         dataset: conversation.dataset,
         conversationId: conversation.id,
@@ -204,6 +207,7 @@ export async function answerConversation(
           threadId,
           saveHistory: false,
           middleware: [probe(question.evidence, (value) => (seen = value))],
+          onMemoryError: (error) => memoryErrors.push(error.message),
         });
         const llmMs = result.trace.spans
           .filter((span) => span.name === 'llm.chat')
@@ -221,6 +225,9 @@ export async function answerConversation(
           contextMessages: seen?.messages ?? 0,
           contextTokens: seen?.tokens ?? 0,
           ...(seen?.recall !== undefined && { evidenceRecall: seen.recall }),
+          ...(memoryErrors.length > 0 && {
+            error: `memory: ${memoryErrors.join('; ')} (the strategy fell back)`,
+          }),
         });
       } catch (error) {
         options.log(`  ${question.id}: ${error instanceof Error ? error.message : String(error)}`);
@@ -237,6 +244,8 @@ export async function answerConversation(
           contextTokens: 0,
           error: error instanceof Error ? error.message : String(error),
         });
+      } finally {
+        release();
       }
     });
   } finally {
