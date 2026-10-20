@@ -140,6 +140,7 @@ The native executor spawns commands on the host. A single-element command runs t
 4. **Guardrails**: `guardrails` on the Cogitator turns on Constitutional AI: input, output and tool-call filtering, critique and revision, and a tool guard that refuses dangerous shell commands (`rm -rf /`, `mkfs.`, `dd of=/dev/...`) and system paths (`/etc/shadow`, `~/.ssh/`). With `strictMode: true`, every call of a tool that declares `sideEffects` goes through the approval flow below; the guard fails closed, so a call that needs approval and got none does not run
 5. **Tool approvals**: `requiresApproval: true` (or a function of the arguments) pauses the run until someone decides with `cogitator.resume()`, or asks `onApproval` inline
 6. **Loop limits** (always on): `maxIterations` per agent (default 10) and a run timeout (`timeout` on the run or agent, else `limits.defaultTimeout`, else 120 s)
+7. **Guards of your own**: a run middleware (`middleware` on the Cogitator, agent or run) can check the input (`beforeRun`), each answer (`afterModel`) and each tool call (`wrapToolCall`), and `tripwire()` stops the run with `GUARDRAIL_TRIPPED` instead of letting the model work around a tool error. See [Run Middleware](https://cogitator.app/docs/core/middleware)
 
 ```typescript
 import { Cogitator } from '@cogitator-ai/core';
@@ -161,7 +162,7 @@ const cog = new Cogitator({
 - `redact`: placeholders, and nothing after the model gets the values back
 - `block`: a run whose input contains any fails with `PII_DETECTED`
 
-Masking happens at the LLM backend boundary only. Memory adapters, run results, `onToolCall` arguments and observability exporters still see the real values. `onDetect` reports counts per kind (never the values) for audit logs.
+Masking happens on the way to the provider only: in agent turns as the innermost run middleware, in the runtime's own model calls (guardrails, reflection, summaries) at the backend. Memory adapters, run results, `onToolCall` arguments and observability exporters still see the real values. `onDetect` reports counts per kind (never the values) for audit logs.
 
 ### API Security
 

@@ -10,7 +10,7 @@ An Agent in Cogitator is a configured LLM persona with:
 - **Instructions** — System prompt defining behavior
 - **Tools** — Capabilities the agent can use
 
-An `Agent` is only configuration: it has no `run()` method. Runs go through the `Cogitator` runtime (`cog.run(agent, { input })`), and memory, sandbox, guardrails, retries and context management are configured there, not on individual agents.
+An `Agent` is only configuration: it has no `run()` method. Runs go through the `Cogitator` runtime (`cog.run(agent, { input })`), and memory, sandbox, guardrails, retries and context management are configured there, not on individual agents. Hooks around one agent's model and tool calls go in its `middleware` ([Run Middleware](https://cogitator.app/docs/core/middleware)).
 
 ```typescript
 interface AgentConfig<TDeps = unknown> {

@@ -145,7 +145,7 @@ const result = await cog.run(agent, { input: 'Email the invoice to ann@example.c
 | `redact` | Placeholders go to the provider and stay in the answer and tool arguments — the values never leave your side of the agent |
 | `block`  | A run whose input has personal data fails with `PII_DETECTED` (400) before any request is made; nothing is masked         |
 
-- **Coverage** — every request the runtime makes goes through the masking: agent turns, and the guardrail, reflection, injection-classifier and context-summary calls.
+- **Coverage** — every request the runtime makes goes through the masking: agent turns, and the guardrail, reflection, injection-classifier and context-summary calls. In agent turns it is the innermost [run middleware](/docs/core/middleware), so it also masks what your middleware adds, and `piiMiddleware(config)` gives the masking to one agent only.
 - **Detection** — card numbers must pass the Luhn check and IBANs the mod-97 check, so order numbers and dates are left alone. `detect: ['email', 'phone']` limits the built-in kinds; `custom` adds your own.
 - **Stable placeholders** — within one request the same value always gets the same placeholder, and the masking is deterministic, so prompt caching keeps working.
 - **Streaming** — a placeholder split across chunks (`[EM` + `AIL_1]`) is held back until it is complete, then restored.

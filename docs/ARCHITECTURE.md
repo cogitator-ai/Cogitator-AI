@@ -888,6 +888,10 @@ const cog = new Cogitator({
 
 With `pii`, emails, phone numbers, card numbers, IBANs, SSNs, IP addresses and API keys are replaced with placeholders before every LLM request; memory keeps the real values.
 
+### Run Middleware
+
+PII masking, prompt injection detection, guardrails and compaction run in the agent loop as built-in `RunMiddleware`, the layers closest to the model. Middleware from the Cogitator config, the agent and the run wraps them: `beforeRun` checks a new run's input, `beforeModel` can change the conversation before each turn, `wrapModelCall` wraps each call to each model a turn tries (fallbacks included), `afterModel` can replace an answer before the run uses it, and `wrapToolCall` wraps each approved tool call, with changed arguments checked against the tool's schema again. `tripwire()` stops a run with `GUARDRAIL_TRIPPED`. See [Run Middleware](https://cogitator.app/docs/core/middleware).
+
 ---
 
 ## References

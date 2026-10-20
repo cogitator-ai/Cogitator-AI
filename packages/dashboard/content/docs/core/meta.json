@@ -4,6 +4,7 @@
     "cogitator",
     "agents",
     "tools",
+    "middleware",
     "llm-backends",
     "model-registry",
     "structured-outputs",

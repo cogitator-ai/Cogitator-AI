@@ -31,6 +31,14 @@ const cog = new Cogitator({
     filterToolCalls: true,
     enableCritiqueRevision: true,
   },
+  middleware: [
+    {
+      name: 'refund-guard',
+      beforeRun: ({ input }) => {
+        if (/refund/i.test(input)) tripwire('Refunds go to a person');
+      },
+    },
+  ],
 });
 `;
 
@@ -179,7 +187,7 @@ export async function featuresB(): Promise<ExplorerFeature[]> {
       pkg: '@cogitator-ai/core',
       title: 'Safety',
       summary:
-        'Personal data is masked before the provider sees it, injection attempts fail the run, and guardrails block or rewrite unsafe inputs, outputs and tool calls.',
+        'Personal data is masked before the provider sees it, injection attempts fail the run, guardrails block or rewrite unsafe inputs, outputs and tool calls, and your own middleware guards every model and tool call.',
       href: '/docs/advanced/security',
       code: safety,
     },

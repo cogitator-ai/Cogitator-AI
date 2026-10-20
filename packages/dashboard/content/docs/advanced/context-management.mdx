@@ -22,7 +22,7 @@ const cog = new Cogitator({
 });
 ```
 
-Context management is built into the runtime: whenever `context` is set (and `enabled` is not `false`), the run checks the conversation before each model call and compresses it when needed. Compression changes only what is sent; memory keeps the full history. After compression, tool results whose call was dropped (and calls without their results) are removed too, so the provider never sees a broken tool exchange.
+Context management is built into the runtime: whenever `context` is set (and `enabled` is not `false`), the run checks the conversation before each model call and compresses it when needed. Compression changes only what is sent; memory keeps the full history. After compression, tool results whose call was dropped (and calls without their results) are removed too, so the provider never sees a broken tool exchange. The check is the `beforeModel` hook of the built-in [run middleware](/docs/core/middleware) `cogitator:compaction`, the last one before the model, and `compactionMiddleware(contextManager)` gives compaction to one agent.
 
 ## Configuration
 

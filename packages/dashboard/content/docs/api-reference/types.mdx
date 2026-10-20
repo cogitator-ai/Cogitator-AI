@@ -27,6 +27,7 @@ interface AgentConfig<TDeps = unknown> {
   handoffs?: Array<Agent | Handoff>; // each becomes a transfer_to_<name> tool
   maxIterations?: number; // Agent default: 10
   timeout?: number; // ms; run default: limits.defaultTimeout, else 120000
+  middleware?: RunMiddleware<TDeps>[]; // hooks around its model and tool calls
 }
 
 type FallbackModel = string | { model: string; provider?: string };
@@ -185,6 +186,49 @@ interface RunCheckpointStore {
 ```
 
 `RunCheckpoint` is the plain-JSON state of a paused run (`version: 1`, `runId`, `threadId`, `model`, `messages`, the paused `turn` with its decisions, usage so far, …) that `cogitator.resume()` continues from.
+
+### Middleware
+
+```typescript
+interface RunMiddleware<TDeps = unknown> {
+  readonly name: string;
+  readonly holdsStream?: boolean; // with afterModel: a streamed turn's text waits for the hooks
+  beforeRun?(event: RunInputEvent, context: RunMiddlewareContext<TDeps>): void | Promise<void>;
+  beforeModel?(
+    event: ModelTurnEvent,
+    context: RunMiddlewareContext<TDeps>
+  ): void | ModelTurnUpdate | Promise<void | ModelTurnUpdate>;
+  wrapModelCall?(
+    call: ModelCallRequest,
+    next: (call: ModelCallRequest) => Promise<ChatResponse>,
+    context: RunMiddlewareContext<TDeps>
+  ): Promise<ChatResponse>;
+  afterModel?(
+    event: ModelResponseEvent,
+    context: RunMiddlewareContext<TDeps>
+  ): void | ModelResponseUpdate | Promise<void | ModelResponseUpdate>;
+  wrapToolCall?(
+    call: ToolCallRequest,
+    next: (call: ToolCallRequest) => Promise<ToolResult>,
+    context: RunMiddlewareContext<TDeps>
+  ): Promise<ToolResult>;
+}
+
+interface ModelCallRequest {
+  request: ChatRequest;
+  model: string; // provider/model the call goes to
+  stream?: { onToken(token: string): void; onReasoning?(delta: string): void };
+}
+
+interface ToolCallRequest {
+  toolCall: ToolCall; // as the model made it
+  tool: Tool;
+  args: unknown; // as the tool's schema parsed them
+  approved: boolean; // a person approved the call
+}
+```
+
+`RunMiddlewareContext` carries `runId`, `threadId`, `agentId`, `agentName`, `userId`, `channelType`, `channelId`, `iteration`, `signal`, `deps` and a `state` map the run's middleware share. See [Run Middleware](/docs/core/middleware).
 
 ## Tool Types
 
@@ -712,6 +756,7 @@ enum ErrorCode {
   SWARM_CONSENSUS_FAILED = 'SWARM_CONSENSUS_FAILED',
   PROMPT_INJECTION_DETECTED = 'PROMPT_INJECTION_DETECTED',
   PII_DETECTED = 'PII_DETECTED',
+  GUARDRAIL_TRIPPED = 'GUARDRAIL_TRIPPED', // a middleware tripwire() stopped the run
   VALIDATION_ERROR = 'VALIDATION_ERROR',
   CONFIGURATION_ERROR = 'CONFIGURATION_ERROR',
   INTERNAL_ERROR = 'INTERNAL_ERROR',

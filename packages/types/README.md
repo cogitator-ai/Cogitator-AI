@@ -442,6 +442,20 @@ const runOptions: RunOptions = {
 | `RunPrompt`            | The instruction version or A/B variant a run used                                                       |
 | `PiiConfig`            | `mode` (`mask` \| `redact` \| `block`), `detect`, `custom`, `onDetect`                                  |
 
+### Run Middleware
+
+`RunMiddleware` hooks around a run's model and tool calls, given in `middleware` of `CogitatorConfig`, `AgentConfig` or `RunOptions` (see the core README).
+
+| Type                   | Description                                                                                                      |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `RunMiddleware`        | `name`, `holdsStream?` and the hooks `beforeRun`, `beforeModel`, `wrapModelCall`, `afterModel`, `wrapToolCall`   |
+| `RunMiddlewareContext` | `runId`, `threadId`, `agentId`, `agentName`, `userId`, channel, `iteration`, `signal`, `deps` and shared `state` |
+| `RunInputEvent`        | A new run's `input` and the `messages` its first turn starts from                                                |
+| `ModelTurnEvent`       | The `messages` and `model` of the next turn, `ModelTurnUpdate` returns new `messages`                            |
+| `ModelCallRequest`     | The `ChatRequest`, the `provider/model` it goes to and, when streaming, its `ModelStreamSink`                    |
+| `ModelResponseEvent`   | A turn's `response`, `ModelResponseUpdate` replaces its `content` or `toolCalls`                                 |
+| `ToolCallRequest`      | The `toolCall`, the `tool`, the schema-parsed `args` and whether a person `approved` it                          |
+
 ### RunResult
 
 ```typescript
@@ -526,7 +540,7 @@ console.log(ERROR_STATUS_CODES[ErrorCode.LLM_RATE_LIMITED]); // 429
 | Agent    | `AGENT_NOT_FOUND`, `AGENT_ALREADY_RUNNING`, `AGENT_MAX_ITERATIONS`, `RUN_TOKEN_LIMIT_EXCEEDED`, `RUN_NOT_PAUSED`, `RUN_TIMEOUT`, `BUDGET_EXCEEDED`        |
 | Workflow | `WORKFLOW_NOT_FOUND`, `WORKFLOW_STEP_FAILED`, `WORKFLOW_CYCLE_DETECTED`                                                                                   |
 | Swarm    | `SWARM_NO_WORKERS`, `SWARM_CONSENSUS_FAILED`                                                                                                              |
-| Security | `PROMPT_INJECTION_DETECTED`, `PII_DETECTED`                                                                                                               |
+| Security | `PROMPT_INJECTION_DETECTED`, `PII_DETECTED`, `GUARDRAIL_TRIPPED`                                                                                          |
 | General  | `VALIDATION_ERROR`, `CONFIGURATION_ERROR`, `INTERNAL_ERROR`, `NOT_IMPLEMENTED`, `CIRCUIT_OPEN`                                                            |
 
 `LLMErrorKind` says why a model provider call failed, finer than the code: `rate_limit`, `quota`, `authentication`, `permission`, `not_found`, `invalid_request`, `context_overflow`, `content_filter`, `overloaded`, `server_error`, `timeout`, `network` or `invalid_response`. An `LLMError` of `@cogitator-ai/core` carries it as `kind` and `details.kind`. `LLM_QUOTA_EXCEEDED` (HTTP 402) is an account out of credits or over a quota that waiting a moment will not lift, and is never retried.

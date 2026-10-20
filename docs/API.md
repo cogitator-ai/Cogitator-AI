@@ -82,6 +82,9 @@ interface CogitatorConfig {
   // Versioned instructions and A/B tests (cog.prompts)
   prompts?: PromptsConfig;
 
+  // Hooks around the model and tool calls of every run, also wrapping invokeTool()
+  middleware?: RunMiddleware[];
+
   limits?: {
     maxConcurrentRuns?: number;
     defaultTimeout?: number; // ms; default 120000
@@ -266,6 +269,9 @@ interface RunOptions<TDeps = unknown> {
   // Execute tool calls in parallel (default: false)
   parallelToolCalls?: boolean;
 
+  // Hooks around this run's model and tool calls, after the Cogitator's and the agent's
+  middleware?: RunMiddleware[];
+
   // The user the run acts for: owns the threads it creates, reaches tools as context.userId
   userId?: string;
   // 'owner' (default): only the thread's creator may continue it; 'shared': anyone
@@ -405,6 +411,8 @@ interface AgentConfig<TDeps = unknown> {
 
   maxIterations?: number; // default: 10
   timeout?: number; // ms; falls back to limits.defaultTimeout, then 120000
+  // Hooks around this agent's model and tool calls, after the Cogitator's middleware
+  middleware?: RunMiddleware[];
 }
 ```
 
@@ -1256,6 +1264,27 @@ const result = await cog.run(agent, {
 });
 ```
 
+### Run middleware
+
+Callbacks and observers only watch a run. `RunMiddleware` changes it, in `middleware` of the Cogitator, the agent or the run:
+
+```typescript
+import { tripwire, type RunMiddleware } from '@cogitator-ai/core';
+
+const guard: RunMiddleware = {
+  name: 'guard',
+  beforeRun: ({ input }) => {
+    if (input.includes('DROP TABLE')) tripwire('SQL in the input');
+  },
+  beforeModel: ({ messages }, context) => undefined, // or { messages } to change the conversation
+  wrapModelCall: (call, next, context) => next(call), // call.request, call.model, call.stream
+  afterModel: ({ response }) => undefined, // or { content } / { toolCalls }
+  wrapToolCall: (call, next, context) => next(call), // call.toolCall, call.args, call.approved
+};
+```
+
+The Cogitator's middleware runs outermost, then the agent's, then the run's, then the built-in PII masking, prompt injection, guardrails and compaction. See [Run Middleware](https://cogitator.app/docs/core/middleware).
+
 ### Workflow callbacks
 
 ```typescript
@@ -1328,7 +1357,7 @@ String enum (each value equals its name), `ERROR_STATUS_CODES` maps each to an H
 
 Errors of model provider calls are `LLMError`s with a `kind` (also `details.kind`, type `LLMErrorKind`): `rate_limit`, `quota`, `authentication`, `permission`, `not_found`, `invalid_request`, `context_overflow`, `content_filter`, `overloaded`, `server_error`, `timeout`, `network` or `invalid_response`, read from the provider's own error codes. A `quota` error is `LLM_QUOTA_EXCEEDED` and never retried. A call the caller aborts fails with the abort reason.
 
-`cog.run()` throws a `CogitatorError` when the run hits its `timeout` (`Run timed out after <n>ms` → `RUN_TIMEOUT`, with what the finished model calls used and cost in `details.usage`), when cost routing finds the budget exceeded (`Budget exceeded: …` → `BUDGET_EXCEEDED`), and when guardrails block the input or output (`Input blocked: …` / `Output blocked: …` → `LLM_CONTENT_FILTERED`, with `details.harmScores`), so server adapters answer with that status and message.
+`cog.run()` throws a `CogitatorError` when the run hits its `timeout` (`Run timed out after <n>ms` → `RUN_TIMEOUT`, with what the finished model calls used and cost in `details.usage`), when cost routing finds the budget exceeded (`Budget exceeded: …` → `BUDGET_EXCEEDED`), when guardrails block the input or output (`Input blocked: …` / `Output blocked: …` → `LLM_CONTENT_FILTERED`, with `details.harmScores`), and when a run middleware calls `tripwire()` (`Guardrail "<name>" tripped: …` → `GUARDRAIL_TRIPPED` 400, with `details.middleware`, `details.reason` and `details.info`), so server adapters answer with that status and message.
 
 ```typescript
 enum ErrorCode {
@@ -1381,6 +1410,7 @@ enum ErrorCode {
   // Security
   PROMPT_INJECTION_DETECTED,
   PII_DETECTED,
+  GUARDRAIL_TRIPPED, // a middleware tripwire() stopped the run
 
   // General
   VALIDATION_ERROR,

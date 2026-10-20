@@ -71,6 +71,7 @@ interface CogitatorConfig {
   context?: ContextManagerConfig;
   logging?: LoggingConfig; // level, format and destination of the process-wide logger
   observers?: RunObserver[]; // watch every run (see Run Observers), flushed by close()
+  middleware?: RunMiddleware[]; // hooks around every run's model and tool calls (see Run Middleware)
   deploy?: DeployConfig; // read by `cogitator deploy`
 }
 ```
@@ -138,6 +139,7 @@ const result = await cog.run(agent, {
 | `timeout`                  | `number`                                                  | Override the agent timeout (ms)                                                                                             |
 | `reasoning`                | `ReasoningConfig`                                         | Override the agent's `reasoning` for this run                                                                               |
 | `parallelToolCalls`        | `boolean`                                                 | Execute tool calls in parallel (default: sequential)                                                                        |
+| `middleware`               | `RunMiddleware[]`                                         | Hooks around this run's model and tool calls, after the Cogitator's and the agent's ([Run Middleware](/docs/core/middleware)) |
 | `toolChoice`               | `ToolChoice`                                              | `'none'` on every turn, or force `'required'` or a named function until the model makes a call, then `'auto'`               |
 | `useMemory`                | `boolean`                                                 | Enable/disable memory for this run (default: on when an adapter is configured)                                              |
 | `loadHistory`              | `boolean`                                                 | Load prior memory history for this run (default: true)                                                                      |
@@ -278,6 +280,8 @@ stop();
 ```
 
 An observer sees the runs that start after it is attached. The run's own callbacks (`onRunStart`, `onSpan` and the rest in `RunOptions`) go first, and an observer that throws is logged without failing the run. `cogitator.close()` calls `close()` of every observer, so exporters send what they buffered. The OpenTelemetry and Langfuse exporters provide one with `observer()`, see [Observability](/docs/deployment/observability).
+
+Observers watch and cannot change a run. To change what a run sends to models and tools, or to stop it, use [Run Middleware](/docs/core/middleware).
 
 ## Global Tool Registry
 

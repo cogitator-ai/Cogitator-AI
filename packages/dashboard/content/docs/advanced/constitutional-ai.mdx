@@ -155,6 +155,8 @@ With `filterToolResults: true`, what a tool returns is checked with the input fi
 
 A blocked input fails the run with `Input blocked: <reason>` before the first model call. When the output filter blocks an answer and the critique-revise loop produces a safe one, the run answers with the revision; without a revision it fails with `Output blocked: <reason>`. Both failures are a `CogitatorError` with code `LLM_CONTENT_FILTERED` and the harm scores in `details.harmScores`. A blocked tool call or tool result reaches the model as the tool's error. Every block is logged and reported to `onViolation`, also when a revision replaces the answer.
 
+In a run the guardrails are the built-in [run middleware](/docs/core/middleware) `cogitator:guardrails`: the input filter is its `beforeRun`, the output filter its `afterModel` (a streamed run holds each turn's text until it passed), the tool guard and the result filter its `wrapToolCall`. Your own middleware runs outside it, and `guardrailsMiddleware(constitutionalAI)` gives the guardrails to one agent.
+
 ```typescript
 const cog = new Cogitator({
   guardrails: { constitution: DEFAULT_CONSTITUTION, filterToolResults: true },

@@ -78,6 +78,7 @@ console.log(result.output);
 - **Causal Reasoning** - Pearl's do-calculus, counterfactuals, d-separation
 - **Resilience** - Retry, circuit breaker, and fallback patterns
 - **PII Masking** - Personal data and secrets replaced with placeholders before they reach the provider
+- **Run Middleware** - Hooks around every model and tool call, tripwire guards that stop a run
 - **Observability** - Full tracing with spans and callbacks
 
 ---
@@ -552,7 +553,7 @@ const cog = new Cogitator({
 });
 ```
 
-In `mask` mode the answer, its stream and tool call arguments get the real values back, so `send_email({ to: '[EMAIL_1]' })` reaches the tool as the real address. `detect` limits the built-in kinds (`PII_TYPES`: `email`, `phone`, `credit_card`, `iban`, `ssn`, `ip_address`, `api_key`). `PiiMasker`, `PiiVault` and `withPiiMasking` work outside a run too. See [Security](https://cogitator.app/docs/advanced/security).
+In `mask` mode the answer, its stream and tool call arguments get the real values back, so `send_email({ to: '[EMAIL_1]' })` reaches the tool as the real address. `detect` limits the built-in kinds (`PII_TYPES`: `email`, `phone`, `credit_card`, `iban`, `ssn`, `ip_address`, `api_key`). In a run the masking is middleware closest to the model, so it also masks what your [middleware](#run-middleware) adds. `piiMiddleware(config)` masks the runs of one agent only, and `PiiMasker`, `PiiVault` and `withPiiMasking` work outside a run. See [Security](https://cogitator.app/docs/advanced/security).
 
 ### Tool Context
 
@@ -989,6 +990,47 @@ await cogitator.close(); // flushes the OTLP exporter
 ```
 
 An observer that throws is logged without failing the run. `createLangfuseExporter(...).observer()` traces every run in Langfuse the same way.
+
+### Run Middleware
+
+Observers only watch. Middleware changes what a run does: it wraps each model call and each tool call, so masking, guards, caching, argument rewriting and logging live in one place instead of in every tool. Give middleware to the Cogitator (every run), the agent or the run:
+
+```typescript
+import { Agent, Cogitator, tripwire, type RunMiddleware } from '@cogitator-ai/core';
+
+const timing: RunMiddleware = {
+  name: 'timing',
+  async wrapModelCall(call, next) {
+    const started = Date.now();
+    const response = await next(call);
+    metrics.record(call.model, Date.now() - started);
+    return response;
+  },
+};
+
+const refundGuard: RunMiddleware = {
+  name: 'refund-guard',
+  beforeRun({ input }) {
+    if (/refund/i.test(input)) tripwire('Refunds go to a person', { queue: 'billing' });
+  },
+};
+
+const cog = new Cogitator({ middleware: [timing] });
+const agent = new Agent({ name: 'support', instructions: '...', middleware: [refundGuard] });
+await cog.run(agent, { input, middleware: [auditFor(userId)] });
+```
+
+| Hook            | When                                          | What it can do                                                                  |
+| --------------- | --------------------------------------------- | ------------------------------------------------------------------------------- |
+| `beforeRun`     | A new run's input, before it is saved or sent | Check it. Not called on `resume()`                                              |
+| `beforeModel`   | Before each model turn                        | Return `{ messages }` to change the conversation from then on                   |
+| `wrapModelCall` | Around each call, once per model a turn tries | Change the request or the stream sink, call `next` again, or answer without it  |
+| `afterModel`    | After each answer, before the run uses it     | Return `{ content }` or `{ toolCalls }` to replace them                         |
+| `wrapToolCall`  | Around each tool call that passed approval    | Change the arguments (checked against the schema again), or answer for the tool |
+
+Every hook gets the run's context: `runId`, `threadId`, the agent, `userId`, the channel, `iteration`, `signal`, `deps` and a `state` map the run's middleware share. The Cogitator's middleware runs first, then the agent's, then the run's, then the built-in ones: PII masking (`security.pii`), prompt injection (`security.promptInjection`), guardrails (`guardrails`) and compaction (`context`), closest to the model. `before*` hooks run in that order, `wrap*` hooks nest with the first outermost, `afterModel` runs in reverse. After a handoff the agent the run went on as brings its own middleware.
+
+`tripwire(reason, info?)` stops the run as a guard that tripped: it fails with `GUARDRAIL_TRIPPED` (HTTP 400), the middleware, the reason and `info` in `details`, and `isTripwire(error)` tells it apart. Any other error a hook throws fails the run as it is. A middleware with `holdsStream: true` and `afterModel` makes a streamed run hold each turn's text until the hooks saw it, so text a hook replaces never reaches `onToken`. The Cogitator's `wrapToolCall` hooks also wrap `invokeTool()`. `piiMiddleware`, `promptInjectionMiddleware`, `guardrailsMiddleware` and `compactionMiddleware` build the built-in ones, to give a feature to one agent only.
 
 ---
 

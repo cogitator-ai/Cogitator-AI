@@ -143,6 +143,92 @@ console.log('violations logged:', guard.getViolationLog().length);`,
       ],
     },
     {
+      id: 'run-middleware',
+      title: 'Guard Every Model and Tool Call',
+      difficulty: 'easy',
+      time: '5 min',
+      problem:
+        'Checks and rewrites that belong to every call (refusing some requests, cleaning tool arguments, scrubbing answers) end up copied into every tool and agent.',
+      points: [
+        'Hook `beforeRun`, `wrapModelCall`, `afterModel` and `wrapToolCall` once, on the Cogitator, the agent or the run',
+        '`tripwire()` stops the run with `GUARDRAIL_TRIPPED` instead of letting the model work around a tool error',
+        'Arguments a middleware changes are checked against the tool schema again',
+      ],
+      file: 'run-middleware.ts',
+      code: `import { Agent, Cogitator, isTripwire, tool, tripwire, type RunMiddleware } from '@cogitator-ai/core';
+import { z } from 'zod';
+
+const orderStatus = tool({
+  name: 'order_status',
+  description: 'Status of an order by its id',
+  parameters: z.object({ id: z.string() }),
+  execute: async ({ id }) => ({ id, status: 'shipped' }),
+});
+
+const normalizeIds: RunMiddleware = {
+  name: 'normalize-ids',
+  wrapToolCall: (call, next) => {
+    const id = String((call.args as { id: string }).id).trim().toUpperCase();
+    return next({ ...call, toolCall: { ...call.toolCall, arguments: { id } } });
+  },
+};
+
+const refundGuard: RunMiddleware = {
+  name: 'refund-guard',
+  beforeRun: ({ input }) => {
+    if (/\\brefund\\b/i.test(input)) tripwire('Refunds go to a person', { queue: 'billing' });
+  },
+};
+
+const noEmails: RunMiddleware = {
+  name: 'no-emails',
+  afterModel: ({ response }) => ({
+    content: response.content.replace(/[\\w.+-]+@[\\w-]+\\.[\\w.]+/g, '[email removed]'),
+  }),
+};
+
+const cog = new Cogitator({ middleware: [normalizeIds] });
+const agent = new Agent({
+  name: 'orders',
+  model: 'ollama/qwen2.5:0.5b',
+  instructions: 'You help with orders. Answer in one sentence.',
+  tools: [orderStatus],
+  middleware: [refundGuard, noEmails],
+});
+
+const answer = await cog.run(agent, { input: 'Tell me to write to support@shop.example.' });
+console.log(answer.output);
+
+console.log((await cog.invokeTool(orderStatus, { id: ' a-17 ' })).result);
+
+try {
+  await cog.run(agent, { input: 'I want a refund' });
+} catch (error) {
+  if (!isTripwire(error)) throw error;
+  console.log(error.message, error.details.info);
+}
+
+await cog.close();`,
+      install: 'pnpm add @cogitator-ai/core zod',
+      setup: 'ollama pull qwen2.5:0.5b',
+      env: [],
+      run: 'npx tsx run-middleware.ts',
+      repoRun: 'npx tsx examples/core/21-run-middleware.ts',
+      notes: [
+        {
+          type: 'info',
+          text: 'The built-in PII masking, prompt injection check, guardrails and compaction are middleware too, closest to the model: your hooks run outside them, and PII masking also masks what your middleware adds.',
+        },
+      ],
+      example: 'core/21-run-middleware.ts',
+      docs: [
+        {
+          href: '/docs/core/middleware',
+          label: 'Run Middleware',
+        },
+      ],
+    },
+    {
       id: 'cost-routing',
       title: 'Cost-Aware Routing & Budgets',
       difficulty: 'medium',

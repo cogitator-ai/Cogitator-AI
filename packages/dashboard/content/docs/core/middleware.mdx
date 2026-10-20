@@ -1,0 +1,183 @@
+---
+title: Run Middleware
+description: Hooks around every model and tool call of a run, with tripwire guards that stop it. PII masking, guardrails and compaction are built on them.
+---
+
+Run observers only watch a run. Middleware changes it: it sits around each model call and each tool call, so masking, guards, caching, argument rewriting, retries and logging live in one place instead of in every tool and every agent.
+
+```typescript
+import { Agent, Cogitator, tripwire, type RunMiddleware } from '@cogitator-ai/core';
+
+const timing: RunMiddleware = {
+  name: 'timing',
+  async wrapModelCall(call, next) {
+    const started = Date.now();
+    const response = await next(call);
+    metrics.record(call.model, Date.now() - started);
+    return response;
+  },
+};
+
+const refundGuard: RunMiddleware = {
+  name: 'refund-guard',
+  beforeRun({ input }) {
+    if (/refund/i.test(input)) tripwire('Refunds go to a person', { queue: 'billing' });
+  },
+};
+
+const cog = new Cogitator({ middleware: [timing] });
+
+const agent = new Agent({
+  name: 'support',
+  model: 'openai/gpt-6-luna',
+  instructions: 'You help with orders.',
+  middleware: [refundGuard],
+});
+
+await cog.run(agent, { input: 'Where is my order?', middleware: [auditFor(userId)] });
+```
+
+## Where Middleware Goes
+
+| Place                         | Applies to                                                       |
+| ----------------------------- | ---------------------------------------------------------------- |
+| `new Cogitator({ middleware })` | Every run of the runtime, and tool calls made with `invokeTool()` |
+| `new Agent({ middleware })`   | The runs of this agent, and the turns of a run handed over to it |
+| `cog.run(agent, { middleware })` | One run. Pass it again to `resume()`                          |
+
+The Cogitator's middleware runs first, then the agent's, then the run's, then the built-in middleware closest to the model. `before*` hooks run in that order, `wrap*` hooks nest with the first one outermost, and `afterModel` runs in reverse, so the middleware nearest the model sees its answer first.
+
+Middleware is code, so the [agent wire format](/docs/core/agents#sending-an-agent-to-another-process) does not carry it: the side that runs an agent gives its own.
+
+## Hooks
+
+Every hook is optional. Each one gets the run's context as its last argument.
+
+| Hook            | When                                          | What it can do                                                                  |
+| --------------- | --------------------------------------------- | ------------------------------------------------------------------------------- |
+| `beforeRun`     | A new run's input, before it is saved or sent | Check it. Not called when a paused run resumes                                  |
+| `beforeModel`   | Before each model turn                        | Return `{ messages }` to change the conversation from then on                   |
+| `wrapModelCall` | Around each call, once per model a turn tries | Change the request or the stream sink, call `next` again, or answer without it  |
+| `afterModel`    | After each answer, before the run uses it     | Return `{ content }` or `{ toolCalls }` to replace them                         |
+| `wrapToolCall`  | Around each tool call that passed approval    | Change the arguments, or answer for the tool                                    |
+
+### beforeRun
+
+`beforeRun({ input, messages }, context)` sees the input of a new run and the messages its first turn starts from: the system prompt, the history and the input. Nothing is saved to memory or sent to a model before it returns, so it is the place for input guards.
+
+### beforeModel
+
+`beforeModel({ messages, model }, context)` runs before each turn. Return `{ messages }` and the run goes on with them, in this turn and every later one. The built-in compaction works this way.
+
+```typescript
+const reminder: RunMiddleware = {
+  name: 'reminder',
+  beforeModel({ messages }, context) {
+    if (context.iteration !== 5) return;
+    return { messages: [...messages, { role: 'user', content: 'Wrap up soon.' }] };
+  },
+};
+```
+
+### wrapModelCall
+
+`wrapModelCall(call, next, context)` wraps one call to one model. `call.request` is the `ChatRequest` the backend gets, `call.model` the `provider/model` it goes to, and `call.stream` where streamed text goes when the run streams. Hand `next` the call, or a changed copy of it, once or more, or return a `ChatResponse` of your own without calling it. When a turn falls back to one of the agent's `fallbackModels`, the hook runs again for that model.
+
+```typescript
+const cache: RunMiddleware = {
+  name: 'cache',
+  async wrapModelCall(call, next) {
+    const key = JSON.stringify(call.request.messages);
+    const hit = answers.get(key);
+    if (hit) return hit;
+    const response = await next(call);
+    answers.set(key, response);
+    return response;
+  },
+};
+```
+
+To see or rewrite streamed text, hand `next` a call with a stream sink of your own that passes text on to `call.stream`.
+
+### afterModel
+
+`afterModel({ response, messages, model }, context)` sees each answer before the run uses it. Return `{ content }` to replace its text, `{ toolCalls }` to replace the calls it makes (an empty list turns it into the final answer). Text a streamed run already sent to `onToken` cannot be taken back: set `holdsStream: true` on the middleware and the run holds each turn's text until the `afterModel` hooks saw it, then sends the final text in one piece.
+
+```typescript
+const noEmails: RunMiddleware = {
+  name: 'no-emails',
+  holdsStream: true,
+  afterModel: ({ response }) => ({
+    content: response.content.replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, '[email removed]'),
+  }),
+};
+```
+
+### wrapToolCall
+
+`wrapToolCall(call, next, context)` wraps each tool call that passed approval, also the calls `invokeTool()` makes for the Cogitator's middleware. `call.toolCall` is the call as the model made it, `call.args` the arguments as the tool's schema parsed them, `call.approved` whether a person approved it. Change the arguments by handing `next` a `toolCall` with new ones: they are checked against the schema again, and a call they do not fit answers the model with the reason. Return a `ToolResult` of your own to answer for the tool.
+
+```typescript
+const normalizeIds: RunMiddleware = {
+  name: 'normalize-ids',
+  wrapToolCall(call, next) {
+    const id = String((call.args as { id: string }).id).trim().toUpperCase();
+    return next({ ...call, toolCall: { ...call.toolCall, arguments: { id } } });
+  },
+};
+```
+
+## The Run Context
+
+| Field                       | What it is                                                                |
+| --------------------------- | ------------------------------------------------------------------------- |
+| `runId`, `threadId`         | The run and its thread (`threadId` is unset for `invokeTool()` without one) |
+| `agentId`, `agentName`      | The agent whose turn it is, after a handoff the one the run went on as    |
+| `userId`, `channelType`, `channelId` | Who and where the run serves                                     |
+| `iteration`                 | The model turn the hook belongs to, from 1, or 0 before the first turn    |
+| `signal`                    | Aborts when the run is cancelled or times out                             |
+| `deps`                      | The run's [tool deps](/docs/core/agents#dependencies-for-tools)                              |
+| `state`                     | A `Map` the run's middleware share. Not kept in a paused run's checkpoint |
+
+## Tripwires
+
+A guard that finds something the run must not go on with calls `tripwire(reason, info?)`. The run stops where it is and fails with `GUARDRAIL_TRIPPED` (HTTP 400): the reason, `info` and the name of the middleware in `details`. Unlike a tool error, which the model reads and works around, a tripwire ends the run.
+
+```typescript
+import { isTripwire } from '@cogitator-ai/core';
+
+try {
+  await cog.run(agent, { input });
+} catch (error) {
+  if (isTripwire(error)) {
+    console.log(error.details.middleware, error.details.reason, error.details.info);
+  }
+}
+```
+
+Any other error a hook throws fails the run as it is. A hook inside `wrapModelCall` that throws a provider error (`LLM_UNAVAILABLE` and the like) moves the turn to the next fallback model, as the model's own failure would.
+
+## Built-in Middleware
+
+The runtime's own features are middleware too, added from the config closest to the model, in this order:
+
+| Middleware                   | From                        | Hooks                                                    |
+| ---------------------------- | --------------------------- | -------------------------------------------------------- |
+| `cogitator:pii`              | `security.pii`              | `wrapModelCall` masks, `beforeRun` in `block` mode       |
+| `cogitator:prompt-injection` | `security.promptInjection`  | `beforeRun`                                              |
+| `cogitator:guardrails`       | `guardrails`                | `beforeRun`, `afterModel` (holds the stream), `wrapToolCall` |
+| `cogitator:compaction`       | `context`                   | `beforeModel`                                            |
+
+Because PII masking is the innermost layer, it also masks whatever your middleware adds to a request, while your middleware sees the real values. `piiMiddleware(config)`, `promptInjectionMiddleware(detector)`, `guardrailsMiddleware(constitutionalAI)` and `compactionMiddleware(contextManager)` build them, to give a feature to one agent only:
+
+```typescript
+import { piiMiddleware } from '@cogitator-ai/core';
+
+const intake = new Agent({
+  name: 'intake',
+  instructions: 'Take the customer details.',
+  middleware: [piiMiddleware({ detect: ['email', 'phone'] })],
+});
+```
+
+See [Security](/docs/advanced/security) and [Constitutional AI](/docs/advanced/constitutional-ai) for what the built-in features check.
