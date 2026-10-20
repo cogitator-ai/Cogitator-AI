@@ -8,6 +8,7 @@ let responseIndex = 0;
 
 vi.mock('../llm/index.js', () => ({
   createLLMBackend: () => ({
+    provider: 'ollama',
     chat: vi.fn().mockImplementation(() => {
       const content = mockResponses[responseIndex]?.content ?? 'Mock response';
       responseIndex++;

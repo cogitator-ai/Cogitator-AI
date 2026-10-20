@@ -1,5 +1,6 @@
 import {
   ModelPricer,
+  costOf,
   type ModelPricing,
   type PricingOverrides,
   type TokenUsageForCost,
@@ -10,10 +11,28 @@ import { getLogger } from '../logger';
 /** Providers that run on your own hardware: their calls cost nothing unless `llm.pricing` says otherwise. */
 const SELF_HOSTED_PROVIDERS: ReadonlySet<string> = new Set(['ollama', 'vllm']);
 
+const FREE: ModelPricing = { input: 0, output: 0 };
+
+/**
+ * The model string a call is priced by: `model` as a run names it, with the provider that served
+ * it in front when the name does not start with it (`llama3.3` on Ollama is `ollama/llama3.3`).
+ * A backend of your own that names no provider leaves the model string as it is.
+ */
+export function pricedModel(model: string, provider: string | undefined): string {
+  if (!provider || model.toLowerCase().startsWith(`${provider.toLowerCase()}/`)) return model;
+  return `${provider}/${model}`;
+}
+
+function isSelfHosted(model: string): boolean {
+  const slash = model.indexOf('/');
+  return slash !== -1 && SELF_HOSTED_PROVIDERS.has(model.slice(0, slash).toLowerCase());
+}
+
 /**
  * Prices the model calls of one runtime: by `llm.pricing` first, then by the model registry.
- * A call to a model with neither counts as $0, and the runtime warns about that model once,
- * unless it runs on a self-hosted provider (Ollama, vLLM), whose calls are free.
+ * A model on a self-hosted provider (`ollama/...`, `vllm/...`) is free unless `llm.pricing`
+ * prices it, even when the registry lists a model of that name at a reseller. A call to any
+ * other model with no price counts as $0, and the runtime warns about that model once.
  */
 export class CallPricer {
   private readonly pricer: ModelPricer;
@@ -25,7 +44,7 @@ export class CallPricer {
 
   /** The price of `model`, the full model string a run uses (`openai/gpt-4o`, `openrouter/vendor/model`). */
   pricing(model: string): ModelPricing | null {
-    return this.pricer.pricing(model);
+    return this.pricer.override(model) ?? (isSelfHosted(model) ? FREE : this.pricer.pricing(model));
   }
 
   /** The price `llm.pricing` sets for `model`, when it sets one. */
@@ -40,7 +59,8 @@ export class CallPricer {
 
   /** USD for `usage` on `model`, `null` when its price is unknown. */
   costOrNull(model: string, usage: TokenUsageForCost): number | null {
-    return this.pricer.cost(model, usage);
+    const pricing = this.pricing(model);
+    return pricing ? costOf(pricing, usage) : null;
   }
 
   /** The cost of one call: what the provider reported, otherwise the price of `model`. */
@@ -52,11 +72,10 @@ export class CallPricer {
    * Warns once per model when a call to `model` on `provider` reported no cost and nothing
    * prices it, so run costs and budgets count it as $0.
    */
-  noteUnpriced(model: string, provider: string): void {
+  noteUnpriced(model: string, provider: string | undefined): void {
     if (this.warned.has(model)) return;
     this.warned.add(model);
-    if (this.pricer.hasOverride(model) || this.pricing(model)) return;
-    if (SELF_HOSTED_PROVIDERS.has(provider)) return;
+    if ((provider && SELF_HOSTED_PROVIDERS.has(provider)) || this.pricing(model)) return;
     getLogger().warn(
       `No price is known for ${model}, so its calls count as $0 in run costs and budgets. Set its price per million tokens in llm.pricing (for example llm.pricing['${model}'] = { input: 0.5, output: 1.5 }), or load the current model catalogue with initializeModels() from @cogitator-ai/models at startup.`,
       { model, provider }

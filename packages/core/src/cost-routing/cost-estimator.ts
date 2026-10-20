@@ -15,7 +15,7 @@ import { parseModel } from '../llm/index';
 
 const DEFAULT_PRICING = { input: 0.15, output: 0.6 };
 
-const LOCAL_PROVIDER_PREFIXES = ['ollama/'];
+const LOCAL_PROVIDER_PREFIXES = ['ollama/', 'vllm/'];
 
 export interface CostEstimatorOptions {
   /** Prices of your own by model (a runtime passes `llm.pricing`), over the model registry and a local model being free */

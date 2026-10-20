@@ -44,7 +44,7 @@ import { withLLMRetry } from './llm/retry';
 import { normalizeTurn } from './llm/turn';
 import { PiiMasker, withPiiDecisions, withPiiMasking } from './security/pii';
 import { createLoggerFromConfig, getLogger, setLogger } from './logger';
-import { CallPricer, RunCostMeter } from './cogitator/run-cost';
+import { CallPricer, RunCostMeter, pricedModel } from './cogitator/run-cost';
 import { isDecisionModel } from '@cogitator-ai/models';
 import type {
   DecideOptions,
@@ -660,7 +660,7 @@ export class Cogitator implements ToolInvoker {
       let cacheWriteTokens = checkpoint?.usage.cacheWriteTokens ?? 0;
       let reasoningTokens = checkpoint?.usage.reasoningTokens ?? 0;
       const costMeter = new RunCostMeter(this.pricer, checkpoint?.usage.cost, checkpoint?.usage);
-      const costModel = effectiveModel;
+      const costModel = pricedModel(effectiveModel, backend.provider);
       usageSoFar = () => ({
         inputTokens: totalInputTokens,
         outputTokens: totalOutputTokens,
@@ -1054,7 +1054,8 @@ export class Cogitator implements ToolInvoker {
         response = normalizeTurn(response);
 
         const spentBefore = costMeter.total(costModel);
-        costMeter.add(response.usage, effectiveModel);
+        const callModel = pricedModel(effectiveModel, backend.provider);
+        costMeter.add(response.usage, callModel);
         const callCost = costMeter.total(costModel) - spentBefore;
 
         const llmSpan = createSpan(
@@ -1090,7 +1091,7 @@ export class Cogitator implements ToolInvoker {
         reasoningTokens += response.usage.reasoningTokens ?? 0;
         lastFinishReason = response.finishReason;
         if (response.usage.cost === undefined) {
-          this.pricer.noteUnpriced(effectiveModel, backend.provider);
+          this.pricer.noteUnpriced(callModel, backend.provider);
         }
         this.state.costRouter?.recordCost({
           runId,

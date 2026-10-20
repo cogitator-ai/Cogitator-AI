@@ -7,8 +7,9 @@ export type PricingOverrides = Record<string, ModelPricing>;
 /**
  * Prices model calls: from prices of your own first, then from the model registry. A price of
  * your own is found by the model string a run uses or by its tail after any `/`, the longest
- * match first, case-insensitively: `openai/gpt-4o` prices only that model at OpenAI, `gpt-4o`
- * prices it at every provider that serves it under that name, `llama3.3:70b` prices it on Ollama.
+ * match first, case-insensitively: `openai/gpt-4o` prices that model string and the ones ending
+ * in it (`openrouter/openai/gpt-4o`), `gpt-4o` the model at every provider that serves it under
+ * that name.
  */
 export class ModelPricer {
   private readonly overrides = new Map<string, ModelPricing>();

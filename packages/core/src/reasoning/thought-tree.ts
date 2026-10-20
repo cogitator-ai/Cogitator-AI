@@ -1,3 +1,4 @@
+import { pricedModel } from '../cogitator/run-cost';
 import { nanoid } from 'nanoid';
 import type {
   ToTConfig,
@@ -50,6 +51,7 @@ export class ThoughtTreeExecutor {
   private llm?: LLMBackend;
   private model = '';
   private modelString = '';
+  private priceKey = '';
 
   private nodes = new Map<string, ThoughtNode>();
   private open: ThoughtNode[] = [];
@@ -75,6 +77,7 @@ export class ThoughtTreeExecutor {
     this.modelString = this.cogitator.resolveModel(agent);
     const route = this.cogitator.route(this.modelString, agent.config.provider);
     this.model = route.model;
+    this.priceKey = pricedModel(this.modelString, route.backend.provider);
     this.llm = this.trackUsage(route.backend);
 
     this.branchGenerator = new BranchGenerator(this.llm, this.model);
@@ -502,7 +505,7 @@ export class ThoughtTreeExecutor {
   private recordUsage(usage: ChatUsage): void {
     this.stats.tokenUsage.input += usage.inputTokens;
     this.stats.tokenUsage.output += usage.outputTokens;
-    this.cost += this.cogitator.pricer.callCost(this.modelString, usage);
+    this.cost += this.cogitator.pricer.callCost(this.priceKey, usage);
   }
 
   private getReflectionEngine(): ReflectionEngine | undefined {

@@ -77,8 +77,9 @@ export interface CogitatorConfig {
      * Prices of your own, in USD per million tokens, by model: for a fine-tune, a model the
      * catalogue does not list yet, a negotiated rate or a self-hosted model you want to cost.
      * They win over the model registry for calls whose provider reports no cost. A key is the
-     * model string a run uses or its tail after any `/`: `openai/gpt-4o` prices that model at
-     * OpenAI only, `gpt-4o` at every provider that serves it under that name.
+     * model string a run uses or its tail after any `/`: `openai/gpt-4o` prices that model
+     * string and the ones ending in it (`openrouter/openai/gpt-4o`), `gpt-4o` the model at every
+     * provider that serves it under that name. Ollama and vLLM models are free without one.
      */
     pricing?: Record<string, ModelPriceConfig>;
     /**

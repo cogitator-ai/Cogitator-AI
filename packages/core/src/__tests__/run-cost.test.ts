@@ -3,7 +3,7 @@ import { calculateCost } from '@cogitator-ai/models';
 import type { ChatRequest, ChatResponse, ChatStreamChunk, LLMBackend } from '@cogitator-ai/types';
 import { Agent } from '../agent';
 import { Cogitator } from '../cogitator';
-import { CallPricer, RunCostMeter } from '../cogitator/run-cost';
+import { CallPricer, RunCostMeter, pricedModel } from '../cogitator/run-cost';
 import { getLogger } from '../logger';
 
 const PRICED = 'openai/gpt-4o-mini';
@@ -207,6 +207,23 @@ describe('a model without a price', () => {
 
     expect(pricer.cost(PRICED, tokens(1_000_000, 0))).toBe(100);
     expect(new CallPricer().cost(PRICED, tokens(1_000_000, 0))).toBe(registryPrice(1_000_000, 0));
+  });
+
+  it('keeps a self-hosted model free even when a reseller lists one of that name', () => {
+    const pricer = new CallPricer({ 'vllm/qwen/qwen3-32b': { input: 1, output: 1 } });
+    const model = 'vllm/meta-llama/Llama-3.3-70B-Instruct';
+
+    expect(new CallPricer().pricing('meta-llama/Llama-3.3-70B-Instruct')).not.toBeNull();
+    expect(pricer.cost(model, tokens(1_000_000, 1_000_000))).toBe(0);
+    expect(pricer.cost('ollama/llama3.3', tokens(1_000_000, 1_000_000))).toBe(0);
+    expect(pricer.cost('vllm/Qwen/Qwen3-32B', tokens(1_000_000, 0))).toBe(1);
+  });
+
+  it('prices a call by the provider that served it when the model string has none', () => {
+    expect(pricedModel('llama3.3', 'ollama')).toBe('ollama/llama3.3');
+    expect(pricedModel('ollama/llama3.3', 'ollama')).toBe('ollama/llama3.3');
+    expect(pricedModel('local/my-finetune', 'local')).toBe('local/my-finetune');
+    expect(pricedModel('gpt-4o', 'openai')).toBe('openai/gpt-4o');
   });
 
   it('stays quiet for a self-hosted provider', async () => {
