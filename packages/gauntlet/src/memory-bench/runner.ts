@@ -1,14 +1,7 @@
 import { Agent, Cogitator, type RunMiddleware } from '@cogitator-ai/core';
 import { ContextBuilder, countMessagesTokens, countTokens } from '@cogitator-ai/memory';
 import type { EmbeddingService, Message } from '@cogitator-ai/types';
-import {
-  BENCH_MODEL,
-  BENCH_PRICE,
-  Budget,
-  budgetRefusal,
-  callCost,
-  LONG_PROMPT_TOKENS,
-} from './budget.js';
+import { BENCH_MODEL, BENCH_PRICE, answerCost, Budget, budgetRefusal, callCost } from './budget.js';
 import type { BenchAnswer, BenchConversation, BenchQuestion, BenchStrategy } from './types.js';
 
 export const ANSWER_INSTRUCTIONS =
@@ -277,10 +270,7 @@ export async function answerConversation(
         const llmMs = result.trace.spans
           .filter((span) => span.name === 'llm.chat')
           .reduce((sum, span) => sum + span.duration, 0);
-        const costUsd =
-          result.usage.inputTokens > LONG_PROMPT_TOKENS
-            ? callCost(result.usage.inputTokens, result.usage.outputTokens)
-            : result.usage.cost;
+        const costUsd = answerCost(result.usage.inputTokens, result.usage.cost);
         options.budget.charge('answers', costUsd);
         await options.onAnswer({
           ...base,

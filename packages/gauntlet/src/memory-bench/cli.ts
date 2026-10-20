@@ -325,11 +325,12 @@ async function main(): Promise<number> {
       });
     }
   }
+  const store = new JudgeStore(
+    join(runDir, 'judge-replies.jsonl'),
+    join(runDir, 'judge-batches.json')
+  );
+  budget.reconcile('judge', store.costUsd);
   if (pending.length > 0) {
-    const store = new JudgeStore(
-      join(runDir, 'judge-replies.jsonl'),
-      join(runDir, 'judge-batches.json')
-    );
     log(`Judging ${pending.length} answers`);
     try {
       await judge(

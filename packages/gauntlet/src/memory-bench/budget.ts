@@ -17,8 +17,20 @@ export const BENCH_PRICE: ModelPriceConfig = {
   inputCacheWrite: 0.125,
 };
 
-/** Prompts above this many tokens cost five times as much on `claude-haiku-5-5`. */
+/** Prompts above this many tokens cost more on `claude-haiku-5-5`, every token class of them. */
 export const LONG_PROMPT_TOKENS = 100_000;
+
+/** How much more a long prompt costs: input, cache reads and writes, and output alike. */
+export const LONG_PROMPT_MULTIPLIER = 5;
+
+/**
+ * What an answer cost, from the runtime's `cost` (priced per token class, prompt cache included,
+ * at the short-prompt rates) and the prompt's `inputTokens` (cache reads and writes included):
+ * a long prompt scales the whole call, so the cache's share stays priced as cache.
+ */
+export function answerCost(inputTokens: number, cost: number): number {
+  return inputTokens > LONG_PROMPT_TOKENS ? cost * LONG_PROMPT_MULTIPLIER : cost;
+}
 
 /** The Message Batches API halves the price. */
 export const BATCH_DISCOUNT = 0.5;
@@ -28,7 +40,7 @@ export const EMBEDDING_PRICE = 0.15;
 
 /** USD of a call with these tokens at the bench prices. */
 export function callCost(inputTokens: number, outputTokens: number, batch = false): number {
-  const long = inputTokens > LONG_PROMPT_TOKENS ? 5 : 1;
+  const long = inputTokens > LONG_PROMPT_TOKENS ? LONG_PROMPT_MULTIPLIER : 1;
   const usd = ((inputTokens * BENCH_PRICE.input + outputTokens * BENCH_PRICE.output) * long) / 1e6;
   return batch ? usd * BATCH_DISCOUNT : usd;
 }

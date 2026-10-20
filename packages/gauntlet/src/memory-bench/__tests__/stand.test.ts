@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import type { EmbeddingService } from '@cogitator-ai/types';
-import { Budget, BudgetExceededError, budgetRefusal, callCost } from '../budget.js';
+import { answerCost, Budget, BudgetExceededError, budgetRefusal, callCost } from '../budget.js';
 import { JudgeStore } from '../judge.js';
 import { CachedEmbeddingService, RateLimitedEmbeddingService } from '../embeddings.js';
 import { bootstrapInterval, markdownReport, summarize } from '../report.js';
@@ -95,6 +95,13 @@ describe('Budget', () => {
     expect(callCost(50_000, 0)).toBeCloseTo(0.005);
     expect(callCost(200_000, 0)).toBeCloseTo(0.1);
     expect(callCost(1_000_000, 1_000_000, true)).toBeCloseTo(1.5);
+  });
+
+  it('prices a long answer from the runtime cost, its cache reads still priced as cache', () => {
+    expect(answerCost(50_000, 0.004)).toBe(0.004);
+    const cachedLong = 0.01 * 0.12 + 0.1 * 0.01;
+    expect(answerCost(120_000, cachedLong)).toBeCloseTo(cachedLong * 5);
+    expect(answerCost(120_000, cachedLong)).toBeLessThan(callCost(120_000, 0));
   });
 
   it('refuses work over the limit and keeps a ledger across runs', async () => {
