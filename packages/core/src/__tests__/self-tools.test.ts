@@ -246,6 +246,15 @@ describe('loadCustomTools', () => {
     expect(await loadCustomTools(testDir)).toEqual([]);
   });
 
+  it('skips a saved tool with a maxResultLength that is not a positive integer', async () => {
+    writeFileSync(
+      join(testDir, 'limitless.mjs'),
+      "export default { name: 'limitless', description: 'x', maxResultLength: -1, parameters: { type: 'object', properties: {} }, execute: async () => 1 };"
+    );
+
+    expect(await loadCustomTools(testDir)).toEqual([]);
+  });
+
   it('skips invalid tool files', async () => {
     writeFileSync(join(testDir, 'bad.mjs'), 'export default { nope: true };');
 

@@ -2,6 +2,7 @@ import type { Tool, ToolSchema } from '@cogitator-ai/types';
 import { toolToSchema } from './tool';
 import { toToolParameters } from './tool-schema';
 import { getLogger } from './logger';
+import { toolResultLengthError } from './tool-content';
 
 export interface ToolRegisterOptions {
   /** Replace a tool registered under the same name without a warning */
@@ -38,12 +39,18 @@ export class ToolRegistry {
   /**
    * Register a single tool in the registry. A tool with the same name is replaced, with a
    * warning when it is a different tool: the model can only ever call one of them, so a clash
-   * is usually a mistake. Pass `{ replace: true }` when replacing it is the intent.
+   * is usually a mistake. Pass `{ replace: true }` when replacing it is the intent. A tool built
+   * without `tool()` whose `maxResultLength` is not a positive integer throws.
    *
    * @param tool - Tool to register
    * @param options - `replace: true` replaces a tool of the same name without a warning
    */
   register(tool: Tool, options?: ToolRegisterOptions): void {
+    const lengthError = toolResultLengthError(
+      tool.maxResultLength,
+      `maxResultLength of tool "${tool.name}"`
+    );
+    if (lengthError) throw new TypeError(lengthError);
     const existing = this.tools.get(tool.name);
     if (existing && existing !== tool && !options?.replace) {
       getLogger().warn(

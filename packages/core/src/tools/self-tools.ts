@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { tool } from '../tool';
 import { isProviderSafeToolName, normalizeToolName } from '../tool-name';
+import { toolResultLengthError } from '../tool-content';
 import type { Tool } from '@cogitator-ai/types';
 
 async function importFresh(filePath: string): Promise<unknown> {
@@ -35,6 +36,11 @@ function validateToolShape(mod: unknown): { valid: boolean; error?: string } {
       error: `Tool name "${t.name}" is not accepted by LLM providers: use letters, digits, "_" and "-", starting with a letter or "_", at most 64 characters, such as "${normalizeToolName(t.name)}"`,
     };
   }
+  const lengthError = toolResultLengthError(
+    t.maxResultLength as number | undefined,
+    `maxResultLength of tool "${t.name}"`
+  );
+  if (lengthError) return { valid: false, error: lengthError };
   if (typeof t.description !== 'string')
     return { valid: false, error: 'Tool must have a string "description"' };
   if (typeof t.execute !== 'function')

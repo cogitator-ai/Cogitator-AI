@@ -44,6 +44,14 @@ describe('ToolRegistry', () => {
       expect(retrieved?.description).toBe('Updated description');
     });
 
+    it('refuses a hand-built tool whose maxResultLength is not a positive integer', () => {
+      const handBuilt = { ...createMockTool('dump'), maxResultLength: -1 } as Tool;
+      expect(() => registry.register(handBuilt)).toThrow(
+        /maxResultLength of tool "dump" must be a positive integer/
+      );
+      expect(registry.has('dump')).toBe(false);
+    });
+
     describe('replacing a tool', () => {
       afterEach(() => vi.restoreAllMocks());
 
