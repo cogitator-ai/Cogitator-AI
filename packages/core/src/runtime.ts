@@ -1317,6 +1317,14 @@ export class Cogitator implements ToolInvoker {
         lastFinishReason = response.finishReason;
         if (response.reasoning) reasoningParts.push(response.reasoning);
 
+        response = await waitForAbortable(
+          turnPipeline.afterModel(
+            { response, messages, model: answeredBy.name },
+            middlewareContext()
+          ),
+          abortController.signal
+        );
+
         if (
           isEmptyAnswer(response) &&
           emptyAnswerRetries < MAX_EMPTY_ANSWER_RETRIES &&
@@ -1331,13 +1339,6 @@ export class Cogitator implements ToolInvoker {
           continue;
         }
 
-        response = await waitForAbortable(
-          turnPipeline.afterModel(
-            { response, messages, model: answeredBy.name },
-            middlewareContext()
-          ),
-          abortController.signal
-        );
         const outputContent = response.content;
         const answeredAlone = !reachedModel && !streamedText;
         if (streaming && outputContent && (holdsStream || answeredAlone)) onToken(outputContent);

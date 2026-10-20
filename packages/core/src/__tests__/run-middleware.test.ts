@@ -968,6 +968,21 @@ describe('run middleware', () => {
       await cog.close();
     });
 
+    it('lets afterModel repair an empty answer before the run asks again', async () => {
+      const { backend } = scripted(answer(''), answer('second try'));
+      const cog = runtime(backend);
+      const fill: RunMiddleware = {
+        name: 'fill',
+        afterModel: ({ response }) => (response.content ? undefined : { content: 'filled in' }),
+      };
+
+      const result = await cog.run(agentWith([fill]), { input: 'Hello' });
+
+      expect(result.output).toBe('filled in');
+      expect(backend.chat).toHaveBeenCalledOnce();
+      await cog.close();
+    });
+
     it('stops waiting for a hook when the run times out', async () => {
       const { backend } = scripted(answer('Hi'));
       const cog = runtime(backend);

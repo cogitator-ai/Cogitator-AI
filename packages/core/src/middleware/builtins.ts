@@ -132,7 +132,7 @@ export function guardrailsMiddleware(
       });
     },
     async afterModel({ response, messages }) {
-      if (!ai.config.filterOutput) return;
+      if (!ai.config.filterOutput || !response.content) return;
       const result = await ai.filterOutput(response.content, [...messages]);
       if (result.allowed) return;
       if (result.suggestedRevision) return { content: result.suggestedRevision };
