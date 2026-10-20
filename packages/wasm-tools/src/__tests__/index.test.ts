@@ -13,6 +13,7 @@ import {
   createJsonTool,
   createBase64Tool,
   createSlugTool,
+  createUnitsTool,
   createValidationTool,
   createDiffTool,
   createRegexTool,
@@ -27,6 +28,7 @@ import {
   hashToolSchema,
   base64ToolSchema,
   slugToolSchema,
+  unitsToolSchema,
   validationToolSchema,
   diffToolSchema,
   regexToolSchema,
@@ -146,6 +148,7 @@ describe('defineWasmTool', () => {
       createJsonTool(),
       createBase64Tool(),
       createSlugTool(),
+      createUnitsTool(),
       createValidationTool(),
       createDiffTool(),
       createRegexTool(),
@@ -253,7 +256,7 @@ describe('getWasmPath', () => {
     expect(path).toMatch(/calc\.wasm$/);
   });
 
-  it('works for all 14 plugin names', () => {
+  it('works for all 15 plugin names', () => {
     const names = [
       'base64',
       'calc',
@@ -267,6 +270,7 @@ describe('getWasmPath', () => {
       'regex',
       'signing',
       'slug',
+      'units',
       'validation',
       'xml',
     ];
@@ -284,6 +288,7 @@ describe('tool factory functions', () => {
     { fn: createJsonTool, name: 'process_json', func: 'process' },
     { fn: createBase64Tool, name: 'base64', func: 'base64' },
     { fn: createSlugTool, name: 'slug', func: 'slug' },
+    { fn: createUnitsTool, name: 'units', func: 'units' },
     { fn: createValidationTool, name: 'validate', func: 'validate' },
     { fn: createDiffTool, name: 'diff', func: 'diff' },
     { fn: createRegexTool, name: 'regex', func: 'regex' },
@@ -445,5 +450,11 @@ describe('schema validation', () => {
         maxLength: 50,
       }).success
     ).toBe(true);
+  });
+
+  it('unitsToolSchema accepts value, from, and to', () => {
+    expect(unitsToolSchema.safeParse({ value: 100, from: 'C', to: 'F' }).success).toBe(true);
+    expect(unitsToolSchema.safeParse({ value: '100', from: 'C', to: 'F' }).success).toBe(false);
+    expect(unitsToolSchema.safeParse({ value: 100, from: 'C' }).success).toBe(false);
   });
 });

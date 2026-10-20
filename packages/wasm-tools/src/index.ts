@@ -344,6 +344,16 @@ export const slugToolSchema = z.object({
   maxLength: z.number().int().min(1).optional().describe('Maximum length of the slug'),
 });
 
+export const unitsToolSchema = z.object({
+  value: z.number().describe('Numeric value to convert'),
+  from: z
+    .string()
+    .describe(
+      'Source unit (e.g. mm, cm, m, km, in, ft, yd, mi, mg, g, kg, t, oz, lb, C, F, K, ml, l, tsp, tbsp, cup, US gallon, imperial gallon, m/s, km/h, mph, knot, B, KB, MB, GB, TB, KiB, MiB, GiB, TiB)'
+    ),
+  to: z.string().describe('Target unit in the same category as "from"'),
+});
+
 export const validationToolSchema = z.object({
   value: z.string().describe('Value to validate'),
   type: z.enum(['email', 'url', 'uuid', 'ipv4', 'ipv6']).describe('Type of validation'),
@@ -463,6 +473,21 @@ export function createSlugTool(options?: { timeout?: number }): Tool<SlugToolInp
     parameters: slugToolSchema,
     category: 'utility',
     tags: ['slug', 'url', 'text'],
+    timeout: options?.timeout ?? 5000,
+  });
+}
+
+export function createUnitsTool(options?: { timeout?: number }): Tool<UnitsToolInput, unknown> {
+  return defineWasmTool({
+    name: 'units',
+    description:
+      'Convert values between units of length, mass, temperature, volume, speed, and data size',
+    wasmModule: getWasmPath('units'),
+    wasi: true,
+    wasmFunction: 'units',
+    parameters: unitsToolSchema,
+    category: 'math',
+    tags: ['units', 'conversion', 'measurement', 'math'],
     timeout: options?.timeout ?? 5000,
   });
 }
@@ -602,6 +627,7 @@ export function createSigningTool(options?: { timeout?: number }): Tool<SigningT
 }
 
 export type SlugToolInput = z.infer<typeof slugToolSchema>;
+export type UnitsToolInput = z.infer<typeof unitsToolSchema>;
 export type ValidationToolInput = z.infer<typeof validationToolSchema>;
 export type DiffToolInput = z.infer<typeof diffToolSchema>;
 export type RegexToolInput = z.infer<typeof regexToolSchema>;

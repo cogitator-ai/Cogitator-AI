@@ -28,7 +28,7 @@ const agent = new Agent({
 
 ## Pre-built WASM Tools
 
-The package ships with **14 ready-to-use** WASM tool factories. Each returns a `Tool` instance backed by a compiled `.wasm` module.
+The package ships with **15 ready-to-use** WASM tool factories. Each returns a `Tool` instance backed by a compiled `.wasm` module.
 
 | Factory                   | Tool name      | Parameters                                                                                                                                                  | Description                                         |
 | ------------------------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
@@ -37,6 +37,7 @@ The package ships with **14 ready-to-use** WASM tool factories. Each returns a `
 | `createHashTool()`        | `hash_text`    | `text`, `algorithm` (`sha256` \| `sha1` \| `md5`)                                                                                                           | Cryptographic hashes                                |
 | `createBase64Tool()`      | `base64`       | `text`, `operation` (`encode` \| `decode`), `urlSafe?`                                                                                                      | Encode/decode Base64 (standard and URL-safe)        |
 | `createSlugTool()`        | `slug`         | `text`, `separator?` (`-`), `lowercase?` (true), `maxLength?`                                                                                               | Convert text to URL-safe slugs with transliteration |
+| `createUnitsTool()`       | `units`        | `value`, `from`, `to`                                                                                                                                       | Convert length, mass, temperature, volume, speed, data |
 | `createValidationTool()`  | `validate`     | `value`, `type` (`email` \| `url` \| `uuid` \| `ipv4` \| `ipv6`)                                                                                            | Validate common formats                             |
 | `createDiffTool()`        | `diff`         | `original`, `modified`, `format?` (`unified` \| `inline` \| `json`), `context?` (3)                                                                         | Generate diffs between texts (Myers algorithm)      |
 | `createRegexTool()`       | `regex`        | `text`, `pattern`, `operation` (`match` \| `matchAll` \| `test` \| `replace` \| `split`), `flags?`, `replacement?`, `limit?`                                | Regex operations with ReDoS protection              |
@@ -78,6 +79,7 @@ Plugin-level errors come back as data (`{ ..., error }`) so the agent can recove
 - **signing**: WASM has no secure RNG, so a 32-byte seed is generated on the host for `generateKeypair` (the seed is the private key). Signatures interoperate with `node:crypto`.
 - **datetime**: month arithmetic clamps to month end (`Jan 31 + 1 month = Feb 29`), impossible dates are rejected.
 - **regex**: nested unbounded quantifiers are rejected; any other catastrophic pattern is stopped by the timeout.
+- **units**: supports length (`mm`, `cm`, `m`, `km`, `in`, `ft`, `yd`, `mi`), mass (`mg`, `g`, `kg`, `t`, `oz`, `lb`), temperature (`C`, `F`, `K` with offsets), volume (`ml`, `l`, `tsp`, `tbsp`, `cup`, `US gallon`, `imperial gallon`), speed (`m/s`, `km/h`, `mph`, `knot`) and data (`B`..`TB` in powers of 1000, `KiB`..`TiB` in powers of 1024); cross-category or unknown units return an `error` listing supported units.
 
 ---
 

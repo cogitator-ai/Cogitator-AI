@@ -17,6 +17,13 @@ const csv = pluginCall<{
   error?: string;
 }>('csv', 'csv');
 const xml = pluginCall<{ result: unknown; type: string; error?: string }>('xml', 'xml');
+const units = pluginCall<{
+  value: number | null;
+  from: string;
+  to: string;
+  category: string;
+  error?: string;
+}>('units', 'units');
 
 describe('calc plugin', () => {
   it.each([
@@ -194,5 +201,124 @@ describe('xml plugin', () => {
   it('skips processing instructions and comments inside elements', () => {
     const out = xml({ xml: '<a><?pi data?><!-- c --><b>1</b></a>', query: '/a/b/text()' });
     expect(out.result).toBe('1');
+  });
+});
+
+describe('units plugin', () => {
+  it.each([
+    [1000, 'mm', 'm', 1],
+    [100, 'cm', 'm', 1],
+    [1, 'km', 'm', 1000],
+    [12, 'in', 'ft', 1],
+    [3, 'ft', 'yd', 1],
+    [1, 'mi', 'ft', 5280],
+    [1, 'in', 'cm', 2.54],
+    [1, 'yd', 'm', 0.9144],
+  ])('converts length: %d %s -> %s = %d', (value, from, to, expected) => {
+    const out = units({ value, from, to });
+    expect(out.category).toBe('length');
+    expect(out.from).toBe(from);
+    expect(out.to).toBe(to);
+    expect(out.value).toBeCloseTo(expected, 9);
+  });
+
+  it.each([
+    [1000, 'mg', 'g', 1],
+    [1000, 'g', 'kg', 1],
+    [1000, 'kg', 't', 1],
+    [16, 'oz', 'lb', 1],
+    [1, 'lb', 'g', 453.59237],
+  ])('converts mass: %d %s -> %s = %d', (value, from, to, expected) => {
+    const out = units({ value, from, to });
+    expect(out.category).toBe('mass');
+    expect(out.value).toBeCloseTo(expected, 9);
+  });
+
+  it.each([
+    [0, 'C', 'F', 32],
+    [100, 'C', 'F', 212],
+    [-40, 'C', 'F', -40],
+    [32, 'F', 'C', 0],
+    [212, 'F', 'C', 100],
+    [-40, 'F', 'C', -40],
+    [0, 'C', 'K', 273.15],
+    [273.15, 'K', 'C', 0],
+    [32, 'F', 'K', 273.15],
+    [273.15, 'K', 'F', 32],
+    [0, 'K', 'F', -459.67],
+    [-459.67, 'F', 'K', 0],
+  ])('converts temperature with offsets: %d %s -> %s = %d', (value, from, to, expected) => {
+    const out = units({ value, from, to });
+    expect(out.category).toBe('temperature');
+    expect(out.value).toBeCloseTo(expected, 9);
+  });
+
+  it.each([
+    [1000, 'ml', 'l', 1],
+    [3, 'tsp', 'tbsp', 1],
+    [16, 'tbsp', 'cup', 1],
+    [16, 'cup', 'US gallon', 1],
+    [1, 'US gallon', 'l', 3.785411784],
+    [1, 'imperial gallon', 'l', 4.54609],
+    [1, 'imperial gallon', 'US gallon', 4.54609 / 3.785411784],
+  ])('converts volume: %d %s -> %s = %d', (value, from, to, expected) => {
+    const out = units({ value, from, to });
+    expect(out.category).toBe('volume');
+    expect(out.value).toBeCloseTo(expected, 9);
+  });
+
+  it.each([
+    [1, 'm/s', 'km/h', 3.6],
+    [36, 'km/h', 'm/s', 10],
+    [1, 'mph', 'm/s', 0.44704],
+    [1, 'knot', 'km/h', 1.852],
+  ])('converts speed: %d %s -> %s = %d', (value, from, to, expected) => {
+    const out = units({ value, from, to });
+    expect(out.category).toBe('speed');
+    expect(out.value).toBeCloseTo(expected, 9);
+  });
+
+  it.each([
+    [1, 'KB', 'B', 1000],
+    [1, 'KiB', 'B', 1024],
+    [1, 'MB', 'KB', 1000],
+    [1, 'MiB', 'KiB', 1024],
+    [1, 'GB', 'MB', 1000],
+    [1, 'GiB', 'MiB', 1024],
+    [1, 'TB', 'GB', 1000],
+    [1, 'TiB', 'GiB', 1024],
+    [1, 'GiB', 'GB', 1.073741824],
+    [1000, 'MB', 'GiB', 1e9 / 1073741824],
+  ])('distinguishes decimal and binary data units: %d %s -> %s = %d', (value, from, to, expected) => {
+    const out = units({ value, from, to });
+    expect(out.category).toBe('data');
+    expect(out.value).toBeCloseTo(expected, 9);
+  });
+
+  it('rejects cross-category conversions and lists supported units', () => {
+    const res = runPlugin<{ error?: string }>('units', 'units', {
+      value: 1,
+      from: 'kg',
+      to: 'm',
+    });
+    expect(res.code).toBe(1);
+    expect(res.output.error).toContain('mass');
+    expect(res.output.error).toContain('length');
+    expect(res.output.error).toContain('kg');
+    expect(res.output.error).toContain('km');
+  });
+
+  it('rejects unknown units and lists supported categories and units', () => {
+    const res = runPlugin<{ error?: string }>('units', 'units', {
+      value: 1,
+      from: 'furlong',
+      to: 'm',
+    });
+    expect(res.code).toBe(1);
+    expect(res.output.error).toContain('Unknown unit');
+    expect(res.output.error).toContain('furlong');
+    expect(res.output.error).toContain('length');
+    expect(res.output.error).toContain('temperature');
+    expect(res.output.error).toContain('data');
   });
 });

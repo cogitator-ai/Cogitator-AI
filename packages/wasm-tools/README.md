@@ -4,7 +4,7 @@ WASM-based tools for Cogitator agents. Secure, sandboxed tool execution using We
 
 ## Features
 
-- **14 pre-built tools** - calculator, JSON, hash, Base64, slug, validation, diff, regex, CSV, Markdown, XML, datetime, compression, Ed25519 signing
+- **15 pre-built tools** - calculator, JSON, hash, Base64, slug, units, validation, diff, regex, CSV, Markdown, XML, datetime, compression, Ed25519 signing
 - **Isolated execution** - every call runs in an Extism sandbox in a worker thread, without filesystem or network access
 - **Fast startup** - no container to start; compiled modules are cached per file
 - **Custom tool framework** - `defineWasmTool()` for your own WASM modules
@@ -48,6 +48,7 @@ import {
   createHashTool,
   createBase64Tool,
   createSlugTool,
+  createUnitsTool,
   createValidationTool,
   createDiffTool,
   createRegexTool,
@@ -70,6 +71,7 @@ const agent = new Agent({
     createHashTool(),
     createBase64Tool(),
     createSlugTool(),
+    createUnitsTool(),
     createValidationTool(),
     createDiffTool(),
     createRegexTool(),
@@ -245,6 +247,26 @@ const slug = createSlugTool({ timeout: 10000 });
 ```
 
 Any run of non-alphanumeric characters becomes one separator; apostrophes are dropped; accents are stripped after transliteration. `maxLength` must be a positive integer and cuts at a separator when possible.
+
+### createUnitsTool(options?)
+
+Convert between units of length, mass, temperature, volume, speed and data size.
+
+```typescript
+const units = createUnitsTool({ timeout: 10000 });
+
+// Example: { value: 100, from: "C", to: "F" } → { value: 212, from: "C", to: "F", category: "temperature" }
+// Example: { value: 1, from: "GiB", to: "GB" } → { value: 1.073741824, from: "GiB", to: "GB", category: "data" }
+```
+
+- **length**: `mm`, `cm`, `m`, `km`, `in`, `ft`, `yd`, `mi`
+- **mass**: `mg`, `g`, `kg`, `t`, `oz`, `lb`
+- **temperature**: `C`, `F`, `K` (with offsets)
+- **volume**: `ml`, `l`, `tsp`, `tbsp`, `cup`, `US gallon`, `imperial gallon`
+- **speed**: `m/s`, `km/h`, `mph`, `knot`
+- **data**: `B`, `KB`, `MB`, `GB`, `TB` (powers of 1000) and `KiB`, `MiB`, `GiB`, `TiB` (powers of 1024)
+
+Cross-category conversions and unknown units return an `error` listing the supported units.
 
 ### createValidationTool(options?)
 
