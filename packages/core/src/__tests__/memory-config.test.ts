@@ -161,4 +161,17 @@ describe('memory from config', () => {
     await cleanupState(state);
     expect(qdrant?.disconnected).toBe(true);
   });
+
+  it('uses an embedding service of your own as it is', async () => {
+    const service = {
+      model: 'my-embedder',
+      dimensions: 3,
+      embed: vi.fn(async () => [1, 0, 0]),
+      embedBatch: vi.fn(async (texts: string[]) => texts.map(() => [1, 0, 0])),
+    };
+
+    await init({ adapter: 'memory', embedding: service, contextBuilder: { strategy: 'relevant' } });
+
+    expect(captured[0]?.embeddingService).toBe(service);
+  });
 });

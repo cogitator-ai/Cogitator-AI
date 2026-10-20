@@ -4,6 +4,7 @@ import type {
   Constitution,
   EmbeddingAdapter,
   EmbeddingService,
+  EmbeddingServiceConfig,
   FactAdapter,
   MemoryAdapter,
   MemoryConfig,
@@ -89,7 +90,12 @@ export async function initializeMemory(
   const memory = config.memory;
   if (state.memoryInitialized || !memory?.adapter) return;
 
-  const embeddingService = memory.embedding ? createEmbeddingService(memory.embedding) : undefined;
+  const embedding = memory.embedding;
+  const embeddingService = !embedding
+    ? undefined
+    : isEmbeddingService(embedding)
+      ? embedding
+      : createEmbeddingService(embedding);
   const adapter = createConfiguredAdapter(memory, embeddingService);
   if (!adapter) return;
 
@@ -451,4 +457,11 @@ async function releaseAdapter(adapter: { disconnect(): Promise<unknown> }): Prom
 function isEmbeddingAdapter(adapter: MemoryAdapter): adapter is MemoryAdapter & EmbeddingAdapter {
   const candidate = adapter as Partial<EmbeddingAdapter>;
   return typeof candidate.search === 'function' && typeof candidate.addEmbedding === 'function';
+}
+
+/** Whether `embedding` is a service of your own rather than a provider's config. */
+function isEmbeddingService(
+  embedding: EmbeddingServiceConfig | EmbeddingService
+): embedding is EmbeddingService {
+  return typeof (embedding as Partial<EmbeddingService>).embed === 'function';
 }

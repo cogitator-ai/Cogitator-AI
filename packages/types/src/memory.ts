@@ -335,7 +335,11 @@ export interface MemoryConfig {
   sqlite?: Omit<SQLiteAdapterConfig, 'provider'>;
   mongodb?: Omit<MongoDBAdapterConfig, 'provider'>;
   qdrant?: Omit<QdrantAdapterConfig, 'provider'>;
-  embedding?: EmbeddingServiceConfig;
+  /**
+   * The embedding model: a provider's config, or an `EmbeddingService` of your own (another
+   * provider, a cache in front of one), which the runtime uses as it is
+   */
+  embedding?: EmbeddingServiceConfig | EmbeddingService;
   contextBuilder?: Partial<ContextBuilderConfig>;
 }
 
