@@ -85,7 +85,8 @@ export async function buildInitialMessages(
   options: RunOptions,
   threadId: string,
   memoryAdapter: MemoryAdapter | undefined,
-  contextBuilder: ContextBuilder | undefined
+  contextBuilder: ContextBuilder | undefined,
+  contextBudget?: number
 ): Promise<Message[]> {
   const userContent = buildUserContent(options.input, options.images);
 
@@ -116,6 +117,7 @@ export async function buildInitialMessages(
       userId: options.userId,
       systemPrompt: agent.instructions,
       currentInput: options.input,
+      ...(contextBudget !== undefined && { maxTokens: contextBudget }),
     });
     for (const warning of ctx.warnings ?? []) {
       getLogger().warn(warning, { agent: agent.name, threadId });

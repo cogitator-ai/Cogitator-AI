@@ -41,7 +41,7 @@ describe('runs with memory.contextBuilder', () => {
     const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
     const cog = new Cogitator({
       llm: { backends: { mock: backend } },
-      memory: { adapter: 'memory', contextBuilder: { strategy: 'recent' } },
+      memory: { adapter: 'memory', contextBuilder: { strategy: 'recent', maxTokens: 4000 } },
     });
     const instructions = 'Always answer as a pirate. '.repeat(600);
     const agent = new Agent({ name: 'a', model: 'mock/m', instructions });
@@ -120,5 +120,61 @@ describe('runs with memory.contextBuilder', () => {
     expect(messages.some((m) => m.includes('includeSemanticContext'))).toBe(true);
     expect(messages.some((m) => m.includes('includeGraphContext'))).toBe(true);
     await cog.close();
+  });
+
+  describe('the history budget', () => {
+    const longTurn = (i: number) =>
+      `Turn ${i}: ${'the shipment moved through another depot. '.repeat(40)}`;
+
+    async function seededRun(model: string, contextBuilder: { maxTokens?: number }) {
+      const { backend, requests } = recordingBackend();
+      const cog = new Cogitator({
+        llm: { backends: { mock: backend } },
+        memory: { adapter: 'memory', contextBuilder: { strategy: 'recent', ...contextBuilder } },
+      });
+      const agent = new Agent({ id: 'agent', name: 'a', model, instructions: 'Track shipments.' });
+      await cog.run(agent, { input: 'warm up', threadId: 'thread-warmup' });
+      const memory = cog.memory!;
+      await memory.createThread('agent', {}, 'thread-long');
+      for (let i = 0; i < 30; i++) {
+        await memory.addEntry({
+          threadId: 'thread-long',
+          message: { role: i % 2 === 0 ? 'user' : 'assistant', content: longTurn(i) },
+          tokenCount: 0,
+        });
+      }
+      requests.length = 0;
+
+      await cog.run(agent, {
+        input: 'Where is it now?',
+        threadId: 'thread-long',
+        threadAccess: 'shared',
+      });
+      await cog.close();
+      return requests[0].messages.filter(
+        (m) => typeof m.content === 'string' && m.content.startsWith('Turn ')
+      );
+    }
+
+    it('fills the context window of the model the run is on', async () => {
+      const history = await seededRun('mock/gpt-4o', {});
+
+      expect(history).toHaveLength(30);
+    });
+
+    it('keeps an explicit maxTokens over the model window', async () => {
+      const history = await seededRun('mock/gpt-4o', { maxTokens: 2000 });
+
+      expect(history.length).toBeGreaterThan(0);
+      expect(history.length).toBeLessThan(30);
+      expect(history.at(-1)?.content).toBe(longTurn(29));
+    });
+
+    it('falls back to a window of 8192 tokens for a model nobody knows', async () => {
+      const history = await seededRun('mock/house-model', {});
+
+      expect(history.length).toBeGreaterThan(0);
+      expect(history.length).toBeLessThan(30);
+    });
   });
 });

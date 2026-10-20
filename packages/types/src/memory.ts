@@ -3,7 +3,7 @@
  */
 
 import type { Message, ToolCall, ToolResult } from './message';
-import type { GraphContext, GraphContextOptions } from './knowledge-graph';
+import type { GraphContext, GraphContextOptions, GraphNode } from './knowledge-graph';
 
 export type MemoryType = 'conversation' | 'fact' | 'embedding';
 
@@ -259,7 +259,12 @@ export type EmbeddingServiceConfig =
 export type ContextStrategy = 'recent' | 'relevant' | 'hybrid';
 
 export interface ContextBuilderConfig {
-  maxTokens: number;
+  /**
+   * Token budget of a built context. Without it, `build()` takes `maxTokens` from its options:
+   * a Cogitator run passes the context window of the model it runs on
+   */
+  maxTokens?: number;
+  /** Tokens of the budget kept free for the answer (default 10% of `maxTokens`, at least 100) */
   reserveTokens?: number;
   strategy: ContextStrategy;
   includeSystemPrompt?: boolean;
@@ -280,13 +285,30 @@ export interface ContextBuildError {
   error: Error;
 }
 
+/** What a built context left out because it did not fit the token budget. */
+export interface DroppedContext {
+  /** History entries left out, in conversation order */
+  entries: MemoryEntry[];
+  /** Facts visible to the user that did not fit */
+  facts: Fact[];
+  /** Search results close enough to the input that did not fit */
+  semanticResults: (Embedding & { score: number })[];
+  /** Knowledge graph nodes cut from the graph context */
+  graphNodes: GraphNode[];
+  /** Tokens of everything left out */
+  tokenCount: number;
+}
+
 export interface BuiltContext {
   messages: Message[];
   facts: Fact[];
   semanticResults: (Embedding & { score: number })[];
   graphContext?: GraphContext;
   tokenCount: number;
+  /** Whether history entries were left out, see `dropped.entries` */
   truncated: boolean;
+  /** What did not fit the budget and was left out */
+  dropped: DroppedContext;
   /** Parts of the context that failed to load and were left out */
   errors?: ContextBuildError[];
   /** Budget problems, such as a system prompt that alone exceeds `maxTokens - reserveTokens` */

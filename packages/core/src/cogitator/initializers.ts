@@ -113,7 +113,6 @@ export async function initializeMemory(
     };
     const contextConfig = {
       ...memory.contextBuilder,
-      maxTokens: memory.contextBuilder.maxTokens ?? 4000,
       strategy: memory.contextBuilder.strategy ?? 'recent',
       includeSystemPrompt: true,
     } as const;

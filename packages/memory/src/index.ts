@@ -153,6 +153,7 @@ export type {
   ContextBuilderConfig,
   ContextStrategy,
   BuiltContext,
+  DroppedContext,
   MemoryConfig,
   GraphAdapter,
   GraphNode,

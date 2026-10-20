@@ -13,6 +13,8 @@ import type {
   ContextBuilderConfig,
   ContextBuildError,
   BuiltContext,
+  DroppedContext,
+  GraphNode,
   MemoryAdapter,
   FactAdapter,
   EmbeddingAdapter,
@@ -73,18 +75,39 @@ export interface BuildContextOptions {
   userId?: string;
   systemPrompt?: string;
   currentInput?: string;
+  /**
+   * Token budget of this context in place of the builder's `maxTokens`, such as the context
+   * window of the model it is built for
+   */
+  maxTokens?: number;
+}
+
+type ResolvedConfig = Required<Omit<ContextBuilderConfig, 'maxTokens' | 'reserveTokens'>> &
+  Pick<ContextBuilderConfig, 'maxTokens' | 'reserveTokens'>;
+
+/** Part of a context: what fits its budget, and what does not. */
+interface Fitted<T> {
+  kept: T[];
+  dropped: T[];
+}
+
+function validBudget(value: number, name: string): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`ContextBuilder ${name} must be a positive number, got ${value}`);
+  }
+  return value;
 }
 
 export class ContextBuilder {
-  private config: Required<ContextBuilderConfig>;
+  private config: ResolvedConfig;
   private deps: ContextBuilderDeps;
   private readonly entryVectors = new Map<string, Float32Array>();
 
   constructor(config: ContextBuilderConfig, deps: ContextBuilderDeps) {
-    const defaultReserve = Math.max(100, Math.floor(config.maxTokens * 0.1));
+    if (config.maxTokens !== undefined) validBudget(config.maxTokens, 'maxTokens');
     this.config = {
       maxTokens: config.maxTokens,
-      reserveTokens: config.reserveTokens ?? defaultReserve,
+      reserveTokens: config.reserveTokens,
       strategy: config.strategy,
       includeSystemPrompt: config.includeSystemPrompt ?? true,
       includeFacts: config.includeFacts ?? false,
@@ -95,8 +118,22 @@ export class ContextBuilder {
     this.deps = deps;
   }
 
+  /**
+   * The context for a turn of `options.threadId`, within `options.maxTokens`, else the builder's
+   * `maxTokens`, minus `reserveTokens`. What does not fit is listed in `dropped`.
+   *
+   * @throws Error when neither `options.maxTokens` nor the builder's `maxTokens` is set
+   */
   async build(options: BuildContextOptions): Promise<BuiltContext> {
-    const availableTokens = Math.max(0, this.config.maxTokens - this.config.reserveTokens);
+    const configured = options.maxTokens ?? this.config.maxTokens;
+    if (configured === undefined) {
+      throw new Error(
+        'ContextBuilder has no token budget: set maxTokens in its config or pass it to build()'
+      );
+    }
+    const maxTokens = validBudget(configured, 'maxTokens');
+    const reserveTokens = this.config.reserveTokens ?? Math.max(100, Math.floor(maxTokens * 0.1));
+    const availableTokens = Math.max(0, maxTokens - reserveTokens);
     const errors: ContextBuildError[] = [];
     const warnings: string[] = [];
     const systemBlocks: string[] = [];
@@ -112,28 +149,29 @@ export class ContextBuilder {
       if (tokens > availableTokens) {
         warnings.push(
           `The system prompt takes ${tokens} tokens, more than the ${availableTokens} the context ` +
-            `budget allows (maxTokens ${this.config.maxTokens} minus reserveTokens ` +
-            `${this.config.reserveTokens}); it is kept, but no history fits. Raise maxTokens.`
+            `budget allows (maxTokens ${maxTokens} minus reserveTokens ` +
+            `${reserveTokens}); it is kept, but no history fits. Raise maxTokens.`
         );
       }
     }
 
-    const facts = this.config.includeFacts
-      ? ((await this.attempt('facts', errors, () => this.loadFacts(options, partBudget(0.1)))) ??
-        [])
-      : [];
+    const fittedFacts = this.config.includeFacts
+      ? await this.attempt('facts', errors, () => this.loadFacts(options, partBudget(0.1)))
+      : undefined;
+    const facts = fittedFacts?.kept ?? [];
     if (facts.length > 0) {
       const block = `Known facts:\n${facts.map((f) => `- ${f.content}`).join('\n')}`;
       systemBlocks.push(block);
       usedTokens += countTokens(block);
     }
 
-    const semanticResults =
+    const fittedSemantic =
       this.config.includeSemanticContext && options.currentInput
-        ? ((await this.attempt('semantic', errors, () =>
+        ? await this.attempt('semantic', errors, () =>
             this.loadSemanticResults(options, partBudget(0.1))
-          )) ?? [])
-        : [];
+          )
+        : undefined;
+    const semanticResults = fittedSemantic?.kept ?? [];
     if (semanticResults.length > 0) {
       systemBlocks.push(
         `Relevant context:\n${semanticResults.map((r) => `- ${r.content}`).join('\n')}`
@@ -141,12 +179,13 @@ export class ContextBuilder {
       usedTokens += semanticResults.reduce((sum, r) => sum + countTokens(r.content), 0);
     }
 
-    const graphContext =
+    const fittedGraph =
       this.config.includeGraphContext && options.currentInput
         ? await this.attempt('graph', errors, () =>
             this.loadGraphContext(options, partBudget(0.15))
           )
         : undefined;
+    const graphContext = fittedGraph?.context;
     if (graphContext?.formattedContext) {
       systemBlocks.push(graphContext.formattedContext);
       usedTokens += graphContext.tokenCount;
@@ -177,6 +216,19 @@ export class ContextBuilder {
       messages.push(entry.message);
       usedTokens += countEntryTokens(entry);
     }
+    const selected = new Set(selectedEntries);
+    const dropped: DroppedContext = {
+      entries: entries.filter((entry) => !selected.has(entry)),
+      facts: fittedFacts?.dropped ?? [],
+      semanticResults: fittedSemantic?.dropped ?? [],
+      graphNodes: fittedGraph?.droppedNodes ?? [],
+      tokenCount: 0,
+    };
+    dropped.tokenCount =
+      dropped.entries.reduce((sum, entry) => sum + countEntryTokens(entry), 0) +
+      dropped.facts.reduce((sum, fact) => sum + countTokens(`- ${fact.content}`), 0) +
+      dropped.semanticResults.reduce((sum, result) => sum + countTokens(result.content), 0) +
+      (fittedGraph?.droppedTokens ?? 0);
 
     return {
       messages,
@@ -184,7 +236,8 @@ export class ContextBuilder {
       semanticResults,
       graphContext,
       tokenCount: usedTokens,
-      truncated: selectedEntries.length < entries.length,
+      truncated: dropped.entries.length > 0,
+      dropped,
       ...(errors.length > 0 && { errors }),
       ...(warnings.length > 0 && { warnings }),
       metadata: {
@@ -212,30 +265,37 @@ export class ContextBuilder {
     }
   }
 
-  /** Facts of the agent visible to the user, as many as fit `budget`. */
-  private async loadFacts(options: BuildContextOptions, budget: number): Promise<Fact[]> {
-    if (!this.deps.factAdapter) return [];
+  /** Facts of the agent visible to the user, as many as fit `budget`, and the rest. */
+  private async loadFacts(options: BuildContextOptions, budget: number): Promise<Fitted<Fact>> {
+    if (!this.deps.factAdapter) return { kept: [], dropped: [] };
     const all = unwrap(await this.deps.factAdapter.getFacts(options.agentId), 'getFacts');
-    const facts: Fact[] = [];
+    const fitted: Fitted<Fact> = { kept: [], dropped: [] };
     let tokens = 0;
     for (const fact of all) {
       if (!isVisibleTo(fact.metadata, options.agentId, options.userId)) continue;
       const factTokens = countTokens(`- ${fact.content}`);
       if (tokens + factTokens <= budget) {
-        facts.push(fact);
+        fitted.kept.push(fact);
         tokens += factTokens;
+      } else {
+        fitted.dropped.push(fact);
       }
     }
-    return facts;
+    return fitted;
   }
 
-  /** The embeddings closest to the current input visible to the user, as many as fit `budget`. */
+  /**
+   * The embeddings closest to the current input visible to the user, as many as fit `budget`,
+   * and the rest.
+   */
   private async loadSemanticResults(
     options: BuildContextOptions,
     budget: number
-  ): Promise<(Embedding & { score: number })[]> {
+  ): Promise<Fitted<Embedding & { score: number }>> {
     const { embeddingAdapter, embeddingService } = this.deps;
-    if (!embeddingAdapter || !embeddingService || !options.currentInput) return [];
+    if (!embeddingAdapter || !embeddingService || !options.currentInput) {
+      return { kept: [], dropped: [] };
+    }
 
     const vector = await embeddingService.embed(options.currentInput);
     const found = unwrap(
@@ -248,32 +308,38 @@ export class ContextBuilder {
       'search'
     );
 
-    const results: (Embedding & { score: number })[] = [];
+    const fitted: Fitted<Embedding & { score: number }> = { kept: [], dropped: [] };
     let tokens = 0;
     for (const result of found
       .filter((r) => isVisibleTo(r.metadata, options.agentId, options.userId))
       .slice(0, SEMANTIC_RESULTS)) {
       const resultTokens = countTokens(result.content);
       if (tokens + resultTokens <= budget) {
-        results.push(result);
+        fitted.kept.push(result);
         tokens += resultTokens;
+      } else {
+        fitted.dropped.push(result);
       }
     }
-    return results;
+    return fitted;
   }
 
-  /** Knowledge graph context for the current input, cut down to `budget` when it is larger. */
+  /**
+   * Knowledge graph context for the current input, cut down to `budget` when it is larger, with
+   * the nodes and tokens the cut left out.
+   */
   private async loadGraphContext(
     options: BuildContextOptions,
     budget: number
-  ): Promise<GraphContext | undefined> {
+  ): Promise<{ context?: GraphContext; droppedNodes: GraphNode[]; droppedTokens: number }> {
+    const none = { droppedNodes: [], droppedTokens: 0 };
     const graph = this.deps.graphContextBuilder;
-    if (!graph || !options.currentInput) return undefined;
+    if (!graph || !options.currentInput) return none;
 
     const graphOptions = { ...this.config.graphContextOptions, userId: options.userId };
     const gc = await graph.buildContext(options.agentId, options.currentInput, graphOptions);
-    if (gc.nodes.length === 0) return undefined;
-    if (gc.tokenCount <= budget) return gc;
+    if (gc.nodes.length === 0) return none;
+    if (gc.tokenCount <= budget) return { context: gc, ...none };
 
     const ratio = budget / gc.tokenCount;
     const limitedNodes = gc.nodes.slice(0, Math.max(1, Math.floor(gc.nodes.length * ratio)));
@@ -286,7 +352,13 @@ export class ContextBuilder {
       maxNodes: limitedNodes.length,
       maxEdges: limitedEdges.length,
     });
-    return rebuilt.tokenCount <= budget ? rebuilt : undefined;
+    const context = rebuilt.tokenCount <= budget ? rebuilt : undefined;
+    const keptIds = new Set(context?.nodes.map((n) => n.id));
+    return {
+      ...(context && { context }),
+      droppedNodes: gc.nodes.filter((n) => !keptIds.has(n.id)),
+      droppedTokens: gc.tokenCount - (context?.tokenCount ?? 0),
+    };
   }
 
   private selectEntries(

@@ -43,6 +43,7 @@ import { isLLMProvider } from './llm/providers';
 import { createLLMBackendFromPlugin, hasLLMPlugin } from './llm/plugin';
 import { withLLMRetry } from './llm/retry';
 import { ModelFallbackChain, type ModelCandidate } from './llm/model-fallback';
+import { modelContextWindow } from './context/model-window';
 import { normalizeTurn } from './llm/turn';
 import { PiiMasker, withPiiDecisions, withPiiMasking } from './security/pii';
 import { createLoggerFromConfig, getLogger, setLogger } from './logger';
@@ -690,7 +691,7 @@ export class Cogitator implements ToolInvoker {
         }
 
         await this.abandonPausedRun(agent, runOptions, threadId);
-        messages = await this.prepareMessages(agent, runOptions, input, threadId);
+        messages = await this.prepareMessages(agent, runOptions, input, threadId, effectiveModel);
       }
 
       let candidates = this.modelCandidates(active, effectiveModel, routeProvider, {
@@ -1493,20 +1494,25 @@ export class Cogitator implements ToolInvoker {
   /**
    * The messages a new run starts with: the thread's history and the input,
    * once the input passed the injection and constitutional checks, with the
-   * input saved to memory.
+   * input saved to memory. Without `memory.contextBuilder.maxTokens`, the
+   * history fills the context window of `model`, the model the run starts on.
    */
   private async prepareMessages(
     agent: Agent,
     options: RunOptions,
     input: string,
-    threadId: string
+    threadId: string,
+    model: string
   ): Promise<Message[]> {
     const messages = await buildInitialMessages(
       agent,
       options,
       threadId,
       this.state.memoryAdapter,
-      this.state.contextBuilder
+      this.state.contextBuilder,
+      this.config.memory?.contextBuilder?.maxTokens === undefined
+        ? modelContextWindow(model)
+        : undefined
     );
 
     const pii = this.config.security?.pii;
