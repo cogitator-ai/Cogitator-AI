@@ -240,6 +240,8 @@ export class AnthropicBackend extends BaseLLMBackend {
         abortReason(request.signal) ?? (e instanceof LLMError ? e : this.wrapAnthropicError(e, ctx))
       );
     }
+    const aborted = abortReason(request.signal);
+    if (aborted) throw aborted;
   }
 
   /**

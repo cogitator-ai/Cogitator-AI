@@ -357,6 +357,8 @@ export interface BedrockProviderConfig {
   sessionToken?: string;
   /** Named profile from the shared AWS config files, used when no static keys are set */
   profile?: string;
+  /** The Bedrock Runtime endpoint, such as a VPC endpoint or a proxy (default: the region's) */
+  endpoint?: string;
 }
 
 export interface VLLMProviderConfig {

@@ -560,6 +560,9 @@ importers:
       '@cogitator-ai/sandbox':
         specifier: workspace:*
         version: link:../sandbox
+      '@cogitator-ai/test-utils':
+        specifier: workspace:*
+        version: link:../test-utils
       '@types/better-sqlite3':
         specifier: ^9.6.0
         version: 9.6.0

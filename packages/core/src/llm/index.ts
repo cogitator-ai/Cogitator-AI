@@ -142,6 +142,7 @@ export function createLLMBackend(
         secretAccessKey: providers.bedrock?.secretAccessKey,
         sessionToken: providers.bedrock?.sessionToken,
         profile: providers.bedrock?.profile,
+        endpoint: providers.bedrock?.endpoint,
         maxRetries: 0,
       });
 

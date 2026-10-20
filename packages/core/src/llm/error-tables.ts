@@ -84,6 +84,14 @@ const QUOTA_PATTERNS: readonly RegExp[] = [
   /insufficient (credits|balance|funds)/,
 ];
 
+/** Phrases of a provider over capacity, for an error that came without a status, in lower case. */
+const OVERLOADED_PATTERNS: readonly RegExp[] = [
+  /overloaded/,
+  /server busy/,
+  /over capacity/,
+  /maximum pending requests/,
+];
+
 /**
  * OpenAI error codes that mean the account cannot pay for more requests, from
  * developers.openai.com/api/docs/guides/error-codes: a 429 with one of them does not lift by
@@ -239,7 +247,11 @@ function dailyQuotaRanOut(details: (Record<string, unknown> | undefined)[]): boo
 
 /** What the HTTP status says, for an error the provider's codes do not explain. */
 function kindOfStatus(status: number | undefined, text: string): LLMErrorKind {
-  if (status === undefined) return 'server_error';
+  if (status === undefined) {
+    return OVERLOADED_PATTERNS.some((pattern) => pattern.test(text))
+      ? 'overloaded'
+      : 'server_error';
+  }
   if (status === 429) return 'rate_limit';
   if (status === 402) return 'quota';
   if (status === 401) return 'authentication';

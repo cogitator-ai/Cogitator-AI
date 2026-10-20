@@ -23,6 +23,7 @@ import {
   LLMError,
   abortReason,
   createLLMError,
+  retryAfterFromHeaders,
   llmUnavailable,
   llmConfigError,
   type LLMErrorContext,
@@ -206,6 +207,8 @@ interface BedrockConfig {
   sessionToken?: string;
   /** Named profile from the shared AWS config files */
   profile?: string;
+  /** The Bedrock Runtime endpoint, such as a VPC endpoint or a proxy (default: the region's) */
+  endpoint?: string;
   /** Retries the provider's SDK makes on its own; leave unset for the SDK default. The runtime passes 0 and retries itself. */
   maxRetries?: number;
 }
@@ -235,6 +238,9 @@ export class BedrockBackend extends BaseLLMBackend {
           }
           if (this.config.profile) {
             clientConfig.profile = this.config.profile;
+          }
+          if (this.config.endpoint) {
+            clientConfig.endpoint = this.config.endpoint;
           }
           if (this.config.accessKeyId && this.config.secretAccessKey) {
             clientConfig.credentials = {
@@ -327,6 +333,8 @@ export class BedrockBackend extends BaseLLMBackend {
     } catch (e) {
       throw this.wrapBedrockError(e, ctx, request.signal);
     }
+    const aborted = abortReason(request.signal);
+    if (aborted) throw aborted;
   }
 
   private *processStreamEvent(
@@ -764,6 +772,7 @@ export class BedrockBackend extends BaseLLMBackend {
     if (status !== undefined) {
       throw createLLMError({ ...ctx, statusCode: status }, status, error.message, {
         cause: error,
+        retryAfterOverride: retryAfterOf(error as AWSServiceError),
         ...(known?.kind && { kind: known.kind }),
       });
     }
@@ -795,6 +804,17 @@ const BEDROCK_EXCEPTIONS: Record<string, { status: number; kind?: LLMErrorKind }
 
 interface AWSServiceError extends Error {
   $metadata?: { httpStatusCode?: number };
+  $response?: { headers?: Record<string, string | undefined> };
+}
+
+/** The wait the response of a failed AWS call asks for, in milliseconds, from its `retry-after` header. */
+function retryAfterOf(error: AWSServiceError): number | undefined {
+  const headers = error.$response?.headers;
+  if (!headers) return undefined;
+  const value = Object.entries(headers).find(([name]) => name.toLowerCase() === 'retry-after')?.[1];
+  return value === undefined
+    ? undefined
+    : retryAfterFromHeaders(new Headers({ 'retry-after': value }));
 }
 
 /** A status for an error that carries neither an exception name nor an HTTP status. */

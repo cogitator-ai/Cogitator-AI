@@ -21,7 +21,9 @@ export abstract class BaseLLMBackend implements LLMBackend {
   /**
    * The chunks of `chunks`, its errors rethrown as `wrap` makes them, or as the caller's abort
    * reason when the caller aborted. An abort the caller's signal did not make, such as one of a
-   * signal of the caller's own the SDK passed on, goes on as it is.
+   * signal of the caller's own the SDK passed on, goes on as it is. A stream that ends quietly
+   * after the caller aborted, as the OpenAI SDK's does, fails with the abort reason too, so a
+   * cut-off answer is never taken for a whole one.
    */
   protected async *guardStream<T>(
     chunks: AsyncIterable<T>,
@@ -33,6 +35,8 @@ export abstract class BaseLLMBackend implements LLMBackend {
     } catch (error) {
       throw abortReason(signal) ?? (isAbortError(error) ? error : wrap(error));
     }
+    const aborted = abortReason(signal);
+    if (aborted) throw aborted;
   }
 
   protected generateId(): string {

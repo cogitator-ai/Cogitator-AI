@@ -93,6 +93,7 @@ export const ProvidersConfigSchema = z.object({
       secretAccessKey: z.string().optional(),
       sessionToken: z.string().optional(),
       profile: z.string().optional(),
+      endpoint: z.string().optional(),
     })
     .optional(),
   vllm: z

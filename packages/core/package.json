@@ -54,6 +54,7 @@
   "devDependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.1145.0",
     "@cogitator-ai/sandbox": "workspace:*",
+    "@cogitator-ai/test-utils": "workspace:*",
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.20.4",
     "@types/nodemailer": "^8.0.2",
