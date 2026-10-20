@@ -114,7 +114,7 @@ describe('Core: run middleware over the Ollama API', () => {
     });
     expect(fake!.requests).toHaveLength(0);
     const entries = await cog.memory!.getEntries({ threadId: 'thread_refund' });
-    expect(entries.data ?? []).toHaveLength(0);
+    expect(entries).toEqual({ success: true, data: [] });
   });
 
   it('masks personal data with the built-in middleware while streaming the real values back', async () => {
