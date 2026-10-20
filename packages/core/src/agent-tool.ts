@@ -72,6 +72,7 @@ export function agentAsTool(
           timeout: effectiveTimeout,
           signal: context.signal,
           ...(context.userId !== undefined && { userId: context.userId }),
+          ...(context.deps !== undefined && { deps: context.deps }),
           onApproval: async (request) => {
             const decision = onApproval ? await onApproval(request) : 'pause';
             return decision === 'pause' ? DELEGATED_DECLINE : decision;

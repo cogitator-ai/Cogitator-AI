@@ -7,7 +7,11 @@ import type { Skill } from './skill';
 import type { ZodType } from 'zod';
 import type { ReasoningConfig } from './llm';
 
-export interface AgentConfig {
+/**
+ * An agent's configuration. `TDeps` is the type of the `deps` its runs pass (`RunOptions.deps`):
+ * with it set, the agent only takes tools whose deps it provides, and runs must pass them.
+ */
+export interface AgentConfig<TDeps = unknown> {
   id?: string;
   name: string;
   description?: string;
@@ -26,7 +30,7 @@ export interface AgentConfig {
    */
   fallbackModels?: FallbackModel[];
   instructions: string;
-  tools?: Tool[];
+  tools?: Tool<unknown, unknown, TDeps>[];
   skills?: Skill[];
   temperature?: number;
   topP?: number;
@@ -66,17 +70,17 @@ export interface Handoff {
 export type ResponseFormat =
   { type: 'text' } | { type: 'json' } | { type: 'json_schema'; schema: ZodType };
 
-export interface Agent {
+export interface Agent<TDeps = unknown> {
   readonly id: string;
   readonly name: string;
-  readonly config: AgentConfig;
+  readonly config: AgentConfig<TDeps>;
   /** Model accessor (shortcut to config.model) */
   readonly model: string | undefined;
   /** Instructions accessor (shortcut to config.instructions) */
   readonly instructions: string;
   /** Tools accessor (shortcut to config.tools) */
-  readonly tools: Tool[];
-  clone(overrides: Partial<AgentConfig>): Agent;
+  readonly tools: Tool<unknown, unknown, TDeps>[];
+  clone(overrides: Partial<AgentConfig<TDeps>>): Agent<TDeps>;
   serialize(): AgentSnapshot;
 }
 

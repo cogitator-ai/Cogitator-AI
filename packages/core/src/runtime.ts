@@ -25,6 +25,7 @@ import type {
   HandoffEvent,
   ResumeOptions,
   RunCheckpoint,
+  RunDeps,
   RunCheckpointStore,
   RunPrompt,
   Tool,
@@ -260,6 +261,7 @@ export class Cogitator implements ToolInvoker {
    * @param options.input - User input/prompt for the agent
    * @param options.threadId - Thread ID for memory persistence
    * @param options.context - Additional context to include in system prompt
+   * @param options.deps - Values for the agent's tools (`context.deps`), kept out of the prompt
    * @param options.stream - Enable streaming responses
    * @param options.onToken - Callback for each streamed token
    * @param options.onToolCall - Callback when a tool is called
@@ -283,7 +285,10 @@ export class Cogitator implements ToolInvoker {
    * console.log('Cost:', result.usage.cost);
    * ```
    */
-  async run(agent: Agent, options: RunOptions): Promise<RunResult> {
+  async run<TDeps = unknown>(
+    agent: Agent<TDeps>,
+    options: RunOptions<TDeps> & RunDeps<TDeps>
+  ): Promise<RunResult> {
     return this.execute(agent, options);
   }
 
@@ -304,10 +309,10 @@ export class Cogitator implements ToolInvoker {
    * }
    * ```
    */
-  async resume(
-    agent: Agent,
+  async resume<TDeps = unknown>(
+    agent: Agent<TDeps>,
     target: RunCheckpoint | string,
-    options: ResumeOptions = {}
+    ...[options = {}]: ResumeArgs<TDeps>
   ): Promise<RunResult> {
     if (typeof target !== 'string' && target.version !== 1) {
       throw new CogitatorError({
@@ -426,6 +431,7 @@ export class Cogitator implements ToolInvoker {
         ...(options.userId !== undefined && { userId: options.userId }),
         ...(options.channelType !== undefined && { channelType: options.channelType }),
         ...(options.channelId !== undefined && { channelId: options.channelId }),
+        ...(options.deps !== undefined && { deps: options.deps }),
       },
       approvedByUser,
       this.config.sandbox?.allowNativeFallback !== false
@@ -894,6 +900,7 @@ export class Cogitator implements ToolInvoker {
                 userId: options.userId,
                 channelType: options.channelType,
                 channelId: options.channelId,
+                ...(options.deps !== undefined && { deps: options.deps }),
               },
               decision?.approved === true,
               this.config.sandbox?.allowNativeFallback !== false
@@ -2222,6 +2229,14 @@ function waitForAbortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<
     });
   });
 }
+
+/**
+ * The options of `resume()`: optional, unless the agent declares its deps type, whose runs must
+ * pass `deps` again (a checkpoint never holds them).
+ */
+type ResumeArgs<TDeps> = unknown extends TDeps
+  ? [options?: ResumeOptions]
+  : [options: ResumeOptions<TDeps> & { deps: TDeps }];
 
 interface PausedTurn {
   toolCalls: ToolCall[];

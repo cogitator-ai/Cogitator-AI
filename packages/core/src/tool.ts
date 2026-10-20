@@ -1,4 +1,10 @@
-import type { Tool, ToolConfig, ToolSchema, ApprovalCheck } from '@cogitator-ai/types';
+import type {
+  ApprovalCheck,
+  BaseToolContext,
+  Tool,
+  ToolConfig,
+  ToolSchema,
+} from '@cogitator-ai/types';
 import { z, type ZodType } from 'zod';
 import { toToolParameters } from './tool-schema';
 import { assertToolName } from './tool-name';
@@ -16,6 +22,7 @@ import { toolResultLengthError } from './tool-content';
  *
  * @typeParam TParams - Type of parameters the tool accepts
  * @typeParam TResult - Type of result the tool returns
+ * @typeParam TDeps - Type of the run's `deps` the tool reads, from its `context` annotation
  * @param config - Tool configuration
  * @returns A Tool instance ready for agent use
  *
@@ -48,10 +55,26 @@ import { toolResultLengthError } from './tool-content';
  *   sandbox: { type: 'docker', image: 'alpine:latest' },
  * });
  * ```
+ *
+ * @example A tool that uses the run's deps
+ * ```ts
+ * interface AppDeps { db: Database; userId: string }
+ *
+ * const listOrders = tool({
+ *   name: 'list_orders',
+ *   description: 'List the signed-in user\'s orders',
+ *   parameters: z.object({ limit: z.number().default(10) }),
+ *   execute: async ({ limit }, { deps }: ToolContext<AppDeps>) =>
+ *     deps.db.orders.findMany({ where: { userId: deps.userId }, take: limit }),
+ * });
+ *
+ * const agent = new Agent<AppDeps>({ name: 'support', instructions: '...', tools: [listOrders] });
+ * await cog.run(agent, { input: 'Where is my order?', deps: { db, userId: session.userId } });
+ * ```
  */
-export function tool<TParams, TResult>(
-  config: ToolConfig<TParams, TResult>
-): Tool<TParams, TResult> {
+export function tool<TParams, TResult, TDeps = unknown>(
+  config: ToolConfig<TParams, TResult, TDeps>
+): Tool<TParams, TResult, TDeps> {
   assertToolName(config.name);
   const lengthError = toolResultLengthError(
     config.maxResultLength,
@@ -67,7 +90,10 @@ export function tool<TParams, TResult>(
     parameters: config.parameters,
     outputSchema: config.outputSchema,
     annotations: config.annotations,
-    execute: config.execute,
+    execute: config.execute as (
+      params: TParams,
+      context: BaseToolContext<TDeps>
+    ) => Promise<TResult>,
     sideEffects: config.sideEffects,
     requiresApproval:
       typeof config.requiresApproval === 'function'

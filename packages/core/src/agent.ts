@@ -41,14 +41,18 @@ export class AgentDeserializationError extends Error {
  *   tools: [searchTool],
  * });
  * ```
+ *
+ * `TDeps` is the type of the `deps` the agent's runs pass to its tools (`RunOptions.deps`). Set
+ * it (`new Agent<AppDeps>(...)`) and the agent only takes tools whose deps it provides, and
+ * `cogitator.run()` requires `deps`.
  */
 const generatedIds = new WeakMap<Agent, string>();
 
-export class Agent implements IAgent {
+export class Agent<TDeps = unknown> implements IAgent<TDeps> {
   /** Human-readable name of the agent */
   readonly name: string;
   /** Full configuration including model, instructions, tools, and parameters */
-  readonly config: AgentConfig;
+  readonly config: AgentConfig<TDeps>;
 
   /**
    * Create a new Agent instance.
@@ -62,7 +66,7 @@ export class Agent implements IAgent {
    * @param config.maxIterations - Maximum tool call iterations (default: 10)
    * @param config.timeout - Run timeout in milliseconds (default: 120000)
    */
-  constructor(config: AgentConfig) {
+  constructor(config: AgentConfig<TDeps>) {
     this.name = config.name;
 
     let finalConfig = { ...config };
@@ -104,7 +108,7 @@ export class Agent implements IAgent {
   }
 
   /** Tools available to this agent */
-  get tools(): Tool[] {
+  get tools(): Tool<unknown, unknown, TDeps>[] {
     return this.config.tools ?? [];
   }
 
@@ -120,9 +124,9 @@ export class Agent implements IAgent {
    * const fastAgent = agent.clone({ model: 'anthropic/claude-haiku' });
    * ```
    */
-  clone(overrides: Partial<AgentConfig>): Agent {
+  clone(overrides: Partial<AgentConfig<TDeps>>): Agent<TDeps> {
     const { id: _id, ...rest } = this.config;
-    return new Agent({
+    return new Agent<TDeps>({
       ...rest,
       ...overrides,
     });

@@ -19,7 +19,7 @@ export type ToolCategory =
 
 export type SideEffectType = 'filesystem' | 'network' | 'database' | 'process' | 'external';
 
-export interface ToolConfig<TParams = unknown, TResult = unknown> {
+export interface ToolConfig<TParams = unknown, TResult = unknown, TDeps = unknown> {
   name: string;
   /** Name of the tool for people, such as an MCP client shows (the model sees `name`) */
   title?: string;
@@ -35,7 +35,11 @@ export interface ToolConfig<TParams = unknown, TResult = unknown> {
   outputSchema?: ZodType<TResult>;
   /** How the tool behaves, as MCP tool annotations describe it */
   annotations?: ToolAnnotations;
-  execute: (params: TParams, context: ToolContext) => Promise<TResult>;
+  /**
+   * Runs the tool. Annotate `context` as `ToolContext<YourDeps>` to read the run's `deps`, typed:
+   * the agent then accepts the tool only when its own deps type provides them
+   */
+  execute: (params: TParams, context: ToolContext<TDeps>) => Promise<TResult>;
   sideEffects?: SideEffectType[];
   requiresApproval?: boolean | ((params: TParams) => boolean);
   timeout?: number;
@@ -48,7 +52,7 @@ export interface ToolConfig<TParams = unknown, TResult = unknown> {
   maxResultLength?: number;
 }
 
-export interface Tool<TParams = unknown, TResult = unknown> {
+export interface Tool<TParams = unknown, TResult = unknown, TDeps = unknown> {
   name: string;
   /** Name of the tool for people, such as an MCP client shows (the model sees `name`) */
   title?: string;
@@ -64,7 +68,7 @@ export interface Tool<TParams = unknown, TResult = unknown> {
   outputSchema?: ZodType<TResult>;
   /** How the tool behaves, as MCP tool annotations describe it */
   annotations?: ToolAnnotations;
-  execute(params: TParams, context: ToolContext): Promise<TResult>;
+  execute(params: TParams, context: BaseToolContext<TDeps>): Promise<TResult>;
   sideEffects?: SideEffectType[];
   requiresApproval?: boolean | ApprovalCheck;
   timeout?: number;
@@ -99,7 +103,8 @@ export interface ToolAnnotations {
 
 export type ApprovalCheck = (params: Record<string, unknown>) => boolean;
 
-export interface ToolContext {
+/** What a tool call runs with, whether or not the tool reads the run's `deps`. */
+export interface BaseToolContext<TDeps = unknown> {
   agentId: string;
   runId: string;
   signal: AbortSignal;
@@ -109,7 +114,22 @@ export interface ToolContext {
   userId?: string;
   channelType?: string;
   channelId?: string;
+  /**
+   * The run's `deps` (`RunOptions.deps`): your own values, such as a database client or the
+   * signed-in user, for tools to use. They never reach the model, the run checkpoint, spans or
+   * memory, so a resumed run passes them again
+   */
+  deps?: TDeps;
 }
+
+/**
+ * The context a tool runs with. `ToolContext<Deps>` has the run's `deps` typed and present: a
+ * tool that reads them annotates its `context` so, and agents typed with their deps
+ * (`new Agent<Deps>(...)`) only accept tools whose deps they provide.
+ */
+export type ToolContext<TDeps = unknown> = unknown extends TDeps
+  ? BaseToolContext
+  : BaseToolContext<TDeps> & { deps: TDeps };
 
 export interface ToolSchema {
   name: string;
