@@ -178,6 +178,26 @@ describe('Sandbox: WASM execution', () => {
       expect(result.data.timedOut).toBe(true);
     }
   });
+
+  it('stops a runaway WASM module when its signal aborts, then runs the next call', async () => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(new Error('run cancelled')), 200);
+    const started = Date.now();
+
+    const result = await manager.execute(
+      { command: [], stdin: 'x', timeout: 30_000, signal: controller.signal },
+      { type: 'wasm', wasmModule: modulePath, wasmFunction: 'spin' }
+    );
+
+    expect(result).toEqual({ success: false, error: 'Execution aborted: run cancelled' });
+    expect(Date.now() - started).toBeLessThan(5_000);
+
+    const next = await manager.execute(
+      { command: [], stdin: 'still alive' },
+      { type: 'wasm', wasmModule: modulePath, wasmFunction: 'echo' }
+    );
+    expect(next.success && next.data.stdout).toBe('still alive');
+  });
 });
 
 describe('Sandbox: SandboxManager', () => {
@@ -301,5 +321,21 @@ describeDocker('Sandbox: Docker Executor', () => {
       expect(result.data.timedOut).toBe(true);
       expect(result.data.exitCode).toBe(124);
     }
+  });
+
+  it('DockerSandboxExecutor stops a command when its signal aborts', async () => {
+    if (!(await manager.isDockerAvailable())) return;
+
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 1000);
+    const started = Date.now();
+    const result = await manager.execute(
+      { command: ['sleep', '30'], timeout: 60_000, signal: controller.signal },
+      { type: 'docker', image: 'alpine:3.19' }
+    );
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toMatch(/^Execution aborted/);
+    expect(Date.now() - started).toBeLessThan(15_000);
   });
 });
