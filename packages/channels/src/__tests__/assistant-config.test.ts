@@ -49,7 +49,7 @@ describe('AssistantConfigSchema', () => {
         rag: { paths: ['/docs'] },
       },
       mcpServers: {
-        weather: { command: 'weather-mcp', args: ['--port', '3000'] },
+        weather: { command: 'weather-mcp', args: ['--port', '3000'], requiresApproval: false },
       },
       memory: {
         adapter: 'postgres' as const,
@@ -74,6 +74,7 @@ describe('AssistantConfigSchema', () => {
     expect(result.stream?.flushInterval).toBe(500);
     expect(result.rateLimit?.maxPerMinute).toBe(10);
     expect(result.mcpServers?.weather.command).toBe('weather-mcp');
+    expect(result.mcpServers?.weather.requiresApproval).toBe(false);
   });
 
   it('accepts all valid LLM providers', () => {

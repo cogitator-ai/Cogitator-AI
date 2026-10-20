@@ -4,6 +4,11 @@ const McpServerSchema = z.object({
   command: z.string(),
   args: z.array(z.string()),
   env: z.record(z.string(), z.string()).optional(),
+  /**
+   * Whether the server's tools ask approval in chat before they run: `true` for every call,
+   * `false` for none. Default: the tools the server marks destructive
+   */
+  requiresApproval: z.boolean().optional(),
 });
 
 const OwnerIdsSchema = z.array(z.string()).optional();
