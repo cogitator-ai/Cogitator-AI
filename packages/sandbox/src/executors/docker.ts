@@ -91,7 +91,8 @@ export class DockerSandboxExecutor extends BaseSandboxExecutor {
     request: SandboxExecutionRequest,
     config: SandboxConfig
   ): Promise<SandboxResult<SandboxExecutionResult>> {
-    if (!this.docker || !this.pool) {
+    const pool = this.pool;
+    if (!this.docker || !pool) {
       return this.failure('Docker executor not connected');
     }
 
@@ -130,7 +131,7 @@ export class DockerSandboxExecutor extends BaseSandboxExecutor {
     let containerCorrupted = true;
 
     try {
-      const container = await this.pool.acquire(image, {
+      const acquiring = pool.acquire(image, {
         memory,
         cpus,
         cpuShares: config.resources?.cpuShares,
@@ -140,13 +141,16 @@ export class DockerSandboxExecutor extends BaseSandboxExecutor {
         mounts: config.mounts,
         user: config.user,
       });
+      const container = await untilAborted(acquiring, request.signal);
+      if (!container) {
+        acquiring.then(
+          (late) => pool.release(late),
+          () => undefined
+        );
+        return this.failure(abortMessage(request.signal!));
+      }
 
       try {
-        if (request.signal?.aborted) {
-          containerCorrupted = false;
-          return this.failure(abortMessage(request.signal));
-        }
-
         const exec = await container.exec({
           Cmd: request.command,
           Env: Object.entries({ ...config.env, ...request.env }).map(([k, v]) => `${k}=${v}`),
@@ -170,7 +174,7 @@ export class DockerSandboxExecutor extends BaseSandboxExecutor {
           duration: Date.now() - startTime,
         });
       } finally {
-        await this.pool.release(container, { corrupted: containerCorrupted });
+        await pool.release(container, { corrupted: containerCorrupted });
       }
     } catch (error) {
       return this.failure(
@@ -269,6 +273,23 @@ export class DockerSandboxExecutor extends BaseSandboxExecutor {
       if (onAbort) signal?.removeEventListener('abort', onAbort);
     }
   }
+}
+
+/**
+ * `promise`'s value, or `undefined` as soon as `signal` aborts (an image pull or a container
+ * start can take minutes, and a cancelled execution should not wait for it).
+ */
+function untilAborted<T>(
+  promise: Promise<T>,
+  signal: AbortSignal | undefined
+): Promise<T | undefined> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.resolve(undefined);
+  return new Promise<T | undefined>((resolve, reject) => {
+    const onAbort = () => resolve(undefined);
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
 }
 
 /**

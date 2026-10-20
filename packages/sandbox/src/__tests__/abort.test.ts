@@ -113,6 +113,9 @@ describe('aborting a sandbox execution', () => {
 
     beforeEach(async () => {
       vi.clearAllMocks();
+      mockDocker.createContainer.mockImplementation(async () =>
+        container({ start: vi.fn(), inspect: vi.fn() })
+      );
       mockDocker.ping.mockResolvedValue('OK');
       mockDocker.getImage.mockReturnValue({ inspect: vi.fn().mockResolvedValue({}) });
       executor = new DockerSandboxExecutor({ pool: { reuseContainers: true } });
@@ -137,6 +140,29 @@ describe('aborting a sandbox execution', () => {
       expect(result).toEqual({ success: false, error: 'Execution aborted: user left' });
       expect(stream.end).toHaveBeenCalled();
       expect(box.remove).toHaveBeenCalledWith({ force: true });
+    });
+
+    it('stops waiting for a container that is still starting, and removes it once it is up', async () => {
+      const box = container({ start: vi.fn(), inspect: vi.fn() });
+      let created!: (value: typeof box) => void;
+      mockDocker.createContainer.mockImplementationOnce(
+        () => new Promise((resolve) => (created = resolve))
+      );
+      const plain = new DockerSandboxExecutor();
+      await plain.connect();
+
+      const started = Date.now();
+      const result = await plain.execute(
+        { command: ['echo', 'hi'], signal: abortAfter(30, 'gone') },
+        config
+      );
+      expect(result).toEqual({ success: false, error: 'Execution aborted: gone' });
+      expect(Date.now() - started).toBeLessThan(1000);
+
+      created(box);
+      await vi.waitFor(() => expect(box.remove).toHaveBeenCalledWith({ force: true }));
+      expect(box.exec).not.toHaveBeenCalled();
+      await plain.disconnect();
     });
 
     it('runs nothing when the signal is already aborted', async () => {

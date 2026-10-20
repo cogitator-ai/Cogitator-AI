@@ -79,6 +79,9 @@ describe('DockerSandboxExecutor', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockDocker.createContainer.mockImplementation(async () =>
+      createMockContainer(createMockExec(createMockStream('', '')), 'warm-container')
+    );
     mockDocker.ping.mockResolvedValue('OK');
     mockDocker.getImage.mockReturnValue({
       inspect: vi.fn().mockResolvedValue({}),
