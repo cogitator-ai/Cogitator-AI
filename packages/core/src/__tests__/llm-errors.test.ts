@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { ErrorCode } from '@cogitator-ai/types';
-import { createLLMError } from '../llm/errors';
+import { abortReason, createLLMError, providerErrorIn, wrapSDKError } from '../llm/errors';
 
 const ctx = { provider: 'openai', model: 'gpt-5' };
 
@@ -93,5 +93,238 @@ describe("createLLMError keeps the provider's message", () => {
     [429, 'You exceeded your current quota, please check your plan and billing details.'],
   ])('for a %i', (status, body) => {
     expect(createLLMError(ctx, status, body).message).toContain(body.slice(0, 30));
+  });
+});
+
+describe('provider error tables', () => {
+  const openai = { provider: 'openai', model: 'gpt-5' };
+  const anthropic = { provider: 'anthropic', model: 'claude-sonnet-5-5' };
+  const google = { provider: 'google', model: 'gemini-3.8-flash' };
+  const body = (error: Record<string, unknown>) => JSON.stringify({ error });
+
+  it.each([
+    'insufficient_quota',
+    'credit_balance_exhausted',
+    'organization_spend_limit_exceeded',
+    'project_spend_limit_exceeded',
+    'organization_usage_limit_exceeded',
+  ])('does not retry an OpenAI 429 with code %s, the quota is gone', (code) => {
+    const error = createLLMError(openai, 429, body({ message: 'No credits', code }), {
+      retryAfterOverride: 20_000,
+    });
+
+    expect(error.code).toBe(ErrorCode.LLM_QUOTA_EXCEEDED);
+    expect(error.kind).toBe('quota');
+    expect(error.details?.kind).toBe('quota');
+    expect(error.retryable).toBe(false);
+    expect(error.retryAfter).toBeUndefined();
+  });
+
+  it('reads the old insufficient_quota type of an OpenAI-compatible server as quota', () => {
+    const error = createLLMError(
+      { provider: 'deepseek' },
+      429,
+      body({ message: 'Balance too low', type: 'insufficient_quota' })
+    );
+    expect(error.kind).toBe('quota');
+  });
+
+  it('retries an OpenAI rate limit after the wait it asks for', () => {
+    const error = createLLMError(
+      openai,
+      429,
+      body({ message: 'Rate limit reached for requests', type: 'requests' }),
+      { retryAfterOverride: 1500 }
+    );
+
+    expect(error.code).toBe(ErrorCode.LLM_RATE_LIMITED);
+    expect(error.kind).toBe('rate_limit');
+    expect(error.retryable).toBe(true);
+    expect(error.retryAfter).toBe(1500);
+  });
+
+  it('retries an overloaded OpenAI server', () => {
+    const error = createLLMError(
+      openai,
+      503,
+      body({ type: 'service_unavailable_error', code: 'server_is_overloaded', message: 'Busy' })
+    );
+    expect(error).toMatchObject({ kind: 'overloaded', retryable: true });
+  });
+
+  it.each([
+    ['billing_error', 402, 'quota', false, ErrorCode.LLM_QUOTA_EXCEEDED],
+    ['authentication_error', 401, 'authentication', false, ErrorCode.LLM_UNAVAILABLE],
+    ['permission_error', 403, 'permission', false, ErrorCode.LLM_UNAVAILABLE],
+    ['not_found_error', 404, 'not_found', false, ErrorCode.LLM_UNAVAILABLE],
+    ['rate_limit_error', 429, 'rate_limit', true, ErrorCode.LLM_RATE_LIMITED],
+    ['api_error', 500, 'server_error', true, ErrorCode.LLM_UNAVAILABLE],
+    ['timeout_error', 504, 'timeout', true, ErrorCode.LLM_TIMEOUT],
+    ['overloaded_error', 529, 'overloaded', true, ErrorCode.LLM_UNAVAILABLE],
+  ])('reads the Anthropic %s', (type, status, kind, retryable, code) => {
+    const error = createLLMError(
+      anthropic,
+      status,
+      JSON.stringify({ type: 'error', error: { type, message: 'Something' } })
+    );
+    expect(error).toMatchObject({ kind, retryable, code });
+  });
+
+  it('reads an Anthropic 429 for a reached spend limit as quota', () => {
+    const error = createLLMError(
+      anthropic,
+      429,
+      JSON.stringify({
+        type: 'error',
+        error: {
+          type: 'rate_limit_error',
+          message: 'You have reached your specified API usage limits.',
+        },
+      })
+    );
+    expect(error).toMatchObject({ kind: 'quota', retryable: false });
+  });
+
+  const quotaFailure = (quotaId: string) =>
+    body({
+      code: 429,
+      status: 'RESOURCE_EXHAUSTED',
+      message: 'You exceeded your current quota.',
+      details: [
+        {
+          '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+          violations: [
+            {
+              quotaMetric: 'generativelanguage.googleapis.com/generate_content_free_tier_requests',
+              quotaId,
+            },
+          ],
+        },
+        { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '55s' },
+      ],
+    });
+
+  it('retries a Gemini per-minute rate limit after its retryDelay', () => {
+    const error = createLLMError(
+      google,
+      429,
+      quotaFailure('GenerateRequestsPerMinutePerProjectPerModel-FreeTier')
+    );
+    expect(error).toMatchObject({ kind: 'rate_limit', retryable: true, retryAfter: 55_000 });
+  });
+
+  it('does not retry a Gemini quota counted per day, whatever its retryDelay', () => {
+    const error = createLLMError(
+      google,
+      429,
+      quotaFailure('GenerateRequestsPerDayPerProjectPerModel-FreeTier')
+    );
+    expect(error).toMatchObject({
+      kind: 'quota',
+      code: ErrorCode.LLM_QUOTA_EXCEEDED,
+      retryable: false,
+    });
+  });
+
+  it('reads Gemini prepaid credits that ran out as quota', () => {
+    const error = createLLMError(
+      google,
+      402,
+      body({ code: 402, status: 'RESOURCE_EXHAUSTED', message: 'Credits depleted' })
+    );
+    expect(error.kind).toBe('quota');
+  });
+
+  it('reads an invalid Gemini API key as an authentication failure', () => {
+    const error = createLLMError(
+      google,
+      400,
+      body({
+        code: 400,
+        status: 'INVALID_ARGUMENT',
+        message: 'API key not valid. Please pass a valid API key.',
+        details: [
+          { '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason: 'API_KEY_INVALID' },
+        ],
+      })
+    );
+    expect(error).toMatchObject({ kind: 'authentication', retryable: false });
+  });
+
+  it('reads an overloaded Gemini as retryable', () => {
+    const error = createLLMError(
+      google,
+      503,
+      body({ code: 503, status: 'UNAVAILABLE', message: 'The model is overloaded.' })
+    );
+    expect(error).toMatchObject({ kind: 'overloaded', retryable: true });
+  });
+});
+
+describe('errors an SDK raises from a stream that began', () => {
+  class APIError extends Error {
+    constructor(
+      readonly status: number | undefined,
+      readonly error: unknown
+    ) {
+      super(JSON.stringify(error));
+    }
+  }
+
+  it('classifies an Anthropic stream error event by its type', () => {
+    const error = wrapSDKError(
+      new APIError(undefined, {
+        type: 'error',
+        error: { type: 'overloaded_error', message: 'Overloaded' },
+      }),
+      { provider: 'anthropic' }
+    );
+
+    expect(error).toMatchObject({ kind: 'overloaded', retryable: true });
+    expect(error.message).toContain('Overloaded');
+    expect(error.message).not.toContain('{');
+  });
+
+  it('classifies an OpenAI stream error chunk by its code', () => {
+    const error = wrapSDKError(
+      new APIError(undefined, { message: 'Out of credits', code: 'credit_balance_exhausted' }),
+      { provider: 'openai' }
+    );
+    expect(error).toMatchObject({ kind: 'quota', retryable: false });
+  });
+
+  it('reads an error in a response body by the provider codes', () => {
+    expect(
+      providerErrorIn({ error: { code: 'insufficient_quota', message: 'No credits' } }, ctx)
+    ).toMatchObject({ kind: 'quota', retryable: false });
+    expect(providerErrorIn({ error: { code: 503, message: 'Upstream down' } }, ctx)).toMatchObject({
+      kind: 'overloaded',
+      retryable: true,
+    });
+    expect(providerErrorIn({ error: { message: 'Something broke' } }, ctx)).toMatchObject({
+      kind: 'server_error',
+      retryable: true,
+      details: { statusCode: 502 },
+    });
+  });
+});
+
+describe('abortReason', () => {
+  it('is the reason the caller aborted with', () => {
+    const controller = new AbortController();
+    const reason = new Error('Stopped by the user');
+    expect(abortReason(controller.signal)).toBeUndefined();
+
+    controller.abort(reason);
+    expect(abortReason(controller.signal)).toBe(reason);
+  });
+
+  it('is an AbortError when the reason is not an Error', () => {
+    const controller = new AbortController();
+    controller.abort('user left');
+    expect(abortReason(controller.signal)).toMatchObject({
+      name: 'AbortError',
+      message: 'user left',
+    });
   });
 });

@@ -20,6 +20,7 @@ describe('loadEnvConfig()', () => {
         [
           'OPENAI_API_KEY',
           'ANTHROPIC_API_KEY',
+          'ANTHROPIC_BASE_URL',
           'OLLAMA_HOST',
           'OLLAMA_URL',
           'OLLAMA_API_KEY',
@@ -89,6 +90,37 @@ describe('loadEnvConfig()', () => {
 
     const config = loadEnvConfig();
     expect(config.llm?.providers?.anthropic?.apiKey).toBe('sk-ant-test-key');
+  });
+
+  it('loads the Anthropic base URL from ANTHROPIC_BASE_URL, COGITATOR_ first', () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-test-key';
+    process.env.ANTHROPIC_BASE_URL = 'https://gateway.example.com/anthropic';
+
+    expect(loadEnvConfig().llm?.providers?.anthropic).toEqual({
+      apiKey: 'sk-ant-test-key',
+      baseUrl: 'https://gateway.example.com/anthropic',
+    });
+
+    process.env.COGITATOR_ANTHROPIC_BASE_URL = 'https://proxy.example.com';
+    expect(loadEnvConfig().llm?.providers?.anthropic?.baseUrl).toBe('https://proxy.example.com');
+  });
+
+  it('loads the Google base URL from COGITATOR_GOOGLE_BASE_URL', () => {
+    process.env.COGITATOR_GOOGLE_API_KEY = 'google-test-key';
+    process.env.COGITATOR_GOOGLE_BASE_URL = 'https://gateway.example.com/gemini/v1beta';
+
+    expect(loadEnvConfig().llm?.providers?.google).toEqual({
+      apiKey: 'google-test-key',
+      baseUrl: 'https://gateway.example.com/gemini/v1beta',
+    });
+  });
+
+  it('leaves the base URL out when only the API key is set', () => {
+    delete process.env.ANTHROPIC_BASE_URL;
+    delete process.env.COGITATOR_ANTHROPIC_BASE_URL;
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-test-key';
+
+    expect(loadEnvConfig().llm?.providers?.anthropic).toEqual({ apiKey: 'sk-ant-test-key' });
   });
 
   it('loads limits from env', () => {

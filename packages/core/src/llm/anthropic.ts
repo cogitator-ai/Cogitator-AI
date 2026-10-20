@@ -15,7 +15,7 @@ import type {
   ContentPart,
 } from '@cogitator-ai/types';
 import { BaseLLMBackend } from './base';
-import { LLMError, wrapSDKError, type LLMErrorContext } from './errors';
+import { LLMError, abortReason, wrapSDKError, type LLMErrorContext } from './errors';
 import {
   finishRunsTools,
   normalizeTurn,
@@ -43,6 +43,10 @@ import {
 
 interface AnthropicConfig {
   apiKey: string;
+  /** The API base (default `https://api.anthropic.com`, or `ANTHROPIC_BASE_URL` when set). */
+  baseUrl?: string;
+  /** Headers sent with every request. */
+  headers?: Record<string, string>;
   /** Retries the provider's SDK makes on its own; leave unset for the SDK default. The runtime passes 0 and retries itself. */
   maxRetries?: number;
 }
@@ -68,12 +72,14 @@ export class AnthropicBackend extends BaseLLMBackend {
     this.client = new Anthropic({
       apiKey: config.apiKey,
       maxRetries: config.maxRetries,
+      ...(config.baseUrl && { baseURL: config.baseUrl }),
+      ...(config.headers && { defaultHeaders: config.headers }),
     });
   }
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
     const model = this.resolveModel(request.model);
-    const ctx: LLMErrorContext = { provider: this.provider, model };
+    const ctx: LLMErrorContext = { provider: this.provider, model, endpoint: this.client.baseURL };
 
     const send = (replayThinking: boolean) => {
       const params = this.buildParams(request, model, replayThinking);
@@ -94,7 +100,7 @@ export class AnthropicBackend extends BaseLLMBackend {
         return send(false);
       });
     } catch (e) {
-      throw this.wrapAnthropicError(e, ctx);
+      throw abortReason(request.signal) ?? this.wrapAnthropicError(e, ctx);
     }
 
     const toolCalls: ToolCall[] = [];
@@ -140,7 +146,7 @@ export class AnthropicBackend extends BaseLLMBackend {
 
   async *chatStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk> {
     const model = this.resolveModel(request.model);
-    const ctx: LLMErrorContext = { provider: this.provider, model };
+    const ctx: LLMErrorContext = { provider: this.provider, model, endpoint: this.client.baseURL };
 
     let stream: ReturnType<typeof this.client.messages.stream>;
     try {
@@ -149,7 +155,7 @@ export class AnthropicBackend extends BaseLLMBackend {
         ? this.client.messages.stream(params, { signal: request.signal })
         : this.client.messages.stream(params);
     } catch (e) {
-      throw this.wrapAnthropicError(e, ctx);
+      throw abortReason(request.signal) ?? this.wrapAnthropicError(e, ctx);
     }
 
     const id = this.generateId();
@@ -230,7 +236,9 @@ export class AnthropicBackend extends BaseLLMBackend {
         }
       }
     } catch (e) {
-      throw e instanceof LLMError ? e : this.wrapAnthropicError(e, ctx);
+      throw (
+        abortReason(request.signal) ?? (e instanceof LLMError ? e : this.wrapAnthropicError(e, ctx))
+      );
     }
   }
 

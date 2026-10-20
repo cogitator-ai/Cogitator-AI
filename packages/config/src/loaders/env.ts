@@ -20,7 +20,9 @@ const ENV_PREFIX = 'COGITATOR_';
  * - COGITATOR_OPENAI_API_KEY -> llm.providers.openai.apiKey
  * - COGITATOR_OPENAI_BASE_URL -> llm.providers.openai.baseUrl
  * - COGITATOR_ANTHROPIC_API_KEY -> llm.providers.anthropic.apiKey
+ * - COGITATOR_ANTHROPIC_BASE_URL -> llm.providers.anthropic.baseUrl
  * - COGITATOR_GOOGLE_API_KEY -> llm.providers.google.apiKey
+ * - COGITATOR_GOOGLE_BASE_URL -> llm.providers.google.baseUrl
  * - COGITATOR_VLLM_BASE_URL -> llm.providers.vllm.baseUrl
  * - COGITATOR_AZURE_API_KEY -> llm.providers.azure.apiKey
  * - COGITATOR_AZURE_ENDPOINT -> llm.providers.azure.endpoint
@@ -42,6 +44,7 @@ const ENV_PREFIX = 'COGITATOR_';
  * Also supports standard env vars:
  * - OPENAI_API_KEY -> llm.providers.openai.apiKey
  * - ANTHROPIC_API_KEY -> llm.providers.anthropic.apiKey
+ * - ANTHROPIC_BASE_URL -> llm.providers.anthropic.baseUrl
  * - OLLAMA_API_KEY -> llm.providers.ollama.apiKey (baseUrl defaults to https://ollama.com)
  * - GEMINI_API_KEY -> llm.providers.google.apiKey (alias of GOOGLE_API_KEY)
  * - AZURE_OPENAI_API_KEY -> llm.providers.azure.apiKey
@@ -172,11 +175,21 @@ function loadProviderConfigs(): ProvidersConfig {
     providers.openai = { apiKey: openai.apiKey, baseUrl: openai.baseUrl };
   }
 
-  const anthropic = readProvider('anthropic').apiKey;
-  if (anthropic) providers.anthropic = { apiKey: anthropic };
+  const anthropic = readProvider('anthropic');
+  if (anthropic.apiKey) {
+    providers.anthropic = {
+      apiKey: anthropic.apiKey,
+      ...(anthropic.baseUrl ? { baseUrl: anthropic.baseUrl } : {}),
+    };
+  }
 
-  const google = readProvider('google').apiKey;
-  if (google) providers.google = { apiKey: google };
+  const google = readProvider('google');
+  if (google.apiKey) {
+    providers.google = {
+      apiKey: google.apiKey,
+      ...(google.baseUrl ? { baseUrl: google.baseUrl } : {}),
+    };
+  }
 
   const vllm = readProvider('vllm').baseUrl;
   if (vllm) providers.vllm = { baseUrl: vllm };

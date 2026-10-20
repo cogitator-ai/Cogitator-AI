@@ -30,12 +30,35 @@ describe('GoogleBackend', () => {
       expect(backend.provider).toBe('google');
     });
 
-    it('should accept custom baseUrl', () => {
+    it('sends requests to a custom base URL with its headers', async () => {
       const customBackend = new GoogleBackend({
         apiKey: 'test-key',
-        baseUrl: 'https://custom.api.com',
+        baseUrl: 'https://gateway.example.com/gemini/v1beta/',
+        headers: { 'x-gateway-key': 'gw-secret', 'x-goog-api-key': 'ignored' },
       });
-      expect(customBackend.provider).toBe('google');
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          candidates: [
+            { content: { role: 'model', parts: [{ text: 'ok' }] }, finishReason: 'STOP' },
+          ],
+        }),
+      });
+
+      await customBackend.chat({
+        model: 'gemini-2.5-flash',
+        messages: [{ role: 'user', content: 'Hi' }],
+      });
+
+      const [url, options] = mockFetch.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe(
+        'https://gateway.example.com/gemini/v1beta/models/gemini-2.5-flash:generateContent'
+      );
+      expect(options.headers).toEqual({
+        'x-gateway-key': 'gw-secret',
+        'x-goog-api-key': 'test-key',
+        'Content-Type': 'application/json',
+      });
     });
   });
 
@@ -473,6 +496,7 @@ describe('GoogleBackend', () => {
 
       let chunkIndex = 0;
       const mockReader = {
+        cancel: vi.fn(async () => undefined),
         read: vi.fn().mockImplementation(async () => {
           if (chunkIndex < chunks.length) {
             return { done: false, value: encoder.encode(chunks[chunkIndex++]) };
@@ -510,6 +534,7 @@ describe('GoogleBackend', () => {
 
       let chunkIndex = 0;
       const mockReader = {
+        cancel: vi.fn(async () => undefined),
         read: vi.fn().mockImplementation(async () => {
           if (chunkIndex < chunks.length) {
             return { done: false, value: encoder.encode(chunks[chunkIndex++]) };
@@ -545,6 +570,7 @@ describe('GoogleBackend', () => {
 
     it('should use correct streaming endpoint', async () => {
       const mockReader = {
+        cancel: vi.fn(async () => undefined),
         read: vi.fn().mockResolvedValue({ done: true, value: undefined }),
         releaseLock: vi.fn(),
       };
@@ -572,6 +598,7 @@ describe('GoogleBackend', () => {
       const encoder = new TextEncoder();
 
       const mockReader = {
+        cancel: vi.fn(async () => undefined),
         read: vi
           .fn()
           .mockResolvedValueOnce({
@@ -615,6 +642,7 @@ describe('GoogleBackend', () => {
       ];
 
       const mockReader = {
+        cancel: vi.fn(async () => undefined),
         read: vi.fn().mockImplementation(async () => {
           if (readIndex < chunks.length) {
             return { done: false, value: encoder.encode(chunks[readIndex++]) };
@@ -928,6 +956,7 @@ describe('GoogleBackend', () => {
         ok: true,
         body: {
           getReader: () => ({
+            cancel: async () => undefined,
             read: async () =>
               index < lines.length
                 ? { done: false, value: encoder.encode(lines[index++]) }

@@ -105,6 +105,8 @@ export function createLLMBackend(
       }
       return new AnthropicBackend({
         apiKey: providers.anthropic.apiKey,
+        baseUrl: providers.anthropic.baseUrl,
+        headers: providers.anthropic.headers,
         maxRetries: 0,
       });
 
@@ -114,6 +116,8 @@ export function createLLMBackend(
       }
       return new GoogleBackend({
         apiKey: providers.google.apiKey,
+        baseUrl: providers.google.baseUrl,
+        headers: providers.google.headers,
       });
 
     case 'azure':

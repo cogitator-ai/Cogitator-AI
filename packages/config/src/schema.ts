@@ -18,6 +18,8 @@ export const LLMProviderSchema = z.enum([
   'openrouter',
 ]);
 
+const ProviderHeadersSchema = z.record(z.string(), z.string());
+
 export const ProvidersConfigSchema = z.object({
   ollama: z
     .object({ baseUrl: z.string().optional(), apiKey: z.string().optional() })
@@ -33,8 +35,20 @@ export const ProvidersConfigSchema = z.object({
       api: z.enum(['responses', 'chat-completions']).optional(),
     })
     .optional(),
-  anthropic: z.object({ apiKey: z.string() }).optional(),
-  google: z.object({ apiKey: z.string() }).optional(),
+  anthropic: z
+    .object({
+      apiKey: z.string(),
+      baseUrl: z.string().optional(),
+      headers: ProviderHeadersSchema.optional(),
+    })
+    .optional(),
+  google: z
+    .object({
+      apiKey: z.string(),
+      baseUrl: z.string().optional(),
+      headers: ProviderHeadersSchema.optional(),
+    })
+    .optional(),
   azure: z
     .object({
       apiKey: z.string(),

@@ -18,7 +18,10 @@ import type {
 import { nanoid } from 'nanoid';
 import { BaseLLMBackend } from './base';
 import {
+  LLMError,
+  abortReason,
   createLLMError,
+  providerErrorIn,
   retryAfterFromHeaders,
   llmUnavailable,
   llmInvalidResponse,
@@ -127,7 +130,10 @@ export class OllamaBackend extends BaseLLMBackend {
         signal: request.signal,
       });
     } catch (e) {
-      throw llmUnavailable(ctx, 'Failed to connect to Ollama', e instanceof Error ? e : undefined);
+      throw (
+        abortReason(request.signal) ??
+        llmUnavailable(ctx, 'Failed to connect to Ollama', e instanceof Error ? e : undefined)
+      );
     }
 
     if (!response.ok) {
@@ -139,7 +145,7 @@ export class OllamaBackend extends BaseLLMBackend {
 
     const data = (await response.json()) as OllamaChatResponse;
     if (data.error) {
-      throw llmUnavailable(ctx, `Ollama error: ${data.error}`);
+      throw ollamaError(data.error, ctx);
     }
     if (!data.message) {
       throw llmInvalidResponse(ctx, 'Ollama response did not include a message');
@@ -180,7 +186,10 @@ export class OllamaBackend extends BaseLLMBackend {
         signal: request.signal,
       });
     } catch (e) {
-      throw llmUnavailable(ctx, 'Failed to connect to Ollama', e instanceof Error ? e : undefined);
+      throw (
+        abortReason(request.signal) ??
+        llmUnavailable(ctx, 'Failed to connect to Ollama', e instanceof Error ? e : undefined)
+      );
     }
 
     if (!response.ok) {
@@ -222,7 +231,7 @@ export class OllamaBackend extends BaseLLMBackend {
             continue;
           }
           if (data.error) {
-            throw llmUnavailable(ctx, `Ollama stream error: ${data.error}`);
+            throw ollamaError(data.error, ctx);
           }
           validChunks++;
 
@@ -260,8 +269,15 @@ export class OllamaBackend extends BaseLLMBackend {
           yield chunk;
         }
       }
+    } catch (e) {
+      throw (
+        abortReason(request.signal) ??
+        (e instanceof LLMError
+          ? e
+          : llmUnavailable(ctx, 'Ollama stream failed', e instanceof Error ? e : undefined))
+      );
     } finally {
-      reader.releaseLock?.();
+      reader.cancel().catch(() => undefined);
     }
 
     if (validChunks === 0 && parseErrors > 0) {
@@ -421,4 +437,11 @@ export function ollamaThink(
   if (reasoning.effort === 'none') return false;
   if (/gpt-oss/i.test(model) && reasoning.effort) return OLLAMA_THINK_LEVELS[reasoning.effort];
   return true;
+}
+
+/** An error Ollama reported in place of an answer, classified by what it says. */
+function ollamaError(message: string, ctx: LLMErrorContext): LLMError {
+  return (
+    providerErrorIn({ error: { message } }, ctx) ?? llmUnavailable(ctx, `Ollama error: ${message}`)
+  );
 }

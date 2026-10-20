@@ -34,6 +34,39 @@ describe('CogitatorConfigSchema', () => {
     expect(result).toEqual({});
   });
 
+  it('accepts a base URL and headers for Anthropic and Google', () => {
+    const result = CogitatorConfigSchema.parse({
+      llm: {
+        providers: {
+          anthropic: {
+            apiKey: 'sk-ant-xxx',
+            baseUrl: 'https://gateway.example.com/anthropic',
+            headers: { 'x-gateway-key': 'secret' },
+          },
+          google: {
+            apiKey: 'google-xxx',
+            baseUrl: 'https://gateway.example.com/gemini/v1beta',
+            headers: { 'x-team': 'research' },
+          },
+        },
+      },
+    });
+
+    expect(result.llm?.providers?.anthropic).toEqual({
+      apiKey: 'sk-ant-xxx',
+      baseUrl: 'https://gateway.example.com/anthropic',
+      headers: { 'x-gateway-key': 'secret' },
+    });
+    expect(result.llm?.providers?.google?.headers).toEqual({ 'x-team': 'research' });
+  });
+
+  it('rejects headers that are not strings', () => {
+    const result = CogitatorConfigSchema.safeParse({
+      llm: { providers: { anthropic: { apiKey: 'sk-ant-xxx', headers: { 'x-retries': 3 } } } },
+    });
+    expect(result.success).toBe(false);
+  });
+
   it('accepts full config', () => {
     const config = {
       llm: {

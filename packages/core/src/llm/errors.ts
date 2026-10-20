@@ -1,4 +1,5 @@
-import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
+import { CogitatorError, ErrorCode, type LLMErrorKind } from '@cogitator-ai/types';
+import { classifyProviderError, statusOfKind } from './error-tables';
 
 export interface LLMErrorContext {
   provider: string;
@@ -12,18 +13,30 @@ export interface LLMErrorContext {
 interface SDKAPIError extends Error {
   status?: number;
   headers?: Headers;
+  /** The parsed error body, which the SDKs keep on errors they raise from a stream */
+  error?: unknown;
+}
+
+export interface LLMErrorOptions {
+  cause?: Error;
+  retryable?: boolean;
+  retryAfter?: number;
+  /** Why the call failed, kept as `details.kind` too */
+  kind?: LLMErrorKind;
 }
 
 export class LLMError extends CogitatorError {
   readonly provider: string;
   readonly model?: string;
   readonly endpoint?: string;
+  /** Why the call failed, from the provider's error codes; absent for errors of the runtime's own, such as configuration */
+  readonly kind?: LLMErrorKind;
 
   constructor(
     message: string,
     code: ErrorCode,
     context: LLMErrorContext,
-    options?: { cause?: Error; retryable?: boolean; retryAfter?: number }
+    options?: LLMErrorOptions
   ) {
     super({
       message: `[${context.provider}] ${message}`,
@@ -35,6 +48,7 @@ export class LLMError extends CogitatorError {
         requestId: context.requestId,
         statusCode: context.statusCode,
         responseBody: context.responseBody?.slice(0, 500),
+        ...(options?.kind && { kind: options.kind }),
       },
       cause: options?.cause,
       retryable: options?.retryable,
@@ -44,36 +58,12 @@ export class LLMError extends CogitatorError {
     this.provider = context.provider;
     this.model = context.model;
     this.endpoint = context.endpoint;
+    this.kind = options?.kind;
   }
 
   static isLLMError(error: unknown): error is LLMError {
     return error instanceof LLMError;
   }
-}
-
-/**
- * Phrases providers use when the prompt does not fit the model's context window, matched in
- * lower case: OpenAI, Azure, DeepSeek, Groq and vLLM, Anthropic, Gemini, Bedrock, Mistral,
- * Ollama and llama.cpp. A bare mention of tokens or length is not enough: a rejected
- * `max_tokens` value says that too.
- */
-const CONTEXT_OVERFLOW_PATTERNS: readonly RegExp[] = [
-  /context_length_exceeded/,
-  /maximum context length/,
-  /context window/,
-  /prompt is too long/,
-  /input is too long/,
-  /too many input tokens/,
-  /input token count.*exceeds/,
-  /too large for model with \d+ maximum context length/,
-  /reduce the length of the messages/,
-  /exceeds (the )?(maximum |available )?context (length|size)/,
-  /context (length|size|window) exceeded/,
-];
-
-function isContextOverflow(text: string): boolean {
-  const lower = text.toLowerCase();
-  return CONTEXT_OVERFLOW_PATTERNS.some((pattern) => pattern.test(lower));
 }
 
 /**
@@ -102,101 +92,70 @@ function withProviderMessage(label: string, said: string | undefined): string {
   return `${label}: ${said}`;
 }
 
+/**
+ * The `LLMError` for a provider call that failed with HTTP `statusCode`: what kind of failure it
+ * is comes from the provider's own error codes in `responseBody` (see `classifyProviderError`),
+ * and the kind decides the error code and whether a retry may help. Quota and billing errors are
+ * not retried, even when the provider sends them as a 429.
+ */
 export function createLLMError(
   context: LLMErrorContext,
   statusCode: number,
   responseBody?: string,
-  options?: { cause?: Error; retryAfterOverride?: number }
+  options?: { cause?: Error; retryAfterOverride?: number; kind?: LLMErrorKind }
 ): LLMError {
   const ctx = { ...context, statusCode, responseBody };
   const cause = options?.cause;
   const said = providerMessage(responseBody);
-
+  const kind = options?.kind ?? classifyProviderError(context.provider, statusCode, responseBody);
   const retryAfter = options?.retryAfterOverride ?? parseRetryAfter(responseBody);
+  const error = (label: string, code: ErrorCode, retryable: boolean, extra?: string) =>
+    new LLMError(withProviderMessage(label, said ?? extra), code, ctx, {
+      cause,
+      retryable,
+      kind,
+      ...(retryable && retryAfter !== undefined && { retryAfter }),
+    });
 
-  if (statusCode === 429) {
-    return new LLMError(
-      withProviderMessage('Rate limit exceeded', said),
-      ErrorCode.LLM_RATE_LIMITED,
-      ctx,
-      {
-        cause,
-        retryable: true,
-        retryAfter,
-      }
-    );
-  }
-
-  if (statusCode === 401 || statusCode === 403) {
-    return new LLMError(
-      withProviderMessage(`Authentication failed (${statusCode})`, said),
-      ErrorCode.LLM_UNAVAILABLE,
-      ctx,
-      { cause, retryable: false }
-    );
-  }
-
-  if (statusCode === 400) {
-    if (isContextOverflow(responseBody ?? '')) {
-      return new LLMError(
-        withProviderMessage('Context length exceeded', said),
-        ErrorCode.LLM_CONTEXT_LENGTH_EXCEEDED,
-        ctx,
-        { cause, retryable: false }
-      );
-    }
-    const lower = responseBody?.toLowerCase() ?? '';
-    if (
-      (lower.includes('safety') || lower.includes('blocked')) &&
-      !lower.includes('invalid json') &&
-      !lower.includes('unknown name')
-    ) {
-      return new LLMError(
-        withProviderMessage('Content filtered by safety policy', said),
-        ErrorCode.LLM_CONTENT_FILTERED,
-        ctx,
-        { cause, retryable: false }
-      );
-    }
-    return new LLMError(
-      withProviderMessage('Bad request', said ?? 'unknown'),
-      ErrorCode.VALIDATION_ERROR,
-      ctx,
-      { cause, retryable: false }
-    );
-  }
-
-  if (statusCode >= 500) {
-    return new LLMError(
-      withProviderMessage(`Server error (${statusCode})`, said ?? 'unknown'),
-      ErrorCode.LLM_UNAVAILABLE,
-      ctx,
-      { cause, retryable: true, retryAfter }
-    );
-  }
-
-  if (statusCode === 404) {
-    return new LLMError(
-      withProviderMessage(
+  switch (kind) {
+    case 'rate_limit':
+      return error('Rate limit exceeded', ErrorCode.LLM_RATE_LIMITED, true);
+    case 'quota':
+      return error(`Quota exceeded (${statusCode})`, ErrorCode.LLM_QUOTA_EXCEEDED, false);
+    case 'authentication':
+      return error(`Authentication failed (${statusCode})`, ErrorCode.LLM_UNAVAILABLE, false);
+    case 'permission':
+      return error(`Permission denied (${statusCode})`, ErrorCode.LLM_UNAVAILABLE, false);
+    case 'not_found':
+      return error(
         `Model or endpoint not found: ${context.model ?? context.endpoint ?? 'unknown'}`,
-        said
-      ),
-      ErrorCode.LLM_UNAVAILABLE,
-      ctx,
-      { cause, retryable: false }
-    );
+        ErrorCode.LLM_UNAVAILABLE,
+        false
+      );
+    case 'context_overflow':
+      return error('Context length exceeded', ErrorCode.LLM_CONTEXT_LENGTH_EXCEEDED, false);
+    case 'content_filter':
+      return error('Content filtered by safety policy', ErrorCode.LLM_CONTENT_FILTERED, false);
+    case 'invalid_request':
+      return error('Bad request', ErrorCode.VALIDATION_ERROR, false, 'unknown');
+    case 'overloaded':
+      return error(`Provider overloaded (${statusCode})`, ErrorCode.LLM_UNAVAILABLE, true);
+    case 'server_error':
+    case 'network':
+      return error(`Server error (${statusCode})`, ErrorCode.LLM_UNAVAILABLE, true, 'unknown');
+    case 'timeout':
+      return error(`Provider timed out (${statusCode})`, ErrorCode.LLM_TIMEOUT, true);
+    case 'invalid_response':
+      return error(`HTTP ${statusCode}`, ErrorCode.LLM_INVALID_RESPONSE, false, 'unknown');
   }
-
-  return new LLMError(
-    withProviderMessage(`HTTP ${statusCode}`, said ?? 'unknown'),
-    ErrorCode.LLM_INVALID_RESPONSE,
-    ctx,
-    { cause, retryable: false }
-  );
 }
 
 export function llmUnavailable(context: LLMErrorContext, reason: string, cause?: Error): LLMError {
-  return new LLMError(reason, ErrorCode.LLM_UNAVAILABLE, context, { cause, retryable: true });
+  return new LLMError(reason, ErrorCode.LLM_UNAVAILABLE, context, {
+    cause,
+    retryable: true,
+    kind: 'network',
+  });
 }
 
 export function llmInvalidResponse(
@@ -207,12 +166,14 @@ export function llmInvalidResponse(
   return new LLMError(reason, ErrorCode.LLM_INVALID_RESPONSE, context, {
     cause,
     retryable: false,
+    kind: 'invalid_response',
   });
 }
 
 export function llmTimeout(context: LLMErrorContext, timeoutMs: number): LLMError {
   return new LLMError(`Request timed out after ${timeoutMs}ms`, ErrorCode.LLM_TIMEOUT, context, {
     retryable: true,
+    kind: 'timeout',
   });
 }
 
@@ -226,14 +187,35 @@ export function llmNotImplemented(context: LLMErrorContext, feature: string): LL
   });
 }
 
-export function wrapSDKError(error: unknown, ctx: LLMErrorContext): LLMError {
-  if (isSDKAPIError(error)) {
-    const statusCode = error.status ?? 500;
-    const enrichedCtx = { ...ctx, statusCode, responseBody: error.message };
+/**
+ * The error a call fails with when the caller aborted it: the reason the caller's `signal` was
+ * aborted with, or an `AbortError` when that is not an `Error`. `undefined` while the signal is
+ * not aborted. Backends throw it in place of whatever the SDK or `fetch` raised, so an abort is
+ * never mistaken for a provider failure that a retry or a fallback model would act on.
+ */
+export function abortReason(signal: AbortSignal | undefined): Error | undefined {
+  if (!signal?.aborted) return undefined;
+  const reason: unknown = signal.reason;
+  if (reason instanceof Error) return reason;
+  const error = new Error(reason === undefined ? 'The call was aborted' : String(reason));
+  error.name = 'AbortError';
+  return error;
+}
 
-    return createLLMError(enrichedCtx, statusCode, error.message, {
+/**
+ * An error the provider's SDK raised, as an `LLMError` classified by the provider's error body:
+ * one for an HTTP error, or one the SDK raises without a status for an error event in a stream
+ * that had already begun (both the OpenAI and the Anthropic SDK do).
+ */
+export function wrapSDKError(error: unknown, ctx: LLMErrorContext): LLMError {
+  if (error instanceof LLMError) return error;
+  if (isSDKAPIError(error)) {
+    const body = sdkErrorBody(error);
+    const kind = classifyProviderError(ctx.provider, error.status, body);
+    return createLLMError(ctx, error.status ?? statusOfKind(kind), body ?? error.message, {
       cause: error,
       retryAfterOverride: retryAfterFromHeaders(error.headers),
+      kind,
     });
   }
 
@@ -241,6 +223,7 @@ export function wrapSDKError(error: unknown, ctx: LLMErrorContext): LLMError {
     return new LLMError(`Request failed: ${error.message}`, ErrorCode.LLM_UNAVAILABLE, ctx, {
       cause: error,
       retryable: true,
+      kind: 'network',
     });
   }
 
@@ -248,10 +231,22 @@ export function wrapSDKError(error: unknown, ctx: LLMErrorContext): LLMError {
 }
 
 /**
+ * The error body an SDK kept, as JSON in the provider's own shape: the OpenAI SDK keeps the
+ * inner `error` object, the Anthropic SDK the whole body.
+ */
+function sdkErrorBody(error: SDKAPIError): string | undefined {
+  const kept = asRecord(error.error);
+  if (!kept) return undefined;
+  return JSON.stringify('error' in kept ? kept : { error: kept });
+}
+
+/**
  * The error a provider reported in the body of a successful response, as routers such as
  * OpenRouter do when the model's own provider fails: `{ error: { code, message } }` in place of
- * the choices, or in a chunk of a stream. The code is read as the HTTP status it stands for, so a
- * rate limit or a server error stays retryable. A code that is not a status counts as a bad gateway.
+ * the choices, or in a chunk of a stream. A numeric code is read as the HTTP status it stands
+ * for, otherwise the provider's error codes say what failed, so a rate limit or an overloaded
+ * provider stays retryable and an exhausted quota does not. A failure they do not explain counts
+ * as a bad gateway.
  */
 export function providerErrorIn(
   body: unknown,
@@ -261,12 +256,17 @@ export function providerErrorIn(
   const error = asRecord(asRecord(body)?.error);
   if (!error) return undefined;
   const { code } = error;
-  const status = typeof code === 'number' && code >= 400 && code < 600 ? code : 502;
-  return createLLMError(context, status, JSON.stringify(error), cause && { cause });
+  const status = typeof code === 'number' && code >= 400 && code < 600 ? code : undefined;
+  const text = JSON.stringify({ error });
+  const kind = classifyProviderError(context.provider, status, text);
+  const statusCode = status ?? (kind === 'server_error' ? 502 : statusOfKind(kind));
+  return createLLMError(context, statusCode, text, { kind, ...(cause && { cause }) });
 }
 
 function isSDKAPIError(error: unknown): error is SDKAPIError {
-  return error instanceof Error && typeof (error as SDKAPIError).status === 'number';
+  if (!(error instanceof Error)) return false;
+  const { status, error: body } = error as SDKAPIError;
+  return typeof status === 'number' || (status === undefined && asRecord(body) !== undefined);
 }
 
 /**

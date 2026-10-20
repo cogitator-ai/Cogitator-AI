@@ -14,6 +14,7 @@ import type {
 import { BaseLLMBackend } from './base';
 import {
   LLMError,
+  abortReason,
   wrapSDKError,
   llmInvalidResponse,
   providerErrorIn,
@@ -162,7 +163,7 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
         ? await this.client.chat.completions.create(params, { signal: request.signal })
         : await this.client.chat.completions.create(params);
     } catch (e) {
-      throw this.wrapAPIError(e, ctx);
+      throw abortReason(request.signal) ?? this.wrapAPIError(e, ctx);
     }
 
     const failure = providerErrorIn(response, ctx);
@@ -216,14 +217,16 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
         ? await this.client.chat.completions.create(params, { signal: request.signal })
         : await this.client.chat.completions.create(params);
     } catch (e) {
-      throw this.wrapAPIError(e, ctx);
+      throw abortReason(request.signal) ?? this.wrapAPIError(e, ctx);
     }
 
     const toolCallsAccum = new Map<number, { id?: string; name?: string }>();
     const toolCallArgsAccum = new Map<number, string>();
     let refused = false;
 
-    for await (const chunk of this.readStream(stream, ctx)) {
+    for await (const chunk of this.guardStream(stream, request.signal, (error) =>
+      this.wrapAPIError(error, ctx)
+    )) {
       const failure = providerErrorIn(chunk, ctx);
       if (failure) throw failure;
       const choice = Array.isArray(chunk.choices) ? chunk.choices[0] : undefined;
@@ -295,23 +298,6 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
         }))
       : [];
     return normalizeTurn({ finishReason: reason, toolCalls });
-  }
-
-  /**
-   * The chunks of a stream, with the provider error the SDK raises while reading one made an
-   * `LLMError`: the OpenAI SDK throws an `APIError` without a status when an event carries
-   * `{ error }`, before the chunk is handed out. Anything else, an abort included, goes on as is.
-   */
-  private async *readStream<T>(stream: AsyncIterable<T>, ctx: LLMErrorContext): AsyncGenerator<T> {
-    try {
-      for await (const chunk of stream) yield chunk;
-    } catch (error) {
-      if (error instanceof LLMError || !(error instanceof Error)) throw error;
-      const { status, error: payload } = error as Error & { status?: unknown; error?: unknown };
-      const failure =
-        status === undefined ? providerErrorIn({ error: payload }, ctx, error) : undefined;
-      throw failure ?? error;
-    }
   }
 
   /**

@@ -14,7 +14,7 @@ import {
   type CacheControl,
   type PromptCacheMarks,
 } from './prompt-cache';
-import type { LLMErrorContext } from './errors';
+import { abortReason, type LLMErrorContext } from './errors';
 import {
   DEFAULT_OPENAI_MODEL,
   buildResponsesParams,
@@ -154,7 +154,7 @@ export class OpenAIBackend extends OpenAICompatibleBackend {
         ? await this.client.responses.create(params, { signal: request.signal })
         : await this.client.responses.create(params);
     } catch (e) {
-      throw this.wrapAPIError(e, ctx);
+      throw abortReason(request.signal) ?? this.wrapAPIError(e, ctx);
     }
     return parseResponsesResponse(response, ctx);
   }
@@ -175,10 +175,12 @@ export class OpenAIBackend extends OpenAICompatibleBackend {
         ? await this.client.responses.create(params, { signal: request.signal })
         : await this.client.responses.create(params);
     } catch (e) {
-      throw this.wrapAPIError(e, ctx);
+      throw abortReason(request.signal) ?? this.wrapAPIError(e, ctx);
     }
 
-    yield* readResponsesStream(stream, ctx);
+    yield* this.guardStream(readResponsesStream(stream, ctx), request.signal, (error) =>
+      this.wrapAPIError(error, ctx)
+    );
   }
 
   /**

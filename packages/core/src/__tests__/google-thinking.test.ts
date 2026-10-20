@@ -28,6 +28,7 @@ function streamBody(lines: string[]) {
   let index = 0;
   return {
     getReader: () => ({
+      cancel: async () => undefined,
       read: async () =>
         index < lines.length
           ? { done: false, value: encoder.encode(lines[index++]) }

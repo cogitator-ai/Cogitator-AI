@@ -254,10 +254,21 @@ export type OpenAIWireApi = 'responses' | 'chat-completions';
 
 export interface AnthropicProviderConfig {
   apiKey: string;
+  /** The API base (default `https://api.anthropic.com`): a proxy or gateway in front of Anthropic. */
+  baseUrl?: string;
+  /** Headers sent with every request, for a gateway that needs its own (auth, routing, tracing). */
+  headers?: Record<string, string>;
 }
 
 export interface GoogleProviderConfig {
   apiKey: string;
+  /**
+   * The Gemini API base with its version (default `https://generativelanguage.googleapis.com/v1beta`):
+   * a proxy or gateway in front of the Gemini API.
+   */
+  baseUrl?: string;
+  /** Headers sent with every request, for a gateway that needs its own (auth, routing, tracing). */
+  headers?: Record<string, string>;
 }
 
 export interface AzureProviderConfig {

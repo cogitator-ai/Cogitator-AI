@@ -18,9 +18,10 @@ import type {
   ToolSchema,
 } from '@cogitator-ai/types';
 import { BaseLLMBackend } from './base';
-import { ErrorCode } from '@cogitator-ai/types';
+import type { LLMErrorKind } from '@cogitator-ai/types';
 import {
   LLMError,
+  abortReason,
   createLLMError,
   llmUnavailable,
   llmConfigError,
@@ -279,7 +280,7 @@ export class BedrockBackend extends BaseLLMBackend {
         ? client.send(command, { abortSignal: request.signal })
         : client.send(command))) as ConverseCommandOutput;
     } catch (e) {
-      throw this.wrapBedrockError(e, ctx);
+      throw this.wrapBedrockError(e, ctx, request.signal);
     }
 
     return this.parseResponse(response);
@@ -304,7 +305,7 @@ export class BedrockBackend extends BaseLLMBackend {
         ? client.send(command, { abortSignal: request.signal })
         : client.send(command))) as ConverseStreamCommandOutput;
     } catch (e) {
-      throw this.wrapBedrockError(e, ctx);
+      throw this.wrapBedrockError(e, ctx, request.signal);
     }
 
     const id = this.generateId();
@@ -324,8 +325,7 @@ export class BedrockBackend extends BaseLLMBackend {
         yield* this.processStreamEvent(event, id, state);
       }
     } catch (e) {
-      if (e instanceof LLMError) throw e;
-      throw this.wrapBedrockError(e, ctx);
+      throw this.wrapBedrockError(e, ctx, request.signal);
     }
   }
 
@@ -747,44 +747,50 @@ export class BedrockBackend extends BaseLLMBackend {
 
   /**
    * An AWS SDK error as an `LLMError`, classified by the exception's name, then by its HTTP
-   * status, and only for errors with neither by whole words of its message.
+   * status, and only for errors with neither by whole words of its message. A call the caller
+   * aborted fails with the abort reason instead.
    */
-  private wrapBedrockError(error: unknown, ctx: LLMErrorContext): never {
+  private wrapBedrockError(error: unknown, ctx: LLMErrorContext, signal?: AbortSignal): never {
+    const aborted = abortReason(signal);
+    if (aborted) throw aborted;
+    if (error instanceof LLMError) throw error;
     if (!(error instanceof Error)) throw llmUnavailable(ctx, String(error));
 
-    if (error.name === 'ModelTimeoutException') {
-      throw new LLMError(error.message, ErrorCode.LLM_TIMEOUT, ctx, {
-        cause: error,
-        retryable: true,
-      });
-    }
+    const known = BEDROCK_EXCEPTIONS[error.name];
     const status =
-      BEDROCK_EXCEPTION_STATUS[error.name] ??
+      known?.status ??
       (error as AWSServiceError).$metadata?.httpStatusCode ??
       statusFromMessage(error.message);
     if (status !== undefined) {
       throw createLLMError({ ...ctx, statusCode: status }, status, error.message, {
         cause: error,
+        ...(known?.kind && { kind: known.kind }),
       });
     }
     throw llmUnavailable(ctx, error.message, error);
   }
 }
 
-/** The HTTP status each Bedrock Runtime exception stands for, as the runtime should treat it. */
-const BEDROCK_EXCEPTION_STATUS: Record<string, number> = {
-  ValidationException: 400,
-  UnrecognizedClientException: 401,
-  ExpiredTokenException: 401,
-  AccessDeniedException: 403,
-  ResourceNotFoundException: 404,
-  ThrottlingException: 429,
-  ServiceQuotaExceededException: 429,
-  InternalServerException: 500,
-  ModelErrorException: 502,
-  ModelStreamErrorException: 502,
-  ServiceUnavailableException: 503,
-  ModelNotReadyException: 503,
+/**
+ * What each Bedrock Runtime exception means, with the HTTP status the API sends it with, from
+ * the Bedrock Runtime API reference. Exceptions of a stream that already began (`ConverseStream`
+ * events such as `throttlingException`) reach the SDK's caller under the same names. A
+ * `ValidationException` is read from its message, which tells a context overflow apart.
+ */
+const BEDROCK_EXCEPTIONS: Record<string, { status: number; kind?: LLMErrorKind }> = {
+  ValidationException: { status: 400 },
+  ServiceQuotaExceededException: { status: 400, kind: 'quota' },
+  UnrecognizedClientException: { status: 401, kind: 'authentication' },
+  ExpiredTokenException: { status: 401, kind: 'authentication' },
+  AccessDeniedException: { status: 403, kind: 'permission' },
+  ResourceNotFoundException: { status: 404, kind: 'not_found' },
+  ModelTimeoutException: { status: 408, kind: 'timeout' },
+  ModelErrorException: { status: 424, kind: 'server_error' },
+  ModelStreamErrorException: { status: 424, kind: 'server_error' },
+  ThrottlingException: { status: 429, kind: 'rate_limit' },
+  ModelNotReadyException: { status: 429, kind: 'overloaded' },
+  InternalServerException: { status: 500, kind: 'server_error' },
+  ServiceUnavailableException: { status: 503, kind: 'overloaded' },
 };
 
 interface AWSServiceError extends Error {

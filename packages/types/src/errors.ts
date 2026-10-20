@@ -18,6 +18,8 @@ export enum ErrorCode {
   LLM_INVALID_RESPONSE = 'LLM_INVALID_RESPONSE',
   LLM_CONTEXT_LENGTH_EXCEEDED = 'LLM_CONTEXT_LENGTH_EXCEEDED',
   LLM_CONTENT_FILTERED = 'LLM_CONTENT_FILTERED',
+  /** The account is out of credits or over a quota that waiting a moment will not lift */
+  LLM_QUOTA_EXCEEDED = 'LLM_QUOTA_EXCEEDED',
 
   SANDBOX_UNAVAILABLE = 'SANDBOX_UNAVAILABLE',
   SANDBOX_TIMEOUT = 'SANDBOX_TIMEOUT',
@@ -71,6 +73,7 @@ export const ERROR_STATUS_CODES: Record<ErrorCode, number> = {
   [ErrorCode.LLM_INVALID_RESPONSE]: 502,
   [ErrorCode.LLM_CONTEXT_LENGTH_EXCEEDED]: 400,
   [ErrorCode.LLM_CONTENT_FILTERED]: 400,
+  [ErrorCode.LLM_QUOTA_EXCEEDED]: 503,
 
   [ErrorCode.SANDBOX_UNAVAILABLE]: 503,
   [ErrorCode.SANDBOX_TIMEOUT]: 504,
@@ -113,6 +116,40 @@ export const ERROR_STATUS_CODES: Record<ErrorCode, number> = {
   [ErrorCode.NOT_IMPLEMENTED]: 501,
   [ErrorCode.CIRCUIT_OPEN]: 503,
 };
+
+/**
+ * Why a model provider call failed, read from the provider's own error codes where it gives
+ * them: an LLM error carries it as `details.kind`. Finer than the error code, which groups,
+ * for example, a wrong API key and an overloaded server as `LLM_UNAVAILABLE`.
+ *
+ * - `rate_limit`: too many requests or tokens for now, retrying after a wait helps
+ * - `quota`: out of credits, or over a daily or billing quota, retrying soon does not help
+ * - `authentication`: the API key or credentials are missing, wrong or expired
+ * - `permission`: the credentials may not use this model, region or feature
+ * - `not_found`: no such model or endpoint
+ * - `invalid_request`: the provider rejected the request as malformed
+ * - `context_overflow`: the prompt does not fit the model's context window
+ * - `content_filter`: the provider's safety policy blocked the prompt or the answer
+ * - `overloaded`: the provider is over capacity, retrying later helps
+ * - `server_error`: the provider failed on its side
+ * - `timeout`: the call did not finish in time
+ * - `network`: the provider could not be reached
+ * - `invalid_response`: the provider answered with something the backend cannot read
+ */
+export type LLMErrorKind =
+  | 'rate_limit'
+  | 'quota'
+  | 'authentication'
+  | 'permission'
+  | 'not_found'
+  | 'invalid_request'
+  | 'context_overflow'
+  | 'content_filter'
+  | 'overloaded'
+  | 'server_error'
+  | 'timeout'
+  | 'network'
+  | 'invalid_response';
 
 /**
  * Error details for additional context

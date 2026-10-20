@@ -24,10 +24,14 @@ import type {
   MessageContent,
   ContentPart,
 } from '@cogitator-ai/types';
+import { ErrorCode } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 import { BaseLLMBackend } from './base';
 import {
+  LLMError,
+  abortReason,
   createLLMError,
+  providerErrorIn,
   retryAfterFromHeaders,
   llmUnavailable,
   llmInvalidResponse,
@@ -39,8 +43,13 @@ import { normalizeTurn } from './turn';
 
 interface GoogleConfig {
   apiKey: string;
+  /** The API base with its version (default `https://generativelanguage.googleapis.com/v1beta`). */
   baseUrl?: string;
+  /** Headers sent with every request. */
+  headers?: Record<string, string>;
 }
+
+const GEMINI_API = 'https://generativelanguage.googleapis.com/v1beta';
 
 interface GeminiContent {
   role: 'user' | 'model';
@@ -150,13 +159,15 @@ interface GeminiStreamChunk {
 
 export class GoogleBackend extends BaseLLMBackend {
   readonly provider = 'google' as const;
-  private apiKey: string;
-  private baseUrl: string;
+  private readonly apiKey: string;
+  private readonly baseUrl: string;
+  private readonly headers: Record<string, string>;
 
   constructor(config: GoogleConfig) {
     super();
     this.apiKey = config.apiKey;
-    this.baseUrl = config.baseUrl ?? 'https://generativelanguage.googleapis.com/v1beta';
+    this.baseUrl = (config.baseUrl ?? GEMINI_API).replace(/\/+$/, '');
+    this.headers = config.headers ?? {};
   }
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
@@ -168,29 +179,7 @@ export class GoogleBackend extends BaseLLMBackend {
       endpoint,
     };
 
-    let response: Response;
-    try {
-      response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': this.apiKey },
-        body: JSON.stringify(geminiRequest),
-        signal: request.signal,
-      });
-    } catch (e) {
-      throw llmUnavailable(
-        ctx,
-        'Failed to connect to Gemini API',
-        e instanceof Error ? e : undefined
-      );
-    }
-
-    if (!response.ok) {
-      const errorBody = await response.text();
-      throw createLLMError(ctx, response.status, errorBody, {
-        retryAfterOverride: retryAfterFromHeaders(response.headers),
-      });
-    }
-
+    const response = await this.post(endpoint, geminiRequest, ctx, request.signal);
     const data = (await response.json()) as GeminiResponse;
     return this.parseResponse(data, ctx);
   }
@@ -204,29 +193,7 @@ export class GoogleBackend extends BaseLLMBackend {
       endpoint,
     };
 
-    let response: Response;
-    try {
-      response = await fetch(`${endpoint}?alt=sse`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': this.apiKey },
-        body: JSON.stringify(geminiRequest),
-        signal: request.signal,
-      });
-    } catch (e) {
-      throw llmUnavailable(
-        ctx,
-        'Failed to connect to Gemini API',
-        e instanceof Error ? e : undefined
-      );
-    }
-
-    if (!response.ok) {
-      const errorBody = await response.text();
-      throw createLLMError(ctx, response.status, errorBody, {
-        retryAfterOverride: retryAfterFromHeaders(response.headers),
-      });
-    }
-
+    const response = await this.post(`${endpoint}?alt=sse`, geminiRequest, ctx, request.signal);
     const reader = response.body?.getReader();
     if (!reader) {
       throw llmInvalidResponse(ctx, 'No response body from stream');
@@ -255,6 +222,9 @@ export class GoogleBackend extends BaseLLMBackend {
         });
         return;
       }
+
+      const failure = providerErrorIn(chunk, ctx);
+      if (failure) throw failure;
 
       if (!chunk.candidates?.length && chunk.promptFeedback?.blockReason) {
         throw promptBlockedError(chunk.promptFeedback);
@@ -318,9 +288,51 @@ export class GoogleBackend extends BaseLLMBackend {
       if (buffer.trim()) {
         yield* processLine(buffer);
       }
+    } catch (e) {
+      throw (
+        abortReason(request.signal) ??
+        (e instanceof LLMError
+          ? e
+          : llmUnavailable(ctx, 'Gemini stream failed', e instanceof Error ? e : undefined))
+      );
     } finally {
-      reader.releaseLock();
+      reader.cancel().catch(() => undefined);
     }
+  }
+
+  /** POSTs `body` to the Gemini API, a failed response or connection made an `LLMError`. */
+  private async post(
+    url: string,
+    body: GeminiRequest,
+    ctx: LLMErrorContext,
+    signal: AbortSignal | undefined
+  ): Promise<Response> {
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          ...this.headers,
+          'Content-Type': 'application/json',
+          'x-goog-api-key': this.apiKey,
+        },
+        body: JSON.stringify(body),
+        signal,
+      });
+    } catch (e) {
+      throw (
+        abortReason(signal) ??
+        llmUnavailable(ctx, 'Failed to connect to Gemini API', e instanceof Error ? e : undefined)
+      );
+    }
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw createLLMError(ctx, response.status, errorBody, {
+        retryAfterOverride: retryAfterFromHeaders(response.headers),
+      });
+    }
+    return response;
   }
 
   private buildRequest(request: ChatRequest): {
@@ -661,7 +673,15 @@ export class GoogleBackend extends BaseLLMBackend {
 
   private promptBlockedError(ctx: LLMErrorContext, feedback: GeminiPromptFeedback) {
     const reason = feedback.blockReasonMessage ?? feedback.blockReason ?? 'unknown reason';
-    return llmInvalidResponse(ctx, `Gemini blocked the prompt: ${reason}`);
+    return new LLMError(
+      `Gemini blocked the prompt: ${reason}`,
+      ErrorCode.LLM_CONTENT_FILTERED,
+      ctx,
+      {
+        retryable: false,
+        kind: 'content_filter',
+      }
+    );
   }
 
   /**

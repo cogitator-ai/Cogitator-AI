@@ -6,6 +6,7 @@ import { getLogger } from '../logger';
 
 const mockCreate = vi.fn();
 const mockStream = vi.fn();
+const clientOptions = vi.fn();
 
 class MockAPIError extends Error {
   status?: number;
@@ -34,6 +35,9 @@ vi.mock('@anthropic-ai/sdk', () => {
       stream: mockStream,
     };
     static APIError = APIError;
+    constructor(options: unknown) {
+      clientOptions(options);
+    }
   }
 
   return {
@@ -57,6 +61,28 @@ describe('AnthropicBackend', () => {
   describe('constructor', () => {
     it('creates instance with api key', () => {
       expect(backend.provider).toBe('anthropic');
+    });
+
+    it('passes a custom base URL and headers to the SDK', () => {
+      clientOptions.mockClear();
+      new AnthropicBackend({
+        apiKey: 'test-api-key',
+        baseUrl: 'https://gateway.example.com/anthropic',
+        headers: { 'x-gateway-key': 'gw-secret' },
+        maxRetries: 0,
+      });
+      expect(clientOptions).toHaveBeenCalledWith({
+        apiKey: 'test-api-key',
+        maxRetries: 0,
+        baseURL: 'https://gateway.example.com/anthropic',
+        defaultHeaders: { 'x-gateway-key': 'gw-secret' },
+      });
+    });
+
+    it('leaves the base URL to the SDK when none is set', () => {
+      clientOptions.mockClear();
+      new AnthropicBackend({ apiKey: 'test-api-key' });
+      expect(clientOptions.mock.calls[0][0]).not.toHaveProperty('baseURL');
     });
   });
 

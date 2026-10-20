@@ -494,6 +494,7 @@ describe('OllamaBackend', () => {
 
       let chunkIndex = 0;
       const mockReader = {
+        cancel: vi.fn(async () => undefined),
         read: vi.fn().mockImplementation(async () => {
           if (chunkIndex < chunks.length) {
             return { done: false, value: encoder.encode(chunks[chunkIndex++]) };
@@ -545,6 +546,7 @@ describe('OllamaBackend', () => {
 
       let chunkIndex = 0;
       const mockReader = {
+        cancel: vi.fn(async () => undefined),
         read: vi.fn().mockImplementation(async () => {
           if (chunkIndex < chunks.length) {
             return { done: false, value: encoder.encode(chunks[chunkIndex++]) };
@@ -589,6 +591,7 @@ describe('OllamaBackend', () => {
 
       let chunkIndex = 0;
       const mockReader = {
+        cancel: vi.fn(async () => undefined),
         read: vi.fn().mockImplementation(async () => {
           if (chunkIndex < chunks.length) {
             return { done: false, value: encoder.encode(chunks[chunkIndex++]) };
@@ -621,6 +624,7 @@ describe('OllamaBackend', () => {
 
     it('uses correct streaming endpoint', async () => {
       const mockReader = {
+        cancel: vi.fn(async () => undefined),
         read: vi.fn().mockResolvedValue({ done: true, value: undefined }),
       };
 
@@ -680,6 +684,7 @@ describe('OllamaBackend', () => {
         ok: true,
         body: {
           getReader: () => ({
+            cancel: async () => undefined,
             read: async () =>
               index < lines.length
                 ? { done: false, value: encoder.encode(JSON.stringify(lines[index++]) + '\n') }
@@ -816,6 +821,7 @@ describe('OllamaBackend', () => {
         ok: true,
         body: {
           getReader: () => ({
+            cancel: async () => undefined,
             read: async () =>
               index < lines.length
                 ? { done: false, value: encoder.encode(JSON.stringify(lines[index++]) + '\n') }

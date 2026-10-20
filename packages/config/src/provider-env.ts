@@ -43,6 +43,7 @@ export const PROVIDER_ENV: Readonly<Record<LLMProvider, readonly ProviderEnvSett
   ],
   anthropic: [
     { field: 'apiKey', env: ['COGITATOR_ANTHROPIC_API_KEY', 'ANTHROPIC_API_KEY'], required: true },
+    { field: 'baseUrl', env: ['COGITATOR_ANTHROPIC_BASE_URL', 'ANTHROPIC_BASE_URL'] },
   ],
   google: [
     {
@@ -50,6 +51,7 @@ export const PROVIDER_ENV: Readonly<Record<LLMProvider, readonly ProviderEnvSett
       env: ['COGITATOR_GOOGLE_API_KEY', 'GOOGLE_API_KEY', 'GEMINI_API_KEY'],
       required: true,
     },
+    { field: 'baseUrl', env: ['COGITATOR_GOOGLE_BASE_URL'] },
   ],
   azure: [
     { field: 'apiKey', env: ['COGITATOR_AZURE_API_KEY', 'AZURE_OPENAI_API_KEY'], required: true },
