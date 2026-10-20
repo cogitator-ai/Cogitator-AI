@@ -174,6 +174,44 @@ describe('cogitatorToMCP metadata', () => {
   });
 });
 
+describe('output schemas MCP cannot carry', () => {
+  const scores = tool({
+    name: 'scores',
+    description: 'Scores by player',
+    parameters: z.object({}),
+    outputSchema: z.record(z.string(), z.number()),
+    execute: async () => ({ ann: 3 }),
+  });
+
+  it('cogitatorToMCP leaves out a record output schema, as MCPServer does', () => {
+    expect(cogitatorToMCP(scores).outputSchema).toBeUndefined();
+  });
+
+  it('MCPServer says it does not advertise it', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const server = new MCPServer({ name: 's', version: '1.0.0', transport: 'stdio' });
+      server.registerTool(scores as Tool);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('"scores" is not a z.object() schema')
+      );
+
+      warn.mockClear();
+      server.registerTool(
+        tool({
+          name: 'plain',
+          description: 'No output schema',
+          parameters: z.object({}),
+          execute: async () => 1,
+        }) as Tool
+      );
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
 describe('MCPServer tool metadata over HTTP', () => {
   let server: MCPServer;
   let client: MCPClient;

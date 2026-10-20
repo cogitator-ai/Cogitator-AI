@@ -27,7 +27,7 @@ import type {
   MCPPromptMessage,
   MCPToolContent,
 } from '../types';
-import { resultToMCPContent } from '../adapter/tool-adapter';
+import { mcpOutputSchema, resultToMCPContent } from '../adapter/tool-adapter';
 import { elicitApproval } from './approval';
 import { z } from 'zod';
 
@@ -86,15 +86,6 @@ function errorMessageOf(error: unknown): string {
 const PERMISSIVE_INPUT_SCHEMA = z.looseObject({});
 
 /**
- * The output schema MCP can advertise for a tool: only an object schema, as MCP takes for
- * `outputSchema`. A tool with another output schema returns its result as `content` only.
- */
-function objectOutputSchema(tool: Tool): z.ZodObject | undefined {
-  const schema: unknown = tool.outputSchema;
-  return schema instanceof z.ZodObject ? schema : undefined;
-}
-
-/**
  * MCP Server for exposing Cogitator tools
  *
  * @example
@@ -145,6 +136,12 @@ export class MCPServer {
       throw new Error('Cannot register tools after server has started');
     }
 
+    if (tool.outputSchema && !mcpOutputSchema(tool)) {
+      console.warn(
+        `[MCPServer] The outputSchema of tool "${tool.name}" is not a z.object() schema, which MCP ` +
+          'needs: it is not advertised and results go out as content only'
+      );
+    }
     this.tools.set(tool.name, tool);
   }
 
@@ -284,7 +281,7 @@ export class MCPServer {
    * Register a tool with the MCP server
    */
   private registerMCPTool(server: McpServer, tool: Tool, caller?: MCPCaller): void {
-    const outputSchema = objectOutputSchema(tool);
+    const outputSchema = mcpOutputSchema(tool);
     server.registerTool(
       tool.name,
       {

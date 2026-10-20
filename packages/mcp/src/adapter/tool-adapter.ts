@@ -314,11 +314,12 @@ function compilePattern(pattern: string): RegExp | undefined {
 
 /**
  * Convert a Cogitator Tool to MCP tool definition format, with its `title`, `annotations` and
- * `outputSchema`. An output schema whose root is not an object is left out: MCP takes only
- * object output schemas.
+ * `outputSchema`. Only a `z.object()` output schema is kept, the one an MCP server can advertise
+ * (see `mcpOutputSchema`).
  */
 export function cogitatorToMCP(tool: Tool): MCPToolDefinition {
-  const outputSchema = tool.outputSchema && outputSchemaToMCP(tool.outputSchema);
+  const objectSchema = mcpOutputSchema(tool);
+  const outputSchema = objectSchema && outputSchemaToMCP(objectSchema);
   return {
     ...toolSchemaToMCP(tool.toJSON()),
     ...(tool.title !== undefined && { title: tool.title }),
@@ -327,7 +328,18 @@ export function cogitatorToMCP(tool: Tool): MCPToolDefinition {
   };
 }
 
-/** The JSON Schema of a tool's output schema for MCP, `undefined` when its root is not an object. */
+/**
+ * The output schema of a tool that MCP can carry: a `z.object()` schema (`z.strictObject`,
+ * `z.looseObject` included). MCP output schemas must have an object root, and the MCP SDK takes
+ * them only as zod object schemas, so a record, a union or a pipe is left out, even one whose
+ * values are objects.
+ */
+export function mcpOutputSchema(tool: Tool): ZodObject | undefined {
+  const schema: unknown = tool.outputSchema;
+  return schema instanceof z.ZodObject ? schema : undefined;
+}
+
+/** The JSON Schema of an object output schema for MCP. */
 function outputSchemaToMCP(schema: ZodTypeAny): MCPObjectSchema | undefined {
   const jsonSchema: Record<string, unknown> = zodToJsonSchema(schema);
   return jsonSchema.type === 'object' ? toToolParameters(jsonSchema) : undefined;

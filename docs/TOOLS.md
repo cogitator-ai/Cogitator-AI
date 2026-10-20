@@ -408,7 +408,7 @@ await serveMCPTools([calculator, webSearch], {
 });
 ```
 
-A tool's `title`, `annotations` and object `outputSchema` reach the clients, and the result of a tool with an output schema is sent as `structuredContent` with its JSON as text.
+A tool's `title`, `annotations` and `z.object()` `outputSchema` reach the clients, and the result of a tool with such an output schema is sent as `structuredContent` with its JSON as text.
 
 ### Serving Agents over MCP
 

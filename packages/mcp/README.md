@@ -388,7 +388,7 @@ await server.stop(); // also closes open HTTP connections
 
 ### Tool Titles, Hints and Output Schemas
 
-A tool's `title`, `annotations` and `outputSchema` reach MCP clients with the tool. Clients show the title to people, read the hints (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) to decide how careful to be, and get the result of a tool with an object output schema as `structuredContent`, with its JSON as text for clients that read only `content`. A result the output schema rejects comes back as a tool error that says why. An output schema whose root is not an object is not advertised, since MCP takes only object output schemas.
+A tool's `title`, `annotations` and `outputSchema` reach MCP clients with the tool. Clients show the title to people, read the hints (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) to decide how careful to be, and get the result of a tool with a `z.object()` output schema as `structuredContent`, with its JSON as text for clients that read only `content`. A result the output schema rejects comes back as a tool error that says why. Only a `z.object()` output schema (`z.strictObject` and `z.looseObject` too) is advertised, since MCP output schemas need an object root and the MCP SDK takes them only as zod object schemas: a record, a union or a pipe is left out, and `MCPServer` warns when it registers such a tool.
 
 ```typescript
 const getRepo = tool({
@@ -756,7 +756,7 @@ const mcpDefinition = cogitatorToMCP(myTool);
 // }
 ```
 
-The definition carries the tool's `title`, `annotations` and an object `outputSchema` as JSON Schema when the tool has them.
+The definition carries the tool's `title`, `annotations` and a `z.object()` `outputSchema` as JSON Schema when the tool has them.
 
 `toolSchemaToMCP(schema)` does the same for a plain `ToolSchema` (the output of `tool.toJSON()`).
 
