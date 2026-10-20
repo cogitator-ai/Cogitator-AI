@@ -197,6 +197,7 @@ function chatCompletion(turn: ChatTurn) {
  */
 export const openAIChatWire: ProviderWire = {
   name: 'OpenAI Chat Completions',
+  path: () => /\/chat\/completions(\?|$)/,
   reply(scenario: ConformanceScenario, mode: ConformanceMode): FakeProviderReply | undefined {
     const error = OPENAI_ERRORS[scenario];
     if (error) return error;
@@ -340,6 +341,7 @@ function responsesStream(turn: ResponsesTurn): string[] {
  */
 export const openAIResponsesWire: ProviderWire = {
   name: 'OpenAI Responses',
+  path: () => /\/responses$/,
   reply(scenario: ConformanceScenario, mode: ConformanceMode): FakeProviderReply | undefined {
     const error = OPENAI_ERRORS[scenario];
     if (error) return error;

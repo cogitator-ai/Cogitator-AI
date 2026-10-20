@@ -72,6 +72,8 @@ export const CONFORMANCE_FIXTURE = {
  */
 export interface ProviderWire {
   readonly name: string;
+  /** The path every request of `mode` must go to, when the wire checks it */
+  path?(mode: ConformanceMode): RegExp;
   reply(
     scenario: ConformanceScenario,
     mode: ConformanceMode,
@@ -235,7 +237,7 @@ async function runCase(
       const outcome = await callBackend(backend, conformanceRequest(target.model), mode);
       checkOutcome(scenario, mode, outcome, label);
     }
-    checkHeaders(target, provider, label);
+    checkRequests(target, provider, mode, label);
   } finally {
     await provider.close();
   }
@@ -411,7 +413,19 @@ async function checkAbort(
   await within(provider.latestClosed(), `${label}: the connection to the provider closes`);
 }
 
-function checkHeaders(target: BackendConformanceTarget, provider: FakeProvider, label: string) {
+function checkRequests(
+  target: BackendConformanceTarget,
+  provider: FakeProvider,
+  mode: ConformanceMode,
+  label: string
+) {
+  assert.ok(provider.requests.length > 0, `${label}: the backend called the provider`);
+  const path = target.wire.path?.(mode);
+  if (path) {
+    for (const request of provider.requests) {
+      assert.match(request.path, path, `${label}: the request goes to the ${mode} endpoint`);
+    }
+  }
   for (const [name, value] of Object.entries(target.headers ?? {})) {
     for (const request of provider.requests) {
       assert.equal(

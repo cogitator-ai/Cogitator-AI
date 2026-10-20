@@ -114,6 +114,8 @@ function stream(turn: GeminiTurn): string[] {
  */
 export const geminiWire: ProviderWire = {
   name: 'Gemini',
+  path: (mode) =>
+    mode === 'chat' ? /\/models\/[^/]+:generateContent$/ : /:streamGenerateContent\?alt=sse$/,
   reply(scenario: ConformanceScenario, mode: ConformanceMode): FakeProviderReply | undefined {
     const error = GEMINI_ERRORS[scenario];
     if (error) return error;

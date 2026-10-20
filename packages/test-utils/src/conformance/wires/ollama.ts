@@ -67,6 +67,7 @@ function stream(turn: OllamaTurn): string[] {
  */
 export const ollamaWire: ProviderWire = {
   name: 'Ollama',
+  path: () => /^\/api\/chat$/,
   reply(scenario: ConformanceScenario, mode: ConformanceMode): FakeProviderReply | undefined {
     const error = OLLAMA_ERRORS[scenario];
     if (error) return error;

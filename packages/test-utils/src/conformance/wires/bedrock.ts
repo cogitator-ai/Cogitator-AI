@@ -152,6 +152,7 @@ function stream(turn: BedrockTurn): Uint8Array[] {
  */
 export const bedrockConverseWire: ProviderWire = {
   name: 'Bedrock Converse',
+  path: (mode) => (mode === 'chat' ? /\/model\/[^/]+\/converse$/ : /\/converse-stream$/),
   reply(scenario: ConformanceScenario, mode: ConformanceMode): FakeProviderReply | undefined {
     const error = BEDROCK_ERRORS[scenario];
     if (error) return error;

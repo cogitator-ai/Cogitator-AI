@@ -29,7 +29,11 @@ const ANTHROPIC_ERRORS: Partial<Record<ConformanceScenario, FakeProviderReply>> 
       'retry-after': String(F.retryAfterSeconds),
     }
   ),
-  quota: anthropicError(402, 'billing_error', 'Your credit balance is too low to access the API'),
+  quota: anthropicError(
+    400,
+    'invalid_request_error',
+    'Your credit balance is too low to access the Anthropic API.'
+  ),
   auth: anthropicError(401, 'authentication_error', 'invalid x-api-key'),
   overloaded: anthropicError(529, 'overloaded_error', 'Overloaded'),
   'server-error': anthropicError(500, 'api_error', 'Internal server error'),
@@ -155,6 +159,7 @@ function stream(turn: AnthropicTurn): string[] {
  */
 export const anthropicWire: ProviderWire = {
   name: 'Anthropic Messages',
+  path: () => /\/v1\/messages$/,
   reply(scenario: ConformanceScenario, mode: ConformanceMode): FakeProviderReply | undefined {
     const error = ANTHROPIC_ERRORS[scenario];
     if (error) return error;
