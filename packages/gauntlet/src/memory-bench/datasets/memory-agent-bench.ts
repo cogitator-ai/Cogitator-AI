@@ -6,8 +6,8 @@ import type { BenchConversation, BenchTurn } from '../types.js';
 const URL =
   'https://huggingface.co/datasets/ai-hyz/MemoryAgentBench/resolve/main/data/Conflict_Resolution-00000-of-00001.parquet';
 
-/** Characters of facts per message the memory gets, about 1000 tokens. */
-const CHUNK_CHARS = 4000;
+/** Characters of facts per message the memory gets, about the 4096 tokens MemoryAgentBench uses. */
+const CHUNK_CHARS = 16000;
 
 const rowSchema = z.object({
   context: z.string(),
@@ -48,10 +48,11 @@ export function conflictConversation(row: z.infer<typeof rowSchema>): BenchConve
     id,
     dataset: 'mab-conflict',
     turns,
+    protocol: CONFLICT_INSTRUCTION,
     questions: row.questions.map((question, index) => ({
       id: row.metadata.qa_pair_ids[index] ?? `${id}_no${index}`,
       category: id.includes('_mh_') ? 'multi-hop' : 'single-hop',
-      question: `${question}\n\n${CONFLICT_INSTRUCTION}`,
+      question,
       answer: (row.answers[index] ?? []).join(' | '),
       scoring: { kind: 'substring' as const, answers: row.answers[index] ?? [] },
     })),

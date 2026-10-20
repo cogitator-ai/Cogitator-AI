@@ -60,6 +60,8 @@ export function stratifiedSample(
     if (quotas.get(category) === 0) {
       quotas.set(category, 1);
       assigned++;
+      const entry = fractions.find((item) => item.category === category);
+      if (entry) entry.fraction = -1;
     }
   }
   fractions.sort((a, b) => b.fraction - a.fraction || a.category.localeCompare(b.category));

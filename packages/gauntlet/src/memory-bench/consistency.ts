@@ -112,6 +112,9 @@ export async function runConsistencySuite(
         'Good to know.',
         'I am planning a trip in May.',
         'Where would you like to go?',
+        ...Array.from({ length: 12 }, (_, i) =>
+          i % 2 === 0 ? `Small talk about the weather, part ${i}.` : 'Sounds nice.'
+        ),
       ];
       for (const [index, content] of shared.entries()) await add(memory, 'main', content, index);
 
@@ -146,7 +149,8 @@ export async function runConsistencySuite(
       await memory.createThread(agent.id, {}, 'rewind');
       await add(memory, 'rewind', 'My favourite colour is teal.', 0);
       await add(memory, 'rewind', 'Teal it is.', 1);
-      const doomed = await add(memory, 'rewind', 'Actually my favourite colour is crimson.', 2);
+      for (let i = 2; i < 14; i++) await add(memory, 'rewind', `Filler turn ${i}.`, i);
+      const doomed = await add(memory, 'rewind', 'Actually my favourite colour is crimson.', 14);
       await ask('rewind', 'What is my favourite colour?');
       const deleted = await memory.deleteEntry(doomed.id);
       if (!deleted.success) throw new Error(deleted.error);

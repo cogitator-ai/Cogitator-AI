@@ -22,30 +22,62 @@ export interface BenchRow {
   contextP95Ms: number;
   /** Mean share of the marked evidence that reached the model, when the dataset marks it */
   evidenceRecall?: number;
+  /**
+   * Accuracy minus that of `recent` on the same questions, with its 95% interval, for the other
+   * strategies when `recent` answered them too
+   */
+  vsRecent?: { delta: number; ciLow: number; ciHigh: number; questions: number };
   costUsd: number;
 }
 
-/** The 95% bootstrap interval of the mean of `values`, `samples` resamples, seeded. */
+/**
+ * The 95% bootstrap interval of the mean of `values`, resampling whole clusters (the questions of
+ * one conversation share its history, so they are not independent), `samples` resamples, seeded.
+ * Without `clusters` every value is its own.
+ */
 export function bootstrapInterval(
   values: readonly number[],
+  clusters?: readonly string[],
   samples = 1000,
   seed = 7
 ): [number, number] {
   if (values.length === 0) return [0, 0];
+  const groups = new Map<string, number[]>();
+  values.forEach((value, index) => {
+    const key = clusters?.[index] ?? String(index);
+    const group = groups.get(key) ?? [];
+    group.push(value);
+    groups.set(key, group);
+  });
+  const list = [...groups.values()];
   const random = seededRandom(seed);
   const means: number[] = [];
   for (let i = 0; i < samples; i++) {
     let sum = 0;
-    for (const _ of values) sum += values[Math.floor(random() * values.length)];
-    means.push(sum / values.length);
+    let count = 0;
+    for (const _ of list) {
+      const group = list[Math.floor(random() * list.length)];
+      for (const value of group) sum += value;
+      count += group.length;
+    }
+    means.push(count === 0 ? 0 : sum / count);
   }
   return [percentile(means, 0.025), percentile(means, 0.975)];
 }
 
-function row(dataset: string, strategy: string, category: string, scores: BenchScore[]): BenchRow {
+function row(
+  dataset: string,
+  strategy: string,
+  category: string,
+  scores: BenchScore[],
+  recent: ReadonlyMap<string, BenchScore>
+): BenchRow {
   const answered = scores.filter((score) => !score.error);
   const values = scores.map((score) => score.score);
-  const [ciLow, ciHigh] = bootstrapInterval(values);
+  const [ciLow, ciHigh] = bootstrapInterval(
+    values,
+    scores.map((score) => score.conversationId)
+  );
   const input = answered.reduce((sum, score) => sum + score.inputTokens, 0);
   const cached = answered.reduce((sum, score) => sum + score.cachedInputTokens, 0);
   const recall = answered.flatMap((score) =>
@@ -79,8 +111,26 @@ function row(dataset: string, strategy: string, category: string, scores: BenchS
       0.95
     ),
     ...(recall.length > 0 && { evidenceRecall: mean(recall) }),
+    ...(strategy !== 'recent' && pairedDelta(scores, recent)),
     costUsd: scores.reduce((sum, score) => sum + score.costUsd + score.judgeCostUsd, 0),
   };
+}
+
+function pairedDelta(
+  scores: readonly BenchScore[],
+  recent: ReadonlyMap<string, BenchScore>
+): Pick<BenchRow, 'vsRecent'> {
+  const deltas: number[] = [];
+  const clusters: string[] = [];
+  for (const score of scores) {
+    const baseline = recent.get(`${score.dataset}\u0000${score.questionId}`);
+    if (!baseline) continue;
+    deltas.push(score.score - baseline.score);
+    clusters.push(score.conversationId);
+  }
+  if (deltas.length === 0) return {};
+  const [ciLow, ciHigh] = bootstrapInterval(deltas, clusters);
+  return { vsRecent: { delta: mean(deltas), ciLow, ciHigh, questions: deltas.length } };
 }
 
 /**
@@ -88,6 +138,11 @@ function row(dataset: string, strategy: string, category: string, scores: BenchS
  * category of each.
  */
 export function summarize(scores: readonly BenchScore[]): BenchRow[] {
+  const recent = new Map(
+    scores
+      .filter((score) => score.strategy === 'recent')
+      .map((score) => [`${score.dataset}\u0000${score.questionId}`, score] as const)
+  );
   const groups = new Map<string, BenchScore[]>();
   for (const score of scores) {
     for (const category of ['all', score.category]) {
@@ -100,7 +155,7 @@ export function summarize(scores: readonly BenchScore[]): BenchRow[] {
   return [...groups]
     .map(([key, group]) => {
       const [dataset, strategy, category] = key.split('\u0000');
-      return row(dataset, strategy, category, group);
+      return row(dataset, strategy, category, group, recent);
     })
     .sort(
       (a, b) =>
@@ -117,11 +172,11 @@ const pct = (value: number) => `${(value * 100).toFixed(1)}%`;
 export function markdownReport(rows: readonly BenchRow[]): string {
   const overall = rows.filter((r) => r.category === 'all');
   const lines = [
-    '| Dataset | Strategy | Questions | Accuracy (95% CI) | Input tokens/query | Cache hit | Evidence in context | Latency p50/p95 | Context build p50/p95 | Cost |',
-    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+    '| Dataset | Strategy | Questions | Accuracy (95% CI) | vs recent | Input tokens/query | Cache hit | Evidence in context | Latency p50/p95 | Context build p50/p95 | Cost |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
     ...overall.map(
       (r) =>
-        `| ${r.dataset} | ${r.strategy} | ${r.questions}${r.errors ? ` (${r.errors} failed)` : ''} | ${pct(r.accuracy)} (${pct(r.ciLow)} to ${pct(r.ciHigh)}) | ${Math.round(r.inputTokensPerQuery)} | ${pct(r.cacheHitRate)} | ${r.evidenceRecall === undefined ? 'n/a' : pct(r.evidenceRecall)} | ${Math.round(r.latencyP50Ms)}/${Math.round(r.latencyP95Ms)} ms | ${Math.round(r.contextP50Ms)}/${Math.round(r.contextP95Ms)} ms | $${r.costUsd.toFixed(3)} |`
+        `| ${r.dataset} | ${r.strategy} | ${r.questions}${r.errors ? ` (${r.errors} failed)` : ''} | ${pct(r.accuracy)} (${pct(r.ciLow)} to ${pct(r.ciHigh)}) | ${r.vsRecent ? `${r.vsRecent.delta >= 0 ? '+' : ''}${pct(r.vsRecent.delta)} (${pct(r.vsRecent.ciLow)} to ${pct(r.vsRecent.ciHigh)})` : ''} | ${Math.round(r.inputTokensPerQuery)} | ${pct(r.cacheHitRate)} | ${r.evidenceRecall === undefined ? 'n/a' : pct(r.evidenceRecall)} | ${Math.round(r.latencyP50Ms)}/${Math.round(r.latencyP95Ms)} ms | ${Math.round(r.contextP50Ms)}/${Math.round(r.contextP95Ms)} ms | $${r.costUsd.toFixed(3)} |`
     ),
   ];
   for (const dataset of [...new Set(rows.map((r) => r.dataset))]) {

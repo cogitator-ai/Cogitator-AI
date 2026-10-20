@@ -122,6 +122,9 @@ export class CachedEmbeddingService implements EmbeddingService {
   }
 
   private key(text: string): string {
-    return createHash('sha256').update(this.inner.model).update('\0').update(text).digest('hex');
+    return createHash('sha256')
+      .update(`${this.inner.model}\0${this.inner.dimensions}\0`)
+      .update(text)
+      .digest('hex');
   }
 }

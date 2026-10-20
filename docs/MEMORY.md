@@ -649,7 +649,7 @@ if (memory) {
 }
 ```
 
-`memory.embedding` also takes an `EmbeddingService` of your own (`embed`, `embedBatch`, `model`, `dimensions`), used as it is: a provider without a built-in service, or a cache in front of one.
+`memory.embedding` also takes an `EmbeddingService` of your own (`embed`, `embedBatch`, `model`, `dimensions`), used as it is: a provider without a built-in service, or a cache in front of one. It is passed to `new Cogitator()` in code, `cogitator.yml` and `defineConfig()` take only provider configs.
 
 - A run with a `threadId` loads and saves its history; per run, `useMemory: false` disables memory, `loadHistory: false` / `saveHistory: false` skip loading or saving, and `onMemoryError` is called when a load or save fails.
 - `await cog.getMemory()` connects and returns the adapter before any run (`undefined` when memory is not configured or could not connect); `cog.memory` returns it once connected, and assigning `cog.memory = adapter` plugs in an adapter you created yourself.

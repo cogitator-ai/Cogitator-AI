@@ -17,7 +17,7 @@ import { cacheDir } from './cache.js';
 import { runConsistencySuite, type ConsistencyCheck } from './consistency.js';
 import { DATASETS, loadDataset } from './datasets/index.js';
 import { CachedEmbeddingService } from './embeddings.js';
-import { judge } from './judge.js';
+import { judge, JudgeStore } from './judge.js';
 import { markdownReport, summarize } from './report.js';
 import { ANSWER_INSTRUCTIONS, answerConversation, answerKey, mapConcurrent } from './runner.js';
 import { stratifiedSample } from './sample.js';
@@ -70,12 +70,26 @@ function parseSample(spec: string | undefined): Map<string, number> {
   return sizes;
 }
 
+/** The records of a JSONL file, a line cut short by a killed run skipped. */
 async function readJsonl<T>(path: string): Promise<T[]> {
   if (!existsSync(path)) return [];
-  return (await readFile(path, 'utf8'))
-    .split('\n')
-    .filter((line) => line.trim())
-    .map((line) => JSON.parse(line) as T);
+  return (await readFile(path, 'utf8')).split('\n').flatMap((line) => {
+    if (!line.trim()) return [];
+    try {
+      return [JSON.parse(line) as T];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/** The last record per key: a question answered again replaces its earlier answer. */
+function latest<T extends BenchAnswer>(records: readonly T[]): Map<string, T> {
+  const byKey = new Map<string, T>();
+  for (const record of records) {
+    byKey.set(answerKey(record.dataset, record.questionId, record.strategy), record);
+  }
+  return byKey;
 }
 
 /** Tokens the memory would embed for a conversation: the last 200 turns the strategies score. */
@@ -229,7 +243,9 @@ async function main(): Promise<number> {
     : undefined;
 
   const answers = await readJsonl<BenchAnswer>(answersPath);
-  const done = new Set(answers.map((a) => answerKey(a.dataset, a.questionId, a.strategy)));
+  const done = new Set(
+    [...latest(answers)].flatMap(([key, answer]) => (answer.error ? [] : [key]))
+  );
   let stopped: string | undefined;
   try {
     for (const [id, conversations] of loaded) {
@@ -268,25 +284,29 @@ async function main(): Promise<number> {
         questions.set(`${conversation.dataset}\u0000${question.id}`, question);
     }
   }
-  const scores = await readJsonl<BenchScore>(scoresPath);
-  const scored = new Set(scores.map((s) => answerKey(s.dataset, s.questionId, s.strategy)));
+  const inScope = (answer: BenchAnswer) =>
+    questions.has(`${answer.dataset}\u0000${answer.questionId}`) &&
+    strategies.some((strategy) => strategy.name === answer.strategy);
+  const answered = [...latest(answers).values()].filter(inScope);
+  const scores = latest(await readJsonl<BenchScore>(scoresPath));
   const pending: {
     answer: BenchAnswer;
     requests: JudgeRequest[];
     combine(scores: number[]): number;
   }[] = [];
-  for (const answer of answers) {
+  const saveScore = async (score: BenchScore) => {
+    scores.set(answerKey(score.dataset, score.questionId, score.strategy), score);
+    await appendFile(scoresPath, `${JSON.stringify(score)}\n`);
+  };
+  for (const answer of answered) {
     const key = answerKey(answer.dataset, answer.questionId, answer.strategy);
     const question = questions.get(`${answer.dataset}\u0000${answer.questionId}`);
-    if (scored.has(key) || !question) continue;
-    const scoring = answer.error
-      ? ({ kind: 'score', score: 0 } as const)
-      : scoringFor(question, answer.output);
+    if (answer.error || !question) continue;
+    const existing = scores.get(key);
+    if (existing?.output === answer.output) continue;
+    const scoring = scoringFor(question, answer.output);
     if (scoring.kind === 'score') {
-      const score: BenchScore = { ...answer, score: scoring.score, judgeCostUsd: 0 };
-      scores.push(score);
-      scored.add(key);
-      await appendFile(scoresPath, `${JSON.stringify(score)}\n`);
+      await saveScore({ ...answer, score: scoring.score, judgeCostUsd: 0 });
     } else {
       pending.push({
         answer,
@@ -300,8 +320,12 @@ async function main(): Promise<number> {
   }
   if (pending.length > 0 && !stopped) {
     log(`Judging ${pending.length} answers`);
+    const store = new JudgeStore(
+      join(runDir, 'judge-replies.jsonl'),
+      join(runDir, 'judge-batches.json')
+    );
     try {
-      const replies = await judge(
+      await judge(
         pending.flatMap((item) => item.requests),
         {
           client: new Anthropic({
@@ -313,34 +337,39 @@ async function main(): Promise<number> {
           }),
           batch: !values['no-batch'],
           budget,
+          store,
           concurrency: Number(values.concurrency),
           log,
         }
       );
-      for (const item of pending) {
-        if (item.requests.some((request) => !replies.has(request.id))) continue;
-        const results = item.requests.map((request) => {
-          const reply = replies.get(request.id);
-          return { score: reply ? request.read(reply.text) : 0, cost: reply?.costUsd ?? 0 };
-        });
-        const score: BenchScore = {
-          ...item.answer,
-          score: item.combine(results.map((result) => result.score)),
-          judgeCostUsd: results.reduce((sum, result) => sum + result.cost, 0),
-        };
-        scores.push(score);
-        await appendFile(scoresPath, `${JSON.stringify(score)}\n`);
-      }
     } catch (error) {
       if (!(error instanceof BudgetExceededError)) throw error;
       stopped = error.message;
-      log(`Stopped before judging: ${stopped}`);
+      log(`Stopped while judging: ${stopped}`);
+    }
+    for (const item of pending) {
+      const replies = item.requests.map((request) => store.replies.get(request.id));
+      if (replies.some((reply) => reply === undefined)) continue;
+      await saveScore({
+        ...item.answer,
+        score: item.combine(
+          item.requests.map((request, i) => request.read(replies[i]?.text ?? ''))
+        ),
+        judgeCostUsd: replies.reduce((sum, reply) => sum + (reply?.costUsd ?? 0), 0),
+      });
     }
   }
   await Promise.all([budget.save(), embeddingBudget.save()]);
   embedding?.close();
 
-  const rows = summarize(scores);
+  const final: BenchScore[] = answered.flatMap((answer) => {
+    if (answer.error) return [{ ...answer, score: 0, judgeCostUsd: 0 }];
+    const score = scores.get(answerKey(answer.dataset, answer.questionId, answer.strategy));
+    return score ? [score] : [];
+  });
+  const unjudged = answered.length - final.length;
+  if (unjudged > 0) log(`${unjudged} answers are not judged yet: run again with --run ${run}`);
+  const rows = summarize(final);
   const report = {
     run,
     finishedAt: new Date().toISOString(),

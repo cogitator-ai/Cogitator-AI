@@ -27,6 +27,8 @@ describe('deterministic scores', () => {
     expect(normalizeAnswer('The  City of Rome!')).toBe('city of rome');
     expect(substringMatch('It is Rome, Italy.', ['rome'])).toBe(true);
     expect(substringMatch('Paris', ['Rome', ''])).toBe(false);
+    expect(substringMatch('About 1000 people', ['1,000'])).toBe(true);
+    expect(substringMatch('the US', ['U.S.'])).toBe(true);
   });
 
   it('computes token F1', () => {
@@ -125,11 +127,22 @@ describe('judge prompts and replies', () => {
     expect(scoring.combine([1, 0.5])).toBe(0.75);
   });
 
+  it('puts a response with dollar signs into the rubric prompt as it is', () => {
+    const scoring = scoringFor(
+      question({ kind: 'beam-rubric', rubric: ['costs'] }),
+      "It costs $$5 and $' more"
+    );
+    if (scoring.kind !== 'judge') throw new Error('expected a judge');
+    expect(scoring.requests[0].prompt).toContain("RESPONSE TO EVALUATE: It costs $$5 and $' more");
+  });
+
   it('reads rubric scores and binary labels, a bad reply as zero', () => {
     expect(readRubricScore('{"score": 0.5, "reason": "x"}')).toBe(0.5);
     expect(readRubricScore('```json\n{"score": [1.0]}\n```')).toBe(1);
     expect(readRubricScore('nonsense')).toBe(0);
+    expect(readRubricScore('{"score": "1.0"}')).toBe(1);
     expect(readBinaryLabel("{'label': 1}")).toBe(1);
     expect(readBinaryLabel('label = 0')).toBe(0);
+    expect(readBinaryLabel('{"reason": "label: 1 would be wrong", "label": 0}')).toBe(0);
   });
 });

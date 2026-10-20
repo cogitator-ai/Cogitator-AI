@@ -17,11 +17,14 @@ export type Scoring =
 const mean = (scores: number[]): number =>
   scores.length === 0 ? 0 : scores.reduce((sum, score) => sum + score, 0) / scores.length;
 
-/** Text as SQuAD compares it: lower case, without punctuation, articles and extra spaces. */
+/**
+ * Text as SQuAD and MemoryAgentBench compare it: lower case, ASCII punctuation removed (so
+ * `1,000` and `1000` match), articles and extra spaces dropped.
+ */
 export function normalizeAnswer(text: string): string {
   return text
     .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/[!-/:-@[-`{-~]/g, '')
     .replace(/\b(a|an|the)\b/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -169,7 +172,7 @@ NOTE: ONLY output the json object, without any explanation before or after that
 
 /** The `score` of a JSON judgement (0, 0.5 or 1), or 0 for a reply it cannot read. */
 export function readRubricScore(reply: string): number {
-  const match = /"score"\s*:\s*\[?\s*([01](?:\.\d+)?)/.exec(reply);
+  const match = /"score"\s*:\s*\[?\s*"?([01](?:\.\d+)?)/.exec(reply);
   if (!match) return 0;
   const score = Number(match[1]);
   return Number.isFinite(score) ? Math.min(Math.max(score, 0), 1) : 0;
@@ -322,10 +325,30 @@ function lmeV2GotchasPrompt(question: string, answer: string, full: string, fina
   return `Evaluate whether the model answer captures the gotcha insight.\n\nQuestion:\n${question}\n\nReference answer (insight points):\n${answer}\n\nModel full response:\n${full}\n\nModel extracted final answer:\n${final}\n\nScoring rubric:\n- Label 1 if the model includes at least one correct insight point from the reference answer (paraphrase acceptable), and does not contradict any reference point.\n- Label 1 even if only part of a multi-point reference answer is covered, as long as there is no contradiction.\n- Label 0 if direction is wrong (suggests opposite action/cause), even if some wording overlaps.\n- Label 0 if any point in the model response contradicts any reference point.\n- Label 0 if the response is irrelevant or generic without insight.\n\nOutput JSON only:\n{"label": 0 or 1, "reason": "short rationale"}`;
 }
 
-/** The `label` (0 or 1) of a binary JSON judgement, or 0 for a reply it cannot read. */
+/**
+ * The `label` (0 or 1) of a binary JSON judgement, read as JSON first and by pattern after, or 0
+ * for a reply it cannot read.
+ */
 export function readBinaryLabel(reply: string): number {
+  const label = jsonObject(reply)?.label;
+  if (label === 1 || label === '1') return 1;
+  if (label === 0 || label === '0') return 0;
   const match = /["']?label["']?\s*[:=]\s*["']?([01])/i.exec(reply);
   return match?.[1] === '1' ? 1 : 0;
+}
+
+/** The first JSON object in `text`, or `undefined` when there is none that parses. */
+function jsonObject(text: string): Record<string, unknown> | undefined {
+  const candidate = /\{[\s\S]*\}/.exec(text)?.[0];
+  if (!candidate) return undefined;
+  try {
+    const value: unknown = JSON.parse(candidate);
+    return value !== null && typeof value === 'object'
+      ? (value as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** How the answer `output` to `question` is scored. */
@@ -358,7 +381,10 @@ export function scoringFor(question: BenchQuestion, output: string): Scoring {
         kind: 'judge',
         requests: scoring.rubric.map((item, index) => ({
           id: `${question.id}:${index}`,
-          prompt: BEAM_RUBRIC.replace('<rubric_item>', item).replace('<llm_response>', output),
+          prompt: BEAM_RUBRIC.replace('<rubric_item>', () => item).replace(
+            '<llm_response>',
+            () => output
+          ),
           maxTokens: 512,
           read: readRubricScore,
         })),

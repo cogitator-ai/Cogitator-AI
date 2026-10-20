@@ -13,6 +13,7 @@ const DATASET_IDS: Record<BeamTier, BenchDatasetId> = {
 };
 
 const turnSchema = z.object({
+  id: z.number().nullish(),
   role: z.string(),
   content: z.string(),
   time_anchor: z.string().nullish(),
@@ -31,6 +32,7 @@ const probeSchema = z.looseObject({
   ideal_answer: z.unknown().optional(),
   ideal_response: z.unknown().optional(),
   ideal_summary: z.unknown().optional(),
+  source_chat_ids: z.array(z.number()).optional(),
 });
 
 const MONTHS = [
@@ -81,25 +83,35 @@ export function beamConversation(
   tier: BeamTier
 ): BenchConversation {
   const turns: BenchTurn[] = [];
+  const byId = new Map<number, string>();
   let at: Date | undefined;
   for (const batch of row.chat) {
     for (const turn of batch) {
       if (turn.role !== 'user' && turn.role !== 'assistant') continue;
       at = parseBeamAnchor(turn.time_anchor) ?? at;
-      turns.push({ role: turn.role, content: stripBeamMarker(turn.content), ...(at && { at }) });
+      const content = stripBeamMarker(turn.content);
+      if (turn.id !== null && turn.id !== undefined) byId.set(turn.id, content);
+      turns.push({ role: turn.role, content, ...(at && { at }) });
     }
   }
   const probes = z
     .record(z.string(), z.array(probeSchema))
     .parse(parsePythonLiteral(row.probing_questions));
   const questions: BenchQuestion[] = Object.entries(probes).flatMap(([category, items]) =>
-    items.map((probe, index) => ({
-      id: `${row.conversation_id}:${category}:${index}`,
-      category,
-      question: probe.question,
-      answer: referenceAnswer(probe),
-      scoring: { kind: 'beam-rubric' as const, rubric: probe.rubric },
-    }))
+    items.map((probe, index) => {
+      const evidence = (probe.source_chat_ids ?? []).flatMap((id) => {
+        const content = byId.get(id);
+        return content ? [content] : [];
+      });
+      return {
+        id: `${row.conversation_id}:${category}:${index}`,
+        category,
+        question: probe.question,
+        answer: referenceAnswer(probe),
+        scoring: { kind: 'beam-rubric' as const, rubric: probe.rubric },
+        ...(evidence.length > 0 && { evidence }),
+      };
+    })
   );
   return { id: `${tier}:${row.conversation_id}`, dataset: DATASET_IDS[tier], turns, questions };
 }

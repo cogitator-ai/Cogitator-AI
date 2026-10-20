@@ -1,13 +1,20 @@
 import { Agent, Cogitator, type RunMiddleware } from '@cogitator-ai/core';
 import { countMessagesTokens, countTokens } from '@cogitator-ai/memory';
 import type { EmbeddingService, Message } from '@cogitator-ai/types';
-import { BENCH_MODEL, BENCH_PRICE, Budget, callCost } from './budget.js';
+import { BENCH_MODEL, BENCH_PRICE, Budget, callCost, LONG_PROMPT_TOKENS } from './budget.js';
 import type { BenchAnswer, BenchConversation, BenchQuestion, BenchStrategy } from './types.js';
 
 export const ANSWER_INSTRUCTIONS =
   'You are a helpful assistant with a long-term memory of earlier conversations with the user. ' +
   'Answer the question from the conversation history you can see. If the history does not ' +
   'hold the answer, say that you do not know. Follow any answer format the question asks for.';
+
+/**
+ * Turns the `relevant` and `hybrid` strategies score at most (`MAX_SCORED_ENTRIES` of the
+ * context builder). Their embeddings are computed before the questions, so the context build
+ * time of every strategy is measured on a warm cache.
+ */
+const SCORED_ENTRIES = 200;
 
 /** Tokens a model turn may write, thinking included. */
 const ANSWER_MAX_TOKENS = 4096;
@@ -56,11 +63,22 @@ export async function mapConcurrent<T>(
   if (failed) throw failure;
 }
 
-/** The input of a question: the question, opened with "today" when the dataset gives it. */
-export function questionInput(question: BenchQuestion): string {
-  return question.askedOn
-    ? `Today is ${question.askedOn}.\n\n${question.question}`
-    : question.question;
+/**
+ * The instructions a question is answered with: the bench's, the dataset's own rules, and "today"
+ * when the dataset gives it. They go to the agent, not into the question, so retrieval searches
+ * the question alone.
+ */
+export function answerInstructions(
+  conversation: BenchConversation,
+  question: BenchQuestion
+): string {
+  return [
+    ANSWER_INSTRUCTIONS,
+    conversation.protocol,
+    question.askedOn && `Today is ${question.askedOn}.`,
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join('\n\n');
 }
 
 /** The share of `evidence` texts that appear in `messages`. */
@@ -130,11 +148,12 @@ export function benchRuntime(
   });
 }
 
-export function benchAgent(): Agent {
+export function benchAgent(instructions = ANSWER_INSTRUCTIONS): Agent {
   return new Agent({
+    id: 'memory-bench',
     name: 'memory-bench',
     model: `anthropic/${BENCH_MODEL}`,
-    instructions: ANSWER_INSTRUCTIONS,
+    instructions,
     maxTokens: ANSWER_MAX_TOKENS,
     maxIterations: 1,
   });
@@ -186,6 +205,11 @@ export async function answerConversation(
   const agent = benchAgent();
   try {
     const threadId = await ingest(cog, agent, conversation);
+    if (options.embedding) {
+      await options.embedding.embedBatch(
+        conversation.turns.slice(-SCORED_ENTRIES).map((turn) => turn.content)
+      );
+    }
     await mapConcurrent(pending, options.concurrency, async (question) => {
       const estimate = callCost(
         options.strategy.contextTokens + countTokens(question.question),
@@ -202,8 +226,8 @@ export async function answerConversation(
         strategy: options.strategy.name,
       };
       try {
-        const result = await cog.run(agent, {
-          input: questionInput(question),
+        const result = await cog.run(benchAgent(answerInstructions(conversation, question)), {
+          input: question.question,
           threadId,
           saveHistory: false,
           middleware: [probe(question.evidence, (value) => (seen = value))],
@@ -212,14 +236,18 @@ export async function answerConversation(
         const llmMs = result.trace.spans
           .filter((span) => span.name === 'llm.chat')
           .reduce((sum, span) => sum + span.duration, 0);
-        options.budget.charge('answers', result.usage.cost);
+        const costUsd =
+          result.usage.inputTokens > LONG_PROMPT_TOKENS
+            ? callCost(result.usage.inputTokens, result.usage.outputTokens)
+            : result.usage.cost;
+        options.budget.charge('answers', costUsd);
         await options.onAnswer({
           ...base,
           output: result.output,
           inputTokens: result.usage.inputTokens,
           outputTokens: result.usage.outputTokens,
           cachedInputTokens: result.usage.cachedInputTokens ?? 0,
-          costUsd: result.usage.cost,
+          costUsd,
           durationMs: result.usage.duration,
           contextMs: Math.max(result.usage.duration - llmMs, 0),
           contextMessages: seen?.messages ?? 0,

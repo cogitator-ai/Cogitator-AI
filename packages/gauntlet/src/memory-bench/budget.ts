@@ -113,8 +113,18 @@ export class Budget {
     return totals;
   }
 
+  /**
+   * Writes this run's entries into the ledger, keeping whatever other runs wrote to it since it
+   * was read, so runs going at once do not erase each other.
+   */
   async save(): Promise<void> {
     await mkdir(dirname(this.ledgerPath), { recursive: true });
-    await writeFile(this.ledgerPath, `${JSON.stringify(this.entries, null, 2)}\n`);
+    const others = existsSync(this.ledgerPath)
+      ? (JSON.parse(readFileSync(this.ledgerPath, 'utf8')) as LedgerEntry[]).filter(
+          (entry) => entry.run !== this.run
+        )
+      : [];
+    const mine = this.entries.filter((entry) => entry.run === this.run);
+    await writeFile(this.ledgerPath, `${JSON.stringify([...others, ...mine], null, 2)}\n`);
   }
 }

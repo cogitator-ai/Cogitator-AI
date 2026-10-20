@@ -40,14 +40,11 @@ export function longMemEvalConversation(record: z.infer<typeof recordSchema>): B
   record.haystack_sessions.forEach((session, index) => {
     const dateText = record.haystack_dates[index];
     const at = dateText ? parseLongMemEvalDate(dateText) : undefined;
-    session.forEach((turn, position) => {
+    session.forEach((turn) => {
       if (turn.has_answer) evidence.push(turn.content);
       turns.push({
         role: turn.role,
-        content:
-          position === 0 && dateText
-            ? `[This conversation took place on ${dateText}]\n${turn.content}`
-            : turn.content,
+        content: dateText ? `[${dateText}] ${turn.content}` : turn.content,
         ...(at && { at }),
         ...(turn.has_answer && { evidence: true }),
       });

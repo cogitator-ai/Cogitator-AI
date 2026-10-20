@@ -52,11 +52,11 @@ describe('BEAM', () => {
         conversation_id: '7',
         chat: [
           [
-            { role: 'user', content: 'Hi ->-> 1,1', time_anchor: 'March-15-2024' },
-            { role: 'assistant', content: 'Hello', time_anchor: null },
+            { id: 0, role: 'user', content: 'Hi ->-> 1,1', time_anchor: 'March-15-2024' },
+            { id: 1, role: 'assistant', content: 'Hello', time_anchor: null },
           ],
         ],
-        probing_questions: `{'knowledge_update': [{'question': 'Latency?', 'answer': '250ms', 'rubric': ['says 250ms']}]}`,
+        probing_questions: `{'knowledge_update': [{'question': 'Latency?', 'answer': '250ms', 'rubric': ['says 250ms'], 'source_chat_ids': [1, 9]}]}`,
       },
       '100K'
     );
@@ -70,6 +70,7 @@ describe('BEAM', () => {
         question: 'Latency?',
         answer: '250ms',
         scoring: { kind: 'beam-rubric', rubric: ['says 250ms'] },
+        evidence: ['Hello'],
       },
     ]);
   });
@@ -97,9 +98,10 @@ describe('LongMemEval', () => {
         ],
       ],
     });
-    expect(conversation.turns[0].content).toBe(
-      '[This conversation took place on 2023/05/20 (Sat) 02:21]\nI bought 3 bikes.'
-    );
+    expect(conversation.turns.map((turn) => turn.content)).toEqual([
+      '[2023/05/20 (Sat) 02:21] I bought 3 bikes.',
+      '[2023/05/20 (Sat) 02:21] Nice.',
+    ]);
     expect(conversation.questions[0]).toMatchObject({
       category: 'multi-session (abstention)',
       answer: '3',
@@ -123,9 +125,10 @@ describe('MemoryAgentBench conflicts', () => {
       metadata: { qa_pair_ids: ['factconsolidation_sh_6k_no0'] },
     });
     expect(conversation.id).toBe('factconsolidation_sh_6k');
+    expect(conversation.protocol).toBe(CONFLICT_INSTRUCTION);
     expect(conversation.questions[0]).toMatchObject({
       category: 'single-hop',
-      question: `Where does X live?\n\n${CONFLICT_INSTRUCTION}`,
+      question: 'Where does X live?',
       scoring: { kind: 'substring', answers: ['Rome'] },
     });
   });
@@ -226,7 +229,10 @@ describe('LoCoMo', () => {
       ],
     });
     expect(conversation.turns.map((t) => t.role)).toEqual(['user', 'assistant']);
-    expect(conversation.turns[0].content).toBe('[1:56 pm on 8 May, 2023]\nAnn: I ran a race.');
+    expect(conversation.turns.map((t) => t.content)).toEqual([
+      '[1:56 pm on 8 May, 2023] Ann: I ran a race.',
+      '[1:56 pm on 8 May, 2023] Bo: Great!',
+    ]);
     expect(conversation.questions).toEqual([
       expect.objectContaining({ category: 'single-hop', evidence: ['Ann: I ran a race.'] }),
     ]);

@@ -6,8 +6,9 @@ import { pipeline } from 'node:stream/promises';
 
 /**
  * Where datasets, embeddings and run results are kept between runs: `MEMORY_BENCH_CACHE`, else
- * `~/.cache/cogitator/memory-bench`. Datasets are downloaded here, never committed: their
- * licenses (CC BY-SA, CC BY-NC) do not allow shipping them with the repository.
+ * `~/.cache/cogitator/memory-bench`. Datasets are downloaded here and never committed: their
+ * licenses (CC BY-SA, CC BY-NC among them) come with terms the repository's MIT license does not
+ * carry.
  */
 export function cacheDir(): string {
   return process.env.MEMORY_BENCH_CACHE ?? join(homedir(), '.cache', 'cogitator', 'memory-bench');

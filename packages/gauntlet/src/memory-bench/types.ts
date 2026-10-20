@@ -37,6 +37,11 @@ export interface BenchConversation {
   dataset: BenchDatasetId;
   turns: BenchTurn[];
   questions: BenchQuestion[];
+  /**
+   * The dataset's own answering rules (its system prompt, its conflict rule), added to the
+   * agent's instructions rather than to the question, so retrieval searches the question alone
+   */
+  protocol?: string;
 }
 
 export type BenchDatasetId =

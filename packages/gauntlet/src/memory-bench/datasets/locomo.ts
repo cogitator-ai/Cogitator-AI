@@ -29,8 +29,8 @@ const sampleSchema = z.object({
 
 /**
  * One LoCoMo dialogue as a conversation: the first speaker as the user, the second as the
- * assistant, each session opened with its date. Adversarial questions (category 5), which have
- * no answer, are left out.
+ * assistant, every turn with its session's date, so a turn retrieval finds alone still carries
+ * it. Adversarial questions (category 5), which have no answer, are left out.
  */
 export function locomoConversation(sample: z.infer<typeof sampleSchema>): BenchConversation {
   const conversation = sample.conversation;
@@ -40,14 +40,14 @@ export function locomoConversation(sample: z.infer<typeof sampleSchema>): BenchC
   for (let session = 1; Array.isArray(conversation[`session_${session}`]); session++) {
     const date = conversation[`session_${session}_date_time`];
     const dialogs = z.array(dialogSchema).parse(conversation[`session_${session}`]);
-    dialogs.forEach((dialog, index) => {
+    for (const dialog of dialogs) {
       const content = `${dialog.speaker}: ${dialog.text}`;
       texts.set(dialog.dia_id, content);
       turns.push({
         role: dialog.speaker === speakerA ? 'user' : 'assistant',
-        content: index === 0 && typeof date === 'string' ? `[${date}]\n${content}` : content,
+        content: typeof date === 'string' ? `[${date}] ${content}` : content,
       });
-    });
+    }
   }
   return {
     id: sample.sample_id,

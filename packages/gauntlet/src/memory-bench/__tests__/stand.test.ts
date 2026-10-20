@@ -4,9 +4,15 @@ import { join } from 'node:path';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import type { EmbeddingService } from '@cogitator-ai/types';
 import { Budget, BudgetExceededError, callCost } from '../budget.js';
+import { JudgeStore } from '../judge.js';
 import { CachedEmbeddingService } from '../embeddings.js';
 import { bootstrapInterval, markdownReport, summarize } from '../report.js';
-import { evidenceRecall, mapConcurrent, questionInput } from '../runner.js';
+import {
+  answerInstructions,
+  ANSWER_INSTRUCTIONS,
+  evidenceRecall,
+  mapConcurrent,
+} from '../runner.js';
 import { stratifiedSample, seededRandom } from '../sample.js';
 import { runConsistencySuite } from '../consistency.js';
 import type { BenchConversation, BenchScore } from '../types.js';
@@ -50,6 +56,25 @@ describe('stratifiedSample', () => {
     expect(stratifiedSample(data, 4, 1)).toEqual(first);
   });
 
+  it('gives a category raised to one no share of the remainder', () => {
+    const skewed = [
+      conversation(
+        'a',
+        Array.from({ length: 64 }, () => 'x')
+      ),
+      conversation('b', [
+        ...Array.from({ length: 26 }, () => 'y'),
+        ...Array.from({ length: 10 }, () => 'z'),
+      ]),
+    ];
+    const picked = stratifiedSample(skewed, 9, 1).flatMap((c) =>
+      c.questions.map((q) => q.category)
+    );
+    expect(picked.filter((c) => c === 'x')).toHaveLength(6);
+    expect(picked.filter((c) => c === 'y')).toHaveLength(2);
+    expect(picked.filter((c) => c === 'z')).toHaveLength(1);
+  });
+
   it('keeps everything without a size or with a larger one', () => {
     expect(stratifiedSample(data, undefined, 1)).toEqual(data);
     expect(stratifiedSample(data, 50, 1)).toEqual(data);
@@ -79,6 +104,17 @@ describe('Budget', () => {
     expect(next.ledgerUsd).toBeCloseTo(0.8);
     expect(next.spentUsd).toBe(0);
     expect(budget.byStage()).toEqual({ answers: expect.closeTo(0.8) });
+  });
+
+  it('keeps what another run wrote to the ledger meanwhile', async () => {
+    const path = join(tempDir(), 'ledger.json');
+    const one = new Budget(5, 'one', path);
+    const two = new Budget(5, 'two', path);
+    one.charge('answers', 1);
+    await one.save();
+    two.charge('judge', 2);
+    await two.save();
+    expect(new Budget(5, 'three', path).ledgerUsd).toBeCloseTo(3);
   });
 });
 
@@ -168,17 +204,27 @@ describe('CachedEmbeddingService under concurrency', () => {
 });
 
 describe('runner helpers', () => {
-  it('opens a question with its date', () => {
+  it('gives the agent the dataset rules and the date, the question stays alone', () => {
+    const question = {
+      id: 'q',
+      category: 'c',
+      question: 'When?',
+      answer: 'a',
+      askedOn: '2023/06/01',
+      scoring: { kind: 'token-f1' as const },
+    };
     expect(
-      questionInput({
-        id: 'q',
-        category: 'c',
-        question: 'When?',
-        answer: 'a',
-        askedOn: '2023/06/01',
-        scoring: { kind: 'token-f1' },
-      })
-    ).toBe('Today is 2023/06/01.\n\nWhen?');
+      answerInstructions(
+        {
+          id: 'c',
+          dataset: 'mab-conflict',
+          turns: [],
+          questions: [question],
+          protocol: 'Newer wins.',
+        },
+        question
+      )
+    ).toBe(`${ANSWER_INSTRUCTIONS}\n\nNewer wins.\n\nToday is 2023/06/01.`);
   });
 
   it('measures how much evidence reached the model', () => {
@@ -242,10 +288,37 @@ describe('report', () => {
     expect(markdownReport(rows)).toContain('| longmemeval-s | recent | 2 | 50.0%');
   });
 
-  it('bootstraps an interval around the mean', () => {
-    const [low, high] = bootstrapInterval([0, 1, 1, 0, 1, 1, 1, 0]);
+  it('bootstraps an interval around the mean, wider when questions share a conversation', () => {
+    const values = [0, 1, 1, 0, 1, 1, 1, 0];
+    const [low, high] = bootstrapInterval(values);
     expect(low).toBeLessThan(0.625);
     expect(high).toBeGreaterThan(0.625);
+    const [clusterLow, clusterHigh] = bootstrapInterval(values, [
+      'a',
+      'a',
+      'a',
+      'a',
+      'b',
+      'b',
+      'b',
+      'b',
+    ]);
+    expect(clusterHigh - clusterLow).toBeGreaterThanOrEqual(0);
+    expect(bootstrapInterval([1, 1], ['a', 'a'])).toEqual([1, 1]);
+  });
+
+  it('compares a strategy with recent on the same questions', () => {
+    const rows = summarize([
+      { ...score('recent', 'a', 0), questionId: 'q1' },
+      { ...score('recent', 'a', 1), questionId: 'q2' },
+      { ...score('hybrid', 'a', 1), questionId: 'q1' },
+      { ...score('hybrid', 'a', 1), questionId: 'q2' },
+    ]);
+    const hybrid = rows.find((r) => r.strategy === 'hybrid' && r.category === 'all');
+    expect(hybrid?.vsRecent).toMatchObject({ delta: 0.5, questions: 2 });
+    expect(
+      rows.find((r) => r.strategy === 'recent' && r.category === 'all')?.vsRecent
+    ).toBeUndefined();
   });
 });
 
@@ -254,5 +327,20 @@ describe('consistency suite', () => {
     const checks = await runConsistencySuite();
     expect(checks.length).toBe(12);
     expect(checks.filter((c) => !c.passed)).toEqual([]);
+  });
+});
+
+describe('JudgeStore', () => {
+  it('keeps replies and open batches for the next run', () => {
+    const dir = tempDir();
+    const store = new JudgeStore(join(dir, 'replies.jsonl'), join(dir, 'batches.json'));
+    store.record('q1', { text: 'yes', costUsd: 0.001 });
+    store.addBatch({ id: 'b1', requests: { j0: 'q2' }, done: false });
+    store.addBatch({ id: 'b2', requests: { j0: 'q3' }, done: false });
+    store.closeBatch('b2');
+
+    const next = new JudgeStore(join(dir, 'replies.jsonl'), join(dir, 'batches.json'));
+    expect(next.replies.get('q1')).toEqual({ text: 'yes', costUsd: 0.001 });
+    expect(next.openBatches.map((batch) => batch.id)).toEqual(['b1']);
   });
 });

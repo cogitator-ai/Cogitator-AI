@@ -38,6 +38,24 @@ const trajectorySchema = z.object({
 });
 
 export type LmeV2Question = z.infer<typeof questionSchema>;
+
+const ANSWER_RULES =
+  'Answer based on your memory of the environment. If you do not know the answer, output exactly ' +
+  '\\boxed{UNKNOWN}. Do not guess. Never attempt to guess an answer if you are not sure. If you ' +
+  "believe the question's construction/premise is wrong, provide an explanation in \\boxed{} " +
+  'explaining why the question is flawed.';
+
+/*
+ * The answering rules of each domain, from DOMAIN_SYSTEM_PROMPTS in evaluation/harness.py of
+ * https://github.com/xiaowu0162/LongMemEval-V2 (Apache License 2.0).
+ */
+const DOMAIN_PROTOCOLS: Record<string, string> = {
+  web:
+    'You are an experienced colleague in a web browsing environment that has a customized ' +
+    'magento-based shopping website, a customized magento-based shopping admin cms website, as ' +
+    `well as a customized forum website based on reddit/postmill. ${ANSWER_RULES}`,
+  enterprise: `You are an experienced colleague working in a customized ServiceNow environment. ${ANSWER_RULES}`,
+};
 export type LmeV2Trajectory = z.infer<typeof trajectorySchema>;
 
 /**
@@ -92,15 +110,19 @@ export function lmeV2Conversations(
     });
     groups.set(key, group);
   }
-  return [...groups.values()].map((group, index) => ({
-    id: `${questions.find((q) => q.id === group.questions[0]?.id)?.domain ?? 'haystack'}-${index}`,
-    dataset: 'lme-v2-small' as const,
-    turns: group.ids.flatMap((id) => {
-      const trajectory = trajectories.get(id);
-      return trajectory ? trajectoryTurns(trajectory) : [];
-    }),
-    questions: group.questions,
-  }));
+  return [...groups.values()].map((group, index) => {
+    const domain = questions.find((q) => q.id === group.questions[0]?.id)?.domain ?? 'haystack';
+    return {
+      id: `${domain}-${index}`,
+      dataset: 'lme-v2-small' as const,
+      ...(DOMAIN_PROTOCOLS[domain] && { protocol: DOMAIN_PROTOCOLS[domain] }),
+      turns: group.ids.flatMap((id) => {
+        const trajectory = trajectories.get(id);
+        return trajectory ? trajectoryTurns(trajectory) : [];
+      }),
+      questions: group.questions,
+    };
+  });
 }
 
 /**
@@ -128,9 +150,10 @@ export async function loadLongMemEvalV2Small(
   const lines = createInterface({ input: createReadStream(trajectoriesPath), crlfDelay: Infinity });
   for await (const line of lines) {
     if (!line.trim()) continue;
-    const id = /"id"\s*:\s*"([^"]+)"/.exec(line)?.[1];
-    if (!id || !needed.has(id)) continue;
-    trajectories.set(id, trajectorySchema.parse(JSON.parse(line)));
+    const leading = /^\{\s*"id"\s*:\s*"([^"]+)"/.exec(line)?.[1];
+    if (leading !== undefined && !needed.has(leading)) continue;
+    const trajectory = trajectorySchema.parse(JSON.parse(line));
+    if (needed.has(trajectory.id)) trajectories.set(trajectory.id, trajectory);
   }
   return lmeV2Conversations(questions, haystacks, trajectories);
 }
