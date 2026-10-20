@@ -236,7 +236,7 @@ export function wrapSDKError(error: unknown, ctx: LLMErrorContext): LLMError {
  * report the failure of the model's own provider inside a stream.
  */
 function statusIn(body: unknown): number | undefined {
-  const record = asRecord(body);
+  const record = asRecord(Array.isArray(body) ? body[0] : body);
   const code = (asRecord(record?.error) ?? record)?.code;
   return typeof code === 'number' && code >= 400 && code < 600 ? code : undefined;
 }
@@ -279,7 +279,10 @@ export function providerErrorIn(
 function isSDKAPIError(error: unknown): error is SDKAPIError {
   if (!(error instanceof Error)) return false;
   const { status, error: body } = error as SDKAPIError;
-  return typeof status === 'number' || (status === undefined && asRecord(body) !== undefined);
+  return (
+    typeof status === 'number' ||
+    (status === undefined && (asRecord(body) !== undefined || Array.isArray(body)))
+  );
 }
 
 /**

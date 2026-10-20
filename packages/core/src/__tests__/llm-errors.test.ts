@@ -400,6 +400,29 @@ describe('review regressions', () => {
     expect(perMinute).toMatchObject({ kind: 'rate_limit', retryable: true });
   });
 
+  it('reads a Gemini error list inside a stream, which the SDK raises without a status', () => {
+    const error = wrapSDKError(
+      new APIError(undefined, [
+        {
+          error: {
+            code: 429,
+            status: 'RESOURCE_EXHAUSTED',
+            message: 'You exceeded your current quota.',
+            details: [
+              {
+                '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+                violations: [{ quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier' }],
+              },
+            ],
+          },
+        },
+      ]),
+      { provider: 'openai' }
+    );
+
+    expect(error).toMatchObject({ kind: 'quota', retryable: false, details: { statusCode: 429 } });
+  });
+
   it('reads an Anthropic balance too low, sent as invalid_request_error, as quota', () => {
     const error = createLLMError(
       { provider: 'anthropic' },
