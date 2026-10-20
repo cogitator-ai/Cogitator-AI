@@ -165,13 +165,23 @@ export class MiddlewarePipeline<TDeps = unknown> {
   }
 }
 
-/** A copy of tool call arguments a middleware can edit without touching anyone else's. */
+/**
+ * A copy of tool call arguments a middleware can edit without touching anyone else's: plain
+ * objects and arrays are copied all the way down, anything else (a `Buffer`, a `Date`, an
+ * instance of a class) is kept as it is, so a tool gets values of the types it was called with.
+ */
 function copyArguments(args: Record<string, unknown>): Record<string, unknown> {
-  try {
-    return structuredClone(args);
-  } catch {
-    return { ...args };
-  }
+  return copyValue(args) as Record<string, unknown>;
+}
+
+function copyValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(copyValue);
+  if (value === null || typeof value !== 'object') return value;
+  const prototype: unknown = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return value;
+  const copy: Record<string, unknown> = prototype === null ? Object.create(null) : {};
+  for (const [key, item] of Object.entries(value)) copy[key] = copyValue(item);
+  return copy;
 }
 
 /** Tool call arguments as text that is the same for the same content, whatever the key order. */

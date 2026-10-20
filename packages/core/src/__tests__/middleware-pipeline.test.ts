@@ -200,6 +200,43 @@ describe('MiddlewarePipeline', () => {
     expect(seen[0].approved).toBe(false);
   });
 
+  it('keeps buffers, dates and class instances in the arguments as they are', async () => {
+    class Money {
+      constructor(readonly cents: number) {}
+    }
+    const values = {
+      file: Buffer.from('abc'),
+      at: new Date(0),
+      price: new Money(5),
+      nested: { tags: ['a'] },
+    };
+    const seen: Record<string, unknown>[] = [];
+    const pipeline = new MiddlewarePipeline([
+      { name: 'pass', wrapToolCall: (call, next) => next(call) },
+    ]);
+
+    await pipeline.callTool(
+      {
+        toolCall: { id: 'c1', name: 'echo', arguments: values },
+        tool: echo,
+        args: values,
+        approved: false,
+      },
+      async (call) => {
+        seen.push(call.toolCall.arguments);
+        return { callId: 'c1', name: 'echo', result: null };
+      },
+      context,
+      ({ toolCall }) => ({ ok: true, args: toolCall.arguments })
+    );
+
+    expect(Buffer.isBuffer(seen[0].file)).toBe(true);
+    expect(seen[0].at).toBeInstanceOf(Date);
+    expect(seen[0].price).toBeInstanceOf(Money);
+    expect(seen[0].nested).toEqual({ tags: ['a'] });
+    expect(seen[0].nested).not.toBe(values.nested);
+  });
+
   it('leaves a GUARDRAIL_TRIPPED error without a reason as it is', () => {
     const bare = new CogitatorError({ message: 'tripped', code: ErrorCode.GUARDRAIL_TRIPPED });
 
