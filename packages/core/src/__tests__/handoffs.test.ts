@@ -193,4 +193,31 @@ describe('handoffs', () => {
       'billing',
     ]);
   });
+
+  it('leaves a default name alone when only a handoff with its own toolName looks the same', () => {
+    const named = (name: string) => new Agent({ name, model: 'mock/m', instructions: 'x' });
+    const desk = new Agent({
+      name: 'desk',
+      model: 'mock/m',
+      instructions: 'x',
+      handoffs: [{ agent: named('Billing EU'), toolName: 'to_eu' }, named('Billing/EU')],
+    });
+    expect(handoffTools(desk).tools.map((t) => t.name)).toEqual([
+      'to_eu',
+      'transfer_to_Billing_EU',
+    ]);
+  });
+
+  it('gives agents whose names differ only in spacing and underscores distinct names', () => {
+    const named = (name: string) => new Agent({ name, model: 'mock/m', instructions: 'x' });
+    const desk = new Agent({
+      name: 'desk',
+      model: 'mock/m',
+      instructions: 'x',
+      handoffs: [named('Billing EU'), named('Billing  EU'), named('Billing__EU')],
+    });
+    const { tools, targets } = handoffTools(desk);
+    expect(new Set(tools.map((t) => t.name)).size).toBe(3);
+    expect(targets.size).toBe(3);
+  });
 });

@@ -1,7 +1,7 @@
 import type { Agent as IAgent, Handoff, Tool } from '@cogitator-ai/types';
 import { z } from 'zod';
 import { tool } from '../tool';
-import { normalizeToolName, normalizeToolNames } from '../tool-name';
+import { normalizeToolName, withNameHash } from '../tool-name';
 
 const handoffParameters = z.object({
   reason: z.string().optional().describe('Why the conversation goes to this agent'),
@@ -43,8 +43,8 @@ export function handoffTools(agent: IAgent): HandoffTools {
 }
 
 /**
- * `transfer_to_<name>` for each handoff, made provider-safe. Agents whose names come out the
- * same (`Billing EU` and `Billing/EU`, or names in other scripts) get a hash of their own name,
+ * `transfer_to_<name>` for each handoff without a `toolName`, made provider-safe. Agents whose
+ * names come out the same (`Billing EU` and `Billing/EU`, or names in other scripts) get a hash of their own name,
  * so the model can still reach each of them.
  */
 function defaultToolNames(handoffs: readonly Handoff[]): string[] {
@@ -52,13 +52,14 @@ function defaultToolNames(handoffs: readonly Handoff[]): string[] {
     normalizeToolName(`transfer_to_${toToolName(agent.name)}`)
   );
   const count = new Map<string, number>();
-  for (const name of names) count.set(name, (count.get(name) ?? 0) + 1);
-  const clashing = handoffs
-    .map((handoff, index) => ({ index, raw: `transfer_to_${handoff.agent.name}` }))
-    .filter(({ index }) => (count.get(names[index]!) ?? 0) > 1);
-  const distinct = normalizeToolNames(clashing.map(({ raw }) => raw));
-  clashing.forEach(({ index }, i) => (names[index] = distinct[i]!));
-  return names;
+  handoffs.forEach(({ toolName }, index) => {
+    if (toolName === undefined) count.set(names[index]!, (count.get(names[index]!) ?? 0) + 1);
+  });
+  return names.map((name, index) =>
+    handoffs[index]!.toolName === undefined && (count.get(name) ?? 0) > 1
+      ? withNameHash(name, handoffs[index]!.agent.name)
+      : name
+  );
 }
 
 /**

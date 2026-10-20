@@ -43,7 +43,11 @@ export function normalizeToolNames(names: readonly string[]): string[] {
   });
 }
 
-function withNameHash(safe: string, original: string): string {
+/**
+ * `safe` cut to fit the name limit and ended with a hash of `original`: a name that stays
+ * distinct from others that look the same. `safe` must be provider-safe already.
+ */
+export function withNameHash(safe: string, original: string): string {
   const suffix = `_${createHash('sha256').update(original).digest('hex').slice(0, 8)}`;
   return `${safe.slice(0, TOOL_NAME_MAX_LENGTH - suffix.length)}${suffix}`;
 }
