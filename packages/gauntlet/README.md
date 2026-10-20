@@ -69,6 +69,28 @@ The last stage, **coverage**, fails when a published package is exercised by no 
 
 When a stage exposes a bug in a package, keep the check that exposes it and fix the package, the stage is the acceptance test.
 
+## Memory benchmarks
+
+`pnpm memory-bench` measures the runtime's memory on long-memory datasets. Each conversation goes into a thread once, then every question runs as a real `cog.run` on that thread (not saved), on `claude-haiku-5-5` with a fixed context budget, and its answer is scored the dataset's own way.
+
+```bash
+pnpm memory-bench --estimate                                   # questions, tokens and cost, no calls
+pnpm memory-bench --datasets longmemeval-s --sample longmemeval-s=100 --strategies recent,hybrid
+pnpm memory-bench --consistency-only                           # fork and rewind checks, free
+```
+
+| Dataset                             | Source and license                                       | Scored by                                            |
+| ----------------------------------- | -------------------------------------------------------- | ---------------------------------------------------- |
+| `longmemeval-s`                     | `xiaowu0162/longmemeval-cleaned`, MIT                    | the LongMemEval yes/no judge prompts                 |
+| `beam-100k`, `beam-500k`, `beam-1m` | `Mohammadta/BEAM`, CC BY-SA 4.0                          | the BEAM rubric judge, one call per rubric item      |
+| `mab-conflict`                      | `ai-hyz/MemoryAgentBench` Conflict_Resolution, MIT       | normalized substring match                           |
+| `lme-v2-small`                      | `xiaowu0162/longmemeval-v2`, Apache-2.0 (text questions) | the LongMemEval-V2 evaluators, LLM checkers included |
+| `locomo`                            | `snap-research/locomo`, CC BY-NC 4.0, smoke only         | token F1                                             |
+
+The datasets are downloaded into `~/.cache/cogitator/memory-bench` (`MEMORY_BENCH_CACHE`) on first use and never committed. Every answer records its tokens, cache hits, latency, the time spent building the context and the share of the dataset's marked evidence that reached the model, through a run middleware that sees each model call. Samples are stratified by category and seeded (`--sample`, `--seed`). Embeddings for `relevant` and `hybrid` go through a SQLite cache, so a rerun pays only for texts it has not embedded. The judge goes out as Message Batches (`--no-batch` for one by one). Spending is capped per run (`--anthropic-budget` for answers and the judge, `--budget` for embeddings) and kept in ledgers in the cache. A run resumes from its results when started again with the same `--run`. Reports land in `reports/memory/<run>.json` and `.md`.
+
+It needs `ANTHROPIC_API_KEY` (and `ANTHROPIC_WORKSPACE_ID` for a key that is not scoped to a workspace), and `GOOGLE_API_KEY` for the embeddings of `relevant` and `hybrid`, from the environment or the repository's `.env`.
+
 ## Environment
 
 | Variable                | Default                                                         |
