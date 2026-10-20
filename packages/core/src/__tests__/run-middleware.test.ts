@@ -698,6 +698,52 @@ describe('run middleware', () => {
       await cog.close();
     });
 
+    it('keeps a stream a middleware silences silent', async () => {
+      const { backend } = scripted(answer('secret'));
+      const cog = runtime(backend);
+      const mute: RunMiddleware = {
+        name: 'mute',
+        wrapModelCall: (call, next) =>
+          next({ ...call, ...(call.stream && { stream: { onToken: () => undefined } }) }),
+      };
+      const tokens: string[] = [];
+
+      const result = await cog.run(agentWith([mute]), {
+        input: 'Hello',
+        stream: true,
+        onToken: (token) => tokens.push(token),
+      });
+
+      expect(tokens).toEqual([]);
+      expect(result.output).toBe('secret');
+      await cog.close();
+    });
+
+    it('leaves no unhandled rejection when a hook cancels the run and then throws', async () => {
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => unhandled.push(reason);
+      process.on('unhandledRejection', onUnhandled);
+      const controller = new AbortController();
+      const { backend } = scripted(answer('Hi'));
+      const cog = runtime(backend);
+      const cancelling: RunMiddleware = {
+        name: 'cancelling',
+        beforeRun: async () => {
+          controller.abort(new Error('cancelled by the hook'));
+          tripwire('stop');
+        },
+      };
+
+      await expect(
+        cog.run(agentWith([cancelling]), { input: 'Hello', signal: controller.signal })
+      ).rejects.toThrow('cancelled by the hook');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      process.off('unhandledRejection', onUnhandled);
+
+      expect(unhandled).toEqual([]);
+      await cog.close();
+    });
+
     it('streams an answer a middleware gives without the model, once', async () => {
       const { backend } = scripted(answer('from the model'));
       const cog = runtime(backend);

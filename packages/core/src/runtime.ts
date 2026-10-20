@@ -1201,12 +1201,11 @@ export class Cogitator implements ToolInvoker {
 
         const holdsStream = streaming && pipeline.holdsStream;
         let streamed = false;
-        let streamedText = false;
+        let reachedModel = false;
         const turnStream = holdsStream
           ? () => undefined
           : (token: string) => {
               streamed = true;
-              streamedText = true;
               onToken(token);
             };
         const onReasoning = options.onReasoning;
@@ -1253,6 +1252,7 @@ export class Cogitator implements ToolInvoker {
                 await turnPipeline.callModel(
                   call,
                   async (sent) => {
+                    reachedModel = true;
                     const startedAt = Date.now();
                     const sentAnswer = normalizeTurn(
                       sent.stream
@@ -1332,7 +1332,7 @@ export class Cogitator implements ToolInvoker {
           abortController.signal
         );
         const outputContent = response.content;
-        if (streaming && outputContent && (holdsStream || !streamedText)) onToken(outputContent);
+        if (streaming && outputContent && (holdsStream || !reachedModel)) onToken(outputContent);
 
         const requestsTools = !limit.closingTurn && Boolean(response.toolCalls?.length);
         const assistantMessage = requestsTools
@@ -2370,6 +2370,7 @@ function throwIfAborted(signal: AbortSignal): void {
 
 function waitForAbortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) {
+    promise.catch(() => undefined);
     return Promise.reject(toAbortError(signal.reason, 'Run aborted'));
   }
 
