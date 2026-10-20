@@ -91,13 +91,14 @@ describe('restrictFileTools', () => {
     expect(escaped.error).toContain('Access denied: ../secret/key');
   });
 
-  it('keeps the approval and timeout of a tool and can require approval for more', () => {
+  it('keeps the approval, timeout and result limit of a tool and can require approval for more', () => {
     const { allowed } = sandbox();
     const writer = {
       ...fakeTool(),
       name: 'file_write',
       sideEffects: ['filesystem'],
       timeout: 5_000,
+      maxResultLength: 2_000,
     } as Tool;
     const reader = { ...fakeTool(), requiresApproval: true } as Tool;
 
@@ -111,6 +112,8 @@ describe('restrictFileTools', () => {
 
     expect(guardedWriter.requiresApproval).toBe(true);
     expect(guardedWriter.timeout).toBe(5_000);
+    expect(guardedWriter.maxResultLength).toBe(2_000);
+    expect(guardedReader.maxResultLength).toBeUndefined();
     expect(guardedWriter.sideEffects).toEqual(['filesystem']);
     expect(guardedReader.requiresApproval).toBe(true);
     expect(plain.requiresApproval).toBeUndefined();

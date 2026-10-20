@@ -143,6 +143,7 @@ describe('CogitatorConfigSchema', () => {
         maxConcurrentRuns: 10,
         defaultTimeout: 30000,
         maxTokensPerRun: 100000,
+        maxToolResultLength: 20000,
       },
     };
 
@@ -153,6 +154,13 @@ describe('CogitatorConfigSchema', () => {
     expect(result.llm?.providers?.azure?.deployment).toBe('gpt-4o');
     expect(result.llm?.providers?.bedrock?.region).toBeUndefined();
     expect(result.limits?.maxConcurrentRuns).toBe(10);
+    expect(result.limits?.maxToolResultLength).toBe(20000);
+  });
+
+  it('rejects a tool result limit that is not a positive integer', () => {
+    for (const maxToolResultLength of [0, -5, 1.5]) {
+      expect(() => CogitatorConfigSchema.parse({ limits: { maxToolResultLength } })).toThrow();
+    }
   });
 
   it('keeps the OpenAI wire api option and rejects unknown values', () => {

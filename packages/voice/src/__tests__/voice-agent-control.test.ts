@@ -253,7 +253,7 @@ describe('VoiceAgent control protocol and realtime wiring', () => {
   });
 
   describe('realtime mode', () => {
-    it('passes instructions (falling back to agent.instructions) and tools to the session', async () => {
+    it('passes instructions (falling back to agent.instructions), tools and toolImages to the session', async () => {
       const tools = [{ name: 't', description: 'd', parameters: {}, execute: vi.fn() }];
       await start({
         mode: 'realtime',
@@ -263,6 +263,7 @@ describe('VoiceAgent control protocol and realtime wiring', () => {
         realtimeModel: 'm',
         voice: 'Kore',
         tools,
+        toolImages: true,
       });
       await vi.waitFor(() => expect(realtimeSessions).toHaveLength(1));
 
@@ -273,6 +274,7 @@ describe('VoiceAgent control protocol and realtime wiring', () => {
         voice: 'Kore',
         instructions: 'from agent',
         tools,
+        toolImages: true,
       });
     });
 

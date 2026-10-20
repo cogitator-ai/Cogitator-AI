@@ -85,6 +85,9 @@ export function restrictFileTools(
       ...(original.sideEffects && { sideEffects: original.sideEffects }),
       ...(approval !== undefined && { requiresApproval: approval }),
       ...(original.timeout !== undefined && { timeout: original.timeout }),
+      ...(original.maxResultLength !== undefined && {
+        maxResultLength: original.maxResultLength,
+      }),
       execute: async (params: unknown, context: ToolContext) => {
         const given = isRecord(params) && typeof params.path === 'string' ? params.path : null;
         if (given === null) {

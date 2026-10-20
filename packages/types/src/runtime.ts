@@ -110,6 +110,13 @@ export interface CogitatorConfig {
     maxConcurrentRuns?: number;
     defaultTimeout?: number;
     maxTokensPerRun?: number;
+    /**
+     * Most characters of a tool's result the model reads (default 100 000, about 25 000
+     * tokens). A longer result is cut in the middle, with a note of how much was left out, so
+     * one huge output cannot fill the context. A tool's own `maxResultLength` overrides it. The
+     * application still gets the whole result, in `onToolResult` and `RunResult`.
+     */
+    maxToolResultLength?: number;
   };
   memory?: MemoryConfig;
   /** Sandbox configuration for isolated tool execution */

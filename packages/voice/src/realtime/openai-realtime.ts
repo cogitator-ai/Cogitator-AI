@@ -1,6 +1,8 @@
 import { EventEmitter } from 'node:events';
 import { WebSocket } from 'ws';
+import type { ToolImagePart } from '@cogitator-ai/types';
 import type { RealtimeSessionConfig } from '../types.js';
+import { realtimeToolParts, realtimeToolText } from './tool-output.js';
 
 const DEFAULT_MODEL = 'gpt-realtime-2.1-mini';
 const DEFAULT_VOICE = 'marin';
@@ -24,6 +26,13 @@ interface FunctionCallItem {
   name: string;
   callId: string;
   arguments: string;
+}
+
+interface ToolCallOutput {
+  callId: string;
+  name: string;
+  output: string;
+  images: ToolImagePart[];
 }
 
 function rawDataToString(data: WebSocket.RawData): string {
@@ -287,40 +296,61 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
         item: { type: 'function_call_output', call_id: callId, output },
       });
     }
+    if (this.config.toolImages) {
+      for (const { name, images } of outputs) {
+        if (images.length === 0) continue;
+        this.send({
+          type: 'conversation.item.create',
+          item: {
+            type: 'message',
+            role: 'user',
+            content: [
+              { type: 'input_text', text: `Images returned by the ${name} tool:` },
+              ...images.map((image) => ({
+                type: 'input_image',
+                image_url: `data:${image.mediaType};base64,${image.data}`,
+              })),
+            ],
+          },
+        });
+      }
+    }
     this.send({ type: 'response.create' });
   }
 
-  private async executeToolCall(
-    call: FunctionCallItem
-  ): Promise<{ callId: string; output: string }> {
+  private async executeToolCall(call: FunctionCallItem): Promise<ToolCallOutput> {
+    const failed = (error: string): ToolCallOutput => ({
+      callId: call.callId,
+      name: call.name,
+      output: JSON.stringify({ error }),
+      images: [],
+    });
+
     let args: unknown;
     try {
       args = JSON.parse(call.arguments || '{}');
     } catch {
-      return {
-        callId: call.callId,
-        output: JSON.stringify({ error: `Invalid JSON arguments for tool ${call.name}` }),
-      };
+      return failed(`Invalid JSON arguments for tool ${call.name}`);
     }
 
     this.emit('tool_call', call.name, args);
 
     const tool = this.config.tools?.find((t) => t.name === call.name);
-    if (!tool) {
-      return {
-        callId: call.callId,
-        output: JSON.stringify({ error: `Unknown tool: ${call.name}` }),
-      };
-    }
+    if (!tool) return failed(`Unknown tool: ${call.name}`);
 
     try {
       const result = await tool.execute(args);
-      return { callId: call.callId, output: JSON.stringify(result ?? null) };
+      const parts = realtimeToolParts(result, tool);
+      return parts
+        ? { callId: call.callId, name: call.name, output: parts.text, images: parts.images }
+        : {
+            callId: call.callId,
+            name: call.name,
+            output: realtimeToolText(result, tool),
+            images: [],
+          };
     } catch (err) {
-      return {
-        callId: call.callId,
-        output: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }),
-      };
+      return failed(err instanceof Error ? err.message : String(err));
     }
   }
 

@@ -11,6 +11,7 @@ import {
   normalizeToolNames,
   toToolParameters,
   toolContent,
+  toolPartsToText,
   toolResultParts,
 } from '@cogitator-ai/core';
 import type { Tool, ToolSchema, ToolContext, ToolContentPart } from '@cogitator-ai/types';
@@ -468,6 +469,20 @@ function partToMCPContent(part: ToolContentPart, index: number): MCPToolContent 
               blob: part.data,
             },
           };
+    case 'json':
+      return { type: 'text', text: toolPartsToText([part]) };
+    case 'resource':
+      if (part.text !== undefined || part.data !== undefined) {
+        return {
+          type: 'resource',
+          resource: {
+            uri: part.uri,
+            ...(part.mediaType !== undefined && { mimeType: part.mediaType }),
+            ...(part.text !== undefined ? { text: part.text } : { blob: part.data }),
+          },
+        };
+      }
+      return { type: 'text', text: toolPartsToText([part]) };
   }
 }
 
@@ -550,6 +565,11 @@ function mcpContentToPart(item: MCPToolContent): ToolContentPart {
           ? { type: 'image', data: item.resource.blob, mediaType }
           : { type: 'file', data: item.resource.blob, mediaType, filename: item.resource.uri };
       }
-      return { type: 'text', text: item.resource.text ?? '' };
+      return {
+        type: 'resource',
+        uri: item.resource.uri,
+        ...(item.resource.mimeType !== undefined && { mediaType: item.resource.mimeType }),
+        text: item.resource.text ?? '',
+      };
   }
 }

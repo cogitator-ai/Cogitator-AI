@@ -75,6 +75,7 @@ import {
 } from './cogitator/message-builder';
 import { createSpan, getTextContent } from './cogitator/span-factory';
 import { executeTool, createToolMessage } from './cogitator/tool-executor';
+import { DEFAULT_TOOL_RESULT_MAX_LENGTH } from './tool-content';
 import { streamChat } from './cogitator/streaming';
 import { RunLimiter } from './cogitator/run-limiter';
 import { findHandoffAgent, handoffTools } from './cogitator/handoffs';
@@ -900,7 +901,13 @@ export class Cogitator implements ToolInvoker {
 
           options.onToolResult?.(result);
 
-          const toolMessage = createToolMessage(toolCall, result);
+          const toolMessage = createToolMessage(
+            toolCall,
+            result,
+            registry.get(toolCall.name)?.maxResultLength ??
+              this.config.limits?.maxToolResultLength ??
+              DEFAULT_TOOL_RESULT_MAX_LENGTH
+          );
           messages.push(toolMessage);
 
           if (

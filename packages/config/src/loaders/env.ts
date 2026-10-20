@@ -40,6 +40,7 @@ const ENV_PREFIX = 'COGITATOR_';
  * - COGITATOR_LIMITS_MAX_CONCURRENT_RUNS -> limits.maxConcurrentRuns
  * - COGITATOR_LIMITS_DEFAULT_TIMEOUT -> limits.defaultTimeout
  * - COGITATOR_LIMITS_MAX_TOKENS_PER_RUN -> limits.maxTokensPerRun
+ * - COGITATOR_LIMITS_MAX_TOOL_RESULT_LENGTH -> limits.maxToolResultLength
  *
  * Also supports standard env vars:
  * - OPENAI_API_KEY -> llm.providers.openai.apiKey
@@ -239,10 +240,12 @@ function loadLimitsConfig(): LimitsConfig {
   const maxConcurrentRuns = getEnvNumber('LIMITS_MAX_CONCURRENT_RUNS');
   const defaultTimeout = getEnvNumber('LIMITS_DEFAULT_TIMEOUT');
   const maxTokensPerRun = getEnvNumber('LIMITS_MAX_TOKENS_PER_RUN');
+  const maxToolResultLength = getEnvNumber('LIMITS_MAX_TOOL_RESULT_LENGTH');
 
   if (maxConcurrentRuns !== undefined) limits.maxConcurrentRuns = maxConcurrentRuns;
   if (defaultTimeout !== undefined) limits.defaultTimeout = defaultTimeout;
   if (maxTokensPerRun !== undefined) limits.maxTokensPerRun = maxTokensPerRun;
+  if (maxToolResultLength !== undefined) limits.maxToolResultLength = maxToolResultLength;
 
   return limits;
 }

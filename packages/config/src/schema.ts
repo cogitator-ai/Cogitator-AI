@@ -161,6 +161,7 @@ export const LimitsConfigSchema = z.object({
   maxConcurrentRuns: z.number().int().positive().optional(),
   defaultTimeout: z.number().positive().optional(),
   maxTokensPerRun: z.number().int().positive().optional(),
+  maxToolResultLength: z.number().int().positive().optional(),
 });
 
 export const MemoryProviderSchema = z.enum([

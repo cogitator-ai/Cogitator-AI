@@ -678,3 +678,45 @@ describe('mcpContentToResult single blocks', () => {
     });
   });
 });
+
+describe('json and resource parts', () => {
+  it('serves json parts as JSON text and resources as MCP resources or a line of text', () => {
+    const content = resultToMCPContent({
+      type: 'tool-content',
+      content: [
+        { type: 'json', value: { total: 2 } },
+        { type: 'resource', uri: 'file:///a.md', mediaType: 'text/markdown', text: '# A' },
+        { type: 'resource', uri: 'file:///b.bin', data: 'AAAA' },
+        { type: 'resource', uri: 'https://example.com/7', name: 'Issue 7' },
+      ],
+    });
+
+    expect(content).toEqual([
+      { type: 'text', text: '{"total":2}' },
+      {
+        type: 'resource',
+        resource: { uri: 'file:///a.md', mimeType: 'text/markdown', text: '# A' },
+      },
+      { type: 'resource', resource: { uri: 'file:///b.bin', blob: 'AAAA' } },
+      { type: 'text', text: '[resource "Issue 7" https://example.com/7]' },
+    ]);
+  });
+
+  it('keeps the URI of a text resource that comes with media', () => {
+    const result = mcpContentToResult([
+      { type: 'image', data: 'AAAA', mimeType: 'image/png' },
+      {
+        type: 'resource',
+        resource: { uri: 'file:///notes.txt', mimeType: 'text/plain', text: 'hi' },
+      },
+    ]);
+
+    expect(result).toEqual({
+      type: 'tool-content',
+      content: [
+        { type: 'image', data: 'AAAA', mediaType: 'image/png' },
+        { type: 'resource', uri: 'file:///notes.txt', mediaType: 'text/plain', text: 'hi' },
+      ],
+    });
+  });
+});

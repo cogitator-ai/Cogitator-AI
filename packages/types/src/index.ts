@@ -6,6 +6,7 @@
 
 export * from './message';
 export * from './tool';
+export * from './tool-content';
 export * from './agent';
 export * from './agent-wire';
 export * from './browser';

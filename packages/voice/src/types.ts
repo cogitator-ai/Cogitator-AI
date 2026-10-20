@@ -87,7 +87,14 @@ export interface RealtimeTool {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
+  /**
+   * Runs the tool. A result made of parts (`toolContent()` from `@cogitator-ai/core`, or an
+   * object with a base64 `image`) reaches the model as the text of its parts, images and files
+   * described, see `toolImages` for sending the images themselves.
+   */
   execute: (args: unknown) => Promise<unknown>;
+  /** Most characters of the tool's result the model reads (default 100 000) */
+  maxResultLength?: number;
 }
 
 export interface RealtimeSessionConfig {
@@ -96,6 +103,13 @@ export interface RealtimeSessionConfig {
   apiKey: string;
   instructions?: string;
   tools?: RealtimeTool[];
+  /**
+   * Send the images that tools return to the model, for a model that takes images: with OpenAI
+   * as a user message with `input_image` parts after the tool outputs (`gpt-realtime`,
+   * `gpt-realtime-2`), with Gemini as `parts` of the function response (Gemini 3 models).
+   * Default false: the model reads a description of each image.
+   */
+  toolImages?: boolean;
   voice?: string;
 }
 
@@ -127,6 +141,8 @@ export interface VoiceAgentConfig {
   instructions?: string;
   /** Realtime-mode tools executed by the session on behalf of the model. */
   tools?: RealtimeTool[];
+  /** Realtime mode: send the images tools return to the model (see `RealtimeSessionConfig.toolImages`). */
+  toolImages?: boolean;
   voice?: string;
   transport?: WebSocketTransportConfig;
 }

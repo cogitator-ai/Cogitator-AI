@@ -38,6 +38,8 @@ export {
   toolResultParts,
   toolPartsToMessageContent,
   toolPartsToText,
+  truncateToolResultText,
+  DEFAULT_TOOL_RESULT_MAX_LENGTH,
 } from './tool-content';
 export { defineSkill, validateSkill, mergeSkillsIntoAgent } from './skill';
 export { agentAsTool } from './agent-tool';

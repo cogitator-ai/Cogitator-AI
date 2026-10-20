@@ -127,11 +127,13 @@ describe('loadEnvConfig()', () => {
     process.env.COGITATOR_LIMITS_MAX_CONCURRENT_RUNS = '5';
     process.env.COGITATOR_LIMITS_DEFAULT_TIMEOUT = '30000';
     process.env.COGITATOR_LIMITS_MAX_TOKENS_PER_RUN = '100000';
+    process.env.COGITATOR_LIMITS_MAX_TOOL_RESULT_LENGTH = '20000';
 
     const config = loadEnvConfig();
     expect(config.limits?.maxConcurrentRuns).toBe(5);
     expect(config.limits?.defaultTimeout).toBe(30000);
     expect(config.limits?.maxTokensPerRun).toBe(100000);
+    expect(config.limits?.maxToolResultLength).toBe(20000);
   });
 
   it('COGITATOR_ prefix takes precedence over standard env vars', () => {

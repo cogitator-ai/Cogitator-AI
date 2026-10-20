@@ -105,6 +105,7 @@ function withSdkParsedArguments(tool: Tool): Tool {
     ...(tool.requiresApproval !== undefined && { requiresApproval: tool.requiresApproval }),
     ...(tool.timeout !== undefined && { timeout: tool.timeout }),
     ...(tool.sandbox !== undefined && { sandbox: tool.sandbox }),
+    ...(tool.maxResultLength !== undefined && { maxResultLength: tool.maxResultLength }),
     toJSON: () => tool.toJSON(),
   };
 }

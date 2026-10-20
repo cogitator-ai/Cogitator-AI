@@ -66,6 +66,7 @@ export function tool<TParams, TResult>(
         : config.requiresApproval,
     timeout: config.timeout,
     sandbox: config.sandbox,
+    maxResultLength: config.maxResultLength,
     toJSON(): ToolSchema {
       return toolToSchema(this);
     },
