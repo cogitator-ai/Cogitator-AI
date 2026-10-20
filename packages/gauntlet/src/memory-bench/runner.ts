@@ -123,6 +123,12 @@ function probe(
   };
 }
 
+/**
+ * Retries of a model call: a run of thousands of questions meets rate limits and dropped
+ * connections, and an answer lost to one would only be asked again on the next run.
+ */
+const BENCH_RETRY = { maxRetries: 8, maxDelay: 60_000 };
+
 /** A runtime whose memory holds conversations for `strategy`, the bench model priced. */
 export function benchRuntime(
   options: Pick<AnswerOptions, 'strategy' | 'anthropicApiKey' | 'anthropicWorkspace' | 'embedding'>
@@ -138,6 +144,7 @@ export function benchRuntime(
         },
       },
       pricing: { [`anthropic/${BENCH_MODEL}`]: BENCH_PRICE },
+      retry: BENCH_RETRY,
     },
     memory: {
       adapter: 'memory',
