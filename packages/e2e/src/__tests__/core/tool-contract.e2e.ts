@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
@@ -133,12 +133,12 @@ describe('Core: tool contract', () => {
   });
 
   it('stops a sandboxed command when the run is cancelled', async () => {
-    const marker = join(tmpdir(), `cogitator-abort-${process.pid}-${Date.now()}`);
+    const base = join(tmpdir(), `cogitator-abort-${process.pid}-${Date.now()}`);
+    const started = `${base}.started`;
+    const finished = `${base}.finished`;
     const cog = await fakeCogitator(
-      callsToolOnce('shell', { command: `sleep 3 && touch ${marker}` }),
-      {
-        sandbox: { docker: { socketPath: join(tmpdir(), 'no-docker-here.sock') } },
-      }
+      callsToolOnce('shell', { command: `touch ${started} && sleep 3 && touch ${finished}` }),
+      { sandbox: { docker: { socketPath: join(tmpdir(), 'no-docker-here.sock') } } }
     );
     const shell = tool({
       name: 'shell',
@@ -148,18 +148,24 @@ describe('Core: tool contract', () => {
       execute: async () => ({ unreachable: true }),
     });
 
-    const controller = new AbortController();
-    const started = Date.now();
-    const run = cog.run(agentWith(shell), {
-      input: 'Run it',
-      signal: controller.signal,
-      onToolCall: () => setTimeout(() => controller.abort(new Error('user cancelled')), 300),
-    });
+    try {
+      const controller = new AbortController();
+      const begin = Date.now();
+      const run = cog.run(agentWith(shell), {
+        input: 'Run it',
+        signal: controller.signal,
+        onToolCall: () => setTimeout(() => controller.abort(new Error('user cancelled')), 500),
+      });
 
-    await expect(run).rejects.toThrow();
-    expect(Date.now() - started).toBeLessThan(2500);
-    await new Promise((resolve) => setTimeout(resolve, 3500));
-    expect(existsSync(marker)).toBe(false);
+      await expect(run).rejects.toThrow();
+      expect(Date.now() - begin).toBeLessThan(2500);
+      expect(existsSync(started)).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 4000));
+      expect(existsSync(finished)).toBe(false);
+    } finally {
+      rmSync(started, { force: true });
+      rmSync(finished, { force: true });
+    }
   }, 15_000);
 });
 
