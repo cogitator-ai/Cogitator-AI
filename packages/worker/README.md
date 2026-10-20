@@ -133,7 +133,7 @@ interface QueueConfig {
 
 **Agent Jobs:**
 
-The simplest way is to serialize an agent you already have. `serializeAgent` writes it in the agent wire format of `@cogitator-ai/core` (`toAgentWire`), shared by agent, workflow and swarm jobs and by distributed swarm turns. It keeps the whole configuration (model and provider, instructions, sampling, stop sequences, reasoning effort, response format, iteration limit, timeout), the tool schemas and every agent it can hand over to, and turns a Zod response schema into JSON Schema, so the worker validates the structured answer the same way an in-process run does. A config with a key the worker does not know is refused rather than run without that setting:
+The simplest way is to serialize an agent you already have. `serializeAgent` writes it in the agent wire format of `@cogitator-ai/core` (`toAgentWire`), shared by agent, workflow and swarm jobs and by distributed swarm turns. It keeps the whole configuration (model and provider, fallback models, instructions, sampling, stop sequences, reasoning effort, response format, iteration limit, timeout), the tool schemas and every agent it can hand over to, and turns a Zod response schema into JSON Schema, so the worker validates the structured answer the same way an in-process run does. A config with a key the worker does not know is refused rather than run without that setting:
 
 ```typescript
 import { Agent } from '@cogitator-ai/core';

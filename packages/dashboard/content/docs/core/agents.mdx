@@ -111,8 +111,9 @@ await cog.run(agent, { input: 'Where is my order?', deps: { db, userId: session.
 
 - `deps` reach every tool of the run: tools of agents it hands over to, [agents run as tools](#agents-as-tools) and `cog.invokeTool(tool, args, { deps })`.
 - They never reach the model, the memory, spans, the run result or a paused run's checkpoint. Pass them again to `cog.resume(agent, checkpoint, { deps, decisions })`.
-- `new Agent<AppDeps>(...)` only accepts tools whose deps `AppDeps` provides, and makes `deps` required in `run()` and `resume()`. An agent without a deps type takes any tool, so a tool that reads `deps` gets `undefined` when the run passes none.
+- `new Agent<AppDeps>(...)` makes `deps` required in `run()` and `resume()`, and refuses a tool whose deps type is unrelated to `AppDeps`. TypeScript compares tool methods loosely, so declare in `AppDeps` every field the agent's tools read: a tool reading a field `AppDeps` lacks still compiles. An agent without a deps type takes any tool, and a tool that reads `deps` then gets `undefined` when the run passes none.
 - `RunOptions.context` is different: it is data for the model, added to the system prompt.
+- `deps` are passed by your own code: `cog.run()`, `cog.resume()`, `cog.invokeTool()` and tools made with `agentAsTool`. Server adapters, channels, swarms, workflows and the worker start runs without them, so an agent whose tools read `deps` runs through `cog.run()` of your own for now.
 
 ## Agent with Tools
 
@@ -245,7 +246,7 @@ const wire = toAgentWire(agent); // plain JSON
 const received = fromAgentWire(JSON.parse(payload), { cogitator, tools: [searchWeb, readUrl] });
 ```
 
-`toAgentWire` carries the whole configuration: model and provider, fallback models, instructions, sampling, `stopSequences`, `reasoning`, `responseFormat` (a Zod schema as JSON Schema, turned back into one on arrival), `maxIterations`, `onIterationLimit`, `timeout`, the tool schemas and every agent the agent can hand over to (handoff graphs with cycles included). Skills arrive merged into the tools and instructions. An explicit `provider` also prefixes the model, so the agent runs on the same route wherever it lands. Pass `resolveModel` for an agent without a model, e.g. `toAgentWire(agent, { resolveModel: (a) => cogitator.resolveModel(a) })`.
+`toAgentWire` carries the whole configuration: model and provider, fallback models (up to 16), instructions, sampling, `stopSequences`, `reasoning`, `responseFormat` (a Zod schema as JSON Schema, turned back into one on arrival), `maxIterations`, `onIterationLimit`, `timeout`, the tool schemas and every agent the agent can hand over to (handoff graphs with cycles included). Skills arrive merged into the tools and instructions. An explicit `provider` also prefixes the model, so the agent runs on the same route wherever it lands. Pass `resolveModel` for an agent without a model, e.g. `toAgentWire(agent, { resolveModel: (a) => cogitator.resolveModel(a) })`.
 
 `fromAgentWire` validates the payload (`agentWireSchema`, or `parseAgentWire` alone), refuses keys it does not know instead of dropping them, resolves the tools by name from `tools` and throws `AgentWireError` for a missing tool or a provider the receiving Cogitator cannot route to. `toAgentWireRunResult(result)` and `fromAgentWireRunResult(wire, { agentId })` carry a run's outcome the same way: answer, structured output, usage with cost and duration, tool calls with their outputs, and the `truncated`, `blocked` and `iterationLimitReached` flags. `@cogitator-ai/worker` and distributed swarms use both.
 

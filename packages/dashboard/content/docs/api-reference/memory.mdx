@@ -106,9 +106,9 @@ See [Embeddings](/docs/memory/embeddings).
 | `countEntryTokens`, `countToolCallsTokens`  | `(entry: MemoryEntry)`, `(toolCalls: ToolCall[])`                                                     | Recount a stored entry, estimate tool calls                               |
 | `truncateToTokens`                          | `truncateToTokens(text: string, maxTokens: number): string`                                           | Cut text to a token budget                                                |
 
-`build()` also takes `maxTokens`, this build's budget in place of the builder's, such as the context window of the model it is built for. The result's `dropped` (`DroppedContext`) lists the history entries, facts, search results and graph nodes that did not fit, with their token count.
+`build()` also takes `maxTokens`, this build's budget in place of the builder's, such as the context window of the model it is built for. The result's `dropped` (`DroppedContext`) lists the history entries, facts, search results and graph nodes left out, with their token count. With the `relevant` and `hybrid` strategies its entries include those the selection passed over, not only those the budget had no room for.
 
-`ContextBuilderConfig` is `{ maxTokens?, strategy: 'recent' | 'relevant' | 'hybrid', reserveTokens?, includeSystemPrompt?, includeFacts?, includeSemanticContext?, includeGraphContext?, graphContextOptions? }`; `ContextBuilderDeps` is `{ memoryAdapter, factAdapter?, embeddingAdapter?, embeddingService?, graphContextBuilder? }`.
+`ContextBuilderConfig` is `{ maxTokens?, strategy: 'recent' | 'relevant' | 'hybrid', reserveTokens?, includeSystemPrompt?, includeFacts?, includeSemanticContext?, includeGraphContext?, graphContextOptions? }`, and `ContextBuilderDeps` is `{ memoryAdapter, factAdapter?, embeddingAdapter?, embeddingService?, graphContextBuilder? }`.
 
 ## Core Facts, Sessions, Compaction
 

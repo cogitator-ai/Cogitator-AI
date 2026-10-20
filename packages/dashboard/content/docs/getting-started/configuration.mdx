@@ -67,7 +67,7 @@ const config = loadConfig({
 
 | Section       | What it configures                                                                                                                                           |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `llm`         | `defaultProvider`, `defaultModel`, `providers`, `retry`, `promptCache`, `pricing`, `plugins`                                                                 |
+| `llm`         | `defaultProvider`, `defaultModel`, `providers`, `retry`, `promptCache`, `modelCircuitBreaker`, `pricing`, `plugins`                                          |
 | `prompts`     | `autoDeployWinner` for [prompt A/B tests](/docs/advanced/prompt-versions)                                                                                    |
 | `limits`      | `maxConcurrentRuns`, `defaultTimeout` (ms), `maxTokensPerRun`, `maxToolResultLength` (characters), see [Cogitator](/docs/core/cogitator#defaults-and-limits) |
 | `memory`      | Adapter, its connection, `embedding` and `contextBuilder`                                                                                                    |
@@ -384,6 +384,16 @@ llm:
     ttl: 1h # Anthropic keeps the cache for an hour instead of 5 minutes
     # conversation: true - also mark single turns for the next one (default: with tools or history)
   # promptCache: false   — turn it off
+```
+
+Agents with `fallbackModels` skip a model that keeps failing for a while, see [Fallback Models](/docs/core/llm-backends#fallback-models):
+
+```yaml
+llm:
+  modelCircuitBreaker:
+    failureThreshold: 5 # failures in a row before a model is skipped
+    resetTimeout: 30000 # ms it is skipped
+    halfOpenRequests: 3 # successful calls before it counts as healthy again
 ```
 
 ### Pricing

@@ -117,12 +117,16 @@ interface ToolContext {
   agentId: string;
   runId: string;
   signal: AbortSignal;
+  toolCallId?: string;
   threadId?: string;
   userId?: string; // the run's userId — scope data access by it
   channelType?: string; // set when the run comes from a channel (Telegram, Slack, …)
   channelId?: string;
+  deps?: unknown; // the run's deps, typed with ToolContext<YourDeps>
 }
 ```
+
+Per-request values such as a database client or an API key go in `deps`, not in the prompt: see [Dependencies for Tools](/docs/core/agents#dependencies-for-tools).
 
 ### Async Execution
 

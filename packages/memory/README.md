@@ -352,7 +352,7 @@ const context = await builder.build({
 console.log(context.messages);
 console.log(context.tokenCount);
 console.log(context.truncated);
-console.log(context.dropped); // what did not fit: entries, facts, semanticResults, graphNodes, tokenCount
+console.log(context.dropped); // what was left out: entries, facts, semanticResults, graphNodes, tokenCount
 ```
 
 ### Budget per Build
@@ -414,7 +414,7 @@ interface BuiltContext {
   graphContext?: GraphContext; // with includeGraphContext and a graph adapter
   tokenCount: number;
   truncated: boolean; // history entries were left out
-  dropped: DroppedContext; // what did not fit the budget
+  dropped: DroppedContext; // what was left out of the context
   errors?: ContextBuildError[]; // parts that failed to load and were left out
   warnings?: string[]; // budget problems, such as a system prompt over budget
   metadata: {
@@ -426,7 +426,7 @@ interface BuiltContext {
 }
 
 interface DroppedContext {
-  entries: MemoryEntry[]; // history left out, in conversation order
+  entries: MemoryEntry[]; // history left out, in conversation order (relevant/hybrid: also entries not selected)
   facts: Fact[]; // facts visible to the user that did not fit
   semanticResults: (Embedding & { score: number })[]; // search results that did not fit
   graphNodes: GraphNode[]; // graph nodes cut from the graph context

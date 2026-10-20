@@ -362,7 +362,7 @@ const result = await cog.run(agent, {
 result.modelUsed; // set when the final answer came from a fallback
 ```
 
-Each turn starts from `model` again. A model that keeps failing is skipped for a while by its circuit breaker (`llm.modelCircuitBreaker`), a stream moves only before its first token, and a run whose models all failed ends with `LLM_UNAVAILABLE` and the failures in `details.attempts`.
+Each turn starts from `model` again. A model that keeps failing is skipped for a while by its circuit breaker (`llm.modelCircuitBreaker`), a stream moves only before its first token, and a run whose models all failed ends with `LLM_UNAVAILABLE` (or the error code every model failed with) and the failures in `details.attempts`.
 
 ### Reasoning
 
@@ -511,7 +511,7 @@ const agent = new Agent<AppDeps>({ name: 'support', instructions: '...', tools: 
 await cog.run(agent, { input: 'Where is my order?', deps: { db, userId: session.userId } });
 ```
 
-`new Agent<AppDeps>` rejects tools that need deps it does not provide, and `run()` and `resume()` then require `deps`. They reach handed-over agents and agents run as tools too, and stay out of the prompt, memory, spans and checkpoints, so a resumed run passes them again.
+`new Agent<AppDeps>` makes `run()` and `resume()` require `deps` and refuses tools whose deps type is unrelated to `AppDeps`. Declare every field the tools read in `AppDeps`: tool methods are compared loosely, so a tool reading a field it lacks still compiles. They reach handed-over agents and agents run as tools too, and stay out of the prompt, memory, spans and checkpoints, so a resumed run passes them again.
 
 ### MCP Tool Servers
 
@@ -637,7 +637,7 @@ interface RunResult {
   readonly runId: string;
   readonly agentId: string;
   readonly threadId: string;
-  readonly modelUsed?: string; // differs from agent.model with cost routing
+  readonly modelUsed?: string; // the model of the final answer, with cost routing or a fallback
   readonly usage: {
     readonly inputTokens: number;
     readonly outputTokens: number;

@@ -51,6 +51,7 @@ interface CogitatorConfig {
     plugins?: Record<string, unknown>; // config for registerLLMBackend() plugins
     retry?: LLMRetryConfig | false; // default: 2 retries with backoff
     promptCache?: PromptCacheConfig | false; // default: on
+    modelCircuitBreaker?: ModelCircuitBreakerConfig; // when a failing fallbackModels model is skipped
     pricing?: Record<string, ModelPriceConfig>; // prices of your own, USD per million tokens, over the registry
   };
   limits?: {
@@ -131,6 +132,7 @@ const result = await cog.run(agent, {
 | `userId`                   | `string`                                                  | The user the run acts for: owns new threads, scopes memory, reaches tools as `context.userId`                               |
 | `threadAccess`             | `'owner' \| 'shared'`                                     | `'owner'` (default): only the thread's creator may continue it ([Multi-User](/docs/advanced/multi-user))                    |
 | `context`                  | `Record<string, unknown>`                                 | System prompt values, as one JSON data block, adapters accept client keys via `acceptContext`                               |
+| `deps`                     | `TDeps`                                                   | Values for the tools as `context.deps`, never shown to the model ([Dependencies](/docs/core/agents#dependencies-for-tools)) |
 | `stream`                   | `boolean`                                                 | Enable token streaming                                                                                                      |
 | `signal`                   | `AbortSignal`                                             | Cancel the run and linked provider/tool work                                                                                |
 | `timeout`                  | `number`                                                  | Override the agent timeout (ms)                                                                                             |
@@ -146,6 +148,7 @@ const result = await cog.run(agent, {
 | `onToolCall`               | `(call: ToolCall) => void`                                | Called when the agent invokes a tool                                                                                        |
 | `onToolResult`             | `(result: ToolResult) => void`                            | Called when a tool returns                                                                                                  |
 | `onHandoff`                | `(handoff: HandoffEvent) => void`                         | Called when an agent hands the conversation over ([Handoffs](/docs/core/agents#handoffs))                                   |
+| `onModelFallback`          | `(event: ModelFallbackEvent) => void`                     | A turn moved to the next of `fallbackModels` ([Fallback Models](/docs/core/llm-backends#fallback-models))                   |
 | `onRunStart`               | `({ runId, agentId, input, threadId }) => void`           | Called when the run starts                                                                                                  |
 | `onRunComplete`            | `(result: RunResult) => void`                             | Called with the result                                                                                                      |
 | `onRunError`               | `(error: Error, runId: string, usage?: RunUsage) => void` | Called when the run fails, with what its finished model calls used and cost (a run cut short by its timeout spent them too) |
@@ -162,7 +165,7 @@ interface RunResult {
   runId: string;
   agentId: string;
   threadId: string;
-  modelUsed?: string; // differs from agent.model under cost routing
+  modelUsed?: string; // the model of the final answer, under cost routing or after a fallback
   usage: {
     inputTokens: number;
     outputTokens: number;

@@ -592,7 +592,7 @@ await cog.close();`,
       notes: [
         {
           type: 'info',
-          text: 'A stream moves only before its first token. When every model fails, the run ends with `LLM_UNAVAILABLE` and the failures in `details.attempts`.',
+          text: 'A stream moves only before its first token. When every model fails, the run ends with `LLM_UNAVAILABLE` (or the error code every model failed with) and the failures in `details.attempts`.',
         },
       ],
       example: 'core/19-model-fallback.ts',

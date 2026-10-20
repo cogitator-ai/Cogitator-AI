@@ -280,7 +280,7 @@ const result = await cog.run(agent, {
 result.modelUsed; // 'openai/gpt-6.1-sol' when a fallback gave the final answer
 ```
 
-Every turn starts from `model` again. Each model has a circuit breaker shared by the runtime's runs (`llm.modelCircuitBreaker`, default 5 failures in a row, 30 s), which opens at once on a lasting failure such as an exhausted quota. A stream moves only before its first token, a fallback turn is priced at the model that answered it and leaves an `llm.fallback` span, and when every model fails the run ends with `LLM_UNAVAILABLE`, the failures in `details.attempts`. Agents without `fallbackModels` behave as before.
+Every turn starts from `model` again. Each model has a circuit breaker shared by the runtime's runs (`llm.modelCircuitBreaker`, default 5 failures in a row, 30 s), which opens at once on a lasting failure such as an exhausted quota. A stream moves only before its first token, a fallback turn is priced at the model that answered it and leaves an `llm.fallback` span, and when every model fails the run ends with `LLM_UNAVAILABLE` (or the error code every model failed with), the failures in `details.attempts`. Agents without `fallbackModels` behave as before.
 
 `llmUnavailable`, `llmTimeout`, `llmInvalidResponse`, `llmConfigError` and `wrapSDKError` build these errors in your own backends, and `providerErrorIn` reads the error a router such as OpenRouter puts in the body of a successful response; `withLLMRetry(backend, options)` / `RetryingBackend` add retries with `Retry-After` support to any backend.
 
@@ -597,7 +597,7 @@ const agent = new Agent<AppDeps>({ name: 'support', instructions: '...', tools: 
 await cog.run(agent, { input: 'Where is my order?', deps: { db, userId: session.userId } });
 ```
 
-`deps` reach every tool of the run, handed-over agents, agents run as tools and `cog.invokeTool(tool, args, { deps })`, and never the model, memory, spans, the result or a paused run's checkpoint: pass them again to `resume()`. `new Agent<AppDeps>` rejects tools whose deps it does not provide and makes `deps` required in `run()` and `resume()`.
+`deps` reach every tool of the run, handed-over agents, agents run as tools and `cog.invokeTool(tool, args, { deps })`, and never the model, memory, spans, the result or a paused run's checkpoint: pass them again to `resume()`. `new Agent<AppDeps>` makes `deps` required in `run()` and `resume()` and refuses tools whose deps type is unrelated to `AppDeps`. Declare every field the tools read in it: tool methods are compared loosely, so a tool reading a field `AppDeps` lacks still compiles. Server adapters, channels, swarms, workflows and the worker start runs without `deps` for now.
 
 ### Sandboxed Tools
 
@@ -892,6 +892,7 @@ const result = await cog.run(agent, {
   userId: 'user_456', // owns the thread, scopes memory, reaches tools as context.userId
   threadAccess: 'owner', // default; 'shared' lets any user continue the thread
   context: { task: 'analysis' }, // extra values for the system prompt
+  deps: { db }, // values for the tools (context.deps), never sent to the model
 
   timeout: 60000,
   signal: controller.signal,
@@ -908,6 +909,7 @@ const result = await cog.run(agent, {
 
   onApproval: (request) => ({ approved: request.toolName !== 'delete_account' }),
   onHandoff: (handoff) => console.log(`${handoff.from} -> ${handoff.to}`),
+  onModelFallback: ({ from, to }) => console.warn(`${from} failed, using ${to}`),
   onToolCall: (call) => console.log('Tool:', call.name),
   onToolResult: (result) => console.log('Result:', result.result),
   onSpan: (span) => console.log('Span:', span.name),
@@ -931,7 +933,7 @@ interface RunResult {
   runId: string;
   agentId: string;
   threadId: string;
-  modelUsed?: string; // differs from agent.model when cost routing picked another
+  modelUsed?: string; // the model of the final answer, when cost routing or a fallback picked it
   usage: {
     inputTokens: number;
     outputTokens: number;
@@ -1003,7 +1005,7 @@ const cog = new Cogitator({
       keyPrefix: 'cogitator:',
     },
     contextBuilder: {
-      maxTokens: 4000, // optional: without it the history fills the run model's context window
+      maxTokens: 4000, // optional: without it the history gets what the run's model has room for
       strategy: 'recent',
     },
   },

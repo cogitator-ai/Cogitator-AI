@@ -543,7 +543,7 @@ type ToolContext<TDeps = unknown> = unknown extends TDeps
   : BaseToolContext<TDeps> & { deps: TDeps };
 ```
 
-`new Agent<AppDeps>(...)` only accepts tools whose deps `AppDeps` provides and makes `deps` required in `run()` and `resume()`. A paused run's checkpoint never holds `deps`, so `resume()` takes them again.
+`new Agent<AppDeps>(...)` makes `deps` required in `run()` and `resume()` and refuses tools whose deps type is unrelated to `AppDeps` (declare every field the tools read in it: tool methods are compared loosely, so a tool reading a field `AppDeps` lacks still compiles). A paused run's checkpoint never holds `deps`, so `resume()` takes them again.
 
 #### Built-in Tools
 

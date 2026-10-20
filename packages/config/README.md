@@ -142,6 +142,10 @@ llm:
     requestTimeout: 180000 # ms one call may take before it is aborted and retried, off by default
   promptCache: # or `false`; on by default
     ttl: 1h # 5m | 1h (Anthropic)
+  modelCircuitBreaker: # when a model agents fall back from (fallbackModels) is skipped
+    failureThreshold: 5 # failures in a row, default 5
+    resetTimeout: 30000 # ms it is skipped, default 30000
+    halfOpenRequests: 3 # successes needed afterwards, default 3
   plugins: # settings for backend plugins registered with registerLLMBackend, by provider name
     my-provider:
       endpoint: http://localhost:9000
@@ -573,26 +577,27 @@ import type { CogitatorConfigInput, CogitatorConfigOutput } from '@cogitator-ai/
 
 ### Available Schemas
 
-| Schema                           | Description                            |
-| -------------------------------- | -------------------------------------- |
-| `CogitatorConfigSchema`          | Full configuration                     |
-| `LLMConfigSchema`                | LLM providers and defaults             |
-| `MemoryConfigSchema`             | Memory adapters and settings           |
-| `SandboxConfigSchema`            | Sandbox execution settings             |
-| `ReflectionConfigSchema`         | Self-reflection settings               |
-| `GuardrailConfigSchema`          | Safety guardrails                      |
-| `ConstitutionSchema`             | `guardrails.constitution` principles   |
-| `CostRoutingConfigSchema`        | Cost-aware model selection             |
-| `KnowledgeGraphConfigSchema`     | Knowledge graph settings               |
-| `PromptOptimizationConfigSchema` | Prompt optimization                    |
-| `SecurityConfigSchema`           | Prompt injection and PII masking       |
-| `ContextManagerConfigSchema`     | Context compression                    |
-| `LoggingConfigSchema`            | Logging settings                       |
-| `DeployConfigSchema`             | Deployment settings                    |
-| `DeployTargetSchema`             | Deploy target enum (`docker` \| `fly`) |
-| `DeployServerSchema`             | Server framework enum                  |
-| `LLMRetryConfigSchema`           | `llm.retry` (`false` or retry options) |
-| `PromptsConfigSchema`            | `prompts` (`autoDeployWinner`)         |
+| Schema                            | Description                            |
+| --------------------------------- | -------------------------------------- |
+| `CogitatorConfigSchema`           | Full configuration                     |
+| `LLMConfigSchema`                 | LLM providers and defaults             |
+| `MemoryConfigSchema`              | Memory adapters and settings           |
+| `SandboxConfigSchema`             | Sandbox execution settings             |
+| `ReflectionConfigSchema`          | Self-reflection settings               |
+| `GuardrailConfigSchema`           | Safety guardrails                      |
+| `ConstitutionSchema`              | `guardrails.constitution` principles   |
+| `CostRoutingConfigSchema`         | Cost-aware model selection             |
+| `KnowledgeGraphConfigSchema`      | Knowledge graph settings               |
+| `PromptOptimizationConfigSchema`  | Prompt optimization                    |
+| `SecurityConfigSchema`            | Prompt injection and PII masking       |
+| `ContextManagerConfigSchema`      | Context compression                    |
+| `LoggingConfigSchema`             | Logging settings                       |
+| `DeployConfigSchema`              | Deployment settings                    |
+| `DeployTargetSchema`              | Deploy target enum (`docker` \| `fly`) |
+| `DeployServerSchema`              | Server framework enum                  |
+| `LLMRetryConfigSchema`            | `llm.retry` (`false` or retry options) |
+| `ModelCircuitBreakerConfigSchema` | `llm.modelCircuitBreaker`              |
+| `PromptsConfigSchema`             | `prompts` (`autoDeployWinner`)         |
 
 `KnowledgeGraphConfigSchema` and `PromptOptimizationConfigSchema` validate those configs on their own; they are not keys of `CogitatorConfigSchema`.
 

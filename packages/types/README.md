@@ -252,7 +252,7 @@ const schemaFormat: ResponseFormat = {
 };
 ```
 
-`AgentConfig` also takes `id`, `provider` (an explicit backend name), `skills` (`Skill` bundles of tools and instructions) and `fallbackModels` (`FallbackModel`: models a turn moves to when `model` fails). `AgentConfig<TDeps>` with a deps type only accepts tools whose deps it provides, and `RunOptions<TDeps>.deps` carries them to the tools (`RunDeps<TDeps>` makes them required). `AgentSnapshot` / `SerializedAgentConfig` describe the JSON form of `agent.serialize()`.
+`AgentConfig` also takes `id`, `provider` (an explicit backend name), `skills` (`Skill` bundles of tools and instructions) and `fallbackModels` (`FallbackModel`: models a turn moves to when `model` fails). `AgentConfig<TDeps>` with a deps type refuses tools whose deps type is unrelated to it, and `RunOptions<TDeps>.deps` carries them to the tools (`RunDeps<TDeps>` makes them required). `AgentSnapshot` / `SerializedAgentConfig` describe the JSON form of `agent.serialize()`.
 
 ---
 
