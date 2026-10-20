@@ -1156,32 +1156,33 @@ export class Cogitator implements ToolInvoker {
           const spentBefore = costMeter.total(costModel);
           costMeter.add(answer.usage, priced);
           const callCost = costMeter.total(costModel) - spentBefore;
-          spans.push(
-            createSpan(
-              'llm.chat',
-              traceId,
-              rootSpanId,
-              startedAt,
-              Date.now(),
-              {
-                'llm.model': sentModel,
-                'llm.iteration': iterations,
-                'llm.input_tokens': answer.usage.inputTokens,
-                'llm.output_tokens': answer.usage.outputTokens,
-                'llm.cost': callCost,
-                ...(answer.usage.cachedInputTokens && {
-                  'llm.cached_input_tokens': answer.usage.cachedInputTokens,
-                }),
-                ...(answer.usage.reasoningTokens && {
-                  'llm.reasoning_tokens': answer.usage.reasoningTokens,
-                }),
-                'llm.finish_reason': answer.finishReason,
-              },
-              answer.finishReason === 'error' ? 'error' : 'ok',
-              'client',
-              options.onSpan
-            )
-          );
+          if (!abortController.signal.aborted)
+            spans.push(
+              createSpan(
+                'llm.chat',
+                traceId,
+                rootSpanId,
+                startedAt,
+                Date.now(),
+                {
+                  'llm.model': sentModel,
+                  'llm.iteration': iterations,
+                  'llm.input_tokens': answer.usage.inputTokens,
+                  'llm.output_tokens': answer.usage.outputTokens,
+                  'llm.cost': callCost,
+                  ...(answer.usage.cachedInputTokens && {
+                    'llm.cached_input_tokens': answer.usage.cachedInputTokens,
+                  }),
+                  ...(answer.usage.reasoningTokens && {
+                    'llm.reasoning_tokens': answer.usage.reasoningTokens,
+                  }),
+                  'llm.finish_reason': answer.finishReason,
+                },
+                answer.finishReason === 'error' ? 'error' : 'ok',
+                'client',
+                options.onSpan
+              )
+            );
           totalInputTokens += answer.usage.inputTokens;
           totalOutputTokens += answer.usage.outputTokens;
           cachedInputTokens += answer.usage.cachedInputTokens ?? 0;
@@ -1217,6 +1218,7 @@ export class Cogitator implements ToolInvoker {
           this.fallbackChain().run<ChatResponse>(
             candidates,
             async (candidate) => {
+              reachedModel = false;
               const turnMessages =
                 candidate === candidates[0]
                   ? messages
@@ -1255,16 +1257,14 @@ export class Cogitator implements ToolInvoker {
                 await turnPipeline.callModel(
                   call,
                   async (sent) => {
-                    reachedModel = true;
                     const startedAt = Date.now();
                     const sentAnswer = normalizeTurn(
                       sent.stream
                         ? await streamChatRequest(candidate.backend, sent.request, sent.stream)
                         : await candidate.backend.chat(sent.request)
                     );
-                    if (!abortController.signal.aborted) {
-                      recordCall(sentAnswer, candidate, sent.request.model, startedAt);
-                    }
+                    reachedModel = true;
+                    recordCall(sentAnswer, candidate, sent.request.model, startedAt);
                     return sentAnswer;
                   },
                   middlewareContext()

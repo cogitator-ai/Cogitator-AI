@@ -70,8 +70,16 @@ export interface ModelStreamSink {
  * copy of it.
  */
 export interface ModelCallRequest {
+  /**
+   * What the backend gets. `request.model` is the model name on that backend, without the
+   * provider: change it to send the call to another model of the same provider, and the call is
+   * priced and traced by that model
+   */
   readonly request: ChatRequest;
-  /** `provider/model` the call goes to: the agent's model, or one of its `fallbackModels` */
+  /**
+   * `provider/model` the call goes to: the agent's model, or one of its `fallbackModels`. It names
+   * the route and changing it has no effect
+   */
   readonly model: string;
   /** Set when the run streams: what the call streams goes here */
   readonly stream?: ModelStreamSink;

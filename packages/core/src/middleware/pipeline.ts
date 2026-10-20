@@ -139,13 +139,18 @@ export class MiddlewarePipeline<TDeps = unknown> {
       changed: boolean
     ) => Promise<ToolResult>) => {
       const layer = this.layers[index];
-      const inner = layer ? through(index + 1) : undefined;
-      const wrap = layer?.wrapToolCall;
+      if (!layer) {
+        return async (pristine, approved, changed) => {
+          const request = prepare(pristine, approved, changed);
+          return 'tool' in request ? run(request) : request;
+        };
+      }
+      const inner = through(index + 1);
+      const wrap = layer.wrapToolCall;
+      if (!wrap) return inner;
       return async (pristine, approved, changed) => {
         const request = prepare(pristine, approved, changed);
         if (!('tool' in request)) return request;
-        if (!layer || !inner) return run(request);
-        if (!wrap) return inner(pristine, approved, false);
         const snapshot = canonicalArguments(pristine);
         const next: ToolCallHandler = async (current) => {
           if (current.args !== request.args) {
@@ -167,34 +172,90 @@ export class MiddlewarePipeline<TDeps = unknown> {
 
 /**
  * A copy of tool call arguments a middleware can edit without touching anyone else's: plain
- * objects and arrays are copied all the way down, anything else (a `Buffer`, a `Date`, an
- * instance of a class) is kept as it is, so a tool gets values of the types it was called with.
+ * objects, arrays, maps and sets are copied all the way down (cycles kept), anything else (a
+ * `Buffer`, a `Date`, an instance of a class) is kept as it is, so a tool gets values of the
+ * types it was called with. Keys are copied as data, so a `__proto__` key stays a key.
  */
 function copyArguments(args: Record<string, unknown>): Record<string, unknown> {
-  return copyValue(args) as Record<string, unknown>;
+  return copyValue(args, new Map()) as Record<string, unknown>;
 }
 
-function copyValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(copyValue);
+function copyValue(value: unknown, copies: Map<object, unknown>): unknown {
   if (value === null || typeof value !== 'object') return value;
+  const done = copies.get(value);
+  if (done !== undefined) return done;
+  if (Array.isArray(value)) {
+    const copy: unknown[] = [];
+    copies.set(value, copy);
+    for (const item of value) copy.push(copyValue(item, copies));
+    return copy;
+  }
+  if (value instanceof Map) {
+    const copy = new Map<unknown, unknown>();
+    copies.set(value, copy);
+    for (const [key, item] of value) copy.set(copyValue(key, copies), copyValue(item, copies));
+    return copy;
+  }
+  if (value instanceof Set) {
+    const copy = new Set<unknown>();
+    copies.set(value, copy);
+    for (const item of value) copy.add(copyValue(item, copies));
+    return copy;
+  }
   const prototype: unknown = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) return value;
   const copy: Record<string, unknown> = prototype === null ? Object.create(null) : {};
-  for (const [key, item] of Object.entries(value)) copy[key] = copyValue(item);
+  copies.set(value, copy);
+  for (const [key, item] of Object.entries(value)) {
+    Object.defineProperty(copy, key, {
+      value: copyValue(item, copies),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
   return copy;
 }
 
-/** Tool call arguments as text that is the same for the same content, whatever the key order. */
+/**
+ * Tool call arguments as text that is the same exactly when their content is: key order aside,
+ * with maps, sets, dates, binary data, `NaN`, `undefined` and cycles told apart.
+ */
 function canonicalArguments(value: unknown): string {
-  return JSON.stringify(value, (_key, item: unknown) => {
-    if (typeof item === 'bigint') return item.toString();
-    if (item === null || typeof item !== 'object' || Array.isArray(item)) return item;
-    return Object.fromEntries(
-      Object.keys(item)
+  const ancestors = new Set<object>();
+  const walk = (item: unknown): string => {
+    if (item === undefined) return 'undefined';
+    if (item === null || typeof item === 'boolean') return String(item);
+    if (typeof item === 'number') return `number:${String(item)}`;
+    if (typeof item === 'bigint') return `bigint:${item.toString()}`;
+    if (typeof item === 'string') return JSON.stringify(item);
+    if (typeof item !== 'object') return typeof item;
+    if (ancestors.has(item)) return 'circular';
+    ancestors.add(item);
+    try {
+      if (Array.isArray(item)) return `[${item.map(walk).join(',')}]`;
+      if (item instanceof Map) {
+        const entries = [...item].map(([key, entry]) => `${walk(key)}=>${walk(entry)}`);
+        return `Map{${entries.sort().join(',')}}`;
+      }
+      if (item instanceof Set) return `Set{${[...item].map(walk).sort().join(',')}}`;
+      if (item instanceof Date) return `Date(${item.getTime()})`;
+      if (ArrayBuffer.isView(item)) {
+        const bytes = new Uint8Array(item.buffer, item.byteOffset, item.byteLength);
+        return `${item.constructor.name}(${bytes.join(',')})`;
+      }
+      const record = item as Record<string, unknown>;
+      const fields = Object.keys(record)
         .sort()
-        .map((key) => [key, (item as Record<string, unknown>)[key]])
-    );
-  });
+        .map((key) => `${JSON.stringify(key)}:${walk(record[key])}`);
+      const kind = (Object.getPrototypeOf(item) as { constructor?: { name?: string } } | null)
+        ?.constructor?.name;
+      return `${kind ?? 'null'}{${fields.join(',')}}`;
+    } finally {
+      ancestors.delete(item);
+    }
+  };
+  return walk(value);
 }
 
 /** What `hook` returns, a tripwire it throws claimed for the middleware `name`. */

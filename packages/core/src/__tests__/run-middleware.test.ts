@@ -904,6 +904,38 @@ describe('run middleware', () => {
       await cog.close();
     });
 
+    it('streams the answer a middleware gives when the model call failed', async () => {
+      const failing: LLMBackend = {
+        provider: 'openai',
+        chat: vi.fn(),
+        chatStream: vi.fn(async function* (): AsyncGenerator<ChatStreamChunk> {
+          yield* [];
+          throw new Error('provider down');
+        }),
+      };
+      const cog = new Cogitator({ llm: { backends: { mock: failing }, retry: false } });
+      const rescue: RunMiddleware = {
+        name: 'rescue',
+        async wrapModelCall(call, next) {
+          try {
+            return await next(call);
+          } catch {
+            return answer('Sorry, try again later.');
+          }
+        },
+      };
+      const tokens: string[] = [];
+
+      await cog.run(agentWith([rescue]), {
+        input: 'Hello',
+        stream: true,
+        onToken: (token) => tokens.push(token),
+      });
+
+      expect(tokens).toEqual(['Sorry, try again later.']);
+      await cog.close();
+    });
+
     it('stops waiting for a hook when the run times out', async () => {
       const { backend } = scripted(answer('Hi'));
       const cog = runtime(backend);

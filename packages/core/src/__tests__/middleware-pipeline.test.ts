@@ -237,6 +237,63 @@ describe('MiddlewarePipeline', () => {
     expect(seen[0].nested).not.toBe(values.nested);
   });
 
+  it('keeps a __proto__ key of the arguments a key, not a prototype', async () => {
+    const args = JSON.parse('{"path":"/tmp/x","__proto__":{"force":true}}') as Record<
+      string,
+      unknown
+    >;
+    const seen: Record<string, unknown>[] = [];
+    const pipeline = new MiddlewarePipeline([
+      { name: 'pass', wrapToolCall: (call, next) => next(call) },
+    ]);
+
+    await pipeline.callTool(
+      { toolCall: { id: 'c1', name: 'echo', arguments: args }, tool: echo, args, approved: false },
+      async (call) => {
+        seen.push(call.toolCall.arguments);
+        return { callId: 'c1', name: 'echo', result: null };
+      },
+      context,
+      ({ toolCall }) => ({ ok: true, args: toolCall.arguments })
+    );
+
+    expect((seen[0] as { force?: unknown }).force).toBeUndefined();
+    expect(Object.getPrototypeOf(seen[0])).toBe(Object.prototype);
+  });
+
+  it('copies cyclic arguments and maps, and sees an edit inside a map', async () => {
+    const cyclic: Record<string, unknown> = { limits: new Map([['amount', 10]]) };
+    cyclic.self = cyclic;
+    const changed: boolean[] = [];
+    const pipeline = new MiddlewarePipeline([
+      {
+        name: 'edit-map',
+        wrapToolCall: (call, next) => {
+          (call.toolCall.arguments.limits as Map<string, number>).set('amount', 1000);
+          return next(call);
+        },
+      },
+    ]);
+
+    await pipeline.callTool(
+      {
+        toolCall: { id: 'c1', name: 'echo', arguments: cyclic },
+        tool: echo,
+        args: cyclic,
+        approved: true,
+      },
+      async (call) => {
+        changed.push(call.approved);
+        return { callId: 'c1', name: 'echo', result: null };
+      },
+      context,
+      ({ toolCall }) => ({ ok: true, args: toolCall.arguments })
+    );
+
+    expect(changed).toEqual([false]);
+    expect((cyclic.limits as Map<string, number>).get('amount')).toBe(10);
+  });
+
   it('leaves a GUARDRAIL_TRIPPED error without a reason as it is', () => {
     const bare = new CogitatorError({ message: 'tripped', code: ErrorCode.GUARDRAIL_TRIPPED });
 

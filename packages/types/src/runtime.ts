@@ -375,8 +375,8 @@ export interface ToolInvocationResult extends ToolResult {
 export interface ToolInvoker {
   /**
    * Never throws for a failing tool: the error is in the result's `error`. An error a
-   * `wrapToolCall` middleware of the Cogitator throws, a `tripwire()` among them, is thrown, as it
-   * would fail a run.
+   * `wrapToolCall` middleware of the Cogitator throws, and a `tripwire()` raised in the tool
+   * itself (a nested agent run), are thrown, as they would fail a run.
    */
   invokeTool(
     tool: Tool,
