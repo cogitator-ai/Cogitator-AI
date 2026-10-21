@@ -213,8 +213,9 @@ class Cogitator {
   // The adapter once connected (by a run or getMemory()); assign your own adapter here
   memory: MemoryAdapter | undefined;
   // A pass over the agent's memory now (memory.consolidation or memory.observations): repeats marked
-  // stale, lessons folded into the playbook, observations written again. Needs a userId, or a
-  // threadId for memory kept for a run without a user
+  // stale, lessons folded into the playbook, observations written again. With the 'user' extraction
+  // scope it needs a userId, or a threadId for memory of runs without a user, with 'thread' a
+  // threadId, with 'agent' nothing. Throws without the config or when memory keeps no items
   consolidateMemory(
     agent: Agent,
     run?: { userId?: string; threadId?: string }

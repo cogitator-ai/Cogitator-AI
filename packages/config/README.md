@@ -280,7 +280,7 @@ memory:
 
 `memory.files` is validated by `MemoryFilesConfigSchema`: `scope` one of `user`, `agent` and `thread`, `readOnly` a boolean and `indexChars` a whole number above 0. With it the runtime gives every agent the `memory` tool and lists the files a run sees in its context. See [Memory Files](https://cogitator.app/docs/memory#memory-files).
 
-`memory.brief` is validated by `MemoryBriefConfigSchema`: `model` not empty, `maxCards` a whole number from 1 to 4, `timeoutMs` above 0 and `maxTokens` a whole number above 0. See [Pre-Turn Brief](https://cogitator.app/docs/memory#pre-turn-brief).
+`memory.brief` is validated by `MemoryBriefConfigSchema`: `model` not empty, `maxCards` a whole number from 1 to 4, `timeoutMs` above 0 and `maxTokens` a whole number above 0, and the runtime throws on the same values when it builds the brief from code. See [Pre-Turn Brief](https://cogitator.app/docs/memory#pre-turn-brief).
 
 `memory.observations` is validated by `MemoryObservationsConfigSchema`: `model` not empty, `maxEntities` and `minItems` whole numbers above 0. See [Observations](https://cogitator.app/docs/memory#observations).
 

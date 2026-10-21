@@ -408,13 +408,14 @@ See [Agent Memory Tools](/docs/memory#agent-memory-tools).
 
 ### Memory Between Runs
 
-`memory.brief` gives a turn cards of what memory holds for it before its first model call, each quoting its source and checked against it, as a hint in the turn's memory context. `memory.observations` keeps what memory makes of each entity as a memory file, written again in the background once its facts change, and shows it to a turn that names the entity. `memory.consolidation` runs a pass in the background every `everyRuns` runs of a thread (20) and after a compaction that changed the thread: items a model finds to repeat or contradict a newer one are marked stale, and new lessons are folded into the playbook, `/memories/playbook.md`, in at most three edits, which every run then sees as a hint:
+`memory.brief` gives a turn cards of what memory holds for it before its first model call, each quoting its source and checked against it, as a hint in the turn's memory context. `memory.observations` keeps what memory makes of each entity as a memory file, written again in the background once its facts change, and shows it to a turn that names the entity, with `memory.contextBuilder` set. `memory.consolidation` runs a pass in the background every `everyRuns` runs of a thread (20) and after a compaction that changed the thread: items a model finds to repeat or contradict a newer one are marked stale, and new lessons are folded into the playbook, `/memories/playbook.md`, in at most three edits, which every run then sees as a hint while `showPlaybook` is on (`playbook: false` only stops new lessons):
 
 ```typescript
 const cog = new Cogitator({
   memory: {
     adapter: 'sqlite',
     sqlite: { path: './memory.db' },
+    contextBuilder: { strategy: 'recent', maxTokens: 8000 },
     extraction: {},
     brief: { model: 'google/gemini-3.5-flash-lite', timeoutMs: 4000 },
     observations: { minItems: 3 },
@@ -423,7 +424,7 @@ const cog = new Cogitator({
 });
 ```
 
-No run waits for upkeep, its model calls count in the cost router but not in a run's usage, and `close()` stops the passes under way. `await cog.consolidateMemory(agent, { userId?, threadId? })` runs a pass now, such as from a worker while the agent is idle, and returns a `MemoryConsolidationReport` (`scope`, `stale`, `playbook`, `observations`, `observationsDeleted`). It needs a `userId`, or a `threadId` for the memory of runs without a user, and throws `VALIDATION_ERROR` when neither `memory.consolidation` nor `memory.observations` is set. See [Between Runs](/docs/memory#between-runs).
+No run waits for upkeep, its model calls count in the cost router but not in a run's usage, and `close()` stops the passes under way. `await cog.consolidateMemory(agent, { userId?, threadId? })` runs a pass now, such as from a worker while the agent is idle, and returns a `MemoryConsolidationReport` (`scope`, `stale`, `playbook`, `observations`, `observationsDeleted`). With the `user` extraction scope (the default) it needs a `userId`, or a `threadId` for the memory of runs without a user, with `thread` a `threadId` (even with a `userId`), and with `agent` nothing. It throws `VALIDATION_ERROR` when neither `memory.consolidation` nor `memory.observations` is set, or when memory keeps no memory items. A pass on demand asks `consolidation.model` for repeats and lessons and `observations.model` for observations, each falling back to the agent's model (`llm.defaultModel` when the agent has none), while a pass after a run falls back to the model the run ended on. See [Between Runs](/docs/memory#between-runs).
 
 ### Memory Context and Prompt Caching
 

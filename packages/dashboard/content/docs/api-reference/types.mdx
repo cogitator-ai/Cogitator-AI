@@ -754,20 +754,20 @@ interface BriefCard {
 }
 
 interface MemoryObservationsConfig {
-  model?: string; // default: the model the run ended on
+  model?: string; // default: the model the run ended on, the agent's for a pass on demand
   maxEntities?: number; // observations one refresh writes at most, default 3
   minItems?: number; // facts that hold an entity needs, default 3
   prompt?: string;
 }
 
 interface MemoryConsolidationConfig {
-  model?: string; // default: the model the run ended on
+  model?: string; // default: the model the run ended on, the agent's for a pass on demand
   everyRuns?: number; // runs of a thread between passes, default 20
   afterCompaction?: boolean; // pass after a compaction too, default true
   maxChanges?: number; // items one pass marks as stale, default 10, 0 leaves items alone
   maxSubjects?: number; // subjects one pass asks about, default 10, the next pass goes on
-  playbook?: 'apply' | 'shadow' | false; // default 'apply'
-  showPlaybook?: boolean; // the playbook in every run's context, default true
+  playbook?: 'apply' | 'shadow' | false; // default 'apply', false only stops new lessons
+  showPlaybook?: boolean; // the playbook in every run's context, default true, whatever playbook says
   prompt?: string;
   afterConsolidate?: (report: MemoryConsolidationReport) => void | Promise<void>;
 }
@@ -777,7 +777,7 @@ interface MemoryConsolidationReport {
   observations: string[]; // paths written
   observationsDeleted: string[];
   stale: StaleMark[]; // { itemId, keptId, reason: 'duplicate' | 'contradiction' }
-  playbook?: { path: string; edits: number; lessonIds: string[] };
+  playbook?: { path: string; editCount: number; lessonIds: string[] };
 }
 
 type EmbeddingServiceConfig = OpenAIEmbeddingConfig | OllamaEmbeddingConfig | GoogleEmbeddingConfig;
