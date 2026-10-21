@@ -1,11 +1,13 @@
 import { Agent, Cogitator } from '@cogitator-ai/core';
-import { countTokens } from '@cogitator-ai/memory';
+import { MemoryItems, countTokens, isMemoryItemAdapter } from '@cogitator-ai/memory';
 import type {
   ChatRequest,
   EmbeddingService,
   LLMBackend,
   MemoryAdapter,
+  MemoryEntry,
   Message,
+  NewMemoryItem,
 } from '@cogitator-ai/types';
 
 /** One check of the suite: whether it held, and what was seen when it did not. */
@@ -84,8 +86,10 @@ const filler = (i: number) =>
 const fillersIn = (context: string) => context.match(/Small talk number \d+ /g)?.length ?? 0;
 
 /**
- * Checks that a branch of a conversation never shows another branch's turns, and that rewound or
- * deleted turns never come back, for each memory strategy. The history is longer than the
+ * Checks that a branch of a conversation never shows another branch's turns, that rewound or
+ * deleted turns never come back, and that forgetting, redacting or rewinding a turn takes the
+ * memory items from it out of the context while the rest of memory stays, for each memory
+ * strategy. The history is longer than the
  * context budget, so every strategy has to choose turns, and each absence is paired with a
  * presence (the branch sees its own turn, the rewound turn was seen before the rewind) so an empty
  * context cannot pass. A fork here is what the runtime offers today: a new thread with the turns
@@ -200,6 +204,86 @@ export async function runConsistencySuite(
         afterRewind.includes('crimson')
           ? 'the rewound turn reached the model'
           : 'nothing of the thread reached the model after the rewind'
+      );
+      if (!isMemoryItemAdapter(memory)) throw new Error('The suite needs memory items');
+      const items = new MemoryItems({ adapter: memory });
+      const fact = (content: string, entry: MemoryEntry): NewMemoryItem => ({
+        kind: 'fact',
+        content,
+        subject: 'the user',
+        trust: 'user',
+        confidence: 0.95,
+        scope: { agentId: agent.id },
+        evidence: [{ entryId: entry.id, quote: content }],
+        verified: true,
+        status: 'active',
+        saidAt: entry.createdAt,
+        sessionAt: entry.createdAt,
+      });
+      const thread = async (id: string, secret: string, item: string) => {
+        await memory.createThread(agent.id, {}, id);
+        for (let i = 0; i < FILLERS; i++) await add(memory, id, filler(i), i);
+        const told = await add(memory, id, secret, FILLERS);
+        await add(memory, id, 'Noted.', FILLERS + 1);
+        await items.write([fact(item, told)]);
+        return told;
+      };
+
+      const cutAt = await add(memory, 'rewind', 'Back to the plans.', FILLERS + 3);
+      const crimson = await add(memory, 'rewind', 'My car is crimson too.', FILLERS + 4);
+      await items.write([fact('The car of the user is crimson.', crimson)]);
+      const beforeCascade = await ask('rewind', 'What colour is my car?');
+      await cog.rewind('rewind', cutAt.id, { agents: [agent] });
+      const afterCascade = await ask('rewind', 'What colour is my car?');
+      check(
+        'rewind: an item from a rewound turn reaches the model before the rewind only',
+        beforeCascade.includes('crimson') && !afterCascade.includes('crimson'),
+        beforeCascade.includes('crimson')
+          ? 'the item of the rewound turn still reached the model'
+          : 'the item did not reach the model before the rewind'
+      );
+
+      const locker = await thread('forget', 'My locker code is 8812.', 'The locker code is 8812.');
+      const beforeForget = await ask('forget', 'What is my locker code?');
+      await cog.forget({ entryIds: [locker.id] }, { agents: [agent] });
+      const afterForget = await ask('forget', 'What is my locker code?');
+      check(
+        'forget: a forgotten turn and the item from it are gone, the rest stays',
+        beforeForget.includes('8812') &&
+          !afterForget.includes('8812') &&
+          fillersIn(afterForget) > 0,
+        afterForget.includes('8812')
+          ? 'the forgotten code still reached the model'
+          : 'the code was not seen before, or nothing of the thread came after'
+      );
+
+      const passport = await thread(
+        'redact',
+        'My passport is X91-4471.',
+        'The passport is X91-4471.'
+      );
+      const beforeRedact = await ask('redact', 'What is my passport?');
+      await cog.redactEntries([passport.id], { agents: [agent] });
+      const afterRedact = await ask('redact', 'What is my passport?');
+      const kept = await memory.getEntries({ threadId: 'redact' });
+      check(
+        'redact: a redacted turn keeps its place and nothing of what it said',
+        beforeRedact.includes('X91-4471') &&
+          !afterRedact.includes('X91-4471') &&
+          kept.success &&
+          kept.data.some((entry) => entry.id === passport.id),
+        afterRedact.includes('X91-4471')
+          ? 'the redacted passport still reached the model'
+          : 'the passport was not seen before, or the redacted turn lost its place'
+      );
+
+      const other = await thread('kept', 'My bike is green.', 'The bike of the user is green.');
+      await cog.forget({ threadId: 'forget' }, { agents: [agent] });
+      const afterThread = await ask('kept', 'What colour is my bike?');
+      check(
+        'forget: forgetting one thread leaves the others whole',
+        afterThread.includes('green') && other.id.length > 0,
+        'a turn or item of another thread went with it'
       );
       check('memory: no errors, no fallback', memoryErrors.length === 0, memoryErrors.join('; '));
     } catch (error) {

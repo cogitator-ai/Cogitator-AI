@@ -422,7 +422,7 @@ describe('report', () => {
 describe('consistency suite', () => {
   it('passes on every strategy', { timeout: 30_000 }, async () => {
     const checks = await runConsistencySuite();
-    expect(checks.length).toBe(24);
+    expect(checks.length).toBe(36);
     expect(checks.filter((c) => !c.passed)).toEqual([]);
   });
 });
