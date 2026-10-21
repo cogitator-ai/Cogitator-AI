@@ -15,7 +15,7 @@ import type {
 } from '@cogitator-ai/types';
 import { InMemoryAdapter } from './memory';
 
-export { BaseMemoryAdapter } from './base';
+export { BaseMemoryAdapter, ChangeReportingMemoryAdapter } from './base';
 export { InMemoryAdapter } from './memory';
 
 export type MemoryAdapterConfigUnion =

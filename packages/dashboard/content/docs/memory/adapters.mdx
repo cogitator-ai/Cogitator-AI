@@ -35,7 +35,7 @@ Every built-in adapter behaves the same way, checked by one conformance suite ag
 - `toolCalls` and `toolResults` come back only with `includeToolCalls`, and a field that was never set is absent, never `null`.
 - `deleteThread` removes the thread's entries too, `clearThread` keeps the thread.
 - Returned threads and entries are copies: changing them does not change what is stored.
-- `onChange(listener)` reports every change once it is stored: `entry-added`, `entry-deleted` (also for entries InMemory drops at `maxEntries`), `thread-cleared` and `thread-deleted`. It returns a function that stops the listener. A listener that throws is logged and does not fail the write. The message index uses it, see [Context Builder](/docs/memory#context-builder).
+- `onChange(listener)` reports every change once it is stored: `entry-added`, `entry-deleted` (also for entries InMemory drops at `maxEntries`), `thread-cleared` and `thread-deleted` (also for threads Redis expired, once a later write sweeps them). It returns a function that stops the listener. A listener that throws is logged and does not fail the write. The message index uses it, see [Context Builder](/docs/memory#context-builder). An adapter of your own reports changes by extending `ChangeReportingMemoryAdapter` and passing each write's result through `reported()`, one that extends `BaseMemoryAdapter` has no `onChange`.
 
 The suite ships in `@cogitator-ai/test-utils` as `memoryAdapterConformanceCases`, so an adapter of your own can be checked the same way (see [Test Utils](/docs/testing/test-utils#conformance-suites)).
 

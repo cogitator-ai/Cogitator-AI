@@ -28,7 +28,7 @@ import type {
   NewMemoryEntry,
   EmbeddingDeleteFilter,
 } from '@cogitator-ai/types';
-import { BaseMemoryAdapter } from './base';
+import { ChangeReportingMemoryAdapter } from './base';
 import { ensureSchemaVersion } from './schema-version';
 import { EMPTY_DELETE_FILTER_ERROR, filterSourceTypes, hasDeleteCondition } from '../search/filter';
 import {
@@ -101,7 +101,7 @@ function toJsonb(value: unknown): string | null {
 }
 
 export class PostgresAdapter
-  extends BaseMemoryAdapter
+  extends ChangeReportingMemoryAdapter
   implements FactAdapter, EmbeddingAdapter, KeywordSearchAdapter
 {
   readonly provider: MemoryProvider = 'postgres';

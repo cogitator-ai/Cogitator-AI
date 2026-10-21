@@ -13,7 +13,7 @@ import type {
   MemoryProvider,
   NewMemoryEntry,
 } from '@cogitator-ai/types';
-import { BaseMemoryAdapter } from './base';
+import { ChangeReportingMemoryAdapter } from './base';
 import {
   compareForListing,
   isAfterCursor,
@@ -48,7 +48,7 @@ function copyEntry(entry: MemoryEntry): MemoryEntry {
   return { ...structuredClone(entry), createdAt: new Date(entry.createdAt) };
 }
 
-export class InMemoryAdapter extends BaseMemoryAdapter {
+export class InMemoryAdapter extends ChangeReportingMemoryAdapter {
   readonly provider: MemoryProvider = 'memory';
 
   private threads = new Map<string, Thread>();

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import type { EmbeddingService, Message } from '@cogitator-ai/types';
+import type { EmbeddingService, MemoryAdapter, Message } from '@cogitator-ai/types';
 import { InMemoryAdapter } from '../adapters/memory';
 import { InMemoryEmbeddingAdapter } from '../adapters/memory-embedding';
 import { ContextBuilder } from '../context-builder';
@@ -23,6 +23,17 @@ function fakeEmbeddings(model = 'topics'): EmbeddingService & {
     embed: vi.fn(async (text: string) => topicVector(text)),
     embedBatch: vi.fn(async (texts: string[]) => texts.map(topicVector)),
   };
+}
+
+/** An adapter that reports no changes, as one of a third party may not */
+function silent(memory: MemoryAdapter): MemoryAdapter {
+  return new Proxy(memory, {
+    get(target, property) {
+      if (property === 'onChange') return undefined;
+      const value: unknown = Reflect.get(target, property);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
 }
 
 const embedded = (service: ReturnType<typeof fakeEmbeddings>) =>
@@ -223,9 +234,12 @@ describe('MessageIndex', () => {
       expect(embedding.embedBatch).not.toHaveBeenCalled();
     });
 
-    it('embeds and keeps entries the background has not indexed yet', async () => {
-      const unwatched = new InMemoryAdapter({ provider: 'memory' });
-      await unwatched.connect();
+    it('embeds and keeps entries of an adapter that reports no changes when a build needs them', async () => {
+      const backing = new InMemoryAdapter({ provider: 'memory' });
+      await backing.connect();
+      const unwatched = silent(backing);
+      const quiet = new MessageIndex({ store, embedding });
+      expect(quiet.attach(unwatched)).toBe(false);
       await unwatched.createThread('agent', {}, 'u');
       const entry = await unwatched.addEntry({
         threadId: 'u',
@@ -233,13 +247,15 @@ describe('MessageIndex', () => {
         tokenCount: 3,
       });
       if (!entry.success) throw new Error(entry.error);
+      await quiet.flush();
+      expect(embedding.embedBatch).not.toHaveBeenCalled();
       const builder = new ContextBuilder(
         { maxTokens: 500, strategy: 'relevant', includeSystemPrompt: false },
-        { memoryAdapter: unwatched, embeddingService: embedding, messageIndex: index }
+        { memoryAdapter: unwatched, embeddingService: embedding, messageIndex: quiet }
       );
 
       await builder.build({ threadId: 'u', agentId: 'agent', currentInput: 'tax' });
-      await index.flush();
+      await quiet.flush();
 
       expect(embedded(embedding)).toEqual(['tax forms']);
       expect(await storedSources()).toContain(entry.data.id);
@@ -272,5 +288,136 @@ describe('MessageIndex', () => {
 
       expect(context.semanticResults.map((r) => r.content)).toEqual(['cat care guide']);
     });
+  });
+});
+
+describe('MessageIndex against races and other users', () => {
+  let memory: InMemoryAdapter;
+  let store: InMemoryEmbeddingAdapter;
+  let embedding: ReturnType<typeof fakeEmbeddings>;
+  let index: MessageIndex;
+
+  beforeEach(async () => {
+    memory = new InMemoryAdapter({ provider: 'memory' });
+    await memory.connect();
+    store = new InMemoryEmbeddingAdapter();
+    embedding = fakeEmbeddings();
+    index = new MessageIndex({ store, embedding });
+    index.attach(memory);
+  });
+
+  async function entryIn(threadId: string, content: string) {
+    const added = await memory.addEntry({
+      threadId,
+      message: { role: 'user', content },
+      tokenCount: 3,
+    });
+    if (!added.success) throw new Error(added.error);
+    return added.data;
+  }
+
+  async function sources(): Promise<string[]> {
+    const found = await store.search({ vector: [1, 1, 1, 1, 1], threshold: -1, limit: 1000 });
+    if (!found.success) throw new Error(found.error);
+    return found.data.map((result) => result.sourceId);
+  }
+
+  it('keeps no vector of an entry whose thread is cleared while a build embeds it', async () => {
+    await memory.createThread('agent', {}, 't');
+    await index.close();
+    const fresh = new MessageIndex({ store, embedding });
+    const entry = await entryIn('t', 'cat napping');
+    fresh.attach(memory);
+    const mark = fresh.mark();
+    const getBySources = store.getBySources.bind(store);
+    vi.spyOn(store, 'getBySources').mockImplementationOnce(async (ids) => {
+      await memory.clearThread('t');
+      return getBySources(ids);
+    });
+
+    await fresh.vectorsOf(
+      [{ entryId: entry.id, threadId: 't', role: 'user', text: 'cat napping' }],
+      mark
+    );
+    await fresh.flush();
+
+    expect(await sources()).toEqual([]);
+  });
+
+  it('keeps no vector of an entry reported after the clear that removed it', async () => {
+    await memory.createThread('agent', {}, 't');
+    const entry = await entryIn('t', 'cat napping');
+    await index.flush();
+    await memory.clearThread('t');
+    index.changed({ type: 'entry-added', entry });
+    await index.flush();
+
+    expect(await sources()).toEqual([]);
+  });
+
+  it('marks its vectors with the owner of the thread, and deletes only its own', async () => {
+    await memory.createThread('agent', { agentId: 'support', userId: 'alice' }, 't');
+    const entry = await entryIn('t', 'cat facts');
+    await store.addEmbedding({
+      sourceId: 'foreign',
+      sourceType: 'message',
+      vector: topicVector('cat'),
+      content: 'kept by another app',
+      metadata: { threadId: 't' },
+    });
+    await index.flush();
+
+    const mine = await store.getBySources([entry.id]);
+    expect(mine.success && mine.data[0]?.metadata).toMatchObject({
+      index: 'messages',
+      agentId: 'support',
+      userId: 'alice',
+    });
+    const forBob = await store.search({
+      vector: topicVector('cat'),
+      threshold: -1,
+      filter: { sourceType: 'message', userId: 'bob' },
+    });
+    expect(forBob.success && forBob.data.map((r) => r.sourceId)).toEqual(['foreign']);
+
+    await memory.deleteThread('t');
+    await index.flush();
+    expect(await sources()).toEqual(['foreign']);
+  });
+
+  it('backfills history written before the index, once, in the background', async () => {
+    await index.close();
+    await memory.createThread('agent', {}, 't');
+    await entryIn('t', 'my cat Whiskers');
+    for (let i = 0; i < 205; i++) await entryIn('t', `filler ${i}`);
+    const late = new MessageIndex({ store, embedding });
+    late.attach(memory);
+    const builder = new ContextBuilder(
+      { maxTokens: 120, reserveTokens: 0, strategy: 'relevant', includeSystemPrompt: false },
+      { memoryAdapter: memory, embeddingService: embedding, messageIndex: late }
+    );
+
+    await builder.build({ threadId: 't', agentId: 'agent', currentInput: 'cat?' });
+    await late.flush();
+    const context = await builder.build({ threadId: 't', agentId: 'agent', currentInput: 'cat?' });
+
+    expect(context.messages.map((m) => m.content)).toContain('my cat Whiskers');
+    expect(await sources()).toHaveLength(206);
+  });
+
+  it('finds older entries for hybrid past the recent and short entries it does not score', async () => {
+    await memory.createThread('agent', {}, 't');
+    await entryIn('t', 'my cat is called Whiskers the great');
+    for (let i = 0; i < 205; i++) await entryIn('t', `filler message number ${i}`);
+    for (let i = 0; i < 80; i++) await entryIn('t', `cat ${i}`);
+    await index.flush();
+    const builder = new ContextBuilder(
+      { maxTokens: 400, reserveTokens: 0, strategy: 'hybrid', includeSystemPrompt: false },
+      { memoryAdapter: memory, embeddingService: embedding, messageIndex: index }
+    );
+
+    const context = await builder.build({ threadId: 't', agentId: 'agent', currentInput: 'cat' });
+
+    expect(context.messages.map((m) => m.content)).toContain('my cat is called Whiskers the great');
   });
 });

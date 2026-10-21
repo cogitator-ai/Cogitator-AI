@@ -354,7 +354,7 @@ const builder = new ContextBuilder(
 );
 ```
 
-Every built-in adapter reports its changes through `onChange(listener)` (`entry-added`, `entry-deleted`, `thread-cleared`, `thread-deleted`), which is what `attach` listens to, and every built-in embedding store reads vectors by source with `getBySources(ids)`.
+Every built-in adapter reports its changes through `onChange(listener)` (`entry-added`, `entry-deleted`, `thread-cleared`, `thread-deleted`), which is what `attach` listens to, and every built-in embedding store reads vectors by source with `getBySources(ids)`. An adapter of your own reports its changes by extending `ChangeReportingMemoryAdapter` and passing each write's result through `reported()`. Vectors carry `metadata.index: 'messages'` and the thread's `agentId` and `userId`.
 
 ### Basic Usage
 

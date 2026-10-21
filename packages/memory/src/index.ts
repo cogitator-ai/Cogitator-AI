@@ -6,6 +6,7 @@
 
 export {
   BaseMemoryAdapter,
+  ChangeReportingMemoryAdapter,
   InMemoryAdapter,
   createMemoryAdapter,
   createEmbeddingAdapter,

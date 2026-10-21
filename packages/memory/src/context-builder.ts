@@ -98,6 +98,12 @@ export interface BuildContextOptions {
 type ResolvedConfig = Required<Omit<ContextBuilderConfig, 'maxTokens' | 'reserveTokens'>> &
   Pick<ContextBuilderConfig, 'maxTokens' | 'reserveTokens'>;
 
+/** What scoring knows of the build: the index mark taken before the read, and the thread size */
+interface ScoringScope {
+  mark?: number;
+  threadSize: number;
+}
+
 /** Part of a context: what fits its budget, and what does not. */
 interface Fitted<T> {
   kept: T[];
@@ -208,6 +214,7 @@ export class ContextBuilder {
       systemBlocks.length > 0 ? [{ role: 'system', content: systemBlocks.join('\n\n') }] : [];
     const injectedSystemMessages = messages.length;
 
+    const scope: ScoringScope = { mark: this.deps.messageIndex?.mark(), threadSize: 0 };
     const entries =
       (await this.attempt('history', errors, async () =>
         unwrap(
@@ -219,11 +226,13 @@ export class ContextBuilder {
         )
       )) ?? [];
 
+    scope.threadSize = entries.length;
     const selectedEntries = await this.selectEntries(
       entries,
       remaining(),
       options.currentInput,
-      errors
+      errors,
+      scope
     );
     for (const entry of selectedEntries) {
       messages.push(entry.message);
@@ -381,13 +390,14 @@ export class ContextBuilder {
     entries: MemoryEntry[],
     availableTokens: number,
     currentInput: string | undefined,
-    errors: ContextBuildError[]
+    errors: ContextBuildError[],
+    scope: ScoringScope
   ): Promise<MemoryEntry[]> | MemoryEntry[] {
     switch (this.config.strategy) {
       case 'relevant':
-        return this.selectRelevantEntries(entries, availableTokens, currentInput, errors);
+        return this.selectRelevantEntries(entries, availableTokens, currentInput, errors, scope);
       case 'hybrid':
-        return this.selectHybridEntries(entries, availableTokens, currentInput, errors);
+        return this.selectHybridEntries(entries, availableTokens, currentInput, errors, scope);
       case 'recent':
       default:
         return this.selectRecentEntries(entries, availableTokens);
@@ -420,13 +430,14 @@ export class ContextBuilder {
     entries: MemoryEntry[],
     availableTokens: number,
     currentInput: string | undefined,
-    errors: ContextBuildError[]
+    errors: ContextBuildError[],
+    scope: ScoringScope
   ): Promise<MemoryEntry[]> {
     if (!currentInput || !this.deps.embeddingService) {
       return this.selectRecentEntries(entries, availableTokens);
     }
 
-    const scored = await this.scoreEntries(entries, currentInput, 0, errors);
+    const scored = await this.scoreEntries(entries, currentInput, 0, errors, scope);
     if (scored === null) {
       return this.selectRecentEntries(entries, availableTokens);
     }
@@ -455,7 +466,8 @@ export class ContextBuilder {
     entries: MemoryEntry[],
     input: string,
     minScore: number,
-    errors: ContextBuildError[]
+    errors: ContextBuildError[],
+    scope: ScoringScope
   ): Promise<{ entry: MemoryEntry; score: number }[] | null> {
     const embeddingService = this.deps.embeddingService;
     if (!embeddingService) return null;
@@ -469,12 +481,20 @@ export class ContextBuilder {
     if (candidates.length === 0) return [];
     const older = embeddable.slice(0, embeddable.length - candidates.length);
     const index = this.deps.messageIndex;
+    const threadId = candidates[0]!.entry.threadId;
+    if (index && older.length > 0) {
+      index.backfill(
+        threadId,
+        older.map(({ text }) => text),
+        scope.mark
+      );
+    }
 
     try {
       const texts = candidates.map(({ text }) => text);
       const [inputVector, vectors] = await Promise.all([
         embeddingService.embed(input),
-        index ? index.vectorsOf(texts) : this.processVectors(texts),
+        index ? index.vectorsOf(texts, scope.mark) : this.processVectors(texts),
       ]);
 
       const scored: { entry: MemoryEntry; score: number }[] = [];
@@ -487,9 +507,9 @@ export class ContextBuilder {
 
       if (index && older.length > 0) {
         const found = await index.search(
-          older[0].entry.threadId,
+          threadId,
           inputVector,
-          INDEX_SEARCH_RESULTS + candidates.length,
+          INDEX_SEARCH_RESULTS + Math.max(0, scope.threadSize - older.length),
           minScore
         );
         for (const { entry } of older) {
@@ -550,7 +570,8 @@ export class ContextBuilder {
     entries: MemoryEntry[],
     availableTokens: number,
     currentInput: string | undefined,
-    errors: ContextBuildError[]
+    errors: ContextBuildError[],
+    scope: ScoringScope
   ): Promise<MemoryEntry[]> {
     if (!currentInput || !this.deps.embeddingService || entries.length <= 10) {
       return this.selectRecentEntries(entries, availableTokens);
@@ -563,7 +584,8 @@ export class ContextBuilder {
     const olderEntries = entries
       .slice(0, -10)
       .filter((e) => typeof e.message.content !== 'string' || e.message.content.length > 20);
-    const scoredEntries = (await this.scoreEntries(olderEntries, currentInput, 0.6, errors)) ?? [];
+    const scoredEntries =
+      (await this.scoreEntries(olderEntries, currentInput, 0.6, errors, scope)) ?? [];
 
     for (const { entry } of scoredEntries) {
       const tokens = countEntryTokens(entry);

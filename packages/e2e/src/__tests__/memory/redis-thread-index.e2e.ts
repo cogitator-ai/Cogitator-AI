@@ -39,10 +39,15 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
     for (let i = 0; i < 50; i++) await memory.createThread('agent', {}, `t${i}`);
     expect(await raw.zrange(`${keyPrefix}threads:index`, 0, -1)).toHaveLength(50);
 
+    const expired: string[] = [];
+    memory.onChange((change) => {
+      if (change.type === 'thread-deleted') expired.push(change.threadId);
+    });
     await sleep(2100);
     await memory.createThread('agent', {}, 'fresh');
 
     expect(await raw.zrange(`${keyPrefix}threads:index`, 0, -1)).toEqual(['fresh']);
+    expect(expired.sort()).toEqual(Array.from({ length: 50 }, (_, i) => `t${i}`).sort());
   });
 
   it('pages and sweeps an index too big for one scan', { timeout: 60_000 }, async () => {
@@ -70,6 +75,10 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
     } while (cursor);
     expect([...listed].sort()).toEqual(ids);
 
+    const expired = new Set<string>();
+    memory.onChange((change) => {
+      if (change.type === 'thread-deleted') expired.add(change.threadId);
+    });
     await sleep(3100);
     await memory.createThread('agent', {}, 'fresh');
     for (let i = 0; i < 30; i++) {
@@ -80,7 +89,9 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
       });
     }
 
-    expect(await raw.zrange(index, 0, -1)).toEqual(['fresh']);
+    const live = (await raw.zrange(index, 0, -1)).filter((member) => member !== '');
+    expect(live).toEqual(['fresh']);
+    expect([...expired].sort()).toEqual(ids);
   });
 
   it('lists a legacy thread written before the first listing', async () => {

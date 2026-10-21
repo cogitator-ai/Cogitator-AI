@@ -11,7 +11,7 @@ import type {
 } from '@cogitator-ai/types';
 import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { BaseMemoryAdapter } from './base';
+import { ChangeReportingMemoryAdapter } from './base';
 import type { SqliteDatabase } from './sqlite-driver';
 import { threadListing, threadPage, type ThreadListing } from './thread-listing';
 
@@ -41,7 +41,7 @@ interface ThreadRow {
   updated_at: string;
 }
 
-export class SQLiteAdapter extends BaseMemoryAdapter {
+export class SQLiteAdapter extends ChangeReportingMemoryAdapter {
   readonly provider: MemoryProvider = 'sqlite';
 
   private db: SqliteDatabase | null = null;

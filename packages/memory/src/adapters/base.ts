@@ -54,34 +54,6 @@ export abstract class BaseMemoryAdapter implements MemoryAdapter {
   abstract disconnect(): Promise<MemoryResult<void>>;
 
   private lastEntryTimes = new Map<string, number>();
-  private readonly changeListeners = new Set<MemoryChangeListener>();
-
-  onChange(listener: MemoryChangeListener): () => void {
-    this.changeListeners.add(listener);
-    return () => {
-      this.changeListeners.delete(listener);
-    };
-  }
-
-  /**
-   * `result`, after telling the change listeners about the change it made when it succeeded. A
-   * listener that throws is logged and does not fail the write.
-   */
-  protected reported<T>(
-    result: MemoryResult<T>,
-    change: (data: T) => MemoryChange
-  ): MemoryResult<T> {
-    if (!result.success || this.changeListeners.size === 0) return result;
-    const made = change(result.data);
-    for (const listener of this.changeListeners) {
-      try {
-        listener(made);
-      } catch (error) {
-        console.warn(`[${this.provider} memory] A change listener failed:`, error);
-      }
-    }
-    return result;
-  }
 
   protected generateId(prefix: string): string {
     return `${prefix}_${nanoid(12)}`;
@@ -134,5 +106,47 @@ export abstract class BaseMemoryAdapter implements MemoryAdapter {
 
   protected failure(error: string): MemoryResult<never> {
     return { success: false, error };
+  }
+}
+
+/**
+ * A memory adapter that reports what it changes (`onChange`), which the message index and other
+ * listeners rely on. Every built-in adapter extends it. An adapter of your own extends it once
+ * every write passes its result through {@link reported}: `addEntry`, `deleteEntry`,
+ * `clearThread` and `deleteThread`, and entries or threads it drops on its own through
+ * {@link report}. An adapter that reports nothing extends {@link BaseMemoryAdapter} instead, so
+ * nobody takes its silence for no changes.
+ */
+export abstract class ChangeReportingMemoryAdapter extends BaseMemoryAdapter {
+  private readonly changeListeners = new Set<MemoryChangeListener>();
+
+  onChange(listener: MemoryChangeListener): () => void {
+    this.changeListeners.add(listener);
+    return () => {
+      this.changeListeners.delete(listener);
+    };
+  }
+
+  /**
+   * `result`, after telling the change listeners about the change it made when it succeeded. A
+   * listener that throws is logged and does not fail the write.
+   */
+  protected reported<T>(
+    result: MemoryResult<T>,
+    change: (data: T) => MemoryChange
+  ): MemoryResult<T> {
+    if (result.success && this.changeListeners.size > 0) this.report(change(result.data));
+    return result;
+  }
+
+  /** Tells the change listeners about `change`; one that throws is logged */
+  protected report(change: MemoryChange): void {
+    for (const listener of this.changeListeners) {
+      try {
+        listener(change);
+      } catch (error) {
+        console.warn(`[${this.provider} memory] A change listener failed:`, error);
+      }
+    }
   }
 }

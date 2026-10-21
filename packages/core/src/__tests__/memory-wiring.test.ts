@@ -14,7 +14,16 @@ vi.mock('@cogitator-ai/memory', async (importOriginal) => {
       captured.push(args[1]);
     }
   }
-  return { ...original, ContextBuilder: CapturingContextBuilder };
+  /** Qdrant kept in process, so runs can use a vector store outside the thread store */
+  class InProcessQdrant extends original.InMemoryEmbeddingAdapter {
+    async connect() {
+      return { success: true as const, data: undefined };
+    }
+    async disconnect() {
+      return { success: true as const, data: undefined };
+    }
+  }
+  return { ...original, ContextBuilder: CapturingContextBuilder, QdrantAdapter: InProcessQdrant };
 });
 
 const backend: LLMBackend = {
@@ -67,7 +76,9 @@ describe('memory wiring', () => {
       const cog = new Cogitator({
         llm: { backends: { mock: backend } },
         memory: {
-          adapter: 'memory',
+          adapter: 'sqlite',
+          sqlite: { path: ':memory:' },
+          qdrant: { url: 'http://qdrant.test', dimensions: 2 },
           contextBuilder: { maxTokens: 4000, strategy: 'relevant' },
           embedding,
         },
@@ -84,6 +95,23 @@ describe('memory wiring', () => {
       const embedded = embedding.embedBatch.mock.calls.flatMap(([texts]) => texts as string[]);
       expect(embedded).not.toContain('first question');
       expect(embedded).toEqual(['second question', 'ok']);
+    });
+
+    it('keeps no index for the in-process memory adapter, whose vectors stay in process', async () => {
+      const cog = new Cogitator({
+        llm: { backends: { mock: backend } },
+        memory: {
+          adapter: 'memory',
+          qdrant: { url: 'http://qdrant.test', dimensions: 2 },
+          contextBuilder: { maxTokens: 4000, strategy: 'relevant' },
+          embedding: fakeEmbedding(),
+        },
+      });
+
+      await cog.run(agent, { input: 'hi' });
+
+      expect(captured.at(-1)?.messageIndex).toBeUndefined();
+      await cog.close();
     });
 
     it('keeps no index for the recent strategy', async () => {

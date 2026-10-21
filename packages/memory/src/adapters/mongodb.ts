@@ -22,7 +22,7 @@ import type {
   UpdateFilter,
   WithId,
 } from 'mongodb';
-import { BaseMemoryAdapter } from './base';
+import { ChangeReportingMemoryAdapter } from './base';
 import { threadListing, threadPage, type ThreadListing } from './thread-listing';
 
 /** A cursor over `find()` results, as far as the adapter reads it. */
@@ -155,7 +155,7 @@ function afterCursor({ cursor, order }: ThreadListing): Filter<ThreadDoc> | unde
     : { $or: [{ updatedAt: { $lt: at } }, { updatedAt: at, _id: { $lt: cursor.id } }] };
 }
 
-export class MongoDBAdapter extends BaseMemoryAdapter {
+export class MongoDBAdapter extends ChangeReportingMemoryAdapter {
   readonly provider: MemoryProvider = 'mongodb';
 
   private client: MongoClient | null = null;

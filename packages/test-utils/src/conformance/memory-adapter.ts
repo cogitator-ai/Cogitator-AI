@@ -532,9 +532,16 @@ const SCENARIOS: Record<MemoryAdapterScenario, (adapter: MemoryAdapter) => Promi
     const other = threadId();
     const changes: MemoryChange[] = [];
     const stop = adapter.onChange((change) => changes.push(change));
+    const stopBroken = adapter.onChange(() => {
+      throw new Error('a broken listener');
+    });
     try {
       await newThread(adapter, agentId, id);
       await newThread(adapter, agentId, other);
+      ok(
+        await adapter.addEntry({ threadId: other, message: user('other'), tokenCount: 1 }),
+        'addEntry with a listener that throws'
+      );
       const first = ok(
         await adapter.addEntry({ threadId: id, message: user('one'), tokenCount: 1 }),
         'addEntry'
@@ -548,15 +555,16 @@ const SCENARIOS: Record<MemoryAdapterScenario, (adapter: MemoryAdapter) => Promi
       ok(await adapter.deleteThread(other), 'deleteThread');
     } finally {
       stop();
+      stopBroken();
     }
     ok(await adapter.addEntry({ threadId: id, message: user('after'), tokenCount: 1 }), 'addEntry');
 
     assert.deepEqual(
       changes.map((change) => change.type),
-      ['entry-added', 'entry-deleted', 'thread-cleared', 'thread-deleted'],
+      ['entry-added', 'entry-added', 'entry-deleted', 'thread-cleared', 'thread-deleted'],
       'each change once, none for a refused write or after the listener stopped'
     );
-    const [added, deleted, cleared, dropped] = changes;
+    const [, added, deleted, cleared, dropped] = changes;
     assert.ok(added.type === 'entry-added');
     assert.equal(contents([added.entry])[0], 'one');
     assert.equal(added.entry.threadId, id);
