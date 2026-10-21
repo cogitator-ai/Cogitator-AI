@@ -344,6 +344,7 @@ export {
   guardrailsMiddleware,
   compactionMiddleware,
   clearToolOutputsMiddleware,
+  restoreClearedOutputs,
   clearedOutputNote,
   isClearedArguments,
   type TripwireDetails,

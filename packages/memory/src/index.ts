@@ -40,6 +40,8 @@ export {
 export {
   ContextBuilder,
   formatTurnContext,
+  extendTurnContext,
+  markTurnEnds,
   withoutTurnContext,
   type ContextBuilderDeps,
   type BuildContextOptions,

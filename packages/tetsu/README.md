@@ -52,19 +52,19 @@ A run that waits on a slow tool or model can stay silent for longer than the `id
 
 A Tetsu controller named `Cogitator`: `operationId`s in the OpenAPI document are `cogitatorRunAgent`, `cogitatorGetThread` and so on.
 
-| Option               | Type                                        | Description                                                                                                           |
-| -------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `cogitator`          | `Cogitator`                                 | **Required.** The runtime                                                                                             |
-| `agents`             | `Record<string, Agent>`                     | Agents by name                                                                                                        |
-| `workflows`          | `Record<string, Workflow>`                  | Workflows by name                                                                                                     |
-| `swarms`             | `Record<string, SwarmConfig>`               | Swarms by name                                                                                                        |
-| `auth`               | `(ctx) => AuthContext \| undefined` or hook | Establishes the caller, see [Authentication](#authentication)                                                         |
-| `authorizeThread`    | `(auth, threadId) => boolean`               | Decides who may use a memory thread, see [Users and threads](#users-and-threads)                                      |
-| `websocket`          | `boolean \| { path?: string }`              | Serve the WebSocket endpoint (default path `/ws`)                                                                     |
-| `until`              | `AbortSignal \| (() => AbortSignal)`        | Ends open streams and sockets, such as `draining` from `@tetsujs/lifecycle`                                           |
-| `sseHeartbeatMs`     | `number`                                    | Heartbeat comment interval of SSE streams (default `5000`, `0` turns it off)                                          |
-| `acceptContext`      | `boolean \| string[]`                       | Keys of a run `context` clients may send: none by default, a list, or `true` for any (it goes into the system prompt) |
-| `threadMessageRoles` | `ThreadMessageRole[]`                       | Roles `POST /threads/:id/messages` accepts (default `user` and `assistant`)                                           |
+| Option               | Type                                        | Description                                                                                                                            |
+| -------------------- | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `cogitator`          | `Cogitator`                                 | **Required.** The runtime                                                                                                              |
+| `agents`             | `Record<string, Agent>`                     | Agents by name                                                                                                                         |
+| `workflows`          | `Record<string, Workflow>`                  | Workflows by name                                                                                                                      |
+| `swarms`             | `Record<string, SwarmConfig>`               | Swarms by name                                                                                                                         |
+| `auth`               | `(ctx) => AuthContext \| undefined` or hook | Establishes the caller, see [Authentication](#authentication)                                                                          |
+| `authorizeThread`    | `(auth, threadId) => boolean`               | Decides who may use a memory thread, see [Users and threads](#users-and-threads)                                                       |
+| `websocket`          | `boolean \| { path?: string }`              | Serve the WebSocket endpoint (default path `/ws`)                                                                                      |
+| `until`              | `AbortSignal \| (() => AbortSignal)`        | Ends open streams and sockets, such as `draining` from `@tetsujs/lifecycle`                                                            |
+| `sseHeartbeatMs`     | `number`                                    | Heartbeat comment interval of SSE streams (default `5000`, `0` turns it off)                                                           |
+| `acceptContext`      | `boolean \| string[]`                       | Keys of a run `context` clients may send: none by default, a list, or `true` for any (the model reads it as data from the application) |
+| `threadMessageRoles` | `ThreadMessageRole[]`                       | Roles `POST /threads/:id/messages` accepts (default `user` and `assistant`)                                                            |
 
 ## Endpoints
 
@@ -112,7 +112,7 @@ Request bodies:
 { role: 'user' | 'assistant' | 'system'; content: string; metadata?: Record<string, unknown> } // system only with threadMessageRoles
 ```
 
-The schemas are refined with the validators every Cogitator adapter shares (`@cogitator-ai/server-shared`), so Tetsu refuses the same bodies as Express, Fastify, Hono, Koa and Next, under its own `VALIDATION_FAILED` envelope. A run puts `context` into the system prompt and the model reads a `system` thread message as operator instructions, so both are refused unless the controller accepts them: `acceptContext` lists the `context` keys clients may send (or `true` for any), and `threadMessageRoles` the roles they may add (`user` and `assistant` by default). A body that is not JSON (`text/plain`, a form) is refused with `415 UNSUPPORTED_MEDIA_TYPE` before it is read, since browsers send those across origins without a CORS preflight. `options.checkpoint: true` is refused: the controller runs each workflow on a fresh executor and keeps no checkpoint store to resume from.
+The schemas are refined with the validators every Cogitator adapter shares (`@cogitator-ai/server-shared`), so Tetsu refuses the same bodies as Express, Fastify, Hono, Koa and Next, under its own `VALIDATION_FAILED` envelope. A run sends `context` to the model as data the application supplied and the model reads a `system` thread message as operator instructions, so both are refused unless the controller accepts them: `acceptContext` lists the `context` keys clients may send (or `true` for any), and `threadMessageRoles` the roles they may add (`user` and `assistant` by default). A body that is not JSON (`text/plain`, a form) is refused with `415 UNSUPPORTED_MEDIA_TYPE` before it is read, since browsers send those across origins without a CORS preflight. `options.checkpoint: true` is refused: the controller runs each workflow on a fresh executor and keeps no checkpoint store to resume from.
 
 `POST /agents/:name/run` and `/resume` answer `{ output, threadId, usage, toolCalls, status, traceId }` plus, when they apply, `reasoning`, `pendingApprovals`, `structured`, `structuredError`, `truncated`, `blocked` and `iterationLimitReached`: the same object as every other adapter, built by `toAgentRunResponse()` of `@cogitator-ai/server-shared`. It never carries the system prompt, the history, trace spans or the checkpoint of a paused run. Swarm routes close the swarm they build once the run ends, so a distributed swarm leaves no Redis connections behind, and `GET /swarms` lists every agent, a router and pipeline stages included.
 

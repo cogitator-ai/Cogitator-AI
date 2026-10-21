@@ -93,7 +93,7 @@ Creates a streaming chat handler. The handler:
 
 - runs the agent with token streaming enabled and forwards `text-*`, `tool-*` and `finish` events as they happen
 - uses the **last user message** as the run input, conversation history is carried by `threadId` (configure `memory` on the `Cogitator` instance). Without one the handler opens a new thread and names it in the `start` event, and the `finish` event repeats it, and `useCogitatorChat` adopts it automatically
-- passes request `metadata` to the run as `context`, only the keys `acceptContext` allows: the run puts `context` into the system prompt, so by default a request with `metadata` is refused with `400`
+- passes request `metadata` to the run as `context`, only the keys `acceptContext` allows: the run sends `context` to the model as data the application supplied, so by default a request with `metadata` is refused with `400`
 - writes a `: keep-alive` comment every `sseHeartbeatMs` (5 s by default, `0` turns it off) while the run is silent, so a proxy or the platform does not close a stream that waits on a slow tool
 - aborts the run when the client disconnects (`req.signal`)
 - reads only JSON bodies (`415` for `text/plain` and forms, which browsers send across origins without a preflight), validates the body (JSON object, `messages` array, non-blank `threadId`, object `metadata`), limits it to 1 MB (413 otherwise) and returns `400` when there is no user message
@@ -131,7 +131,7 @@ export const POST = createChatHandler(cogitator, agent, {
 
 ### `createAgentHandler`
 
-Creates a batch (non-streaming) handler for long-running tasks. The default parser is the validator every Cogitator adapter shares: a non-blank string `input`, an optional object `context` with only the keys `acceptContext` allows (none by default, since the run puts `context` into the system prompt), and an optional non-blank `threadId` (`400 { error, code: 'INVALID_INPUT' }` otherwise, `415` for a body that is not JSON). A `parseInput` of your own decides for itself. The run is aborted if the client disconnects.
+Creates a batch (non-streaming) handler for long-running tasks. The default parser is the validator every Cogitator adapter shares: a non-blank string `input`, an optional object `context` with only the keys `acceptContext` allows (none by default, since the model reads `context` as data the application supplied), and an optional non-blank `threadId` (`400 { error, code: 'INVALID_INPUT' }` otherwise, `415` for a body that is not JSON). A `parseInput` of your own decides for itself. The run is aborted if the client disconnects.
 
 ```typescript
 import { createAgentHandler } from '@cogitator-ai/next';

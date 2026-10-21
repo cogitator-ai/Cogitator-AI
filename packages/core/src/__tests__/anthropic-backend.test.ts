@@ -1600,6 +1600,33 @@ describe('AnthropicBackend', () => {
       expect(sentMessages(2)[1]?.content).toBe('Earlier answer');
     });
 
+    it('marks the end of the turn before as well, so the next turn finds the cached prefix', async () => {
+      mockCreate.mockResolvedValue(answer);
+
+      await backend.chat({
+        model: 'claude-sonnet-5-5',
+        messages: [
+          { role: 'system' as const, content: instructions },
+          { role: 'user' as const, content: 'first' },
+          { role: 'assistant' as const, content: 'one', cacheBreakpoint: true },
+          { role: 'user' as const, content: 'second' },
+          { role: 'assistant' as const, content: 'two', cacheBreakpoint: true },
+          { role: 'user' as const, content: 'third' },
+        ],
+        cache: {},
+      });
+
+      const sentMessages = (
+        mockCreate.mock.calls[0][0] as { messages: Array<{ content: unknown }> }
+      ).messages;
+      const marked = sentMessages.filter(
+        (message) =>
+          Array.isArray(message.content) &&
+          JSON.stringify(message.content).includes('cache_control')
+      );
+      expect(marked).toHaveLength(2);
+    });
+
     it('marks the conversation end only when another turn is likely, unless told', async () => {
       mockCreate.mockResolvedValue(answer);
       const tools: ToolSchema[] = [

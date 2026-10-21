@@ -9,6 +9,7 @@ export {
 export {
   clearToolOutputsMiddleware,
   clearedToolOutputsAttributes,
+  restoreClearedOutputs,
   clearedOutputNote,
   isClearedArguments,
 } from './clear-tool-outputs';

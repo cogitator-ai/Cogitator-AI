@@ -20,6 +20,7 @@ import { tool } from '../tool';
 import { ContextManager } from '../context/index';
 import {
   clearToolOutputsMiddleware,
+  restoreClearedOutputs,
   clearedOutputNote,
   isClearedArguments,
 } from '../middleware/index';
@@ -61,12 +62,28 @@ function contextWith(state = new Map<string, unknown>()): RunMiddlewareContext {
   };
 }
 
+/** Runs the tool calls of `messages` through `layer`, as a run that made them does */
+async function ran(
+  layer: RunMiddleware,
+  messages: readonly Message[],
+  context: RunMiddlewareContext
+) {
+  for (const toolCall of messages.flatMap(callsOf)) {
+    await layer.wrapToolCall?.(
+      { toolCall, tool: recallToolOutputTool(), args: toolCall.arguments, approved: false },
+      async () => ({ callId: toolCall.id, name: toolCall.name, result: null }),
+      context
+    );
+  }
+}
+
 async function clear(
   options: ClearToolOutputsConfig,
   messages: Message[],
   context = contextWith()
 ): Promise<Message[] | undefined> {
   const layer = clearToolOutputsMiddleware(options);
+  await ran(layer, messages, context);
   const update = (await layer.beforeModel?.({ messages, model: 'mock/m' }, context)) as
     ModelTurnUpdate | undefined;
   return update?.messages;
@@ -217,6 +234,7 @@ describe('clearToolOutputsMiddleware', () => {
       order.push('hook');
     });
     const layer = clearToolOutputsMiddleware({ trigger: 0, keep: 1, onBeforeClear });
+    await ran(layer, conversation(ids(2)), context);
     const update = await layer.beforeModel?.(
       { messages: conversation(ids(2)), model: 'mock/m' },
       context
@@ -256,9 +274,39 @@ describe('clearToolOutputsMiddleware', () => {
         throw new Error('store down');
       },
     });
+    const context = contextWith();
+    await ran(layer, conversation(ids(2)), context);
     await expect(
-      layer.beforeModel?.({ messages: conversation(ids(2)), model: 'mock/m' }, contextWith())
+      layer.beforeModel?.({ messages: conversation(ids(2)), model: 'mock/m' }, context)
     ).rejects.toThrow('store down');
+  });
+
+  it('tells onBeforeClear only of the calls the run made, not of those memory brought', async () => {
+    const onBeforeClear = vi.fn();
+    const layer = clearToolOutputsMiddleware({ trigger: 0, keep: 1, onBeforeClear });
+    const context = contextWith();
+    const history = conversation(ids(3));
+    await ran(layer, history.slice(-4), context);
+
+    const update = (await layer.beforeModel?.({ messages: history, model: 'mock/m' }, context)) as
+      ModelTurnUpdate | undefined;
+
+    expect(clearedIds(update?.messages ?? [])).toEqual(['c1', 'c2']);
+    expect(
+      onBeforeClear.mock.calls[0]?.[0].calls.map((call: { toolCallId: string }) => call.toolCallId)
+    ).toEqual(['c2']);
+  });
+
+  it('gives the cleared outputs and arguments back in what outlives the run', async () => {
+    const state = new Map<string, unknown>();
+    const messages = conversation(ids(2));
+    const cleared = await clear(
+      { trigger: 0, keep: 1, clearInputs: true },
+      messages,
+      contextWith(state)
+    );
+
+    expect(restoreClearedOutputs(cleared ?? [], state)).toEqual(messages);
   });
 
   it('refuses invalid options', () => {

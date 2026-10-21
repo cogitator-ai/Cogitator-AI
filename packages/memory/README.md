@@ -437,21 +437,21 @@ Every built-in adapter reports its changes through `onChange(listener)` (`entry-
 
 A context is assembled by a `ContextAssembler` from partitions, each with a `share` of the budget it may take, and some `required`:
 
-| Partition   | Holds                                       | Default               |
-| ----------- | ------------------------------------------- | --------------------- |
-| `system`    | the system prompt                           | required, sent whole  |
-| `pinned`    | `pinned` texts of `build()`                 | 10%, required         |
-| `index`     | the `index` text of `build()`               | 5%                    |
-| `summaries` | compaction summaries                        | 10%, required         |
-| `facts`     | facts                                       | 10%                   |
-| `recall`    | semantic search results, then graph context | 25%                   |
-| `brief`     | the `brief` text of `build()`               | 5%                    |
-| `recent`    | history, selected by the strategy           | what the others leave |
-| `final`     | `currentInput`, counted, not in `messages`  | required              |
+| Partition   | Holds                                       | Default                  |
+| ----------- | ------------------------------------------- | ------------------------ |
+| `system`    | the system prompt                           | required, sent whole     |
+| `pinned`    | `pinned` texts of `build()`                 | required                 |
+| `index`     | the `index` text of `build()`               | required                 |
+| `summaries` | compaction summaries                        | required                 |
+| `brief`     | the `brief` text of `build()`               | required                 |
+| `facts`     | facts                                       | 15%                      |
+| `recall`    | semantic search results, then graph context | 35%                      |
+| `recent`    | history, selected by the strategy           | what the others leave    |
+| `final`     | `currentInput`, counted, not in `messages`  | required, always counted |
 
-Required partitions get room first. The others get their share, no more than they need, and what one leaves unused goes to those that need more, `recent` last. A text block that repeats one of a more lasting partition (a fact the system prompt states, a search result that repeats a fact) is left out as a `duplicate`.
+Required partitions are fitted first. The others split what they leave by their shares, no more than each needs, and what the shares cannot place goes to those still short of room in fill order (`facts`, `recall`, `recent`). The shares of the partitions that are not required may add up to 1 at most, else the constructor throws. A text block that a kept block of a more lasting partition holds in full, word for word (a fact the system prompt states, a search result that repeats a fact), is left out as a `duplicate`.
 
-`messages` is ordered for the prompt cache: one system message (the system prompt, `pinned`, `index`), the compaction summary and the history, whose last message carries `cacheBreakpoint: true`, then a user message with what changes every turn (the brief, `Known facts:`, `Relevant context:` and graph context), which is also `memoryContext`. A caller that adds the input itself should send `memoryContext` in front of the input as one user message, as a Cogitator run does. `formatTurnContext(blocks)` builds that text from texts of your own.
+`messages` is ordered for the prompt cache: one system message (the system prompt, `pinned`, `index`), the compaction summary and the history, whose last message and the last message of the turn before it carry `cacheBreakpoint: true` (`markTurnEnds`), then a user message with what changes every turn (the brief, `Known facts:`, `Relevant context:` and graph context) in a `<memory_context>` block, which is also `memoryContext`. A caller that adds the input itself should send `memoryContext` in front of the input as one user message, as a Cogitator run does, which adds its `context` and the insights of reflection to the same block. `formatTurnContext(blocks)` builds that text from texts of your own, `extendTurnContext(text, block)` adds a block to it, and `withoutTurnContext(text)` gives the input back without it.
 
 ```typescript
 const context = await builder.build({
@@ -549,7 +549,7 @@ Semantic context is scoped by embedding metadata: entries with `metadata.agentId
 
 ```typescript
 interface BuiltContext {
-  messages: Message[]; // system message, history (last one a cache breakpoint), turn context
+  messages: Message[]; // system message, history (cache breakpoints at its end and the turn before), turn context
   memoryContext?: string; // brief, facts, recall and graph context, sent with the input
   partitions: Partial<Record<ContextPartition, number>>; // tokens per partition, the input included
   facts: Fact[];

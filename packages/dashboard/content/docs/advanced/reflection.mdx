@@ -33,7 +33,7 @@ await cog.getInsights(agent.id); // everything learned so far
 await cog.getReflectionSummary(agent.id);
 ```
 
-With `reflection.enabled`, every run starts by appending the agent's most relevant insights to its system prompt ("Past learnings that may help"). Then, depending on the flags:
+With `reflection.enabled`, every run starts by adding the agent's most relevant insights to the turn context in front of its input ("Past learnings that may help"), not to the system prompt, so the instructions stay the same and the prompt cache keeps serving them. Then, depending on the flags:
 
 | Flag                   | When                     | Effect                                                                                      |
 | ---------------------- | ------------------------ | ------------------------------------------------------------------------------------------- |

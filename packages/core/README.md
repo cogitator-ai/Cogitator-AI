@@ -400,7 +400,7 @@ result.usage.reasoningTokens; // billed as output
 
 Reasoning that has to travel with tool calls (Claude thinking blocks, OpenAI reasoning items, Gemini thought signatures) is sent back while the agent works through a tool loop.
 
-Runs cache their prompt by default: Anthropic requests, and Claude through OpenRouter (`OpenAIBackend` with `provider: 'openrouter'`), mark the end of the agent's instructions, so runs with different input share them, the end of the history a memory context was built from (`Message.cacheBreakpoint`), so the next turn on a thread reads the history from the cache, and the end of the conversation when another turn is likely (tools or earlier turns, `promptCache.conversation` overrides it), Bedrock requests mark their stable prefix, OpenAI and Gemini cache on their own, and `usage.cachedInputTokens` / `cacheWriteTokens` are priced at the model's cache prices (1-hour writes, `cacheWrite1hTokens`, at their own price). `llm.promptCache: { ttl: '1h' }` or `false` changes it.
+Runs cache their prompt by default: Anthropic requests, and Claude through OpenRouter (`OpenAIBackend` with `provider: 'openrouter'`), mark the end of the agent's instructions, so runs with different input share them, the end of the history a memory context was built from and of the turn before it (`Message.cacheBreakpoint`), so the next turn on a thread reads the history from the cache, up to four marks in all, and the end of the conversation when another turn is likely (tools or earlier turns, `promptCache.conversation` overrides it), Bedrock requests mark their stable prefix, OpenAI and Gemini cache on their own, and `usage.cachedInputTokens` / `cacheWriteTokens` are priced at the model's cache prices (1-hour writes, `cacheWrite1hTokens`, at their own price). `llm.promptCache: { ttl: '1h' }` or `false` changes it.
 
 ---
 
@@ -892,7 +892,7 @@ const result = await cog.run(agent, {
   threadId: 'thread_123',
   userId: 'user_456', // owns the thread, scopes memory, reaches tools as context.userId
   threadAccess: 'owner', // default; 'shared' lets any user continue the thread
-  context: { task: 'analysis' }, // extra values for the system prompt
+  context: { task: 'analysis' }, // data for the model, sent with the input
   deps: { db }, // values for the tools (context.deps), never sent to the model
 
   timeout: 60000,
@@ -1079,7 +1079,7 @@ const cog = new Cogitator({
 
 `adapter` also accepts `'sqlite'` (`sqlite.path`), `'mongodb'` (`mongodb.uri`) and `'redis'` (`redis.url`, or `redis.host` + `redis.port`, or `redis.cluster`). Qdrant stores embeddings, not threads: configure it in `memory.qdrant` next to a thread adapter, together with `memory.embedding` and `memory.contextBuilder.includeSemanticContext`, and semantic context is retrieved from it. The Postgres adapter sizes its vector column to the `memory.embedding` model. Runs with a `threadId` load history from and save messages to the adapter. With `contextBuilder`, the agent's instructions are always sent and counted in the budget, and a part of the context that fails to load (history, facts, semantic search) is passed to `onMemoryError` as a `'load'` failure while the run goes on.
 
-The context is ordered for the prompt cache: the system message (the instructions and what the run adds to them), then the history with a cache breakpoint on its last message, then one user message with what memory recalled for the turn (facts, semantic results) and the run's `brief` in front of the input. Only the input is saved to the thread. Without `contextBuilder.maxTokens` the runtime gives the builder the model's window minus the answer and the tool schemas, once, with `reserveTokens: 0`, and the builder counts the input in it. The `agent.run` span reports the tokens of each partition as `context.tokens.<partition>`. See [Memory Context and Prompt Caching](https://cogitator.app/docs/core/cogitator#memory-context-and-prompt-caching).
+The context is ordered for the prompt cache: the system message (the instructions), then the history with cache breakpoints on its last message and on the last message of the turn before, then one user message with a `<memory_context>` block in front of the input: what memory recalled for the turn (facts, semantic results), the run's `brief`, its `context` and the insights of reflection. Only the input is saved to the thread. Without `contextBuilder.maxTokens` the runtime gives the builder the model's window minus the answer and the tool schemas, once, with `reserveTokens: 0`, and the builder counts the input in it. The `agent.run` span reports the tokens of each partition as `context.tokens.<partition>`. See [Memory Context and Prompt Caching](https://cogitator.app/docs/core/cogitator#memory-context-and-prompt-caching).
 
 The adapter connects on the first run. To read threads before that (for example in an API route), use `getMemory()`, which connects it on first use; `cog.memory` stays `undefined` until something connected it:
 
@@ -2144,7 +2144,7 @@ const cog = new Cogitator({
 });
 ```
 
-Once a turn's conversation reaches `trigger` tokens, every tool result but the `keep` most recent ones gets a note in place of its output, which names the call and tells the model to get it back with the built-in tool `recall_tool_output({ toolCallId })` (from the run, or from the thread's memory). `clearInputs` clears the calls' arguments too, `clearAtLeast` waits until a clearing frees that many tokens so the prompt cache is not broken for little, and an awaited `onBeforeClear({ calls, tokens, tokensFreed, model }, context)` lets the application keep what matters first. The `agent.run` span reports `context.cleared_tool_outputs`, `context.cleared_tool_output_tokens` and `context.clearings`.
+Once a turn's conversation reaches `trigger` tokens, every tool result but the `keep` most recent ones gets a note in place of its output, which names the call and tells the model to get it back with the built-in tool `recall_tool_output({ toolCallId })` (from the run, or from the thread's memory). `clearInputs` clears the calls' arguments too, `clearAtLeast` waits until a clearing frees that many tokens so the prompt cache is not broken for little, and an awaited `onBeforeClear({ calls, tokens, tokensFreed, model }, context)` lets the application keep what matters first. It hears only of the calls the run made itself, since outputs loaded from memory are in memory already. The run goes on with the notes, while `RunResult.messages` and a paused run's checkpoint get the cleared outputs and arguments back. `recall_tool_output` reads memory only for a run that uses it, and only the branch the run is on. The `agent.run` span reports `context.cleared_tool_outputs`, `context.cleared_tool_output_tokens` and `context.clearings`.
 
 ---
 

@@ -113,7 +113,7 @@ await cog.run(agent, { input: 'Where is my order?', deps: { db, userId: session.
 - `deps` reach every tool of the run: tools of agents it hands over to, [agents run as tools](#agents-as-tools) and `cog.invokeTool(tool, args, { deps })`.
 - They never reach the model, the memory, spans, the run result or a paused run's checkpoint. Pass them again to `cog.resume(agent, checkpoint, { deps, decisions })`.
 - `new Agent<AppDeps>(...)` makes `deps` required in `run()` and `resume()`, and refuses a tool whose deps type is unrelated to `AppDeps`. TypeScript compares tool methods loosely, so declare in `AppDeps` every field the agent's tools read: a tool reading a field `AppDeps` lacks still compiles. An agent without a deps type takes any tool, and a tool that reads `deps` then gets `undefined` when the run passes none.
-- `RunOptions.context` is different: it is data for the model, added to the system prompt.
+- `RunOptions.context` is different: it is data for the model, sent as one JSON block in the turn context in front of the input.
 - `deps` are passed by your own code: `cog.run()`, `cog.resume()`, `cog.invokeTool()` and tools made with `agentAsTool`. Server adapters, channels, swarms, workflows and the worker start runs without them, so an agent whose tools read `deps` runs through `cog.run()` of your own for now.
 
 ## Agent with Tools

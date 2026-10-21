@@ -152,10 +152,6 @@ export class OpenAIBackend extends OpenAICompatibleBackend {
   ): OpenAI.Chat.ChatCompletionMessageParam[] {
     const marks = this.claudeCacheMarks(request, model);
     if (!marks) return messages;
-    let breakpoint = -1;
-    messages.forEach((message, i) => {
-      if (cacheBreakpoints.has(message)) breakpoint = i;
-    });
     const index = messages.findIndex((message) => message.role === 'system');
     const system = messages[index];
     const split =
@@ -170,7 +166,7 @@ export class OpenAIBackend extends OpenAICompatibleBackend {
         ];
         return { role: 'system', content };
       }
-      return i === breakpoint ? withCacheEnd(message, marks.control) : message;
+      return cacheBreakpoints.has(message) ? withCacheEnd(message, marks.control) : message;
     });
   }
 

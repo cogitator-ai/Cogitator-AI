@@ -38,6 +38,10 @@ const CLEARED_ARGUMENTS_TEXT = 'Arguments cleared to save context';
 class ClearingLedger {
   /** The outputs the run cleared, by tool call id, for `recall_tool_output` */
   readonly held = new Map<string, MessageContent>();
+  /** The arguments of the calls whose inputs the run cleared, by tool call id */
+  readonly heldArguments = new Map<string, Record<string, unknown>>();
+  /** The tool calls the run made itself */
+  readonly ran = new Set<string>();
   cleared = 0;
   tokensFreed = 0;
   clearings = 0;
@@ -76,6 +80,36 @@ export function clearedToolOutputsAttributes(
   };
 }
 
+/**
+ * `messages` with every output and argument the clearing of a run replaced given back, for what
+ * outlives the turn: a paused run's checkpoint, which a resumed run clears again from, and the
+ * messages of its result. `messages` itself stays as it is.
+ */
+export function restoreClearedOutputs(
+  messages: readonly Message[],
+  state: ReadonlyMap<string, unknown>
+): Message[] {
+  const ledger = state.get(STATE_KEY);
+  if (!(ledger instanceof ClearingLedger) || ledger.clearings === 0) return [...messages];
+  return messages.map((message) => {
+    const id = message.toolCallId;
+    const held = id === undefined ? undefined : ledger.held.get(id);
+    if (message.role === 'tool' && id !== undefined && held !== undefined) {
+      return message.content === clearedOutputNote(id) ? { ...message, content: held } : message;
+    }
+    const calls = toolCallsOf(message);
+    if (!calls?.some((call) => ledger.heldArguments.has(call.id))) return message;
+    const toolCalls = calls.map((call) => {
+      const original = ledger.heldArguments.get(call.id);
+      return original && isClearedArguments(call.arguments)
+        ? { ...call, arguments: original }
+        : call;
+    });
+    const restored: Message & { toolCalls: ToolCall[] } = { ...message, toolCalls };
+    return restored;
+  });
+}
+
 function ledgerOf(context: RunMiddlewareContext): ClearingLedger {
   const existing = context.state.get(STATE_KEY);
   if (existing instanceof ClearingLedger) return existing;
@@ -102,8 +136,10 @@ interface Candidate {
  * `keep` most recent ones and those of `exclude`d tools gets a note in place of its output, once
  * that frees `clearAtLeast` tokens. Each result keeps its message, so every provider still gets
  * a result for each tool call. The run goes on with the cleared conversation, so a cleared
- * output is not counted again. The middleware answers `recall_tool_output` from the outputs it
- * cleared in the run, and the tool reads memory for the others.
+ * output is not counted again, and `restoreClearedOutputs` gives the outputs back in what outlives
+ * the run. `onBeforeClear` hears of the calls the run made itself: outputs read from memory are in
+ * memory already. The middleware answers `recall_tool_output` from the outputs it cleared in the
+ * run, and the tool reads memory for the others.
  *
  * The Cogitator adds it from `context.clearToolOutputs`, before compaction, with the
  * `recall_tool_output` tool. To use it on one agent, add it to the agent's `middleware` and
@@ -171,17 +207,14 @@ export function clearToolOutputsMiddleware(config: ClearToolOutputsConfig = {}):
       const tokensFreed = candidates.reduce((sum, candidate) => sum + candidate.call.tokens, 0);
       if (candidates.length === 0 || tokensFreed < clearAtLeast) return;
 
-      await onBeforeClear?.(
-        {
-          calls: candidates.map((candidate) => candidate.call),
-          tokens,
-          tokensFreed,
-          model,
-        },
-        context
-      );
-
       const ledger = ledgerOf(context);
+      const ownCalls = candidates
+        .filter((candidate) => ledger.ran.has(candidate.call.toolCallId))
+        .map((candidate) => candidate.call);
+      if (ownCalls.length > 0) {
+        await onBeforeClear?.({ calls: ownCalls, tokens, tokensFreed, model }, context);
+      }
+
       const cleared = [...messages];
       const inputsToClear = new Set<string>();
       for (const candidate of candidates) {
@@ -196,9 +229,11 @@ export function clearToolOutputsMiddleware(config: ClearToolOutputsConfig = {}):
         cleared.forEach((message, index) => {
           const calls = toolCallsOf(message);
           if (!calls?.some((call) => inputsToClear.has(call.id))) return;
-          const toolCalls = calls.map((call) =>
-            inputsToClear.has(call.id) ? { ...call, arguments: clearedArguments() } : call
-          );
+          const toolCalls = calls.map((call) => {
+            if (!inputsToClear.has(call.id)) return call;
+            ledger.heldArguments.set(call.id, call.arguments);
+            return { ...call, arguments: clearedArguments() };
+          });
           const replaced: Message & { toolCalls: ToolCall[] } = { ...message, toolCalls };
           cleared[index] = replaced;
         });
@@ -216,6 +251,7 @@ export function clearToolOutputsMiddleware(config: ClearToolOutputsConfig = {}):
       return { messages: cleared };
     },
     async wrapToolCall(call, next, context) {
+      ledgerOf(context).ran.add(call.toolCall.id);
       if (!isRecallToolOutput(call.tool)) return next(call);
       const toolCallId = recalledCallId(call.args);
       const held = toolCallId === undefined ? undefined : ledgerOf(context).held.get(toolCallId);

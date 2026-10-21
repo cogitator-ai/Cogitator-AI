@@ -45,19 +45,19 @@ Creates a Koa Router with all Cogitator endpoints.
 
 **Options:**
 
-| Option               | Type                          | Description                                                                                                           |
-| -------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `cogitator`          | `Cogitator`                   | **Required.** Cogitator runtime instance                                                                              |
-| `agents`             | `Record<string, Agent>`       | Named agents to expose                                                                                                |
-| `workflows`          | `Record<string, Workflow>`    | Named workflows                                                                                                       |
-| `swarms`             | `Record<string, SwarmConfig>` | Named swarms                                                                                                          |
-| `auth`               | `AuthFunction`                | `(ctx) => AuthContext \| undefined` (sync or async), receives the Koa Context, throw to answer `401 UNAUTHORIZED`     |
-| `enableSwagger`      | `boolean`                     | Serve `/openapi.json` and Swagger UI at `/docs`                                                                       |
-| `swagger`            | `SwaggerConfig`               | Swagger configuration                                                                                                 |
-| `bodyLimit`          | `number`                      | Max JSON body size in bytes (default 1 MiB)                                                                           |
-| `sseHeartbeatMs`     | `number`                      | How often SSE streams write a `: keep-alive` comment while a run is silent (default `5000`, `0` turns it off)         |
-| `acceptContext`      | `boolean \| string[]`         | Keys of a run `context` clients may send: none by default, a list, or `true` for any (it goes into the system prompt) |
-| `threadMessageRoles` | `ThreadMessageRole[]`         | Roles `POST /threads/:id/messages` accepts (default `user` and `assistant`)                                           |
+| Option               | Type                          | Description                                                                                                                            |
+| -------------------- | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `cogitator`          | `Cogitator`                   | **Required.** Cogitator runtime instance                                                                                               |
+| `agents`             | `Record<string, Agent>`       | Named agents to expose                                                                                                                 |
+| `workflows`          | `Record<string, Workflow>`    | Named workflows                                                                                                                        |
+| `swarms`             | `Record<string, SwarmConfig>` | Named swarms                                                                                                                           |
+| `auth`               | `AuthFunction`                | `(ctx) => AuthContext \| undefined` (sync or async), receives the Koa Context, throw to answer `401 UNAUTHORIZED`                      |
+| `enableSwagger`      | `boolean`                     | Serve `/openapi.json` and Swagger UI at `/docs`                                                                                        |
+| `swagger`            | `SwaggerConfig`               | Swagger configuration                                                                                                                  |
+| `bodyLimit`          | `number`                      | Max JSON body size in bytes (default 1 MiB)                                                                                            |
+| `sseHeartbeatMs`     | `number`                      | How often SSE streams write a `: keep-alive` comment while a run is silent (default `5000`, `0` turns it off)                          |
+| `acceptContext`      | `boolean \| string[]`         | Keys of a run `context` clients may send: none by default, a list, or `true` for any (the model reads it as data from the application) |
+| `threadMessageRoles` | `ThreadMessageRole[]`         | Roles `POST /threads/:id/messages` accepts (default `user` and `assistant`)                                                            |
 
 WebSocket support is attached to the HTTP server with [`setupWebSocket`](#websocket), not through router options.
 
@@ -68,7 +68,7 @@ WebSocket support is attached to the HTTP server with [`setupWebSocket`](#websoc
 - While an SSE stream is open it writes a `: keep-alive` comment every `sseHeartbeatMs` (5 s by default, `0` turns it off), which SSE clients skip, so a proxy or load balancer does not close a stream that waits on a slow tool or model (nginx closes a connection silent for 60 s).
 - Workflow runs accept an optional body. `options` is limited to `maxConcurrency` and `maxIterations` (positive integers). Any other option is dropped and a wrongly typed one returns `400 INVALID_INPUT`. `checkpoint: true` is refused, since the server runs each workflow on a fresh executor and keeps no checkpoint store to resume from.
 - Thread messages accept `role` of `user` or `assistant` (more with `threadMessageRoles`), `metadata` is stored with the entry and a token estimate is recorded.
-- A run puts `context` into the system prompt, and the model reads a `system` thread message as operator instructions, so clients may set neither unless the server allows it: `acceptContext` lists the `context` keys clients may send (`true` accepts any key, for clients trusted like your own code), and `threadMessageRoles` the roles of `POST /threads/:id/messages` (`user` and `assistant` by default). Anything else is refused with `400 INVALID_INPUT`, over HTTP and WebSocket alike.
+- A run sends `context` to the model as data the application supplied, and the model reads a `system` thread message as operator instructions, so clients may set neither unless the server allows it: `acceptContext` lists the `context` keys clients may send (`true` accepts any key, for clients trusted like your own code), and `threadMessageRoles` the roles of `POST /threads/:id/messages` (`user` and `assistant` by default). Anything else is refused with `400 INVALID_INPUT`, over HTTP and WebSocket alike.
 - A `POST` body that is not JSON (`text/plain`, a form) is refused with `415 UNSUPPORTED_MEDIA_TYPE` before it is parsed: browsers send those across origins without a CORS preflight.
 - `POST /agents/:name/run` and `/resume` answer `toAgentRunResponse()` of `@cogitator-ai/server-shared`: `output`, `threadId`, `usage`, `toolCalls` (`{ id, name, arguments }`), `status` and `traceId`, plus `reasoning`, `pendingApprovals`, `structured`, `structuredError`, `truncated`, `blocked` and `iterationLimitReached` when they apply. The WebSocket `complete` event carries the same object, never the system prompt, the history, trace spans or a paused run's checkpoint.
 - The `start` event of an agent stream names the run's thread (the request's `threadId`, or a new one), and `finish` repeats it with the run's outcome, so a client that sent no thread continues the conversation with this one.

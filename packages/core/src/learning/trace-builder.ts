@@ -1,3 +1,4 @@
+import { withoutTurnContext } from '@cogitator-ai/memory';
 import type {
   ExecutionStep,
   ExecutionTrace,
@@ -54,15 +55,16 @@ export function buildExecutionTrace(
   };
 }
 
-/** The input a run answered: its first user message. */
+/** The input a run answered: its first user message, without the turn context sent with it. */
 export function runInput(runResult: RunResult): string {
   const user = runResult.messages.find((message) => message.role === 'user');
   if (!user) return '';
   return typeof user.content === 'string'
-    ? user.content
+    ? withoutTurnContext(user.content)
     : user.content
         .filter((part): part is { type: 'text'; text: string } => part.type === 'text')
-        .map((part) => part.text)
+        .map((part) => withoutTurnContext(part.text))
+        .filter((text) => text.length > 0)
         .join(' ');
 }
 

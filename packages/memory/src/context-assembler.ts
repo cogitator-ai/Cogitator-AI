@@ -16,12 +16,12 @@ import type {
  */
 export const DEFAULT_PARTITIONS: Readonly<Record<ContextPartition, ContextPartitionBudget>> = {
   system: { required: true },
-  pinned: { share: 0.1, required: true },
-  index: { share: 0.05 },
-  summaries: { share: 0.1, required: true },
-  facts: { share: 0.1 },
-  recall: { share: 0.25 },
-  brief: { share: 0.05 },
+  pinned: { required: true },
+  index: { required: true },
+  summaries: { required: true },
+  facts: { share: 0.15 },
+  recall: { share: 0.35 },
+  brief: { required: true },
   recent: {},
   final: { required: true },
 };
@@ -92,7 +92,7 @@ const SHORT_TEXT = 24;
 /** Whether `kept` says all of `text` already: the same text, or one that holds it whole */
 function repeats(text: string, kept: readonly string[]): boolean {
   return kept.some(
-    (other) => other === text || (text.length >= SHORT_TEXT && other.includes(text))
+    (other) => other === text || (text.length >= SHORT_TEXT && ` ${other} `.includes(` ${text} `))
   );
 }
 
@@ -132,6 +132,13 @@ export class ContextAssembler {
       }
       merged[name] = { ...merged[name], ...budget };
     }
+    const shared = Object.values(merged).reduce(
+      (sum, partition) => sum + (partition.required ? 0 : (partition.share ?? 0)),
+      0
+    );
+    if (shared > 1) {
+      throw new Error(`The shares of the context partitions add up to ${shared}, more than 1`);
+    }
     this.partitions = merged;
   }
 
@@ -144,28 +151,19 @@ export class ContextAssembler {
     const assembly: Assembly<T> = { kept: {}, dropped: [], tokens: {}, used: 0 };
     const byPartition = new Map(candidates.map((candidate) => [candidate.partition, candidate]));
     const said: string[] = [];
+    const isRequired = (partition: ContextPartition) =>
+      this.partitions[partition].required === true;
 
-    const grants = this.grants(budget, byPartition);
-    let carried = 0;
-    for (const partition of FILL_ORDER) {
+    const fill = async (partition: ContextPartition, room: number): Promise<number> => {
       const given = byPartition.get(partition);
-      if (!given) continue;
-      const candidate = {
-        ...given,
-        blocks: given.blocks.filter((block) => {
-          const text = block.text === undefined ? '' : normalized(block.text);
-          if (text.length === 0 || !repeats(text, said)) return true;
-          assembly.dropped.push(this.dropped(partition, block, 'duplicate'));
-          return false;
-        }),
-      };
-      const required = this.partitions[partition].required === true;
-      const room = required
-        ? partition === 'system' || partition === 'final'
-          ? Infinity
-          : Math.max(0, budget - assembly.used)
-        : Math.min((grants.get(partition) ?? 0) + carried, Math.max(0, budget - assembly.used));
-      const fitted = await (candidate.fit ?? fitInOrder)(candidate.blocks, room);
+      if (!given) return 0;
+      const blocks = given.blocks.filter((block) => {
+        const text = block.text === undefined ? '' : normalized(block.text);
+        if (text.length === 0 || !repeats(text, said)) return true;
+        assembly.dropped.push(this.dropped(partition, block, 'duplicate'));
+        return false;
+      });
+      const fitted = await (given.fit ?? fitInOrder)(blocks, room);
       const tokens = fitted.tokens ?? fitted.kept.reduce((sum, block) => sum + block.tokens, 0);
       for (const block of fitted.kept) {
         if (block.text !== undefined) said.push(normalized(block.text));
@@ -176,54 +174,76 @@ export class ContextAssembler {
       for (const { block, reason } of fitted.dropped) {
         assembly.dropped.push(this.dropped(partition, block, reason));
       }
-      if (!required) carried = Math.max(0, room - tokens);
+      return tokens;
+    };
+
+    for (const partition of FILL_ORDER) {
+      if (!isRequired(partition)) continue;
+      const unbounded = partition === 'system' || partition === 'final';
+      await fill(partition, unbounded ? Infinity : Math.max(0, budget - assembly.used));
+    }
+
+    const open = FILL_ORDER.filter((partition) => !isRequired(partition));
+    const grants = this.grants(Math.max(0, budget - assembly.used), open, byPartition);
+    let carried = 0;
+    for (const partition of open) {
+      if (!byPartition.has(partition)) continue;
+      const room = Math.min(
+        (grants.get(partition) ?? 0) + carried,
+        Math.max(0, budget - assembly.used)
+      );
+      carried = Math.max(0, room - (await fill(partition, room)));
     }
     return assembly;
   }
 
   /**
-   * The room of each partition that is not required: its share of what the required ones leave,
-   * no more than it needs, with what is left over shared again among those that need more
+   * The room of each partition in `open`: its share of `free`, no more than it needs, with what
+   * is left over shared again among those that need more, and what shares cannot place going to
+   * the hungry ones in the order they are filled
    */
   private grants<T>(
-    budget: number,
+    free: number,
+    open: readonly ContextPartition[],
     byPartition: ReadonlyMap<ContextPartition, PartitionCandidates<T>>
   ): Map<ContextPartition, number> {
-    const demand = (candidate: PartitionCandidates<T>) =>
-      candidate.demand ?? candidate.blocks.reduce((sum, block) => sum + block.tokens, 0);
-    let free = budget;
-    const open = new Map<ContextPartition, { share: number; need: number }>();
-    const assigned = Object.values(this.partitions).reduce(
-      (sum, partition) => sum + (partition.required ? 0 : (partition.share ?? 0)),
+    const assigned = open.reduce(
+      (sum, partition) => sum + (this.partitions[partition].share ?? 0),
       0
     );
-    for (const [partition, candidate] of byPartition) {
-      const config = this.partitions[partition];
-      if (config.required) {
-        free -= demand(candidate);
-        continue;
-      }
-      const share = config.share ?? Math.max(0, 1 - assigned);
-      open.set(partition, { share, need: demand(candidate) });
+    const hungry = new Map<ContextPartition, { share: number; need: number }>();
+    for (const partition of open) {
+      const candidate = byPartition.get(partition);
+      if (!candidate) continue;
+      const need =
+        candidate.demand ?? candidate.blocks.reduce((sum, block) => sum + block.tokens, 0);
+      const share = this.partitions[partition].share ?? Math.max(0, 1 - assigned);
+      if (need > 0) hungry.set(partition, { share, need });
     }
-    free = Math.max(0, free);
 
     const grants = new Map<ContextPartition, number>();
+    const give = (partition: ContextPartition, tokens: number) =>
+      grants.set(partition, (grants.get(partition) ?? 0) + tokens);
     let left = free;
-    while (left > 0 && open.size > 0) {
-      const shares = [...open.values()].reduce((sum, { share }) => sum + share, 0);
+    while (left > 0 && hungry.size > 0) {
+      const shares = [...hungry.values()].reduce((sum, { share }) => sum + share, 0);
       if (shares <= 0) break;
       let granted = 0;
-      for (const [partition, entry] of open) {
-        const offer = Math.floor((left * entry.share) / shares);
-        const take = Math.min(offer, entry.need);
-        grants.set(partition, (grants.get(partition) ?? 0) + take);
+      for (const [partition, entry] of hungry) {
+        const take = Math.min(Math.floor((left * entry.share) / shares), entry.need);
+        give(partition, take);
         entry.need -= take;
         granted += take;
-        if (entry.need <= 0) open.delete(partition);
+        if (entry.need <= 0) hungry.delete(partition);
       }
       left -= granted;
       if (granted === 0) break;
+    }
+    for (const [partition, entry] of hungry) {
+      if (left <= 0) break;
+      const take = Math.min(left, entry.need);
+      give(partition, take);
+      left -= take;
     }
     return grants;
   }

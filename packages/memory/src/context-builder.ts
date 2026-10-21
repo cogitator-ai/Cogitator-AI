@@ -70,6 +70,20 @@ export function formatTurnContext(blocks: readonly string[]): string | undefined
   return [TURN_CONTEXT_OPEN, TURN_CONTEXT_HEADER, ...present, TURN_CONTEXT_CLOSE].join('\n\n');
 }
 
+/**
+ * `text` with `block` added to its turn context: inside the one `formatTurnContext` put in front
+ * of it, or in a new one there
+ */
+export function extendTurnContext(text: string, block: string): string {
+  if (!block.trim()) return text;
+  const end = text.startsWith(TURN_CONTEXT_OPEN) ? text.indexOf(TURN_CONTEXT_CLOSE) : -1;
+  if (end === -1) {
+    const context = formatTurnContext([block]) ?? '';
+    return text ? `${context}\n\n${text}` : context;
+  }
+  return `${text.slice(0, end)}${block}\n\n${text.slice(end)}`;
+}
+
 /** `text` without the turn context `formatTurnContext` put in front of it */
 export function withoutTurnContext(text: string): string {
   if (!text.startsWith(TURN_CONTEXT_OPEN)) return text;
@@ -92,6 +106,22 @@ function textBlock(text: string, tokens = countTokens(text)): AssemblyBlock<Piec
 
 function entryBlock(entry: MemoryEntry): AssemblyBlock<Piece> {
   return { value: { kind: 'entry', entry }, tokens: countEntryTokens(entry), sourceId: entry.id };
+}
+
+/**
+ * `history` with cache breakpoints at its end and at the end of the turn before the last one, so
+ * the next turn finds the prefix this turn cached even when its own turn added many blocks
+ */
+export function markTurnEnds(history: Message[]): Message[] {
+  const last = history.length - 1;
+  if (last < 0) return history;
+  const lastInput = history.map((message) => message.role).lastIndexOf('user');
+  const turnBefore = lastInput - 1;
+  return history.map((message, at) =>
+    at === last || (at === turnBefore && history[at]?.role !== 'system')
+      ? { ...message, cacheBreakpoint: true }
+      : message
+  );
 }
 
 function entryOf(block: AssemblyBlock<Piece>): MemoryEntry {
@@ -320,6 +350,24 @@ export class ContextBuilder {
       });
     }
 
+    const turnFrame = [
+      ...(options.brief?.trim() || facts.length > 0 || semantic.length > 0 || graph
+        ? [[TURN_CONTEXT_OPEN, TURN_CONTEXT_HEADER, TURN_CONTEXT_CLOSE].join('\n\n')]
+        : []),
+      ...(facts.length > 0 ? ['Known facts:'] : []),
+      ...(semantic.length > 0 ? ['Relevant context:'] : []),
+    ].join('\n\n');
+    if (turnFrame) {
+      const final = candidates.findIndex((candidate) => candidate.partition === 'final');
+      const frame: AssemblyBlock<Piece> = {
+        value: { kind: 'input' },
+        tokens: countTokens(turnFrame),
+      };
+      if (final === -1) candidates.push({ partition: 'final', blocks: [frame] });
+      else
+        candidates[final] = { partition: 'final', blocks: [...candidates[final]!.blocks, frame] };
+    }
+
     const scope: ScoringScope = { mark: this.deps.messageIndex?.mark(), threadSize: 0 };
     const entries = (await this.attempt('history', errors, () => this.readHistory(options))) ?? [];
     scope.threadSize = entries.length;
@@ -403,9 +451,7 @@ export class ContextBuilder {
       lasting.length > 0 ? [{ role: 'system', content: lasting.join('\n\n') }] : [];
 
     const historyEntries = [...kept('summaries'), ...kept('recent')].map(entryOf);
-    const history = historyEntries.map((entry) => entry.message);
-    const last = history.at(-1);
-    if (last) history[history.length - 1] = { ...last, cacheBreakpoint: true };
+    const history = markTurnEnds(historyEntries.map((entry) => entry.message));
     messages.push(...history);
 
     const facts = kept('facts').flatMap((block) =>
@@ -436,7 +482,10 @@ export class ContextBuilder {
           .filter((block) => block.partition === partition)
           .flatMap((block) => (block.sourceId === undefined ? [] : [block.sourceId]))
       );
-    const droppedEntries = new Set([...droppedIds('summaries'), ...droppedIds('recent')]);
+    const keptEntries = new Set(historyEntries.map((entry) => entry.id));
+    const droppedEntries = new Set(
+      [...droppedIds('summaries'), ...droppedIds('recent')].filter((id) => !keptEntries.has(id))
+    );
     const droppedFacts = droppedIds('facts');
     const droppedSemantic = droppedIds('recall');
     const dropped: DroppedContext = {

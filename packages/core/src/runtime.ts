@@ -64,6 +64,7 @@ import {
 import {
   clearedToolOutputsAttributes,
   clearToolOutputsMiddleware,
+  restoreClearedOutputs,
 } from './middleware/clear-tool-outputs';
 import { recallToolOutputTool } from './tools/recall-tool-output';
 import { createLoggerFromConfig, getLogger, setLogger } from './logger';
@@ -1585,7 +1586,7 @@ export class Cogitator implements ToolInvoker {
           model: effectiveModel,
           ...(routeProvider !== undefined && { provider: routeProvider }),
           input,
-          messages,
+          messages: restoreClearedOutputs(messages, middlewareState),
           toolCalls: allToolCalls,
           ...(prompt && { prompt }),
           ...(active !== agent && { activeAgent: active.name }),
@@ -1668,7 +1669,7 @@ export class Cogitator implements ToolInvoker {
           },
           ...(reasoningParts.length > 0 && { reasoning: reasoningParts.join('\n\n') }),
           toolCalls: allToolCalls,
-          messages,
+          messages: restoreClearedOutputs(messages, middlewareState),
           trace: { traceId, spans: publicSpans() },
         };
         options.onRunComplete?.(paused);
@@ -1766,7 +1767,7 @@ export class Cogitator implements ToolInvoker {
         ...(lastFinishReason === 'length' && { truncated: true }),
         ...(blocked && { blocked }),
         toolCalls: allToolCalls,
-        messages,
+        messages: restoreClearedOutputs(messages, middlewareState),
         trace: {
           traceId,
           spans: publicSpans(),

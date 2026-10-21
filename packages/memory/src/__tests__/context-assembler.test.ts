@@ -36,7 +36,7 @@ describe('ContextAssembler', () => {
 
     expect(assembly.tokens.facts).toBe(200);
     expect(assembly.tokens.recall).toBe(200);
-    expect(assembly.tokens.recent).toBe(550);
+    expect(assembly.tokens.recent).toBe(600);
     expect(assembly.used).toBeLessThanOrEqual(1000);
     expect(assembly.dropped.every((dropped) => dropped.reason === 'budget')).toBe(true);
   });
@@ -73,8 +73,8 @@ describe('ContextAssembler', () => {
   });
 
   it('keeps a block that says more than one before it, and checks only blocks that stayed', async () => {
-    const assembly = await new ContextAssembler({ facts: { share: 0 } }).assemble(1000, [
-      { partition: 'facts', blocks: [block(10, 'The user lives in Lisbon, Portugal')] },
+    const assembly = await new ContextAssembler().assemble(1000, [
+      { partition: 'facts', blocks: [block(2000, 'The user lives in Lisbon, Portugal')] },
       {
         partition: 'recall',
         blocks: [
@@ -115,6 +115,44 @@ describe('ContextAssembler', () => {
 
     expect(assembly.tokens.final).toBe(950);
     expect(assembly.tokens.recent).toBe(0);
+  });
+
+  it('gives what the shares cannot place to the partitions still hungry', async () => {
+    const assembly = await new ContextAssembler({ recall: { share: 0.85 } }).assemble(10000, [
+      { partition: 'recall', blocks: [block(500)] },
+      { partition: 'recent', blocks: Array.from({ length: 100 }, () => block(50)) },
+    ]);
+
+    expect(assembly.tokens.recall).toBe(500);
+    expect(assembly.tokens.recent).toBe(5000);
+  });
+
+  it('shares the room a required partition could not use', async () => {
+    const assembly = await new ContextAssembler().assemble(1000, [
+      { partition: 'summaries', blocks: [block(2600)] },
+      { partition: 'recent', blocks: Array.from({ length: 6 }, () => block(50)) },
+    ]);
+
+    expect(assembly.tokens.summaries).toBe(0);
+    expect(assembly.tokens.recent).toBe(300);
+  });
+
+  it('tells words apart when it looks for repeats', async () => {
+    const assembly = await new ContextAssembler().assemble(1000, [
+      {
+        partition: 'pinned',
+        blocks: [block(10, 'The user works at the bankruptcy court in Lisbon')],
+      },
+      { partition: 'facts', blocks: [block(10, 'The user works at the bank')] },
+    ]);
+
+    expect(assembly.kept.facts?.map((kept) => kept.text)).toEqual(['The user works at the bank']);
+  });
+
+  it('refuses shares that add up to more than 1', () => {
+    expect(() => new ContextAssembler({ facts: { share: 0.7 }, recall: { share: 0.7 } })).toThrow(
+      /add up to/
+    );
   });
 
   it('refuses a share outside 0 to 1', () => {
@@ -167,6 +205,8 @@ describe('ContextBuilder on the assembler', () => {
     ]);
     expect(countEntryTokens(big)).toBeGreaterThan(600);
     expect(result.tokenCount).toBeLessThan(600);
+    expect(result.dropped.entries).toEqual([]);
+    expect(result.truncated).toBe(false);
   });
 
   it('builds without the graph when cutting it down fails', async () => {
@@ -266,6 +306,25 @@ describe('ContextBuilder on the assembler', () => {
     expect(result.memoryContext).toContain('Ana asked about trains yesterday.');
     expect(result.memoryContext).toContain('Known facts:\n- Prefers short answers');
     expect(result.partitions.final).toBeGreaterThan(0);
+  });
+
+  it('marks the end of the history and of the turn before it', async () => {
+    for (const content of ['q1', 'a1', 'q2', 'a2']) {
+      await add({ role: content.startsWith('q') ? 'user' : 'assistant', content });
+    }
+    const builder = new ContextBuilder(
+      { strategy: 'recent', maxTokens: 2000 },
+      { memoryAdapter: adapter }
+    );
+
+    const result = await builder.build({ threadId, agentId: 'agent' });
+
+    expect(result.messages.map((m) => [m.content, m.cacheBreakpoint === true])).toEqual([
+      ['q1', false],
+      ['a1', true],
+      ['q2', false],
+      ['a2', true],
+    ]);
   });
 
   it('takes the reserve for the answer from the options when given', async () => {

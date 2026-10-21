@@ -497,8 +497,9 @@ export interface ContextBuilderConfig {
   includeGraphContext?: boolean;
   graphContextOptions?: GraphContextOptions;
   /**
-   * Budgets of the partitions, merged over the defaults (`pinned` 10%, `index` 5%, `summaries`
-   * 10% and required, `facts` 10%, `recall` 25%, `brief` 5%, `recent` the rest)
+   * Budgets of the partitions, merged over the defaults: `system`, `pinned`, `index`,
+   * `summaries`, `brief` and `final` required, `facts` 15%, `recall` 35%, `recent` the rest.
+   * The shares of the partitions that are not required add up to 1 at most.
    */
   partitions?: Partial<Record<ContextPartition, ContextPartitionBudget>>;
 }

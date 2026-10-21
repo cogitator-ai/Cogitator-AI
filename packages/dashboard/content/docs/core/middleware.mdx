@@ -63,7 +63,7 @@ Every hook is optional. Each one gets the run's context as its last argument.
 
 ### beforeRun
 
-`beforeRun({ input, messages }, context)` sees the input of a new run and the messages its first turn starts from: the system prompt, the history and the input. The input is not saved to memory and no model turn starts before it returns, so it is the place for input guards. Audio input is already transcribed into `input` by then.
+`beforeRun({ input, messages }, context)` sees the input of a new run and the messages its first turn starts from: the system prompt, the history and the input, with what memory recalled for the turn and the brief in a `<memory_context>` block in front of it (the run's `context` and the insights of reflection are added after `beforeRun`). The input is not saved to memory and no model turn starts before it returns, so it is the place for input guards. Audio input is already transcribed into `input` by then.
 
 ### beforeModel
 

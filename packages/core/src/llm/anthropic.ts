@@ -260,7 +260,10 @@ export class AnthropicBackend extends BaseLLMBackend {
     model: string,
     replayThinking: boolean
   ): Anthropic.MessageCreateParamsNonStreaming {
-    const { system, messages, breakpoint } = this.convertMessages(request.messages, replayThinking);
+    const { system, messages, breakpoints } = this.convertMessages(
+      request.messages,
+      replayThinking
+    );
     const { tools, toolChoice, systemSuffix, outputConfig } = this.prepareJsonMode(request, model);
 
     const allTools = [
@@ -288,8 +291,9 @@ export class AnthropicBackend extends BaseLLMBackend {
       outputConfig || effort ? { ...outputConfig, ...(effort && { effort }) } : undefined;
 
     const cacheMarks = promptCacheMarks(request);
-    if (cacheMarks && breakpoint !== undefined)
-      markCacheEnd(messages[breakpoint], cacheMarks.control);
+    if (cacheMarks) {
+      for (const at of breakpoints) markCacheEnd(messages[at], cacheMarks.control);
+    }
     return {
       model,
       system: this.systemParam(this.buildSystemPrompt(system, systemSuffix), cacheMarks),
@@ -334,13 +338,13 @@ export class AnthropicBackend extends BaseLLMBackend {
   ): {
     system: string;
     messages: Anthropic.MessageParam[];
-    /** The converted message that ends at a `cacheBreakpoint`, the last one when several do */
-    breakpoint?: number;
+    /** The converted messages that end at a `cacheBreakpoint` */
+    breakpoints: number[];
   } {
     const systemParts: string[] = [];
     const anthropicMessages: Anthropic.MessageParam[] = [];
     const lastUser = messages.map((m) => m.role).lastIndexOf('user');
-    let breakpoint: number | undefined;
+    const breakpoints = new Set<number>();
 
     for (const [index, m] of messages.entries()) {
       switch (m.role) {
@@ -382,14 +386,14 @@ export class AnthropicBackend extends BaseLLMBackend {
         }
       }
       if (m.cacheBreakpoint && m.role !== 'system' && anthropicMessages.length > 0) {
-        breakpoint = anthropicMessages.length - 1;
+        breakpoints.add(anthropicMessages.length - 1);
       }
     }
 
     return {
       system: systemParts.join('\n\n'),
       messages: anthropicMessages,
-      ...(breakpoint !== undefined && { breakpoint }),
+      breakpoints: [...breakpoints],
     };
   }
 

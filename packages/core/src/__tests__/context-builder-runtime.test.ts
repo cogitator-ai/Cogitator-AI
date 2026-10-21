@@ -40,7 +40,7 @@ afterEach(() => {
 });
 
 describe('runs with memory.contextBuilder', () => {
-  it('sends instructions larger than the context budget, with the run context', async () => {
+  it('sends instructions larger than the context budget, the run context with the input', async () => {
     const { backend, requests } = recordingBackend();
     const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
     const cog = new Cogitator({
@@ -54,7 +54,8 @@ describe('runs with memory.contextBuilder', () => {
 
     const system = systemText(requests[0].messages);
     expect(system.startsWith(instructions)).toBe(true);
-    expect(system).toContain('"plan": "gold"');
+    expect(system).not.toContain('"plan": "gold"');
+    expect(String(requests[0].messages.at(-1)?.content)).toContain('"plan": "gold"');
     expect(warn.mock.calls.some(([message]) => /system prompt/i.test(String(message)))).toBe(true);
     await cog.close();
   });
@@ -74,8 +75,8 @@ describe('runs with memory.contextBuilder', () => {
     await cog.run(agent, { input: 'hi', threadId: 't1', context: { tier: 'pro' } });
 
     const system = systemText(requests[0].messages);
-    expect(system.startsWith('Be brief.')).toBe(true);
-    expect(system).toContain('"tier": "pro"');
+    expect(system).toBe('Be brief.');
+    expect(String(requests[0].messages.at(-1)?.content)).toMatch(/"tier": "pro"[\s\S]*hi$/);
     await cog.close();
   });
 

@@ -85,7 +85,7 @@ interface RunOptions<TDeps = unknown> {
   input: string;
   images?: ImageInput[]; // URLs, base64 or { data, mimeType }
   audio?: AudioInput[]; // transcribed and added to the input
-  context?: Record<string, unknown>; // added to the system prompt
+  context?: Record<string, unknown>; // sent as data in the turn context, in front of the input
   deps?: TDeps; // tools get them as context.deps; never sent to the model, memory or checkpoints
   threadId?: string;
   timeout?: number;
@@ -788,7 +788,7 @@ interface DroppedBlock {
 }
 ```
 
-`ContextBuilderConfig` takes `partitions?: Partial<Record<ContextPartition, ContextPartitionBudget>>`, `BuiltContext` has `memoryContext?: string` (what changes every turn, sent with the input) and `partitions` (tokens per partition), and `DroppedContext` has `blocks: DroppedBlock[]`.
+`ContextBuilderConfig` takes `partitions?: Partial<Record<ContextPartition, ContextPartitionBudget>>`, merged over the defaults (`system`, `pinned`, `index`, `summaries`, `brief` and `final` required, `facts` 15%, `recall` 35%, `recent` the rest, shares of the partitions that are not required adding up to 1 at most), `BuiltContext` has `memoryContext?: string` (what changes every turn, sent with the input) and `partitions` (tokens per partition), and `DroppedContext` has `blocks: DroppedBlock[]`.
 
 ## Errors
 
