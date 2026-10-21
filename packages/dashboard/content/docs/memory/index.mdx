@@ -384,7 +384,7 @@ const builder = new ContextBuilder(
 
 The system prompt is always sent whole. A system prompt larger than `maxTokens - reserveTokens` leaves no room for history, and `warnings` says so.
 
-A block that a more lasting partition already says in full is left out as a duplicate: a fact the system prompt or a pinned text states, a search result that repeats a fact. A block counts as a duplicate only when a kept block holds all of it, word for word: with case and punctuation ignored, its text is the same as a kept text or, at 24 characters or more, appears inside one on word boundaries. A block that only overlaps a kept one stays. History entries and the graph context are not compared.
+A block that a more lasting partition already says in full is left out as a duplicate: a fact the system prompt or a pinned text states, a search result that repeats a fact. A block counts as a duplicate only when a kept block holds all of it, word for word: with case and punctuation between words ignored (signs such as a minus, a currency or a percent count), its text is the same as a kept text or, at 24 characters or more, appears inside one on word boundaries. A block that only overlaps a kept one stays. History entries and the graph context are not compared. Once every partition is filled, room still left goes back to the partitions that had to leave blocks out, in fill order.
 
 ### Message Order and Prompt Caching
 
