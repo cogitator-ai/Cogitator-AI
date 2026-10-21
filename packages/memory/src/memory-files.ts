@@ -29,6 +29,8 @@ const MAX_PATH_CHARS = 512;
 const MAX_NAME_CHARS = 255;
 /** Bytes a memory file holds at most */
 export const MAX_FILE_BYTES = 1_048_576;
+/** Bytes one change keeps at most, its files together, such as a renamed directory */
+export const MAX_CHANGE_BYTES = 8_388_608;
 /** Entries a directory view lists at most */
 const MAX_LISTED = 500;
 
@@ -703,6 +705,15 @@ export class MemoryFiles {
             write.from !== undefined ? fronts.get(write.from) : undefined,
           ]),
         }));
+        const bytes = writes.reduce(
+          (sum, write) => sum + (write.content === null ? 0 : Buffer.byteLength(write.content)),
+          0
+        );
+        if (bytes > MAX_CHANGE_BYTES) {
+          throw new MemoryFileError(
+            `The change would keep more than ${MAX_CHANGE_BYTES} bytes at once. Move fewer files at a time.`
+          );
+        }
         const sequences = this.nextSequences(snapshot, writes);
         const conflict = await this.write(access, writes, current, sequences);
         if (!conflict) return;
@@ -716,17 +727,22 @@ export class MemoryFiles {
   }
 
   /**
-   * Where a change of a path goes: the narrowest of the access's scope and the scopes of the
-   * versions the run sees in front of it (a deletion too) and, for a moved file, of its source,
-   * so the change stands in front in its turn and a moved file is never shared wider
+   * Where a change of a path goes: the access's scope with every limit of the versions the run
+   * sees in front of it (a deletion too) and, for a moved file, of its source, so the change
+   * stands in front in its turn and a file is never shared wider than it was. A run sees only
+   * versions whose limits it meets, so the limits never contradict each other.
    */
   private scopeFor(
     access: MemoryFileAccess,
     fronts: readonly (MemoryFileVersion | undefined)[]
   ): MemoryItemScope {
-    let scope = access.scope;
+    const scope: MemoryItemScope = { ...access.scope };
     for (const front of fronts) {
-      if (front && narrowness(front) > narrowness({ scope })) scope = front.scope;
+      if (!front) continue;
+      for (const field of SCOPE_FIELDS) {
+        const value = front.scope[field];
+        if (value !== undefined && scope[field] === undefined) scope[field] = value;
+      }
     }
     return scope;
   }

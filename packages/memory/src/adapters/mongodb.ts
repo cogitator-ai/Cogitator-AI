@@ -223,7 +223,7 @@ function itemDoc(item: MemoryItem): Omit<ItemDoc, '_id'> {
  */
 interface FileBatchDoc {
   _id: string;
-  agentId: string;
+  agentIds: string[];
   ids: string[];
   paths: string[];
   versions: MemoryFileVersion[];
@@ -505,7 +505,8 @@ export class MongoDBAdapter
       const entities = db.collection<EntityDoc>(`${this.prefix}entities`);
       await entities.createIndex({ agentId: 1, names: 1 });
       const fileBatches = db.collection<FileBatchDoc>(`${this.prefix}file_batches`);
-      await fileBatches.createIndex({ agentId: 1, paths: 1 });
+      await fileBatches.createIndex({ agentIds: 1 });
+      await fileBatches.createIndex({ paths: 1 });
       await fileBatches.createIndex({ ids: 1 });
 
       this.client = client;
@@ -1374,11 +1375,17 @@ export class MongoDBAdapter
       }
       await this.fileBatches.insertOne({
         _id: batchId,
-        agentId: versions[0]!.scope.agentId,
+        agentIds: [...new Set(versions.map((version) => version.scope.agentId))],
         ids: versions.map((version) => version.id),
         paths: [...new Set(versions.map((version) => version.path))],
         versions,
       });
+      const kept = await this.filePlaces.countDocuments({ _id: { $in: places }, batchId });
+      if (kept !== places.length) {
+        await this.fileBatches.deleteOne({ _id: batchId });
+        await this.filePlaces.deleteMany({ _id: { $in: places }, batchId });
+        return this.failure(MEMORY_FILE_CONFLICT);
+      }
       return this.success(versions.map((version) => structuredClone(version)));
     } catch (err) {
       await this.filePlaces
@@ -1394,7 +1401,7 @@ export class MongoDBAdapter
     if (!this.db) return this.failure('Not connected');
     try {
       const query: Filter<FileBatchDoc> = {
-        agentId: { $eq: filter.agentId },
+        agentIds: filter.agentId,
         ...(filter.ids && { ids: { $in: filter.ids } }),
         ...(filter.paths && { paths: { $in: filter.paths } }),
         ...(filter.prefix !== undefined &&

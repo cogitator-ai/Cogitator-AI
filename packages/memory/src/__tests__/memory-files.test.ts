@@ -241,6 +241,33 @@ describe('MemoryFiles', () => {
     ]);
   });
 
+  it("keeps a user's file private when a thread-scoped run moves it in a shared thread", async () => {
+    const ana: MemoryFileAccess = { scope: { agentId: 'a', userId: 'ana' } };
+    await files.create(ana, '/memories/private.md', 'Ana only');
+    const threadRun: MemoryFileAccess = {
+      scope: { agentId: 'a', threadId: 'shared' },
+      visibleTo: { agentId: 'a', userId: 'ana', threadId: 'shared' },
+    };
+
+    await files.rename(threadRun, '/memories/private.md', '/memories/moved.md');
+
+    const bo: MemoryFileAccess = {
+      scope: { agentId: 'a', userId: 'bo' },
+      visibleTo: { agentId: 'a', userId: 'bo', threadId: 'shared' },
+    };
+    expect(await files.read(bo, '/memories/moved.md')).toBeUndefined();
+    expect((await files.read(threadRun, '/memories/moved.md'))?.content).toBe('Ana only');
+  });
+
+  it('refuses a change too large to keep at once', async () => {
+    const big = 'x'.repeat(1_000_000);
+    for (let at = 0; at < 9; at++) await files.create(access, `/memories/dir/${at}.md`, big);
+
+    await expect(files.rename(access, '/memories/dir', '/memories/moved')).rejects.toThrow(
+      'Move fewer files at a time'
+    );
+  });
+
   it('keeps files and directories apart, and text a store cannot hold out', async () => {
     await files.create(access, '/memories/a', 'a file');
     await expect(files.create(access, '/memories/a/b', 'x')).rejects.toThrow(
