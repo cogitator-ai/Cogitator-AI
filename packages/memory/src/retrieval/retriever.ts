@@ -34,7 +34,15 @@ const PPR_DAMPING = 0.5;
 const PPR_ITERATIONS = 20;
 
 type Channel =
-  'vector' | 'keyword' | 'time' | 'entity' | 'items' | 'itemEntity' | 'itemTime' | 'graph';
+  | 'vector'
+  | 'keyword'
+  | 'time'
+  | 'entity'
+  | 'items'
+  | 'itemEntity'
+  | 'itemTime'
+  | 'graph'
+  | 'evidence';
 
 /** How much each channel counts for each kind of question */
 const WEIGHTS: Record<QueryType, Record<Channel, number>> = {
@@ -47,6 +55,7 @@ const WEIGHTS: Record<QueryType, Record<Channel, number>> = {
     itemEntity: 0.8,
     itemTime: 0.5,
     graph: 0.6,
+    evidence: 1,
   },
   temporal: {
     vector: 1,
@@ -57,6 +66,7 @@ const WEIGHTS: Record<QueryType, Record<Channel, number>> = {
     itemEntity: 0.8,
     itemTime: 2,
     graph: 0.5,
+    evidence: 1,
   },
   update: {
     vector: 0.8,
@@ -67,6 +77,7 @@ const WEIGHTS: Record<QueryType, Record<Channel, number>> = {
     itemEntity: 1.2,
     itemTime: 0.5,
     graph: 0.6,
+    evidence: 1,
   },
   aggregate: {
     vector: 1,
@@ -77,6 +88,7 @@ const WEIGHTS: Record<QueryType, Record<Channel, number>> = {
     itemEntity: 1.2,
     itemTime: 0.8,
     graph: 0.8,
+    evidence: 1,
   },
   preference: {
     vector: 1,
@@ -87,6 +99,7 @@ const WEIGHTS: Record<QueryType, Record<Channel, number>> = {
     itemEntity: 1,
     itemTime: 0.3,
     graph: 0.6,
+    evidence: 1,
   },
 };
 
@@ -144,7 +157,8 @@ interface ThreadIndex {
  * entities of memory it names. Memory items are found by their words, by those entities, by the
  * time they are about, and by a personalized PageRank walk over the graph of items and the
  * entities they name, seeded with the entities of the turn and the best items of the other
- * channels. The channels are fused by reciprocal rank with weights for the kind of question
+ * channels, and turns the best items stand on are found through their evidence. The channels
+ * are fused by reciprocal rank with weights for the kind of question
  * (`analyzeQuery`), reranked by how many of the turn's words a hit holds, biased toward turns
  * said lately, and laid out for diversity (MMR). A turn that is small talk is not searched.
  */
@@ -188,6 +202,7 @@ export class MemoryRetriever {
       ids: await this.graphHits(request, items, entities, seeds),
       weight: 0,
     });
+    channels.push({ channel: 'evidence', ids: evidenceHits(turns, items, seeds), weight: 0 });
     const weights = WEIGHTS[analysis.type];
     for (const channel of channels) channel.weight = weights[channel.channel];
 
@@ -469,6 +484,27 @@ export class MemoryRetriever {
       .slice(0, CHANNEL_HITS)
       .map(([id]) => id);
   }
+}
+
+/**
+ * Turns the best items the item channels found stand on: what memory extracted from a turn makes
+ * the turn findable by what it meant, not only by its words
+ */
+function evidenceHits(
+  turns: readonly MemoryEntry[],
+  items: readonly MemoryItem[],
+  seeds: ReadonlyMap<string, number>
+): string[] {
+  const open = new Set(turns.map((entry) => entry.id));
+  const byId = new Map(items.map((item) => [item.id, item]));
+  const ids = new Set<string>();
+  for (const [id] of [...seeds.entries()].sort((a, b) => b[1] - a[1])) {
+    for (const piece of byId.get(id.slice(2))?.evidence ?? []) {
+      if (piece.entryId && open.has(piece.entryId)) ids.add(`e:${piece.entryId}`);
+    }
+    if (ids.size >= CHANNEL_HITS) break;
+  }
+  return [...ids].slice(0, CHANNEL_HITS);
 }
 
 function textOf(

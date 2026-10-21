@@ -154,6 +154,37 @@ describe('MemoryRetriever', () => {
     expect(vectorHits).toEqual(['e2']);
   });
 
+  it('finds a turn through the evidence of an item about it', async () => {
+    const adapter = new InMemoryAdapter({ provider: 'memory' });
+    const items = new MemoryItems({ adapter });
+    const scope = { agentId: 'a', userId: 'u1' };
+    await items.write([
+      {
+        kind: 'fact',
+        content: 'The user owns a golden retriever',
+        trust: 'user',
+        confidence: 0.9,
+        scope,
+        evidence: [{ entryId: 'e0', quote: 'a dog named Rex' }],
+        verified: true,
+        saidAt: at(1),
+        sessionAt: at(1),
+      },
+    ]);
+
+    const retrieval = await new MemoryRetriever().retrieve({
+      input: 'What breed is my retriever?',
+      anchor,
+      history,
+      items,
+      itemAdapter: adapter,
+      scope,
+    });
+
+    const turn = retrieval.hits.find((hit) => hit.kind === 'entry' && hit.hit.entry.id === 'e0');
+    expect(turn?.kind === 'entry' && turn.hit.channels).toContain('evidence');
+  });
+
   it('skips small talk', async () => {
     const retrieval = await new MemoryRetriever().retrieve({ input: 'thanks!', anchor, history });
     expect(retrieval.hits).toEqual([]);
