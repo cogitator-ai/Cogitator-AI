@@ -187,6 +187,35 @@ describe('compacted history', () => {
 });
 
 describe('compacted threads', () => {
+  it('keeps what was said while a summary was written, read in a window that misses its start', async () => {
+    const adapter = new InMemoryAdapter({ provider: 'memory' });
+    await seed(adapter, 't1', ['q1', 'a1']);
+    const service = new CompactionService({
+      adapter,
+      summarize: async () => {
+        for (const content of ['c1', 'c2', 'c3']) {
+          await adapter.addEntry({
+            threadId: 't1',
+            message: { role: 'user', content },
+            tokenCount: 1,
+          });
+        }
+        return 'sum';
+      },
+    });
+    await service.compact('t1', { strategy: 'summary', threshold: 0, keepRecent: 0 });
+
+    const window = await adapter.getPath({ threadId: 't1', types: HISTORY_ENTRY_TYPES, limit: 4 });
+    if (!window.success) throw new Error(window.error);
+
+    expect(compactedHistory(window.data).map((e) => e.message.content)).toEqual([
+      '[Conversation summary]\nsum',
+      'c1',
+      'c2',
+      'c3',
+    ]);
+  });
+
   it('keeps what was said while the summary was written when it keeps nothing else', async () => {
     const adapter = new InMemoryAdapter({ provider: 'memory' });
     await seed(adapter, 't1', ['q1', 'a1']);

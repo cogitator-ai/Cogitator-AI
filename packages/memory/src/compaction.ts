@@ -71,14 +71,9 @@ export function compactedHistory(path: readonly MemoryEntry[]): MemoryEntry[] {
     id === undefined ? -1 : path.findIndex((entry) => entry.id === id);
   const kept = indexOf(compaction.firstKeptEntryId ?? undefined);
   const lastLeftOut = indexOf(compaction.lastCompactedEntryId);
-  const from =
-    kept !== -1
-      ? kept
-      : lastLeftOut !== -1
-        ? lastLeftOut + 1
-        : compaction.firstKeptEntryId === null
-          ? at + 1
-          : 0;
+  const anchored =
+    compaction.firstKeptEntryId !== null || compaction.lastCompactedEntryId !== undefined;
+  const from = kept !== -1 ? kept : lastLeftOut !== -1 ? lastLeftOut + 1 : anchored ? 0 : at + 1;
   const rest = conversation(path.slice(from));
   return compaction.summarized ? [latest, ...rest] : rest;
 }
