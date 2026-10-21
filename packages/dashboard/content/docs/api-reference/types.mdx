@@ -229,6 +229,7 @@ interface RunMiddleware<TDeps = unknown> {
 interface RunEndEvent {
   readonly result: RunResult;
   readonly model: string; // the model the run ended on, as provider/model
+  readonly memoryAgentId: string; // the id the agent's memory items are kept under: its configured id, else its name
 }
 
 interface ModelCallRequest {
@@ -957,6 +958,8 @@ interface MemoryItemFilter {
   kinds?: MemoryItemKind[];
   statuses?: MemoryItemStatus[];
   includeExpired?: boolean; // an item whose expiredAt is still to come is found either way
+  visibleTo?: MemoryItemScope; // items this scope sees: each of userId, projectId, threadId absent or the same (agentId not read)
+  scope?: MemoryItemScope; // items of exactly this scope (agentId not read)
 }
 
 interface MemoryEntityFilter {

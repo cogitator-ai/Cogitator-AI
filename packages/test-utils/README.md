@@ -454,7 +454,7 @@ for (const c of memoryAdapterConformanceCases({
 }
 ```
 
-Each case uses threads, agents or embeddings of its own, so one database can serve them all. The embedding suite also takes `dimensions`. The memory item suite checks that items and entities read back field for field (dates as `Date`s, a missing field absent, never `null`), replace by id, `findItems` filters and order (oldest recorded first), items let go left out unless `includeExpired` while one let go later is still found, entities found by any normalized name, deletes and copies.
+Each case uses threads, agents or embeddings of its own, so one database can serve them all. The embedding suite also takes `dimensions`. The memory item suite checks that items and entities read back field for field (dates as `Date`s, a missing field absent, never `null`), replace by id, `findItems` filters, scope filters (`visibleTo`, `scope`) and order (oldest recorded first), items let go left out unless `includeExpired` while one let go later is still found, entities found by any normalized name, deletes and copies.
 
 ---
 

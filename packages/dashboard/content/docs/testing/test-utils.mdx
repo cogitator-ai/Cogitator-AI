@@ -231,7 +231,7 @@ describe('MyAdapter conformance', () => {
 });
 ```
 
-Each case touches only threads, agents or embeddings of its own, so one database can serve them all. The memory item suite takes the same `create` and `release` and checks that an item reads back field for field (dates as `Date`s, a missing field absent, never `null`), that `findItems` filters, orders and leaves out items let go as the built-in stores do, and the entity index by name. `skip` leaves a case out with a reason. The embedding suite also takes the `dimensions` the store was made for.
+Each case touches only threads, agents or embeddings of its own, so one database can serve them all. The memory item suite takes the same `create` and `release` and checks that an item reads back field for field (dates as `Date`s, a missing field absent, never `null`), that `findItems` filters (by scope too, `visibleTo` and `scope`), orders and leaves out items let go as the built-in stores do, and the entity index by name. `skip` leaves a case out with a reason. The embedding suite also takes the `dimensions` the store was made for.
 
 ## Fixtures
 

@@ -136,7 +136,7 @@ await postgres.addFact({
 });
 ```
 
-[Memory items](/docs/memory#memory-items) name their user in `scope.userId` instead: an item of one user never reaches another, and an item without a user is seen by everyone the agent serves. With [`memory.extraction`](/docs/memory#extraction-after-a-run) the items a run's conversation establishes belong to the run's `userId` by default, and those of a run without a user to its thread.
+[Memory items](/docs/memory#memory-items) name their user in `scope.userId` instead: an item of one user never reaches another, and an item without a user is seen by everyone the agent serves. With [`memory.extraction`](/docs/memory#extraction-after-a-run) the items a run's conversation establishes belong to the run's own `userId` by default, never to the thread's owner, and those of a run without a user to its thread. User messages a run with a user saves carry `metadata.userId`, so in a shared thread another user's words count as a claim, not as the user's.
 
 The runtime builds each run's context for its `userId`. The filter runs inside the vector search (`filter: { userId }`) on the in-memory, Postgres and Qdrant adapters, so other users' memories never crowd out the user's own. Configure what goes into the context with `memory.contextBuilder`:
 

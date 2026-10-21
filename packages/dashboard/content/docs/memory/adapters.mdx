@@ -49,7 +49,7 @@ A store of memory items only stores, `MemoryItems` keeps every rule on top of it
 
 - `putItem` and `putEntity` replace the item or entity with the same id, and an item reads back field for field, its dates as `Date`s, a field it does not have absent, never `null`.
 - `getItem` gives `null` for an item that does not exist.
-- `findItems` keeps the items of the filter's agent that meet every condition given (`ids`, `slots`, `entityIds`, `kinds`, `statuses`), oldest recorded first, then by id. It leaves out an item memory let go (`expiredAt` not after now) unless `includeExpired`, and finds one whose `expiredAt` is still to come.
+- `findItems` keeps the items of the filter's agent that meet every condition given (`ids`, `slots`, `entityIds`, `kinds`, `statuses`), oldest recorded first, then by id. `visibleTo` keeps the items a scope sees (each of the item's user, project and thread absent or the same, an item with a user left out for a scope without one), and `scope` the items of exactly that scope, so a run of one user never reads every user's items. It leaves out an item memory let go (`expiredAt` not after now) unless `includeExpired`, and finds one whose `expiredAt` is still to come.
 - `findEntities` finds entities by id or by any of their names and aliases, normalized.
 - `deleteItems` and `deleteEntities` delete for good, and returned items and entities are copies.
 
@@ -180,7 +180,7 @@ memory.setVectorDimensions(1536); // before connect(); default 768
 unwrap(await memory.connect());
 ```
 
-On `connect()` the adapter creates the schema, the `threads`, `entries`, `memory_items`, `memory_entities` and `embeddings` tables, the pgvector extension, an HNSW cosine index on the vectors and a generated English `tsvector` column for keyword search. If an index cannot be created, it logs a warning and carries on.
+On `connect()` the adapter creates the schema, the `threads`, `entries`, `memory_items` (its scope in `user_id`, `project_id` and `thread_id` columns), `memory_entities` and `embeddings` tables, the pgvector extension, an HNSW cosine index on the vectors and a generated English `tsvector` column for keyword search. If an index cannot be created, it logs a warning and carries on.
 
 pgvector is only needed for embeddings. On a database without it (a managed Postgres without the extension, or a role not allowed to run `CREATE EXTENSION`), `connect()` still succeeds and threads, entries and facts work: the `embeddings` table is not created, a warning names the reason, and `addEmbedding`, `search`, `keywordSearch`, `deleteEmbedding` and `deleteBySource` return a failed result with it. `memory.vectorStatus()` returns `{ available: true, dimensions }` or `{ available: false, reason }`, and the `Cogitator` runtime does not use such a store for semantic context.
 
@@ -295,7 +295,7 @@ const memory = new SQLiteAdapter({ provider: 'sqlite', path: ':memory:' });
 | `path`    | string  | —       | Path to `.db` file, or `:memory:`                 |
 | `walMode` | boolean | true    | Enable WAL journal mode (disabled for `:memory:`) |
 
-Memory items live in the same file, in the `memory_items`, `memory_entities` and `memory_entity_names` tables. `connect()` returns a failure (rather than throwing) when `better-sqlite3` is not installed. For a knowledge graph in the same kind of file, see [`SQLiteGraphAdapter`](/docs/memory/knowledge-graphs#graph-adapters).
+Memory items live in the same file, in the `memory_items` (with `user_id`, `project_id` and `thread_id` columns of their scope, added and filled on `connect()` for a table made before them), `memory_entities` and `memory_entity_names` tables. `connect()` returns a failure (rather than throwing) when `better-sqlite3` is not installed. For a knowledge graph in the same kind of file, see [`SQLiteGraphAdapter`](/docs/memory/knowledge-graphs#graph-adapters).
 
 **Requires:** `pnpm add better-sqlite3`
 
@@ -303,7 +303,7 @@ Memory items live in the same file, in the `memory_items`, `memory_entities` and
 
 ## MongoDB
 
-Document-oriented memory storage. Threads and entries are stored in the `<prefix>threads` and `<prefix>entries` collections, indexed on `agentId` and `(threadId, createdAt)`, and memory items and their entities in `<prefix>items` and `<prefix>entities`, indexed on the fields they are found by.
+Document-oriented memory storage. Threads and entries are stored in the `<prefix>threads` and `<prefix>entries` collections, indexed on `agentId` and `(threadId, createdAt)`, and memory items and their entities in `<prefix>items` (the fields of their scope at the top of the document) and `<prefix>entities`, indexed on the fields they are found by.
 
 ```typescript
 import { MongoDBAdapter, unwrap } from '@cogitator-ai/memory';
