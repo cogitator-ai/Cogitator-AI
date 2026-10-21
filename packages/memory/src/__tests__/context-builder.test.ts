@@ -318,6 +318,89 @@ describe('ContextBuilder', () => {
     });
   });
 
+  describe('hybrid recall', () => {
+    it('keeps the tail as history and brings older turns and items as memory of the turn', async () => {
+      const day = (n: number) => new Date(Date.UTC(2026, 2, n, 9));
+      const say = async (role: 'user' | 'assistant', content: string, n: number) =>
+        adapter.addEntry({
+          threadId,
+          message: { role, content },
+          tokenCount: 1,
+          createdAt: day(n),
+        });
+      await say('user', 'I adopted a dog named Rex from the shelter', 1);
+      await say('assistant', 'Congratulations on Rex!', 1);
+      for (let n = 0; n < 40; n++) {
+        await say('user', `Let us plan the garden bed number ${n} together`, 2);
+        await say('assistant', `Bed ${n} gets tomatoes and basil this year`, 2);
+      }
+      const items = new MemoryItems({ adapter });
+      const base = {
+        trust: 'user' as const,
+        confidence: 0.9,
+        evidence: [],
+        verified: true,
+        saidAt: day(1),
+        scope: { agentId: 'agent1', userId: 'u1' },
+      };
+      await items.write([
+        {
+          ...base,
+          kind: 'fact',
+          content: 'Ana lived in Porto',
+          subject: 'Ana',
+          attribute: 'city',
+          value: 'Porto',
+          sessionAt: day(1),
+        },
+        {
+          ...base,
+          kind: 'fact',
+          content: 'Ana lives in Lisbon',
+          subject: 'Ana',
+          attribute: 'city',
+          value: 'Lisbon',
+          sessionAt: day(3),
+        },
+        { ...base, kind: 'event', content: 'Rex had his first vet visit', sessionAt: day(1) },
+      ]);
+      const builder = new ContextBuilder(
+        { maxTokens: 1200, strategy: 'hybrid', includeFacts: true },
+        { memoryAdapter: adapter, memoryItems: items }
+      );
+
+      const result = await builder.build({
+        threadId,
+        agentId: 'agent1',
+        userId: 'u1',
+        currentInput: 'What is my dog Rex like?',
+        asOf: day(10),
+      });
+
+      const history = result.messages.filter((m) => m.role !== 'system').slice(0, -1);
+      expect(history.some((m) => String(m.content).includes('Rex'))).toBe(false);
+      expect(result.memoryContext).toContain(
+        'Earlier in this conversation:\n[2026-03-01] user: I adopted a dog named Rex from the shelter\n[2026-03-01] assistant: Congratulations on Rex!'
+      );
+      expect(result.memoryContext?.match(/I adopted a dog named Rex/g)).toHaveLength(1);
+      expect(result.facts.map((fact) => fact.content)).toContain('Rex had his first vet visit');
+      expect(result.recalled?.items.map((item) => item.content) ?? []).not.toContain(
+        'Rex had his first vet visit'
+      );
+
+      const before = await builder.build({
+        threadId,
+        agentId: 'agent1',
+        userId: 'u1',
+        currentInput: 'Where did Ana live before Lisbon?',
+        asOf: day(10),
+      });
+      expect(before.memoryContext).toContain(
+        'From memory:\n- Ana lived in Porto (2026-03-01 to 2026-03-03)'
+      );
+    });
+  });
+
   describe('memory items under the runtime agent id', () => {
     it('reads facts kept for agent.id beside the memory id of the agent', async () => {
       const items = new MemoryItems({ adapter });

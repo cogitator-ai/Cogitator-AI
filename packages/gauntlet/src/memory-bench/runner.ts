@@ -581,6 +581,15 @@ async function closeSession(
   return { leafId: thread.data?.activeLeafId ?? null, compacted: watch.result !== undefined };
 }
 
+/** When the last turn of `conversation` was said, when its dataset dates its turns */
+function lastSaid(conversation: BenchConversation): Date | undefined {
+  let last: Date | undefined;
+  for (const turn of conversation.turns) {
+    if (turn.at && (!last || turn.at > last)) last = turn.at;
+  }
+  return last;
+}
+
 /** The figures of an answer that was never given. */
 const unanswered = {
   output: '',
@@ -662,9 +671,11 @@ export async function answerConversation(
       ...(turn > 1 && { turn }),
     };
     try {
+      const asOf = question.askedAt ?? lastSaid(conversation);
       const result = await cog.run(benchAgent(answerInstructions(conversation, question)), {
         input,
         threadId,
+        ...(asOf && { asOf }),
         ...(request.after === undefined
           ? { saveHistory: false }
           : { saveHistory: true, branch: { fromEntryId: request.after, activate: false } }),

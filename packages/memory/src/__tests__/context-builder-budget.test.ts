@@ -267,7 +267,7 @@ describe('ContextBuilder budget and failures', () => {
       await addMessages(600, (i) => `history entry ${i} with some words`);
       const embeddingService = fakeEmbeddings();
       const builder = new ContextBuilder(
-        { maxTokens: 100_000, strategy: 'hybrid' },
+        { maxTokens: 4000, strategy: 'hybrid' },
         { memoryAdapter: adapter, embeddingService }
       );
 

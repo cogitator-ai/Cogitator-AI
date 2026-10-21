@@ -26,6 +26,8 @@ export interface BenchQuestion {
   answer: string;
   /** "Today" when the question is asked, as the dataset writes it, for questions about time */
   askedOn?: string;
+  /** When the question is asked, when the dataset says, which memory reads the question at */
+  askedAt?: Date;
   scoring: BenchScoring;
   /** Texts of the turns that hold the answer, when the dataset marks them */
   evidence?: string[];

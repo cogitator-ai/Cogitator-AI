@@ -25,11 +25,13 @@ import type {
   EmbeddingService,
   MemoryResult,
 } from '@cogitator-ai/types';
-import { visibleIn, type MemoryItems } from './memory-items';
+import { isMemoryItemAdapter, visibleIn, type MemoryItems } from './memory-items';
+import { MemoryRetriever } from './retrieval/retriever';
 import type { GraphContextBuilder } from './knowledge-graph/graph-context-builder';
 import { readCompactedHistory } from './compaction';
 import {
   ContextAssembler,
+  DEFAULT_PARTITIONS,
   fitInOrder,
   type Assembly,
   type AssemblyBlock,
@@ -112,6 +114,37 @@ const SOURCE_OF_TRUST: Record<MemoryItemTrust, Fact['source']> = {
   tool: 'inferred',
   web: 'inferred',
 };
+
+/** The heading of the earlier turns a search of memory brought */
+const RECALLED_TURNS_HEADER = 'Earlier in this conversation:';
+/** The heading of the memory items a search of memory brought */
+const RECALLED_ITEMS_HEADER = 'From memory:';
+
+/** `YYYY-MM-DD` of `date`, in UTC */
+function dayOf(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+/** Earlier turns as the context shows them: each on its line with its date and who said it */
+function turnLines(turn: readonly MemoryEntry[]): string {
+  return turn
+    .map((entry) => {
+      const text = typeof entry.message.content === 'string' ? entry.message.content : '';
+      return `[${dayOf(entry.createdAt)}] ${entry.message.role}: ${text}`;
+    })
+    .join('\n');
+}
+
+/** A memory item as the context shows it, with when it held when it no longer does */
+function itemLine(item: MemoryItem): string {
+  const held =
+    item.validTo !== undefined
+      ? ` (${item.validFrom ? `${dayOf(item.validFrom)} to ` : 'until '}${dayOf(item.validTo)})`
+      : item.about?.start
+        ? ` (${item.about.text ?? dayOf(item.about.start)})`
+        : '';
+  return `- ${item.content}${held}`;
+}
 
 /** A line of the `Known facts` block, with the value a fact replaced when it replaced one */
 function factLine(fact: Fact): string {
@@ -222,6 +255,8 @@ type Piece =
   | { kind: 'input' }
   | { kind: 'entry'; entry: MemoryEntry }
   | { kind: 'fact'; fact: Fact }
+  | { kind: 'retrieved'; entries: MemoryEntry[] }
+  | { kind: 'recalled'; item: MemoryItem }
   | { kind: 'semantic'; result: Embedding & { score: number } }
   | { kind: 'graph'; context: GraphContext };
 
@@ -347,6 +382,11 @@ export interface BuildContextOptions {
   index?: string;
   /** Notes prepared for this turn (the `brief` partition) */
   brief?: string;
+  /**
+   * The moment the turn is read at, the clock by default: the date memory searches resolve the
+   * time a turn names from, and the moment memory items are read as of
+   */
+  asOf?: Date;
 }
 
 type ResolvedConfig = Required<Omit<ContextBuilderConfig, 'maxTokens' | 'reserveTokens'>> &
@@ -370,6 +410,7 @@ export class ContextBuilder {
   private deps: ContextBuilderDeps;
   private readonly entryVectors = new Map<string, Float32Array>();
   private readonly assembler: ContextAssembler;
+  private readonly retriever = new MemoryRetriever();
 
   constructor(config: ContextBuilderConfig, deps: ContextBuilderDeps) {
     if (config.maxTokens !== undefined) validBudget(config.maxTokens, 'maxTokens');
@@ -467,10 +508,23 @@ export class ContextBuilder {
       droppedNodes: [],
       droppedTokens: 0,
     };
-    if (semantic.length > 0 || graph) {
+    const scope: ScoringScope = { mark: this.deps.messageIndex?.mark(), threadSize: 0 };
+    const entries = (await this.attempt('history', errors, () => this.readHistory(options))) ?? [];
+    scope.threadSize = entries.length;
+    const summaries = entries.filter((entry) => entry.type === 'compaction');
+    const history = entries.filter((entry) => entry.type !== 'compaction');
+    const recalled =
+      this.config.strategy === 'hybrid' && options.currentInput
+        ? ((await this.attempt('relevance', errors, () =>
+            this.recall(history, options, availableTokens, facts, errors, scope)
+          )) ?? [])
+        : [];
+
+    if (semantic.length > 0 || graph || recalled.length > 0) {
       candidates.push({
         partition: 'recall',
         blocks: [
+          ...recalled,
           ...semantic.map((result) => ({
             value: { kind: 'semantic' as const, result },
             tokens: countTokens(`- ${result.content}`),
@@ -486,11 +540,19 @@ export class ContextBuilder {
     }
 
     const turnFrame = [
-      ...(options.brief?.trim() || facts.length > 0 || semantic.length > 0 || graph
+      ...(options.brief?.trim() ||
+      facts.length > 0 ||
+      semantic.length > 0 ||
+      graph ||
+      recalled.length > 0
         ? [[TURN_CONTEXT_OPEN, TURN_CONTEXT_HEADER, TURN_CONTEXT_CLOSE].join('\n\n')]
         : []),
       ...(facts.length > 0 ? ['Known facts:'] : []),
       ...(semantic.length > 0 ? ['Relevant context:'] : []),
+      ...(recalled.some((block) => block.value.kind === 'retrieved')
+        ? [RECALLED_TURNS_HEADER]
+        : []),
+      ...(recalled.some((block) => block.value.kind === 'recalled') ? [RECALLED_ITEMS_HEADER] : []),
     ].join('\n\n');
     if (turnFrame) {
       const final = candidates.findIndex((candidate) => candidate.partition === 'final');
@@ -503,11 +565,6 @@ export class ContextBuilder {
         candidates[final] = { partition: 'final', blocks: [...candidates[final]!.blocks, frame] };
     }
 
-    const scope: ScoringScope = { mark: this.deps.messageIndex?.mark(), threadSize: 0 };
-    const entries = (await this.attempt('history', errors, () => this.readHistory(options))) ?? [];
-    scope.threadSize = entries.length;
-    const summaries = entries.filter((entry) => entry.type === 'compaction');
-    const history = entries.filter((entry) => entry.type !== 'compaction');
     if (summaries.length > 0) {
       candidates.push({ partition: 'summaries', blocks: summaries.map(entryBlock) });
     }
@@ -598,6 +655,16 @@ export class ContextBuilder {
     const graphContext = kept('recall')
       .map((block) => block.value)
       .find((value) => value.kind === 'graph')?.context;
+    const inHistory = new Set(historyEntries.map((entry) => entry.id));
+    const recalledTurns = kept('recall').flatMap((block) =>
+      block.value.kind === 'retrieved'
+        ? [block.value.entries.filter((entry) => !inHistory.has(entry.id))]
+        : []
+    );
+    const shownTurns = recalledTurns.filter((turn) => turn.length > 0);
+    const recalledItems = kept('recall').flatMap((block) =>
+      block.value.kind === 'recalled' ? [block.value.item] : []
+    );
     const turnBlocks = [
       ...textsOf('brief'),
       ...(facts.length > 0 ? [`Known facts:\n${facts.map(factLine).join('\n')}`] : []),
@@ -605,6 +672,12 @@ export class ContextBuilder {
         ? [`Relevant context:\n${semanticResults.map((r) => `- ${r.content}`).join('\n')}`]
         : []),
       ...(graphContext?.formattedContext ? [graphContext.formattedContext] : []),
+      ...(shownTurns.length > 0
+        ? [`${RECALLED_TURNS_HEADER}\n${shownTurns.map(turnLines).join('\n\n')}`]
+        : []),
+      ...(recalledItems.length > 0
+        ? [`${RECALLED_ITEMS_HEADER}\n${recalledItems.map(itemLine).join('\n')}`]
+        : []),
     ];
     const memoryContext = formatTurnContext(turnBlocks);
     if (memoryContext) messages.push({ role: 'user', content: memoryContext });
@@ -615,7 +688,10 @@ export class ContextBuilder {
           .filter((block) => block.partition === partition)
           .flatMap((block) => (block.sourceId === undefined ? [] : [block.sourceId]))
       );
-    const keptEntries = new Set(historyEntries.map((entry) => entry.id));
+    const keptEntries = new Set([
+      ...historyEntries.map((entry) => entry.id),
+      ...shownTurns.flat().map((entry) => entry.id),
+    ]);
     const droppedEntries = new Set(
       [...droppedIds('summaries'), ...droppedIds('recent')].filter((id) => !keptEntries.has(id))
     );
@@ -636,6 +712,9 @@ export class ContextBuilder {
       partitions: assembly.tokens,
       facts,
       semanticResults,
+      ...((shownTurns.length > 0 || recalledItems.length > 0) && {
+        recalled: { entries: shownTurns.flat(), items: recalledItems },
+      }),
       graphContext,
       tokenCount: assembly.used - (assembly.tokens.final ?? 0),
       truncated: dropped.entries.length > 0,
@@ -790,6 +869,78 @@ export class ContextBuilder {
   }
 
   /**
+   * The blocks a search of memory brings for the turn (the `hybrid` strategy): the earlier turns
+   * of `history` and the memory items {@link MemoryRetriever} finds, best first, each turn with
+   * the turns next to it. The newest turns the context will hold in `recent` anyway (about what
+   * the budget leaves after the required partitions, `facts` and `recall`) are not searched, and
+   * neither are the items `facts` holds.
+   */
+  private async recall(
+    history: MemoryEntry[],
+    options: BuildContextOptions,
+    availableTokens: number,
+    facts: readonly Fact[],
+    errors: ContextBuildError[],
+    scope: ScoringScope
+  ): Promise<AssemblyBlock<Piece>[]> {
+    const input = options.currentInput;
+    if (!input) return [];
+    const shares = { ...DEFAULT_PARTITIONS, ...this.config.partitions };
+    const tail = Math.max(
+      0,
+      Math.floor(availableTokens * (1 - (shares.facts.share ?? 0) - (shares.recall.share ?? 0))) -
+        countTokens(input)
+    );
+    const held = new Set(this.selectRecentEntries(history, tail).map((entry) => entry.id));
+    const scored = this.deps.embeddingService
+      ? await this.scoreEntries(
+          history.filter((entry) => !held.has(entry.id)),
+          input,
+          0,
+          errors,
+          scope
+        )
+      : null;
+    const items = this.deps.memoryItems;
+    const memory = this.deps.memoryAdapter;
+    const retrieval = await this.retriever.retrieve({
+      input,
+      anchor: options.asOf ?? new Date(),
+      history,
+      held,
+      ...(scored && { cosines: new Map(scored.map(({ entry, score }) => [entry.id, score])) }),
+      ...(items &&
+        isMemoryItemAdapter(memory) && {
+          items,
+          itemAdapter: memory,
+          scope: {
+            agentId: options.memoryAgentId ?? options.agentId,
+            ...(options.userId !== undefined && { userId: options.userId }),
+            threadId: options.threadId,
+          },
+        }),
+    });
+    const inFacts = new Set(facts.map((fact) => fact.id));
+    const position = new Map(history.map((entry, at) => [entry.id, at]));
+    const covered = new Set<string>();
+    return retrieval.hits.flatMap((hit): AssemblyBlock<Piece>[] => {
+      if (hit.kind === 'item') {
+        if (inFacts.has(hit.hit.item.id)) return [];
+        const line = itemLine(hit.hit.item);
+        return [{ value: { kind: 'recalled', item: hit.hit.item }, tokens: countTokens(line) }];
+      }
+      const turn = [hit.hit.entry, ...hit.hit.neighbors]
+        .filter((entry) => !covered.has(entry.id))
+        .sort((a, b) => (position.get(a.id) ?? 0) - (position.get(b.id) ?? 0));
+      if (turn.length === 0) return [];
+      for (const entry of turn) covered.add(entry.id);
+      return [
+        { value: { kind: 'retrieved', entries: turn }, tokens: countTokens(turnLines(turn)) },
+      ];
+    });
+  }
+
+  /**
    * The history a context draws on: the active branch (or the one `leafId` names) of an adapter
    * with branches, else every entry of the thread
    */
@@ -827,7 +978,7 @@ export class ContextBuilder {
       case 'relevant':
         return this.selectRelevantEntries(entries, availableTokens, currentInput, errors, scope);
       case 'hybrid':
-        return this.selectHybridEntries(entries, availableTokens, currentInput, errors, scope);
+        return this.selectRecentEntries(entries, availableTokens);
       case 'recent':
       default:
         return this.selectRecentEntries(entries, availableTokens);
@@ -1028,49 +1179,6 @@ export class ContextBuilder {
       this.entryVectors.set(entryId, vector);
     }
     return vector;
-  }
-
-  private async selectHybridEntries(
-    entries: MemoryEntry[],
-    availableTokens: number,
-    currentInput: string | undefined,
-    errors: ContextBuildError[],
-    scope: ScoringScope
-  ): Promise<MemoryEntry[]> {
-    if (!currentInput || !this.deps.embeddingService || entries.length <= 10) {
-      return this.selectRecentEntries(entries, availableTokens);
-    }
-
-    const semanticBudget = Math.floor(availableTokens * 0.3);
-    const usedIds = new Set<string>();
-    let usedTokens = 0;
-
-    const olderEntries = entries
-      .slice(0, -10)
-      .filter((e) => typeof e.message.content !== 'string' || e.message.content.length > 20);
-    const scoredEntries =
-      (await this.scoreEntries(olderEntries, currentInput, 0.6, errors, scope)) ?? [];
-
-    for (const { entry } of scoredEntries) {
-      const tokens = countEntryTokens(entry);
-      if (usedTokens + tokens <= semanticBudget) {
-        usedIds.add(entry.id);
-        usedTokens += tokens;
-      }
-    }
-
-    const recentEntries = new Map(
-      this.selectRecentEntries(
-        entries.filter((e) => !usedIds.has(e.id)),
-        availableTokens - usedTokens
-      ).map((entry) => [entry.id, entry])
-    );
-
-    return entries.flatMap((entry) => {
-      const recent = recentEntries.get(entry.id);
-      if (recent) return [recent];
-      return usedIds.has(entry.id) ? [entry] : [];
-    });
   }
 
   private cosineSimilarity(a: ArrayLike<number>, b: ArrayLike<number>): number {

@@ -232,7 +232,7 @@ describe('ContextBuilder', () => {
     expect(context.messages.map((m) => m.content)).toEqual(['m0', 'm1', 'm2', 'm3']);
   });
 
-  it('returns hybrid selections in chronological order', async () => {
+  it('keeps the hybrid tail in order and brings the older turn it finds with the turn', async () => {
     const memoryAdapter = new InMemoryAdapter();
     await memoryAdapter.createThread('a1', {}, 't1');
     const contents = Array.from({ length: 14 }, (_, i) =>
@@ -258,11 +258,13 @@ describe('ContextBuilder', () => {
     );
 
     const context = await builder.build({ threadId: 't1', agentId: 'a1', currentInput: 'pets' });
-    const included = context.messages.map((m) => contents.indexOf(m.content as string));
+    const included = context.messages
+      .map((m) => contents.indexOf(m.content as string))
+      .filter((at) => at !== -1);
 
-    expect(included[0]).toBe(2);
     expect(included).toEqual([...included].sort((a, b) => a - b));
-    expect(included).toHaveLength(12);
+    expect(included).not.toContain(2);
+    expect(context.memoryContext).toContain('a long message about pets and animals');
   });
 });
 

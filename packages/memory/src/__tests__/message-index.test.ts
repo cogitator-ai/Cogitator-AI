@@ -418,7 +418,10 @@ describe('MessageIndex against races and other users', () => {
 
     const context = await builder.build({ threadId: 't', agentId: 'agent', currentInput: 'cat' });
 
-    expect(context.messages.map((m) => m.content)).toContain('my cat is called Whiskers the great');
+    expect(context.memoryContext).toContain('my cat is called Whiskers the great');
+    expect(context.recalled?.entries.map((entry) => entry.message.content)).toContain(
+      'my cat is called Whiskers the great'
+    );
   });
 
   it('writes a vector again when a build needs it after the store failed to keep it', async () => {

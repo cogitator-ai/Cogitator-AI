@@ -62,6 +62,9 @@ export function longMemEvalConversation(record: z.infer<typeof recordSchema>): B
         question: record.question,
         answer: String(record.answer),
         askedOn: record.question_date,
+        ...(parseLongMemEvalDate(record.question_date) && {
+          askedAt: parseLongMemEvalDate(record.question_date),
+        }),
         scoring: { kind: 'longmemeval', questionType: record.question_type, abstention },
         ...(evidence.length > 0 && { evidence }),
       },

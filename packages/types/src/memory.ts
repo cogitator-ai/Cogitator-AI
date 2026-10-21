@@ -5,7 +5,7 @@
 import type { Message, ToolCall, ToolResult } from './message';
 import type { GraphContext, GraphContextOptions, GraphNode } from './knowledge-graph';
 import type { MemoryCompactionConfig } from './session';
-import type { MemoryExtractionConfig } from './memory-items';
+import type { MemoryExtractionConfig, MemoryItem } from './memory-items';
 
 export type MemoryType = 'conversation' | 'fact' | 'embedding';
 
@@ -592,6 +592,11 @@ export interface BuiltContext {
   partitions: Partial<Record<ContextPartition, number>>;
   facts: Fact[];
   semanticResults: (Embedding & { score: number })[];
+  /**
+   * What a search of memory brought for the turn (the `hybrid` strategy): earlier turns of the
+   * thread, with the turns next to them, and memory items, best first
+   */
+  recalled?: { entries: MemoryEntry[]; items: MemoryItem[] };
   graphContext?: GraphContext;
   tokenCount: number;
   /** Whether history entries were left out, see `dropped.entries` */

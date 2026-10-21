@@ -188,6 +188,7 @@ export async function buildInitialMessages(
       systemPrompt: agent.instructions,
       currentInput: options.input,
       ...(options.brief !== undefined && { brief: options.brief }),
+      ...(options.asOf !== undefined && { asOf: options.asOf }),
       ...(contextBudget !== undefined && { maxTokens: contextBudget, reserveTokens: 0 }),
     });
     onContext?.(ctx);

@@ -324,6 +324,12 @@ export interface RunOptions<TDeps = unknown> {
    * unlike the system prompt, do not change the prefix later turns read from the prompt cache.
    */
   brief?: string;
+  /**
+   * The moment memory reads the turn at, the clock by default: what a turn's "yesterday" or
+   * "now" means when memory is searched, and which memory items hold. Set it to replay a
+   * conversation or evaluate one recorded at another time.
+   */
+  asOf?: Date;
 
   /** Execute tool calls in parallel. Default: false (sequential execution) */
   parallelToolCalls?: boolean;
