@@ -178,7 +178,11 @@ export function withoutToolCalls(entry: MemoryEntry): MemoryEntry {
  * overriding {@link getPath}.
  */
 export abstract class BranchingMemoryAdapter extends ChangeReportingMemoryAdapter {
-  /** Makes `leafId` the thread's active leaf, null for a thread with no entries */
+  /**
+   * Makes `leafId` the thread's active leaf, null for a thread with no entries. Fails, leaving the
+   * leaf as it was, when `leafId` is not an entry of the thread at the moment of the write: a
+   * checkout racing a delete must not leave the leaf on a deleted entry.
+   */
   protected abstract setActiveLeaf(
     threadId: string,
     leafId: string | null
@@ -197,7 +201,7 @@ export abstract class BranchingMemoryAdapter extends ChangeReportingMemoryAdapte
       const found = await this.getEntry(current);
       if (!found.success) return found;
       const entry = found.data;
-      if (!entry || entry.threadId !== options.threadId) break;
+      if (entry?.threadId !== options.threadId) break;
       if (entryTypeWanted(entry.type, options.types)) {
         wanted.push(options.includeToolCalls ? entry : withoutToolCalls(entry));
         if (options.limit && wanted.length >= options.limit) break;
@@ -209,9 +213,13 @@ export abstract class BranchingMemoryAdapter extends ChangeReportingMemoryAdapte
 
   /**
    * The entry a path read starts at, walking back: the parent of `before`, else the leaf asked
-   * for, else the active leaf. Null for an empty path.
+   * for, else the active leaf. Null for an empty path. The thread is read first in every case, so
+   * an adapter that chains entries of older versions on reading a thread does it before the walk.
    */
   protected async pathStart(options: PathQueryOptions): Promise<MemoryResult<string | null>> {
+    const thread = await this.getThread(options.threadId);
+    if (!thread.success) return thread;
+    if (!thread.data) return this.failure(`Thread not found: ${options.threadId}`);
     if (options.before !== undefined) {
       const before = await this.entryOf(options.threadId, options.before);
       if (!before.success) return before;
@@ -222,9 +230,6 @@ export abstract class BranchingMemoryAdapter extends ChangeReportingMemoryAdapte
       if (!leaf.success) return leaf;
       return this.success(leaf.data.id);
     }
-    const thread = await this.getThread(options.threadId);
-    if (!thread.success) return thread;
-    if (!thread.data) return this.failure(`Thread not found: ${options.threadId}`);
     return this.success(thread.data.activeLeafId ?? null);
   }
 
@@ -291,7 +296,7 @@ export abstract class BranchingMemoryAdapter extends ChangeReportingMemoryAdapte
   private async entryOf(threadId: string, entryId: string): Promise<MemoryResult<MemoryEntry>> {
     const found = await this.getEntry(entryId);
     if (!found.success) return found;
-    if (!found.data || found.data.threadId !== threadId) {
+    if (found.data?.threadId !== threadId) {
       return this.failure(`Entry ${entryId} is not in thread ${threadId}`);
     }
     return this.success(found.data);

@@ -206,7 +206,14 @@ export interface GraphAdapter {
     updates: Partial<
       Pick<
         GraphNode,
-        'name' | 'aliases' | 'description' | 'properties' | 'confidence' | 'metadata' | 'embedding'
+        | 'name'
+        | 'aliases'
+        | 'description'
+        | 'properties'
+        | 'confidence'
+        | 'metadata'
+        | 'embedding'
+        | 'evidence'
       >
     >
   ): Promise<MemoryResult<GraphNode>>;
@@ -226,7 +233,14 @@ export interface GraphAdapter {
     updates: Partial<
       Pick<
         GraphEdge,
-        'weight' | 'label' | 'properties' | 'confidence' | 'validFrom' | 'validUntil' | 'metadata'
+        | 'weight'
+        | 'label'
+        | 'properties'
+        | 'confidence'
+        | 'validFrom'
+        | 'validUntil'
+        | 'metadata'
+        | 'evidence'
       >
     >
   ): Promise<MemoryResult<GraphEdge>>;

@@ -13,9 +13,11 @@ import type {
   EntityType,
   RelationType,
   MemoryResult,
+  Evidence,
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 import { cosineSimilarity } from '../utils';
+import { mergeEvidence } from './evidence';
 
 export interface Neo4jGraphAdapterConfig {
   uri: string;
@@ -151,6 +153,7 @@ export class Neo4jGraphAdapter implements GraphAdapter {
           confidence: $confidence,
           source: $source,
           metadata: $metadata,
+          evidence: $evidence,
           createdAt: datetime($createdAt),
           updatedAt: datetime($updatedAt),
           lastAccessedAt: datetime($lastAccessedAt),
@@ -169,6 +172,7 @@ export class Neo4jGraphAdapter implements GraphAdapter {
           confidence: node.confidence,
           source: node.source,
           metadata: JSON.stringify(node.metadata ?? {}),
+          evidence: evidenceProperty(node.evidence),
           createdAt: now,
           updatedAt: now,
           lastAccessedAt: now,
@@ -229,7 +233,14 @@ export class Neo4jGraphAdapter implements GraphAdapter {
     updates: Partial<
       Pick<
         GraphNode,
-        'name' | 'aliases' | 'description' | 'properties' | 'confidence' | 'metadata' | 'embedding'
+        | 'name'
+        | 'aliases'
+        | 'description'
+        | 'properties'
+        | 'confidence'
+        | 'metadata'
+        | 'embedding'
+        | 'evidence'
       >
     >
   ): Promise<MemoryResult<GraphNode>> {
@@ -267,6 +278,10 @@ export class Neo4jGraphAdapter implements GraphAdapter {
       if (updates.embedding !== undefined) {
         setClauses.push('n.embedding = $embedding');
         params.embedding = updates.embedding;
+      }
+      if (updates.evidence !== undefined) {
+        setClauses.push('n.evidence = $evidence');
+        params.evidence = evidenceProperty(updates.evidence);
       }
 
       const result = await session.run(
@@ -456,6 +471,7 @@ export class Neo4jGraphAdapter implements GraphAdapter {
            validFrom: $validFrom,
            validUntil: $validUntil,
            metadata: $metadata,
+           evidence: $evidence,
            createdAt: datetime($createdAt),
            updatedAt: datetime($updatedAt)
          }]->(t)
@@ -475,6 +491,7 @@ export class Neo4jGraphAdapter implements GraphAdapter {
           validFrom: edge.validFrom?.toISOString() ?? null,
           validUntil: edge.validUntil?.toISOString() ?? null,
           metadata: JSON.stringify(edge.metadata ?? {}),
+          evidence: evidenceProperty(edge.evidence),
           createdAt: now,
           updatedAt: now,
         }
@@ -558,7 +575,14 @@ export class Neo4jGraphAdapter implements GraphAdapter {
     updates: Partial<
       Pick<
         GraphEdge,
-        'weight' | 'label' | 'properties' | 'confidence' | 'validFrom' | 'validUntil' | 'metadata'
+        | 'weight'
+        | 'label'
+        | 'properties'
+        | 'confidence'
+        | 'validFrom'
+        | 'validUntil'
+        | 'metadata'
+        | 'evidence'
       >
     >
   ): Promise<MemoryResult<GraphEdge>> {
@@ -596,6 +620,10 @@ export class Neo4jGraphAdapter implements GraphAdapter {
       if (updates.metadata !== undefined) {
         setClauses.push('r.metadata = $metadata');
         params.metadata = JSON.stringify(updates.metadata);
+      }
+      if (updates.evidence !== undefined) {
+        setClauses.push('r.evidence = $evidence');
+        params.evidence = evidenceProperty(updates.evidence);
       }
 
       const result = await session.run(
@@ -1007,6 +1035,7 @@ export class Neo4jGraphAdapter implements GraphAdapter {
     const allAliases = new Set(targetNode.aliases);
     const allProperties = { ...targetNode.properties };
     const mergeIds: string[] = [];
+    const sourceEvidence: (Evidence[] | undefined)[] = [];
 
     for (const sourceId of sourceNodeIds) {
       if (sourceId === targetNodeId || mergeIds.includes(sourceId)) continue;
@@ -1016,6 +1045,7 @@ export class Neo4jGraphAdapter implements GraphAdapter {
       const sourceNode = sourceNodeResult.data;
       if (sourceNode.agentId !== targetNode.agentId) continue;
       mergeIds.push(sourceId);
+      sourceEvidence.push(sourceNode.evidence);
       allAliases.add(sourceNode.name);
       sourceNode.aliases.forEach((a) => allAliases.add(a));
       Object.assign(allProperties, sourceNode.properties);
@@ -1051,9 +1081,11 @@ export class Neo4jGraphAdapter implements GraphAdapter {
         }
       });
 
+      const evidence = mergeEvidence(targetNode.evidence, sourceEvidence);
       return this.updateNode(targetNodeId, {
         aliases: Array.from(allAliases),
         properties: allProperties,
+        ...(evidence ? { evidence } : {}),
       });
     } finally {
       await session.close();
@@ -1174,6 +1206,7 @@ export class Neo4jGraphAdapter implements GraphAdapter {
       lastAccessedAt: parseNeo4jDate(props.lastAccessedAt),
       accessCount: (props.accessCount as number) ?? 0,
       metadata: props.metadata ? JSON.parse(props.metadata as string) : undefined,
+      ...evidenceOf(props.evidence),
     };
   }
 
@@ -1200,8 +1233,22 @@ export class Neo4jGraphAdapter implements GraphAdapter {
       validFrom: props.validFrom ? new Date(props.validFrom as string) : undefined,
       validUntil: props.validUntil ? new Date(props.validUntil as string) : undefined,
       metadata: props.metadata ? JSON.parse(props.metadata as string) : undefined,
+      ...evidenceOf(props.evidence),
     };
   }
+}
+
+/**
+ * `evidence` as a property: Neo4j stores no nested objects, so it is JSON text, and a null
+ * leaves the property unset
+ */
+function evidenceProperty(evidence: Evidence[] | undefined): string | null {
+  return evidence === undefined ? null : JSON.stringify(evidence);
+}
+
+/** The `evidence` of a property, or nothing when the property is unset */
+function evidenceOf(value: unknown): { evidence?: Evidence[] } {
+  return typeof value === 'string' ? { evidence: JSON.parse(value) as Evidence[] } : {};
 }
 
 function parseNeo4jDate(value: unknown): Date {

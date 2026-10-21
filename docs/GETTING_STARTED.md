@@ -256,7 +256,7 @@ await cog.close();
 | Adapter    | Use Case                        | Persistence          | Via `memory.adapter` |
 | ---------- | ------------------------------- | -------------------- | -------------------- |
 | `memory`   | Development, testing            | None (RAM only)      | Yes                  |
-| `redis`    | Production short-term (TTL)     | Until TTL expires    | Yes (`redis.url`)    |
+| `redis`    | Production, optional TTL        | Permanent, or `ttl`  | Yes (`redis.url`)    |
 | `postgres` | Production long-term + pgvector | Permanent            | Yes                  |
 | `sqlite`   | Embedded / single-file storage  | Permanent            | No¹                  |
 | `mongodb`  | Document-oriented workloads     | Permanent            | No¹                  |

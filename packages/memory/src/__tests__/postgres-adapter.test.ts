@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { PostgresAdapter } from '../adapters/postgres';
-import type { Message, ToolCall, ToolResult } from '@cogitator-ai/types';
+import type { Evidence, Message, ToolCall, ToolResult } from '@cogitator-ai/types';
 
 /** How node-pg turns a JS parameter into the text it sends to the server. */
 const { prepareValue } = createRequire(import.meta.url)('pg/lib/utils.js') as {
@@ -50,7 +50,7 @@ function withPgvector(sql: string): QueryResult | undefined {
   if (sql.includes("to_regtype('vector')")) return { rows: [{ available: true }] };
   if (sql.includes('SELECT active_leaf_id FROM')) return { rows: [{ active_leaf_id: null }] };
   if (sql.includes('RETURNING seq')) return { rows: [{ seq: 1 }] };
-  if (sql.includes('SELECT thread_id, parent_id FROM')) {
+  if (sql.includes('SELECT thread_id, parent_id FROM') || sql.includes('SELECT thread_id FROM')) {
     return { rows: [{ thread_id: 'thread_123', parent_id: null }] };
   }
   return undefined;
@@ -586,6 +586,89 @@ describe('PostgresAdapter', () => {
       const lastCall = mockPool.query.mock.calls[mockPool.query.mock.calls.length - 1];
       expect(lastCall[0]).toContain('ILIKE');
       expect(lastCall[1]).toContain('%coffee%');
+    });
+  });
+
+  describe('fact evidence', () => {
+    const evidence: Evidence[] = [
+      { entryId: 'entry_1', quote: 'I take my coffee black' },
+      { toolCallId: 'call_1', fileRange: { path: 'notes.md', start: 3, end: 9 }, quote: 'black' },
+    ];
+
+    const factRow = (stored: Evidence[] | null): Record<string, unknown> => ({
+      id: 'fact_1',
+      agent_id: 'agent1',
+      content: 'Takes coffee black',
+      category: 'preferences',
+      confidence: 0.9,
+      source: 'inferred',
+      metadata: {},
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+      expires_at: null,
+      evidence: stored,
+    });
+
+    it('creates the evidence column for new and existing facts tables', () => {
+      const statements = mockPool.query.mock.calls.map(([sql]) => sql.replace(/\s+/g, ' '));
+      expect(statements.some((sql) => /CREATE TABLE .*\.facts \(.*evidence JSONB/.test(sql))).toBe(
+        true
+      );
+      expect(statements).toContain(
+        'ALTER TABLE cogitator.facts ADD COLUMN IF NOT EXISTS evidence JSONB'
+      );
+    });
+
+    it('stores evidence as JSON text and NULL for a fact without it', async () => {
+      const fact = {
+        agentId: 'agent1',
+        content: 'Takes coffee black',
+        category: 'preferences',
+        confidence: 0.9,
+        source: 'inferred' as const,
+      };
+      await adapter.addFact({ ...fact, evidence });
+      await adapter.addFact(fact);
+
+      const inserts = mockPool.query.mock.calls.filter(([sql]) =>
+        sql.includes('INSERT INTO cogitator.facts')
+      );
+      expect(inserts[0][0]).toContain('$10::jsonb');
+      expect(asJsonb(prepareValue(inserts[0][1]?.[9]))).toEqual(evidence);
+      expect(inserts[1][1]?.[9]).toBeNull();
+    });
+
+    it.each([
+      ['getFacts', () => adapter.getFacts('agent1')],
+      ['searchFacts', () => adapter.searchFacts('agent1', 'coffee')],
+    ])('%s reads evidence back and leaves it out of facts without it', async (_name, read) => {
+      mockPool.query.mockResolvedValueOnce({ rows: [factRow(evidence), factRow(null)] });
+
+      const result = await read();
+
+      expect(result.success).toBe(true);
+      if (!result.success) return;
+      expect(result.data[0].evidence).toEqual(evidence);
+      expect(result.data[1]).not.toHaveProperty('evidence');
+    });
+
+    it('updates evidence and returns the stored fact with it', async () => {
+      mockPool.query.mockResolvedValueOnce({ rows: [factRow(evidence)] });
+
+      const result = await adapter.updateFact('fact_1', { evidence });
+
+      const { sql, params } = sentToPostgres('UPDATE cogitator.facts');
+      expect(sql).toContain('evidence = $1::jsonb');
+      expect(asJsonb(params[0])).toEqual(evidence);
+      expect(result.success && result.data.evidence).toEqual(evidence);
+    });
+
+    it('leaves evidence alone when an update does not carry it', async () => {
+      mockPool.query.mockResolvedValueOnce({ rows: [factRow(evidence)] });
+
+      await adapter.updateFact('fact_1', { content: 'Takes coffee black, no sugar' });
+
+      expect(sentToPostgres('UPDATE cogitator.facts').sql).not.toContain('evidence');
     });
   });
 

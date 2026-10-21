@@ -110,6 +110,7 @@ interface RunOptions<TDeps = unknown> {
   onRunError?: (error: Error, runId: string, usage?: RunUsage) => void;
   onSpan?: (span: Span) => void;
   onMemoryError?: (error: Error, operation: 'save' | 'load') => void;
+  branch?: { fromEntryId: string | null; activate?: boolean }; // run on a branch of the thread, activate default: true
   parallelToolCalls?: boolean; // default: false
   middleware?: RunMiddleware<TDeps>[]; // after the Cogitator's and the agent's, pass again to resume()
   userId?: string; // owns new threads, scopes facts, reaches tools as context.userId
@@ -149,6 +150,13 @@ interface RunResult {
   readonly trace: { readonly traceId: string; readonly spans: readonly Span[] };
   readonly reflections?: readonly Reflection[];
   readonly reflectionSummary?: ReflectionSummary;
+  readonly memory?: RunMemoryPlace; // where the run wrote in memory, when it wrote anything
+}
+
+interface RunMemoryPlace {
+  readonly threadId: string;
+  readonly branchPoint: string | null; // the entry the run's first entry went after
+  readonly leafId?: string; // the run's last entry
 }
 
 interface HandoffEvent {
@@ -187,7 +195,7 @@ interface RunCheckpointStore {
 }
 ```
 
-`RunCheckpoint` is the plain-JSON state of a paused run (`version: 1`, `runId`, `threadId`, `model`, `messages`, the paused `turn` with its decisions, usage so far, …) that `cogitator.resume()` continues from.
+`RunCheckpoint` is the plain-JSON state of a paused run (`version: 1`, `runId`, `threadId`, `model`, `messages`, the paused `turn` with its decisions, usage so far, `branch` (where a run on a branch writes next), …) that `cogitator.resume()` continues from.
 
 ### Middleware
 
@@ -708,6 +716,52 @@ interface ModelPriceConfig {
 ```
 
 Every adapter method returns a `MemoryResult`; `unwrap(result)` from `@cogitator-ai/memory` returns `data` or throws. `MemoryAdapter`, `Thread`, `MemoryEntry`, `Fact`, `Embedding` and the search and graph types are listed on the [Memory API](/docs/api-reference/memory) page.
+
+Threads are trees of entries (see [Threads as Trees](/docs/memory#threads-as-trees)), described by these types:
+
+```typescript
+type MemoryEntryType =
+  | 'message'
+  | 'tool_result'
+  | 'model_change'
+  | 'compaction'
+  | 'approval'
+  | 'interrupt'
+  | 'label'
+  | 'custom';
+
+const CONVERSATION_ENTRY_TYPES: readonly MemoryEntryType[]; // ['message', 'tool_result'], what reads return by default
+const MEMORY_ENTRY_FORMAT = 2; // layout of entries written now
+
+type NewMemoryEntry = Omit<
+  MemoryEntry,
+  'id' | 'createdAt' | 'seq' | 'formatVersion' | 'parentId'
+> & {
+  createdAt?: Date;
+  parentId?: string | null; // default: after the active leaf
+  activate?: boolean; // default: true, the entry becomes the active leaf
+};
+
+interface PathQueryOptions {
+  threadId: string;
+  leafId?: string;
+  limit?: number;
+  before?: string;
+  types?: readonly MemoryEntryType[] | 'all';
+  includeToolCalls?: boolean;
+}
+
+interface Evidence {
+  entryId?: string;
+  toolCallId?: string;
+  fileRange?: { path: string; start: number; end: number };
+  quote: string;
+}
+
+type EvidenceStatus = 'verified' | 'suggested';
+```
+
+`MemoryQueryOptions` takes `types` as well, `Thread` has `activeLeafId`, `MemoryEntry` has `type`, `parentId`, `seq`, `event` and `formatVersion`, and `Fact`, `GraphNode`, `GraphEdge` and `Insight` take an optional `evidence: Evidence[]`. `ExecutionCheckpoint` keeps the run's `memory: RunMemoryPlace`, see [Time Travel](/docs/advanced/time-travel#replays-on-branches).
 
 ## Errors
 

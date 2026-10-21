@@ -28,29 +28,37 @@ const entries = unwrap(await memory.getEntries({ threadId: thread.id, limit: 20 
 
 All conversation adapters implement `MemoryAdapter`:
 
-| Method         | Signature                                                                                                                                    |
-| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `connect`      | `connect(): Promise<MemoryResult<void>>`                                                                                                     |
-| `disconnect`   | `disconnect(): Promise<MemoryResult<void>>`                                                                                                  |
-| `createThread` | `createThread(agentId: string, metadata?: Record<string, unknown>, threadId?: string): Promise<MemoryResult<Thread>>`                        |
-| `getThread`    | `getThread(threadId: string): Promise<MemoryResult<Thread \| null>>`                                                                         |
-| `updateThread` | `updateThread(threadId: string, metadata: Record<string, unknown>): Promise<MemoryResult<Thread>>`                                           |
-| `deleteThread` | `deleteThread(threadId: string): Promise<MemoryResult<void>>`                                                                                |
-| `addEntry`     | `addEntry(entry: Omit<MemoryEntry, 'id' \| 'createdAt'>): Promise<MemoryResult<MemoryEntry>>`                                                |
-| `getEntries`   | `getEntries(options: MemoryQueryOptions): Promise<MemoryResult<MemoryEntry[]>>` (`{ threadId, limit?, before?, after?, includeToolCalls? }`) |
-| `getEntry`     | `getEntry(entryId: string): Promise<MemoryResult<MemoryEntry \| null>>`                                                                      |
-| `deleteEntry`  | `deleteEntry(entryId: string): Promise<MemoryResult<void>>`                                                                                  |
-| `clearThread`  | `clearThread(threadId: string): Promise<MemoryResult<void>>`                                                                                 |
+| Method         | Signature                                                                                                                                                             |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `connect`      | `connect(): Promise<MemoryResult<void>>`                                                                                                                              |
+| `disconnect`   | `disconnect(): Promise<MemoryResult<void>>`                                                                                                                           |
+| `createThread` | `createThread(agentId: string, metadata?: Record<string, unknown>, threadId?: string): Promise<MemoryResult<Thread>>`                                                 |
+| `getThread`    | `getThread(threadId: string): Promise<MemoryResult<Thread \| null>>`                                                                                                  |
+| `updateThread` | `updateThread(threadId: string, metadata: Record<string, unknown>): Promise<MemoryResult<Thread>>`                                                                    |
+| `deleteThread` | `deleteThread(threadId: string): Promise<MemoryResult<void>>`                                                                                                         |
+| `addEntry`     | `addEntry(entry: NewMemoryEntry): Promise<MemoryResult<MemoryEntry>>` (an entry without `id`, `seq` and `formatVersion`, plus `parentId?`, `activate?`, `createdAt?`) |
+| `getEntries`   | `getEntries(options: MemoryQueryOptions): Promise<MemoryResult<MemoryEntry[]>>` (`{ threadId, limit?, before?, after?, includeToolCalls?, types? }`), every branch    |
+| `getEntry`     | `getEntry(entryId: string): Promise<MemoryResult<MemoryEntry \| null>>`                                                                                               |
+| `deleteEntry`  | `deleteEntry(entryId: string): Promise<MemoryResult<void>>`                                                                                                           |
+| `clearThread`  | `clearThread(threadId: string): Promise<MemoryResult<void>>`                                                                                                          |
+| `getPath?`     | `getPath(options: PathQueryOptions): Promise<MemoryResult<MemoryEntry[]>>` (`{ threadId, leafId?, limit?, before?, types?, includeToolCalls? }`), one branch          |
+| `rewind?`      | `rewind(threadId: string, toEntryId: string): Promise<MemoryResult<Thread>>`, the active leaf back along its branch                                                   |
+| `checkout?`    | `checkout(threadId: string, entryId: string): Promise<MemoryResult<Thread>>`, any branch active                                                                       |
+| `forkThread?`  | `forkThread(threadId: string, atEntryId: string, newThreadId?: string): Promise<MemoryResult<Thread>>`, a branch copied into a new thread                             |
 
-| Export                | Constructor                                                                     | Also implements                                           | Notes                                                                                                         |
-| --------------------- | ------------------------------------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `InMemoryAdapter`     | `new InMemoryAdapter(config?: InMemoryAdapterConfig)`                           | —                                                         | Process memory; `maxEntries` (default 10000); `stats` getter                                                  |
-| `RedisAdapter`        | `new RedisAdapter(config: RedisAdapterConfig)`                                  | —                                                         | `url` or `host`/`port`, or `cluster`; `ttl` (default 86400 s), `keyPrefix`                                    |
-| `PostgresAdapter`     | `new PostgresAdapter(config: PostgresAdapterConfig)`                            | `FactAdapter`, `EmbeddingAdapter`, `KeywordSearchAdapter` | `connectionString`, `schema?`, `poolSize?`; pgvector; `setVectorDimensions(n)`                                |
-| `SQLiteAdapter`       | `new SQLiteAdapter(config: SQLiteAdapterConfig)`                                | —                                                         | `path` (`':memory:'` allowed), `walMode` (default true)                                                       |
-| `MongoDBAdapter`      | `new MongoDBAdapter(config: MongoDBAdapterConfig)`                              | —                                                         | `uri`, `database` (default `cogitator`), `collectionPrefix` (default `memory_`)                               |
-| `BaseMemoryAdapter`   | abstract class                                                                  | —                                                         | Base for your own adapter                                                                                     |
-| `createMemoryAdapter` | `createMemoryAdapter(config: MemoryAdapterConfigUnion): Promise<MemoryAdapter>` | —                                                         | Adapter from `{ provider: 'memory' \| 'redis' \| 'postgres' \| 'sqlite' \| 'mongodb', … }`; not connected yet |
+The four branch methods are optional on the interface, every built-in adapter implements them. `deleteEntry` splices the entry out of its branch. See [Threads as Trees](/docs/memory#threads-as-trees).
+
+| Export                         | Constructor                                                                     | Also implements                                           | Notes                                                                                                         |
+| ------------------------------ | ------------------------------------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `InMemoryAdapter`              | `new InMemoryAdapter(config?: InMemoryAdapterConfig)`                           | —                                                         | Process memory, `maxEntries` per thread (default 10000), `stats` getter                                       |
+| `RedisAdapter`                 | `new RedisAdapter(config: RedisAdapterConfig)`                                  | —                                                         | `url` or `host`/`port`, or `cluster`, `ttl` (seconds, default 0: no expiry), `keyPrefix`                      |
+| `PostgresAdapter`              | `new PostgresAdapter(config: PostgresAdapterConfig)`                            | `FactAdapter`, `EmbeddingAdapter`, `KeywordSearchAdapter` | `connectionString`, `schema?`, `poolSize?`; pgvector; `setVectorDimensions(n)`                                |
+| `SQLiteAdapter`                | `new SQLiteAdapter(config: SQLiteAdapterConfig)`                                | —                                                         | `path` (`':memory:'` allowed), `walMode` (default true)                                                       |
+| `MongoDBAdapter`               | `new MongoDBAdapter(config: MongoDBAdapterConfig)`                              | —                                                         | `uri`, `database` (default `cogitator`), `collectionPrefix` (default `memory_`)                               |
+| `BaseMemoryAdapter`            | abstract class                                                                  | —                                                         | Base for your own adapter                                                                                     |
+| `ChangeReportingMemoryAdapter` | abstract class                                                                  | —                                                         | Base that reports changes through `onChange`                                                                  |
+| `BranchingMemoryAdapter`       | abstract class                                                                  | —                                                         | Base that gives `getPath`, `rewind`, `checkout` and `forkThread` on top of `setActiveLeaf`                    |
+| `createMemoryAdapter`          | `createMemoryAdapter(config: MemoryAdapterConfigUnion): Promise<MemoryAdapter>` | —                                                         | Adapter from `{ provider: 'memory' \| 'redis' \| 'postgres' \| 'sqlite' \| 'mongodb', … }`; not connected yet |
 
 The adapter configs take `provider` plus the fields above; inside `CogitatorConfig.memory` the same fields go under `inMemory`, `redis`, `postgres`, `sqlite` or `mongodb` without `provider`. See [Memory Adapters](/docs/memory/adapters).
 
@@ -97,26 +105,27 @@ See [Embeddings](/docs/memory/embeddings).
 
 ## Context Building and Tokens
 
-| Export                                      | Signature                                                                                             | Purpose                                                                   |
-| ------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| `ContextBuilder`                            | `new ContextBuilder(config: ContextBuilderConfig, deps: ContextBuilderDeps)`                          | Assemble history, facts, semantic and graph context within a token budget |
-| `builder.build`                             | `build(options: { threadId; agentId; userId?; systemPrompt?; currentInput? }): Promise<BuiltContext>` | Messages plus metadata, `errors` and `warnings`                           |
-| `countTokens`                               | `countTokens(text: string): number`                                                                   | Token estimate                                                            |
-| `countMessageTokens`, `countMessagesTokens` | `(message: Message)`, `(messages: Message[])`                                                         | Token estimates for messages, with tool calls and images                  |
-| `countEntryTokens`, `countToolCallsTokens`  | `(entry: MemoryEntry)`, `(toolCalls: ToolCall[])`                                                     | Recount a stored entry, estimate tool calls                               |
-| `truncateToTokens`                          | `truncateToTokens(text: string, maxTokens: number): string`                                           | Cut text to a token budget                                                |
+| Export                                      | Signature                                                                                                                  | Purpose                                                                   |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `ContextBuilder`                            | `new ContextBuilder(config: ContextBuilderConfig, deps: ContextBuilderDeps)`                                               | Assemble history, facts, semantic and graph context within a token budget |
+| `builder.build`                             | `build(options: { threadId; agentId; userId?; systemPrompt?; currentInput?; maxTokens?; leafId? }): Promise<BuiltContext>` | Messages plus metadata, `errors` and `warnings`                           |
+| `countTokens`                               | `countTokens(text: string): number`                                                                                        | Token estimate                                                            |
+| `countMessageTokens`, `countMessagesTokens` | `(message: Message)`, `(messages: Message[])`                                                                              | Token estimates for messages, with tool calls and images                  |
+| `countEntryTokens`, `countToolCallsTokens`  | `(entry: MemoryEntry)`, `(toolCalls: ToolCall[])`                                                                          | Recount a stored entry, estimate tool calls                               |
+| `truncateToTokens`                          | `truncateToTokens(text: string, maxTokens: number): string`                                                                | Cut text to a token budget                                                |
 
-`build()` also takes `maxTokens`, this build's budget in place of the builder's, such as the context window of the model it is built for. The result's `dropped` (`DroppedContext`) lists the history entries, facts, search results and graph nodes left out, with their token count. With the `relevant` and `hybrid` strategies its entries include those the selection passed over, not only those the budget had no room for.
+`build()` also takes `maxTokens`, this build's budget in place of the builder's, such as the context window of the model it is built for, and `leafId`, the entry the history ends at (the thread's active branch by default, none for `null`). The result's `dropped` (`DroppedContext`) lists the history entries, facts, search results and graph nodes left out, with their token count. With the `relevant` and `hybrid` strategies its entries include those the selection passed over, not only those the budget had no room for.
 
 `ContextBuilderConfig` is `{ maxTokens?, strategy: 'recent' | 'relevant' | 'hybrid', reserveTokens?, includeSystemPrompt?, includeFacts?, includeSemanticContext?, includeGraphContext?, graphContextOptions? }`, and `ContextBuilderDeps` is `{ memoryAdapter, factAdapter?, embeddingAdapter?, embeddingService?, graphContextBuilder? }`.
 
 ## Core Facts, Sessions, Compaction
 
-| Export              | Signature                                                                                                                                                                                    | Purpose                                              |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| `CoreFactsStore`    | `new CoreFactsStore(config: { path: string } \| { db })` — `initialize`, `set`, `get`, `getAll`, `delete`, `getHistory`, `formatForPrompt`, `close`                                          | Key-value facts about a user in SQLite, with history |
-| `SessionManager`    | `new SessionManager(adapter: MemoryAdapter, options?: { compaction?: CompactionService; indexRefreshInterval?: number })`: `getOrCreate`, `get`, `update`, `archive`, `list`, `delete`, `incrementMessageCount`, `compact` | Channel sessions per user and channel                |
-| `CompactionService` | `new CompactionService(config: { adapter: MemoryAdapter; summarize: SummarizeFn })` — `compact(sessionId, config)`, `applySummary(…)`                                                        | Replace old entries with a summary                   |
+| Export              | Signature                                                                                                                                                                                                                  | Purpose                                                                                                                                 |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `CoreFactsStore`    | `new CoreFactsStore(config: { path: string } \| { db })` — `initialize`, `set`, `get`, `getAll`, `delete`, `getHistory`, `formatForPrompt`, `close`                                                                        | Key-value facts about a user in SQLite, with history                                                                                    |
+| `SessionManager`    | `new SessionManager(adapter: MemoryAdapter, options?: { compaction?: CompactionService; indexRefreshInterval?: number })`: `getOrCreate`, `get`, `update`, `archive`, `list`, `delete`, `incrementMessageCount`, `compact` | Channel sessions per user and channel                                                                                                   |
+| `CompactionService` | `new CompactionService(config: { adapter: MemoryAdapter; summarize: SummarizeFn })` — `compact(sessionId, config)`, `applySummary(…)`                                                                                      | Replace old entries with a summary                                                                                                      |
+| `compactedHistory`  | `compactedHistory(path: readonly MemoryEntry[]): MemoryEntry[]`                                                                                                                                                            | The conversation of a branch read with `HISTORY_ENTRY_TYPES`: the latest compaction's summary, the entries it kept and everything after |
 
 `CompactionConfig` is `{ strategy, keepRecent, threshold?, messageThreshold?, summaryModel?, summaryPrompt? }`: a thread is compacted once it holds `threshold` tokens or `messageThreshold` entries (at least one is required). `SummarizeFn` is `(messages: Message[], options?: SummarizeOptions) => Promise<string>`, where `SummarizeOptions` is `{ model?: string; prompt?: string }`, filled from `summaryModel` / `summaryPrompt` of the `CompactionConfig` passed to `compact()`.
 
@@ -131,6 +140,16 @@ See [Embeddings](/docs/memory/embeddings).
 | `GraphContextBuilder`  | `new GraphContextBuilder(graphAdapter, embeddingService?, config?: GraphContextBuilderConfig)` — `buildContext(agentId, input, options?)`                                                                                                                                                                               | Graph context for prompts                     |
 
 `GraphAdapter` methods: `addNode`, `getNode`, `getNodeByName`, `updateNode`, `deleteNode`, `queryNodes`, `searchNodesSemantic`, `addEdge`, `getEdge`, `getEdgesBetween`, `updateEdge`, `deleteEdge`, `queryEdges`, `traverse`, `findShortestPath`, `getNeighbors`, `mergeNodes`, `clearGraph`, `getGraphStats` — all returning `MemoryResult`. See [Knowledge Graphs](/docs/memory/knowledge-graphs).
+
+## Lineage
+
+| Export                   | Signature                                                                                                                                                        | Purpose                                                  |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `verifyEvidence`         | `verifyEvidence(evidence: Evidence, entry: MemoryEntry): EvidenceStatus`                                                                                         | Whether the quote is in the entry or its tool result     |
+| `verifyEvidenceInMemory` | `verifyEvidenceInMemory(memory: Pick<MemoryAdapter, 'getEntry'>, evidence: readonly Evidence[]): Promise<MemoryResult<{ status; evidence: CheckedEvidence[] }>>` | Check each piece against its stored entry                |
+| `evidenceOnPath`         | `evidenceOnPath(evidence: readonly Evidence[], pathIds: ReadonlySet<string>): boolean`                                                                           | Whether every piece that names an entry lies on a branch |
+
+`EvidenceStatus` is `'verified' | 'suggested'`, `CheckedEvidence` is an `Evidence` with its `status`. `Evidence` and `EvidenceStatus` come from `@cogitator-ai/types`. See [Lineage](/docs/memory#lineage).
 
 ## Zod Schemas
 
@@ -147,6 +166,7 @@ interface Thread {
   metadata: Record<string, unknown>; // metadata.userId: the owning user
   createdAt: Date;
   updatedAt: Date;
+  activeLeafId?: string; // the entry the active branch ends at, absent with no entries
 }
 
 interface MemoryEntry {
@@ -158,6 +178,30 @@ interface MemoryEntry {
   tokenCount: number;
   createdAt: Date;
   metadata?: Record<string, unknown>;
+  type?: MemoryEntryType; // 'message' when absent
+  parentId?: string | null; // the entry before it on its branch, null for the first
+  seq?: number; // order the thread's entries were added in
+  event?: Record<string, unknown>; // payload of an event entry
+  formatVersion?: number; // MEMORY_ENTRY_FORMAT (2) for entries written now
+}
+
+type MemoryEntryType =
+  | 'message'
+  | 'tool_result'
+  | 'model_change'
+  | 'compaction'
+  | 'approval'
+  | 'interrupt'
+  | 'label'
+  | 'custom';
+
+interface PathQueryOptions {
+  threadId: string;
+  leafId?: string; // default: the active leaf
+  limit?: number; // the newest entries of the branch
+  before?: string; // only entries before this one, to page back
+  types?: readonly MemoryEntryType[] | 'all'; // default: CONVERSATION_ENTRY_TYPES
+  includeToolCalls?: boolean;
 }
 
 interface Fact {
@@ -171,6 +215,7 @@ interface Fact {
   updatedAt: Date;
   expiresAt?: Date;
   metadata?: Record<string, unknown>; // metadata.userId: only in that user's context
+  evidence?: Evidence[]; // what it stands on, see Lineage
 }
 
 interface Embedding {
@@ -195,4 +240,4 @@ interface SearchResult {
 }
 ```
 
-Also re-exported: the adapter configs, `MemoryQueryOptions`, `SemanticSearchOptions`, `SearchOptions`, `SearchFilter`, `HybridSearchConfig`, `ContextBuilderConfig`, `BuiltContext`, `DroppedContext`, `MemoryConfig`, the graph types (`GraphNode`, `GraphEdge`, `TraversalOptions`, `InferenceRule`, …) and the session types (`Session`, `SessionFilter`, `CompactionConfig`, `CompactionResult`; the interface is exported as `ISessionManager`).
+`MemoryEntryType`, `PathQueryOptions`, `NewMemoryEntry`, `Evidence` and `EvidenceStatus` are re-exported here, `CompactionEvent`, `CONVERSATION_ENTRY_TYPES` (`['message', 'tool_result']`) and `MEMORY_ENTRY_FORMAT` come from `@cogitator-ai/types`. `HISTORY_ENTRY_TYPES` (`['message', 'tool_result', 'compaction']`) is exported here. Also re-exported: the adapter configs, `MemoryQueryOptions`, `SemanticSearchOptions`, `SearchOptions`, `SearchFilter`, `HybridSearchConfig`, `ContextBuilderConfig`, `BuiltContext`, `DroppedContext`, `MemoryConfig`, the graph types (`GraphNode`, `GraphEdge`, `TraversalOptions`, `InferenceRule`, …) and the session types (`Session`, `SessionFilter`, `CompactionConfig`, `CompactionResult`; the interface is exported as `ISessionManager`).

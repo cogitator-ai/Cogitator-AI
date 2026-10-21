@@ -14,6 +14,7 @@ import type {
 } from '@cogitator-ai/types';
 import type { Agent } from '../agent';
 import type { Cogitator } from '../runtime';
+import { threadOwner } from '../cogitator/threads';
 import { countToolCallSteps } from './checkpoint-store';
 
 export interface ExecutionReplayerOptions {
@@ -116,6 +117,7 @@ export class ExecutionReplayer {
         ? {
             threadId: memory.threadId,
             branch: { fromEntryId: memory.branchPoint, activate: false },
+            ...(options.userId !== undefined && { userId: options.userId }),
           }
         : { threadId: `replay_${checkpoint.runId}_${nanoid(8)}` }),
     });
@@ -139,7 +141,8 @@ export class ExecutionReplayer {
 
   /**
    * Where a live replay goes on in memory: on a branch of the original thread from where the run
-   * started, while the checkpoint knows that place and its entry is still there. Modified messages
+   * started, while the checkpoint knows that place, its entry is still there and the thread is
+   * the replaying user's (`options.userId`, none for a thread of no user). Modified messages
    * that change the conversation before the run's input keep the replay off memory, as memory
    * would give the history they replace.
    */
@@ -162,6 +165,7 @@ export class ExecutionReplayer {
     if (!memory?.getPath) return undefined;
     const thread = await memory.getThread(place.threadId);
     if (!thread.success || !thread.data) return undefined;
+    if (threadOwner(thread.data) !== options.userId) return undefined;
     if (place.branchPoint === null) return place;
     const entry = await memory.getEntry(place.branchPoint);
     return entry.success && entry.data?.threadId === place.threadId ? place : undefined;

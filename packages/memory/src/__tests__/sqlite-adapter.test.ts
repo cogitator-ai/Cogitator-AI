@@ -296,7 +296,7 @@ describe('SQLiteAdapter', () => {
 
   describe('entry operations', () => {
     it('adds an entry', async () => {
-      mockStmt.get.mockReturnValueOnce({ active_leaf_id: null });
+      mockStmt.get.mockReturnValueOnce({ active_leaf_id: null }).mockReturnValueOnce({ seq: 1 });
       const message: Message = { role: 'user', content: 'Hello' };
       const result = await adapter.addEntry({
         threadId: 'thread_123',
@@ -314,7 +314,7 @@ describe('SQLiteAdapter', () => {
     });
 
     it('adds entry with tool calls', async () => {
-      mockStmt.get.mockReturnValueOnce({ active_leaf_id: null });
+      mockStmt.get.mockReturnValueOnce({ active_leaf_id: null }).mockReturnValueOnce({ seq: 1 });
       const message: Message = { role: 'assistant', content: 'Running...' };
       const result = await adapter.addEntry({
         threadId: 'thread_123',

@@ -1,6 +1,7 @@
 import type {
   MemoryAdapter,
   Message,
+  RunCheckpoint,
   RunMemoryPlace,
   RunOptions,
   ToolCall,
@@ -10,47 +11,74 @@ import { saveEntry, type EntryEvent, type EntryPlacement } from './message-build
 
 /**
  * What a run writes to its thread's memory, in the order it writes it. A run on a branch
- * (`RunOptions.branch`) chains its entries after the branch point; any other run adds after the
- * thread's active leaf. Writes and session events go one after another, so an event recorded
- * from a callback still lands before the entries that follow it.
+ * (`RunOptions.branch`) starts after the branch point, any other run after the thread's active
+ * leaf, and from then on each entry goes after the run's previous one, so the run's entries stay
+ * one chain even when another run moves the leaf meanwhile. Writes and session events go one
+ * after another, so an event recorded from a callback still lands before the entries that follow
+ * it, and a failed write does not stop the ones after it. Nothing is written before {@link open},
+ * which the runtime calls once the run may use the thread.
  */
 export class RunMemory {
   private queue: Promise<unknown> = Promise.resolve();
   private readonly place: EntryPlacement;
+  private opened = false;
   private branchPoint: string | null | undefined;
   private leafId: string | undefined;
 
   /**
    * @param memory the runtime's memory adapter when it writes, read then: memory connects
    *   after a run starts
+   * @param options the run's options when it writes: a resumed run takes the user of its
+   *   checkpoint
    */
   constructor(
     private readonly memory: () => MemoryAdapter | undefined,
     private readonly threadId: string,
-    private readonly options: RunOptions,
-    resumed?: { parentId: string | null; activate: boolean }
+    private readonly options: () => RunOptions
   ) {
-    const branch = options.branch;
-    this.place = resumed
-      ? { ...resumed }
-      : branch
-        ? { parentId: branch.fromEntryId, activate: branch.activate ?? true }
-        : {};
+    const branch = options().branch;
+    this.place = branch ? { parentId: branch.fromEntryId, activate: branch.activate ?? true } : {};
+  }
+
+  /**
+   * Lets the run write to its thread, once its access to it is checked. A paused run passes the
+   * place its checkpoint kept, to go on along its branch.
+   */
+  open(resumed?: RunCheckpoint['branch']): void {
+    if (resumed) {
+      this.place.parentId = resumed.parentId;
+      this.place.activate = resumed.activate;
+      if (resumed.branchPoint !== undefined) this.branchPoint = resumed.branchPoint;
+    }
+    this.opened = true;
+  }
+
+  /** Whether the run leaves the thread's active leaf where it is (`activate: false`) */
+  get aside(): boolean {
+    return this.place.activate === false;
+  }
+
+  /** Whether the run may write to its thread: {@link open} was called */
+  get isOpen(): boolean {
+    return this.opened;
   }
 
   /** Whether the run saves to memory */
   get enabled(): boolean {
+    const options = this.options();
     return (
-      this.memory() !== undefined &&
-      this.options.saveHistory !== false &&
-      this.options.useMemory !== false
+      this.memory() !== undefined && options.saveHistory !== false && options.useMemory !== false
     );
   }
 
-  /** Where the run's next entry goes, for a paused run to go on along its branch */
-  get placement(): { parentId: string | null; activate: boolean } | undefined {
+  /** Where the run's next entry goes and where it started, for a paused run to go on */
+  get placement(): RunCheckpoint['branch'] {
     if (this.place.parentId === undefined) return undefined;
-    return { parentId: this.place.parentId, activate: this.place.activate ?? true };
+    return {
+      parentId: this.place.parentId,
+      activate: this.place.activate ?? true,
+      ...(this.branchPoint !== undefined && { branchPoint: this.branchPoint }),
+    };
   }
 
   /** Saves a message of the run */
@@ -85,7 +113,8 @@ export class RunMemory {
     toolResults?: ToolResult[],
     event?: EntryEvent
   ): Promise<void> {
-    if (!this.enabled) return Promise.resolve();
+    if (!this.opened || !this.enabled) return Promise.resolve();
+    const options = this.options();
     const written = this.queue.then(async () => {
       const entry = await saveEntry(
         this.threadId,
@@ -94,17 +123,17 @@ export class RunMemory {
         this.memory(),
         toolCalls,
         toolResults,
-        this.options.onMemoryError,
-        this.options.userId,
+        options.onMemoryError,
+        options.userId,
         this.place,
         event
       );
       if (!entry) return;
       if (this.branchPoint === undefined) this.branchPoint = entry.parentId ?? null;
       this.leafId = entry.id;
-      if (this.place.parentId !== undefined) this.place.parentId = entry.id;
+      this.place.parentId = entry.id;
     });
-    this.queue = written;
+    this.queue = written.catch(() => undefined);
     return written;
   }
 }

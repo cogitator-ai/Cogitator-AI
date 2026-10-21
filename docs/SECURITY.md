@@ -202,7 +202,7 @@ Cogitator does not encrypt memory itself. Mitigations:
 
 1. Use storage-level encryption at rest (managed Postgres/MongoDB encryption, encrypted volumes)
 2. Use TLS to the stores: `?sslmode=require` in the Postgres connection string, `rediss://` URLs and `password` for Redis
-3. Bound retention: the Redis adapter expires keys after `ttl` seconds (default 86400); other adapters keep data until you delete it
+3. Bound retention: set `ttl` on the Redis adapter to expire keys that many seconds after their last write (by default nothing expires), other adapters keep data until you delete it
 4. Scope data per user with `userId` on runs: the threads a run creates belong to its user, and the facts and embeddings put into its context are filtered by it
 5. Delete data with the adapter API (`deleteThread`, `clearThread`, `deleteEntry`, `deleteFact`, `deleteBySource`)
 

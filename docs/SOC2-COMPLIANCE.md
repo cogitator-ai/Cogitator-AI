@@ -502,7 +502,7 @@ const cogitator = new Cogitator({
     adapter: 'redis',
     redis: {
       url: process.env.REDIS_URL,
-      ttl: 86400, // keys expire after 24 hours
+      ttl: 86400, // keys expire 24 hours after the last write, no expiry without ttl
     },
   },
 });
@@ -514,13 +514,13 @@ Memory stores the conversation messages, including tool calls and tool results. 
 
 #### Data Retention
 
-| Data Type                   | Framework Behaviour                         | Disposal                                     |
-| --------------------------- | ------------------------------------------- | -------------------------------------------- |
-| Conversation memory (Redis) | Expires after `redis.ttl` (default 86400 s) | Automatic                                    |
-| Conversation memory (other) | Kept until deleted                          | `deleteThread`, `clearThread`, `deleteEntry` |
-| Facts and embeddings        | Kept until deleted                          | `deleteFact`, `deleteBySource`               |
-| In-memory adapter           | Process memory; lost on restart             | Automatic                                    |
-| Logs and traces             | Not stored by Cogitator                     | Your log and trace platform's retention      |
+| Data Type                   | Framework Behaviour                                         | Disposal                                                                |
+| --------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------- |
+| Conversation memory (Redis) | Expires after `redis.ttl` seconds when set, kept by default | Automatic with `ttl`, else `deleteThread`, `clearThread`, `deleteEntry` |
+| Conversation memory (other) | Kept until deleted                                          | `deleteThread`, `clearThread`, `deleteEntry`                            |
+| Facts and embeddings        | Kept until deleted                                          | `deleteFact`, `deleteBySource`                                          |
+| In-memory adapter           | Process memory; lost on restart                             | Automatic                                                               |
+| Logs and traces             | Not stored by Cogitator                                     | Your log and trace platform's retention                                 |
 
 ---
 

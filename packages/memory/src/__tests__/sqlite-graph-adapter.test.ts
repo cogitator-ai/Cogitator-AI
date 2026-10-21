@@ -1,6 +1,10 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { SQLiteGraphAdapter } from '../knowledge-graph/sqlite-graph-adapter';
-import type { GraphNode, GraphEdge } from '@cogitator-ai/types';
+import type { Evidence, GraphNode, GraphEdge } from '@cogitator-ai/types';
 
 describe('SQLiteGraphAdapter', () => {
   let adapter: SQLiteGraphAdapter;
@@ -648,6 +652,132 @@ describe('SQLiteGraphAdapter', () => {
       const res = await broken.getNode('node_1');
 
       expect(res.success).toBe(false);
+    });
+  });
+
+  describe('evidence', () => {
+    const evidence: Evidence[] = [
+      { entryId: 'entry_1', quote: 'Alice knows Bob from school' },
+      { toolCallId: 'call_1', fileRange: { path: 'people.md', start: 1, end: 4 }, quote: 'Bob' },
+    ];
+
+    it('keeps the evidence of nodes and edges and leaves it out where there is none', async () => {
+      const alice = await adapter.addNode(makeNode({ evidence }));
+      const bob = await adapter.addNode(makeNode({ name: 'Bob', aliases: [] }));
+      if (!alice.success || !bob.success) throw new Error('nodes not added');
+      const knows = await adapter.addEdge(makeEdge(alice.data.id, bob.data.id, { evidence }));
+      const knownBy = await adapter.addEdge(makeEdge(bob.data.id, alice.data.id));
+      if (!knows.success || !knownBy.success) throw new Error('edges not added');
+
+      const nodes = await adapter.queryNodes({ agentId: 'agent1' });
+      const byName = new Map(nodes.success ? nodes.data.map((n) => [n.name, n]) : []);
+      expect(byName.get('Alice')?.evidence).toEqual(evidence);
+      expect(byName.get('Bob')).not.toHaveProperty('evidence');
+
+      const edge = await adapter.getEdge(knows.data.id);
+      expect(edge.success && edge.data?.evidence).toEqual(evidence);
+      const plain = await adapter.getEdge(knownBy.data.id);
+      expect(plain.success && plain.data).not.toHaveProperty('evidence');
+
+      const neighbors = await adapter.getNeighbors(bob.data.id, 'incoming');
+      expect(neighbors.success && neighbors.data[0].node.evidence).toEqual(evidence);
+      expect(neighbors.success && neighbors.data[0].edge.evidence).toEqual(evidence);
+    });
+
+    it('replaces evidence on update and keeps it when an update does not carry it', async () => {
+      const alice = await adapter.addNode(makeNode());
+      const bob = await adapter.addNode(makeNode({ name: 'Bob', aliases: [] }));
+      if (!alice.success || !bob.success) throw new Error('nodes not added');
+      const edge = await adapter.addEdge(makeEdge(alice.data.id, bob.data.id));
+      if (!edge.success) throw new Error('edge not added');
+
+      const node = await adapter.updateNode(alice.data.id, { evidence });
+      expect(node.success && node.data.evidence).toEqual(evidence);
+      const renamed = await adapter.updateNode(alice.data.id, { name: 'Alicia' });
+      expect(renamed.success && renamed.data.evidence).toEqual(evidence);
+
+      const updated = await adapter.updateEdge(edge.data.id, { evidence });
+      expect(updated.success && updated.data.evidence).toEqual(evidence);
+      const reweighed = await adapter.updateEdge(edge.data.id, { weight: 0.5 });
+      expect(reweighed.success && reweighed.data.evidence).toEqual(evidence);
+    });
+
+    it('merges the evidence of merged nodes once each, the target first', async () => {
+      const [a, b] = evidence;
+      const c: Evidence = { entryId: 'entry_2', quote: 'Bob' };
+      const target = await adapter.addNode(makeNode({ evidence: [a] }));
+      const first = await adapter.addNode(makeNode({ name: 'Al', aliases: [], evidence: [b, a] }));
+      const plain = await adapter.addNode(makeNode({ name: 'A.', aliases: [] }));
+      const second = await adapter.addNode(
+        makeNode({ name: 'Alice B.', aliases: [], evidence: [{ ...b }, c] })
+      );
+      if (!target.success || !first.success || !plain.success || !second.success) {
+        throw new Error('nodes not added');
+      }
+
+      const merged = await adapter.mergeNodes(target.data.id, [
+        first.data.id,
+        plain.data.id,
+        second.data.id,
+      ]);
+
+      expect(merged.success && merged.data.evidence).toEqual([a, b, c]);
+      const stored = await adapter.getNode(target.data.id);
+      expect(stored.success && stored.data?.evidence).toEqual([a, b, c]);
+    });
+
+    it('leaves evidence absent when no merged node has any', async () => {
+      const target = await adapter.addNode(makeNode());
+      const source = await adapter.addNode(makeNode({ name: 'Al', aliases: [] }));
+      if (!target.success || !source.success) throw new Error('nodes not added');
+
+      const merged = await adapter.mergeNodes(target.data.id, [source.data.id]);
+
+      expect(merged.success).toBe(true);
+      expect(merged.success && merged.data).not.toHaveProperty('evidence');
+    });
+
+    it('adds the evidence column to tables an earlier version created', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'graph-evidence-'));
+      const path = join(dir, 'graph.db');
+      const legacy = new Database(path);
+      legacy.exec(`
+        CREATE TABLE graph_nodes (
+          id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL,
+          aliases TEXT DEFAULT '[]', description TEXT, properties TEXT DEFAULT '{}',
+          embedding TEXT, confidence REAL DEFAULT 1.0, source TEXT NOT NULL,
+          metadata TEXT DEFAULT '{}', access_count INTEGER DEFAULT 0,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_accessed_at TEXT NOT NULL
+        );
+        CREATE TABLE graph_edges (
+          id TEXT PRIMARY KEY,
+          source_node_id TEXT NOT NULL REFERENCES graph_nodes(id) ON DELETE CASCADE,
+          target_node_id TEXT NOT NULL REFERENCES graph_nodes(id) ON DELETE CASCADE,
+          type TEXT NOT NULL, label TEXT, weight REAL DEFAULT 1.0, properties TEXT DEFAULT '{}',
+          confidence REAL DEFAULT 1.0, source TEXT NOT NULL, bidirectional INTEGER DEFAULT 0,
+          valid_from TEXT, valid_until TEXT, metadata TEXT DEFAULT '{}', agent_id TEXT NOT NULL,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        INSERT INTO graph_nodes (id, agent_id, name, type, source, created_at, updated_at, last_accessed_at)
+        VALUES ('node_old', 'agent1', 'Old', 'person', 'user', '2024-01-01', '2024-01-01', '2024-01-01');
+      `);
+      legacy.close();
+
+      const upgraded = new SQLiteGraphAdapter({ path });
+      try {
+        await upgraded.initialize();
+        await upgraded.initialize();
+
+        const old = await upgraded.getNode('node_old');
+        expect(old.success && old.data).not.toHaveProperty('evidence');
+        const added = await upgraded.addNode(makeNode({ evidence }));
+        if (!added.success) throw new Error(added.error);
+        const stored = await upgraded.getNode(added.data.id);
+        expect(stored.success && stored.data?.evidence).toEqual(evidence);
+      } finally {
+        await upgraded.close();
+        rmSync(dir, { recursive: true, force: true });
+      }
     });
   });
 });

@@ -383,7 +383,7 @@ const gateway = new Gateway({
 
 The `threadKey` function determines how sessions are grouped. By default, each user gets their own session per channel.
 
-Compaction follows the same rules as `CompactionService`: `threshold` counts tokens and `messageThreshold` counts messages, and the thread is compacted once either is reached. Compaction summarizes everything except the newest `keepRecent` messages with an LLM call (`summaryPrompt` overrides the default prompt) and stores the summary as a system message. Strategies: `summary`, `sliding-window` (drop old messages), `hybrid`. A failed compaction is reported to `onError` and the message is still answered. Force it with `await gateway.compactThread(threadId)`.
+Compaction follows the same rules as `CompactionService`: `threshold` counts tokens and `messageThreshold` counts messages, and the thread is compacted once either is reached. Compaction summarizes everything except the newest `keepRecent` messages with an LLM call (`summaryPrompt` overrides the default prompt) and adds the summary to the thread as a `compaction` entry, which later runs read in place of the summarized messages (nothing is deleted, see [Sessions and Compaction](/docs/memory#sessions-compaction-and-core-facts)). Strategies: `summary`, `sliding-window` (drop old messages), `hybrid`. A failed compaction is reported to `onError` and the message is still answered. Force it with `await gateway.compactThread(threadId)`.
 
 ## Stats
 

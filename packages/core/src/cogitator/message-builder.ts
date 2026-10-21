@@ -11,7 +11,12 @@ import type {
   MemoryEntry,
   MemoryEntryType,
 } from '@cogitator-ai/types';
-import { ContextBuilder, countMessageTokens } from '@cogitator-ai/memory';
+import {
+  ContextBuilder,
+  compactedHistory,
+  countMessageTokens,
+  HISTORY_ENTRY_TYPES,
+} from '@cogitator-ai/memory';
 import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import { getLogger } from '../logger';
 import { ensureThreadAccess, threadMetadata } from './threads';
@@ -129,7 +134,7 @@ export async function buildInitialMessages(
 
   if (typeof branchFrom === 'string') {
     const from = unwrap(await memoryAdapter.getEntry(branchFrom), 'getEntry');
-    if (!from || from.threadId !== threadId) {
+    if (from?.threadId !== threadId) {
       throw new CogitatorError({
         message: `The branch starts at entry ${branchFrom}, which is not in thread ${threadId}`,
         code: ErrorCode.VALIDATION_ERROR,
@@ -174,12 +179,14 @@ export async function buildInitialMessages(
           ? await memoryAdapter.getPath({
               threadId,
               limit: 20,
+              types: HISTORY_ENTRY_TYPES,
               ...(leafId !== undefined && { leafId }),
             })
           : await memoryAdapter.getEntries({ threadId, limit: 20 });
     const messages: Message[] = [{ role: 'system', content: agent.instructions }];
     if (entries.success) {
-      messages.push(...sanitizeToolHistory(entries.data.map((e) => e.message)));
+      const history = memoryAdapter.getPath ? compactedHistory(entries.data) : entries.data;
+      messages.push(...sanitizeToolHistory(history.map((e) => e.message)));
     } else {
       reportMemoryError(
         new Error(

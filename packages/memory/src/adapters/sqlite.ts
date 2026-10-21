@@ -63,8 +63,9 @@ interface EntryRow {
 
 /**
  * Layout of the database, kept in `PRAGMA user_version`. 1: entries form trees (`parent_id`,
- * `type`, `event`, `format_version`) and threads name their active leaf; entries written before
- * are chained in the order they were added.
+ * `type`, `event`, `format_version`, a `seq` of their order in the thread) and threads name their
+ * active leaf. Entries written before are chained in the order they were added and marked as
+ * format 1.
  */
 const SCHEMA_VERSION = 1;
 
@@ -195,6 +196,7 @@ export class SQLiteAdapter extends BranchingMemoryAdapter {
           ['parent_id', 'TEXT'],
           ['event', 'TEXT'],
           ['format_version', 'INTEGER'],
+          ['seq', 'INTEGER'],
         ] as const) {
           if (!entryColumns.has(name)) db.exec(`ALTER TABLE entries ADD COLUMN ${name} ${type}`);
         }
@@ -202,18 +204,20 @@ export class SQLiteAdapter extends BranchingMemoryAdapter {
           db.exec('ALTER TABLE threads ADD COLUMN active_leaf_id TEXT');
         }
         db.exec(`
+          UPDATE entries SET seq = rowid WHERE seq IS NULL;
           UPDATE entries SET parent_id = (
             SELECT previous FROM (
               SELECT id, LAG(id) OVER (
-                PARTITION BY thread_id ORDER BY created_at, rowid
+                PARTITION BY thread_id ORDER BY created_at, seq
               ) AS previous FROM entries
             ) ordered WHERE ordered.id = entries.id
-          ) WHERE parent_id IS NULL AND format_version IS NULL;
+          ), format_version = 1 WHERE format_version IS NULL;
           UPDATE threads SET active_leaf_id = (
             SELECT id FROM entries WHERE entries.thread_id = threads.id
-            ORDER BY created_at DESC, rowid DESC LIMIT 1
+            ORDER BY created_at DESC, seq DESC LIMIT 1
           ) WHERE active_leaf_id IS NULL;
           CREATE INDEX IF NOT EXISTS idx_entries_parent ON entries(thread_id, parent_id);
+          CREATE INDEX IF NOT EXISTS idx_entries_seq ON entries(thread_id, seq);
         `);
         db.pragma(`user_version = ${SCHEMA_VERSION}`);
       }
@@ -428,26 +432,28 @@ export class SQLiteAdapter extends BranchingMemoryAdapter {
           }
         }
         const parentId = askedParent === undefined ? thread.active_leaf_id : askedParent;
-        const inserted = db
-          .prepare(
-            `INSERT INTO entries (id, thread_id, message, tool_calls, tool_results, token_count,
-               created_at, metadata, type, parent_id, event, format_version)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          )
-          .run(
-            id,
-            entry.threadId,
-            JSON.stringify(fields.message),
-            fields.toolCalls ? JSON.stringify(fields.toolCalls) : null,
-            fields.toolResults ? JSON.stringify(fields.toolResults) : null,
-            fields.tokenCount,
-            createdAt.toISOString(),
-            fields.metadata ? JSON.stringify(fields.metadata) : null,
-            type,
-            parentId,
-            fields.event ? JSON.stringify(fields.event) : null,
-            MEMORY_ENTRY_FORMAT
-          );
+        const { seq } = db
+          .prepare('SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM entries WHERE thread_id = ?')
+          .get(entry.threadId) as { seq: number };
+        db.prepare(
+          `INSERT INTO entries (id, thread_id, message, tool_calls, tool_results, token_count,
+             created_at, metadata, type, parent_id, event, format_version, seq)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(
+          id,
+          entry.threadId,
+          JSON.stringify(fields.message),
+          fields.toolCalls ? JSON.stringify(fields.toolCalls) : null,
+          fields.toolResults ? JSON.stringify(fields.toolResults) : null,
+          fields.tokenCount,
+          createdAt.toISOString(),
+          fields.metadata ? JSON.stringify(fields.metadata) : null,
+          type,
+          parentId,
+          fields.event ? JSON.stringify(fields.event) : null,
+          MEMORY_ENTRY_FORMAT,
+          seq
+        );
         if (activate !== false) {
           db.prepare('UPDATE threads SET active_leaf_id = ? WHERE id = ?').run(id, entry.threadId);
         }
@@ -458,7 +464,7 @@ export class SQLiteAdapter extends BranchingMemoryAdapter {
           createdAt,
           type,
           parentId,
-          seq: Number(inserted.lastInsertRowid),
+          seq,
           formatVersion: MEMORY_ENTRY_FORMAT,
         });
       } catch (err) {
@@ -491,12 +497,12 @@ export class SQLiteAdapter extends BranchingMemoryAdapter {
       conditions.push(types);
       params.push(...typeParams);
 
-      let sql = `SELECT *, rowid AS seq FROM entries WHERE ${conditions.join(' AND ')}
-                 ORDER BY created_at ASC, rowid ASC`;
+      let sql = `SELECT * FROM entries WHERE ${conditions.join(' AND ')}
+                 ORDER BY created_at ASC, seq ASC`;
       if (options.limit) {
         sql = `SELECT * FROM (
-          SELECT *, rowid AS seq FROM entries WHERE ${conditions.join(' AND ')}
-          ORDER BY created_at DESC, rowid DESC LIMIT ?
+          SELECT * FROM entries WHERE ${conditions.join(' AND ')}
+          ORDER BY created_at DESC, seq DESC LIMIT ?
         ) ORDER BY created_at ASC, seq ASC`;
         params.push(options.limit);
       }
@@ -525,16 +531,17 @@ export class SQLiteAdapter extends BranchingMemoryAdapter {
       const limit = options.limit || Number.MAX_SAFE_INTEGER;
       const rows = this.db
         .prepare(
-          `WITH RECURSIVE path(id, parent_id, depth, kept) AS (
-             SELECT e.id, e.parent_id, 0, CASE WHEN ${wanted} THEN 1 ELSE 0 END
+          `WITH RECURSIVE path(id, parent_id, depth, kept, bound) AS (
+             SELECT e.id, e.parent_id, 0, CASE WHEN ${wanted} THEN 1 ELSE 0 END,
+                    (SELECT COUNT(*) FROM entries WHERE thread_id = e.thread_id)
              FROM entries e WHERE e.id = ? AND e.thread_id = ?
              UNION ALL
              SELECT e.id, e.parent_id, path.depth + 1,
-                    path.kept + CASE WHEN ${wanted} THEN 1 ELSE 0 END
+                    path.kept + CASE WHEN ${wanted} THEN 1 ELSE 0 END, path.bound
              FROM entries e JOIN path ON e.id = path.parent_id
-             WHERE path.kept < ? AND e.thread_id = ?
+             WHERE path.kept < ? AND e.thread_id = ? AND path.depth < path.bound
            )
-           SELECT e.*, e.rowid AS seq FROM path JOIN entries e ON e.id = path.id
+           SELECT e.* FROM path JOIN entries e ON e.id = path.id
            WHERE ${wanted} ORDER BY path.depth DESC`
         )
         .all(
@@ -560,11 +567,17 @@ export class SQLiteAdapter extends BranchingMemoryAdapter {
     if (!this.db) return this.failure('Not connected');
     try {
       const row = this.db
-        .prepare('UPDATE threads SET active_leaf_id = ? WHERE id = ? RETURNING *')
-        .get(leafId, threadId) as ThreadRow | undefined;
-      return row
-        ? this.success(this.rowToThread(row))
-        : this.failure(`Thread not found: ${threadId}`);
+        .prepare(
+          `UPDATE threads SET active_leaf_id = ? WHERE id = ?
+             AND (? IS NULL OR EXISTS (SELECT 1 FROM entries WHERE id = ? AND thread_id = ?))
+           RETURNING *`
+        )
+        .get(leafId, threadId, leafId, leafId, threadId) as ThreadRow | undefined;
+      if (row) return this.success(this.rowToThread(row));
+      const thread = this.db.prepare('SELECT 1 FROM threads WHERE id = ?').get(threadId);
+      return this.failure(
+        thread ? `Entry ${leafId} is not in thread ${threadId}` : `Thread not found: ${threadId}`
+      );
     } catch (err) {
       return this.failure((err as Error).message);
     }
@@ -574,9 +587,8 @@ export class SQLiteAdapter extends BranchingMemoryAdapter {
     if (!this.db) return this.failure('Not connected');
 
     try {
-      const row = this.db
-        .prepare('SELECT *, rowid AS seq FROM entries WHERE id = ?')
-        .get(entryId) as EntryRow | undefined;
+      const row = this.db.prepare('SELECT * FROM entries WHERE id = ?').get(entryId) as
+        EntryRow | undefined;
       return this.success(row ? rowToEntry(row, true) : null);
     } catch (err) {
       return this.failure((err as Error).message);

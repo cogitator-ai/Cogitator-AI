@@ -6,7 +6,7 @@ import { InMemoryEmbeddingAdapter } from '../adapters/memory-embedding';
 import { ContextBuilder } from '../context-builder';
 import { countMessageTokens } from '../token-counter';
 import { SessionManager } from '../session-manager';
-import { CompactionService } from '../compaction';
+import { CompactionService, compactedHistory, HISTORY_ENTRY_TYPES } from '../compaction';
 import { SQLiteGraphAdapter } from '../knowledge-graph/sqlite-graph-adapter';
 import { fetchWithRetry } from '../embedding/retry';
 
@@ -338,7 +338,8 @@ describe('CompactionService', () => {
     const service = new CompactionService({ adapter, summarize: async () => 'old stuff' });
     await service.compact('t', { strategy: 'summary', threshold: 10, keepRecent: 2 });
 
-    const entries = await adapter.getEntries({ threadId: 't' });
+    const path = await adapter.getPath({ threadId: 't', types: HISTORY_ENTRY_TYPES });
+    const entries = path.success ? { success: true, data: compactedHistory(path.data) } : path;
     expect(entries.success && entries.data.map((e) => e.message.content)).toEqual([
       '[Conversation summary]\nold stuff',
       'm4',

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { Evidence } from '@cogitator-ai/types';
 import { PostgresGraphAdapter } from '../knowledge-graph/adapters/postgres-adapter';
 
 interface QueryResult {
@@ -175,5 +176,254 @@ describe('PostgresGraphAdapter against pgvector', () => {
     });
     expect(clientStatements()).toContain('ROLLBACK');
     expect(release).toHaveBeenCalledWith(false);
+  });
+
+  describe('evidence', () => {
+    const evidence: Evidence[] = [
+      { entryId: 'entry_1', quote: 'Alice manages the Berlin team' },
+      { fileRange: { path: 'teams.md', start: 5, end: 7 }, quote: 'Berlin' },
+    ];
+
+    function edgeRow(stored: Evidence[] | null): Record<string, unknown> {
+      return {
+        id: 'edge_1',
+        agent_id: 'agent',
+        source_node_id: 'a',
+        target_node_id: 'b',
+        type: 'related_to',
+        label: null,
+        weight: 1,
+        bidirectional: false,
+        properties: {},
+        confidence: 1,
+        source: 'user',
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
+        valid_from: null,
+        valid_until: null,
+        metadata: {},
+        evidence: stored,
+      };
+    }
+
+    function sent(fragment: string): { text: string; values: unknown[] } {
+      const call = poolQuery.mock.calls.find(([text]) => text.includes(fragment));
+      if (!call) throw new Error(`No query containing ${fragment}`);
+      return { text: call[0], values: call[1] ?? [] };
+    }
+
+    function answerWith(fragment: string, rows: Record<string, unknown>[]): void {
+      poolQuery.mockImplementation(async (text) =>
+        text.includes(fragment) ? { rows } : answer(text)
+      );
+    }
+
+    const node = {
+      agentId: 'agent',
+      type: 'person' as const,
+      name: 'Alice',
+      aliases: [],
+      properties: {},
+      confidence: 1,
+      source: 'user' as const,
+    };
+    const edge = {
+      agentId: 'agent',
+      sourceNodeId: 'a',
+      targetNodeId: 'b',
+      type: 'related_to' as const,
+      weight: 1,
+      bidirectional: false,
+      properties: {},
+      confidence: 1,
+      source: 'user' as const,
+    };
+
+    it('adds the evidence column to new and existing tables', async () => {
+      await adapter.connect();
+
+      const statements = poolStatements();
+      for (const table of ['graph_nodes', 'graph_edges']) {
+        expect(
+          statements.some((text) =>
+            new RegExp(`CREATE TABLE IF NOT EXISTS kg\\.${table} \\(.*evidence JSONB`).test(text)
+          )
+        ).toBe(true);
+        expect(statements).toContain(
+          `ALTER TABLE kg.${table} ADD COLUMN IF NOT EXISTS evidence JSONB`
+        );
+      }
+    });
+
+    it('sends evidence as JSON text and NULL for items without it', async () => {
+      await adapter.connect();
+
+      await adapter.addNode({ ...node, evidence });
+      await adapter.addEdge({ ...edge, evidence });
+      const plainNode = await adapter.addNode(node);
+      const plainEdge = await adapter.addEdge(edge);
+
+      const nodeInserts = poolQuery.mock.calls.filter(([text]) =>
+        text.includes('INSERT INTO kg.graph_nodes')
+      );
+      const edgeInserts = poolQuery.mock.calls.filter(([text]) =>
+        text.includes('INSERT INTO kg.graph_edges')
+      );
+      expect(nodeInserts[0][0]).toContain('$13::jsonb');
+      expect(JSON.parse(nodeInserts[0][1]?.[12] as string)).toEqual(evidence);
+      expect(nodeInserts[1][1]?.[12]).toBeNull();
+      expect(edgeInserts[0][0]).toContain('$16::jsonb');
+      expect(JSON.parse(edgeInserts[0][1]?.[15] as string)).toEqual(evidence);
+      expect(edgeInserts[1][1]?.[15]).toBeNull();
+      expect(plainNode.success && plainNode.data).not.toHaveProperty('evidence');
+      expect(plainEdge.success && plainEdge.data).not.toHaveProperty('evidence');
+    });
+
+    it('reads evidence back and leaves it out of rows without it', async () => {
+      await adapter.connect();
+      answerWith('SELECT * FROM kg.graph_edges', [edgeRow(evidence), edgeRow(null)]);
+
+      const edges = await adapter.getEdgesBetween('a', 'b');
+
+      expect(edges.success).toBe(true);
+      if (!edges.success) return;
+      expect(edges.data[0].evidence).toEqual(evidence);
+      expect(edges.data[1]).not.toHaveProperty('evidence');
+
+      answerWith('SET last_accessed_at = NOW()', [{ ...nodeRow('a', 1), evidence }]);
+      const found = await adapter.getNode('a');
+      expect(found.success && found.data?.evidence).toEqual(evidence);
+
+      answerWith('SET last_accessed_at = NOW()', [{ ...nodeRow('b', 1), evidence: null }]);
+      const plain = await adapter.getNode('b');
+      expect(plain.success && plain.data).not.toHaveProperty('evidence');
+    });
+
+    it('reads the evidence of neighbors and of the edges to them', async () => {
+      await adapter.connect();
+      answerWith('e.evidence as e_evidence', [
+        {
+          e_id: 'edge_1',
+          e_agent_id: 'agent',
+          source_node_id: 'a',
+          target_node_id: 'b',
+          e_type: 'related_to',
+          e_weight: 1,
+          e_bidirectional: false,
+          e_properties: {},
+          e_confidence: 1,
+          e_source: 'user',
+          e_created_at: '2026-01-01T00:00:00.000Z',
+          e_updated_at: '2026-01-01T00:00:00.000Z',
+          e_metadata: {},
+          e_evidence: evidence.slice(1),
+          n_id: 'b',
+          n_agent_id: 'agent',
+          n_type: 'person',
+          n_name: 'Bob',
+          n_aliases: [],
+          n_properties: {},
+          n_confidence: 1,
+          n_source: 'user',
+          n_created_at: '2026-01-01T00:00:00.000Z',
+          n_updated_at: '2026-01-01T00:00:00.000Z',
+          n_last_accessed_at: '2026-01-01T00:00:00.000Z',
+          n_access_count: 0,
+          n_metadata: {},
+          n_evidence: evidence,
+        },
+      ]);
+
+      const neighbors = await adapter.getNeighbors('a', 'outgoing');
+
+      expect(neighbors.success).toBe(true);
+      if (!neighbors.success) return;
+      expect(neighbors.data[0].node.evidence).toEqual(evidence);
+      expect(neighbors.data[0].edge.evidence).toEqual(evidence.slice(1));
+    });
+
+    it.each([
+      [
+        'updateNode',
+        (target: PostgresGraphAdapter) => target.updateNode('a', { evidence }),
+        'UPDATE kg.graph_nodes SET',
+        () => ({ ...nodeRow('a', 1), evidence }),
+      ],
+      [
+        'updateEdge',
+        (target: PostgresGraphAdapter) => target.updateEdge('edge_1', { evidence }),
+        'UPDATE kg.graph_edges SET',
+        () => edgeRow(evidence),
+      ],
+    ])('%s replaces the evidence', async (_name, update, fragment, stored) => {
+      await adapter.connect();
+      answerWith(fragment, [stored()]);
+
+      const result = await update(adapter);
+
+      const { text, values } = sent(fragment);
+      expect(text).toContain('evidence = $1::jsonb');
+      expect(JSON.parse(values[0] as string)).toEqual(evidence);
+      expect(result.success && result.data.evidence).toEqual(evidence);
+    });
+
+    describe('mergeNodes', () => {
+      const extra: Evidence = { toolCallId: 'call_4', quote: 'Berlin team' };
+      const stored = new Map<string, Record<string, unknown>>();
+
+      beforeEach(async () => {
+        await adapter.connect();
+        stored.clear();
+        poolQuery.mockImplementation(async (text, values = []) => {
+          if (text.includes('SET last_accessed_at = NOW()')) {
+            const row = stored.get(values[0] as string);
+            return { rows: row ? [row] : [] };
+          }
+          if (text.includes('UPDATE kg.graph_nodes SET updated_at = NOW()')) {
+            const id = values.at(-1) as string;
+            const row = { ...stored.get(id) };
+            const position = /evidence = \$(\d+)::jsonb/.exec(text)?.[1];
+            if (position) row.evidence = JSON.parse(values[Number(position) - 1] as string);
+            stored.set(id, row);
+            return { rows: [row] };
+          }
+          return answer(text);
+        });
+      });
+
+      const put = (id: string, own?: Evidence[]) =>
+        stored.set(id, { ...nodeRow(id, 1), ...(own ? { evidence: own } : {}) });
+
+      it('gives the target its own evidence and that of every source once, in order', async () => {
+        put('t', [evidence[0]]);
+        put('a', [evidence[1], evidence[0]]);
+        put('b');
+        put('c', [{ ...evidence[1] }, extra]);
+
+        const result = await adapter.mergeNodes('t', ['a', 'b', 'c']);
+
+        expect(result.success && result.data.evidence).toEqual([evidence[0], evidence[1], extra]);
+      });
+
+      it('leaves evidence absent when no merged node has any', async () => {
+        put('t');
+        put('a');
+
+        const result = await adapter.mergeNodes('t', ['a']);
+
+        expect(result.success).toBe(true);
+        expect(result.success && result.data).not.toHaveProperty('evidence');
+        expect(poolStatements().some((text) => text.includes('evidence = $'))).toBe(false);
+      });
+    });
+
+    it('leaves evidence alone when an update does not carry it', async () => {
+      await adapter.connect();
+      answerWith('UPDATE kg.graph_nodes SET', [nodeRow('a', 1)]);
+
+      await adapter.updateNode('a', { name: 'Alicia' });
+
+      expect(sent('UPDATE kg.graph_nodes SET').text).not.toContain('evidence');
+    });
   });
 });

@@ -94,8 +94,8 @@ function writeReply(reply: unknown): { written: boolean; expired: string[] } {
   return { written: Number(written) === 1, expired: expired.map(String) };
 }
 
-/** The stored thread, read on the primary like every write, never on a lagging replica. */
-const READ_THREAD = `return redis.call('GET', KEYS[1])`;
+/** A stored thread or entry, read on the primary like every write, never on a lagging replica. */
+const READ_KEY = `return redis.call('GET', KEYS[1])`;
 
 /**
  * Writes a thread and its place in the thread index if the thread is still what the caller read:
@@ -119,55 +119,72 @@ return {1, unpack(expired)}
 
 /**
  * Lua helpers for trees of entries. An entry's JSON ends with its `parentId`, which
- * `withParent` sets without decoding the rest. `chain` links the entries of a thread written
- * before trees in the order they were added, once, when the thread has no active leaf yet.
+ * `withParent` sets without decoding the rest, marking an entry written before trees as format
+ * 1 when `legacy` is set. `chain` links the entries of a thread written before trees once per
+ * thread, recorded by the thread's chained marker: in the order `getEntries` read them before
+ * trees (creation time, then `seq`, then key), each marked so a second chaining skips it, and
+ * makes the last one the active leaf when the thread has none.
  */
 const TREE = `
-local function withParent(json, parent)
+local function withParent(json, parent, legacy)
   local value = 'null'
   if parent then value = cjson.encode(parent) end
+  local tail = ',"parentId":' .. value .. '}'
+  if legacy then tail = ',"formatVersion":1' .. tail end
   local head = string.match(json, '^(.*),"parentId":[^,]*}$')
-  if head then return head .. ',"parentId":' .. value .. '}' end
-  return string.sub(json, 1, -2) .. ',"parentId":' .. value .. '}'
+  if head then return head .. tail end
+  return string.sub(json, 1, -2) .. tail
 end
-local function chain(entriesKey, leafKey, prefix, ttl)
-  if redis.call('EXISTS', leafKey) == 1 then return end
-  local members = redis.call('ZRANGE', entriesKey, 0, -1)
-  local previous = nil
-  local skip = #prefix + #'entry:'
-  for i = 1, #members do
-    local json = redis.call('GET', members[i])
+local function chain(entriesKey, leafKey, chainedKey, prefix, ttl)
+  if redis.call('EXISTS', chainedKey) == 1 then return end
+  local scored = redis.call('ZRANGE', entriesKey, 0, -1, 'WITHSCORES')
+  local legacy = {}
+  for i = 1, #scored, 2 do
+    local json = redis.call('GET', scored[i])
     if json and not string.find(json, '"formatVersion"', 1, true) then
-      redis.call('SET', members[i], withParent(json, previous), 'KEEPTTL')
-      previous = string.sub(members[i], skip + 1)
+      local seq = cjson.decode(json).seq
+      if type(seq) ~= 'number' then seq = 0 end
+      legacy[#legacy + 1] = { key = scored[i], json = json, at = tonumber(scored[i + 1]), seq = seq }
     end
   end
-  if previous then put(leafKey, previous, ttl) end
+  table.sort(legacy, function(a, b)
+    if a.at ~= b.at then return a.at < b.at end
+    if a.seq ~= b.seq then return a.seq < b.seq end
+    return a.key < b.key
+  end)
+  local previous = nil
+  local skip = #prefix + #'entry:'
+  for i = 1, #legacy do
+    redis.call('SET', legacy[i].key, withParent(legacy[i].json, previous, true), 'KEEPTTL')
+    previous = string.sub(legacy[i].key, skip + 1)
+  end
+  if previous and redis.call('EXISTS', leafKey) == 0 then put(leafKey, previous, ttl) end
+  put(chainedKey, '1', ttl)
 end
 `;
 
 /**
- * Adds an entry to a thread that exists, after the active leaf (`ARGV[5]` empty) or after the
- * entry `ARGV[5]` of the thread, and makes it the active leaf unless `ARGV[6]` is `'0'`. It
- * refreshes the TTL of the thread, its entries, its leaf and the index. Replies
- * `{1, parent id or '', expired ids...}` when added, `{0}` without the thread, `{-1}` when the
- * parent is not in the thread.
+ * Adds an entry to a thread that exists and makes it the active leaf unless `ARGV[6]` is `'0'`.
+ * `ARGV[5]` says where it goes: `'leaf'` after the active leaf, `'root'` as a new root, `'entry'`
+ * after the entry `ARGV[8]` of the thread. It refreshes the TTL of the thread, its entries, its
+ * leaf, its chained marker and the index. Replies `{1, parent id or '', expired ids...}` when
+ * added, `{0}` without the thread, `{-1}` when the parent is not in the thread.
  */
 const ADD_ENTRY = `${SWEEP_INDEX}${TREE}
 if redis.call('EXISTS', KEYS[1]) == 0 then return {0} end
-chain(KEYS[2], KEYS[6], ARGV[4], ARGV[3])
+chain(KEYS[2], KEYS[6], KEYS[7], ARGV[4], ARGV[3])
 local parent = nil
-if ARGV[5] == '' then
+if ARGV[5] == 'leaf' then
   parent = redis.call('GET', KEYS[6]) or nil
-elseif redis.call('ZSCORE', KEYS[2], ARGV[4] .. 'entry:' .. ARGV[5]) then
-  parent = ARGV[5]
-else
-  return {-1}
+elseif ARGV[5] == 'entry' then
+  if not redis.call('ZSCORE', KEYS[2], ARGV[4] .. 'entry:' .. ARGV[8]) then return {-1} end
+  parent = ARGV[8]
 end
 put(KEYS[3], withParent(ARGV[1], parent), ARGV[3])
 redis.call('ZADD', KEYS[2], ARGV[2], KEYS[3])
 keep(KEYS[2], ARGV[3])
 keep(KEYS[1], ARGV[3])
+keep(KEYS[7], ARGV[3])
 if ARGV[6] == '1' then
   put(KEYS[6], ARGV[7], ARGV[3])
 elseif redis.call('EXISTS', KEYS[6]) == 1 then
@@ -183,18 +200,27 @@ return {1, parent or '', unpack(expired)}
 
 /** Chains a thread's entries from before trees, then replies with its active leaf or false */
 const READ_LEAF = `${LIFETIME}${TREE}
-chain(KEYS[1], KEYS[2], ARGV[1], ARGV[2])
+chain(KEYS[1], KEYS[2], KEYS[3], ARGV[1], ARGV[2])
 return redis.call('GET', KEYS[2])
 `;
 
-/** Sets the active leaf of a thread that exists, `ARGV[2]` empty clearing it. Replies 1 or 0. */
-const SET_LEAF = `${LIFETIME}
+/**
+ * Sets the active leaf of a thread that exists to the entry `KEYS[5]` when `ARGV[3]` is `'1'`,
+ * clears it otherwise. The entry must still be one of the thread's when the script runs, so a
+ * checkout racing a delete never leaves the leaf on a deleted entry. Replies 1 when set, 0
+ * without the thread, -1 when the entry is not in the thread.
+ */
+const SET_LEAF = `${LIFETIME}${TREE}
 if redis.call('EXISTS', KEYS[1]) == 0 then return 0 end
-if ARGV[2] == '' then
+chain(KEYS[3], KEYS[2], KEYS[4], ARGV[1], ARGV[2])
+if ARGV[3] ~= '1' then
   redis.call('DEL', KEYS[2])
-else
-  put(KEYS[2], ARGV[2], ARGV[1])
+  return 1
 end
+if not redis.call('ZSCORE', KEYS[3], KEYS[5]) or redis.call('EXISTS', KEYS[5]) == 0 then
+  return -1
+end
+put(KEYS[2], ARGV[4], ARGV[2])
 return 1
 `;
 
@@ -202,11 +228,14 @@ return 1
 const PATH_STEPS = 2000;
 
 /**
- * Walks back from the entry `ARGV[2]` of the thread `ARGV[5]`, keeping entries of the types in
- * `ARGV[4]` (comma separated, `*` for all) until `ARGV[3]` are kept (0 for all), for at most
- * `ARGV[6]` steps. Replies `{next id or '', kept JSON...}`, newest first.
+ * Walks back from the entry `ARGV[2]` of the thread `ARGV[5]` (entries `KEYS[1]`, leaf `KEYS[2]`,
+ * chained marker `KEYS[3]`, which also route the script to the thread's node in a cluster),
+ * keeping entries of the types in `ARGV[4]` (comma separated, `*` for all) until `ARGV[3]` are
+ * kept (0 for all), for at most `ARGV[6]` steps. Replies `{next id or '', kept JSON...}`, newest
+ * first.
  */
-const PATH = `
+const PATH = `${LIFETIME}${TREE}
+chain(KEYS[1], KEYS[2], KEYS[3], ARGV[1], ARGV[7])
 local all = ARGV[4] == '*'
 local wanted = {}
 for t in string.gmatch(ARGV[4], '[^,]+') do wanted[t] = true end
@@ -235,37 +264,38 @@ return out
 `;
 
 /**
- * Deletes the entry `KEYS[1]` and splices it out of its branch: its children go after its parent,
- * and the active leaf moves to the parent when it was the entry. Replies 1, or 0 without it.
+ * Deletes the entry `KEYS[1]` of the thread `ARGV[4]` (entries `KEYS[2]`, leaf `KEYS[3]`, chained
+ * marker `KEYS[4]`) and splices it out of its branch: its children go after its parent, and the
+ * active leaf moves to the parent when it was the entry. Replies 1, 0 without the entry, -1 when
+ * the entry is not the thread's.
  */
 const REMOVE_ENTRY = `${LIFETIME}${TREE}
 local json = redis.call('GET', KEYS[1])
 if not json then return 0 end
-local threadId = cjson.decode(json).threadId
-local entriesKey = ARGV[1] .. 'thread:entries:' .. threadId
-local leafKey = ARGV[1] .. 'thread:leaf:' .. threadId
-chain(entriesKey, leafKey, ARGV[1], ARGV[2])
+if cjson.decode(json).threadId ~= ARGV[4] then return -1 end
+chain(KEYS[2], KEYS[3], KEYS[4], ARGV[1], ARGV[2])
 local parent = cjson.decode(redis.call('GET', KEYS[1])).parentId
 if parent == cjson.null then parent = nil end
 local suffix = ',"parentId":' .. cjson.encode(ARGV[3]) .. '}'
-local members = redis.call('ZRANGE', entriesKey, 0, -1)
+local members = redis.call('ZRANGE', KEYS[2], 0, -1)
 for i = 1, #members do
   local child = redis.call('GET', members[i])
   if child and string.sub(child, -#suffix) == suffix then
     redis.call('SET', members[i], withParent(child, parent), 'KEEPTTL')
   end
 end
-if redis.call('GET', leafKey) == ARGV[3] then
-  if parent then put(leafKey, parent, ARGV[2]) else redis.call('DEL', leafKey) end
+if redis.call('GET', KEYS[3]) == ARGV[3] then
+  if parent then put(KEYS[3], parent, ARGV[2]) else redis.call('DEL', KEYS[3]) end
 end
-redis.call('ZREM', entriesKey, KEYS[1])
+redis.call('ZREM', KEYS[2], KEYS[1])
 redis.call('DEL', KEYS[1])
 return 1
 `;
 
 /**
  * Deletes the entries of a thread, their sorted set and its active leaf (`KEYS[1]`, `KEYS[2]`),
- * and with four keys the thread itself and its place in the thread index too.
+ * and with five keys its chained marker, the thread itself and its place in the thread index
+ * too (`KEYS[3]` to `KEYS[5]`).
  */
 const DROP_ENTRIES = `
 local members = redis.call('ZRANGE', KEYS[1], 0, -1)
@@ -273,9 +303,9 @@ for i = 1, #members, 500 do
   redis.call('DEL', unpack(members, i, math.min(i + 499, #members)))
 end
 redis.call('DEL', KEYS[1], KEYS[2])
-if #KEYS == 4 then
-  redis.call('DEL', KEYS[3])
-  redis.call('ZREM', KEYS[4], ARGV[1])
+if #KEYS == 5 then
+  redis.call('DEL', KEYS[3], KEYS[4])
+  redis.call('ZREM', KEYS[5], ARGV[1])
 end
 return #members
 `;
@@ -561,6 +591,15 @@ export class RedisAdapter extends BranchingMemoryAdapter {
     return `${this.prefix}${type}:${id}`;
   }
 
+  /** The keys every tree script of a thread takes: its entries, its leaf, its chained marker */
+  private treeKeys(threadId: string): [string, string, string] {
+    return [
+      this.key('thread:entries', threadId),
+      this.key('thread:leaf', threadId),
+      this.key('thread:chained', threadId),
+    ];
+  }
+
   /** Thread ids scored by `updatedAt` in ms, kept with the threads by every thread write. */
   private get indexKey(): string {
     return `${this.prefix}threads:index`;
@@ -597,7 +636,7 @@ export class RedisAdapter extends BranchingMemoryAdapter {
   ): Promise<Thread | null> {
     const threadKey = this.key('thread', threadId);
     for (let attempt = 0; attempt < MAX_WRITE_ATTEMPTS; attempt++) {
-      const read = await client.eval(READ_THREAD, 1, threadKey);
+      const read = await client.eval(READ_KEY, 1, threadKey);
       const current = typeof read === 'string' ? read : null;
       const thread = next(current === null ? null : (parseThread(current) ?? null));
       if (!thread) return null;
@@ -644,14 +683,7 @@ export class RedisAdapter extends BranchingMemoryAdapter {
     const data = await client.get(this.key('thread', threadId));
     const thread = data === null ? undefined : parseThread(data);
     if (!thread) return null;
-    const leaf = await client.eval(
-      READ_LEAF,
-      2,
-      this.key('thread:entries', threadId),
-      this.key('thread:leaf', threadId),
-      this.prefix,
-      this.ttl
-    );
+    const leaf = await client.eval(READ_LEAF, 3, ...this.treeKeys(threadId), this.prefix, this.ttl);
     return typeof leaf === 'string' ? { ...thread, activeLeafId: leaf } : thread;
   }
 
@@ -685,9 +717,8 @@ export class RedisAdapter extends BranchingMemoryAdapter {
     return this.run(async (client) => {
       await client.eval(
         DROP_ENTRIES,
-        4,
-        this.key('thread:entries', threadId),
-        this.key('thread:leaf', threadId),
+        5,
+        ...this.treeKeys(threadId),
         this.key('thread', threadId),
         this.indexKey,
         threadId
@@ -831,22 +862,25 @@ export class RedisAdapter extends BranchingMemoryAdapter {
         formatVersion: MEMORY_ENTRY_FORMAT,
       } satisfies StoredEntry;
 
+      const [entriesKey, leafKey, chainedKey] = this.treeKeys(entry.threadId);
       const reply = await client.eval(
         ADD_ENTRY,
-        6,
+        7,
         this.key('thread', entry.threadId),
-        this.key('thread:entries', entry.threadId),
+        entriesKey,
         this.key('entry', id),
         this.indexKey,
         this.sweepKey,
-        this.key('thread:leaf', entry.threadId),
+        leafKey,
+        chainedKey,
         JSON.stringify(stored),
         createdAt.getTime(),
         this.ttl,
         this.prefix,
-        askedParent ?? '',
+        askedParent === undefined ? 'leaf' : askedParent === null ? 'root' : 'entry',
         activate === false ? '0' : '1',
-        id
+        id,
+        askedParent ?? ''
       );
       if (!Array.isArray(reply)) throw new Error('Unexpected reply from Redis');
       const [status, parent, ...expired] = reply;
@@ -877,13 +911,15 @@ export class RedisAdapter extends BranchingMemoryAdapter {
         const left = options.limit ? options.limit - found.length : 0;
         const reply = await client.eval(
           PATH,
-          0,
+          3,
+          ...this.treeKeys(options.threadId),
           this.prefix,
           next,
           left,
           types,
           options.threadId,
-          PATH_STEPS
+          PATH_STEPS,
+          this.ttl
         );
         if (!Array.isArray(reply)) throw new Error('Unexpected reply from Redis');
         const [continuation, ...rows] = reply.map(String);
@@ -902,15 +938,24 @@ export class RedisAdapter extends BranchingMemoryAdapter {
     leafId: string | null
   ): Promise<MemoryResult<Thread>> {
     return this.run(async (client) => {
-      const set = await client.eval(
-        SET_LEAF,
-        2,
-        this.key('thread', threadId),
-        this.key('thread:leaf', threadId),
-        this.ttl,
-        leafId ?? ''
+      const [entriesKey, leafKey, chainedKey] = this.treeKeys(threadId);
+      const set = Number(
+        await client.eval(
+          SET_LEAF,
+          5,
+          this.key('thread', threadId),
+          leafKey,
+          entriesKey,
+          chainedKey,
+          this.key('entry', leafId ?? ''),
+          this.prefix,
+          this.ttl,
+          leafId === null ? '0' : '1',
+          leafId ?? ''
+        )
       );
-      if (Number(set) !== 1) return this.failure(`Thread not found: ${threadId}`);
+      if (set === -1) return this.failure(`Entry ${leafId} is not in thread ${threadId}`);
+      if (set !== 1) return this.failure(`Thread not found: ${threadId}`);
       const thread = await this.readThread(client, threadId);
       return thread ? this.success(thread) : this.failure(`Thread not found: ${threadId}`);
     });
@@ -1004,18 +1049,29 @@ export class RedisAdapter extends BranchingMemoryAdapter {
     }));
   }
 
-  /** Deletes an entry and splices it out of its branch: its children go after its parent */
+  /**
+   * Deletes an entry and splices it out of its branch: its children go after its parent. The
+   * entry is read first to learn its thread, whose keys the script then names.
+   */
   private async removeEntry(entryId: string): Promise<MemoryResult<void>> {
     return this.run(async (client) => {
-      await client.eval(
+      const entryKey = this.key('entry', entryId);
+      const json = await client.eval(READ_KEY, 1, entryKey);
+      if (typeof json !== 'string') return this.success(undefined);
+      const { threadId } = parseEntry(json);
+      const removed = await client.eval(
         REMOVE_ENTRY,
-        1,
-        this.key('entry', entryId),
+        4,
+        entryKey,
+        ...this.treeKeys(threadId),
         this.prefix,
         this.ttl,
-        entryId
+        entryId,
+        threadId
       );
-      return this.success(undefined);
+      return Number(removed) === -1
+        ? this.failure(`Entry ${entryId} is not in thread ${threadId}`)
+        : this.success(undefined);
     });
   }
 

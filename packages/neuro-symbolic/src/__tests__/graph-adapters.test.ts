@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import type { GraphAdapter, MemoryResult } from '@cogitator-ai/types';
+import type { Evidence, GraphAdapter, GraphNode, MemoryResult } from '@cogitator-ai/types';
 import { MemoryGraphAdapter } from '../knowledge-graph/adapters/memory-adapter';
 import { PostgresGraphAdapter } from '../knowledge-graph/adapters/postgres-adapter';
 import { Neo4jGraphAdapter } from '../knowledge-graph/adapters/neo4j-adapter';
@@ -481,6 +481,79 @@ function runAdapterTests(name: string, createAdapter: () => GraphAdapter) {
 
         expect(result.success).toBe(true);
         expect(unwrap(result).visitedNodes.length).toBeLessThanOrEqual(2);
+      });
+    });
+
+    describe('Evidence', () => {
+      const a: Evidence = { entryId: 'e1', quote: 'Ann leads design' };
+      const b: Evidence = { toolCallId: 'c1', quote: 'design lead' };
+      const c: Evidence = { fileRange: { path: 'team.md', start: 1, end: 2 }, quote: 'Ann' };
+      const d: Evidence = { entryId: 'e2', quote: 'Ann leads design' };
+
+      const person = (name: string, evidence?: Evidence[]) => ({
+        agentId: TEST_AGENT_ID,
+        type: 'person' as const,
+        name,
+        aliases: [],
+        properties: {},
+        confidence: 1,
+        source: 'user' as const,
+        ...(evidence ? { evidence } : {}),
+      });
+
+      it('keeps evidence through node and edge updates', async () => {
+        const ann = unwrap(await adapter.addNode(person('Ann')));
+        const bo = unwrap(await adapter.addNode(person('Bo')));
+        const edge = unwrap(
+          await adapter.addEdge({
+            agentId: TEST_AGENT_ID,
+            sourceNodeId: ann.id,
+            targetNodeId: bo.id,
+            type: 'knows',
+            weight: 1,
+            bidirectional: false,
+            properties: {},
+            confidence: 1,
+            source: 'user',
+          })
+        );
+
+        unwrap(await adapter.updateNode(ann.id, { evidence: [a] }));
+        unwrap(await adapter.updateNode(ann.id, { name: 'Anna' }));
+        expect(unwrap(await adapter.getNode(ann.id))?.evidence).toEqual([a]);
+        unwrap(await adapter.updateEdge(edge.id, { evidence: [b] }));
+        unwrap(await adapter.updateEdge(edge.id, { weight: 0.5 }));
+        expect(unwrap(await adapter.getEdge(edge.id))?.evidence).toEqual([b]);
+      });
+
+      it('merges the evidence of merged nodes once each, the target first', async () => {
+        const target = unwrap(await adapter.addNode(person('Ann', [a, b])));
+        const first = unwrap(await adapter.addNode(person('Annie', [b, c])));
+        const plain = unwrap(await adapter.addNode(person('A.')));
+        const second = unwrap(await adapter.addNode(person('Ann K.', [{ ...c }, d, a])));
+
+        const merged = unwrap(await adapter.mergeNodes(target.id, [first.id, plain.id, second.id]));
+
+        expect(merged.evidence).toEqual([a, b, c, d]);
+        expect(unwrap(await adapter.getNode(target.id))?.evidence).toEqual([a, b, c, d]);
+      });
+
+      it('leaves evidence absent when no merged node has any', async () => {
+        const target = unwrap(await adapter.addNode(person('Ann')));
+        const source = unwrap(await adapter.addNode(person('Annie')));
+
+        const merged: GraphNode = unwrap(await adapter.mergeNodes(target.id, [source.id]));
+
+        expect(merged).not.toHaveProperty('evidence');
+      });
+
+      it('gives the target the evidence of sources when it has none', async () => {
+        const target = unwrap(await adapter.addNode(person('Ann')));
+        const source = unwrap(await adapter.addNode(person('Annie', [c, c])));
+
+        const merged = unwrap(await adapter.mergeNodes(target.id, [source.id]));
+
+        expect(merged.evidence).toEqual([c]);
       });
     });
 

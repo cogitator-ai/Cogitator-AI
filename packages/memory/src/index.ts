@@ -7,6 +7,7 @@
 export {
   BaseMemoryAdapter,
   ChangeReportingMemoryAdapter,
+  BranchingMemoryAdapter,
   InMemoryAdapter,
   createMemoryAdapter,
   createEmbeddingAdapter,
@@ -80,6 +81,8 @@ export type { CoreFactsStoreConfig, FactHistoryEntry } from './core-facts';
 export { SessionManager, type SessionManagerOptions } from './session-manager';
 export {
   CompactionService,
+  compactedHistory,
+  HISTORY_ENTRY_TYPES,
   type SummarizeFn,
   type SummarizeOptions,
   type CompactionServiceConfig,
@@ -146,6 +149,11 @@ export type {
   MemoryType,
   Thread,
   MemoryEntry,
+  MemoryEntryType,
+  NewMemoryEntry,
+  PathQueryOptions,
+  Evidence,
+  EvidenceStatus,
   Fact,
   Embedding,
   MemoryProvider,

@@ -905,6 +905,7 @@ const result = await cog.run(agent, {
   useMemory: true,
   loadHistory: true,
   saveHistory: true,
+  branch: { fromEntryId: entryId, activate: false }, // run on a branch of the thread's memory
   parallelToolCalls: false, // default: tool calls of one turn run one after another
   toolChoice: 'required', // force a tool call until the model makes one, then 'auto'
 
@@ -959,6 +960,7 @@ interface RunResult {
   trace: { traceId: string; spans: Span[] };
   reflections?: Reflection[];
   reflectionSummary?: ReflectionSummary;
+  memory?: { threadId: string; branchPoint: string | null; leafId?: string }; // where the run wrote
 }
 ```
 
@@ -1087,7 +1089,25 @@ if (memory) {
 }
 ```
 
-See [Memory](https://cogitator.app/docs/memory) and [Memory Adapters](https://cogitator.app/docs/memory/adapters).
+### Runs on Branches
+
+A thread's memory is a tree of entries. A run goes on after the thread's active leaf by default, `branch` runs it from another entry: history is read along the branch ending at `fromEntryId` (`null` for none), and the run's entries go after it. `activate: false` keeps the thread's active leaf where it was, so the run writes a branch of its own:
+
+```typescript
+const first = await cog.run(agent, { input: 'Plan a day in Rome', threadId: 'trip' });
+await cog.run(agent, { input: 'Make it cheaper', threadId: 'trip' });
+
+const other = await cog.run(agent, {
+  input: 'Make it a museum day instead',
+  threadId: 'trip',
+  branch: { fromEntryId: first.memory!.leafId!, activate: false },
+});
+// other saw the first question and answer, not the cheaper plan
+```
+
+`result.memory` says where a run wrote (`threadId`, `branchPoint`, `leafId`). A branch needs an adapter with `getPath` (every built-in one) and an entry of the thread, else the run fails with `VALIDATION_ERROR`. The runtime also records session events as entries: `model_change` on a fallback, `approval` when a run pauses, `interrupt` when one is aborted or times out. A paused run resumes on its branch. A run with `activate: false` leaves the thread's paused run alone and is resumed with its checkpoint, not the thread id.
+
+See [Memory](https://cogitator.app/docs/memory), [Memory Adapters](https://cogitator.app/docs/memory/adapters) and [Runs on Branches](https://cogitator.app/docs/core/cogitator#runs-on-branches).
 
 ---
 
@@ -1500,6 +1520,10 @@ const liveReplay = await timeTravel.replayLive(agent, checkpointId, {
 ```
 
 Checkpoints are anchored on tool calls: checkpoint `i` holds the conversation after `i` tool calls, stopping before the result of the call it is anchored on. `stepsReplayed` is that index, `stepsExecuted` counts the replay's tool calls, and `divergedAt` uses the original run's numbering. Mocked tool results are keyed by tool name (in deterministic replays also by call id): the tool answers with the given value and never runs. Tools in `skipTools` are removed from the replayed agent. Checkpoints, replays and forks store their traces in the trace store, so `compare()` and `compareWithOriginal()` can read them.
+
+### Replays on Branches
+
+Checkpoints keep where their run wrote in memory (`checkpoint.memory`). A live replay or a fork goes on a branch of the original thread from the entry the run started after, with `activate: false`: it reads the earlier conversation from memory, the thread's active leaf does not move, and two forks of one run never see each other's entries. `replay.memory` says where it wrote. A replay goes on a thread of its own (`replay_<runId>_<id>`) instead when the checkpoint has no place in memory, the memory has no `getPath`, the thread belongs to another user than the replay's `userId` (an option of replays and forks), the entry the run started after is gone, or `modifiedMessages` change the conversation before the run's input.
 
 ---
 

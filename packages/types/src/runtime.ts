@@ -313,8 +313,9 @@ export interface RunOptions<TDeps = unknown> {
    * Runs on a branch of the thread: history is read along the branch ending at `fromEntryId`
    * (null for none, a new root), and the run's entries go after it, one after another. With
    * `activate: false` the thread's active leaf stays where it was, so a fork or a replay writes
-   * a branch of its own while the conversation goes on; true by default. Needs a memory adapter
-   * with branches (every built-in one).
+   * a branch of its own while the conversation goes on; true by default. Such a run does not
+   * take the thread's place for a paused run: when it pauses, resume it with its checkpoint, not
+   * its thread id. Needs a memory adapter with branches (every built-in one).
    */
   branch?: { fromEntryId: string | null; activate?: boolean };
 
@@ -516,8 +517,11 @@ export interface RunCheckpoint {
    * trace under it. Missing in checkpoints saved before it existed
    */
   trace?: { traceId: string; rootSpanId: string };
-  /** Where a run on a branch writes next, so the resumed run goes on along it */
-  branch?: { parentId: string | null; activate: boolean };
+  /**
+   * Where the run writes next and where it started writing (`branchPoint`), so the resumed run
+   * goes on along its branch and reports the same place
+   */
+  branch?: { parentId: string | null; activate: boolean; branchPoint?: string | null };
 }
 
 /** Where a run's entries went in the thread's tree of memory */

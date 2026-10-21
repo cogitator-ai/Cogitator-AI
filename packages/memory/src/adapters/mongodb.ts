@@ -30,7 +30,10 @@ import { BranchingMemoryAdapter, entryTypeWanted } from './base';
 import { threadListing, threadPage, type ThreadListing } from './thread-listing';
 
 /** A cursor over `find()` results, as far as the adapter reads it. */
-type MongoCursor<T extends Document> = Pick<FindCursor<WithId<T>>, 'sort' | 'limit' | 'toArray'>;
+type MongoCursor<T extends Document> = Pick<
+  FindCursor<WithId<T>>,
+  'sort' | 'limit' | 'batchSize' | 'toArray' | 'next' | 'close'
+>;
 
 /**
  * The collection methods the adapter calls, typed against the installed `mongodb` driver so a
@@ -47,8 +50,6 @@ interface MongoCollection<T extends Document> extends Pick<
   | 'deleteOne'
   | 'deleteMany'
   | 'bulkWrite'
-  | 'aggregate'
-  | 'collectionName'
 > {
   findOne(filter: Filter<T>): Promise<WithId<T> | null>;
   find(filter: Filter<T>, options?: FindOptions): MongoCursor<T>;
@@ -78,6 +79,33 @@ interface ThreadDoc {
   activeLeafId?: string | null;
   /** Set once the entries written before trees were chained, and on threads made since */
   chained?: boolean;
+  /** The write lease of the writer changing the thread's tree, see `MongoDBAdapter.underLease` */
+  lease?: ThreadLease | null;
+}
+
+/** A write lease on a thread: who holds it, and until when by the server's clock */
+interface ThreadLease {
+  token: string;
+  until: Date;
+}
+
+/** A lease this adapter holds */
+interface HeldLease {
+  threadId: string;
+  token: string;
+  /** `performance.now()` just before the lease was asked for */
+  takenAt: number;
+  /** The thread as the lease found it, kept up to date by the writes made under it */
+  thread: WithId<ThreadDoc>;
+  /** Whether it was given back, by a write that released it or by {@link MongoDBAdapter.release} */
+  released: boolean;
+}
+
+/** A lease ran out or was taken over before a write under it was done, so the write starts over */
+class LeaseLost extends Error {
+  constructor() {
+    super('The write lease on the thread was lost');
+  }
 }
 
 /**
@@ -106,8 +134,38 @@ interface EntryDoc {
   formatVersion?: number | null;
 }
 
-/** Ancestors one `$graphLookup` of a path read walks */
-const PATH_STEPS = 2000;
+/** An entry as a path walk reads it: no content, only where it hangs and what it is */
+type EntrySkeleton = Pick<WithId<EntryDoc>, '_id' | 'parentId' | 'type' | 'createdAt'>;
+
+const SKELETON = { _id: 1, parentId: 1, type: 1, createdAt: 1 } as const;
+
+/** Entry skeletons one round trip of a path walk reads */
+const SKELETON_BATCH = 500;
+
+/** Full entries one round trip of a path read asks for */
+const ENTRY_BATCH = 100;
+
+/** How long a write lease lasts: a writer that crashed holding one blocks its thread this long */
+const LEASE_MS = 5_000;
+
+/**
+ * How old a lease may be when its holder makes a write that the lease does not fence, far enough
+ * from {@link LEASE_MS} that a lease never runs out between the check and the write
+ */
+const LEASE_SAFE_MS = 2_000;
+
+/** How long a writer waits for a lease another one holds: long enough for one that crashed */
+const LEASE_WAIT_MS = 2 * LEASE_MS;
+
+/** Times a write starts over after its lease was lost */
+const LEASE_ATTEMPTS = 5;
+
+const LEASE_FIRST_PAUSE_MS = 2;
+const LEASE_MAX_PAUSE_MS = 50;
+
+function pause(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function readMessage({ name, toolCallId, ...message }: StoredMessage): Message {
   return {
@@ -203,6 +261,8 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
   private uri: string;
   private database: string;
   private prefix: string;
+  /** The tail of each thread's queue of tree writes in this process */
+  private writeQueues = new Map<string, Promise<unknown>>();
 
   constructor(config: MongoDBAdapterConfig) {
     super();
@@ -326,11 +386,32 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
   private async chainedThread(threadId: string): Promise<WithId<ThreadDoc> | null> {
     const doc = await this.threads.findOne({ _id: threadId });
     if (!doc || doc.chained) return doc;
+    const chained = await this.underLease(
+      threadId,
+      async (lease) => {
+        await this.ensureChained(lease);
+        return this.success(undefined);
+      },
+      { missing: async () => this.success(undefined) }
+    );
+    if (!chained.success) throw new Error(chained.error);
+    return this.threads.findOne({ _id: threadId });
+  }
+
+  /**
+   * Chains the entries of the leased thread written before trees, once per thread: each after the
+   * one before in the order `getEntries` read them then, the newest the active leaf when the
+   * thread has none
+   */
+  private async ensureChained(lease: HeldLease): Promise<void> {
+    if (lease.thread.chained) return;
     const legacy = await this.entries
-      .find({ threadId, formatVersion: null }, { projection: { _id: 1 } })
-      .sort({ createdAt: 1, seq: 1, _id: 1 })
+      .find({ threadId: lease.threadId, formatVersion: null }, { projection: { _id: 1 } })
+      .sort({ createdAt: -1, seq: -1 })
       .toArray();
+    legacy.reverse();
     if (legacy.length > 0) {
+      this.guard(lease);
       await this.entries.bulkWrite(
         legacy.map((entry, i) => ({
           updateOne: {
@@ -340,18 +421,139 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
         }))
       );
     }
-    return this.threads
-      .findOneAndUpdate(
-        { _id: threadId, chained: { $ne: true } },
-        {
-          $set: {
-            chained: true,
-            ...(legacy.length > 0 && !doc.activeLeafId && { activeLeafId: legacy.at(-1)!._id }),
+    const activeLeafId = lease.thread.activeLeafId ?? legacy.at(-1)?._id ?? null;
+    await this.commit(lease, { $set: { chained: true, activeLeafId } });
+    lease.thread = { ...lease.thread, chained: true, activeLeafId };
+  }
+
+  /**
+   * Runs `write` holding the thread's write lease, the one protocol every change to a thread's
+   * tree follows: appends, deletes that splice an entry out, leaf moves, clearing and chaining.
+   *
+   * MongoDB without a replica set has no transactions over several documents, and a tree write
+   * touches several: an append reads the leaf, inserts the entry and moves the leaf, a delete
+   * re-parents the children, moves the leaf and removes the entry. Run side by side, an append can
+   * hang its entry under one a delete has just removed, or two appends under one parent. So
+   * writers take turns: a lease on the thread document, taken by one atomic `findOneAndUpdate`
+   * when nobody holds it or the holder's ran out by the server's clock, and given back when the
+   * write is done. A writer that crashed holding it blocks the thread for {@link LEASE_MS} at
+   * most. The write that finishes a change on the thread document (publishing the leaf) is fenced
+   * by the lease token, so it lands only while the lease is still this writer's, and writes to
+   * entries are made only while the lease is younger than {@link LEASE_SAFE_MS}. Each step
+   * leaves a valid tree when a writer stops after it: an entry is inserted before it is published
+   * as the leaf, and a deleted entry's children and the leaf leave it before it goes. A write
+   * whose lease was lost starts over. Writes of one adapter to one thread queue up in process
+   * first, so they do not compete for the lease, and a write costs one round trip to take the
+   * lease, which the write that publishes it gives back.
+   *
+   * Compare-and-set of the leaf after inserting the entry was the alternative without a lease,
+   * but it cannot keep a concurrent splice from removing the parent an entry was just inserted
+   * under.
+   */
+  private underLease<T>(
+    threadId: string,
+    write: (lease: HeldLease) => Promise<MemoryResult<T>>,
+    options: { countEntry?: boolean; missing?: () => Promise<MemoryResult<T>> } = {}
+  ): Promise<MemoryResult<T>> {
+    return this.queued(threadId, async () => {
+      for (let attempt = 0; attempt < LEASE_ATTEMPTS; attempt++) {
+        const lease = await this.acquire(threadId, options.countEntry === true);
+        if (!lease) {
+          return options.missing
+            ? options.missing()
+            : this.failure(`Thread not found: ${threadId}`);
+        }
+        try {
+          return await write(lease);
+        } catch (err) {
+          if (!(err instanceof LeaseLost)) throw err;
+        } finally {
+          await this.release(lease);
+        }
+      }
+      return this.failure(
+        `Thread ${threadId} lost its write lease on every one of ${LEASE_ATTEMPTS} attempts`
+      );
+    });
+  }
+
+  /** Runs `task` after the tree writes this adapter queued for the thread before it */
+  private queued<T>(threadId: string, task: () => Promise<T>): Promise<T> {
+    const run = (this.writeQueues.get(threadId) ?? Promise.resolve()).then(task);
+    const tail = run.then(
+      () => undefined,
+      () => undefined
+    );
+    this.writeQueues.set(threadId, tail);
+    void tail.then(() => {
+      if (this.writeQueues.get(threadId) === tail) this.writeQueues.delete(threadId);
+    });
+    return run;
+  }
+
+  /**
+   * Takes the thread's write lease, counting a new entry in `entrySeq` when `countEntry` is set,
+   * waiting while another writer holds it. Null when the thread does not exist.
+   */
+  private async acquire(threadId: string, countEntry: boolean): Promise<HeldLease | null> {
+    const token = this.generateId('lease');
+    const deadline = performance.now() + LEASE_WAIT_MS;
+    let wait = LEASE_FIRST_PAUSE_MS;
+    for (;;) {
+      const takenAt = performance.now();
+      const thread = await this.threads.findOneAndUpdate(
+        { _id: threadId, $or: [{ lease: null }, { $expr: { $lt: ['$lease.until', '$$NOW'] } }] },
+        [
+          {
+            $set: {
+              lease: { token: { $literal: token }, until: { $add: ['$$NOW', LEASE_MS] } },
+              ...(countEntry && { entrySeq: { $add: [{ $ifNull: ['$entrySeq', 0] }, 1] } }),
+            },
           },
-        },
+        ],
         { returnDocument: 'after' }
-      )
-      .then((updated) => updated ?? this.threads.findOne({ _id: threadId }));
+      );
+      if (thread) return { threadId, token, takenAt, thread, released: false };
+      if (!(await this.threads.findOne({ _id: threadId }))) return null;
+      if (performance.now() > deadline) {
+        throw new Error(
+          `Thread ${threadId} stayed leased by another writer for ${LEASE_WAIT_MS} ms`
+        );
+      }
+      await pause(wait * (0.5 + Math.random()));
+      wait = Math.min(wait * 2, LEASE_MAX_PAUSE_MS);
+    }
+  }
+
+  /** Fails with {@link LeaseLost} once the lease is too old for a write it does not fence */
+  private guard(lease: HeldLease): void {
+    if (performance.now() - lease.takenAt > LEASE_SAFE_MS) throw new LeaseLost();
+  }
+
+  /**
+   * Updates the leased thread if the lease is still this writer's, giving it back when `release`
+   * is set. Fails with {@link LeaseLost} otherwise, also when the thread was deleted.
+   */
+  private async commit(
+    lease: HeldLease,
+    update: UpdateFilter<ThreadDoc>,
+    release = false
+  ): Promise<void> {
+    const result = await this.threads.updateOne(
+      { _id: lease.threadId, 'lease.token': lease.token },
+      release ? { ...update, $unset: { lease: '' } } : update
+    );
+    if (result.matchedCount === 0) throw new LeaseLost();
+    if (release) lease.released = true;
+  }
+
+  /** Gives the lease back if it is still this writer's. One it fails to give back runs out. */
+  private async release(lease: HeldLease): Promise<void> {
+    if (lease.released) return;
+    lease.released = true;
+    await this.threads
+      .updateOne({ _id: lease.threadId, 'lease.token': lease.token }, { $unset: { lease: '' } })
+      .catch(() => undefined);
   }
 
   async listThreads(options?: ListThreadsOptions): Promise<MemoryResult<ThreadPage>> {
@@ -434,6 +636,11 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
     }));
   }
 
+  /**
+   * Inserts the entry under the parent it asks for, or under the active leaf, then publishes it
+   * as the leaf, all under the thread's write lease. An entry inserted by an attempt that lost the
+   * lease is moved under the parent the next attempt finds, and taken back when the add fails.
+   */
   private async storeEntry(entry: NewMemoryEntry): Promise<MemoryResult<MemoryEntry>> {
     if (!this.db) return this.failure('Not connected');
 
@@ -442,127 +649,177 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
     const { activate, parentId: askedParent, ...fields } = entry;
     const type = fields.type ?? (fields.message?.role === 'tool' ? 'tool_result' : 'message');
     const moves = activate !== false;
+    let inserted = false;
+    let seq: number | undefined;
 
     try {
-      if (!(await this.chainedThread(entry.threadId))) {
-        return this.failure(`Thread not found: ${entry.threadId}`);
-      }
-      if (
-        askedParent &&
-        !(await this.entries.findOne({ _id: askedParent, threadId: entry.threadId }))
-      ) {
-        return this.failure(`Parent entry ${askedParent} is not in thread ${entry.threadId}`);
-      }
-      const before = await this.threads.findOneAndUpdate(
-        { _id: entry.threadId },
-        { $inc: { entrySeq: 1 }, ...(moves && { $set: { activeLeafId: id } }) },
-        { returnDocument: 'before', projection: { entrySeq: 1, activeLeafId: 1 } }
+      const added = await this.underLease(
+        entry.threadId,
+        async (lease): Promise<MemoryResult<MemoryEntry>> => {
+          await this.ensureChained(lease);
+          seq ??= lease.thread.entrySeq ?? 1;
+          const parentId =
+            askedParent === undefined ? (lease.thread.activeLeafId ?? null) : askedParent;
+          if (
+            askedParent != null &&
+            !(await this.entries.findOne({ _id: askedParent, threadId: entry.threadId }))
+          ) {
+            return this.failure(`Parent entry ${askedParent} is not in thread ${entry.threadId}`);
+          }
+          this.guard(lease);
+          if (inserted) {
+            await this.entries.updateOne({ _id: id }, { $set: { parentId } });
+          } else {
+            inserted = true;
+            await this.entries.insertOne({
+              _id: id,
+              threadId: entry.threadId,
+              message: fields.message,
+              toolCalls: fields.toolCalls,
+              toolResults: fields.toolResults,
+              tokenCount: fields.tokenCount,
+              createdAt,
+              metadata: fields.metadata,
+              seq,
+              type,
+              parentId,
+              event: fields.event,
+              formatVersion: MEMORY_ENTRY_FORMAT,
+            });
+          }
+          await this.commit(lease, moves ? { $set: { activeLeafId: id } } : {}, true);
+          return this.success({
+            ...fields,
+            id,
+            createdAt,
+            type,
+            parentId,
+            seq,
+            formatVersion: MEMORY_ENTRY_FORMAT,
+          });
+        },
+        { countEntry: true }
       );
-      if (!before) return this.failure(`Thread not found: ${entry.threadId}`);
-      const parentId = askedParent === undefined ? (before.activeLeafId ?? null) : askedParent;
-      const seq = (before.entrySeq ?? 0) + 1;
-
-      try {
-        await this.entries.insertOne({
-          _id: id,
-          threadId: entry.threadId,
-          message: fields.message,
-          toolCalls: fields.toolCalls,
-          toolResults: fields.toolResults,
-          tokenCount: fields.tokenCount,
-          createdAt,
-          metadata: fields.metadata,
-          seq,
-          type,
-          parentId,
-          event: fields.event,
-          formatVersion: MEMORY_ENTRY_FORMAT,
-        });
-      } catch (err) {
-        if (moves) {
-          await this.threads.updateOne(
-            { _id: entry.threadId, activeLeafId: id },
-            { $set: { activeLeafId: before.activeLeafId ?? null } }
-          );
-        }
-        throw err;
-      }
-      if (!(await this.threads.findOne({ _id: entry.threadId }))) {
-        await this.entries.deleteOne({ _id: id });
-        return this.failure(`Thread not found: ${entry.threadId}`);
-      }
-      return this.success({
-        ...fields,
-        id,
-        createdAt,
-        type,
-        parentId,
-        seq,
-        formatVersion: MEMORY_ENTRY_FORMAT,
-      });
+      if (!added.success && inserted) await this.entries.deleteOne({ _id: id });
+      return added;
     } catch (err) {
       return this.failure((err as Error).message);
     }
   }
 
-  /** The path walked back with `$graphLookup`, a bounded number of ancestors at a time */
+  /**
+   * The path walked back from its start reading only skeletons of entries, a bounded batch per
+   * round trip, then the full entries it keeps, so a long path of big entries never makes one big
+   * result
+   */
   override async getPath(options: PathQueryOptions): Promise<MemoryResult<MemoryEntry[]>> {
     const limitProblem = this.entryLimitProblem(options.limit);
     if (limitProblem) return this.failure(limitProblem);
     if (!this.db) return this.failure('Not connected');
     const start = await this.pathStart(options);
     if (!start.success) return start;
+    if (start.data === null) return this.success([]);
 
     try {
-      const found: MemoryEntry[] = [];
-      let next: string | null = start.data;
-      while (next) {
-        const [head] = await this.entries
-          .aggregate<WithId<EntryDoc> & { ancestors: (WithId<EntryDoc> & { depth: number })[] }>([
-            { $match: { _id: next, threadId: options.threadId } },
-            {
-              $graphLookup: {
-                from: this.entries.collectionName,
-                startWith: '$parentId',
-                connectFromField: 'parentId',
-                connectToField: '_id',
-                as: 'ancestors',
-                depthField: 'depth',
-                maxDepth: PATH_STEPS - 1,
-                restrictSearchWithMatch: { threadId: options.threadId },
-              },
-            },
-          ])
-          .toArray();
-        if (!head) break;
-        const { ancestors, ...first } = head;
-        const walked = [first, ...ancestors.sort((a, b) => a.depth - b.depth)];
-        for (const doc of walked) {
-          if (!entryTypeWanted(doc.type ?? undefined, options.types)) continue;
-          found.push(readEntry(doc, options.includeToolCalls === true));
-          if (options.limit && found.length >= options.limit) return this.success(found.reverse());
-        }
-        const oldest = walked.at(-1)!;
-        next = walked.length < PATH_STEPS ? null : (oldest.parentId ?? null);
-      }
-      return this.success(found.reverse());
+      const kept = await this.walkPath(options.threadId, start.data, options);
+      const docs = await this.entriesById(options.threadId, kept);
+      return this.success(
+        docs.map((doc) => readEntry(doc, options.includeToolCalls === true)).reverse()
+      );
     } catch (err) {
       return this.failure((err as Error).message);
     }
   }
 
+  /**
+   * The ids of the entries `options` wants on the path back from `startId`, newest first. A
+   * parent is almost always created before its child, so the walk reads the thread's entries
+   * created no later than the start through one cursor, newest first, as far as it needs, and
+   * looks a parent the cursor does not hold up by its id.
+   */
+  private async walkPath(
+    threadId: string,
+    startId: string,
+    options: PathQueryOptions
+  ): Promise<string[]> {
+    const skeleton = async (id: string): Promise<EntrySkeleton | undefined> => {
+      const [found] = await this.entries
+        .find({ _id: id, threadId }, { projection: SKELETON })
+        .limit(1)
+        .toArray();
+      return found;
+    };
+    let current = await skeleton(startId);
+    if (!current) return [];
+    const cursor = this.entries
+      .find({ threadId, createdAt: { $lte: current.createdAt } }, { projection: SKELETON })
+      .sort({ createdAt: -1, seq: -1 })
+      .batchSize(SKELETON_BATCH);
+    const scanned = new Map<string, EntrySkeleton>();
+    const seen = new Set<string>();
+    const kept: string[] = [];
+    let scanning = true;
+
+    try {
+      while (current && !seen.has(current._id)) {
+        seen.add(current._id);
+        if (entryTypeWanted(current.type ?? undefined, options.types)) {
+          kept.push(current._id);
+          if (options.limit && kept.length >= options.limit) break;
+        }
+        const parentId = current.parentId;
+        if (!parentId) break;
+        current = scanned.get(parentId);
+        while (!current && scanning) {
+          const next = await cursor.next();
+          if (!next) scanning = false;
+          else if (next._id === parentId) current = next;
+          else scanned.set(next._id, next);
+        }
+        current ??= await skeleton(parentId);
+      }
+    } finally {
+      await cursor.close();
+    }
+    return kept;
+  }
+
+  /** The full entries of the thread with the ids, in their order, a batch per round trip */
+  private async entriesById(threadId: string, ids: string[]): Promise<WithId<EntryDoc>[]> {
+    const byId = new Map<string, WithId<EntryDoc>>();
+    for (let i = 0; i < ids.length; i += ENTRY_BATCH) {
+      const docs = await this.entries
+        .find({ _id: { $in: ids.slice(i, i + ENTRY_BATCH) }, threadId })
+        .toArray();
+      for (const doc of docs) byId.set(doc._id, doc);
+    }
+    return ids.flatMap((id) => byId.get(id) ?? []);
+  }
+
+  /**
+   * Moves the active leaf under the thread's write lease, to an entry that is still the
+   * thread's when the leaf moves: a delete takes the same lease, so none can slip in between.
+   */
   protected async setActiveLeaf(
     threadId: string,
     leafId: string | null
   ): Promise<MemoryResult<Thread>> {
     if (!this.db) return this.failure('Not connected');
     try {
-      const doc = await this.threads.findOneAndUpdate(
-        { _id: threadId },
-        { $set: { activeLeafId: leafId } },
-        { returnDocument: 'after' }
-      );
-      return doc ? this.success(readThread(doc)) : this.failure(`Thread not found: ${threadId}`);
+      return await this.underLease(threadId, async (lease) => {
+        await this.ensureChained(lease);
+        if (leafId !== null && !(await this.entries.findOne({ _id: leafId, threadId }))) {
+          return this.failure(`Entry ${leafId} is not in thread ${threadId}`);
+        }
+        const doc = await this.threads.findOneAndUpdate(
+          { _id: threadId, 'lease.token': lease.token },
+          { $set: { activeLeafId: leafId }, $unset: { lease: '' } },
+          { returnDocument: 'after' }
+        );
+        if (!doc) throw new LeaseLost();
+        lease.released = true;
+        return this.success(readThread(doc));
+      });
     } catch (err) {
       return this.failure((err as Error).message);
     }
@@ -616,25 +873,41 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
     }));
   }
 
+  /**
+   * Splices the entry out of its branch under the thread's write lease: its children go after its
+   * parent and the leaf moves to the parent when it was the entry, before the entry goes
+   */
   private async removeEntry(entryId: string): Promise<MemoryResult<void>> {
     if (!this.db) return this.failure('Not connected');
 
     try {
       const entry = await this.entries.findOne({ _id: entryId });
       if (!entry) return this.success(undefined);
-      await this.chainedThread(entry.threadId);
-      const current = (await this.entries.findOne({ _id: entryId })) ?? entry;
-      const parentId = current.parentId ?? null;
-      await this.entries.updateMany(
-        { threadId: current.threadId, parentId: entryId },
-        { $set: { parentId } }
+      const { threadId } = entry;
+      return await this.underLease(
+        threadId,
+        async (lease) => {
+          await this.ensureChained(lease);
+          const current = await this.entries.findOne({ _id: entryId });
+          if (!current) return this.success(undefined);
+          const parentId = current.parentId ?? null;
+          this.guard(lease);
+          await this.entries.updateMany({ threadId, parentId: entryId }, { $set: { parentId } });
+          if (lease.thread.activeLeafId === entryId) {
+            await this.commit(lease, { $set: { activeLeafId: parentId } });
+            lease.thread = { ...lease.thread, activeLeafId: parentId };
+          }
+          this.guard(lease);
+          await this.entries.deleteOne({ _id: entryId });
+          return this.success(undefined);
+        },
+        {
+          missing: async () => {
+            await this.entries.deleteOne({ _id: entryId });
+            return this.success(undefined);
+          },
+        }
       );
-      await this.threads.updateOne(
-        { _id: current.threadId, activeLeafId: entryId },
-        { $set: { activeLeafId: parentId } }
-      );
-      await this.entries.deleteOne({ _id: entryId });
-      return this.success(undefined);
     } catch (err) {
       return this.failure((err as Error).message);
     }
@@ -647,16 +920,26 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
     }));
   }
 
+  /** Deletes the thread's entries and its leaf under its write lease, so no append lands between */
   private async emptyThread(threadId: string): Promise<MemoryResult<void>> {
     if (!this.db) return this.failure('Not connected');
 
     try {
-      await this.entries.deleteMany({ threadId });
-      await this.threads.updateOne(
-        { _id: threadId },
-        { $set: { activeLeafId: null, chained: true } }
+      return await this.underLease(
+        threadId,
+        async (lease) => {
+          this.guard(lease);
+          await this.entries.deleteMany({ threadId });
+          await this.commit(lease, { $set: { activeLeafId: null, chained: true } }, true);
+          return this.success(undefined);
+        },
+        {
+          missing: async () => {
+            await this.entries.deleteMany({ threadId });
+            return this.success(undefined);
+          },
+        }
       );
-      return this.success(undefined);
     } catch (err) {
       return this.failure((err as Error).message);
     }

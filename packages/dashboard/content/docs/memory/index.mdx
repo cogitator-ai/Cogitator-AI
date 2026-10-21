@@ -101,7 +101,118 @@ const entries = unwrap(
 );
 ```
 
-`getEntries()` returns entries oldest first; `limit` keeps the most recent ones, and `before` / `after` (dates) narrow the range. Tool calls and results are stripped unless `includeToolCalls` is `true`.
+`getEntries()` returns entries oldest first, `limit` keeps the most recent ones, and `before` / `after` (dates) narrow the range. Tool calls and results are stripped unless `includeToolCalls` is `true`. It reads every branch of the thread (see below) and returns only `message` and `tool_result` entries unless `types` asks for more.
+
+### Threads as Trees
+
+A thread's entries form a tree, not a list. Each entry points at the entry before it on its branch (`parentId`, `null` for the first entry), and the thread's `activeLeafId` names the entry its active branch ends at. Branches share the entries before the point they split at. Every entry also carries a `seq` (its place in the order the thread's entries were added), a `type` and a `formatVersion`.
+
+This is what lets a run try something else from an earlier point, a replay go on beside the original, or a user edit a message, without copying or deleting the conversation.
+
+`addEntry` without a `parentId` goes after the active leaf and becomes the new leaf in one step. With a `parentId` it goes on that branch, and `activate: false` adds it without moving the active leaf:
+
+```typescript
+const question = unwrap(
+  await memory.addEntry({
+    threadId: thread.id,
+    message: { role: 'user', content: 'Plan a day in Rome' },
+    tokenCount: 6,
+  })
+);
+const answer = unwrap(
+  await memory.addEntry({
+    threadId: thread.id,
+    message: { role: 'assistant', content: 'Start at the Colosseum...' },
+    tokenCount: 6,
+  })
+);
+
+const retry = unwrap(
+  await memory.addEntry({
+    threadId: thread.id,
+    parentId: question.id,
+    activate: false,
+    message: { role: 'assistant', content: 'Start at the Vatican...' },
+    tokenCount: 6,
+  })
+);
+```
+
+The thread now has two branches that share the question, and the active one still ends at `answer`.
+
+#### Entry Types
+
+| Type           | What it records                                           |
+| -------------- | --------------------------------------------------------- |
+| `message`      | A user, assistant (with its tool calls) or system message |
+| `tool_result`  | The answer of a tool                                      |
+| `model_change` | The run moved to another model, such as a fallback        |
+| `compaction`   | Entries before a point of the branch were summarized      |
+| `approval`     | A run paused for an approval decision                     |
+| `interrupt`    | A run was stopped                                         |
+| `label`        | A name for a point of the thread                          |
+| `custom`       | Anything else, for plugins                                |
+
+All but `message` and `tool_result` are events of the session: they carry their payload in `event` and are never sent to a model. An entry without a `type` (written before types existed) is a `message`. `getEntries` and `getPath` return only `message` and `tool_result` entries by default, so code that knows nothing of events keeps seeing the conversation. Pass `types: ['message', 'approval']` or `types: 'all'` to see more. The runtime records `model_change`, `approval` and `interrupt` itself, see [Runs on Branches](/docs/core/cogitator#runs-on-branches).
+
+#### Reading a Branch
+
+`getPath` reads one branch from its first entry to its leaf, oldest first, without reading the rest of the thread:
+
+```typescript
+const active = unwrap(await memory.getPath({ threadId: thread.id }));
+const other = unwrap(await memory.getPath({ threadId: thread.id, leafId: retry.id }));
+const everything = unwrap(await memory.getPath({ threadId: thread.id, types: 'all' }));
+```
+
+| Option             | Default         | Description                                                  |
+| ------------------ | --------------- | ------------------------------------------------------------ |
+| `threadId`         | required        | The thread                                                   |
+| `leafId`           | the active leaf | The entry the branch ends at                                 |
+| `limit`            | all             | The newest `limit` entries of the branch                     |
+| `before`           | none            | Only entries before this one on its branch, to read in pages |
+| `types`            | conversation    | Entry types to return, or `'all'`                            |
+| `includeToolCalls` | `false`         | Keep `toolCalls` and `toolResults` on the entries            |
+
+A long branch reads in pages from its end: take the newest entries, then pass the oldest of them as `before`:
+
+```typescript
+const newest = unwrap(await memory.getPath({ threadId: thread.id, limit: 50 }));
+const oldest = newest[0];
+if (oldest) {
+  const earlier = unwrap(
+    await memory.getPath({ threadId: thread.id, limit: 50, before: oldest.id })
+  );
+}
+```
+
+Postgres and SQLite read a path in one recursive query that stops at `limit`, MongoDB with `$graphLookup`, InMemory and Redis walk the parents entry by entry.
+
+#### Rewind, Checkout and Fork
+
+```typescript
+unwrap(await memory.rewind(thread.id, question.id));
+unwrap(await memory.checkout(thread.id, retry.id));
+const copy = unwrap(await memory.forkThread(thread.id, retry.id, 'rome-vatican'));
+```
+
+- `rewind(threadId, toEntryId)` moves the active leaf back to an entry of the active branch. Nothing is deleted: the next entry starts a new branch from there, and the old one stays readable with `getPath({ leafId })`. An entry on another branch fails, check it out instead.
+- `checkout(threadId, entryId)` makes the branch ending at any entry of the thread the active one.
+- `forkThread(threadId, atEntryId, newThreadId?)` makes a new thread holding copies of the branch up to `atEntryId`, events included. Each copy names its original in `metadata.forkOf`, and the new thread names its origin in `metadata.forkedFrom` (`{ threadId, entryId }`).
+
+`deleteEntry` splices an entry out of its branch: its children go after its parent, and when it was the active leaf, its parent becomes the leaf. `clearThread` removes every entry and the leaf with them.
+
+These methods are optional on the `MemoryAdapter` interface, so an adapter of your own may leave them out. Every built-in adapter has them, and a run on a branch needs `getPath`.
+
+#### Entries Written Before Trees
+
+Entries written by earlier versions have no parent. Each store chains them in the order they were added the first time it meets them, so an old thread reads as one branch:
+
+- Postgres moves its schema to version 2 on `connect()` (adds the columns, chains the entries and sets each thread's leaf, in the setup transaction).
+- SQLite migrates on `connect()`, by `PRAGMA user_version`.
+- Redis and MongoDB chain a thread the first time it is read or written.
+
+Upgrade every process that shares a store at once: an older process appends entries without a parent.
 
 ### Facts
 
@@ -127,6 +238,59 @@ await postgres.addFact({
 ```
 
 A fact with `metadata.userId` only goes into that user's context; a fact without one is shared by everyone the agent serves. Facts with an `expiresAt` in the past are no longer returned.
+
+### Lineage
+
+A summary, a fact, a graph node or edge, or a reflection insight is derived from the conversation, and a model that derives it can get it wrong. `Fact`, `GraphNode`, `GraphEdge` and `Insight` take an optional `evidence` list that says what the item stands on, word for word:
+
+```typescript
+interface Evidence {
+  entryId?: string; // the memory entry the quote is from
+  toolCallId?: string; // the tool call whose result the quote is from
+  fileRange?: { path: string; start: number; end: number };
+  quote: string; // the words, as they appear in the source
+}
+```
+
+`@cogitator-ai/memory` checks evidence against memory:
+
+```typescript
+import {
+  evidenceOnPath,
+  unwrap,
+  verifyEvidence,
+  verifyEvidenceInMemory,
+} from '@cogitator-ai/memory';
+import type { Evidence } from '@cogitator-ai/types';
+
+const said = unwrap(
+  await memory.addEntry({
+    threadId: thread.id,
+    message: { role: 'user', content: 'I am vegetarian, and I fly out of Lisbon.' },
+    tokenCount: 12,
+  })
+);
+
+const diet: Evidence = { entryId: said.id, quote: 'I am vegetarian' };
+const airport: Evidence = { entryId: said.id, quote: 'I fly out of Porto' };
+const evidence = [diet, airport];
+
+verifyEvidence(diet, said); // 'verified'
+verifyEvidence(airport, said); // 'suggested'
+
+const checked = unwrap(await verifyEvidenceInMemory(memory, evidence));
+checked.status; // 'suggested', since the second quote is not in the entry
+checked.evidence.map((item) => item.status); // ['verified', 'suggested']
+
+const branch = unwrap(await memory.getPath({ threadId: thread.id, types: 'all' }));
+evidenceOnPath(evidence, new Set(branch.map((entry) => entry.id))); // true
+```
+
+- `verifyEvidence(evidence, entry)` is `'verified'` when the quote appears in the entry word for word, whitespace aside: in its text, or in the results of its tool calls. With a `toolCallId` only the result of that call counts. Anything else, an empty quote included, is `'suggested'`: keep it, but do not rely on it as fact.
+- `verifyEvidenceInMemory(memory, evidence)` loads each entry with `getEntry` and checks it. Evidence of an entry that is gone, or with no `entryId` (a file is not memory's to check), is `'suggested'`. The whole is `'verified'` only when every piece is.
+- `evidenceOnPath(evidence, pathIds)` is `true` when every piece that names an entry names one of `pathIds`. Use it with the ids of a branch from `getPath` to keep only the derived items that stand on that branch, so a fact learned on an abandoned branch does not leak into another.
+
+Every built-in fact and graph adapter stores `evidence` and reads it back (a JSON column in Postgres and SQLite, a JSON property in Neo4j), `updateFact`, `updateNode` and `updateEdge` take it, and `mergeNodes` keeps the evidence of every merged node.
 
 ## Context Building
 
@@ -179,6 +343,8 @@ console.log(context.errors, context.warnings);
 | `includeSemanticContext` | `false`                      | Add a `Relevant context:` block from the top 5 embeddings scoring ≥ 0.7 (needs `embeddingAdapter` + `embeddingService` and a `currentInput`, up to 10% of the budget)                                      |
 | `includeGraphContext`    | `false`                      | Add knowledge graph context (needs `graphContextBuilder` and a `currentInput`, up to 15% of the budget) — see [Knowledge Graphs](/docs/memory/knowledge-graphs#using-graph-context-in-the-context-builder) |
 | `graphContextOptions`    | `{}`                         | `maxNodes`, `maxEdges`, `maxDepth`, `includeInferred`, `entityTypes`                                                                                                                                       |
+
+The history comes from the thread's active branch (`getPath`), not from every entry of the thread, so a branch a replay or a fork wrote never shows up in the conversation it split from. Pass `leafId` to `build()` to build from the branch ending at that entry, or `leafId: null` for no history. An adapter without `getPath` gives the whole thread.
 
 Facts, semantic and graph context are merged into the system message, each within its share of the budget and of what the system prompt leaves. A system prompt larger than `maxTokens - reserveTokens` is still sent whole: no history fits then, and `warnings` says so.
 
@@ -247,23 +413,23 @@ await cog.run(agent, { input: 'Hi, I am Alice', threadId: 'thread-alice' });
 await cog.run(agent, { input: 'What is my name?', threadId: 'thread-alice' });
 ```
 
-- `memory.adapter` names the thread store and takes its settings from the key of the same name: `'memory'` (`inMemory`), `'redis'` (`redis.url`, `redis.host` + `redis.port`, or `redis.cluster`), `'postgres'` (`postgres.connectionString`), `'sqlite'` (`sqlite.path`) or `'mongodb'` (`mongodb.uri`). When the required setting is missing or the connection fails, the run goes on without memory and logs a warning, and the failed adapter is disconnected so nothing keeps reconnecting in the background. An adapter you connect yourself can be assigned with `cog.memory = adapter`, such runs load the last 20 entries, since the context builder is only created from the `memory` config.
-- With `contextBuilder` set, each run builds its context as described above. Without `maxTokens` the budget is the context window of the model the run starts on (from the model registry, else the model family, else 8192 tokens, and at most 4096 on Ollama, which serves no more by default, except Ollama Cloud), minus room for the answer (the agent's `maxTokens`, else 15% of the window, at most half of it), the tool schemas and the input, and below the point where `context` compression would start when it is on, and `strategy` defaults to `'recent'`. Set `maxTokens` to cap the history, and the cost of every turn, on long threads, or to use a larger context your Ollama server runs with (`OLLAMA_CONTEXT_LENGTH`). The agent's instructions are always sent and counted in the budget (`includeSystemPrompt: false` is ignored with a warning), and a run with instructions larger than the budget logs a warning. Parts that fail to load are passed to `onMemoryError` with the `'load'` operation, and the run goes on without them. Options the runtime cannot serve log a warning at connect: `includeFacts` needs the Postgres store, `includeSemanticContext` needs `memory.embedding` and an embedding store, and `includeGraphContext` has no effect, since the runtime builds no knowledge graph. A Postgres store is also the fact adapter, and the embedding adapter unless `memory.qdrant` is set. The runtime creates the Postgres `embeddings` table with the vector size of `memory.embedding` (768 without one, or the size of an existing table). A Postgres store without pgvector still keeps threads and facts, but is not used for semantic context, and a warning names the reason. With `relevant` or `hybrid` and `memory.embedding`, the runtime keeps a message index in the embedding store (the Postgres store or `memory.qdrant`), so every message is embedded once, in the background, and `close()` waits for that work. The in-process `memory` adapter, and a thread store without a vector store, keep vectors in process as before. An adapter that reports no changes logs a warning, since the vectors of its deleted entries would stay. Indexing failures are logged with the `index` operation. Without `contextBuilder`, a run loads the last 20 entries of the thread.
+- `memory.adapter` names the thread store and takes its settings from the key of the same name: `'memory'` (`inMemory`), `'redis'` (`redis.url`, `redis.host` + `redis.port`, or `redis.cluster`), `'postgres'` (`postgres.connectionString`), `'sqlite'` (`sqlite.path`) or `'mongodb'` (`mongodb.uri`). When the required setting is missing or the connection fails, the run goes on without memory and logs a warning, and the failed adapter is disconnected so nothing keeps reconnecting in the background. An adapter you connect yourself can be assigned with `cog.memory = adapter`, such runs load the last 20 entries of the active branch, since the context builder is only created from the `memory` config.
+- With `contextBuilder` set, each run builds its context as described above. Without `maxTokens` the budget is the context window of the model the run starts on (from the model registry, else the model family, else 8192 tokens, and at most 4096 on Ollama, which serves no more by default, except Ollama Cloud), minus room for the answer (the agent's `maxTokens`, else 15% of the window, at most half of it), the tool schemas and the input, and below the point where `context` compression would start when it is on, and `strategy` defaults to `'recent'`. Set `maxTokens` to cap the history, and the cost of every turn, on long threads, or to use a larger context your Ollama server runs with (`OLLAMA_CONTEXT_LENGTH`). The agent's instructions are always sent and counted in the budget (`includeSystemPrompt: false` is ignored with a warning), and a run with instructions larger than the budget logs a warning. Parts that fail to load are passed to `onMemoryError` with the `'load'` operation, and the run goes on without them. Options the runtime cannot serve log a warning at connect: `includeFacts` needs the Postgres store, `includeSemanticContext` needs `memory.embedding` and an embedding store, and `includeGraphContext` has no effect, since the runtime builds no knowledge graph. A Postgres store is also the fact adapter, and the embedding adapter unless `memory.qdrant` is set. The runtime creates the Postgres `embeddings` table with the vector size of `memory.embedding` (768 without one, or the size of an existing table). A Postgres store without pgvector still keeps threads and facts, but is not used for semantic context, and a warning names the reason. With `relevant` or `hybrid` and `memory.embedding`, the runtime keeps a message index in the embedding store (the Postgres store or `memory.qdrant`), so every message is embedded once, in the background, and `close()` waits for that work. The in-process `memory` adapter, and a thread store without a vector store, keep vectors in process as before. An adapter that reports no changes logs a warning, since the vectors of its deleted entries would stay. Indexing failures are logged with the `index` operation. Without `contextBuilder`, a run loads the last 20 entries of the thread's active branch.
 - `memory.embedding` takes a provider's config (`openai`, `ollama`, `google`) or an `EmbeddingService` of your own, which the runtime uses as it is: another provider, or a cache in front of one, as long as it has `embed`, `embedBatch`, `model` and `dimensions`. A service is code, so it goes to `new Cogitator({ memory })`, not into `cogitator.yml` or `defineConfig()`.
 - `'qdrant'` is not a thread store. For semantic context from Qdrant, keep a thread store as `adapter` and add `memory.qdrant` (`url`, `apiKey`, `collection`, `dimensions` matching the embedding model) together with `memory.embedding` and `contextBuilder: { includeSemanticContext: true }`. The runtime searches the collection for semantic context, and with the `relevant` or `hybrid` strategy also keeps the vectors of the thread's messages in it (`sourceType: 'message'`, so the key needs write access). Add facts and documents with your own `QdrantAdapter`. See [Configuration](/docs/getting-started/configuration#memory) for a YAML example.
-- Per run, `useMemory: false` disables memory, `loadHistory: false` / `saveHistory: false` skip loading or saving, and `onMemoryError` is called when a load or save fails.
+- Per run, `useMemory: false` disables memory, `loadHistory: false` / `saveHistory: false` skip loading or saving, and `onMemoryError` is called when a load or save fails. `branch: { fromEntryId, activate? }` runs on a branch of the thread, and `result.memory` says where the run wrote, see [Runs on Branches](/docs/core/cogitator#runs-on-branches).
 - `await cog.getMemory()` connects and returns the adapter before any run — see [Cogitator](/docs/core/cogitator).
 
 ## Choosing an Adapter
 
-| Adapter  | Persistence | Embeddings | Facts | Graph                  | Best For                           |
-| -------- | ----------- | ---------- | ----- | ---------------------- | ---------------------------------- |
-| InMemory | None        | Separate¹  | No    | No                     | Testing, short-lived agents        |
-| Redis    | TTL-based   | No         | No    | No                     | Short-term memory with auto-expiry |
-| Postgres | Permanent   | pgvector   | Yes   | `PostgresGraphAdapter` | Production with full features      |
-| SQLite   | Permanent   | No         | No    | `SQLiteGraphAdapter`   | Single-process, local apps         |
-| MongoDB  | Permanent   | No         | No    | No                     | Document-oriented workloads        |
-| Qdrant   | Permanent   | Native     | No    | No                     | Dedicated vector search            |
+| Adapter  | Persistence  | Embeddings | Facts | Graph                  | Best For                           |
+| -------- | ------------ | ---------- | ----- | ---------------------- | ---------------------------------- |
+| InMemory | None         | Separate¹  | No    | No                     | Testing, short-lived agents        |
+| Redis    | Optional TTL | No         | No    | No                     | Shared fast store, optional expiry |
+| Postgres | Permanent    | pgvector   | Yes   | `PostgresGraphAdapter` | Production with full features      |
+| SQLite   | Permanent    | No         | No    | `SQLiteGraphAdapter`   | Single-process, local apps         |
+| MongoDB  | Permanent    | No         | No    | No                     | Document-oriented workloads        |
+| Qdrant   | Permanent    | Native     | No    | No                     | Dedicated vector search            |
 
 ¹ `InMemoryEmbeddingAdapter` provides in-process vector and keyword search.
 
@@ -332,10 +498,21 @@ const result = await compaction.compact(session.id, {
 | Strategy         | Behavior                                                                                           |
 | ---------------- | -------------------------------------------------------------------------------------------------- |
 | `summary`        | Replaces older entries with one `[Conversation summary]` system entry produced by your `summarize` |
-| `sliding-window` | Deletes older entries                                                                              |
+| `sliding-window` | Leaves older entries out without a summary                                                         |
 | `hybrid`         | `sliding-window` when 5 or fewer entries would be removed, otherwise `summary`                     |
 
-The summary entry is dated a millisecond before the first kept entry, and kept entries are left untouched, so a reply saved while the summary was being written stays after the messages it answers. Compactions of the same thread in one process run one after another. An adapter that ignores the `createdAt` of `addEntry` gets the kept entries re-added after the summary instead.
+On an adapter with branches (every built-in one) compaction deletes nothing. It adds a `compaction` entry to the end of the active branch, whose `event` (`CompactionEvent`) names the first kept entry, and whose message is the summary. A reader of the branch then sees the summary followed by the kept entries and everything after them, a reply saved while the summary was being written included. `ContextBuilder` and the runtime read history this way. Read it yourself with `compactedHistory`:
+
+```typescript
+import { compactedHistory, HISTORY_ENTRY_TYPES } from '@cogitator-ai/memory';
+
+const path = await memory.getPath({ threadId, types: HISTORY_ENTRY_TYPES });
+const conversation = path.success ? compactedHistory(path.data) : [];
+```
+
+Since the summarized entries stay, other branches that start among them and evidence that points at them keep working, and `getEntries` still returns every entry. The next compaction summarizes the previous summary together with what followed it. Compactions of the same thread in one process run one after another.
+
+An adapter without `getPath` gets the older behaviour: the summary is dated a millisecond before the first kept entry and the summarized entries are deleted (an adapter that ignores the `createdAt` of `addEntry` gets the kept entries re-added after the summary).
 
 `summarize` is your function, call any LLM in it. It receives the messages being replaced and, as a second argument, `SummarizeOptions` `{ model, prompt }` taken from the `summaryModel` / `summaryPrompt` of the `compact()` config (either may be `undefined`). `sessions.compact()` throws unless the manager was created with `{ compaction }`.
 

@@ -24,6 +24,8 @@ With `@cogitator-ai/core` you usually configure memory on the runtime (`new Cogi
 - **Multiple Adapters** - In-memory, Redis (standalone + cluster), PostgreSQL with pgvector, SQLite, MongoDB, Qdrant
 - **Thread Management** - Create (idempotent upsert), update, delete conversation threads
 - **Stable Ordering** - Entries keep insertion order even when saved within the same millisecond
+- **Threads as Trees** - Entries branch from any point, with typed session events, paged branch reads, rewind, checkout and thread forks
+- **Lineage** - Check that derived facts and summaries quote what the conversation actually said
 - **Token Counting** - Estimate token usage without tiktoken dependency
 - **Context Builder** - Token-aware context with `recent`, `relevant` (embedding-ranked) and `hybrid` strategies
 - **Scoped Semantic Memory** - Embeddings tagged with `metadata.agentId` / `metadata.threadId` never leak to other agents
@@ -103,9 +105,11 @@ const memory = new InMemoryAdapter({
 await memory.connect();
 ```
 
+`maxEntries` (default 10000) counts each thread on its own. A full thread drops the oldest entry of a branch that is not active first, then the oldest of the active branch.
+
 ### Redis Adapter
 
-Persistent short-term memory with TTL support. Every write refreshes the TTL of the thread and its entry index, so active conversations do not expire mid-way, expired entries are pruned from the index on read. `getEntries({ limit })` reads only the newest `limit` entries. A failed `connect()` closes its client again, so an unreachable Redis does not keep the process alive.
+Threads and entries in Redis. Nothing expires by default (`ttl: 0`), earlier versions expired keys after 24 hours, so pass `ttl: 86400` to keep that. With a `ttl`, every write refreshes the TTL of the thread and its entry index, so active conversations do not expire mid-way, and expired entries are pruned from the index on read. `getEntries({ limit })` reads only the newest `limit` entries. A failed `connect()` closes its client again, so an unreachable Redis does not keep the process alive.
 
 ```typescript
 import { RedisAdapter } from '@cogitator-ai/memory';
@@ -244,13 +248,24 @@ interface MemoryAdapter {
   deleteThread(threadId: string): Promise<MemoryResult<void>>;
   listThreads(options?: ListThreadsOptions): Promise<MemoryResult<ThreadPage>>;
 
-  addEntry(entry: Omit<MemoryEntry, 'id' | 'createdAt'>): Promise<MemoryResult<MemoryEntry>>;
+  addEntry(entry: NewMemoryEntry): Promise<MemoryResult<MemoryEntry>>;
   getEntries(options: MemoryQueryOptions): Promise<MemoryResult<MemoryEntry[]>>;
   getEntry(entryId: string): Promise<MemoryResult<MemoryEntry | null>>;
   deleteEntry(entryId: string): Promise<MemoryResult<void>>;
   clearThread(threadId: string): Promise<MemoryResult<void>>;
+
+  getPath?(options: PathQueryOptions): Promise<MemoryResult<MemoryEntry[]>>;
+  rewind?(threadId: string, toEntryId: string): Promise<MemoryResult<Thread>>;
+  checkout?(threadId: string, entryId: string): Promise<MemoryResult<Thread>>;
+  forkThread?(
+    threadId: string,
+    atEntryId: string,
+    newThreadId?: string
+  ): Promise<MemoryResult<Thread>>;
 }
 ```
+
+The branch methods are optional on the interface, every built-in adapter implements them.
 
 ### Thread Operations
 
@@ -312,6 +327,67 @@ await memory.deleteEntry(entry.id);
 
 await memory.clearThread(thread.id);
 ```
+
+`getEntries` reads every branch of the thread and returns only `message` and `tool_result` entries unless `types` asks for more (`types: 'all'`). `deleteEntry` splices the entry out of its branch: its children go after its parent.
+
+### Threads as Trees
+
+A thread's entries form a tree: each entry has a `parentId` (`null` for the first one), a `seq` and a `type`, and the thread's `activeLeafId` names the entry its active branch ends at. `addEntry` goes after the active leaf and moves it there in one step. An explicit `parentId` writes on another branch, and `activate: false` leaves the leaf where it is:
+
+```typescript
+const question = unwrap(
+  await memory.addEntry({
+    threadId: thread.id,
+    message: { role: 'user', content: 'Plan a day in Rome' },
+    tokenCount: 6,
+  })
+);
+await memory.addEntry({
+  threadId: thread.id,
+  message: { role: 'assistant', content: 'Start at the Colosseum...' },
+  tokenCount: 6,
+});
+const retry = unwrap(
+  await memory.addEntry({
+    threadId: thread.id,
+    parentId: question.id,
+    activate: false,
+    message: { role: 'assistant', content: 'Start at the Vatican...' },
+    tokenCount: 6,
+  })
+);
+
+const active = unwrap(await memory.getPath({ threadId: thread.id })); // question, Colosseum
+const other = unwrap(await memory.getPath({ threadId: thread.id, leafId: retry.id })); // question, Vatican
+
+await memory.rewind(thread.id, question.id); // the active leaf goes back, nothing is deleted
+await memory.checkout(thread.id, retry.id); // any branch becomes the active one
+const copy = unwrap(await memory.forkThread(thread.id, retry.id, 'rome-vatican'));
+```
+
+- `getPath({ threadId, leafId?, limit?, before?, types?, includeToolCalls? })` reads one branch oldest first, the newest `limit` entries of it, and pages back with `before`, without reading the rest of the thread.
+- Entry types: `message`, `tool_result`, and the session events `model_change`, `compaction`, `approval`, `interrupt`, `label` and `custom`, which carry an `event` payload and are never sent to a model as they are (the summary of a `compaction` stands in for the entries it covers). Reads return events only when `types` asks for them.
+- `forkThread` copies the branch up to an entry into a new thread, each copy naming its original in `metadata.forkOf`, the new thread its origin in `metadata.forkedFrom`.
+- `ContextBuilder` builds from the active branch, `build({ leafId })` from another one.
+
+Entries written before trees are chained in the order they were added the first time a store meets them: Postgres moves its schema to version 2 on `connect()`, SQLite migrates by `PRAGMA user_version`, Redis and MongoDB chain a thread the first time it is read or written. Upgrade every process that shares a store together, as an older process appends entries without a parent.
+
+### Lineage
+
+`Fact`, `GraphNode`, `GraphEdge` and `Insight` take an optional `evidence: Evidence[]` (`{ entryId?, toolCallId?, fileRange?, quote }`, from `@cogitator-ai/types`) that says what they stand on, word for word:
+
+```typescript
+import { evidenceOnPath, verifyEvidence, verifyEvidenceInMemory } from '@cogitator-ai/memory';
+
+const rome = { entryId: question.id, quote: 'a day in Rome' };
+const evidence = [rome];
+
+verifyEvidence(rome, question); // 'verified': the quote is in the entry, whitespace aside
+const checked = unwrap(await verifyEvidenceInMemory(memory, evidence)); // { status, evidence }
+const onBranch = evidenceOnPath(evidence, new Set(active.map((entry) => entry.id))); // true
+```
+
+A quote that is not found, evidence of an entry that is gone and evidence without an `entryId` are `'suggested'`. Every built-in fact and graph adapter stores `evidence`, takes it in updates, and `mergeNodes` keeps the evidence of the merged nodes.
 
 ---
 
@@ -473,7 +549,7 @@ interface ContextBuildError {
 
 ## Sessions and Compaction
 
-`SessionManager` maps channel conversations (user + channel + agent) onto memory threads. `CompactionService` replaces old history with an LLM summary placed before the most recent messages.
+`SessionManager` maps channel conversations (user + channel + agent) onto memory threads. `CompactionService` replaces old history with an LLM summary, which a reader of the thread gets before the most recent messages.
 
 ```typescript
 import { createLLMBackend } from '@cogitator-ai/core';
@@ -520,7 +596,7 @@ await sessions.compact(session.id, {
 
 `list()` works with or without a `userId` filter (sessions are tracked in an index thread). Using a session puts it back into the index if the index lost it and rewrites the index at most once per `indexRefreshInterval` (default one minute), so with Redis and a `ttl` the index lives as long as any session is active.
 
-A thread is compacted once its entries hold `threshold` tokens or `messageThreshold` entries, whichever comes first (set at least one). The summary entry is dated just before the first kept entry and the kept entries are not rewritten, so a reply saved while the summary was being written keeps its place after its question. `addEntry` accepts an optional `createdAt` for this (`NewMemoryEntry`).
+A thread is compacted once its conversation holds `threshold` tokens or `messageThreshold` entries, whichever comes first (set at least one). On an adapter with branches (every built-in one) nothing is deleted: a `compaction` entry at the end of the active branch names the first kept entry and holds the summary, and `compactedHistory(path)` (read the path with `types: HISTORY_ENTRY_TYPES`) gives the conversation as the summary, the kept entries and everything after them. `ContextBuilder` and the runtime read history this way, other branches and evidence keep the summarized entries, and `getEntries` still returns all of them. An adapter without `getPath` gets the summary dated just before the first kept entry and the summarized entries deleted.
 
 `compact()` requires the `compaction` option, without it use `CompactionService` directly. The summarizer (`SummarizeFn`) is called as `summarize(messages, options)`, where `options` is a `SummarizeOptions` `{ model?, prompt? }` filled from the `summaryModel` / `summaryPrompt` of the compaction config.
 
@@ -807,7 +883,16 @@ import type {
   ContextStrategy,
   BuiltContext,
   MemoryConfig,
+  CheckedEvidence,
 } from '@cogitator-ai/memory';
+
+import type {
+  MemoryEntryType,
+  NewMemoryEntry,
+  PathQueryOptions,
+  Evidence,
+  EvidenceStatus,
+} from '@cogitator-ai/types';
 ```
 
 ---

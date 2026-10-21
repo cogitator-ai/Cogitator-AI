@@ -1,7 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { CompactionService, type SummarizeFn } from '../compaction';
+import {
+  CompactionService,
+  compactedHistory,
+  HISTORY_ENTRY_TYPES,
+  type SummarizeFn,
+} from '../compaction';
 import { InMemoryAdapter } from '../adapters/memory';
 import type { CompactionConfig, Message } from '@cogitator-ai/types';
+
+/** The conversation of a thread's active branch, as a context reads it after compaction */
+async function conversation(adapter: InMemoryAdapter, threadId: string) {
+  const path = await adapter.getPath({ threadId, types: HISTORY_ENTRY_TYPES });
+  return path.success ? { success: true as const, data: compactedHistory(path.data) } : path;
+}
 
 function isSummary(content: Message['content']): boolean {
   return typeof content === 'string' && content.includes('Summary');
@@ -75,7 +86,7 @@ describe('CompactionService', () => {
       const args = vi.mocked(summarize).mock.calls[0][0];
       expect(args).toHaveLength(6);
 
-      const entries = await adapter.getEntries({ threadId });
+      const entries = await conversation(adapter, threadId);
       expect(entries.success).toBe(true);
       if (entries.success) {
         expect(entries.data).toHaveLength(5);
@@ -121,7 +132,7 @@ describe('CompactionService', () => {
       expect(result.summaryTokens).toBe(0);
       expect(summarize).not.toHaveBeenCalled();
 
-      const entries = await adapter.getEntries({ threadId });
+      const entries = await conversation(adapter, threadId);
       if (entries.success) {
         expect(entries.data).toHaveLength(4);
         expect(entries.data[0].message.content).toBe('Message 7');

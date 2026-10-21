@@ -47,6 +47,7 @@ Each checkpoint stores:
 - `toolResults` — the results of the earlier tool calls, by call id
 - `pendingToolCalls` — the tool call the step is anchored on
 - `label` — for retrieval with `getByLabel()` on the store; `checkpointAll` and `checkpointEvery` label them `<prefix>_step_<i>`
+- `memory`: where the run wrote in its thread's memory (`threadId`, `branchPoint`, `leafId`, from `result.memory`), when it wrote anything
 
 Only the run's own tool calls are steps. A run that continues a thread carries the earlier turns in its messages, tool results included: they stay in every checkpoint as history but are never counted, so step 0 is always the run's first tool call. A step past the run's last tool call, such as step 0 of a run that called no tool, is the moment before its final answer: the conversation up to the run's input, without the answer, which makes a run without tools forkable from its start.
 
@@ -88,7 +89,7 @@ console.log('Steps executed:', replay.stepsExecuted); // 0 in deterministic mode
 
 ### Live Replay
 
-Runs the agent again from the checkpoint with fresh model calls. The replayed agent is a copy named `<name>_replay` whose instructions — the checkpoint's system message, or the agent's own instructions when it has none — carry the conversation up to the checkpoint (its assistant and tool messages); it answers the checkpoint's last user message in a thread of its own (`replay_<runId>`):
+Runs the agent again from the checkpoint with fresh model calls. The replayed agent is a copy named `<name>_replay` whose instructions (the checkpoint's system message, or the agent's own instructions when it has none) carry what the run did up to the checkpoint, and it answers the run's input again. Where it runs is described in [Replays on Branches](#replays-on-branches):
 
 ```typescript
 const replay = await timeTravel.replayLive(agent, checkpoint.id);
@@ -111,14 +112,34 @@ const replay = await timeTravel.replayLive(agent, checkpoint.id, {
   modifiedToolResults: { web_search: { results: [] } }, // the tool answers this instead of running
   skipTools: ['send_email'], // removed from the replayed agent
   modifiedMessages: editedMessages, // replaces the checkpoint's messages
+  userId: 'alice', // the user it runs as, the owner of the run's thread
 });
 ```
 
 `replay(agent, checkpointId, { mode })` is the general form of both.
 
+### Replays on Branches
+
+A live replay goes on a branch of the original thread, from the entry the run started after (`checkpoint.memory.branchPoint`), with `activate: false` (see [Runs on Branches](/docs/core/cogitator#runs-on-branches)):
+
+- The replay reads the conversation before the run from memory, along that branch, so its context is what the original run saw. Its instructions carry only the run's own steps up to the checkpoint.
+- Its entries go on a branch of their own. The thread's active leaf does not move, so the conversation goes on where it was, and the next message never sees the replay.
+- Two replays or forks of one run each get their own branch from the same point, and never see each other's entries.
+- `replay.memory` says where it wrote: the original `threadId`, the run's `branchPoint` and the replay's last entry as `leafId`. `getPath({ threadId, leafId })` reads its branch, and the [Studio](/docs/getting-started/studio) Tree panel shows it next to the original.
+
+A replay goes on a thread of its own, `replay_<runId>_<id>` (a new id for every replay), with the whole conversation up to the checkpoint in its instructions, when:
+
+- the checkpoint has no `memory`: the run wrote nothing to memory, or the checkpoint was saved before checkpoints kept it,
+- the runtime's memory adapter has no `getPath`, or the thread is gone,
+- the thread belongs to another user than the replay runs as: `userId` in the replay or fork options must name the thread's owner (`metadata.userId`), and a replay without one goes on the branch only of a thread no user owns,
+- the entry the run started after was deleted,
+- `modifiedMessages` change the conversation before the run's input. Memory would give the history they replace, so such a replay stays off it. Changes to the system message, the input or the run's own steps keep the branch.
+
+The entries the replays and forks write stay in the original thread. `getPath` and the context builder read the active branch only, `getEntries` reads every branch, so list a thread's conversation with `getPath`.
+
 ## Forking Execution
 
-Forking creates an alternate timeline from a checkpoint with modified conditions. This is the core debugging primitive. Each fork saves a copy of the checkpoint (`fork.checkpoint`, id `ckpt_fork_...`, with `metadata.forkedFrom`) and runs a live replay from it (`fork.result`).
+Forking creates an alternate timeline from a checkpoint with modified conditions. This is the core debugging primitive. Each fork saves a copy of the checkpoint (`fork.checkpoint`, id `ckpt_fork_...`, with `metadata.forkedFrom` and the original's `memory`) and runs a live replay from it (`fork.result`), on a branch of the original thread as described in [Replays on Branches](#replays-on-branches).
 
 ### Fork with Additional Context
 

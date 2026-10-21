@@ -261,10 +261,11 @@ describe('RedisAdapter', () => {
 
       expect(result.success).toBe(true);
       expect(mockRedisClient.eval).toHaveBeenCalledWith(
-        expect.stringContaining("redis.call('ZREM', KEYS[4], ARGV[1])"),
-        4,
+        expect.stringContaining("redis.call('ZREM', KEYS[5], ARGV[1])"),
+        5,
         'cogitator:thread:entries:thread_123',
         'cogitator:thread:leaf:thread_123',
+        'cogitator:thread:chained:thread_123',
         'cogitator:thread:thread_123',
         'cogitator:threads:index',
         'thread_123'
@@ -287,18 +288,132 @@ describe('RedisAdapter', () => {
         expect(result.data.message).toEqual(message);
         expect(result.data).toMatchObject({ seq: 1, parentId: null, type: 'message' });
       }
-      const [, numKeys, threadKey, setKey, entryKey, indexKey, sweepKey, leafKey, json] =
-        mockRedisClient.eval.mock.calls[0] ?? [];
-      expect([numKeys, threadKey, setKey, entryKey, indexKey, sweepKey, leafKey]).toEqual([
-        6,
+      const [
+        ,
+        numKeys,
+        threadKey,
+        setKey,
+        entryKey,
+        indexKey,
+        sweepKey,
+        leafKey,
+        chainedKey,
+        json,
+      ] = mockRedisClient.eval.mock.calls[0] ?? [];
+      expect([
+        numKeys,
+        threadKey,
+        setKey,
+        entryKey,
+        indexKey,
+        sweepKey,
+        leafKey,
+        chainedKey,
+      ]).toEqual([
+        7,
         'cogitator:thread:thread_123',
         'cogitator:thread:entries:thread_123',
         `cogitator:entry:${result.success && result.data.id}`,
         'cogitator:threads:index',
         'cogitator:threads:sweep',
         'cogitator:thread:leaf:thread_123',
+        'cogitator:thread:chained:thread_123',
       ]);
       expect(JSON.parse(String(json))).toMatchObject({ seq: 1 });
+    });
+
+    it('tells the script apart a parent left out, a new root and a parent entry', async () => {
+      const add = (parentId?: string | null) =>
+        adapter.addEntry({
+          threadId: 't1',
+          message: { role: 'user', content: 'x' },
+          tokenCount: 1,
+          ...(parentId !== undefined && { parentId }),
+        });
+      mockRedisClient.eval.mockResolvedValue([1, '']);
+
+      await add();
+      await add(null);
+      await add('entry_parent');
+
+      const placements = scriptCalls('ARGV[5] ==').map((call) => [call[12], call[15]]);
+      expect(placements).toEqual([
+        ['leaf', ''],
+        ['root', ''],
+        ['entry', 'entry_parent'],
+      ]);
+      const [script] = mockRedisClient.eval.mock.calls[0] ?? [];
+      expect(script).toContain("if ARGV[5] == 'leaf' then");
+      resetEval();
+    });
+
+    it('names a key of the thread in every script, so a cluster routes it to its node', async () => {
+      const at = new Date(0).toISOString();
+      mockRedisClient.get.mockImplementation(async (key: string) =>
+        key === 'cogitator:thread:t1'
+          ? JSON.stringify({ id: 't1', agentId: 'a', createdAt: at, updatedAt: at })
+          : JSON.stringify({ id: 'e1', threadId: 't1', createdAt: at })
+      );
+      mockRedisClient.eval.mockImplementation(async (script: string) => {
+        if (script === READ_THREAD) {
+          return JSON.stringify({ id: 'e1', threadId: 't1', createdAt: new Date(0) });
+        }
+        if (script.includes("if ARGV[5] == 'leaf' then")) return [1, ''];
+        if (script.includes('local out = {')) return [''];
+        return sweeps(script) ? [1] : 1;
+      });
+
+      await adapter.addEntry({
+        threadId: 't1',
+        message: { role: 'user', content: 'x' },
+        tokenCount: 1,
+      });
+      await adapter.getThread('t1');
+      await adapter.getPath({ threadId: 't1', leafId: 'e1' });
+      await adapter.checkout('t1', 'e1');
+      await adapter.deleteEntry('e1');
+      await adapter.clearThread('t1');
+      await adapter.deleteThread('t1');
+
+      expect(scriptCalls('local out = {')[0]?.slice(0, 4)).toEqual([
+        3,
+        'cogitator:thread:entries:t1',
+        'cogitator:thread:leaf:t1',
+        'cogitator:thread:chained:t1',
+      ]);
+      const keyless = mockRedisClient.eval.mock.calls.filter(([, numKeys]) => Number(numKeys) < 1);
+      expect(keyless).toEqual([]);
+      mockRedisClient.get.mockReset();
+      mockRedisClient.get.mockResolvedValue(null);
+      resetEval();
+    });
+
+    it('moves the leaf only to an entry the script still finds in the thread', async () => {
+      mockRedisClient.get.mockResolvedValue(
+        JSON.stringify({ id: 'e1', threadId: 't1', createdAt: new Date(0) })
+      );
+      mockRedisClient.eval.mockImplementation(async (script: string) => {
+        if (script === READ_THREAD) {
+          return JSON.stringify({ id: 'e1', threadId: 't1', createdAt: new Date(0) });
+        }
+        if (script.includes("redis.call('ZSCORE', KEYS[3], KEYS[5])")) return -1;
+        return sweeps(script) ? [1] : 1;
+      });
+
+      const result = await adapter.checkout('t1', 'e1');
+
+      expect(result).toEqual({ success: false, error: 'Entry e1 is not in thread t1' });
+      const [setLeaf] = scriptCalls("redis.call('ZSCORE', KEYS[3], KEYS[5])");
+      expect(setLeaf?.slice(0, 6)).toEqual([
+        5,
+        'cogitator:thread:t1',
+        'cogitator:thread:leaf:t1',
+        'cogitator:thread:entries:t1',
+        'cogitator:thread:chained:t1',
+        'cogitator:entry:e1',
+      ]);
+      mockRedisClient.get.mockResolvedValue(null);
+      resetEval();
     });
 
     it('reports threads its sweep found expired as deleted', async () => {
@@ -403,18 +518,44 @@ describe('RedisAdapter', () => {
       }
     });
 
-    it('deletes entry', async () => {
+    it('deletes entry, naming the keys of its thread', async () => {
+      mockRedisClient.eval.mockImplementation(async (script: string) =>
+        script === READ_THREAD
+          ? JSON.stringify({ id: 'entry_123', threadId: 'thread_123', createdAt: new Date(0) })
+          : 1
+      );
+
       const result = await adapter.deleteEntry('entry_123');
 
       expect(result.success).toBe(true);
       expect(mockRedisClient.eval).toHaveBeenCalledWith(
-        expect.stringContaining("redis.call('ZREM', entriesKey, KEYS[1])"),
+        READ_THREAD,
         1,
+        'cogitator:entry:entry_123'
+      );
+      expect(mockRedisClient.eval).toHaveBeenCalledWith(
+        expect.stringContaining("redis.call('ZREM', KEYS[2], KEYS[1])"),
+        4,
         'cogitator:entry:entry_123',
+        'cogitator:thread:entries:thread_123',
+        'cogitator:thread:leaf:thread_123',
+        'cogitator:thread:chained:thread_123',
         'cogitator:',
         0,
-        'entry_123'
+        'entry_123',
+        'thread_123'
       );
+      resetEval();
+    });
+
+    it('deletes nothing when the entry is gone', async () => {
+      mockRedisClient.eval.mockImplementation(async () => null);
+
+      const result = await adapter.deleteEntry('entry_123');
+
+      expect(result.success).toBe(true);
+      expect(mockRedisClient.eval).toHaveBeenCalledTimes(1);
+      resetEval();
     });
 
     it('clears thread entries and keeps the thread', async () => {
@@ -568,7 +709,7 @@ describe('RedisAdapter hardening', () => {
       tokenCount: 1,
     });
 
-    const [script, , threadKey, , , , , , , , ttl] = mockRedisClient.eval.mock.calls[0] ?? [];
+    const [script, , threadKey, , , , , , , , , ttl] = mockRedisClient.eval.mock.calls[0] ?? [];
     expect(script).toContain('keep(KEYS[1], ARGV[3])');
     expect(script).toContain('keep(KEYS[4], ARGV[3] * 7)');
     expect(script).toContain('sweep(KEYS[4], KEYS[5], ARGV[4], ARGV[3])');

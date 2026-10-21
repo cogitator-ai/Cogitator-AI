@@ -29,10 +29,10 @@ export interface Thread {
 /**
  * What an entry records. `message` covers user, assistant (with its tool calls) and system
  * messages, `tool_result` the answer of a tool. The others are events of the session, which a
- * context never sends to a model: `model_change` (the run moved to another model),
- * `compaction` (earlier entries summarized), `approval` and `interrupt` (a run paused for a
- * decision or was stopped), `label` (a name for a point of the thread) and `custom` (for
- * plugins).
+ * context never sends to a model as they are: `model_change` (the run moved to another model),
+ * `compaction` (the entries before a point of the branch are summarized, see
+ * {@link CompactionEvent}), `approval` and `interrupt` (a run paused for a decision or was
+ * stopped), `label` (a name for a point of the thread) and `custom` (for plugins).
  */
 export type MemoryEntryType =
   | 'message'
@@ -43,6 +43,25 @@ export type MemoryEntryType =
   | 'interrupt'
   | 'label'
   | 'custom';
+
+/**
+ * What a `compaction` entry records. Entries before `firstKeptEntryId` on its branch are left out
+ * of the conversation, and the entry's message, when `summarized`, stands in for them. Nothing is
+ * deleted, so other branches and evidence that point at those entries keep them.
+ */
+export interface CompactionEvent {
+  /** The first entry the compaction kept, null when it kept none */
+  firstKeptEntryId: string | null;
+  /**
+   * The last entry it left out, so a reader of only the newest entries of a branch, which may
+   * not reach the first kept one, knows where the conversation goes on
+   */
+  lastCompactedEntryId?: string;
+  /** How many entries of the conversation it left out */
+  compacted: number;
+  /** Whether its message summarizes them, or they were dropped without a summary */
+  summarized: boolean;
+}
 
 /** The entry types that hold conversation, the ones reads return unless asked for others */
 export const CONVERSATION_ENTRY_TYPES: readonly MemoryEntryType[] = ['message', 'tool_result'];
@@ -353,7 +372,9 @@ export interface FactAdapter {
   getFacts(agentId: string, category?: string): Promise<MemoryResult<Fact[]>>;
   updateFact(
     factId: string,
-    updates: Partial<Pick<Fact, 'content' | 'category' | 'confidence' | 'metadata' | 'expiresAt'>>
+    updates: Partial<
+      Pick<Fact, 'content' | 'category' | 'confidence' | 'metadata' | 'expiresAt' | 'evidence'>
+    >
   ): Promise<MemoryResult<Fact>>;
   deleteFact(factId: string): Promise<MemoryResult<void>>;
   searchFacts(agentId: string, query: string): Promise<MemoryResult<Fact[]>>;

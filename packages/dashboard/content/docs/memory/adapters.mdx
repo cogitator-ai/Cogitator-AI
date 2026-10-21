@@ -18,7 +18,7 @@ unwrap(await memory.connect());
 
 Database drivers are optional peer dependencies, installed by you and not with `@cogitator-ai/memory` or `@cogitator-ai/core`: each section below names the one its adapter needs, and an adapter whose driver is missing fails `connect()` with the install command.
 
-All conversation adapters share the same `MemoryAdapter` interface: `createThread`, `getThread`, `updateThread`, `deleteThread`, `listThreads`, `addEntry`, `getEntries`, `getEntry`, `deleteEntry`, `clearThread`, `connect` and `disconnect`. Some adapters add `FactAdapter`, `EmbeddingAdapter` or `KeywordSearchAdapter`.
+All conversation adapters share the same `MemoryAdapter` interface: `createThread`, `getThread`, `updateThread`, `deleteThread`, `listThreads`, `addEntry`, `getEntries`, `getEntry`, `deleteEntry`, `clearThread`, `connect` and `disconnect`, and the branch methods `getPath`, `rewind`, `checkout` and `forkThread` (optional on the interface, every built-in adapter has them, see [Threads as Trees](/docs/memory#threads-as-trees)). Some adapters add `FactAdapter`, `EmbeddingAdapter` or `KeywordSearchAdapter`.
 
 Every method, `connect()` included, returns a `MemoryResult` instead of throwing, so a failed connection goes unnoticed unless you check it. Wrap calls in `unwrap()` (throws on failure) or check `result.success`; see [Results and `unwrap()`](/docs/memory#results-and-unwrap).
 
@@ -34,6 +34,10 @@ Every built-in adapter behaves the same way, checked by one conformance suite ag
 - `getEntries` returns entries oldest first, entries with the same `createdAt` in the order they were added. `limit` keeps the newest entries, `0` or no limit returns them all, and a negative or fractional limit fails.
 - `toolCalls` and `toolResults` come back only with `includeToolCalls`, and a field that was never set is absent, never `null`.
 - `deleteThread` removes the thread's entries too, `clearThread` keeps the thread.
+- An entry added without `parentId` goes after the thread's active leaf and becomes it, one with `parentId` goes after that entry, which must be in the same thread, and `activate: false` leaves the leaf where it is. Concurrent appends chain one after another, they never take the same parent unnoticed.
+- `getPath` returns one branch oldest first, `limit` keeps the newest entries of it and `before` pages back. `getEntries` and `getPath` return `message` and `tool_result` entries unless `types` asks for others.
+- `rewind` only moves the leaf to an entry of the active branch, `checkout` to any entry of the thread, and neither deletes anything. `forkThread` copies a branch into a new thread with `metadata.forkOf` on each copy and `metadata.forkedFrom` on the thread.
+- `deleteEntry` splices: the entry's children go after its parent, and an active leaf that is deleted moves to its parent.
 - Returned threads and entries are copies: changing them does not change what is stored.
 - `onChange(listener)` reports every change once it is stored: `entry-added`, `entry-deleted` (also for entries InMemory drops at `maxEntries`), `thread-cleared` and `thread-deleted` (also for threads Redis expired, once a later write sweeps them). It returns a function that stops the listener. A listener that throws is logged and does not fail the write. The message index uses it, see [Context Builder](/docs/memory#context-builder). An adapter of your own reports changes by extending `ChangeReportingMemoryAdapter` and passing each write's result through `reported()`, one that extends `BaseMemoryAdapter` has no `onChange`.
 
@@ -87,9 +91,11 @@ await memory.addEntry({
 console.log(memory.stats); // { threads: 1, entries: 1 }
 ```
 
-| Option       | Type   | Default | Description                                        |
-| ------------ | ------ | ------- | -------------------------------------------------- |
-| `maxEntries` | number | 10000   | Max entries across all threads; oldest are evicted |
+| Option       | Type   | Default | Description                       |
+| ------------ | ------ | ------- | --------------------------------- |
+| `maxEntries` | number | 10000   | Max entries per thread, see below |
+
+`maxEntries` counts each thread on its own: a thread at the limit drops one entry for each new one, the oldest entry of a branch that is not active first, then the oldest of the active branch, whose next entry becomes the first. A long conversation keeps its newest turns, and replays and forks go before the conversation they split from. Before, the limit counted every thread together, so a busy thread could evict the entries of a quiet one.
 
 It stores copies of what you give it. A value it cannot clone, such as metadata holding a function, is stored as JSON the way the database adapters store it: the function is left out, and a `Date`, `Map` or `Set` in that same value comes back as a string or `{}`.
 
@@ -97,7 +103,7 @@ It stores copies of what you give it. A value it cannot clone, such as metadata 
 
 ## Redis
 
-Short-term memory with automatic TTL expiration. Uses sorted sets for ordered retrieval. Supports both standalone Redis and Redis Cluster.
+Threads and entries in Redis, kept until you delete them or, with a `ttl`, until they go unused that long. Uses sorted sets for ordered retrieval. Supports both standalone Redis and Redis Cluster.
 
 ```typescript
 import { RedisAdapter, unwrap } from '@cogitator-ai/memory';
@@ -127,23 +133,23 @@ const memory = new RedisAdapter({
 });
 ```
 
-| Option      | Type   | Default                                    | Description                                       |
-| ----------- | ------ | ------------------------------------------ | ------------------------------------------------- |
-| `url`       | string | —                                          | Redis URL for standalone mode                     |
-| `host`      | string | —                                          | Host (alternative to url)                         |
-| `port`      | number | —                                          | Port (alternative to url)                         |
-| `cluster`   | object | —                                          | `nodes` and `scaleReads` (`master`/`slave`/`all`) |
-| `keyPrefix` | string | `cogitator:` or `{cogitator}:` for cluster | Key prefix for all Redis keys                     |
-| `ttl`       | number | 86400                                      | TTL in seconds (24h default)                      |
-| `password`  | string | —                                          | Redis authentication password                     |
+| Option      | Type   | Default                                    | Description                                            |
+| ----------- | ------ | ------------------------------------------ | ------------------------------------------------------ |
+| `url`       | string | —                                          | Redis URL for standalone mode                          |
+| `host`      | string | —                                          | Host (alternative to url)                              |
+| `port`      | number | —                                          | Port (alternative to url)                              |
+| `cluster`   | object | —                                          | `nodes` and `scaleReads` (`master`/`slave`/`all`)      |
+| `keyPrefix` | string | `cogitator:` or `{cogitator}:` for cluster | Key prefix for all Redis keys                          |
+| `ttl`       | number | 0                                          | Seconds keys live after their last write, 0 keeps them |
+| `password`  | string | —                                          | Redis authentication password                          |
 
-Each write refreshes the TTL of the thread and its entry index, so active conversations do not expire mid-way; expired entries are pruned from the index on read. In cluster mode a custom `keyPrefix` without a hash tag is wrapped automatically (`'myapp:'` → `'{myapp}:'`) so all keys of the adapter map to one slot.
+Without a `ttl`, or with `ttl: 0`, nothing expires. Earlier versions expired keys after 24 hours by default: pass `ttl: 86400` to keep that. With a `ttl`, each write refreshes the TTL of the thread and its entry index, so active conversations do not expire mid-way, and expired entries are pruned from the index on read. In cluster mode a custom `keyPrefix` without a hash tag is wrapped automatically (`'myapp:'` → `'{myapp}:'`) so all keys of the adapter map to one slot.
 
 `getEntries({ limit })` reads only the newest `limit` entries of the thread instead of the whole thread. When `connect()` fails, the client is closed again, so an unreachable Redis does not leave a client reconnecting in the background and keeping the process alive, and the error names the connection problem (`connect ECONNREFUSED ...`).
 
 **Requires:** `pnpm add ioredis`
 
-**When to use:** Ephemeral conversations that should auto-expire, high-throughput scenarios, or when you already run Redis.
+**When to use:** When you already run Redis, high-throughput scenarios, or conversations that should expire after a while of silence (`ttl`).
 
 ## Postgres
 
@@ -392,15 +398,15 @@ It needs no `connect()`. Vector search uses a default `threshold` of 0.7, and bo
 
 ## Comparison
 
-| Feature            | InMemory | Redis   | Postgres | SQLite         | MongoDB | Qdrant                 |
-| ------------------ | -------- | ------- | -------- | -------------- | ------- | ---------------------- |
-| Threads/Entries    | Yes      | Yes     | Yes      | Yes            | Yes     | No                     |
-| Facts              | No       | No      | Yes      | No             | No      | No                     |
-| Vector Search      | No¹      | No      | pgvector | No             | No      | Yes                    |
-| Keyword Search     | No¹      | No      | tsvector | No             | No      | No                     |
-| Knowledge Graph    | No       | No      | Yes²     | Yes²           | No      | No                     |
-| TTL Expiration     | No       | Yes     | No       | No             | No      | No                     |
-| `memory.adapter`³  | Yes      | Yes     | Yes      | Yes            | Yes     | `memory.qdrant`        |
-| Extra Dependencies | None     | ioredis | pg       | better-sqlite3 | mongodb | @qdrant/js-client-rest |
+| Feature            | InMemory | Redis    | Postgres | SQLite         | MongoDB | Qdrant                 |
+| ------------------ | -------- | -------- | -------- | -------------- | ------- | ---------------------- |
+| Threads/Entries    | Yes      | Yes      | Yes      | Yes            | Yes     | No                     |
+| Facts              | No       | No       | Yes      | No             | No      | No                     |
+| Vector Search      | No¹      | No       | pgvector | No             | No      | Yes                    |
+| Keyword Search     | No¹      | No       | tsvector | No             | No      | No                     |
+| Knowledge Graph    | No       | No       | Yes²     | Yes²           | No      | No                     |
+| TTL Expiration     | No       | Optional | No       | No             | No      | No                     |
+| `memory.adapter`³  | Yes      | Yes      | Yes      | Yes            | Yes     | `memory.qdrant`        |
+| Extra Dependencies | None     | ioredis  | pg       | better-sqlite3 | mongodb | @qdrant/js-client-rest |
 
 ¹ Use `InMemoryEmbeddingAdapter`. ² Via `PostgresGraphAdapter` / `SQLiteGraphAdapter` — see [Knowledge Graphs](/docs/memory/knowledge-graphs). ³ Can be selected as the thread store in the `Cogitator` `memory` config. Qdrant is configured next to a thread store as `memory.qdrant`, the embedding store semantic context searches. Any adapter can also be assigned with `cog.memory = adapter` — see [Using Memory with Cogitator](/docs/memory#using-memory-with-cogitator).

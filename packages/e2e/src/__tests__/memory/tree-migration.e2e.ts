@@ -14,10 +14,60 @@ const redisUrl =
 const mongoUrl = process.env.TEST_MONGODB_URL;
 const tag = randomUUID().replace(/-/g, '').slice(0, 8);
 
+interface StoredDocument {
+  _id: string;
+  [field: string]: unknown;
+}
+
 async function connected<T extends MemoryAdapter>(adapter: T): Promise<T> {
   const result = await adapter.connect();
   if (!result.success) throw new Error(result.error);
   return adapter;
+}
+
+/** An entry as stored before trees: no parent, no type, no format version */
+interface LegacyEntry {
+  id: string;
+  at: Date;
+  seq?: number;
+}
+
+/** The ids and parents on the path to the thread's active leaf */
+async function pathOf(
+  adapter: MemoryAdapter,
+  threadId: string
+): Promise<[string, string | null][]> {
+  const path = await adapter.getPath!({ threadId });
+  if (!path.success) throw new Error(path.error);
+  return path.data.map((entry) => [entry.id, entry.parentId ?? null]);
+}
+
+/**
+ * Checks out the root of a chained legacy thread of three entries and deletes it: the thread
+ * keeps no active leaf, and nothing chains the rest again.
+ */
+async function expectChainedOnce(
+  adapter: MemoryAdapter,
+  threadId: string,
+  [root, middle, last]: string[]
+): Promise<void> {
+  expect(await pathOf(adapter, threadId)).toEqual([
+    [root, null],
+    [middle, root],
+    [last, middle],
+  ]);
+  const checkedOut = await adapter.checkout!(threadId, root!);
+  expect(checkedOut.success && checkedOut.data.activeLeafId).toBe(root);
+  expect((await adapter.deleteEntry(root!)).success).toBe(true);
+
+  const thread = await adapter.getThread(threadId);
+  expect(thread.success && thread.data?.activeLeafId).toBeUndefined();
+  expect(await pathOf(adapter, threadId)).toEqual([]);
+  const branch = await adapter.getPath!({ threadId, leafId: last! });
+  expect(branch.success && branch.data.map((entry) => [entry.id, entry.parentId])).toEqual([
+    [middle, null],
+    [last, middle],
+  ]);
 }
 
 /** What every adapter must show for a thread of entries e1, e2, e3 written before trees */
@@ -86,33 +136,67 @@ async function expectChained(adapter: MemoryAdapter, threadId: string): Promise<
     redis.disconnect();
   });
 
-  it('chains them the first time the thread is read', async () => {
+  /** Stores a thread and its entries as the adapter wrote them before trees */
+  async function seed(threadId: string, entries: LegacyEntry[]): Promise<void> {
     const redis = new Redis(redisUrl!);
     const at = new Date(0).toISOString();
     await redis.set(
-      `${keyPrefix}thread:t`,
-      JSON.stringify({ id: 't', agentId: 'agent', metadata: {}, createdAt: at, updatedAt: at })
+      `${keyPrefix}thread:${threadId}`,
+      JSON.stringify({ id: threadId, agentId: 'agent', metadata: {}, createdAt: at, updatedAt: at })
     );
-    for (const [i, id] of ['e1', 'e2', 'e3'].entries()) {
-      const createdAt = new Date(i * 1000);
+    for (const { id, at: createdAt, seq } of entries) {
       const key = `${keyPrefix}entry:${id}`;
       await redis.set(
         key,
         JSON.stringify({
           id,
-          threadId: 't',
+          threadId,
           message: { role: 'user', content: id },
           tokenCount: 1,
           createdAt,
-          seq: i + 1,
+          ...(seq !== undefined && { seq }),
         })
       );
-      await redis.zadd(`${keyPrefix}thread:entries:t`, createdAt.getTime(), key);
+      await redis.zadd(`${keyPrefix}thread:entries:${threadId}`, createdAt.getTime(), key);
     }
     redis.disconnect();
+  }
+
+  it('chains them the first time the thread is read', async () => {
+    await seed('t', [
+      { id: 'e1', at: new Date(0), seq: 1 },
+      { id: 'e2', at: new Date(1000), seq: 2 },
+      { id: 'e3', at: new Date(2000), seq: 3 },
+    ]);
 
     adapter = await connected(new RedisAdapter({ provider: 'redis', url: redisUrl!, keyPrefix }));
     await expectChained(adapter, 't');
+  });
+
+  it('chains entries created at one time in the order they were added', async () => {
+    const at = new Date(5000);
+    await seed('tied', [
+      { id: 'k3', at, seq: 11 },
+      { id: 'k1', at, seq: 12 },
+      { id: 'k2', at, seq: 13 },
+    ]);
+    adapter ??= await connected(new RedisAdapter({ provider: 'redis', url: redisUrl!, keyPrefix }));
+
+    expect(await pathOf(adapter, 'tied')).toEqual([
+      ['k3', null],
+      ['k1', 'k3'],
+      ['k2', 'k1'],
+    ]);
+  });
+
+  it('chains a thread once, so a leaf deleted later stays gone', async () => {
+    await seed('once', [
+      { id: 'o1', at: new Date(0), seq: 21 },
+      { id: 'o2', at: new Date(1000), seq: 22 },
+      { id: 'o3', at: new Date(2000), seq: 23 },
+    ]);
+    adapter ??= await connected(new RedisAdapter({ provider: 'redis', url: redisUrl!, keyPrefix }));
+    await expectChainedOnce(adapter, 'once', ['o1', 'o2', 'o3']);
   });
 });
 
@@ -128,29 +212,67 @@ async function expectChained(adapter: MemoryAdapter, threadId: string): Promise<
     await client.close();
   });
 
-  it('chains them the first time the thread is read', async () => {
+  /** Stores a thread and its entries as the adapter wrote them before trees, in this order */
+  async function seed(threadId: string, entries: LegacyEntry[]): Promise<void> {
     const client = new MongoClient(mongoUrl!);
     await client.connect();
     const db = client.db(database);
     const at = new Date(0);
     await db
-      .collection<{ _id: string }>('memory_threads')
-      .insertOne({ _id: 't', agentId: 'agent', metadata: {}, createdAt: at, updatedAt: at });
-    await db.collection<{ _id: string }>('memory_entries').insertMany(
-      ['e1', 'e2', 'e3'].map((id, i) => ({
+      .collection<StoredDocument>('memory_threads')
+      .insertOne({ _id: threadId, agentId: 'agent', metadata: {}, createdAt: at, updatedAt: at });
+    for (const { id, at: createdAt, seq } of entries) {
+      await db.collection<StoredDocument>('memory_entries').insertOne({
         _id: id,
-        threadId: 't',
+        threadId,
         message: { role: 'user', content: id },
         tokenCount: 1,
-        createdAt: new Date(i * 1000),
-        seq: i + 1,
-      }))
-    );
+        createdAt,
+        ...(seq !== undefined && { seq }),
+      });
+    }
     await client.close();
+  }
 
-    adapter = await connected(
-      new MongoDBAdapter({ provider: 'mongodb', uri: mongoUrl!, database })
-    );
+  const open = async () =>
+    connected(new MongoDBAdapter({ provider: 'mongodb', uri: mongoUrl!, database }));
+
+  it('chains them the first time the thread is read', async () => {
+    await seed('t', [
+      { id: 'e1', at: new Date(0), seq: 1 },
+      { id: 'e2', at: new Date(1000), seq: 2 },
+      { id: 'e3', at: new Date(2000), seq: 3 },
+    ]);
+
+    adapter = await open();
     await expectChained(adapter, 't');
+  });
+
+  it('chains entries created at one time in the order they were added', async () => {
+    const at = new Date(5000);
+    await seed('tied', [
+      { id: 'k3', at },
+      { id: 'k1', at },
+      { id: 'k2', at },
+    ]);
+    adapter ??= await open();
+
+    const order = await adapter.getEntries({ threadId: 'tied' });
+    expect(order.success && order.data.map((entry) => entry.id)).toEqual(['k3', 'k1', 'k2']);
+    expect(await pathOf(adapter, 'tied')).toEqual([
+      ['k3', null],
+      ['k1', 'k3'],
+      ['k2', 'k1'],
+    ]);
+  });
+
+  it('chains a thread once, so a leaf deleted later stays gone', async () => {
+    await seed('once', [
+      { id: 'o1', at: new Date(0), seq: 21 },
+      { id: 'o2', at: new Date(1000), seq: 22 },
+      { id: 'o3', at: new Date(2000), seq: 23 },
+    ]);
+    adapter ??= await open();
+    await expectChainedOnce(adapter, 'once', ['o1', 'o2', 'o3']);
   });
 });

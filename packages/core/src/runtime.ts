@@ -644,8 +644,7 @@ export class Cogitator implements ToolInvoker {
     const runMemory = new RunMemory(
       () => this.state.memoryAdapter,
       threadId,
-      options,
-      checkpoint?.branch
+      () => options
     );
     const explicitTrace = normalizeTraceParent(options.trace);
     const parentTrace = explicitTrace ?? currentTraceContext();
@@ -726,6 +725,7 @@ export class Cogitator implements ToolInvoker {
         }
         runId = checkpoint.runId;
         options = { ...options, userId: checkpoint.userId };
+        runMemory.open(checkpoint.branch);
         if (!explicitTrace && checkpoint.trace) {
           traceId = checkpoint.trace.traceId;
           parentSpanId = checkpoint.trace.rootSpanId;
@@ -848,7 +848,7 @@ export class Cogitator implements ToolInvoker {
           }
         }
 
-        await this.abandonPausedRun(agent, runOptions, threadId);
+        if (!runMemory.aside) await this.abandonPausedRun(agent, runOptions, threadId);
         messages = await this.prepareMessages(
           agent,
           runOptions,
@@ -1027,7 +1027,7 @@ export class Cogitator implements ToolInvoker {
         if (pending.length > 0) {
           return { toolCalls, decisions: Object.fromEntries(decisions), pending };
         }
-        if (resumed) await this.runCheckpointStore().delete(threadId);
+        if (resumed && !runMemory.aside) await this.runCheckpointStore().delete(threadId);
 
         const executeToolCall = async (toolCall: ToolCall) => {
           const toolSpanStart = Date.now();
@@ -1449,11 +1449,13 @@ export class Cogitator implements ToolInvoker {
                   )
                 );
                 options.onModelFallback?.(event);
-                void runMemory.event(
-                  active.id,
-                  { type: 'model_change', event: { from: event.from, to: event.to, reason } },
-                  `The turn moved from ${event.from} to ${event.to}`
-                );
+                runMemory
+                  .event(
+                    active.id,
+                    { type: 'model_change', event: { from: event.from, to: event.to, reason } },
+                    `The turn moved from ${event.from} to ${event.to}`
+                  )
+                  .catch(() => undefined);
               },
             }
           ),
@@ -1583,7 +1585,7 @@ export class Cogitator implements ToolInvoker {
         );
         const placement = runMemory.placement;
         if (placement) pausedCheckpoint.branch = placement;
-        await this.runCheckpointStore().save(pausedCheckpoint);
+        if (!runMemory.aside) await this.runCheckpointStore().save(pausedCheckpoint);
         spans.unshift(
           createSpan(
             'agent.run',
@@ -1825,6 +1827,7 @@ export class Cogitator implements ToolInvoker {
       this.state.contextBuilder,
       historyBudget
     );
+    runMemory.open();
 
     await checkInput(messages);
 
@@ -1899,9 +1902,12 @@ export class Cogitator implements ToolInvoker {
     const pausedMemory = new RunMemory(
       () => this.state.memoryAdapter,
       threadId,
-      options,
-      paused.branch
+      () => ({
+        ...options,
+        branch: undefined,
+      })
     );
+    pausedMemory.open(paused.branch);
     for (const toolCall of paused.turn.toolCalls) {
       const result: ToolResult = {
         callId: toolCall.id,

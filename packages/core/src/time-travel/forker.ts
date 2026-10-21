@@ -45,6 +45,7 @@ export class ExecutionForker {
       mode: 'live',
       modifiedMessages,
       modifiedToolResults: options.mockToolResults,
+      ...(options.userId !== undefined && { userId: options.userId }),
     });
 
     return {

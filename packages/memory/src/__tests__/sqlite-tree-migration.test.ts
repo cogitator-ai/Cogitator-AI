@@ -83,4 +83,50 @@ describe('SQLiteAdapter: entries written before trees', () => {
     expect(thread.success && thread.data?.activeLeafId).toBe('e2');
     await second.disconnect();
   });
+
+  it('keeps the order of entries of the same moment through a VACUUM', async () => {
+    const path = legacyDatabase();
+    const adapter = new SQLiteAdapter({ provider: 'sqlite', path });
+    await adapter.connect();
+    const at = new Date(5000);
+    for (const content of ['q', 'a', 'q2', 'a2']) {
+      await adapter.addEntry({
+        threadId: 't',
+        message: { role: 'user', content },
+        tokenCount: 1,
+        createdAt: at,
+      });
+    }
+    const before = await adapter.getEntries({ threadId: 't' });
+    await adapter.disconnect();
+    const db = new Database(path);
+    db.exec('VACUUM');
+    db.close();
+
+    const reopened = new SQLiteAdapter({ provider: 'sqlite', path });
+    await reopened.connect();
+    const after = await reopened.getEntries({ threadId: 't' });
+
+    const order = (read: typeof before) =>
+      read.success ? read.data.map((entry) => [entry.id, entry.seq]) : [];
+    expect(order(after)).toEqual(order(before));
+    await reopened.disconnect();
+  });
+
+  it('ends a path read on a cycle a damaged database holds', async () => {
+    const path = legacyDatabase();
+    const adapter = new SQLiteAdapter({ provider: 'sqlite', path });
+    await adapter.connect();
+    await adapter.disconnect();
+    const db = new Database(path);
+    db.prepare("UPDATE entries SET parent_id = 'e3' WHERE id = 'e1'").run();
+    db.close();
+
+    const reopened = new SQLiteAdapter({ provider: 'sqlite', path });
+    await reopened.connect();
+    const read = await reopened.getPath({ threadId: 't' });
+
+    expect(read.success && read.data.length).toBeLessThanOrEqual(4);
+    await reopened.disconnect();
+  });
 });

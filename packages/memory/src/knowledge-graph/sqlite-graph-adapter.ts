@@ -13,9 +13,11 @@ import type {
   TraversalDirection,
   EntityType,
   RelationType,
+  Evidence,
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 import { unwrap } from '../result';
+import { mergeEvidence } from './evidence';
 import type { SqliteDatabase } from '../adapters/sqlite-driver';
 
 interface NodeRow {
@@ -30,6 +32,7 @@ interface NodeRow {
   confidence: number;
   source: string;
   metadata: string;
+  evidence: string | null;
   access_count: number;
   created_at: string;
   updated_at: string;
@@ -51,6 +54,7 @@ interface EdgeRow {
   valid_from: string | null;
   valid_until: string | null;
   metadata: string;
+  evidence: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -70,8 +74,19 @@ interface NeighborRow extends NodeRow {
   edge_valid_from: string | null;
   edge_valid_until: string | null;
   edge_metadata: string;
+  edge_evidence: string | null;
   edge_created_at: string;
   edge_updated_at: string;
+}
+
+/** The `evidence` stored as JSON text, or nothing when there is none, so items without it stay without it */
+function evidenceOf(text: string | null): { evidence?: Evidence[] } {
+  return text ? { evidence: JSON.parse(text) as Evidence[] } : {};
+}
+
+/** JSON text of `evidence`, or null when there is none */
+function evidenceText(evidence: Evidence[] | undefined): string | null {
+  return evidence === undefined ? null : JSON.stringify(evidence);
 }
 
 export interface SQLiteGraphAdapterConfig {
@@ -123,6 +138,7 @@ export class SQLiteGraphAdapter implements GraphAdapter {
         confidence REAL DEFAULT 1.0,
         source TEXT NOT NULL,
         metadata TEXT DEFAULT '{}',
+        evidence TEXT,
         access_count INTEGER DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -143,6 +159,7 @@ export class SQLiteGraphAdapter implements GraphAdapter {
         valid_from TEXT,
         valid_until TEXT,
         metadata TEXT DEFAULT '{}',
+        evidence TEXT,
         agent_id TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -156,8 +173,18 @@ export class SQLiteGraphAdapter implements GraphAdapter {
       CREATE INDEX IF NOT EXISTS idx_graph_edges_target ON graph_edges(target_node_id);
       CREATE INDEX IF NOT EXISTS idx_graph_edges_type ON graph_edges(agent_id, type);
     `);
+    this.addMissingColumn('graph_nodes', 'evidence', 'TEXT');
+    this.addMissingColumn('graph_edges', 'evidence', 'TEXT');
 
     this.initialized = true;
+  }
+
+  /** Adds a column a table created by an earlier version lacks */
+  private addMissingColumn(table: string, column: string, type: string): void {
+    const db = this.ensureDb();
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+    if (columns.some((existing) => existing.name === column)) return;
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
   }
 
   async close(): Promise<void> {
@@ -212,6 +239,7 @@ export class SQLiteGraphAdapter implements GraphAdapter {
       lastAccessedAt: new Date(row.last_accessed_at),
       accessCount: row.access_count,
       metadata: JSON.parse(row.metadata) as Record<string, unknown>,
+      ...evidenceOf(row.evidence),
     };
   }
 
@@ -233,6 +261,7 @@ export class SQLiteGraphAdapter implements GraphAdapter {
       validFrom: row.valid_from ? new Date(row.valid_from) : undefined,
       validUntil: row.valid_until ? new Date(row.valid_until) : undefined,
       metadata: JSON.parse(row.metadata) as Record<string, unknown>,
+      ...evidenceOf(row.evidence),
     };
   }
 
@@ -254,6 +283,7 @@ export class SQLiteGraphAdapter implements GraphAdapter {
       validFrom: row.edge_valid_from ? new Date(row.edge_valid_from) : undefined,
       validUntil: row.edge_valid_until ? new Date(row.edge_valid_until) : undefined,
       metadata: JSON.parse(row.edge_metadata) as Record<string, unknown>,
+      ...evidenceOf(row.edge_evidence),
     };
   }
 
@@ -283,8 +313,8 @@ export class SQLiteGraphAdapter implements GraphAdapter {
 
       db.prepare(
         `INSERT INTO graph_nodes
-         (id, agent_id, type, name, aliases, description, properties, embedding, confidence, source, metadata, access_count, created_at, updated_at, last_accessed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`
+         (id, agent_id, type, name, aliases, description, properties, embedding, confidence, source, metadata, evidence, access_count, created_at, updated_at, last_accessed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`
       ).run(
         id,
         node.agentId,
@@ -297,6 +327,7 @@ export class SQLiteGraphAdapter implements GraphAdapter {
         node.confidence,
         node.source,
         JSON.stringify(node.metadata ?? {}),
+        evidenceText(node.evidence),
         nowStr,
         nowStr,
         nowStr
@@ -359,7 +390,14 @@ export class SQLiteGraphAdapter implements GraphAdapter {
     updates: Partial<
       Pick<
         GraphNode,
-        'name' | 'aliases' | 'description' | 'properties' | 'confidence' | 'metadata' | 'embedding'
+        | 'name'
+        | 'aliases'
+        | 'description'
+        | 'properties'
+        | 'confidence'
+        | 'metadata'
+        | 'embedding'
+        | 'evidence'
       >
     >
   ): Promise<MemoryResult<GraphNode>> {
@@ -396,6 +434,10 @@ export class SQLiteGraphAdapter implements GraphAdapter {
       if (updates.embedding !== undefined) {
         setClauses.push('embedding = ?');
         params.push(JSON.stringify(updates.embedding));
+      }
+      if (updates.evidence !== undefined) {
+        setClauses.push('evidence = ?');
+        params.push(evidenceText(updates.evidence));
       }
 
       params.push(nodeId);
@@ -505,8 +547,8 @@ export class SQLiteGraphAdapter implements GraphAdapter {
 
       db.prepare(
         `INSERT INTO graph_edges
-         (id, agent_id, source_node_id, target_node_id, type, label, weight, bidirectional, properties, confidence, source, valid_from, valid_until, metadata, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (id, agent_id, source_node_id, target_node_id, type, label, weight, bidirectional, properties, confidence, source, valid_from, valid_until, metadata, evidence, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         id,
         edge.agentId,
@@ -522,6 +564,7 @@ export class SQLiteGraphAdapter implements GraphAdapter {
         edge.validFrom?.toISOString() ?? null,
         edge.validUntil?.toISOString() ?? null,
         JSON.stringify(edge.metadata ?? {}),
+        evidenceText(edge.evidence),
         nowStr,
         nowStr
       );
@@ -571,7 +614,14 @@ export class SQLiteGraphAdapter implements GraphAdapter {
     updates: Partial<
       Pick<
         GraphEdge,
-        'weight' | 'label' | 'properties' | 'confidence' | 'validFrom' | 'validUntil' | 'metadata'
+        | 'weight'
+        | 'label'
+        | 'properties'
+        | 'confidence'
+        | 'validFrom'
+        | 'validUntil'
+        | 'metadata'
+        | 'evidence'
       >
     >
   ): Promise<MemoryResult<GraphEdge>> {
@@ -608,6 +658,10 @@ export class SQLiteGraphAdapter implements GraphAdapter {
       if (updates.metadata !== undefined) {
         setClauses.push('metadata = ?');
         params.push(JSON.stringify(updates.metadata));
+      }
+      if (updates.evidence !== undefined) {
+        setClauses.push('evidence = ?');
+        params.push(evidenceText(updates.evidence));
       }
 
       params.push(edgeId);
@@ -869,14 +923,15 @@ export class SQLiteGraphAdapter implements GraphAdapter {
 
       const selectCols = `
         n.id, n.agent_id, n.type, n.name, n.aliases, n.description,
-        n.properties, n.embedding, n.confidence, n.source, n.metadata,
+        n.properties, n.embedding, n.confidence, n.source, n.metadata, n.evidence,
         n.created_at, n.updated_at, n.last_accessed_at, n.access_count,
         e.id as edge_id, e.agent_id as edge_agent_id, e.type as edge_type,
         e.source_node_id as edge_source_node_id, e.target_node_id as edge_target_node_id,
         e.label as edge_label, e.weight as edge_weight, e.bidirectional as edge_bidirectional,
         e.properties as edge_properties, e.confidence as edge_confidence,
         e.source as edge_source, e.valid_from as edge_valid_from, e.valid_until as edge_valid_until,
-        e.metadata as edge_metadata, e.created_at as edge_created_at, e.updated_at as edge_updated_at
+        e.metadata as edge_metadata, e.evidence as edge_evidence,
+        e.created_at as edge_created_at, e.updated_at as edge_updated_at
       `;
 
       let sql: string;
@@ -936,9 +991,11 @@ export class SQLiteGraphAdapter implements GraphAdapter {
   ): Promise<MemoryResult<GraphNode>> {
     return this.run(async () => {
       const db = this.ensureDb();
+      const sourceEvidence: (Evidence[] | undefined)[] = [];
 
       for (const sourceId of sourceNodeIds) {
         const sourceNode = unwrap(await this.getNode(sourceId));
+        sourceEvidence.push(sourceNode?.evidence);
 
         db.prepare(`UPDATE graph_edges SET source_node_id = ? WHERE source_node_id = ?`).run(
           targetNodeId,
@@ -979,7 +1036,9 @@ export class SQLiteGraphAdapter implements GraphAdapter {
         return this.failure(`Target node not found: ${targetNodeId}`);
       }
 
-      return this.success(mergedNode);
+      const evidence = mergeEvidence(mergedNode.evidence, sourceEvidence);
+      if (!evidence) return this.success(mergedNode);
+      return this.updateNode(targetNodeId, { evidence });
     });
   }
 

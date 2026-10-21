@@ -172,13 +172,16 @@ export class InMemoryAdapter extends BranchingMemoryAdapter {
     if (!thread) return this.failure(`Thread not found: ${entry.threadId}`);
     if (entry.parentId) {
       const parent = this.entries.get(entry.parentId);
-      if (!parent || parent.threadId !== entry.threadId) {
+      if (parent?.threadId !== entry.threadId) {
         return this.failure(`Parent entry ${entry.parentId} is not in thread ${entry.threadId}`);
       }
     }
     const copied = this.stored(entry, 'entry');
     if (!copied.success) return copied;
-    await this.makeRoom(entry.threadId);
+    await this.makeRoom(entry.threadId, entry.parentId ?? thread.activeLeafId);
+    if (entry.parentId && !this.entries.has(entry.parentId)) {
+      return this.failure(`Parent entry ${entry.parentId} is not in thread ${entry.threadId}`);
+    }
 
     const { activate, parentId: askedParent, ...fields } = copied.data;
     const full: MemoryEntry = {
@@ -202,9 +205,10 @@ export class InMemoryAdapter extends BranchingMemoryAdapter {
 
   /**
    * Keeps a thread under `maxEntries`: the oldest entry of a branch that is not active goes
-   * first, then the oldest of the active branch, whose next entry becomes the first
+   * first, then the oldest of the active branch, whose next entry becomes the first. `parentId`,
+   * the entry the next one goes after, and the active leaf stay.
    */
-  private async makeRoom(threadId: string): Promise<void> {
+  private async makeRoom(threadId: string, parentId: string | undefined): Promise<void> {
     const ids = this.threadEntries.get(threadId) ?? [];
     if (ids.length < this.maxEntries) return;
     const active = new Set<string>();
@@ -213,7 +217,9 @@ export class InMemoryAdapter extends BranchingMemoryAdapter {
       active.add(current);
       current = this.entries.get(current)?.parentId ?? undefined;
     }
-    const victim = ids.find((id) => !active.has(id)) ?? ids[0];
+    const leaf = this.threads.get(threadId)?.activeLeafId;
+    const evictable = ids.filter((id) => id !== parentId && id !== leaf);
+    const victim = evictable.find((id) => !active.has(id)) ?? evictable[0];
     if (victim) await this.deleteEntry(victim);
   }
 
@@ -223,6 +229,9 @@ export class InMemoryAdapter extends BranchingMemoryAdapter {
   ): Promise<MemoryResult<Thread>> {
     const thread = this.threads.get(threadId);
     if (!thread) return this.failure(`Thread not found: ${threadId}`);
+    if (leafId !== null && this.entries.get(leafId)?.threadId !== threadId) {
+      return this.failure(`Entry ${leafId} is not in thread ${threadId}`);
+    }
     if (leafId === null) delete thread.activeLeafId;
     else thread.activeLeafId = leafId;
     return this.success(copyThread(thread));

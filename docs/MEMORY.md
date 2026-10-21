@@ -70,7 +70,7 @@ await adapter.connect();
 
 ### RedisAdapter
 
-Redis-backed storage with TTL. Supports standalone and cluster mode via `@cogitator-ai/redis`.
+Redis-backed storage, with an optional TTL. Supports standalone and cluster mode via `@cogitator-ai/redis`.
 
 ```typescript
 import { RedisAdapter } from '@cogitator-ai/memory';
@@ -78,7 +78,7 @@ import { RedisAdapter } from '@cogitator-ai/memory';
 const standalone = new RedisAdapter({
   provider: 'redis',
   url: 'redis://localhost:6379',
-  ttl: 86400, // default: 24 hours
+  ttl: 86400, // optional, default 0: nothing expires
   keyPrefix: 'cogitator:', // default
 });
 
@@ -487,7 +487,7 @@ interface MemoryConfig {
     port?: number;
     cluster?: { nodes: { host: string; port: number }[]; scaleReads?: 'master' | 'slave' | 'all' };
     keyPrefix?: string;
-    ttl?: number; // default: 86400 (24h)
+    ttl?: number; // seconds after the last write, default 0 (no expiry)
     password?: string;
   };
 

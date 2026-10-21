@@ -48,7 +48,11 @@ export type MemoryAdapterScenario =
   | 'tree-checkout-and-rewind'
   | 'tree-fork-thread'
   | 'tree-entry-types'
-  | 'tree-delete-splices';
+  | 'tree-delete-splices'
+  | 'tree-new-root'
+  | 'tree-delete-branch-point'
+  | 'tree-checkout-of-deleted'
+  | 'tree-concurrent-appends';
 
 /** One case of the memory adapter contract. */
 export interface MemoryAdapterConformanceCase {
@@ -811,6 +815,94 @@ const SCENARIOS: Record<MemoryAdapterScenario, (adapter: MemoryAdapter) => Promi
     assert.equal(ok(await adapter.getThread(id), 'getThread')?.activeLeafId, undefined);
     const [fresh] = await addAll(adapter, id, ['fresh']);
     assert.equal(fresh!.parentId, null, 'a cleared thread starts over');
+  },
+
+  async 'tree-new-root'(adapter) {
+    if (!adapter.getPath) return;
+    const { agentId, threadId } = scope();
+    const id = threadId();
+    await newThread(adapter, agentId, id);
+    const [, b] = await addAll(adapter, id, ['a', 'b']);
+
+    const aside = ok(
+      await adapter.addEntry({
+        threadId: id,
+        message: user('aside'),
+        tokenCount: 1,
+        parentId: null,
+        activate: false,
+      }),
+      'addEntry of a new root that stays aside'
+    );
+    assert.equal(aside.parentId, null, 'parentId: null starts a new root, not the active branch');
+    assert.equal(ok(await adapter.getThread(id), 'getThread')?.activeLeafId, b!.id);
+    const root = ok(
+      await adapter.addEntry({
+        threadId: id,
+        message: user('root'),
+        tokenCount: 1,
+        parentId: null,
+      }),
+      'addEntry of a new root'
+    );
+    assert.equal(root.parentId, null);
+    assert.deepEqual(contents(ok(await adapter.getPath({ threadId: id }), 'getPath')), ['root']);
+  },
+
+  async 'tree-delete-branch-point'(adapter) {
+    if (!adapter.getPath || !adapter.rewind) return;
+    const { agentId, threadId } = scope();
+    const id = threadId();
+    await newThread(adapter, agentId, id);
+    const [a, b, c] = await addAll(adapter, id, ['a', 'b', 'c']);
+    ok(await adapter.rewind(id, b!.id), 'rewind');
+    const [d] = await addAll(adapter, id, ['d']);
+
+    ok(await adapter.deleteEntry(b!.id), 'deleteEntry of a branch point');
+    assert.equal(ok(await adapter.getEntry(c!.id), 'getEntry')?.parentId, a!.id);
+    assert.equal(ok(await adapter.getEntry(d!.id), 'getEntry')?.parentId, a!.id);
+    assert.deepEqual(contents(ok(await adapter.getPath({ threadId: id }), 'getPath')), ['a', 'd']);
+    assert.deepEqual(
+      contents(ok(await adapter.getPath({ threadId: id, leafId: c!.id }), 'getPath of a branch')),
+      ['a', 'c']
+    );
+    ok(await adapter.deleteEntry(a!.id), 'deleteEntry of the root');
+    assert.equal(ok(await adapter.getEntry(c!.id), 'getEntry')?.parentId, null);
+    assert.deepEqual(contents(ok(await adapter.getPath({ threadId: id }), 'getPath')), ['d']);
+  },
+
+  async 'tree-checkout-of-deleted'(adapter) {
+    if (!adapter.checkout || !adapter.rewind || !adapter.getPath) return;
+    const { agentId, threadId } = scope();
+    const id = threadId();
+    await newThread(adapter, agentId, id);
+    const [a, b, c] = await addAll(adapter, id, ['a', 'b', 'c']);
+    ok(await adapter.rewind(id, a!.id), 'rewind');
+    ok(await adapter.deleteEntry(c!.id), 'deleteEntry');
+
+    refused(await adapter.checkout(id, c!.id), 'checkout of a deleted entry');
+    refused(await adapter.rewind(id, b!.id), 'rewind to an entry past the leaf');
+    assert.equal(ok(await adapter.getThread(id), 'getThread')?.activeLeafId, a!.id);
+  },
+
+  async 'tree-concurrent-appends'(adapter) {
+    if (!adapter.getPath) return;
+    const { agentId, threadId } = scope();
+    const id = threadId();
+    await newThread(adapter, agentId, id);
+    const texts = Array.from({ length: 8 }, (_, i) => `m${i}`);
+
+    const added = await Promise.all(
+      texts.map(async (text) =>
+        ok(await adapter.addEntry({ threadId: id, message: user(text), tokenCount: 1 }), 'addEntry')
+      )
+    );
+
+    const parents = added.map((entry) => entry.parentId ?? null);
+    assert.equal(new Set(parents).size, texts.length, 'no two appends go after the same entry');
+    const path = ok(await adapter.getPath({ threadId: id }), 'getPath');
+    assert.equal(path.length, texts.length, 'every append is on the active branch');
+    assert.deepEqual(contents(path).sort(), [...texts].sort());
   },
 };
 

@@ -131,7 +131,7 @@ interface MemoryConfig {
     port?: number;
     cluster?: { nodes: { host: string; port: number }[]; scaleReads?: 'master' | 'slave' | 'all' };
     keyPrefix?: string;
-    ttl?: number; // seconds, default 86400
+    ttl?: number; // seconds after the last write, default 0 (no expiry)
     password?: string;
   };
   postgres?: { connectionString: string; schema?: string; poolSize?: number };

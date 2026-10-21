@@ -13,15 +13,27 @@ import type {
   TraversalDirection,
   EntityType,
   RelationType,
+  Evidence,
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 import { unwrap } from '../result';
+import { mergeEvidence } from './evidence';
 import {
   detectVectorSearchTuning,
   ensureHnswCosineIndex,
   vectorColumnPlan,
   type VectorColumnPlan,
 } from '../adapters/pgvector';
+
+/** JSON text for a JSONB parameter. node-pg would send a JS array as a Postgres array literal. */
+function toJsonb(value: unknown): string | null {
+  return value === undefined || value === null ? null : JSON.stringify(value);
+}
+
+/** The `evidence` of a row, or nothing when the row has none, so items without it stay without it */
+function evidenceOf(value: unknown): { evidence?: Evidence[] } {
+  return value ? { evidence: value as Evidence[] } : {};
+}
 
 type Pool = {
   query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
@@ -85,7 +97,8 @@ export class PostgresGraphAdapter implements GraphAdapter {
         updated_at TIMESTAMPTZ DEFAULT NOW(),
         last_accessed_at TIMESTAMPTZ DEFAULT NOW(),
         access_count INTEGER DEFAULT 0,
-        metadata JSONB DEFAULT '{}'
+        metadata JSONB DEFAULT '{}',
+        evidence JSONB
       )
     `);
 
@@ -106,9 +119,17 @@ export class PostgresGraphAdapter implements GraphAdapter {
         updated_at TIMESTAMPTZ DEFAULT NOW(),
         valid_from TIMESTAMPTZ,
         valid_until TIMESTAMPTZ,
-        metadata JSONB DEFAULT '{}'
+        metadata JSONB DEFAULT '{}',
+        evidence JSONB
       )
     `);
+
+    await this.pool.query(
+      `ALTER TABLE ${this.schema}.graph_nodes ADD COLUMN IF NOT EXISTS evidence JSONB`
+    );
+    await this.pool.query(
+      `ALTER TABLE ${this.schema}.graph_edges ADD COLUMN IF NOT EXISTS evidence JSONB`
+    );
 
     await this.pool.query(`
       CREATE INDEX IF NOT EXISTS idx_graph_nodes_agent_id
@@ -190,8 +211,8 @@ export class PostgresGraphAdapter implements GraphAdapter {
 
       await this.pool.query(
         `INSERT INTO ${this.schema}.graph_nodes
-         (id, agent_id, type, name, aliases, description, properties, embedding, confidence, source, metadata, created_at, updated_at, last_accessed_at, access_count)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12, $12, 0)`,
+         (id, agent_id, type, name, aliases, description, properties, embedding, confidence, source, metadata, created_at, updated_at, last_accessed_at, access_count, evidence)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12, $12, 0, $13::jsonb)`,
         [
           id,
           node.agentId,
@@ -205,6 +226,7 @@ export class PostgresGraphAdapter implements GraphAdapter {
           node.source,
           node.metadata ?? {},
           now,
+          toJsonb(node.evidence),
         ]
       );
 
@@ -258,7 +280,14 @@ export class PostgresGraphAdapter implements GraphAdapter {
     updates: Partial<
       Pick<
         GraphNode,
-        'name' | 'aliases' | 'description' | 'properties' | 'confidence' | 'metadata' | 'embedding'
+        | 'name'
+        | 'aliases'
+        | 'description'
+        | 'properties'
+        | 'confidence'
+        | 'metadata'
+        | 'embedding'
+        | 'evidence'
       >
     >
   ): Promise<MemoryResult<GraphNode>> {
@@ -294,6 +323,10 @@ export class PostgresGraphAdapter implements GraphAdapter {
       if (updates.embedding !== undefined) {
         setClauses.push(`embedding = $${paramIndex++}`);
         params.push(`[${updates.embedding.join(',')}]`);
+      }
+      if (updates.evidence !== undefined) {
+        setClauses.push(`evidence = $${paramIndex++}::jsonb`);
+        params.push(toJsonb(updates.evidence));
       }
 
       params.push(nodeId);
@@ -399,8 +432,8 @@ export class PostgresGraphAdapter implements GraphAdapter {
 
       await this.pool.query(
         `INSERT INTO ${this.schema}.graph_edges
-         (id, agent_id, source_node_id, target_node_id, type, label, weight, bidirectional, properties, confidence, source, valid_from, valid_until, metadata, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $15)`,
+         (id, agent_id, source_node_id, target_node_id, type, label, weight, bidirectional, properties, confidence, source, valid_from, valid_until, metadata, created_at, updated_at, evidence)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $15, $16::jsonb)`,
         [
           id,
           edge.agentId,
@@ -417,6 +450,7 @@ export class PostgresGraphAdapter implements GraphAdapter {
           edge.validUntil ?? null,
           edge.metadata ?? {},
           now,
+          toJsonb(edge.evidence),
         ]
       );
 
@@ -463,7 +497,14 @@ export class PostgresGraphAdapter implements GraphAdapter {
     updates: Partial<
       Pick<
         GraphEdge,
-        'weight' | 'label' | 'properties' | 'confidence' | 'validFrom' | 'validUntil' | 'metadata'
+        | 'weight'
+        | 'label'
+        | 'properties'
+        | 'confidence'
+        | 'validFrom'
+        | 'validUntil'
+        | 'metadata'
+        | 'evidence'
       >
     >
   ): Promise<MemoryResult<GraphEdge>> {
@@ -499,6 +540,10 @@ export class PostgresGraphAdapter implements GraphAdapter {
       if (updates.metadata !== undefined) {
         setClauses.push(`metadata = $${paramIndex++}`);
         params.push(updates.metadata);
+      }
+      if (updates.evidence !== undefined) {
+        setClauses.push(`evidence = $${paramIndex++}::jsonb`);
+        params.push(toJsonb(updates.evidence));
       }
 
       params.push(edgeId);
@@ -784,13 +829,14 @@ export class PostgresGraphAdapter implements GraphAdapter {
 
       const selectCols = `
         n.id, n.agent_id, n.type, n.name, n.aliases, n.description,
-        n.properties, n.confidence, n.source, n.metadata,
+        n.properties, n.confidence, n.source, n.metadata, n.evidence,
         n.created_at, n.updated_at, n.last_accessed_at, n.access_count,
         e.id as edge_id, e.agent_id as edge_agent_id, e.type as edge_type,
         e.source_node_id, e.target_node_id, e.label, e.weight, e.bidirectional,
         e.properties as edge_properties, e.confidence as edge_confidence,
         e.source as edge_source, e.valid_from, e.valid_until,
-        e.metadata as edge_metadata, e.created_at as edge_created_at, e.updated_at as edge_updated_at
+        e.metadata as edge_metadata, e.evidence as edge_evidence,
+        e.created_at as edge_created_at, e.updated_at as edge_updated_at
       `;
 
       if (direction === 'outgoing') {
@@ -845,8 +891,10 @@ export class PostgresGraphAdapter implements GraphAdapter {
     sourceNodeIds: string[]
   ): Promise<MemoryResult<GraphNode>> {
     return this.run(async () => {
+      const sourceEvidence: (Evidence[] | undefined)[] = [];
       for (const sourceId of sourceNodeIds) {
         const sourceNode = unwrap(await this.getNode(sourceId));
+        sourceEvidence.push(sourceNode?.evidence);
 
         await this.pool.query(
           `UPDATE ${this.schema}.graph_edges
@@ -882,7 +930,9 @@ export class PostgresGraphAdapter implements GraphAdapter {
         return this.failure(`Target node not found: ${targetNodeId}`);
       }
 
-      return this.success(mergedNode);
+      const evidence = mergeEvidence(mergedNode.evidence, sourceEvidence);
+      if (!evidence) return this.success(mergedNode);
+      return this.updateNode(targetNodeId, { evidence });
     });
   }
 
@@ -958,6 +1008,7 @@ export class PostgresGraphAdapter implements GraphAdapter {
       lastAccessedAt: new Date(row.last_accessed_at as string),
       accessCount: row.access_count as number,
       metadata: row.metadata as Record<string, unknown> | undefined,
+      ...evidenceOf(row.evidence),
     };
   }
 
@@ -979,6 +1030,7 @@ export class PostgresGraphAdapter implements GraphAdapter {
       validFrom: row.valid_from ? new Date(row.valid_from as string) : undefined,
       validUntil: row.valid_until ? new Date(row.valid_until as string) : undefined,
       metadata: row.metadata as Record<string, unknown> | undefined,
+      ...evidenceOf(row.evidence),
     };
   }
 
@@ -1000,6 +1052,7 @@ export class PostgresGraphAdapter implements GraphAdapter {
       validFrom: row.valid_from ? new Date(row.valid_from as string) : undefined,
       validUntil: row.valid_until ? new Date(row.valid_until as string) : undefined,
       metadata: row.edge_metadata as Record<string, unknown> | undefined,
+      ...evidenceOf(row.edge_evidence),
     };
   }
 }

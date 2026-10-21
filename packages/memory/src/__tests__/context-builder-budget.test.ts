@@ -201,11 +201,13 @@ describe('ContextBuilder budget and failures', () => {
     });
 
     it('reports failed history and fact loads instead of building an empty context silently', async () => {
+      const reset = async (): Promise<MemoryResult<MemoryEntry[]>> => ({
+        success: false,
+        error: 'connection reset',
+      });
       const broken: MemoryAdapter = Object.assign(Object.create(adapter) as InMemoryAdapter, {
-        getEntries: async (): Promise<MemoryResult<MemoryEntry[]>> => ({
-          success: false,
-          error: 'connection reset',
-        }),
+        getEntries: reset,
+        getPath: reset,
       });
       const factAdapter = {
         getFacts: vi.fn(async () => {

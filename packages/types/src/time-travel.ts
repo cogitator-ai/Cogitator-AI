@@ -84,6 +84,11 @@ export interface ReplayOptions {
   modifiedToolResults?: Record<string, unknown>;
   /** Tools removed from the replayed agent, so the model cannot call them */
   skipTools?: string[];
+  /**
+   * The user a live replay runs as. A replay goes on a branch of its run's thread only when the
+   * thread is theirs, and on a thread of its own otherwise.
+   */
+  userId?: string;
 }
 
 export interface ReplayResult extends RunResult {
@@ -103,6 +108,8 @@ export interface ForkOptions {
   additionalContext?: string;
   mockToolResults?: Record<string, unknown>;
   label?: string;
+  /** The user the fork runs as, see {@link ReplayOptions.userId} */
+  userId?: string;
 }
 
 export interface ForkResult {

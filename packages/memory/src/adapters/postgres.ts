@@ -16,6 +16,7 @@ import type {
   MemoryResult,
   PostgresAdapterConfig,
   MemoryProvider,
+  Evidence,
   Fact,
   Embedding,
   SemanticSearchOptions,
@@ -103,6 +104,23 @@ function rowToEmbedding(row: Record<string, unknown>): Embedding {
 /** JSON text for a JSONB parameter. node-pg would send a JS array as a Postgres array literal. */
 function toJsonb(value: unknown): string | null {
   return value === undefined || value === null ? null : JSON.stringify(value);
+}
+
+/** A `facts` row as a fact, without `evidence` when the row has none */
+function rowToFact(row: Record<string, unknown>): Fact {
+  return {
+    id: row.id as string,
+    agentId: row.agent_id as string,
+    content: row.content as string,
+    category: row.category as string,
+    confidence: row.confidence as number,
+    source: row.source as Fact['source'],
+    metadata: row.metadata as Record<string, unknown>,
+    createdAt: new Date(row.created_at as string),
+    updatedAt: new Date(row.updated_at as string),
+    expiresAt: row.expires_at ? new Date(row.expires_at as string) : undefined,
+    ...(row.evidence ? { evidence: row.evidence as Evidence[] } : {}),
+  };
 }
 
 export class PostgresAdapter
@@ -209,13 +227,13 @@ export class PostgresAdapter
       `ALTER TABLE ${this.schema}.threads ADD COLUMN IF NOT EXISTS active_leaf_id TEXT`
     );
     await db.query(`
-      UPDATE ${entries} e SET parent_id = ordered.previous
+      UPDATE ${entries} e SET parent_id = ordered.previous, format_version = 1
       FROM (
         SELECT id, LAG(id) OVER (
           PARTITION BY thread_id ORDER BY created_at, seq NULLS FIRST, id
         ) AS previous FROM ${entries}
       ) ordered
-      WHERE ordered.id = e.id AND e.format_version IS NULL AND e.parent_id IS NULL
+      WHERE ordered.id = e.id AND e.format_version IS NULL
     `);
     await db.query(`
       UPDATE ${this.schema}.threads t SET active_leaf_id = last.id
@@ -280,9 +298,11 @@ export class PostgresAdapter
           metadata JSONB DEFAULT '{}',
           created_at TIMESTAMPTZ DEFAULT NOW(),
           updated_at TIMESTAMPTZ DEFAULT NOW(),
-          expires_at TIMESTAMPTZ
+          expires_at TIMESTAMPTZ,
+          evidence JSONB
         )
       `);
+        await db.query(`ALTER TABLE ${this.schema}.facts ADD COLUMN IF NOT EXISTS evidence JSONB`);
 
         await db.query(`CREATE SEQUENCE IF NOT EXISTS ${this.schema}.entries_seq`);
         await db.query(`ALTER TABLE ${this.schema}.entries ADD COLUMN IF NOT EXISTS seq BIGINT`);
@@ -694,12 +714,14 @@ export class PostgresAdapter
     try {
       const result = await this.pool.query(
         `WITH RECURSIVE path AS (
-           SELECT e.*, 0 AS depth, CASE WHEN ${wanted('e')} THEN 1 ELSE 0 END AS kept
+           SELECT e.*, 0 AS depth, CASE WHEN ${wanted('e')} THEN 1 ELSE 0 END AS kept,
+                  (SELECT COUNT(*) FROM ${this.schema}.entries WHERE thread_id = $2) AS bound
            FROM ${this.schema}.entries e WHERE e.id = $1 AND e.thread_id = $2
            UNION ALL
-           SELECT e.*, path.depth + 1, path.kept + CASE WHEN ${wanted('e')} THEN 1 ELSE 0 END
+           SELECT e.*, path.depth + 1, path.kept + CASE WHEN ${wanted('e')} THEN 1 ELSE 0 END,
+                  path.bound
            FROM ${this.schema}.entries e JOIN path ON e.id = path.parent_id
-           WHERE path.kept < $4::bigint AND e.thread_id = $2
+           WHERE path.kept < $4::bigint AND e.thread_id = $2 AND path.depth < path.bound
          )
          SELECT * FROM path WHERE ${wanted('path')} ORDER BY depth DESC`,
         [start.data, options.threadId, types, options.limit || Number.MAX_SAFE_INTEGER]
@@ -719,14 +741,26 @@ export class PostgresAdapter
   ): Promise<MemoryResult<Thread>> {
     if (!this.pool) return this.failure('Not connected');
     try {
-      const result = await this.pool.query(
-        `UPDATE ${this.schema}.threads SET active_leaf_id = $1 WHERE id = $2 RETURNING *`,
-        [leafId, threadId]
-      );
-      const row = result.rows[0];
-      return row
-        ? this.success(this.rowToThread(row))
-        : this.failure(`Thread not found: ${threadId}`);
+      const outcome = await this.inTransaction(async (client) => {
+        const thread = await client.query(
+          `SELECT 1 FROM ${this.schema}.threads WHERE id = $1 FOR UPDATE`,
+          [threadId]
+        );
+        if (thread.rows.length === 0) return `Thread not found: ${threadId}`;
+        if (leafId !== null) {
+          const entry = await client.query(
+            `SELECT 1 FROM ${this.schema}.entries WHERE id = $1 AND thread_id = $2`,
+            [leafId, threadId]
+          );
+          if (entry.rows.length === 0) return `Entry ${leafId} is not in thread ${threadId}`;
+        }
+        const updated = await client.query(
+          `UPDATE ${this.schema}.threads SET active_leaf_id = $1 WHERE id = $2 RETURNING *`,
+          [leafId, threadId]
+        );
+        return this.rowToThread(updated.rows[0]);
+      });
+      return typeof outcome === 'string' ? this.failure(outcome) : this.success(outcome);
     } catch (err) {
       return this.failure((err as Error).message);
     }
@@ -804,15 +838,19 @@ export class PostgresAdapter
     const entries = `${this.schema}.entries`;
     try {
       await this.inTransaction(async (client) => {
+        const owner = await client.query(`SELECT thread_id FROM ${entries} WHERE id = $1`, [
+          entryId,
+        ]);
+        if (!owner.rows[0]) return;
+        await client.query(`SELECT 1 FROM ${this.schema}.threads WHERE id = $1 FOR UPDATE`, [
+          owner.rows[0].thread_id,
+        ]);
         const found = await client.query(
           `SELECT thread_id, parent_id FROM ${entries} WHERE id = $1 FOR UPDATE`,
           [entryId]
         );
         const entry = found.rows[0];
         if (!entry) return;
-        await client.query(`SELECT 1 FROM ${this.schema}.threads WHERE id = $1 FOR UPDATE`, [
-          entry.thread_id,
-        ]);
         await client.query(
           `UPDATE ${entries} SET parent_id = $1 WHERE parent_id = $2 AND thread_id = $3`,
           [entry.parent_id, entryId, entry.thread_id]
@@ -841,6 +879,9 @@ export class PostgresAdapter
     if (!this.pool) return this.failure('Not connected');
     try {
       await this.inTransaction(async (client) => {
+        await client.query(`SELECT 1 FROM ${this.schema}.threads WHERE id = $1 FOR UPDATE`, [
+          threadId,
+        ]);
         await client.query(`DELETE FROM ${this.schema}.entries WHERE thread_id = $1`, [threadId]);
         await client.query(
           `UPDATE ${this.schema}.threads SET active_leaf_id = NULL WHERE id = $1`,
@@ -862,8 +903,8 @@ export class PostgresAdapter
     try {
       await this.pool.query(
         `INSERT INTO ${this.schema}.facts
-         (id, agent_id, content, category, confidence, source, metadata, expires_at, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $9)`,
+         (id, agent_id, content, category, confidence, source, metadata, expires_at, created_at, updated_at, evidence)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $9, $10::jsonb)`,
         [
           id,
           fact.agentId,
@@ -874,6 +915,7 @@ export class PostgresAdapter
           toJsonb(fact.metadata ?? {}),
           fact.expiresAt ?? null,
           now,
+          toJsonb(fact.evidence),
         ]
       );
 
@@ -904,25 +946,14 @@ export class PostgresAdapter
       return this.failure((err as Error).message);
     }
 
-    return this.success(
-      result.rows.map((row) => ({
-        id: row.id as string,
-        agentId: row.agent_id as string,
-        content: row.content as string,
-        category: row.category as string,
-        confidence: row.confidence as number,
-        source: row.source as Fact['source'],
-        metadata: row.metadata as Record<string, unknown>,
-        createdAt: new Date(row.created_at as string),
-        updatedAt: new Date(row.updated_at as string),
-        expiresAt: row.expires_at ? new Date(row.expires_at as string) : undefined,
-      }))
-    );
+    return this.success(result.rows.map(rowToFact));
   }
 
   async updateFact(
     factId: string,
-    updates: Partial<Pick<Fact, 'content' | 'category' | 'confidence' | 'metadata' | 'expiresAt'>>
+    updates: Partial<
+      Pick<Fact, 'content' | 'category' | 'confidence' | 'metadata' | 'expiresAt' | 'evidence'>
+    >
   ): Promise<MemoryResult<Fact>> {
     if (!this.pool) return this.failure('Not connected');
 
@@ -950,6 +981,10 @@ export class PostgresAdapter
       setClauses.push(`expires_at = $${paramIndex++}`);
       params.push(updates.expiresAt);
     }
+    if (updates.evidence !== undefined) {
+      setClauses.push(`evidence = $${paramIndex++}::jsonb`);
+      params.push(toJsonb(updates.evidence));
+    }
 
     params.push(factId);
 
@@ -967,19 +1002,7 @@ export class PostgresAdapter
       return this.failure(`Fact not found: ${factId}`);
     }
 
-    const row = result.rows[0];
-    return this.success({
-      id: row.id as string,
-      agentId: row.agent_id as string,
-      content: row.content as string,
-      category: row.category as string,
-      confidence: row.confidence as number,
-      source: row.source as Fact['source'],
-      metadata: row.metadata as Record<string, unknown>,
-      createdAt: new Date(row.created_at as string),
-      updatedAt: new Date(row.updated_at as string),
-      expiresAt: row.expires_at ? new Date(row.expires_at as string) : undefined,
-    });
+    return this.success(rowToFact(result.rows[0]));
   }
 
   async deleteFact(factId: string): Promise<MemoryResult<void>> {
@@ -1004,20 +1027,7 @@ export class PostgresAdapter
         [agentId, `%${query.replace(/[%_\\]/g, '\\$&')}%`]
       );
 
-      return this.success(
-        result.rows.map((row) => ({
-          id: row.id as string,
-          agentId: row.agent_id as string,
-          content: row.content as string,
-          category: row.category as string,
-          confidence: row.confidence as number,
-          source: row.source as Fact['source'],
-          metadata: row.metadata as Record<string, unknown>,
-          createdAt: new Date(row.created_at as string),
-          updatedAt: new Date(row.updated_at as string),
-          expiresAt: row.expires_at ? new Date(row.expires_at as string) : undefined,
-        }))
-      );
+      return this.success(result.rows.map(rowToFact));
     } catch (err) {
       return this.failure((err as Error).message);
     }

@@ -13,9 +13,11 @@ import type {
   EntityType,
   RelationType,
   MemoryResult,
+  Evidence,
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 import { cosineSimilarity } from '../utils';
+import { mergeEvidence } from './evidence';
 
 export class MemoryGraphAdapter implements GraphAdapter {
   private nodes = new Map<string, GraphNode>();
@@ -82,7 +84,14 @@ export class MemoryGraphAdapter implements GraphAdapter {
     updates: Partial<
       Pick<
         GraphNode,
-        'name' | 'aliases' | 'description' | 'properties' | 'confidence' | 'metadata' | 'embedding'
+        | 'name'
+        | 'aliases'
+        | 'description'
+        | 'properties'
+        | 'confidence'
+        | 'metadata'
+        | 'embedding'
+        | 'evidence'
       >
     >
   ): Promise<MemoryResult<GraphNode>> {
@@ -251,7 +260,14 @@ export class MemoryGraphAdapter implements GraphAdapter {
     updates: Partial<
       Pick<
         GraphEdge,
-        'weight' | 'label' | 'properties' | 'confidence' | 'validFrom' | 'validUntil' | 'metadata'
+        | 'weight'
+        | 'label'
+        | 'properties'
+        | 'confidence'
+        | 'validFrom'
+        | 'validUntil'
+        | 'metadata'
+        | 'evidence'
       >
     >
   ): Promise<MemoryResult<GraphEdge>> {
@@ -487,11 +503,13 @@ export class MemoryGraphAdapter implements GraphAdapter {
 
     const allAliases = new Set(targetNode.aliases);
     const allProperties = { ...targetNode.properties };
+    const sourceEvidence: (Evidence[] | undefined)[] = [];
 
     for (const sourceId of sourceNodeIds) {
       if (sourceId === targetNodeId) continue;
       const sourceNode = this.nodes.get(sourceId);
       if (sourceNode?.agentId !== targetNode.agentId) continue;
+      sourceEvidence.push(sourceNode.evidence);
 
       allAliases.add(sourceNode.name);
       sourceNode.aliases.forEach((a) => allAliases.add(a));
@@ -522,10 +540,12 @@ export class MemoryGraphAdapter implements GraphAdapter {
       }
     }
 
+    const evidence = mergeEvidence(targetNode.evidence, sourceEvidence);
     const updatedNode: GraphNode = {
       ...targetNode,
       aliases: Array.from(allAliases),
       properties: allProperties,
+      ...(evidence ? { evidence } : {}),
       updatedAt: new Date(),
     };
 
