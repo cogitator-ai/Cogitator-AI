@@ -35,6 +35,8 @@ import {
   LLMEntityExtractor,
   createEmbeddingService,
   InMemoryEmbeddingAdapter,
+  MemoryItems,
+  isMemoryItemAdapter,
 } from '@cogitator-ai/memory';
 import type { LLMBackendMinimal, PostgresGraphAdapterConfig } from '@cogitator-ai/memory';
 import type { EmbeddingServiceConfig } from '@cogitator-ai/types';
@@ -223,6 +225,10 @@ export class RuntimeBuilder {
           graphAdapter,
           coreFacts,
           agentId: this.config.name,
+          memory: memoryAdapter,
+          ...(isMemoryItemAdapter(memoryAdapter) && {
+            items: new MemoryItems({ adapter: memoryAdapter }),
+          }),
         })
       );
     }
@@ -301,6 +307,7 @@ export class RuntimeBuilder {
     tools.push(createCapabilitiesTool(capDoc));
 
     const agent = new Agent({
+      id: this.config.name,
       name: this.config.name,
       model: this.fullModelId,
       instructions: this.buildInstructions(await coreFacts.formatForPrompt()),

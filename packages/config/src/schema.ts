@@ -268,6 +268,32 @@ export const MemoryCompactionConfigSchema = z.object({
   summaryPrompt: z.string().optional(),
 });
 
+/**
+ * `memory.extraction`: memory items extracted from a run's conversation after the run. The
+ * `afterExtract` hook is a function, so it is set in code, not in YAML.
+ */
+export const MemoryExtractionConfigSchema = z.object({
+  model: z.string().min(1).optional(),
+  prompt: z.string().optional(),
+  windowTokens: z.number().int().positive().optional(),
+  activationConfidence: z.number().min(0).max(1).optional(),
+  scope: z.enum(['user', 'agent', 'thread']).optional(),
+  timeZone: z
+    .string()
+    .refine(
+      (zone) => {
+        try {
+          new Intl.DateTimeFormat('en-US', { timeZone: zone });
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      { message: 'an IANA time zone, such as Europe/Lisbon' }
+    )
+    .optional(),
+});
+
 export const MemoryConfigSchema = z.object({
   adapter: MemoryProviderSchema.optional(),
   inMemory: z
@@ -323,6 +349,7 @@ export const MemoryConfigSchema = z.object({
   embedding: EmbeddingConfigSchema.optional(),
   contextBuilder: ContextBuilderConfigSchema.optional(),
   compaction: MemoryCompactionConfigSchema.optional(),
+  extraction: MemoryExtractionConfigSchema.optional(),
 });
 
 export const SandboxTypeSchema = z.enum(['docker', 'native', 'wasm']);

@@ -18,6 +18,7 @@ export {
   LLMProviderSchema,
   MemoryConfigSchema,
   MemoryCompactionConfigSchema,
+  MemoryExtractionConfigSchema,
   MemoryProviderSchema,
   ContextBuilderConfigSchema,
   ContextStrategySchema,

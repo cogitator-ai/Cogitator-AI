@@ -384,6 +384,30 @@ describe('CogitatorConfigSchema', () => {
     );
   });
 
+  it('keeps every memory.extraction setting that YAML can hold and refuses the rest', () => {
+    const extraction = {
+      model: 'anthropic/claude-haiku-5-5',
+      prompt: 'Mind the allergies.',
+      windowTokens: 3000,
+      activationConfidence: 0.8,
+      scope: 'thread' as const,
+      timeZone: 'Europe/Lisbon',
+    };
+
+    expect(CogitatorConfigSchema.parse({ memory: { extraction } }).memory?.extraction).toEqual(
+      extraction
+    );
+    for (const invalid of [
+      { windowTokens: 0 },
+      { activationConfidence: 1.5 },
+      { scope: 'world' },
+      { timeZone: 'Mars/Olympus' },
+      { model: '' },
+    ]) {
+      expect(() => CogitatorConfigSchema.parse({ memory: { extraction: invalid } })).toThrow();
+    }
+  });
+
   it('rejects memory.compaction settings the compaction cannot run with', () => {
     const invalid = [
       { at: 0 },

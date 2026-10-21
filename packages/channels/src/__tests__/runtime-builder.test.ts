@@ -142,6 +142,8 @@ vi.mock('@cogitator-ai/memory', () => {
     LLMEntityExtractor: MockLLMEntityExtractor,
     createEmbeddingService: vi.fn(),
     InMemoryEmbeddingAdapter: vi.fn(),
+    MemoryItems: vi.fn(),
+    isMemoryItemAdapter: () => false,
   };
 });
 
