@@ -461,11 +461,18 @@ describe('framework adapters', () => {
   });
 
   it('hono adapter writes heartbeats while a streamed run is silent', async () => {
+    let finish!: () => void;
+    const silence = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
     const app = a2aHono(
       new A2AServer({
         agents: { helper: mockAgent() },
         cogitator: {
-          run: () => new Promise((resolve) => setTimeout(() => resolve(runResult('late')), 120)),
+          run: async () => {
+            await silence;
+            return runResult('late');
+          },
         },
         sseHeartbeatMs: 20,
       })
@@ -480,9 +487,23 @@ describe('framework adapters', () => {
         id: 1,
       }),
     });
-    const text = await response.text();
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let text = '';
+    const heartbeats = () => text.match(/^: keep-alive$/gm)?.length ?? 0;
+    while (heartbeats() < 3) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+    finish();
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
 
-    expect(text.match(/^: keep-alive$/gm)?.length).toBeGreaterThanOrEqual(3);
+    expect(heartbeats()).toBeGreaterThanOrEqual(3);
     expect(text).not.toContain('[DONE]');
     expect(text.trimEnd().split('\n').at(-1)).toContain('"final":true');
   });
