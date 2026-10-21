@@ -325,6 +325,15 @@ export type {
   LLMPluginMetadata,
   LLMPlugin,
 } from './llm/index';
+export {
+  anthropicCompactionSummarizer,
+  ANTHROPIC_COMPACTION_BETA,
+  type AnthropicCompactionOptions,
+} from './llm/anthropic-compaction';
+export {
+  memoryCompactionMiddleware,
+  type MemoryCompactionDeps,
+} from './middleware/memory-compaction';
 
 export { InMemoryRunCheckpointStore, ThreadRunCheckpointStore } from './cogitator/run-checkpoints';
 export { PromptRegistry, promptKey } from './cogitator/prompts';

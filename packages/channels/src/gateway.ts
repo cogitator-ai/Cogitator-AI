@@ -134,6 +134,11 @@ function messageText(message: Message): string {
     .join(' ');
 }
 
+/** The thread of a user on a channel when `session.threadKey` does not name it */
+function defaultThreadId(channelType: string, userId: string): string {
+  return `${channelType}:${userId}`;
+}
+
 function isScheduled(msg: ChannelMessage): boolean {
   const raw = msg.raw;
   return typeof raw === 'object' && raw !== null && 'scheduled' in raw && raw.scheduled === true;
@@ -275,6 +280,58 @@ export class Gateway {
     return result.compactedMessages < result.originalMessages
       ? `Compacted ${result.originalMessages} messages into ${result.compactedMessages}`
       : `Nothing to compact (${result.originalMessages} messages)`;
+  }
+
+  /**
+   * Compacts every conversation thread the gateway knows, as {@link compactThread} does one: the
+   * threads it served since it started and, unless `session.threadKey` names threads its own way,
+   * the thread of every stored session. Threads go one at a time, and one that fails does not
+   * stop the rest.
+   */
+  async compactAll(): Promise<string> {
+    const compaction = this.config.session?.compaction;
+    if (!this.config.memory || !compaction) {
+      return 'Compaction is not configured';
+    }
+
+    const { threadIds, listError } = await this.knownThreads();
+    const notListed = listError ? ` (stored sessions could not be listed: ${listError})` : '';
+    if (threadIds.length === 0) return `No threads to compact${notListed}`;
+
+    const agent = await this.resolveAgent({ id: 'system', channelType: 'system' });
+    let compacted = 0;
+    const failures: string[] = [];
+    for (const threadId of threadIds) {
+      try {
+        const result = await this.compact(threadId, { ...compaction, threshold: 0 }, agent);
+        if (result.compactedMessages < result.originalMessages) compacted++;
+      } catch (error) {
+        failures.push(`${threadId}: ${toError(error).message}`);
+      }
+    }
+
+    const lines = [`Compacted ${compacted} of ${threadIds.length} threads${notListed}`];
+    if (failures.length > 0) lines.push(`Failed (${failures.length}):`, ...failures);
+    return lines.join('\n');
+  }
+
+  /**
+   * The threads {@link compactAll} goes through: those served since the gateway started, and the
+   * default thread of each stored session when threads are not keyed by `session.threadKey`
+   */
+  private async knownThreads(): Promise<{ threadIds: string[]; listError?: string }> {
+    const threadIds = new Set(this.threads.keys());
+    if (!this.sessionManager || this.config.session?.threadKey) {
+      return { threadIds: [...threadIds] };
+    }
+    try {
+      for (const session of await this.sessionManager.list()) {
+        threadIds.add(defaultThreadId(session.channelType, session.userId));
+      }
+    } catch (error) {
+      return { threadIds: [...threadIds], listError: toError(error).message };
+    }
+    return { threadIds: [...threadIds] };
   }
 
   /**
@@ -989,7 +1046,7 @@ export class Gateway {
     if (this.config.session?.threadKey) {
       return this.config.session.threadKey(msg);
     }
-    return `${msg.channelType}:${msg.userId}`;
+    return defaultThreadId(msg.channelType, msg.userId);
   }
 
   private async resolveAgent(user: ChannelUser): Promise<Agent> {
@@ -1019,12 +1076,18 @@ export class Gateway {
     };
   }
 
+  /**
+   * A summarizer that asks `options.model` with `options.prompt` as its system message, as
+   * `CompactionService` hands them per call (the `hierarchical` strategy asks for chapter atoms
+   * this way). Without them it falls back to the compaction's `summaryModel` / `summaryPrompt`,
+   * then to the agent's model and {@link DEFAULT_SUMMARY_PROMPT}.
+   */
   private createSummarizeFn(agent: Agent, compaction: CompactionConfig): SummarizeFn {
-    const modelId = compaction.summaryModel ?? this.config.cogitator.resolveModel(agent);
-    const explicitProvider = compaction.summaryModel ? undefined : agent.config?.provider;
-    const prompt = compaction.summaryPrompt ?? DEFAULT_SUMMARY_PROMPT;
-
-    return async (messages) => {
+    return async (messages, options) => {
+      const summaryModel = options?.model ?? compaction.summaryModel;
+      const modelId = summaryModel ?? this.config.cogitator.resolveModel(agent);
+      const explicitProvider = summaryModel ? undefined : agent.config?.provider;
+      const prompt = options?.prompt ?? compaction.summaryPrompt ?? DEFAULT_SUMMARY_PROMPT;
       const backend = this.config.cogitator.getLLMBackend(modelId, explicitProvider);
       const model = explicitProvider ? modelId : parseModel(modelId).model;
       const transcript = messages.map((m) => `${m.role}: ${messageText(m)}`).join('\n');
