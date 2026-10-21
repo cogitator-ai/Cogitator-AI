@@ -79,7 +79,7 @@ console.log(result.output);
 - **Resilience** - Retry, circuit breaker, and fallback patterns
 - **PII Masking** - Personal data and secrets replaced with placeholders before they reach the provider
 - **Run Middleware** - Hooks around every model and tool call, tripwire guards that stop a run
-- **Observability** - Full tracing with spans and callbacks
+- **Observability** - OpenTelemetry GenAI spans, one trace across runs, workflows and swarms, OTLP and Langfuse exporters
 
 ---
 
@@ -2146,7 +2146,15 @@ const result = await cog.run(agent, {
 });
 ```
 
-Both exporters do nothing unless `enabled: true` is set, so you can build them unconditionally and switch them per environment. They are not attached automatically; wire them to the run callbacks as above. See [Observability](https://cogitator.app/docs/deployment/observability).
+Both exporters do nothing unless `enabled: true` is set, so you can build them unconditionally and switch them per environment. They are not attached automatically: wire them to the run callbacks as above, pass them in `observers`, or register them for every runtime of the process:
+
+```typescript
+import { registerTelemetry } from '@cogitator-ai/core';
+
+const unregister = registerTelemetry(otlp.observer());
+```
+
+Spans follow the OpenTelemetry GenAI semantic conventions (`invoke_agent`, `chat`, `execute_tool` with `gen_ai.*` attributes, next to the older `llm.*`, `tool.*` and `run.*` ones), streamed model calls record their time to first chunk, and the OTLP exporter sends the convention's span names. Runs that belong together share one trace: a run started inside a tool joins the run that called the tool, workflows and swarms put their agents under their own span, and `trace` in the run options (with `parseTraceparent` for an incoming `traceparent` header) puts a run under any parent. Prompts and answers go on the spans only when asked for, with `telemetry: { captureContent: true }` or `captureContent` on an observer. See [Observability](https://cogitator.app/docs/deployment/observability).
 
 ---
 

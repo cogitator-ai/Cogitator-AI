@@ -1,11 +1,13 @@
 ---
 title: Observability
-description: Trace agent executions with Langfuse and OpenTelemetry — cost tracking, span visualization, and production debugging.
+description: Trace agent executions with Langfuse and OpenTelemetry, with GenAI semantic conventions, one trace across runs, cost tracking and content capture.
 ---
 
 ## Overview
 
-Cogitator ships two observability exporters in `@cogitator-ai/core`: **Langfuse** for AI-native tracing with cost tracking, and **OpenTelemetry (OTLP)** for standard distributed tracing. Neither is attached automatically — you connect them to the run callbacks (`onRunStart`, `onToolCall`, `onToolResult`, `onSpan`, `onRunComplete`, `onRunError`) that `cog.run()` accepts.
+Cogitator ships two observability exporters in `@cogitator-ai/core`: **Langfuse** for AI-native tracing with cost tracking, and **OpenTelemetry (OTLP)** for standard distributed tracing. Neither is attached automatically: pass them to a runtime's `observers`, register them for the whole process with `registerTelemetry`, or connect them to the run callbacks (`onRunStart`, `onToolCall`, `onToolResult`, `onSpan`, `onRunComplete`, `onRunError`) that `cog.run()` accepts.
+
+Spans follow the [OpenTelemetry GenAI semantic conventions](https://github.com/open-telemetry/semantic-conventions-genai), so any GenAI-aware backend reads them without custom mapping, and runs that belong together (an agent called as a tool, the agents of a workflow or a swarm) share one trace.
 
 Both exporters are **off unless you pass `enabled: true`**; a disabled exporter accepts every call and does nothing, which makes it easy to toggle per environment.
 
@@ -15,16 +17,81 @@ Every run produces spans, returned in `result.trace.spans` and streamed one by o
 
 | Span            | Kind       | Attributes                                                                                                                                                |
 | --------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `agent.run`     | `server`   | `agent.id`, `agent.name`, `agent.model`, `run.id`, `run.thread_id`, `run.iterations`, `run.tool_calls`, `run.input_tokens`, `run.output_tokens`           |
+| `agent.run`     | `internal` | `agent.id`, `agent.name`, `agent.model`, `run.id`, `run.thread_id`, `run.iterations`, `run.tool_calls`, `run.input_tokens`, `run.output_tokens`           |
 | `llm.chat`      | `client`   | `llm.model`, `llm.iteration`, `llm.input_tokens`, `llm.output_tokens`, `llm.cost`, `llm.cached_input_tokens`, `llm.reasoning_tokens`, `llm.finish_reason` |
 | `tool.<name>`   | `internal` | `tool.name`, `tool.call_id`, `tool.arguments`, `tool.success`, `tool.error`                                                                               |
 | `agent.handoff` | `internal` | `handoff.from`, `handoff.to`                                                                                                                              |
 
-The root `agent.run` span is emitted last (when the run ends); a failed run emits it with status `error` and an `error` attribute.
+The root `agent.run` span is emitted last (when the run ends). A failed run emits it with status `error`, an `error` attribute and `error.type` (the Cogitator error code, such as `RUN_TIMEOUT`, else the error's class).
+
+Trace and span ids are W3C ids: 32 hex characters for a trace, 16 for a span.
+
+## GenAI Semantic Conventions
+
+Next to the attributes above, which stay for compatibility, every span carries the `gen_ai.*` attributes of the OpenTelemetry GenAI conventions. The `GEN_AI` constant in `@cogitator-ai/core` names them all.
+
+| Span            | `gen_ai.operation.name` | Attributes                                                                                                                                                                                                                                                                   |
+| --------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `agent.run`     | `invoke_agent`          | `gen_ai.agent.id`, `gen_ai.agent.name`, `gen_ai.agent.description`, `gen_ai.request.model`, `gen_ai.conversation.id`, `gen_ai.usage.*`                                                                                                                                       |
+| `llm.chat`      | `chat`                  | `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.request.temperature`, `gen_ai.request.top_p`, `gen_ai.request.max_tokens`, `gen_ai.request.stop_sequences`, `gen_ai.request.stream`, `gen_ai.response.id`, `gen_ai.response.finish_reasons`, `gen_ai.response.time_to_first_chunk`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_write.input_tokens`, `gen_ai.usage.reasoning.output_tokens`, `gen_ai.conversation.id` |
+| `tool.<name>`   | `execute_tool`          | `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.tool.type`, `gen_ai.conversation.id`, `error.type` when the tool failed                                                                                                                                                   |
+| `llm.decide`    | `chat`                  | `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.response.id`, `gen_ai.usage.*`                                                                                                                                                                                      |
+| `workflow.run`  | `invoke_workflow`       | `gen_ai.workflow.name`, `workflow.id`                                                                                                                                                                                                                                        |
+| `swarm.run`     | `invoke_workflow`       | `gen_ai.workflow.name`, `swarm.id`, `swarm.strategy`                                                                                                                                                                                                                         |
+
+`gen_ai.provider.name` uses the convention's names where it has one (`openai`, `anthropic`, `gcp.gemini` for Google, `azure.ai.openai`, `aws.bedrock`, `mistral`, `groq`, `deepseek`) and the backend's own name otherwise (`ollama`, `vllm`, `openrouter`, a custom backend). `gen_ai.response.time_to_first_chunk` is the time in seconds from the request to the first chunk of a streamed answer, recorded on streamed calls only.
+
+### Recording Prompts and Answers
+
+What the model was sent and answered is sensitive and often large, so it is off by default. Turn it on for a runtime:
+
+```typescript
+const cog = new Cogitator({ telemetry: { captureContent: true } });
+```
+
+Model call spans then carry `gen_ai.system_instructions`, `gen_ai.input.messages`, `gen_ai.output.messages` and `gen_ai.tool.definitions`, and tool spans `gen_ai.tool.call.arguments` and `gen_ai.tool.call.result`, as JSON strings in the convention's shapes:
+
+```json
+[{ "role": "user", "parts": [{ "type": "text", "content": "What is the weather in Paris?" }] }]
+```
+
+An observer can also ask for content for itself with `captureContent: true`. Content is then recorded while it watches, and only the observers that asked for it receive it: the others, the run's own `onSpan` and `result.trace.spans` get the spans without those attributes. This is how [Cogitator Studio](/docs/getting-started/studio) shows the prompt and the answer of every model call without sending them to your OTLP backend.
+
+## One Trace Across Runs
+
+A run started inside a tool of another run (an agent used as a tool, or any `cog.run()` in your tool's code) joins that run's trace, its `agent.run` span a child of the tool's span. Workflows and swarms do the same for their agents:
+
+- a [workflow](/docs/workflows/execution) puts each agent run under its node span when a workflow tracer is on, else under a `workflow.run` span it reports to the runtime's observers
+- a swarm reports a `swarm.run` span and runs its agents under it
+
+To put a run into a trace that started elsewhere, such as an incoming HTTP request, pass its parent:
+
+```typescript
+import { parseTraceparent } from '@cogitator-ai/core';
+
+const parent = parseTraceparent(request.headers.get('traceparent') ?? '');
+const result = await cog.run(agent, { input, ...(parent && { trace: parent }) });
+```
+
+`formatTraceparent(traceId, spanId)` writes the header for a call going out, and `withTraceContext(parent, work)` makes every run started inside `work` join `parent`.
+
+## Every Runtime of a Process
+
+`registerTelemetry` watches the runs of every `Cogitator` in the process, whoever builds it (a server adapter, a workflow, a swarm), until the function it returns is called. Decisions and the spans of workflows and swarms reach it too:
+
+```typescript
+import { createOTLPExporter, registerTelemetry } from '@cogitator-ai/core';
+
+const otlp = createOTLPExporter({ endpoint: 'http://localhost:4318/v1/traces', enabled: true });
+otlp.start();
+const unregister = registerTelemetry(otlp.observer());
+```
+
+`cog.close()` does not close a registered observer: whoever registers it flushes and stops it. `cog.recordSpan(span, { runId })` reports a span of your own orchestration to everything watching a runtime, the same way.
 
 ## Langfuse Integration
 
-[Langfuse](https://langfuse.com) provides purpose-built observability for LLM applications — traces, generations, cost analysis, and evaluation scores. The `langfuse` SDK is an optional peer dependency:
+[Langfuse](https://langfuse.com) provides purpose-built observability for LLM applications: traces, generations, cost analysis, and evaluation scores. The `langfuse` SDK is an optional peer dependency:
 
 ```bash
 pnpm add langfuse
@@ -159,14 +226,16 @@ await cog.run(agent, {
 });
 ```
 
-You can also export spans after the fact — `result.trace.spans.forEach((span) => otlp.exportSpan(result.runId, span))` — or build your own `Span` objects:
+You can also export spans after the fact, with `result.trace.spans.forEach((span) => otlp.exportSpan(result.runId, span))`, or build your own `Span` objects:
 
 ```typescript
+import { newSpanId, newTraceId } from '@cogitator-ai/core';
+
 otlp.exportSpan('run_abc123', {
-  id: 'span_001',
-  traceId: 'trace_abc123',
+  id: newSpanId(),
+  traceId: newTraceId(),
   name: 'agent.run',
-  kind: 'server',
+  kind: 'internal',
   status: 'ok',
   startTime: Date.now() - 1500,
   endTime: Date.now(),
@@ -179,19 +248,21 @@ await otlp.flush();
 
 Spans are batched and flushed every 5 seconds after `start()`, or as soon as 100 spans are pending.
 
-OTLP needs hex ids (16 bytes for a trace, 8 for a span), while Cogitator ids look like `trace_…` and `span_…`. The exporter derives the OTLP ids from them with SHA-256 (ids that already are hex of the right length are kept), so the spans of a run share a trace and child spans point at their parents, also when they are exported after the run. The original ids and the run id are kept as the `cogitator.trace_id`, `cogitator.span_id` and `cogitator.run_id` attributes. Numbers, booleans and strings keep their types as OTLP attribute values; objects are sent as JSON strings.
+Cogitator ids already are the hex ids OTLP needs (16 bytes for a trace, 8 for a span) and are sent as they are. Ids of another shape, such as those in traces saved by older versions, are turned into OTLP ids with SHA-256, so parent links stay intact. The original ids, the run id and the span's Cogitator name are kept as the `cogitator.trace_id`, `cogitator.span_id`, `cogitator.run_id` and `cogitator.span_name` attributes.
+
+Spans are exported under the convention's names, `{operation} {target}`: `chat gpt-5.5`, `execute_tool search`, `invoke_agent researcher`, `invoke_workflow onboarding`. Spans that are not GenAI operations, such as `agent.handoff`, keep their own name. Numbers, booleans and strings keep their types as OTLP attribute values, arrays are sent as arrays, and objects as JSON strings.
 
 A batch the collector refuses with a 4xx status is dropped and logged; on network errors, 408, 429 and 5xx it is kept and sent again with the next flush, up to 10,000 pending spans.
 
-`OTLPExporter` also has `onRunStart`, `onRunComplete` and `onRunError` hooks. They do nothing — ids come from the spans themselves — and exist so you can wire both exporters to the same callbacks.
+`OTLPExporter` also has `onRunStart`, `onRunComplete` and `onRunError` hooks. They do nothing (ids come from the spans themselves) and exist so you can wire both exporters to the same callbacks.
 
 ### Span Kinds
 
 | Cogitator Kind | OTLP Kind | Emitted by                                      |
 | -------------- | --------- | ----------------------------------------------- |
-| `internal`     | INTERNAL  | `tool.<name>`, `agent.handoff`                  |
-| `client`       | CLIENT    | `llm.chat`                                      |
-| `server`       | SERVER    | `agent.run`                                     |
+| `internal`     | INTERNAL  | `agent.run`, `tool.<name>`, `agent.handoff`, `workflow.run`, `swarm.run` |
+| `client`       | CLIENT    | `llm.chat`, `llm.decide`                        |
+| `server`       | SERVER    | Available for your own spans (e.g. an API call)  |
 | `producer`     | PRODUCER  | Available for your own spans (e.g. queue jobs)  |
 | `consumer`     | CONSUMER  | Available for your own spans (e.g. worker jobs) |
 
