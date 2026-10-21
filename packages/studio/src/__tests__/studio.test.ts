@@ -5,7 +5,14 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { request } from 'node:http';
 import { startStudio, type StudioHandle } from '../server/server.js';
-import type { HostStatus, RunRecord, StudioEvent, StudioStats, ThreadRecord } from '../protocol.js';
+import type {
+  HostStatus,
+  RunRecord,
+  StudioEvent,
+  StudioStats,
+  ThreadRecord,
+  ThreadTree,
+} from '../protocol.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = join(HERE, 'fixtures', 'project');
@@ -295,6 +302,39 @@ describe('time-travel forks', () => {
     expect(original.output).toBe('Done: sunny in Lisbon');
     const tree = await run(runId);
     expect(tree.forks.map((candidate) => candidate.id)).toEqual([fork.runId]);
+  });
+
+  it('branch off the thread in its memory tree, while the chat goes on along its own branch', async () => {
+    const first = await chat('hello there');
+    await settled(first.runId);
+    const { runId } = await chat('weather in the tree', first.threadId);
+    const { run: original } = await settled(runId);
+    const fork = await api<{ runId: string }>(`/api/runs/${runId}/fork`, {
+      method: 'POST',
+      body: { step: 0, toolResults: { lookup_weather: 'snowing in Lisbon' } },
+    });
+    const { run: forked } = await settled(fork.runId);
+    const next = await chat('and now?', first.threadId);
+    const { run: after } = await settled(next.runId);
+
+    expect(forked.memory).toMatchObject({
+      threadId: first.threadId,
+      branchPoint: original.memory?.branchPoint,
+    });
+    expect(after.output).toBe('Echo: and now? (turn 3)');
+    const tree = await api<ThreadTree>(`/api/threads/${first.threadId}/tree`);
+    expect(tree.branching).toBe(true);
+    expect(tree.activeLeafId).toBe(after.memory?.leafId);
+    const written = (id: string) => tree.entries.filter((entry) => entry.runId === id);
+    expect(written(forked.id).map((entry) => [entry.role, entry.text])).toEqual([
+      ['user', 'weather in the tree'],
+      ['assistant', ''],
+      ['tool', '"snowing in Lisbon"'],
+      ['assistant', 'Done: snowing in Lisbon'],
+    ]);
+    expect(written(forked.id)[0]?.parentId).toBe(original.memory?.branchPoint);
+    expect(written(runId)[0]?.parentId).toBe(original.memory?.branchPoint);
+    expect(written(after.id)[0]?.parentId).toBe(original.memory?.leafId);
   });
 
   it('refuse a step the run does not have', async () => {

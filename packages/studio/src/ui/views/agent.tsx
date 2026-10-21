@@ -10,6 +10,7 @@ import {
   ArrowUp,
   Bot,
   ChevronRight,
+  GitBranch,
   Info,
   Plus,
   Search,
@@ -30,6 +31,7 @@ import {
   Topbar,
 } from '../components/common';
 import { Markdown } from '../components/markdown';
+import { ThreadTreePanel } from '../components/thread-tree';
 import { ToolCallCard } from '../components/tool-call';
 import { agentModel, formatCost, formatDuration, formatTokens, timeAgo } from '../format';
 import { usePageKey } from '../hotkeys';
@@ -279,6 +281,7 @@ export function AgentView({ agentKey, threadId }: { agentKey: string; threadId?:
   const scroller = useRef<HTMLDivElement>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
   const pinned = useRef(true);
+  const [treeOpen, setTreeOpen] = useState(false);
 
   useEffect(() => {
     if (threadId) void loadThread(threadId).catch(() => undefined);
@@ -289,6 +292,9 @@ export function AgentView({ agentKey, threadId }: { agentKey: string; threadId?:
     composer.current?.focus();
   }, [threadId]);
 
+  const finishedOnThread = Object.values(runs).filter(
+    (run) => run.threadId === threadId && run.status !== 'running' && run.status !== 'waiting'
+  ).length;
   const last = turns.at(-1);
   const progress = `${turns.length}:${last?.output?.length ?? 0}:${last?.toolCalls.length ?? 0}:${last?.status ?? ''}`;
   useLayoutEffect(() => {
@@ -303,8 +309,9 @@ export function AgentView({ agentKey, threadId }: { agentKey: string; threadId?:
     element.style.height = `${Math.min(element.scrollHeight, 240)}px`;
   }, [input]);
 
-  usePageKey(['n', 'c'], (event) => {
+  usePageKey(['n', 'c', 't'], (event) => {
     if (event.key === 'n') navigate('agents', agentKey);
+    else if (event.key === 't') setTreeOpen((open) => !open);
     else composer.current?.focus();
   });
 
@@ -378,10 +385,23 @@ export function AgentView({ agentKey, threadId }: { agentKey: string; threadId?:
               <Wrench size={11} />
               {agent.tools.length}
             </span>
+            {thread && (
+              <button
+                type="button"
+                className={`btn btn-sm ${treeOpen ? 'btn-secondary' : 'btn-ghost'}`}
+                onClick={() => setTreeOpen((open) => !open)}
+                aria-pressed={treeOpen}
+                data-tip="Every branch of the thread in memory (T)"
+                data-testid="tree-toggle"
+              >
+                <GitBranch size={13} />
+                Tree
+              </button>
+            )}
           </>
         }
       />
-      <div className="agent-layout">
+      <div className={`agent-layout ${thread && treeOpen ? 'with-tree' : ''}`}>
         <ThreadList agent={agentKey} threads={threads} active={threadId} />
         <section className="chat" aria-label={`Chat with ${agent.name}`}>
           <div
@@ -470,6 +490,13 @@ export function AgentView({ agentKey, threadId }: { agentKey: string; threadId?:
             )}
           </form>
         </section>
+        {thread && treeOpen && (
+          <ThreadTreePanel
+            threadId={thread.id}
+            version={`${progress}:${finishedOnThread}`}
+            onClose={() => setTreeOpen(false)}
+          />
+        )}
       </div>
     </>
   );

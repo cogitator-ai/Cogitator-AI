@@ -128,6 +128,7 @@ export class ExecutionForker {
       messages: [...original.messages],
       toolResults: { ...original.toolResults },
       pendingToolCalls: [...original.pendingToolCalls],
+      ...(original.memory && { memory: original.memory }),
       label: options.label ?? `fork_of_${original.id}`,
       createdAt: new Date(),
       metadata: {

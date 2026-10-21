@@ -20,6 +20,7 @@ const GROUPS: Array<{ title: string; keys: Array<[string, string[]]> }> = [
       ['New line', ['Shift', 'Enter']],
       ['New thread', ['N']],
       ['Focus the message box', ['C']],
+      ['Show the memory tree', ['T']],
     ],
   },
   {

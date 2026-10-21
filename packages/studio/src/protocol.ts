@@ -137,6 +137,8 @@ export interface RunRecord {
   forkOf?: ForkOrigin;
   /** Runs forked from this one. */
   forks: string[];
+  /** Where the run wrote in the memory of its thread. */
+  memory?: MemoryPlace;
   nodes?: WorkflowNodeRecord[];
   /** The workflow manager's id of the run, which a rerun starts from. */
   workflowRunId?: string;
@@ -157,6 +159,47 @@ export interface ForkOrigin {
   input?: string;
   context?: string;
   toolResults?: Record<string, unknown>;
+}
+
+/**
+ * Where a run wrote in the memory of a thread: its entries follow `branchPoint`, the entry it went
+ * on from (`null` at the root), and end at `leafId`.
+ */
+export interface MemoryPlace {
+  threadId: string;
+  branchPoint: string | null;
+  leafId?: string;
+}
+
+/** An entry of a thread's memory, as the tree of the thread shows it. */
+export interface TreeEntry {
+  id: string;
+  /** The entry it follows, `null` for a root. Missing when the memory keeps no tree. */
+  parentId?: string | null;
+  /** `message`, `tool_result`, or an event such as `model_change`, `approval` or `interrupt`. */
+  type: string;
+  role?: string;
+  /** The text of the entry, cut short. */
+  text: string;
+  /** Names of the tools an assistant message called. */
+  toolCalls?: string[];
+  /** What an event entry recorded. */
+  event?: unknown;
+  createdAt: number;
+  /** The run that wrote it, when the studio knows. */
+  runId?: string;
+}
+
+/** Every branch of a thread's memory, with the one its next message goes on. */
+export interface ThreadTree {
+  threadId: string;
+  activeLeafId?: string;
+  /** Oldest first. */
+  entries: TreeEntry[];
+  /** Whether older entries were left out. */
+  truncated: boolean;
+  /** Whether the memory keeps entries as a tree, or only as a list. */
+  branching: boolean;
 }
 
 /** An agent or workflow with what its runs did, for the overview. */
@@ -260,6 +303,7 @@ export type HostEvent =
       }>;
       steps?: StepRecord[];
       workflowRunId?: string;
+      memory?: MemoryPlace;
     }
   | { type: 'run.failed'; runId: string; error: string; endedAt: number; stopped: boolean }
   | {
@@ -313,6 +357,13 @@ export type HostRequest =
   | { type: 'stop'; requestId: string; runId: string }
   | { type: 'approve'; requestId: string; approvalId: string; approved: boolean; reason?: string }
   | { type: 'fork'; requestId: string; run: RunRecord; fork: ForkRequest }
+  | {
+      type: 'thread.tree';
+      requestId: string;
+      threadId: string;
+      agent: string;
+      history: HistoryMessage[];
+    }
   | { type: 'workflow.run'; requestId: string; workflow: string; input: unknown }
   | { type: 'workflow.rerun'; requestId: string; run: RunRecord; fromNode: string };
 

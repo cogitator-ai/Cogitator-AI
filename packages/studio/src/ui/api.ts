@@ -5,6 +5,7 @@ import type {
   StudioEvent,
   StudioStats,
   ThreadRecord,
+  ThreadTree,
 } from '../protocol';
 
 export interface StateResponse {
@@ -44,6 +45,7 @@ export const api = {
   run: (id: string) => request<RunTree>(`/api/runs/${encodeURIComponent(id)}`),
   thread: (id: string) =>
     request<{ thread: ThreadRecord; runs: RunRecord[] }>(`/api/threads/${encodeURIComponent(id)}`),
+  threadTree: (id: string) => request<ThreadTree>(`/api/threads/${encodeURIComponent(id)}/tree`),
   chat: (agent: string, input: string, threadId?: string) =>
     request<{ runId: string; threadId: string }>('/api/chat', {
       method: 'POST',

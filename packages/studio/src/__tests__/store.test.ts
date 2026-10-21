@@ -349,3 +349,58 @@ describe('reloadsProject', () => {
     expect(reloadsProject('README.md')).toBe(false);
   });
 });
+
+describe('the memory tree of a thread', () => {
+  it('names the run that wrote each entry, from where each run went on and ended', () => {
+    const { store: studio } = store();
+    const entry = (id: string, parentId: string | null) => ({
+      id,
+      parentId,
+      type: 'message',
+      text: id,
+      createdAt: 0,
+    });
+    const place = (
+      runId: string,
+      threadId: string,
+      branchPoint: string | null,
+      leafId: string
+    ): HostEvent => ({
+      type: 'run.completed',
+      runId,
+      output: 'ok',
+      usage: { inputTokens: 1, outputTokens: 1, cost: 0, duration: 1 },
+      endedAt: 2,
+      memory: { threadId, branchPoint, leafId },
+    });
+    for (const id of ['other', 'a', 'b', 'c']) studio.apply(started(id, id, 1));
+    studio.apply(place('a', 't', null, 'a2'));
+    studio.apply(place('b', 't', 'a2', 'b2'));
+    studio.apply(place('c', 't', 'a2', 'c1'));
+    studio.apply(place('other', 'u', null, 'a1'));
+
+    const tree = studio.attribute({
+      threadId: 't',
+      activeLeafId: 'b2',
+      truncated: false,
+      branching: true,
+      entries: [
+        entry('a1', null),
+        entry('a2', 'a1'),
+        entry('b1', 'a2'),
+        entry('b2', 'b1'),
+        entry('c1', 'a2'),
+        entry('seeded', null),
+      ],
+    });
+
+    expect(tree.entries.map((item) => [item.id, item.runId])).toEqual([
+      ['a1', 'a'],
+      ['a2', 'a'],
+      ['b1', 'b'],
+      ['b2', 'b'],
+      ['c1', 'c'],
+      ['seeded', undefined],
+    ]);
+  });
+});

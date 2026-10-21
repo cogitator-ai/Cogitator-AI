@@ -8,6 +8,7 @@ import type {
   MessageContent,
   Span,
   TimeTravelCheckpointStore,
+  RunMemoryPlace,
   RunResult,
   Tool,
 } from '@cogitator-ai/types';
@@ -102,7 +103,7 @@ export class ExecutionReplayer {
 
     const input = this.extractUserInput(initialMessages);
 
-    const memory = checkpoint.memory;
+    const memory = await this.branchOf(cogitator, checkpoint, options);
     const modifiedAgent = this.createReplayAgent(
       agent,
       memory ? this.stepsOfRun(initialMessages) : initialMessages,
@@ -134,6 +135,36 @@ export class ExecutionReplayer {
     };
 
     return replayResult;
+  }
+
+  /**
+   * Where a live replay goes on in memory: on a branch of the original thread from where the run
+   * started, while the checkpoint knows that place and its entry is still there. Modified messages
+   * that change the conversation before the run's input keep the replay off memory, as memory
+   * would give the history they replace.
+   */
+  private async branchOf(
+    cogitator: Cogitator,
+    checkpoint: ExecutionCheckpoint,
+    options: ReplayOptions
+  ): Promise<RunMemoryPlace | undefined> {
+    const place = checkpoint.memory;
+    if (!place) return undefined;
+    const modified = options.modifiedMessages;
+    if (
+      modified &&
+      modified.length > 0 &&
+      this.earlierConversation(modified) !== this.earlierConversation(checkpoint.messages)
+    ) {
+      return undefined;
+    }
+    const memory = await cogitator.getMemory();
+    if (!memory?.getPath) return undefined;
+    const thread = await memory.getThread(place.threadId);
+    if (!thread.success || !thread.data) return undefined;
+    if (place.branchPoint === null) return place;
+    const entry = await memory.getEntry(place.branchPoint);
+    return entry.success && entry.data?.threadId === place.threadId ? place : undefined;
   }
 
   private buildMessagesForReplay(
@@ -177,6 +208,12 @@ export class ExecutionReplayer {
     const input = messages.map((m) => m.role).lastIndexOf('user');
     const system = messages.filter((m) => m.role === 'system');
     return input === -1 ? messages : [...system, ...messages.slice(input + 1)];
+  }
+
+  /** The conversation before the run's input, system messages aside, to compare. */
+  private earlierConversation(messages: Message[]): string {
+    const input = messages.map((m) => m.role).lastIndexOf('user');
+    return JSON.stringify(messages.slice(0, Math.max(input, 0)).filter((m) => m.role !== 'system'));
   }
 
   private extractUserInput(messages: Message[]): string {

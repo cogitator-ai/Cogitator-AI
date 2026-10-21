@@ -1471,6 +1471,129 @@ a.tr.focused {
   min-height: 0;
 }
 
+.agent-layout.with-tree {
+  grid-template-columns: 260px minmax(0, 1fr) 320px;
+}
+
+.tree-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.tree-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 8px 10px 14px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 500;
+}
+
+.tree-head button {
+  margin-left: auto;
+}
+
+.tree-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 8px 16px;
+}
+
+.tree-notice {
+  margin: 0 4px 10px;
+  font-size: 12px;
+}
+
+.tree-entry {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: var(--r-sm);
+  color: var(--text-3);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+a.tree-entry:hover {
+  background: var(--hover);
+}
+
+.tree-entry.on-path {
+  color: var(--text);
+}
+
+.tree-dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  margin-top: 5px;
+  border: 1.5px solid var(--text-4);
+  border-radius: 50%;
+}
+
+.tree-entry.on-path .tree-dot {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.tree-entry.is-event .tree-dot {
+  border-radius: 2px;
+}
+
+.tree-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
+}
+
+.tree-role,
+.tree-event {
+  font-weight: 500;
+  color: var(--text-2);
+}
+
+.tree-event {
+  color: var(--warn);
+}
+
+.tree-empty {
+  color: var(--text-4);
+}
+
+.tree-calls {
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.tree-tag {
+  flex-shrink: 0;
+  font-size: 10.5px;
+}
+
+.tree-forks {
+  display: grid;
+  gap: 6px;
+  margin: 4px 0 4px 9px;
+}
+
+.tree-branch {
+  padding-left: 8px;
+  border-left: 1.5px solid var(--border-strong);
+}
+
+.tree-branch.on-path {
+  border-left-color: var(--accent-ring);
+}
+
 .chat-scroll {
   flex: 1;
   min-height: 0;
@@ -3119,8 +3242,17 @@ a.list-row:hover {
     flex-basis: 100%;
   }
 
-  .agent-layout {
+  .agent-layout,
+  .agent-layout.with-tree {
+    position: relative;
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tree-panel {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    border-left: none;
   }
 
   .threads {

@@ -18,6 +18,7 @@ import type {
   StudioStats,
   TargetStats,
   ThreadRecord,
+  ThreadTree,
   UsageInfo,
   WorkflowNodeRecord,
 } from '../protocol.js';
@@ -354,6 +355,31 @@ export class StudioStore {
     return thread;
   }
 
+  /**
+   * `tree` with the run that wrote each entry, found by walking from where each run of the thread
+   * ended back to where it went on from.
+   */
+  attribute(tree: ThreadTree): ThreadTree {
+    const parents = new Map(tree.entries.map((entry) => [entry.id, entry.parentId]));
+    const owners = new Map<string, string>();
+    for (const run of this.runs.values()) {
+      const place = run.memory;
+      if (!place?.leafId || place.threadId !== tree.threadId) continue;
+      let id: string | null | undefined = place.leafId;
+      while (id && id !== place.branchPoint && parents.has(id) && !owners.has(id)) {
+        owners.set(id, run.id);
+        id = parents.get(id);
+      }
+    }
+    return {
+      ...tree,
+      entries: tree.entries.map((entry) => {
+        const runId = owners.get(entry.id);
+        return runId ? { ...entry, runId } : entry;
+      }),
+    };
+  }
+
   /** The finished turns of a thread, to replay into a fresh memory. */
   history(threadId: string): HistoryMessage[] {
     const thread = this.threads.get(threadId);
@@ -639,6 +665,7 @@ export class StudioStore {
         run.output = event.output;
         run.endedAt = event.endedAt;
         if (event.steps) run.steps = event.steps;
+        if (event.memory) run.memory = event.memory;
         for (const call of event.toolCalls ?? []) {
           const known = run.toolCalls.find((candidate) => candidate.id === call.id);
           if (!known) run.toolCalls.push({ ...call });

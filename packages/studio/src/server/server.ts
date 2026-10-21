@@ -4,7 +4,14 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { basename, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { calculateCost, initializeModels } from '@cogitator-ai/models';
-import type { ForkRequest, HostStatus, RunRecord, StudioEvent, ThreadRecord } from '../protocol.js';
+import type {
+  ForkRequest,
+  HostStatus,
+  RunRecord,
+  StudioEvent,
+  ThreadRecord,
+  ThreadTree,
+} from '../protocol.js';
 import { HostManager } from './host-manager.js';
 import { StudioStore, type Pricer } from './store.js';
 
@@ -369,6 +376,17 @@ export async function startStudio(options: StudioOptions): Promise<StudioHandle>
           .map((id) => store.getRun(id))
           .filter((run): run is RunRecord => run !== undefined);
         return send(res, 200, { thread, runs });
+      }
+      case 'GET /threads/:id/tree': {
+        const thread = store.getThread(parts[1]);
+        if (!thread) throw new HttpError(404, `There is no thread ${parts[1]}`);
+        const tree = await manager.request<ThreadTree>({
+          type: 'thread.tree',
+          threadId: thread.id,
+          agent: thread.agent,
+          history: store.history(thread.id),
+        });
+        return send(res, 200, store.attribute(tree));
       }
       case 'POST /chat': {
         const body = await readJson(req);

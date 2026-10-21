@@ -296,4 +296,50 @@ describe('runs on branches of a thread', () => {
     const thread = await (await memoryOf(cog)).getThread('t');
     expect(thread.success && thread.data?.activeLeafId).toBe(run.memory?.leafId);
   });
+
+  it('forks with a new input on a branch, and keeps edits of the earlier conversation off memory', async () => {
+    const backend = echoingBackend();
+    const cog = runtime(backend);
+    await cog.run(agent, { input: 'before', threadId: 't' });
+    const run = await cog.run(agent, { input: 'question', threadId: 't' });
+    const tt = new TimeTravel(cog);
+    const checkpoint = await tt.checkpoint(run, 0);
+
+    const forked = await tt.fork(agent, checkpoint.id, { input: 'another question' });
+    expect(forked.result.memory).toMatchObject({
+      threadId: 't',
+      branchPoint: run.memory?.branchPoint,
+    });
+    expect(contents(backend.requests.at(-1)!.messages.slice(1))).toEqual([
+      'before',
+      're: before',
+      'another question',
+    ]);
+
+    const edited = await tt.replay(agent, checkpoint.id, {
+      mode: 'live',
+      modifiedMessages: checkpoint.messages.map((message) =>
+        message.content === 'before' ? { ...message, content: 'rewritten' } : message
+      ),
+    });
+    expect(edited.memory?.threadId).toMatch(/^replay_/);
+    expect(contents(backend.requests.at(-1)!.messages.slice(1))).toEqual(['question']);
+  });
+
+  it('replays on a thread of its own once the place the run started from is gone', async () => {
+    const backend = echoingBackend();
+    const cog = runtime(backend);
+    await cog.run(agent, { input: 'before', threadId: 't' });
+    const run = await cog.run(agent, { input: 'question', threadId: 't' });
+    const tt = new TimeTravel(cog);
+    const checkpoint = await tt.checkpoint(run, 0);
+    await (await memoryOf(cog)).deleteEntry(run.memory!.branchPoint!);
+
+    const replayed = await tt.replay(agent, checkpoint.id, { mode: 'live' });
+
+    expect(replayed.memory?.threadId).toMatch(/^replay_/);
+    const system = String(backend.requests.at(-1)!.messages[0]?.content);
+    expect(system).toContain('re: before');
+    expect(contents(backend.requests.at(-1)!.messages.slice(1))).toEqual(['question']);
+  });
 });

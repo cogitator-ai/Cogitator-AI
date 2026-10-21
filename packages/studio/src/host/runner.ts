@@ -6,6 +6,7 @@ import type { Agent, TimeTravel } from '@cogitator-ai/core';
 import { InMemoryAdapter } from '@cogitator-ai/memory';
 import type {
   ExecutionCheckpoint,
+  MemoryEntry,
   RunObserver,
   RunResult,
   Span,
@@ -22,10 +23,13 @@ import type {
   HistoryMessage,
   HostEvent,
   HostRequest,
+  MemoryPlace,
   RawSpan,
   RegistryInfo,
   RunRecord,
   StepRecord,
+  ThreadTree,
+  TreeEntry,
   UsageInfo,
 } from '../protocol.js';
 import { describeRegistry } from '../registry.js';
@@ -34,6 +38,8 @@ import { importFromProject, loadProject, type LoadedProject } from './project.js
 
 const CHECKPOINT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const STOPPED = 'Stopped in Cogitator Studio';
+const TREE_ENTRIES = 500;
+const TREE_TEXT = 280;
 
 /** Which studio request a run belongs to, carried through every run it starts. */
 interface RunContext {
@@ -100,6 +106,35 @@ function toolCallsOf(result: RunResult) {
       ...(raw !== undefined && { result: plain(value) }),
     };
   });
+}
+
+/** Where a run wrote in memory, from a runtime that reports it. */
+function memoryOf(result: RunResult): MemoryPlace | undefined {
+  const place = result.memory;
+  if (!place) return undefined;
+  return {
+    threadId: place.threadId,
+    branchPoint: place.branchPoint,
+    ...(place.leafId && { leafId: place.leafId }),
+  };
+}
+
+function treeEntry(entry: MemoryEntry): TreeEntry {
+  const content = entry.message.content;
+  const text =
+    typeof content === 'string'
+      ? content
+      : content.map((part) => (part.type === 'text' ? part.text : `[${part.type}]`)).join(' ');
+  return {
+    id: entry.id,
+    ...(entry.parentId !== undefined && { parentId: entry.parentId }),
+    type: entry.type ?? (entry.message.role === 'tool' ? 'tool_result' : 'message'),
+    role: entry.message.role,
+    text: text.length > TREE_TEXT ? `${text.slice(0, TREE_TEXT)}…` : text,
+    ...(entry.toolCalls?.length && { toolCalls: entry.toolCalls.map((call) => call.name) }),
+    ...(entry.event !== undefined && { event: plain(entry.event) }),
+    createdAt: new Date(entry.createdAt).getTime(),
+  };
 }
 
 function message(error: unknown): string {
@@ -188,7 +223,44 @@ export class StudioHost {
         return this.runWorkflow(request.workflow, request.input);
       case 'workflow.rerun':
         return this.rerunWorkflow(request.run, request.fromNode);
+      case 'thread.tree':
+        return this.threadTree(request.threadId, request.agent, request.history);
     }
+  }
+
+  /**
+   * Every branch of a thread as memory keeps it, the newest entries when there are more than the
+   * studio shows. A memory without trees gives its entries as a list. The studio's own memory
+   * gets the thread's earlier messages first, as a chat in it would.
+   */
+  private async threadTree(
+    threadId: string,
+    key: string,
+    history: readonly HistoryMessage[]
+  ): Promise<ThreadTree> {
+    const agent = this.project.agents.get(key);
+    if (agent) await this.seed(threadId, agent, history);
+    const memory = await this.project.cogitator.getMemory();
+    const empty: ThreadTree = { threadId, entries: [], truncated: false, branching: false };
+    if (!memory) return empty;
+    const thread = await memory.getThread(threadId);
+    if (!thread.success) throw new Error(thread.error);
+    if (!thread.data) return empty;
+    const read = await memory.getEntries({
+      threadId,
+      limit: TREE_ENTRIES + 1,
+      types: 'all',
+      includeToolCalls: true,
+    });
+    if (!read.success) throw new Error(read.error);
+    const entries = read.data.slice(-TREE_ENTRIES).map(treeEntry);
+    return {
+      threadId,
+      ...(thread.data.activeLeafId && { activeLeafId: thread.data.activeLeafId }),
+      entries,
+      truncated: read.data.length > TREE_ENTRIES,
+      branching: typeof memory.getPath === 'function',
+    };
   }
 
   private emit(event: HostEvent): void {
@@ -371,6 +443,7 @@ export class StudioHost {
               `[studio host] could not record the steps of run ${runId}, it cannot be forked: ${message(error)}`
             );
           }
+          const memory = memoryOf(result);
           this.emit({
             type: 'run.completed',
             runId,
@@ -379,6 +452,7 @@ export class StudioHost {
             endedAt: Date.now(),
             toolCalls: toolCallsOf(result),
             ...(steps && { steps }),
+            ...(memory && { memory }),
           });
         },
         (error: unknown) =>
