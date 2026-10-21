@@ -250,6 +250,7 @@ export {
   OPINION_LOSS,
   byRecorded,
   entityNames,
+  isMemoryItemAdapter,
   matchesEntityFilter,
   matchesItemFilter,
   normalizeName,
@@ -264,6 +265,6 @@ export {
   parseExtraction,
   sessionLine,
   trustOfEntry,
-  type ExtractionContext,
+  type MemoryExtractionContext,
   type MemoryExtractorConfig,
 } from './memory-extraction';

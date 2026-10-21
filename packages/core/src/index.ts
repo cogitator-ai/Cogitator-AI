@@ -332,8 +332,14 @@ export {
 } from './llm/anthropic-compaction';
 export {
   memoryCompactionMiddleware,
+  type CompactionRun,
   type MemoryCompactionDeps,
 } from './middleware/memory-compaction';
+export {
+  memoryExtractionMiddleware,
+  EXTRACTION_CURSOR,
+  type MemoryExtractionDeps,
+} from './middleware/memory-extraction';
 
 export { InMemoryRunCheckpointStore, ThreadRunCheckpointStore } from './cogitator/run-checkpoints';
 export { PromptRegistry, promptKey } from './cogitator/prompts';

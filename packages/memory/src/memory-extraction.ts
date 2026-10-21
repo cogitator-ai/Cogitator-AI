@@ -107,7 +107,7 @@ const WEEKDAY_NAMES = [
 ];
 
 /** What an extraction knows besides the window: whose memory it is and when the session was */
-export interface ExtractionContext {
+export interface MemoryExtractionContext {
   scope: MemoryItemScope;
   /** The date relative dates are resolved against, the time of the window's last entry by default */
   sessionAt?: Date;
@@ -133,7 +133,7 @@ export function sessionLine(sessionAt: Date, timeZone = 'UTC'): string {
 export function parseExtraction(
   answer: string,
   window: readonly MemoryEntry[],
-  context: ExtractionContext
+  context: MemoryExtractionContext
 ): NewMemoryItem[] | undefined {
   const start = answer.indexOf('[');
   const end = answer.lastIndexOf(']');
@@ -215,7 +215,7 @@ export class MemoryExtractor {
   /** The items of `entries` as written, oldest first */
   async extract(
     entries: readonly MemoryEntry[],
-    context: ExtractionContext
+    context: MemoryExtractionContext
   ): Promise<MemoryItem[]> {
     const written: MemoryItem[] = [];
     const conversation = entries.filter(
@@ -232,7 +232,7 @@ export class MemoryExtractor {
   /** The checked items of one window, unwritten */
   async read(
     window: readonly MemoryEntry[],
-    context: ExtractionContext,
+    context: MemoryExtractionContext,
     windowTokens = this.config.windowTokens ?? DEFAULT_WINDOW_TOKENS
   ): Promise<NewMemoryItem[]> {
     const sessionAt = context.sessionAt ?? window.at(-1)?.createdAt ?? new Date();

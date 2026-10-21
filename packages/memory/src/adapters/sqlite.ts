@@ -10,12 +10,18 @@ import type {
   NewMemoryEntry,
   MemoryEntryType,
   PathQueryOptions,
+  MemoryEntity,
+  MemoryEntityFilter,
+  MemoryItem,
+  MemoryItemAdapter,
+  MemoryItemFilter,
 } from '@cogitator-ai/types';
 import { CONVERSATION_ENTRY_TYPES, MEMORY_ENTRY_FORMAT } from '@cogitator-ai/types';
 import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { BranchingMemoryAdapter, MAX_PATH_DEPTH } from './base';
 import type { SqliteDatabase } from './sqlite-driver';
+import { sqliteMemoryItems } from './sqlite-memory-items';
 import { threadListing, threadPage, type ThreadListing } from './thread-listing';
 
 /** Whether `path` names a database file on disk rather than an in-memory or temporary database. */
@@ -101,10 +107,11 @@ function rowToEntry(row: EntryRow, includeToolCalls: boolean): MemoryEntry {
   };
 }
 
-export class SQLiteAdapter extends BranchingMemoryAdapter {
+export class SQLiteAdapter extends BranchingMemoryAdapter implements MemoryItemAdapter {
   readonly provider: MemoryProvider = 'sqlite';
 
   private db: SqliteDatabase | null = null;
+  private items: MemoryItemAdapter | null = null;
   private path: string;
   private walMode: boolean;
 
@@ -166,6 +173,7 @@ export class SQLiteAdapter extends BranchingMemoryAdapter {
         CREATE INDEX IF NOT EXISTS idx_threads_updated ON threads(updated_at, id);
       `);
       this.migrate(db);
+      this.items = sqliteMemoryItems(db);
 
       this.db = db;
       return this.success(undefined);
@@ -237,6 +245,7 @@ export class SQLiteAdapter extends BranchingMemoryAdapter {
         return this.failure((err as Error).message);
       } finally {
         this.db = null;
+        this.items = null;
       }
     }
     return this.success(undefined);
@@ -670,5 +679,33 @@ export class SQLiteAdapter extends BranchingMemoryAdapter {
       updatedAt: new Date(row.updated_at),
       ...(row.active_leaf_id && { activeLeafId: row.active_leaf_id }),
     };
+  }
+
+  async putItem(item: MemoryItem): Promise<MemoryResult<MemoryItem>> {
+    return this.items ? this.items.putItem(item) : this.failure('Not connected');
+  }
+
+  async getItem(itemId: string): Promise<MemoryResult<MemoryItem | null>> {
+    return this.items ? this.items.getItem(itemId) : this.failure('Not connected');
+  }
+
+  async findItems(filter: MemoryItemFilter): Promise<MemoryResult<MemoryItem[]>> {
+    return this.items ? this.items.findItems(filter) : this.failure('Not connected');
+  }
+
+  async deleteItems(itemIds: string[]): Promise<MemoryResult<void>> {
+    return this.items ? this.items.deleteItems(itemIds) : this.failure('Not connected');
+  }
+
+  async putEntity(entity: MemoryEntity): Promise<MemoryResult<MemoryEntity>> {
+    return this.items ? this.items.putEntity(entity) : this.failure('Not connected');
+  }
+
+  async findEntities(filter: MemoryEntityFilter): Promise<MemoryResult<MemoryEntity[]>> {
+    return this.items ? this.items.findEntities(filter) : this.failure('Not connected');
+  }
+
+  async deleteEntities(entityIds: string[]): Promise<MemoryResult<void>> {
+    return this.items ? this.items.deleteEntities(entityIds) : this.failure('Not connected');
   }
 }

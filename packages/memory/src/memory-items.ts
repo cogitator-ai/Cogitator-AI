@@ -421,3 +421,19 @@ const TRUST_RANK: Record<MemoryItemTrust, number> = {
 function rank(trust: MemoryItemTrust): number {
   return TRUST_RANK[trust];
 }
+
+/** Whether `adapter` stores memory items, as every built-in memory adapter does */
+export function isMemoryItemAdapter<T extends object>(
+  adapter: T
+): adapter is T & MemoryItemAdapter {
+  const candidate = adapter as Partial<MemoryItemAdapter>;
+  return (
+    typeof candidate.putItem === 'function' &&
+    typeof candidate.getItem === 'function' &&
+    typeof candidate.findItems === 'function' &&
+    typeof candidate.deleteItems === 'function' &&
+    typeof candidate.putEntity === 'function' &&
+    typeof candidate.findEntities === 'function' &&
+    typeof candidate.deleteEntities === 'function'
+  );
+}

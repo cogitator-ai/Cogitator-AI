@@ -167,6 +167,34 @@ export interface MemoryItemAdapter {
   deleteEntities(entityIds: string[]): Promise<MemoryResult<void>>;
 }
 
+/**
+ * `memory.extraction`: memory items taken from a run's conversation after the run. One model call
+ * reads each window of the entries new since the last extraction, every item it names is checked
+ * against the quotes it gives, and items are only added.
+ */
+export interface MemoryExtractionConfig {
+  /** Model that extracts, as `provider/model`, the model the run ended on by default */
+  model?: string;
+  /** Instructions added to the extraction prompt */
+  prompt?: string;
+  /** Tokens of conversation one call reads (default 4000) */
+  windowTokens?: number;
+  /** Confidence a `user` item with quotes that hold needs to become `active` (default 0.7) */
+  activationConfidence?: number;
+  /**
+   * Who the items belong to: `user` (default) the run's user, agent-wide for a run without one,
+   * `agent` everyone the agent talks to, `thread` the thread alone
+   */
+  scope?: 'user' | 'agent' | 'thread';
+  /**
+   * IANA time zone relative dates are resolved in when the thread names none
+   * (`metadata.timeZone`), UTC by default
+   */
+  timeZone?: string;
+  /** Called with the items an extraction wrote */
+  afterExtract?: (items: MemoryItem[]) => void | Promise<void>;
+}
+
 /** What `MemoryItems.query` finds */
 export interface MemoryItemQuery {
   scope: MemoryItemScope;

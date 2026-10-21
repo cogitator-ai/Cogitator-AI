@@ -20,6 +20,8 @@ import {
   QdrantAdapter,
   ContextBuilder,
   MessageIndex,
+  MemoryItems,
+  isMemoryItemAdapter,
   createEmbeddingService,
   type ContextBuilderDeps,
 } from '@cogitator-ai/memory';
@@ -126,6 +128,7 @@ export async function initializeMemory(
     const deps: ContextBuilderDeps = {
       memoryAdapter: adapter,
       ...(isFactAdapter(adapter) && { factAdapter: adapter }),
+      ...(isMemoryItemAdapter(adapter) && { memoryItems: new MemoryItems({ adapter }) }),
       ...(embeddingAdapter && { embeddingAdapter }),
       ...(embeddingService && { embeddingService }),
       ...(messageIndex && { messageIndex }),
@@ -193,12 +196,10 @@ function warnAboutMissingContextParts(
         "agent's instructions and count them in the context budget"
     );
   }
-  if (options.includeFacts && !deps.factAdapter) {
+  if (options.includeFacts && !deps.factAdapter && !deps.memoryItems) {
     logger.warn(
-      'memory.contextBuilder.includeFacts adds nothing: facts are stored only by the ' +
-        "postgres memory adapter, and memory.adapter is '" +
-        deps.memoryAdapter.provider +
-        "'"
+      'memory.contextBuilder.includeFacts adds nothing: memory.adapter ' +
+        `'${deps.memoryAdapter.provider}' stores neither facts nor memory items`
     );
   }
   if (options.includeSemanticContext && (!deps.embeddingService || !deps.embeddingAdapter)) {
