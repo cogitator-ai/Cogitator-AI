@@ -208,7 +208,7 @@ describe('MessageIndex', () => {
   });
 
   it('keeps the vectors of the threads used lately and indexes a dropped one again', async () => {
-    index = new MessageIndex({ store, embedding, threadsKept: 2 });
+    index = new MessageIndex({ store, embedding, vectorsKept: 2 });
     index.attach(memory);
     await memory.createThread('agent', {}, 'thread-2');
     await memory.createThread('agent', {}, 'thread-3');
@@ -232,8 +232,8 @@ describe('MessageIndex', () => {
     expect(await storedSources()).toEqual([first.id, third.id].sort());
   });
 
-  it('is refused fewer than one thread kept', () => {
-    expect(() => new MessageIndex({ store, embedding, threadsKept: 0 })).toThrow(/threadsKept/);
+  it('is refused fewer than one vector kept', () => {
+    expect(() => new MessageIndex({ store, embedding, vectorsKept: 0 })).toThrow(/vectorsKept/);
   });
 
   it('is refused a batch size below one', () => {
@@ -441,7 +441,13 @@ describe('MessageIndex against races and other users', () => {
     for (let i = 0; i < 80; i++) await entryIn('t', `cat ${i}`);
     await index.flush();
     const builder = new ContextBuilder(
-      { maxTokens: 400, reserveTokens: 0, strategy: 'hybrid', includeSystemPrompt: false },
+      {
+        maxTokens: 400,
+        reserveTokens: 0,
+        strategy: 'hybrid',
+        includeSystemPrompt: false,
+        partitions: { recall: { share: 0.35 } },
+      },
       { memoryAdapter: memory, embeddingService: embedding, messageIndex: index }
     );
 

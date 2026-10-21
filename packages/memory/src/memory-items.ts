@@ -644,8 +644,11 @@ export class MemoryItems {
   async noteRetrieved(itemIds: readonly string[], at: Date = this.now()): Promise<void> {
     const ids = [...new Set(itemIds)];
     if (ids.length === 0) return;
-    if (this.adapter.countRetrieved) {
-      unwrap(await this.adapter.countRetrieved(ids, at));
+    const countRetrieved = this.adapter.countRetrieved?.bind(this.adapter);
+    if (countRetrieved) {
+      for (const [agentId, owned] of await this.idsByAgent(ids)) {
+        await this.exclusive(agentId, async () => unwrap(await countRetrieved(owned, at)));
+      }
       return;
     }
     await this.update(ids, (item) => ({

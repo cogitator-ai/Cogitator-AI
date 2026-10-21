@@ -30,6 +30,10 @@ const THREADS_KEPT = 32;
 
 /** Turns off the history a thread's keyword index may hold beyond its history before it is built again */
 const STALE_TURNS = 200;
+
+/** Letters of scripts written without spaces between words */
+const UNSPACED =
+  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Thai}\p{Script=Lao}\p{Script=Khmer}\p{Script=Myanmar}]/u;
 /** Entities a graph walk reads at most, the newest */
 const GRAPH_ENTITIES = 500;
 /** Damping of the personalized PageRank walk, as HippoRAG 2 uses it */
@@ -454,7 +458,9 @@ export class MemoryRetriever {
     );
     const seen = [...new Map(found.flat().map((item) => [item.id, item])).values()];
     const at = request.anchor.getTime();
-    const holding = (item: MemoryItem) => item.validTo === undefined || item.validTo.getTime() > at;
+    const holding = (item: MemoryItem) =>
+      (item.validFrom?.getTime() ?? -Infinity) <= at &&
+      (item.validTo === undefined || item.validTo.getTime() > at);
     return [...seen.filter((item) => !holding(item)), ...onePerSlot(seen.filter(holding))];
   }
 
@@ -563,19 +569,19 @@ export class MemoryRetriever {
 
 /**
  * Patterns that find a name of an entity as whole words of a normalized text, so `Ana` is not
- * found in `banana`; names under three letters are left out
+ * found in `banana`. A name's edge in a script written without spaces (Chinese, Japanese, Thai
+ * and the like) needs no boundary there. Names under three letters are left out, unless written
+ * in such a script.
  */
 function namePatterns(names: readonly string[]): RegExp[] {
   return names
     .map(normalizeName)
-    .filter((name) => name.length > 2)
-    .map(
-      (name) =>
-        new RegExp(
-          `(?<![\\p{L}\\p{N}])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}])`,
-          'u'
-        )
-    );
+    .filter((name) => name.length > 2 || UNSPACED.test(name))
+    .map((name) => {
+      const before = UNSPACED.test(name.at(0) ?? '') ? '' : '(?<![\\p{L}\\p{N}])';
+      const after = UNSPACED.test(name.at(-1) ?? '') ? '' : '(?![\\p{L}\\p{N}])';
+      return new RegExp(`${before}${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}${after}`, 'u');
+    });
 }
 
 /**

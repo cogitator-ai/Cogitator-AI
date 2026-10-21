@@ -137,7 +137,7 @@ export async function initializeMemory(
                 adapter,
                 new InMemoryEmbeddingAdapter(),
                 embeddingService,
-                IN_PROCESS_INDEX_THREADS
+                IN_PROCESS_INDEX_VECTORS
               )
         : undefined;
     state.messageIndex = messageIndex;
@@ -162,28 +162,31 @@ export async function initializeMemory(
   state.memoryInitialized = true;
 }
 
-/** Threads a lasting memory without an embedding store keeps the vectors of in process */
-const IN_PROCESS_INDEX_THREADS = 64;
+/**
+ * Vectors a lasting memory without an embedding store keeps in process, those of the threads
+ * used least lately dropped past it
+ */
+const IN_PROCESS_INDEX_VECTORS = 50_000;
 
 /**
  * The index that embeds each entry of `adapter` once, its vectors in `store`: the configured
  * embedding store, or one in process for a memory with none or one in process itself (whose
  * entries would leave vectors behind in a lasting store), so `relevant` and `hybrid` search a
  * whole thread instead of its newest entries on every memory. A lasting memory indexed in
- * process keeps the vectors of the threads used lately, so the process does not grow with every
- * thread it ever read. Background failures are logged, as no run waits on them.
+ * process keeps up to {@link IN_PROCESS_INDEX_VECTORS} vectors, of the threads used lately, so
+ * the process does not grow with every thread it ever read. Background failures are logged, as no run waits on them.
  */
 function indexFor(
   adapter: MemoryAdapter,
   store: EmbeddingAdapter,
   embedding: EmbeddingService,
-  threadsKept?: number
+  vectorsKept?: number
 ): MessageIndex {
   const logger = getLogger();
   const index = new MessageIndex({
     store,
     embedding,
-    ...(threadsKept !== undefined && { threadsKept }),
+    ...(vectorsKept !== undefined && { vectorsKept }),
     onError: (error) =>
       logger.warn('Indexing memory entries failed', { operation: 'index', error: error.message }),
   });
@@ -461,8 +464,10 @@ export function initializeContextManager(
 }
 
 export async function cleanupState(state: InitializerState): Promise<void> {
-  await state.retrievalCounts;
-  state.retrievalCounts = undefined;
+  for (let pending = state.retrievalCounts; pending; pending = state.retrievalCounts) {
+    await pending;
+    if (state.retrievalCounts === pending) state.retrievalCounts = undefined;
+  }
   if (state.messageIndex) {
     await state.messageIndex.close();
     state.messageIndex = undefined;

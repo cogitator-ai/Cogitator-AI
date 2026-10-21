@@ -419,7 +419,7 @@ Strategies:
 - `relevant` - messages ranked by embedding similarity to `currentInput` (requires `embeddingService`; falls back to `recent` without input), returned in chronological order
 - `hybrid` - keeps the newest messages as history, like `recent`, and recalls older turns and memory items a search of memory finds into the turn's memory context (needs `currentInput`, searches without vectors when there is no `embeddingService`)
 
-The system prompt is always kept and counted: the rest of the context gets what it leaves of `maxTokens - reserveTokens`, and a prompt larger than that is still sent whole, with a note in `warnings`. Entries are counted by their text, tool call arguments and images rather than only by their saved `tokenCount`. Without a `messageIndex`, `relevant` scores the newest 200 entries (`hybrid` the newest 200 older than the history it keeps) and embeds each entry once per builder (vectors are cached by entry id). Give the builder a `messageIndex` to keep those vectors in an embedding store instead: each entry is embedded once, in the background, and older entries of the thread are found by a search of the store, so recall reaches the whole thread. That is one embedding per message, plus one of the input per turn. `threadsKept` bounds an index in process to the threads used lately, re-indexing a dropped thread when a build uses it.
+The system prompt is always kept and counted: the rest of the context gets what it leaves of `maxTokens - reserveTokens`, and a prompt larger than that is still sent whole, with a note in `warnings`. Entries are counted by their text, tool call arguments and images rather than only by their saved `tokenCount`. Without a `messageIndex`, `relevant` scores the newest 200 entries (`hybrid` the newest 200 older than the history it keeps) and embeds each entry once per builder (vectors are cached by entry id). Give the builder a `messageIndex` to keep those vectors in an embedding store instead: each entry is embedded once, in the background, and older entries of the thread are found by a search of the store, so recall reaches the whole thread. That is one embedding per message, plus one of the input per turn. `vectorsKept` bounds an index in process to about that many vectors, of the threads used lately, re-indexing a dropped thread when a build uses it.
 
 `build()` also takes `asOf`, the moment the turn is read at (now by default): the time a turn names ("yesterday") is resolved from it and memory items are read as of it, to replay a recorded conversation. Its `timeZone` is the thread's IANA zone in place of the builder's.
 
@@ -481,7 +481,7 @@ A context is assembled by a `ContextAssembler` from partitions, each with a `sha
 | `summaries` | compaction summaries                       | required                 |
 | `brief`     | the `brief` text of `build()`              | required                 |
 | `facts`     | facts                                      | 15%                      |
-| `recall`    | recall (`hybrid`), search results, graph   | 35%                      |
+| `recall`    | recall (`hybrid`), search results, graph   | 35% (60% for `hybrid`)   |
 | `recent`    | history, selected by the strategy          | what the others leave    |
 | `final`     | `currentInput`, counted, not in `messages` | required, always counted |
 

@@ -45,11 +45,11 @@ export interface MessageIndexOptions {
    */
   onError?: (error: Error) => void;
   /**
-   * Threads whose vectors are kept, those used least lately dropped beyond it: for a store in
-   * process indexing a memory that lasts longer than the process holds. Every thread by default.
-   * A dropped thread is indexed again when a build uses it.
+   * Vectors kept, about: past it the vectors of the threads used least lately are dropped, for a
+   * store in process indexing a memory that lasts longer than the process holds. Every vector by
+   * default. A dropped thread is indexed again when a build uses it.
    */
-  threadsKept?: number;
+  vectorsKept?: number;
 }
 
 /** An entry as the index sees it: the text its vector is made of */
@@ -117,8 +117,10 @@ export class MessageIndex {
   private readonly owners = new Map<string, Owner>();
   private readonly backfilled = new Map<string, true>();
   private readonly texts = new Map<string, Float32Array>();
-  private readonly used = new Map<string, true>();
-  private readonly threadsKept: number;
+  /** Vectors written per thread, the thread used least lately first */
+  private readonly held = new Map<string, number>();
+  private heldVectors = 0;
+  private readonly vectorsKept: number;
   private readonly detachers: (() => void)[] = [];
   private memory?: MemoryAdapter;
   private queue: Promise<void> = Promise.resolve();
@@ -133,11 +135,11 @@ export class MessageIndex {
     this.store = options.store;
     this.embedding = options.embedding;
     this.batchSize = Math.floor(options.batchSize ?? DEFAULT_BATCH_SIZE);
-    if (options.threadsKept !== undefined && !(options.threadsKept >= 1)) {
-      throw new Error(`MessageIndex threadsKept must be 1 or more, got ${options.threadsKept}`);
+    if (options.vectorsKept !== undefined && !(options.vectorsKept >= 1)) {
+      throw new Error(`MessageIndex vectorsKept must be 1 or more, got ${options.vectorsKept}`);
     }
     this.onError = options.onError ?? (() => undefined);
-    this.threadsKept = Math.floor(options.threadsKept ?? Infinity);
+    this.vectorsKept = Math.floor(options.vectorsKept ?? Infinity);
   }
 
   /** The embedding model the vectors are made with */
@@ -183,7 +185,7 @@ export class MessageIndex {
         return;
       case 'thread-cleared':
       case 'thread-deleted':
-        this.used.delete(change.threadId);
+        this.release(change.threadId);
         this.dropThread(change.threadId);
         return;
     }
@@ -312,15 +314,45 @@ export class MessageIndex {
     await this.flush();
   }
 
-  /** Marks `threadId` used now, dropping the vectors of the thread used least lately past the limit */
+  /** Marks `threadId` used now, the last the vectors of the threads used least lately leave */
   private use(threadId: string): void {
-    if (!Number.isFinite(this.threadsKept)) return;
-    remember(this.used, threadId, true, Infinity);
-    if (this.used.size <= this.threadsKept) return;
-    const oldest = this.used.keys().next().value;
-    if (oldest === undefined) return;
-    this.used.delete(oldest);
-    this.dropThread(oldest);
+    if (!Number.isFinite(this.vectorsKept)) return;
+    const count = this.held.get(threadId) ?? 0;
+    this.held.delete(threadId);
+    this.held.set(threadId, count);
+  }
+
+  /** Counts a vector written for `threadId`, then drops threads used least lately past the limit */
+  private wrote(threadId: string): void {
+    if (!Number.isFinite(this.vectorsKept)) return;
+    this.held.set(threadId, (this.held.get(threadId) ?? 0) + 1);
+    this.heldVectors++;
+    for (const [oldest] of this.held) {
+      if (this.heldVectors <= this.vectorsKept || oldest === threadId) break;
+      this.release(oldest);
+      this.evict(oldest);
+    }
+  }
+
+  /** Forgets the vectors counted for `threadId` */
+  private release(threadId: string): void {
+    this.heldVectors -= this.held.get(threadId) ?? 0;
+    this.held.delete(threadId);
+  }
+
+  /**
+   * Drops the vectors of a thread to make room, unlike {@link dropThread} without marking it
+   * deleted: a vector written for it later is kept, and its backfill runs again when used
+   */
+  private evict(threadId: string): void {
+    for (const [entryId, pending] of this.waiting) {
+      if (pending.threadId === threadId) this.waiting.delete(entryId);
+    }
+    for (const [entryId, cached] of this.vectors) {
+      if (cached.threadId === threadId) this.vectors.delete(entryId);
+    }
+    this.backfilled.delete(threadId);
+    this.run(() => this.deleteThreadVectors(threadId));
   }
 
   private dropThread(threadId: string): void {
@@ -333,17 +365,19 @@ export class MessageIndex {
     }
     this.owners.delete(threadId);
     this.backfilled.delete(threadId);
-    this.run(async () => {
-      if (!this.store.deleteByFilter) return;
-      await this.unwrap(
-        this.store.deleteByFilter({
-          sourceType: 'message',
-          threadId,
-          metadata: MESSAGE_INDEX_MARK,
-        }),
-        'deleteByFilter'
-      );
-    });
+    this.run(() => this.deleteThreadVectors(threadId));
+  }
+
+  private async deleteThreadVectors(threadId: string): Promise<void> {
+    if (!this.store.deleteByFilter) return;
+    await this.unwrap(
+      this.store.deleteByFilter({
+        sourceType: 'message',
+        threadId,
+        metadata: MESSAGE_INDEX_MARK,
+      }),
+      'deleteByFilter'
+    );
   }
 
   /**
@@ -449,6 +483,7 @@ export class MessageIndex {
       await this.unwrap(this.store.addEmbedding(embedding), 'addEmbedding');
     }
     this.keep(entry, vector);
+    this.wrote(entry.threadId);
   }
 
   /** Whether the entry or its thread was deleted since the index saw it */

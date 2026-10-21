@@ -60,6 +60,10 @@ describe('analyzeQuery', () => {
     expect(timeExpressionOf('May I ask what I ordered?', today)).toBeUndefined();
     expect(timeExpressionOf('we may need to march on', today)).toBeUndefined();
     expect(timeExpressionOf('I ate 2000 calories', today)).toBeUndefined();
+    expect(timeExpressionOf('Do you think this may work?', today)).toBeUndefined();
+    expect(timeExpressionOf('a table of 2048 rows', today)).toBeUndefined();
+    expect(timeExpressionOf('around 2000 people came', today)).toBeUndefined();
+    expect(timeExpressionOf('What did I do last May?', today)?.date).toBe('2025-05');
   });
 });
 
@@ -264,6 +268,77 @@ describe('MemoryRetriever', () => {
     expect(ids).toContain('b1');
     expect(ids).not.toContain('a1');
     added.mockRestore();
+  });
+
+  it('keeps the state that holds at the anchor over one still to come', async () => {
+    const adapter = new InMemoryAdapter({ provider: 'memory' });
+    const items = new MemoryItems({ adapter });
+    const scope = { agentId: 'a', userId: 'u1' };
+    const city = (value: string, from: Date) => ({
+      kind: 'fact' as const,
+      content: `The user lives in ${value}`,
+      subject: 'user',
+      attribute: 'city',
+      value,
+      trust: 'user' as const,
+      confidence: 0.9,
+      scope,
+      evidence: [],
+      verified: true,
+      saidAt: at(1),
+      sessionAt: at(1),
+      about: { start: from, precision: 'day' as const },
+    });
+    await items.write([
+      city('Lisbon', new Date('2026-01-01')),
+      city('Berlin', new Date('2026-04-01')),
+    ]);
+
+    const retrieval = await new MemoryRetriever().retrieve({
+      input: 'Where did I live in March?',
+      anchor,
+      history: [],
+      items,
+      itemAdapter: adapter,
+      scope,
+    });
+
+    const found = retrieval.hits.flatMap((hit) =>
+      hit.kind === 'item' ? [hit.hit.item.value] : []
+    );
+    expect(found).toContain('Lisbon');
+  });
+
+  it('finds an entity named in a script written without spaces', async () => {
+    const adapter = new InMemoryAdapter({ provider: 'memory' });
+    const items = new MemoryItems({ adapter });
+    const scope = { agentId: 'a', userId: 'u1' };
+    await items.write([
+      {
+        kind: 'fact',
+        content: '東京は首都です',
+        subject: '東京',
+        attribute: 'role',
+        trust: 'user',
+        confidence: 0.9,
+        scope,
+        evidence: [],
+        verified: true,
+        saidAt: at(1),
+        sessionAt: at(1),
+      },
+    ]);
+
+    const retrieval = await new MemoryRetriever().retrieve({
+      input: '東京 について',
+      anchor,
+      history: [entry('j', 'user', '私は東京に住んでいます', 2)],
+      items,
+      itemAdapter: adapter,
+      scope,
+    });
+    const turn = retrieval.hits.find((hit) => hit.kind === 'entry' && hit.hit.entry.id === 'j');
+    expect(turn?.kind === 'entry' && turn.hit.channels).toContain('entity');
   });
 
   it('skips small talk', async () => {

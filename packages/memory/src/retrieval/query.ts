@@ -78,8 +78,11 @@ const NUMBER_WORDS: Record<string, number> = {
 
 const UNIT = '(day|week|month|year)s?';
 
-/** Words that lead a month or a year named alone, so `may` the verb and `2000` the number are not dates */
-const LEAD = '(?:in|during|since|until|till|before|after|by|from|through|of|around)';
+/** Words that lead a time named alone, so `may` the verb and `2000` the number are not dates */
+const LEAD = '(?:in|during|since|until|till|before|after|through)';
+
+/** Words that also lead a month written as a name, never lowercase `may`, a verb as often */
+const MONTH_LEAD = `(?:${LEAD}|by|from|of|around|early|late|mid|last|this)`;
 
 /**
  * The time words of `text` as a {@link TimeExpression}, the first that can be placed. A date
@@ -155,7 +158,8 @@ export function timeExpressionOf(
   for (const named of text.matchAll(new RegExp(`\\b(${months})\\b(?:,? (\\d{4})\\b)?`, 'gi'))) {
     const name = named[1] ?? '';
     const before = text.slice(0, named.index).toLowerCase();
-    const led = new RegExp(`\\b(?:${LEAD}|early|late|mid|last|this)[ -]$`).test(before);
+    const leads = name === 'may' ? `(?:${LEAD}|early|late|mid)` : MONTH_LEAD;
+    const led = new RegExp(`\\b${leads}[ -]$`).test(before);
     const capitalized = name !== 'May' && /^[A-Z]/.test(name);
     if (!named[2] && !led && !capitalized) continue;
     const month = MONTHS.indexOf(name.toLowerCase()) + 1;

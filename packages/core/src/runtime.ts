@@ -2677,8 +2677,9 @@ export class Cogitator implements ToolInvoker {
   /**
    * Embeds every entry of `threadId` the memory index has not embedded yet and waits until their
    * vectors are stored, such as after a conversation was imported, so the first search of the
-   * thread already sees all of it. The thread is read and embedded a page at a time, so a long
-   * one is never held whole. Does nothing when memory keeps no index (the `recent` strategy or no
+   * thread already sees all of it. With an adapter that reads a thread in pages (`getPath`) the
+   * thread is read and embedded a page at a time, so a long one is never held whole, else it is
+   * read at once and embedded a page at a time. Does nothing when memory keeps no index (the `recent` strategy or no
    * embedding service).
    */
   async indexMemory(threadId: string): Promise<void> {
