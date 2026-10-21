@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import type { Message } from '@cogitator-ai/types';
+import type { MemoryItem, Message } from '@cogitator-ai/types';
 
 const { mockRedisClient, mockCreateRedisClient } = vi.hoisted(() => {
   const mockRedisClient = {
@@ -1053,6 +1053,229 @@ describe('RedisAdapter listThreads', () => {
         5000,
         'moved',
       ],
+    ]);
+  });
+});
+
+describe('RedisAdapter memory items', () => {
+  const READ_FIELD = "return redis.call('HGET', KEYS[1], ARGV[1])";
+  const PUT_RECORD = 'local staleSorted';
+  const DROP_RECORD = "for i = 3, #KEYS do redis.call('SREM', KEYS[i], ARGV[2]) end";
+  const READ_RECORDS = "if ARGV[1] == 'records' then";
+
+  const at = new Date('2026-01-01T00:00:00.000Z');
+  const item: MemoryItem = {
+    id: 'mem_1',
+    kind: 'fact',
+    content: 'Ana lives in Porto',
+    entityId: 'ent_1',
+    slot: 'ent_1:home city',
+    status: 'active',
+    trust: 'user',
+    confidence: 0.9,
+    scope: { agentId: 'agent:1' },
+    evidence: [{ entryId: 'e1', quote: 'I live in Porto' }],
+    verified: true,
+    saidAt: at,
+    sessionAt: at,
+    validFrom: at,
+    recordedAt: at,
+  };
+  const agentItems = 'cogitator:items:agent:agent%3A1';
+  const slotSet = `${agentItems}:slot:ent_1%3Ahome%20city`;
+  const entitySet = `${agentItems}:entity:ent_1`;
+
+  let adapter: RedisAdapter;
+  let stored: string | null;
+  let putReplies: number[];
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    stored = null;
+    putReplies = [];
+    mockCreateRedisClient.mockResolvedValue(mockRedisClient);
+    mockRedisClient.eval.mockImplementation(async (script: string) => {
+      if (script === READ_FIELD) return stored;
+      if (script.includes(PUT_RECORD)) return putReplies.shift() ?? 1;
+      return 1;
+    });
+    adapter = new RedisAdapter({ provider: 'redis', host: 'localhost', ttl: 60 });
+    await adapter.connect();
+  });
+
+  afterEach(async () => {
+    resetEval();
+    await adapter.disconnect();
+  });
+
+  const indexes = (sorted: string, sets: string[]) => JSON.stringify({ sorted, sets });
+
+  it('writes a new item into its agent, slot and entity indexes, with no expiry', async () => {
+    const result = await adapter.putItem(item);
+
+    expect(result.success && result.data).toEqual(item);
+    const [put] = scriptCalls(PUT_RECORD);
+    const next = indexes(agentItems, [slotSet, entitySet]);
+    expect(put).toEqual([
+      4,
+      'cogitator:item:mem_1',
+      agentItems,
+      slotSet,
+      entitySet,
+      '',
+      'mem_1',
+      JSON.stringify(item),
+      at.getTime(),
+      next,
+      2,
+      0,
+    ]);
+    expect(put).not.toContain(60);
+  });
+
+  it('takes a replaced item out of the indexes it leaves', async () => {
+    stored = indexes(agentItems, [slotSet, entitySet]);
+    const moved: MemoryItem = { ...item, slot: 'ent_1:work city', scope: { agentId: 'other' } };
+    delete moved.entityId;
+
+    await adapter.putItem(moved);
+
+    const otherItems = 'cogitator:items:agent:other';
+    const otherSlot = `${otherItems}:slot:ent_1%3Awork%20city`;
+    const [put] = scriptCalls(PUT_RECORD);
+    expect(put?.slice(0, 7)).toEqual([
+      6,
+      'cogitator:item:mem_1',
+      otherItems,
+      otherSlot,
+      agentItems,
+      slotSet,
+      entitySet,
+    ]);
+    expect(put?.slice(7, 8)).toEqual([stored]);
+    expect(put?.slice(-3)).toEqual([indexes(otherItems, [otherSlot]), 1, 1]);
+  });
+
+  it('leaves the indexes a replaced item stays in alone', async () => {
+    stored = indexes(agentItems, [slotSet, entitySet]);
+
+    await adapter.putItem({ ...item, status: 'superseded' });
+
+    const [put] = scriptCalls(PUT_RECORD);
+    expect(put?.slice(0, 5)).toEqual([4, 'cogitator:item:mem_1', agentItems, slotSet, entitySet]);
+    expect(put?.slice(-2)).toEqual([2, 0]);
+  });
+
+  it('reads the indexes again when another writer moved the item in between', async () => {
+    putReplies = [0, 1];
+    let reads = 0;
+    mockRedisClient.eval.mockImplementation(async (script: string) => {
+      if (script === READ_FIELD) {
+        reads++;
+        return reads === 1 ? null : indexes(agentItems, [entitySet]);
+      }
+      if (script.includes(PUT_RECORD)) return putReplies.shift() ?? 1;
+      return 1;
+    });
+
+    const result = await adapter.putItem({ ...item, entityId: undefined });
+
+    expect(result.success).toBe(true);
+    const puts = scriptCalls(PUT_RECORD);
+    expect(puts).toHaveLength(2);
+    expect(puts[1]?.slice(0, 5)).toEqual([
+      4,
+      'cogitator:item:mem_1',
+      agentItems,
+      slotSet,
+      entitySet,
+    ]);
+    expect(puts[1]?.[5]).toBe(indexes(agentItems, [entitySet]));
+  });
+
+  it('deletes an item out of every index it is in, and skips one that is gone', async () => {
+    const kept = indexes(agentItems, [slotSet, entitySet]);
+    stored = kept;
+
+    await adapter.deleteItems(['mem_1', 'mem_1']);
+    stored = null;
+    await adapter.deleteItems(['missing']);
+
+    expect(scriptCalls(DROP_RECORD)).toEqual([
+      [4, 'cogitator:item:mem_1', agentItems, slotSet, entitySet, kept, 'mem_1'],
+    ]);
+  });
+
+  it('finds items through the narrowest index, filtering and ordering in process', async () => {
+    const later = { ...item, id: 'mem_0', recordedAt: new Date(at.getTime() + 1000) };
+    const foreign = { ...item, id: 'mem_2', scope: { agentId: 'other' } };
+    const gone = { ...item, id: 'mem_3', expiredAt: at };
+    const ahead = { ...item, id: 'mem_4', expiredAt: new Date(Date.now() + 60_000) };
+    mockRedisClient.eval.mockImplementation(async (script: string) =>
+      script.includes(READ_RECORDS)
+        ? [later, foreign, gone, ahead, item].map((i) => JSON.stringify(i))
+        : 1
+    );
+
+    const result = await adapter.findItems({ agentId: 'agent:1', slots: [item.slot!, item.slot!] });
+
+    expect(result.success && result.data.map((found) => found.id)).toEqual([
+      'mem_1',
+      'mem_4',
+      'mem_0',
+    ]);
+    expect(result.success && result.data[0]?.recordedAt).toBeInstanceOf(Date);
+    expect(scriptCalls(READ_RECORDS)).toEqual([[1, slotSet, 'sets', 'cogitator:item:']]);
+
+    await adapter.findItems({ agentId: 'agent:1', ids: ['mem_1'], slots: [item.slot!] });
+    await adapter.findItems({ agentId: 'agent:1' });
+    expect(scriptCalls(READ_RECORDS).slice(1)).toEqual([
+      [1, 'cogitator:item:mem_1', 'records', 'cogitator:item:'],
+      [1, agentItems, 'sorted', 'cogitator:item:'],
+    ]);
+  });
+
+  it('finds nothing without reading when a filter lists no values', async () => {
+    const result = await adapter.findItems({ agentId: 'agent:1', entityIds: [] });
+
+    expect(result.success && result.data).toEqual([]);
+    expect(scriptCalls(READ_RECORDS)).toEqual([]);
+  });
+
+  it('keeps the name index of a replaced entity to the names it still has', async () => {
+    const agentEntities = 'cogitator:entities:agent:agent%3A1';
+    const named = (name: string) => `${agentEntities}:name:${encodeURIComponent(name)}`;
+    stored = indexes(agentEntities, [named('ana lima'), named('ana'), named('dr. lima')]);
+
+    await adapter.putEntity({
+      id: 'ent_1',
+      scope: { agentId: 'agent:1' },
+      name: 'Ana Lima',
+      aliases: ['Ana'],
+      firstSeenAt: at,
+      lastSeenAt: at,
+    });
+
+    const [put] = scriptCalls(PUT_RECORD);
+    expect(put?.slice(0, 5)).toEqual([
+      5,
+      'cogitator:entity:ent_1',
+      agentEntities,
+      named('ana lima'),
+      named('ana'),
+    ]);
+    expect(put?.[5]).toBe(named('dr. lima'));
+    expect(put?.slice(-2)).toEqual([2, 0]);
+  });
+
+  it('deletes an entity out of its name index', async () => {
+    const agentEntities = 'cogitator:entities:agent:a';
+    stored = indexes(agentEntities, [`${agentEntities}:name:porto`]);
+
+    await adapter.deleteEntities(['ent_1']);
+
+    expect(scriptCalls(DROP_RECORD)).toEqual([
+      [3, 'cogitator:entity:ent_1', agentEntities, `${agentEntities}:name:porto`, stored, 'ent_1'],
     ]);
   });
 });

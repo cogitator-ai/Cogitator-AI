@@ -2,7 +2,8 @@
  * Redis adapter for short-term memory
  *
  * Uses Redis sorted sets for ordered message retrieval.
- * Supports TTL for automatic expiration.
+ * Supports TTL for automatic expiration of threads and entries. Memory items and entities are
+ * long-term memory and never expire with it.
  * Supports both standalone Redis and Redis Cluster modes via @cogitator-ai/redis.
  */
 
@@ -10,7 +11,12 @@ import type {
   ListThreadsOptions,
   Thread,
   ThreadPage,
+  MemoryEntity,
+  MemoryEntityFilter,
   MemoryEntry,
+  MemoryItem,
+  MemoryItemAdapter,
+  MemoryItemFilter,
   MemoryQueryOptions,
   MemoryResult,
   RedisAdapterConfig,
@@ -24,6 +30,13 @@ import { createRedisClient, type RedisClient } from '@cogitator-ai/redis';
 import { BranchingMemoryAdapter, entryTypeWanted } from './base';
 import { CONVERSATION_ENTRY_TYPES, MEMORY_ENTRY_FORMAT } from '@cogitator-ai/types';
 import { matchesListing, threadListing, threadPage, type ThreadCursor } from './thread-listing';
+import { byRecorded, entityNames, matchesEntityFilter, matchesItemFilter } from '../memory-items';
+import {
+  memoryEntityFromJson,
+  memoryItemFromJson,
+  type StoredMemoryEntity,
+  type StoredMemoryItem,
+} from './memory-item-json';
 
 /**
  * The index member that records the index holds every stored thread: it lives and dies with the
@@ -507,7 +520,157 @@ function indexPage(reply: unknown): {
   };
 }
 
-export class RedisAdapter extends BranchingMemoryAdapter {
+/**
+ * Memory items and entities are records: a hash with the record as JSON under `data` and the
+ * index keys it is in under `indexes` (see {@link RecordIndexes}), so a write that moves it, to
+ * another slot, entity, name or agent, takes it out of the indexes it leaves.
+ */
+const RECORD_DATA = 'data';
+const RECORD_INDEXES = 'indexes';
+
+/** Reads the field `ARGV[1]` of the record `KEYS[1]` on the primary, like every write does */
+const READ_FIELD = `return redis.call('HGET', KEYS[1], ARGV[1])`;
+
+/**
+ * Writes the record `KEYS[1]` of the id `ARGV[2]` if its indexes are still `ARGV[1]` (`''` for
+ * no record): its JSON `ARGV[3]`, its sorted index `KEYS[2]` at the score `ARGV[4]`, its
+ * `ARGV[6]` sets after it, and its indexes `ARGV[5]`. The keys after those are the indexes it
+ * leaves, the first `ARGV[7]` of them sorted sets. Replies 1 when written, 0 otherwise.
+ */
+const PUT_RECORD = `
+if (redis.call('HGET', KEYS[1], '${RECORD_INDEXES}') or '') ~= ARGV[1] then return 0 end
+local sets = tonumber(ARGV[6])
+local staleSorted = tonumber(ARGV[7])
+for i = 3 + sets, 2 + sets + staleSorted do redis.call('ZREM', KEYS[i], ARGV[2]) end
+for i = 3 + sets + staleSorted, #KEYS do redis.call('SREM', KEYS[i], ARGV[2]) end
+redis.call('HSET', KEYS[1], '${RECORD_DATA}', ARGV[3], '${RECORD_INDEXES}', ARGV[5])
+redis.call('ZADD', KEYS[2], ARGV[4], ARGV[2])
+for i = 3, 2 + sets do redis.call('SADD', KEYS[i], ARGV[2]) end
+return 1
+`;
+
+/**
+ * Deletes the record `KEYS[1]` of the id `ARGV[2]` and takes it out of its sorted index
+ * `KEYS[2]` and its sets after it, if its indexes are still `ARGV[1]`. Replies 1 when deleted, 0
+ * otherwise.
+ */
+const DROP_RECORD = `
+if (redis.call('HGET', KEYS[1], '${RECORD_INDEXES}') or '') ~= ARGV[1] then return 0 end
+redis.call('ZREM', KEYS[2], ARGV[2])
+for i = 3, #KEYS do redis.call('SREM', KEYS[i], ARGV[2]) end
+redis.call('DEL', KEYS[1])
+return 1
+`;
+
+/**
+ * The JSON of records, read on the primary: those under the keys when `ARGV[1]` is `'records'`,
+ * those the sorted index `KEYS[1]` holds when it is `'sorted'`, those any of the sets hold when
+ * it is `'sets'`, their record keys made of the prefix `ARGV[2]` and their ids. Records that are
+ * gone are left out.
+ */
+const READ_RECORDS = `
+local out = {}
+if ARGV[1] == 'records' then
+  for i = 1, #KEYS do
+    local data = redis.call('HGET', KEYS[i], '${RECORD_DATA}')
+    if data then out[#out + 1] = data end
+  end
+  return out
+end
+local ids
+if ARGV[1] == 'sorted' then
+  ids = redis.call('ZRANGE', KEYS[1], 0, -1)
+else
+  ids = redis.call('SUNION', unpack(KEYS))
+end
+for i = 1, #ids do
+  local data = redis.call('HGET', ARGV[2] .. ids[i], '${RECORD_DATA}')
+  if data then out[#out + 1] = data end
+end
+return out
+`;
+
+/**
+ * The index keys a record is in: the sorted set of its agent's records, scored by time, and the
+ * sets that find it by slot, entity or name
+ */
+interface RecordIndexes {
+  sorted: string;
+  sets: string[];
+}
+
+/** Where a read of records starts: the records themselves, or the index that holds them */
+interface RecordSource {
+  mode: 'records' | 'sorted' | 'sets';
+  keys: string[];
+}
+
+function isRecordIndexes(value: unknown): value is RecordIndexes {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'sorted' in value &&
+    typeof value.sorted === 'string' &&
+    'sets' in value &&
+    Array.isArray(value.sets) &&
+    value.sets.every((key) => typeof key === 'string')
+  );
+}
+
+function parseIndexes(json: string): RecordIndexes {
+  const value: unknown = JSON.parse(json);
+  if (!isRecordIndexes(value)) throw new Error('Unexpected record indexes in Redis');
+  return value;
+}
+
+/**
+ * The indexes of `current` that `next` leaves, which a write of `next` takes the record out of:
+ * its sorted set when the record moves to another agent, and the sets `next` is not in
+ */
+function leftIndexes(
+  current: RecordIndexes | null,
+  next: RecordIndexes
+): { sorted: string[]; sets: string[] } {
+  if (!current) return { sorted: [], sets: [] };
+  return {
+    sorted: current.sorted === next.sorted ? [] : [current.sorted],
+    sets: current.sets.filter((key) => !next.sets.includes(key)),
+  };
+}
+
+/** A value as part of a key: encoded, so no `:` or hash tag in it changes where the key goes */
+function keyPart(value: string): string {
+  return encodeURIComponent(value);
+}
+
+function parseItem(data: string): MemoryItem {
+  return memoryItemFromJson(JSON.parse(data) as StoredMemoryItem);
+}
+
+function parseEntity(data: string): MemoryEntity {
+  return memoryEntityFromJson(JSON.parse(data) as StoredMemoryEntity);
+}
+
+/** First seen first, then by id, the order entities are found in */
+function byFirstSeen(a: MemoryEntity, b: MemoryEntity): number {
+  return (
+    a.firstSeenAt.getTime() - b.firstSeenAt.getTime() || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+  );
+}
+
+function recordRows(reply: unknown): string[] {
+  if (!Array.isArray(reply)) throw new Error('Unexpected reply from Redis');
+  return reply.filter((row): row is string => typeof row === 'string');
+}
+
+/**
+ * Threads and entries in Redis, and memory items with their entities: each item and entity is a
+ * record in a hash, found through a sorted set of its agent's records and sets by slot, entity
+ * or name, which every write keeps in step with the record in one script. Threads and entries
+ * live for `ttl` seconds when it is set, memory items and entities never expire with it: they
+ * are long-term memory, kept until they are deleted.
+ */
+export class RedisAdapter extends BranchingMemoryAdapter implements MemoryItemAdapter {
   readonly provider: MemoryProvider = 'redis';
 
   private client: RedisClient | null = null;
@@ -1138,6 +1301,251 @@ export class RedisAdapter extends BranchingMemoryAdapter {
         this.key('thread:entries', threadId),
         this.key('thread:leaf', threadId)
       );
+      return this.success(undefined);
+    });
+  }
+
+  /**
+   * The key of an index of the memory items or entities of `agentId`: the sorted set of them all,
+   * or the set of those `by` names, such as `['slot', slot]`
+   */
+  private recordIndex(
+    records: 'items' | 'entities',
+    agentId: string,
+    by?: readonly [string, string]
+  ): string {
+    const agent = `${this.prefix}${records}:agent:${keyPart(agentId)}`;
+    return by ? `${agent}:${by[0]}:${keyPart(by[1])}` : agent;
+  }
+
+  /** The indexes `item` is found by: its agent's items by record time, its slot, its entity */
+  private itemIndexes(item: MemoryItem): RecordIndexes {
+    const { agentId } = item.scope;
+    return {
+      sorted: this.recordIndex('items', agentId),
+      sets: [
+        ...(item.slot !== undefined
+          ? [this.recordIndex('items', agentId, ['slot', item.slot])]
+          : []),
+        ...(item.entityId !== undefined
+          ? [this.recordIndex('items', agentId, ['entity', item.entityId])]
+          : []),
+      ],
+    };
+  }
+
+  /** The indexes `entity` is found by: its agent's entities by first sight, each of its names */
+  private entityIndexes(entity: MemoryEntity): RecordIndexes {
+    const { agentId } = entity.scope;
+    return {
+      sorted: this.recordIndex('entities', agentId),
+      sets: entityNames(entity).map((name) =>
+        this.recordIndex('entities', agentId, ['name', name])
+      ),
+    };
+  }
+
+  /**
+   * Writes a record and moves it in its indexes, retrying when another writer moved it in between,
+   * so the indexes it leaves are always the ones it was in
+   */
+  private async putRecord(
+    client: RedisClient,
+    recordKey: string,
+    id: string,
+    data: string,
+    score: number,
+    indexes: RecordIndexes
+  ): Promise<void> {
+    const next = JSON.stringify(indexes);
+    for (let attempt = 0; attempt < MAX_WRITE_ATTEMPTS; attempt++) {
+      const read = await client.eval(READ_FIELD, 1, recordKey, RECORD_INDEXES);
+      const current = typeof read === 'string' ? read : '';
+      const left = leftIndexes(current ? parseIndexes(current) : null, indexes);
+      const keys = [recordKey, indexes.sorted, ...indexes.sets, ...left.sorted, ...left.sets];
+      const written = await client.eval(
+        PUT_RECORD,
+        keys.length,
+        ...keys,
+        current,
+        id,
+        data,
+        score,
+        next,
+        indexes.sets.length,
+        left.sorted.length
+      );
+      if (Number(written) === 1) return;
+    }
+    throw new Error(`Record ${recordKey} changed on every one of ${MAX_WRITE_ATTEMPTS} attempts`);
+  }
+
+  /** Deletes a record and takes it out of its indexes, retrying when another writer moved it */
+  private async dropRecord(client: RedisClient, recordKey: string, id: string): Promise<void> {
+    for (let attempt = 0; attempt < MAX_WRITE_ATTEMPTS; attempt++) {
+      const read = await client.eval(READ_FIELD, 1, recordKey, RECORD_INDEXES);
+      if (typeof read !== 'string') return;
+      const { sorted, sets } = parseIndexes(read);
+      const dropped = await client.eval(
+        DROP_RECORD,
+        2 + sets.length,
+        recordKey,
+        sorted,
+        ...sets,
+        read,
+        id
+      );
+      if (Number(dropped) === 1) return;
+    }
+    throw new Error(`Record ${recordKey} changed on every one of ${MAX_WRITE_ATTEMPTS} attempts`);
+  }
+
+  private async readRecords(
+    client: RedisClient,
+    type: 'item' | 'entity',
+    { mode, keys }: RecordSource
+  ): Promise<string[]> {
+    return recordRows(
+      await client.eval(READ_RECORDS, keys.length, ...keys, mode, this.key(type, ''))
+    );
+  }
+
+  /**
+   * The narrowest source that holds every item `filter` finds: the items it names, the sets of
+   * its slots or entities, or all of its agent's. Null when it can find none.
+   */
+  private itemSource(filter: MemoryItemFilter): RecordSource | null {
+    const { agentId } = filter;
+    const source = (mode: RecordSource['mode'], keys: string[]): RecordSource | null =>
+      keys.length > 0 ? { mode, keys: [...new Set(keys)] } : null;
+    if (filter.ids)
+      return source(
+        'records',
+        filter.ids.map((id) => this.key('item', id))
+      );
+    if (filter.slots) {
+      return source(
+        'sets',
+        filter.slots.map((slot) => this.recordIndex('items', agentId, ['slot', slot]))
+      );
+    }
+    if (filter.entityIds) {
+      return source(
+        'sets',
+        filter.entityIds.map((entityId) => this.recordIndex('items', agentId, ['entity', entityId]))
+      );
+    }
+    return source('sorted', [this.recordIndex('items', agentId)]);
+  }
+
+  /** The narrowest source that holds every entity `filter` finds, null when it can find none */
+  private entitySource(filter: MemoryEntityFilter): RecordSource | null {
+    const { agentId } = filter;
+    const source = (mode: RecordSource['mode'], keys: string[]): RecordSource | null =>
+      keys.length > 0 ? { mode, keys: [...new Set(keys)] } : null;
+    if (filter.ids)
+      return source(
+        'records',
+        filter.ids.map((id) => this.key('entity', id))
+      );
+    if (filter.names) {
+      return source(
+        'sets',
+        filter.names.map((name) => this.recordIndex('entities', agentId, ['name', name]))
+      );
+    }
+    return source('sorted', [this.recordIndex('entities', agentId)]);
+  }
+
+  /**
+   * Writes `item`, replacing the item with its id and moving it in the indexes when its agent,
+   * slot or entity changed. Items never expire with the adapter's `ttl`.
+   */
+  async putItem(item: MemoryItem): Promise<MemoryResult<MemoryItem>> {
+    return this.run(async (client) => {
+      const data = JSON.stringify(item);
+      await this.putRecord(
+        client,
+        this.key('item', item.id),
+        item.id,
+        data,
+        item.recordedAt.getTime(),
+        this.itemIndexes(item)
+      );
+      return this.success(parseItem(data));
+    });
+  }
+
+  async getItem(itemId: string): Promise<MemoryResult<MemoryItem | null>> {
+    return this.run(async (client) => {
+      const data = await client.eval(READ_FIELD, 1, this.key('item', itemId), RECORD_DATA);
+      return this.success(typeof data === 'string' ? parseItem(data) : null);
+    });
+  }
+
+  /** Reads the narrowest index the filter allows, then filters and orders in process */
+  async findItems(filter: MemoryItemFilter): Promise<MemoryResult<MemoryItem[]>> {
+    return this.run(async (client) => {
+      const source = this.itemSource(filter);
+      if (!source) return this.success([]);
+      const rows = await this.readRecords(client, 'item', source);
+      return this.success(
+        rows
+          .map(parseItem)
+          .filter((item) => matchesItemFilter(item, filter))
+          .sort(byRecorded)
+      );
+    });
+  }
+
+  async deleteItems(itemIds: string[]): Promise<MemoryResult<void>> {
+    return this.run(async (client) => {
+      for (const itemId of new Set(itemIds)) {
+        await this.dropRecord(client, this.key('item', itemId), itemId);
+      }
+      return this.success(undefined);
+    });
+  }
+
+  /**
+   * Writes `entity`, replacing the entity with its id and its names in the name index. Entities
+   * never expire with the adapter's `ttl`.
+   */
+  async putEntity(entity: MemoryEntity): Promise<MemoryResult<MemoryEntity>> {
+    return this.run(async (client) => {
+      const data = JSON.stringify(entity);
+      await this.putRecord(
+        client,
+        this.key('entity', entity.id),
+        entity.id,
+        data,
+        entity.firstSeenAt.getTime(),
+        this.entityIndexes(entity)
+      );
+      return this.success(parseEntity(data));
+    });
+  }
+
+  /** Entities `filter` finds, first seen first */
+  async findEntities(filter: MemoryEntityFilter): Promise<MemoryResult<MemoryEntity[]>> {
+    return this.run(async (client) => {
+      const source = this.entitySource(filter);
+      if (!source) return this.success([]);
+      const rows = await this.readRecords(client, 'entity', source);
+      return this.success(
+        rows
+          .map(parseEntity)
+          .filter((entity) => matchesEntityFilter(entity, filter))
+          .sort(byFirstSeen)
+      );
+    });
+  }
+
+  async deleteEntities(entityIds: string[]): Promise<MemoryResult<void>> {
+    return this.run(async (client) => {
+      for (const entityId of new Set(entityIds)) {
+        await this.dropRecord(client, this.key('entity', entityId), entityId);
+      }
       return this.success(undefined);
     });
   }

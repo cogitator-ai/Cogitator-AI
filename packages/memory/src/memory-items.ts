@@ -198,7 +198,10 @@ export class MemoryItems {
     return this.writeState(item);
   }
 
-  /** The item already kept that `item` says again: same scope, kind and words, or slot and value */
+  /**
+   * The item already kept that `item` says again: same scope, kind and words, or slot and value,
+   * one memory is not letting go
+   */
   private async sameItem(item: MemoryItem): Promise<MemoryItem | undefined> {
     const found = unwrap(
       await this.adapter.findItems({
@@ -213,6 +216,7 @@ export class MemoryItems {
       (known) =>
         sameScope(known.scope, item.scope) &&
         known.validTo === undefined &&
+        known.expiredAt === undefined &&
         (normalizeName(known.content) === content ||
           (item.slot !== undefined &&
             item.value !== undefined &&

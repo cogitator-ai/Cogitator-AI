@@ -2,7 +2,14 @@ import type {
   ListThreadsOptions,
   Thread,
   ThreadPage,
+  MemoryEntity,
+  MemoryEntityFilter,
   MemoryEntry,
+  MemoryItem,
+  MemoryItemAdapter,
+  MemoryItemFilter,
+  MemoryItemKind,
+  MemoryItemStatus,
   MemoryQueryOptions,
   MemoryResult,
   Message,
@@ -28,6 +35,7 @@ import type {
 } from 'mongodb';
 import { BranchingMemoryAdapter, entryTypeWanted } from './base';
 import { threadListing, threadPage, type ThreadListing } from './thread-listing';
+import { entityNames } from '../memory-items';
 
 /** A cursor over `find()` results, as far as the adapter reads it. */
 type MongoCursor<T extends Document> = Pick<
@@ -50,6 +58,7 @@ interface MongoCollection<T extends Document> extends Pick<
   | 'deleteOne'
   | 'deleteMany'
   | 'bulkWrite'
+  | 'replaceOne'
 > {
   findOne(filter: Filter<T>): Promise<WithId<T> | null>;
   find(filter: Filter<T>, options?: FindOptions): MongoCursor<T>;
@@ -149,6 +158,51 @@ interface EntryDoc {
   parentId?: string | null;
   event?: Record<string, unknown> | null;
   formatVersion?: number | null;
+}
+
+/**
+ * A memory item: the fields its filters read at the top, beside the item whole. Dates are BSON
+ * dates, so they come back as dates, and a field the item does not have is absent, not null.
+ */
+interface ItemDoc {
+  _id: string;
+  agentId: string;
+  kind: MemoryItemKind;
+  status: MemoryItemStatus;
+  slot?: string;
+  entityId?: string;
+  recordedAt: Date;
+  expiredAt?: Date;
+  item: MemoryItem;
+}
+
+/** An entity with every name of it normalized in `names`, which entities are found by */
+interface EntityDoc {
+  _id: string;
+  agentId: string;
+  names: string[];
+  entity: MemoryEntity;
+}
+
+/** The document of `item` but its `_id`, which a replace by id keeps */
+function itemDoc(item: MemoryItem): Omit<ItemDoc, '_id'> {
+  return {
+    agentId: item.scope.agentId,
+    kind: item.kind,
+    status: item.status,
+    ...(item.slot !== undefined && { slot: item.slot }),
+    ...(item.entityId !== undefined && { entityId: item.entityId }),
+    recordedAt: item.recordedAt,
+    ...(item.expiredAt !== undefined && { expiredAt: item.expiredAt }),
+    item,
+  };
+}
+
+/** First seen first, then by id, the order entities are found in */
+function byFirstSeen(a: MemoryEntity, b: MemoryEntity): number {
+  return (
+    a.firstSeenAt.getTime() - b.firstSeenAt.getTime() || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+  );
 }
 
 /** An entry as a path walk reads it: no content, only where it hangs and what it is */
@@ -302,7 +356,11 @@ function afterCursor({ cursor, order }: ThreadListing): Filter<ThreadDoc> | unde
     : { $or: [{ updatedAt: { $lt: at } }, { updatedAt: at, _id: { $lt: cursor.id } }] };
 }
 
-export class MongoDBAdapter extends BranchingMemoryAdapter {
+/**
+ * Threads and entries in MongoDB, and memory items with their entities in `<prefix>items` and
+ * `<prefix>entities`
+ */
+export class MongoDBAdapter extends BranchingMemoryAdapter implements MemoryItemAdapter {
   readonly provider: MemoryProvider = 'mongodb';
 
   private client: MongoClient | null = null;
@@ -329,6 +387,16 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
   private get entries(): MongoCollection<EntryDoc> {
     if (!this.db) throw new Error('Not connected');
     return this.db.collection<EntryDoc>(`${this.prefix}entries`);
+  }
+
+  private get items(): MongoCollection<ItemDoc> {
+    if (!this.db) throw new Error('Not connected');
+    return this.db.collection<ItemDoc>(`${this.prefix}items`);
+  }
+
+  private get entities(): MongoCollection<EntityDoc> {
+    if (!this.db) throw new Error('Not connected');
+    return this.db.collection<EntityDoc>(`${this.prefix}entities`);
   }
 
   /**
@@ -362,6 +430,12 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
       const entries = db.collection<EntryDoc>(`${this.prefix}entries`);
       await entries.createIndex({ threadId: 1, createdAt: 1, seq: 1 });
       await entries.createIndex({ threadId: 1, parentId: 1 });
+      const items = db.collection<ItemDoc>(`${this.prefix}items`);
+      await items.createIndex({ agentId: 1, slot: 1 });
+      await items.createIndex({ agentId: 1, entityId: 1 });
+      await items.createIndex({ agentId: 1, recordedAt: 1, _id: 1 });
+      const entities = db.collection<EntityDoc>(`${this.prefix}entities`);
+      await entities.createIndex({ agentId: 1, names: 1 });
 
       this.client = client;
       this.db = db;
@@ -1104,6 +1178,104 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
           },
         }
       );
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
+  async putItem(item: MemoryItem): Promise<MemoryResult<MemoryItem>> {
+    if (!this.db) return this.failure('Not connected');
+    try {
+      await this.items.replaceOne({ _id: item.id }, itemDoc(item), { upsert: true });
+      return this.success(structuredClone(item));
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
+  async getItem(itemId: string): Promise<MemoryResult<MemoryItem | null>> {
+    if (!this.db) return this.failure('Not connected');
+    try {
+      const doc = await this.items.findOne({ _id: { $eq: itemId } });
+      return this.success(doc ? doc.item : null);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
+  /**
+   * Items `filter` finds, filtered in the database, oldest recorded first. An item whose
+   * `expiredAt` is still ahead is found without `includeExpired`.
+   */
+  async findItems(filter: MemoryItemFilter): Promise<MemoryResult<MemoryItem[]>> {
+    if (!this.db) return this.failure('Not connected');
+    const conditions: Filter<ItemDoc>[] = [{ agentId: { $eq: filter.agentId } }];
+    if (filter.ids) conditions.push({ _id: { $in: filter.ids } });
+    if (filter.slots) conditions.push({ slot: { $in: filter.slots } });
+    if (filter.entityIds) conditions.push({ entityId: { $in: filter.entityIds } });
+    if (filter.kinds) conditions.push({ kind: { $in: filter.kinds } });
+    if (filter.statuses) conditions.push({ status: { $in: filter.statuses } });
+    if (filter.includeExpired !== true) {
+      conditions.push({
+        $or: [{ expiredAt: { $exists: false } }, { expiredAt: { $gt: new Date() } }],
+      });
+    }
+    try {
+      const docs = await this.items
+        .find({ $and: conditions })
+        .sort({ recordedAt: 1, _id: 1 })
+        .toArray();
+      return this.success(docs.map((doc) => doc.item));
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
+  async deleteItems(itemIds: string[]): Promise<MemoryResult<void>> {
+    if (!this.db) return this.failure('Not connected');
+    if (itemIds.length === 0) return this.success(undefined);
+    try {
+      await this.items.deleteMany({ _id: { $in: itemIds } });
+      return this.success(undefined);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
+  async putEntity(entity: MemoryEntity): Promise<MemoryResult<MemoryEntity>> {
+    if (!this.db) return this.failure('Not connected');
+    try {
+      await this.entities.replaceOne(
+        { _id: entity.id },
+        { agentId: entity.scope.agentId, names: entityNames(entity), entity },
+        { upsert: true }
+      );
+      return this.success(structuredClone(entity));
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
+  /** Entities `filter` finds, first seen first */
+  async findEntities(filter: MemoryEntityFilter): Promise<MemoryResult<MemoryEntity[]>> {
+    if (!this.db) return this.failure('Not connected');
+    const conditions: Filter<EntityDoc>[] = [{ agentId: { $eq: filter.agentId } }];
+    if (filter.ids) conditions.push({ _id: { $in: filter.ids } });
+    if (filter.names) conditions.push({ names: { $in: filter.names } });
+    try {
+      const docs = await this.entities.find({ $and: conditions }).toArray();
+      return this.success(docs.map((doc) => doc.entity).sort(byFirstSeen));
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
+  async deleteEntities(entityIds: string[]): Promise<MemoryResult<void>> {
+    if (!this.db) return this.failure('Not connected');
+    if (entityIds.length === 0) return this.success(undefined);
+    try {
+      await this.entities.deleteMany({ _id: { $in: entityIds } });
+      return this.success(undefined);
     } catch (err) {
       return this.failure((err as Error).message);
     }

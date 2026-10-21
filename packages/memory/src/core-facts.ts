@@ -171,7 +171,7 @@ export class CoreFactsStore {
     );
     const facts = new Map<string, string>();
     for (const item of found) {
-      if (this.isFact(item) && item.validTo === undefined && item.value !== undefined) {
+      if (this.isCurrent(item) && item.value !== undefined) {
         facts.set(keyOf(item), item.value);
       }
     }
@@ -205,6 +205,15 @@ export class CoreFactsStore {
     return item.slot?.startsWith(SLOT_PREFIX) === true && sameScope(item.scope, this.scope);
   }
 
+  /**
+   * Whether `item` is the value of its key now: no newer value closed it and it was not deleted.
+   * A deleted value is let go at once, never later, so any `expiredAt` means it is gone, even one
+   * a millisecond ahead of the clock to keep the history in order.
+   */
+  private isCurrent(item: MemoryItem): boolean {
+    return this.isFact(item) && item.validTo === undefined && item.expiredAt === undefined;
+  }
+
   /** The value `key` holds now: the item of its slot no newer one closed and not let go */
   private async current(opened: Opened, key: string): Promise<MemoryItem | undefined> {
     return unwrap(
@@ -215,7 +224,7 @@ export class CoreFactsStore {
         statuses: ['active'],
       })
     )
-      .filter((item) => this.isFact(item) && item.validTo === undefined)
+      .filter((item) => this.isCurrent(item))
       .at(-1);
   }
 

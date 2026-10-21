@@ -10,7 +10,7 @@ import type {
   WithId,
 } from 'mongodb';
 import { MongoDBAdapter } from '../adapters/mongodb';
-import type { Message } from '@cogitator-ai/types';
+import type { MemoryEntity, MemoryItem, Message } from '@cogitator-ai/types';
 
 interface StoredDoc extends Document {
   _id: string;
@@ -29,6 +29,7 @@ type CollectionSurface = Pick<
   | 'deleteOne'
   | 'deleteMany'
   | 'bulkWrite'
+  | 'replaceOne'
 > & {
   findOne(filter: Filter<StoredDoc>): Promise<WithId<StoredDoc> | null>;
   find(filter: Filter<StoredDoc>, options?: Document): CursorSurface;
@@ -73,6 +74,13 @@ const mockCollection = {
     .fn<CollectionSurface['deleteMany']>()
     .mockResolvedValue({ ...deleted, deletedCount: 5 }),
   bulkWrite: vi.fn<CollectionSurface['bulkWrite']>(),
+  replaceOne: vi.fn<CollectionSurface['replaceOne']>().mockResolvedValue({
+    acknowledged: true,
+    matchedCount: 1,
+    modifiedCount: 1,
+    upsertedCount: 0,
+    upsertedId: null,
+  }),
 } satisfies CollectionSurface;
 
 const mockDb = {
@@ -1340,6 +1348,160 @@ describe('MongoDBAdapter', () => {
       expect((await adapter.listThreads({ limit: 501 })).success).toBe(false);
       expect((await adapter.listThreads({ metadata: { "a'b": 'x' } })).success).toBe(false);
       expect(mockCollection.find).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('memory items', () => {
+    const at = new Date('2026-01-01T00:00:00.000Z');
+    const item: MemoryItem = {
+      id: 'mem_1',
+      kind: 'fact',
+      content: 'Ana lives in Porto',
+      entityId: 'ent_1',
+      slot: 'ent_1:home city',
+      status: 'active',
+      trust: 'user',
+      confidence: 0.9,
+      scope: { agentId: 'agent1' },
+      evidence: [{ entryId: 'e1', quote: 'I live in Porto' }],
+      verified: true,
+      saidAt: at,
+      sessionAt: at,
+      recordedAt: at,
+    };
+
+    /** The documents the adapter replaced, as the driver stored them */
+    function replaced(): Document[] {
+      return mockCollection.replaceOne.mock.calls.map(([filter, doc]) => ({
+        ...BSON.deserialize(BSON.serialize(doc, { ignoreUndefined: true })),
+        _id: filter._id,
+      }));
+    }
+
+    it('creates the indexes items and entities are found by', () => {
+      const names = mockDb.collection.mock.calls.map(([name]) => name);
+      expect(names).toEqual(expect.arrayContaining(['memory_items', 'memory_entities']));
+      expect(mockCollection.createIndex).toHaveBeenCalledWith({ agentId: 1, slot: 1 });
+      expect(mockCollection.createIndex).toHaveBeenCalledWith({ agentId: 1, entityId: 1 });
+      expect(mockCollection.createIndex).toHaveBeenCalledWith({
+        agentId: 1,
+        recordedAt: 1,
+        _id: 1,
+      });
+      expect(mockCollection.createIndex).toHaveBeenCalledWith({ agentId: 1, names: 1 });
+    });
+
+    it('replaces an item whole, so a slot or entity it left is no longer indexed', async () => {
+      await adapter.putItem(item);
+      const moved: MemoryItem = { ...item, slot: 'ent_1:work city', status: 'superseded' };
+      delete moved.entityId;
+      await adapter.putItem(moved);
+
+      const [first, second] = replaced();
+      expect(mockCollection.replaceOne).toHaveBeenCalledWith({ _id: 'mem_1' }, expect.anything(), {
+        upsert: true,
+      });
+      expect(first).toMatchObject({ slot: 'ent_1:home city', entityId: 'ent_1' });
+      expect(second).toMatchObject({
+        _id: 'mem_1',
+        agentId: 'agent1',
+        kind: 'fact',
+        status: 'superseded',
+        slot: 'ent_1:work city',
+        recordedAt: at,
+      });
+      expect(Object.keys(second ?? {})).not.toContain('entityId');
+      expect(Object.keys(second ?? {})).not.toContain('expiredAt');
+      expect(second?.item).toEqual(moved);
+    });
+
+    it('finds items by the filtered fields, leaving out only items already let go', async () => {
+      mockCollection.find.mockReturnValueOnce(
+        cursorOver([{ _id: 'mem_1', item } as WithId<StoredDoc>])
+      );
+
+      const found = await adapter.findItems({
+        agentId: 'agent1',
+        slots: ['ent_1:home city'],
+        statuses: ['active'],
+      });
+
+      expect(found.success && found.data).toEqual([item]);
+      const [filter] = mockCollection.find.mock.calls.at(-1) ?? [];
+      expect(filter).toEqual({
+        $and: [
+          { agentId: { $eq: 'agent1' } },
+          { slot: { $in: ['ent_1:home city'] } },
+          { status: { $in: ['active'] } },
+          { $or: [{ expiredAt: { $exists: false } }, { expiredAt: { $gt: expect.any(Date) } }] },
+        ],
+      });
+      const cursor = mockCollection.find.mock.results.at(-1)?.value as ReturnType<
+        typeof cursorOver
+      >;
+      expect(cursor.sort).toHaveBeenCalledWith({ recordedAt: 1, _id: 1 });
+
+      await adapter.findItems({ agentId: 'agent1', includeExpired: true });
+      expect(mockCollection.find.mock.calls.at(-1)?.[0]).toEqual({
+        $and: [{ agentId: { $eq: 'agent1' } }],
+      });
+    });
+
+    it('deletes items and entities by id, and nothing for no ids', async () => {
+      await adapter.deleteItems(['mem_1', 'mem_2']);
+      await adapter.deleteEntities(['ent_1']);
+      await adapter.deleteItems([]);
+      await adapter.deleteEntities([]);
+
+      expect(mockCollection.deleteMany.mock.calls.map(([filter]) => filter)).toEqual([
+        { _id: { $in: ['mem_1', 'mem_2'] } },
+        { _id: { $in: ['ent_1'] } },
+      ]);
+    });
+
+    it('keeps the names of a replaced entity to the ones it still has', async () => {
+      const entity: MemoryEntity = {
+        id: 'ent_1',
+        scope: { agentId: 'agent1' },
+        name: 'The Eiffel Tower',
+        aliases: ['Tour  Eiffel'],
+        firstSeenAt: at,
+        lastSeenAt: at,
+      };
+      await adapter.putEntity(entity);
+      await adapter.putEntity({ ...entity, aliases: [] });
+
+      const [first, second] = replaced();
+      expect(first?.names).toEqual(['eiffel tower', 'tour eiffel']);
+      expect(second?.names).toEqual(['eiffel tower']);
+      expect(second?.entity).toEqual({ ...entity, aliases: [] });
+      expect(Object.keys(second?.entity ?? {})).not.toContain('type');
+    });
+
+    it('finds entities by a normalized name, first seen first', async () => {
+      const entity = (id: string, firstSeenAt: Date): MemoryEntity => ({
+        id,
+        scope: { agentId: 'agent1' },
+        name: 'Porto',
+        aliases: [],
+        firstSeenAt,
+        lastSeenAt: firstSeenAt,
+      });
+      const late = entity('ent_a', new Date(at.getTime() + 1000));
+      const early = entity('ent_b', at);
+      mockCollection.find.mockReturnValueOnce(
+        cursorOver([
+          { _id: late.id, entity: late },
+          { _id: early.id, entity: early },
+        ] as WithId<StoredDoc>[])
+      );
+
+      const found = await adapter.findEntities({ agentId: 'agent1', names: ['porto'] });
+
+      expect(found.success && found.data.map((e) => e.id)).toEqual(['ent_b', 'ent_a']);
+      expect(mockCollection.find.mock.calls.at(-1)?.[0]).toEqual({
+        $and: [{ agentId: { $eq: 'agent1' } }, { names: { $in: ['porto'] } }],
+      });
     });
   });
 

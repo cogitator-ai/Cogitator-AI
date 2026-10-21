@@ -1,11 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import pg from 'pg';
-import { PostgresAdapter } from '@cogitator-ai/memory';
+import { Redis } from 'ioredis';
+import { MongoClient } from 'mongodb';
+import { MongoDBAdapter, PostgresAdapter, RedisAdapter } from '@cogitator-ai/memory';
 import { memoryItemAdapterConformanceCases } from '@cogitator-ai/test-utils';
 import type { Evidence, MemoryAdapter, MemoryItemAdapter, MemoryResult } from '@cogitator-ai/types';
 
 const postgresUrl = process.env.TEST_POSTGRES_URL;
+const redisUrl =
+  process.env.TEST_REDIS === 'true'
+    ? (process.env.TEST_REDIS_URL ?? 'redis://localhost:6379')
+    : undefined;
+const mongoUrl = process.env.TEST_MONGODB_URL;
 
 const tag = randomUUID().replace(/-/g, '').slice(0, 8);
 
@@ -49,6 +56,38 @@ const targets: Target[] = [
         })
       ),
     cleanUp: () => dropSchemas(`items_conformance_${tag}`),
+  },
+  {
+    name: 'RedisAdapter',
+    url: redisUrl,
+    create: () =>
+      connected(
+        new RedisAdapter({ provider: 'redis', url: redisUrl!, keyPrefix: `items:${tag}:` })
+      ),
+    async cleanUp() {
+      const redis = new Redis(redisUrl!);
+      let cursor = '0';
+      do {
+        const [next, keys] = await redis.scan(cursor, 'MATCH', `items:${tag}:*`, 'COUNT', 500);
+        if (keys.length > 0) await redis.del(...keys);
+        cursor = next;
+      } while (cursor !== '0');
+      redis.disconnect();
+    },
+  },
+  {
+    name: 'MongoDBAdapter',
+    url: mongoUrl,
+    create: () =>
+      connected(
+        new MongoDBAdapter({ provider: 'mongodb', uri: mongoUrl!, database: `items_${tag}` })
+      ),
+    async cleanUp() {
+      const client = new MongoClient(mongoUrl!);
+      await client.connect();
+      await client.db(`items_${tag}`).dropDatabase();
+      await client.close();
+    },
   },
 ];
 

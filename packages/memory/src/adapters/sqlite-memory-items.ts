@@ -8,10 +8,15 @@ import type {
   MemoryItem,
   MemoryItemAdapter,
   MemoryItemFilter,
-  MemoryItemTime,
   MemoryResult,
 } from '@cogitator-ai/types';
 import { entityNames } from '../memory-items';
+import {
+  memoryEntityFromJson,
+  memoryItemFromJson,
+  type StoredMemoryEntity,
+  type StoredMemoryItem,
+} from './memory-item-json';
 
 /** The prepared statement methods the memory item tables need */
 export interface SqliteItemsStatement {
@@ -66,57 +71,16 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_memory_entity_names_name ON memory_entity_names(agent_id, name);
 `;
 
-type StoredTime = Omit<MemoryItemTime, 'start' | 'end'> & { start?: string; end?: string };
-
-/** A memory item as JSON gives it back: its dates as ISO strings */
-interface StoredItem extends Omit<
-  MemoryItem,
-  'saidAt' | 'sessionAt' | 'about' | 'validFrom' | 'validTo' | 'recordedAt' | 'expiredAt'
-> {
-  saidAt: string;
-  sessionAt: string;
-  about?: StoredTime;
-  validFrom?: string;
-  validTo?: string;
-  recordedAt: string;
-  expiredAt?: string;
-}
-
-interface StoredEntity extends Omit<MemoryEntity, 'firstSeenAt' | 'lastSeenAt'> {
-  firstSeenAt: string;
-  lastSeenAt: string;
-}
-
 interface DataRow {
   data: string;
 }
 
-function timeFrom({ start, end, ...time }: StoredTime): MemoryItemTime {
-  return {
-    ...time,
-    ...(start !== undefined && { start: new Date(start) }),
-    ...(end !== undefined && { end: new Date(end) }),
-  };
-}
-
 function itemFrom(data: string): MemoryItem {
-  const { saidAt, sessionAt, about, validFrom, validTo, recordedAt, expiredAt, ...item } =
-    JSON.parse(data) as StoredItem;
-  return {
-    ...item,
-    saidAt: new Date(saidAt),
-    sessionAt: new Date(sessionAt),
-    ...(about !== undefined && { about: timeFrom(about) }),
-    ...(validFrom !== undefined && { validFrom: new Date(validFrom) }),
-    ...(validTo !== undefined && { validTo: new Date(validTo) }),
-    recordedAt: new Date(recordedAt),
-    ...(expiredAt !== undefined && { expiredAt: new Date(expiredAt) }),
-  };
+  return memoryItemFromJson(JSON.parse(data) as StoredMemoryItem);
 }
 
 function entityFrom(data: string): MemoryEntity {
-  const { firstSeenAt, lastSeenAt, ...entity } = JSON.parse(data) as StoredEntity;
-  return { ...entity, firstSeenAt: new Date(firstSeenAt), lastSeenAt: new Date(lastSeenAt) };
+  return memoryEntityFromJson(JSON.parse(data) as StoredMemoryEntity);
 }
 
 const placeholders = (values: readonly unknown[]) => values.map(() => '?').join(', ');

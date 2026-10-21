@@ -35,11 +35,16 @@ import type {
   MemoryItem,
   MemoryItemAdapter,
   MemoryItemFilter,
-  MemoryItemTime,
   MemoryItemTrust,
 } from '@cogitator-ai/types';
 import { CONVERSATION_ENTRY_TYPES, MEMORY_ENTRY_FORMAT } from '@cogitator-ai/types';
 import { BranchingMemoryAdapter, MAX_PATH_DEPTH } from './base';
+import {
+  memoryEntityFromJson,
+  memoryItemFromJson,
+  type StoredMemoryEntity,
+  type StoredMemoryItem,
+} from './memory-item-json';
 import { entityNames, MemoryItems, normalizeName } from '../memory-items';
 import { attempt, ensureSchemaVersion, withSetupTransaction } from './schema-version';
 import { EMPTY_DELETE_FILTER_ERROR, filterSourceTypes, hasDeleteCondition } from '../search/filter';
@@ -100,60 +105,6 @@ const factSlot = (factId: string) => `${FACT_SLOT_PREFIX}${factId}`;
 /** An ISO 8601 text of a timestamp in UTC to the millisecond, as `JSON.stringify` writes a date */
 const isoText = (column: string) =>
   `to_char(${column} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
-
-/** A memory item time as the `item` column holds it, its dates as ISO text */
-type StoredTime = Omit<MemoryItemTime, 'start' | 'end'> & { start?: string; end?: string };
-
-/** A memory item as the `item` column holds it, its dates as ISO text */
-type StoredItem = Omit<
-  MemoryItem,
-  'saidAt' | 'sessionAt' | 'about' | 'validFrom' | 'validTo' | 'recordedAt' | 'expiredAt'
-> & {
-  saidAt: string;
-  sessionAt: string;
-  about?: StoredTime;
-  validFrom?: string;
-  validTo?: string;
-  recordedAt: string;
-  expiredAt?: string;
-};
-
-/** A memory entity as the `entity` column holds it, its dates as ISO text */
-type StoredEntity = Omit<MemoryEntity, 'firstSeenAt' | 'lastSeenAt'> & {
-  firstSeenAt: string;
-  lastSeenAt: string;
-};
-
-function storedToItem(stored: StoredItem): MemoryItem {
-  const { saidAt, sessionAt, about, validFrom, validTo, recordedAt, expiredAt, ...rest } = stored;
-  return {
-    ...rest,
-    saidAt: new Date(saidAt),
-    sessionAt: new Date(sessionAt),
-    ...(about !== undefined && { about: storedToTime(about) }),
-    ...(validFrom !== undefined && { validFrom: new Date(validFrom) }),
-    ...(validTo !== undefined && { validTo: new Date(validTo) }),
-    recordedAt: new Date(recordedAt),
-    ...(expiredAt !== undefined && { expiredAt: new Date(expiredAt) }),
-  };
-}
-
-function storedToTime(stored: StoredTime): MemoryItemTime {
-  const { start, end, ...rest } = stored;
-  return {
-    ...rest,
-    ...(start !== undefined && { start: new Date(start) }),
-    ...(end !== undefined && { end: new Date(end) }),
-  };
-}
-
-function storedToEntity(stored: StoredEntity): MemoryEntity {
-  return {
-    ...stored,
-    firstSeenAt: new Date(stored.firstSeenAt),
-    lastSeenAt: new Date(stored.lastSeenAt),
-  };
-}
 
 /** The trust of a memory item that holds a fact of `source` */
 function trustOfSource(source: Fact['source']): MemoryItemTrust {
@@ -1130,7 +1081,7 @@ export class PostgresAdapter
           json,
         ]
       );
-      return this.success(storedToItem(JSON.parse(json) as StoredItem));
+      return this.success(memoryItemFromJson(JSON.parse(json) as StoredMemoryItem));
     } catch (err) {
       return this.failure((err as Error).message);
     }
@@ -1144,7 +1095,7 @@ export class PostgresAdapter
         [itemId]
       );
       const row = result.rows[0];
-      return this.success(row ? storedToItem(row.item as StoredItem) : null);
+      return this.success(row ? memoryItemFromJson(row.item as StoredMemoryItem) : null);
     } catch (err) {
       return this.failure((err as Error).message);
     }
@@ -1173,7 +1124,9 @@ export class PostgresAdapter
          ORDER BY recorded_at, id COLLATE "C"`,
         params
       );
-      return this.success(result.rows.map((row) => storedToItem(row.item as StoredItem)));
+      return this.success(
+        result.rows.map((row) => memoryItemFromJson(row.item as StoredMemoryItem))
+      );
     } catch (err) {
       return this.failure((err as Error).message);
     }
@@ -1203,7 +1156,7 @@ export class PostgresAdapter
            agent_id = EXCLUDED.agent_id, names = EXCLUDED.names, entity = EXCLUDED.entity`,
         [entity.id, entity.scope.agentId, entityNames(entity), json]
       );
-      return this.success(storedToEntity(JSON.parse(json) as StoredEntity));
+      return this.success(memoryEntityFromJson(JSON.parse(json) as StoredMemoryEntity));
     } catch (err) {
       return this.failure((err as Error).message);
     }
@@ -1228,7 +1181,9 @@ export class PostgresAdapter
          ORDER BY id COLLATE "C"`,
         params
       );
-      return this.success(result.rows.map((row) => storedToEntity(row.entity as StoredEntity)));
+      return this.success(
+        result.rows.map((row) => memoryEntityFromJson(row.entity as StoredMemoryEntity))
+      );
     } catch (err) {
       return this.failure((err as Error).message);
     }
@@ -1438,7 +1393,7 @@ export class PostgresAdapter
 
     return this.success(
       result.rows.flatMap((row) => {
-        const item = storedToItem(row.item as StoredItem);
+        const item = memoryItemFromJson(row.item as StoredMemoryItem);
         if (!item.slot?.startsWith(FACT_SLOT_PREFIX)) return [];
         const factId = item.slot.slice(FACT_SLOT_PREFIX.length);
         return [itemToFact(factId, item, new Date(row.created_at as string))];
