@@ -243,15 +243,21 @@ export class PostgresTraceStore implements CombinedPersistentStore {
   }
 
   /**
-   * Stores a trace, replacing the one stored under its id: a paused run and the run that resumes
-   * it share their run id, and the trace of what the run did last wins.
+   * Stores a trace as the one trace of its run: it replaces the trace stored under its id, and any
+   * other trace of the same run, such as one an earlier version stored under the run's trace id.
+   * A paused run and the run that resumes it share their run id, and what the run did last wins.
    */
   private traceUpsert(): string {
     const placeholders = TRACE_COLUMNS.map((_, index) => `$${index + 1}`).join(', ');
+    const param = (column: (typeof TRACE_COLUMNS)[number]) =>
+      `$${TRACE_COLUMNS.indexOf(column) + 1}`;
     const updates = TRACE_COLUMNS.filter((column) => column !== 'id')
       .map((column) => `${column} = EXCLUDED.${column}`)
       .join(', ');
-    return `INSERT INTO ${this.schema}.traces (${TRACE_COLUMNS.join(', ')})
+    return `WITH superseded AS (
+         DELETE FROM ${this.schema}.traces WHERE run_id = ${param('run_id')} AND id <> ${param('id')}
+       )
+       INSERT INTO ${this.schema}.traces (${TRACE_COLUMNS.join(', ')})
        VALUES (${placeholders})
        ON CONFLICT (id) DO UPDATE SET ${updates}`;
   }
@@ -344,9 +350,10 @@ export class PostgresTraceStore implements CombinedPersistentStore {
   async getTraceByRunId(runId: string): Promise<ExecutionTrace | null> {
     if (!this.pool) throw new Error('Not connected');
 
-    const result = await this.pool.query(`SELECT * FROM ${this.schema}.traces WHERE run_id = $1`, [
-      runId,
-    ]);
+    const result = await this.pool.query(
+      `SELECT * FROM ${this.schema}.traces WHERE run_id = $1 ORDER BY created_at DESC LIMIT 1`,
+      [runId]
+    );
 
     if (result.rows.length === 0) return null;
 

@@ -337,10 +337,19 @@ describe('PostgresTraceStore', () => {
       expect(String(mockQuery.mock.calls[0][0])).toContain('trace_id');
       expect(String(mockQuery.mock.calls[0][0])).toContain('ON CONFLICT (id) DO UPDATE');
       expect(String(mockQuery.mock.calls[0][0])).toContain('output = EXCLUDED.output');
+      expect(String(mockQuery.mock.calls[0][0])).toContain(
+        'DELETE FROM cogitator.traces WHERE run_id = $2 AND id <> $1'
+      );
       expect(mockQuery.mock.calls[0][1]).toContain('a'.repeat(32));
       expect(String(mockQuery.mock.calls[1][0])).toContain('trace_id = $1');
       expect(mockQuery.mock.calls[1][1]).toEqual(['a'.repeat(32)]);
       expect(found[0].traceId).toBe('a'.repeat(32));
+    });
+
+    it('reads the latest trace of a run', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+      await store.traces().getByRunId('run_1');
+      expect(String(mockQuery.mock.calls[0][0])).toContain('ORDER BY created_at DESC LIMIT 1');
     });
 
     it('adds the trace id column to an existing traces table', async () => {

@@ -1256,7 +1256,7 @@ export class Cogitator implements ToolInvoker {
           startedAt: number,
           timing?: StreamTiming
         ): void => {
-          if (abortController.signal.aborted) return;
+          const cause = abortController.signal.aborted ? abortController.signal.reason : error;
           spans.push(
             createSpan(
               'llm.chat',
@@ -1267,13 +1267,13 @@ export class Cogitator implements ToolInvoker {
               {
                 'llm.model': sentRequest.model,
                 'llm.iteration': iterations,
-                'llm.failure': error instanceof Error ? failureReason(error) : '_OTHER',
+                'llm.failure': cause instanceof Error ? failureReason(cause) : '_OTHER',
                 [GEN_AI.operationName]: 'chat',
                 [GEN_AI.providerName]: genAiProviderName(candidate.backend.provider),
                 ...chatRequestAttributes(sentRequest),
                 ...(timing && { [GEN_AI.requestStream]: true }),
                 ...(conversationId && { [GEN_AI.conversationId]: conversationId }),
-                [GEN_AI.errorType]: errorType(error),
+                [GEN_AI.errorType]: errorType(cause),
               },
               'error',
               'client',

@@ -362,6 +362,39 @@ describe('telemetry edge cases', () => {
     }
   });
 
+  it('records a model call cut short by the run timeout', async () => {
+    const hanging: LLMBackend = {
+      provider: 'openai',
+      chat: vi.fn(
+        (request: ChatRequest) =>
+          new Promise<ChatResponse>((_resolve, reject) => {
+            request.signal?.addEventListener(
+              'abort',
+              () => {
+                const reason: unknown = request.signal?.reason;
+                reject(reason instanceof Error ? reason : new Error('aborted'));
+              },
+              { once: true }
+            );
+          })
+      ),
+      chatStream: vi.fn(async function* (): AsyncGenerator<ChatStreamChunk> {
+        yield* [];
+        throw new Error('unused');
+      }),
+    };
+    const spans: Span[] = [];
+    const cog = new Cogitator({
+      llm: { backends: { test: hanging }, retry: false },
+      observers: [{ onSpan: (span) => spans.push(span) }],
+    });
+    runtimes.push(cog);
+    await expect(cog.run(agent, { input: 'hello', timeout: 50 })).rejects.toThrow();
+    const [chat] = byName(spans, 'llm.chat');
+    expect(chat?.status).toBe('error');
+    expect(chat?.attributes[GEN_AI.errorType]).toBe('RUN_TIMEOUT');
+  });
+
   it('keeps the error text of a failed call out of the spans', async () => {
     const leaky: LLMBackend = {
       provider: 'openai',
