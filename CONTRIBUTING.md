@@ -94,6 +94,14 @@ The user-facing documentation lives on [cogitator.app/docs](https://cogitator.ap
 
 Start in [GitHub Discussions](https://github.com/cogitator-ai/Cogitator-AI/discussions) or use the feature request template. Describe the problem you are solving, your proposed solution and the alternatives you considered.
 
+### Picking Up an Issue
+
+Issues labeled [`good first issue`](https://github.com/cogitator-ai/Cogitator-AI/labels/good%20first%20issue) and [`help wanted`](https://github.com/cogitator-ai/Cogitator-AI/labels/help%20wanted) are open for anyone.
+
+1. **Ask first.** Comment on the issue that you would like to take it, and wait until it is assigned to you before opening a pull request. That way two people never work on the same thing.
+2. **One issue at a time.** Finish it, get it merged, then pick the next one. A focused pull request that goes through review is worth more than several half-done ones started to grow a contribution count, and it leaves the other issues open for newcomers.
+3. **Say when you stop.** If you can't continue, comment on the issue and it goes back to the pool. An assignment with no activity for about a week is released, so someone else can pick it up.
+
 ### Pull Requests
 
 1. **Branch** from `main`:
