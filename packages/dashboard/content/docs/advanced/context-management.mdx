@@ -86,6 +86,8 @@ With `memory.contextBuilder` and no `maxTokens` of its own, a run builds its con
 
 The context is ordered for the prompt cache: the system message and the history come first and stay the same from turn to turn, the history carries cache breakpoints at its end and at the end of the turn before, and what memory recalls for the turn, the run's `context` and the insights of reflection go with the input in the last user message (see [Memory Context and Prompt Caching](/docs/core/cogitator#memory-context-and-prompt-caching)). Clearing tool outputs and compression change the conversation inside a run, so each one costs the cache of what comes after the first message it changes, and `clearAtLeast` and `compressionThreshold` decide how often that happens.
 
+The builder's `hybrid` strategy (`memory.contextBuilder.strategy`, not the compression strategy of the same name below) keeps the newest turns as history and [recalls](/docs/memory#recall) older turns and memory items a search of memory finds for the turn into the `recall` partition, under `Earlier in this conversation:` and `From memory:`. So a turn long out of the window can still reach the model, while the history prefix keeps coming from the prompt cache. The search reads the turn at `RunOptions.asOf` (now by default) in the thread's time zone (its `metadata.timeZone`, else `memory.contextBuilder.timeZone`, else `memory.extraction.timeZone`, else UTC).
+
 The `agent.run` span reports the tokens each partition of the context took as `context.tokens.<partition>` (`context.tokens.system`, `context.tokens.recent`, `context.tokens.final` and so on).
 
 ## Clearing, Compression and Memory Compaction

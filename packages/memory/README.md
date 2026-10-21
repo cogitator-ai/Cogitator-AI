@@ -27,7 +27,7 @@ With `@cogitator-ai/core` you usually configure memory on the runtime (`new Cogi
 - **Threads as Trees** - Entries branch from any point, with typed session events, paged branch reads, rewind, checkout and thread forks
 - **Lineage** - Check that derived facts and summaries quote what the conversation actually said
 - **Token Counting** - Estimate token usage without tiktoken dependency
-- **Context Builder** - Token-aware context with `recent`, `relevant` (embedding-ranked) and `hybrid` strategies
+- **Context Builder** - Token-aware context with `recent`, `relevant` (embedding-ranked) and `hybrid` (recent history plus recall of older turns and memory items by a multi-channel search) strategies
 - **Scoped Semantic Memory** - Embeddings tagged with `metadata.agentId` / `metadata.threadId` never leak to other agents
 - **Sessions & Compaction** - `SessionManager` for channel sessions, `CompactionService` for summarizing long histories, hierarchically into grounded atoms that a compaction never loses while they are open
 - **Embedding Services** - OpenAI, Ollama and Google embedding integration
@@ -409,6 +409,7 @@ interface ContextBuilderConfig {
   includeGraphContext?: boolean;
   graphContextOptions?: GraphContextOptions;
   partitions?: Partial<Record<ContextPartition, ContextPartitionBudget>>; // merged over the defaults
+  timeZone?: string; // IANA zone of recalled dates and of the time a turn names, default UTC
 }
 ```
 
@@ -416,9 +417,11 @@ Strategies:
 
 - `recent` - the newest messages that fit into the token budget, as one unbroken run back from the newest: a tool result too large for the room left stays as a short note in its place and the run goes on past it, any other message that does not fit ends the run, so a reply never appears without the message it answers
 - `relevant` - messages ranked by embedding similarity to `currentInput` (requires `embeddingService`; falls back to `recent` without input), returned in chronological order
-- `hybrid` - always keeps the latest messages and fills the remaining budget with the most relevant older ones
+- `hybrid` - keeps the newest messages as history, like `recent`, and recalls older turns and memory items a search of memory finds into the turn's memory context (needs `currentInput`, searches without vectors when there is no `embeddingService`)
 
-The system prompt is always kept and counted: the rest of the context gets what it leaves of `maxTokens - reserveTokens`, and a prompt larger than that is still sent whole, with a note in `warnings`. Entries are counted by their text, tool call arguments and images rather than only by their saved `tokenCount`. `relevant` and `hybrid` score the newest 200 entries and embed each entry once per builder (vectors are cached by entry id). Give the builder a `messageIndex` to keep those vectors in an embedding store instead: each entry is embedded once, in the background, and older entries of the thread are found by a search of the store.
+The system prompt is always kept and counted: the rest of the context gets what it leaves of `maxTokens - reserveTokens`, and a prompt larger than that is still sent whole, with a note in `warnings`. Entries are counted by their text, tool call arguments and images rather than only by their saved `tokenCount`. Without a `messageIndex`, `relevant` scores the newest 200 entries (`hybrid` the newest 200 older than the history it keeps) and embeds each entry once per builder (vectors are cached by entry id). Give the builder a `messageIndex` to keep those vectors in an embedding store instead: each entry is embedded once, in the background, and older entries of the thread are found by a search of the store, so recall reaches the whole thread. That is one embedding per message, plus one of the input per turn. `threadsKept` bounds an index in process to the threads used lately, re-indexing a dropped thread when a build uses it.
+
+`build()` also takes `asOf`, the moment the turn is read at (now by default): the time a turn names ("yesterday") is resolved from it and memory items are read as of it, to replay a recorded conversation. Its `timeZone` is the thread's IANA zone in place of the builder's.
 
 ```typescript
 import { MessageIndex } from '@cogitator-ai/memory';
@@ -434,25 +437,57 @@ const builder = new ContextBuilder(
 
 Every built-in adapter reports its changes through `onChange(listener)` (`entry-added`, `entry-deleted`, `thread-cleared`, `thread-deleted`), which is what `attach` listens to, and every built-in embedding store reads vectors by source with `getBySources(ids)`. An adapter of your own reports its changes by extending `ChangeReportingMemoryAdapter` and passing each write's result through `reported()`. Vectors carry `metadata.index: 'messages'` and the thread's `agentId` and `userId`.
 
+### Recall
+
+With `hybrid` the turns older than the history the budget keeps and the memory items the run sees are searched for the turn, and what is found goes into the `recall` partition, best first, under `Earlier in this conversation:` (each turn dated, with the turn next to it that makes it readable) and `From memory:` (each item with the interval it held when it no longer holds). An item the `facts` partition kept is not repeated, and `BuiltContext.recalled` gives `{ entries, items }` as sent.
+
+The search reads the turn without a model: small talk is not searched, and the question is `temporal`, `aggregate`, `update`, `preference` or `general`, which sets the weights of its channels. Turns are found by their vectors (a cosine of 0.45 or more and 0.6 of the best), by BM25 over the thread, by the time the turn names and by the entities of memory it names. Items are found by BM25, by those entities, by the time they are about, by a personalized PageRank walk over the graph of items and entities, and turns through the evidence of the best items. The channels are fused by weighted reciprocal rank, then reranked by the share of the input's words a hit holds, biased a little toward recent turns and toward items sent to a model more often (`timesRetrieved`), and laid out for diversity (MMR). `ContextBuilderDeps.reranker` (any `Reranker`, such as `CohereReranker` from `@cogitator-ai/rag`) reorders the best 30 after that, and one that fails leaves the order as it was, with a `relevance` error.
+
+```typescript
+import { ContextBuilder, MemoryItems } from '@cogitator-ai/memory';
+import { CohereReranker } from '@cogitator-ai/rag';
+
+const reranker = new CohereReranker({ apiKey: process.env.COHERE_API_KEY! });
+const builder = new ContextBuilder(
+  { maxTokens: 16_000, strategy: 'hybrid', includeFacts: true, timeZone: 'Europe/Lisbon' },
+  {
+    memoryAdapter: memory,
+    memoryItems: new MemoryItems({ adapter: memory }),
+    embeddingService: embeddings,
+    messageIndex: index,
+    reranker,
+  }
+);
+
+const context = await builder.build({
+  threadId: 'ana-1',
+  agentId: 'concierge',
+  userId: 'ana',
+  currentInput: 'Where did we stay last April?',
+  asOf: new Date('2026-10-21T15:00:00Z'),
+});
+context.recalled; // { entries, items }
+```
+
 ### Partitions and Message Order
 
 A context is assembled by a `ContextAssembler` from partitions, each with a `share` of the budget it may take, and some `required`:
 
-| Partition   | Holds                                       | Default                  |
-| ----------- | ------------------------------------------- | ------------------------ |
-| `system`    | the system prompt                           | required, sent whole     |
-| `pinned`    | `pinned` texts of `build()`                 | required                 |
-| `index`     | the `index` text of `build()`               | required                 |
-| `summaries` | compaction summaries                        | required                 |
-| `brief`     | the `brief` text of `build()`               | required                 |
-| `facts`     | facts                                       | 15%                      |
-| `recall`    | semantic search results, then graph context | 35%                      |
-| `recent`    | history, selected by the strategy           | what the others leave    |
-| `final`     | `currentInput`, counted, not in `messages`  | required, always counted |
+| Partition   | Holds                                      | Default                  |
+| ----------- | ------------------------------------------ | ------------------------ |
+| `system`    | the system prompt                          | required, sent whole     |
+| `pinned`    | `pinned` texts of `build()`                | required                 |
+| `index`     | the `index` text of `build()`              | required                 |
+| `summaries` | compaction summaries                       | required                 |
+| `brief`     | the `brief` text of `build()`              | required                 |
+| `facts`     | facts                                      | 15%                      |
+| `recall`    | recall (`hybrid`), search results, graph   | 35%                      |
+| `recent`    | history, selected by the strategy          | what the others leave    |
+| `final`     | `currentInput`, counted, not in `messages` | required, always counted |
 
 Required partitions are fitted first. The others split what they leave by their shares, no more than each needs, and what the shares cannot place goes to those still short of room in fill order (`facts`, `recall`, `recent`). The shares of the partitions that are not required may add up to 1 at most, else the constructor throws. A text block that a kept block of a more lasting partition holds in full, word for word (a fact the system prompt states, a search result that repeats a fact), is left out as a `duplicate`.
 
-`messages` is ordered for the prompt cache: one system message (the system prompt, `pinned`, `index`), the compaction summary and the history, whose last message and the last message of the turn before it carry `cacheBreakpoint: true` (`markTurnEnds`), then a user message with what changes every turn (the brief, `Known facts:`, `Relevant context:` and graph context) in a `<memory_context>` block, which is also `memoryContext`. A caller that adds the input itself should send `memoryContext` in front of the input as one user message, as a Cogitator run does, which adds its `context` and the insights of reflection to the same block. `formatTurnContext(blocks)` builds that text from texts of your own, `extendTurnContext(text, block)` adds a block to it, and `withoutTurnContext(text)` gives the input back without it.
+`messages` is ordered for the prompt cache: one system message (the system prompt, `pinned`, `index`), the compaction summary and the history, whose last message and the last message of the turn before it carry `cacheBreakpoint: true` (`markTurnEnds`), then a user message with what changes every turn (the brief, `Known facts:`, `Relevant context:`, graph context, `Earlier in this conversation:` and `From memory:`) in a `<memory_context>` block, which is also `memoryContext`. A caller that adds the input itself should send `memoryContext` in front of the input as one user message, as a Cogitator run does, which adds its `context` and the insights of reflection to the same block. `formatTurnContext(blocks)` builds that text from texts of your own, `extendTurnContext(text, block)` adds a block to it, and `withoutTurnContext(text)` gives the input back without it.
 
 ```typescript
 const context = await builder.build({
@@ -555,6 +590,7 @@ interface BuiltContext {
   partitions: Partial<Record<ContextPartition, number>>; // tokens per partition, the input included
   facts: Fact[];
   semanticResults: (Embedding & { score: number })[];
+  recalled?: { entries: MemoryEntry[]; items: MemoryItem[] }; // what hybrid recalled for the turn
   graphContext?: GraphContext; // with includeGraphContext and a graph adapter
   tokenCount: number; // tokens of the context, without the input
   truncated: boolean; // history entries were left out
@@ -572,7 +608,7 @@ interface BuiltContext {
 }
 
 interface DroppedContext {
-  entries: MemoryEntry[]; // history left out, in conversation order (relevant/hybrid: also entries not selected)
+  entries: MemoryEntry[]; // history left out, in conversation order (relevant/hybrid: also entries not selected, hybrid: not those recalled)
   facts: Fact[]; // facts visible to the user that did not fit
   semanticResults: (Embedding & { score: number })[]; // search results that did not fit
   graphNodes: GraphNode[]; // graph nodes cut from the graph context
@@ -586,7 +622,7 @@ interface ContextBuildError {
 }
 ```
 
-`build()` does not throw when a part of the context fails to load (an unreachable store, an embedding API answering 429, a vector size mismatch): the part is left out and reported in `errors`. A failed relevance scoring falls back to the `recent` strategy.
+`build()` does not throw when a part of the context fails to load (an unreachable store, an embedding API answering 429, a vector size mismatch): the part is left out and reported in `errors`. A failed relevance scoring falls back to the `recent` strategy for `relevant`, and to a recall without vectors for `hybrid`.
 
 ---
 
@@ -695,7 +731,8 @@ await items.history(scope, slot); // every value of a slot, closed ones included
 - An item becomes `active` on its own only from `system`, or from `user` with quotes that hold at `activationConfidence` (default 0.7). Everything else stays `suggested` and out of every context, so text a model, a tool or a page wrote cannot plant itself. An opinion said again gains 0.1 when the new statement has quotes that hold, and one a less trusted source contradicts loses 0.2.
 - Times are bitemporal: `validFrom`/`validTo` in the world, `recordedAt`/`expiredAt` in memory, queried with `asOf` (default `knownAt`) and `knownAt` (default now), by default over `active` and `superseded` items with the state that holds read from the times. `resolveTime(expression, sessionAt, timeZone)` turns time words a model marked up (`date`, `relative`, `weekday`) into an interval, end exclusive, with its precision.
 - `MemoryExtractor` reads entries in windows of `windowTokens` (default 4000), one model call each (`EXTRACTION_PROMPT`, each message shown with its date), checks every quote against its entry (`parseExtraction`, which reads a `null` or blank field as absent and drops an item that does not fit) and writes the items through `MemoryItems`. An item's trust is that of the least trusted entry a holding quote is in (`trustOfEntry(entry, userId)`, where another user's message counts as `model`), so what a page, the assistant or another user said is never the user's, and its dates are resolved from the message that said them. A window the model cannot answer throws `ExtractionAnswerError` (`WindowError` from `extract`), and each call asks for up to 8000 tokens (`SummarizeOptions.maxTokens`).
-- With `contextBuilder.includeFacts`, the context builder reads the items the run sees that hold now as its facts (`ContextBuilderDeps.memoryItems`), one state per slot (the one that started last, the narrowest scope on a tie), instructions and preferences first, newest first, a replaced value shown as `(previously: X)` when the run still sees it and memory did not let it go.
+- With `contextBuilder.includeFacts`, the context builder reads the items the run sees that hold now (as of `asOf`) as its facts (`ContextBuilderDeps.memoryItems`), one state per slot (the one that started last, the narrowest scope on a tie), instructions and preferences first, newest first, a replaced value shown as `(previously: X)` when the run still sees it and memory did not let it go. With `hybrid` the items that match the turn are recalled under `From memory:` too.
+- `timesRetrieved` and `lastRetrievedAt` count how often and when an item went to a model. `noteRetrieved(itemIds, at?)` counts them, in one step of the store where the adapter has `countRetrieved` (every built-in one does), else read and written back under the agent's lock, and a Cogitator run counts the facts and recalled items it sent once it finishes or pauses, in the background.
 
 A Cogitator extracts items after each run with `memory.extraction`. See [Memory Items](https://cogitator.app/docs/memory#memory-items).
 

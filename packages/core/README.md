@@ -907,6 +907,7 @@ const result = await cog.run(agent, {
   saveHistory: true,
   branch: { fromEntryId: entryId, activate: false }, // run on a branch of the thread's memory
   brief: `Current date and time: ${new Date().toISOString()}`, // notes for this turn, sent with the input, not saved
+  asOf: new Date('2026-03-09T18:00:00Z'), // the moment memory reads the turn at, now by default
   parallelToolCalls: false, // default: tool calls of one turn run one after another
   toolChoice: 'required', // force a tool call until the model makes one, then 'auto'
 
@@ -1119,6 +1120,14 @@ const cog = new Cogitator({
 ```
 
 The entries of the active branch new since the last extraction (the thread keeps its cursor in `metadata.memoryExtraction`, `EXTRACTION_CURSOR`), or a first extraction's run entries (a first extraction that fails is taken up by the next one, and the thread keeps its place after every window), are read in windows by `extraction.model` (the model the run ended on by default), every item checked against its quotes: only what the user said with quotes that hold becomes `active`. Items are kept under the agent's configured `id`, else its `name` (`memoryAgentId(agent)`, also on the `afterRun` event), and belong to the run's own user, never the thread's owner. A window the model could not answer three extractions in a row is left out, never one a provider or storage failure stopped, and runs of one thread extract one after another. A run without a user keeps its items in the thread's scope, and a thread `metadata.timeZone` that is not an IANA zone falls back to `timeZone`. The calls are counted in the run's costs and `usage`, a failure is logged while the run keeps its result and the thread waits a minute (doubling up to an hour) before the next try. It is the built-in middleware `cogitator:memory-extraction` (`memoryExtractionMiddleware`), whose `afterRun` runs before the compaction's. With `includeFacts`, a store that keeps memory items (every built-in one) gives the context the items the run's agent, user and thread see that hold now, one state per slot, in place of `FactAdapter` facts. See [Extraction After a Run](https://cogitator.app/docs/memory#extraction-after-a-run).
+
+`contextBuilder.strategy: 'hybrid'` keeps the newest turns as history and recalls older turns and memory items a search of memory finds for the turn into the `<memory_context>` block (`Earlier in this conversation:` and `From memory:`). `memory.reranker`, any `Reranker` such as `CohereReranker` from `@cogitator-ai/rag`, reorders the best 30 hits. The search resolves the time a turn names ("yesterday") from the run's `asOf` (now by default, set it to replay or evaluate a recorded conversation) in the thread's `metadata.timeZone`, else `contextBuilder.timeZone`, else `extraction.timeZone`, else UTC, and reads memory items as of `asOf`. A run counts the facts and recalled items it sent to the model (`timesRetrieved`, `lastRetrievedAt`) once it finishes or pauses, in the background, and `close()` waits for those writes. See [Recall](https://cogitator.app/docs/memory#recall).
+
+With `relevant` or `hybrid` and `memory.embedding`, every memory gets a message index: in the embedding store when there is one, else in process (a lasting store without one keeps the vectors of the 64 threads used lately). Every entry of a thread is embedded once in the background, an embedding per message, plus one of the input per turn. After importing a conversation, `indexMemory(threadId)` embeds what the index has not reached yet, a page at a time, and returns once the vectors are stored:
+
+```typescript
+await cog.indexMemory('imported-thread'); // does nothing without an index
+```
 
 The adapter connects on the first run. To read threads before that (for example in an API route), use `getMemory()`, which connects it on first use; `cog.memory` stays `undefined` until something connected it:
 

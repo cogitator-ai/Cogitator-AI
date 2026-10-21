@@ -348,8 +348,9 @@ console.log(context.errors, context.warnings);
 | `includeGraphContext`    | `false`                      | Add knowledge graph context (needs `graphContextBuilder` and a `currentInput`, the `recall` partition), see [Knowledge Graphs](/docs/memory/knowledge-graphs#using-graph-context-in-the-context-builder) |
 | `graphContextOptions`    | `{}`                         | `maxNodes`, `maxEdges`, `maxDepth`, `includeInferred`, `entityTypes`                                                                                                                                     |
 | `partitions`             | see below                    | Budgets of the partitions, merged over the defaults                                                                                                                                                      |
+| `timeZone`               | `'UTC'`                      | IANA time zone the dates of recalled turns are shown in and the time a turn names is read on, when `build()` names none. The constructor throws on a name that is not an IANA zone                       |
 
-`build()` takes `threadId`, `agentId`, `userId`, `systemPrompt`, `currentInput`, `maxTokens`, `reserveTokens` and `leafId`, plus three texts of your own: `pinned` (a list of what is always in context, after the system prompt), `index` (what memory holds, so the model knows what to look up) and `brief` (notes for this turn only, such as the current time).
+`build()` takes `threadId`, `agentId`, `userId`, `systemPrompt`, `currentInput`, `maxTokens`, `reserveTokens` and `leafId`, plus three texts of your own: `pinned` (a list of what is always in context, after the system prompt), `index` (what memory holds, so the model knows what to look up) and `brief` (notes for this turn only, such as the current time). Two more set the moment and the calendar of the turn: `asOf`, the moment the turn is read at (now by default), from which the time a turn names ("yesterday", "last March") is resolved and as of which memory items are read, so a recorded conversation can be replayed as it was, and `timeZone`, the IANA zone of the thread in place of the builder's (a name that is not a valid zone is ignored).
 
 The history comes from the thread's active branch (`getPath`), not from every entry of the thread, so a branch a replay or a fork wrote never shows up in the conversation it split from. Pass `leafId` to `build()` to build from the branch ending at that entry, or `leafId: null` for no history. An adapter without `getPath` gives the whole thread.
 
@@ -357,17 +358,17 @@ The history comes from the thread's active branch (`getPath`), not from every en
 
 A context is assembled from partitions, by the `ContextAssembler`. Each has a budget, a `share` of the context budget it may take, and may be `required`:
 
-| Partition   | Holds                                                     | Default budget              |
-| ----------- | --------------------------------------------------------- | --------------------------- |
-| `system`    | the system prompt                                         | required, always sent whole |
-| `pinned`    | `pinned` texts                                            | required                    |
-| `index`     | the `index` text                                          | required                    |
-| `summaries` | compaction summaries of the branch                        | required                    |
-| `brief`     | the `brief` text                                          | required                    |
-| `facts`     | facts (`includeFacts`)                                    | 15%                         |
-| `recall`    | semantic search results, then the knowledge graph context | 35%                         |
-| `recent`    | history entries, selected by the strategy                 | what the others leave       |
-| `final`     | `currentInput`, counted but not part of `messages`        | required, always counted    |
+| Partition   | Holds                                                                                               | Default budget              |
+| ----------- | --------------------------------------------------------------------------------------------------- | --------------------------- |
+| `system`    | the system prompt                                                                                   | required, always sent whole |
+| `pinned`    | `pinned` texts                                                                                      | required                    |
+| `index`     | the `index` text                                                                                    | required                    |
+| `summaries` | compaction summaries of the branch                                                                  | required                    |
+| `brief`     | the `brief` text                                                                                    | required                    |
+| `facts`     | facts (`includeFacts`)                                                                              | 15%                         |
+| `recall`    | what a search of memory found (`hybrid`), semantic search results, then the knowledge graph context | 35%                         |
+| `recent`    | history entries, selected by the strategy                                                           | what the others leave       |
+| `final`     | `currentInput`, counted but not part of `messages`                                                  | required, always counted    |
 
 Required partitions are fitted first, in the order `system`, `final`, `pinned`, `summaries`, `index`, `brief`. `system` and `final` are always kept whole, the others take what is left of the budget and are cut down only when it cannot hold them. The partitions that are not required split what the required ones leave by their shares, each no more than it needs, and what one leaves unused is shared again among those that need more. What the shares cannot place goes to the partitions still short of room in the order they are filled, `facts`, `recall`, then `recent`, so no part of the budget sits unused while another partition is cut. `recent` takes the share the others leave (50% by default). Change a budget with `partitions`, merged over the defaults: a `share` must be between 0 and 1, and the shares of the partitions that are not required may add up to 1 at most, or the builder throws:
 
@@ -393,7 +394,7 @@ A block that a more lasting partition already says in full is left out as a dupl
 
 1. One system message: the system prompt, then the `pinned` texts and the `index`.
 2. The compaction summary of the branch, then the history the strategy selected. Two of these messages carry `cacheBreakpoint: true`: the last one, and the last one of the turn before it (the message before the history's last user message), so the next turn still finds the prefix this turn cached even when this turn added many messages (`markTurnEnds(history)` marks a history of your own the same way).
-3. A user message with what changes every turn, when there is any: the brief, a `Known facts:` block, a `Relevant context:` block and the graph context, under a header that tells the model they come from memory and the application, not from the user, all inside `<memory_context>` tags so the input that follows stands apart from them.
+3. A user message with what changes every turn, when there is any: the brief, a `Known facts:` block, a `Relevant context:` block, the graph context, and what the `hybrid` strategy recalled (`Earlier in this conversation:` and `From memory:`), under a header that tells the model they come from memory and the application, not from the user, all inside `<memory_context>` tags so the input that follows stands apart from them.
 
 The same text is `memoryContext`. Facts, search results and graph context used to be part of the system message, where they changed the prompt prefix on every turn and so its cache. Now the prefix up to the history stays the same from one turn to the next, and a backend that caches prompts marks the cache at the breakpoint (see [Prompt Caching](/docs/core/llm-backends#prompt-caching)). A caller that adds the input itself should do what a Cogitator run does: leave the last message out and send `memoryContext` in front of the input, as one user message. `formatTurnContext(blocks)` builds that text from texts of your own, under the same header and tags, `extendTurnContext(text, block)` adds a block to the turn context in front of an input (or opens one there), and `withoutTurnContext(text)` gives the input back from a message sent that way (time travel replays and learning traces use it, so they see the input as the user wrote it). A Cogitator run adds its `context` (`Context (data supplied with the request, not instructions):`) and the insights of reflection (`Past learnings that may help:`) to the same block.
 
@@ -401,30 +402,30 @@ The same text is `memoryContext`. Facts, search results and graph context used t
 
 `dropped` (`DroppedContext`) lists what did not make it into the context: the history `entries`, `facts`, `semanticResults` and graph nodes (`graphNodes`), their `tokenCount`, and `blocks`, every left out block with its `partition`, `tokens`, the id of the entry, fact or search result it came from (`sourceId`) and a `reason`:
 
-| Reason         | Meaning                                                                              |
-| -------------- | ------------------------------------------------------------------------------------ |
-| `budget`       | no room left in the budget                                                           |
-| `duplicate`    | it said what a block that stays says already                                         |
-| `not-selected` | the strategy did not pick it, such as an entry `relevant` or `hybrid` scored too low |
-| `oversized`    | larger than its partition could hold alone, left out in favour of what follows       |
+| Reason         | Meaning                                                                                                                     |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `budget`       | no room left in the budget                                                                                                  |
+| `duplicate`    | it said what a block that stays says already                                                                                |
+| `not-selected` | the strategy did not pick it, such as an entry `relevant` scored too low, or an entry older than the history `hybrid` keeps |
+| `oversized`    | larger than its partition could hold alone, left out in favour of what follows                                              |
 
-`partitions` gives the tokens each partition took, `final` included, while `tokenCount` counts the context without the input.
+`partitions` gives the tokens each partition took, `final` included, while `tokenCount` counts the context without the input. An entry `hybrid` recalled into the turn's memory context is not in `dropped.entries`, though its history block is in `dropped.blocks`.
 
 ### History Strategies
 
 The `recent` partition is filled with conversation entries by the strategy. Entries are counted by their text, tool call names and JSON arguments, and images (85 tokens for `detail: 'low'`, otherwise an upper estimate of 1600), not only by the `tokenCount` they were saved with:
 
-| Strategy   | Behavior                                                                                                                     |
-| ---------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `recent`   | Fills context with the newest entries that fit, as one unbroken run back from the newest one (see below)                     |
-| `relevant` | Selects entries by semantic similarity to the current input                                                                  |
-| `hybrid`   | Spends up to 30% of the room on older entries (outside the last 10) scoring above 0.6 similarity, the rest on recent entries |
+| Strategy   | Behavior                                                                                                                                                                    |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `recent`   | Fills context with the newest entries that fit, as one unbroken run back from the newest one (see below)                                                                    |
+| `relevant` | Selects entries by semantic similarity to the current input                                                                                                                 |
+| `hybrid`   | Keeps the newest entries as history, like `recent`, and recalls older turns and memory items a search of memory finds into the turn's memory context, see [Recall](#recall) |
 
-`relevant` and `hybrid` need an `embeddingService` and a `currentInput`, without them (or, for `hybrid`, with 10 entries or fewer) they fall back to `recent`. Selected messages are always returned in chronological order.
+`relevant` needs an `embeddingService` and a `currentInput`, without them it falls back to `recent`. `hybrid` needs a `currentInput`, and searches by words, time and entities without an `embeddingService`. Selected messages are always returned in chronological order.
 
 A tool result too large for the room left does not end the `recent` run: it stays in place as a short note (`[The output of this tool call, about N tokens, was left out of the context to make room]`) so its call keeps an answer, and the run goes on to older entries. The tokens the note saves are listed in `dropped.blocks` as `oversized`. Any other entry that does not fit ends the run, so the model never sees a reply without the message it answers. Compaction summaries are a required partition, so they get their room before the history and stay in the context.
 
-With a `messageIndex` each history entry is embedded once and its vector kept in an embedding store, `sourceType: 'message'`. The builder scores the newest 200 user and assistant entries against their kept vectors, embeds the few the index has not reached yet (and keeps them), and finds older entries of the thread close to the input with a search of the store, so recall is not limited to the newest 200. A turn embeds only its input. Without an index the builder keeps vectors in process, by entry id, for the newest 200 entries.
+With a `messageIndex` each history entry is embedded once and its vector kept in an embedding store, `sourceType: 'message'`. The builder scores the newest 200 user and assistant entries (for `hybrid`, of those older than the history it keeps) against their kept vectors, embeds the few the index has not reached yet (and keeps them), and finds older entries of the thread close to the input with a search of the store, so recall is not limited to the newest 200. A turn embeds only its input. Without an index the builder keeps vectors in process, by entry id, for the newest 200 entries.
 
 ```typescript
 import { MessageIndex } from '@cogitator-ai/memory';
@@ -438,15 +439,83 @@ const builder = new ContextBuilder(
 );
 ```
 
-`attach` listens to the adapter's changes (`onChange`, every built-in adapter has it): new user and assistant entries are embedded in batches in the background, and deleting an entry, clearing or deleting a thread deletes their vectors. Writes and deletes run in order, and an entry is checked to still exist right before its vector is written, so a vector never outlives its entry. Threads and entries Redis expires are reported as deleted once a later write or read finds them gone (the thread index outlives the threads by seven lifetimes for this, so threads expiring after a longer silence are not reported). When the store fails, the builder scores the newest entries with vectors kept in process and records a `relevance` error, so a build never falls back to `recent` for it. A build's input is not embedded again when it is saved. On Postgres, pgvector 0.8 or later is recommended: its iterative scans keep filtered searches complete in a store that also holds message vectors. History written before the index is indexed in the background the first time a thread is built. Vectors of another embedding model are embedded again. `flush()` waits for the background work, `close()` stops it. Background failures go to `onError`, and the entries are embedded when a build needs them.
+`attach` listens to the adapter's changes (`onChange`, every built-in adapter has it): new user and assistant entries are embedded in batches in the background, and deleting an entry, clearing or deleting a thread deletes their vectors. Writes and deletes run in order, and an entry is checked to still exist right before its vector is written, so a vector never outlives its entry. Threads and entries Redis expires are reported as deleted once a later write or read finds them gone (the thread index outlives the threads by seven lifetimes for this, so threads expiring after a longer silence are not reported). When the store fails, the builder scores the newest entries with vectors kept in process and records a `relevance` error, so a build never falls back to `recent` for it. A build's input is not embedded again when it is saved. On Postgres, pgvector 0.8 or later is recommended: its iterative scans keep filtered searches complete in a store that also holds message vectors. History written before the index is indexed in the background the first time a thread is built. Vectors of another embedding model are embedded again. `flush()` waits for the background work, `close()` stops it. Background failures go to `onError`, and the entries are embedded when a build needs them. `threadsKept` keeps the vectors of that many threads at most, dropping those used least lately, for a store in process that indexes a memory lasting longer than the process (every thread by default). A thread it dropped is indexed again when a build uses it.
 
 Each vector is marked `metadata.index: 'messages'` and carries the thread's `agentId` and `userId`, so a search of a shared store filtered by user leaves out other users' messages, and the index never touches `message` vectors of others. Semantic context searches only facts and documents, so message vectors never show up in another thread's context (embeddings you stored yourself as `sourceType: 'message'` no longer do either).
 
-A part that fails to load (the history, facts, the semantic search, the knowledge graph, or relevance scoring) is left out and listed in `errors` as `{ source, error }` instead of failing the build. When relevance scoring fails, the strategy falls back to `recent`.
+A part that fails to load (the history, facts, the semantic search, the knowledge graph, or relevance scoring and recall) is left out and listed in `errors` as `{ source, error }` instead of failing the build. When relevance scoring fails, `relevant` falls back to `recent`, and `hybrid` recalls without vectors.
 
 Semantic context is scoped per agent: embeddings whose `metadata.agentId` belongs to another agent are never injected, while embeddings without an `agentId` (shared documents) are visible to every agent.
 
 Pass `userId` to `build()` to scope it per user as well: facts, embeddings and knowledge graph nodes whose `metadata.userId` belongs to another user are left out, while those without one are shared. Agent runs do this with the run's `userId` — see [Multiple Users](/docs/advanced/multi-user).
+
+### Recall
+
+With `strategy: 'hybrid'` the newest turns stay as history, in the `recent` partition, where the prompt cache serves them, and the rest of the thread and the memory items the run sees are searched for the turn. The turns searched are the ones older than what the budget leaves for history after the required partitions, `facts` and `recall`, so a search never brings back what the history holds anyway. What it finds goes into the turn's memory context, in the `recall` partition (35% of the budget by default, and what it leaves unused goes to the history), best first:
+
+```text
+Earlier in this conversation:
+[2026-04-02] user: We booked the cabin in Gerês for the long weekend.
+[2026-04-02] assistant: Noted: Friday April 17 to Monday April 20.
+
+From memory:
+- Ana ran her first half marathon (in March)
+- Ana lives in Porto (2019-03-01 to 2026-09-14)
+```
+
+Each recalled turn comes with the turn next to it that makes it readable (the question an answer replies to, the answer to a question) unless the history holds it, and with the date it was said on, in the thread's time zone. An item that no longer holds shows the interval it held, and an item about a time shows that time, in the words it was said in when it has them, else as a date. An item the `facts` partition kept is not repeated under `From memory:`. `BuiltContext.recalled` gives what was sent, `{ entries, items }`.
+
+The search reads the turn without a model first. A greeting, a thanks or a reply such as `ok` or `sure` is not searched. Any other turn asks one of five kinds of question, and the time it names is resolved from `asOf` in the thread's time zone:
+
+| Kind         | When the turn                                          | What counts more                                                       |
+| ------------ | ------------------------------------------------------ | ---------------------------------------------------------------------- |
+| `temporal`   | asks when, how long, before or after, or names a time  | turns said and items about the time it names, past states of items too |
+| `aggregate`  | asks how many, how much, a total or a list             | words and entities, past states of items too                           |
+| `update`     | asks how things stand now (`now`, `still`, `latest`)   | memory items, and among them those that still hold                     |
+| `preference` | asks for a recommendation, a suggestion or a favourite | memory items, and among them preferences and instructions              |
+| `general`    | anything else                                          | turns close to the input by their vectors                              |
+
+Then it searches in channels, each giving its best 50:
+
+- turns close to the input by their vectors (with an `embeddingService`): a cosine of 0.45 or more, and at least 0.6 of the best one of the turn
+- turns that hold the input's words, by BM25 over the thread, its index kept between turns
+- turns said in the time the input names
+- turns that name an entity of memory the input names
+- memory items that hold the input's words, by BM25
+- items about an entity the input names
+- items about the time the input names, or that held or were said then
+- items a personalized PageRank walk reaches over the graph of items and the entities they name, started from the entities of the turn and the best items of the other channels
+- the turns the best items were extracted from (their evidence), so a turn is found by what it meant, not only by its words
+
+The items searched are those the run's agent (under its memory id), user and thread see that hold as of `asOf`, and for a `temporal` or `aggregate` question the states that held before too. They need a store that keeps memory items (`ContextBuilderDeps.memoryItems`). The channels are fused by weighted reciprocal rank, with the weights of the kind of question. A hit then gains by the share of the input's words it holds, rarer words counting more, an older turn counts a little less (never less than half), an item sent to a model more often counts slightly more (`timesRetrieved`), and the list is laid out for diversity (maximal marginal relevance over word overlap), so near copies of one fact do not crowd out the rest.
+
+`ContextBuilderDeps.reranker` takes any `Reranker`, such as `CohereReranker` or `LLMReranker` from `@cogitator-ai/rag`, and reorders the best 30 hits after the search ranked them, each given as the text the context would show. A reranker that fails leaves the order as it was and records a `relevance` error.
+
+```typescript
+import { ContextBuilder, MemoryItems } from '@cogitator-ai/memory';
+import { CohereReranker } from '@cogitator-ai/rag';
+
+const builder = new ContextBuilder(
+  { maxTokens: 16_000, strategy: 'hybrid', includeFacts: true, timeZone: 'Europe/Lisbon' },
+  {
+    memoryAdapter: memory,
+    memoryItems: new MemoryItems({ adapter: memory }),
+    embeddingService: embeddings,
+    messageIndex: index,
+    reranker: new CohereReranker({ apiKey: process.env.COHERE_API_KEY! }),
+  }
+);
+
+const context = await builder.build({
+  threadId: 'ana-1',
+  agentId: 'concierge',
+  userId: 'ana',
+  currentInput: 'Where did we stay last April?',
+  asOf: new Date('2026-10-21T15:00:00Z'),
+});
+
+context.recalled; // { entries, items }: the earlier turns and the memory items sent
+```
 
 ## Using Memory with Cogitator
 
@@ -480,7 +549,10 @@ await cog.run(agent, { input: 'What is my name?', threadId: 'thread-alice' });
 ```
 
 - `memory.adapter` names the thread store and takes its settings from the key of the same name: `'memory'` (`inMemory`), `'redis'` (`redis.url`, `redis.host` + `redis.port`, or `redis.cluster`), `'postgres'` (`postgres.connectionString`), `'sqlite'` (`sqlite.path`) or `'mongodb'` (`mongodb.uri`). When the required setting is missing or the connection fails, the run goes on without memory and logs a warning, and the failed adapter is disconnected so nothing keeps reconnecting in the background. An adapter you connect yourself can be assigned with `cog.memory = adapter`, such runs load the last 20 entries of the active branch, since the context builder is only created from the `memory` config.
-- With `contextBuilder` set, each run builds its context as described above. Without `maxTokens` the budget is the context window of the model the run starts on (from the model registry, else the model family, else 8192 tokens, and at most 4096 on Ollama, which serves no more by default, except Ollama Cloud), minus room for the answer (the agent's `maxTokens`, else 15% of the window, at most half of it) and the tool schemas, and below the point where `context` compression would start when it is on, and `strategy` defaults to `'recent'`. The runtime passes that budget once, with `reserveTokens: 0`, and the builder counts the input in it (the `final` partition), so nothing is reserved twice. With `maxTokens` set, the builder's `reserveTokens` applies as usual. Set `maxTokens` to cap the history, and the cost of every turn, on long threads, or to use a larger context your Ollama server runs with (`OLLAMA_CONTEXT_LENGTH`). The agent's instructions are always sent and counted in the budget (`includeSystemPrompt: false` is ignored with a warning), and a run with instructions larger than the budget logs a warning. What memory recalls for the turn (`memoryContext`, with the run's `brief`), the run's `context` and the insights of reflection go into the final user message in front of the input, inside one `<memory_context>` block, so the system prompt and the history stay the same from turn to turn and are read from the prompt cache, and only the input is saved to the thread. Parts that fail to load are passed to `onMemoryError` with the `'load'` operation, and the run goes on without them. Options the runtime cannot serve log a warning at connect: `includeFacts` needs a store that keeps memory items or facts (every built-in thread store keeps items), `includeSemanticContext` needs `memory.embedding` and an embedding store, and `includeGraphContext` has no effect, since the runtime builds no knowledge graph. A Postgres store is also the fact adapter, and the embedding adapter unless `memory.qdrant` is set. The runtime creates the Postgres `embeddings` table with the vector size of `memory.embedding` (768 without one, or the size of an existing table). A Postgres store without pgvector still keeps threads and facts, but is not used for semantic context, and a warning names the reason. With `relevant` or `hybrid` and `memory.embedding`, the runtime keeps a message index in the embedding store (the Postgres store or `memory.qdrant`), so every message is embedded once, in the background, and `close()` waits for that work. The in-process `memory` adapter, and a thread store without a vector store, keep vectors in process as before. An adapter that reports no changes logs a warning, since the vectors of its deleted entries would stay. Indexing failures are logged with the `index` operation. Without `contextBuilder`, a run loads the last 20 entries of the thread's active branch.
+- With `contextBuilder` set, each run builds its context as described above. Without `maxTokens` the budget is the context window of the model the run starts on (from the model registry, else the model family, else 8192 tokens, and at most 4096 on Ollama, which serves no more by default, except Ollama Cloud), minus room for the answer (the agent's `maxTokens`, else 15% of the window, at most half of it) and the tool schemas, and below the point where `context` compression would start when it is on, and `strategy` defaults to `'recent'`. The runtime passes that budget once, with `reserveTokens: 0`, and the builder counts the input in it (the `final` partition), so nothing is reserved twice. With `maxTokens` set, the builder's `reserveTokens` applies as usual. Set `maxTokens` to cap the history, and the cost of every turn, on long threads, or to use a larger context your Ollama server runs with (`OLLAMA_CONTEXT_LENGTH`). The agent's instructions are always sent and counted in the budget (`includeSystemPrompt: false` is ignored with a warning), and a run with instructions larger than the budget logs a warning. What memory recalls for the turn (`memoryContext`, with the run's `brief`), the run's `context` and the insights of reflection go into the final user message in front of the input, inside one `<memory_context>` block, so the system prompt and the history stay the same from turn to turn and are read from the prompt cache, and only the input is saved to the thread. Parts that fail to load are passed to `onMemoryError` with the `'load'` operation, and the run goes on without them. Options the runtime cannot serve log a warning at connect: `includeFacts` needs a store that keeps memory items or facts (every built-in thread store keeps items), `includeSemanticContext` needs `memory.embedding` and an embedding store, and `includeGraphContext` has no effect, since the runtime builds no knowledge graph. A Postgres store is also the fact adapter, and the embedding adapter unless `memory.qdrant` is set. The runtime creates the Postgres `embeddings` table with the vector size of `memory.embedding` (768 without one, or the size of an existing table). A Postgres store without pgvector still keeps threads and facts, but is not used for semantic context, and a warning names the reason. With `relevant` or `hybrid` and `memory.embedding`, the runtime keeps a message index on every memory, so every message is embedded once, in the background, and `close()` waits for that work: in the embedding store (the Postgres store or `memory.qdrant`), else in process. The in-process `memory` adapter is always indexed in process, and a lasting store without an embedding store keeps the vectors of the 64 threads used lately, indexing a thread again when a run uses it after it was dropped. An adapter that reports no changes logs a warning, since the vectors of its deleted entries would stay. Indexing failures are logged with the `index` operation. Without `contextBuilder`, a run loads the last 20 entries of the thread's active branch.
+- With `strategy: 'hybrid'` each run [recalls](#recall) older turns and memory items into the turn's memory context. `memory.reranker` (a `Reranker`, set in code) reorders the best hits. `contextBuilder.timeZone` (an IANA zone, `memory.extraction.timeZone` by default, else UTC) is the calendar of recalled dates and of the time a turn names, and a run on a thread whose `metadata.timeZone` is a valid zone uses that one. `RunOptions.asOf` sets the moment the turn is read at, now by default, to replay or evaluate a conversation recorded at another time: "yesterday" is resolved from it, and the facts and recalled items are those that held then.
+- Embedding cost: `relevant` and `hybrid` embed every entry of a thread once, in the background, which is one embedding per message, plus one embedding of the input per turn. After importing a conversation, `await cog.indexMemory(threadId)` embeds every entry of the thread the index has not reached yet, a page of 500 at a time, and returns once the vectors are stored, so the first search already sees the whole thread. It does nothing without an index (the `recent` strategy or no `memory.embedding`).
+- A run counts the memory items it sent to the model, the facts and the recalled items, once it finishes or pauses for approval: each item's `timesRetrieved` goes up and `lastRetrievedAt` is set. The counts are written in the background, one after another, so the run does not wait on them, a failure is logged, and `close()` waits for them.
 - `memory.embedding` takes a provider's config (`openai`, `ollama`, `google`) or an `EmbeddingService` of your own, which the runtime uses as it is: another provider, or a cache in front of one, as long as it has `embed`, `embedBatch`, `model` and `dimensions`. A service is code, so it goes to `new Cogitator({ memory })`, not into `cogitator.yml` or `defineConfig()`.
 - `'qdrant'` is not a thread store. For semantic context from Qdrant, keep a thread store as `adapter` and add `memory.qdrant` (`url`, `apiKey`, `collection`, `dimensions` matching the embedding model) together with `memory.embedding` and `contextBuilder: { includeSemanticContext: true }`. The runtime searches the collection for semantic context, and with the `relevant` or `hybrid` strategy also keeps the vectors of the thread's messages in it (`sourceType: 'message'`, so the key needs write access). Add facts and documents with your own `QdrantAdapter`. See [Configuration](/docs/getting-started/configuration#memory) for a YAML example.
 - Per run, `useMemory: false` disables memory, `loadHistory: false` / `saveHistory: false` skip loading or saving, and `onMemoryError` is called when a load or save fails. `branch: { fromEntryId, activate? }` runs on a branch of the thread, and `result.memory` says where the run wrote, see [Runs on Branches](/docs/core/cogitator#runs-on-branches).
@@ -740,7 +812,7 @@ const [porto] = await items.write([
 porto?.status; // 'active': the user said it, and the quote holds
 ```
 
-A `MemoryItem` has its `kind`, its `content` (one statement that reads on its own), and for a state that can change the `subject` it is about, the `attribute` it records and the `value` it gives it. It keeps its `status` (`suggested`, `active`, `stale` or `superseded`), its `trust`, its `confidence` (0 to 1), its `scope`, its `evidence` and whether every quote of it was found in its entry (`verified`), when it was said (`saidAt`) and the date of the session it was said in (`sessionAt`), and the time it is about (`about`: the words, an interval and its precision).
+A `MemoryItem` has its `kind`, its `content` (one statement that reads on its own), and for a state that can change the `subject` it is about, the `attribute` it records and the `value` it gives it. It keeps its `status` (`suggested`, `active`, `stale` or `superseded`), its `trust`, its `confidence` (0 to 1), its `scope`, its `evidence` and whether every quote of it was found in its entry (`verified`), when it was said (`saidAt`) and the date of the session it was said in (`sessionAt`), and the time it is about (`about`: the words, an interval and its precision). `timesRetrieved` and `lastRetrievedAt` count how often and when it last went to a model in a context, as a run counts it (`noteRetrieved`).
 
 ### Slots and Supersession
 
@@ -798,16 +870,17 @@ An opinion said again, when the new statement has quotes that hold, gains 0.1 co
 
 Item times are bitemporal: `validFrom` and `validTo` say when an item of a slot held in the world, `recordedAt` and `expiredAt` when memory took it in and let it go.
 
-| Method                              | What it does                                                                                                                                                                                                                              |
-| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `query(query)`                      | The items `query.scope` sees that hold now, by default, oldest recorded first                                                                                                                                                             |
-| `history(scope, slot)`              | Every item of a slot, current and closed, by when they started to hold                                                                                                                                                                    |
-| `activate(itemId)`                  | Makes a `suggested` item `active`, closing what it follows                                                                                                                                                                                |
-| `markStale(itemIds)`                | Marks items as no longer trusted to hold: kept, found with `statuses: ['stale']`                                                                                                                                                          |
-| `expire(itemIds, at?)`              | Lets items go at `at` (now by default): kept, but found only by a `knownAt` before then. A state let go keeps its place in the timeline, so the one before it stays closed. An item with an `expiredAt` still to come is found until then |
-| `purge(itemIds)`                    | Deletes items for good, such as everything a user asked to be forgotten                                                                                                                                                                   |
-| `get(itemId)`                       | One item, or `null`                                                                                                                                                                                                                       |
-| `link(scope, name, seenAt?, type?)` | The entity a name stands for, made when there is none yet                                                                                                                                                                                 |
+| Method                              | What it does                                                                                                                                                                                                                                                                                       |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `query(query)`                      | The items `query.scope` sees that hold now, by default, oldest recorded first                                                                                                                                                                                                                      |
+| `history(scope, slot)`              | Every item of a slot, current and closed, by when they started to hold                                                                                                                                                                                                                             |
+| `activate(itemId)`                  | Makes a `suggested` item `active`, closing what it follows                                                                                                                                                                                                                                         |
+| `markStale(itemIds)`                | Marks items as no longer trusted to hold: kept, found with `statuses: ['stale']`                                                                                                                                                                                                                   |
+| `expire(itemIds, at?)`              | Lets items go at `at` (now by default): kept, but found only by a `knownAt` before then. A state let go keeps its place in the timeline, so the one before it stays closed. An item with an `expiredAt` still to come is found until then                                                          |
+| `purge(itemIds)`                    | Deletes items for good, such as everything a user asked to be forgotten                                                                                                                                                                                                                            |
+| `noteRetrieved(itemIds, at?)`       | Counts items as sent to a model once more at `at` (now by default): `timesRetrieved` goes up by one and `lastRetrievedAt` is set, in one step of the store (`MemoryItemAdapter.countRetrieved`, which every built-in store has), else each item read again and written back under its agent's lock |
+| `get(itemId)`                       | One item, or `null`                                                                                                                                                                                                                                                                                |
+| `link(scope, name, seenAt?, type?)` | The entity a name stands for, made when there is none yet                                                                                                                                                                                                                                          |
 
 `MemoryItemQuery` takes the `scope` and narrows it with `kinds`, `statuses` (`active` and `superseded` by default), `slots` and `entityIds`. Which state of a slot holds is read from its times, not its status:
 
@@ -929,7 +1002,7 @@ Known facts:
 - Ana moved to Lisbon (previously: Porto)
 ```
 
-Suggested and stale items and closed states stay out. On Postgres the facts written through `FactAdapter` are memory items too, so they show up the same way.
+Suggested and stale items and closed states stay out. On Postgres the facts written through `FactAdapter` are memory items too, so they show up the same way. The items are read as of `BuildContextOptions.asOf` (now by default), so a replayed turn sees the facts that held when it was asked. With `strategy: 'hybrid'` the items that match the turn also come under `From memory:`, closed states included for a question about time or about many things, and an item `Known facts:` holds is not repeated there, see [Recall](#recall).
 
 The memory tools `remember`, `recall` and `forget` write, search and let go memory items when given them. Given the thread store, `remember` keeps a fact as the user's only when its quote is in one of the run user's own messages on the thread's active branch. `remember` writes to the user's memory, or the thread's for a run without a user, `recall` sees the user's items and the thread's, and `forget` lets go only the run's own items that hold the query as whole words, see [Memory Tools](/docs/channels/smart-memory#memory-tools).
 
