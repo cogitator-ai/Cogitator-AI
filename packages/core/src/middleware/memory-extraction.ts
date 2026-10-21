@@ -10,8 +10,10 @@ import type {
   MemoryEntry,
   MemoryExtractionConfig,
   MemoryItemScope,
+  MemoryResult,
   RunEndEvent,
   RunMiddleware,
+  RunMiddlewareContext,
 } from '@cogitator-ai/types';
 import { getLogger } from '../logger';
 import type { CompactionRun } from './memory-compaction';
@@ -29,6 +31,8 @@ export const EXTRACTION_CURSOR = 'memoryExtraction';
 /** Entries read from the path at once while looking for where the last extraction stopped */
 const PAGE = 200;
 const RETRY_AFTER_MS = 60_000;
+/** Extractions in a row a window may fail before the next one goes on without it */
+const WINDOW_ATTEMPTS = 3;
 const RETRY_AFTER_MAX_MS = 60 * 60_000;
 
 /**
@@ -70,14 +74,41 @@ async function newEntries(
 }
 
 /**
- * The last entry extracted from a thread, `null` when extraction is to start from the thread's
- * first entry, undefined when the thread was never extracted
+ * Whether `leafId` lies on the thread's active branch: it is the active leaf, or runs of the
+ * thread that ran at the same time appended after it. A run on another branch (a fork, a replay)
+ * does not.
  */
-function cursorOf(metadata: Record<string, unknown> | undefined): string | null | undefined {
+async function onActivePath(
+  memory: Required<Pick<MemoryAdapter, 'getPath'>>,
+  threadId: string,
+  activeLeafId: string | null | undefined,
+  leafId: string
+): Promise<boolean> {
+  if (activeLeafId === leafId) return true;
+  if (!activeLeafId) return false;
+  const path = await memory.getPath({ threadId, leafId: activeLeafId, limit: PAGE });
+  return path.success && path.data.some((entry) => entry.id === leafId);
+}
+
+/** Where extraction stands on a thread, as its metadata keeps it */
+interface ExtractionCursor {
+  /** The last entry extracted, `null` to start from the thread's first entry */
+  through: string | null;
+  /** Extractions in a row that failed at this place */
+  failures?: number;
+}
+
+/** Where extraction stands on a thread, undefined when the thread was never extracted */
+function cursorOf(metadata: Record<string, unknown> | undefined): ExtractionCursor | undefined {
   const cursor = metadata?.[EXTRACTION_CURSOR];
   if (typeof cursor !== 'object' || cursor === null) return undefined;
-  const through = (cursor as { through?: unknown }).through;
-  return typeof through === 'string' || through === null ? through : undefined;
+  const { through, failures } = cursor as { through?: unknown; failures?: unknown };
+  if (typeof through !== 'string' && through !== null) return undefined;
+  return { through, ...(typeof failures === 'number' && { failures }) };
+}
+
+function unwrapUpdate(result: MemoryResult<unknown>): void {
+  if (!result.success) throw new Error(result.error);
 }
 
 /**
@@ -85,8 +116,12 @@ function cursorOf(metadata: Record<string, unknown> | undefined): string | null 
  * the entries of the active branch written since the last extraction (whose last entry the
  * thread keeps in `metadata.memoryExtraction`), or for a first extraction the run's own, read in
  * windows by the extraction model and written through `MemoryItems`, so items are grounded,
- * trusted by who said them and only added. A first extraction that fails marks where it started,
- * so the next one takes those entries too. A run without a user keeps its items to its thread, so
+ * trusted by who said them and only added. The thread keeps its place after every window, so a
+ * failure later on does not read the earlier windows again, and a window that failed three
+ * extractions in a row is left out with a warning instead of holding the thread back. Runs of
+ * one thread extract one after another. A first extraction that fails marks where it started,
+ * so the next one takes those entries too. The items are kept under the agent's memory id (its
+ * configured id, else its name) and the run's user. A run without a user keeps its items to its thread, so
  * visitors never share them. A run aside of the active branch, an aborted run and a memory that
  * stores no items are left alone. An extraction that fails is logged, the run keeps
  * its result, and the thread is left alone for a minute, twice as long after each failure in a
@@ -109,94 +144,140 @@ export function memoryExtractionMiddleware(
     );
   }
   const failures = new Map<string, { until: number; wait: number }>();
+  const extracting = new Map<string, Promise<void>>();
   return {
     name: 'cogitator:memory-extraction',
-    async afterRun({ result, model }: RunEndEvent, context) {
-      const memory = deps.memory();
-      const place = result.memory;
-      if (!memory?.getPath || !isMemoryItemAdapter(memory) || !place?.leafId) return;
-      if (context.signal.aborted) return;
-      if ((failures.get(place.threadId)?.until ?? 0) > Date.now()) return;
-      const thread = await memory.getThread(place.threadId);
-      if (!thread.success || thread.data?.activeLeafId !== place.leafId) return;
-      const metadata = thread.data.metadata;
-      const userId =
-        context.userId ?? (typeof metadata.userId === 'string' ? metadata.userId : undefined);
-      const anonymous = config.scope !== 'agent' && userId === undefined;
-      const scope: MemoryItemScope = {
-        agentId: result.agentId,
-        ...(config.scope !== 'agent' && userId !== undefined && { userId }),
-        ...((config.scope === 'thread' || anonymous) && { threadId: place.threadId }),
-      };
-      const timeZone =
-        typeof metadata.timeZone === 'string' && isTimeZone(metadata.timeZone)
-          ? metadata.timeZone
-          : (config.timeZone ?? 'UTC');
-      const cursor = cursorOf(metadata);
-
+    async afterRun(event: RunEndEvent, context) {
+      const threadId = event.result.memory?.threadId;
+      if (threadId === undefined) return;
+      const before = extracting.get(threadId) ?? Promise.resolve();
+      const run = before.then(() => extract(event, context));
+      const settled = run.catch(() => undefined);
+      extracting.set(threadId, settled);
       try {
-        const entries = await newEntries(
-          { getPath: memory.getPath.bind(memory) },
-          place.threadId,
-          place.leafId,
-          cursor,
-          place.branchPoint
-        );
-        if (entries.length === 0) return;
-        const extractor = new MemoryExtractor({
-          items: new MemoryItems({
-            adapter: memory,
-            ...(activation !== undefined && { activationConfidence: activation }),
-          }),
-          summarize: deps.summarizer(config.model ?? model, {
-            runId: result.runId,
-            agentId: result.agentId,
-            threadId: place.threadId,
-            signal: context.signal,
-          }),
-          ...(config.prompt && { prompt: config.prompt }),
-          ...(windowTokens !== undefined && { windowTokens }),
-        });
-        const written = await extractor.extract(entries, { scope, timeZone });
-        const last = entries.at(-1);
-        if (last) {
-          await memory.updateThread(place.threadId, {
-            [EXTRACTION_CURSOR]: { through: last.id, at: new Date().toISOString() },
-          });
-        }
-        failures.delete(place.threadId);
-        try {
-          await config.afterExtract?.(written);
-        } catch (error) {
-          getLogger().warn('memory.extraction.afterExtract failed', {
-            threadId: place.threadId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      } catch (error) {
-        if (cursor === undefined) {
-          await memory
-            .updateThread(place.threadId, {
-              [EXTRACTION_CURSOR]: { through: place.branchPoint, at: new Date().toISOString() },
-            })
-            .catch(() => undefined);
-        }
-        if (context.signal.aborted) return;
-        const wait = Math.min(
-          (failures.get(place.threadId)?.wait ?? RETRY_AFTER_MS / 2) * 2,
-          RETRY_AFTER_MAX_MS
-        );
-        const now = Date.now();
-        for (const [threadId, failure] of failures) {
-          if (failure.until + RETRY_AFTER_MAX_MS < now) failures.delete(threadId);
-        }
-        failures.set(place.threadId, { until: now + wait, wait });
-        getLogger().warn('Could not extract memory items after a run', {
-          threadId: place.threadId,
-          retryInMs: wait,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        await run;
+      } finally {
+        if (extracting.get(threadId) === settled) extracting.delete(threadId);
       }
     },
   };
+
+  async function extract(
+    { result, model, memoryAgentId }: RunEndEvent,
+    context: RunMiddlewareContext
+  ): Promise<void> {
+    const memory = deps.memory();
+    const place = result.memory;
+    if (!memory?.getPath || !isMemoryItemAdapter(memory) || !place?.leafId) return;
+    if (context.signal.aborted) return;
+    if ((failures.get(place.threadId)?.until ?? 0) > Date.now()) return;
+    const thread = await memory.getThread(place.threadId);
+    if (!thread.success || !thread.data) return;
+    const onActive = await onActivePath(
+      { getPath: memory.getPath.bind(memory) },
+      place.threadId,
+      thread.data.activeLeafId,
+      place.leafId
+    );
+    if (!onActive) return;
+    const metadata = thread.data.metadata;
+    const userId = context.userId;
+    const anonymous = config.scope !== 'agent' && userId === undefined;
+    const scope: MemoryItemScope = {
+      agentId: memoryAgentId,
+      ...(config.scope !== 'agent' && userId !== undefined && { userId }),
+      ...((config.scope === 'thread' || anonymous) && { threadId: place.threadId }),
+    };
+    const timeZone =
+      typeof metadata.timeZone === 'string' && isTimeZone(metadata.timeZone)
+        ? metadata.timeZone
+        : (config.timeZone ?? 'UTC');
+    const stored = cursorOf(metadata);
+    let through = stored?.through;
+    const keep = (position: string | null, failed: number) =>
+      memory.updateThread(place.threadId, {
+        [EXTRACTION_CURSOR]: {
+          through: position,
+          at: new Date().toISOString(),
+          ...(failed > 0 && { failures: failed }),
+        },
+      });
+
+    try {
+      const entries = await newEntries(
+        { getPath: memory.getPath.bind(memory) },
+        place.threadId,
+        place.leafId,
+        through,
+        place.branchPoint
+      );
+      if (entries.length === 0) return;
+      const extractor = new MemoryExtractor({
+        items: new MemoryItems({
+          adapter: memory,
+          ...(activation !== undefined && { activationConfidence: activation }),
+        }),
+        summarize: deps.summarizer(config.model ?? model, {
+          runId: result.runId,
+          agentId: result.agentId,
+          threadId: place.threadId,
+          signal: context.signal,
+        }),
+        ...(config.prompt && { prompt: config.prompt }),
+        ...(windowTokens !== undefined && { windowTokens }),
+      });
+      if (through === undefined) through = place.branchPoint;
+      const written = await extractor.extract(
+        entries,
+        { scope, timeZone },
+        {
+          onWindow: async (own) => {
+            const last = own.at(-1);
+            if (!last) return;
+            through = last.id;
+            unwrapUpdate(await keep(last.id, 0));
+          },
+          skip: (error, own, index) => {
+            if (index > 0 || (stored?.failures ?? 0) < WINDOW_ATTEMPTS - 1) return false;
+            getLogger().warn('Skipped a window that failed memory extraction again and again', {
+              threadId: place.threadId,
+              from: own[0]?.id,
+              to: own.at(-1)?.id,
+              error: error.message,
+            });
+            return true;
+          },
+        }
+      );
+      const last = entries.at(-1);
+      if (last && through !== last.id) unwrapUpdate(await keep(last.id, 0));
+      failures.delete(place.threadId);
+      try {
+        await config.afterExtract?.(written);
+      } catch (error) {
+        getLogger().warn('memory.extraction.afterExtract failed', {
+          threadId: place.threadId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    } catch (error) {
+      if (context.signal.aborted) return;
+      const failed = through === stored?.through ? (stored?.failures ?? 0) + 1 : 1;
+      await keep(through ?? place.branchPoint, failed).catch(() => undefined);
+      const wait = Math.min(
+        (failures.get(place.threadId)?.wait ?? RETRY_AFTER_MS / 2) * 2,
+        RETRY_AFTER_MAX_MS
+      );
+      const now = Date.now();
+      for (const [threadId, failure] of failures) {
+        if (failure.until + RETRY_AFTER_MAX_MS < now) failures.delete(threadId);
+      }
+      failures.set(place.threadId, { until: now + wait, wait });
+      getLogger().warn('Could not extract memory items after a run', {
+        threadId: place.threadId,
+        retryInMs: wait,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
 }

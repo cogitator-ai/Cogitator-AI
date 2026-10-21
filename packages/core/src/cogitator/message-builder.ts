@@ -25,7 +25,7 @@ import {
 import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import { getLogger } from '../logger';
 import { ensureThreadAccess, threadMetadata } from './threads';
-import type { Agent } from '../agent';
+import { memoryAgentId, type Agent } from '../agent';
 import type { ReflectionEngine } from '../reflection/index';
 import type { AgentContext } from '@cogitator-ai/types';
 import { sanitizeToolHistory } from '../utils/tool-history';
@@ -182,6 +182,7 @@ export async function buildInitialMessages(
     const ctx = await contextBuilder.build({
       threadId,
       agentId: agent.id,
+      memoryAgentId: memoryAgentId(agent),
       ...(options.branch && { leafId: options.branch.fromEntryId }),
       userId: options.userId,
       systemPrompt: agent.instructions,
@@ -328,6 +329,7 @@ export async function saveEntry(
         toolCalls,
         toolResults,
         tokenCount: event ? 0 : countMessageTokens(message),
+        ...(userId !== undefined && message.role === 'user' && { metadata: { userId } }),
         ...(event && { type: event.type, event: event.event }),
         ...(placement?.parentId !== undefined && { parentId: placement.parentId }),
         ...(placement?.activate !== undefined && { activate: placement.activate }),

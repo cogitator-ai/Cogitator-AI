@@ -92,7 +92,7 @@ describe('memory.extraction', () => {
     await cog.run(agent, { input: 'I live in Lisbon now', threadId: 't', userId: 'u1' });
 
     const items = await itemsOf(cog);
-    const current = await items.query({ scope: { agentId: agent.id, userId: 'u1' } });
+    const current = await items.query({ scope: { agentId: agent.name, userId: 'u1' } });
     expect(current.map((item) => [item.value, item.trust, item.status])).toEqual([
       ['Lisbon', 'user', 'active'],
     ]);
@@ -174,7 +174,7 @@ describe('memory.extraction', () => {
     const items = await itemsOf(cog);
     const later = new Date(Date.now() + 3 * 3600_000);
     expect(
-      (await items.query({ scope: { agentId: agent.id, userId: 'u1' }, knownAt: later })).map(
+      (await items.query({ scope: { agentId: agent.name, userId: 'u1' }, knownAt: later })).map(
         (i) => i.value
       )
     ).toEqual(['Porto']);
@@ -186,9 +186,107 @@ describe('memory.extraction', () => {
     await cog.run(agent, { input: 'I live in Porto', threadId: 'visitor-1' });
 
     const items = await itemsOf(cog);
-    expect(await items.query({ scope: { agentId: agent.id } })).toEqual([]);
-    const [kept] = await items.query({ scope: { agentId: agent.id, threadId: 'visitor-1' } });
-    expect(kept?.scope).toEqual({ agentId: agent.id, threadId: 'visitor-1' });
+    expect(await items.query({ scope: { agentId: agent.name } })).toEqual([]);
+    const [kept] = await items.query({ scope: { agentId: agent.name, threadId: 'visitor-1' } });
+    expect(kept?.scope).toEqual({ agentId: agent.name, threadId: 'visitor-1' });
+  });
+
+  it('keeps memory under the agent name, so a new instance of the agent finds it', async () => {
+    const llm = backend();
+    const cog = new Cogitator({
+      llm: { backends: { mock: llm } },
+      memory: { adapter: 'memory', extraction: {}, contextBuilder: { includeFacts: true } },
+    });
+    cogs.push(cog);
+
+    await cog.run(new Agent({ name: 'concierge', model: 'mock/m', instructions: 'x' }), {
+      input: 'I live in Porto',
+      threadId: 't1',
+      userId: 'u1',
+    });
+    await cog.run(new Agent({ name: 'concierge', model: 'mock/m', instructions: 'x' }), {
+      input: 'Where do I live?',
+      threadId: 't2',
+      userId: 'u1',
+    });
+
+    const answer = llm.requests.filter((request) => !isExtraction(request)).at(-1);
+    expect(JSON.stringify(answer?.messages)).toContain('The user lives in Porto');
+  });
+
+  it('extracts the runs of one thread one after another, each entry once', async () => {
+    const llm = backend();
+    const cog = runtime(llm);
+
+    await Promise.all(
+      ['I live in Porto', 'I live in Lisbon', 'I live in Braga'].map((input) =>
+        cog.run(agent, { input, threadId: 't', userId: 'u1' })
+      )
+    );
+
+    const transcripts = llm.requests
+      .filter(isExtraction)
+      .map((r) => String(r.messages[1]?.content));
+    for (const city of ['Porto', 'Lisbon', 'Braga']) {
+      expect(transcripts.filter((text) => text.includes(`I live in ${city}`))).toHaveLength(1);
+    }
+  });
+
+  it('keeps its place window by window and leaves out a window that keeps failing', async () => {
+    vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const llm = backend();
+    const answer = vi.mocked(llm.chat).getMockImplementation()!;
+    vi.mocked(llm.chat).mockImplementation(async (request) =>
+      isExtraction(request) && String(request.messages[1]?.content).includes('poison')
+        ? { id: 'r', content: 'no', finishReason: 'stop', usage }
+        : answer(request)
+    );
+    const cog = runtime(llm, { windowTokens: 40 });
+
+    try {
+      await cog.run(agent, {
+        input: `poison ${'word '.repeat(60)}`,
+        threadId: 't',
+        userId: 'u1',
+      });
+      for (let attempt = 0; attempt < 3; attempt++) {
+        vi.setSystemTime(Date.now() + 2 * 3600_000);
+        await cog.run(agent, { input: 'I live in Porto', threadId: 't', userId: 'u1' });
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const items = await itemsOf(cog);
+    const later = new Date(Date.now() + 10 * 3600_000);
+    expect(
+      (await items.query({ scope: { agentId: agent.name, userId: 'u1' }, knownAt: later })).map(
+        (item) => item.value
+      )
+    ).toContain('Porto');
+    const thread = await (await cog.getMemory())!.getThread('t');
+    expect(thread.success && thread.data?.metadata[EXTRACTION_CURSOR]).not.toHaveProperty(
+      'failures'
+    );
+  });
+
+  it('leaves alone a run on another branch', async () => {
+    const llm = backend();
+    const cog = runtime(llm);
+    const root = await cog.run(agent, { input: 'I live in Porto', threadId: 't', userId: 'u1' });
+
+    await cog.run(agent, {
+      input: 'I live in Faro',
+      threadId: 't',
+      userId: 'u1',
+      branch: { fromEntryId: root.memory!.branchPoint!, activate: false },
+    });
+
+    const transcripts = llm.requests
+      .filter(isExtraction)
+      .map((r) => String(r.messages[1]?.content));
+    expect(transcripts.some((text) => text.includes('Faro'))).toBe(false);
   });
 
   it('refuses settings it cannot work with', async () => {

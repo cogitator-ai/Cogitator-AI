@@ -38,6 +38,8 @@ export interface SummarizeOptions {
   model?: string;
   /** `CompactionConfig.summaryPrompt`: instructions for writing the summary. */
   prompt?: string;
+  /** Tokens the answer may take, the backend's default when absent */
+  maxTokens?: number;
 }
 
 /**

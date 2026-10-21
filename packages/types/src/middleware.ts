@@ -191,4 +191,9 @@ export interface RunEndEvent {
   readonly result: RunResult;
   /** The model the run ended on, as `provider/model` with its provider resolved */
   readonly model: string;
+  /**
+   * The id the agent's long-term memory (memory items) is kept under: its configured `id`, else
+   * its `name`, so the memory of an agent created again with the same name is found again
+   */
+  readonly memoryAgentId: string;
 }

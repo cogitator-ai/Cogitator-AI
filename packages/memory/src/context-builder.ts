@@ -163,13 +163,13 @@ function onePerSlot(items: readonly MemoryItem[]): MemoryItem[] {
 async function loadItemFacts(items: MemoryItems, options: BuildContextOptions): Promise<Fact[]> {
   const current = await items.query({
     scope: {
-      agentId: options.agentId,
+      agentId: options.memoryAgentId ?? options.agentId,
       ...(options.userId !== undefined && { userId: options.userId }),
       threadId: options.threadId,
     },
   });
   const scope = {
-    agentId: options.agentId,
+    agentId: options.memoryAgentId ?? options.agentId,
     ...(options.userId !== undefined && { userId: options.userId }),
     threadId: options.threadId,
   };
@@ -311,6 +311,11 @@ export interface ContextBuilderDeps {
 export interface BuildContextOptions {
   threadId: string;
   agentId: string;
+  /**
+   * The id the agent's memory items are kept under, `agentId` by default: a runtime passes the
+   * agent's configured id, else its name, which stays the same across instances
+   */
+  memoryAgentId?: string;
   /** The user the context is built for: facts and embeddings of other users are left out */
   userId?: string;
   systemPrompt?: string;

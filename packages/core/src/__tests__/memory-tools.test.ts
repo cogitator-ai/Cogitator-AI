@@ -433,4 +433,43 @@ describe('createMemoryTools', () => {
       );
     });
   });
+
+  describe('forget', () => {
+    it("lets go only the run's own items that hold the words", async () => {
+      const adapter = new InMemoryAdapter({ provider: 'memory' });
+      const items = new MemoryItems({ adapter });
+      const fact = (content: string, scope: Record<string, string>) => ({
+        kind: 'fact' as const,
+        content,
+        trust: 'system' as const,
+        confidence: 1,
+        evidence: [],
+        saidAt: new Date(),
+        sessionAt: new Date(),
+        scope: { agentId: 'a1', ...scope },
+      });
+      await items.write([
+        fact('Pricing is per seat', {}),
+        fact('My pricing tier is pro', { userId: 'u1' }),
+        fact('Bo likes apricots', { userId: 'u1' }),
+        fact('Bo pays for pricing', { userId: 'u2' }),
+      ]);
+      const { forget } = byName(createMemoryTools(createConfig(mocks, { items })));
+
+      const result = await forget.execute(
+        { query: 'pricing' },
+        createToolContext({ userId: 'u1', threadId: 't1' })
+      );
+
+      expect(result).toMatchObject({ forgotten: ['My pricing tier is pro'] });
+      const left = await items.query({ scope: { agentId: 'a1', userId: 'u1' } });
+      expect(left.map((item) => item.content).sort()).toEqual([
+        'Bo likes apricots',
+        'Pricing is per seat',
+      ]);
+      expect(
+        (await forget.execute({ query: 'a' }, createToolContext({ userId: 'u1' }))).forgotten
+      ).toBeUndefined();
+    });
+  });
 });

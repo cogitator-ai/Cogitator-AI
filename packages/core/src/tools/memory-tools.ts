@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { verifyEvidence, type MemoryItems } from '@cogitator-ai/memory';
+import { normalizeName, verifyEvidence, type MemoryItems } from '@cogitator-ai/memory';
 import { tool, toolset } from '../tool';
 import type {
   BaseToolContext,
@@ -9,6 +9,7 @@ import type {
   GraphSemanticSearchOptions,
   MemoryAdapter,
   MemoryEntry,
+  MemoryItem,
   MemoryItemScope,
   NodeQuery,
 } from '@cogitator-ai/types';
@@ -35,11 +36,21 @@ export interface MemoryToolsConfig {
    * found word for word in a user message of the run's thread, so a model cannot plant what the
    * user never said. Without it nothing can be checked and every fact is kept as before.
    */
-  memory?: Pick<MemoryAdapter, 'getEntries'>;
+  memory?: Pick<MemoryAdapter, 'getEntries' | 'getPath'>;
 }
 
-/** User messages of a thread `remember` looks for its quote in, the newest */
-const QUOTE_LOOKBACK = 50;
+/** Entries of a thread, the newest, among which `remember` looks for its quote */
+const QUOTE_LOOKBACK = 200;
+
+/** Whether `text` holds `query` as whole words, without case */
+function holdsWords(text: string, query: string): boolean {
+  const words = normalizeName(query).split(' ').filter(Boolean);
+  if (words.length === 0) return false;
+  const phrase = words.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+');
+  return new RegExp(`(^|[^\\p{L}\\p{N}])${phrase}($|[^\\p{L}\\p{N}])`, 'u').test(
+    normalizeName(text)
+  );
+}
 
 const rememberParams = z.object({
   fact: z.string().describe('The fact or piece of information to remember'),
@@ -80,22 +91,36 @@ export function createMemoryTools(config: MemoryToolsConfig) {
     ...(context.threadId !== undefined && { threadId: context.threadId }),
   });
 
-  /** The user message of the run's thread `quote` is found in, word for word */
+  /**
+   * The message of the run's user on the thread's active branch `quote` is found in, word for
+   * word: one another participant wrote does not count
+   */
   const quotedIn = async (
     quote: string | undefined,
     context: BaseToolContext
   ): Promise<MemoryEntry | undefined> => {
     if (!memory || !quote?.trim() || !context.threadId) return undefined;
-    const entries = await memory.getEntries({ threadId: context.threadId, limit: QUOTE_LOOKBACK });
+    const entries = memory.getPath
+      ? await memory.getPath({ threadId: context.threadId, limit: QUOTE_LOOKBACK })
+      : await memory.getEntries({ threadId: context.threadId, limit: QUOTE_LOOKBACK });
     if (!entries.success) return undefined;
     return [...entries.data]
       .reverse()
       .find(
         (entry) =>
           entry.message.role === 'user' &&
+          (context.userId === undefined ||
+            entry.metadata?.userId === undefined ||
+            entry.metadata.userId === context.userId) &&
           verifyEvidence({ entryId: entry.id, quote }, entry) === 'verified'
       );
   };
+
+  /** Whether `item` is the run's own memory: its user's, or its thread's for a run without one */
+  const ownedBy = (item: MemoryItem, context: BaseToolContext): boolean =>
+    context.userId !== undefined
+      ? item.scope.userId === context.userId
+      : item.scope.threadId !== undefined && item.scope.threadId === context.threadId;
 
   const remember = tool({
     name: 'remember',
@@ -232,7 +257,12 @@ export function createMemoryTools(config: MemoryToolsConfig) {
       'Forget facts in long-term memory that match the given pattern: they are no longer recalled or used. Use with care.',
     parameters: forgetParams,
     execute: async ({ query }, context) => {
-      const expired = items ? await items.query({ scope: seenFrom(context), text: query }) : [];
+      const expired = items
+        ? (await items.query({ scope: seenFrom(context), text: query })).filter(
+            (item) =>
+              ownedBy(item, context) && holdsWords(`${item.content} ${item.value ?? ''}`, query)
+          )
+        : [];
       if (items && expired.length > 0) await items.expire(expired.map((item) => item.id));
       const nodeQuery: NodeQuery = {
         agentId,

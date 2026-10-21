@@ -137,6 +137,14 @@ describe('parseExtraction', () => {
 });
 
 describe('trustOfEntry and sessionLine', () => {
+  it("does not take another user's words as the user's own", () => {
+    const said = (userId: string) =>
+      ({ ...entry('x', { role: 'user', content: 'hi' }), metadata: { userId } }) as MemoryEntry;
+    expect(trustOfEntry(said('u2'), 'u1')).toBe('model');
+    expect(trustOfEntry(said('u1'), 'u1')).toBe('user');
+    expect(trustOfEntry(said('u2'))).toBe('user');
+  });
+
   it('trusts by who wrote the entry', () => {
     expect(window.map(trustOfEntry)).toEqual(['user', 'model', 'web']);
     expect(trustOfEntry(entry('x', { role: 'tool', name: 'calculator', content: '4' }))).toBe(

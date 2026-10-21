@@ -85,11 +85,19 @@ const itemSchema = z.object({
 /** A tool whose results come from the web, which is trusted less than other tools */
 const WEB_TOOL = /web|fetch|browse|search|scrape|crawl|http|url|page/i;
 
-/** How far memory trusts what `entry` says: by who wrote it */
-export function trustOfEntry(entry: MemoryEntry): MemoryItemTrust {
+/**
+ * How far memory trusts what `entry` says: by who wrote it. A user message another user wrote
+ * (`metadata.userId`, kept on the entries of a run with a user) is not the word of `userId`, the
+ * user whose memory it goes to, so it counts as a claim, not as theirs.
+ */
+export function trustOfEntry(entry: MemoryEntry, userId?: string): MemoryItemTrust {
   switch (entry.message.role) {
-    case 'user':
-      return 'user';
+    case 'user': {
+      const author = entry.metadata?.userId;
+      return userId !== undefined && typeof author === 'string' && author !== userId
+        ? 'model'
+        : 'user';
+    }
     case 'system':
       return 'system';
     case 'tool':
@@ -189,7 +197,7 @@ export function parseExtraction(
         verified = false;
         continue;
       }
-      const entryTrust = trustOfEntry(entry);
+      const entryTrust = trustOfEntry(entry, context.scope.userId);
       if (trust === undefined || TRUST_RANK[entryTrust] < TRUST_RANK[trust]) trust = entryTrust;
     }
     const said = saidAt ?? sessionAt;
@@ -226,6 +234,8 @@ export interface MemoryExtractorConfig {
 
 /** Tokens of conversation one extraction call reads */
 const DEFAULT_WINDOW_TOKENS = 4000;
+/** Tokens an extraction answer may take: a dense window's items with their quotes */
+const EXTRACTION_MAX_TOKENS = 8000;
 
 /**
  * Extracts memory items from entries and writes them. Each window of about `windowTokens` is one
@@ -236,19 +246,36 @@ const DEFAULT_WINDOW_TOKENS = 4000;
 export class MemoryExtractor {
   constructor(private readonly config: MemoryExtractorConfig) {}
 
-  /** The items of `entries` as written, oldest first */
+  /**
+   * The items of `entries` as written, oldest first. `progress.onWindow` hears of each window
+   * once its items are written, with the entries it was the first to read, so a caller can keep
+   * its place. A window whose model call fails throws, unless `progress.skip` takes the error
+   * and the window's entries and says to go on without it.
+   */
   async extract(
     entries: readonly MemoryEntry[],
-    context: MemoryExtractionContext
+    context: MemoryExtractionContext,
+    progress: {
+      onWindow?: (own: MemoryEntry[], items: MemoryItem[]) => Promise<void>;
+      skip?: (error: Error, own: MemoryEntry[], index: number) => boolean;
+    } = {}
   ): Promise<MemoryItem[]> {
     const written: MemoryItem[] = [];
     const conversation = entries.filter(
       (entry) => entry.message.role !== 'system' && (entry.type ?? 'message') !== 'compaction'
     );
     const windowTokens = this.config.windowTokens ?? DEFAULT_WINDOW_TOKENS;
-    for (const { window } of chapterWindows(conversation, windowTokens)) {
-      const items = await this.read(window, context, windowTokens);
-      written.push(...(await this.config.items.write(items)));
+    for (const [index, { window, own }] of chapterWindows(conversation, windowTokens).entries()) {
+      let items: MemoryItem[];
+      try {
+        items = await this.config.items.write(await this.read(window, context, windowTokens));
+      } catch (error) {
+        const failure = error instanceof Error ? error : new Error(String(error));
+        if (!progress.skip?.(failure, own, index)) throw failure;
+        items = [];
+      }
+      written.push(...items);
+      await progress.onWindow?.(own, items);
     }
     return written;
   }
@@ -270,6 +297,7 @@ export class MemoryExtractor {
       const answer = await this.config.summarize([{ role: 'user', content: transcript }], {
         model: this.config.model,
         prompt,
+        maxTokens: EXTRACTION_MAX_TOKENS,
       });
       const items = parseExtraction(answer, window, { ...context, sessionAt });
       if (items) return items;

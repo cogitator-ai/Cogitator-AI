@@ -313,3 +313,15 @@ function deserializeResponseFormat(
       'Pass the Zod schema back as overrides.responseFormat to deserialize it.'
   );
 }
+
+/**
+ * The id `agent`'s long-term memory (memory items) is kept under: its configured `id`, else its
+ * `name`. A generated id changes with every instance, a name does not, so the memory of an agent
+ * created again, in another process or for another request, is found again.
+ */
+export function memoryAgentId(agent: {
+  readonly config: { id?: string };
+  readonly name: string;
+}): string {
+  return agent.config.id ?? agent.name;
+}

@@ -6,7 +6,7 @@
 
 export { Cogitator } from './runtime';
 export { CallPricer } from './cogitator/run-cost';
-export { Agent, AgentDeserializationError } from './agent';
+export { Agent, AgentDeserializationError, memoryAgentId } from './agent';
 export {
   toAgentWire,
   fromAgentWire,

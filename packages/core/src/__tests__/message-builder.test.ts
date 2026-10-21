@@ -217,7 +217,7 @@ describe('buildInitialMessages with a context builder', () => {
     }));
 
     const messages = await buildInitialMessages(
-      { id: 'a1', name: 'a', instructions: 'sys' } as never,
+      { id: 'a1', name: 'a', instructions: 'sys', config: { id: 'a1' } } as never,
       { input: 'what to drink?' },
       'thread_1',
       memory,

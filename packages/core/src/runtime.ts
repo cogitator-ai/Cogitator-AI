@@ -40,7 +40,7 @@ import type {
   ModelCallRequest,
   RunMiddleware,
 } from '@cogitator-ai/types';
-import { type Agent } from './agent';
+import { memoryAgentId, type Agent } from './agent';
 import { ToolRegistry } from './registry';
 import { createLLMBackend } from './llm/index';
 import { memoryCompactionMiddleware, type CompactionRun } from './middleware/memory-compaction';
@@ -572,6 +572,7 @@ export class Cogitator implements ToolInvoker {
           { role: 'system', content: options?.prompt ?? 'Summarize the conversation.' },
           ...messages,
         ],
+        ...(options?.maxTokens !== undefined && { maxTokens: options.maxTokens }),
         ...(signal && { signal }),
       });
       const priced = this.pricedModel(model);
@@ -1852,7 +1853,11 @@ export class Cogitator implements ToolInvoker {
 
       await runMemory.settled();
       await pipeline.afterRun(
-        { result, model: fellBackTo ?? this.pricedModel(effectiveModel, routeProvider) },
+        {
+          result,
+          model: fellBackTo ?? this.pricedModel(effectiveModel, routeProvider),
+          memoryAgentId: memoryAgentId(agent),
+        },
         middlewareContext()
       );
       const afterRun = this.afterRunSpend.get(runId);
