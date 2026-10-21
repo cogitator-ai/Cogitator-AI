@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll } from 'vitest';
-import { Agent, Cogitator } from '@cogitator-ai/core';
+import { Agent, Cogitator, memoryAgentId } from '@cogitator-ai/core';
 import { MemoryItems, isMemoryItemAdapter } from '@cogitator-ai/memory';
 
 const describeGoogle = process.env.GOOGLE_API_KEY ? describe : describe.skip;
@@ -36,7 +36,9 @@ describeGoogle('Memory: memory items extracted after each run', () => {
       userId: 'ana',
     });
 
-    const kept = await (await items()).query({ scope: { agentId: agent.id, userId: 'ana' } });
+    const kept = await (
+      await items()
+    ).query({ scope: { agentId: memoryAgentId(agent), userId: 'ana' } });
     const text = kept.map((item) => item.content.toLowerCase()).join('\n');
     expect(text).toContain('lisbon');
     expect(text).toContain('vegetarian');
