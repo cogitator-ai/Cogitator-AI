@@ -1,10 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { MemoryEntry, Message, NewMemoryItem } from '@cogitator-ai/types';
 import { InMemoryAdapter } from '../adapters/memory';
 import { MemoryItems } from '../memory-items';
 import { analyzeQuery, timeExpressionOf } from '../retrieval/query';
 import { diversify, fuse, lexicalScore, recencyBias, wordsOf } from '../retrieval/rank';
 import { MemoryRetriever } from '../retrieval/retriever';
+import { BM25Index } from '../search/bm25';
 
 const anchor = new Date('2026-03-15T12:00:00Z');
 
@@ -242,6 +243,27 @@ describe('MemoryRetriever', () => {
 
     const turn = retrieval.hits.find((hit) => hit.kind === 'entry' && hit.hit.entry.id === 'e0');
     expect(turn?.kind === 'entry' && turn.hit.channels).toContain('evidence');
+  });
+
+  it('keeps a thread keyword index across branches and finds only turns of the branch', async () => {
+    const retriever = new MemoryRetriever();
+    const added = vi.spyOn(BM25Index.prototype, 'addDocument');
+    const branchA = [...history, entry('a1', 'user', 'The parcel went to Porto', 14)];
+    const branchB = [...history, entry('b1', 'user', 'The parcel went to Faro', 14)];
+
+    await retriever.retrieve({ input: 'Where did the parcel go?', anchor, history: branchA });
+    const first = added.mock.calls.length;
+    const onB = await retriever.retrieve({
+      input: 'Where did the parcel go?',
+      anchor,
+      history: branchB,
+    });
+
+    expect(added.mock.calls.length - first).toBe(1);
+    const ids = onB.hits.flatMap((hit) => (hit.kind === 'entry' ? [hit.hit.entry.id] : []));
+    expect(ids).toContain('b1');
+    expect(ids).not.toContain('a1');
+    added.mockRestore();
   });
 
   it('skips small talk', async () => {

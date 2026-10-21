@@ -27,6 +27,9 @@ const CHANNEL_HITS = 50;
 const RANKED = 100;
 /** Threads whose keyword index a retriever keeps */
 const THREADS_KEPT = 32;
+
+/** Turns off the history a thread's keyword index may hold beyond its history before it is built again */
+const STALE_TURNS = 200;
 /** Entities a graph walk reads at most, the newest */
 const GRAPH_ENTITIES = 500;
 /** Damping of the personalized PageRank walk, as HippoRAG 2 uses it */
@@ -346,19 +349,23 @@ export class MemoryRetriever {
   ): string[] {
     const threadId = history[0]?.threadId;
     if (threadId === undefined || turns.length === 0) return [];
-    const index = this.threadIndex(threadId, history);
+    const { index, ids } = this.threadIndex(threadId, history);
     const allowed = new Set(turns.map((entry) => entry.id));
     return index
-      .search(input, CHANNEL_HITS * 2)
+      .search(input, CHANNEL_HITS + Math.max(0, ids.size - allowed.size))
       .filter((hit) => allowed.has(hit.id))
       .slice(0, CHANNEL_HITS)
       .map((hit) => `e:${hit.id}`);
   }
 
-  private threadIndex(threadId: string, history: readonly MemoryEntry[]): BM25Index {
-    const ids = new Set(history.map((entry) => entry.id));
+  /**
+   * The BM25 index of a thread's turns, kept across builds and grown by the turns new to it. It
+   * may hold turns of other branches or turns deleted since, which a search leaves out by the
+   * history it is given, and it is built again once those outnumber the history.
+   */
+  private threadIndex(threadId: string, history: readonly MemoryEntry[]): ThreadIndex {
     let kept = this.threads.get(threadId);
-    if (kept && [...kept.ids].some((id) => !ids.has(id))) kept = undefined;
+    if (kept && kept.ids.size > 2 * history.length + STALE_TURNS) kept = undefined;
     if (!kept) kept = { index: new BM25Index(), ids: new Set() };
     for (const entry of history) {
       if (kept.ids.has(entry.id)) continue;
@@ -372,7 +379,7 @@ export class MemoryRetriever {
       const oldest = this.threads.keys().next().value;
       if (oldest !== undefined) this.threads.delete(oldest);
     }
-    return kept.index;
+    return kept;
   }
 
   /**
