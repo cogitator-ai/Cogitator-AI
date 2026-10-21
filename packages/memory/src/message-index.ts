@@ -44,6 +44,12 @@ export interface MessageIndexOptions {
    * again when a context needs them.
    */
   onError?: (error: Error) => void;
+  /**
+   * Threads whose vectors are kept, those used least lately dropped beyond it: for a store in
+   * process indexing a memory that lasts longer than the process holds. Every thread by default.
+   * A dropped thread is indexed again when a build uses it.
+   */
+  threadsKept?: number;
 }
 
 /** An entry as the index sees it: the text its vector is made of */
@@ -105,12 +111,14 @@ export class MessageIndex {
   private readonly batchSize: number;
   private readonly onError: (error: Error) => void;
   private readonly waiting = new Map<string, Pending>();
-  private readonly vectors = new Map<string, Float32Array>();
+  private readonly vectors = new Map<string, { vector: Float32Array; threadId: string }>();
   private readonly deletedEntries = new Map<string, true>();
   private readonly droppedThreads = new Map<string, number>();
   private readonly owners = new Map<string, Owner>();
   private readonly backfilled = new Map<string, true>();
   private readonly texts = new Map<string, Float32Array>();
+  private readonly used = new Map<string, true>();
+  private readonly threadsKept: number;
   private readonly detachers: (() => void)[] = [];
   private memory?: MemoryAdapter;
   private queue: Promise<void> = Promise.resolve();
@@ -125,7 +133,11 @@ export class MessageIndex {
     this.store = options.store;
     this.embedding = options.embedding;
     this.batchSize = Math.floor(options.batchSize ?? DEFAULT_BATCH_SIZE);
+    if (options.threadsKept !== undefined && !(options.threadsKept >= 1)) {
+      throw new Error(`MessageIndex threadsKept must be 1 or more, got ${options.threadsKept}`);
+    }
     this.onError = options.onError ?? (() => undefined);
+    this.threadsKept = Math.floor(options.threadsKept ?? Infinity);
   }
 
   /** The embedding model the vectors are made with */
@@ -158,6 +170,7 @@ export class MessageIndex {
       case 'entry-added': {
         const text = indexedText(change.entry);
         if (!text) return;
+        this.use(text.threadId);
         this.waiting.set(text.entryId, { ...text, seenAt: this.clock });
         this.schedule();
         return;
@@ -170,6 +183,7 @@ export class MessageIndex {
         return;
       case 'thread-cleared':
       case 'thread-deleted':
+        this.used.delete(change.threadId);
         this.dropThread(change.threadId);
         return;
     }
@@ -186,11 +200,12 @@ export class MessageIndex {
   ): Promise<Map<string, Float32Array>> {
     const found = new Map<string, Float32Array>();
     const unseen: IndexedText[] = [];
+    for (const threadId of new Set(entries.map((entry) => entry.threadId))) this.use(threadId);
     for (const entry of entries) {
       const cached = this.vectors.get(entry.entryId);
       if (cached) {
         remember(this.vectors, entry.entryId, cached, VECTOR_CACHE_SIZE);
-        found.set(entry.entryId, cached);
+        found.set(entry.entryId, cached.vector);
       } else {
         unseen.push(entry);
       }
@@ -202,7 +217,7 @@ export class MessageIndex {
     for (const entry of unseen) {
       const vector = stored.get(entry.entryId);
       if (vector) {
-        this.keep(entry.entryId, vector);
+        this.keep(entry, vector);
         found.set(entry.entryId, vector);
       } else {
         this.waiting.delete(entry.entryId);
@@ -229,6 +244,7 @@ export class MessageIndex {
     limit: number,
     minScore: number
   ): Promise<Map<string, number>> {
+    this.use(threadId);
     const found = await this.unwrap(
       this.store.search({
         vector,
@@ -250,7 +266,9 @@ export class MessageIndex {
    * thread: history written before the index, or entries a failed batch left out
    */
   backfill(threadId: string, entries: readonly IndexedText[], seenAt = this.clock): void {
-    if (this.closed || entries.length === 0 || this.backfilled.has(threadId)) return;
+    if (this.closed || entries.length === 0) return;
+    this.use(threadId);
+    if (this.backfilled.has(threadId)) return;
     remember(this.backfilled, threadId, true, THREADS_REMEMBERED);
     this.run(async () => {
       try {
@@ -296,11 +314,25 @@ export class MessageIndex {
     await this.flush();
   }
 
+  /** Marks `threadId` used now, dropping the vectors of the thread used least lately past the limit */
+  private use(threadId: string): void {
+    if (!Number.isFinite(this.threadsKept)) return;
+    remember(this.used, threadId, true, Infinity);
+    if (this.used.size <= this.threadsKept) return;
+    const oldest = this.used.keys().next().value;
+    if (oldest === undefined) return;
+    this.used.delete(oldest);
+    this.dropThread(oldest);
+  }
+
   private dropThread(threadId: string): void {
     for (const [entryId, pending] of this.waiting) {
       if (pending.threadId === threadId) this.waiting.delete(entryId);
     }
     remember(this.droppedThreads, threadId, ++this.clock, TOMBSTONES);
+    for (const [entryId, cached] of this.vectors) {
+      if (cached.threadId === threadId) this.vectors.delete(entryId);
+    }
     this.owners.delete(threadId);
     this.backfilled.delete(threadId);
     this.run(async () => {
@@ -418,7 +450,7 @@ export class MessageIndex {
       await this.unwrap(this.store.deleteBySource(entry.entryId), 'deleteBySource');
       await this.unwrap(this.store.addEmbedding(embedding), 'addEmbedding');
     }
-    this.keep(entry.entryId, vector);
+    this.keep(entry, vector);
   }
 
   /** Whether the entry or its thread was deleted since the index saw it */
@@ -452,8 +484,8 @@ export class MessageIndex {
     return owner;
   }
 
-  private keep(entryId: string, vector: Float32Array): void {
-    remember(this.vectors, entryId, vector, VECTOR_CACHE_SIZE);
+  private keep(entry: IndexedText, vector: Float32Array): void {
+    remember(this.vectors, entry.entryId, { vector, threadId: entry.threadId }, VECTOR_CACHE_SIZE);
   }
 
   /** Vectors the store keeps for these entries, made by the index's model */

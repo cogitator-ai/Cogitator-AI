@@ -207,6 +207,35 @@ describe('MessageIndex', () => {
     expect(embedding.embedBatch).not.toHaveBeenCalled();
   });
 
+  it('keeps the vectors of the threads used lately and indexes a dropped one again', async () => {
+    index = new MessageIndex({ store, embedding, threadsKept: 2 });
+    index.attach(memory);
+    await memory.createThread('agent', {}, 'thread-2');
+    await memory.createThread('agent', {}, 'thread-3');
+    const first = await say('cat in the first thread');
+    const second = await say('tax in the second', 'user', 'thread-2');
+    await index.flush();
+    await index.search('thread-2', topicVector('tax'), 5, 0);
+    const third = await say('car in the third', 'user', 'thread-3');
+    await index.flush();
+
+    expect(await storedSources()).toEqual([second.id, third.id].sort());
+
+    const text = {
+      entryId: first.id,
+      threadId,
+      role: 'user' as const,
+      text: first.message.content as string,
+    };
+    await index.vectorsOf([text]);
+    await index.flush();
+    expect(await storedSources()).toEqual([first.id, third.id].sort());
+  });
+
+  it('is refused fewer than one thread kept', () => {
+    expect(() => new MessageIndex({ store, embedding, threadsKept: 0 })).toThrow(/threadsKept/);
+  });
+
   it('is refused a batch size below one', () => {
     expect(() => new MessageIndex({ store, embedding, batchSize: 0 })).toThrow(/batchSize/);
   });

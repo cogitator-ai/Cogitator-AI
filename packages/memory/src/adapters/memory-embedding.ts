@@ -33,21 +33,37 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return magnitude === 0 ? 0 : dotProduct / magnitude;
 }
 
+function threadOf(embedding: Embedding): string | undefined {
+  const threadId = embedding.metadata?.threadId;
+  return typeof threadId === 'string' ? threadId : undefined;
+}
+
+function link(index: Map<string, Set<string>>, key: string, id: string): void {
+  const ids = index.get(key);
+  if (ids) ids.add(id);
+  else index.set(key, new Set([id]));
+}
+
+function unlink(index: Map<string, Set<string>>, key: string, id: string): void {
+  const ids = index.get(key);
+  ids?.delete(id);
+  if (ids?.size === 0) index.delete(key);
+}
+
+/**
+ * Embeddings kept in process. Each is indexed by its source and by the thread in its metadata, so
+ * replacing the vector of a source and searching one thread do not scan the whole store.
+ */
 export class InMemoryEmbeddingAdapter implements EmbeddingAdapter, KeywordSearchAdapter {
   private embeddings = new Map<string, Embedding>();
+  private bySource = new Map<string, Set<string>>();
+  private byThread = new Map<string, Set<string>>();
   private bm25Index = new BM25Index();
 
   async addEmbedding(
     embedding: Omit<Embedding, 'id' | 'createdAt'>
   ): Promise<MemoryResult<Embedding>> {
-    const id = `emb_${nanoid(12)}`;
-    const now = new Date();
-    const full: Embedding = { ...embedding, id, createdAt: now };
-
-    this.embeddings.set(id, full);
-    this.bm25Index.addDocument({ id, content: embedding.content });
-
-    return { success: true, data: full };
+    return { success: true, data: this.put(embedding) };
   }
 
   async search(
@@ -61,7 +77,7 @@ export class InMemoryEmbeddingAdapter implements EmbeddingAdapter, KeywordSearch
     const limit = options.limit ?? 10;
     const results: (Embedding & { score: number })[] = [];
 
-    for (const emb of this.embeddings.values()) {
+    for (const emb of this.candidates(options.filter?.threadId)) {
       if (!matchesSearchFilter(emb, options.filter)) {
         continue;
       }
@@ -106,18 +122,12 @@ export class InMemoryEmbeddingAdapter implements EmbeddingAdapter, KeywordSearch
   }
 
   async deleteEmbedding(embeddingId: string): Promise<MemoryResult<void>> {
-    this.embeddings.delete(embeddingId);
-    this.bm25Index.removeDocument(embeddingId);
+    this.remove(embeddingId);
     return { success: true, data: undefined };
   }
 
   async deleteBySource(sourceId: string): Promise<MemoryResult<void>> {
-    for (const [id, emb] of this.embeddings) {
-      if (emb.sourceId === sourceId) {
-        this.embeddings.delete(id);
-        this.bm25Index.removeDocument(id);
-      }
-    }
+    for (const id of [...(this.bySource.get(sourceId) ?? [])]) this.remove(id);
     return { success: true, data: undefined };
   }
 
@@ -125,33 +135,58 @@ export class InMemoryEmbeddingAdapter implements EmbeddingAdapter, KeywordSearch
   async replaceBySource(
     embedding: Omit<Embedding, 'id' | 'createdAt'>
   ): Promise<MemoryResult<Embedding>> {
-    for (const [id, stored] of this.embeddings) {
-      if (stored.sourceId === embedding.sourceId) {
-        this.embeddings.delete(id);
-        this.bm25Index.removeDocument(id);
-      }
-    }
-    const full: Embedding = { ...embedding, id: `emb_${nanoid(12)}`, createdAt: new Date() };
-    this.embeddings.set(full.id, full);
-    this.bm25Index.addDocument({ id: full.id, content: embedding.content });
-    return { success: true, data: full };
+    for (const id of [...(this.bySource.get(embedding.sourceId) ?? [])]) this.remove(id);
+    return { success: true, data: this.put(embedding) };
   }
 
   async getBySources(sourceIds: string[]): Promise<MemoryResult<Embedding[]>> {
-    const wanted = new Set(sourceIds);
-    const found = [...this.embeddings.values()].filter((emb) => wanted.has(emb.sourceId));
-    return { success: true, data: found.map((emb) => ({ ...emb, vector: [...emb.vector] })) };
+    const found = [...new Set(sourceIds)].flatMap((sourceId) =>
+      [...(this.bySource.get(sourceId) ?? [])].flatMap((id) => {
+        const emb = this.embeddings.get(id);
+        return emb ? [{ ...emb, vector: [...emb.vector] }] : [];
+      })
+    );
+    return { success: true, data: found };
   }
 
   async deleteByFilter(filter: EmbeddingDeleteFilter): Promise<MemoryResult<void>> {
     if (!hasDeleteCondition(filter)) return { success: false, error: EMPTY_DELETE_FILTER_ERROR };
-    for (const [id, emb] of this.embeddings) {
-      if (matchesSearchFilter(emb, filter)) {
-        this.embeddings.delete(id);
-        this.bm25Index.removeDocument(id);
-      }
+    for (const emb of [...this.candidates(filter.threadId)]) {
+      if (matchesSearchFilter(emb, filter)) this.remove(emb.id);
     }
     return { success: true, data: undefined };
+  }
+
+  private put(embedding: Omit<Embedding, 'id' | 'createdAt'>): Embedding {
+    const full: Embedding = { ...embedding, id: `emb_${nanoid(12)}`, createdAt: new Date() };
+    this.embeddings.set(full.id, full);
+    link(this.bySource, full.sourceId, full.id);
+    const threadId = threadOf(full);
+    if (threadId !== undefined) link(this.byThread, threadId, full.id);
+    this.bm25Index.addDocument({ id: full.id, content: embedding.content });
+    return full;
+  }
+
+  private remove(id: string): void {
+    const emb = this.embeddings.get(id);
+    if (!emb) return;
+    this.embeddings.delete(id);
+    unlink(this.bySource, emb.sourceId, id);
+    const threadId = threadOf(emb);
+    if (threadId !== undefined) unlink(this.byThread, threadId, id);
+    this.bm25Index.removeDocument(id);
+  }
+
+  /** The embeddings a filter on `threadId` can match: that thread's, or all without one */
+  private *candidates(threadId: string | undefined): Iterable<Embedding> {
+    if (!threadId) {
+      yield* this.embeddings.values();
+      return;
+    }
+    for (const id of this.byThread.get(threadId) ?? []) {
+      const emb = this.embeddings.get(id);
+      if (emb) yield emb;
+    }
   }
 
   get size(): number {
@@ -160,6 +195,8 @@ export class InMemoryEmbeddingAdapter implements EmbeddingAdapter, KeywordSearch
 
   clear(): void {
     this.embeddings.clear();
+    this.bySource.clear();
+    this.byThread.clear();
     this.bm25Index.clear();
   }
 }

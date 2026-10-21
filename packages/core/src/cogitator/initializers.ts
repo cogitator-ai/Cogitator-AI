@@ -127,13 +127,16 @@ export async function initializeMemory(
     } as const;
     const messageIndex =
       contextConfig.strategy !== 'recent' && embeddingService
-        ? indexFor(
-            adapter,
-            adapter instanceof InMemoryAdapter || !embeddingAdapter
-              ? new InMemoryEmbeddingAdapter()
-              : embeddingAdapter,
-            embeddingService
-          )
+        ? adapter instanceof InMemoryAdapter
+          ? indexFor(adapter, new InMemoryEmbeddingAdapter(), embeddingService)
+          : embeddingAdapter
+            ? indexFor(adapter, embeddingAdapter, embeddingService)
+            : indexFor(
+                adapter,
+                new InMemoryEmbeddingAdapter(),
+                embeddingService,
+                IN_PROCESS_INDEX_THREADS
+              )
         : undefined;
     state.messageIndex = messageIndex;
     state.memoryItems = isMemoryItemAdapter(adapter) ? new MemoryItems({ adapter }) : undefined;
@@ -157,28 +160,28 @@ export async function initializeMemory(
   state.memoryInitialized = true;
 }
 
-/**
- * The index keeping a vector per history entry for the `relevant` and `hybrid` strategies, in
- * the embedding store. The in-process `memory` adapter gets none: its entries live as long as the
- * process, and the context builder keeps their vectors in process too, while a store outside
- * would keep vectors of entries a restart forgot. Background failures are logged, as no run
- * waits on them.
- */
+/** Threads a lasting memory without an embedding store keeps the vectors of in process */
+const IN_PROCESS_INDEX_THREADS = 64;
+
 /**
  * The index that embeds each entry of `adapter` once, its vectors in `store`: the configured
  * embedding store, or one in process for a memory with none or one in process itself (whose
  * entries would leave vectors behind in a lasting store), so `relevant` and `hybrid` search a
- * whole thread instead of its newest entries on every memory
+ * whole thread instead of its newest entries on every memory. A lasting memory indexed in
+ * process keeps the vectors of the threads used lately, so the process does not grow with every
+ * thread it ever read. Background failures are logged, as no run waits on them.
  */
 function indexFor(
   adapter: MemoryAdapter,
   store: EmbeddingAdapter,
-  embedding: EmbeddingService
+  embedding: EmbeddingService,
+  threadsKept?: number
 ): MessageIndex {
   const logger = getLogger();
   const index = new MessageIndex({
     store,
     embedding,
+    ...(threadsKept !== undefined && { threadsKept }),
     onError: (error) =>
       logger.warn('Indexing memory entries failed', { operation: 'index', error: error.message }),
   });
