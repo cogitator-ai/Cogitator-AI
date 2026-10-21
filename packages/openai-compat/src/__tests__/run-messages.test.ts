@@ -66,9 +66,13 @@ const backend: LLMBackend = {
   }),
 };
 
+let holdStream = true;
+
 const redactCards: RunMiddleware = {
   name: 'redact-cards',
-  holdsStream: true,
+  get holdsStream() {
+    return holdStream;
+  },
   afterModel: ({ response }) => ({
     content: response.content.replace(/\d{4}( \d{4}){3}/g, '[card]'),
   }),
@@ -95,6 +99,15 @@ class SlowStorage extends InMemoryThreadStorage {
 }
 
 const POLL = { pollIntervalMs: 10 };
+
+const weatherFunction = {
+  type: 'function' as const,
+  function: {
+    name: 'get_weather',
+    description: 'Weather for a city',
+    parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] },
+  },
+};
 const storage = new SlowStorage();
 
 describe('messages of a run', () => {
@@ -128,10 +141,11 @@ describe('messages of a run', () => {
     breakStorage = false;
     storage.delayMs = 0;
     storage.failing = false;
+    holdStream = true;
   });
 
-  async function start() {
-    const assistant = await client.beta.assistants.create({ model: 'cogitator' });
+  async function start(tools: OpenAI.Beta.AssistantTool[] = []) {
+    const assistant = await client.beta.assistants.create({ model: 'cogitator', tools });
     const thread = await client.beta.threads.create({
       messages: [{ role: 'user', content: 'Check my card' }],
     });
@@ -236,5 +250,101 @@ describe('messages of a run', () => {
     expect(count('thread.message.incomplete')).toBe(count('thread.message.created'));
     expect(count('thread.message.created')).toBeGreaterThan(0);
     expect(events.at(-1)).toBe('thread.run.failed');
+  });
+
+  it('stores the redacted text of a streamed tool turn when the middleware does not hold the stream', async () => {
+    toolTurn = [{ id: 'call_1', name: 'forget', arguments: {} }];
+    holdStream = false;
+    const { assistant, thread } = await start();
+
+    const run = await client.beta.threads.runs
+      .stream(thread.id, { assistant_id: assistant.id })
+      .finalRun();
+
+    expect(run.status).toBe('completed');
+    expect(await texts(thread.id, run.id)).toEqual([
+      'Your card is [card], checking.',
+      'Done with [card].',
+    ]);
+  });
+
+  it('streams the rest of a run submitted right after a pause the store held up', async () => {
+    toolTurn = [{ id: 'w1', name: 'get_weather', arguments: { city: 'Paris' } }];
+    storage.delayMs = 150;
+    const { assistant, thread } = await start([weatherFunction]);
+
+    const paused = await client.beta.threads.runs.createAndPoll(
+      thread.id,
+      { assistant_id: assistant.id },
+      POLL
+    );
+    expect(paused.status).toBe('requires_action');
+    const stream = client.beta.threads.runs.submitToolOutputsStream(paused.id, {
+      thread_id: thread.id,
+      tool_outputs: [{ tool_call_id: 'w1', output: 'sunny' }],
+    });
+    const done = await stream.finalRun();
+
+    expect(done.status).toBe('completed');
+    expect(
+      (await stream.finalMessages()).map((m) =>
+        m.content[0]?.type === 'text' ? m.content[0].text.value : ''
+      )
+    ).toEqual(['Done with [card].']);
+  });
+
+  it('fails a run whose message before a pause was not stored, without asking for outputs', async () => {
+    toolTurn = [{ id: 'w1', name: 'get_weather', arguments: { city: 'Paris' } }];
+    const { assistant, thread } = await start([weatherFunction]);
+    storage.failing = true;
+
+    const events: string[] = [];
+    const stream = client.beta.threads.runs
+      .stream(thread.id, { assistant_id: assistant.id })
+      .on('event', (event) => events.push(event.event));
+    const run = await stream.finalRun();
+    storage.failing = false;
+    const steps = await client.beta.threads.runs.steps.list(run.id, {
+      thread_id: thread.id,
+      order: 'asc',
+    });
+
+    expect(run.status).toBe('failed');
+    expect(events).not.toContain('thread.run.requires_action');
+    expect(events).toContain('thread.message.incomplete');
+    expect(steps.data.map((step) => [step.type, step.status])).toEqual([
+      ['message_creation', 'failed'],
+      ['tool_calls', 'failed'],
+    ]);
+  });
+
+  it('finishes a run and frees its thread when a listener of its events throws', async () => {
+    toolTurn = [{ id: 'call_1', name: 'forget', arguments: {} }];
+    storage.delayMs = 20;
+    const { assistant, thread } = await start();
+    const adapter = server.getAdapter();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const run = await adapter.createRun(thread.id, { assistant_id: assistant.id });
+    let thrown = false;
+    adapter.getStreamEmitter(run.id)?.on('event', (event) => {
+      if (event !== 'thread.run.step.completed' || thrown) return;
+      thrown = true;
+      throw new Error('listener broke');
+    });
+    const first = await client.beta.threads.runs.poll(run.id, { thread_id: thread.id }, POLL);
+    storage.delayMs = 0;
+    const second = await client.beta.threads.runs.createAndPoll(
+      thread.id,
+      { assistant_id: assistant.id },
+      POLL
+    );
+    const logged = errors.mock.calls.some(([text]) => String(text).includes('A listener of run'));
+    errors.mockRestore();
+
+    expect(thrown).toBe(true);
+    expect(logged).toBe(true);
+    expect(first.status).toBe('completed');
+    expect(second.status).toBe('completed');
   });
 });

@@ -55,6 +55,24 @@ describe('thread ownership', () => {
     await cog.close();
   });
 
+  it('refuses an empty thread id for a run that uses memory', async () => {
+    const cog = cogitator();
+
+    const error = await denial(cog.run(agent, { input: 'hi', threadId: '' }));
+    const shared = await denial(
+      cog.run(agent, { input: 'hi', threadId: '', threadAccess: 'shared' })
+    );
+
+    expect(error.code).toBe(ErrorCode.VALIDATION_ERROR);
+    expect(shared.code).toBe(ErrorCode.VALIDATION_ERROR);
+    await expect(
+      cog.run(agent, { input: 'hi', threadId: '', useMemory: false })
+    ).resolves.toMatchObject({
+      output: 'ok',
+    });
+    await cog.close();
+  });
+
   it('lets only the owner use a thread', async () => {
     const memory = new InMemoryAdapter();
     await memory.createThread('support', { agentId: 'support', userId: 'alice' }, 't1');

@@ -30,7 +30,7 @@ import {
 } from './thread-manager';
 import type { ThreadStorage } from './storage';
 import { InvalidRequestError } from './errors';
-import { RunStepRecorder, type RunStepEventType } from './run-steps';
+import { RunStepRecorder, isSettledStep, settledEvent, type RunStepEventType } from './run-steps';
 import type {
   Assistant,
   AssistantTool,
@@ -547,7 +547,7 @@ export class OpenAIAdapter {
     const state: RunState = {
       run,
       ...(owner !== undefined && { owner }),
-      steps: new RunStepRecorder(run, (event, data) => this.emit(state, event, data)),
+      steps: new RunStepRecorder(run, (event, data) => this.emitStep(state, event, data)),
       abortController: new AbortController(),
       emitter: new EventEmitter<StreamEmitterEvents>(),
       events: [],
@@ -690,7 +690,8 @@ export class OpenAIAdapter {
    * stream only events emitted after this point.
    */
   getRunEventCursor(runId: string): number {
-    return this.runs.get(runId)?.events.length ?? 0;
+    const state = this.runs.get(runId);
+    return state ? state.events.length + state.queued : 0;
   }
 
   /**
@@ -744,17 +745,42 @@ export class OpenAIAdapter {
     this.enqueue(state, async () => this.deliver(state, payload));
   }
 
+  /**
+   * Emit a step event. The settle event of a step that waits in the outbox is named by the
+   * status the step has when it goes out, so a message step whose message was not stored after
+   * all goes out failed.
+   */
+  private emitStep(state: RunState, event: RunStepEventType, data: RunStep | RunStepDelta): void {
+    if (state.queued === 0 || !isSettledStep(data)) {
+      this.emit(state, event, data);
+      return;
+    }
+    this.enqueue(state, async () =>
+      this.deliver(state, { event: settledEvent(data), data: structuredClone(data) })
+    );
+  }
+
+  /** Send an event to the run's listeners: one that throws is logged and never stops the run */
   private deliver(state: RunState, payload: RunStreamEvent): void {
     state.events.push(payload);
-    state.emitter.emit('event', payload.event, payload.data);
+    try {
+      state.emitter.emit('event', payload.event, payload.data);
+    } catch (error) {
+      console.error(`[CogitatorOpenAI] A listener of run ${state.run.id} failed:`, error);
+    }
   }
 
   /** Runs `step` once every event queued before it is out, holding back the events after it */
   private enqueue(state: RunState, step: () => Promise<void>): void {
     state.queued++;
-    state.outbox = state.outbox.then(step).finally(() => {
-      state.queued--;
-    });
+    state.outbox = state.outbox
+      .then(step)
+      .catch((error: unknown) => {
+        console.error(`[CogitatorOpenAI] Run ${state.run.id} could not send an event:`, error);
+      })
+      .finally(() => {
+        state.queued--;
+      });
   }
 
   private end(state: RunState): void {
@@ -867,11 +893,16 @@ export class OpenAIAdapter {
 
   /**
    * Put the run in `requires_action` with `calls` and wait for the client's outputs, or for the
-   * run to be cancelled or to expire (`RUN_TTL_SECONDS`).
+   * run to be cancelled or to expire (`RUN_TTL_SECONDS`). The messages before the pause are
+   * stored and their events sent first, so a client that sees `requires_action` has all of them,
+   * and a store that failed fails the run instead.
    */
-  private awaitToolOutputs(state: RunState, calls: ToolCall[]): Promise<Map<string, string>> {
-    if (state.abortController.signal.aborted) {
-      return Promise.reject(new RunTerminatedError('cancelled'));
+  private async awaitToolOutputs(state: RunState, calls: ToolCall[]): Promise<Map<string, string>> {
+    await Promise.all(state.messageWrites);
+    await state.outbox;
+    const { signal } = state.abortController;
+    if (signal.aborted) {
+      throw signal.reason instanceof Error ? signal.reason : new RunTerminatedError('cancelled');
     }
     return new Promise<Map<string, string>>((resolve, reject) => {
       state.pending = { calls, resolve, reject };
@@ -1046,7 +1077,7 @@ export class OpenAIAdapter {
        * calls tools becomes its own message, which a run without `stream: true` gets no tokens
        * of, so it takes the text from here when the first call of the turn arrives.
        */
-      let turnText = '';
+      let turnText: string | undefined;
 
       const turnOptions = {
         signal,
@@ -1070,11 +1101,11 @@ export class OpenAIAdapter {
         },
         onToolCall: (call: AgentToolCall) => {
           if (signal.aborted) return;
-          if (!message.announced && turnText) {
+          if (turnText !== undefined && (message.announced || turnText)) {
             announceMessage();
             message.text = turnText;
           }
-          turnText = '';
+          turnText = undefined;
           if (message.announced && !message.written) {
             void this.sealMessage(state, assistant.id, message, message.text);
             state.steps.messageFinished(null);
@@ -1216,20 +1247,26 @@ export class OpenAIAdapter {
     const sealed = sealedAs(incompleteReason);
     message.written = true;
     const write = this.threadManager.appendMessage(threadId, sealed).then((stored) => {
-      if (!stored) throw new Error(`Thread ${threadId} was deleted while run ${state.run.id} ran`);
+      if (!stored) {
+        throw new InvalidRequestError(
+          `Thread ${threadId} was deleted while the run was writing to it`
+        );
+      }
     });
     this.enqueue(state, () =>
       write.then(
         () =>
           this.deliver(state, {
             event: incompleteReason ? 'thread.message.incomplete' : 'thread.message.completed',
-            data: sealed,
+            data: structuredClone(sealed),
           }),
-        () =>
-          this.deliver(state, {
-            event: 'thread.message.incomplete',
-            data: sealedAs('run_failed'),
-          })
+        () => {
+          state.steps.messageLost(message.id, {
+            code: 'server_error',
+            message: 'The message could not be stored',
+          });
+          this.deliver(state, { event: 'thread.message.incomplete', data: sealedAs('run_failed') });
+        }
       )
     );
     write.catch((error: unknown) =>

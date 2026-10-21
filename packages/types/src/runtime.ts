@@ -209,7 +209,7 @@ export interface ModelFallbackEvent {
 export interface KeptModelTurn {
   /** The turn's text, empty when it only calls tools */
   content: string;
-  /** The tool calls the run goes on to make, none on a final answer */
+  /** The tool calls the turn asks for, none on a final answer */
   toolCalls: ToolCall[];
   /** The model that answered, as `provider/model` */
   model: string;

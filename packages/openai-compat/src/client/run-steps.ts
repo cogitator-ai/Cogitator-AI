@@ -44,6 +44,18 @@ const SETTLED_EVENT: Record<Exclude<RunStepStatus, 'in_progress'>, RunStepEventT
   expired: 'thread.run.step.expired',
 };
 
+/** Whether `data` is a step that is no longer in progress, the data of its settle event */
+export function isSettledStep(data: unknown): data is RunStep {
+  if (typeof data !== 'object' || data === null) return false;
+  const step = data as Partial<RunStep>;
+  return step.object === 'thread.run.step' && step.status !== 'in_progress';
+}
+
+/** The event that settles `step` with the status it has now */
+export function settledEvent(step: RunStep): RunStepEventType {
+  return step.status === 'in_progress' ? 'thread.run.step.in_progress' : SETTLED_EVENT[step.status];
+}
+
 function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
@@ -163,6 +175,23 @@ export class RunStepRecorder {
     if (this.settled || step?.status !== 'in_progress') return;
     step.usage = this.claimUsage() ?? (this.steps.length === 1 ? runUsage : null);
     this.settle(step, 'completed');
+  }
+
+  /**
+   * The message of a step that completed was not stored after all: the step fails with `error`
+   * instead. A settle event of the step that has not gone out yet goes out as failed.
+   */
+  messageLost(messageId: string, error: RunError): void {
+    const step = this.steps.find(
+      (candidate) =>
+        candidate.step_details.type === 'message_creation' &&
+        candidate.step_details.message_creation.message_id === messageId
+    );
+    if (step?.status !== 'completed') return;
+    step.status = 'failed';
+    step.completed_at = null;
+    step.failed_at = nowSeconds();
+    step.last_error = { ...error };
   }
 
   /** Settle the steps still in progress as the run ended; later reports are ignored. */

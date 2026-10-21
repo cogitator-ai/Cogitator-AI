@@ -281,7 +281,7 @@ Steps live in memory with their run and are dropped with it (`maxStoredRuns`).
 
 ### Streaming Runs
 
-Pass `stream: true` to stream OpenAI-style events (`thread.run.*`, `thread.run.step.*`, `thread.message.created|delta|completed|incomplete`, `done`). Step events open each step before its message events, and a `tool_calls` step gets one `thread.run.step.delta` per call, so SDK helpers such as `toolCallCreated` work. `thread.message.completed` goes out once the message is stored, so a client that reads the message on that event finds it. A store that fails, or a thread deleted while the run writes to it, fails the run, and that message ends `incomplete` with `run_failed`. With the SDK use `runs.stream(...)` / `submitToolOutputsStream(...)`. In-process, iterate the run's event log:
+Pass `stream: true` to stream OpenAI-style events (`thread.run.*`, `thread.run.step.*`, `thread.message.created|delta|completed|incomplete`, `done`). Step events open each step before its message events, and a `tool_calls` step gets one `thread.run.step.delta` per call, so SDK helpers such as `toolCallCreated` work. `thread.message.completed` goes out once the message is stored, so a client that reads the message on that event finds it, and a run reaches `requires_action` only once the messages before the pause are stored. A store that fails, or a thread deleted while the run writes to it, fails the run: that message ends `incomplete` with `run_failed` and its `message_creation` step `failed`. With the SDK use `runs.stream(...)` / `submitToolOutputsStream(...)`. In-process, iterate the run's event log:
 
 ```typescript
 const run = await adapter.createRun(thread.id, {

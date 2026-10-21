@@ -97,6 +97,13 @@ export async function buildInitialMessages(
     ];
   }
 
+  if (threadId === '') {
+    throw new CogitatorError({
+      message: 'threadId must be a non-empty string for a run that uses memory',
+      code: ErrorCode.VALIDATION_ERROR,
+    });
+  }
+
   if (options.threadId !== undefined && options.threadAccess !== 'shared') {
     await ensureThreadAccess(memoryAdapter, threadId, {
       agentId: agent.id,

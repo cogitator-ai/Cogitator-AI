@@ -521,6 +521,8 @@ const SCENARIOS: Record<MemoryAdapterScenario, (adapter: MemoryAdapter) => Promi
   async 'refuses-empty-thread-id'(adapter) {
     const { agentId } = scope();
     refused(await adapter.createThread(agentId, {}, ''), 'createThread with an empty id');
+    assert.equal(ok(await adapter.getThread(''), 'getThread'), null, 'no thread has an empty id');
+    ok(await adapter.deleteThread(''), 'deleteThread of an empty id');
     const listed = ok(await adapter.listThreads({ agentId }), 'listThreads').threads;
     assert.deepEqual(listed, [], 'a refused thread is not listed');
   },

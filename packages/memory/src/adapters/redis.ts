@@ -449,6 +449,7 @@ export class RedisAdapter extends BaseMemoryAdapter {
   }
 
   async deleteThread(threadId: string): Promise<MemoryResult<void>> {
+    if (threadId === '') return this.success(undefined);
     return this.run(async (client) => {
       await client.eval(
         DROP_ENTRIES,
