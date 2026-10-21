@@ -198,6 +198,7 @@ export class StudioHost {
   /** Reports every run started for a studio request, nested ones included. */
   private observer(): RunObserver {
     return {
+      captureContent: true,
       onRunStart: (event) => {
         const context = this.als.getStore();
         if (!context) return;

@@ -15,6 +15,7 @@ import { formatCost, formatDuration, formatTokens } from '../format';
 import { href } from '../router';
 import { ErrorText, JsonBlock, StatusBadge } from './common';
 import { Markdown } from './markdown';
+import { MODEL_CONTENT_ATTRIBUTES, ModelContent } from './model-content';
 
 type RowKind = SpanRecord['kind'] | 'run';
 
@@ -137,6 +138,7 @@ const SHOWN_ATTRIBUTES = new Set([
   'tool.arguments',
   'tool.success',
   'tool.error',
+  ...MODEL_CONTENT_ATTRIBUTES,
 ]);
 
 function Inspector({
@@ -269,6 +271,7 @@ function Inspector({
             </div>
           )}
           {row.kind === 'run' && row.run.error && <ErrorText>{row.run.error}</ErrorText>}
+          {llm && <ModelContent attributes={attributes} />}
 
           {row.kind === 'tool' && (
             <JsonBlock

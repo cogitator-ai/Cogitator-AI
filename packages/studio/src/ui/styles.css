@@ -495,7 +495,9 @@ h3 {
   border-radius: var(--r-sm);
   color: var(--text-2);
   cursor: pointer;
-  transition: background 0.12s, color 0.12s;
+  transition:
+    background 0.12s,
+    color 0.12s;
 }
 
 .sb-link svg {
@@ -580,7 +582,12 @@ h3 {
   white-space: nowrap;
   cursor: pointer;
   user-select: none;
-  transition: background 0.12s, border-color 0.12s, color 0.12s, opacity 0.12s, transform 0.06s;
+  transition:
+    background 0.12s,
+    border-color 0.12s,
+    color 0.12s,
+    opacity 0.12s,
+    transform 0.06s;
 }
 
 .btn:active:not(:disabled) {
@@ -658,7 +665,9 @@ h3 {
   color: var(--text);
   font: inherit;
   box-shadow: var(--shadow-sm);
-  transition: border-color 0.12s, box-shadow 0.12s;
+  transition:
+    border-color 0.12s,
+    box-shadow 0.12s;
 }
 
 .input::placeholder {
@@ -706,9 +715,12 @@ textarea.input {
 .select {
   appearance: none;
   padding-right: 28px;
-  background-image: linear-gradient(45deg, transparent 50%, var(--text-3) 50%),
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--text-3) 50%),
     linear-gradient(135deg, var(--text-3) 50%, transparent 50%);
-  background-position: calc(100% - 14px) 15px, calc(100% - 10px) 15px;
+  background-position:
+    calc(100% - 14px) 15px,
+    calc(100% - 10px) 15px;
   background-size: 4px 4px;
   background-repeat: no-repeat;
   cursor: pointer;
@@ -779,7 +791,9 @@ textarea.input {
 .seg button[aria-pressed='true'] {
   background: var(--surface);
   color: var(--text);
-  box-shadow: var(--shadow-sm), 0 0 0 1px var(--border);
+  box-shadow:
+    var(--shadow-sm),
+    0 0 0 1px var(--border);
 }
 
 .seg-icons button {
@@ -1253,7 +1267,10 @@ textarea.input {
   border-radius: var(--r-lg);
   background: var(--surface);
   box-shadow: var(--shadow-sm);
-  transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s var(--ease);
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s,
+    transform 0.15s var(--ease);
 }
 
 .entity:hover {
@@ -1608,12 +1625,16 @@ a.tr.focused {
   border-radius: 14px;
   background: var(--surface);
   box-shadow: var(--shadow-md);
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
 }
 
 .composer:focus-within {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--border-strong));
-  box-shadow: var(--shadow-md), 0 0 0 3px var(--accent-soft);
+  box-shadow:
+    var(--shadow-md),
+    0 0 0 3px var(--accent-soft);
 }
 
 .composer textarea {
@@ -2200,6 +2221,37 @@ a.tr.focused {
   color: var(--text-3);
 }
 
+.model-content {
+  display: grid;
+  gap: 14px;
+}
+
+.model-message {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  margin-bottom: 8px;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  word-break: break-word;
+}
+
+.model-role {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-3);
+}
+
+.model-reasoning {
+  color: var(--text-3);
+  white-space: pre-wrap;
+}
+
+.model-part-other {
+  color: var(--text-3);
+}
+
 .io-input {
   padding: 10px 12px;
   border-radius: var(--r-md);
@@ -2462,7 +2514,10 @@ a.tr.focused {
   background: var(--surface);
   color: var(--text-2);
   cursor: pointer;
-  transition: border-color 0.12s, background 0.12s, color 0.12s;
+  transition:
+    border-color 0.12s,
+    background 0.12s,
+    color 0.12s;
 }
 
 .step:hover {

@@ -159,6 +159,20 @@ describe('chat', () => {
       outputTokens: 5,
       cost: PRICE,
     });
+    const prompt = JSON.parse(String(llm[0].attributes['gen_ai.input.messages'])) as Array<{
+      role: string;
+      parts: Array<{ type: string; content?: string }>;
+    }>;
+    expect(prompt.at(-1)).toEqual({
+      role: 'user',
+      parts: [{ type: 'text', content: 'hello there' }],
+    });
+    expect(JSON.parse(String(llm[0].attributes['gen_ai.output.messages']))).toEqual([
+      expect.objectContaining({
+        role: 'assistant',
+        parts: expect.arrayContaining([{ type: 'text', content: record.output }]),
+      }),
+    ]);
     expect(record.spans.some((span) => span.kind === 'agent')).toBe(true);
     expect(record.usage).toMatchObject({ inputTokens: 10, outputTokens: 5 });
     expect(record.steps).toEqual([expect.objectContaining({ index: 0, label: 'from the start' })]);
