@@ -2680,7 +2680,7 @@ export class Cogitator implements ToolInvoker {
    * thread already sees all of it. With an adapter that reads a thread in pages (`getPath`) the
    * thread is read and embedded a page at a time, so a long one is never held whole, else it is
    * read at once and embedded a page at a time. Does nothing when memory keeps no index (the `recent` strategy or no
-   * embedding service).
+   * embedding service). Fails when the embedding store refuses a vector.
    */
   async indexMemory(threadId: string): Promise<void> {
     const memory = await this.getMemory();
@@ -2699,7 +2699,7 @@ export class Cogitator implements ToolInvoker {
       if (!page.success) throw new Error(page.error);
       const texts: IndexedText[] = page.data.flatMap((entry) => indexedText(entry) ?? []);
       for (let start = 0; start < texts.length; start += INDEX_PAGE) {
-        await index.vectorsOf(texts.slice(start, start + INDEX_PAGE), seenAt);
+        await index.index(texts.slice(start, start + INDEX_PAGE), seenAt);
         await index.flush();
       }
       const first = page.data[0];

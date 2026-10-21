@@ -232,6 +232,35 @@ describe('MessageIndex', () => {
     expect(await storedSources()).toEqual([first.id, third.id].sort());
   });
 
+  it('keeps the vectors of the thread written last when threads interleave past the limit', async () => {
+    index = new MessageIndex({ store, embedding, vectorsKept: 1 });
+    index.attach(memory);
+    await memory.createThread('agent', {}, 'thread-2');
+    await say('cat a1');
+    await say('tax b1', 'user', 'thread-2');
+    await say('cat a2');
+    const last = await say('tax b2', 'user', 'thread-2');
+    await index.flush();
+
+    expect(await storedSources()).toEqual([last.id]);
+  });
+
+  it('fails an explicit index when the store refuses a vector', async () => {
+    const entry = await say('cat refused');
+    await index.flush();
+    await store.deleteBySource(entry.id);
+    const refused = vi
+      .spyOn(store, 'replaceBySource')
+      .mockResolvedValue({ success: false, error: 'down' });
+    index = new MessageIndex({ store, embedding });
+    const text = { entryId: entry.id, threadId, role: 'user' as const, text: 'cat refused' };
+
+    await expect(index.index([text])).rejects.toThrow(/down/);
+    refused.mockRestore();
+    await index.index([text]);
+    expect(await storedSources()).toEqual([entry.id]);
+  });
+
   it('is refused fewer than one vector kept', () => {
     expect(() => new MessageIndex({ store, embedding, vectorsKept: 0 })).toThrow(/vectorsKept/);
   });

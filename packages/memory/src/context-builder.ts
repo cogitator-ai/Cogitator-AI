@@ -30,6 +30,7 @@ import type {
 } from '@cogitator-ai/types';
 import { isMemoryItemAdapter, onePerSlot, visibleIn, type MemoryItems } from './memory-items';
 import { MemoryRetriever, type Retrieval } from './retrieval/retriever';
+import { analyzeQuery } from './retrieval/query';
 import type { GraphContextBuilder } from './knowledge-graph/graph-context-builder';
 import { readCompactedHistory } from './compaction';
 import { calendarDate, isTimeZone } from './time-resolution';
@@ -121,6 +122,10 @@ const SOURCE_OF_TRUST: Record<MemoryItemTrust, Fact['source']> = {
 
 /** The heading of the earlier turns a search of memory brought */
 const RECALLED_TURNS_HEADER = 'Earlier in this conversation:';
+/** Memory items embedded in one call */
+const ITEM_EMBED_BATCH = 64;
+/** Vectors of memory items a builder keeps, the used least lately dropped past it */
+const ITEM_VECTORS_KEPT = 20_000;
 /** Hits of a search of memory a reranker reorders, the best */
 const RERANKED = 30;
 /** The heading of the memory items a search of memory brought */
@@ -140,6 +145,18 @@ function turnLines(turn: readonly MemoryEntry[], timeZone: string): string {
       return `[${dayOf(entry.createdAt, timeZone)}] ${entry.message.role}: ${text}`;
     })
     .join('\n');
+}
+
+/**
+ * Tokens recalled turns take: each line as shown, or the entry's own count when that is more,
+ * such as a stored count of a model that reads the text as more tokens than an estimate
+ */
+function recalledTokens(turn: readonly MemoryEntry[], timeZone: string): number {
+  return turn.reduce(
+    (sum, entry) =>
+      sum + Math.max(countTokens(turnLines([entry], timeZone)), countEntryTokens(entry)),
+    0
+  );
 }
 
 /** A memory item as the context shows it, with when it held when it no longer does */
@@ -449,6 +466,8 @@ export class ContextBuilder {
   private config: ResolvedConfig;
   private deps: ContextBuilderDeps;
   private readonly entryVectors = new Map<string, Float32Array>();
+  /** Vectors of memory items by model and item id: an item's content never changes */
+  private readonly itemVectors = new Map<string, Float32Array>();
   private readonly assembler: ContextAssembler;
   private readonly retriever = new MemoryRetriever();
 
@@ -964,31 +983,32 @@ export class ContextBuilder {
   ): Promise<AssemblyBlock<Piece>[]> {
     const input = options.currentInput;
     if (!input) return [];
-    const shares = { ...DEFAULT_PARTITIONS, ...this.config.partitions };
+    const anchor = options.asOf ?? new Date();
+    const timeZone = this.timeZoneOf(options);
+    if (!analyzeQuery(input, anchor, timeZone).retrieve) return [];
     const factsDemand = facts.reduce((sum, fact) => sum + countTokens(factLine(fact)), 0);
-    const tail = Math.max(
-      0,
-      availableTokens -
-        requiredTokens -
-        Math.min(factsDemand, Math.floor(availableTokens * (shares.facts.share ?? 0))) -
-        Math.floor(availableTokens * (shares.recall.share ?? 0))
-    );
+    const tail = this.assembler.roomOf('recent', availableTokens - requiredTokens, {
+      facts: factsDemand,
+    });
     const held = new Set(this.selectRecentEntries(history, tail).map((entry) => entry.id));
-    const scored = this.deps.embeddingService
+    const embedding = this.deps.embeddingService;
+    const inputVector = embedding?.embed(input);
+    inputVector?.catch(() => undefined);
+    const scored = embedding
       ? await this.scoreEntries(
           history.filter((entry) => !held.has(entry.id)),
           input,
           0,
           errors,
-          scope
+          scope,
+          inputVector
         )
       : null;
     const items = this.deps.memoryItems;
     const memory = this.deps.memoryAdapter;
-    const timeZone = this.timeZoneOf(options);
     const retrieval = await this.retriever.retrieve({
       input,
-      anchor: options.asOf ?? new Date(),
+      anchor,
       timeZone,
       history,
       held,
@@ -1003,6 +1023,10 @@ export class ContextBuilder {
             threadId: options.threadId,
           },
           agentIds: [options.agentId],
+          ...(inputVector && {
+            itemCosines: (found: readonly MemoryItem[]) =>
+              this.itemCosines(found, inputVector, errors),
+          }),
         }),
     });
     const hits = this.deps.reranker
@@ -1023,7 +1047,7 @@ export class ContextBuilder {
       return [
         {
           value: { kind: 'retrieved', entries: turn },
-          tokens: countTokens(turnLines(turn, timeZone)),
+          tokens: recalledTokens(turn, timeZone),
         },
       ];
     });
@@ -1197,7 +1221,8 @@ export class ContextBuilder {
     input: string,
     minScore: number,
     errors: ContextBuildError[],
-    scope: ScoringScope
+    scope: ScoringScope,
+    inputVector?: Promise<number[]>
   ): Promise<{ entry: MemoryEntry; score: number }[] | null> {
     const embeddingService = this.deps.embeddingService;
     if (!embeddingService) return null;
@@ -1237,17 +1262,17 @@ export class ContextBuilder {
           return { vectors: await this.processVectors(texts), indexed: false };
         }
       };
-      const [inputVector, { vectors, indexed }] = await Promise.all([
-        embeddingService.embed(input),
+      const [queryVector, { vectors, indexed }] = await Promise.all([
+        inputVector ?? embeddingService.embed(input),
         windowVectors(),
       ]);
-      index?.offer(input, inputVector);
+      index?.offer(input, queryVector);
 
       const scored: { entry: MemoryEntry; score: number }[] = [];
       for (const { entry } of candidates) {
         const vector = vectors.get(entry.id);
         if (!vector) continue;
-        const score = this.cosineSimilarity(inputVector, vector);
+        const score = this.cosineSimilarity(queryVector, vector);
         if (score > minScore) scored.push({ entry, score });
       }
 
@@ -1255,7 +1280,7 @@ export class ContextBuilder {
         try {
           const found = await index.search(
             threadId,
-            inputVector,
+            queryVector,
             INDEX_SEARCH_RESULTS + Math.max(0, scope.threadSize - older.length),
             minScore
           );
@@ -1281,6 +1306,53 @@ export class ContextBuilder {
   }
 
   /** Vectors of `texts` by entry id from the builder's own cache, embedding the ones it lacks */
+  /**
+   * How close each of `items` is to the input, by the cosine of their embeddings, each item
+   * embedded once and kept. A failure is recorded as a `relevance` error and finds nothing.
+   */
+  private async itemCosines(
+    items: readonly MemoryItem[],
+    inputVector: Promise<number[]>,
+    errors: ContextBuildError[]
+  ): Promise<Map<string, number>> {
+    const embedding = this.deps.embeddingService;
+    if (!embedding) return new Map();
+    try {
+      const keyOf = (item: MemoryItem) => `${embedding.model}:${item.id}`;
+      const missing = items.filter((item) => !this.itemVectors.has(keyOf(item)));
+      for (let start = 0; start < missing.length; start += ITEM_EMBED_BATCH) {
+        const batch = missing.slice(start, start + ITEM_EMBED_BATCH);
+        const made = await embedding.embedBatch(batch.map((item) => item.content));
+        batch.forEach((item, at) => {
+          const vector = made[at];
+          if (vector) this.itemVectors.set(keyOf(item), Float32Array.from(vector));
+        });
+      }
+      const query = await inputVector;
+      const cosines = new Map<string, number>();
+      for (const item of items) {
+        const key = keyOf(item);
+        const vector = this.itemVectors.get(key);
+        if (!vector) continue;
+        this.itemVectors.delete(key);
+        this.itemVectors.set(key, vector);
+        cosines.set(item.id, this.cosineSimilarity(query, vector));
+      }
+      while (this.itemVectors.size > ITEM_VECTORS_KEPT) {
+        const oldest = this.itemVectors.keys().next().value;
+        if (oldest === undefined) break;
+        this.itemVectors.delete(oldest);
+      }
+      return cosines;
+    } catch (err) {
+      errors.push({
+        source: 'relevance',
+        error: err instanceof Error ? err : new Error(String(err)),
+      });
+      return new Map();
+    }
+  }
+
   private async processVectors(texts: IndexedText[]): Promise<Map<string, Float32Array>> {
     const embeddingService = this.deps.embeddingService;
     const missing = texts.filter(({ entryId }) => !this.entryVectors.has(entryId));

@@ -341,6 +341,39 @@ describe('MemoryRetriever', () => {
     expect(turn?.kind === 'entry' && turn.hit.channels).toContain('entity');
   });
 
+  it('finds an item by meaning when its words differ from the question', async () => {
+    const adapter = new InMemoryAdapter({ provider: 'memory' });
+    const items = new MemoryItems({ adapter });
+    const scope = { agentId: 'a', userId: 'u1' };
+    const [peanuts] = await items.write([
+      {
+        kind: 'fact',
+        content: 'The user is allergic to peanuts',
+        trust: 'user',
+        confidence: 0.9,
+        scope,
+        evidence: [],
+        verified: true,
+        saidAt: at(1),
+        sessionAt: at(1),
+      },
+    ]);
+
+    const retrieval = await new MemoryRetriever().retrieve({
+      input: 'Which food allergy do I have?',
+      anchor,
+      history: [],
+      items,
+      itemAdapter: adapter,
+      scope,
+      itemCosines: async (found) => new Map(found.map((item) => [item.id, 0.8])),
+    });
+
+    const hit = retrieval.hits.find((found) => found.kind === 'item');
+    expect(hit?.kind === 'item' && hit.hit.item.id).toBe(peanuts!.id);
+    expect(hit?.kind === 'item' && hit.hit.channels).toEqual(['itemVector']);
+  });
+
   it('skips small talk', async () => {
     const retrieval = await new MemoryRetriever().retrieve({ input: 'thanks!', anchor, history });
     expect(retrieval.hits).toEqual([]);

@@ -257,16 +257,45 @@ export class ContextAssembler {
     open: readonly ContextPartition[],
     byPartition: ReadonlyMap<ContextPartition, PartitionCandidates<T>>
   ): Map<ContextPartition, number> {
+    const needs = new Map<ContextPartition, number>();
+    for (const partition of open) {
+      const candidate = byPartition.get(partition);
+      if (!candidate) continue;
+      needs.set(
+        partition,
+        candidate.demand ?? candidate.blocks.reduce((sum, block) => sum + block.tokens, 0)
+      );
+    }
+    return this.grantsFor(free, open, needs);
+  }
+
+  /**
+   * The room `partition` gets at least of `free`, the budget the required partitions leave, when
+   * the open partitions need `needs` and those not named need all they can get: what a caller
+   * can count on before it knows what the others will hold
+   */
+  roomOf(
+    partition: ContextPartition,
+    free: number,
+    needs: Partial<Record<ContextPartition, number>>
+  ): number {
+    const open = FILL_ORDER.filter((name) => this.partitions[name].required !== true);
+    const wanted = new Map(open.map((name) => [name, needs[name] ?? Infinity]));
+    return this.grantsFor(Math.max(0, free), open, wanted).get(partition) ?? 0;
+  }
+
+  private grantsFor(
+    free: number,
+    open: readonly ContextPartition[],
+    needs: ReadonlyMap<ContextPartition, number>
+  ): Map<ContextPartition, number> {
     const assigned = open.reduce(
       (sum, partition) => sum + (this.partitions[partition].share ?? 0),
       0
     );
     const hungry = new Map<ContextPartition, { share: number; need: number }>();
     for (const partition of open) {
-      const candidate = byPartition.get(partition);
-      if (!candidate) continue;
-      const need =
-        candidate.demand ?? candidate.blocks.reduce((sum, block) => sum + block.tokens, 0);
+      const need = needs.get(partition) ?? 0;
       const share = this.partitions[partition].share ?? Math.max(0, 1 - assigned);
       if (need > 0) hungry.set(partition, { share, need });
     }

@@ -200,6 +200,22 @@ export class MessageIndex {
     entries: readonly IndexedText[],
     seenAt = this.clock
   ): Promise<Map<string, Float32Array>> {
+    return this.vectorsFor(entries, seenAt, false);
+  }
+
+  /**
+   * Embeds and stores the vectors of `entries` the store has none of yet, and waits until they
+   * are stored: unlike a build's {@link vectorsOf}, a write the store refuses fails the call
+   */
+  async index(entries: readonly IndexedText[], seenAt = this.clock): Promise<void> {
+    await this.vectorsFor(entries, seenAt, true);
+  }
+
+  private async vectorsFor(
+    entries: readonly IndexedText[],
+    seenAt: number,
+    strict: boolean
+  ): Promise<Map<string, Float32Array>> {
     const found = new Map<string, Float32Array>();
     const unseen: IndexedText[] = [];
     for (const threadId of new Set(entries.map((entry) => entry.threadId))) this.use(threadId);
@@ -231,7 +247,9 @@ export class MessageIndex {
       const batch = missing.slice(start, start + this.batchSize);
       const vectors = await this.embedBatch(batch);
       batch.forEach((entry, i) => found.set(entry.entryId, vectors[i]));
-      if (!this.closed) this.run(() => this.write(batch, vectors));
+      if (this.closed) continue;
+      if (strict) await this.serial(() => this.write(batch, vectors));
+      else this.run(() => this.write(batch, vectors));
     }
     return found;
   }
@@ -322,15 +340,18 @@ export class MessageIndex {
     this.held.set(threadId, count);
   }
 
-  /** Counts a vector written for `threadId`, then drops threads used least lately past the limit */
-  private wrote(threadId: string): void {
+  /**
+   * Counts a vector written for `threadId`, then drops threads used least lately past the limit,
+   * each before the next write, so a write that follows is never undone by a drop queued earlier
+   */
+  private async wrote(threadId: string): Promise<void> {
     if (!Number.isFinite(this.vectorsKept)) return;
     this.held.set(threadId, (this.held.get(threadId) ?? 0) + 1);
     this.heldVectors++;
     for (const [oldest] of this.held) {
       if (this.heldVectors <= this.vectorsKept || oldest === threadId) break;
       this.release(oldest);
-      this.evict(oldest);
+      await this.evict(oldest);
     }
   }
 
@@ -344,7 +365,7 @@ export class MessageIndex {
    * Drops the vectors of a thread to make room, unlike {@link dropThread} without marking it
    * deleted: a vector written for it later is kept, and its backfill runs again when used
    */
-  private evict(threadId: string): void {
+  private async evict(threadId: string): Promise<void> {
     for (const [entryId, pending] of this.waiting) {
       if (pending.threadId === threadId) this.waiting.delete(entryId);
     }
@@ -352,7 +373,7 @@ export class MessageIndex {
       if (cached.threadId === threadId) this.vectors.delete(entryId);
     }
     this.backfilled.delete(threadId);
-    this.run(() => this.deleteThreadVectors(threadId));
+    await this.deleteThreadVectors(threadId);
   }
 
   private dropThread(threadId: string): void {
@@ -400,6 +421,16 @@ export class MessageIndex {
         }
       }
     });
+  }
+
+  /** Runs `work` after everything queued before it, its failure the caller's */
+  private serial<T>(work: () => Promise<T>): Promise<T> {
+    const result = this.queue.then(work);
+    this.queue = result.then(
+      () => undefined,
+      () => undefined
+    );
+    return result;
   }
 
   /** Runs `work` after everything queued before it; a failure goes to `onError` */
@@ -483,7 +514,7 @@ export class MessageIndex {
       await this.unwrap(this.store.addEmbedding(embedding), 'addEmbedding');
     }
     this.keep(entry, vector);
-    this.wrote(entry.threadId);
+    await this.wrote(entry.threadId);
   }
 
   /** Whether the entry or its thread was deleted since the index saw it */

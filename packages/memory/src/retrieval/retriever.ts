@@ -46,6 +46,7 @@ type Channel =
   | 'time'
   | 'entity'
   | 'items'
+  | 'itemVector'
   | 'itemEntity'
   | 'itemTime'
   | 'graph'
@@ -59,6 +60,7 @@ const WEIGHTS: Record<QueryType, Record<Channel, number>> = {
     time: 0.5,
     entity: 0.8,
     items: 1,
+    itemVector: 1.2,
     itemEntity: 0.8,
     itemTime: 0.5,
     graph: 0.6,
@@ -70,6 +72,7 @@ const WEIGHTS: Record<QueryType, Record<Channel, number>> = {
     time: 2,
     entity: 0.8,
     items: 1,
+    itemVector: 1,
     itemEntity: 0.8,
     itemTime: 2,
     graph: 0.5,
@@ -81,6 +84,7 @@ const WEIGHTS: Record<QueryType, Record<Channel, number>> = {
     time: 0.5,
     entity: 1,
     items: 1.6,
+    itemVector: 1.6,
     itemEntity: 1.2,
     itemTime: 0.5,
     graph: 0.6,
@@ -92,6 +96,7 @@ const WEIGHTS: Record<QueryType, Record<Channel, number>> = {
     time: 0.8,
     entity: 1.2,
     items: 1.2,
+    itemVector: 1.2,
     itemEntity: 1.2,
     itemTime: 0.8,
     graph: 0.8,
@@ -103,6 +108,7 @@ const WEIGHTS: Record<QueryType, Record<Channel, number>> = {
     time: 0.3,
     entity: 0.8,
     items: 1.6,
+    itemVector: 1.6,
     itemEntity: 1,
     itemTime: 0.3,
     graph: 0.6,
@@ -126,6 +132,11 @@ export interface RetrievalRequest {
   items?: MemoryItems;
   itemAdapter?: MemoryItemAdapter;
   scope?: MemoryItemScope;
+  /**
+   * How close each of the items found is to the input, by item id, such as the cosines of their
+   * embeddings: the items are found by meaning, not only by their words
+   */
+  itemCosines?: (items: readonly MemoryItem[]) => Promise<ReadonlyMap<string, number>>;
   /**
    * The agents whose items and entities the turn sees, each with the rest of `scope`: the
    * scope's agent by default, more when an agent keeps memory under two ids
@@ -224,8 +235,15 @@ export class MemoryRetriever {
       },
       { channel: 'entity', weight: weights.entity, ids: this.entityHits(turns, entities) },
     ];
+    const itemCosines =
+      request.itemCosines && items.length > 0 ? await request.itemCosines(items) : undefined;
     const itemChannels: (ChannelHits & { channel: Channel })[] = [
       { channel: 'items', weight: weights.items, ids: this.itemHits(items, analysis) },
+      {
+        channel: 'itemVector',
+        weight: weights.itemVector,
+        ids: closest(items, itemCosines).map((id) => `i:${id}`),
+      },
       {
         channel: 'itemEntity',
         weight: weights.itemEntity,
@@ -331,18 +349,7 @@ export class MemoryRetriever {
     turns: readonly MemoryEntry[],
     cosines: ReadonlyMap<string, number> | undefined
   ): string[] {
-    if (!cosines || cosines.size === 0) return [];
-    const scored = turns.flatMap((entry) => {
-      const cosine = cosines.get(entry.id);
-      return cosine === undefined ? [] : [{ id: entry.id, cosine }];
-    });
-    const best = Math.max(0, ...scored.map((hit) => hit.cosine));
-    const bar = Math.max(MIN_COSINE, RELATIVE_COSINE * best);
-    return scored
-      .filter((hit) => hit.cosine >= bar)
-      .sort((a, b) => b.cosine - a.cosine)
-      .slice(0, CHANNEL_HITS)
-      .map((hit) => `e:${hit.id}`);
+    return closest(turns, cosines).map((id) => `e:${id}`);
   }
 
   /** Turns that hold the input's words, by BM25 over the thread, its index kept between turns */
@@ -565,6 +572,28 @@ export class MemoryRetriever {
       .slice(0, CHANNEL_HITS)
       .map(([id]) => id);
   }
+}
+
+/**
+ * The ids of `candidates` close to the input, closest first: their cosines clear the absolute
+ * and the relative bar
+ */
+function closest(
+  candidates: readonly { id: string }[],
+  cosines: ReadonlyMap<string, number> | undefined
+): string[] {
+  if (!cosines || cosines.size === 0) return [];
+  const scored = candidates.flatMap((candidate) => {
+    const cosine = cosines.get(candidate.id);
+    return cosine === undefined ? [] : [{ id: candidate.id, cosine }];
+  });
+  const best = Math.max(0, ...scored.map((hit) => hit.cosine));
+  const bar = Math.max(MIN_COSINE, RELATIVE_COSINE * best);
+  return scored
+    .filter((hit) => hit.cosine >= bar)
+    .sort((a, b) => b.cosine - a.cosine)
+    .slice(0, CHANNEL_HITS)
+    .map((hit) => hit.id);
 }
 
 /**

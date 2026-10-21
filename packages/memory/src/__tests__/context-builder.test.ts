@@ -431,6 +431,34 @@ describe('ContextBuilder', () => {
     });
   });
 
+  describe('hybrid recall at the edge of the history', () => {
+    it('searches every turn the history does not keep', async () => {
+      const filler =
+        'the code review ran late and the tram was late again, my code is fine '.repeat(6);
+      for (let n = 0; n < 30; n++) {
+        const content = n === 27 ? `My locker code is 4471. ${filler}` : `${n} ${filler}`;
+        await adapter.addEntry({
+          threadId,
+          message: { role: n % 2 ? 'assistant' : 'user', content },
+          tokenCount: 90,
+        });
+      }
+      const builder = new ContextBuilder(
+        { maxTokens: 1000, reserveTokens: 0, strategy: 'hybrid' },
+        { memoryAdapter: adapter }
+      );
+
+      const result = await builder.build({
+        threadId,
+        agentId: 'agent1',
+        currentInput: 'What is my locker code?',
+      });
+
+      const history = result.messages.map((message) => String(message.content)).join('\n');
+      expect(`${history}\n${result.memoryContext ?? ''}`).toContain('4471');
+    });
+  });
+
   describe('hybrid recall in a time zone', () => {
     it('shows and reads dates on the calendar of the thread', async () => {
       const say = async (role: 'user' | 'assistant', content: string, at: string) =>
