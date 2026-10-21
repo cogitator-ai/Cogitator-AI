@@ -91,6 +91,16 @@ function zoned(
   return new Date(settled);
 }
 
+/** Whether `timeZone` is an IANA time zone this runtime knows, such as `Europe/Lisbon` */
+export function isTimeZone(timeZone: string): boolean {
+  try {
+    formatterFor(timeZone);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** The calendar date of `instant` in `timeZone` */
 export function calendarDate(instant: Date, timeZone: string): CalendarDate {
   const clock = new Date(wallClock(instant, timeZone));

@@ -202,7 +202,10 @@ export interface MemoryExtractionConfig {
 export interface MemoryItemQuery {
   scope: MemoryItemScope;
   kinds?: MemoryItemKind[];
-  /** `active` by default */
+  /**
+   * `active` and `superseded` by default, with which state of a slot holds read from its times
+   * (see `asOf`)
+   */
   statuses?: MemoryItemStatus[];
   slots?: string[];
   entityIds?: string[];

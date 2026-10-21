@@ -258,7 +258,13 @@ export {
   visibleIn,
   type MemoryItemsConfig,
 } from './memory-items';
-export { calendarDate, resolveTime, type TimeExpression, type Weekday } from './time-resolution';
+export {
+  calendarDate,
+  isTimeZone,
+  resolveTime,
+  type TimeExpression,
+  type Weekday,
+} from './time-resolution';
 export {
   EXTRACTION_PROMPT,
   MemoryExtractor,

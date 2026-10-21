@@ -318,6 +318,39 @@ describe('ContextBuilder', () => {
     });
   });
 
+  describe('memory items as facts, let go and narrowed', () => {
+    it('does not show a value memory let go and keeps one state per slot', async () => {
+      const items = new MemoryItems({ adapter });
+      const fact = (value: string, at: string, scope: Record<string, string>) => ({
+        kind: 'fact' as const,
+        content: `Ana lives in ${value}`,
+        subject: 'Ana',
+        attribute: 'city',
+        value,
+        trust: 'user' as const,
+        confidence: 0.9,
+        evidence: [],
+        verified: true,
+        saidAt: new Date(at),
+        sessionAt: new Date(at),
+        scope: { agentId: 'agent1', ...scope },
+      });
+      const [porto] = await items.write([fact('Porto', '2026-01-01', { userId: 'u1' })]);
+      await items.write([fact('Lisbon', '2026-01-10', { userId: 'u1' })]);
+      await items.write([fact('Faro', '2026-01-10', { userId: 'u1', threadId })]);
+      await items.expire([porto!.id]);
+      const builder = new ContextBuilder(
+        { maxTokens: 1000, strategy: 'recent', includeFacts: true },
+        { memoryAdapter: adapter, memoryItems: items }
+      );
+
+      const result = await builder.build({ threadId, agentId: 'agent1', userId: 'u1' });
+
+      expect(result.facts.map((fact) => fact.content)).toEqual(['Ana lives in Faro']);
+      expect(result.memoryContext).not.toContain('Porto');
+    });
+  });
+
   describe('graph context', () => {
     const makeNode = (id: string, name: string): GraphNode => ({
       id,

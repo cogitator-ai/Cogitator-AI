@@ -66,9 +66,18 @@ const forgetParams = z.object({
 export function createMemoryTools(config: MemoryToolsConfig) {
   const { graphAdapter, coreFacts, embeddingFn, agentId, items, memory } = config;
 
+  /** Where `remember` keeps a fact: the user's memory, or the thread's for a run without a user */
   const scopeOf = (context: BaseToolContext): MemoryItemScope => ({
     agentId,
-    ...(context.userId !== undefined && { userId: context.userId }),
+    ...(context.userId !== undefined
+      ? { userId: context.userId }
+      : context.threadId !== undefined && { threadId: context.threadId }),
+  });
+
+  /** What `recall` and `forget` see: the user's memory and the thread's */
+  const seenFrom = (context: BaseToolContext): MemoryItemScope => ({
+    ...scopeOf(context),
+    ...(context.threadId !== undefined && { threadId: context.threadId }),
   });
 
   /** The user message of the run's thread `quote` is found in, word for word */
@@ -91,7 +100,7 @@ export function createMemoryTools(config: MemoryToolsConfig) {
   const remember = tool({
     name: 'remember',
     description:
-      'Save a fact or piece of information to long-term memory. Use this when the user shares important information that should be remembered across conversations.',
+      "Save a fact or piece of information to long-term memory. Use this when the user shares important information that should be remembered across conversations, and give the user's own words as the quote.",
     parameters: rememberParams,
     execute: async ({ fact, category, isCoreFact, coreFactKey, quote }, context) => {
       if (isCoreFact && !coreFactKey) {
@@ -128,7 +137,7 @@ export function createMemoryTools(config: MemoryToolsConfig) {
             {
               kind: 'fact',
               content: fact,
-              trust: usersOwn && said ? 'user' : 'model',
+              trust: usersOwn ? 'user' : 'model',
               confidence: 0.9,
               scope: scopeOf(context),
               evidence,
@@ -167,7 +176,11 @@ export function createMemoryTools(config: MemoryToolsConfig) {
       const results: ResultItem[] = [];
 
       if (items) {
-        for (const item of await items.query({ scope: scopeOf(context), text: query, limit: 10 })) {
+        for (const item of await items.query({
+          scope: seenFrom(context),
+          text: query,
+          limit: 10,
+        })) {
           results.push({ fact: item.content, type: 'memory', confidence: item.confidence });
         }
       }
@@ -216,10 +229,10 @@ export function createMemoryTools(config: MemoryToolsConfig) {
   const forget = tool({
     name: 'forget',
     description:
-      'Delete facts from long-term memory that match the given pattern. Use with care as this permanently removes information.',
+      'Forget facts in long-term memory that match the given pattern: they are no longer recalled or used. Use with care.',
     parameters: forgetParams,
     execute: async ({ query }, context) => {
-      const expired = items ? await items.query({ scope: scopeOf(context), text: query }) : [];
+      const expired = items ? await items.query({ scope: seenFrom(context), text: query }) : [];
       if (items && expired.length > 0) await items.expire(expired.map((item) => item.id));
       const nodeQuery: NodeQuery = {
         agentId,

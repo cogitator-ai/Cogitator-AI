@@ -110,6 +110,35 @@ function sameScope(a: MemoryItemScope, b: MemoryItemScope): boolean {
   );
 }
 
+/**
+ * Whether two values of a slot are the same value: the same text up to spaces at the ends and
+ * between words. Case and signs count, so `-5` is not `5` and a corrected spelling is a change.
+ */
+export function sameValue(a: string, b: string): boolean {
+  const plain = (value: string) => value.normalize('NFKC').replace(/\s+/g, ' ').trim();
+  return plain(a) === plain(b);
+}
+
+/** Whether `a` and `b` are laid out the same in the timeline of their slot */
+function sameState(a: MemoryItem, b: MemoryItem): boolean {
+  return (
+    a.status === b.status &&
+    time(a.validTo) === time(b.validTo) &&
+    a.supersededBy === b.supersededBy &&
+    (a.supersedes ?? []).join('\u0000') === (b.supersedes ?? []).join('\u0000')
+  );
+}
+
+/** First seen first, then by id */
+function byFirstSeen(a: MemoryEntity, b: MemoryEntity): number {
+  return (
+    a.firstSeenAt.getTime() - b.firstSeenAt.getTime() || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+  );
+}
+
+/** Passes a settle makes at most, each after another writer changed the slot meanwhile */
+const SETTLE_PASSES = 5;
+
 function mergedEvidence(a: Evidence[], b: Evidence[]): Evidence[] {
   const key = (piece: Evidence) => `${piece.entryId ?? ''}\u0000${piece.quote}`;
   const seen = new Set(a.map(key));
@@ -134,12 +163,12 @@ export interface MemoryItemsConfig {
 /**
  * Memory items with their rules, over any {@link MemoryItemAdapter}.
  *
- * Writing only adds. An item said again merges its evidence into the one already there. An
- * `active` item of a slot closes the `active` item of that slot and scope it follows in the
- * world (`validFrom` not earlier), which becomes `superseded` with `validTo` set, so nothing
- * is deleted and a question "as of" an earlier date still finds it. An item that says how
- * things were before the current one (a flashback) is kept as history and closes nothing. Only
- * an `active` item closes another: a `suggested` one waits beside it until {@link activate}.
+ * Writing only adds. An item said again merges its evidence into the one already there. The
+ * `active` items of a slot and scope form its timeline: by when each started to hold, each is
+ * closed (`superseded`, `validTo`) when the next one starts, the last one open, so nothing is
+ * deleted, a question "as of" an earlier date finds what held then, and an item that tells how
+ * things were before (a flashback) takes its place in the past without closing the present. A
+ * `suggested` item stays out of the timeline until {@link activate}.
  *
  * An item becomes `active` on its own when it comes from the application (`system`), or from
  * the user with quotes that hold, at {@link MemoryItemsConfig.activationConfidence} or above.
@@ -225,63 +254,81 @@ export class MemoryItems {
 
     const same = await this.sameItem(item);
     if (same) return this.merge(same, item);
-    return this.writeState(item);
+    const written = unwrap(await this.adapter.putItem(item));
+    if (written.slot === undefined) return written;
+    if (written.status === 'active') return this.settled(written);
+    if (written.kind === 'opinion') await this.weaken(written);
+    return written;
   }
 
   /**
-   * The item already kept that `item` says again: same scope, kind and words, or slot and value,
-   * one memory is not letting go
+   * The item already kept that `item` says again: of the same scope and kind, open and not let
+   * go, with the same words or, in a slot, the same value. In a slot it is only one no other
+   * value followed since, so saying a value again after it changed is a new state, not the old
+   * one brought back with its old date.
    */
   private async sameItem(item: MemoryItem): Promise<MemoryItem | undefined> {
     const found = unwrap(
       await this.adapter.findItems({
         agentId: item.scope.agentId,
-        kinds: [item.kind],
-        statuses: ['active', 'suggested'],
-        ...(item.slot !== undefined && { slots: [item.slot] }),
+        ...(item.slot !== undefined ? { slots: [item.slot] } : { kinds: [item.kind] }),
       })
-    );
+    ).filter((known) => sameScope(known.scope, item.scope));
     const content = normalizeName(item.content);
-    return found.find(
+    const candidate = found.find(
       (known) =>
-        sameScope(known.scope, item.scope) &&
+        known.kind === item.kind &&
+        (known.status === 'active' || known.status === 'suggested') &&
         known.validTo === undefined &&
         known.expiredAt === undefined &&
         (normalizeName(known.content) === content ||
           (item.slot !== undefined &&
             item.value !== undefined &&
             known.value !== undefined &&
-            normalizeName(known.value) === normalizeName(item.value)))
+            sameValue(known.value, item.value)))
     );
-  }
-
-  private async merge(known: MemoryItem, item: MemoryItem): Promise<MemoryItem> {
-    const gained =
-      known.kind === 'opinion' ? Math.min(1, known.confidence + OPINION_GAIN) : known.confidence;
-    const verified = known.verified || item.verified;
-    const merged: MemoryItem = {
-      ...known,
-      evidence: mergedEvidence(known.evidence, item.evidence),
-      verified,
-      confidence: Math.max(gained, item.confidence),
-    };
-    const status =
-      known.status === 'suggested' && this.statusFor(merged) === 'active' ? 'active' : known.status;
-    if (status === 'active' && known.status === 'suggested') {
-      return this.writeState({ ...merged, status }, known.id);
-    }
-    return unwrap(await this.adapter.putItem({ ...merged, status }));
+    if (!candidate || item.slot === undefined) return candidate;
+    const since = time(candidate.validFrom) ?? 0;
+    const followed = found.some(
+      (known) =>
+        known.id !== candidate.id &&
+        (known.status === 'active' || known.status === 'superseded') &&
+        (time(known.validFrom) ?? 0) > since
+    );
+    return followed ? undefined : candidate;
   }
 
   /**
-   * Writes `item` and, when it is an `active` item of a slot, closes what it follows. A
-   * `suggested` opinion only weakens the `active` opinions of its slot that come from a more
-   * trusted source. `replacing` names the stored item it is, one that became `active` and now
-   * supersedes in turn.
+   * `item` merged into `known`, the item it says again: the evidence of both, and the trust that
+   * comes with the better grounded of the two (quotes that hold first, then the more trusted
+   * source), so a quote of one source never vouches for the trust of another. An opinion said
+   * again with quotes that hold gains confidence.
    */
-  private async writeState(item: MemoryItem, replacing?: string): Promise<MemoryItem> {
-    if (item.slot === undefined) return unwrap(await this.adapter.putItem(item));
-    const current = unwrap(
+  private async merge(known: MemoryItem, item: MemoryItem): Promise<MemoryItem> {
+    const itemBetter =
+      Number(item.verified) - Number(known.verified) || rank(item.trust) - rank(known.trust);
+    const source = itemBetter > 0 ? item : known;
+    const confidence =
+      known.kind === 'opinion' && item.verified
+        ? Math.min(1, Math.max(known.confidence, source.confidence) + OPINION_GAIN)
+        : Math.max(known.confidence, source.confidence);
+    const merged: MemoryItem = {
+      ...known,
+      evidence: mergedEvidence(known.evidence, item.evidence),
+      trust: source.trust,
+      verified: source.verified,
+      confidence,
+    };
+    const status =
+      known.status === 'suggested' && this.statusFor(merged) === 'active' ? 'active' : known.status;
+    const written = unwrap(await this.adapter.putItem({ ...merged, status }));
+    return written.slot !== undefined && status === 'active' ? this.settled(written) : written;
+  }
+
+  /** Takes confidence from the open opinions of `item`'s slot a more trusted source holds */
+  private async weaken(item: MemoryItem): Promise<void> {
+    if (item.slot === undefined) return;
+    const held = unwrap(
       await this.adapter.findItems({
         agentId: item.scope.agentId,
         slots: [item.slot],
@@ -289,52 +336,82 @@ export class MemoryItems {
       })
     ).filter(
       (known) =>
-        known.id !== (replacing ?? item.id) &&
+        known.kind === 'opinion' &&
         sameScope(known.scope, item.scope) &&
-        known.validTo === undefined
+        known.validTo === undefined &&
+        rank(known.trust) > rank(item.trust)
     );
-    if (item.status !== 'active') {
-      if (item.kind === 'opinion') {
-        for (const known of current) {
-          if (known.kind !== 'opinion' || rank(known.trust) <= rank(item.trust)) continue;
-          unwrap(
-            await this.adapter.putItem({
-              ...known,
-              confidence: Math.max(0, known.confidence - OPINION_LOSS),
-            })
-          );
-        }
-      }
-      return unwrap(await this.adapter.putItem(item));
+    for (const known of held) {
+      unwrap(
+        await this.adapter.putItem({
+          ...known,
+          confidence: Math.max(0, known.confidence - OPINION_LOSS),
+        })
+      );
     }
-    const from = time(item.validFrom) ?? 0;
-    const follows = current.filter((known) => (time(known.validFrom) ?? 0) <= from);
-    const later = current.filter((known) => (time(known.validFrom) ?? 0) > from);
-
-    const earliestLater = later
-      .map((known) => known.validFrom)
-      .filter((date): date is Date => date !== undefined)
-      .sort((a, b) => a.getTime() - b.getTime())[0];
-    const kept: MemoryItem = {
-      ...item,
-      ...(follows.length > 0 && {
-        supersedes: [...(item.supersedes ?? []), ...follows.map((known) => known.id)],
-      }),
-      ...(earliestLater && { validTo: earliestLater }),
-    };
-    const written = unwrap(await this.adapter.putItem(kept));
-    for (const known of follows) {
-      await this.adapter.putItem({
-        ...known,
-        status: 'superseded',
-        validTo: item.validFrom ?? item.recordedAt,
-        supersededBy: written.id,
-      });
-    }
-    return written;
   }
 
-  /** The entity `name` stands for in `scope`, made when there is none yet */
+  /** `item` as stored once its slot is settled */
+  private async settled(item: MemoryItem): Promise<MemoryItem> {
+    if (item.slot !== undefined) await this.settle(item.slot, item.scope);
+    return unwrap(await this.adapter.getItem(item.id)) ?? item;
+  }
+
+  /**
+   * Lays the states of `slot` in `scope` out in time: its `active` and `superseded` items memory
+   * keeps, by when they started to hold (then when they were recorded, then by id), each closed
+   * when the next one starts and `superseded` by it, the last one `active` and open. The layout
+   * depends only on the items, so writers that raced, a write after an older one (a flashback
+   * told late) and a close that failed half way all end in the same timeline once any of them
+   * settles it. A pass that changed something reads again, in case another writer changed the
+   * slot meanwhile. An item memory let go keeps its place in the timeline, so forgetting the
+   * latest state does not bring the one before it back.
+   */
+  private async settle(slot: string, scope: MemoryItemScope): Promise<void> {
+    for (let pass = 0; pass < SETTLE_PASSES; pass++) {
+      const states = unwrap(
+        await this.adapter.findItems({
+          agentId: scope.agentId,
+          slots: [slot],
+          statuses: ['active', 'superseded'],
+          includeExpired: true,
+        })
+      )
+        .filter((item) => sameScope(item.scope, scope))
+        .sort((a, b) => (time(a.validFrom) ?? 0) - (time(b.validFrom) ?? 0) || byRecorded(a, b));
+      let changed = false;
+      for (const [at, item] of states.entries()) {
+        const next = states[at + 1];
+        const previous = states[at - 1];
+        const { validTo: _validTo, supersededBy: _supersededBy, ...open } = item;
+        const supersedes =
+          previous && !(item.supersedes ?? []).includes(previous.id)
+            ? [...(item.supersedes ?? []), previous.id]
+            : item.supersedes;
+        const laid: MemoryItem = next
+          ? {
+              ...open,
+              ...(supersedes && { supersedes }),
+              status: 'superseded',
+              validTo: next.validFrom ?? next.recordedAt,
+              supersededBy: next.id,
+            }
+          : { ...open, ...(supersedes && { supersedes }), status: 'active' };
+        if (sameState(item, laid)) continue;
+        unwrap(await this.adapter.putItem(laid));
+        changed = true;
+      }
+      if (!changed) return;
+    }
+  }
+
+  /**
+   * The entity `name` stands for in `scope`: one `scope` sees (its own, or a broader one such as
+   * the user's for a thread), made in `scope` when there is none yet, so a slot of an entity is
+   * the same slot in a thread and in the user's memory. When writers raced and
+   * made two for one name, every one of them settles on the first made (then by id), and a
+   * writer that made another one deletes it before anything stands on it.
+   */
   async link(
     scope: MemoryItemScope,
     name: string,
@@ -342,25 +419,22 @@ export class MemoryItems {
     type?: string
   ): Promise<MemoryEntity> {
     const normalized = normalizeName(name);
-    const found = unwrap(
-      await this.adapter.findEntities({ agentId: scope.agentId, names: [normalized] })
-    ).find((entity) => sameScope(entity.scope, scope));
+    const named = async () =>
+      unwrap(await this.adapter.findEntities({ agentId: scope.agentId, names: [normalized] }))
+        .filter((entity) => visibleIn(entity, scope))
+        .sort(byFirstSeen)[0];
+    const found = await named();
     if (found) {
-      const aliases = [found.name, ...found.aliases].some(
-        (known) => normalizeName(known) === normalized
-      )
-        ? found.aliases
-        : [...found.aliases, name.trim()];
+      if (seenAt <= found.lastSeenAt && (!type || found.type)) return found;
       return unwrap(
         await this.adapter.putEntity({
           ...found,
-          aliases,
           lastSeenAt: seenAt > found.lastSeenAt ? seenAt : found.lastSeenAt,
           ...(type && !found.type && { type }),
         })
       );
     }
-    return unwrap(
+    const made = unwrap(
       await this.adapter.putEntity({
         id: `ent_${nanoid(12)}`,
         scope,
@@ -371,18 +445,25 @@ export class MemoryItems {
         lastSeenAt: seenAt,
       })
     );
+    const first = await named();
+    if (!first || first.id === made.id) return made;
+    unwrap(await this.adapter.deleteEntities([made.id]));
+    return first;
   }
 
-  /** Items `query.scope` sees, see {@link MemoryItemQuery}, oldest recorded first */
+  /**
+   * Items `query.scope` sees, see {@link MemoryItemQuery}, oldest recorded first. Which state of
+   * a slot holds is read from the times, not the status, so a state that a later one is set to
+   * close in the future still holds until then.
+   */
   async query(query: MemoryItemQuery): Promise<MemoryItem[]> {
     const now = this.now().getTime();
-    const asOf = time(query.asOf) ?? now;
     const knownAt = time(query.knownAt) ?? now;
-    const past = query.includeClosed || query.asOf !== undefined || query.knownAt !== undefined;
+    const asOf = time(query.asOf) ?? knownAt;
     const found = unwrap(
       await this.adapter.findItems({
         agentId: query.scope.agentId,
-        statuses: query.statuses ?? (past ? ['active', 'superseded'] : ['active']),
+        statuses: query.statuses ?? ['active', 'superseded'],
         includeExpired: query.knownAt !== undefined,
         ...(query.kinds && { kinds: query.kinds }),
         ...(query.slots && { slots: query.slots }),
@@ -423,7 +504,8 @@ export class MemoryItems {
       const item = unwrap(await this.adapter.getItem(itemId));
       if (!item) throw new Error(`No memory item ${itemId}`);
       if (item.status === 'active') return item;
-      return this.writeState({ ...item, status: 'active' }, item.id);
+      const active = unwrap(await this.adapter.putItem({ ...item, status: 'active' }));
+      return this.settled(active);
     });
   }
 
@@ -432,7 +514,10 @@ export class MemoryItems {
     await this.update(itemIds, (item) => ({ ...item, status: 'stale' }));
   }
 
-  /** Lets items go: they are kept, but no longer found unless asked for as of an earlier date */
+  /**
+   * Lets items go: they are kept, but no longer found unless asked for as known at an earlier
+   * date. A state let go keeps its place in time, so the one before it stays closed.
+   */
   async expire(itemIds: readonly string[], at: Date = this.now()): Promise<void> {
     await this.update(itemIds, (item) => (item.expiredAt ? item : { ...item, expiredAt: at }));
   }

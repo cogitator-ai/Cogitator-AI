@@ -282,3 +282,136 @@ describe('MemoryItems at once', () => {
     expect(entities.success && entities.data).toHaveLength(1);
   });
 });
+
+describe('MemoryItems timelines', () => {
+  const city = (value: string, from: number, fields: Partial<NewMemoryItem> = {}) =>
+    said({
+      content: `Ana lives in ${value}`,
+      subject: 'Ana',
+      attribute: 'home city',
+      value,
+      sessionAt: day(from),
+      ...fields,
+    });
+  const values = async (items: MemoryItems, asOf?: Date, knownAt?: Date) =>
+    (
+      await items.query({
+        scope,
+        ...(asOf && { asOf }),
+        ...(knownAt && { knownAt }),
+      })
+    ).map((item) => item.value);
+
+  it('says a value again after it changed as a new state, not the old one brought back', async () => {
+    const { items } = memory();
+    await items.write([city('Berlin', 1, { trust: 'model' })]);
+    await items.write([city('Paris', 10)]);
+    await items.write([city('Berlin', 20)]);
+
+    expect(await values(items)).toEqual(['Berlin']);
+    expect(await values(items, day(15))).toEqual(['Paris']);
+  });
+
+  it('keeps a state until a later one starts, even one set to start in the future', async () => {
+    const { items } = memory(day(15));
+    await items.write([city('Porto', 1), city('Lisbon', 20)]);
+
+    expect(await values(items)).toEqual(['Porto']);
+    expect(await values(items, day(25))).toEqual(['Lisbon']);
+  });
+
+  it('fits a state told late between the ones around it', async () => {
+    const { items } = memory();
+    await items.write([city('Porto', 1), city('Lisbon', 10), city('Braga', 5)]);
+
+    expect(await values(items, day(3))).toEqual(['Porto']);
+    expect(await values(items, day(7))).toEqual(['Braga']);
+    expect(await values(items, day(12))).toEqual(['Lisbon']);
+  });
+
+  it('answers as known at a date with what held then by default', async () => {
+    const { items } = memory(day(30));
+    await items.write([
+      city('Berlin', 1, { recordedAt: day(1) }),
+      city('Paris', 10, { recordedAt: day(10) }),
+    ]);
+
+    expect(await values(items, undefined, day(5))).toEqual(['Berlin']);
+  });
+
+  it('takes a changed sign or spelling as a new value', async () => {
+    const { items } = memory();
+    const [five] = await items.write([
+      said({ content: 'Offset is 5', subject: 'clock', attribute: 'offset', value: '5' }),
+    ]);
+    const [minus] = await items.write([
+      said({
+        content: 'Offset is -5',
+        subject: 'clock',
+        attribute: 'offset',
+        value: '-5',
+        sessionAt: day(2),
+      }),
+    ]);
+
+    expect(minus?.id).not.toBe(five?.id);
+    expect((await items.query({ scope })).map((item) => item.value)).toEqual(['-5']);
+  });
+
+  it('does not bring the state before back when the latest one is let go', async () => {
+    const { items } = memory();
+    const [, lisbon] = await items.write([city('Porto', 1), city('Lisbon', 10)]);
+    await items.expire([lisbon!.id]);
+    await items.write([city('Porto', 1, { content: 'Ana lived in Porto' })]);
+
+    expect(await values(items)).toEqual([]);
+  });
+
+  it('settles two states a failed close left open into one timeline', async () => {
+    const { adapter, items } = memory();
+    const [porto] = await items.write([city('Porto', 1)]);
+    await adapter.putItem({
+      ...porto!,
+      id: 'mem_stray',
+      value: 'Lisbon',
+      content: 'Ana lives in Lisbon',
+      validFrom: day(10),
+    });
+    await items.write([city('Lisbon', 10, { evidence: [{ entryId: 'e9', quote: 'Lisbon' }] })]);
+
+    expect(await values(items)).toEqual(['Lisbon']);
+    expect((await items.get(porto!.id))?.status).toBe('superseded');
+  });
+
+  it('trusts what the better grounded source says when an item is said again', async () => {
+    const { items } = memory();
+    const [web] = await items.write([said({ content: 'Ana runs Acme', trust: 'web' })]);
+    const [user] = await items.write([said({ content: 'Ana runs Acme', trust: 'user' })]);
+    expect(user).toMatchObject({ id: web?.id, trust: 'user', status: 'active' });
+
+    const [guess] = await items.write([
+      said({ content: 'Ana is a pilot', trust: 'user', verified: false }),
+    ]);
+    const [page] = await items.write([said({ content: 'Ana is a pilot', trust: 'web' })]);
+    expect(page).toMatchObject({
+      id: guess?.id,
+      trust: 'web',
+      verified: true,
+      status: 'suggested',
+    });
+  });
+
+  it('settles on one entity for a name when writers that do not share a queue race', async () => {
+    const adapter = new InMemoryAdapter({ provider: 'memory' });
+    const views = Array.from(
+      { length: 4 },
+      () => new MemoryItems({ adapter: Object.create(adapter) as InMemoryAdapter })
+    );
+
+    const linked = await Promise.all(views.map((items) => items.link(scope, 'Ana')));
+
+    expect(new Set(linked.map((entity) => entity.id)).size).toBe(1);
+    const entities = await adapter.findEntities({ agentId: 'a' });
+    expect(entities.success && entities.data).toHaveLength(1);
+  });
+});

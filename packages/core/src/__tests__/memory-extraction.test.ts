@@ -29,7 +29,9 @@ function backend(): LLMBackend & { requests: ChatRequest[] } {
         return { id: 'r', content: 'noted', finishReason: 'stop', usage };
       }
       const transcript = String(request.messages[1]?.content ?? '');
-      const lines = transcript.split('\n').filter((line) => /^\[\d+\] user: I live in/.test(line));
+      const lines = transcript
+        .split('\n')
+        .filter((line) => /^\[\d+\] user(?: \([^)]*\))?: I live in/.test(line));
       return {
         id: 'r',
         content: JSON.stringify(
@@ -142,6 +144,51 @@ describe('memory.extraction', () => {
     expect(result.output).toBe('noted');
     expect(tries).toBe(3);
     expect(warn.mock.calls.some(([message]) => String(message).includes('extract'))).toBe(true);
+  });
+
+  it('takes the entries of a first extraction that failed into the next one', async () => {
+    vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const llm = backend();
+    const answer = vi.mocked(llm.chat).getMockImplementation()!;
+    let failures = 3;
+    vi.mocked(llm.chat).mockImplementation(async (request) => {
+      if (isExtraction(request) && failures > 0) {
+        failures--;
+        return { id: 'r', content: 'no', finishReason: 'stop', usage };
+      }
+      return answer(request);
+    });
+    const cog = runtime(llm);
+
+    try {
+      await cog.run(agent, { input: 'I live in Porto', threadId: 't', userId: 'u1' });
+      vi.setSystemTime(Date.now() + 2 * 3600_000);
+      await cog.run(agent, { input: 'Nice weather', threadId: 't', userId: 'u1' });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const last = llm.requests.filter(isExtraction).at(-1);
+    expect(String(last?.messages[1]?.content)).toContain('I live in Porto');
+    const items = await itemsOf(cog);
+    const later = new Date(Date.now() + 3 * 3600_000);
+    expect(
+      (await items.query({ scope: { agentId: agent.id, userId: 'u1' }, knownAt: later })).map(
+        (i) => i.value
+      )
+    ).toEqual(['Porto']);
+  });
+
+  it('keeps a run without a user to its thread, so visitors never share memory', async () => {
+    const cog = runtime(backend());
+
+    await cog.run(agent, { input: 'I live in Porto', threadId: 'visitor-1' });
+
+    const items = await itemsOf(cog);
+    expect(await items.query({ scope: { agentId: agent.id } })).toEqual([]);
+    const [kept] = await items.query({ scope: { agentId: agent.id, threadId: 'visitor-1' } });
+    expect(kept?.scope).toEqual({ agentId: agent.id, threadId: 'visitor-1' });
   });
 
   it('refuses settings it cannot work with', async () => {

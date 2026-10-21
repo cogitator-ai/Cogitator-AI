@@ -2,6 +2,7 @@ import {
   MemoryExtractor,
   MemoryItems,
   isMemoryItemAdapter,
+  isTimeZone,
   type SummarizeFn,
 } from '@cogitator-ai/memory';
 import type {
@@ -31,14 +32,15 @@ const RETRY_AFTER_MS = 60_000;
 const RETRY_AFTER_MAX_MS = 60 * 60_000;
 
 /**
- * The entries of the path to `leafId` after `cursor`, or when the path does not hold it (a
- * first extraction, another branch), after `branchPoint`, the entry the run went after
+ * The entries of the path to `leafId` after `cursor` (the whole path for a `null` cursor, one
+ * set before anything was extracted), or when the path does not hold it (a first extraction,
+ * another branch), after `branchPoint`, the entry the run went after
  */
 async function newEntries(
   memory: Required<Pick<MemoryAdapter, 'getPath'>>,
   threadId: string,
   leafId: string,
-  cursor: string | undefined,
+  cursor: string | null | undefined,
   branchPoint: string | null
 ): Promise<MemoryEntry[]> {
   const read: MemoryEntry[] = [];
@@ -52,23 +54,30 @@ async function newEntries(
       ...(before !== undefined && { before }),
     });
     if (!page.success) throw new Error(page.error);
-    const stop = cursor === undefined ? -1 : page.data.findIndex((entry) => entry.id === cursor);
+    const stop =
+      cursor === undefined || cursor === null
+        ? -1
+        : page.data.findIndex((entry) => entry.id === cursor);
     if (stop !== -1) return [...page.data.slice(stop + 1), ...read];
     read.unshift(...page.data);
     const first = page.data[0];
     if (!first || page.data.length < PAGE) break;
     before = first.id;
   }
-  if (branchPoint === null) return read;
+  if (cursor === null || branchPoint === null) return read;
   const after = read.findIndex((entry) => entry.id === branchPoint);
   return read.slice(after + 1);
 }
 
-function cursorOf(metadata: Record<string, unknown> | undefined): string | undefined {
+/**
+ * The last entry extracted from a thread, `null` when extraction is to start from the thread's
+ * first entry, undefined when the thread was never extracted
+ */
+function cursorOf(metadata: Record<string, unknown> | undefined): string | null | undefined {
   const cursor = metadata?.[EXTRACTION_CURSOR];
   if (typeof cursor !== 'object' || cursor === null) return undefined;
   const through = (cursor as { through?: unknown }).through;
-  return typeof through === 'string' ? through : undefined;
+  return typeof through === 'string' || through === null ? through : undefined;
 }
 
 /**
@@ -76,8 +85,10 @@ function cursorOf(metadata: Record<string, unknown> | undefined): string | undef
  * the entries of the active branch written since the last extraction (whose last entry the
  * thread keeps in `metadata.memoryExtraction`), or for a first extraction the run's own, read in
  * windows by the extraction model and written through `MemoryItems`, so items are grounded,
- * trusted by who said them and only added. A run aside of the active branch, an aborted run and
- * a memory that stores no items are left alone. An extraction that fails is logged, the run keeps
+ * trusted by who said them and only added. A first extraction that fails marks where it started,
+ * so the next one takes those entries too. A run without a user keeps its items to its thread, so
+ * visitors never share them. A run aside of the active branch, an aborted run and a memory that
+ * stores no items are left alone. An extraction that fails is logged, the run keeps
  * its result, and the thread is left alone for a minute, twice as long after each failure in a
  * row up to an hour.
  */
@@ -111,20 +122,24 @@ export function memoryExtractionMiddleware(
       const metadata = thread.data.metadata;
       const userId =
         context.userId ?? (typeof metadata.userId === 'string' ? metadata.userId : undefined);
+      const anonymous = config.scope !== 'agent' && userId === undefined;
       const scope: MemoryItemScope = {
         agentId: result.agentId,
         ...(config.scope !== 'agent' && userId !== undefined && { userId }),
-        ...(config.scope === 'thread' && { threadId: place.threadId }),
+        ...((config.scope === 'thread' || anonymous) && { threadId: place.threadId }),
       };
       const timeZone =
-        typeof metadata.timeZone === 'string' ? metadata.timeZone : (config.timeZone ?? 'UTC');
+        typeof metadata.timeZone === 'string' && isTimeZone(metadata.timeZone)
+          ? metadata.timeZone
+          : (config.timeZone ?? 'UTC');
+      const cursor = cursorOf(metadata);
 
       try {
         const entries = await newEntries(
           { getPath: memory.getPath.bind(memory) },
           place.threadId,
           place.leafId,
-          cursorOf(metadata),
+          cursor,
           place.branchPoint
         );
         if (entries.length === 0) return;
@@ -159,6 +174,13 @@ export function memoryExtractionMiddleware(
           });
         }
       } catch (error) {
+        if (cursor === undefined) {
+          await memory
+            .updateThread(place.threadId, {
+              [EXTRACTION_CURSOR]: { through: place.branchPoint, at: new Date().toISOString() },
+            })
+            .catch(() => undefined);
+        }
         if (context.signal.aborted) return;
         const wait = Math.min(
           (failures.get(place.threadId)?.wait ?? RETRY_AFTER_MS / 2) * 2,

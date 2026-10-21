@@ -64,7 +64,9 @@ function textOf(content: string | ContentPart[]): string {
  */
 export function chapterTranscript(
   window: readonly MemoryEntry[],
-  entryTokens = Number.POSITIVE_INFINITY
+  entryTokens = Number.POSITIVE_INFINITY,
+  /** A note after the role of an entry, such as the date it was written */
+  noteOf?: (entry: MemoryEntry) => string | undefined
 ): string {
   const room = entryTokens * 4;
   return window
@@ -81,7 +83,8 @@ export function chapterTranscript(
         whole.length > room
           ? `${whole.slice(0, room)} [${whole.length - room} more characters cut]`
           : whole;
-      return `[${at}] ${role}: ${text.replace(/\n/g, '\n    ')}`;
+      const note = noteOf?.(entry);
+      return `[${at}] ${role}${note ? ` (${note})` : ''}: ${text.replace(/\n/g, '\n    ')}`;
     })
     .join('\n');
 }

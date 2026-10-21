@@ -18,13 +18,14 @@ import type {
   GraphNode,
   MemoryAdapter,
   FactAdapter,
+  MemoryItem,
   MemoryItemKind,
   MemoryItemTrust,
   EmbeddingAdapter,
   EmbeddingService,
   MemoryResult,
 } from '@cogitator-ai/types';
-import type { MemoryItems } from './memory-items';
+import { visibleIn, type MemoryItems } from './memory-items';
 import type { GraphContextBuilder } from './knowledge-graph/graph-context-builder';
 import { readCompactedHistory } from './compaction';
 import {
@@ -120,9 +121,44 @@ function factLine(fact: Fact): string {
     : `- ${fact.content}`;
 }
 
+/** How narrow a scope is: a thread's items over a user's, a user's over the agent's */
+function narrowness(item: MemoryItem): number {
+  return (
+    (item.scope.threadId !== undefined ? 4 : 0) +
+    (item.scope.projectId !== undefined ? 2 : 0) +
+    (item.scope.userId !== undefined ? 1 : 0)
+  );
+}
+
+/** Whether state `a` of a slot wins over `b`: it started later, or together in a narrower scope */
+function laterState(a: MemoryItem, b: MemoryItem): boolean {
+  const since = (a.validFrom?.getTime() ?? 0) - (b.validFrom?.getTime() ?? 0);
+  return since !== 0 ? since > 0 : narrowness(a) > narrowness(b);
+}
+
 /**
- * The memory items of the run's agent, user and thread that hold now, as facts: instructions and
- * preferences first, newest first within a kind, each with the value of the item it superseded
+ * `items` with one item per slot: the one that started to hold last, of the narrowest scope when
+ * two started together, since a run sees a slot's states of its thread, its user and the agent
+ * at once
+ */
+function onePerSlot(items: readonly MemoryItem[]): MemoryItem[] {
+  const bySlot = new Map<string, MemoryItem>();
+  const kept: MemoryItem[] = [];
+  for (const item of items) {
+    if (item.slot === undefined) {
+      kept.push(item);
+      continue;
+    }
+    const known = bySlot.get(item.slot);
+    if (!known || laterState(item, known)) bySlot.set(item.slot, item);
+  }
+  return [...kept, ...bySlot.values()];
+}
+
+/**
+ * The memory items of the run's agent, user and thread that hold now, as facts: one per slot,
+ * instructions and preferences first, newest first within a kind, each with the value of the
+ * item it superseded when the run may still see it
  */
 async function loadItemFacts(items: MemoryItems, options: BuildContextOptions): Promise<Fact[]> {
   const current = await items.query({
@@ -132,7 +168,12 @@ async function loadItemFacts(items: MemoryItems, options: BuildContextOptions): 
       threadId: options.threadId,
     },
   });
-  const ordered = [...current].sort(
+  const scope = {
+    agentId: options.agentId,
+    ...(options.userId !== undefined && { userId: options.userId }),
+    threadId: options.threadId,
+  };
+  const ordered = onePerSlot(current).sort(
     (a, b) =>
       KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || b.recordedAt.getTime() - a.recordedAt.getTime()
   );
@@ -140,7 +181,11 @@ async function loadItemFacts(items: MemoryItems, options: BuildContextOptions): 
     ordered.map(async (item): Promise<Fact> => {
       const replaced = item.supersedes?.at(-1);
       const before = replaced ? await items.get(replaced) : null;
-      const previously = before ? (before.value ?? before.content) : undefined;
+      const shown =
+        before &&
+        visibleIn(before, scope) &&
+        (before.expiredAt === undefined || before.expiredAt.getTime() > Date.now());
+      const previously = shown ? (before.value ?? before.content) : undefined;
       return {
         id: item.id,
         agentId: item.scope.agentId,

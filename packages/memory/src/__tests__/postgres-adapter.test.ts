@@ -680,7 +680,12 @@ describe('PostgresAdapter', () => {
           const wanted = statuses ? (params[Number(statuses[1]) - 1] as string[]) : undefined;
           const rows = [...table.values()]
             .filter((item) => wanted === undefined || wanted.includes(String(item.status)))
-            .filter((item) => !sql.includes('expired_at IS NULL') || !('expiredAt' in item))
+            .filter(
+              (item) =>
+                !sql.includes('expired_at IS NULL') ||
+                !('expiredAt' in item) ||
+                new Date(String(item.expiredAt)) > new Date()
+            )
             .map((item) => ({ item }));
           return { rows };
         }
@@ -799,7 +804,9 @@ describe('PostgresAdapter', () => {
         metadata: { source: 'chat' },
         createdAt: created,
       });
-      const [added, closed] = writtenItems();
+      const written = writtenItems();
+      const added = written.filter((item) => item?.id !== 'fact_123').at(-1);
+      const closed = written.filter((item) => item?.id === 'fact_123').at(-1);
       expect(added).toMatchObject({
         content: 'User likes tea',
         slot: 'fact:fact_123',

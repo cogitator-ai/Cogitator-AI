@@ -103,7 +103,7 @@ describe('runs with memory.contextBuilder', () => {
     await cog.close();
   });
 
-  it('warns about context parts the runtime cannot provide', async () => {
+  it('warns about context parts the runtime cannot provide, not about facts it stores', async () => {
     const { backend } = recordingBackend();
     const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
     const cog = new Cogitator({
@@ -121,7 +121,7 @@ describe('runs with memory.contextBuilder', () => {
     await cog.run(new Agent({ name: 'a', model: 'mock/m', instructions: 'x' }), { input: 'hi' });
 
     const messages = warn.mock.calls.map(([message]) => String(message));
-    expect(messages.some((m) => m.includes('includeFacts'))).toBe(true);
+    expect(messages.some((m) => m.includes('includeFacts'))).toBe(false);
     expect(messages.some((m) => m.includes('includeSemanticContext'))).toBe(true);
     expect(messages.some((m) => m.includes('includeGraphContext'))).toBe(true);
     await cog.close();

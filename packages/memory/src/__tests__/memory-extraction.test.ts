@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import type { MemoryEntry, Message } from '@cogitator-ai/types';
 import { InMemoryAdapter } from '../adapters/memory';
 import { MemoryItems } from '../memory-items';
+import type { SummarizeOptions } from '../compaction';
 import { MemoryExtractor, parseExtraction, sessionLine, trustOfEntry } from '../memory-extraction';
 
 const session = new Date('2026-01-07T12:00:00Z');
@@ -22,8 +23,8 @@ const window = [
 ];
 
 describe('parseExtraction', () => {
-  it('ties quotes to entries, trusts the most trusted source and resolves time', () => {
-    const [moved, guess, page] =
+  it('ties quotes to entries, trusts the least trusted source quoted and resolves time', () => {
+    const [moved, vouched, guess, page] =
       parseExtraction(
         JSON.stringify([
           {
@@ -34,9 +35,14 @@ describe('parseExtraction', () => {
             value: 'Lisbon',
             confidence: 0.9,
             time: { text: 'last month', relative: { unit: 'month', amount: -1 } },
+            evidence: [{ message: 0, quote: 'I moved to Lisbon last month' }],
+          },
+          {
+            kind: 'fact',
+            content: 'Ana is the CEO of Acme',
             evidence: [
-              { message: 0, quote: 'I moved to Lisbon last month' },
-              { message: 1, quote: 'Noted, Ana' },
+              { message: 0, quote: 'Call me Ana' },
+              { message: 2, quote: 'Ana Lima is the CEO of Acme' },
             ],
           },
           {
@@ -68,6 +74,7 @@ describe('parseExtraction', () => {
         precision: 'month',
       },
     });
+    expect(vouched).toMatchObject({ trust: 'web', verified: true });
     expect(guess).toMatchObject({ trust: 'model', verified: true, confidence: 0.8 });
     expect(page).toMatchObject({ trust: 'web', verified: true });
   });
@@ -81,7 +88,42 @@ describe('parseExtraction', () => {
       ) ?? [];
     expect(item).toMatchObject({ verified: false, trust: 'model' });
     expect(parseExtraction('nothing to remember', window, { scope })).toBeUndefined();
-    expect(parseExtraction('[{"kind":"rumor","content":"x"}]', window, { scope })).toBeUndefined();
+    expect(parseExtraction('{"kind":"fact","content":"x"}', window, { scope })).toBeUndefined();
+    expect(parseExtraction('[{"kind":"rumor","content":"x"}]', window, { scope })).toEqual([]);
+  });
+
+  it('reads nulls and blank placeholders as absent and keeps the items around one that does not fit', () => {
+    const items =
+      parseExtraction(
+        JSON.stringify([
+          {
+            kind: 'event',
+            content: 'Ana moved',
+            subject: null,
+            confidence: '0.9',
+            time: {
+              text: 'last month',
+              date: null,
+              relative: { unit: 'month', amount: -1 },
+              weekday: { day: '', amount: 0 },
+            },
+            evidence: [{ message: 0, quote: 'I moved to Lisbon' }, null],
+          },
+          { kind: 'fact', content: '' },
+          { kind: 'preference', content: 'Ana likes jazz', value: 7, time: null, evidence: null },
+        ]),
+        window,
+        { scope }
+      ) ?? [];
+
+    expect(items.map((item) => item.content)).toEqual(['Ana moved', 'Ana likes jazz']);
+    expect(items[0]).toMatchObject({
+      confidence: 0.9,
+      verified: true,
+      about: { precision: 'month' },
+    });
+    expect(items[0]?.subject).toBeUndefined();
+    expect(items[1]).toMatchObject({ value: '7', verified: false, evidence: [] });
   });
 
   it('keeps an attribute only with its subject', () => {
@@ -113,7 +155,7 @@ describe('MemoryExtractor', () => {
   it('writes what each window holds, so a newer state closes the older one', async () => {
     const adapter = new InMemoryAdapter({ provider: 'memory' });
     const items = new MemoryItems({ adapter, now: () => new Date('2026-02-01T00:00:00Z') });
-    const summarize = vi.fn(async (messages: Message[]) => {
+    const summarize = vi.fn(async (messages: Message[], _options?: SummarizeOptions) => {
       const transcript = String(messages[0]?.content);
       const city = transcript.includes('Lisbon') ? 'Lisbon' : 'Porto';
       const line = transcript.split('\n').find((text) => text.includes(city)) ?? '';

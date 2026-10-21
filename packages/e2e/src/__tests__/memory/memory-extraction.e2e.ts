@@ -8,7 +8,7 @@ describeGoogle('Memory: memory items extracted after each run', () => {
   const cog = new Cogitator({
     llm: {
       defaultModel: 'google/gemini-2.5-flash',
-      providers: { google: { apiKey: process.env.GOOGLE_API_KEY } },
+      providers: { google: { apiKey: process.env.GOOGLE_API_KEY! } },
     },
     memory: {
       adapter: 'memory',
