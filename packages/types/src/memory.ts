@@ -4,6 +4,7 @@
 
 import type { Message, ToolCall, ToolResult } from './message';
 import type { GraphContext, GraphContextOptions, GraphNode } from './knowledge-graph';
+import type { MemoryCompactionConfig } from './session';
 
 export type MemoryType = 'conversation' | 'fact' | 'embedding';
 
@@ -61,6 +62,43 @@ export interface CompactionEvent {
   compacted: number;
   /** Whether its message summarizes them, or they were dropped without a summary */
   summarized: boolean;
+  /**
+   * The summary as a tree of what the conversation established, when a `hierarchical`
+   * compaction wrote it: the newest chapters, the arcs older chapters were folded into, and the
+   * saga older arcs were folded into. The entry's message is the handoff rendered from it.
+   */
+  levels?: CompactionLevels;
+}
+
+/** What a piece of summary records */
+export type CompactionAtomKind =
+  'fact' | 'task' | 'decision' | 'constraint' | 'error' | 'file' | 'thread';
+
+/** One thing a summary keeps from the conversation, with what it stands on */
+export interface CompactionAtom {
+  kind: CompactionAtomKind;
+  /** Whether it is still open, such as a task not done or an error not fixed */
+  status: 'open' | 'closed';
+  text: string;
+  /** Quotes of the entries it stands on */
+  evidence?: Evidence[];
+  /** Whether every quote was found in its entry: an atom that is not is a suggestion */
+  verified: boolean;
+}
+
+/** A part of the conversation a summary covers, and what it kept of it */
+export interface CompactionNode {
+  /** The first and the last entry the node covers */
+  from: string;
+  to: string;
+  atoms: CompactionAtom[];
+}
+
+/** The levels of a hierarchical summary, oldest first in each */
+export interface CompactionLevels {
+  saga?: CompactionNode;
+  arcs: CompactionNode[];
+  chapters: CompactionNode[];
 }
 
 /** The entry types that hold conversation, the ones reads return unless asked for others */
@@ -587,6 +625,8 @@ export interface MemoryConfig {
    */
   embedding?: EmbeddingServiceConfig | EmbeddingService;
   contextBuilder?: Partial<ContextBuilderConfig>;
+  /** Compaction of a run's thread after the run, off unless set */
+  compaction?: MemoryCompactionConfig;
 }
 
 export type SearchStrategy = 'vector' | 'keyword' | 'hybrid';

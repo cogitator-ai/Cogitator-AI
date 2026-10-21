@@ -4,7 +4,12 @@
 
 export type SessionStatus = 'active' | 'paused' | 'archived';
 
-export type CompactionStrategy = 'summary' | 'sliding-window' | 'hybrid';
+/**
+ * How a thread is compacted: `hierarchical` keeps a tree of grounded atoms (see
+ * `CompactionLevels`), `summary` one summary text, `sliding-window` drops old entries, `hybrid`
+ * one of the last two by how much there is to drop
+ */
+export type CompactionStrategy = 'hierarchical' | 'summary' | 'sliding-window' | 'hybrid';
 
 export interface Session {
   readonly id: string;
@@ -49,10 +54,52 @@ export interface CompactionConfig {
   messageThreshold?: number;
   /** Newest entries kept verbatim after the summary */
   keepRecent: number;
+  /**
+   * Tokens of the newest conversation kept verbatim, in place of `keepRecent` when set: a
+   * suffix of whole turns, so a tool call keeps its result
+   */
+  keepRecentTokens?: number;
+  /** `hierarchical`: tokens of conversation one chapter covers (default 4000) */
+  chapterTokens?: number;
+  /** `hierarchical`: chapters kept before the oldest are folded into an arc (default 4) */
+  chaptersPerArc?: number;
+  /** `hierarchical`: arcs kept before the oldest are folded into the saga (default 4) */
+  arcsPerSaga?: number;
   /** Model that writes the summary; handed to the summarizer as `options.model`. */
   summaryModel?: string;
   /** Instructions for the summary; handed to the summarizer as `options.prompt`. */
   summaryPrompt?: string;
+}
+
+/** A compaction about to happen after a run, for `MemoryCompactionConfig.beforeCompact` */
+export interface BeforeCompactEvent {
+  threadId: string;
+  /** Tokens of the thread's conversation */
+  tokens: number;
+  /** Tokens past which the thread is compacted */
+  threshold: number;
+}
+
+/**
+ * Compaction of a run's thread after the run (`memory.compaction`): once the conversation of the
+ * run's branch passes `at` of the model's context window, it is compacted `hierarchical`ly, the
+ * newest `keepRecentTokens` kept verbatim (by default the less of 20000 and a quarter of the
+ * window). The settings of `CompactionConfig` apply, and `strategy` is always `hierarchical`.
+ */
+export interface MemoryCompactionConfig extends Partial<
+  Omit<CompactionConfig, 'strategy' | 'threshold' | 'messageThreshold'>
+> {
+  /** Share of the model's context window the conversation passes to be compacted (default 0.8) */
+  at?: number;
+  /**
+   * Called before a compaction, a chance to save what matters to memory: `false` cancels it,
+   * `{ instructions }` adds to what the summarizer is asked
+   */
+  beforeCompact?: (
+    event: BeforeCompactEvent
+  ) => void | false | { instructions?: string } | Promise<void | false | { instructions?: string }>;
+  /** Called after a compaction with what it did */
+  afterCompact?: (result: CompactionResult) => void | Promise<void>;
 }
 
 export interface CompactionResult {

@@ -5,6 +5,7 @@
 import type { ChatRequest, ChatResponse } from './llm';
 import type { Message, ToolCall, ToolResult } from './message';
 import type { Tool } from './tool';
+import type { RunResult } from './runtime';
 
 /**
  * What a middleware hook knows about the run it works in. `iteration` and the agent are those of
@@ -177,4 +178,17 @@ export interface RunMiddleware<TDeps = unknown> {
     next: ToolCallHandler,
     context: RunMiddlewareContext<TDeps>
   ): Promise<ToolResult>;
+  /**
+   * After a run finished and saved what it said, before `run()` returns its result: for work
+   * that keeps memory in shape for the next run, such as compaction. Not called for a run that
+   * failed or paused. An error it throws fails the run.
+   */
+  afterRun?(event: RunEndEvent, context: RunMiddlewareContext<TDeps>): void | Promise<void>;
+}
+
+/** A run that finished, for `afterRun` */
+export interface RunEndEvent {
+  readonly result: RunResult;
+  /** The model the run ended on, as `provider/model` */
+  readonly model: string;
 }

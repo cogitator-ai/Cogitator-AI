@@ -5,12 +5,25 @@ import {
   type MemoryEntryType,
   type MemoryResult,
   type CompactionConfig,
+  type CompactionAtom,
   type CompactionEvent,
+  type CompactionLevels,
   type CompactionResult,
   type CompactionStrategy,
   type Message,
 } from '@cogitator-ai/types';
 import { countEntryTokens, countMessagesTokens } from './token-counter';
+import {
+  CHAPTER_PROMPT,
+  chapterTranscript,
+  chapterWindows,
+  foldLevels,
+  lostControls,
+  mergeAtoms,
+  parseChapter,
+  renderHandoff,
+  structuralAtoms,
+} from './compaction-hierarchy';
 
 /**
  * Summary settings taken from the `CompactionConfig` passed to `compact()`.
@@ -211,7 +224,8 @@ export class CompactionService {
     sessionId: string,
     entriesToRemove: MemoryEntry[],
     summary: string,
-    entriesToKeep: MemoryEntry[] = []
+    entriesToKeep: MemoryEntry[] = [],
+    levels?: CompactionLevels
   ): Promise<number> {
     const summaryMessage: Message = {
       role: 'system',
@@ -225,6 +239,7 @@ export class CompactionService {
         ...lastOf(entriesToRemove),
         compacted: entriesToRemove.length,
         summarized: true,
+        ...(levels && { levels }),
       });
       return summaryTokens;
     }
@@ -342,6 +357,29 @@ export class CompactionService {
     }
   }
 
+  /**
+   * The atoms of a chapter: what the summarizer finds in `window` (asked with
+   * {@link CHAPTER_PROMPT}, asked again up to twice for an answer that is not a valid array),
+   * with the control atoms the entries hold in their structure, which no answer can lose
+   */
+  async chapterAtoms(window: MemoryEntry[], config: CompactionConfig): Promise<CompactionAtom[]> {
+    const prompt = config.summaryPrompt
+      ? `${CHAPTER_PROMPT}\n\n${config.summaryPrompt}`
+      : CHAPTER_PROMPT;
+    let atoms: CompactionAtom[] | undefined;
+    for (let attempt = 0; attempt < 3 && atoms === undefined; attempt++) {
+      const answer = await this.summarize([{ role: 'user', content: chapterTranscript(window) }], {
+        model: config.summaryModel,
+        prompt,
+      });
+      atoms = parseChapter(answer, window);
+    }
+    if (atoms === undefined) {
+      throw new Error('The summarizer did not answer with the atoms of a chapter after 3 tries');
+    }
+    return mergeAtoms([{ from: '', to: '', atoms: [...atoms, ...structuralAtoms(window)] }]);
+  }
+
   getSummarizeFn(): SummarizeFn {
     return this.summarize;
   }
@@ -434,7 +472,115 @@ const hybridStrategy: StrategyFn = async (service, sessionId, entries, config) =
   return summaryStrategy(service, sessionId, entries, config);
 };
 
+/**
+ * Where the kept tail of `conversation` starts: the newest `keepRecentTokens` tokens of whole
+ * turns when set, a turn opening with a user message, else the newest `keepRecent` entries moved
+ * back to the call a kept tool result answers
+ */
+function tailStart(conversation: readonly MemoryEntry[], config: CompactionConfig): number {
+  if (config.keepRecentTokens !== undefined) {
+    let used = 0;
+    let start = conversation.length;
+    for (let at = conversation.length - 1; at >= 0; at--) {
+      used += countEntryTokens(conversation[at]!);
+      if (used > config.keepRecentTokens) break;
+      if (conversation[at]!.message.role === 'user') start = at;
+    }
+    if (start === conversation.length) {
+      const lastInput = conversation.map((entry) => entry.message.role).lastIndexOf('user');
+      return lastInput === -1 ? conversation.length : lastInput;
+    }
+    return start;
+  }
+  let start = Math.max(0, conversation.length - config.keepRecent);
+  while (start > 0 && conversation[start]?.message.role === 'tool') start--;
+  return start;
+}
+
+const DEFAULT_CHAPTER_TOKENS = 4000;
+const DEFAULT_CHAPTERS_PER_ARC = 4;
+const DEFAULT_ARCS_PER_SAGA = 4;
+
+/**
+ * Keeps a tree of grounded atoms in place of the conversation before the kept tail: the entries
+ * new since the last compaction become chapters (windows read by the summarizer), chapters
+ * beyond `chaptersPerArc` fold into arcs and arcs beyond `arcsPerSaga` into the saga, with no
+ * model. The summary is published only when it still holds every open control atom of the one
+ * before it, and its message is the handoff rendered from the tree.
+ */
+const hierarchicalStrategy: StrategyFn = async (service, sessionId, entries, config) => {
+  const first = entries[0];
+  const before = first?.type === 'compaction' ? first : undefined;
+  const event = before?.event as Partial<CompactionEvent> | undefined;
+  const conversation = before ? entries.slice(1) : entries;
+  const tail = tailStart(conversation, config);
+  const compacted = conversation.slice(0, tail);
+  const unchanged: CompactionResult = {
+    sessionId,
+    originalMessages: entries.length,
+    compactedMessages: entries.length,
+    summaryTokens: 0,
+  };
+  if (compacted.length === 0) return unchanged;
+
+  const previous: CompactionLevels = event?.levels ?? {
+    arcs: [],
+    chapters: before
+      ? [
+          {
+            from: before.id,
+            to: before.id,
+            atoms: [
+              {
+                kind: 'fact',
+                status: 'closed',
+                text: String(before.message.content),
+                verified: false,
+              },
+            ],
+          },
+        ]
+      : [],
+  };
+  const chapters = [];
+  for (const { window, own } of chapterWindows(
+    compacted,
+    config.chapterTokens ?? DEFAULT_CHAPTER_TOKENS
+  )) {
+    chapters.push({
+      from: own[0]!.id,
+      to: own.at(-1)!.id,
+      atoms: await service.chapterAtoms(window, config),
+    });
+  }
+  const levels = foldLevels(
+    { ...previous, chapters: [...previous.chapters, ...chapters] },
+    config.chaptersPerArc ?? DEFAULT_CHAPTERS_PER_ARC,
+    config.arcsPerSaga ?? DEFAULT_ARCS_PER_SAGA
+  );
+  const lost = lostControls(previous, levels);
+  if (lost.length > 0) {
+    throw new Error(
+      `The summary would lose ${lost.length} open item(s), such as "${lost[0]!.text}": it is not published`
+    );
+  }
+  const summaryTokens = await service.applySummary(
+    sessionId,
+    [...(before ? [before] : []), ...compacted],
+    renderHandoff(levels),
+    conversation.slice(tail),
+    levels
+  );
+  return {
+    sessionId,
+    originalMessages: entries.length,
+    compactedMessages: conversation.length - tail + 1,
+    summaryTokens,
+  };
+};
+
 const strategies: Record<CompactionStrategy, StrategyFn> = {
+  hierarchical: hierarchicalStrategy,
   summary: summaryStrategy,
   'sliding-window': slidingWindowStrategy,
   hybrid: hybridStrategy,

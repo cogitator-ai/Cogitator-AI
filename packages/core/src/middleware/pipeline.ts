@@ -6,6 +6,7 @@ import type {
   ModelCallRequest,
   ModelResponseEvent,
   ModelTurnEvent,
+  RunEndEvent,
   RunInputEvent,
   RunMiddleware,
   ToolCallHandler,
@@ -42,6 +43,14 @@ export class MiddlewarePipeline<TDeps = unknown> {
     for (const layer of this.layers) {
       if (!layer.beforeRun) continue;
       await claimed(layer.name, () => layer.beforeRun?.(event, context));
+    }
+  }
+
+  /** Runs every `afterRun` hook, in order, once a run finished. */
+  async afterRun(event: RunEndEvent, context: RunMiddlewareContext<TDeps>): Promise<void> {
+    for (const layer of this.layers) {
+      if (!layer.afterRun) continue;
+      await claimed(layer.name, () => layer.afterRun?.(event, context));
     }
   }
 

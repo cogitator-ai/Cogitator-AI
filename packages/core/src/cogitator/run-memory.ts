@@ -91,6 +91,11 @@ export class RunMemory {
     };
   }
 
+  /** Resolves once every write asked for so far is done, failed ones included */
+  settled(): Promise<void> {
+    return this.queue.then(() => undefined);
+  }
+
   /** Saves a message of the run */
   save(
     agentId: string,

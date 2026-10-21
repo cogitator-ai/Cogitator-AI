@@ -42,14 +42,15 @@ import type {
 } from '@cogitator-ai/types';
 import { type Agent } from './agent';
 import { ToolRegistry } from './registry';
-import { createLLMBackend } from './llm/index';
+import { createLLMBackend, parseModel } from './llm/index';
+import { memoryCompactionMiddleware } from './middleware/memory-compaction';
 import { LLMError, llmInvalidResponse } from './llm/errors';
 import { isLLMProvider } from './llm/providers';
 import { createLLMBackendFromPlugin, hasLLMPlugin } from './llm/plugin';
 import { withLLMRetry } from './llm/retry';
 import { ModelFallbackChain, type ModelCandidate } from './llm/model-fallback';
 import { modelContextWindow } from './context/model-window';
-import { countMessagesTokens, countTokens } from '@cogitator-ai/memory';
+import { countMessagesTokens, countTokens, type SummarizeFn } from '@cogitator-ai/memory';
 import { TruncateStrategy } from './context/strategies/index';
 import { sanitizeToolHistory } from './utils/tool-history';
 import { normalizeTurn } from './llm/turn';
@@ -243,6 +244,7 @@ export class Cogitator implements ToolInvoker {
   private turnBackends = new Map<string, LLMBackend>();
   private piiLayer?: RunMiddleware;
   private clearingLayer?: RunMiddleware;
+  private memoryCompactionLayer?: RunMiddleware;
   private recallTool?: Tool;
   /** The memory of each run going on, for `recall_tool_output` to read the run's branch */
   private readonly runMemories = new Map<string, RunMemory>();
@@ -510,8 +512,9 @@ export class Cogitator implements ToolInvoker {
   /**
    * The middleware the runtime's own features become, closest to the model, in this order:
    * PII masking (`security.pii`), prompt injection (`security.promptInjection`), guardrails
-   * (`guardrails`), tool output clearing (`context.clearToolOutputs`) and compaction
-   * (`context`). Each is there once its feature is set up.
+   * (`guardrails`), tool output clearing (`context.clearToolOutputs`), compaction of a turn
+   * (`context`) and compaction of the thread after a run (`memory.compaction`). Each is there once
+   * its feature is set up.
    */
   private builtinMiddleware(): RunMiddleware[] {
     const pii = this.config.security?.pii;
@@ -520,6 +523,14 @@ export class Cogitator implements ToolInvoker {
     if (clearing) {
       this.clearingLayer ??= clearToolOutputsMiddleware(clearing === true ? {} : clearing);
     }
+    const memoryCompaction = this.config.memory?.compaction;
+    if (memoryCompaction) {
+      this.memoryCompactionLayer ??= memoryCompactionMiddleware(memoryCompaction, {
+        memory: () => this.state.memoryAdapter,
+        summarizer: (model) => this.summarizerFor(model),
+        windowOf: (model) => this.servedWindow(model),
+      });
+    }
     const { injectionDetector, constitutionalAI, contextManager } = this.state;
     return [
       ...(this.piiLayer ? [this.piiLayer] : []),
@@ -527,7 +538,22 @@ export class Cogitator implements ToolInvoker {
       ...(constitutionalAI ? [guardrailsMiddleware(constitutionalAI)] : []),
       ...(this.clearingLayer ? [this.clearingLayer] : []),
       ...(contextManager ? [compactionMiddleware(contextManager)] : []),
+      ...(this.memoryCompactionLayer ? [this.memoryCompactionLayer] : []),
     ];
+  }
+
+  /** A summarizer that asks `model`, given as `provider/model`, with the prompt as its system message */
+  private summarizerFor(model: string): SummarizeFn {
+    return async (messages, options) => {
+      const response = await this.getLLMBackend(model).chat({
+        model: parseModel(model).model,
+        messages: [
+          { role: 'system', content: options?.prompt ?? 'Summarize the conversation.' },
+          ...messages,
+        ],
+      });
+      return response.content;
+    };
   }
 
   /**
@@ -1780,6 +1806,12 @@ export class Cogitator implements ToolInvoker {
       };
 
       if (prompt) await this.recordPrompt(prompt, result, Date.now() - startTime);
+
+      await runMemory.settled();
+      await pipeline.afterRun(
+        { result, model: result.modelUsed ?? effectiveModel },
+        middlewareContext()
+      );
 
       options.onRunComplete?.(result);
 
