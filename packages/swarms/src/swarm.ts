@@ -2,7 +2,14 @@
  * Swarm - Main facade for multi-agent swarm coordination
  */
 
-import type { Cogitator } from '@cogitator-ai/core';
+import {
+  currentTraceContext,
+  GEN_AI,
+  newSpanId,
+  newTraceId,
+  withTraceContext,
+  type Cogitator,
+} from '@cogitator-ai/core';
 import type {
   SwarmConfig,
   SwarmRunOptions,
@@ -166,10 +173,20 @@ export class Swarm {
     callerSignal?.addEventListener('abort', forwardCallerAbort, { once: true });
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     let detachCallbacks: (() => void) | undefined;
+    const ambient = currentTraceContext();
+    const trace = {
+      traceId: ambient?.traceId || newTraceId(),
+      spanId: newSpanId(),
+      parentSpanId: ambient?.parentSpanId,
+      startTime: Date.now(),
+    };
+    const inTrace = <T>(work: () => T): T =>
+      withTraceContext({ traceId: trace.traceId, parentSpanId: trace.spanId }, work);
+    let failed: unknown;
 
     try {
       if (this.assessorConfig && !this.assessed) {
-        await this.runAssessment(options.input);
+        await inTrace(() => this.runAssessment(options.input));
       }
 
       if (this.coordinator instanceof DistributedSwarmCoordinator) {
@@ -206,7 +223,7 @@ export class Swarm {
       });
 
       const result = await raceWithAbort(
-        this.coordinator.runInScope(scope, () => this.strategy.execute(options)),
+        inTrace(() => this.coordinator.runInScope(scope, () => this.strategy.execute(options))),
         runController.signal
       );
 
@@ -221,6 +238,7 @@ export class Swarm {
       const aborted = runController.signal.aborted ? abortReason(runController.signal) : undefined;
       if (aborted) this.abortPendingApprovals(aborted);
       const failure = aborted ?? error;
+      failed = failure;
       if (!aborted) runController.abort(failure);
 
       this.coordinator.events.emit('swarm:error', {
@@ -235,7 +253,45 @@ export class Swarm {
       detachCallbacks?.();
       this.coordinator.endRun();
       this.running = false;
+      this.reportRunSpan(trace, failed);
     }
+  }
+
+  /**
+   * Reports the swarm run as an `invoke_workflow` span, the parent of its agents' runs, to the
+   * runtime's observers. A runtime that does not record spans is skipped: telemetry never fails
+   * a run.
+   */
+  private reportRunSpan(
+    trace: { traceId: string; spanId: string; parentSpanId?: string; startTime: number },
+    failure: unknown
+  ): void {
+    if (typeof this.cogitator.recordSpan !== 'function') return;
+    const endTime = Date.now();
+    this.cogitator.recordSpan(
+      {
+        id: trace.spanId,
+        traceId: trace.traceId,
+        ...(trace.parentSpanId && { parentId: trace.parentSpanId }),
+        name: 'swarm.run',
+        kind: 'internal',
+        status: failure === undefined ? 'ok' : 'error',
+        startTime: trace.startTime,
+        endTime,
+        duration: endTime - trace.startTime,
+        attributes: {
+          [GEN_AI.operationName]: 'invoke_workflow',
+          [GEN_AI.workflowName]: this.config.name,
+          'swarm.id': this.id,
+          'swarm.strategy': this.config.strategy,
+          ...(failure !== undefined && {
+            [GEN_AI.errorType]: failure instanceof Error ? failure.name || '_OTHER' : '_OTHER',
+            error: failure instanceof Error ? failure.message : String(failure),
+          }),
+        },
+      },
+      { runId: this.id }
+    );
   }
 
   /**

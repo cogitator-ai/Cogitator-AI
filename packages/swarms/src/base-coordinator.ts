@@ -1,6 +1,12 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { nanoid } from 'nanoid';
-import { AgentRunPausedError, getLogger, isPausedRun } from '@cogitator-ai/core';
+import {
+  AgentRunPausedError,
+  currentTraceContext,
+  getLogger,
+  isPausedRun,
+  newTraceId,
+} from '@cogitator-ai/core';
 import type {
   Agent,
   AgentConfig,
@@ -545,7 +551,7 @@ export abstract class BaseSwarmCoordinator<
           usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cost: 0, duration: 0 },
           toolCalls: [],
           messages: [],
-          trace: { traceId: `trace_${nanoid(12)}`, spans: [] },
+          trace: { traceId: currentTraceContext()?.traceId || newTraceId(), spans: [] },
         };
 
       case 'abort':
