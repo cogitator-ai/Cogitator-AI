@@ -671,8 +671,8 @@ export class Cogitator implements ToolInvoker {
    * A summarizer that asks `model`, routed as a run's model is (see {@link route}), with the
    * prompt as its system message. Each call stops with the run's `signal` and is counted for
    * `run` in the cost router, and with `inRun` in the usage the run returns too: a call made
-   * after the run returned, such as by memory upkeep, is not. With `security.pii` masking, what
-   * it sends is masked as a run's model calls are.
+   * after the run returned, such as by memory upkeep, is not. The routed backend masks what it
+   * sends under `security.pii`, as for a run's own model calls.
    */
   private summarizerFor(
     model: string,
@@ -681,9 +681,7 @@ export class Cogitator implements ToolInvoker {
   ): SummarizeFn {
     return async (messages, options) => {
       signal?.throwIfAborted();
-      const routed = this.route(model);
-      const backend = withPiiMasking(routed.backend, this.config.security?.pii);
-      const name = routed.model;
+      const { backend, model: name } = this.route(model);
       const response = await backend.chat({
         model: name,
         messages: [
@@ -704,7 +702,7 @@ export class Cogitator implements ToolInvoker {
         outputTokens: response.usage.outputTokens,
         cost,
       });
-      if (!inRun) return response.content;
+      if (!inRun || signal?.aborted) return response.content;
       const spent = this.afterRunSpend.get(run.runId) ?? {
         inputTokens: 0,
         outputTokens: 0,
@@ -2923,6 +2921,8 @@ export class Cogitator implements ToolInvoker {
    * memory is the one the agent's runs for `userId` (or, for a run without a user, in
    * `threadId`) write their items to, as `memory.extraction.scope` says. Call it from a worker
    * or a timer while the agent is idle. A pass of the same memory under way is waited for first.
+   * The look for repeats asks about `memory.consolidation.maxSubjects` subjects at most: when the
+   * report's `dedupe.complete` is false, pass its `dedupe.through` as `since` to go on.
    *
    * @throws CogitatorError when neither `memory.consolidation` nor `memory.observations` is set,
    * when memory keeps no memory items, or when `run` does not name the memory: a `userId` or a
@@ -2931,7 +2931,7 @@ export class Cogitator implements ToolInvoker {
    */
   async consolidateMemory(
     agent: Agent,
-    run: { userId?: string; threadId?: string } = {}
+    run: { userId?: string; threadId?: string; since?: Date } = {}
   ): Promise<MemoryConsolidationReport> {
     const memory = await this.getMemory();
     this.builtinMiddleware();
@@ -2963,6 +2963,7 @@ export class Cogitator implements ToolInvoker {
       }),
       model: this.resolveModel(agent),
       run: { runId, agentId: agent.id, threadId },
+      ...(run.since && { since: run.since }),
     });
   }
 

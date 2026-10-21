@@ -605,7 +605,10 @@ export class MemoryItems {
     return items.sort((a, b) => (time(a.validFrom) ?? 0) - (time(b.validFrom) ?? 0));
   }
 
-  /** Makes a `suggested` item `active`, such as one the user confirmed, closing what it follows */
+  /**
+   * Makes a `suggested` item `active`, such as one the user confirmed, closing what it follows,
+   * and keeps when in `metadata.activatedAt`
+   */
   async activate(itemId: string): Promise<MemoryItem> {
     const found = unwrap(await this.adapter.getItem(itemId));
     if (!found) throw new Error(`No memory item ${itemId}`);
@@ -613,7 +616,13 @@ export class MemoryItems {
       const item = unwrap(await this.adapter.getItem(itemId));
       if (!item) throw new Error(`No memory item ${itemId}`);
       if (item.status === 'active') return item;
-      const active = unwrap(await this.adapter.putItem({ ...item, status: 'active' }));
+      const active = unwrap(
+        await this.adapter.putItem({
+          ...item,
+          status: 'active',
+          metadata: { ...item.metadata, activatedAt: this.now().toISOString() },
+        })
+      );
       return this.settled(active);
     });
   }
@@ -622,14 +631,15 @@ export class MemoryItems {
    * Marks items as no longer trusted to hold: kept and found by `statuses: ['stale']`. `because`
    * is kept in their metadata as `staleBecause`, such as the item a consolidation found them to
    * repeat. With `onlyFrom`, an item whose status is no longer among those statuses when it is
-   * written, such as one a newer item superseded meanwhile, is left as it is.
+   * written, such as one a newer item superseded meanwhile, is left as it is. Returns the ids of
+   * the items it marked.
    */
   async markStale(
     itemIds: readonly string[],
     because?: Record<string, unknown>,
     onlyFrom?: readonly MemoryItemStatus[]
-  ): Promise<void> {
-    await this.update(itemIds, (item) =>
+  ): Promise<string[]> {
+    return this.update(itemIds, (item) =>
       onlyFrom && !onlyFrom.includes(item.status)
         ? item
         : {
@@ -687,16 +697,20 @@ export class MemoryItems {
   private async update(
     itemIds: readonly string[],
     change: (item: MemoryItem) => MemoryItem
-  ): Promise<void> {
+  ): Promise<string[]> {
+    const changedIds: string[] = [];
     for (const [agentId, ids] of await this.idsByAgent(itemIds)) {
       await this.exclusive(agentId, async () => {
         const items = unwrap(await this.adapter.findItems({ agentId, ids, includeExpired: true }));
         for (const item of items) {
           const changed = change(item);
-          if (changed !== item) unwrap(await this.adapter.putItem(changed));
+          if (changed === item) continue;
+          unwrap(await this.adapter.putItem(changed));
+          changedIds.push(item.id);
         }
       });
     }
+    return changedIds;
   }
 
   /** The distinct ids of the items that exist among `itemIds`, by the agent they belong to */

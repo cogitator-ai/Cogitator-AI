@@ -77,6 +77,11 @@ export interface MemoryConsolidationReport {
   /** Paths of the observations deleted, their entity no longer having enough facts */
   observationsDeleted: string[];
   stale: StaleMark[];
+  /**
+   * How far the look for repeats got, when the pass made one: `complete` once it looked at every
+   * subject, else `through` says where a later pass goes on from (its `since`)
+   */
+  dedupe?: { complete: boolean; through?: Date };
   /** The playbook edits, when lessons were folded in */
   playbook?: { path: string; editCount: number; lessonIds: string[] };
 }

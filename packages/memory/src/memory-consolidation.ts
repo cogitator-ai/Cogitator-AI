@@ -15,6 +15,8 @@ import type { SummarizeFn } from './compaction';
 import {
   MEMORY_ROOT,
   MemoryFileError,
+  byFileVersion,
+  fileKeyOf,
   type MemoryFile,
   type MemoryFileAccess,
   type MemoryFiles,
@@ -120,6 +122,38 @@ function jsonArray(answer: string): unknown[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * When a lesson became one the playbook may take: when it was activated, else when memory
+ * recorded it, so a lesson activated after a fold is still folded
+ */
+function lessonTime(item: MemoryItem): number {
+  const activatedAt = item.metadata?.activatedAt;
+  const activated = typeof activatedAt === 'string' ? Date.parse(activatedAt) : Number.NaN;
+  return Number.isNaN(activated) ? item.recordedAt.getTime() : activated;
+}
+
+/**
+ * The content of the playbook to build on: `current`, or when a model wrote it, the newest
+ * version of its scope memory or a person wrote, undefined when there is none
+ */
+async function trustedContent(
+  files: MemoryFiles,
+  access: MemoryFileAccess,
+  current: MemoryFile
+): Promise<string | undefined> {
+  if (current.version.author !== 'model') return current.content;
+  const key = fileKeyOf(current.version.scope, PLAYBOOK_PATH);
+  const versions = (await files.history(access, PLAYBOOK_PATH))
+    .filter((version) => fileKeyOf(version.scope, PLAYBOOK_PATH) === key)
+    .sort(byFileVersion);
+  for (let at = versions.length - 1; at >= 0; at--) {
+    const version = versions[at];
+    if (!version || version.author === 'model') continue;
+    return version.content ?? undefined;
+  }
+  return undefined;
 }
 
 function oneLine(text: string): string {
@@ -355,14 +389,24 @@ export class MemoryConsolidator {
       .sort((a, b) => a.newest - b.newest);
     const marked: StaleMark[] = [];
     const used = new Set<string>();
-    let through: Date | undefined;
-    const stopped = (): DedupeResult => ({
-      stale: marked,
-      complete: false,
-      ...(through && { through }),
-    });
+    const stopped = (next: number): DedupeResult => {
+      const nextNewest = subjects[next]?.newest ?? Infinity;
+      let done: number | undefined;
+      for (let at = next - 1; at >= 0; at--) {
+        const newest = subjects[at]?.newest;
+        if (newest !== undefined && newest < nextNewest) {
+          done = newest;
+          break;
+        }
+      }
+      return {
+        stale: marked,
+        complete: false,
+        ...(done !== undefined && { through: new Date(done) }),
+      };
+    };
     for (const [asked, subject] of subjects.entries()) {
-      if (asked >= maxSubjects || marked.length >= maxChanges) return stopped();
+      if (asked >= maxSubjects || marked.length >= maxChanges) return stopped(asked);
       const batch = [...subject.items].sort(byRecorded).slice(-DEDUPE_BATCH);
       const byId = new Map(batch.map((item) => [item.id, item]));
       const listed = batch
@@ -397,19 +441,22 @@ export class MemoryConsolidator {
           whole = false;
           continue;
         }
-        await this.items.markStale(
-          allowed.map((item) => item.id),
-          { reason: parsed.data.reason, keptId: keep.id, at: new Date().toISOString() },
-          ['active']
+        const changed = new Set(
+          await this.items.markStale(
+            allowed.map((item) => item.id),
+            { reason: parsed.data.reason, keptId: keep.id, at: new Date().toISOString() },
+            ['active']
+          )
         );
         used.add(keep.id);
         for (const item of allowed) {
           used.add(item.id);
-          marked.push({ itemId: item.id, keptId: keep.id, reason: parsed.data.reason });
+          if (changed.has(item.id)) {
+            marked.push({ itemId: item.id, keptId: keep.id, reason: parsed.data.reason });
+          }
         }
       }
-      if (!whole) return stopped();
-      through = new Date(subject.newest);
+      if (!whole) return stopped(asked);
     }
     return { stale: marked, complete: true };
   }
@@ -433,9 +480,11 @@ export class MemoryConsolidator {
     const access: MemoryFileAccess = { scope, visibleTo: scope, author: 'system' };
     const current = await files.read(access, PLAYBOOK_PATH);
     const draft = mode === 'shadow' ? await files.read(access, PLAYBOOK_DRAFT_PATH) : undefined;
-    const base = current ? parsePlaybook(current.content) : { rules: [] };
+    const trusted = current ? await trustedContent(files, access, current) : undefined;
+    const base = trusted !== undefined ? parsePlaybook(trusted) : { rules: [] };
     const baseSha = current?.sha256 ?? 'none';
-    const drafted = draft ? parsePlaybook(draft.content) : undefined;
+    const drafted =
+      draft && draft.version.author !== 'model' ? parsePlaybook(draft.content) : undefined;
     const from = drafted?.draftOf === baseSha ? drafted : base;
 
     const found = await this.itemAdapter.findItems({
@@ -455,9 +504,9 @@ export class MemoryConsolidator {
           item.trust !== 'tool' &&
           item.trust !== 'web' &&
           (!shared || mode === 'shadow' || item.trust === 'system') &&
-          item.recordedAt.getTime() > after
+          lessonTime(item) > after
       )
-      .sort(byRecorded)
+      .sort((a, b) => lessonTime(a) - lessonTime(b) || byRecorded(a, b))
       .slice(0, LESSONS_READ);
     const newest = lessons.at(-1);
     if (!newest) return undefined;
@@ -482,7 +531,7 @@ export class MemoryConsolidator {
     const { rules, made } = applyPlaybookEdits(from.rules, edits);
     const next: Playbook = {
       rules,
-      through: newest.recordedAt,
+      through: new Date(lessonTime(newest)),
       ...(mode === 'shadow' && { draftOf: baseSha }),
     };
     const path = mode === 'shadow' ? PLAYBOOK_DRAFT_PATH : PLAYBOOK_PATH;
@@ -509,7 +558,7 @@ export class MemoryConsolidator {
     if (!files) return false;
     const access: MemoryFileAccess = { scope, visibleTo: scope, author: 'system' };
     const draft = await files.read(access, PLAYBOOK_DRAFT_PATH);
-    if (!draft) return false;
+    if (!draft || draft.version.author === 'model') return false;
     const current = await files.read(access, PLAYBOOK_PATH);
     const drafted = parsePlaybook(draft.content);
     if (drafted.draftOf !== (current?.sha256 ?? 'none')) return false;

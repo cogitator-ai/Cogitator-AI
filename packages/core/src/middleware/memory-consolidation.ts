@@ -62,6 +62,8 @@ export interface MemoryUpkeep extends RunMiddleware {
     scope: MemoryItemScope;
     model: string;
     run: Omit<CompactionRun, 'signal'>;
+    /** Look only at subjects with an item recorded at or after this */
+    since?: Date;
   }): Promise<MemoryConsolidationReport>;
   /** Stops the passes under way and waits for them */
   close(): Promise<void>;
@@ -219,7 +221,6 @@ export function memoryUpkeepMiddleware(
     const memory = deps.memory();
     if (!memory || !isMemoryItemAdapter(memory)) return report;
     const startedAt = new Date();
-    let cursor: Date | undefined = startedAt;
     const items = new MemoryItems({ adapter: memory });
     const files = isMemoryFileAdapter(memory) ? new MemoryFiles({ adapter: memory }) : undefined;
     const summarize = (model: string | undefined) =>
@@ -239,7 +240,14 @@ export function memoryUpkeepMiddleware(
         ...(consolidation.prompt && { prompt: consolidation.prompt }),
       });
       report.stale = dedupe.stale;
-      cursor = dedupe.complete ? startedAt : dedupe.through;
+      report.dedupe = {
+        complete: dedupe.complete,
+        ...(dedupe.through && { through: dedupe.through }),
+      };
+      const cursor = dedupe.complete ? startedAt : dedupe.through;
+      if (cursor) {
+        for (const threadId of job.cursors) await moveCursor(memory, threadId, cursor);
+      }
       const mode = consolidation.playbook ?? 'apply';
       if (mode !== false) {
         const change = await consolidator.foldLessons(job.scope, {
@@ -269,9 +277,6 @@ export function memoryUpkeepMiddleware(
       );
       report.observations = refresh.written.map((observation) => observation.path);
       report.observationsDeleted = refresh.deleted;
-    }
-    if (job.consolidate && cursor) {
-      for (const threadId of job.cursors) await moveCursor(memory, threadId, cursor);
     }
     if (job.consolidate && consolidation?.afterConsolidate) {
       try {
@@ -349,12 +354,20 @@ export function memoryUpkeepMiddleware(
     noteCompaction(threadId) {
       if (consolidation) compacted.add(threadId);
     },
-    async consolidate({ scope, model, run }) {
+    async consolidate({ scope, model, run, since }) {
       const key = keyOf(scope);
       for (let current = running.get(key); current; current = running.get(key)) {
         await current.done;
       }
-      const work = pass({ scope, model, run, observe: true, consolidate: true, cursors: [] });
+      const work = pass({
+        scope,
+        model,
+        run,
+        observe: true,
+        consolidate: true,
+        cursors: [],
+        ...(since && { since }),
+      });
       const entry: { done: Promise<void>; next?: UpkeepJob } = {
         done: work.then(
           () => undefined,

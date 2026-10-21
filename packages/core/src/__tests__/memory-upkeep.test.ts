@@ -176,6 +176,7 @@ describe('memory upkeep', () => {
     expect(report.scope).toEqual(scope);
     expect(report.playbook).toMatchObject({ path: '/memories/playbook.next.md', editCount: 1 });
     expect(report.stale).toEqual([]);
+    expect(report.dedupe).toEqual({ complete: true });
     await expect(cog.consolidateMemory(agent)).rejects.toThrow('needs a userId');
   });
 
