@@ -7,7 +7,7 @@ import type { ProjectBuilder } from '../project.js';
 import type { FeatureModule } from './types.js';
 import { CALCULATOR_TS, CURRENT_TIME_TS, FETCH_URL_TS, TOOLS_TEST_TS } from './starter-tools.js';
 
-const BIOME_SCHEMA_VERSION = VERSIONS.biome.replace(/^\^/, '');
+const BIOME_SCHEMA_VERSION = VERSIONS.biome;
 
 function tsconfig(spec: ProjectSpec): string {
   const bun = runsOnBun(spec);

@@ -42,7 +42,11 @@ export const VERSIONS = {
   vitest: '^5.0.3',
   /** A peer vitest requires and Yarn, unlike npm, pnpm and Bun, does not install by itself. */
   vite: '^8.3.4',
-  biome: '^2.5.15',
+  /**
+   * Exact, as Biome asks: its formatting changes between releases, and the scaffolder runs
+   * `biome check --write`, so a new release, or a broken one, must not change what it writes.
+   */
+  biome: '2.5.15',
   express: '^5.2.1',
   typesExpress: '^5.0.6',
   fastify: '^5.12.5',
