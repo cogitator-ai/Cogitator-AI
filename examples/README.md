@@ -52,7 +52,7 @@ Agent creation, tools, streaming, caching, reasoning, reflection, optimization, 
 
 ### [`memory/`](./memory/) — Memory & Knowledge
 
-In-memory storage, context building, semantic search, knowledge graphs.
+In-memory storage, context building, semantic search, knowledge graphs, memory files and agent memory search.
 
 ### [`swarms/`](./swarms/) — Multi-Agent Coordination
 

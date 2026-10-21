@@ -70,7 +70,7 @@ console.log(result.output);
 - **Handoffs & Approvals** - Pass a conversation to another agent; pause runs for human approval and resume them later
 - **Prompt Versions & A/B Tests** - Versioned instructions per agent with `cog.prompts`
 - **Memory Integration** - In-memory, Redis, PostgreSQL, SQLite, MongoDB and Qdrant adapters
-- **Agent Memory Tools** - `search_memory`, `open_turns` and `list_entities` with a citation lock, and memory files under `/memories` through the `memory` tool, native on Anthropic
+- **Agent Memory Tools** - `search_memory`, `open_turns` and `list_entities` with a citation lock, and memory files under `/memories` through the `memory` tool, Anthropic's own `memory_20250818` on Claude 4 and later through the Anthropic backend, a tool with the same commands everywhere else
 - **26 Built-in Tools** - Web search, SQL, email, GitHub, filesystem, and more
 - **Reflection Engine** - Self-improvement through tool call analysis
 - **Tree-of-Thought** - Advanced reasoning with branch exploration

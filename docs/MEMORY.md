@@ -101,7 +101,7 @@ In cluster mode the key prefix must contain a hash tag so multi-key commands hit
 
 Postgres with full feature set: threads, entries, facts, vector embeddings (pgvector).
 
-Implements `MemoryAdapter + MemoryItemAdapter + FactAdapter + EmbeddingAdapter + KeywordSearchAdapter`. Schema version 3 moves every row of `facts` into a memory item of its own slot `fact:<id>` on the first `connect()` after upgrading and renames the table `facts_legacy`.
+Implements `MemoryAdapter + MemoryItemAdapter + MemoryFileAdapter + FactAdapter + EmbeddingAdapter + KeywordSearchAdapter`. Schema version 3 moves every row of `facts` into a memory item of its own slot `fact:<id>` on the first `connect()` after upgrading and renames the table `facts_legacy`. Schema version 4 adds the table of memory file versions (`memory_file_versions`) and moves nothing.
 
 ```typescript
 import { PostgresAdapter } from '@cogitator-ai/memory';
@@ -536,6 +536,12 @@ interface MemoryConfig {
 With `contextBuilder` set and no `maxTokens`, each run's history budget is the context window of the model the run starts on (from the model registry, else the model family, else 8192 tokens, and at most 4096 on Ollama, which serves no more by default, except Ollama Cloud), minus room for the answer (the agent's `maxTokens`, else 15% of the window, at most half of it), the tool schemas and the input, and below the point where `context` compression would start when it is on. The builder keeps `reserveTokens` of it free as slack. Set `maxTokens` to cap the history and the cost of long threads, or to use a larger context your Ollama server runs with. With `contextBuilder` set, a Postgres store is also used as the fact adapter, and as the embedding adapter unless `memory.qdrant` is set. The runtime creates the Postgres `embeddings` table with the vector size of `memory.embedding` (768 without one). Without `contextBuilder`, a run loads the last 20 entries of the thread.
 
 ---
+
+## Memory Files and Agent Memory Tools
+
+With `memory.files` in the Cogitator config, every agent gets the `memory` tool: notes under `/memories` it views and changes across conversations with the commands of Anthropic's memory tool (`view`, `create`, `str_replace`, `insert`, `delete`, `rename`), sent as Anthropic's own `memory_20250818` to Claude 4 and later and as a tool with the same commands to every other model. The files a run sees are listed with its turn. `MemoryFiles` keeps every change as a version in the run's store (`MemoryFileAdapter`, in every built-in adapter, checked by `memoryFileAdapterConformanceCases`): a run sees the files of its user, its thread and the agent, in its own thread only the versions of its branch, and an edit of a file another writer changed after the run viewed it fails. `redact` replaces the content of a file's versions and keeps its history.
+
+`cog.memorySearchTools(memoryAgentId)` gives an agent `search_memory` (earlier turns and memory items in one ranked list), `open_turns` and `list_entities`, and the `memoryCitations()` middleware takes out of an answer every `[turn:<id>]` or `[item:<id>]` the run never opened. See [Memory](https://cogitator.app/docs/memory#agent-memory-tools).
 
 ## Memory Items
 

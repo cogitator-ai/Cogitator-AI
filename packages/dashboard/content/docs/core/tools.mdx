@@ -43,7 +43,7 @@ function tool<TParams, TResult>(config: ToolConfig<TParams, TResult>): Tool<TPar
 | `execute`          | `(params, context) => Promise<TResult>` | Implementation function                                                                                                              |
 | `category`         | `ToolCategory`                          | `'math'`, `'text'`, `'file'`, `'network'`, `'system'`, `'utility'`, `'web'`, `'database'`, `'communication'` or `'development'`      |
 | `tags`             | `string[]`                              | Optional tags for filtering                                                                                                          |
-| `sideEffects`      | `SideEffectType[]`                      | `'filesystem'`, `'network'`, `'database'`, `'process'`, `'external'`; shown to approvers                                             |
+| `sideEffects`      | `SideEffectType[]`                      | `'filesystem'`, `'network'`, `'database'`, `'process'`, `'external'`, shown to approvers                                             |
 | `requiresApproval` | `boolean \| (params) => boolean`        | Require human approval before execution ([Approvals](/docs/tools/approvals))                                                         |
 | `timeout`          | `number`                                | Per-call timeout in milliseconds                                                                                                     |
 | `sandbox`          | `SandboxConfig`                         | Run in an isolated environment (see below)                                                                                           |

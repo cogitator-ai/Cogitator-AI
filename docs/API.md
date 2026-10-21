@@ -601,7 +601,8 @@ import {
 ```
 
 Tool factories: `createAnalyzeImageTool`, `createGenerateImageTool`, `createTranscribeAudioTool`,
-`createGenerateSpeechTool`, `createMemoryTools`, `createSchedulerTools`, and `agentAsTool(cogitator, agent, options)`
+`createGenerateSpeechTool`, `createMemoryTools`, `createMemorySearchTools`, `memoryFileTool`, `createSchedulerTools`, and
+`agentAsTool(cogitator, agent, options)`
 to call one agent from another. See [Built-in Tools](https://cogitator.app/docs/tools/built-in).
 
 ---

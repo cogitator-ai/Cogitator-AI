@@ -323,7 +323,7 @@ const agent = new Agent({
 
 `builtinTools` is a `Tool[]` and includes: `calculator`, `datetime`, `uuid`, `randomNumber`, `randomString`, `hash`, `base64Encode`, `base64Decode`, `sleep`, `jsonParse`, `jsonStringify`, `regexMatch`, `regexReplace`, `fileRead`, `fileWrite`, `fileList`, `fileExists`, `fileDelete`, `httpRequest`, `exec`, `webSearch`, `webScrape`, `sqlQuery`, `vectorSearch`, `sendEmail`, `githubApi`.
 
-Tool factories that need configuration are exported separately: `createMemoryTools`, `createSchedulerTools`, `createCapabilitiesTool`, `createDeviceTools`, `createSelfTools`, `createAnalyzeImageTool`, `createGenerateImageTool`, `createTranscribeAudioTool`, `createGenerateSpeechTool`. See [Built-in Tools](https://cogitator.app/docs/tools/built-in).
+Tool factories that need configuration are exported separately: `createMemoryTools`, `createMemorySearchTools`, `memoryFileTool`, `createSchedulerTools`, `createCapabilitiesTool`, `createDeviceTools`, `createSelfTools`, `createAnalyzeImageTool`, `createGenerateImageTool`, `createTranscribeAudioTool`, `createGenerateSpeechTool`. See [Built-in Tools](https://cogitator.app/docs/tools/built-in).
 
 ---
 
