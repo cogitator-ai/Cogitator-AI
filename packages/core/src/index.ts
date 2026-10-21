@@ -101,6 +101,8 @@ export {
   createMemoryTools,
   createMemorySearchTools,
   MEMORY_SEARCH_TOOLS,
+  memoryFileTool,
+  MEMORY_FILE_TOOL,
   createSchedulerTools,
   restrictFileTools,
   isPathAllowed,
@@ -116,6 +118,8 @@ export {
 export type {
   MemoryToolsConfig,
   MemorySearchToolsConfig,
+  MemoryFileToolConfig,
+  MemoryFileToolParams,
   CoreFactsLike,
   SchedulerToolsConfig,
   RestrictFileToolsOptions,

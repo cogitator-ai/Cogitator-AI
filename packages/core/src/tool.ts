@@ -102,6 +102,7 @@ export function tool<TParams, TResult, TDeps = unknown>(
     timeout: config.timeout,
     sandbox: config.sandbox,
     maxResultLength: config.maxResultLength,
+    ...(config.providerTypes && { providerTypes: config.providerTypes }),
     toJSON(): ToolSchema {
       return toolToSchema(this);
     },
@@ -175,6 +176,7 @@ export function toolToSchema<TParams, TResult>(t: Tool<TParams, TResult>): ToolS
     name: t.name,
     description: t.description,
     parameters: toToolParameters(jsonSchema),
+    ...(t.providerTypes && { providerTypes: t.providerTypes }),
   };
 }
 

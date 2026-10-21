@@ -234,6 +234,42 @@ describe('AnthropicBackend', () => {
       );
     });
 
+    it('sends a tool with an Anthropic type as that type, the others with their schema', async () => {
+      mockCreate.mockResolvedValueOnce({
+        id: 'msg_123',
+        content: [{ type: 'text', text: 'OK' }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 10, output_tokens: 2 },
+      });
+
+      await backend.chat({
+        model: 'claude-sonnet-4-20250514',
+        messages: [{ role: 'user', content: 'Test' }],
+        tools: [
+          {
+            name: 'memory',
+            description: 'Your memory directory',
+            parameters: { type: 'object', properties: { command: { type: 'string' } } },
+            providerTypes: { anthropic: 'memory_20250818' },
+          },
+          {
+            name: 'my_tool',
+            description: 'A test tool',
+            parameters: { type: 'object', properties: {} },
+          },
+        ],
+      });
+
+      expect(mockCreate.mock.calls[0]?.[0].tools).toEqual([
+        { type: 'memory_20250818', name: 'memory' },
+        {
+          name: 'my_tool',
+          description: 'A test tool',
+          input_schema: { type: 'object', properties: {} },
+        },
+      ]);
+    });
+
     it('includes generation config', async () => {
       mockCreate.mockResolvedValueOnce({
         id: 'msg_123',

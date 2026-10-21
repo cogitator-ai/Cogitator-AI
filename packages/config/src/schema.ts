@@ -294,6 +294,12 @@ export const MemoryExtractionConfigSchema = z.object({
   timeZone: TimeZoneSchema.optional(),
 });
 
+export const MemoryFilesConfigSchema = z.object({
+  scope: z.enum(['user', 'agent', 'thread']).optional(),
+  readOnly: z.boolean().optional(),
+  indexChars: z.number().int().positive().optional(),
+});
+
 export const MemoryConfigSchema = z.object({
   adapter: MemoryProviderSchema.optional(),
   inMemory: z
@@ -350,6 +356,7 @@ export const MemoryConfigSchema = z.object({
   contextBuilder: ContextBuilderConfigSchema.optional(),
   compaction: MemoryCompactionConfigSchema.optional(),
   extraction: MemoryExtractionConfigSchema.optional(),
+  files: MemoryFilesConfigSchema.optional(),
 });
 
 export const SandboxTypeSchema = z.enum(['docker', 'native', 'wasm']);

@@ -9,6 +9,7 @@ import type {
   ChatStreamChunk,
   ChatUsage,
   ToolCall,
+  ToolSchema,
   ToolChoice,
   Message,
   MessageContent,
@@ -266,12 +267,8 @@ export class AnthropicBackend extends BaseLLMBackend {
     );
     const { tools, toolChoice, systemSuffix, outputConfig } = this.prepareJsonMode(request, model);
 
-    const allTools = [
-      ...(request.tools?.map((t) => ({
-        name: t.name,
-        description: t.description,
-        input_schema: t.parameters as AnthropicToolInput,
-      })) ?? []),
+    const allTools: Anthropic.ToolUnion[] = [
+      ...(request.tools?.map((t) => anthropicTool(t)) ?? []),
       ...tools,
     ];
 
@@ -608,6 +605,20 @@ interface StreamedToolUse {
   name: string;
   inputJson: string;
   thinking: Record<string, unknown>[];
+}
+
+/**
+ * A tool as Anthropic takes it: its type in Anthropic's own catalog when it has one, such as the
+ * memory tool, which the model knows from its training, else its name, description and schema
+ */
+function anthropicTool(t: ToolSchema): Anthropic.ToolUnion {
+  const type = t.providerTypes?.anthropic;
+  if (type !== undefined) return { type, name: t.name } as Anthropic.ToolUnion;
+  return {
+    name: t.name,
+    description: t.description,
+    input_schema: t.parameters as AnthropicToolInput,
+  };
 }
 
 function toToolCall(use: StreamedToolUse, args: ToolCallArguments): ToolCall {

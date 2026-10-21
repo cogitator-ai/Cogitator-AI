@@ -50,6 +50,12 @@ export interface ToolConfig<TParams = unknown, TResult = unknown, TDeps = unknow
    * note of how much was left out. `onToolResult` still gets the whole result.
    */
   maxResultLength?: number;
+  /**
+   * The tool's type in a provider's own catalog, sent to that provider instead of the tool's
+   * schema, such as `{ anthropic: 'memory_20250818' }`: the model knows the tool from its
+   * training, and every other provider gets the schema as usual
+   */
+  providerTypes?: ProviderToolTypes;
 }
 
 export interface Tool<TParams = unknown, TResult = unknown, TDeps = unknown> {
@@ -79,7 +85,19 @@ export interface Tool<TParams = unknown, TResult = unknown, TDeps = unknown> {
    * note of how much was left out. `onToolResult` still gets the whole result.
    */
   maxResultLength?: number;
+  /**
+   * The tool's type in a provider's own catalog, sent to that provider instead of the tool's
+   * schema, such as `{ anthropic: 'memory_20250818' }`: the model knows the tool from its
+   * training, and every other provider gets the schema as usual
+   */
+  providerTypes?: ProviderToolTypes;
   toJSON(): ToolSchema;
+}
+
+/** Types a tool has in providers' own tool catalogs, by provider */
+export interface ProviderToolTypes {
+  /** An Anthropic tool type, such as `memory_20250818` */
+  anthropic?: string;
 }
 
 /**
@@ -135,6 +153,8 @@ export interface ToolSchema {
   name: string;
   description: string;
   parameters: ToolParametersSchema;
+  /** The tool's type in a provider's own catalog, sent to that provider instead of `parameters` */
+  providerTypes?: ProviderToolTypes;
 }
 
 /**

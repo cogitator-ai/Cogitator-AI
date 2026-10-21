@@ -19,6 +19,7 @@ export {
   MemoryConfigSchema,
   MemoryCompactionConfigSchema,
   MemoryExtractionConfigSchema,
+  MemoryFilesConfigSchema,
   MemoryProviderSchema,
   ContextBuilderConfigSchema,
   ContextStrategySchema,

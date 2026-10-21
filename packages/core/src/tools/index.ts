@@ -135,3 +135,14 @@ export const builtinTools: Tool[] = [
   sendEmail,
   githubApi,
 ];
+export {
+  memoryFileTool,
+  memoryFileCommand,
+  memoryFileScope,
+  memoryFileVisibility,
+  memoryFilePlace,
+  MEMORY_FILE_TOOL,
+  type MemoryFileToolConfig,
+  type MemoryFileToolParams,
+  type MemoryFilePlaceOfRun,
+} from './memory-file-tool';
