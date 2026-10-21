@@ -10,6 +10,7 @@ import {
 } from '@cogitator-ai/types';
 import { OpenAIServer } from '../server/api-server';
 import { ThreadManager } from '../client/thread-manager';
+import type { RunStep } from '../types/openai-types';
 
 type RunHandler = (agent: Agent, options: RunOptions) => Promise<Partial<RunResult>>;
 
@@ -515,6 +516,227 @@ describe('OpenAI SDK compatibility', () => {
     expect([...first.data, ...rest.data].map((f) => f.id)).toEqual(all.data.map((f) => f.id));
     expect(rest.has_more).toBe(false);
     expect(bad.status).toBe(400);
+  });
+
+  describe('a model turn that writes text and then calls a tool', () => {
+    const lookupCall = { id: 'call_1', name: 'lookup', arguments: { order: 'A-1' } };
+
+    function textThenTool(finish: (options: RunOptions) => Promise<Partial<RunResult>>) {
+      handler = async (_agent, options) => {
+        options.onToken?.('Let me ');
+        options.onToken?.('check.');
+        options.onToolCall?.(lookupCall);
+        options.onToolResult?.({ callId: 'call_1', name: 'lookup', result: { status: 'shipped' } });
+        return finish(options);
+      };
+    }
+
+    async function stepsOf(threadId: string, runId: string): Promise<RunStep[]> {
+      const page = await client.beta.threads.runs.steps.list(runId, {
+        thread_id: threadId,
+        order: 'asc',
+      });
+      return page.data as RunStep[];
+    }
+
+    function messageIdOf(step: RunStep): string | undefined {
+      return step.step_details.type === 'message_creation'
+        ? step.step_details.message_creation.message_id
+        : undefined;
+    }
+
+    it('streams one message per text turn and strictly sequential steps', async () => {
+      textThenTool(async (options) => {
+        options.onToken?.('Shipped.');
+        return { output: 'Shipped.' };
+      });
+      const thread = await client.beta.threads.create({
+        messages: [{ role: 'user', content: 'Where is A-1?' }],
+      });
+
+      const done: RunStep[] = [];
+      const texts = new Map<string, string>();
+      const stream = client.beta.threads.runs
+        .stream(thread.id, { assistant_id: assistantId })
+        .on('runStepDone', (step) => done.push(step as RunStep))
+        .on('textDone', (text, message) => texts.set(message.id, text.value));
+      const finalRun = await stream.finalRun();
+      const streamedMessages = await stream.finalMessages();
+
+      const stored = await client.beta.threads.messages.list(thread.id, {
+        order: 'asc',
+        run_id: finalRun.id,
+      });
+      const steps = await stepsOf(thread.id, finalRun.id);
+
+      expect(finalRun.status).toBe('completed');
+      expect(stored.data.map((m) => m.content[0])).toMatchObject([
+        { text: { value: 'Let me check.' } },
+        { text: { value: 'Shipped.' } },
+      ]);
+      expect(stored.data.map((m) => m.status)).toEqual(['completed', 'completed']);
+      expect(streamedMessages.map((m) => m.id)).toEqual(stored.data.map((m) => m.id));
+      expect([...texts.entries()]).toEqual([
+        [stored.data[0].id, 'Let me check.'],
+        [stored.data[1].id, 'Shipped.'],
+      ]);
+      expect(steps.map((step) => [step.type, step.status])).toEqual([
+        ['message_creation', 'completed'],
+        ['tool_calls', 'completed'],
+        ['message_creation', 'completed'],
+      ]);
+      expect(steps.map(messageIdOf)).toEqual([stored.data[0].id, undefined, stored.data[1].id]);
+      expect(done.map((step) => step.id)).toEqual(steps.map((step) => step.id));
+      expect(done[1].step_details).toMatchObject({
+        tool_calls: [{ id: 'call_1', function: { output: '{"status":"shipped"}' } }],
+      });
+    });
+
+    it('keeps the finished turn and the partial one when the run fails later', async () => {
+      textThenTool(async (options) => {
+        options.onToken?.('Ship');
+        throw new Error('boom');
+      });
+      const thread = await client.beta.threads.create({
+        messages: [{ role: 'user', content: 'Where is A-1?' }],
+      });
+
+      const events: string[] = [];
+      const stream = client.beta.threads.runs
+        .stream(thread.id, { assistant_id: assistantId })
+        .on('event', (event) => events.push(event.event));
+      const finalRun = await stream.finalRun();
+      const stored = await client.beta.threads.messages.list(thread.id, {
+        order: 'asc',
+        run_id: finalRun.id,
+      });
+      const steps = await stepsOf(thread.id, finalRun.id);
+
+      expect(finalRun.status).toBe('failed');
+      expect(stored.data).toHaveLength(2);
+      expect(stored.data[0]).toMatchObject({
+        status: 'completed',
+        content: [{ text: { value: 'Let me check.' } }],
+      });
+      expect(stored.data[1]).toMatchObject({
+        status: 'incomplete',
+        incomplete_details: { reason: 'run_failed' },
+        content: [{ text: { value: 'Ship' } }],
+      });
+      expect(steps.map((step) => [step.type, step.status])).toEqual([
+        ['message_creation', 'completed'],
+        ['tool_calls', 'completed'],
+        ['message_creation', 'failed'],
+      ]);
+      expect(steps.map(messageIdOf)).toEqual([stored.data[0].id, undefined, stored.data[1].id]);
+      expect(events.slice(-3)).toEqual([
+        'thread.message.incomplete',
+        'thread.run.step.failed',
+        'thread.run.failed',
+      ]);
+    });
+
+    it('keeps the finished turn when the run is cancelled during the tool call', async () => {
+      handler = (_agent, options) =>
+        new Promise((_resolve, reject) => {
+          options.onToken?.('Let me check.');
+          options.onToolCall?.(lookupCall);
+          options.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+        });
+      const thread = await client.beta.threads.create({
+        messages: [{ role: 'user', content: 'Where is A-1?' }],
+      });
+      const run = await client.beta.threads.runs.create(thread.id, { assistant_id: assistantId });
+      await vi.waitFor(async () => expect(await stepsOf(thread.id, run.id)).toHaveLength(2));
+
+      await client.beta.threads.runs.cancel(run.id, { thread_id: thread.id });
+      const final = await client.beta.threads.runs.poll(run.id, { thread_id: thread.id }, POLL);
+      const stored = await client.beta.threads.messages.list(thread.id, { run_id: run.id });
+      const steps = await stepsOf(thread.id, run.id);
+
+      expect(final.status).toBe('cancelled');
+      expect(stored.data).toHaveLength(1);
+      expect(stored.data[0]).toMatchObject({
+        status: 'completed',
+        content: [{ text: { value: 'Let me check.' } }],
+      });
+      expect(steps.map((step) => [step.type, step.status])).toEqual([
+        ['message_creation', 'completed'],
+        ['tool_calls', 'cancelled'],
+      ]);
+      expect(messageIdOf(steps[0])).toBe(stored.data[0].id);
+    });
+  });
+
+  describe('before cursors', () => {
+    type Page = { data: { id: string }[]; has_more: boolean; first_id?: string; last_id?: string };
+
+    async function page(path: string): Promise<Page> {
+      return (await (await fetch(`${server.getBaseUrl()}${path}`)).json()) as Page;
+    }
+
+    it('give the items right before the cursor for messages', async () => {
+      const thread = await client.beta.threads.create({
+        messages: ['m1', 'm2', 'm3', 'm4', 'm5'].map((content) => ({
+          role: 'user' as const,
+          content,
+        })),
+      });
+      const all = await page(`/threads/${thread.id}/messages?order=asc`);
+      const [m1, m2, m3, m4, m5] = all.data.map((m) => m.id);
+
+      const asc = await page(`/threads/${thread.id}/messages?order=asc&limit=2&before=${m5}`);
+      const desc = await page(`/threads/${thread.id}/messages?limit=2&before=${m1}`);
+      const nearStart = await page(`/threads/${thread.id}/messages?order=asc&limit=2&before=${m3}`);
+
+      expect(asc.data.map((m) => m.id)).toEqual([m3, m4]);
+      expect(asc.has_more).toBe(true);
+      expect(desc.data.map((m) => m.id)).toEqual([m3, m2]);
+      expect(desc.has_more).toBe(true);
+      expect(nearStart.data.map((m) => m.id)).toEqual([m1, m2]);
+      expect(nearStart.has_more).toBe(false);
+
+      const manager = server.getAdapter().getThreadManager();
+      const direct = await manager.listMessages(thread.id, { order: 'asc', limit: 2, before: m5 });
+      expect(direct.map((m) => m.id)).toEqual([m3, m4]);
+    });
+
+    it('give the items right before the cursor for runs and steps', async () => {
+      handler = async (_agent, options) => {
+        for (const id of ['c1', 'c2', 'c3']) {
+          options.onToolCall?.({ id, name: 'lookup', arguments: {} });
+          options.onToolResult?.({ callId: id, name: 'lookup', result: id });
+        }
+        return { output: 'done' };
+      };
+      const thread = await client.beta.threads.create({
+        messages: [{ role: 'user', content: 'go' }],
+      });
+      const runs: string[] = [];
+      for (let i = 0; i < 4; i++) {
+        const run = await client.beta.threads.runs.createAndPoll(
+          thread.id,
+          { assistant_id: assistantId },
+          POLL
+        );
+        runs.push(run.id);
+      }
+
+      const runPage = await page(`/threads/${thread.id}/runs?order=asc&limit=2&before=${runs[3]}`);
+      expect(runPage.data.map((r) => r.id)).toEqual([runs[1], runs[2]]);
+      expect(runPage.has_more).toBe(true);
+
+      const stepsPath = `/threads/${thread.id}/runs/${runs[3]}/steps`;
+      const steps = (await page(`${stepsPath}?order=asc`)).data.map((step) => step.id);
+      expect(steps).toHaveLength(4);
+      const ascSteps = await page(`${stepsPath}?order=asc&limit=2&before=${steps[3]}`);
+      const descSteps = await page(`${stepsPath}?limit=2&before=${steps[0]}`);
+
+      expect(ascSteps.data.map((step) => step.id)).toEqual([steps[1], steps[2]]);
+      expect(ascSteps.has_more).toBe(true);
+      expect(descSteps.data.map((step) => step.id)).toEqual([steps[2], steps[1]]);
+      expect(descSteps.has_more).toBe(true);
+    });
   });
 });
 

@@ -467,6 +467,8 @@ export class PostgresThreadStorage implements ThreadStorage {
   private static readonly IDENTIFIER_REGEX = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
   private static readonly OWNER = `(data->>'owner')`;
   private static readonly CREATED_AT = `((data->'thread'->>'created_at')::bigint)`;
+  /** Ids in code unit order, as the in-memory and Redis listings compare them */
+  private static readonly ID = `(id COLLATE "C")`;
 
   private static validateIdentifier(value: string, name: string): void {
     if (!PostgresThreadStorage.IDENTIFIER_REGEX.test(value)) {
@@ -512,7 +514,7 @@ export class PostgresThreadStorage implements ThreadStorage {
 
       await pool.query(`
         CREATE INDEX IF NOT EXISTS idx_${this.tableName}_thread_owner
-        ON ${this.schema}.${this.tableName} (${PostgresThreadStorage.OWNER}, ${PostgresThreadStorage.CREATED_AT}, id)
+        ON ${this.schema}.${this.tableName} (${PostgresThreadStorage.OWNER}, ${PostgresThreadStorage.CREATED_AT}, ${PostgresThreadStorage.ID})
         WHERE type = 'thread'
       `);
     } catch (err) {
@@ -569,7 +571,7 @@ export class PostgresThreadStorage implements ThreadStorage {
   async listThreads(options?: ListStoredThreadsOptions): Promise<StoredThreadPage> {
     const listing = threadListing(options);
     const pool = this.ensurePool();
-    const { OWNER, CREATED_AT } = PostgresThreadStorage;
+    const { OWNER, CREATED_AT, ID } = PostgresThreadStorage;
     const conditions = [`type = 'thread'`];
     const values: unknown[] = [];
     if (listing.owner === null) {
@@ -582,14 +584,14 @@ export class PostgresThreadStorage implements ThreadStorage {
     if (listing.cursor) {
       values.push(listing.cursor.createdAt, listing.cursor.id);
       conditions.push(
-        `(${CREATED_AT}, id) ${direction === 'ASC' ? '>' : '<'} ($${values.length - 1}::bigint, $${values.length}::text)`
+        `(${CREATED_AT}, ${ID}) ${direction === 'ASC' ? '>' : '<'} ($${values.length - 1}::bigint, $${values.length}::text)`
       );
     }
     values.push(listing.limit + 1);
     const result = await pool.query<{ data: StoredThread }>(
       `SELECT data FROM ${this.schema}.${this.tableName}
        WHERE ${conditions.join(' AND ')}
-       ORDER BY ${CREATED_AT} ${direction}, id ${direction}
+       ORDER BY ${CREATED_AT} ${direction}, ${ID} ${direction}
        LIMIT $${values.length}`,
       values
     );

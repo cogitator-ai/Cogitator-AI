@@ -12,7 +12,7 @@ import type {
   ListResponse,
   Message,
 } from '../../types/openai-types';
-import { parseLimit, parseOrder, sendInvalidRequest } from './shared';
+import { paginate, parseLimit, parseOrder, sendInvalidRequest } from './shared';
 
 function validateMessage(message: Partial<CreateMessageRequest> | undefined): string | null {
   if (!message || (message.role !== 'user' && message.role !== 'assistant')) {
@@ -174,19 +174,13 @@ export function registerThreadRoutes(fastify: FastifyInstance, adapter: OpenAIAd
     const { after, before, run_id } = request.query;
     const messages = await adapter.listMessages(
       request.params.thread_id,
-      { limit: limit + 1, order, after, before, run_id },
+      { order, run_id },
       request.apiKeyOwner
     );
 
-    const hasMore = messages.length > limit;
-    const data = messages.slice(0, limit);
-
     const response: ListResponse<Message> = {
       object: 'list',
-      data,
-      first_id: data[0]?.id,
-      last_id: data[data.length - 1]?.id,
-      has_more: hasMore,
+      ...paginate(messages, { limit, after, before }),
     };
 
     return reply.send(response);

@@ -197,6 +197,17 @@ describe.each([
     expect(unowned.threads.map((t) => t.thread.id)).toEqual(['t_d']);
   });
 
+  it('breaks creation time ties by id in code unit order', async () => {
+    const storage = await create();
+    for (const id of ['t_a', 't_B', 't_Z', 't_b']) {
+      await storage.saveThread(id, storedThread(id, 500));
+    }
+
+    const page = await storage.listThreads({ order: 'asc' });
+
+    expect(page.threads.map((t) => t.thread.id)).toEqual(['t_B', 't_Z', 't_a', 't_b']);
+  });
+
   it('refuses a limit out of range and a cursor it did not hand out', async () => {
     const storage = await seeded();
 
@@ -221,7 +232,7 @@ describe('PostgresThreadStorage.listThreads', () => {
 
     const index = pgState.queries.find((q) => q.includes('idx_openai_compat_data_thread_owner'));
     expect(index).toContain("(data->>'owner')");
-    expect(index).toContain("((data->'thread'->>'created_at')::bigint)");
+    expect(index).toContain("((data->'thread'->>'created_at')::bigint), (id COLLATE \"C\"))");
     expect(index).toContain("WHERE type = 'thread'");
   });
 
@@ -239,7 +250,7 @@ describe('PostgresThreadStorage.listThreads', () => {
     expect(page.nextCursor).toBeDefined();
     expect(pgState.queries[0]).toContain("(data->>'owner') = $1");
     expect(pgState.queries[0]).toContain(
-      "ORDER BY ((data->'thread'->>'created_at')::bigint) DESC, id DESC"
+      "ORDER BY ((data->'thread'->>'created_at')::bigint) DESC, (id COLLATE \"C\") DESC"
     );
     expect(pgState.queries[0]).toContain('LIMIT $2');
     expect(pgState.values[0]).toEqual(['key-a', 3]);
@@ -250,7 +261,7 @@ describe('PostgresThreadStorage.listThreads', () => {
     expect(next.threads.map((t) => t.thread.id)).toEqual(['t_a']);
     expect(next.nextCursor).toBeUndefined();
     expect(pgState.queries[1]).toContain(
-      "(((data->'thread'->>'created_at')::bigint), id) < ($2::bigint, $3::text)"
+      "(((data->'thread'->>'created_at')::bigint), (id COLLATE \"C\")) < ($2::bigint, $3::text)"
     );
     expect(pgState.values[1]).toEqual(['key-a', 200, 't_c', 3]);
   });
@@ -261,7 +272,7 @@ describe('PostgresThreadStorage.listThreads', () => {
     await storage.listThreads({ owner: null, order: 'asc' });
 
     expect(pgState.queries[0]).toContain("(data->>'owner') IS NULL");
-    expect(pgState.queries[0]).toContain('ASC, id ASC');
+    expect(pgState.queries[0]).toContain('ASC, (id COLLATE "C") ASC');
     expect(pgState.values[0]).toEqual([51]);
   });
 });

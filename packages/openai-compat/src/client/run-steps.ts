@@ -141,9 +141,12 @@ export class RunStepRecorder {
     }
   }
 
-  /** The run started its assistant message: opens the `message_creation` step pointing at it. */
+  /**
+   * The run started an assistant message: opens a `message_creation` step pointing at it. A run
+   * writes one message per model turn that answered with text, each with its own step.
+   */
   messageStarted(messageId: string): void {
-    if (this.settled || this.messageStep) return;
+    if (this.settled || this.messageStep?.status === 'in_progress') return;
     this.messageStep = this.createStep({
       type: 'message_creation',
       message_creation: { message_id: messageId },
@@ -152,7 +155,8 @@ export class RunStepRecorder {
 
   /**
    * The assistant message is written. The step takes the usage of the model calls since the last
-   * step, or `runUsage` when it is the only step of the run, so every call was its own.
+   * step (a turn that wrote text and then called tools counts toward its message, the first step
+   * it produced), or `runUsage` when it is the only step of the run, so every call was its own.
    */
   messageFinished(runUsage: Usage | null): void {
     const step = this.messageStep;

@@ -9,6 +9,7 @@ import {
   CogitatorError,
   type ImageInput,
   type ResponseFormat as AgentResponseFormat,
+  type RunMiddleware,
   type RunOptions,
   type Span,
   type Tool,
@@ -22,6 +23,7 @@ import { nanoid } from 'nanoid';
 import { z } from 'zod';
 import {
   ThreadManager,
+  assistantMessage,
   type LLMThreadMessage,
   type StoredAssistant,
   type StoredThread,
@@ -134,15 +136,29 @@ interface RunState {
   pending?: PendingToolOutputs;
   /** Outputs the client submitted for its function calls, by tool call id */
   clientOutputs: Map<string, string>;
+  /** Stores of the messages the run wrote, awaited before the run completes */
+  messageWrites: Promise<unknown>[];
   expiryTimer?: ReturnType<typeof setTimeout>;
 }
 
 /** The assistant message a run writes, from its first token to the stored message. */
 interface RunMessage {
   id: string;
+  /** Unix seconds of its first token, which the stored message keeps */
+  createdAt: number;
   announced: boolean;
   written: boolean;
   text: string;
+}
+
+function newRunMessage(): RunMessage {
+  return {
+    id: `msg_${nanoid()}`,
+    createdAt: nowSeconds(),
+    announced: false,
+    written: false,
+    text: '',
+  };
 }
 
 class RunTerminatedError extends Error {
@@ -530,6 +546,7 @@ export class OpenAIAdapter {
       events: [],
       ended: false,
       clientOutputs: new Map(),
+      messageWrites: [],
     };
     this.runs.set(runId, state);
     this.activeRunByThread.set(threadId, runId);
@@ -924,21 +941,17 @@ export class OpenAIAdapter {
     const { run } = state;
     const threadId = run.thread_id;
     const signal = state.abortController.signal;
-    const message: RunMessage = {
-      id: `msg_${nanoid()}`,
-      announced: false,
-      written: false,
-      text: '',
-    };
+    let message = newRunMessage();
 
     const announceMessage = () => {
       if (message.announced) return;
       message.announced = true;
+      message.createdAt = nowSeconds();
       state.steps.messageStarted(message.id);
       const inProgress: Message = {
         id: message.id,
         object: 'thread.message',
-        created_at: nowSeconds(),
+        created_at: message.createdAt,
         thread_id: threadId,
         status: 'in_progress',
         completed_at: null,
@@ -998,6 +1011,19 @@ export class OpenAIAdapter {
         tools,
       });
 
+      /**
+       * Text of the latest model turn, seen after the run's middleware. A turn that writes text
+       * and calls tools becomes its own message, which a run without `stream: true` gets no
+       * tokens of, so it takes the text from here when the first call of the turn arrives.
+       */
+      let turnText = '';
+      const turnTextTracker: RunMiddleware = {
+        name: 'openai-compat-turn-text',
+        afterModel: ({ response }) => {
+          turnText = response.content;
+        },
+      };
+
       const turnOptions = {
         signal,
         stream: !!request.stream,
@@ -1015,8 +1041,20 @@ export class OpenAIAdapter {
         },
         onApproval: (approval: ToolApprovalRequest) =>
           clientToolNames.has(approval.toolName) ? 'pause' : undefined,
+        middleware: [turnTextTracker],
         onToolCall: (call: AgentToolCall) => {
-          if (!signal.aborted) state.steps.toolCalled(call);
+          if (signal.aborted) return;
+          if (!message.announced && turnText) {
+            announceMessage();
+            message.text = turnText;
+          }
+          turnText = '';
+          if (message.announced && !message.written) {
+            void this.sealMessage(state, assistant.id, message, message.text);
+            state.steps.messageFinished(null);
+            message = newRunMessage();
+          }
+          state.steps.toolCalled(call);
         },
         onToolResult: (result: ToolResult) => state.steps.toolReturned(result),
         onSpan: (span: Span) => state.steps.recordSpan(span),
@@ -1064,8 +1102,9 @@ export class OpenAIAdapter {
           : undefined;
       if (finalContent || incompleteReason) {
         announceMessage();
-        await this.writeMessage(state, assistant.id, message, finalContent, incompleteReason);
+        void this.sealMessage(state, assistant.id, message, finalContent, incompleteReason);
       }
+      await Promise.all(state.messageWrites);
       state.steps.messageFinished(run.usage);
       state.steps.finish({ status: 'completed' });
 
@@ -1079,6 +1118,7 @@ export class OpenAIAdapter {
         this.emit(state, 'thread.run.completed', run);
       }
     } catch (error) {
+      await Promise.allSettled(state.messageWrites);
       const reason = signal.aborted ? signal.reason : error;
       if (reason instanceof RunTerminatedError) {
         const cancelled = reason.status === 'cancelled';
@@ -1122,30 +1162,37 @@ export class OpenAIAdapter {
     }
   }
 
-  /** Store the assistant message of the run and emit its final event. */
-  private async writeMessage(
+  /**
+   * Finish a message of the run: emit its final event right away, so the events of the next step
+   * follow it, and store it. Stores to one thread keep the order of the calls, and the run waits
+   * for them (`messageWrites`) before it completes.
+   */
+  private sealMessage(
     state: RunState,
     assistantId: string,
     message: RunMessage,
     content: string,
     incompleteReason?: MessageIncompleteReason
-  ): Promise<void> {
-    const written = await this.threadManager.addAssistantMessage(
-      state.run.thread_id,
+  ): Promise<unknown> {
+    const sealed = assistantMessage({
+      threadId: state.run.thread_id,
       content,
       assistantId,
-      state.run.id,
-      message.id,
-      incompleteReason
-    );
+      runId: state.run.id,
+      messageId: message.id,
+      incompleteReason,
+      createdAt: message.createdAt,
+    });
     message.written = true;
-    if (written) {
-      this.emit(
-        state,
-        incompleteReason ? 'thread.message.incomplete' : 'thread.message.completed',
-        written
-      );
-    }
+    this.emit(
+      state,
+      incompleteReason ? 'thread.message.incomplete' : 'thread.message.completed',
+      sealed
+    );
+    const write = this.threadManager.appendMessage(state.run.thread_id, sealed);
+    write.catch(() => undefined);
+    state.messageWrites.push(write);
+    return write;
   }
 
   /**
@@ -1160,7 +1207,7 @@ export class OpenAIAdapter {
   ): Promise<void> {
     if (!message.announced || message.written) return;
     try {
-      await this.writeMessage(state, assistantId, message, message.text, reason);
+      await this.sealMessage(state, assistantId, message, message.text, reason);
     } catch (error) {
       console.error(
         `[CogitatorOpenAI] Run ${state.run.id} could not keep its unfinished message:`,

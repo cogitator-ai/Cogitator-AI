@@ -1,8 +1,16 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import { createHash } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import type { Cogitator } from '@cogitator-ai/core';
-import type { Agent, RunOptions, RunResult } from '@cogitator-ai/types';
+import { Cogitator as RealCogitator, type Cogitator } from '@cogitator-ai/core';
+import type {
+  Agent,
+  ChatRequest,
+  ChatResponse,
+  ChatStreamChunk,
+  LLMBackend,
+  RunOptions,
+  RunResult,
+} from '@cogitator-ai/types';
 import { OpenAIServer } from '../server/api-server';
 import { apiKeyOwner } from '../server/middleware/auth';
 import { InMemoryThreadStorage } from '../client/storage';
@@ -32,6 +40,7 @@ const cogitator = {
   },
 } as unknown as Cogitator;
 
+const USAGE = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
 const KEY_A = 'sk-key-a';
 const KEY_B = 'sk-key-b';
 
@@ -230,5 +239,101 @@ describe('threads and runs scoped to the API key', () => {
       .listThreads({ owner: apiKeyOwner(KEY_A), limit: 500 });
     expect(ofA.threads.length).toBeGreaterThan(0);
     expect(ofA.threads.every((stored) => stored.owner === apiKeyOwner(KEY_A))).toBe(true);
+  });
+});
+
+describe('a run of another key waiting in requires_action', () => {
+  const answer = (request: ChatRequest): ChatResponse =>
+    request.messages.some((m) => m.role === 'tool')
+      ? { id: 'r2', content: 'It is sunny.', finishReason: 'stop', usage: USAGE }
+      : {
+          id: 'r1',
+          content: '',
+          toolCalls: [{ id: 'w1', name: 'get_weather', arguments: { city: 'Paris' } }],
+          finishReason: 'tool_calls',
+          usage: USAGE,
+        };
+  const backend: LLMBackend = {
+    provider: 'openai',
+    chat: async (request: ChatRequest) => answer(request),
+    chatStream: async function* (request: ChatRequest): AsyncGenerator<ChatStreamChunk> {
+      const response = answer(request);
+      if (response.content) yield { id: response.id, delta: { content: response.content } };
+      if (response.toolCalls) yield { id: response.id, delta: { toolCalls: response.toolCalls } };
+      yield { id: response.id, delta: {}, finishReason: response.finishReason, usage: USAGE };
+    },
+  };
+
+  let realCogitator: RealCogitator;
+  let server: OpenAIServer;
+
+  beforeAll(async () => {
+    realCogitator = new RealCogitator({ llm: { backends: { mock: backend } } });
+    server = new OpenAIServer(realCogitator, { apiKeys: [KEY_A, KEY_B], defaultModel: 'mock/m' });
+    await server.waitUntilReady();
+  });
+
+  afterAll(async () => {
+    await server.getFastify().close();
+    await realCogitator.close();
+  });
+
+  async function call(key: string, url: string, payload?: Record<string, unknown>) {
+    return server.getFastify().inject({
+      method: payload ? 'POST' : 'GET',
+      url,
+      headers: { authorization: `Bearer ${key}` },
+      ...(payload && { payload }),
+    });
+  }
+
+  it('refuses submit_tool_outputs and cancel from another key and keeps the run waiting', async () => {
+    const assistant = (
+      await call(KEY_A, '/v1/assistants', {
+        model: 'cogitator',
+        tools: [
+          {
+            type: 'function',
+            function: {
+              name: 'get_weather',
+              parameters: { type: 'object', properties: { city: { type: 'string' } } },
+            },
+          },
+        ],
+      })
+    ).json<{ id: string }>();
+    const thread = (
+      await call(KEY_A, '/v1/threads', { messages: [{ role: 'user', content: 'Weather?' }] })
+    ).json<Thread>();
+    const created = (
+      await call(KEY_A, `/v1/threads/${thread.id}/runs`, { assistant_id: assistant.id })
+    ).json<Run>();
+    const runUrl = `/v1/threads/${thread.id}/runs/${created.id}`;
+    await vi.waitFor(async () =>
+      expect((await call(KEY_A, runUrl)).json<Run>().status).toBe('requires_action')
+    );
+    const waiting = (await call(KEY_A, runUrl)).json<Run>();
+
+    const submitted = await call(KEY_B, `${runUrl}/submit_tool_outputs`, {
+      stream: true,
+      tool_outputs: [{ tool_call_id: 'w1', output: 'hijacked' }],
+    });
+    const cancelled = await call(KEY_B, `${runUrl}/cancel`, {});
+
+    expect(submitted.statusCode).toBe(404);
+    expect(submitted.headers['content-type']).toContain('application/json');
+    expect(cancelled.statusCode).toBe(404);
+    const after = (await call(KEY_A, runUrl)).json<Run>();
+    expect(after).toEqual(waiting);
+    const [step] = (await call(KEY_A, `${runUrl}/steps`)).json<{ data: RunStep[] }>().data;
+    expect(step).toMatchObject({ type: 'tool_calls', status: 'in_progress' });
+
+    const resumed = await call(KEY_A, `${runUrl}/submit_tool_outputs`, {
+      tool_outputs: [{ tool_call_id: 'w1', output: 'sunny' }],
+    });
+    expect(resumed.statusCode).toBe(200);
+    await vi.waitFor(async () =>
+      expect((await call(KEY_A, runUrl)).json<Run>().status).toBe('completed')
+    );
   });
 });

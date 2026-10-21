@@ -416,9 +416,9 @@ Runs live in the adapter's memory, unlike assistants, threads, messages and file
 Every run records its steps, as the Assistants API does:
 
 - a `tool_calls` step for each model turn that called tools, with each call's `id`, `name`, `arguments` and `output` (`null` until the output is known). A step whose calls wait on the client stays `in_progress` while the run is in `requires_action`, and completes with the submitted outputs after `submit_tool_outputs`.
-- a `message_creation` step for the assistant message of the run, with its `message_id`.
+- a `message_creation` step for each assistant message, with its `message_id`. A run writes one message per model turn that answered with text: a turn that writes "Let me check." and then calls a tool stores that text as its own completed message (and completes its step) before the `tool_calls` step opens, so steps never overlap and the stored messages hold exactly the streamed text. A run without `stream: true` stores the same messages and steps, taking each turn's text as the run's middleware leaves it, also when the turn calls a client function and the run waits in `requires_action`.
 
-Steps carry `created_at` / `completed_at` / `failed_at` / `cancelled_at` / `expired_at` (unix seconds) and `usage`: the tokens of the model call that produced the step, when the agent run reports them, or the run's usage when the run has a single step. When the run is cancelled, expires or fails, the steps still in progress end `cancelled`, `expired` or `failed` (with the run's `last_error`), and a message the run had started streaming is kept with `status: 'incomplete'` and `incomplete_details.reason` `run_cancelled`, `run_expired` or `run_failed`.
+Steps carry `created_at` / `completed_at` / `failed_at` / `cancelled_at` / `expired_at` (unix seconds) and `usage`: the tokens of the model call that produced the step, when the agent run reports them (a turn that wrote text and then called tools counts toward its message, the first step it produced), or the run's usage when the run has a single step. When the run is cancelled, expires or fails, the steps still in progress end `cancelled`, `expired` or `failed` (with the run's `last_error`), and a message the run had started streaming is kept with `status: 'incomplete'` and `incomplete_details.reason` `run_cancelled`, `run_expired` or `run_failed`.
 
 ```typescript
 const steps = await openai.beta.threads.runs.steps.list(run.id, { thread_id: thread.id });
@@ -732,7 +732,7 @@ const unowned = await storage.listThreads({ owner: null }); // threads stored be
 A page is `{ threads, nextCursor? }`, `nextCursor` being absent on the last page. A cursor the storage did not hand out throws `TypeError`. What a page costs depends on the backend:
 
 - **In-memory**: filters and sorts the threads of the process.
-- **PostgreSQL**: `WHERE`, `ORDER BY` and `LIMIT` in SQL, served by the partial index `idx_<table>_thread_owner` on (owner, creation time, id) that `connect()` creates. A listing without `owner` reads every thread row.
+- **PostgreSQL**: `WHERE`, `ORDER BY` and `LIMIT` in SQL, served by the partial index `idx_<table>_thread_owner` on (owner, creation time, id) that `connect()` creates. Ids compare with `COLLATE "C"`, the code unit order the other backends use, whatever the database collation. A listing without `owner` reads every thread row.
 - **Redis**: threads are plain keys with a TTL and no index, so every page reads all thread keys (`SCAN` + `MGET`, messages included) and sorts them in memory. That is fine for an occasional listing, use PostgreSQL when there are many threads.
 
 ### Custom Storage Implementation
@@ -754,7 +754,7 @@ const manager = new ThreadManager(new MyCustomStorage());
 
 ## Supported Endpoints
 
-All endpoints except `/health` live under `/v1`. List endpoints for assistants, messages and runs accept `limit` (1-100, default 20), `order` (`asc` / `desc`, default `desc`), `after` and `before`, and return `{ object: 'list', data, first_id, last_id, has_more }`. `GET /v1/files` accepts `limit` (1-10 000, default 10 000), `order` (default `desc`) and `after`, plus a `purpose` filter.
+All endpoints except `/health` live under `/v1`. List endpoints for assistants, messages and runs accept `limit` (1-100, default 20), `order` (`asc` / `desc`, default `desc`), `after` and `before`, and return `{ object: 'list', data, first_id, last_id, has_more }`. `after` gives the items right after the cursor and `before` the items right before it, both in list order, and `has_more` tells whether more items lie beyond the page, away from the cursor. `GET /v1/files` accepts `limit` (1-10 000, default 10 000), `order` (default `desc`) and `after`, plus a `purpose` filter.
 
 ### Models
 

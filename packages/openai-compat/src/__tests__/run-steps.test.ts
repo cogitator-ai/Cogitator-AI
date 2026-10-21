@@ -24,13 +24,14 @@ const lookup = tool({
 
 let toolTurn: ToolCall[] | null = null;
 let failAfterTools = false;
+let toolTurnText = '';
 
 function answer(request: ChatRequest): ChatResponse {
   const results = request.messages.filter((m) => m.role === 'tool');
   if (toolTurn && results.length === 0) {
     return {
       id: 'r1',
-      content: '',
+      content: toolTurnText,
       toolCalls: toolTurn,
       finishReason: 'tool_calls',
       usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
@@ -102,6 +103,7 @@ describe('run steps', () => {
   beforeEach(() => {
     toolTurn = null;
     failAfterTools = false;
+    toolTurnText = '';
   });
 
   async function start(tools: OpenAI.Beta.AssistantTool[] = [], content = 'Hello') {
@@ -361,6 +363,237 @@ describe('run steps', () => {
       'thread.run.step.completed',
       'thread.run.completed',
     ]);
+  });
+
+  describe('a tool turn that also writes text', () => {
+    function messageIdOf(step: RunStep): string | undefined {
+      return step.step_details.type === 'message_creation'
+        ? step.step_details.message_creation.message_id
+        : undefined;
+    }
+
+    async function storedTexts(threadId: string, runId: string) {
+      const page = await client.beta.threads.messages.list(threadId, {
+        order: 'asc',
+        run_id: runId,
+      });
+      return page.data.map((m) => ({
+        id: m.id,
+        status: m.status,
+        text: m.content[0]?.type === 'text' ? m.content[0].text.value : undefined,
+      }));
+    }
+
+    it('streams a server tool turn through the SDK with sequential steps', async () => {
+      toolTurn = [{ id: 'call_1', name: 'lookup', arguments: { order: 'A-1' } }];
+      toolTurnText = 'Let me check.';
+      const { assistant, thread } = await start();
+
+      const done: RunStep[] = [];
+      const stream = client.beta.threads.runs
+        .stream(thread.id, { assistant_id: assistant.id })
+        .on('runStepDone', (step) => done.push(step as RunStep));
+      const finalRun = await stream.finalRun();
+      const streamed = await stream.finalMessages();
+      const stored = await storedTexts(thread.id, finalRun.id);
+      const steps = await stepsOf(thread.id, finalRun.id);
+
+      expect(finalRun.status).toBe('completed');
+      expect(stored).toEqual([
+        { id: expect.any(String), status: 'completed', text: 'Let me check.' },
+        {
+          id: expect.any(String),
+          status: 'completed',
+          text: 'Result: {"order":"A-1","status":"shipped"}',
+        },
+      ]);
+      expect(streamed.map((m) => m.id)).toEqual(stored.map((m) => m.id));
+      expect(steps.map((step) => step.type)).toEqual([
+        'message_creation',
+        'tool_calls',
+        'message_creation',
+      ]);
+      expect(steps.map(messageIdOf)).toEqual([stored[0].id, undefined, stored[1].id]);
+      expect(done.map((step) => step.id)).toEqual(steps.map((step) => step.id));
+      expect(steps[0].usage).toEqual({ prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 });
+      expect(steps[2].usage).toEqual({ prompt_tokens: 20, completion_tokens: 4, total_tokens: 24 });
+    });
+
+    it('streams the text before a client function, then continues with submitToolOutputsStream', async () => {
+      toolTurn = [{ id: 'w1', name: 'get_weather', arguments: { city: 'Paris' } }];
+      toolTurnText = 'Checking the weather.';
+      const { assistant, thread } = await start([weatherFunction]);
+
+      const firstDone: RunStep[] = [];
+      const first = client.beta.threads.runs
+        .stream(thread.id, { assistant_id: assistant.id })
+        .on('runStepDone', (step) => firstDone.push(step as RunStep));
+      const paused = await first.finalRun();
+      const waiting = await stepsOf(thread.id, paused.id);
+
+      expect(paused.status).toBe('requires_action');
+      expect(firstDone.map((step) => step.type)).toEqual(['message_creation']);
+      expect(waiting.map((step) => [step.type, step.status])).toEqual([
+        ['message_creation', 'completed'],
+        ['tool_calls', 'in_progress'],
+      ]);
+      expect(await storedTexts(thread.id, paused.id)).toEqual([
+        { id: messageIdOf(waiting[0]), status: 'completed', text: 'Checking the weather.' },
+      ]);
+
+      const resumedDone: RunStep[] = [];
+      const resumed = client.beta.threads.runs
+        .submitToolOutputsStream(paused.id, {
+          thread_id: thread.id,
+          tool_outputs: [{ tool_call_id: 'w1', output: 'sunny' }],
+        })
+        .on('runStepDone', (step) => resumedDone.push(step as RunStep));
+      const finalRun = await resumed.finalRun();
+      const stored = await storedTexts(thread.id, finalRun.id);
+      const steps = await stepsOf(thread.id, finalRun.id);
+
+      expect(finalRun.status).toBe('completed');
+      expect(stored.map((m) => m.text)).toEqual(['Checking the weather.', 'Result: "sunny"']);
+      expect(steps.map((step) => [step.type, step.status])).toEqual([
+        ['message_creation', 'completed'],
+        ['tool_calls', 'completed'],
+        ['message_creation', 'completed'],
+      ]);
+      expect(steps.map(messageIdOf)).toEqual([stored[0].id, undefined, stored[1].id]);
+      expect(resumedDone.map((step) => step.id)).toEqual([steps[1].id, steps[2].id]);
+    });
+
+    async function snapshot(threadId: string, runId: string) {
+      const stored = await storedTexts(threadId, runId);
+      const steps = await stepsOf(threadId, runId);
+      return {
+        messages: stored.map(({ status, text }) => ({ status, text })),
+        steps: steps.map((step) => ({
+          type: step.type,
+          status: step.status,
+          usage: step.usage,
+          details:
+            step.step_details.type === 'message_creation'
+              ? stored.findIndex((m) => m.id === messageIdOf(step))
+              : step.step_details.tool_calls.map((call) =>
+                  call.type === 'function' ? call.function : call.type
+                ),
+        })),
+      };
+    }
+
+    async function runScripted(stream: boolean, tools: OpenAI.Beta.AssistantTool[]) {
+      const { assistant, thread } = await start(tools);
+      let run = stream
+        ? await client.beta.threads.runs
+            .stream(thread.id, { assistant_id: assistant.id })
+            .finalRun()
+        : await client.beta.threads.runs.createAndPoll(
+            thread.id,
+            { assistant_id: assistant.id },
+            POLL
+          );
+      if (run.status === 'requires_action') {
+        const params = {
+          thread_id: thread.id,
+          tool_outputs: [{ tool_call_id: 'w1', output: 'sunny' }],
+        };
+        run = stream
+          ? await client.beta.threads.runs.submitToolOutputsStream(run.id, params).finalRun()
+          : await client.beta.threads.runs.submitToolOutputsAndPoll(run.id, params, POLL);
+      }
+      expect(run.status).toBe('completed');
+      return snapshot(thread.id, run.id);
+    }
+
+    it.each([
+      ['a server tool', [{ id: 'call_1', name: 'lookup', arguments: { order: 'A-1' } }], []],
+      [
+        'a client function',
+        [{ id: 'w1', name: 'get_weather', arguments: { city: 'Paris' } }],
+        [weatherFunction],
+      ],
+      ['no tool', null, []],
+    ] as const)(
+      'stores the same messages and steps streaming or not, for a turn with text and %s',
+      async (_name, calls, tools) => {
+        toolTurn = calls ? [...calls] : null;
+        toolTurnText = 'Let me check.';
+
+        const streamed = await runScripted(true, [...tools]);
+        const polled = await runScripted(false, [...tools]);
+
+        expect(polled).toEqual(streamed);
+        if (calls) {
+          expect(polled.messages.map((m) => m.text)).toEqual([
+            'Let me check.',
+            expect.stringMatching(/^Result: /),
+          ]);
+          expect(polled.steps.map((step) => [step.type, step.details])).toEqual([
+            ['message_creation', 0],
+            ['tool_calls', [expect.objectContaining({ name: calls[0].name })]],
+            ['message_creation', 1],
+          ]);
+        }
+      }
+    );
+
+    it('keeps the turn text before a client function as its own message while the run waits', async () => {
+      toolTurn = [{ id: 'w1', name: 'get_weather', arguments: { city: 'Paris' } }];
+      toolTurnText = 'Checking the weather.';
+      const { assistant, thread } = await start([weatherFunction]);
+
+      const paused = await client.beta.threads.runs.createAndPoll(
+        thread.id,
+        { assistant_id: assistant.id },
+        POLL
+      );
+      const waiting = await snapshot(thread.id, paused.id);
+
+      expect(paused.status).toBe('requires_action');
+      expect(waiting.messages).toEqual([{ status: 'completed', text: 'Checking the weather.' }]);
+      expect(waiting.steps.map((step) => [step.type, step.status])).toEqual([
+        ['message_creation', 'completed'],
+        ['tool_calls', 'in_progress'],
+      ]);
+
+      const done = await client.beta.threads.runs.submitToolOutputsAndPoll(
+        paused.id,
+        { thread_id: thread.id, tool_outputs: [{ tool_call_id: 'w1', output: 'sunny' }] },
+        POLL
+      );
+      const all = await client.beta.threads.messages.list(thread.id, { order: 'asc' });
+
+      expect(done.status).toBe('completed');
+      expect(all.data.map((m) => m.role)).toEqual(['user', 'assistant', 'assistant']);
+      expect((await snapshot(thread.id, done.id)).messages.map((m) => m.text)).toEqual([
+        'Checking the weather.',
+        'Result: "sunny"',
+      ]);
+    });
+
+    it('keeps the earlier turn when the run is cancelled in requires_action', async () => {
+      toolTurn = [{ id: 'w1', name: 'get_weather', arguments: { city: 'Rome' } }];
+      toolTurnText = 'Checking the weather.';
+      const { assistant, thread } = await start([weatherFunction]);
+      const paused = await client.beta.threads.runs
+        .stream(thread.id, { assistant_id: assistant.id })
+        .finalRun();
+
+      await client.beta.threads.runs.cancel(paused.id, { thread_id: thread.id });
+      const final = await client.beta.threads.runs.poll(paused.id, { thread_id: thread.id }, POLL);
+      const stored = await storedTexts(thread.id, paused.id);
+      const steps = await stepsOf(thread.id, paused.id);
+
+      expect(final.status).toBe('cancelled');
+      expect(stored).toEqual([
+        { id: messageIdOf(steps[0]), status: 'completed', text: 'Checking the weather.' },
+      ]);
+      expect(steps.map((step) => [step.type, step.status])).toEqual([
+        ['message_creation', 'completed'],
+        ['tool_calls', 'cancelled'],
+      ]);
+    });
   });
 
   it('streams a tool_calls step with deltas the SDK assembles, across submit_tool_outputs', async () => {
