@@ -266,6 +266,7 @@ export {
   MEMORY_ROOT,
   REDACTED_CONTENT,
   MAX_FILE_BYTES,
+  MAX_CHANGE_BYTES,
   memoryPath,
   sha256Of,
   isMemoryFileAdapter,
