@@ -158,6 +158,19 @@ describe('processors/swarm-agent', () => {
     expect(options.userId).toBe('alice');
   });
 
+  it("runs the agent in the swarm's trace", async () => {
+    runMock.mockResolvedValue(runResult('done'));
+    const { processSwarmAgentJob } = await import('../processors/swarm-agent');
+    const trace = { traceId: 'a'.repeat(32), parentSpanId: 'b'.repeat(16) };
+
+    await processSwarmAgentJob(
+      { ...payload, runOptions: { ...payload.runOptions, trace } },
+      { publisher: { publish: vi.fn().mockResolvedValue(1) } }
+    );
+
+    expect((runMock.mock.calls[0][1] as RunOptions).trace).toEqual(trace);
+  });
+
   it('publishes failures only on the final attempt and rethrows', async () => {
     runMock.mockRejectedValue(new Error('model down'));
     const publish = vi.fn().mockResolvedValue(1);

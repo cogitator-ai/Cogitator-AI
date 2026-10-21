@@ -4,6 +4,7 @@
 
 import {
   currentTraceContext,
+  errorType,
   GEN_AI,
   newSpanId,
   newTraceId,
@@ -285,7 +286,7 @@ export class Swarm {
           'swarm.id': this.id,
           'swarm.strategy': this.config.strategy,
           ...(failure !== undefined && {
-            [GEN_AI.errorType]: failure instanceof Error ? failure.name || '_OTHER' : '_OTHER',
+            [GEN_AI.errorType]: errorType(failure),
             error: failure instanceof Error ? failure.message : String(failure),
           }),
         },

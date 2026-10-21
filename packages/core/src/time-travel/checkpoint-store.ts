@@ -200,7 +200,7 @@ export class InMemoryCheckpointStore implements TimeTravelCheckpointStore {
 
     const checkpoint: ExecutionCheckpoint = {
       id: `ckpt_${nanoid(12)}`,
-      traceId: trace.id,
+      traceId: trace.traceId ?? trace.id,
       runId: trace.runId,
       agentId: trace.agentId,
       stepIndex,

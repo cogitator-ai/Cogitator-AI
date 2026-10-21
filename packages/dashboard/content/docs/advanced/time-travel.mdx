@@ -55,7 +55,7 @@ Only the run's own tool calls are steps. A run that continues a thread carries t
 Retrieve checkpoints by trace, agent, or label:
 
 ```typescript
-const checkpoints = await timeTravel.getCheckpoints(result.trace.traceId);
+const checkpoints = await timeTravel.getCheckpoints(result.runId);
 
 for (const cp of checkpoints) {
   console.log(`Step ${cp.stepIndex}: ${cp.label ?? 'unlabeled'}`);
@@ -194,10 +194,10 @@ Variants run one after another. A variant with both `additionalContext` and `inp
 
 ## Comparing Runs
 
-The `TraceComparator` produces structured diffs between two execution traces. `compare()` reads them from the TimeTravel's trace store, which holds the trace of every run you checkpointed and of every replay and fork; an unknown id throws `Trace not found`:
+The `TraceComparator` produces structured diffs between two execution traces. `compare()` reads them from the TimeTravel's trace store, which holds the trace of every run you checkpointed and of every replay and fork, each under its run id. A trace id works too when it belongs to one recorded run. Runs started inside another run share its trace, so for them pass the run id. An unknown id throws `Trace not found`:
 
 ```typescript
-const diff = await timeTravel.compare(result.trace.traceId, fork.result.trace.traceId);
+const diff = await timeTravel.compare(result.runId, fork.result.runId);
 
 console.log(`Common steps: ${diff.commonSteps}`);
 console.log(`Only in original: ${diff.trace1OnlySteps}`);

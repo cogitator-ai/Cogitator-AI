@@ -118,11 +118,10 @@ Available items to craft: wooden_sword, stone_pickaxe, iron_armor, gold_ring, fo
     );
   }
 
-  section('3. Listing checkpoints by trace');
+  section('3. Listing checkpoints of the run');
 
-  const traceId = result.trace.traceId;
-  const listed = await tt.getCheckpoints(traceId);
-  console.log(`  Found ${listed.length} checkpoints for trace ${traceId.slice(0, 16)}...`);
+  const listed = await tt.getCheckpoints(result.runId);
+  console.log(`  Found ${listed.length} checkpoints for run ${result.runId}`);
 
   section('4. Inspecting a specific checkpoint');
 

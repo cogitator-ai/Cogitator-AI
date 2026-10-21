@@ -25,6 +25,7 @@ export const GEN_AI = {
   requestMaxTokens: 'gen_ai.request.max_tokens',
   requestStopSequences: 'gen_ai.request.stop_sequences',
   requestStream: 'gen_ai.request.stream',
+  outputType: 'gen_ai.output.type',
   responseId: 'gen_ai.response.id',
   responseModel: 'gen_ai.response.model',
   responseFinishReasons: 'gen_ai.response.finish_reasons',
@@ -50,6 +51,15 @@ export const GEN_AI = {
   outputMessages: 'gen_ai.output.messages',
   errorType: 'error.type',
 } as const;
+
+/** Attributes the convention types as doubles, whole numbers among their values included. */
+export const GEN_AI_DOUBLE_ATTRIBUTES: ReadonlySet<string> = new Set([
+  GEN_AI.requestTemperature,
+  GEN_AI.requestTopP,
+  GEN_AI.responseTimeToFirstChunk,
+  'gen_ai.request.frequency_penalty',
+  'gen_ai.request.presence_penalty',
+]);
 
 /** The attributes that carry model and tool content, recorded only on opt-in. */
 export const GEN_AI_CONTENT_ATTRIBUTES: readonly string[] = [
@@ -227,6 +237,8 @@ export function chatRequestAttributes(request: ChatRequest): Record<string, unkn
     ...(request.stop &&
       request.stop.length > 0 && { [GEN_AI.requestStopSequences]: [...request.stop] }),
     ...(request.stream && { [GEN_AI.requestStream]: true }),
+    ...(request.responseFormat &&
+      request.responseFormat.type !== 'text' && { [GEN_AI.outputType]: 'json' }),
   };
 }
 
@@ -277,7 +289,7 @@ export function errorType(error: unknown): string {
 /** The attributes of an agent's `invoke_agent` span: the agent, its model and the conversation. */
 export function invokeAgentAttributes(
   agent: { id: string; name: string; config?: { description?: string } },
-  conversationId: string,
+  conversationId: string | undefined,
   model: string | undefined
 ): Record<string, unknown> {
   return {
@@ -286,6 +298,6 @@ export function invokeAgentAttributes(
     [GEN_AI.agentName]: agent.name,
     ...(agent.config?.description && { [GEN_AI.agentDescription]: agent.config.description }),
     ...(model && { [GEN_AI.requestModel]: model }),
-    [GEN_AI.conversationId]: conversationId,
+    ...(conversationId && { [GEN_AI.conversationId]: conversationId }),
   };
 }

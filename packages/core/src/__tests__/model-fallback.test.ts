@@ -109,7 +109,12 @@ describe('model fallback in a run', () => {
       'llm.fallback.from': 'primary/fast',
       'llm.fallback.to': 'backup/steady',
     });
-    expect(spans.find((s) => s.name === 'llm.chat')?.attributes['llm.model']).toBe('steady');
+    const chats = spans.filter((s) => s.name === 'llm.chat');
+    expect(chats.map((s) => [s.attributes['llm.model'], s.status])).toEqual([
+      ['fast', 'error'],
+      ['steady', 'ok'],
+    ]);
+    expect(chats[0].attributes['error.type']).toBe((events[0].error as CogitatorError).code);
   });
 
   it('prices a fallback turn at the model that answered it', async () => {

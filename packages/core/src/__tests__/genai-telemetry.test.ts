@@ -295,6 +295,142 @@ describe('GenAI semantic conventions on run spans', () => {
   });
 });
 
+describe('telemetry edge cases', () => {
+  const approve = tool({
+    name: 'lookup',
+    description: 'Looks a term up after approval',
+    parameters: z.object({ term: z.string() }),
+    requiresApproval: true,
+    execute: async ({ term }) => `found ${term}`,
+  });
+  const careful = new Agent({
+    name: 'careful',
+    model: 'test/model-1',
+    instructions: 'Answer.',
+    tools: [approve],
+  });
+
+  it('keeps content out of a paused run and continues its trace when it resumes', async () => {
+    const plain: Span[] = [];
+    const { cog } = runtime({
+      observers: [{ onSpan: (span) => plain.push(span) }, { captureContent: true }],
+    });
+    const paused = await cog.run(careful, {
+      input: 'please look it up, my card is 4111',
+      threadId: 'thread-paused',
+    });
+    expect(paused.status).toBe('paused');
+    const has = (spans: readonly Span[]) =>
+      spans.some((span) => GEN_AI.inputMessages in span.attributes);
+    expect(has(paused.trace.spans)).toBe(false);
+    expect(has(plain)).toBe(false);
+    const [pausedRoot] = byName(paused.trace.spans, 'agent.run');
+    expect(pausedRoot.status).toBe('unset');
+    expect(pausedRoot.attributes['run.status']).toBe('paused');
+    expect(paused.checkpoint?.trace).toEqual({
+      traceId: paused.trace.traceId,
+      rootSpanId: pausedRoot.id,
+    });
+    expect(byName(paused.trace.spans, 'llm.chat')[0].parentId).toBe(pausedRoot.id);
+
+    const resumed = await cog.resume(careful, paused.checkpoint!, {
+      decisions: { call_1: { approved: true } },
+    });
+    expect(resumed.trace.traceId).toBe(paused.trace.traceId);
+    expect(byName(resumed.trace.spans, 'agent.run')[0].parentId).toBe(pausedRoot.id);
+  });
+
+  it('ignores a parent it cannot name and lowercases one it can', async () => {
+    const { cog } = runtime();
+    const lost = await cog.run(agent, {
+      input: 'hello',
+      trace: { traceId: '', parentSpanId: newSpanId() },
+    });
+    expect(byName(lost.trace.spans, 'agent.run')[0].parentId).toBeUndefined();
+    const traceId = newTraceId();
+    const loud = await cog.run(agent, {
+      input: 'hello',
+      trace: { traceId: traceId.toUpperCase(), parentSpanId: 'not-a-span' },
+    });
+    expect(loud.trace.traceId).toBe(traceId);
+    expect(byName(loud.trace.spans, 'agent.run')[0].parentId).toBeUndefined();
+  });
+
+  it('names a conversation only when the run has a thread of its own', async () => {
+    const { cog } = runtime();
+    const result = await cog.run(agent, { input: 'please look it up' });
+    for (const span of result.trace.spans) {
+      expect(span.attributes[GEN_AI.conversationId]).toBeUndefined();
+    }
+  });
+
+  it('records a failed model call as a chat span with its error type', async () => {
+    const failing: LLMBackend = {
+      provider: 'openai',
+      chat: vi.fn(async () => {
+        throw new TypeError('socket hang up');
+      }),
+      chatStream: vi.fn(async function* (): AsyncGenerator<ChatStreamChunk> {
+        yield* [];
+        throw new TypeError('socket hang up');
+      }),
+    };
+    const spans: Span[] = [];
+    const cog = new Cogitator({
+      llm: { backends: { test: failing }, retry: false },
+      observers: [{ onSpan: (span) => spans.push(span) }],
+    });
+    runtimes.push(cog);
+    await expect(cog.run(agent, { input: 'hello' })).rejects.toThrow();
+    const [chat] = byName(spans, 'llm.chat');
+    expect(chat.status).toBe('error');
+    expect(chat.kind).toBe('client');
+    expect(chat.attributes).toMatchObject({
+      [GEN_AI.operationName]: 'chat',
+      [GEN_AI.providerName]: 'openai',
+      [GEN_AI.errorType]: 'TypeError',
+    });
+  });
+
+  it('names the agent on tool spans and records no result for a failed tool', async () => {
+    const broken = tool({
+      name: 'lookup',
+      description: 'Fails',
+      parameters: z.object({ term: z.string() }),
+      execute: async () => {
+        throw new Error('index offline');
+      },
+    });
+    const { cog } = runtime({ captureContent: true });
+    const result = await cog.run(
+      new Agent({
+        name: 'unlucky',
+        model: 'test/model-1',
+        instructions: 'Answer.',
+        tools: [broken],
+      }),
+      { input: 'please look it up' }
+    );
+    const [toolSpan] = byName(result.trace.spans, 'tool.lookup');
+    expect(toolSpan.attributes[GEN_AI.agentName]).toBe('unlucky');
+    expect(toolSpan.attributes[GEN_AI.errorType]).toBe('tool_error');
+    expect(toolSpan.attributes[GEN_AI.toolCallArguments]).toBeDefined();
+    expect(toolSpan.attributes[GEN_AI.toolCallResult]).toBeUndefined();
+  });
+
+  it('records a JSON output type for structured answers', async () => {
+    const { cog } = runtime();
+    const structured = new Agent({
+      name: 'structured',
+      model: 'test/model-1',
+      instructions: 'Answer.',
+      responseFormat: { type: 'json' },
+    });
+    const result = await cog.run(structured, { input: 'hello' });
+    expect(byName(result.trace.spans, 'llm.chat')[0].attributes[GEN_AI.outputType]).toBe('json');
+  });
+});
+
 describe('one trace across runs', () => {
   it('puts a run under the parent it is given', async () => {
     const { cog } = runtime();
@@ -437,5 +573,31 @@ describe('GenAI names', () => {
     expect(chat?.attributes.find((a) => a.key === 'cogitator.span_name')?.value).toEqual({
       stringValue: 'llm.chat',
     });
+    expect(chat?.attributes.find((a) => a.key === GEN_AI.requestTemperature)?.value).toEqual({
+      doubleValue: 0.3,
+    });
+
+    exporter.exportSpan('run-1', {
+      id: newSpanId(),
+      traceId: newTraceId(),
+      name: 'llm.chat',
+      kind: 'client',
+      status: 'ok',
+      startTime: 0,
+      endTime: 1,
+      duration: 1,
+      attributes: {
+        [GEN_AI.operationName]: 'chat',
+        [GEN_AI.requestTemperature]: 1,
+        [GEN_AI.responseTimeToFirstChunk]: 2,
+        [GEN_AI.usageInputTokens]: 7,
+      },
+    });
+    await exporter.flush();
+    const [whole] = (JSON.parse(bodies[1]) as typeof payload).resourceSpans[0].scopeSpans[0].spans;
+    const valueOf = (key: string) => whole.attributes.find((a) => a.key === key)?.value;
+    expect(valueOf(GEN_AI.requestTemperature)).toEqual({ doubleValue: 1 });
+    expect(valueOf(GEN_AI.responseTimeToFirstChunk)).toEqual({ doubleValue: 2 });
+    expect(valueOf(GEN_AI.usageInputTokens)).toEqual({ intValue: '7' });
   });
 });

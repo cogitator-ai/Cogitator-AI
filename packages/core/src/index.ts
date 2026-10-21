@@ -600,6 +600,7 @@ export {
   parseTraceparent,
   withTraceContext,
   GEN_AI,
+  errorType,
   genAiProviderName,
   genAiSpanName,
 } from './observability/index';

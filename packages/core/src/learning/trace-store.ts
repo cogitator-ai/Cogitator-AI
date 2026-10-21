@@ -84,6 +84,10 @@ export class InMemoryTraceStore implements TraceStore {
       candidates = Array.from(this.traces.values());
     }
 
+    if (query.traceId !== undefined) {
+      candidates = candidates.filter((t) => t.traceId === query.traceId);
+    }
+
     if (query.isDemo !== undefined) {
       candidates = candidates.filter((t) => t.isDemo === query.isDemo);
     }

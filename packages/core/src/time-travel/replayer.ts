@@ -1,4 +1,5 @@
 import { nanoid } from 'nanoid';
+import { newTraceId } from '../observability/trace-context';
 import type {
   ExecutionCheckpoint,
   ReplayOptions,
@@ -51,7 +52,7 @@ export class ExecutionReplayer {
     const divergedAt: number | undefined = undefined;
 
     const runId = `replay_${nanoid(12)}`;
-    const traceId = `trace_${nanoid(16)}`;
+    const traceId = newTraceId();
     const startTime = Date.now();
     const spans: Span[] = [];
 
@@ -82,6 +83,7 @@ export class ExecutionReplayer {
       },
       replayedFrom: checkpoint.id,
       originalTraceId: checkpoint.traceId,
+      originalRunId: checkpoint.runId,
       divergedAt,
       stepsReplayed,
       stepsExecuted,
@@ -115,6 +117,7 @@ export class ExecutionReplayer {
       ...runResult,
       replayedFrom: checkpoint.id,
       originalTraceId: checkpoint.traceId,
+      originalRunId: checkpoint.runId,
       divergedAt,
       stepsReplayed,
       stepsExecuted,

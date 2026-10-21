@@ -39,8 +39,14 @@ export interface TraceMetrics {
 }
 
 export interface ExecutionTrace {
+  /** Id in the trace store, the run's id unless given otherwise */
   id: string;
   runId: string;
+  /**
+   * The distributed trace the run belongs to, shared with the runs it started and the run, workflow
+   * or swarm that started it
+   */
+  traceId?: string;
   agentId: string;
   threadId: string;
   input: string;
@@ -72,6 +78,8 @@ export interface ExecutionTrace {
 
 export interface TraceQuery {
   agentId?: string;
+  /** Traces of runs that belong to this distributed trace */
+  traceId?: string;
   minScore?: number;
   isDemo?: boolean;
   labels?: string[];

@@ -34,6 +34,18 @@ export function isSpanId(id: string): boolean {
 }
 
 /**
+ * `parent` with lowercase ids, its parent span left out when it is not a span id, or `undefined`
+ * when its trace id is not a trace id: a run never joins a trace it cannot name.
+ */
+export function normalizeTraceParent(parent: TraceParent | undefined): TraceParent | undefined {
+  if (!parent) return undefined;
+  const traceId = parent.traceId.trim().toLowerCase();
+  if (!isTraceId(traceId)) return undefined;
+  const parentSpanId = parent.parentSpanId?.trim().toLowerCase();
+  return { traceId, ...(parentSpanId && isSpanId(parentSpanId) && { parentSpanId }) };
+}
+
+/**
  * The trace context of a W3C `traceparent` header (`00-<trace id>-<span id>-<flags>`), the span
  * becoming the parent of what joins it, or `undefined` for a header that is not one.
  */

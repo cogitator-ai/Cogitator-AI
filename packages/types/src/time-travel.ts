@@ -82,7 +82,10 @@ export interface ReplayOptions {
 
 export interface ReplayResult extends RunResult {
   replayedFrom: string;
+  /** The distributed trace of the original run */
   originalTraceId: string;
+  /** The original run, the id its trace is stored under */
+  originalRunId: string;
   divergedAt?: number;
   stepsReplayed: number;
   stepsExecuted: number;
@@ -127,7 +130,7 @@ export interface TraceDiff {
 }
 
 export interface TimeTravelConfig {
-  /** Checkpoints kept per trace; the oldest go first. */
+  /** Checkpoints kept per run, the oldest go first. The name dates from when every run had a trace of its own. */
   maxCheckpointsPerTrace?: number;
   /** Milliseconds a checkpoint is kept; older ones of the same agent are deleted on the next save. */
   checkpointRetention?: number;

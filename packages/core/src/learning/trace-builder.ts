@@ -27,8 +27,9 @@ export function buildExecutionTrace(
 ): ExecutionTrace {
   const steps = extractSteps(runResult);
   return {
-    id: options.id ?? runResult.trace.traceId,
+    id: options.id ?? runResult.runId,
     runId: runResult.runId,
+    traceId: runResult.trace.traceId,
     agentId: runResult.agentId,
     threadId: runResult.threadId,
     input,

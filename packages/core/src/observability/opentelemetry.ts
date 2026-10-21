@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Span as CogitatorSpan, RunObserver, RunResult } from '@cogitator-ai/types';
-import { genAiSpanName } from './genai';
+import { GEN_AI_DOUBLE_ATTRIBUTES, genAiSpanName } from './genai';
 
 export interface OTLPExporterConfig {
   endpoint: string;
@@ -70,8 +70,11 @@ function toOtlpId(id: string, bytes: number): string {
   return createHash('sha256').update(id).digest('hex').slice(0, hexLength);
 }
 
-function toAnyValue(value: unknown): OTLPAnyValue {
-  if (Array.isArray(value)) return { arrayValue: { values: value.map(toAnyValue) } };
+function toAnyValue(value: unknown, double = false): OTLPAnyValue {
+  if (Array.isArray(value)) {
+    return { arrayValue: { values: value.map((item) => toAnyValue(item, double)) } };
+  }
+  if (double && typeof value === 'number') return { doubleValue: value };
   if (typeof value === 'boolean') return { boolValue: value };
   if (typeof value === 'number') {
     return Number.isInteger(value) ? { intValue: String(value) } : { doubleValue: value };
@@ -165,7 +168,10 @@ export class OTLPExporter {
     const attributes = [
       ...Object.entries(span.attributes)
         .filter(([, value]) => value !== undefined && value !== null)
-        .map(([key, value]) => ({ key, value: toAnyValue(value) })),
+        .map(([key, value]) => ({
+          key,
+          value: toAnyValue(value, GEN_AI_DOUBLE_ATTRIBUTES.has(key)),
+        })),
       { key: 'cogitator.run_id', value: { stringValue: runId } },
       { key: 'cogitator.trace_id', value: { stringValue: span.traceId } },
       { key: 'cogitator.span_id', value: { stringValue: span.id } },

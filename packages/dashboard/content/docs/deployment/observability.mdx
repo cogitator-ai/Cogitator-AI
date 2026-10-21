@@ -62,7 +62,8 @@ An observer can also ask for content for itself with `captureContent: true`. Con
 A run started inside a tool of another run (an agent used as a tool, or any `cog.run()` in your tool's code) joins that run's trace, its `agent.run` span a child of the tool's span. Workflows and swarms do the same for their agents:
 
 - a [workflow](/docs/workflows/execution) puts each agent run under its node span when a workflow tracer is on, else under a `workflow.run` span it reports to the runtime's observers
-- a swarm reports a `swarm.run` span and runs its agents under it
+- a swarm reports a `swarm.run` span and runs its agents under it, also on workers of a distributed swarm
+- a paused run reports its `agent.run` span with status `unset` and `run.status: paused`, and `cog.resume()` continues the same trace under it
 
 To put a run into a trace that started elsewhere, such as an incoming HTTP request, pass its parent:
 
@@ -87,7 +88,7 @@ otlp.start();
 const unregister = registerTelemetry(otlp.observer());
 ```
 
-`cog.close()` does not close a registered observer: whoever registers it flushes and stops it. `cog.recordSpan(span, { runId })` reports a span of your own orchestration to everything watching a runtime, the same way.
+`cog.close()` does not close a registered observer: whoever registers it flushes and stops it. Register an exporter in one place only: `otlp.observer()` makes a new observer each call, so the same exporter in a runtime's `observers` and in `registerTelemetry` exports every span twice. `cog.recordSpan(span, { runId })` reports a span of your own orchestration to everything watching a runtime, the same way. Langfuse keeps one trace per run, so it shows the agent runs of a workflow or a swarm, not the `workflow.run` and `swarm.run` spans around them.
 
 ## Langfuse Integration
 

@@ -9,4 +9,4 @@ export {
   parseTraceparent,
   withTraceContext,
 } from './trace-context';
-export { GEN_AI, genAiProviderName, genAiSpanName } from './genai';
+export { GEN_AI, errorType, genAiProviderName, genAiSpanName } from './genai';

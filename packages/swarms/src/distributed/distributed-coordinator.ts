@@ -10,8 +10,9 @@ import type {
   RunResult,
   Tool,
   DistributedSwarmConfig,
+  TraceParent,
 } from '@cogitator-ai/types';
-import { fromAgentWireRunResult, toAgentWire } from '@cogitator-ai/core';
+import { currentTraceContext, fromAgentWireRunResult, toAgentWire } from '@cogitator-ai/core';
 import { RedisMessageBus } from '../communication/redis-message-bus.js';
 import { RedisBlackboard } from '../communication/redis-blackboard.js';
 import { RedisSwarmEventEmitter } from '../communication/redis-event-emitter.js';
@@ -50,6 +51,8 @@ export interface SwarmAgentJobPayload {
     userId?: string;
     timeout?: number;
     saveHistory?: boolean;
+    /** The swarm's trace, so the run on the worker joins it */
+    trace?: TraceParent;
   };
   stateKeys: {
     blackboard: string;
@@ -278,6 +281,7 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
 
   private createJobPayload(request: AgentRunRequest): SwarmAgentJobPayload {
     const { agent, input, context } = request;
+    const trace = currentTraceContext();
 
     return {
       type: 'swarm-agent',
@@ -292,6 +296,7 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
         userId: request.userId,
         timeout: request.timeout,
         saveHistory: request.saveHistory,
+        ...(trace && { trace }),
       },
       stateKeys: {
         blackboard: `${this.keyPrefix}:${this.swarmId}:blackboard`,
@@ -421,7 +426,11 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
           cost: 0,
         },
       },
-      { agentId: swarmAgent.agent.id, threadId: request.threadId }
+      {
+        agentId: swarmAgent.agent.id,
+        threadId: request.threadId,
+        traceId: currentTraceContext()?.traceId,
+      }
     );
   }
 

@@ -109,6 +109,7 @@ import {
   currentTraceContext,
   newSpanId,
   newTraceId,
+  normalizeTraceParent,
   withTraceContext,
 } from './observability/trace-context';
 import { telemetryObservers } from './observability/telemetry';
@@ -638,10 +639,13 @@ export class Cogitator implements ToolInvoker {
     let prompt: RunPrompt | undefined;
     let runId = checkpoint?.runId ?? `run_${nanoid(12)}`;
     const threadId = options.threadId ?? `thread_${nanoid(12)}`;
-    const parentTrace = options.trace ?? currentTraceContext();
-    const traceId = parentTrace?.traceId || newTraceId();
-    const parentSpanId = parentTrace?.parentSpanId;
+    const parentTrace = normalizeTraceParent(options.trace ?? currentTraceContext());
+    let traceId = parentTrace?.traceId ?? newTraceId();
+    let parentSpanId = parentTrace?.parentSpanId;
+    const conversationId = options.threadId;
     const captureContent = this.capturesContent();
+    const publicSpans = () =>
+      this.config.telemetry?.captureContent === true ? spans : spans.map(withoutContent);
     const startTime = Date.now();
     const spans: Span[] = [];
 
@@ -713,6 +717,10 @@ export class Cogitator implements ToolInvoker {
         }
         runId = checkpoint.runId;
         options = { ...options, userId: checkpoint.userId };
+        if (!parentTrace && checkpoint.trace) {
+          traceId = checkpoint.trace.traceId;
+          parentSpanId = checkpoint.trace.rootSpanId;
+        }
       }
 
       prompt = checkpoint?.prompt;
@@ -1101,11 +1109,14 @@ export class Cogitator implements ToolInvoker {
               [GEN_AI.toolName]: toolCall.name,
               [GEN_AI.toolCallId]: toolCall.id,
               [GEN_AI.toolType]: 'function',
-              [GEN_AI.conversationId]: threadId,
+              [GEN_AI.agentName]: active.name,
+              ...(conversationId && { [GEN_AI.conversationId]: conversationId }),
               ...(result.error && { [GEN_AI.errorType]: TOOL_ERROR_TYPE }),
               ...(captureContent && {
                 [GEN_AI.toolCallArguments]: JSON.stringify(toolCall.arguments),
-                [GEN_AI.toolCallResult]: JSON.stringify(result.error ?? result.result ?? null),
+                ...(!result.error && {
+                  [GEN_AI.toolCallResult]: JSON.stringify(result.result ?? null),
+                }),
               }),
             },
             result.error ? 'error' : 'ok',
@@ -1230,6 +1241,39 @@ export class Cogitator implements ToolInvoker {
         agentContext.iterationIndex = iterations - 1;
         agentContext.previousActions = [...allActions];
 
+        const recordFailedCall = (
+          error: unknown,
+          candidate: ModelCandidate,
+          sentRequest: ChatRequest,
+          startedAt: number,
+          timing?: StreamTiming
+        ): void => {
+          if (abortController.signal.aborted) return;
+          spans.push(
+            createSpan(
+              'llm.chat',
+              traceId,
+              rootSpanId,
+              startedAt,
+              Date.now(),
+              {
+                'llm.model': sentRequest.model,
+                'llm.iteration': iterations,
+                error: error instanceof Error ? error.message : String(error),
+                [GEN_AI.operationName]: 'chat',
+                [GEN_AI.providerName]: genAiProviderName(candidate.backend.provider),
+                ...chatRequestAttributes(sentRequest),
+                ...(timing && { [GEN_AI.requestStream]: true }),
+                ...(conversationId && { [GEN_AI.conversationId]: conversationId }),
+                [GEN_AI.errorType]: errorType(error),
+              },
+              'error',
+              'client',
+              options.onSpan
+            )
+          );
+        };
+
         const recordCall = (
           answer: ChatResponse,
           candidate: ModelCandidate,
@@ -1269,7 +1313,10 @@ export class Cogitator implements ToolInvoker {
                   ...chatRequestAttributes(sentRequest),
                   ...(timing && { [GEN_AI.requestStream]: true }),
                   ...chatResponseAttributes(answer),
-                  [GEN_AI.conversationId]: threadId,
+                  ...(conversationId && { [GEN_AI.conversationId]: conversationId }),
+                  ...(answer.finishReason === 'error' && {
+                    [GEN_AI.errorType]: ErrorCode.LLM_INVALID_RESPONSE,
+                  }),
                   ...(timing?.firstChunkAt !== undefined && {
                     [GEN_AI.responseTimeToFirstChunk]: (timing.firstChunkAt - startedAt) / 1000,
                   }),
@@ -1358,16 +1405,22 @@ export class Cogitator implements ToolInvoker {
                   async (sent) => {
                     const startedAt = Date.now();
                     const timing: StreamTiming | undefined = sent.stream ? {} : undefined;
-                    const sentAnswer = normalizeTurn(
-                      sent.stream
-                        ? await streamChatRequest(
-                            candidate.backend,
-                            sent.request,
-                            sent.stream,
-                            timing
-                          )
-                        : await candidate.backend.chat(sent.request)
-                    );
+                    let sentAnswer: ChatResponse;
+                    try {
+                      sentAnswer = normalizeTurn(
+                        sent.stream
+                          ? await streamChatRequest(
+                              candidate.backend,
+                              sent.request,
+                              sent.stream,
+                              timing
+                            )
+                          : await candidate.backend.chat(sent.request)
+                      );
+                    } catch (error) {
+                      recordFailedCall(error, candidate, sent.request, startedAt, timing);
+                      throw error;
+                    }
                     reachedModel = true;
                     recordCall(sentAnswer, candidate, sent.request, startedAt, timing);
                     return sentAnswer;
@@ -1526,7 +1579,36 @@ export class Cogitator implements ToolInvoker {
           },
           reasoning: reasoningParts,
           startedAt: checkpoint?.startedAt ?? startTime,
+          trace: { traceId, rootSpanId },
         };
+        spans.unshift(
+          createSpan(
+            'agent.run',
+            traceId,
+            parentSpanId,
+            startTime,
+            Date.now(),
+            {
+              'agent.id': agent.id,
+              'agent.name': agent.name,
+              'agent.model': effectiveModel,
+              'run.id': runId,
+              'run.thread_id': threadId,
+              'run.status': 'paused',
+              'run.iterations': iterations,
+              'run.tool_calls': allToolCalls.length,
+              'run.input_tokens': totalInputTokens,
+              'run.output_tokens': totalOutputTokens,
+              ...invokeAgentAttributes(agent, conversationId, effectiveModel),
+              [GEN_AI.usageInputTokens]: totalInputTokens,
+              [GEN_AI.usageOutputTokens]: totalOutputTokens,
+            },
+            'unset',
+            'internal',
+            options.onSpan,
+            rootSpanId
+          )
+        );
         const paused: RunResult = {
           output: getTextContent(messages[messages.length - 1]?.content ?? ''),
           runId,
@@ -1546,7 +1628,7 @@ export class Cogitator implements ToolInvoker {
           ...(reasoningParts.length > 0 && { reasoning: reasoningParts.join('\n\n') }),
           toolCalls: allToolCalls,
           messages,
-          trace: { traceId, spans },
+          trace: { traceId, spans: publicSpans() },
         };
         await this.runCheckpointStore().save(pausedCheckpoint);
         options.onRunComplete?.(paused);
@@ -1599,7 +1681,7 @@ export class Cogitator implements ToolInvoker {
           'run.tool_calls': allToolCalls.length,
           'run.input_tokens': totalInputTokens,
           'run.output_tokens': totalOutputTokens,
-          ...invokeAgentAttributes(agent, threadId, agentModel),
+          ...invokeAgentAttributes(agent, conversationId, agentModel),
           [GEN_AI.usageInputTokens]: totalInputTokens,
           [GEN_AI.usageOutputTokens]: totalOutputTokens,
           ...(cachedInputTokens > 0 && { [GEN_AI.usageCacheReadInputTokens]: cachedInputTokens }),
@@ -1645,7 +1727,7 @@ export class Cogitator implements ToolInvoker {
         messages,
         trace: {
           traceId,
-          spans: this.config.telemetry?.captureContent === true ? spans : spans.map(withoutContent),
+          spans: publicSpans(),
         },
         reflections: allReflections.length > 0 ? allReflections : undefined,
         reflectionSummary: this.state.reflectionEngine
@@ -1674,7 +1756,11 @@ export class Cogitator implements ToolInvoker {
           'agent.model': agent.model ?? this.config.llm?.defaultModel,
           'run.id': runId,
           error: error instanceof Error ? error.message : String(error),
-          ...invokeAgentAttributes(agent, threadId, agent.model ?? this.config.llm?.defaultModel),
+          ...invokeAgentAttributes(
+            agent,
+            conversationId,
+            agent.model ?? this.config.llm?.defaultModel
+          ),
           [GEN_AI.errorType]: errorType(error),
         },
         'error',

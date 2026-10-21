@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { Agent, Cogitator, GEN_AI } from '@cogitator-ai/core';
+import {
+  Agent,
+  Cogitator,
+  GEN_AI,
+  newSpanId,
+  newTraceId,
+  withTraceContext,
+} from '@cogitator-ai/core';
 import type { ChatStreamChunk, LLMBackend, Span } from '@cogitator-ai/types';
 import { WorkflowBuilder } from '../builder';
 import { WorkflowExecutor } from '../executor';
@@ -86,6 +93,38 @@ describe('one trace for a workflow', () => {
       expect(run.traceId).toBe(node?.traceId);
     }
     expect(spans.some((span) => span.name === 'workflow.run')).toBe(false);
+  });
+
+  it('joins the trace it runs in before an incoming header the tracer kept', async () => {
+    const tracer = createTracer({ exporter: 'noop' });
+    tracer.setContextFromHeaders({
+      traceparent: `00-${newTraceId()}-${newSpanId()}-01`,
+    });
+    const startWorkflowSpan = vi.spyOn(tracer, 'startWorkflowSpan');
+    const traceId = newTraceId();
+    const parentSpanId = newSpanId();
+    await withTraceContext({ traceId, parentSpanId }, () =>
+      new WorkflowExecutor({} as Cogitator).execute(
+        new WorkflowBuilder('inside').addNode('a', async () => ({})).build(),
+        {},
+        { tracer }
+      )
+    );
+    const span = startWorkflowSpan.mock.results[0].value.span;
+    expect(span.traceId).toBe(traceId);
+    expect(span.parentSpanId).toBe(parentSpanId);
+  });
+
+  it('reports its own workflow span when the tracer does not sample the workflow', async () => {
+    const spans: Span[] = [];
+    const cog = runtime(spans);
+    const tracer = createTracer({ exporter: 'noop', sampleRate: 0 });
+    await new WorkflowExecutor(cog).execute(twoAgentWorkflow(), {}, { tracer });
+    const workflow = spans.find((span) => span.name === 'workflow.run');
+    expect(workflow).toBeDefined();
+    const runs = spans.filter((span) => span.name === 'agent.run');
+    expect(runs).toHaveLength(2);
+    for (const run of runs) expect(run.parentId).toBe(workflow?.id);
   });
 
   it('keeps workflows running at once on one tracer in traces of their own', async () => {

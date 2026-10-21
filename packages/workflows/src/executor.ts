@@ -25,6 +25,7 @@ import type {
 } from '@cogitator-ai/types';
 import {
   currentTraceContext,
+  errorType,
   findAgentRunPausedError,
   GEN_AI,
   newSpanId,
@@ -330,8 +331,9 @@ export class WorkflowExecutor {
       },
       ambient && { traceId: ambient.traceId, spanId: ambient.parentSpanId }
     );
-    const workflowTrace = workflowSpan
-      ? { traceId: workflowSpan.span.traceId, spanId: workflowSpan.span.spanId }
+    const tracedSpan = workflowSpan?.sampled ? workflowSpan : undefined;
+    const workflowTrace = tracedSpan
+      ? { traceId: tracedSpan.span.traceId, spanId: tracedSpan.span.spanId }
       : {
           traceId: ambient?.traceId || newTraceId(),
           spanId: newSpanId(),
@@ -454,10 +456,9 @@ export class WorkflowExecutor {
             cached?.isDuplicate && cached.record?.status === 'completed'
               ? { result: cached.record.result as NodeResult<S>, retries: 0 }
               : await withTraceContext(
-                  {
-                    traceId: nodeSpan?.span.traceId ?? workflowTrace.traceId,
-                    parentSpanId: nodeSpan?.span.spanId ?? workflowTrace.spanId,
-                  },
+                  nodeSpan?.sampled && tracedSpan
+                    ? { traceId: nodeSpan.span.traceId, parentSpanId: nodeSpan.span.spanId }
+                    : { traceId: workflowTrace.traceId, parentSpanId: workflowTrace.spanId },
                   () =>
                     runNodeWithPolicy(node, nodeName, makeContext, {
                       config: node.config,
@@ -633,7 +634,8 @@ export class WorkflowExecutor {
       } else {
         workflowSpan.end('ok');
       }
-    } else {
+    }
+    if (!tracedSpan) {
       const endTime = Date.now();
       this.reportSpan(
         {
@@ -651,7 +653,7 @@ export class WorkflowExecutor {
             [GEN_AI.operationName]: 'invoke_workflow',
             [GEN_AI.workflowName]: workflow.name,
             'workflow.id': workflowId,
-            ...(error && { [GEN_AI.errorType]: error.name || '_OTHER', error: error.message }),
+            ...(error && { [GEN_AI.errorType]: errorType(error), error: error.message }),
           },
         },
         workflowId

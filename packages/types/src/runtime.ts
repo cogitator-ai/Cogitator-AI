@@ -40,10 +40,12 @@ export interface TraceParent {
 /** Telemetry settings of a runtime. */
 export interface TelemetryConfig {
   /**
-   * Record what the model was sent and answered, and tool arguments and results, on the spans
+   * Record the GenAI content attributes on the spans: what the model was sent and answered
    * (`gen_ai.system_instructions`, `gen_ai.input.messages`, `gen_ai.output.messages`,
-   * `gen_ai.tool.definitions`, `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result`). Off by
-   * default: prompts and answers are often sensitive and large.
+   * `gen_ai.tool.definitions`) and tool arguments and results (`gen_ai.tool.call.arguments`,
+   * `gen_ai.tool.call.result`). Off by default: prompts and answers are often sensitive and large.
+   * Cogitator's own `tool.arguments`, `tool.error` and `decision.answers` attributes are recorded
+   * as before, whatever this says.
    */
   captureContent?: boolean;
 }
@@ -485,6 +487,11 @@ export interface RunCheckpoint {
   };
   reasoning: string[];
   startedAt: number;
+  /**
+   * The trace the paused run belongs to and its root span, so the resumed run continues the
+   * trace under it. Missing in checkpoints saved before it existed
+   */
+  trace?: { traceId: string; rootSpanId: string };
 }
 
 /**

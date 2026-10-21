@@ -12,6 +12,7 @@ import { Cogitator } from '../cogitator';
 import { Agent } from '../agent';
 import { tool } from '../tool';
 import { InMemoryCheckpointStore, TimeTravel } from '../time-travel/index';
+import { newSpanId, newTraceId } from '../observability/trace-context';
 
 vi.mock('../llm/index', async (importOriginal) => {
   const original = await importOriginal<typeof import('../llm/index')>();
@@ -128,10 +129,11 @@ describe('TimeTravel on real runs', () => {
     const fork = await tt.forkWithMockedTool(agent(), checkpoint.id, 'search', { hits: [] });
     const diff = await tt.compareWithOriginal(fork.result);
 
-    expect(diff.trace1Id).toBe(run.trace.traceId);
-    expect(diff.trace2Id).toBe(fork.result.trace.traceId);
+    expect(diff.trace1Id).toBe(run.runId);
+    expect(diff.trace2Id).toBe(fork.result.runId);
     expect(diff.commonSteps + diff.trace1OnlySteps).toBeGreaterThan(0);
-    const forkTrace = await tt.getTraceStore().get(fork.result.trace.traceId);
+    const forkTrace = await tt.getTraceStore().get(fork.result.runId);
+    expect(forkTrace?.traceId).toBe(fork.result.trace.traceId);
     expect(forkTrace?.output).toBe('Found: {"hits":[]}');
     expect(forkTrace?.steps.find((s) => s.type === 'tool_call')?.toolResult?.result).toEqual({
       hits: [],
@@ -146,9 +148,29 @@ describe('TimeTravel on real runs', () => {
     const replay = await tt.replayDeterministic(agent(), checkpoint.id);
     const diff = await tt.compareWithOriginal(replay);
 
-    expect(diff.trace2Id).toBe(replay.trace.traceId);
+    expect(diff.trace2Id).toBe(replay.runId);
     expect(diff.trace2OnlySteps).toBe(0);
     expect(diff.commonSteps).toBeGreaterThan(0);
+  });
+
+  it('keeps runs that share a trace apart and still takes a trace id that names one run', async () => {
+    const tt = new TimeTravel(cog);
+    const trace = { traceId: newTraceId(), parentSpanId: newSpanId() };
+    const first = await cog.run(agent(), { input: 'Research AI', trace });
+    const second = await cog.run(agent(), { input: 'Research AI', trace });
+    const alone = await cog.run(agent(), { input: 'Research AI' });
+    expect(first.trace.traceId).toBe(second.trace.traceId);
+
+    await tt.checkpoint(first, 0);
+    await tt.checkpoint(second, 0);
+    await tt.checkpoint(alone, 0);
+
+    expect((await tt.getTraceStore().get(first.runId))?.runId).toBe(first.runId);
+    expect((await tt.getTraceStore().get(second.runId))?.runId).toBe(second.runId);
+    expect((await tt.getCheckpoints(first.runId)).every((c) => c.runId === first.runId)).toBe(true);
+    expect((await tt.compare(first.runId, second.runId)).trace2Id).toBe(second.runId);
+    expect((await tt.compare(alone.trace.traceId, first.runId)).trace1Id).toBe(alone.runId);
+    await expect(tt.compare(first.trace.traceId, alone.runId)).rejects.toThrow(/pass a run id/);
   });
 
   it('applies name-keyed results in a deterministic replay', async () => {

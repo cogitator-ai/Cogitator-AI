@@ -511,11 +511,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /**
  * A `RunResult` from a run's wire form, for code that consumes runs of another process like
  * local ones. Its `messages` and trace spans are empty: they stayed with the process that ran
- * the agent.
+ * the agent. `context.traceId` is the trace the run joined, a new one when it is not known.
  */
 export function fromAgentWireRunResult(
   wire: AgentWireRunResult,
-  context: { agentId: string; threadId?: string }
+  context: { agentId: string; threadId?: string; traceId?: string }
 ): RunResult {
   return {
     output: wire.output,
@@ -558,6 +558,6 @@ export function fromAgentWireRunResult(
       arguments: isRecord(call.input) ? call.input : {},
     })),
     messages: [],
-    trace: { traceId: newTraceId(), spans: [] },
+    trace: { traceId: context.traceId ?? newTraceId(), spans: [] },
   };
 }

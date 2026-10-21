@@ -32,6 +32,7 @@ export async function executeSwarmAgentJob(
       ...(runOptions?.userId !== undefined && { userId: runOptions.userId }),
       ...(runOptions?.timeout !== undefined && { timeout: runOptions.timeout }),
       ...(runOptions?.saveHistory !== undefined && { saveHistory: runOptions.saveHistory }),
+      ...(runOptions?.trace && { trace: runOptions.trace }),
       ...(execution.signal && { signal: execution.signal }),
     });
 

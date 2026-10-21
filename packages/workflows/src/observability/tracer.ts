@@ -81,6 +81,8 @@ function formatBaggage(baggage: Baggage): string {
 
 export interface SpanScope {
   span: WorkflowSpan;
+  /** Whether the span is recorded and exported */
+  sampled: boolean;
   end: (status?: SpanStatus, message?: string) => void;
   addEvent: (name: string, attributes?: Record<string, unknown>) => void;
   setAttribute: (key: string, value: unknown) => void;
@@ -216,8 +218,8 @@ export class WorkflowTracer {
 
   /**
    * Starts the span of a workflow run. Its parent is the innermost open span of this async
-   * context (a workflow inside a node), else the incoming context, else `parent`, the trace the
-   * caller is part of.
+   * context (a workflow inside a node), else `parent`, the trace the caller is part of right now,
+   * else the incoming context from `setContextFromHeaders`.
    */
   startWorkflowSpan(
     workflowName: string,
@@ -227,15 +229,16 @@ export class WorkflowTracer {
     parent?: { traceId: string; spanId?: string }
   ): SpanScope {
     const enclosing = this.getCurrentSpan();
-    const incoming = enclosing ? null : this.incomingContext;
+    const caller = enclosing ? undefined : parent;
+    const incoming = enclosing || caller ? null : this.incomingContext;
     const sampled = enclosing
       ? this.isSpanSampled(enclosing)
       : incoming
         ? ((incoming.traceFlags ?? 1) & 1) === 1
         : Math.random() < this.sampleRate;
-    const traceId = enclosing?.traceId ?? incoming?.traceId ?? parent?.traceId ?? generateTraceId();
+    const traceId = enclosing?.traceId ?? caller?.traceId ?? incoming?.traceId ?? generateTraceId();
     const spanId = generateSpanId();
-    const parentSpanId = enclosing?.spanId ?? incoming?.spanId ?? parent?.spanId;
+    const parentSpanId = enclosing?.spanId ?? caller?.spanId ?? incoming?.spanId;
 
     const span: WorkflowSpan = {
       traceId,
@@ -371,6 +374,7 @@ export class WorkflowTracer {
     this.sampledSpans.set(span, sampled);
     return {
       span,
+      sampled,
 
       end: (status: SpanStatus = 'ok', message?: string) => {
         span.endTime = Date.now();
