@@ -82,6 +82,7 @@ export { SessionManager, type SessionManagerOptions } from './session-manager';
 export {
   CompactionService,
   compactedHistory,
+  readCompactedHistory,
   HISTORY_ENTRY_TYPES,
   type SummarizeFn,
   type SummarizeOptions,

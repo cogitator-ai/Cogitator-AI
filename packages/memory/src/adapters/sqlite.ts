@@ -14,7 +14,7 @@ import type {
 import { CONVERSATION_ENTRY_TYPES, MEMORY_ENTRY_FORMAT } from '@cogitator-ai/types';
 import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { BranchingMemoryAdapter } from './base';
+import { BranchingMemoryAdapter, MAX_PATH_DEPTH } from './base';
 import type { SqliteDatabase } from './sqlite-driver';
 import { threadListing, threadPage, type ThreadListing } from './thread-listing';
 
@@ -531,15 +531,14 @@ export class SQLiteAdapter extends BranchingMemoryAdapter {
       const limit = options.limit || Number.MAX_SAFE_INTEGER;
       const rows = this.db
         .prepare(
-          `WITH RECURSIVE path(id, parent_id, depth, kept, bound) AS (
-             SELECT e.id, e.parent_id, 0, CASE WHEN ${wanted} THEN 1 ELSE 0 END,
-                    (SELECT COUNT(*) FROM entries WHERE thread_id = e.thread_id)
+          `WITH RECURSIVE path(id, parent_id, depth, kept) AS (
+             SELECT e.id, e.parent_id, 0, CASE WHEN ${wanted} THEN 1 ELSE 0 END
              FROM entries e WHERE e.id = ? AND e.thread_id = ?
              UNION ALL
              SELECT e.id, e.parent_id, path.depth + 1,
-                    path.kept + CASE WHEN ${wanted} THEN 1 ELSE 0 END, path.bound
+                    path.kept + CASE WHEN ${wanted} THEN 1 ELSE 0 END
              FROM entries e JOIN path ON e.id = path.parent_id
-             WHERE path.kept < ? AND e.thread_id = ? AND path.depth < path.bound
+             WHERE path.kept < ? AND e.thread_id = ? AND path.depth < ${MAX_PATH_DEPTH}
            )
            SELECT e.* FROM path JOIN entries e ON e.id = path.id
            WHERE ${wanted} ORDER BY path.depth DESC`

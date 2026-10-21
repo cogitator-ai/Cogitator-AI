@@ -30,9 +30,10 @@ function sourcesIn(entry: MemoryEntry, evidence: Evidence): string[] {
   const results = (entry.toolResults ?? []).filter(
     (result) => evidence.toolCallId === undefined || result.callId === evidence.toolCallId
   );
-  const resultTexts = results.map((result) =>
-    typeof result.result === 'string' ? result.result : JSON.stringify(result.result)
-  );
+  const resultTexts = results.flatMap((result): string[] => {
+    const text = typeof result.result === 'string' ? result.result : JSON.stringify(result.result);
+    return text === undefined ? [] : [text];
+  });
   if (evidence.toolCallId !== undefined) {
     const answers = entry.message.toolCallId === evidence.toolCallId;
     return answers ? [textOf(entry.message.content), ...resultTexts] : resultTexts;

@@ -294,6 +294,31 @@ describe('InMemoryAdapter', () => {
       await limitedAdapter.disconnect();
     });
 
+    it('stays at maxEntries under appends made at once', async () => {
+      const limited = new InMemoryAdapter({ provider: 'memory', maxEntries: 3 });
+      await limited.connect();
+      await limited.createThread('agent', {}, 't');
+
+      await Promise.all(
+        Array.from({ length: 8 }, (_, i) =>
+          limited.addEntry({
+            threadId: 't',
+            message: { role: 'user', content: `m${i}` },
+            tokenCount: 1,
+          })
+        )
+      );
+
+      const left = await limited.getEntries({ threadId: 't' });
+      expect(left.success && left.data.length).toBe(3);
+      const path = await limited.getPath!({ threadId: 't' });
+      expect(path.success && path.data.map((entry) => entry.message.content)).toEqual([
+        'm5',
+        'm6',
+        'm7',
+      ]);
+    });
+
     it('keeps the entry a new one goes after, evicting another branch', async () => {
       const limited = new InMemoryAdapter({ provider: 'memory', maxEntries: 3 });
       await limited.connect();

@@ -501,14 +501,16 @@ const result = await compaction.compact(session.id, {
 | `sliding-window` | Leaves older entries out without a summary                                                         |
 | `hybrid`         | `sliding-window` when 5 or fewer entries would be removed, otherwise `summary`                     |
 
-On an adapter with branches (every built-in one) compaction deletes nothing. It adds a `compaction` entry to the end of the active branch, whose `event` (`CompactionEvent`) names the first kept entry, and whose message is the summary. A reader of the branch then sees the summary followed by the kept entries and everything after them, a reply saved while the summary was being written included. `ContextBuilder` and the runtime read history this way. Read it yourself with `compactedHistory`:
+On an adapter with branches (every built-in one) compaction deletes nothing. It adds a `compaction` entry to the end of the active branch, whose `event` (`CompactionEvent`) names the first kept entry, and whose message is the summary. A reader of the branch then sees the summary followed by the kept entries and everything after them, a reply saved while the summary was being written included. `ContextBuilder` and the runtime read history this way, in pages from the leaf back to where the latest compaction goes on from, so a long compacted thread costs only its current conversation. Read it yourself the same way:
 
 ```typescript
-import { compactedHistory, HISTORY_ENTRY_TYPES } from '@cogitator-ai/memory';
+import { readCompactedHistory } from '@cogitator-ai/memory';
 
-const path = await memory.getPath({ threadId, types: HISTORY_ENTRY_TYPES });
-const conversation = path.success ? compactedHistory(path.data) : [];
+const conversation = await readCompactedHistory(memory, { threadId });
+// conversation.data: the summary, the kept entries and everything after them
 ```
+
+`compactedHistory(path)` builds the same conversation from a path you read yourself with `types: HISTORY_ENTRY_TYPES`.
 
 Since the summarized entries stay, other branches that start among them and evidence that points at them keep working, and `getEntries` still returns every entry. The next compaction summarizes the previous summary together with what followed it. Compactions of the same thread in one process run one after another.
 

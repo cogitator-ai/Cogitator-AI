@@ -518,10 +518,11 @@ export interface RunCheckpoint {
    */
   trace?: { traceId: string; rootSpanId: string };
   /**
-   * Where the run writes next and where it started writing (`branchPoint`), so the resumed run
-   * goes on along its branch and reports the same place
+   * Where the run writes next (`parentId`, after the thread's active leaf when absent) and where
+   * it started writing (`branchPoint`), so the resumed run goes on along its branch and reports
+   * the same place
    */
-  branch?: { parentId: string | null; activate: boolean; branchPoint?: string | null };
+  branch?: { parentId?: string | null; activate: boolean; branchPoint?: string | null };
 }
 
 /** Where a run's entries went in the thread's tree of memory */

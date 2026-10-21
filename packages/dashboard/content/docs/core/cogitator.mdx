@@ -238,7 +238,6 @@ The second branch sees the first question and answer, not the request for a chea
 - A run on a branch needs a memory adapter with `getPath` (every built-in one has it), and `fromEntryId` must be an entry of the thread. Otherwise the run fails with `VALIDATION_ERROR` before it calls the model.
 - The run records events of the session as entries next to its messages: `model_change` when a turn falls back to another of `fallbackModels` (`{ from, to, reason }`), `approval` when it pauses for approvals (`{ pending: [{ toolCallId, toolName }] }`) and `interrupt` when its `signal` aborts it or its timeout cuts it short (`{ reason }`, the error message). Reads return them only when asked with `types`, and they are never sent to a model.
 - A paused run keeps its place in the checkpoint (`RunCheckpoint.branch`), so `resume()` goes on along the same branch and reports the same `branchPoint`. A run with `activate: false` does not take the thread's place for a paused run, so it never replaces or abandons the pause of the conversation itself: resume it with its checkpoint (`resume(agent, result.checkpoint, …)`), not with the thread id.
-- Each entry of a run goes after the run's previous one, so a run's entries stay one chain even when another run moves the leaf meanwhile.
 
 [Time travel](/docs/advanced/time-travel#replays-on-branches) runs live replays and forks this way, and the [Studio](/docs/getting-started/studio) shows every branch of a thread in its Tree panel.
 

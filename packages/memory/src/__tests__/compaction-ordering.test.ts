@@ -1,10 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { MemoryAdapter, Message } from '@cogitator-ai/types';
 import type { MemoryEntry } from '@cogitator-ai/types';
 import {
   CompactionService,
   compactedHistory,
   HISTORY_ENTRY_TYPES,
+  readCompactedHistory,
   type SummarizeFn,
 } from '../compaction';
 import { InMemoryAdapter } from '../adapters/memory';
@@ -182,6 +183,92 @@ describe('compacted history', () => {
     ).rejects.toThrow(/changed while it was compacted/);
     const all = await adapter.getEntries({ threadId: 't1', types: 'all' });
     expect(all.success && all.data.some((e) => e.type === 'compaction')).toBe(false);
+  });
+});
+
+describe('compacted threads', () => {
+  it('keeps what was said while the summary was written when it keeps nothing else', async () => {
+    const adapter = new InMemoryAdapter({ provider: 'memory' });
+    await seed(adapter, 't1', ['q1', 'a1']);
+    const service = new CompactionService({
+      adapter,
+      summarize: async () => {
+        await adapter.addEntry({
+          threadId: 't1',
+          message: { role: 'user', content: 'meanwhile' },
+          tokenCount: 1,
+        });
+        return 'sum';
+      },
+    });
+
+    await service.compact('t1', { strategy: 'summary', threshold: 0, keepRecent: 0 });
+
+    expect(await contentsOf(adapter, 't1')).toEqual(['[Conversation summary]\nsum', 'meanwhile']);
+  });
+
+  it('takes back a compaction that landed on another branch the leaf moved to', async () => {
+    const adapter = new InMemoryAdapter({ provider: 'memory' });
+    await seed(adapter, 't1', ['q1', 'a1', 'q2', 'a2']);
+    const add = adapter.addEntry.bind(adapter);
+    adapter.addEntry = async (entry) => {
+      if (entry.type === 'compaction') {
+        await add({
+          threadId: 't1',
+          message: { role: 'user', content: 'x' },
+          tokenCount: 1,
+          parentId: null,
+        });
+      }
+      return add(entry);
+    };
+    const service = new CompactionService({ adapter, summarize: async () => 'sum' });
+
+    await expect(
+      service.compact('t1', { strategy: 'summary', threshold: 0, keepRecent: 2 })
+    ).rejects.toThrow(/changed while it was compacted/);
+    const all = await adapter.getEntries({ threadId: 't1', types: 'all' });
+    expect(all.success && all.data.some((e) => e.type === 'compaction')).toBe(false);
+  });
+
+  it('reads a long compacted thread back only to where its compaction goes on from', async () => {
+    const adapter = new InMemoryAdapter({ provider: 'memory' });
+    await seed(
+      adapter,
+      't1',
+      Array.from({ length: 600 }, (_, i) => `m${i}`)
+    );
+    const service = new CompactionService({ adapter, summarize: async () => 'sum' });
+    await service.compact('t1', { strategy: 'summary', threshold: 0, keepRecent: 2 });
+    for (const content of ['n1', 'n2']) {
+      await adapter.addEntry({ threadId: 't1', message: { role: 'user', content }, tokenCount: 1 });
+    }
+    const getPath = vi.spyOn(adapter, 'getPath');
+
+    const read = await readCompactedHistory(adapter, { threadId: 't1' });
+
+    expect(read.success && read.data.map((e) => e.message.content)).toEqual([
+      '[Conversation summary]\nsum',
+      'm598',
+      'm599',
+      'n1',
+      'n2',
+    ]);
+    expect(getPath).toHaveBeenCalledTimes(1);
+  });
+
+  it('forks a compacted thread into a copy that reads the same conversation', async () => {
+    const adapter = new InMemoryAdapter({ provider: 'memory' });
+    await seed(adapter, 't1', ['q1', 'a1', 'q2', 'a2']);
+    const service = new CompactionService({ adapter, summarize: async () => 'sum' });
+    await service.compact('t1', { strategy: 'summary', threshold: 0, keepRecent: 2 });
+    const thread = await adapter.getThread('t1');
+    if (!thread.success || !thread.data?.activeLeafId) throw new Error('no leaf');
+
+    const fork = await adapter.forkThread('t1', thread.data.activeLeafId, 't2');
+
+    expect(fork.success).toBe(true);
+    expect(await contentsOf(adapter, 't2')).toEqual(await contentsOf(adapter, 't1'));
   });
 });
 

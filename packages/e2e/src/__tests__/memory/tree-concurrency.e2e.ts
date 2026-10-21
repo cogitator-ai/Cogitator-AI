@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, describe, expect, it } from 'vitest';
 import { Redis } from 'ioredis';
-import { MongoClient } from 'mongodb';
+import { Collection, MongoClient } from 'mongodb';
+import type { Document } from 'mongodb';
 import { MongoDBAdapter, RedisAdapter } from '@cogitator-ai/memory';
 import type { MemoryAdapter, MemoryEntry } from '@cogitator-ai/types';
 
@@ -108,6 +109,42 @@ async function expectCheckoutNeverLandsOnDeleted(
   });
 });
 
+/**
+ * Holds the next call of the driver's `method` that `matches` its first two arguments in the
+ * driver's queue for `ms` before it reaches the server, as a slow network or a busy pool would.
+ * Resolves `reached` when the call is made and `landed` when the server answered it.
+ */
+function holdUp(
+  method: 'updateOne' | 'bulkWrite',
+  matches: (first: unknown, second: unknown) => boolean,
+  ms: number
+): { reached: Promise<void>; landed: Promise<void> } {
+  const prototype = Collection.prototype as unknown as Record<string, unknown>;
+  const original = prototype[method] as (this: Collection<Document>, ...args: unknown[]) => unknown;
+  let reach!: () => void;
+  let land!: () => void;
+  const reached = new Promise<void>((resolve) => (reach = resolve));
+  const landed = new Promise<void>((resolve) => (land = resolve));
+  prototype[method] = async function (this: Collection<Document>, ...args: unknown[]) {
+    if (!matches(args[0], args[1])) return original.apply(this, args);
+    prototype[method] = original;
+    reach();
+    await new Promise((resolve) => setTimeout(resolve, ms));
+    try {
+      return await original.apply(this, args);
+    } finally {
+      land();
+    }
+  };
+  return { reached, landed };
+}
+
+/** Whether a thread update is an append publishing its entry as the leaf */
+function isPublish(filter: unknown, update: unknown): boolean {
+  if (typeof filter !== 'object' || filter === null || !('lease.token' in filter)) return false;
+  return typeof update === 'object' && update !== null && '$set' in update && '$unset' in update;
+}
+
 (mongoUrl ? describe : describe.skip)('Memory: MongoDB trees under concurrent writes', () => {
   const database = `tree_race_${tag}`;
   const adapters: MongoDBAdapter[] = [];
@@ -170,6 +207,129 @@ async function expectCheckoutNeverLandsOnDeleted(
     const pair = [await open(), await open()];
     await pair[0]!.createThread('agent', {}, 'checkout-race');
     await expectCheckoutNeverLandsOnDeleted(pair, 'checkout-race');
+  });
+
+  /**
+   * The state a delete leaves when it recorded its entry as removed under its lease, then stalled
+   * past the lease before its writes to entries landed: the entry and the link of its child to it
+   * are still there, the lease ran out.
+   */
+  async function stallDelete(threadId: string, entryId: string, parentId: string): Promise<void> {
+    const client = new MongoClient(mongoUrl!);
+    await client.connect();
+    await client
+      .db(database)
+      .collection<{ _id: string }>('memory_threads')
+      .updateOne(
+        { _id: threadId },
+        {
+          $set: {
+            removed: [{ id: entryId, parentId, at: new Date() }],
+            lease: { token: 'stalled', until: new Date(Date.now() - 1000) },
+          },
+        }
+      );
+    await client.close();
+  }
+
+  /** The delete that stalled lands at last */
+  async function landLateDelete(entryId: string): Promise<void> {
+    const client = new MongoClient(mongoUrl!);
+    await client.connect();
+    await client
+      .db(database)
+      .collection<{ _id: string }>('memory_entries')
+      .deleteOne({ _id: entryId });
+    await client.close();
+  }
+
+  it('publishes an append held up past its lease, inserting it again after a clear', async () => {
+    const [appender, clearer] = [await open(), await open()];
+    const threadId = 'late-append';
+    await appender.createThread('agent', {}, threadId);
+    await add(appender, threadId, 'a');
+    const publish = holdUp('updateOne', isPublish, 6_500);
+
+    const appending = add(appender, threadId, 'late');
+    await publish.reached;
+    ok(await clearer.clearThread(threadId));
+    const late = await appending;
+
+    const thread = ok(await clearer.getThread(threadId));
+    expect(thread?.activeLeafId).toBe(late.id);
+    expect(ok(await clearer.getEntry(late.id))?.parentId).toBeNull();
+    const path = ok(await clearer.getPath({ threadId }));
+    expect(path.map((entry) => entry.message.content)).toEqual(['late']);
+  }, 30_000);
+
+  it('finishes a delete whose re-parenting reaches the server after its lease ran out', async () => {
+    const [deleter, other] = [await open(), await open()];
+    const threadId = 'late-reparent';
+    await deleter.createThread('agent', {}, threadId);
+    const a = await add(deleter, threadId, 'a');
+    const b = await add(deleter, threadId, 'b');
+    const c = await add(deleter, threadId, 'c');
+    const reparent = holdUp('bulkWrite', () => true, 6_500);
+
+    const deleting = deleter.deleteEntry(b.id);
+    await reparent.reached;
+    const checkedOut = await other.checkout!(threadId, b.id);
+    const d = await add(other, threadId, 'd');
+    await reparent.landed;
+    ok(await deleting);
+
+    expect(checkedOut.success).toBe(false);
+    expect(d.parentId).toBe(c.id);
+    expect(ok(await other.getEntry(c.id))?.parentId).toBe(a.id);
+    expect(ok(await other.getEntry(b.id))).toBeNull();
+    expect(ok(await other.getThread(threadId))?.activeLeafId).toBe(d.id);
+    const path = ok(await other.getPath({ threadId }));
+    expect(path.map((entry) => entry.message.content)).toEqual(['a', 'c', 'd']);
+  }, 30_000);
+
+  it('keeps a delete that lands after its lease ran out from leaving anything on the entry', async () => {
+    const adapter = await open();
+    const threadId = 'late-delete';
+    await adapter.createThread('agent', {}, threadId);
+    const [a, b, c] = [
+      await add(adapter, threadId, 'a'),
+      await add(adapter, threadId, 'b'),
+      await add(adapter, threadId, 'c'),
+    ];
+    await stallDelete(threadId, b.id, a.id);
+
+    const checkedOut = await adapter.checkout!(threadId, b.id);
+    const appended = await adapter.addEntry({
+      threadId,
+      message: { role: 'user', content: 'under b' },
+      tokenCount: 1,
+      parentId: b.id,
+    });
+    await landLateDelete(b.id);
+
+    expect(checkedOut.success).toBe(false);
+    expect(appended.success).toBe(false);
+    const leaf = ok(await adapter.getThread(threadId))?.activeLeafId;
+    expect(leaf).toBe(c.id);
+    expect(ok(await adapter.getEntry(c.id))?.parentId).toBe(a.id);
+    expect(ok(await adapter.getEntry(b.id))).toBeNull();
+    const path = ok(await adapter.getPath({ threadId }));
+    expect(path.map((entry) => entry.message.content)).toEqual(['a', 'c']);
+  });
+
+  it('reads a path past a parent a delete removed before it moved the children', async () => {
+    const adapter = await open();
+    const threadId = 'late-children';
+    await adapter.createThread('agent', {}, threadId);
+    const a = await add(adapter, threadId, 'a');
+    const b = await add(adapter, threadId, 'b');
+    await add(adapter, threadId, 'c');
+    await stallDelete(threadId, b.id, a.id);
+    await landLateDelete(b.id);
+
+    const path = ok(await adapter.getPath({ threadId }));
+
+    expect(path.map((entry) => entry.message.content)).toEqual(['a', 'c']);
   });
 
   it('waits out the lease of a writer that crashed holding it', async () => {

@@ -30,6 +30,8 @@ interface LegacyEntry {
   id: string;
   at: Date;
   seq?: number;
+  /** Stored as the entry's last field */
+  metadata?: Record<string, unknown>;
 }
 
 /** The ids and parents on the path to the thread's active leaf */
@@ -144,7 +146,7 @@ async function expectChained(adapter: MemoryAdapter, threadId: string): Promise<
       `${keyPrefix}thread:${threadId}`,
       JSON.stringify({ id: threadId, agentId: 'agent', metadata: {}, createdAt: at, updatedAt: at })
     );
-    for (const { id, at: createdAt, seq } of entries) {
+    for (const { id, at: createdAt, seq, metadata } of entries) {
       const key = `${keyPrefix}entry:${id}`;
       await redis.set(
         key,
@@ -155,6 +157,7 @@ async function expectChained(adapter: MemoryAdapter, threadId: string): Promise<
           tokenCount: 1,
           createdAt,
           ...(seq !== undefined && { seq }),
+          ...(metadata && { metadata }),
         })
       );
       await redis.zadd(`${keyPrefix}thread:entries:${threadId}`, createdAt.getTime(), key);
@@ -197,6 +200,33 @@ async function expectChained(adapter: MemoryAdapter, threadId: string): Promise<
     ]);
     adapter ??= await connected(new RedisAdapter({ provider: 'redis', url: redisUrl!, keyPrefix }));
     await expectChainedOnce(adapter, 'once', ['o1', 'o2', 'o3']);
+  });
+
+  it('chains an entry whose content holds a formatVersion or a parentId of its own', async () => {
+    await seed('nested', [
+      { id: 'n1', at: new Date(0), seq: 31, metadata: { formatVersion: 7 } },
+      {
+        id: 'n2',
+        at: new Date(1000),
+        seq: 32,
+        metadata: { note: 'tool output', formatVersion: 3, parentId: 'elsewhere' },
+      },
+      { id: 'n3', at: new Date(2000), seq: 33 },
+    ]);
+    adapter ??= await connected(new RedisAdapter({ provider: 'redis', url: redisUrl!, keyPrefix }));
+
+    expect(await pathOf(adapter, 'nested')).toEqual([
+      ['n1', null],
+      ['n2', 'n1'],
+      ['n3', 'n2'],
+    ]);
+    const n2 = await adapter.getEntry('n2');
+    expect(n2.success && n2.data?.metadata).toEqual({
+      note: 'tool output',
+      formatVersion: 3,
+      parentId: 'elsewhere',
+    });
+    expect(n2.success && n2.data?.formatVersion).toBe(1);
   });
 });
 

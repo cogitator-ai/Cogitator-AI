@@ -32,7 +32,7 @@ import type {
   PathQueryOptions,
 } from '@cogitator-ai/types';
 import { CONVERSATION_ENTRY_TYPES, MEMORY_ENTRY_FORMAT } from '@cogitator-ai/types';
-import { BranchingMemoryAdapter } from './base';
+import { BranchingMemoryAdapter, MAX_PATH_DEPTH } from './base';
 import { attempt, ensureSchemaVersion, withSetupTransaction } from './schema-version';
 import { EMPTY_DELETE_FILTER_ERROR, filterSourceTypes, hasDeleteCondition } from '../search/filter';
 import {
@@ -714,14 +714,12 @@ export class PostgresAdapter
     try {
       const result = await this.pool.query(
         `WITH RECURSIVE path AS (
-           SELECT e.*, 0 AS depth, CASE WHEN ${wanted('e')} THEN 1 ELSE 0 END AS kept,
-                  (SELECT COUNT(*) FROM ${this.schema}.entries WHERE thread_id = $2) AS bound
+           SELECT e.*, 0 AS depth, CASE WHEN ${wanted('e')} THEN 1 ELSE 0 END AS kept
            FROM ${this.schema}.entries e WHERE e.id = $1 AND e.thread_id = $2
            UNION ALL
-           SELECT e.*, path.depth + 1, path.kept + CASE WHEN ${wanted('e')} THEN 1 ELSE 0 END,
-                  path.bound
+           SELECT e.*, path.depth + 1, path.kept + CASE WHEN ${wanted('e')} THEN 1 ELSE 0 END
            FROM ${this.schema}.entries e JOIN path ON e.id = path.parent_id
-           WHERE path.kept < $4::bigint AND e.thread_id = $2 AND path.depth < path.bound
+           WHERE path.kept < $4::bigint AND e.thread_id = $2 AND path.depth < ${MAX_PATH_DEPTH}
          )
          SELECT * FROM path WHERE ${wanted('path')} ORDER BY depth DESC`,
         [start.data, options.threadId, types, options.limit || Number.MAX_SAFE_INTEGER]

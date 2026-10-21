@@ -22,7 +22,13 @@ type CursorSurface = Pick<
 >;
 type CollectionSurface = Pick<
   Collection<StoredDoc>,
-  'createIndex' | 'insertOne' | 'updateOne' | 'updateMany' | 'deleteOne' | 'deleteMany'
+  | 'createIndex'
+  | 'insertOne'
+  | 'updateOne'
+  | 'updateMany'
+  | 'deleteOne'
+  | 'deleteMany'
+  | 'bulkWrite'
 > & {
   findOne(filter: Filter<StoredDoc>): Promise<WithId<StoredDoc> | null>;
   find(filter: Filter<StoredDoc>, options?: Document): CursorSurface;
@@ -66,6 +72,7 @@ const mockCollection = {
   deleteMany: vi
     .fn<CollectionSurface['deleteMany']>()
     .mockResolvedValue({ ...deleted, deletedCount: 5 }),
+  bulkWrite: vi.fn<CollectionSurface['bulkWrite']>(),
 } satisfies CollectionSurface;
 
 const mockDb = {
@@ -173,6 +180,7 @@ describe('MongoDBAdapter', () => {
         createdAt: 1,
         seq: 1,
       });
+      expect(mockCollection.createIndex).toHaveBeenCalledWith({ threadId: 1, parentId: 1 });
     });
 
     it('uses default database name', async () => {
@@ -519,7 +527,13 @@ describe('MongoDBAdapter', () => {
       );
     });
 
-    it('splices an entry out under the lease, moving the children and the leaf before it goes', async () => {
+    /** The `removed` stage of the pipeline update `n` of the thread, as a delete records it */
+    function recordedRemoval(n = 0): unknown {
+      const update = mockCollection.updateOne.mock.calls[n]?.[1];
+      return Array.isArray(update) ? update[0]?.$set : undefined;
+    }
+
+    it('records a delete on the thread, fenced by the lease, before it touches any entry', async () => {
       const entry = { _id: 'entry_123', threadId: 'thread_123', parentId: 'entry_parent' };
       mockCollection.findOne.mockResolvedValue(entry);
       mockCollection.findOneAndUpdate.mockResolvedValueOnce({
@@ -530,23 +544,247 @@ describe('MongoDBAdapter', () => {
       const result = await adapter.deleteEntry('entry_123');
 
       expect(result.success).toBe(true);
-      expect(mockCollection.updateMany).toHaveBeenCalledWith(
-        { threadId: 'thread_123', parentId: 'entry_123' },
-        { $set: { parentId: 'entry_parent' } }
-      );
-      expect(mockCollection.updateOne).toHaveBeenCalledWith(
-        { _id: 'thread_123', 'lease.token': leaseToken() },
-        { $set: { activeLeafId: 'entry_parent' } }
-      );
-      const [children] = mockCollection.updateMany.mock.invocationCallOrder;
-      const [leaf, released] = mockCollection.updateOne.mock.invocationCallOrder;
-      const [removed] = mockCollection.deleteOne.mock.invocationCallOrder;
-      expect(children).toBeLessThan(leaf!);
-      expect(leaf).toBeLessThan(removed!);
+      expect(mockCollection.updateOne.mock.calls[0]?.[0]).toEqual({
+        _id: 'thread_123',
+        'lease.token': leaseToken(),
+      });
+      expect(recordedRemoval()).toEqual({
+        activeLeafId: { $literal: 'entry_parent' },
+        removed: {
+          $slice: [
+            {
+              $concatArrays: [
+                { $ifNull: ['$removed', []] },
+                [
+                  {
+                    id: { $literal: 'entry_123' },
+                    parentId: { $literal: 'entry_parent' },
+                    at: '$$NOW',
+                  },
+                ],
+              ],
+            },
+            -1000,
+          ],
+        },
+      });
+      expect(mockCollection.bulkWrite).toHaveBeenCalledWith([
+        {
+          updateMany: {
+            filter: { threadId: 'thread_123', parentId: 'entry_123' },
+            update: { $set: { parentId: 'entry_parent' } },
+          },
+        },
+      ]);
+      expect(mockCollection.deleteMany).toHaveBeenCalledWith({
+        threadId: 'thread_123',
+        _id: { $in: ['entry_123'] },
+      });
+      const [recorded, released] = mockCollection.updateOne.mock.invocationCallOrder;
+      const [children] = mockCollection.bulkWrite.mock.invocationCallOrder;
+      const [removed] = mockCollection.deleteMany.mock.invocationCallOrder;
+      expect(recorded).toBeLessThan(children!);
+      expect(children).toBeLessThan(removed!);
       expect(removed).toBeLessThan(released!);
+      expect(mockCollection.deleteOne).not.toHaveBeenCalled();
+    });
+
+    it('finishes a delete another writer recorded before it does anything else', async () => {
+      const removed = [
+        { id: 'entry_late', parentId: 'entry_gone_too', at: new Date() },
+        { id: 'entry_gone_too', parentId: 'entry_root', at: new Date() },
+      ];
+      mockCollection.findOneAndUpdate.mockResolvedValueOnce({
+        ...thread,
+        entrySeq: 3,
+        activeLeafId: 'entry_root',
+        removed,
+      });
+
+      const result = await adapter.addEntry({
+        threadId: 'thread_123',
+        message: { role: 'user', content: 'after' },
+        tokenCount: 1,
+      });
+
+      expect(result.success && result.data.parentId).toBe('entry_root');
+      expect(mockCollection.bulkWrite).toHaveBeenCalledWith([
+        {
+          updateMany: {
+            filter: { threadId: 'thread_123', parentId: 'entry_late' },
+            update: { $set: { parentId: 'entry_root' } },
+          },
+        },
+        {
+          updateMany: {
+            filter: { threadId: 'thread_123', parentId: 'entry_gone_too' },
+            update: { $set: { parentId: 'entry_root' } },
+          },
+        },
+      ]);
+      expect(mockCollection.deleteMany).toHaveBeenCalledWith({
+        threadId: 'thread_123',
+        _id: { $in: ['entry_late', 'entry_gone_too'] },
+      });
+      expect(mockCollection.deleteMany.mock.invocationCallOrder[0]).toBeLessThan(
+        mockCollection.insertOne.mock.invocationCallOrder[0]!
+      );
+    });
+
+    it('refuses to check out or append under an entry a delete recorded, though it still exists', async () => {
+      const entry = {
+        _id: 'entry_late',
+        threadId: 'thread_123',
+        message: { role: 'user', content: 'late' },
+        tokenCount: 1,
+        createdAt: new Date(0),
+      };
+      const leased = {
+        ...thread,
+        activeLeafId: 'entry_root',
+        removed: [{ id: 'entry_late', parentId: 'entry_root', at: new Date() }],
+      };
+      mockCollection.findOne.mockResolvedValue(entry);
+      mockCollection.findOneAndUpdate.mockResolvedValue(leased);
+
+      const checkedOut = await adapter.checkout('thread_123', 'entry_late');
+      const appended = await adapter.addEntry({
+        threadId: 'thread_123',
+        message: { role: 'user', content: 'x' },
+        tokenCount: 1,
+        parentId: 'entry_late',
+      });
+
+      expect(checkedOut).toEqual({
+        success: false,
+        error: 'Entry entry_late is not in thread thread_123',
+      });
+      expect(appended).toEqual({
+        success: false,
+        error: 'Parent entry entry_late is not in thread thread_123',
+      });
+      expect(mockCollection.insertOne).not.toHaveBeenCalled();
+    });
+
+    const unmatched = {
+      acknowledged: true,
+      matchedCount: 0,
+      modifiedCount: 0,
+      upsertedCount: 0,
+      upsertedId: null,
+    } as const;
+
+    it('inserts its entry again when a clear deleted it while its publish was held up', async () => {
+      mockCollection.findOneAndUpdate
+        .mockResolvedValueOnce({ ...thread, entrySeq: 1, activeLeafId: 'entry_a' })
+        .mockResolvedValueOnce({ ...thread, entrySeq: 2, activeLeafId: null });
+      mockCollection.updateOne
+        .mockResolvedValueOnce(unmatched)
+        .mockResolvedValueOnce(unmatched)
+        .mockResolvedValueOnce(unmatched);
+
+      const result = await adapter.addEntry({
+        threadId: 'thread_123',
+        message: { role: 'user', content: 'Hello' },
+        tokenCount: 1,
+      });
+
+      expect(result.success && result.data.parentId).toBeNull();
+      const [first, second] = mockCollection.insertOne.mock.calls.map(([doc]) => doc);
+      expect(first).toMatchObject({ parentId: 'entry_a', seq: 1 });
+      expect(second).toMatchObject({ _id: first?._id, parentId: null, seq: 1 });
       expect(mockCollection.updateOne).toHaveBeenLastCalledWith(
-        { _id: 'thread_123', 'lease.token': leaseToken() },
-        { $unset: { lease: '' } }
+        { _id: 'thread_123', 'lease.token': leaseToken(1) },
+        { $set: { activeLeafId: first?._id }, $unset: { lease: '' } }
+      );
+    });
+
+    it('finishes a delete from its record when the delete lost the lease after the entry went', async () => {
+      const entry = { _id: 'entry_123', threadId: 'thread_123', parentId: 'entry_parent' };
+      const record = { id: 'entry_123', parentId: 'entry_parent', at: new Date() };
+      mockCollection.findOne.mockResolvedValueOnce(entry).mockResolvedValue(entry);
+      mockCollection.findOneAndUpdate
+        .mockResolvedValueOnce({ ...thread, activeLeafId: 'entry_123' })
+        .mockResolvedValueOnce({ ...thread, activeLeafId: 'entry_parent', removed: [record] });
+      mockCollection.updateOne
+        .mockResolvedValueOnce({ ...unmatched, matchedCount: 1 })
+        .mockResolvedValueOnce(unmatched);
+
+      const result = await adapter.deleteEntry('entry_123');
+
+      expect(result.success).toBe(true);
+      expect(mockCollection.findOneAndUpdate).toHaveBeenCalledTimes(2);
+      expect(mockCollection.updateOne.mock.calls[1]).toEqual([
+        { _id: 'thread_123', 'lease.token': leaseToken(0) },
+        { $unset: { lease: '' } },
+      ]);
+      const reparented = {
+        updateMany: {
+          filter: { threadId: 'thread_123', parentId: 'entry_123' },
+          update: { $set: { parentId: 'entry_parent' } },
+        },
+      };
+      expect(mockCollection.bulkWrite.mock.calls).toEqual([[[reparented]], [[reparented]]]);
+      expect(mockCollection.deleteMany).toHaveBeenCalledTimes(2);
+    });
+
+    it('chains a big thread from before trees in batches that survive a lost lease', async () => {
+      let clock = 0;
+      const now = vi.spyOn(performance, 'now').mockImplementation(() => clock);
+      const legacy = Array.from({ length: 1600 }, (_, i) => ({
+        _id: `old_${String(i).padStart(4, '0')}`,
+        threadId: 'thread_123',
+        createdAt: new Date(i * 1000),
+        parentId: undefined as string | null | undefined,
+        formatVersion: undefined as number | undefined,
+      }));
+      mockCollection.find.mockImplementation(() => {
+        let limit = Infinity;
+        const cursor = {
+          ...cursorOver([]),
+          toArray: vi.fn<CursorSurface['toArray']>(async () => {
+            const unlinked = legacy.filter((doc) => doc.formatVersion === undefined).reverse();
+            const read = unlinked.slice(0, limit).map(({ _id }) => ({ _id }));
+            clock += read.length * 1.5;
+            return read;
+          }),
+        };
+        cursor.sort.mockReturnValue(cursor as unknown as ReturnType<CursorSurface['sort']>);
+        cursor.limit.mockImplementation((n: number) => {
+          limit = n;
+          return cursor as unknown as ReturnType<CursorSurface['limit']>;
+        });
+        return cursor;
+      });
+      mockCollection.bulkWrite.mockImplementation(async (operations) => {
+        for (const operation of operations) {
+          if (!('updateOne' in operation)) continue;
+          const doc = legacy.find((stored) => stored._id === operation.updateOne.filter._id);
+          const update = operation.updateOne.update as {
+            $set: { parentId: string | null; formatVersion: number };
+          };
+          if (doc && doc.formatVersion === undefined) Object.assign(doc, update.$set);
+        }
+        return {} as Awaited<ReturnType<CollectionSurface['bulkWrite']>>;
+      });
+      const unchained = { ...thread, chained: false };
+      mockCollection.findOne.mockResolvedValue(unchained);
+      mockCollection.findOneAndUpdate.mockResolvedValue(unchained);
+
+      const result = await adapter.getThread('thread_123');
+      now.mockRestore();
+
+      expect(result.success).toBe(true);
+      expect(mockCollection.findOneAndUpdate.mock.calls.length).toBeGreaterThan(1);
+      expect(mockCollection.bulkWrite).toHaveBeenCalledTimes(4);
+      expect(legacy.every((doc) => doc.formatVersion === 1)).toBe(true);
+      expect(legacy.map((doc) => doc.parentId)).toEqual([
+        null,
+        ...legacy.slice(0, -1).map((doc) => doc._id),
+      ]);
+      expect(mockCollection.updateOne).toHaveBeenCalledWith(
+        { _id: 'thread_123', 'lease.token': leaseToken(0) },
+        { $set: { activeLeafId: 'old_1599' } }
       );
     });
 
@@ -836,16 +1074,22 @@ describe('MongoDBAdapter', () => {
       const result = await adapter.deleteEntry('entry_123');
 
       expect(result.success).toBe(true);
-      expect(mockCollection.deleteOne).toHaveBeenCalledWith({ _id: 'entry_123' });
+      expect(mockCollection.deleteMany).toHaveBeenCalledWith({
+        threadId: 'thread_123',
+        _id: { $in: ['entry_123'] },
+      });
     });
 
-    it('clears thread entries under the lease', async () => {
-      mockCollection.findOneAndUpdate.mockResolvedValueOnce({ ...thread });
+    it('clears the entries numbered so far under the lease, so a late clear spares newer ones', async () => {
+      mockCollection.findOneAndUpdate.mockResolvedValueOnce({ ...thread, entrySeq: 9 });
 
       const result = await adapter.clearThread('thread_123');
 
       expect(result.success).toBe(true);
-      expect(mockCollection.deleteMany).toHaveBeenCalledWith({ threadId: 'thread_123' });
+      expect(mockCollection.deleteMany).toHaveBeenCalledWith({
+        threadId: 'thread_123',
+        $or: [{ seq: { $lte: 9 } }, { seq: { $exists: false } }, { seq: { $type: 'null' } }],
+      });
       expect(mockCollection.updateOne).toHaveBeenCalledWith(
         { _id: 'thread_123', 'lease.token': leaseToken() },
         { $set: { activeLeafId: null, chained: true }, $unset: { lease: '' } }

@@ -800,6 +800,43 @@ describe('RedisAdapter hardening', () => {
     mockRedisClient.mget.mockReset();
     mockRedisClient.mget.mockResolvedValue([]);
   });
+
+  it('pages back past event entries for a limit instead of reading the whole thread', async () => {
+    const adapter = new RedisAdapter({ provider: 'redis', host: 'localhost' });
+    await adapter.connect();
+    const members = Array.from({ length: 10_000 }, (_, i) => `k${String(i).padStart(5, '0')}`);
+    const events = new Set(members.slice(-300));
+    const stored = (key: string) =>
+      JSON.stringify({
+        id: key.replace('k', 'e'),
+        threadId: 't1',
+        message: { role: 'user', content: key },
+        tokenCount: 1,
+        createdAt: new Date(Number(key.slice(1)) * 1000),
+        ...(events.has(key) && { type: 'model_change' }),
+      });
+    const at = (index: number) => (index < 0 ? Math.max(members.length + index, 0) : index);
+    mockRedisClient.zrange.mockImplementation(async (_key: string, start: number, stop) =>
+      members.slice(at(start), at(Number(stop)) + 1)
+    );
+    mockRedisClient.mget.mockImplementation(async (...keys: string[]) => keys.map(stored));
+    mockRedisClient.zrangebyscore.mockResolvedValue([]);
+
+    const result = await adapter.getEntries({ threadId: 't1', limit: 3 });
+
+    expect(result.success && result.data.map((e) => e.id)).toEqual(['e09697', 'e09698', 'e09699']);
+    expect(mockRedisClient.zrange).not.toHaveBeenCalledWith('cogitator:thread:entries:t1', 0, -1);
+    const fetched = mockRedisClient.mget.mock.calls.reduce((sum, call) => sum + call.length, 0);
+    expect(fetched).toBeLessThanOrEqual(403);
+    mockRedisClient.zrangebyscore.mockReset();
+    mockRedisClient.zrangebyscore.mockResolvedValue([]);
+    mockRedisClient.zrange.mockReset();
+    mockRedisClient.zrange.mockResolvedValue([]);
+    mockRedisClient.zrem.mockReset();
+    mockRedisClient.zrem.mockResolvedValue(1);
+    mockRedisClient.mget.mockReset();
+    mockRedisClient.mget.mockResolvedValue([]);
+  });
 });
 
 describe('RedisAdapter listThreads', () => {

@@ -81,6 +81,23 @@ interface ThreadDoc {
   chained?: boolean;
   /** The write lease of the writer changing the thread's tree, see `MongoDBAdapter.underLease` */
   lease?: ThreadLease | null;
+  /** Entries deletes took out of the tree lately, see {@link RemovedEntry} */
+  removed?: RemovedEntry[] | null;
+}
+
+/**
+ * An entry a delete took out of the thread's tree. The delete records it on the thread, fenced by
+ * its lease, before it touches any entry: from then on no writer hangs an entry under it or makes
+ * it the leaf, even while it still exists, and every writer that takes the lease finishes the
+ * delete (its children moved to `parentId`, or further up past entries removed too, and the
+ * entry gone). So a delete whose writes land late, after its lease ran out, leaves nothing that
+ * points at the entry. Records are kept for {@link REMOVED_KEPT_MS}, so writes that land late are
+ * repaired too, and a path read follows them past a parent that is already gone.
+ */
+interface RemovedEntry {
+  id: string;
+  parentId: string | null;
+  at: Date;
 }
 
 /** A write lease on a thread: who holds it, and until when by the server's clock */
@@ -139,6 +156,9 @@ type EntrySkeleton = Pick<WithId<EntryDoc>, '_id' | 'parentId' | 'type' | 'creat
 
 const SKELETON = { _id: 1, parentId: 1, type: 1, createdAt: 1 } as const;
 
+/** Entries written before trees one write of the chaining links */
+const CHAIN_BATCH = 500;
+
 /** Entry skeletons one round trip of a path walk reads */
 const SKELETON_BATCH = 500;
 
@@ -160,11 +180,41 @@ const LEASE_WAIT_MS = 2 * LEASE_MS;
 /** Times a write starts over after its lease was lost */
 const LEASE_ATTEMPTS = 5;
 
+/** How long a thread keeps the record of an entry a delete removed */
+const REMOVED_KEPT_MS = 6 * LEASE_MS;
+
+/** The most records of removed entries a thread keeps */
+const REMOVED_KEPT = 1000;
+
 const LEASE_FIRST_PAUSE_MS = 2;
 const LEASE_MAX_PAUSE_MS = 50;
 
 function pause(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Where a reference to `id` leads once the removed entries are gone: up through their parents to
+ * the first entry not removed, null for the root or a cycle
+ */
+function survivor(
+  removed: readonly RemovedEntry[] | null | undefined,
+  id: string | null
+): string | null {
+  if (!removed?.length) return id;
+  const parents = new Map(removed.map((entry) => [entry.id, entry.parentId]));
+  const seen = new Set<string>();
+  let current = id;
+  while (current !== null && parents.has(current)) {
+    if (seen.has(current)) return null;
+    seen.add(current);
+    current = parents.get(current) ?? null;
+  }
+  return current;
+}
+
+function isRemoved(removed: readonly RemovedEntry[] | null | undefined, id: string): boolean {
+  return removed?.some((entry) => entry.id === id) === true;
 }
 
 function readMessage({ name, toolCallId, ...message }: StoredMessage): Message {
@@ -309,9 +359,9 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
       const threads = db.collection<ThreadDoc>(`${this.prefix}threads`);
       await threads.createIndex({ agentId: 1, updatedAt: 1, _id: 1 });
       await threads.createIndex({ updatedAt: 1, _id: 1 });
-      await db
-        .collection<EntryDoc>(`${this.prefix}entries`)
-        .createIndex({ threadId: 1, createdAt: 1, seq: 1 });
+      const entries = db.collection<EntryDoc>(`${this.prefix}entries`);
+      await entries.createIndex({ threadId: 1, createdAt: 1, seq: 1 });
+      await entries.createIndex({ threadId: 1, parentId: 1 });
 
       this.client = client;
       this.db = db;
@@ -401,29 +451,41 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
   /**
    * Chains the entries of the leased thread written before trees, once per thread: each after the
    * one before in the order `getEntries` read them then, the newest the active leaf when the
-   * thread has none
+   * thread has none. It walks back from the newest a batch at a time, checking the lease before
+   * each, and marks each entry format 1 in the write that links it, so an attempt that loses the
+   * lease leaves its progress for the next one.
    */
   private async ensureChained(lease: HeldLease): Promise<void> {
     if (lease.thread.chained) return;
-    const legacy = await this.entries
-      .find({ threadId: lease.threadId, formatVersion: null }, { projection: { _id: 1 } })
-      .sort({ createdAt: -1, seq: -1 })
-      .toArray();
-    legacy.reverse();
-    if (legacy.length > 0) {
+    const unlinked = () =>
+      this.entries
+        .find({ threadId: lease.threadId, formatVersion: null }, { projection: { _id: 1 } })
+        .sort({ createdAt: -1, seq: -1 });
+    if (!lease.thread.activeLeafId) {
+      const [newest] = await unlinked().limit(1).toArray();
+      if (newest) {
+        await this.commit(lease, { $set: { activeLeafId: newest._id } });
+        lease.thread = { ...lease.thread, activeLeafId: newest._id };
+      }
+    }
+    for (;;) {
       this.guard(lease);
+      const batch = await unlinked()
+        .limit(CHAIN_BATCH + 1)
+        .toArray();
+      if (batch.length === 0) break;
       await this.entries.bulkWrite(
-        legacy.map((entry, i) => ({
+        batch.slice(0, CHAIN_BATCH).map((entry, i) => ({
           updateOne: {
-            filter: { _id: entry._id },
-            update: { $set: { parentId: i === 0 ? null : legacy[i - 1]!._id } },
+            filter: { _id: entry._id, formatVersion: null },
+            update: { $set: { parentId: batch[i + 1]?._id ?? null, formatVersion: 1 } },
           },
         }))
       );
+      if (batch.length <= CHAIN_BATCH) break;
     }
-    const activeLeafId = lease.thread.activeLeafId ?? legacy.at(-1)?._id ?? null;
-    await this.commit(lease, { $set: { chained: true, activeLeafId } });
-    lease.thread = { ...lease.thread, chained: true, activeLeafId };
+    await this.commit(lease, { $set: { chained: true } });
+    lease.thread = { ...lease.thread, chained: true };
   }
 
   /**
@@ -441,7 +503,8 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
    * by the lease token, so it lands only while the lease is still this writer's, and writes to
    * entries are made only while the lease is younger than {@link LEASE_SAFE_MS}. Each step
    * leaves a valid tree when a writer stops after it: an entry is inserted before it is published
-   * as the leaf, and a deleted entry's children and the leaf leave it before it goes. A write
+   * as the leaf, and a delete is recorded on the thread before it touches an entry, which every
+   * later holder finishes (see {@link RemovedEntry}). A write
    * whose lease was lost starts over. Writes of one adapter to one thread queue up in process
    * first, so they do not compete for the lease, and a write costs one round trip to take the
    * lease, which the write that publishes it gives back.
@@ -464,6 +527,7 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
             : this.failure(`Thread not found: ${threadId}`);
         }
         try {
+          await this.settleRemoved(lease);
           return await write(lease);
         } catch (err) {
           if (!(err instanceof LeaseLost)) throw err;
@@ -525,6 +589,43 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
     }
   }
 
+  /**
+   * Finishes the deletes recorded on the leased thread: moves the children of every removed entry
+   * to its surviving ancestor and deletes the entry, again each time, so writes of a delete that
+   * land late are repaired. Drops records older than {@link REMOVED_KEPT_MS}.
+   */
+  private async settleRemoved(lease: HeldLease): Promise<void> {
+    const removed = lease.thread.removed ?? [];
+    if (removed.length === 0) return;
+    const { threadId } = lease;
+    this.guard(lease);
+    await this.entries.bulkWrite(
+      removed.map(({ id }) => ({
+        updateMany: {
+          filter: { threadId, parentId: id },
+          update: { $set: { parentId: survivor(removed, id) } },
+        },
+      }))
+    );
+    this.guard(lease);
+    await this.entries.deleteMany({ threadId, _id: { $in: removed.map((entry) => entry.id) } });
+    const oldest = Math.min(...removed.map((entry) => new Date(entry.at).getTime()));
+    if (Date.now() - oldest > REMOVED_KEPT_MS) {
+      await this.commit(lease, [
+        {
+          $set: {
+            removed: {
+              $filter: {
+                input: { $ifNull: ['$removed', []] },
+                cond: { $gt: ['$$this.at', { $subtract: ['$$NOW', REMOVED_KEPT_MS] }] },
+              },
+            },
+          },
+        },
+      ]);
+    }
+  }
+
   /** Fails with {@link LeaseLost} once the lease is too old for a write it does not fence */
   private guard(lease: HeldLease): void {
     if (performance.now() - lease.takenAt > LEASE_SAFE_MS) throw new LeaseLost();
@@ -536,12 +637,15 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
    */
   private async commit(
     lease: HeldLease,
-    update: UpdateFilter<ThreadDoc>,
+    update: UpdateFilter<ThreadDoc> | Document[],
     release = false
   ): Promise<void> {
+    const released: UpdateFilter<ThreadDoc> | Document[] = Array.isArray(update)
+      ? [...update, { $unset: 'lease' }]
+      : { ...update, $unset: { lease: '' as const } };
     const result = await this.threads.updateOne(
       { _id: lease.threadId, 'lease.token': lease.token },
-      release ? { ...update, $unset: { lease: '' } } : update
+      release ? released : update
     );
     if (result.matchedCount === 0) throw new LeaseLost();
     if (release) lease.released = true;
@@ -639,7 +743,8 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
   /**
    * Inserts the entry under the parent it asks for, or under the active leaf, then publishes it
    * as the leaf, all under the thread's write lease. An entry inserted by an attempt that lost the
-   * lease is moved under the parent the next attempt finds, and taken back when the add fails.
+   * lease is moved under the parent the next attempt finds, inserted again when a clear that took
+   * the lease meanwhile deleted it, and taken back when the add fails.
    */
   private async storeEntry(entry: NewMemoryEntry): Promise<MemoryResult<MemoryEntry>> {
     if (!this.db) return this.failure('Not connected');
@@ -658,18 +763,22 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
         async (lease): Promise<MemoryResult<MemoryEntry>> => {
           await this.ensureChained(lease);
           seq ??= lease.thread.entrySeq ?? 1;
+          const { removed } = lease.thread;
           const parentId =
-            askedParent === undefined ? (lease.thread.activeLeafId ?? null) : askedParent;
+            askedParent === undefined
+              ? survivor(removed, lease.thread.activeLeafId ?? null)
+              : askedParent;
           if (
             askedParent != null &&
-            !(await this.entries.findOne({ _id: askedParent, threadId: entry.threadId }))
+            (isRemoved(removed, askedParent) ||
+              !(await this.entries.findOne({ _id: askedParent, threadId: entry.threadId })))
           ) {
             return this.failure(`Parent entry ${askedParent} is not in thread ${entry.threadId}`);
           }
           this.guard(lease);
-          if (inserted) {
-            await this.entries.updateOne({ _id: id }, { $set: { parentId } });
-          } else {
+          const moved =
+            inserted && (await this.entries.updateOne({ _id: id }, { $set: { parentId } }));
+          if (!moved || moved.matchedCount === 0) {
             inserted = true;
             await this.entries.insertOne({
               _id: id,
@@ -735,7 +844,8 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
    * The ids of the entries `options` wants on the path back from `startId`, newest first. A
    * parent is almost always created before its child, so the walk reads the thread's entries
    * created no later than the start through one cursor, newest first, as far as it needs, and
-   * looks a parent the cursor does not hold up by its id.
+   * looks a parent the cursor does not hold up by its id. A parent a delete removed before its
+   * children moved leads on to the parent the thread recorded for it.
    */
   private async walkPath(
     threadId: string,
@@ -749,7 +859,7 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
         .toArray();
       return found;
     };
-    let current = await skeleton(startId);
+    let current: EntrySkeleton | undefined = await skeleton(startId);
     if (!current) return [];
     const cursor = this.entries
       .find({ threadId, createdAt: { $lte: current.createdAt } }, { projection: SKELETON })
@@ -759,6 +869,7 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
     const seen = new Set<string>();
     const kept: string[] = [];
     let scanning = true;
+    let removed: RemovedEntry[] | undefined;
 
     try {
       while (current && !seen.has(current._id)) {
@@ -767,7 +878,7 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
           kept.push(current._id);
           if (options.limit && kept.length >= options.limit) break;
         }
-        const parentId = current.parentId;
+        const parentId: string | null | undefined = current.parentId;
         if (!parentId) break;
         current = scanned.get(parentId);
         while (!current && scanning) {
@@ -777,6 +888,13 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
           else scanned.set(next._id, next);
         }
         current ??= await skeleton(parentId);
+        if (!current) {
+          removed ??= (await this.threads.findOne({ _id: threadId }))?.removed ?? [];
+          const resumed = survivor(removed, parentId);
+          if (resumed !== null && resumed !== parentId) {
+            current = scanned.get(resumed) ?? (await skeleton(resumed));
+          }
+        }
       }
     } finally {
       await cursor.close();
@@ -798,7 +916,8 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
 
   /**
    * Moves the active leaf under the thread's write lease, to an entry that is still the
-   * thread's when the leaf moves: a delete takes the same lease, so none can slip in between.
+   * thread's when the leaf moves: a delete takes the same lease, so none can slip in between,
+   * and one whose writes are still landing has recorded its entry as removed.
    */
   protected async setActiveLeaf(
     threadId: string,
@@ -808,7 +927,11 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
     try {
       return await this.underLease(threadId, async (lease) => {
         await this.ensureChained(lease);
-        if (leafId !== null && !(await this.entries.findOne({ _id: leafId, threadId }))) {
+        if (
+          leafId !== null &&
+          (isRemoved(lease.thread.removed, leafId) ||
+            !(await this.entries.findOne({ _id: leafId, threadId })))
+        ) {
           return this.failure(`Entry ${leafId} is not in thread ${threadId}`);
         }
         const doc = await this.threads.findOneAndUpdate(
@@ -874,8 +997,12 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
   }
 
   /**
-   * Splices the entry out of its branch under the thread's write lease: its children go after its
-   * parent and the leaf moves to the parent when it was the entry, before the entry goes
+   * Splices the entry out of its branch under the thread's write lease: records it as removed on
+   * the thread together with the leaf moving to its parent when it was the entry, in one write
+   * the lease fences, then moves its children to its parent and deletes it, and gives the lease
+   * back in a write it fences too. When that fails the delete starts over, and the next holder of
+   * the lease finishes it from the record, also when the entry is already gone (see
+   * {@link RemovedEntry}).
    */
   private async removeEntry(entryId: string): Promise<MemoryResult<void>> {
     if (!this.db) return this.failure('Not connected');
@@ -888,17 +1015,43 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
         threadId,
         async (lease) => {
           await this.ensureChained(lease);
+          if (isRemoved(lease.thread.removed, entryId)) return this.success(undefined);
           const current = await this.entries.findOne({ _id: entryId });
           if (!current) return this.success(undefined);
-          const parentId = current.parentId ?? null;
-          this.guard(lease);
-          await this.entries.updateMany({ threadId, parentId: entryId }, { $set: { parentId } });
-          if (lease.thread.activeLeafId === entryId) {
-            await this.commit(lease, { $set: { activeLeafId: parentId } });
-            lease.thread = { ...lease.thread, activeLeafId: parentId };
-          }
-          this.guard(lease);
-          await this.entries.deleteOne({ _id: entryId });
+          const parentId = survivor(lease.thread.removed, current.parentId ?? null);
+          const leaf = lease.thread.activeLeafId ?? null;
+          const activeLeafId = leaf === entryId ? parentId : leaf;
+          await this.commit(lease, [
+            {
+              $set: {
+                activeLeafId: { $literal: activeLeafId },
+                removed: {
+                  $slice: [
+                    {
+                      $concatArrays: [
+                        { $ifNull: ['$removed', []] },
+                        [
+                          {
+                            id: { $literal: entryId },
+                            parentId: { $literal: parentId },
+                            at: '$$NOW',
+                          },
+                        ],
+                      ],
+                    },
+                    -REMOVED_KEPT,
+                  ],
+                },
+              },
+            },
+          ]);
+          lease.thread = {
+            ...lease.thread,
+            activeLeafId,
+            removed: [...(lease.thread.removed ?? []), { id: entryId, parentId, at: new Date() }],
+          };
+          await this.settleRemoved(lease);
+          await this.commit(lease, {}, true);
           return this.success(undefined);
         },
         {
@@ -920,7 +1073,11 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
     }));
   }
 
-  /** Deletes the thread's entries and its leaf under its write lease, so no append lands between */
+  /**
+   * Deletes the thread's entries and its leaf under its write lease, so no append lands between.
+   * It deletes only entries numbered up to the thread's count, so if the delete lands late it
+   * leaves the entries added after it alone.
+   */
   private async emptyThread(threadId: string): Promise<MemoryResult<void>> {
     if (!this.db) return this.failure('Not connected');
 
@@ -929,7 +1086,14 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
         threadId,
         async (lease) => {
           this.guard(lease);
-          await this.entries.deleteMany({ threadId });
+          await this.entries.deleteMany({
+            threadId,
+            $or: [
+              { seq: { $lte: lease.thread.entrySeq ?? 0 } },
+              { seq: { $exists: false } },
+              { seq: { $type: 'null' } },
+            ],
+          });
           await this.commit(lease, { $set: { activeLeafId: null, chained: true } }, true);
           return this.success(undefined);
         },

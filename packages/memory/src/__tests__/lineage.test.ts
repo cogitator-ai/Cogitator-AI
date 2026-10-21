@@ -49,6 +49,14 @@ describe('verifyEvidence', () => {
     expect(verifyEvidence({ toolCallId: 'c1', quote: 'sunny in Paris' }, tool)).toBe('suggested');
     expect(verifyEvidence({ toolCallId: 'c2', quote: 'sunny in Paris' }, tool)).toBe('verified');
   });
+
+  it('suggests a quote of a tool call that returned nothing', () => {
+    const empty = entry({
+      message: { role: 'tool', content: '', toolCallId: 'c1', name: 'noop' },
+      toolResults: [{ callId: 'c1', name: 'noop', result: undefined }],
+    });
+    expect(verifyEvidence({ toolCallId: 'c1', quote: 'anything' }, empty)).toBe('suggested');
+  });
 });
 
 describe('evidenceOnPath', () => {

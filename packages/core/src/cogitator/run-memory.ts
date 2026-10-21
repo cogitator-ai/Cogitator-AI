@@ -11,12 +11,12 @@ import { saveEntry, type EntryEvent, type EntryPlacement } from './message-build
 
 /**
  * What a run writes to its thread's memory, in the order it writes it. A run on a branch
- * (`RunOptions.branch`) starts after the branch point, any other run after the thread's active
- * leaf, and from then on each entry goes after the run's previous one, so the run's entries stay
- * one chain even when another run moves the leaf meanwhile. Writes and session events go one
- * after another, so an event recorded from a callback still lands before the entries that follow
- * it, and a failed write does not stop the ones after it. Nothing is written before {@link open},
- * which the runtime calls once the run may use the thread.
+ * (`RunOptions.branch`) chains its entries after the branch point, any other run adds each one
+ * after the thread's active leaf, so runs that share a thread at once all stay on its active
+ * branch. Writes and session events go one after another, so an event recorded from a callback
+ * still lands before the entries that follow it, and a failed write does not stop the ones after
+ * it. Nothing is written before {@link open}, which the runtime calls once the run may use the
+ * thread.
  */
 export class RunMemory {
   private queue: Promise<unknown> = Promise.resolve();
@@ -46,7 +46,7 @@ export class RunMemory {
    */
   open(resumed?: RunCheckpoint['branch']): void {
     if (resumed) {
-      this.place.parentId = resumed.parentId;
+      if (resumed.parentId !== undefined) this.place.parentId = resumed.parentId;
       this.place.activate = resumed.activate;
       if (resumed.branchPoint !== undefined) this.branchPoint = resumed.branchPoint;
     }
@@ -73,9 +73,9 @@ export class RunMemory {
 
   /** Where the run's next entry goes and where it started, for a paused run to go on */
   get placement(): RunCheckpoint['branch'] {
-    if (this.place.parentId === undefined) return undefined;
+    if (this.place.parentId === undefined && this.branchPoint === undefined) return undefined;
     return {
-      parentId: this.place.parentId,
+      ...(this.place.parentId !== undefined && { parentId: this.place.parentId }),
       activate: this.place.activate ?? true,
       ...(this.branchPoint !== undefined && { branchPoint: this.branchPoint }),
     };
@@ -131,7 +131,7 @@ export class RunMemory {
       if (!entry) return;
       if (this.branchPoint === undefined) this.branchPoint = entry.parentId ?? null;
       this.leafId = entry.id;
-      this.place.parentId = entry.id;
+      if (this.place.parentId !== undefined) this.place.parentId = entry.id;
     });
     this.queue = written.catch(() => undefined);
     return written;

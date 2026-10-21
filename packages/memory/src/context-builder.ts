@@ -22,7 +22,7 @@ import type {
   MemoryResult,
 } from '@cogitator-ai/types';
 import type { GraphContextBuilder } from './knowledge-graph/graph-context-builder';
-import { compactedHistory, HISTORY_ENTRY_TYPES } from './compaction';
+import { readCompactedHistory } from './compaction';
 import { countEntryTokens, countMessageTokens, countTokens } from './token-counter';
 import { indexedText, type IndexedText, type MessageIndex } from './message-index';
 
@@ -395,17 +395,19 @@ export class ContextBuilder {
   private async readHistory(options: BuildContextOptions): Promise<MemoryEntry[]> {
     const memory = this.deps.memoryAdapter;
     if (options.leafId === null) return [];
-    if (memory.getPath) {
-      const path = unwrap(
-        await memory.getPath({
-          threadId: options.threadId,
-          ...(options.leafId !== undefined && { leafId: options.leafId }),
-          types: HISTORY_ENTRY_TYPES,
-          includeToolCalls: true,
-        }),
+    const getPath = memory.getPath?.bind(memory);
+    if (getPath) {
+      return unwrap(
+        await readCompactedHistory(
+          { getPath },
+          {
+            threadId: options.threadId,
+            ...(options.leafId !== undefined && { leafId: options.leafId }),
+            includeToolCalls: true,
+          }
+        ),
         'getPath'
       );
-      return compactedHistory(path);
     }
     return unwrap(
       await memory.getEntries({ threadId: options.threadId, includeToolCalls: true }),

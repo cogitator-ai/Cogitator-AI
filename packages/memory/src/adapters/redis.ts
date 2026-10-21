@@ -119,18 +119,20 @@ return {1, unpack(expired)}
 
 /**
  * Lua helpers for trees of entries. An entry's JSON ends with its `parentId`, which
- * `withParent` sets without decoding the rest, marking an entry written before trees as format
- * 1 when `legacy` is set. `chain` links the entries of a thread written before trees once per
- * thread, recorded by the thread's chained marker: in the order `getEntries` read them before
- * trees (creation time, then `seq`, then key), each marked so a second chaining skips it, and
- * makes the last one the active leaf when the thread has none.
+ * `withParent` sets without decoding the rest. With `legacy` set it gives an entry written before
+ * trees, which has no `parentId` of its own, its first one and marks it format 1, appending both
+ * whatever its last field holds. `chain` links the entries of a thread written before trees once
+ * per thread, recorded by the thread's chained marker: those without a top-level `formatVersion`,
+ * in the order `getEntries` read them before trees (creation time, then `seq`, then key), each
+ * marked so a second chaining skips it, and makes the last one the active leaf when the thread
+ * has none.
  */
 const TREE = `
 local function withParent(json, parent, legacy)
   local value = 'null'
   if parent then value = cjson.encode(parent) end
   local tail = ',"parentId":' .. value .. '}'
-  if legacy then tail = ',"formatVersion":1' .. tail end
+  if legacy then return string.sub(json, 1, -2) .. ',"formatVersion":1' .. tail end
   local head = string.match(json, '^(.*),"parentId":[^,]*}$')
   if head then return head .. tail end
   return string.sub(json, 1, -2) .. tail
@@ -141,8 +143,9 @@ local function chain(entriesKey, leafKey, chainedKey, prefix, ttl)
   local legacy = {}
   for i = 1, #scored, 2 do
     local json = redis.call('GET', scored[i])
-    if json and not string.find(json, '"formatVersion"', 1, true) then
-      local seq = cjson.decode(json).seq
+    local entry = json and cjson.decode(json)
+    if entry and (entry.formatVersion == nil or entry.formatVersion == cjson.null) then
+      local seq = entry.seq
       if type(seq) ~= 'number' then seq = 0 end
       legacy[#legacy + 1] = { key = scored[i], json = json, at = tonumber(scored[i + 1]), seq = seq }
     end
@@ -380,6 +383,9 @@ interface IndexRow extends ThreadCursor {
 }
 
 const SCAN_BATCH = 500;
+
+/** Members one page of a backwards read of a thread's entries takes, at least */
+const NEWEST_PAGE = 200;
 
 interface StoredThread {
   id: string;
@@ -998,9 +1004,7 @@ export class RedisAdapter extends BranchingMemoryAdapter {
       const wanted = (list: StoredEntry[]) =>
         list.filter((entry) => entryTypeWanted(entry.type, options.types));
       if (limit && !ranged && wanted(entries).length < limit && keys.length >= limit) {
-        const all = await client.zrange(setKey, 0, -1);
-        const found = all.length > 0 ? await client.mget(...all) : [];
-        entries = found.filter((v): v is string => v !== null).map(parseEntry);
+        entries = await this.newestWanted(client, setKey, limit, wanted, keys, entries);
       } else if (limit && !ranged && entries.length === limit) {
         entries = await this.withEarlierTies(client, setKey, keys, entries);
       }
@@ -1012,6 +1016,50 @@ export class RedisAdapter extends BranchingMemoryAdapter {
         entries.map((entry) => readEntry(entry, options.includeToolCalls === true))
       );
     });
+  }
+
+  /**
+   * The newest `limit` entries `wanted` keeps, when the last members already read (`keys`, their
+   * `entries`) hold too few: reads on backwards a page of members at a time until it has enough or
+   * the thread ends, so entries of other types among the newest never make it read a long thread
+   * whole. Members whose entry expired are removed at the end, so pages keep their places.
+   */
+  private async newestWanted(
+    client: RedisClient,
+    setKey: string,
+    limit: number,
+    wanted: (list: StoredEntry[]) => StoredEntry[],
+    keys: string[],
+    entries: StoredEntry[]
+  ): Promise<StoredEntry[]> {
+    const read = [...keys];
+    const found = wanted(entries);
+    const expired: string[] = [];
+    const page = Math.max(limit, NEWEST_PAGE);
+    let offset = keys.length;
+    while (found.length < limit) {
+      const chunk = await client.zrange(setKey, -(offset + page), -(offset + 1));
+      if (chunk.length === 0) break;
+      const values = await client.mget(...chunk);
+      const live: StoredEntry[] = [];
+      for (const [index, key] of chunk.entries()) {
+        const value = values[index];
+        if (value == null) {
+          expired.push(key);
+        } else {
+          read.push(key);
+          live.push(parseEntry(value));
+        }
+      }
+      found.push(...wanted(live));
+      offset += chunk.length;
+      if (chunk.length < page) break;
+    }
+    if (expired.length > 0) {
+      await client.zrem(setKey, ...expired);
+      this.reportExpiredEntries(expired);
+    }
+    return found.length > 0 ? this.withEarlierTies(client, setKey, read, found) : [];
   }
 
   /**

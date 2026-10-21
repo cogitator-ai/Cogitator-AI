@@ -170,6 +170,28 @@ export function withoutToolCalls(entry: MemoryEntry): MemoryEntry {
 }
 
 /**
+ * The most entries a path read walks: far beyond any real branch, it only ends a walk a damaged
+ * store would make go round a cycle forever
+ */
+export const MAX_PATH_DEPTH = 1_000_000;
+
+/**
+ * An event of a copied entry pointing at the copies: a field holding the id of an entry copied
+ * before it, such as the first kept entry of a compaction, names that entry's copy
+ */
+function withCopiedIds(
+  event: Record<string, unknown>,
+  copies: ReadonlyMap<string, string>
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(event).map(([key, value]) => [
+      key,
+      typeof value === 'string' ? (copies.get(value) ?? value) : value,
+    ])
+  );
+}
+
+/**
  * A memory adapter whose threads are trees of entries (see `MemoryEntry.parentId`), with an
  * active leaf new entries go after. Every built-in adapter extends it. An adapter of your own
  * stores `parentId` and the leaf, chooses the parent in `addEntry` as `NewMemoryEntry`
@@ -274,6 +296,7 @@ export abstract class BranchingMemoryAdapter extends ChangeReportingMemoryAdapte
     );
     if (!fork.success) return fork;
     let parentId: string | null = null;
+    const copies = new Map<string, string>();
     for (const entry of path.data) {
       const { id, threadId: _thread, seq: _seq, formatVersion: _format, ...copy } = entry;
       const added = await this.addEntry({
@@ -281,8 +304,10 @@ export abstract class BranchingMemoryAdapter extends ChangeReportingMemoryAdapte
         threadId: fork.data.id,
         parentId,
         metadata: { ...entry.metadata, forkOf: id },
+        ...(entry.event && { event: withCopiedIds(entry.event, copies) }),
       });
       if (!added.success) return added;
+      copies.set(id, added.data.id);
       parentId = added.data.id;
     }
     const forked = await this.getThread(fork.data.id);

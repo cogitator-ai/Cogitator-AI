@@ -124,9 +124,9 @@ describe('SQLiteAdapter: entries written before trees', () => {
 
     const reopened = new SQLiteAdapter({ provider: 'sqlite', path });
     await reopened.connect();
-    const read = await reopened.getPath({ threadId: 't' });
+    const read = await reopened.getPath({ threadId: 't', limit: 10 });
 
-    expect(read.success && read.data.length).toBeLessThanOrEqual(4);
+    expect(read.success && read.data.length).toBe(10);
     await reopened.disconnect();
   });
 });

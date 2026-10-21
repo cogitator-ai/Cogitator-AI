@@ -76,6 +76,23 @@ describe('runs on branches of a thread', () => {
     expect(thread.success && thread.data?.activeLeafId).toBe(second.memory?.leafId);
   });
 
+  it('keeps every entry of runs that share a thread at once on its active branch', async () => {
+    const cog = runtime(echoingBackend());
+
+    await Promise.all([
+      cog.run(agent, { input: 'one', threadId: 't' }),
+      cog.run(agent, { input: 'two', threadId: 't' }),
+    ]);
+
+    const path = await (await memoryOf(cog)).getPath!({ threadId: 't' });
+    expect(path.success && contents(path.data.map((e) => e.message)).sort()).toEqual([
+      'one',
+      're: one',
+      're: two',
+      'two',
+    ]);
+  });
+
   it('reads history along the branch and leaves the active leaf when not activated', async () => {
     const backend = echoingBackend();
     const cog = runtime(backend);
