@@ -170,6 +170,21 @@ describe('ContextAssembler', () => {
     ]);
   });
 
+  it('keeps a block that made another a duplicate when it gives room back', async () => {
+    const fact = 'The user lives in Lisbon and works at the harbour office every weekday';
+    const assembly = await new ContextAssembler().assemble(1000, [
+      { partition: 'facts', blocks: [block(800, 'A long fact '.repeat(20)), block(140, fact)] },
+      {
+        partition: 'recall',
+        blocks: [block(10, 'works at the harbour office every weekday'), block(1000, 'Huge doc')],
+      },
+      { partition: 'recent', blocks: [block(100)] },
+    ]);
+
+    expect(assembly.kept.facts?.map((kept) => kept.text)).toContain(fact);
+    expect(assembly.used).toBeLessThanOrEqual(1000);
+  });
+
   it('refuses shares that add up to more than 1', () => {
     expect(() => new ContextAssembler({ facts: { share: 0.7 }, recall: { share: 0.7 } })).toThrow(
       /add up to/

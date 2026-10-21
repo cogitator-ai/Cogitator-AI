@@ -41,8 +41,11 @@ export function recalledCallId(args: unknown): string | undefined {
 /** Where a run keeps its conversation in memory, for `recall_tool_output` to read from */
 export interface RecallPlace {
   threadId: string;
-  /** The run's newest entry, whose branch is the run's conversation */
-  leafId?: string;
+  /**
+   * The run's newest entry, whose branch is the run's conversation, null for a run on a branch
+   * of its own that holds nothing yet, the thread's active branch when absent
+   */
+  leafId?: string | null;
 }
 
 /**
@@ -95,10 +98,12 @@ async function outputInMemory(
   place: RecallPlace,
   toolCallId: string
 ): Promise<MessageContent | undefined> {
+  if (place.leafId === null) return undefined;
+  const leafId = place.leafId;
   const read = memory.getPath
     ? await memory.getPath({
         threadId: place.threadId,
-        ...(place.leafId !== undefined && { leafId: place.leafId }),
+        ...(leafId !== undefined && { leafId }),
         types: ['tool_result'],
         includeToolCalls: true,
       })

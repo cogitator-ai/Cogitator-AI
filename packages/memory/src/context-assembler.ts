@@ -183,18 +183,37 @@ export class ContextAssembler {
       return tokens;
     };
 
+    const keyOf = (block: AssemblyBlock<T>) => block.sourceId ?? block.text ?? block;
     const refill = async (partition: ContextPartition): Promise<void> => {
       const given = byPartition.get(partition);
       const state = filled.get(partition);
       const left = budget - assembly.used;
       if (!given || !state?.cut || left <= 0) return;
       const previous = assembly.tokens[partition] ?? 0;
-      const fitted = await (given.fit ?? fitInOrder)(state.blocks, previous + left);
+      const kept = assembly.kept[partition] ?? [];
+      const keptKeys = new Set(kept.map(keyOf));
+      let fitted: FitResult<T>;
+      if (given.fit) {
+        fitted = await given.fit(state.blocks, previous + left);
+        const now = new Set(fitted.kept.map(keyOf));
+        if ([...keptKeys].some((key) => !now.has(key))) return;
+      } else {
+        const added = fitInOrder(
+          state.blocks.filter((block) => !keptKeys.has(keyOf(block))),
+          left
+        );
+        const order = new Map(state.blocks.map((block, at) => [block, at]));
+        fitted = {
+          kept: [...kept, ...added.kept].sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0)),
+          dropped: added.dropped,
+        };
+      }
       const tokens = fitted.tokens ?? fitted.kept.reduce((sum, block) => sum + block.tokens, 0);
       if (tokens <= previous) return;
-      const before = new Set(assembly.kept[partition] ?? []);
       for (const block of fitted.kept) {
-        if (!before.has(block) && block.text !== undefined) said.push(normalized(block.text));
+        if (!keptKeys.has(keyOf(block)) && block.text !== undefined) {
+          said.push(normalized(block.text));
+        }
       }
       assembly.kept[partition] = fitted.kept;
       assembly.tokens[partition] = tokens;
@@ -207,7 +226,6 @@ export class ContextAssembler {
       ];
       filled.set(partition, { blocks: state.blocks, cut: fitted.dropped.length > 0 });
     };
-
     for (const partition of FILL_ORDER) {
       if (!isRequired(partition)) continue;
       const unbounded = partition === 'system' || partition === 'final';

@@ -62,9 +62,9 @@ export class RunMemory {
    * Where the run reads its conversation, once it may use memory, also when it saves none
    * (`saveHistory: false`): its thread and newest entry
    */
-  get conversation(): { threadId: string; leafId?: string } | undefined {
+  get conversation(): { threadId: string; leafId?: string | null } | undefined {
     if (!this.opened || !this.memory() || this.options().useMemory === false) return undefined;
-    const leafId = this.leafId ?? this.place.parentId ?? undefined;
+    const leafId = this.leafId ?? this.place.parentId;
     return { threadId: this.threadId, ...(leafId !== undefined && { leafId }) };
   }
 

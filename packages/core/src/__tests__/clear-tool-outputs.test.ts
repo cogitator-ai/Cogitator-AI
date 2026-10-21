@@ -588,6 +588,26 @@ describe('context.clearToolOutputs in a run', () => {
     expect(toolMessage(requests[3], 'r1')?.content).toBe(originalOutput(1));
   });
 
+  it('recalls nothing for a run on an empty branch of its own that saves nothing', async () => {
+    const { backend, requests } = scripted(
+      callTool('fetch', { page: 1 }, 'c1'),
+      answer('Fetched'),
+      callTool(RECALL_TOOL_OUTPUT, { toolCallId: 'c1' }, 'r1'),
+      answer('Nothing')
+    );
+    const runner = runtime(backend, { enabled: false, clearToolOutputs: {} }, true);
+    const agent = researcher();
+    await runner.run(agent, { input: 'Fetch page 1', threadId: 'thread_a' });
+    await runner.run(agent, {
+      input: 'What did page 1 say?',
+      threadId: 'thread_a',
+      saveHistory: false,
+      branch: { fromEntryId: null, activate: false },
+    });
+
+    expect(String(toolMessage(requests[3], 'r1')?.content)).not.toContain(BIG);
+  });
+
   it('reads no memory for a run that does not use it, whatever thread it names', async () => {
     const { backend, requests } = scripted(
       callTool('fetch', { page: 1 }, 'c1'),
