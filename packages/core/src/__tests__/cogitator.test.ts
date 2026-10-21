@@ -1173,10 +1173,20 @@ describe('Cogitator', () => {
         },
       ]);
 
+      const calls: string[] = [];
+      const results: (string | undefined)[] = [];
       await cog.run(createTestAgent({ tools: [echo] }), {
         input: 'echo hi twice',
         threadId: 'thread_dup',
+        onToolCall: (call) => calls.push(call.id),
+        onToolResult: (result) => results.push(result.error),
       });
+
+      expect(calls).toEqual(['c1', 'c2']);
+      expect(results).toEqual([
+        undefined,
+        'Duplicate tool call detected. Try a different approach.',
+      ]);
 
       const entries = await cog.memory!.getEntries({ threadId: 'thread_dup' });
       expect(entries.success).toBe(true);

@@ -30,14 +30,20 @@ const forget = tool({
 });
 
 let toolTurn: ToolCall[] = [];
+/** How many turns in a row call the tools of `toolTurn` */
+let toolTurns = 1;
 
 function answer(request: ChatRequest): ChatResponse {
   const results = request.messages.filter((m) => m.role === 'tool');
-  if (toolTurn.length > 0 && results.length === 0) {
+  if (toolTurn.length > 0 && results.length < toolTurns * toolTurn.length) {
+    const turn = results.length / toolTurn.length;
     return {
       id: 'r1',
       content: 'Your card is 4111 1111 1111 1111, checking.',
-      toolCalls: toolTurn,
+      toolCalls: toolTurn.map((call) => ({
+        ...call,
+        id: turn === 0 ? call.id : `${call.id}_${turn}`,
+      })),
       finishReason: 'tool_calls',
       usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
     };
@@ -137,6 +143,7 @@ describe('messages of a run', () => {
 
   beforeEach(() => {
     toolTurn = [];
+    toolTurns = 1;
     threadToForget = null;
     breakStorage = false;
     storage.delayMs = 0;
@@ -346,5 +353,41 @@ describe('messages of a run', () => {
     expect(logged).toBe(true);
     expect(first.status).toBe('completed');
     expect(second.status).toBe('completed');
+  });
+
+  it('records the turn that repeats the same call as its own message and tool_calls step', async () => {
+    toolTurn = [{ id: 'call_1', name: 'forget', arguments: {} }];
+    toolTurns = 2;
+    const { assistant, thread } = await start();
+
+    const stream = client.beta.threads.runs.stream(thread.id, { assistant_id: assistant.id });
+    const run = await stream.finalRun();
+    const steps = await client.beta.threads.runs.steps.list(run.id, {
+      thread_id: thread.id,
+      order: 'asc',
+    });
+
+    expect(run.status).toBe('completed');
+    expect(steps.data.map((step) => [step.type, step.status])).toEqual([
+      ['message_creation', 'completed'],
+      ['tool_calls', 'completed'],
+      ['message_creation', 'completed'],
+      ['tool_calls', 'completed'],
+      ['message_creation', 'completed'],
+    ]);
+    const repeated = steps.data[3]!.step_details;
+    expect(repeated.type === 'tool_calls' && repeated.tool_calls).toEqual([
+      expect.objectContaining({
+        id: 'call_1_1',
+        function: expect.objectContaining({
+          output: expect.stringContaining('Duplicate tool call detected'),
+        }),
+      }),
+    ]);
+    expect(await texts(thread.id, run.id)).toEqual([
+      'Your card is [card], checking.',
+      'Your card is [card], checking.',
+      'Done with [card].',
+    ]);
   });
 });
