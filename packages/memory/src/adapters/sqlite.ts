@@ -133,6 +133,8 @@ export class SQLiteAdapter extends BaseMemoryAdapter {
     metadata: Record<string, unknown> = {},
     threadId?: string
   ): Promise<MemoryResult<Thread>> {
+    const idProblem = this.threadIdProblem(threadId);
+    if (idProblem) return this.failure(idProblem);
     if (!this.db) return this.failure('Not connected');
 
     const id = threadId ?? this.generateId('thread');

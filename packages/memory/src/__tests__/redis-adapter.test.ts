@@ -768,6 +768,37 @@ describe('RedisAdapter listThreads', () => {
     expect(second.success && second.data.nextCursor).toBeUndefined();
   });
 
+  it('keeps every key of a cluster listing in the slot of a custom prefix', async () => {
+    const cluster = new RedisAdapter({
+      provider: 'redis',
+      cluster: { nodes: [{ host: 'n1', port: 7000 }] },
+      keyPrefix: 'myapp:',
+    });
+    await cluster.connect();
+    scripts({
+      complete: () => null,
+      page: () => [1, [], rows(['old', 2000, stored('old', 2000)])],
+    });
+    mockRedisClient.scan.mockResolvedValueOnce(['0', ['{myapp}:thread:old']]);
+    mockRedisClient.mget.mockResolvedValueOnce([stored('old', 2000)]);
+
+    const listed = await cluster.listThreads();
+
+    expect(listed.success && listed.data.threads.map((t) => t.id)).toEqual(['old']);
+    expect(mockRedisClient.scan).toHaveBeenCalledWith(
+      '0',
+      'MATCH',
+      '{myapp}:thread:*',
+      'COUNT',
+      500
+    );
+    const keys = mockRedisClient.eval.mock.calls.flatMap(([, numKeys, ...args]) =>
+      args.slice(0, Number(numKeys))
+    );
+    expect(keys.length).toBeGreaterThan(0);
+    for (const key of keys) expect(String(key)).toMatch(/^\{myapp\}:/);
+  });
+
   it('moves a thread whose index member is behind its stored update time and skips it there', async () => {
     scripts({ page: () => [1, [], rows(['moved', 1000, stored('moved', 5000)])] });
 

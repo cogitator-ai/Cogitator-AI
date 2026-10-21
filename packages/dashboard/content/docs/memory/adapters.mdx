@@ -28,6 +28,7 @@ Calling `createThread` with an existing thread id is an upsert in every adapter:
 
 Every built-in adapter behaves the same way, checked by one conformance suite against live databases:
 
+- `createThread` with an id of your own needs a non-empty one: an empty id fails.
 - `getThread` and `getEntry` give `null` for what does not exist, `updateThread` of a missing thread fails, and `addEntry` into a thread that does not exist fails.
 - `updateThread` is atomic: concurrent updates of different keys all land.
 - `getEntries` returns entries oldest first, entries with the same `createdAt` in the order they were added. `limit` keeps the newest entries, `0` or no limit returns them all, and a negative or fractional limit fails.
@@ -88,6 +89,8 @@ console.log(memory.stats); // { threads: 1, entries: 1 }
 | Option       | Type   | Default | Description                                        |
 | ------------ | ------ | ------- | -------------------------------------------------- |
 | `maxEntries` | number | 10000   | Max entries across all threads; oldest are evicted |
+
+It stores copies of what you give it. A value it cannot clone, such as metadata holding a function, is stored as JSON the way the database adapters store it: the function is left out, and a `Date`, `Map` or `Set` in that same value comes back as a string or `{}`.
 
 **When to use:** Unit tests, prototyping, ephemeral agents that don't need persistence.
 

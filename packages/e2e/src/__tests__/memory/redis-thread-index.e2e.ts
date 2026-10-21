@@ -45,6 +45,44 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
     expect(await raw.zrange(`${keyPrefix}threads:index`, 0, -1)).toEqual(['fresh']);
   });
 
+  it('pages and sweeps an index too big for one scan', { timeout: 60_000 }, async () => {
+    const keyPrefix = prefix();
+    const memory = await adapter(keyPrefix, 3);
+    const ids = Array.from({ length: 300 }, (_, i) => `t${String(i).padStart(3, '0')}`);
+    for (const id of ids) {
+      await memory.createThread('agent', {}, id);
+      for (const content of ['one', 'two']) {
+        await memory.addEntry({ threadId: id, message: { role: 'user', content }, tokenCount: 1 });
+      }
+    }
+    const index = `${keyPrefix}threads:index`;
+    expect(await raw.eval("return redis.call('OBJECT', 'ENCODING', KEYS[1])", 1, index)).toBe(
+      'skiplist'
+    );
+
+    const listed: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await memory.listThreads({ agentId: 'agent', limit: 100, cursor });
+      if (!page.success) throw new Error(page.error);
+      listed.push(...page.data.threads.map((thread) => thread.id));
+      cursor = page.data.nextCursor;
+    } while (cursor);
+    expect([...listed].sort()).toEqual(ids);
+
+    await sleep(3100);
+    await memory.createThread('agent', {}, 'fresh');
+    for (let i = 0; i < 30; i++) {
+      await memory.addEntry({
+        threadId: 'fresh',
+        message: { role: 'user', content: `m${i}` },
+        tokenCount: 1,
+      });
+    }
+
+    expect(await raw.zrange(index, 0, -1)).toEqual(['fresh']);
+  });
+
   it('lists a legacy thread written before the first listing', async () => {
     const keyPrefix = prefix();
     const legacy = {

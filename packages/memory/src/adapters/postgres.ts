@@ -349,6 +349,8 @@ export class PostgresAdapter
     metadata: Record<string, unknown> = {},
     threadId?: string
   ): Promise<MemoryResult<Thread>> {
+    const idProblem = this.threadIdProblem(threadId);
+    if (idProblem) return this.failure(idProblem);
     if (!this.pool) return this.failure('Not connected');
 
     const id = threadId ?? this.generateId('thread');

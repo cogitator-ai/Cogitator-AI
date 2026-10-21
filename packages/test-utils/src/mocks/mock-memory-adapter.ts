@@ -40,6 +40,9 @@ export class MockMemoryAdapter implements MemoryAdapter {
     threadId?: string
   ): Promise<MemoryResult<Thread>> {
     this._calls.push({ method: 'createThread', args: [agentId, metadata, threadId] });
+    if (threadId === '') {
+      return { success: false, error: 'createThread threadId must be a non-empty string' };
+    }
 
     const thread: Thread = {
       id: threadId ?? `thread_${nanoid(8)}`,

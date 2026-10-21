@@ -413,6 +413,8 @@ export class RedisAdapter extends BaseMemoryAdapter {
     metadata: Record<string, unknown> = {},
     threadId?: string
   ): Promise<MemoryResult<Thread>> {
+    const idProblem = this.threadIdProblem(threadId);
+    if (idProblem) return this.failure(idProblem);
     return this.run(async (client) => {
       const id = threadId ?? this.generateId('thread');
       const thread = await this.writeThread(client, id, (existing) => {

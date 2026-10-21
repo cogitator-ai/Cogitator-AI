@@ -33,7 +33,8 @@ export type MemoryAdapterScenario =
   | 'list-threads-pages'
   | 'list-threads-refuses-bad-input'
   | 'list-threads-edges'
-  | 'unserializable-values';
+  | 'unserializable-values'
+  | 'refuses-empty-thread-id';
 
 /** One case of the memory adapter contract. */
 export interface MemoryAdapterConformanceCase {
@@ -481,11 +482,20 @@ const SCENARIOS: Record<MemoryAdapterScenario, (adapter: MemoryAdapter) => Promi
     } catch (error) {
       assert.fail(`createThread threw instead of returning a result: ${String(error)}`);
     }
-    if (!created.success) return;
+    if (!created.success) {
+      assert.equal(
+        ok(await adapter.getThread(id), 'getThread'),
+        null,
+        'a refused thread is not stored'
+      );
+      return;
+    }
     const read = ok(await adapter.getThread(id), 'getThread');
     assert.equal(read?.metadata.label, 'kept');
+    assert.equal(typeof read?.metadata.run, 'undefined', 'a function is stored as nothing');
+    let added: MemoryResult<MemoryEntry>;
     try {
-      await adapter.addEntry({
+      added = await adapter.addEntry({
         threadId: id,
         message: { role: 'tool', content: 'done', toolCallId: 'c1', name: 'x' },
         tokenCount: 1,
@@ -494,6 +504,25 @@ const SCENARIOS: Record<MemoryAdapterScenario, (adapter: MemoryAdapter) => Promi
     } catch (error) {
       assert.fail(`addEntry threw instead of returning a result: ${String(error)}`);
     }
+    const stored = ok(
+      await adapter.getEntries({ threadId: id, includeToolCalls: true }),
+      'getEntries'
+    );
+    if (!added.success) {
+      assert.deepEqual(stored, [], 'a refused entry is not stored');
+      return;
+    }
+    assert.equal(stored.length, 1);
+    const result = stored[0].toolResults?.[0]?.result as Record<string, unknown> | undefined;
+    assert.equal(result?.ok, true, 'the storable part of a tool result is kept');
+    assert.equal(typeof result?.fn, 'undefined', 'a function is stored as nothing');
+  },
+
+  async 'refuses-empty-thread-id'(adapter) {
+    const { agentId } = scope();
+    refused(await adapter.createThread(agentId, {}, ''), 'createThread with an empty id');
+    const listed = ok(await adapter.listThreads({ agentId }), 'listThreads').threads;
+    assert.deepEqual(listed, [], 'a refused thread is not listed');
   },
 
   async 'list-threads-refuses-bad-input'(adapter) {

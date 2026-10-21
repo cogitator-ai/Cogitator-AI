@@ -77,6 +77,8 @@ export class InMemoryAdapter extends BaseMemoryAdapter {
     metadata: Record<string, unknown> = {},
     threadId?: string
   ): Promise<MemoryResult<Thread>> {
+    const idProblem = this.threadIdProblem(threadId);
+    if (idProblem) return this.failure(idProblem);
     const copied = this.stored(metadata, 'thread metadata');
     if (!copied.success) return copied;
     const id = threadId ?? this.generateId('thread');

@@ -90,6 +90,14 @@ export abstract class BaseMemoryAdapter implements MemoryAdapter {
     return `getEntries limit must be a whole number of 0 or more, got ${limit}`;
   }
 
+  /** Why `threadId` cannot name a new thread, if it cannot: an id is a non-empty string */
+  protected threadIdProblem(threadId: string | undefined): string | undefined {
+    if (threadId === undefined || (typeof threadId === 'string' && threadId.length > 0)) {
+      return undefined;
+    }
+    return 'createThread threadId must be a non-empty string';
+  }
+
   protected success<T>(data: T): MemoryResult<T> {
     return { success: true, data };
   }
