@@ -153,7 +153,7 @@ describeOllama('Memory: relevant context with Ollama embeddings', () => {
     }
 
     const builder = new ContextBuilder(
-      { maxTokens: 200, reserveTokens: 160, strategy: 'relevant', includeSystemPrompt: false },
+      { maxTokens: 200, reserveTokens: 150, strategy: 'relevant', includeSystemPrompt: false },
       {
         memoryAdapter: adapter,
         embeddingService: new OllamaEmbeddingService({
