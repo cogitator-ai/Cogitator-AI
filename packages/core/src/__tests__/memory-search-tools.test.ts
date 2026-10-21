@@ -145,6 +145,34 @@ describe('memory search tools', () => {
     expect(excerpts.some((excerpt) => excerpt.includes('4471'))).toBe(true);
   });
 
+  it("cuts the run's own entries where they start, past an event the path holds", async () => {
+    const interrupt = await memory.addEntry({
+      threadId: 't',
+      message: { role: 'system', content: 'The run was interrupted: aborted' },
+      tokenCount: 3,
+      type: 'interrupt',
+    });
+    if (!interrupt.success) throw new Error(interrupt.error);
+    await memory.addEntry({
+      threadId: 't',
+      message: { role: 'user', content: 'What is my locker code?' },
+      tokenCount: 5,
+    });
+    const [search] = createMemorySearchTools({
+      memory,
+      agentId: 'concierge',
+      placeOf: () => ({ threadId: 't', ownAfter: interrupt.data.id }),
+    });
+
+    const found = await search.execute({ query: 'locker code at the climbing gym' }, context);
+
+    const excerpts = found.results.flatMap((result) =>
+      result.kind === 'turn' ? [result.excerpt] : []
+    );
+    expect(excerpts.some((excerpt) => excerpt.includes('4471'))).toBe(true);
+    expect(excerpts).not.toContain('What is my locker code?');
+  });
+
   it('says so when nothing matches', async () => {
     const { search } = tools();
 
@@ -338,7 +366,8 @@ describe('memoryCitations', () => {
     const backend = scripted([
       () => ({
         id: 'r',
-        content: 'One [turn:a, turn:b] two [Turn: c] three [item:d; see note] four ［item:e］.',
+        content:
+          'One [turn:ent_a1, turn:ent_b2] two [Turn: ent_c3] three [item:mem_d4; see note] four ［item:mem_e5］.\n[turn:ent_f6]',
         finishReason: 'stop',
         usage,
       }),
@@ -353,11 +382,30 @@ describe('memoryCitations', () => {
     });
     await cog.close();
 
-    expect(result.output).toBe('One two three [see note] four.');
+    expect(result.output).toBe('One two three [see note] four.\n');
     expect(uncited).toHaveBeenCalledWith(
-      ['turn:a', 'turn:b', 'turn:c', 'item:d', 'item:e'],
+      ['turn:ent_a1', 'turn:ent_b2', 'turn:ent_c3', 'item:mem_d4', 'item:mem_e5', 'turn:ent_f6'],
       expect.anything()
     );
+  });
+
+  it('leaves code and brackets that cite nothing as they are', async () => {
+    const answer =
+      'Use `[item:mem_x1]` as a key, and `interface Bag { [item: string]: number }`.\n' +
+      '```ts\nconst seen: Record<string, number> = {}; // [turn:ent_y2]\n```\n' +
+      'Shopping [Item: apples, bananas] and [turn: number].';
+    const backend = scripted([() => ({ id: 'r', content: answer, finishReason: 'stop', usage })]);
+    const cog = new Cogitator({
+      llm: { backends: { mock: backend } },
+      middleware: [memoryCitations()],
+    });
+
+    const result = await cog.run(new Agent({ name: 'a', model: 'mock/m', instructions: 'x' }), {
+      input: 'code',
+    });
+    await cog.close();
+
+    expect(result.output).toBe(answer);
   });
 
   it('leaves an answer without references as it is', async () => {

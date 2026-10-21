@@ -986,9 +986,9 @@ export class Cogitator implements ToolInvoker {
 
       const buildRegistry = (owner: Agent) => {
         const ownerRegistry = new ToolRegistry();
-        ownerRegistry.registerMany(this.builtinTools(owner));
         const handoff = handoffTools(owner);
         const own = new Set([...owner.tools, ...handoff.tools].map((t) => t.name));
+        ownerRegistry.registerMany(this.builtinTools(owner).filter((t) => !own.has(t.name)));
         ownerRegistry.registerMany(this.tools.getAll().filter((t) => !own.has(t.name)));
         ownerRegistry.registerMany(owner.tools);
         ownerRegistry.registerMany(handoff.tools);
@@ -2791,8 +2791,10 @@ export class Cogitator implements ToolInvoker {
       ...(this.state.memoryItems && { items: this.state.memoryItems }),
       ...(this.state.embeddingService && { embedding: this.state.embeddingService }),
       ...(this.state.messageIndex && { messageIndex: this.state.messageIndex }),
-      ...(this.config.memory?.contextBuilder?.timeZone !== undefined && {
-        timeZone: this.config.memory.contextBuilder.timeZone,
+      ...((this.config.memory?.contextBuilder?.timeZone ??
+        this.config.memory?.extraction?.timeZone) !== undefined && {
+        timeZone:
+          this.config.memory?.contextBuilder?.timeZone ?? this.config.memory?.extraction?.timeZone,
       }),
       placeOf: (runId) => this.runMemories.get(runId)?.conversation,
     });

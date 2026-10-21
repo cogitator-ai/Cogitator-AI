@@ -201,8 +201,11 @@ interface PlannedWrite {
   path: string;
   content: string | null;
   renamedFrom?: string;
-  /** The path whose version in front decides the scope, the write's own by default */
-  scopeOf?: string;
+  /**
+   * The path the write moves a file from: its version in front is the one this one replaces, and
+   * its scope bounds where the write goes
+   */
+  from?: string;
 }
 
 /** `path` as the path of a file: a path that ends in `/` names a directory */
@@ -311,16 +314,25 @@ export class MemoryFiles {
     versions: readonly MemoryFileVersion[],
     root = MEMORY_ROOT
   ): MemoryFile[] {
-    const heads = new Map<string, MemoryFileVersion>();
-    for (const version of versions) {
-      if (!this.sees(access, version) || !under(version.path, root)) continue;
-      const known = heads.get(version.path);
-      if (!known || this.wins(version, known)) heads.set(version.path, version);
-    }
-    return [...heads.values()]
+    return [...this.frontsOf(access, versions, root).values()]
       .filter((version) => version.content !== null)
       .map((version) => this.fileOf(version))
       .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  }
+
+  /** The version in front of each path the access sees under `root`, deletions included */
+  private frontsOf(
+    access: MemoryFileAccess,
+    versions: readonly MemoryFileVersion[],
+    root = MEMORY_ROOT
+  ): Map<string, MemoryFileVersion> {
+    const fronts = new Map<string, MemoryFileVersion>();
+    for (const version of versions) {
+      if (!this.sees(access, version) || !under(version.path, root)) continue;
+      const known = fronts.get(version.path);
+      if (!known || this.wins(version, known)) fronts.set(version.path, version);
+    }
+    return fronts;
   }
 
   /** The file at `path` as the access sees it, undefined when there is none */
@@ -517,7 +529,7 @@ export class MemoryFiles {
       return moved.flatMap((file) => {
         const path = `${to}${file.path.slice(from.length)}`;
         return [
-          { path, content: file.content, renamedFrom: file.path, scopeOf: file.path },
+          { path, content: file.content, renamedFrom: file.path, from: file.path },
           { path: file.path, content: null },
         ];
       });
@@ -527,8 +539,9 @@ export class MemoryFiles {
 
   /**
    * Replaces the content of every version of the files at `paths` (and under them) the access
-   * sees with {@link REDACTED_CONTENT}, kept as redacted with `reason`, following renames back to
-   * the paths a file had and on to the ones it got: what must not be kept is gone from the store,
+   * sees with {@link REDACTED_CONTENT}, kept as redacted with `reason`, following each file's
+   * history (`previousId`) back through the paths it had and on to the ones it got, never into
+   * another file that took one of those paths later: what must not be kept is gone from the store,
    * while the history of changes stays. With `everyScope`, the versions of every user, project
    * and thread of the agent are redacted, not only those the access sees. The conversation keeps
    * the tool calls that wrote the text, which redacting a file does not touch. Returns the
@@ -546,28 +559,30 @@ export class MemoryFiles {
         ...(!options.everyScope && { visibleTo: access.visibleTo ?? access.scope }),
       })
     );
-    const roots = new Set(paths.map(memoryPath));
-    const named = (path: string) => [...roots].some((root) => under(path, root) || path === root);
-    const chain = new Set(
-      all.filter((version) => named(version.path)).map((version) => version.path)
-    );
-    for (let grew = true; grew;) {
-      grew = false;
-      for (const version of all) {
-        const from = version.renamedFrom;
-        if (from === undefined) continue;
-        if (chain.has(version.path) && !chain.has(from)) {
-          chain.add(from);
-          grew = true;
-        } else if (chain.has(from) && !chain.has(version.path)) {
-          chain.add(version.path);
-          grew = true;
-        }
-      }
+    const roots = paths.map(memoryPath);
+    const byId = new Map(all.map((version) => [version.id, version]));
+    const linked = new Map<string, MemoryFileVersion[]>();
+    for (const version of all) {
+      if (version.previousId === null) continue;
+      const next = linked.get(version.previousId) ?? [];
+      next.push(version);
+      linked.set(version.previousId, next);
+    }
+    const chain = new Set<string>();
+    const queue = all
+      .filter((version) => roots.some((root) => under(version.path, root) || version.path === root))
+      .map((version) => version.id);
+    while (queue.length > 0) {
+      const id = queue.pop()!;
+      if (chain.has(id)) continue;
+      chain.add(id);
+      const version = byId.get(id);
+      if (version?.previousId) queue.push(version.previousId);
+      for (const next of linked.get(id) ?? []) queue.push(next.id);
     }
     const versions = all.filter(
       (version) =>
-        chain.has(version.path) && version.content !== null && version.redacted === undefined
+        chain.has(version.id) && version.content !== null && version.redacted === undefined
     );
     if (versions.length === 0) return 0;
     unwrap(
@@ -679,10 +694,14 @@ export class MemoryFiles {
             visibleTo: access.visibleTo ?? access.scope,
           })
         );
+        const fronts = this.frontsOf(access, snapshot);
         const current = new Map(this.filesOf(access, snapshot).map((file) => [file.path, file]));
         const writes = (await plan(current)).map((write) => ({
           ...write,
-          scope: this.scopeFor(access, current.get(write.scopeOf ?? write.path)),
+          scope: this.scopeFor(access, [
+            fronts.get(write.path),
+            write.from !== undefined ? fronts.get(write.from) : undefined,
+          ]),
         }));
         const sequences = this.nextSequences(snapshot, writes);
         const conflict = await this.write(access, writes, current, sequences);
@@ -697,14 +716,19 @@ export class MemoryFiles {
   }
 
   /**
-   * Where a change of a path goes: the access's scope, or the narrower scope of the version the
-   * run sees in front of it, so the change stands in front in its turn
+   * Where a change of a path goes: the narrowest of the access's scope and the scopes of the
+   * versions the run sees in front of it (a deletion too) and, for a moved file, of its source,
+   * so the change stands in front in its turn and a moved file is never shared wider
    */
-  private scopeFor(access: MemoryFileAccess, front: MemoryFile | undefined): MemoryItemScope {
-    if (!front) return access.scope;
-    return narrowness(front.version) > narrowness({ scope: access.scope })
-      ? front.version.scope
-      : access.scope;
+  private scopeFor(
+    access: MemoryFileAccess,
+    fronts: readonly (MemoryFileVersion | undefined)[]
+  ): MemoryItemScope {
+    let scope = access.scope;
+    for (const front of fronts) {
+      if (front && narrowness(front) > narrowness({ scope })) scope = front.scope;
+    }
+    return scope;
   }
 
   /**
@@ -747,7 +771,7 @@ export class MemoryFiles {
         sequence,
         content: write.content,
         sha256: write.content === null ? null : sha256Of(write.content),
-        previousId: current.get(write.path)?.version.id ?? null,
+        previousId: current.get(write.from ?? write.path)?.version.id ?? null,
         ...(access.place &&
           entryId !== undefined && { place: { threadId: access.place.threadId, entryId } }),
         ...(write.renamedFrom !== undefined && { renamedFrom: write.renamedFrom }),

@@ -221,6 +221,26 @@ describe('MemoryFiles', () => {
     expect((await files.read(access, '/memories/a.md'))?.content).toBe('ONE and more');
   });
 
+  it('creates and renames onto a path deleted in a narrower scope, where the run sees it', async () => {
+    const threadOnly: MemoryFileAccess = { scope: { agentId: 'a', threadId: 't1' } };
+    await files.create(threadOnly, '/memories/x.md', 'thread note');
+    const user: MemoryFileAccess = {
+      scope: { agentId: 'a', userId: 'ana' },
+      visibleTo: { agentId: 'a', userId: 'ana', threadId: 't1' },
+    };
+    await files.delete(user, '/memories/x.md');
+
+    await files.create(user, '/memories/x.md', 'back again');
+    expect((await files.read(user, '/memories/x.md'))?.content).toBe('back again');
+
+    await files.delete(user, '/memories/x.md');
+    await files.create(user, '/memories/src.md', 'moved');
+    await files.rename(user, '/memories/src.md', '/memories/x.md');
+    expect((await files.list(user)).map((file) => [file.path, file.content])).toEqual([
+      ['/memories/x.md', 'moved'],
+    ]);
+  });
+
   it('keeps files and directories apart, and text a store cannot hold out', async () => {
     await files.create(access, '/memories/a', 'a file');
     await expect(files.create(access, '/memories/a/b', 'x')).rejects.toThrow(
@@ -405,6 +425,18 @@ describe('MemoryFiles', () => {
     expect(await files.redact(access, ['/memories/a.md'])).toBe(0);
     expect(await files.redact(access, ['/memories/a.md'], 'leak', { everyScope: true })).toBe(1);
     expect((await files.read(thread, '/memories/a.md'))?.content).toBe(REDACTED_CONTENT);
+  });
+
+  it('redacts a renamed file and never a new file that took its old path', async () => {
+    await files.create(access, '/memories/notes.md', 'SECRET');
+    await files.rename(access, '/memories/notes.md', '/memories/secret.md');
+    await files.create(access, '/memories/notes.md', 'shopping list');
+
+    expect(await files.redact(access, ['/memories/secret.md'])).toBe(2);
+
+    expect((await files.read(access, '/memories/notes.md'))?.content).toBe('shopping list');
+    const everything = await adapter.findFileVersions({ agentId: 'a' });
+    expect(JSON.stringify(everything)).not.toContain('SECRET');
   });
 
   it('lists the files for a context within a size', async () => {

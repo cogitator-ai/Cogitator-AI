@@ -215,7 +215,7 @@ export interface MemoryExtractionConfig {
   /** Confidence a `user` item with quotes that hold needs to become `active` (default 0.7) */
   activationConfidence?: number;
   /**
-   * Who the items belong to: `user` (default) the run's user, agent-wide for a run without one,
+   * Who the items belong to: `user` (default) the run's user, the thread for a run without one,
    * `agent` everyone the agent talks to, `thread` the thread alone
    */
   scope?: 'user' | 'agent' | 'thread';

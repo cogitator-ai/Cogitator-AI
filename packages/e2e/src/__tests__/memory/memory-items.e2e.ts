@@ -594,15 +594,19 @@ async function countOf(client: pg.Client, table: string): Promise<number> {
     await client.connect();
     const places = client
       .db(database)
-      .collection<{ _id: string; batchId: string; at: Date }>('memory_file_places');
+      .collection<{ _id: string; batchId: string; versionId: string; at: Date }>(
+        'memory_file_places'
+      );
     await places.insertOne({
       _id: `${fileKeyOf(scope, path)}#1`,
       batchId: 'batch_of_a_dead_writer',
+      versionId: 'v_dead',
       at: new Date(Date.now() - 120_000),
     });
     await places.insertOne({
       _id: `${fileKeyOf(scope, '/memories/fresh.md')}#1`,
       batchId: 'batch_still_writing',
+      versionId: 'v_writing',
       at: new Date(),
     });
 

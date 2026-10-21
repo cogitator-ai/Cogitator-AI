@@ -236,6 +236,7 @@ interface FileBatchDoc {
 interface FilePlaceDoc {
   _id: string;
   batchId: string;
+  versionId: string;
   at: Date;
 }
 
@@ -1362,8 +1363,8 @@ export class MongoDBAdapter
     const batchId = `batch_${versions[0]!.id}`;
     let taken = 0;
     try {
-      for (const place of places) {
-        await this.takePlace(place, batchId);
+      for (const [at, place] of places.entries()) {
+        await this.takePlace(place, batchId, versions[at]!.id);
         taken++;
       }
       const held = await this.filePlaces.countDocuments({ _id: { $in: places }, batchId });
@@ -1457,7 +1458,10 @@ export class MongoDBAdapter
         { ids: { $in: ids } },
         { $pull: { versions: { id: { $in: ids } }, ids: { $in: ids } } }
       );
-      await this.fileBatches.deleteMany({ ids: { $size: 0 } });
+      await this.fileBatches.deleteMany({
+        _id: { $in: batches.map((batch) => batch._id) },
+        ids: { $size: 0 },
+      });
       if (dropped.length > 0) {
         await this.filePlaces.deleteMany({
           _id: { $in: dropped.map((version) => filePlaceOf(version)) },
@@ -1470,26 +1474,26 @@ export class MongoDBAdapter
   }
 
   /**
-   * Takes `place` for `batchId`. A place another batch took longer than
-   * {@link ORPHAN_PLACE_MS} ago without publishing it, as a writer that died between the two
-   * steps leaves it, is let go and taken again; any other taken place is a conflict.
+   * Takes `place` for version `versionId` of `batchId`. A place another batch took longer than
+   * {@link ORPHAN_PLACE_MS} ago and holds no version in, as a writer that died before it
+   * published or a deletion that died before it let its places go leave it, is let go and taken
+   * again. Any other taken place is a conflict.
    */
-  private async takePlace(place: string, batchId: string): Promise<void> {
+  private async takePlace(place: string, batchId: string, versionId: string): Promise<void> {
     try {
-      await this.filePlaces.insertOne({ _id: place, batchId, at: new Date() });
+      await this.filePlaces.insertOne({ _id: place, batchId, versionId, at: new Date() });
       return;
     } catch (err) {
       if (!isDuplicateKey(err)) throw err;
       const held = await this.filePlaces.findOne({ _id: place });
-      if (
-        !held ||
-        Date.now() - held.at.getTime() < ORPHAN_PLACE_MS ||
-        (await this.fileBatches.findOne({ _id: held.batchId }))
-      ) {
-        throw err;
-      }
+      if (!held || Date.now() - held.at.getTime() < ORPHAN_PLACE_MS) throw err;
+      const published = await this.fileBatches.findOne({
+        _id: held.batchId,
+        ids: held.versionId,
+      });
+      if (published) throw err;
       await this.filePlaces.deleteOne({ _id: place, batchId: held.batchId });
-      await this.filePlaces.insertOne({ _id: place, batchId, at: new Date() });
+      await this.filePlaces.insertOne({ _id: place, batchId, versionId, at: new Date() });
     }
   }
 

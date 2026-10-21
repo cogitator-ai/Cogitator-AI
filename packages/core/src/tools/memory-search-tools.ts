@@ -18,10 +18,14 @@ import type {
   MemoryItem,
   MemoryItemScope,
 } from '@cogitator-ai/types';
+import { CONVERSATION_ENTRY_TYPES } from '@cogitator-ai/types';
 import { tool, toolset } from '../tool';
 
 /** Names of the tools {@link createMemorySearchTools} makes */
 export const MEMORY_SEARCH_TOOLS = ['search_memory', 'open_turns', 'list_entities'] as const;
+
+/** The entry types that hold the conversation, which the tools search and open */
+const CONVERSATION = new Set<string>(CONVERSATION_ENTRY_TYPES);
 
 /** Characters of a turn a search shows before it is opened */
 const EXCERPT_CHARS = 280;
@@ -165,17 +169,28 @@ export function createMemorySearchTools(config: MemorySearchToolsConfig) {
     if (!conversation || conversation.leafId === null) return { history: [], own: new Set() };
     const { threadId, leafId } = conversation;
     const read = memory.getPath
-      ? await memory.getPath({ threadId, ...(leafId !== undefined && { leafId }) })
-      : await memory.getEntries({ threadId });
+      ? await memory.getPath({ threadId, types: 'all', ...(leafId !== undefined && { leafId }) })
+      : await memory.getEntries({ threadId, types: 'all' });
     if (!read.success) throw new Error(`Reading thread ${threadId} failed: ${read.error}`);
-    const history = read.data;
+    const all = read.data;
+    const conversational = (entry: MemoryEntry) => CONVERSATION.has(entry.type ?? 'message');
+    const history = all.filter(conversational);
     if (!config.placeOf) return { history, own: currentTurn(history) };
     if (conversation.ownAfter === undefined) return { history, own: new Set() };
-    const from =
+    const cut =
       conversation.ownAfter === null
         ? 0
-        : history.findIndex((entry) => entry.id === conversation.ownAfter) + 1;
-    return { history, own: new Set(history.slice(from).map((entry) => entry.id)) };
+        : all.findIndex((entry) => entry.id === conversation.ownAfter) + 1;
+    if (cut === 0 && conversation.ownAfter !== null) return { history, own: new Set() };
+    return {
+      history,
+      own: new Set(
+        all
+          .slice(cut)
+          .filter(conversational)
+          .map((entry) => entry.id)
+      ),
+    };
   };
 
   /**

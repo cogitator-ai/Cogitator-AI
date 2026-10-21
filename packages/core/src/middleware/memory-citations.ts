@@ -3,11 +3,20 @@ import type { Message, RunMiddleware, RunMiddlewareContext, ToolResult } from '@
 /** Where the references a run opened are kept in the run's middleware state */
 const OPENED = 'memory.citations.opened';
 
-/** Brackets in an answer that may cite memory */
-const BRACKETS = /\s?[[［]([^\]］]*)[\]］]/g;
+/** Brackets in an answer that may cite memory, with the space before them */
+const BRACKETS = /(\s?)[[［]([^\]］[［]*)[\]］]/g;
 
-/** A reference to memory, as an answer may write it: `turn:<id>`, `item: <id>`, `Turn:<id>` */
-const CITED = /^(turn|item)\s*:\s*(\S+)$/i;
+/**
+ * A reference to memory, as an answer may write it (`turn:<id>`, `item: <id>`, `Turn:<id>`):
+ * an id as the tools hand them out holds a digit, `_` or `-`, so `[item: string]` is not one
+ */
+const CITED = /^(turn|item)\s*:\s*([A-Za-z0-9_-]*[0-9_-][A-Za-z0-9_-]*)$/i;
+
+/** Code in an answer, which the lock leaves as it is */
+const CODE = /(```[\s\S]*?```|`[^`\n]*`)/;
+
+/** A `ref` field of a memory tool's result, as its JSON holds it, whole or cut */
+const REF_FIELD = /"ref"\s*:\s*"((?:turn|item):[^"\\]+)"/g;
 
 /** A reference the memory tools hand out */
 const HANDED_OUT = /^(?:turn|item):\S+$/;
@@ -46,13 +55,15 @@ function textOf(message: Message): string {
   return message.content.map((part) => ('text' in part ? part.text : '')).join('\n');
 }
 
-/** The references a tool message of a memory tool handed out, read from its JSON */
+/**
+ * The references a tool message of a memory tool handed out: the `ref` fields of its JSON, read
+ * also from a message cut short, while text inside its strings, quoted and escaped, hands out
+ * nothing
+ */
 function referencesInMessage(message: Message): string[] {
-  try {
-    return referencesOf(JSON.parse(textOf(message)) as unknown);
-  } catch {
-    return [];
-  }
+  return [...textOf(message).matchAll(REF_FIELD)].flatMap((match) =>
+    match[1] && HANDED_OUT.test(match[1]) ? [match[1]] : []
+  );
 }
 
 function openedOf(context: RunMiddlewareContext): Set<string> {
@@ -101,22 +112,27 @@ export function memoryCitations(options: MemoryCitationsOptions = {}): RunMiddle
         }
       }
       const uncited: string[] = [];
-      const content = response.content.replace(BRACKETS, (marker, inside: string) => {
-        const parts = inside.split(/\s*[,;]\s*/);
-        const cited = parts.map((part) => CITED.exec(part.trim()));
-        if (cited.every((match) => match === null)) return marker;
-        const kept = parts.filter((_, at) => {
-          const match = cited[at];
-          if (!match) return true;
-          const reference = `${match[1]!.toLowerCase()}:${match[2]}`;
-          if (opened.has(reference)) return true;
-          uncited.push(reference);
-          return false;
+      const check = (text: string) =>
+        text.replace(BRACKETS, (marker, space: string, inside: string) => {
+          const parts = inside.split(/\s*[,;]\s*/);
+          const cited = parts.map((part) => CITED.exec(part.trim()));
+          if (cited.every((match) => match === null)) return marker;
+          const kept = parts.filter((_, at) => {
+            const match = cited[at];
+            if (!match) return true;
+            const reference = `${match[1]!.toLowerCase()}:${match[2]}`;
+            if (opened.has(reference)) return true;
+            uncited.push(reference);
+            return false;
+          });
+          if (kept.length === parts.length) return marker;
+          if (kept.length === 0) return space.includes('\n') ? space : '';
+          return `${space}[${kept.join(', ')}]`;
         });
-        if (kept.length === parts.length) return marker;
-        if (kept.length === 0) return '';
-        return `${marker.startsWith(' ') ? ' ' : ''}[${kept.join(', ')}]`;
-      });
+      const content = response.content
+        .split(CODE)
+        .map((piece, at) => (at % 2 === 1 ? piece : check(piece)))
+        .join('');
       if (uncited.length === 0) return;
       options.onUncited?.(uncited, context);
       return { content };
