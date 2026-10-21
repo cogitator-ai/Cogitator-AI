@@ -825,14 +825,14 @@ Memory files, notes an agent keeps under `/memories` with the memory tool, are k
 
 Memory also works between runs. Its settings and what a pass reports:
 
-| Type                        | Description                                                                                                                                                                                    |
-| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MemoryBriefConfig`         | `MemoryConfig.brief`: `model`, `maxCards` (1 to 4), `timeoutMs`, `maxTokens` and `prompt` of the cards a cheap model writes before a turn                                                      |
-| `BriefCard`                 | One card: `kind` (`BriefCardKind`: `constraint`, `knowledge`, `consequence` or `open_thread`), `text`, `quote` and `source` (`turn:<id>` or `item:<id>`)                                       |
-| `MemoryObservationsConfig`  | `MemoryConfig.observations`: `model`, `maxEntities`, `minItems` and `prompt` of the observations memory writes of each entity, shown to a turn only with `contextBuilder` set                  |
-| `MemoryConsolidationConfig` | `MemoryConfig.consolidation`: `model`, `everyRuns`, `afterCompaction`, `maxChanges`, `maxSubjects`, `playbook` (`apply`, `shadow` or `false`), `showPlaybook`, `prompt` and `afterConsolidate` |
-| `MemoryConsolidationReport` | What a pass changed: `scope`, `observations` and `observationsDeleted` (paths), `stale` and `playbook` (`path`, `editCount`, `lessonIds`)                                                      |
-| `StaleMark`                 | An item a pass marked as stale: `itemId`, `keptId` (the item it gave way to) and `reason` (`duplicate` or `contradiction`)                                                                     |
+| Type                        | Description                                                                                                                                                                                             |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MemoryBriefConfig`         | `MemoryConfig.brief`: `model`, `maxCards` (1 to 4), `timeoutMs`, `maxTokens` and `prompt` of the cards a cheap model writes before a turn                                                               |
+| `BriefCard`                 | One card: `kind` (`BriefCardKind`: `constraint`, `knowledge`, `consequence` or `open_thread`), `text`, `quote` and `source` (`turn:<id>` or `item:<id>`)                                                |
+| `MemoryObservationsConfig`  | `MemoryConfig.observations`: `model`, `maxEntities`, `minItems` and `prompt` of the observations memory writes of each entity, shown to a turn only with `contextBuilder` set                           |
+| `MemoryConsolidationConfig` | `MemoryConfig.consolidation`: `model`, `everyRuns`, `afterCompaction`, `maxChanges`, `maxSubjects`, `playbook` (`apply`, `shadow` or `false`), `showPlaybook`, `prompt` and `afterConsolidate`          |
+| `MemoryConsolidationReport` | What a pass changed: `scope`, `observations` and `observationsDeleted` (paths), `stale`, `playbook` (`path`, `editCount`, `lessonIds`) and `dedupe` (`complete`, `through`, where a later pass goes on) |
+| `StaleMark`                 | An item a pass marked as stale: `itemId`, `keptId` (the item it gave way to) and `reason` (`duplicate` or `contradiction`)                                                                              |
 
 `RunMiddlewareContext.memoryAgentId` is the id the run's agent keeps memory under, its configured `id`, else its name, unset for a tool call made with `invokeTool()`. `ContextBuildError.source` may be `observations` too.
 

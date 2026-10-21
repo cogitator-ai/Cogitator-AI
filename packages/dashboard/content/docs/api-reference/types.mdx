@@ -778,6 +778,7 @@ interface MemoryConsolidationReport {
   observationsDeleted: string[];
   stale: StaleMark[]; // { itemId, keptId, reason: 'duplicate' | 'contradiction' }
   playbook?: { path: string; editCount: number; lessonIds: string[] };
+  dedupe?: { complete: boolean; through?: Date }; // through: the since of a pass that goes on
 }
 
 type EmbeddingServiceConfig = OpenAIEmbeddingConfig | OllamaEmbeddingConfig | GoogleEmbeddingConfig;

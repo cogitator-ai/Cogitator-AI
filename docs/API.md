@@ -218,7 +218,7 @@ class Cogitator {
   // threadId, with 'agent' nothing. Throws without the config or when memory keeps no items
   consolidateMemory(
     agent: Agent,
-    run?: { userId?: string; threadId?: string }
+    run?: { userId?: string; threadId?: string; since?: Date } // since: report.dedupe.through to go on
   ): Promise<MemoryConsolidationReport>;
 
   // Versioned instructions and A/B tests
@@ -1187,7 +1187,7 @@ await consolidator.promotePlaybook(scope); // a shadow draft made the playbook, 
 
 // Helpers they build on
 await files.put(access, '/memories/notes.md', text, expectedSha256OrNull); // a whole file, created or replaced
-await items.markStale(itemIds, { reason: 'duplicate', keptId }, ['active']); // kept in metadata.staleBecause, only items still active
+await items.markStale(itemIds, { reason: 'duplicate', keptId }, ['active']); // the ids it marked, only items still active
 ```
 
 `memoryBriefMiddleware(config, deps)` and `memoryUpkeepMiddleware(config, deps)` from `@cogitator-ai/core` are the run middleware a Cogitator builds from the config, exported for a runtime of your own. See [Between Runs](https://cogitator.app/docs/memory#between-runs).
