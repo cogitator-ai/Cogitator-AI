@@ -94,8 +94,8 @@ export function createIngestTool(
       try {
         const { source } = IngestParamsSchema.parse(params);
         await assertAllowedSource(source, options);
-        const { documents, chunks } = await pipeline.ingest(source);
-        return { success: true, source, documents, chunks };
+        const { documents, chunks, unchanged } = await pipeline.ingest(source);
+        return { success: true, source, documents, chunks, unchanged };
       } catch (err) {
         return { success: false, error: err instanceof Error ? err.message : String(err) };
       }

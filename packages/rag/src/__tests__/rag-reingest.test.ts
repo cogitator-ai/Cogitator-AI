@@ -1,11 +1,13 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { EmbeddingService } from '@cogitator-ai/types';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { DocumentLoader, EmbeddingService, RAGDocument } from '@cogitator-ai/types';
 import { HybridSearch, InMemoryEmbeddingAdapter } from '@cogitator-ai/memory';
 import { RAGPipelineBuilder } from '../rag-builder';
 import { TextLoader } from '../loaders/text-loader';
+import { documentId } from '../loaders/document-id';
+import { chunkId } from '../chunkers/chunk-id';
 
 const VOCABULARY = ['cats', 'dogs', 'tea', 'coffee', 'alice', 'secret', 'paris', 'rome'];
 
@@ -170,5 +172,177 @@ describe('RAG re-ingest and scoping', () => {
     expect((await wiki.query('paris')).some((r) => r.content.includes('Paris'))).toBe(true);
     await wiki.removeSource(file);
     expect((await docs.query('cats')).some((r) => r.content.includes('Cats'))).toBe(true);
+  });
+});
+
+describe('RAG ingest of unchanged and changed sources', () => {
+  /** A source of several parts, as a loader of PDF pages or CSV rows returns them */
+  class PartsLoader implements DocumentLoader {
+    readonly supportedTypes = ['parts'];
+    parts: string[] = [];
+    load(source: string): Promise<RAGDocument[]> {
+      return Promise.resolve(
+        this.parts.map((content, part) => ({
+          id: documentId(source, part),
+          content,
+          source,
+          sourceType: 'text' as const,
+          metadata: { part },
+        }))
+      );
+    }
+  }
+
+  function counted(): EmbeddingService & { embedBatch: ReturnType<typeof vi.fn> } {
+    return {
+      dimensions: VOCABULARY.length,
+      model: 'bag-of-words',
+      embed: async (text) => vectorOf(text),
+      embedBatch: vi.fn(async (texts: string[]) => texts.map(vectorOf)),
+    };
+  }
+
+  function partsPipeline(
+    store: InMemoryEmbeddingAdapter,
+    loader: PartsLoader,
+    embedding: EmbeddingService,
+    chunkSize = 60
+  ) {
+    return new RAGPipelineBuilder()
+      .withLoader(loader)
+      .withEmbeddingService(embedding)
+      .withEmbeddingAdapter(store)
+      .withConfig({
+        chunking: { strategy: 'recursive', chunkSize, chunkOverlap: 0 },
+        retrieval: { strategy: 'similarity', topK: 20, threshold: 0 },
+      })
+      .build();
+  }
+
+  const embeddedTexts = (embedding: ReturnType<typeof counted>) =>
+    embedding.embedBatch.mock.calls.flatMap(([texts]) => texts as string[]);
+
+  async function contents(store: InMemoryEmbeddingAdapter): Promise<string[]> {
+    const found = await store.search({ vector: vectorOf('x'), threshold: -1, limit: 100 });
+    if (!found.success) throw new Error(found.error);
+    return found.data.map((result) => result.content).sort();
+  }
+
+  let store: InMemoryEmbeddingAdapter;
+  let loader: PartsLoader;
+  let embedding: ReturnType<typeof counted>;
+
+  beforeEach(() => {
+    store = new InMemoryEmbeddingAdapter();
+    loader = new PartsLoader();
+    embedding = counted();
+  });
+
+  it('leaves an unchanged source as stored, embedding and writing nothing', async () => {
+    loader.parts = ['Cats sleep all day.', 'Dogs love walks.'];
+    const rag = partsPipeline(store, loader, embedding);
+    await rag.ingest('book');
+    embedding.embedBatch.mockClear();
+    const add = vi.spyOn(store, 'addEmbedding');
+    const remove = vi.spyOn(store, 'deleteByFilter');
+
+    const again = await rag.ingest('book');
+
+    expect(again).toEqual({ documents: 2, chunks: 0, unchanged: 2 });
+    expect(embedding.embedBatch).not.toHaveBeenCalled();
+    expect(add).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+    expect(await contents(store)).toEqual(['Cats sleep all day.', 'Dogs love walks.']);
+  });
+
+  it('embeds only the changed part of a source and keeps the vectors of the rest', async () => {
+    loader.parts = ['Cats sleep all day.', 'Dogs love walks.', 'Tea at five.'];
+    const rag = partsPipeline(store, loader, embedding);
+    await rag.ingest('book');
+    embedding.embedBatch.mockClear();
+
+    loader.parts = ['Cats sleep all day.', 'Dogs love long walks in Rome.', 'Tea at five.'];
+    const again = await rag.ingest('book');
+
+    expect(again).toMatchObject({ documents: 3, unchanged: 0 });
+    expect(embeddedTexts(embedding)).toEqual(['Dogs love long walks in Rome.']);
+    expect(await contents(store)).toEqual([
+      'Cats sleep all day.',
+      'Dogs love long walks in Rome.',
+      'Tea at five.',
+    ]);
+  });
+
+  it('writes the new chunks of a changed source before deleting the old ones', async () => {
+    loader.parts = ['Cats sleep all day.'];
+    const rag = partsPipeline(store, loader, embedding);
+    await rag.ingest('book');
+    const order: string[] = [];
+    const add = store.addEmbedding.bind(store);
+    vi.spyOn(store, 'addEmbedding').mockImplementation(async (embedding) => {
+      order.push(`add ${embedding.content}`);
+      return add(embedding);
+    });
+    const remove = store.deleteByFilter.bind(store);
+    vi.spyOn(store, 'deleteByFilter').mockImplementation(async (filter) => {
+      order.push(`delete ${(await contents(store)).join(' | ')}`);
+      return remove(filter);
+    });
+
+    loader.parts = ['Cats nap in Paris.'];
+    await rag.ingest('book');
+
+    expect(order).toEqual([
+      'add Cats nap in Paris.',
+      'delete Cats nap in Paris. | Cats sleep all day.',
+    ]);
+    expect(await contents(store)).toEqual(['Cats nap in Paris.']);
+  });
+
+  it('drops a part the source no longer has', async () => {
+    loader.parts = ['Cats sleep all day.', 'Dogs love walks.'];
+    const rag = partsPipeline(store, loader, embedding);
+    await rag.ingest('book');
+
+    loader.parts = ['Cats sleep all day.'];
+    const again = await rag.ingest('book');
+
+    expect(again.unchanged).toBe(0);
+    expect(await contents(store)).toEqual(['Cats sleep all day.']);
+  });
+
+  it('embeds everything again when the chunking changes', async () => {
+    loader.parts = ['Cats sleep all day. Dogs love walks.'];
+    await partsPipeline(store, loader, embedding, 60).ingest('book');
+    embedding.embedBatch.mockClear();
+
+    await partsPipeline(store, loader, embedding, 20).ingest('book');
+
+    expect(embedding.embedBatch).toHaveBeenCalled();
+    expect((await contents(store)).length).toBeGreaterThan(1);
+  });
+
+  it('replaces chunks stored before generations', async () => {
+    loader.parts = ['Cats sleep all day.'];
+    const legacyDoc = documentId('book', 0);
+    await store.addEmbedding({
+      sourceId: chunkId(legacyDoc, 0),
+      sourceType: 'document',
+      vector: vectorOf('old cats'),
+      content: 'old cats',
+      metadata: { source: 'book', documentId: legacyDoc, order: 0 },
+    });
+    await store.addEmbedding({
+      sourceId: chunkId(legacyDoc, 1),
+      sourceType: 'document',
+      vector: vectorOf('old dogs'),
+      content: 'old dogs',
+      metadata: { source: 'book', documentId: legacyDoc, order: 1 },
+    });
+
+    const result = await partsPipeline(store, loader, embedding).ingest('book');
+
+    expect(result.unchanged).toBe(0);
+    expect(await contents(store)).toEqual(['Cats sleep all day.']);
   });
 });

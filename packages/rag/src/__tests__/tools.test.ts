@@ -103,7 +103,7 @@ describe('createIngestTool', () => {
   });
 
   it('calls pipeline.ingest with correct args', async () => {
-    vi.mocked(pipeline.ingest).mockResolvedValue({ documents: 3, chunks: 15 });
+    vi.mocked(pipeline.ingest).mockResolvedValue({ documents: 3, chunks: 15, unchanged: 0 });
 
     const tool = createIngestTool(pipeline);
     const response = await tool.execute({ source: '/data/docs' });
@@ -114,6 +114,7 @@ describe('createIngestTool', () => {
       source: '/data/docs',
       documents: 3,
       chunks: 15,
+      unchanged: 0,
     });
   });
 

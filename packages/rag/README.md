@@ -48,7 +48,7 @@ const pipeline = new RAGPipelineBuilder()
   .build();
 
 // ingest documents from a file or directory
-const { documents, chunks } = await pipeline.ingest('./docs');
+const { documents, chunks, unchanged } = await pipeline.ingest('./docs');
 
 // query the knowledge base (options override the configured retrieval for this call)
 const results = await pipeline.query('How does authentication work?', { topK: 3 });
@@ -388,6 +388,8 @@ const agent = new Agent({
 ## Re-ingest, Removal and Scoping
 
 Ingesting a source again replaces what the pipeline stored for it: once the new chunks are embedded, the old chunks of that `source` are deleted, so no duplicates or stale text are left. Document ids come from the source (plus the row, item or page within it) and chunk ids from the document id and position, so they stay the same across re-ingests. `removeSource(source)` deletes a source, using the `source` results carry (the resolved path for files).
+
+A source that did not change is skipped: each chunk keeps a hash of the document, the chunking settings and the embedding model, and `ingest()` embeds nothing when every hash matches (`unchanged` in its result counts those documents). A changed source is written as a new generation first and the old one deleted after, so queries never find it missing, and its unchanged documents keep their vectors.
 
 ```typescript
 await pipeline.ingest('./docs/handbook.md'); // again after an edit: replaced, not duplicated

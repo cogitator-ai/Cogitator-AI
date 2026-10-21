@@ -104,9 +104,11 @@ Loads documents from `source`, chunks them, embeds each document's chunks with o
 
 Ingesting a source again replaces it: once the new chunks of a source are embedded, the chunks stored for it before (same `source`, same namespace) are deleted, so a re-ingested README or a folder synced by a cron job leaves no duplicates and no stale text. Document ids are derived from the source (and the row, item or page within it) and chunk ids from the document id and the chunk position, so results cite the same ids after a re-ingest. Replacing needs an embedding store with `deleteByFilter` (every built-in store has it), a custom store without it gets the chunks appended next to the old ones, with a warning.
 
+Each chunk keeps a hash of what it was made from: the document's text, source and metadata, the chunking settings and the embedding model. A source whose hashes all match is left as stored and nothing is embedded (`unchanged` counts its documents), so syncing a large folder again only pays for what changed. A changed source is written as a new generation before the previous one is deleted, so a query never finds it missing, and the chunks of its unchanged documents keep their vectors. This needs `getBySources` on the store, which every built-in store has. Chunks stored by earlier versions are replaced the first time as before, deleted and then written.
+
 ```typescript
-const { documents, chunks } = await pipeline.ingest('./data/knowledge-base/');
-console.log(`Ingested ${documents} documents (${chunks} chunks)`);
+const { documents, chunks, unchanged } = await pipeline.ingest('./data/knowledge-base/');
+console.log(`Ingested ${documents} documents (${chunks} chunks), ${unchanged} unchanged`);
 ```
 
 ### `query(text, options?)`

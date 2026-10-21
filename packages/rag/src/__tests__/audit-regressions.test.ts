@@ -270,7 +270,7 @@ describe('RAGPipeline regressions', () => {
       .withConfig({ chunking: { strategy: 'fixed', chunkSize: 10, chunkOverlap: 0 } })
       .build();
 
-    await expect(pipeline.ingest('x')).resolves.toEqual({ documents: 1, chunks: 1 });
+    await expect(pipeline.ingest('x')).resolves.toEqual({ documents: 1, chunks: 1, unchanged: 0 });
     expect(service.embedBatch).toHaveBeenCalledWith(['cat']);
   });
 
@@ -571,7 +571,7 @@ describe('createIngestTool allowedRoots', () => {
   symlinkSync(join(outside, 'secret.txt'), join(kb, 'link.txt'));
 
   const pipeline = {
-    ingest: vi.fn(async () => ({ documents: 1, chunks: 1 })),
+    ingest: vi.fn(async () => ({ documents: 1, chunks: 1, unchanged: 0 })),
   } as unknown as RAGPipeline;
 
   it('allows sources inside the allowed roots', async () => {
