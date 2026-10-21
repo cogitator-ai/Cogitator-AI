@@ -30,6 +30,7 @@ import { isMemoryItemAdapter, visibleIn, type MemoryItems } from './memory-items
 import { MemoryRetriever, type Retrieval } from './retrieval/retriever';
 import type { GraphContextBuilder } from './knowledge-graph/graph-context-builder';
 import { readCompactedHistory } from './compaction';
+import { calendarDate, isTimeZone } from './time-resolution';
 import {
   ContextAssembler,
   DEFAULT_PARTITIONS,
@@ -123,28 +124,30 @@ const RERANKED = 30;
 /** The heading of the memory items a search of memory brought */
 const RECALLED_ITEMS_HEADER = 'From memory:';
 
-/** `YYYY-MM-DD` of `date`, in UTC */
-function dayOf(date: Date): string {
-  return date.toISOString().slice(0, 10);
+/** `YYYY-MM-DD` of `date` on the calendar of `timeZone` */
+function dayOf(date: Date, timeZone: string): string {
+  const { year, month, day } = calendarDate(date, timeZone);
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }
 
 /** Earlier turns as the context shows them: each on its line with its date and who said it */
-function turnLines(turn: readonly MemoryEntry[]): string {
+function turnLines(turn: readonly MemoryEntry[], timeZone: string): string {
   return turn
     .map((entry) => {
       const text = typeof entry.message.content === 'string' ? entry.message.content : '';
-      return `[${dayOf(entry.createdAt)}] ${entry.message.role}: ${text}`;
+      return `[${dayOf(entry.createdAt, timeZone)}] ${entry.message.role}: ${text}`;
     })
     .join('\n');
 }
 
 /** A memory item as the context shows it, with when it held when it no longer does */
-function itemLine(item: MemoryItem): string {
+function itemLine(item: MemoryItem, timeZone: string): string {
+  const day = (date: Date) => dayOf(date, timeZone);
   const held =
     item.validTo !== undefined
-      ? ` (${item.validFrom ? `${dayOf(item.validFrom)} to ` : 'until '}${dayOf(item.validTo)})`
+      ? ` (${item.validFrom ? `${day(item.validFrom)} to ` : 'until '}${day(item.validTo)})`
       : item.about?.start
-        ? ` (${item.about.text ?? dayOf(item.about.start)})`
+        ? ` (${item.about.text ?? day(item.about.start)})`
         : '';
   return `- ${item.content}${held}`;
 }
@@ -393,6 +396,11 @@ export interface BuildContextOptions {
    * time a turn names from, and the moment memory items are read as of
    */
   asOf?: Date;
+  /**
+   * IANA time zone of the thread, in place of the builder's `timeZone`: the calendar the dates of
+   * recalled turns are shown in and the time a turn names is read on
+   */
+  timeZone?: string;
 }
 
 type ResolvedConfig = Required<Omit<ContextBuilderConfig, 'maxTokens' | 'reserveTokens'>> &
@@ -430,7 +438,11 @@ export class ContextBuilder {
       includeGraphContext: config.includeGraphContext ?? false,
       graphContextOptions: config.graphContextOptions ?? {},
       partitions: config.partitions ?? {},
+      timeZone: config.timeZone ?? 'UTC',
     };
+    if (!isTimeZone(this.config.timeZone)) {
+      throw new Error(`ContextBuilder timeZone must be an IANA time zone, got ${config.timeZone}`);
+    }
     this.assembler = new ContextAssembler(config.partitions);
     this.deps = deps;
   }
@@ -636,6 +648,7 @@ export class ContextBuilder {
 
     const assembly = await this.assembler.assemble(availableTokens, candidates);
     return this.compose(assembly, {
+      timeZone: this.timeZoneOf(options),
       systemPrompt,
       entries,
       facts,
@@ -660,8 +673,10 @@ export class ContextBuilder {
       graphOutcome: { droppedNodes: GraphNode[]; droppedTokens: number; failed?: boolean };
       errors: ContextBuildError[];
       warnings: string[];
+      timeZone: string;
     }
   ): BuiltContext {
+    const { timeZone } = parts;
     const kept = (partition: ContextPartition) => assembly.kept[partition] ?? [];
     const textsOf = (partition: ContextPartition) =>
       kept(partition).flatMap((block) => (block.value.kind === 'text' ? [block.value.text] : []));
@@ -705,10 +720,14 @@ export class ContextBuilder {
         : []),
       ...(graphContext?.formattedContext ? [graphContext.formattedContext] : []),
       ...(shownTurns.length > 0
-        ? [`${RECALLED_TURNS_HEADER}\n${shownTurns.map(turnLines).join('\n\n')}`]
+        ? [
+            `${RECALLED_TURNS_HEADER}\n${shownTurns.map((turn) => turnLines(turn, timeZone)).join('\n\n')}`,
+          ]
         : []),
       ...(recalledItems.length > 0
-        ? [`${RECALLED_ITEMS_HEADER}\n${recalledItems.map(itemLine).join('\n')}`]
+        ? [
+            `${RECALLED_ITEMS_HEADER}\n${recalledItems.map((item) => itemLine(item, timeZone)).join('\n')}`,
+          ]
         : []),
     ];
     const memoryContext = formatTurnContext(turnBlocks);
@@ -939,9 +958,11 @@ export class ContextBuilder {
       : null;
     const items = this.deps.memoryItems;
     const memory = this.deps.memoryAdapter;
+    const timeZone = this.timeZoneOf(options);
     const retrieval = await this.retriever.retrieve({
       input,
       anchor: options.asOf ?? new Date(),
+      timeZone,
       history,
       held,
       ...(scored && { cosines: new Map(scored.map(({ entry, score }) => [entry.id, score])) }),
@@ -957,13 +978,13 @@ export class ContextBuilder {
         }),
     });
     const hits = this.deps.reranker
-      ? await this.reranked(input, retrieval.hits, errors)
+      ? await this.reranked(input, retrieval.hits, errors, timeZone)
       : retrieval.hits;
     const position = new Map(history.map((entry, at) => [entry.id, at]));
     const covered = new Set<string>();
     return hits.flatMap((hit): AssemblyBlock<Piece>[] => {
       if (hit.kind === 'item') {
-        const line = itemLine(hit.hit.item);
+        const line = itemLine(hit.hit.item, timeZone);
         return [{ value: { kind: 'recalled', item: hit.hit.item }, tokens: countTokens(line) }];
       }
       const turn = [hit.hit.entry, ...hit.hit.neighbors]
@@ -972,7 +993,10 @@ export class ContextBuilder {
       if (turn.length === 0) return [];
       for (const entry of turn) covered.add(entry.id);
       return [
-        { value: { kind: 'retrieved', entries: turn }, tokens: countTokens(turnLines(turn)) },
+        {
+          value: { kind: 'retrieved', entries: turn },
+          tokens: countTokens(turnLines(turn, timeZone)),
+        },
       ];
     });
   }
@@ -981,10 +1005,18 @@ export class ContextBuilder {
    * `hits` with the best {@link RERANKED} reordered by the reranker, the rest after them as they
    * were. A reranker that fails leaves them as they were, recorded as a `relevance` error.
    */
+  /** The thread's time zone when the build names a valid one, else the builder's */
+  private timeZoneOf(options: BuildContextOptions): string {
+    return options.timeZone !== undefined && isTimeZone(options.timeZone)
+      ? options.timeZone
+      : this.config.timeZone;
+  }
+
   private async reranked(
     input: string,
     hits: Retrieval['hits'],
-    errors: ContextBuildError[]
+    errors: ContextBuildError[],
+    timeZone: string
   ): Promise<Retrieval['hits']> {
     const reranker = this.deps.reranker;
     if (!reranker || hits.length < 2) return hits;
@@ -998,8 +1030,8 @@ export class ContextBuilder {
           documentId: String(at),
           content:
             hit.kind === 'item'
-              ? itemLine(hit.hit.item)
-              : turnLines([hit.hit.entry, ...hit.hit.neighbors]),
+              ? itemLine(hit.hit.item, timeZone)
+              : turnLines([hit.hit.entry, ...hit.hit.neighbors], timeZone),
           score: hit.hit.score,
         }))
       );

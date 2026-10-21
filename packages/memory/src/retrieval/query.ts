@@ -78,6 +78,9 @@ const NUMBER_WORDS: Record<string, number> = {
 
 const UNIT = '(day|week|month|year)s?';
 
+/** Words that lead a month or a year named alone, so `may` the verb and `2000` the number are not dates */
+const LEAD = '(?:in|during|since|until|till|before|after|by|from|through|of|around)';
+
 /**
  * The time words of `text` as a {@link TimeExpression}, the first that can be placed. A date
  * without a year (`March 9`, `in May`) is the last such date up to `today`, the date the
@@ -148,16 +151,23 @@ export function timeExpressionOf(
     }
   }
 
-  const monthYear = match(new RegExp(`\\b(${months})(?:,? (\\d{4}))?\\b`));
-  const yearOnly = match(/\b(19\d{2}|20\d{2})\b/);
-  if (monthYear) {
-    const month = MONTHS.indexOf(monthYear[1] ?? '') + 1;
-    const monthsYear = monthYear[2] ?? yearOnly?.[1] ?? inYear(undefined, month);
+  const yearOnly = match(new RegExp(`\\b(?:${LEAD}|year) (19\\d{2}|20\\d{2})\\b`));
+  for (const named of text.matchAll(new RegExp(`\\b(${months})\\b(?:,? (\\d{4})\\b)?`, 'gi'))) {
+    const name = named[1] ?? '';
+    const before = text.slice(0, named.index).toLowerCase();
+    const led = new RegExp(`\\b(?:${LEAD}|early|late|mid|last|this)[ -]$`).test(before);
+    const capitalized = name !== 'May' && /^[A-Z]/.test(name);
+    if (!named[2] && !led && !capitalized) continue;
+    const month = MONTHS.indexOf(name.toLowerCase()) + 1;
+    const monthsYear = named[2] ?? yearOnly?.[1] ?? inYear(undefined, month);
     if (monthsYear) {
-      return { text: monthYear[0], date: `${monthsYear}-${String(month).padStart(2, '0')}` };
+      return {
+        text: named[0].toLowerCase(),
+        date: `${monthsYear}-${String(month).padStart(2, '0')}`,
+      };
     }
   }
-  if (yearOnly) return { text: yearOnly[0], date: yearOnly[1] ?? '' };
+  if (yearOnly?.[1]) return { text: yearOnly[1], date: yearOnly[1] };
   return undefined;
 }
 

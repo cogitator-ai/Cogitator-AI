@@ -11,6 +11,7 @@ import type {
   AudioInput,
   MemoryEntry,
   MemoryEntryType,
+  Thread,
 } from '@cogitator-ai/types';
 import {
   ContextBuilder,
@@ -155,18 +156,20 @@ export async function buildInitialMessages(
     });
   }
 
+  let thread: Thread | undefined;
   if (options.threadId !== undefined && options.threadAccess !== 'shared') {
-    await ensureThreadAccess(memoryAdapter, threadId, {
+    thread = await ensureThreadAccess(memoryAdapter, threadId, {
       agentId: agent.id,
       userId: options.userId,
     });
   } else {
     try {
-      await createThreadIfMissing(memoryAdapter, threadId, agent.id, options.userId);
+      thread = await createThreadIfMissing(memoryAdapter, threadId, agent.id, options.userId);
     } catch (err) {
       reportMemoryError(err, 'load', options.onMemoryError);
     }
   }
+  const timeZone = thread?.metadata.timeZone;
 
   if (typeof branchFrom === 'string') {
     const from = unwrap(await memoryAdapter.getEntry(branchFrom), 'getEntry');
@@ -189,6 +192,7 @@ export async function buildInitialMessages(
       currentInput: options.input,
       ...(options.brief !== undefined && { brief: options.brief }),
       ...(options.asOf !== undefined && { asOf: options.asOf }),
+      ...(typeof timeZone === 'string' && { timeZone }),
       ...(contextBudget !== undefined && { maxTokens: contextBudget, reserveTokens: 0 }),
     });
     onContext?.(ctx);
@@ -270,23 +274,23 @@ function unwrap<T>(result: MemoryResult<T>, operation: string): T {
 }
 
 /**
- * Creates thread `threadId`, owned by `userId`, unless it exists. A thread
+ * Thread `threadId`, created owned by `userId` when it does not exist. A thread
  * that cannot be read is left alone: creating it would overwrite its owner.
  */
-
 async function createThreadIfMissing(
   memoryAdapter: MemoryAdapter,
   threadId: string,
   agentId: string,
   userId: string | undefined
-): Promise<void> {
+): Promise<Thread> {
   const thread = unwrap(await memoryAdapter.getThread(threadId), 'getThread');
-  if (!thread) {
+  return (
+    thread ??
     unwrap(
       await memoryAdapter.createThread(agentId, threadMetadata({ agentId, userId }), threadId),
       'createThread'
-    );
-  }
+    )
+  );
 }
 
 /** Where an entry goes in the thread's tree, and whether it becomes the active leaf */

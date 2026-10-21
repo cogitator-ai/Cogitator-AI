@@ -122,6 +122,8 @@ export async function initializeMemory(
       ...memory.contextBuilder,
       strategy: memory.contextBuilder.strategy ?? 'recent',
       includeSystemPrompt: true,
+      ...(memory.contextBuilder.timeZone === undefined &&
+        memory.extraction?.timeZone !== undefined && { timeZone: memory.extraction.timeZone }),
     } as const;
     const messageIndex =
       contextConfig.strategy !== 'recent' && embeddingService

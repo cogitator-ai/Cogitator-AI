@@ -177,15 +177,16 @@ export class MemoryRetriever {
     const weights = WEIGHTS[analysis.type];
     const entities = await this.entitiesNamed(request, analysis);
     const items = await this.itemsOf(request, analysis);
-    const channels: (ChannelHits & { channel: Channel })[] = [
+    const turnChannels: (ChannelHits & { channel: Channel })[] = [
       { channel: 'vector', weight: weights.vector, ids: this.vectorHits(turns, request.cosines) },
       {
         channel: 'keyword',
         weight: weights.keyword,
         ids: this.keywordHits(request.history, turns, request.input),
       },
-      { channel: 'time', weight: weights.time, ids: this.timeHits(turns, analysis) },
       { channel: 'entity', weight: weights.entity, ids: this.entityHits(turns, entities) },
+    ];
+    const itemChannels: (ChannelHits & { channel: Channel })[] = [
       { channel: 'items', weight: weights.items, ids: this.itemHits(items, analysis) },
       {
         channel: 'itemEntity',
@@ -195,7 +196,20 @@ export class MemoryRetriever {
           .map((item) => `i:${item.id}`)
           .slice(0, CHANNEL_HITS),
       },
-      { channel: 'itemTime', weight: weights.itemTime, ids: this.itemTimeHits(items, analysis) },
+    ];
+    const channels = [
+      ...turnChannels,
+      {
+        channel: 'time' as const,
+        weight: weights.time,
+        ids: this.timeHits(turns, analysis, fuse(turnChannels)),
+      },
+      ...itemChannels,
+      {
+        channel: 'itemTime' as const,
+        weight: weights.itemTime,
+        ids: this.itemTimeHits(items, analysis, fuse(itemChannels)),
+      },
     ];
     const seeds = fuse(channels.filter((channel) => channel.channel.startsWith('item')));
     channels.push({
@@ -330,28 +344,37 @@ export class MemoryRetriever {
     return kept.index;
   }
 
-  /** Turns said in the time the input names, in the order they were said */
-  private timeHits(turns: readonly MemoryEntry[], analysis: QueryAnalysis): string[] {
+  /**
+   * Turns said in the time the input names, those the other channels found first, then those
+   * that hold more of the input's words, then in the order they were said
+   */
+  private timeHits(
+    turns: readonly MemoryEntry[],
+    analysis: QueryAnalysis,
+    found: ReadonlyMap<string, number>
+  ): string[] {
     const start = analysis.time?.start?.getTime();
     const end = analysis.time?.end?.getTime();
     if (start === undefined || end === undefined) return [];
-    return turns
-      .filter((entry) => {
-        const at = entry.createdAt.getTime();
-        return at >= start && (at < end || (start === end && at === start));
-      })
-      .slice(0, CHANNEL_HITS)
-      .map((entry) => `e:${entry.id}`);
+    const within = turns.filter((entry) => {
+      const at = entry.createdAt.getTime();
+      return at >= start && (at < end || (start === end && at === start));
+    });
+    return byRelevance(
+      within.map((entry) => ({ id: `e:${entry.id}`, text: indexedText(entry)?.text ?? '' })),
+      analysis,
+      found
+    );
   }
 
   /** Turns that name an entity the input names */
   private entityHits(turns: readonly MemoryEntry[], entities: readonly MemoryEntity[]): string[] {
     if (entities.length === 0) return [];
-    const names = entities.flatMap((entity) => [entity.name, ...entity.aliases].map(normalizeName));
+    const names = entities.flatMap((entity) => namePatterns([entity.name, ...entity.aliases]));
     return turns
       .filter((entry) => {
         const text = normalizeName(indexedText(entry)?.text ?? '');
-        return names.some((name) => name.length > 2 && text.includes(name));
+        return names.some((name) => name.test(text));
       })
       .slice(-CHANNEL_HITS)
       .reverse()
@@ -406,23 +429,32 @@ export class MemoryRetriever {
     return index.search(analysis.terms.join(' '), CHANNEL_HITS).map((hit) => `i:${hit.id}`);
   }
 
-  /** Items about the time the input names: what they are about, or when they started to hold */
-  private itemTimeHits(items: readonly MemoryItem[], analysis: QueryAnalysis): string[] {
+  /**
+   * Items about the time the input names (what they are about, or when they started to hold),
+   * ordered like {@link timeHits}
+   */
+  private itemTimeHits(
+    items: readonly MemoryItem[],
+    analysis: QueryAnalysis,
+    found: ReadonlyMap<string, number>
+  ): string[] {
     const start = analysis.time?.start?.getTime();
     const end = analysis.time?.end?.getTime();
     if (start === undefined || end === undefined) return [];
     const until = end > start ? end : start + 1;
     const overlaps = (from?: Date, to?: Date) =>
       from !== undefined && from.getTime() < until && (to ?? from).getTime() >= start;
-    return items
-      .filter(
-        (item) =>
-          overlaps(item.about?.start, item.about?.end) ||
-          overlaps(item.validFrom, item.validTo ?? item.validFrom) ||
-          overlaps(item.saidAt, item.saidAt)
-      )
-      .slice(0, CHANNEL_HITS)
-      .map((item) => `i:${item.id}`);
+    const within = items.filter(
+      (item) =>
+        overlaps(item.about?.start, item.about?.end) ||
+        overlaps(item.validFrom, item.validTo ?? item.validFrom) ||
+        overlaps(item.saidAt, item.saidAt)
+    );
+    return byRelevance(
+      within.map((item) => ({ id: `i:${item.id}`, text: `${item.content} ${item.value ?? ''}` })),
+      analysis,
+      found
+    );
   }
 
   /**
@@ -452,14 +484,14 @@ export class MemoryRetriever {
     };
     const names = entities.map((entity) => ({
       id: `n:${entity.id}`,
-      names: [entity.name, ...entity.aliases].map(normalizeName).filter((name) => name.length > 2),
+      names: namePatterns([entity.name, ...entity.aliases]),
     }));
     for (const item of items) {
       const node = `i:${item.id}`;
       if (item.entityId) join(node, `n:${item.entityId}`);
       const text = normalizeName(`${item.content} ${item.value ?? ''}`);
       for (const entity of names) {
-        if (entity.names.some((name) => text.includes(name))) join(node, entity.id);
+        if (entity.names.some((name) => name.test(text))) join(node, entity.id);
       }
     }
 
@@ -491,6 +523,44 @@ export class MemoryRetriever {
       .slice(0, CHANNEL_HITS)
       .map(([id]) => id);
   }
+}
+
+/**
+ * Patterns that find a name of an entity as whole words of a normalized text, so `Ana` is not
+ * found in `banana`; names under three letters are left out
+ */
+function namePatterns(names: readonly string[]): RegExp[] {
+  return names
+    .map(normalizeName)
+    .filter((name) => name.length > 2)
+    .map(
+      (name) =>
+        new RegExp(
+          `(?<![\\p{L}\\p{N}])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}])`,
+          'u'
+        )
+    );
+}
+
+/**
+ * The ids of `candidates` the other channels scored first, then by the share of the input's words
+ * they hold, the rest in the order given; at most a channel's worth
+ */
+function byRelevance(
+  candidates: readonly { id: string; text: string }[],
+  analysis: QueryAnalysis,
+  found: ReadonlyMap<string, number>
+): string[] {
+  return candidates
+    .map((candidate, at) => ({
+      id: candidate.id,
+      at,
+      found: found.get(candidate.id) ?? 0,
+      lexical: lexicalScore(analysis.terms, candidate.text),
+    }))
+    .sort((a, b) => b.found - a.found || b.lexical - a.lexical || a.at - b.at)
+    .slice(0, CHANNEL_HITS)
+    .map((candidate) => candidate.id);
 }
 
 /**

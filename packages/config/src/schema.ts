@@ -192,6 +192,18 @@ export const EntityTypeSchema = z.enum([
   'custom',
 ]);
 
+const TimeZoneSchema = z.string().refine(
+  (zone) => {
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: zone });
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  { message: 'an IANA time zone, such as Europe/Lisbon' }
+);
+
 export const ContextBuilderConfigSchema = z.object({
   maxTokens: z.number().positive().optional(),
   reserveTokens: z.number().positive().optional(),
@@ -200,6 +212,7 @@ export const ContextBuilderConfigSchema = z.object({
   includeFacts: z.boolean().optional(),
   includeSemanticContext: z.boolean().optional(),
   includeGraphContext: z.boolean().optional(),
+  timeZone: TimeZoneSchema.optional(),
   graphContextOptions: z
     .object({
       maxNodes: z.number().positive().optional(),
@@ -278,20 +291,7 @@ export const MemoryExtractionConfigSchema = z.object({
   windowTokens: z.number().int().positive().optional(),
   activationConfidence: z.number().min(0).max(1).optional(),
   scope: z.enum(['user', 'agent', 'thread']).optional(),
-  timeZone: z
-    .string()
-    .refine(
-      (zone) => {
-        try {
-          new Intl.DateTimeFormat('en-US', { timeZone: zone });
-          return true;
-        } catch {
-          return false;
-        }
-      },
-      { message: 'an IANA time zone, such as Europe/Lisbon' }
-    )
-    .optional(),
+  timeZone: TimeZoneSchema.optional(),
 });
 
 export const MemoryConfigSchema = z.object({

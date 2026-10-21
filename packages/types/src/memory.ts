@@ -542,6 +542,11 @@ export interface ContextBuilderConfig {
    * The shares of the partitions that are not required add up to 1 at most.
    */
   partitions?: Partial<Record<ContextPartition, ContextPartitionBudget>>;
+  /**
+   * IANA time zone the dates of recalled turns are shown in and the time a turn names is read
+   * on, when the thread names none (`metadata.timeZone`): UTC by default
+   */
+  timeZone?: string;
 }
 
 /**

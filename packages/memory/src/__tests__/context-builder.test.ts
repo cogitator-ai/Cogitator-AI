@@ -401,6 +401,68 @@ describe('ContextBuilder', () => {
     });
   });
 
+  describe('hybrid recall in a time zone', () => {
+    it('shows and reads dates on the calendar of the thread', async () => {
+      const say = async (role: 'user' | 'assistant', content: string, at: string) =>
+        adapter.addEntry({
+          threadId,
+          message: { role, content },
+          tokenCount: 1,
+          createdAt: new Date(at),
+        });
+      await say('user', 'I mailed the parcel to Porto', '2026-03-09T23:30:00Z');
+      await say('assistant', 'Hope it arrives soon', '2026-03-09T23:31:00Z');
+      for (let n = 0; n < 40; n++) {
+        await say(
+          'user',
+          `Let us plan the garden bed number ${n} together`,
+          '2026-03-11T09:00:00Z'
+        );
+        await say(
+          'assistant',
+          `Bed ${n} gets tomatoes and basil this year`,
+          '2026-03-11T09:00:00Z'
+        );
+      }
+      const builder = new ContextBuilder(
+        { maxTokens: 1200, strategy: 'hybrid', timeZone: 'America/New_York' },
+        { memoryAdapter: adapter }
+      );
+      const asOf = new Date('2026-03-12T12:00:00Z');
+
+      const inBuilderZone = await builder.build({
+        threadId,
+        agentId: 'agent1',
+        currentInput: 'What did I do on March 9?',
+        asOf,
+      });
+      expect(inBuilderZone.memoryContext).toContain(
+        '[2026-03-09] user: I mailed the parcel to Porto'
+      );
+
+      const inThreadZone = await builder.build({
+        threadId,
+        agentId: 'agent1',
+        currentInput: 'What did I do on March 10?',
+        asOf,
+        timeZone: 'Asia/Tokyo',
+      });
+      expect(inThreadZone.memoryContext).toContain(
+        '[2026-03-10] user: I mailed the parcel to Porto'
+      );
+    });
+
+    it('refuses a time zone that is not one', () => {
+      expect(
+        () =>
+          new ContextBuilder(
+            { strategy: 'hybrid', timeZone: 'Mars/Olympus' },
+            { memoryAdapter: adapter }
+          )
+      ).toThrow(/IANA time zone/);
+    });
+  });
+
   describe('hybrid recall under pressure', () => {
     const base = {
       trust: 'user' as const,

@@ -50,6 +50,15 @@ describe('analyzeQuery', () => {
       date: '2025-05-02',
     });
     expect(timeExpressionOf('in May', today)).toEqual({ text: 'may', date: '2025-05' });
+    expect(timeExpressionOf('in mid-May', today)).toEqual({ text: 'may', date: '2025-05' });
+    expect(timeExpressionOf('What did I plant in April?', today)?.date).toBe('2025-04');
+  });
+
+  it('does not take a verb or a number for a date', () => {
+    const today = { year: 2026, month: 3, day: 15 };
+    expect(timeExpressionOf('May I ask what I ordered?', today)).toBeUndefined();
+    expect(timeExpressionOf('we may need to march on', today)).toBeUndefined();
+    expect(timeExpressionOf('I ate 2000 calories', today)).toBeUndefined();
   });
 });
 
@@ -135,6 +144,56 @@ describe('MemoryRetriever', () => {
     expect(retrieval.analysis.type).toBe('temporal');
     const top = retrieval.hits[0];
     expect(top?.kind === 'entry' && ['e4', 'e5'].includes(top.hit.entry.id)).toBe(true);
+  });
+
+  it('keeps the turns of a busy day that hold the question in the time channel', async () => {
+    const busy = Array.from({ length: 60 }, (_, at) =>
+      entry(`n${at}`, at % 2 ? 'assistant' : 'user', `note number ${at}`, 9)
+    );
+    const retrieval = await new MemoryRetriever().retrieve({
+      input: 'Where did the parcel go on March 9 2026?',
+      anchor,
+      history: [...busy, entry('p', 'user', 'The parcel went to Porto', 9)],
+    });
+    const parcel = retrieval.hits.find((hit) => hit.kind === 'entry' && hit.hit.entry.id === 'p');
+    expect(parcel?.kind === 'entry' && parcel.hit.channels).toContain('time');
+  });
+
+  it('finds an entity only by whole words of its name', async () => {
+    const adapter = new InMemoryAdapter({ provider: 'memory' });
+    const items = new MemoryItems({ adapter });
+    const scope = { agentId: 'a', userId: 'u1' };
+    await items.write([
+      {
+        kind: 'fact',
+        content: 'Ana works at Acme',
+        subject: 'Ana',
+        attribute: 'employer',
+        trust: 'user',
+        confidence: 0.9,
+        scope,
+        evidence: [],
+        verified: true,
+        saidAt: at(1),
+        sessionAt: at(1),
+      },
+    ]);
+
+    const retrieval = await new MemoryRetriever().retrieve({
+      input: 'What did Ana tell me?',
+      anchor,
+      history: [
+        entry('b', 'user', 'I baked banana bread', 2),
+        entry('c', 'user', 'Ana told me about her new job', 3),
+      ],
+      items,
+      itemAdapter: adapter,
+      scope,
+    });
+    const byEntity = retrieval.hits.flatMap((hit) =>
+      hit.kind === 'entry' && hit.hit.channels.includes('entity') ? [hit.hit.entry.id] : []
+    );
+    expect(byEntity).toEqual(['c']);
   });
 
   it('lets vectors in only above the absolute and the relative bar', async () => {

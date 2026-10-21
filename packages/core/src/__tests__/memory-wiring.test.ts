@@ -1,10 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { ChatStreamChunk, EmbeddingService, LLMBackend } from '@cogitator-ai/types';
-import type { ContextBuilderDeps } from '@cogitator-ai/memory';
+import type { BuildContextOptions, ContextBuilderDeps } from '@cogitator-ai/memory';
+import type { ContextBuilderConfig } from '@cogitator-ai/types';
 import { Cogitator } from '../cogitator';
 import { Agent } from '../agent';
 
 const captured = vi.hoisted(() => [] as ContextBuilderDeps[]);
+const configs = vi.hoisted(() => [] as ContextBuilderConfig[]);
+const builds = vi.hoisted(() => [] as BuildContextOptions[]);
 
 vi.mock('@cogitator-ai/memory', async (importOriginal) => {
   const original = await importOriginal<typeof import('@cogitator-ai/memory')>();
@@ -12,6 +15,11 @@ vi.mock('@cogitator-ai/memory', async (importOriginal) => {
     constructor(...args: ConstructorParameters<typeof original.ContextBuilder>) {
       super(...args);
       captured.push(args[1]);
+      configs.push(args[0]);
+    }
+    async build(options: BuildContextOptions) {
+      builds.push(options);
+      return super.build(options);
     }
   }
   /** Qdrant kept in process, so runs can use a vector store outside the thread store */
@@ -57,6 +65,27 @@ describe('memory wiring', () => {
     expect(deps?.embeddingService?.model).toBe('nomic-embed-text');
     expect(deps?.factAdapter).toBeUndefined();
     expect(deps?.embeddingAdapter).toBeUndefined();
+    await cog.close();
+  });
+
+  it('reads dates in the time zone of the thread, else of memory extraction', async () => {
+    const cog = new Cogitator({
+      llm: { backends: { mock: backend } },
+      memory: {
+        adapter: 'memory',
+        contextBuilder: { maxTokens: 4000, strategy: 'hybrid' },
+        extraction: { timeZone: 'America/New_York' },
+      },
+    });
+    const agent = new Agent({ name: 'a', model: 'mock/m', instructions: 'x' });
+
+    await cog.run(agent, { input: 'hi', threadId: 'plain' });
+    expect(configs.at(-1)?.timeZone).toBe('America/New_York');
+    expect(builds.at(-1)?.timeZone).toBeUndefined();
+
+    await cog.memory?.createThread('a', { timeZone: 'Asia/Tokyo' }, 'zoned');
+    await cog.run(agent, { input: 'hi', threadId: 'zoned', threadAccess: 'shared' });
+    expect(builds.at(-1)?.timeZone).toBe('Asia/Tokyo');
     await cog.close();
   });
 
