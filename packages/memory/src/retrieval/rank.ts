@@ -76,25 +76,30 @@ function overlap(a: ReadonlySet<string>, b: ReadonlySet<string>): number {
 /**
  * The candidates in maximal marginal relevance order: each next one the best trade between its
  * score and how unlike it is to those already taken (word overlap), so near copies of one fact do
- * not crowd out the rest
+ * not crowd out the rest. Each candidate keeps its likeness to the closest one taken, so the
+ * order costs a comparison per pair.
  */
 export function diversify(candidates: readonly Diverse[], lambda = MMR_LAMBDA): Diverse[] {
   const top = Math.max(0, ...candidates.map((candidate) => candidate.score));
-  const left = [...candidates];
+  const left = candidates.map((candidate) => ({ candidate, similar: 0 }));
   const taken: Diverse[] = [];
   while (left.length > 0) {
     let best = 0;
     let bestValue = -Infinity;
-    for (const [at, candidate] of left.entries()) {
+    for (const [at, { candidate, similar }] of left.entries()) {
       const relevance = top === 0 ? 0 : candidate.score / top;
-      const similar = Math.max(0, ...taken.map((known) => overlap(candidate.words, known.words)));
       const value = lambda * relevance - (1 - lambda) * similar;
       if (value > bestValue) {
         bestValue = value;
         best = at;
       }
     }
-    taken.push(...left.splice(best, 1));
+    const [chosen] = left.splice(best, 1);
+    if (!chosen) break;
+    taken.push(chosen.candidate);
+    for (const rest of left) {
+      rest.similar = Math.max(rest.similar, overlap(rest.candidate.words, chosen.candidate.words));
+    }
   }
   return taken;
 }
