@@ -58,6 +58,12 @@ export class RunMemory {
     return this.place.activate === false;
   }
 
+  /** Where the run keeps its conversation, once it may use memory: its thread and newest entry */
+  get conversation(): { threadId: string; leafId?: string } | undefined {
+    if (!this.opened || !this.enabled) return undefined;
+    return { threadId: this.threadId, ...(this.leafId !== undefined && { leafId: this.leafId }) };
+  }
+
   /** Whether the run may write to its thread: {@link open} was called */
   get isOpen(): boolean {
     return this.opened;

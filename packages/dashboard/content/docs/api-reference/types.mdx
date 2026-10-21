@@ -111,6 +111,7 @@ interface RunOptions<TDeps = unknown> {
   onSpan?: (span: Span) => void;
   onMemoryError?: (error: Error, operation: 'save' | 'load') => void;
   branch?: { fromEntryId: string | null; activate?: boolean }; // run on a branch of the thread, activate default: true
+  brief?: string; // notes for this turn only, sent with the input and not saved
   parallelToolCalls?: boolean; // default: false
   middleware?: RunMiddleware<TDeps>[]; // after the Cogitator's and the agent's, pass again to resume()
   userId?: string; // owns new threads, scopes facts, reaches tools as context.userId
@@ -422,6 +423,7 @@ interface Message {
   content: MessageContent;
   name?: string;
   toolCallId?: string;
+  cacheBreakpoint?: boolean; // ends a part of the prompt the next turns send again unchanged
 }
 
 interface ToolCallMessage extends Message {
@@ -439,6 +441,8 @@ interface ToolResultMessage extends Message {
 ```
 
 The three content parts are exported as `TextContentPart`, `ImageUrlContentPart` and `ImageBase64ContentPart`.
+
+`cacheBreakpoint` marks the end of a stable part of the prompt, such as the history a [context](/docs/memory#message-order-and-prompt-caching) was built from. Backends that mark Anthropic's prompt cache (Anthropic, and Claude through OpenRouter) put a cache breakpoint at the end of the last message that carries it, other backends ignore it.
 
 ## LLM Types
 
@@ -762,6 +766,29 @@ type EvidenceStatus = 'verified' | 'suggested';
 ```
 
 `MemoryQueryOptions` takes `types` as well, `Thread` has `activeLeafId`, `MemoryEntry` has `type`, `parentId`, `seq`, `event` and `formatVersion`, and `Fact`, `GraphNode`, `GraphEdge` and `Insight` take an optional `evidence: Evidence[]`. `ExecutionCheckpoint` keeps the run's `memory: RunMemoryPlace`, see [Time Travel](/docs/advanced/time-travel#replays-on-branches).
+
+The [context builder](/docs/memory#context-building) shares its budget among partitions and reports what it left out with these types:
+
+```typescript
+type ContextPartition =
+  'system' | 'pinned' | 'index' | 'summaries' | 'facts' | 'recall' | 'brief' | 'recent' | 'final';
+
+interface ContextPartitionBudget {
+  share?: number; // part of the context budget, 0 to 1
+  required?: boolean; // filled first, cut only when the budget cannot hold it
+}
+
+type DroppedReason = 'budget' | 'duplicate' | 'not-selected' | 'oversized';
+
+interface DroppedBlock {
+  partition: ContextPartition;
+  reason: DroppedReason;
+  tokens: number;
+  sourceId?: string; // the history entry, fact or search result it came from
+}
+```
+
+`ContextBuilderConfig` takes `partitions?: Partial<Record<ContextPartition, ContextPartitionBudget>>`, `BuiltContext` has `memoryContext?: string` (what changes every turn, sent with the input) and `partitions` (tokens per partition), and `DroppedContext` has `blocks: DroppedBlock[]`.
 
 ## Errors
 

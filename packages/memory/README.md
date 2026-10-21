@@ -407,16 +407,17 @@ interface ContextBuilderConfig {
   includeSemanticContext?: boolean;
   includeGraphContext?: boolean;
   graphContextOptions?: GraphContextOptions;
+  partitions?: Partial<Record<ContextPartition, ContextPartitionBudget>>; // merged over the defaults
 }
 ```
 
 Strategies:
 
-- `recent` - the newest messages that fit into the token budget, as one unbroken run: the window stops at the first message that does not fit, so a reply never appears without the message it answers
+- `recent` - the newest messages that fit into the token budget, as one unbroken run back from the newest: a tool result too large for the room left stays as a short note in its place and the run goes on past it, any other message that does not fit ends the run, so a reply never appears without the message it answers
 - `relevant` - messages ranked by embedding similarity to `currentInput` (requires `embeddingService`; falls back to `recent` without input), returned in chronological order
 - `hybrid` - always keeps the latest messages and fills the remaining budget with the most relevant older ones
 
-The system prompt is always kept and counted: history gets what it leaves of `maxTokens - reserveTokens`, and a prompt larger than that is still sent whole, with a note in `warnings`. Entries are counted by their text, tool call arguments and images rather than only by their saved `tokenCount`. `relevant` and `hybrid` score the newest 200 entries and embed each entry once per builder (vectors are cached by entry id). Give the builder a `messageIndex` to keep those vectors in an embedding store instead: each entry is embedded once, in the background, and older entries of the thread are found by a search of the store.
+The system prompt is always kept and counted: the rest of the context gets what it leaves of `maxTokens - reserveTokens`, and a prompt larger than that is still sent whole, with a note in `warnings`. Entries are counted by their text, tool call arguments and images rather than only by their saved `tokenCount`. `relevant` and `hybrid` score the newest 200 entries and embed each entry once per builder (vectors are cached by entry id). Give the builder a `messageIndex` to keep those vectors in an embedding store instead: each entry is embedded once, in the background, and older entries of the thread are found by a search of the store.
 
 ```typescript
 import { MessageIndex } from '@cogitator-ai/memory';
@@ -431,6 +432,42 @@ const builder = new ContextBuilder(
 ```
 
 Every built-in adapter reports its changes through `onChange(listener)` (`entry-added`, `entry-deleted`, `thread-cleared`, `thread-deleted`), which is what `attach` listens to, and every built-in embedding store reads vectors by source with `getBySources(ids)`. An adapter of your own reports its changes by extending `ChangeReportingMemoryAdapter` and passing each write's result through `reported()`. Vectors carry `metadata.index: 'messages'` and the thread's `agentId` and `userId`.
+
+### Partitions and Message Order
+
+A context is assembled by a `ContextAssembler` from partitions, each with a `share` of the budget it may take, and some `required`:
+
+| Partition   | Holds                                       | Default               |
+| ----------- | ------------------------------------------- | --------------------- |
+| `system`    | the system prompt                           | required, sent whole  |
+| `pinned`    | `pinned` texts of `build()`                 | 10%, required         |
+| `index`     | the `index` text of `build()`               | 5%                    |
+| `summaries` | compaction summaries                        | 10%, required         |
+| `facts`     | facts                                       | 10%                   |
+| `recall`    | semantic search results, then graph context | 25%                   |
+| `brief`     | the `brief` text of `build()`               | 5%                    |
+| `recent`    | history, selected by the strategy           | what the others leave |
+| `final`     | `currentInput`, counted, not in `messages`  | required              |
+
+Required partitions get room first. The others get their share, no more than they need, and what one leaves unused goes to those that need more, `recent` last. A text block that repeats one of a more lasting partition (a fact the system prompt states, a search result that repeats a fact) is left out as a `duplicate`.
+
+`messages` is ordered for the prompt cache: one system message (the system prompt, `pinned`, `index`), the compaction summary and the history, whose last message carries `cacheBreakpoint: true`, then a user message with what changes every turn (the brief, `Known facts:`, `Relevant context:` and graph context), which is also `memoryContext`. A caller that adds the input itself should send `memoryContext` in front of the input as one user message, as a Cogitator run does. `formatTurnContext(blocks)` builds that text from texts of your own.
+
+```typescript
+const context = await builder.build({
+  threadId: 'thread_123',
+  agentId: 'agent-1',
+  systemPrompt: 'You are a helpful assistant.',
+  pinned: ['The user is on the Pro plan.'],
+  brief: 'Current date and time: Wednesday, October 21, 2026, 17:20.',
+  currentInput: 'What changed since yesterday?',
+});
+
+context.partitions; // tokens per partition, e.g. { system: 9, final: 8, pinned: 9, brief: 15, recent: 2400 }
+context.dropped.blocks; // [{ partition: 'recent', reason: 'budget', tokens: 310, sourceId: 'entry_17' }, ...]
+```
+
+Every left out block is in `dropped.blocks` with its `partition`, `reason` (`budget`, `duplicate`, `not-selected` for an entry the strategy did not pick, `oversized` for one larger than its partition could hold), `tokens` and `sourceId`. `ContextAssembler`, `DEFAULT_PARTITIONS` and `fitInOrder` are exported for contexts of your own.
 
 ### Basic Usage
 
@@ -456,7 +493,7 @@ const context = await builder.build({
 console.log(context.messages);
 console.log(context.tokenCount);
 console.log(context.truncated);
-console.log(context.dropped); // what was left out: entries, facts, semanticResults, graphNodes, tokenCount
+console.log(context.dropped); // what was left out: entries, facts, semanticResults, graphNodes, tokenCount, blocks
 ```
 
 ### Budget per Build
@@ -473,7 +510,7 @@ const context = await builder.build({
 });
 ```
 
-A build without a budget from either side throws. `reserveTokens` defaults to 10% of the budget used (at least 100).
+A build without a budget from either side throws. `reserveTokens` defaults to 10% of the budget used (at least 100), and `build()` takes its own `reserveTokens` too. A Cogitator run passes `reserveTokens: 0`, since its budget already leaves room for the answer, and the builder counts the input in the budget.
 
 ### With Facts and Semantic Search
 
@@ -512,11 +549,13 @@ Semantic context is scoped by embedding metadata: entries with `metadata.agentId
 
 ```typescript
 interface BuiltContext {
-  messages: Message[];
+  messages: Message[]; // system message, history (last one a cache breakpoint), turn context
+  memoryContext?: string; // brief, facts, recall and graph context, sent with the input
+  partitions: Partial<Record<ContextPartition, number>>; // tokens per partition, the input included
   facts: Fact[];
   semanticResults: (Embedding & { score: number })[];
   graphContext?: GraphContext; // with includeGraphContext and a graph adapter
-  tokenCount: number;
+  tokenCount: number; // tokens of the context, without the input
   truncated: boolean; // history entries were left out
   dropped: DroppedContext; // what was left out of the context
   errors?: ContextBuildError[]; // parts that failed to load and were left out
@@ -526,6 +565,8 @@ interface BuiltContext {
     includedMessageCount: number;
     factsIncluded: number;
     semanticResultsIncluded: number;
+    graphNodesIncluded: number;
+    graphEdgesIncluded: number;
   };
 }
 
@@ -534,7 +575,8 @@ interface DroppedContext {
   facts: Fact[]; // facts visible to the user that did not fit
   semanticResults: (Embedding & { score: number })[]; // search results that did not fit
   graphNodes: GraphNode[]; // graph nodes cut from the graph context
-  tokenCount: number; // tokens of all of the above
+  tokenCount: number; // tokens of everything left out
+  blocks: DroppedBlock[]; // every block left out, with its partition and reason
 }
 
 interface ContextBuildError {
@@ -882,11 +924,17 @@ import type {
   ContextBuilderConfig,
   ContextStrategy,
   BuiltContext,
+  DroppedContext,
+  BuildContextOptions,
   MemoryConfig,
   CheckedEvidence,
 } from '@cogitator-ai/memory';
 
 import type {
+  ContextPartition,
+  ContextPartitionBudget,
+  DroppedReason,
+  DroppedBlock,
   MemoryEntryType,
   NewMemoryEntry,
   PathQueryOptions,

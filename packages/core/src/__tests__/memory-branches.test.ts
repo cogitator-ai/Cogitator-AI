@@ -566,6 +566,21 @@ describe('runs on branches of a thread', () => {
     });
   });
 
+  it('replays with the input alone, not the memory context it was sent with', async () => {
+    const backend = echoingBackend();
+    const cog = runtime(backend);
+    await cog.run(agent, { input: 'before', threadId: 't' });
+    const run = await cog.run(agent, { input: 'question', threadId: 't', brief: 'It is Monday.' });
+    const tt = new TimeTravel(cog);
+    const checkpoint = await tt.checkpoint(run, 0);
+
+    await tt.replay(agent, checkpoint.id, { mode: 'live' });
+
+    const all = await (await memoryOf(cog)).getEntries({ threadId: 't' });
+    const inputs = all.success ? all.data.filter((e) => e.message.role === 'user') : [];
+    expect(inputs.map((e) => e.message.content)).toEqual(['before', 'question', 'question']);
+  });
+
   it('replays on a thread of its own once the place the run started from is gone', async () => {
     const backend = echoingBackend();
     const cog = runtime(backend);

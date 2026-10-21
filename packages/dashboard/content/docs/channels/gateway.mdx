@@ -66,6 +66,7 @@ interface GatewayConfig {
     denyWords?: readonly string[]; // default: deny, no, нет, отклоняю
     notAllowedMessage?: string;
   };
+  brief?: (msg: ChannelMessage) => string | undefined; // notes for the run of each message
 
   onError?: (error: Error, msg: ChannelMessage) => void;
 }
@@ -74,6 +75,19 @@ interface GatewayConfig {
 `GatewayConfig.owner` is deprecated and never read: configure owners on the middleware that uses them, `ownerCommands({ ownerIds })` and `dmPolicy({ ownerIds })` (see [Middleware](/docs/channels/middleware)).
 
 Without `memory` (and without `sessionManager`) the Gateway keeps no history: every run starts from an empty thread. `onError` receives failures of runs, middleware and compaction; the message is dropped silently when it is not set.
+
+### Brief
+
+`brief` returns notes for the run of a message, such as the current time or the user's local date. They go to the run as [`RunOptions.brief`](/docs/core/cogitator#memory-context-and-prompt-caching): sent with the input, after what memory recalls for it, and not saved to the thread. Put what changes from message to message here rather than in the agent's instructions, so the instructions and the history stay the same and are read from the prompt cache:
+
+```typescript
+const gateway = new Gateway({
+  // ...
+  brief: (msg) => `Current date and time: ${new Date().toISOString()}, via ${msg.channelType}.`,
+});
+```
+
+An empty or `undefined` brief sends nothing. `RuntimeBuilder` (`cogitator up`) sets it to the current date and time, which it no longer puts into the instructions.
 
 ### Per-user Agents
 

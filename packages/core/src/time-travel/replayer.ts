@@ -14,6 +14,7 @@ import type {
 } from '@cogitator-ai/types';
 import type { Agent } from '../agent';
 import type { Cogitator } from '../runtime';
+import { withoutTurnContext } from '@cogitator-ai/memory';
 import { threadOwner } from '../cogitator/threads';
 import { countToolCallSteps } from './checkpoint-store';
 
@@ -223,7 +224,7 @@ export class ExecutionReplayer {
   private extractUserInput(messages: Message[]): string {
     const userMessages = messages.filter((m) => m.role === 'user');
     const lastUserMessage = userMessages[userMessages.length - 1];
-    return lastUserMessage ? this.getTextContent(lastUserMessage.content) : '';
+    return lastUserMessage ? withoutTurnContext(this.getTextContent(lastUserMessage.content)) : '';
   }
 
   /**

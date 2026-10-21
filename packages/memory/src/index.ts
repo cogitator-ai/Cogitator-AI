@@ -40,6 +40,7 @@ export {
 export {
   ContextBuilder,
   formatTurnContext,
+  withoutTurnContext,
   type ContextBuilderDeps,
   type BuildContextOptions,
 } from './context-builder';

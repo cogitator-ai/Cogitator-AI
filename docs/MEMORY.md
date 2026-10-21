@@ -371,12 +371,12 @@ const context = await builder.build({
 // context.tokenCount — tokens used
 // context.truncated — whether history was cut
 // context.dropped: entries, facts, semanticResults and graphNodes left out, with tokenCount
-// context.facts — facts included in system prompt
+// context.facts — facts sent with the turn (see memoryContext)
 // context.semanticResults — embeddings included
 // context.graphContext — graph nodes/edges, when includeGraphContext is on
 ```
 
-Facts (up to 10% of the budget), semantic context (top 5 embeddings scoring ≥ 0.7, up to 10%) and graph context (up to 15%) are merged into the system message. The rest of the budget is filled with conversation entries by the strategy.
+The budget is shared among partitions (`pinned` 10%, `index` 5%, `summaries` 10%, `facts` 10%, `recall` 25% for semantic results and graph context, `brief` 5%, `recent` the rest), and what a partition does not need goes to those that need more. The system message holds the system prompt, what is pinned and the memory index. Facts, recall and the brief change every turn, so they come last as one user message (`context.memoryContext`), which a Cogitator run sends together with the input, and the history before them ends with a prompt cache breakpoint.
 
 ### Strategies
 

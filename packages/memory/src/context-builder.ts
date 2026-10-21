@@ -56,13 +56,25 @@ const SEMANTIC_SOURCES: Embedding['sourceType'][] = ['fact', 'document'];
 const TURN_CONTEXT_HEADER =
   'Context for this turn (recalled from memory and supplied by the application, not written by the user):';
 
+const TURN_CONTEXT_OPEN = '<memory_context>';
+const TURN_CONTEXT_CLOSE = '</memory_context>';
+
 /**
  * The part of a context that changes every turn, as one text sent with the input: `blocks` under
- * a header that tells the model where they come from, none when there are no blocks
+ * a header that tells the model where they come from, inside `<memory_context>` tags so the model
+ * can tell them from the input that follows, none when there are no blocks
  */
 export function formatTurnContext(blocks: readonly string[]): string | undefined {
   const present = blocks.filter((block) => block.trim());
-  return present.length > 0 ? [TURN_CONTEXT_HEADER, ...present].join('\n\n') : undefined;
+  if (present.length === 0) return undefined;
+  return [TURN_CONTEXT_OPEN, TURN_CONTEXT_HEADER, ...present, TURN_CONTEXT_CLOSE].join('\n\n');
+}
+
+/** `text` without the turn context `formatTurnContext` put in front of it */
+export function withoutTurnContext(text: string): string {
+  if (!text.startsWith(TURN_CONTEXT_OPEN)) return text;
+  const end = text.indexOf(TURN_CONTEXT_CLOSE);
+  return end === -1 ? text : text.slice(end + TURN_CONTEXT_CLOSE.length).replace(/^\s+/, '');
 }
 
 /** What a block of a context holds */
@@ -93,12 +105,14 @@ function entryOf(block: AssemblyBlock<Piece>): MemoryEntry {
  */
 function withoutOutput(entry: MemoryEntry): MemoryEntry {
   const tokens = countEntryTokens(entry);
+  const message = {
+    ...entry.message,
+    content: `[The output of this tool call, about ${tokens} tokens, was left out of the context to make room]`,
+  };
   return {
     ...entry,
-    message: {
-      ...entry.message,
-      content: `[The output of this tool call, about ${tokens} tokens, was left out of the context to make room]`,
-    },
+    message,
+    tokenCount: countMessageTokens(message),
     toolResults: entry.toolResults?.map((result) => ({ ...result, result: null })),
   };
 }
@@ -302,7 +316,7 @@ export class ContextBuilder {
             ? [{ value: { kind: 'graph' as const, context: graph }, tokens: graph.tokenCount }]
             : []),
         ],
-        fit: (blocks, budget) => this.fitRecall(blocks, budget, options, graphOutcome),
+        fit: (blocks, budget) => this.fitRecall(blocks, budget, options, graphOutcome, errors),
       });
     }
 
@@ -527,7 +541,8 @@ export class ContextBuilder {
     blocks: AssemblyBlock<Piece>[],
     budget: number,
     options: BuildContextOptions,
-    outcome: { droppedNodes: GraphNode[]; droppedTokens: number }
+    outcome: { droppedNodes: GraphNode[]; droppedTokens: number },
+    errors: ContextBuildError[]
   ): Promise<FitResult<Piece>> {
     const results = fitInOrder(
       blocks.filter((block) => block.value.kind !== 'graph'),
@@ -555,14 +570,17 @@ export class ContextBuilder {
     const limitedEdges = whole.edges.filter(
       (e) => limitedIds.has(e.sourceNodeId) && limitedIds.has(e.targetNodeId)
     );
+    const currentInput = options.currentInput;
     const rebuilt =
       room > 0
-        ? await graph.buildContext(options.agentId, options.currentInput, {
-            ...this.config.graphContextOptions,
-            userId: options.userId,
-            maxNodes: limitedNodes.length,
-            maxEdges: limitedEdges.length,
-          })
+        ? await this.attempt('graph', errors, () =>
+            graph.buildContext(options.agentId, currentInput, {
+              ...this.config.graphContextOptions,
+              userId: options.userId,
+              maxNodes: limitedNodes.length,
+              maxEdges: limitedEdges.length,
+            })
+          )
         : undefined;
     const context = rebuilt && rebuilt.tokenCount <= room ? rebuilt : undefined;
     const keptIds = new Set(context?.nodes.map((n) => n.id));

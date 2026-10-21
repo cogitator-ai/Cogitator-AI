@@ -440,4 +440,4 @@ const built = await builder.build({
 console.log(built.graphContext?.formattedContext);
 ```
 
-Graph context needs a `currentInput`, gets up to 15% of the token budget (the builder retries with fewer nodes when it does not fit), and is appended to the system message.
+Graph context needs a `currentInput` and goes into the `recall` partition after the semantic search results, in the room they leave (the builder retries with fewer nodes when it does not fit, and lists the nodes it cut in `dropped.graphNodes`). It is sent with the turn context in the user message after the history (`memoryContext`), not in the system message, see [Message Order and Prompt Caching](/docs/memory#message-order-and-prompt-caching).

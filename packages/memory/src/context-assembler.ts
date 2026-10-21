@@ -89,12 +89,10 @@ function normalized(text: string): string {
 /** Text short enough that containing it says little: only the same text counts as a duplicate */
 const SHORT_TEXT = 24;
 
+/** Whether `kept` says all of `text` already: the same text, or one that holds it whole */
 function repeats(text: string, kept: readonly string[]): boolean {
   return kept.some(
-    (other) =>
-      other === text ||
-      (text.length >= SHORT_TEXT && other.includes(text)) ||
-      (other.length >= SHORT_TEXT && text.includes(other))
+    (other) => other === text || (text.length >= SHORT_TEXT && other.includes(text))
   );
 }
 
@@ -144,38 +142,34 @@ export class ContextAssembler {
 
   async assemble<T>(budget: number, candidates: PartitionCandidates<T>[]): Promise<Assembly<T>> {
     const assembly: Assembly<T> = { kept: {}, dropped: [], tokens: {}, used: 0 };
-    const given = new Map(candidates.map((candidate) => [candidate.partition, candidate]));
-    const byPartition = new Map<ContextPartition, PartitionCandidates<T>>();
-    const seen: string[] = [];
-    for (const partition of FILL_ORDER) {
-      const candidate = given.get(partition);
-      if (!candidate) continue;
-      const blocks = candidate.blocks.filter((block) => {
-        if (block.text === undefined) return true;
-        const text = normalized(block.text);
-        if (text.length > 0 && repeats(text, seen)) {
-          assembly.dropped.push(this.dropped(partition, block, 'duplicate'));
-          return false;
-        }
-        seen.push(text);
-        return true;
-      });
-      byPartition.set(partition, { ...candidate, blocks });
-    }
+    const byPartition = new Map(candidates.map((candidate) => [candidate.partition, candidate]));
+    const said: string[] = [];
 
     const grants = this.grants(budget, byPartition);
     let carried = 0;
     for (const partition of FILL_ORDER) {
-      const candidate = byPartition.get(partition);
-      if (!candidate) continue;
+      const given = byPartition.get(partition);
+      if (!given) continue;
+      const candidate = {
+        ...given,
+        blocks: given.blocks.filter((block) => {
+          const text = block.text === undefined ? '' : normalized(block.text);
+          if (text.length === 0 || !repeats(text, said)) return true;
+          assembly.dropped.push(this.dropped(partition, block, 'duplicate'));
+          return false;
+        }),
+      };
       const required = this.partitions[partition].required === true;
       const room = required
-        ? partition === 'system'
+        ? partition === 'system' || partition === 'final'
           ? Infinity
           : Math.max(0, budget - assembly.used)
         : Math.min((grants.get(partition) ?? 0) + carried, Math.max(0, budget - assembly.used));
       const fitted = await (candidate.fit ?? fitInOrder)(candidate.blocks, room);
       const tokens = fitted.tokens ?? fitted.kept.reduce((sum, block) => sum + block.tokens, 0);
+      for (const block of fitted.kept) {
+        if (block.text !== undefined) said.push(normalized(block.text));
+      }
       assembly.kept[partition] = fitted.kept;
       assembly.tokens[partition] = tokens;
       assembly.used += tokens;
@@ -206,7 +200,7 @@ export class ContextAssembler {
     for (const [partition, candidate] of byPartition) {
       const config = this.partitions[partition];
       if (config.required) {
-        if (partition !== 'system') free -= demand(candidate);
+        free -= demand(candidate);
         continue;
       }
       const share = config.share ?? Math.max(0, 1 - assigned);

@@ -38,17 +38,28 @@ export function recalledCallId(args: unknown): string | undefined {
   return parsed.success ? parsed.data.toolCallId : undefined;
 }
 
+/** Where a run keeps its conversation in memory, for `recall_tool_output` to read from */
+export interface RecallPlace {
+  threadId: string;
+  /** The run's newest entry, whose branch is the run's conversation */
+  leafId?: string;
+}
+
 /**
  * The built-in tool `recall_tool_output`, which gets back the output of a tool call that
  * clearing (`context.clearToolOutputs`) replaced with a note. The clearing middleware answers it
  * from the outputs the run cleared itself. Otherwise, as after a paused run resumed, the tool reads
- * the call's `tool_result` entry from the run's own thread in `memory`, never another thread.
+ * the call's `tool_result` entry from the branch the run is on in `memory`: only a run that uses
+ * memory and was let on its thread has a place, so the tool never reads another thread or branch.
  * The Cogitator adds it to an agent's tools when clearing is on.
  *
  * @param memory the memory adapter to read from when the call asks for it, `undefined` when there is none
+ * @param placeOf where the run with this id keeps its conversation, `undefined` for a run that
+ *   uses no memory
  */
 export function recallToolOutputTool(
-  memory: () => MemoryAdapter | undefined = () => undefined
+  memory: () => MemoryAdapter | undefined = () => undefined,
+  placeOf: (runId: string) => RecallPlace | undefined = () => undefined
 ): Tool<RecallToolOutputParams, ToolContentResult> {
   const recall = tool({
     name: RECALL_TOOL_OUTPUT,
@@ -58,12 +69,13 @@ export function recallToolOutputTool(
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
     execute: async ({ toolCallId }, context) => {
       const adapter = memory();
-      if (!adapter || context.threadId === undefined) {
+      const place = placeOf(context.runId);
+      if (!adapter || !place) {
         throw new Error(
-          `The output of tool call ${toolCallId} is not held by this run, and there is no memory to read it from`
+          `The output of tool call ${toolCallId} is not held by this run, and the run keeps no memory to read it from`
         );
       }
-      const output = await outputInMemory(adapter, context.threadId, toolCallId);
+      const output = await outputInMemory(adapter, place, toolCallId);
       if (output === undefined) {
         throw new Error(`No output of tool call ${toolCallId} in this conversation`);
       }
@@ -74,13 +86,23 @@ export function recallToolOutputTool(
   return recall;
 }
 
-/** The output of `toolCallId` as the newest `tool_result` entry of `threadId` holds it. */
+/**
+ * The output of `toolCallId` as the newest `tool_result` entry on the run's branch holds it, of
+ * the whole thread with an adapter that keeps no branches
+ */
 async function outputInMemory(
   memory: MemoryAdapter,
-  threadId: string,
+  place: RecallPlace,
   toolCallId: string
 ): Promise<MessageContent | undefined> {
-  const read = await memory.getEntries({ threadId, includeToolCalls: true });
+  const read = memory.getPath
+    ? await memory.getPath({
+        threadId: place.threadId,
+        ...(place.leafId !== undefined && { leafId: place.leafId }),
+        types: ['tool_result'],
+        includeToolCalls: true,
+      })
+    : await memory.getEntries({ threadId: place.threadId, includeToolCalls: true });
   if (!read.success) {
     throw new Error(`Could not read the conversation from memory: ${read.error}`);
   }

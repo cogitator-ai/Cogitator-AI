@@ -310,6 +310,7 @@ const gateway = new Gateway({
     compaction: { strategy: 'summary', messageThreshold: 50, keepRecent: 10 },
   },
   runTimeout: 120_000,
+  brief: (msg) => `Current date and time: ${new Date().toISOString()}`, // sent with each run's input, not saved
 });
 
 gateway.stats; // { uptime, activeSessions, totalSessions, messagesToday, connectedChannels }
@@ -320,6 +321,8 @@ await gateway.stop();
 ```
 
 `GatewayConfig.owner` is deprecated and never read: set owners on `ownerCommands({ ownerIds })` and `dmPolicy({ ownerIds })` (see [Middleware](#middleware)).
+
+`brief(msg)` returns notes for the run of each message, passed as `RunOptions.brief`: they go with the input, after what memory recalls for it, and are not saved to the thread. Put what changes from message to message there, such as the current time, rather than in the agent's instructions, so the instructions stay the same and the prompt cache keeps serving them.
 
 `stream` takes `flushInterval` and `minChunkSize` (ms / chars between edits), plus optional `minInitialChars` (wait for this much text before the first message), `maxMessageChars` (defaults to the platform limit) and `deleteOnAbort` (remove the partial answer when the run is interrupted). Telegram streams through message drafts when available and falls back to edits.
 
@@ -620,7 +623,7 @@ For a parsed YAML file, validate it first with `new RuntimeBuilder(AssistantConf
 - **Channels:** the terminal REPL plus `channels.telegram` (`TG_TOKEN` or `TELEGRAM_TOKEN`), `channels.discord` (`DISCORD_TOKEN`) and `channels.slack` (`SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, optional `SLACK_APP_TOKEN` / `SLACK_PORT`). A configured channel without its token is skipped with a warning. `channels.whatsapp` (`{ ownerIds?, sessionPath? }`, owner ids are phone numbers without `@s.whatsapp.net`, the session defaults to `~/.cogitator/whatsapp-session`) needs `@whiskeysockets/baileys`. `channels.webchat` (`{ port?, path? }`, default `8080` and `/ws`, no `ownerIds`) needs `ws` and starts only with `WEBCHAT_TOKEN` set, and clients connect with `?token=<WEBCHAT_TOKEN>`. `channels.bluesky` (`{ ownerIds?, posts?, directMessages?, pollInterval?, tokenPath? }`, owner ids are DIDs) needs `@atproto/api` and starts with `BLUESKY_HANDLE` and `BLUESKY_APP_PASSWORD`. `channels.threads` (`{ ownerIds?, webhook?: { port, path? }, pollInterval?, tokenPath? }`, owner ids are usernames) starts with `THREADS_ACCESS_TOKEN`, and with `THREADS_APP_SECRET` and `THREADS_VERIFY_TOKEN` for webhooks. Both keep their session or token in `tokenPath` (default `~/.cogitator/tokens.json`).
 
 - **Memory:** `memory.adapter: sqlite` (default, `memory.path`, default `~/.cogitator/memory.db`) or `postgres` (`memory.connectionString`, `DATABASE_URL` or `POSTGRES_URL`; requires `pg`). Core facts always live in the SQLite file. The knowledge graph (`memory.knowledgeGraph`) and auto-extraction (`memory.autoExtract`) are on by default; `memory.compaction.threshold` enables history compaction.
-- **Fresh context:** the gateway builds an agent per message — instructions (current date/time and known user facts) and the `/model` override are resolved each time. `runtime.agent` is the base agent.
+- **Fresh context:** the gateway builds an agent per message: instructions (with known user facts) and the `/model` override are resolved each time. The current date and time go to each run as its `brief`, with the input, so they do not change the instructions and their prompt cache. `runtime.agent` is the base agent.
 - **Owner commands wired:** `/status`, `/sessions`, `/users`, `/compact`, `/model` (global or per user), `/restart`.
 - **Security:** `fileSystem.paths` is enforced — file tools refuse paths outside the allowed roots (symlinks resolved). Self-config tools (`config_*`, `env_*`) only work for channel owners and the local terminal. `security` sets the DM/group policy, allowlists and command access.
 

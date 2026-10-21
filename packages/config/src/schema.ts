@@ -209,6 +209,22 @@ export const ContextBuilderConfigSchema = z.object({
       entityTypes: z.array(EntityTypeSchema).optional(),
     })
     .optional(),
+  partitions: z
+    .partialRecord(
+      z.enum([
+        'system',
+        'pinned',
+        'index',
+        'summaries',
+        'facts',
+        'recall',
+        'brief',
+        'recent',
+        'final',
+      ]),
+      z.object({ share: z.number().min(0).max(1).optional(), required: z.boolean().optional() })
+    )
+    .optional(),
 });
 
 const EmbeddingDimensionsSchema = z.number().int().positive();

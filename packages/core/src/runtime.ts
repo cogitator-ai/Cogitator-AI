@@ -243,6 +243,8 @@ export class Cogitator implements ToolInvoker {
   private piiLayer?: RunMiddleware;
   private clearingLayer?: RunMiddleware;
   private recallTool?: Tool;
+  /** The memory of each run going on, for `recall_tool_output` to read the run's branch */
+  private readonly runMemories = new Map<string, RunMemory>();
   private modelChain?: ModelFallbackChain;
   private readonly decisionBackends = new Map<string, DecisionBackend>();
   private processCheckpoints?: InMemoryRunCheckpointStore;
@@ -533,7 +535,10 @@ export class Cogitator implements ToolInvoker {
    */
   private builtinTools(): Tool[] {
     if (!this.config.context?.clearToolOutputs) return [];
-    this.recallTool ??= recallToolOutputTool(() => this.state.memoryAdapter);
+    this.recallTool ??= recallToolOutputTool(
+      () => this.state.memoryAdapter,
+      (runId) => this.runMemories.get(runId)?.conversation
+    );
     return [this.recallTool];
   }
 
@@ -758,6 +763,7 @@ export class Cogitator implements ToolInvoker {
         }
       }
 
+      this.runMemories.set(runId, runMemory);
       prompt = checkpoint?.prompt;
       if (!checkpoint && (this.config.prompts || this.promptRegistry)) {
         const resolution = await this.prompts.resolve(agent, threadId);
@@ -1828,6 +1834,7 @@ export class Cogitator implements ToolInvoker {
 
       throw error;
     } finally {
+      if (this.runMemories.get(runId) === runMemory) this.runMemories.delete(runId);
       releaseRunSlot?.();
       if (timeoutId) {
         clearTimeout(timeoutId);

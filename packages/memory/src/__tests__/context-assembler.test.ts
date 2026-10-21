@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { Fact, FactAdapter, Message } from '@cogitator-ai/types';
 import { ContextAssembler, type AssemblyBlock } from '../context-assembler';
-import { ContextBuilder } from '../context-builder';
+import { ContextBuilder, withoutTurnContext } from '../context-builder';
 import { InMemoryAdapter } from '../adapters/memory';
 import { countEntryTokens } from '../token-counter';
 
@@ -72,6 +72,51 @@ describe('ContextAssembler', () => {
     ]);
   });
 
+  it('keeps a block that says more than one before it, and checks only blocks that stayed', async () => {
+    const assembly = await new ContextAssembler({ facts: { share: 0 } }).assemble(1000, [
+      { partition: 'facts', blocks: [block(10, 'The user lives in Lisbon, Portugal')] },
+      {
+        partition: 'recall',
+        blocks: [
+          block(10, 'The user lives in Lisbon, Portugal'),
+          block(20, 'The user lives in Lisbon, Portugal and works at the harbour'),
+        ],
+      },
+    ]);
+
+    expect(assembly.kept.recall?.map((kept) => kept.text)).toEqual([
+      'The user lives in Lisbon, Portugal',
+      'The user lives in Lisbon, Portugal and works at the harbour',
+    ]);
+  });
+
+  it('shares only what the system prompt leaves', async () => {
+    const assembly = await new ContextAssembler({
+      facts: { share: 0.5 },
+      recall: { share: 0 },
+      index: { share: 0 },
+      brief: { share: 0 },
+    }).assemble(1000, [
+      { partition: 'system', blocks: [block(600)] },
+      { partition: 'facts', blocks: Array.from({ length: 10 }, () => block(50)) },
+      { partition: 'recent', blocks: Array.from({ length: 10 }, () => block(50)) },
+    ]);
+
+    expect(assembly.tokens.facts).toBe(200);
+    expect(assembly.tokens.recent).toBe(200);
+  });
+
+  it('counts an input larger than the room in full, leaving the rest nothing', async () => {
+    const assembly = await new ContextAssembler().assemble(1000, [
+      { partition: 'system', blocks: [block(100)] },
+      { partition: 'final', blocks: [block(950)] },
+      { partition: 'recent', blocks: [block(10)] },
+    ]);
+
+    expect(assembly.tokens.final).toBe(950);
+    expect(assembly.tokens.recent).toBe(0);
+  });
+
   it('refuses a share outside 0 to 1', () => {
     expect(() => new ContextAssembler({ facts: { share: 1.5 } })).toThrow(/share from 0 to 1/);
   });
@@ -121,6 +166,39 @@ describe('ContextBuilder on the assembler', () => {
       expect.objectContaining({ partition: 'recent', reason: 'oversized', sourceId: big.id }),
     ]);
     expect(countEntryTokens(big)).toBeGreaterThan(600);
+    expect(result.tokenCount).toBeLessThan(600);
+  });
+
+  it('builds without the graph when cutting it down fails', async () => {
+    const nodes = ['a', 'b'].map((id) => ({
+      id,
+      agentId: 'agent',
+      name: id,
+      type: 'concept' as const,
+      aliases: [],
+      properties: {},
+      confidence: 1,
+      source: 'user' as const,
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+    }));
+    let calls = 0;
+    const graph = {
+      buildContext: async () => {
+        calls++;
+        if (calls > 1) throw new Error('graph store down');
+        return { nodes, edges: [], formattedContext: 'graph '.repeat(400), tokenCount: 2000 };
+      },
+    };
+    const builder = new ContextBuilder(
+      { strategy: 'recent', maxTokens: 600, includeGraphContext: true },
+      { memoryAdapter: adapter, graphContextBuilder: graph as never }
+    );
+
+    const result = await builder.build({ threadId, agentId: 'agent', currentInput: 'who' });
+
+    expect(result.graphContext).toBeUndefined();
+    expect(result.errors?.map((error) => error.source)).toEqual(['graph']);
   });
 
   it('always keeps the summary of compacted history', async () => {
@@ -182,7 +260,9 @@ describe('ContextBuilder on the assembler', () => {
       { role: 'assistant', content: 'hi', cacheBreakpoint: true },
       { role: 'user', content: result.memoryContext },
     ]);
-    expect(result.memoryContext).toMatch(/^Context for this turn/);
+    expect(result.memoryContext).toMatch(/^<memory_context>\n\nContext for this turn/);
+    expect(result.memoryContext).toMatch(/<\/memory_context>$/);
+    expect(withoutTurnContext(`${result.memoryContext}\n\nand today?`)).toBe('and today?');
     expect(result.memoryContext).toContain('Ana asked about trains yesterday.');
     expect(result.memoryContext).toContain('Known facts:\n- Prefers short answers');
     expect(result.partitions.final).toBeGreaterThan(0);

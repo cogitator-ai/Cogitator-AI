@@ -308,7 +308,7 @@ describe('buildInitialMessages with a brief', () => {
 
     expect(messages[0]).toEqual({ role: 'system', content: 'sys' });
     expect(String(messages[1]?.content)).toMatch(
-      /^Context for this turn .*\n\nCurrent date and time: Monday, 09:00\.\n\nwhat time is it\?$/s
+      /^<memory_context>\n\nContext for this turn .*\n\nCurrent date and time: Monday, 09:00\.\n\n<\/memory_context>\n\nwhat time is it\?$/s
     );
   });
 });

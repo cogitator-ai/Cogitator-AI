@@ -411,3 +411,20 @@ describe('CogitatorConfigSchema', () => {
     expect(parsed.prompts).toEqual({ autoDeployWinner: true });
   });
 });
+
+describe('ContextBuilderConfigSchema partitions', () => {
+  it('keeps the partition budgets and refuses a share outside 0 to 1', async () => {
+    const { ContextBuilderConfigSchema } = await import('../schema');
+
+    expect(
+      ContextBuilderConfigSchema.parse({
+        strategy: 'recent',
+        partitions: { facts: { share: 0 }, pinned: { required: false } },
+      }).partitions
+    ).toEqual({ facts: { share: 0 }, pinned: { required: false } });
+    expect(() =>
+      ContextBuilderConfigSchema.parse({ partitions: { recall: { share: 1.5 } } })
+    ).toThrow();
+    expect(() => ContextBuilderConfigSchema.parse({ partitions: { other: {} } })).toThrow();
+  });
+});
