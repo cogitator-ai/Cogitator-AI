@@ -1,4 +1,4 @@
-import type { MemoryResult } from './memory';
+import type { Evidence, MemoryResult } from './memory';
 
 export type EntityType =
   'person' | 'organization' | 'location' | 'concept' | 'event' | 'object' | 'custom';
@@ -34,6 +34,8 @@ export interface GraphNode {
   lastAccessedAt: Date;
   accessCount: number;
   metadata?: Record<string, unknown>;
+  /** Where it comes from, word for word: entries, tool results or files it stands on */
+  evidence?: Evidence[];
 }
 
 export interface GraphEdge {
@@ -53,6 +55,8 @@ export interface GraphEdge {
   validFrom?: Date;
   validUntil?: Date;
   metadata?: Record<string, unknown>;
+  /** Where it comes from, word for word: entries, tool results or files it stands on */
+  evidence?: Evidence[];
 }
 
 export interface ExtractedEntity {

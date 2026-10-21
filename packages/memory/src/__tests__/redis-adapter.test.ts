@@ -142,11 +142,11 @@ describe('RedisAdapter', () => {
       await adapter.createThread('agent1', {}, 't1');
 
       const [script] = mockRedisClient.eval.mock.calls.find(([s]) =>
-        String(s).includes("redis.call('SET', KEYS[1], ARGV[3]")
+        String(s).includes('put(KEYS[1], ARGV[3], ARGV[4])')
       ) ?? [''];
       expect(script).toContain("redis.call('ZSCAN', index");
       expect(script).toContain("redis.call('EXISTS', prefix .. 'thread:' .. id) == 0");
-      expect(script).toContain("redis.call('EXPIRE', KEYS[2], ARGV[4] * 7)");
+      expect(script).toContain('keep(KEYS[2], ARGV[4] * 7)');
       expect(script).toContain('sweep(KEYS[2], KEYS[3], ARGV[7], ARGV[4])');
     });
 
@@ -261,9 +261,10 @@ describe('RedisAdapter', () => {
 
       expect(result.success).toBe(true);
       expect(mockRedisClient.eval).toHaveBeenCalledWith(
-        expect.stringContaining("redis.call('ZREM', KEYS[3], ARGV[1])"),
-        3,
+        expect.stringContaining("redis.call('ZREM', KEYS[4], ARGV[1])"),
+        4,
         'cogitator:thread:entries:thread_123',
+        'cogitator:thread:leaf:thread_123',
         'cogitator:thread:thread_123',
         'cogitator:threads:index',
         'thread_123'
@@ -284,17 +285,18 @@ describe('RedisAdapter', () => {
       if (result.success) {
         expect(result.data.id).toMatch(/^entry_/);
         expect(result.data.message).toEqual(message);
-        expect(result.data).not.toHaveProperty('seq');
+        expect(result.data).toMatchObject({ seq: 1, parentId: null, type: 'message' });
       }
-      const [, numKeys, threadKey, setKey, entryKey, indexKey, sweepKey, json] =
+      const [, numKeys, threadKey, setKey, entryKey, indexKey, sweepKey, leafKey, json] =
         mockRedisClient.eval.mock.calls[0] ?? [];
-      expect([numKeys, threadKey, setKey, entryKey, indexKey, sweepKey]).toEqual([
-        5,
+      expect([numKeys, threadKey, setKey, entryKey, indexKey, sweepKey, leafKey]).toEqual([
+        6,
         'cogitator:thread:thread_123',
         'cogitator:thread:entries:thread_123',
         `cogitator:entry:${result.success && result.data.id}`,
         'cogitator:threads:index',
         'cogitator:threads:sweep',
+        'cogitator:thread:leaf:thread_123',
       ]);
       expect(JSON.parse(String(json))).toMatchObject({ seq: 1 });
     });
@@ -302,7 +304,7 @@ describe('RedisAdapter', () => {
     it('reports threads its sweep found expired as deleted', async () => {
       const changes: unknown[] = [];
       adapter.onChange((change) => changes.push(change));
-      mockRedisClient.eval.mockResolvedValueOnce([1, 'gone-1', 'gone-2']);
+      mockRedisClient.eval.mockResolvedValueOnce([1, '', 'gone-1', 'gone-2']);
 
       const result = await adapter.addEntry({
         threadId: 't1',
@@ -402,20 +404,17 @@ describe('RedisAdapter', () => {
     });
 
     it('deletes entry', async () => {
-      const entry = {
-        id: 'entry_123',
-        threadId: 'thread_123',
-        message: { role: 'user', content: 'Hello' },
-        tokenCount: 10,
-        createdAt: new Date().toISOString(),
-      };
-      mockRedisClient.get.mockResolvedValueOnce(JSON.stringify(entry));
-
       const result = await adapter.deleteEntry('entry_123');
 
       expect(result.success).toBe(true);
-      expect(mockRedisClient.zrem).toHaveBeenCalled();
-      expect(mockRedisClient.del).toHaveBeenCalled();
+      expect(mockRedisClient.eval).toHaveBeenCalledWith(
+        expect.stringContaining("redis.call('ZREM', entriesKey, KEYS[1])"),
+        1,
+        'cogitator:entry:entry_123',
+        'cogitator:',
+        0,
+        'entry_123'
+      );
     });
 
     it('clears thread entries and keeps the thread', async () => {
@@ -424,8 +423,9 @@ describe('RedisAdapter', () => {
       expect(result.success).toBe(true);
       expect(mockRedisClient.eval).toHaveBeenCalledWith(
         expect.stringContaining("redis.call('ZRANGE', KEYS[1], 0, -1)"),
-        1,
-        'cogitator:thread:entries:thread_123'
+        2,
+        'cogitator:thread:entries:thread_123',
+        'cogitator:thread:leaf:thread_123'
       );
     });
 
@@ -466,7 +466,7 @@ describe('RedisAdapter', () => {
         0
       );
       expect(result.success && result.data.map((e) => e.id)).toEqual(['third', 'fourth']);
-      expect(result.success && result.data[0]).not.toHaveProperty('seq');
+      expect(result.success && result.data[0]).toMatchObject({ seq: 3 });
       mockRedisClient.mget.mockReset();
       mockRedisClient.mget.mockResolvedValue([]);
     });
@@ -568,9 +568,9 @@ describe('RedisAdapter hardening', () => {
       tokenCount: 1,
     });
 
-    const [script, , threadKey, , , , , , , ttl] = mockRedisClient.eval.mock.calls[0] ?? [];
-    expect(script).toContain("redis.call('EXPIRE', KEYS[1], ARGV[3])");
-    expect(script).toContain("if redis.call('EXPIRE', KEYS[4], ARGV[3] * 7) == 1 then");
+    const [script, , threadKey, , , , , , , , ttl] = mockRedisClient.eval.mock.calls[0] ?? [];
+    expect(script).toContain('keep(KEYS[1], ARGV[3])');
+    expect(script).toContain('keep(KEYS[4], ARGV[3] * 7)');
     expect(script).toContain('sweep(KEYS[4], KEYS[5], ARGV[4], ARGV[3])');
     expect([threadKey, ttl]).toEqual(['cogitator:thread:t1', 60]);
   });

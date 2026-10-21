@@ -8,10 +8,13 @@ import type {
   SQLiteAdapterConfig,
   MemoryProvider,
   NewMemoryEntry,
+  MemoryEntryType,
+  PathQueryOptions,
 } from '@cogitator-ai/types';
+import { CONVERSATION_ENTRY_TYPES, MEMORY_ENTRY_FORMAT } from '@cogitator-ai/types';
 import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { ChangeReportingMemoryAdapter } from './base';
+import { BranchingMemoryAdapter } from './base';
 import type { SqliteDatabase } from './sqlite-driver';
 import { threadListing, threadPage, type ThreadListing } from './thread-listing';
 
@@ -39,9 +42,65 @@ interface ThreadRow {
   metadata: string;
   created_at: string;
   updated_at: string;
+  active_leaf_id?: string | null;
 }
 
-export class SQLiteAdapter extends ChangeReportingMemoryAdapter {
+interface EntryRow {
+  id: string;
+  thread_id: string;
+  message: string;
+  tool_calls: string | null;
+  tool_results: string | null;
+  token_count: number;
+  created_at: string;
+  metadata: string | null;
+  type: string | null;
+  parent_id: string | null;
+  event: string | null;
+  format_version: number | null;
+  seq: number;
+}
+
+/**
+ * Layout of the database, kept in `PRAGMA user_version`. 1: entries form trees (`parent_id`,
+ * `type`, `event`, `format_version`) and threads name their active leaf; entries written before
+ * are chained in the order they were added.
+ */
+const SCHEMA_VERSION = 1;
+
+/** A SQL condition on an entry's type, `alias` naming the entries table, with its parameters */
+function typeCondition(
+  types: readonly MemoryEntryType[] | 'all' | undefined,
+  alias = ''
+): [string, unknown[]] {
+  if (types === 'all') return ['1 = 1', []];
+  const wanted = types ?? CONVERSATION_ENTRY_TYPES;
+  if (wanted.length === 0) return ['1 = 0', []];
+  return [
+    `COALESCE(${alias}type, 'message') IN (${wanted.map(() => '?').join(', ')})`,
+    [...wanted],
+  ];
+}
+
+function rowToEntry(row: EntryRow, includeToolCalls: boolean): MemoryEntry {
+  return {
+    id: row.id,
+    threadId: row.thread_id,
+    message: JSON.parse(row.message),
+    ...(includeToolCalls && row.tool_calls && { toolCalls: JSON.parse(row.tool_calls) }),
+    ...(includeToolCalls && row.tool_results && { toolResults: JSON.parse(row.tool_results) }),
+    tokenCount: row.token_count,
+    createdAt: new Date(row.created_at),
+    ...(row.metadata && { metadata: JSON.parse(row.metadata) }),
+    type: (row.type ?? 'message') as MemoryEntryType,
+    parentId: row.parent_id,
+    seq: row.seq,
+    ...(row.event && { event: JSON.parse(row.event) }),
+    formatVersion: row.format_version ?? 1,
+  };
+}
+
+export class SQLiteAdapter extends BranchingMemoryAdapter {
   readonly provider: MemoryProvider = 'sqlite';
 
   private db: SqliteDatabase | null = null;
@@ -105,12 +164,63 @@ export class SQLiteAdapter extends ChangeReportingMemoryAdapter {
         CREATE INDEX IF NOT EXISTS idx_threads_agent_updated ON threads(agent_id, updated_at, id);
         CREATE INDEX IF NOT EXISTS idx_threads_updated ON threads(updated_at, id);
       `);
+      this.migrate(db);
 
       this.db = db;
       return this.success(undefined);
     } catch (err) {
       if (db?.open) db.close();
       return this.failure((err as Error).message);
+    }
+  }
+
+  /**
+   * Brings the database to {@link SCHEMA_VERSION}, in one transaction that holds the write lock,
+   * so processes opening it at once take turns
+   */
+  private migrate(db: SqliteDatabase): void {
+    if (Number(db.pragma('user_version', { simple: true })) >= SCHEMA_VERSION) return;
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      if (Number(db.pragma('user_version', { simple: true })) < SCHEMA_VERSION) {
+        const columns = (table: string) =>
+          new Set(
+            (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map(
+              (column) => column.name
+            )
+          );
+        const entryColumns = columns('entries');
+        for (const [name, type] of [
+          ['type', 'TEXT'],
+          ['parent_id', 'TEXT'],
+          ['event', 'TEXT'],
+          ['format_version', 'INTEGER'],
+        ] as const) {
+          if (!entryColumns.has(name)) db.exec(`ALTER TABLE entries ADD COLUMN ${name} ${type}`);
+        }
+        if (!columns('threads').has('active_leaf_id')) {
+          db.exec('ALTER TABLE threads ADD COLUMN active_leaf_id TEXT');
+        }
+        db.exec(`
+          UPDATE entries SET parent_id = (
+            SELECT previous FROM (
+              SELECT id, LAG(id) OVER (
+                PARTITION BY thread_id ORDER BY created_at, rowid
+              ) AS previous FROM entries
+            ) ordered WHERE ordered.id = entries.id
+          ) WHERE parent_id IS NULL AND format_version IS NULL;
+          UPDATE threads SET active_leaf_id = (
+            SELECT id FROM entries WHERE entries.thread_id = threads.id
+            ORDER BY created_at DESC, rowid DESC LIMIT 1
+          ) WHERE active_leaf_id IS NULL;
+          CREATE INDEX IF NOT EXISTS idx_entries_parent ON entries(thread_id, parent_id);
+        `);
+        db.pragma(`user_version = ${SCHEMA_VERSION}`);
+      }
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
     }
   }
 
@@ -292,29 +402,69 @@ export class SQLiteAdapter extends ChangeReportingMemoryAdapter {
 
   private async storeEntry(entry: NewMemoryEntry): Promise<MemoryResult<MemoryEntry>> {
     if (!this.db) return this.failure('Not connected');
-
-    const full: MemoryEntry = {
-      ...entry,
-      id: this.generateId('entry'),
-      createdAt: this.entryTimestamp(entry),
-    };
+    const db = this.db;
+    const { activate, parentId: askedParent, ...fields } = entry;
+    const createdAt = this.entryTimestamp(entry);
+    const id = this.generateId('entry');
+    const type = fields.type ?? (fields.message.role === 'tool' ? 'tool_result' : 'message');
 
     try {
-      const stmt = this.db.prepare(`
-        INSERT INTO entries (id, thread_id, message, tool_calls, tool_results, token_count, created_at, metadata)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      stmt.run(
-        full.id,
-        full.threadId,
-        JSON.stringify(full.message),
-        full.toolCalls ? JSON.stringify(full.toolCalls) : null,
-        full.toolResults ? JSON.stringify(full.toolResults) : null,
-        full.tokenCount,
-        full.createdAt.toISOString(),
-        full.metadata ? JSON.stringify(full.metadata) : null
-      );
-      return this.success(full);
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const thread = db
+          .prepare('SELECT active_leaf_id FROM threads WHERE id = ?')
+          .get(entry.threadId) as { active_leaf_id: string | null } | undefined;
+        if (!thread) {
+          db.exec('ROLLBACK');
+          return this.failure(`Thread not found: ${entry.threadId}`);
+        }
+        if (askedParent) {
+          const parent = db
+            .prepare('SELECT 1 FROM entries WHERE id = ? AND thread_id = ?')
+            .get(askedParent, entry.threadId);
+          if (!parent) {
+            db.exec('ROLLBACK');
+            return this.failure(`Parent entry ${askedParent} is not in thread ${entry.threadId}`);
+          }
+        }
+        const parentId = askedParent === undefined ? thread.active_leaf_id : askedParent;
+        const inserted = db
+          .prepare(
+            `INSERT INTO entries (id, thread_id, message, tool_calls, tool_results, token_count,
+               created_at, metadata, type, parent_id, event, format_version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          )
+          .run(
+            id,
+            entry.threadId,
+            JSON.stringify(fields.message),
+            fields.toolCalls ? JSON.stringify(fields.toolCalls) : null,
+            fields.toolResults ? JSON.stringify(fields.toolResults) : null,
+            fields.tokenCount,
+            createdAt.toISOString(),
+            fields.metadata ? JSON.stringify(fields.metadata) : null,
+            type,
+            parentId,
+            fields.event ? JSON.stringify(fields.event) : null,
+            MEMORY_ENTRY_FORMAT
+          );
+        if (activate !== false) {
+          db.prepare('UPDATE threads SET active_leaf_id = ? WHERE id = ?').run(id, entry.threadId);
+        }
+        db.exec('COMMIT');
+        return this.success({
+          ...fields,
+          id,
+          createdAt,
+          type,
+          parentId,
+          seq: Number(inserted.lastInsertRowid),
+          formatVersion: MEMORY_ENTRY_FORMAT,
+        });
+      } catch (err) {
+        db.exec('ROLLBACK');
+        throw err;
+      }
     } catch (err) {
       return this.failure((err as Error).message);
     }
@@ -337,42 +487,84 @@ export class SQLiteAdapter extends ChangeReportingMemoryAdapter {
         conditions.push('created_at > ?');
         params.push(options.after.toISOString());
       }
+      const [types, typeParams] = typeCondition(options.types);
+      conditions.push(types);
+      params.push(...typeParams);
 
-      let sql = `SELECT * FROM entries WHERE ${conditions.join(' AND ')} ORDER BY created_at ASC, rowid ASC`;
+      let sql = `SELECT *, rowid AS seq FROM entries WHERE ${conditions.join(' AND ')}
+                 ORDER BY created_at ASC, rowid ASC`;
       if (options.limit) {
         sql = `SELECT * FROM (
-          SELECT *, rowid AS entry_order FROM entries WHERE ${conditions.join(' AND ')}
+          SELECT *, rowid AS seq FROM entries WHERE ${conditions.join(' AND ')}
           ORDER BY created_at DESC, rowid DESC LIMIT ?
-        ) ORDER BY created_at ASC, entry_order ASC`;
+        ) ORDER BY created_at ASC, seq ASC`;
         params.push(options.limit);
       }
 
-      const stmt = this.db.prepare(sql);
-      const rows = stmt.all(...params) as Array<{
-        id: string;
-        thread_id: string;
-        message: string;
-        tool_calls: string | null;
-        tool_results: string | null;
-        token_count: number;
-        created_at: string;
-        metadata: string | null;
-      }>;
+      const rows = this.db.prepare(sql).all(...params) as EntryRow[];
+      return this.success(rows.map((row) => rowToEntry(row, options.includeToolCalls === true)));
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
 
-      const entries: MemoryEntry[] = rows.map((row) => ({
-        id: row.id,
-        threadId: row.thread_id,
-        message: JSON.parse(row.message),
-        toolCalls:
-          options.includeToolCalls && row.tool_calls ? JSON.parse(row.tool_calls) : undefined,
-        toolResults:
-          options.includeToolCalls && row.tool_results ? JSON.parse(row.tool_results) : undefined,
-        tokenCount: row.token_count,
-        createdAt: new Date(row.created_at),
-        metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-      }));
+  /**
+   * The path walked back from its start in one recursive query, which stops once it holds
+   * `limit` entries of the asked types
+   */
+  override async getPath(options: PathQueryOptions): Promise<MemoryResult<MemoryEntry[]>> {
+    if (!this.db) return this.failure('Not connected');
+    const limitProblem = this.entryLimitProblem(options.limit);
+    if (limitProblem) return this.failure(limitProblem);
+    const start = await this.pathStart(options);
+    if (!start.success) return start;
+    if (start.data === null) return this.success([]);
 
-      return this.success(entries);
+    try {
+      const [wanted, wantedParams] = typeCondition(options.types, 'e.');
+      const limit = options.limit || Number.MAX_SAFE_INTEGER;
+      const rows = this.db
+        .prepare(
+          `WITH RECURSIVE path(id, parent_id, depth, kept) AS (
+             SELECT e.id, e.parent_id, 0, CASE WHEN ${wanted} THEN 1 ELSE 0 END
+             FROM entries e WHERE e.id = ? AND e.thread_id = ?
+             UNION ALL
+             SELECT e.id, e.parent_id, path.depth + 1,
+                    path.kept + CASE WHEN ${wanted} THEN 1 ELSE 0 END
+             FROM entries e JOIN path ON e.id = path.parent_id
+             WHERE path.kept < ? AND e.thread_id = ?
+           )
+           SELECT e.*, e.rowid AS seq FROM path JOIN entries e ON e.id = path.id
+           WHERE ${wanted} ORDER BY path.depth DESC`
+        )
+        .all(
+          ...wantedParams,
+          start.data,
+          options.threadId,
+          ...wantedParams,
+          limit,
+          options.threadId,
+          ...wantedParams
+        ) as EntryRow[];
+      const entries = rows.map((row) => rowToEntry(row, options.includeToolCalls === true));
+      return this.success(options.limit ? entries.slice(-options.limit) : entries);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
+  protected async setActiveLeaf(
+    threadId: string,
+    leafId: string | null
+  ): Promise<MemoryResult<Thread>> {
+    if (!this.db) return this.failure('Not connected');
+    try {
+      const row = this.db
+        .prepare('UPDATE threads SET active_leaf_id = ? WHERE id = ? RETURNING *')
+        .get(leafId, threadId) as ThreadRow | undefined;
+      return row
+        ? this.success(this.rowToThread(row))
+        : this.failure(`Thread not found: ${threadId}`);
     } catch (err) {
       return this.failure((err as Error).message);
     }
@@ -382,32 +574,10 @@ export class SQLiteAdapter extends ChangeReportingMemoryAdapter {
     if (!this.db) return this.failure('Not connected');
 
     try {
-      const stmt = this.db.prepare('SELECT * FROM entries WHERE id = ?');
-      const row = stmt.get(entryId) as
-        | {
-            id: string;
-            thread_id: string;
-            message: string;
-            tool_calls: string | null;
-            tool_results: string | null;
-            token_count: number;
-            created_at: string;
-            metadata: string | null;
-          }
-        | undefined;
-
-      if (!row) return this.success(null);
-
-      return this.success({
-        id: row.id,
-        threadId: row.thread_id,
-        message: JSON.parse(row.message),
-        toolCalls: row.tool_calls ? JSON.parse(row.tool_calls) : undefined,
-        toolResults: row.tool_results ? JSON.parse(row.tool_results) : undefined,
-        tokenCount: row.token_count,
-        createdAt: new Date(row.created_at),
-        metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-      });
+      const row = this.db
+        .prepare('SELECT *, rowid AS seq FROM entries WHERE id = ?')
+        .get(entryId) as EntryRow | undefined;
+      return this.success(row ? rowToEntry(row, true) : null);
     } catch (err) {
       return this.failure((err as Error).message);
     }
@@ -420,12 +590,34 @@ export class SQLiteAdapter extends ChangeReportingMemoryAdapter {
     }));
   }
 
+  /** Deletes an entry and splices it out of its branch: its children go after its parent */
   private async removeEntry(entryId: string): Promise<MemoryResult<void>> {
     if (!this.db) return this.failure('Not connected');
+    const db = this.db;
 
     try {
-      this.db.prepare('DELETE FROM entries WHERE id = ?').run(entryId);
-      return this.success(undefined);
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const entry = db
+          .prepare('SELECT thread_id, parent_id FROM entries WHERE id = ?')
+          .get(entryId) as { thread_id: string; parent_id: string | null } | undefined;
+        if (entry) {
+          db.prepare('UPDATE entries SET parent_id = ? WHERE parent_id = ? AND thread_id = ?').run(
+            entry.parent_id,
+            entryId,
+            entry.thread_id
+          );
+          db.prepare(
+            'UPDATE threads SET active_leaf_id = ? WHERE id = ? AND active_leaf_id = ?'
+          ).run(entry.parent_id, entry.thread_id, entryId);
+          db.prepare('DELETE FROM entries WHERE id = ?').run(entryId);
+        }
+        db.exec('COMMIT');
+        return this.success(undefined);
+      } catch (err) {
+        db.exec('ROLLBACK');
+        throw err;
+      }
     } catch (err) {
       return this.failure((err as Error).message);
     }
@@ -442,7 +634,16 @@ export class SQLiteAdapter extends ChangeReportingMemoryAdapter {
     if (!this.db) return this.failure('Not connected');
 
     try {
-      this.db.prepare('DELETE FROM entries WHERE thread_id = ?').run(threadId);
+      const db = this.db;
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        db.prepare('DELETE FROM entries WHERE thread_id = ?').run(threadId);
+        db.prepare('UPDATE threads SET active_leaf_id = NULL WHERE id = ?').run(threadId);
+        db.exec('COMMIT');
+      } catch (err) {
+        db.exec('ROLLBACK');
+        throw err;
+      }
       return this.success(undefined);
     } catch (err) {
       return this.failure((err as Error).message);
@@ -456,6 +657,7 @@ export class SQLiteAdapter extends ChangeReportingMemoryAdapter {
       metadata: JSON.parse(row.metadata),
       createdAt: new Date(row.created_at),
       updatedAt: new Date(row.updated_at),
+      ...(row.active_leaf_id && { activeLeafId: row.active_leaf_id }),
     };
   }
 }

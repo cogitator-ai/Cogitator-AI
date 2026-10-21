@@ -27,8 +27,11 @@ import type {
   SearchResult,
   NewMemoryEntry,
   EmbeddingDeleteFilter,
+  MemoryEntryType,
+  PathQueryOptions,
 } from '@cogitator-ai/types';
-import { ChangeReportingMemoryAdapter } from './base';
+import { CONVERSATION_ENTRY_TYPES, MEMORY_ENTRY_FORMAT } from '@cogitator-ai/types';
+import { BranchingMemoryAdapter } from './base';
 import { attempt, ensureSchemaVersion, withSetupTransaction } from './schema-version';
 import { EMPTY_DELETE_FILTER_ERROR, filterSourceTypes, hasDeleteCondition } from '../search/filter';
 import {
@@ -72,9 +75,11 @@ const THREAD_TIME = "date_trunc('milliseconds', updated_at AT TIME ZONE 'UTC')";
 
 /**
  * Layout of threads, entries and facts. 1: the tables with `entries.seq` and the listing
- * indexes; a schema from before versions were recorded is brought up to it in place.
+ * indexes. 2: entries form trees (`parent_id`, `type`, `event`, `format_version`) and threads
+ * name their active leaf; entries written before are chained in the order they were added. A
+ * schema from before versions were recorded is brought up to date in place.
  */
-const MEMORY_SCHEMA_VERSION = 1;
+const MEMORY_SCHEMA_VERSION = 2;
 
 /** An `embeddings` row as an embedding, its vector read from pgvector's text form when needed */
 function rowToEmbedding(row: Record<string, unknown>): Embedding {
@@ -101,7 +106,7 @@ function toJsonb(value: unknown): string | null {
 }
 
 export class PostgresAdapter
-  extends ChangeReportingMemoryAdapter
+  extends BranchingMemoryAdapter
   implements FactAdapter, EmbeddingAdapter, KeywordSearchAdapter
 {
   readonly provider: MemoryProvider = 'postgres';
@@ -190,6 +195,41 @@ export class PostgresAdapter
     });
   }
 
+  /** Adds the tree columns and chains the entries written before them in the order they were added */
+  private async migrateToTrees(db: SqlQueryable): Promise<void> {
+    const entries = `${this.schema}.entries`;
+    await db.query(`
+      ALTER TABLE ${entries}
+        ADD COLUMN IF NOT EXISTS type TEXT,
+        ADD COLUMN IF NOT EXISTS parent_id TEXT,
+        ADD COLUMN IF NOT EXISTS event JSONB,
+        ADD COLUMN IF NOT EXISTS format_version INTEGER
+    `);
+    await db.query(
+      `ALTER TABLE ${this.schema}.threads ADD COLUMN IF NOT EXISTS active_leaf_id TEXT`
+    );
+    await db.query(`
+      UPDATE ${entries} e SET parent_id = ordered.previous
+      FROM (
+        SELECT id, LAG(id) OVER (
+          PARTITION BY thread_id ORDER BY created_at, seq NULLS FIRST, id
+        ) AS previous FROM ${entries}
+      ) ordered
+      WHERE ordered.id = e.id AND e.format_version IS NULL AND e.parent_id IS NULL
+    `);
+    await db.query(`
+      UPDATE ${this.schema}.threads t SET active_leaf_id = last.id
+      FROM (
+        SELECT DISTINCT ON (thread_id) thread_id, id FROM ${entries}
+        ORDER BY thread_id, created_at DESC, seq DESC NULLS LAST, id DESC
+      ) last
+      WHERE last.thread_id = t.id AND t.active_leaf_id IS NULL
+    `);
+    await db.query(
+      `CREATE INDEX IF NOT EXISTS idx_entries_parent ON ${entries}(thread_id, parent_id)`
+    );
+  }
+
   /** Brings threads, entries and facts to {@link MEMORY_SCHEMA_VERSION} */
   private async migrate(connection: SqlQueryable): Promise<void> {
     const tables = ['threads', 'entries', 'facts'].map((table) => `${this.schema}.${table}`);
@@ -270,6 +310,7 @@ export class PostgresAdapter
         CREATE INDEX IF NOT EXISTS idx_facts_agent_id
         ON ${this.schema}.facts(agent_id, category)
       `);
+        await this.migrateToTrees(db);
       },
       present
     );
@@ -569,25 +610,123 @@ export class PostgresAdapter
 
     const id = this.generateId('entry');
     const now = this.entryTimestamp(entry);
+    const { activate, parentId: askedParent, ...fields } = entry;
+    const type = fields.type ?? (fields.message.role === 'tool' ? 'tool_result' : 'message');
 
     try {
-      await this.pool.query(
-        `INSERT INTO ${this.schema}.entries
-         (id, thread_id, message, tool_calls, tool_results, token_count, metadata, created_at)
-         VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7::jsonb, $8)`,
-        [
+      const stored = await this.inTransaction(async (client) => {
+        const thread = await client.query(
+          `SELECT active_leaf_id FROM ${this.schema}.threads WHERE id = $1 FOR UPDATE`,
+          [entry.threadId]
+        );
+        if (thread.rows.length === 0) return `Thread not found: ${entry.threadId}`;
+        if (askedParent) {
+          const parent = await client.query(
+            `SELECT 1 FROM ${this.schema}.entries WHERE id = $1 AND thread_id = $2`,
+            [askedParent, entry.threadId]
+          );
+          if (parent.rows.length === 0) {
+            return `Parent entry ${askedParent} is not in thread ${entry.threadId}`;
+          }
+        }
+        const parentId =
+          askedParent === undefined
+            ? ((thread.rows[0]!.active_leaf_id as string | null) ?? null)
+            : askedParent;
+        const inserted = await client.query(
+          `INSERT INTO ${this.schema}.entries
+           (id, thread_id, message, tool_calls, tool_results, token_count, metadata, created_at,
+            type, parent_id, event, format_version)
+           VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7::jsonb, $8, $9, $10, $11::jsonb, $12)
+           RETURNING seq`,
+          [
+            id,
+            entry.threadId,
+            toJsonb(fields.message),
+            toJsonb(fields.toolCalls),
+            toJsonb(fields.toolResults),
+            fields.tokenCount,
+            toJsonb(fields.metadata ?? {}),
+            now,
+            type,
+            parentId,
+            toJsonb(fields.event),
+            MEMORY_ENTRY_FORMAT,
+          ]
+        );
+        if (activate !== false) {
+          await client.query(
+            `UPDATE ${this.schema}.threads SET active_leaf_id = $1 WHERE id = $2`,
+            [id, entry.threadId]
+          );
+        }
+        return {
+          ...fields,
           id,
-          entry.threadId,
-          toJsonb(entry.message),
-          toJsonb(entry.toolCalls),
-          toJsonb(entry.toolResults),
-          entry.tokenCount,
-          toJsonb(entry.metadata ?? {}),
-          now,
-        ]
-      );
+          createdAt: now,
+          type,
+          parentId,
+          seq: Number(inserted.rows[0]!.seq),
+          formatVersion: MEMORY_ENTRY_FORMAT,
+        } satisfies MemoryEntry;
+      });
+      return typeof stored === 'string' ? this.failure(stored) : this.success(stored);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
 
-      return this.success({ ...entry, id, createdAt: now });
+  /**
+   * The path walked back from its start in one recursive query, which stops once it holds
+   * `limit` entries of the asked types
+   */
+  override async getPath(options: PathQueryOptions): Promise<MemoryResult<MemoryEntry[]>> {
+    if (!this.pool) return this.failure('Not connected');
+    const limitProblem = this.entryLimitProblem(options.limit);
+    if (limitProblem) return this.failure(limitProblem);
+    const start = await this.pathStart(options);
+    if (!start.success) return start;
+    if (start.data === null) return this.success([]);
+
+    const types = options.types === 'all' ? null : [...(options.types ?? CONVERSATION_ENTRY_TYPES)];
+    const wanted = (alias: string) =>
+      `($3::text[] IS NULL OR COALESCE(${alias}.type, 'message') = ANY($3::text[]))`;
+    try {
+      const result = await this.pool.query(
+        `WITH RECURSIVE path AS (
+           SELECT e.*, 0 AS depth, CASE WHEN ${wanted('e')} THEN 1 ELSE 0 END AS kept
+           FROM ${this.schema}.entries e WHERE e.id = $1 AND e.thread_id = $2
+           UNION ALL
+           SELECT e.*, path.depth + 1, path.kept + CASE WHEN ${wanted('e')} THEN 1 ELSE 0 END
+           FROM ${this.schema}.entries e JOIN path ON e.id = path.parent_id
+           WHERE path.kept < $4::bigint AND e.thread_id = $2
+         )
+         SELECT * FROM path WHERE ${wanted('path')} ORDER BY depth DESC`,
+        [start.data, options.threadId, types, options.limit || Number.MAX_SAFE_INTEGER]
+      );
+      const entries = result.rows.map((row) =>
+        this.rowToEntry(row, options.includeToolCalls ?? false)
+      );
+      return this.success(options.limit ? entries.slice(-options.limit) : entries);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
+  protected async setActiveLeaf(
+    threadId: string,
+    leafId: string | null
+  ): Promise<MemoryResult<Thread>> {
+    if (!this.pool) return this.failure('Not connected');
+    try {
+      const result = await this.pool.query(
+        `UPDATE ${this.schema}.threads SET active_leaf_id = $1 WHERE id = $2 RETURNING *`,
+        [leafId, threadId]
+      );
+      const row = result.rows[0];
+      return row
+        ? this.success(this.rowToThread(row))
+        : this.failure(`Thread not found: ${threadId}`);
     } catch (err) {
       return this.failure((err as Error).message);
     }
@@ -609,6 +748,10 @@ export class PostgresAdapter
     if (options.after) {
       query += ` AND created_at > $${paramIndex++}`;
       params.push(options.after);
+    }
+    if (options.types !== 'all') {
+      query += ` AND COALESCE(type, 'message') = ANY($${paramIndex++}::text[])`;
+      params.push([...(options.types ?? CONVERSATION_ENTRY_TYPES)]);
     }
 
     if (options.limit) {
@@ -655,10 +798,32 @@ export class PostgresAdapter
     }));
   }
 
+  /** Deletes an entry and splices it out of its branch: its children go after its parent */
   private async removeEntry(entryId: string): Promise<MemoryResult<void>> {
     if (!this.pool) return this.failure('Not connected');
+    const entries = `${this.schema}.entries`;
     try {
-      await this.pool.query(`DELETE FROM ${this.schema}.entries WHERE id = $1`, [entryId]);
+      await this.inTransaction(async (client) => {
+        const found = await client.query(
+          `SELECT thread_id, parent_id FROM ${entries} WHERE id = $1 FOR UPDATE`,
+          [entryId]
+        );
+        const entry = found.rows[0];
+        if (!entry) return;
+        await client.query(`SELECT 1 FROM ${this.schema}.threads WHERE id = $1 FOR UPDATE`, [
+          entry.thread_id,
+        ]);
+        await client.query(
+          `UPDATE ${entries} SET parent_id = $1 WHERE parent_id = $2 AND thread_id = $3`,
+          [entry.parent_id, entryId, entry.thread_id]
+        );
+        await client.query(
+          `UPDATE ${this.schema}.threads SET active_leaf_id = $1
+           WHERE id = $2 AND active_leaf_id = $3`,
+          [entry.parent_id, entry.thread_id, entryId]
+        );
+        await client.query(`DELETE FROM ${entries} WHERE id = $1`, [entryId]);
+      });
       return this.success(undefined);
     } catch (err) {
       return this.failure((err as Error).message);
@@ -675,7 +840,13 @@ export class PostgresAdapter
   private async emptyThread(threadId: string): Promise<MemoryResult<void>> {
     if (!this.pool) return this.failure('Not connected');
     try {
-      await this.pool.query(`DELETE FROM ${this.schema}.entries WHERE thread_id = $1`, [threadId]);
+      await this.inTransaction(async (client) => {
+        await client.query(`DELETE FROM ${this.schema}.entries WHERE thread_id = $1`, [threadId]);
+        await client.query(
+          `UPDATE ${this.schema}.threads SET active_leaf_id = NULL WHERE id = $1`,
+          [threadId]
+        );
+      });
       return this.success(undefined);
     } catch (err) {
       return this.failure((err as Error).message);
@@ -1152,6 +1323,11 @@ export class PostgresAdapter
       tokenCount: row.token_count as number,
       ...(metadata != null && { metadata }),
       createdAt: new Date(row.created_at as string),
+      type: ((row.type as string | null) ?? 'message') as MemoryEntryType,
+      parentId: (row.parent_id as string | null) ?? null,
+      ...(row.seq != null && { seq: Number(row.seq) }),
+      ...(row.event != null && { event: row.event as Record<string, unknown> }),
+      formatVersion: (row.format_version as number | null) ?? 1,
     };
   }
 
@@ -1162,6 +1338,7 @@ export class PostgresAdapter
       metadata: (row.metadata as Record<string, unknown> | null) ?? {},
       createdAt: new Date(row.created_at as string),
       updatedAt: new Date(row.updated_at as string),
+      ...(row.active_leaf_id != null && { activeLeafId: row.active_leaf_id as string }),
     };
   }
 

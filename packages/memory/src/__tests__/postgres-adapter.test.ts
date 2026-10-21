@@ -42,8 +42,18 @@ function asJsonb(param: unknown): unknown {
 }
 
 /** What a database with pgvector answers to the adapter's schema probes. */
+/**
+ * Rows a working database answers with: pgvector installed, a thread with no entries yet for a
+ * new entry, the seq of an inserted entry, and the entry a delete looks up
+ */
 function withPgvector(sql: string): QueryResult | undefined {
-  return sql.includes("to_regtype('vector')") ? { rows: [{ available: true }] } : undefined;
+  if (sql.includes("to_regtype('vector')")) return { rows: [{ available: true }] };
+  if (sql.includes('SELECT active_leaf_id FROM')) return { rows: [{ active_leaf_id: null }] };
+  if (sql.includes('RETURNING seq')) return { rows: [{ seq: 1 }] };
+  if (sql.includes('SELECT thread_id, parent_id FROM')) {
+    return { rows: [{ thread_id: 'thread_123', parent_id: null }] };
+  }
+  return undefined;
 }
 
 vi.mock('pg', () => {
@@ -391,7 +401,16 @@ describe('PostgresAdapter', () => {
       expect(result.success).toBe(true);
       if (result.success) {
         expect(Object.keys(result.data[0]).sort()).toEqual(
-          ['createdAt', 'id', 'message', 'threadId', 'tokenCount'].sort()
+          [
+            'createdAt',
+            'formatVersion',
+            'id',
+            'message',
+            'parentId',
+            'threadId',
+            'tokenCount',
+            'type',
+          ].sort()
         );
       }
     });
@@ -784,7 +803,7 @@ describe('PostgresAdapter', () => {
       [
         'updateThread',
         () => adapter.updateThread('thread_1', { tags: ['b'] }),
-        'UPDATE cogitator.threads',
+        'SET metadata = COALESCE',
         1,
       ],
       [

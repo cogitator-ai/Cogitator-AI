@@ -8,6 +8,8 @@
  * - Improve over time
  */
 
+import type { Evidence } from './memory';
+
 export type ReflectionActionType = 'tool_call' | 'response' | 'decision' | 'error';
 export type InsightType = 'pattern' | 'mistake' | 'success' | 'tip' | 'warning';
 
@@ -42,6 +44,8 @@ export interface Insight {
     runId: string;
     reflectionId: string;
   };
+  /** Where it comes from, word for word: entries, tool results or files it stands on */
+  evidence?: Evidence[];
 }
 
 export interface Reflection {

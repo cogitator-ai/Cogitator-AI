@@ -19,10 +19,10 @@ interface StoredDoc extends Document {
 type CursorSurface = Pick<FindCursor<WithId<StoredDoc>>, 'sort' | 'limit' | 'toArray'>;
 type CollectionSurface = Pick<
   Collection<StoredDoc>,
-  'createIndex' | 'insertOne' | 'updateOne' | 'deleteOne' | 'deleteMany'
+  'createIndex' | 'insertOne' | 'updateOne' | 'updateMany' | 'deleteOne' | 'deleteMany'
 > & {
   findOne(filter: Filter<StoredDoc>): Promise<WithId<StoredDoc> | null>;
-  find(filter: Filter<StoredDoc>): CursorSurface;
+  find(filter: Filter<StoredDoc>, options?: Document): CursorSurface;
   findOneAndUpdate(
     filter: Filter<StoredDoc>,
     update: Document | Document[],
@@ -42,11 +42,20 @@ const mockCollection = {
     .mockResolvedValue({ acknowledged: true, insertedId: 'test-id' }),
   findOne: vi.fn<CollectionSurface['findOne']>(),
   find: vi.fn<CollectionSurface['find']>(),
-  findOneAndUpdate: vi.fn<CollectionSurface['findOneAndUpdate']>(),
+  findOneAndUpdate: vi
+    .fn<CollectionSurface['findOneAndUpdate']>()
+    .mockResolvedValue({ _id: 'thread_123', entrySeq: 0 } as WithId<StoredDoc>),
   updateOne: vi.fn<CollectionSurface['updateOne']>().mockResolvedValue({
     acknowledged: true,
     matchedCount: 1,
     modifiedCount: 1,
+    upsertedCount: 0,
+    upsertedId: null,
+  }),
+  updateMany: vi.fn<CollectionSurface['updateMany']>().mockResolvedValue({
+    acknowledged: true,
+    matchedCount: 0,
+    modifiedCount: 0,
     upsertedCount: 0,
     upsertedId: null,
   }),
@@ -237,6 +246,7 @@ describe('MongoDBAdapter', () => {
         metadata: { key: 'value' },
         createdAt: now,
         updatedAt: now,
+        chained: true,
       });
 
       const result = await adapter.getThread('thread_123');
@@ -333,6 +343,7 @@ describe('MongoDBAdapter', () => {
       metadata: {},
       createdAt: new Date(0),
       updatedAt: new Date(0),
+      chained: true,
     };
 
     beforeEach(() => {
@@ -340,7 +351,11 @@ describe('MongoDBAdapter', () => {
     });
 
     it('numbers the entries of a thread in the order they are added', async () => {
-      mockCollection.findOneAndUpdate.mockResolvedValueOnce({ _id: 'thread_123', entrySeq: 7 });
+      mockCollection.findOneAndUpdate.mockResolvedValueOnce({
+        _id: 'thread_123',
+        entrySeq: 6,
+        activeLeafId: 'entry_before',
+      });
 
       await adapter.addEntry({
         threadId: 'thread_123',
@@ -350,10 +365,12 @@ describe('MongoDBAdapter', () => {
 
       expect(mockCollection.findOneAndUpdate).toHaveBeenCalledWith(
         { _id: 'thread_123' },
-        { $inc: { entrySeq: 1 } },
-        { returnDocument: 'after', projection: { entrySeq: 1 } }
+        { $inc: { entrySeq: 1 }, $set: { activeLeafId: expect.stringMatching(/^entry_/) } },
+        { returnDocument: 'before', projection: { entrySeq: 1, activeLeafId: 1 } }
       );
-      expect(mockCollection.insertOne).toHaveBeenCalledWith(expect.objectContaining({ seq: 7 }));
+      expect(mockCollection.insertOne).toHaveBeenCalledWith(
+        expect.objectContaining({ seq: 7, parentId: 'entry_before' })
+      );
     });
 
     it('refuses an entry for a thread that does not exist', async () => {
@@ -370,7 +387,7 @@ describe('MongoDBAdapter', () => {
     });
 
     it('takes the entry back when the thread was deleted while it was added', async () => {
-      mockCollection.findOne.mockResolvedValueOnce(null);
+      mockCollection.findOne.mockResolvedValueOnce(thread).mockResolvedValueOnce(null);
 
       const result = await adapter.addEntry({
         threadId: 'thread_123',
@@ -470,11 +487,10 @@ describe('MongoDBAdapter', () => {
       });
 
       expect(mockCollection.find).toHaveBeenCalledWith({
-        threadId: { $eq: 'thread_123' },
-        createdAt: {
-          $lt: before,
-          $gt: after,
-        },
+        $and: [
+          { threadId: { $eq: 'thread_123' }, createdAt: { $lt: before, $gt: after } },
+          { $or: [{ type: { $in: ['message', 'tool_result'] } }, { type: null }] },
+        ],
       });
     });
 
@@ -696,7 +712,7 @@ describe('MongoDBAdapter', () => {
       });
       mockCollection.findOne.mockImplementation(async (filter) =>
         filter._id === 'thread_123'
-          ? { _id: 'thread_123' }
+          ? ({ _id: 'thread_123', chained: true } as WithId<StoredDoc>)
           : (stored.get(String(filter._id)) ?? null)
       );
 
@@ -719,6 +735,10 @@ describe('MongoDBAdapter', () => {
         message: { role: 'user', content: 'Hello' },
         tokenCount: 2,
         createdAt: written.data.createdAt,
+        type: 'message',
+        parentId: null,
+        seq: expect.any(Number),
+        formatVersion: 2,
       });
     });
 
@@ -755,6 +775,9 @@ describe('MongoDBAdapter', () => {
         message: { role: 'user', content: 'Hello' },
         tokenCount: 2,
         createdAt: now,
+        type: 'message',
+        parentId: null,
+        formatVersion: 1,
       };
 
       expect(single.success && single.data).toEqual(expected);

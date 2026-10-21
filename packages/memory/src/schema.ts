@@ -30,7 +30,7 @@ export const RedisConfigSchema = z.object({
     })
     .optional(),
   keyPrefix: z.string().optional(),
-  ttl: z.number().positive().optional(),
+  ttl: z.number().int().nonnegative().optional(),
   password: z.string().optional(),
 });
 

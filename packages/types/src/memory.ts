@@ -19,10 +19,41 @@ export interface Thread {
   metadata: Record<string, unknown>;
   createdAt: Date;
   updatedAt: Date;
+  /**
+   * The entry the thread's active branch ends at, which new entries are added after. Absent while
+   * the thread has no entries.
+   */
+  activeLeafId?: string;
 }
 
 /**
- * A memory entry - stored message with metadata
+ * What an entry records. `message` covers user, assistant (with its tool calls) and system
+ * messages, `tool_result` the answer of a tool. The others are events of the session, which a
+ * context never sends to a model: `model_change` (the run moved to another model),
+ * `compaction` (earlier entries summarized), `approval` and `interrupt` (a run paused for a
+ * decision or was stopped), `label` (a name for a point of the thread) and `custom` (for
+ * plugins).
+ */
+export type MemoryEntryType =
+  | 'message'
+  | 'tool_result'
+  | 'model_change'
+  | 'compaction'
+  | 'approval'
+  | 'interrupt'
+  | 'label'
+  | 'custom';
+
+/** The entry types that hold conversation, the ones reads return unless asked for others */
+export const CONVERSATION_ENTRY_TYPES: readonly MemoryEntryType[] = ['message', 'tool_result'];
+
+/** The layout of entries this version writes */
+export const MEMORY_ENTRY_FORMAT = 2;
+
+/**
+ * A memory entry. A thread's entries form a tree: each points at the entry before it on its
+ * branch (`parentId`, null for the first), and the thread's `activeLeafId` names the branch new
+ * entries go on. Branches share the entries before the point they split at.
  */
 export interface MemoryEntry {
   id: string;
@@ -33,13 +64,63 @@ export interface MemoryEntry {
   tokenCount: number;
   createdAt: Date;
   metadata?: Record<string, unknown>;
+  /** What the entry records, `message` when absent (entries written before types) */
+  type?: MemoryEntryType;
+  /** The entry before it on its branch, null for the first of the thread */
+  parentId?: string | null;
+  /** Position among the thread's entries in the order they were added */
+  seq?: number;
+  /** The payload of an event entry (any type but `message` and `tool_result`) */
+  event?: Record<string, unknown>;
+  /** Layout version of the entry, {@link MEMORY_ENTRY_FORMAT} for entries written now */
+  formatVersion?: number;
 }
 
 /**
  * An entry to add to a thread. `createdAt` places it at that time instead of now: compaction
  * uses it to put a summary before the entries it keeps without rewriting them.
+ *
+ * Without `parentId` the entry goes after the thread's active leaf and becomes it. With one it
+ * goes after that entry, on that branch. `activate: false` adds it without moving the active
+ * leaf, so a fork or a replay writes a branch of its own while the thread goes on where it was.
  */
-export type NewMemoryEntry = Omit<MemoryEntry, 'id' | 'createdAt'> & { createdAt?: Date };
+export type NewMemoryEntry = Omit<
+  MemoryEntry,
+  'id' | 'createdAt' | 'seq' | 'formatVersion' | 'parentId'
+> & {
+  createdAt?: Date;
+  parentId?: string | null;
+  activate?: boolean;
+};
+
+/** Which part of a thread's tree `getPath` reads */
+export interface PathQueryOptions {
+  threadId: string;
+  /** The entry the path ends at, the thread's active leaf by default */
+  leafId?: string;
+  /** Entries of the path to return, the newest ones, all by default */
+  limit?: number;
+  /** Only entries before this one on the path, to read a long path in pages from its end */
+  before?: string;
+  /** Entry types to return, the conversation ones by default, or `'all'` */
+  types?: readonly MemoryEntryType[] | 'all';
+  includeToolCalls?: boolean;
+}
+
+/** Evidence a derived item (summary, fact, observation) stands on: where, and what it says */
+export interface Evidence {
+  /** The memory entry the quote is from */
+  entryId?: string;
+  /** The tool call whose result the quote is from */
+  toolCallId?: string;
+  /** A part of a file the quote is from */
+  fileRange?: { path: string; start: number; end: number };
+  /** The words the item stands on, as they appear in the source */
+  quote: string;
+}
+
+/** Whether the quote of a piece of evidence was found in its source word for word */
+export type EvidenceStatus = 'verified' | 'suggested';
 
 /**
  * A fact is a long-term memory (user preference, learned info).
@@ -58,6 +139,8 @@ export interface Fact {
   updatedAt: Date;
   expiresAt?: Date;
   metadata?: Record<string, unknown>;
+  /** Where it comes from, word for word: entries, tool results or files it stands on */
+  evidence?: Evidence[];
 }
 
 /**
@@ -101,7 +184,7 @@ export interface RedisAdapterConfig extends MemoryAdapterConfig {
   };
   /** Key prefix (default: 'cogitator:' or '{cogitator}:' for cluster) */
   keyPrefix?: string;
-  /** TTL in seconds (default: 86400 = 24 hours) */
+  /** Seconds threads and entries live after their last write, 0 (the default) to keep them */
   ttl?: number;
   /** Password for authentication */
   password?: string;
@@ -156,6 +239,8 @@ export interface MemoryQueryOptions {
   before?: Date;
   after?: Date;
   includeToolCalls?: boolean;
+  /** Entry types to return, the conversation ones by default, or `'all'` */
+  types?: readonly MemoryEntryType[] | 'all';
 }
 
 /** Which threads `listThreads` returns, and in which order. */
@@ -230,6 +315,25 @@ export interface MemoryAdapter {
   getEntry(entryId: string): Promise<MemoryResult<MemoryEntry | null>>;
   deleteEntry(entryId: string): Promise<MemoryResult<void>>;
   clearThread(threadId: string): Promise<MemoryResult<void>>;
+
+  /**
+   * The entries of a branch in order, from its first entry to `leafId` (the active leaf by
+   * default), the newest `limit` of them, without reading the rest of the thread
+   */
+  getPath?(options: PathQueryOptions): Promise<MemoryResult<MemoryEntry[]>>;
+  /** Moves the active leaf back to `toEntryId`, an entry on the active branch. Nothing is deleted. */
+  rewind?(threadId: string, toEntryId: string): Promise<MemoryResult<Thread>>;
+  /** Makes the branch ending at `entryId` the active one, any entry of the thread */
+  checkout?(threadId: string, entryId: string): Promise<MemoryResult<Thread>>;
+  /**
+   * A new thread holding copies of the branch up to `atEntryId`, each copy naming its original
+   * in `metadata.forkOf`, the thread naming its origin in `metadata.forkedFrom`
+   */
+  forkThread?(
+    threadId: string,
+    atEntryId: string,
+    newThreadId?: string
+  ): Promise<MemoryResult<Thread>>;
   /**
    * Calls `listener` with every change the adapter makes from now on, until the returned
    * function is called. The built-in adapters report every change; one that does not is still

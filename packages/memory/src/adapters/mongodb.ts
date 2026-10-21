@@ -11,18 +11,22 @@ import type {
   ToolCall,
   ToolResult,
   NewMemoryEntry,
+  MemoryEntryType,
+  PathQueryOptions,
 } from '@cogitator-ai/types';
+import { CONVERSATION_ENTRY_TYPES, MEMORY_ENTRY_FORMAT } from '@cogitator-ai/types';
 import type {
   Collection,
   Document,
   Filter,
   FindCursor,
   FindOneAndUpdateOptions,
+  FindOptions,
   MongoClient as DriverClient,
   UpdateFilter,
   WithId,
 } from 'mongodb';
-import { ChangeReportingMemoryAdapter } from './base';
+import { BranchingMemoryAdapter, entryTypeWanted } from './base';
 import { threadListing, threadPage, type ThreadListing } from './thread-listing';
 
 /** A cursor over `find()` results, as far as the adapter reads it. */
@@ -36,10 +40,18 @@ type MongoCursor<T extends Document> = Pick<FindCursor<WithId<T>>, 'sort' | 'lim
  */
 interface MongoCollection<T extends Document> extends Pick<
   Collection<T>,
-  'createIndex' | 'insertOne' | 'updateOne' | 'deleteOne' | 'deleteMany'
+  | 'createIndex'
+  | 'insertOne'
+  | 'updateOne'
+  | 'updateMany'
+  | 'deleteOne'
+  | 'deleteMany'
+  | 'bulkWrite'
+  | 'aggregate'
+  | 'collectionName'
 > {
   findOne(filter: Filter<T>): Promise<WithId<T> | null>;
-  find(filter: Filter<T>): MongoCursor<T>;
+  find(filter: Filter<T>, options?: FindOptions): MongoCursor<T>;
   findOneAndUpdate(
     filter: Filter<T>,
     update: UpdateFilter<T> | Document[],
@@ -63,6 +75,9 @@ interface ThreadDoc {
   createdAt: Date;
   updatedAt: Date;
   entrySeq?: number;
+  activeLeafId?: string | null;
+  /** Set once the entries written before trees were chained, and on threads made since */
+  chained?: boolean;
 }
 
 /**
@@ -85,7 +100,14 @@ interface EntryDoc {
   createdAt: Date;
   metadata?: Record<string, unknown> | null;
   seq?: number;
+  type?: MemoryEntryType | null;
+  parentId?: string | null;
+  event?: Record<string, unknown> | null;
+  formatVersion?: number | null;
 }
+
+/** Ancestors one `$graphLookup` of a path read walks */
+const PATH_STEPS = 2000;
 
 function readMessage({ name, toolCallId, ...message }: StoredMessage): Message {
   return {
@@ -117,7 +139,23 @@ function readEntry(doc: WithId<EntryDoc>, withToolCalls: boolean): MemoryEntry {
     tokenCount: doc.tokenCount,
     createdAt: doc.createdAt,
     ...(doc.metadata && { metadata: doc.metadata }),
+    type: doc.type ?? 'message',
+    parentId: doc.parentId ?? null,
+    ...(doc.seq != null && { seq: doc.seq }),
+    ...(doc.event && { event: doc.event }),
+    formatVersion: doc.formatVersion ?? 1,
   };
+}
+
+/** A filter on entry types, absent meaning `message` */
+function typeFilter(
+  types: readonly MemoryEntryType[] | 'all' | undefined
+): Filter<EntryDoc> | undefined {
+  if (types === 'all') return undefined;
+  const wanted = [...(types ?? CONVERSATION_ENTRY_TYPES)];
+  return wanted.includes('message')
+    ? { $or: [{ type: { $in: wanted } }, { type: null }] }
+    : { type: { $in: wanted } };
 }
 
 function readThread(doc: WithId<ThreadDoc>): Thread {
@@ -127,6 +165,7 @@ function readThread(doc: WithId<ThreadDoc>): Thread {
     metadata: doc.metadata ?? {},
     createdAt: doc.createdAt,
     updatedAt: doc.updatedAt,
+    ...(doc.activeLeafId && { activeLeafId: doc.activeLeafId }),
   };
 }
 
@@ -155,7 +194,7 @@ function afterCursor({ cursor, order }: ThreadListing): Filter<ThreadDoc> | unde
     : { $or: [{ updatedAt: { $lt: at } }, { updatedAt: at, _id: { $lt: cursor.id } }] };
 }
 
-export class MongoDBAdapter extends ChangeReportingMemoryAdapter {
+export class MongoDBAdapter extends BranchingMemoryAdapter {
   readonly provider: MemoryProvider = 'mongodb';
 
   private client: MongoClient | null = null;
@@ -254,17 +293,16 @@ export class MongoDBAdapter extends ChangeReportingMemoryAdapter {
     try {
       await this.threads.updateOne(
         { _id: id },
-        { $set: { agentId, metadata, updatedAt: now }, $setOnInsert: { createdAt: now } },
+        {
+          $set: { agentId, metadata, updatedAt: now },
+          $setOnInsert: { createdAt: now, chained: true },
+        },
         { upsert: true }
       );
       const stored = await this.threads.findOne({ _id: id });
-      return this.success({
-        id,
-        agentId,
-        metadata,
-        createdAt: stored?.createdAt ?? now,
-        updatedAt: now,
-      });
+      return this.success(
+        stored ? readThread(stored) : { id, agentId, metadata, createdAt: now, updatedAt: now }
+      );
     } catch (err) {
       return this.failure((err as Error).message);
     }
@@ -274,11 +312,46 @@ export class MongoDBAdapter extends ChangeReportingMemoryAdapter {
     if (!this.db) return this.failure('Not connected');
 
     try {
-      const doc = await this.threads.findOne({ _id: threadId });
+      const doc = await this.chainedThread(threadId);
       return this.success(doc ? readThread(doc) : null);
     } catch (err) {
       return this.failure((err as Error).message);
     }
+  }
+
+  /**
+   * The thread, its entries written before trees chained in the order they were added the
+   * first time it is read
+   */
+  private async chainedThread(threadId: string): Promise<WithId<ThreadDoc> | null> {
+    const doc = await this.threads.findOne({ _id: threadId });
+    if (!doc || doc.chained) return doc;
+    const legacy = await this.entries
+      .find({ threadId, formatVersion: null }, { projection: { _id: 1 } })
+      .sort({ createdAt: 1, seq: 1, _id: 1 })
+      .toArray();
+    if (legacy.length > 0) {
+      await this.entries.bulkWrite(
+        legacy.map((entry, i) => ({
+          updateOne: {
+            filter: { _id: entry._id },
+            update: { $set: { parentId: i === 0 ? null : legacy[i - 1]!._id } },
+          },
+        }))
+      );
+    }
+    return this.threads
+      .findOneAndUpdate(
+        { _id: threadId, chained: { $ne: true } },
+        {
+          $set: {
+            chained: true,
+            ...(legacy.length > 0 && !doc.activeLeafId && { activeLeafId: legacy.at(-1)!._id }),
+          },
+        },
+        { returnDocument: 'after' }
+      )
+      .then((updated) => updated ?? this.threads.findOne({ _id: threadId }));
   }
 
   async listThreads(options?: ListThreadsOptions): Promise<MemoryResult<ThreadPage>> {
@@ -364,36 +437,132 @@ export class MongoDBAdapter extends ChangeReportingMemoryAdapter {
   private async storeEntry(entry: NewMemoryEntry): Promise<MemoryResult<MemoryEntry>> {
     if (!this.db) return this.failure('Not connected');
 
-    const full: MemoryEntry = {
-      ...entry,
-      id: this.generateId('entry'),
-      createdAt: this.entryTimestamp(entry),
-    };
+    const id = this.generateId('entry');
+    const createdAt = this.entryTimestamp(entry);
+    const { activate, parentId: askedParent, ...fields } = entry;
+    const type = fields.type ?? (fields.message.role === 'tool' ? 'tool_result' : 'message');
+    const moves = activate !== false;
 
     try {
-      const thread = await this.threads.findOneAndUpdate(
-        { _id: entry.threadId },
-        { $inc: { entrySeq: 1 } },
-        { returnDocument: 'after', projection: { entrySeq: 1 } }
-      );
-      if (!thread) return this.failure(`Thread not found: ${entry.threadId}`);
-
-      await this.entries.insertOne({
-        _id: full.id,
-        threadId: full.threadId,
-        message: full.message,
-        toolCalls: full.toolCalls,
-        toolResults: full.toolResults,
-        tokenCount: full.tokenCount,
-        createdAt: full.createdAt,
-        metadata: full.metadata,
-        seq: thread.entrySeq,
-      });
-      if (!(await this.threads.findOne({ _id: entry.threadId }))) {
-        await this.entries.deleteOne({ _id: full.id });
+      if (!(await this.chainedThread(entry.threadId))) {
         return this.failure(`Thread not found: ${entry.threadId}`);
       }
-      return this.success(full);
+      if (
+        askedParent &&
+        !(await this.entries.findOne({ _id: askedParent, threadId: entry.threadId }))
+      ) {
+        return this.failure(`Parent entry ${askedParent} is not in thread ${entry.threadId}`);
+      }
+      const before = await this.threads.findOneAndUpdate(
+        { _id: entry.threadId },
+        { $inc: { entrySeq: 1 }, ...(moves && { $set: { activeLeafId: id } }) },
+        { returnDocument: 'before', projection: { entrySeq: 1, activeLeafId: 1 } }
+      );
+      if (!before) return this.failure(`Thread not found: ${entry.threadId}`);
+      const parentId = askedParent === undefined ? (before.activeLeafId ?? null) : askedParent;
+      const seq = (before.entrySeq ?? 0) + 1;
+
+      try {
+        await this.entries.insertOne({
+          _id: id,
+          threadId: entry.threadId,
+          message: fields.message,
+          toolCalls: fields.toolCalls,
+          toolResults: fields.toolResults,
+          tokenCount: fields.tokenCount,
+          createdAt,
+          metadata: fields.metadata,
+          seq,
+          type,
+          parentId,
+          event: fields.event,
+          formatVersion: MEMORY_ENTRY_FORMAT,
+        });
+      } catch (err) {
+        if (moves) {
+          await this.threads.updateOne(
+            { _id: entry.threadId, activeLeafId: id },
+            { $set: { activeLeafId: before.activeLeafId ?? null } }
+          );
+        }
+        throw err;
+      }
+      if (!(await this.threads.findOne({ _id: entry.threadId }))) {
+        await this.entries.deleteOne({ _id: id });
+        return this.failure(`Thread not found: ${entry.threadId}`);
+      }
+      return this.success({
+        ...fields,
+        id,
+        createdAt,
+        type,
+        parentId,
+        seq,
+        formatVersion: MEMORY_ENTRY_FORMAT,
+      });
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
+  /** The path walked back with `$graphLookup`, a bounded number of ancestors at a time */
+  override async getPath(options: PathQueryOptions): Promise<MemoryResult<MemoryEntry[]>> {
+    const limitProblem = this.entryLimitProblem(options.limit);
+    if (limitProblem) return this.failure(limitProblem);
+    if (!this.db) return this.failure('Not connected');
+    const start = await this.pathStart(options);
+    if (!start.success) return start;
+
+    try {
+      const found: MemoryEntry[] = [];
+      let next: string | null = start.data;
+      while (next) {
+        const [head] = await this.entries
+          .aggregate<WithId<EntryDoc> & { ancestors: (WithId<EntryDoc> & { depth: number })[] }>([
+            { $match: { _id: next, threadId: options.threadId } },
+            {
+              $graphLookup: {
+                from: this.entries.collectionName,
+                startWith: '$parentId',
+                connectFromField: 'parentId',
+                connectToField: '_id',
+                as: 'ancestors',
+                depthField: 'depth',
+                maxDepth: PATH_STEPS - 1,
+                restrictSearchWithMatch: { threadId: options.threadId },
+              },
+            },
+          ])
+          .toArray();
+        if (!head) break;
+        const { ancestors, ...first } = head;
+        const walked = [first, ...ancestors.sort((a, b) => a.depth - b.depth)];
+        for (const doc of walked) {
+          if (!entryTypeWanted(doc.type ?? undefined, options.types)) continue;
+          found.push(readEntry(doc, options.includeToolCalls === true));
+          if (options.limit && found.length >= options.limit) return this.success(found.reverse());
+        }
+        const oldest = walked.at(-1)!;
+        next = walked.length < PATH_STEPS ? null : (oldest.parentId ?? null);
+      }
+      return this.success(found.reverse());
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
+  protected async setActiveLeaf(
+    threadId: string,
+    leafId: string | null
+  ): Promise<MemoryResult<Thread>> {
+    if (!this.db) return this.failure('Not connected');
+    try {
+      const doc = await this.threads.findOneAndUpdate(
+        { _id: threadId },
+        { $set: { activeLeafId: leafId } },
+        { returnDocument: 'after' }
+      );
+      return doc ? this.success(readThread(doc)) : this.failure(`Thread not found: ${threadId}`);
     } catch (err) {
       return this.failure((err as Error).message);
     }
@@ -414,7 +583,10 @@ export class MongoDBAdapter extends ChangeReportingMemoryAdapter {
         filter.createdAt = createdAt;
       }
 
-      let cursor = this.entries.find(filter).sort({ createdAt: -1, seq: -1 });
+      const types = typeFilter(options.types);
+      let cursor = this.entries
+        .find(types ? { $and: [filter, types] } : filter)
+        .sort({ createdAt: -1, seq: -1 });
       if (options.limit) cursor = cursor.limit(options.limit);
 
       const docs = await cursor.toArray();
@@ -448,6 +620,19 @@ export class MongoDBAdapter extends ChangeReportingMemoryAdapter {
     if (!this.db) return this.failure('Not connected');
 
     try {
+      const entry = await this.entries.findOne({ _id: entryId });
+      if (!entry) return this.success(undefined);
+      await this.chainedThread(entry.threadId);
+      const current = (await this.entries.findOne({ _id: entryId })) ?? entry;
+      const parentId = current.parentId ?? null;
+      await this.entries.updateMany(
+        { threadId: current.threadId, parentId: entryId },
+        { $set: { parentId } }
+      );
+      await this.threads.updateOne(
+        { _id: current.threadId, activeLeafId: entryId },
+        { $set: { activeLeafId: parentId } }
+      );
       await this.entries.deleteOne({ _id: entryId });
       return this.success(undefined);
     } catch (err) {
@@ -467,6 +652,10 @@ export class MongoDBAdapter extends ChangeReportingMemoryAdapter {
 
     try {
       await this.entries.deleteMany({ threadId });
+      await this.threads.updateOne(
+        { _id: threadId },
+        { $set: { activeLeafId: null, chained: true } }
+      );
       return this.success(undefined);
     } catch (err) {
       return this.failure((err as Error).message);
