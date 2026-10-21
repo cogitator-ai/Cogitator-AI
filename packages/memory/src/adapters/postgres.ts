@@ -39,6 +39,7 @@ import type {
   MemoryFileAdapter,
   MemoryFileFilter,
   MemoryFileVersion,
+  EntryRedaction,
 } from '@cogitator-ai/types';
 import {
   CONVERSATION_ENTRY_TYPES,
@@ -1064,6 +1065,32 @@ export class PostgresAdapter
     if (result.rows.length === 0) return this.success(null);
 
     return this.success(this.rowToEntry(result.rows[0], true));
+  }
+
+  async redactEntry(
+    entryId: string,
+    redaction: EntryRedaction
+  ): Promise<MemoryResult<MemoryEntry | null>> {
+    return this.redactThrough(entryId, redaction, async (entry) => {
+      if (!this.pool) return this.failure('Not connected');
+      try {
+        await this.pool.query(
+          `UPDATE ${this.schema}.entries SET message = $1::jsonb, tool_calls = $2::jsonb,
+             tool_results = $3::jsonb, token_count = $4, metadata = $5::jsonb WHERE id = $6`,
+          [
+            toJsonb(entry.message),
+            toJsonb(entry.toolCalls),
+            toJsonb(entry.toolResults),
+            entry.tokenCount,
+            toJsonb(entry.metadata ?? {}),
+            entry.id,
+          ]
+        );
+        return this.success(undefined);
+      } catch (err) {
+        return this.failure((err as Error).message);
+      }
+    });
   }
 
   async deleteEntry(entryId: string): Promise<MemoryResult<void>> {

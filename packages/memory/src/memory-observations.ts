@@ -319,8 +319,14 @@ export class MemoryObservations {
         gaveUp();
         continue;
       }
+      const standing = before ? undefined : await this.files.read(access, path);
+      const expected = before
+        ? before.file.sha256
+        : standing?.version.redacted !== undefined
+          ? standing.sha256
+          : null;
       try {
-        await this.files.put(access, path, content, before?.file.sha256 ?? null);
+        await this.files.put(access, path, content, expected);
       } catch (error) {
         if (!(error instanceof MemoryFileError)) throw error;
         gaveUp();

@@ -20,6 +20,7 @@ import type {
   MemoryFileAdapter,
   MemoryFileFilter,
   MemoryFileVersion,
+  EntryRedaction,
 } from '@cogitator-ai/types';
 import { BranchingMemoryAdapter, entryTypeWanted, withoutToolCalls } from './base';
 import { MEMORY_ENTRY_FORMAT, MEMORY_FILE_CONFLICT } from '@cogitator-ai/types';
@@ -298,6 +299,17 @@ export class InMemoryAdapter
   async getEntry(entryId: string): Promise<MemoryResult<MemoryEntry | null>> {
     const entry = this.entries.get(entryId);
     return this.success(entry ? copyEntry(entry) : null);
+  }
+
+  async redactEntry(
+    entryId: string,
+    redaction: EntryRedaction
+  ): Promise<MemoryResult<MemoryEntry | null>> {
+    return this.redactThrough(entryId, redaction, async (entry) => {
+      if (!this.entries.has(entry.id)) return this.failure(`Entry not found: ${entry.id}`);
+      this.entries.set(entry.id, copyEntry(entry));
+      return this.success(undefined);
+    });
   }
 
   async deleteEntry(entryId: string): Promise<MemoryResult<void>> {

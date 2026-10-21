@@ -18,6 +18,7 @@ import type {
   MemoryFileFilter,
   MemoryFileVersion,
   MemoryItemFilter,
+  EntryRedaction,
 } from '@cogitator-ai/types';
 import { CONVERSATION_ENTRY_TYPES, MEMORY_ENTRY_FORMAT } from '@cogitator-ai/types';
 import { mkdir } from 'node:fs/promises';
@@ -621,6 +622,33 @@ export class SQLiteAdapter
     } catch (err) {
       return this.failure((err as Error).message);
     }
+  }
+
+  async redactEntry(
+    entryId: string,
+    redaction: EntryRedaction
+  ): Promise<MemoryResult<MemoryEntry | null>> {
+    return this.redactThrough(entryId, redaction, async (entry) => {
+      if (!this.db) return this.failure('Not connected');
+      try {
+        this.db
+          .prepare(
+            `UPDATE entries SET message = ?, tool_calls = ?, tool_results = ?, token_count = ?,
+               metadata = ? WHERE id = ?`
+          )
+          .run(
+            JSON.stringify(entry.message),
+            entry.toolCalls ? JSON.stringify(entry.toolCalls) : null,
+            entry.toolResults ? JSON.stringify(entry.toolResults) : null,
+            entry.tokenCount,
+            entry.metadata ? JSON.stringify(entry.metadata) : null,
+            entry.id
+          );
+        return this.success(undefined);
+      } catch (err) {
+        return this.failure((err as Error).message);
+      }
+    });
   }
 
   async deleteEntry(entryId: string): Promise<MemoryResult<void>> {

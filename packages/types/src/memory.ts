@@ -346,10 +346,18 @@ export interface SemanticSearchOptions {
 export type MemoryChange =
   | { type: 'entry-added'; entry: MemoryEntry }
   | { type: 'entry-deleted'; entryId: string; threadId?: string }
+  | { type: 'entry-redacted'; entryId: string; threadId: string }
   | { type: 'thread-cleared'; threadId: string }
   | { type: 'thread-deleted'; threadId: string };
 
 export type MemoryChangeListener = (change: MemoryChange) => void;
+
+/** What redacting an entry records in its `metadata.redacted` */
+export interface EntryRedaction {
+  at: Date;
+  /** Why it was redacted, such as a user's request */
+  reason?: string;
+}
 
 /**
  * Core memory adapter - all adapters implement this
@@ -383,6 +391,17 @@ export interface MemoryAdapter {
    * default), the newest `limit` of them, without reading the rest of the thread
    */
   getPath?(options: PathQueryOptions): Promise<MemoryResult<MemoryEntry[]>>;
+  /**
+   * Replaces what a conversation entry (`message` or `tool_result`) says with `[redacted]`: its
+   * text, the arguments of its tool calls and the results of its tools. Its place in the thread,
+   * its role and the ids that tie tool calls to their results stay, and `metadata.redacted`
+   * records `redaction`. Null when there is no such entry. An event entry, such as a compaction,
+   * is refused: delete it instead.
+   */
+  redactEntry?(
+    entryId: string,
+    redaction: EntryRedaction
+  ): Promise<MemoryResult<MemoryEntry | null>>;
   /** Moves the active leaf back to `toEntryId`, an entry on the active branch. Nothing is deleted. */
   rewind?(threadId: string, toEntryId: string): Promise<MemoryResult<Thread>>;
   /** Makes the branch ending at `entryId` the active one, any entry of the thread */

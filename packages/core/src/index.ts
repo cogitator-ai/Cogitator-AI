@@ -4,7 +4,7 @@
  * Core runtime for Cogitator AI agents
  */
 
-export { Cogitator } from './runtime';
+export { Cogitator, type MemoryCascadeCall } from './runtime';
 export { CallPricer } from './cogitator/run-cost';
 export { Agent, AgentDeserializationError, memoryAgentId } from './agent';
 export {

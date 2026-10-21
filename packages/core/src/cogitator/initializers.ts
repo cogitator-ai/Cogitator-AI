@@ -518,7 +518,7 @@ export async function cleanupState(state: InitializerState): Promise<void> {
   state.contextManagerInitialized = false;
 }
 
-function isFactAdapter(adapter: MemoryAdapter): adapter is MemoryAdapter & FactAdapter {
+export function isFactAdapter(adapter: MemoryAdapter): adapter is MemoryAdapter & FactAdapter {
   const candidate = adapter as Partial<FactAdapter>;
   return typeof candidate.getFacts === 'function' && typeof candidate.addFact === 'function';
 }
@@ -550,7 +550,9 @@ async function releaseAdapter(adapter: { disconnect(): Promise<unknown> }): Prom
   }
 }
 
-function isEmbeddingAdapter(adapter: MemoryAdapter): adapter is MemoryAdapter & EmbeddingAdapter {
+export function isEmbeddingAdapter(
+  adapter: MemoryAdapter
+): adapter is MemoryAdapter & EmbeddingAdapter {
   const candidate = adapter as Partial<EmbeddingAdapter>;
   return typeof candidate.search === 'function' && typeof candidate.addEmbedding === 'function';
 }

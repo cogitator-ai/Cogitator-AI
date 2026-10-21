@@ -658,6 +658,21 @@ export class MemoryItems {
     await this.update(itemIds, (item) => (item.expiredAt ? item : { ...item, expiredAt: at }));
   }
 
+  /**
+   * Keeps of each item's evidence only the pieces `keep` takes, such as when the entries the rest
+   * quote were deleted. An item that is left with no evidence keeps none. Returns the ids of the
+   * items it changed.
+   */
+  async reviseEvidence(
+    itemIds: readonly string[],
+    keep: (evidence: Evidence) => boolean
+  ): Promise<string[]> {
+    return this.update(itemIds, (item) => {
+      const kept = item.evidence.filter(keep);
+      return kept.length === item.evidence.length ? item : { ...item, evidence: kept };
+    });
+  }
+
   /** Deletes items for good, such as everything a user asked to be forgotten */
   async purge(itemIds: readonly string[]): Promise<void> {
     for (const [agentId, ids] of await this.idsByAgent(itemIds)) {

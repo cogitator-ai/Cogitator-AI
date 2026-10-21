@@ -23,6 +23,7 @@ import type {
   MemoryFileAdapter,
   MemoryFileFilter,
   MemoryFileVersion,
+  EntryRedaction,
 } from '@cogitator-ai/types';
 import {
   CONVERSATION_ENTRY_TYPES,
@@ -1143,6 +1144,32 @@ export class MongoDBAdapter
     } catch (err) {
       return this.failure((err as Error).message);
     }
+  }
+
+  async redactEntry(
+    entryId: string,
+    redaction: EntryRedaction
+  ): Promise<MemoryResult<MemoryEntry | null>> {
+    return this.redactThrough(entryId, redaction, async (entry) => {
+      if (!this.db) return this.failure('Not connected');
+      try {
+        await this.entries.updateOne(
+          { _id: entry.id },
+          {
+            $set: {
+              message: entry.message,
+              toolCalls: entry.toolCalls,
+              toolResults: entry.toolResults,
+              tokenCount: entry.tokenCount,
+              metadata: entry.metadata,
+            },
+          }
+        );
+        return this.success(undefined);
+      } catch (err) {
+        return this.failure((err as Error).message);
+      }
+    });
   }
 
   async deleteEntry(entryId: string): Promise<MemoryResult<void>> {

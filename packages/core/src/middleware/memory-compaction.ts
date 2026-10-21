@@ -14,8 +14,16 @@ import type {
   RunMiddleware,
 } from '@cogitator-ai/types';
 import { getLogger } from '../logger';
+import { onActivePath } from './memory-extraction';
 
 /** The run a compaction follows, which its calls are counted against and stop with */
+/** A compaction stopped before a model call, as the run's branch is no longer the active one */
+class LeftBranchError extends Error {
+  constructor(threadId: string) {
+    super(`The branch of thread ${threadId} the run compacted is no longer the active one`);
+  }
+}
+
 export interface CompactionRun {
   runId: string;
   agentId: string;
@@ -110,14 +118,25 @@ export function memoryCompactionMiddleware(
         const instructions = [settings.summaryPrompt, before?.instructions]
           .filter((part): part is string => !!part?.trim())
           .join('\n\n');
+        const summarize = deps.summarizer(settings.summaryModel ?? model, {
+          runId: result.runId,
+          agentId: result.agentId,
+          threadId: place.threadId,
+          signal: context.signal,
+        });
+        const leafId = place.leafId;
+        const getPath = memory.getPath.bind(memory);
         const service = new CompactionService({
           adapter: memory,
-          summarize: deps.summarizer(settings.summaryModel ?? model, {
-            runId: result.runId,
-            agentId: result.agentId,
-            threadId: place.threadId,
-            signal: context.signal,
-          }),
+          summarize: async (messages, options) => {
+            const now = await memory.getThread(place.threadId);
+            const stays =
+              now.success &&
+              now.data !== null &&
+              (await onActivePath({ getPath }, place.threadId, now.data.activeLeafId, leafId));
+            if (!stays) throw new LeftBranchError(place.threadId);
+            return summarize(messages, options);
+          },
         });
         const keepsTokens =
           settings.keepRecentTokens !== undefined || settings.keepRecent === undefined;
@@ -132,6 +151,7 @@ export function memoryCompactionMiddleware(
           ...(instructions && { summaryPrompt: instructions }),
         });
       } catch (error) {
+        if (error instanceof LeftBranchError) return;
         if (context.signal.aborted) {
           getLogger().warn('Compacting the thread stopped with its run', {
             threadId: place.threadId,

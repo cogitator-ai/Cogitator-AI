@@ -178,6 +178,7 @@ export class MessageIndex {
         return;
       }
       case 'entry-deleted':
+      case 'entry-redacted':
         this.waiting.delete(change.entryId);
         this.vectors.delete(change.entryId);
         remember(this.deletedEntries, change.entryId, true, TOMBSTONES);

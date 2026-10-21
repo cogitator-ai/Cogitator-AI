@@ -28,6 +28,7 @@ import type {
   MemoryFileAdapter,
   MemoryFileFilter,
   MemoryFileVersion,
+  EntryRedaction,
 } from '@cogitator-ai/types';
 import { createRedisClient, type RedisClient } from '@cogitator-ai/redis';
 import { BranchingMemoryAdapter, entryTypeWanted } from './base';
@@ -1326,6 +1327,34 @@ export class RedisAdapter
       const data = await client.get(this.key('entry', entryId));
       return this.success(data === null ? null : readEntry(parseEntry(data), true));
     });
+  }
+
+  async redactEntry(
+    entryId: string,
+    redaction: EntryRedaction
+  ): Promise<MemoryResult<MemoryEntry | null>> {
+    return this.redactThrough(entryId, redaction, (entry) =>
+      this.run(async (client) => {
+        const key = this.key('entry', entry.id);
+        const data = await client.get(key);
+        if (data === null) return this.failure(`Entry not found: ${entry.id}`);
+        const stored = {
+          ...parseEntry(data),
+          message: entry.message,
+          toolCalls: entry.toolCalls,
+          toolResults: entry.toolResults,
+          tokenCount: entry.tokenCount,
+          metadata: entry.metadata,
+        };
+        await client.eval(
+          "return redis.call('SET', KEYS[1], ARGV[1], 'XX', 'KEEPTTL')",
+          1,
+          key,
+          JSON.stringify(stored)
+        );
+        return this.success(undefined);
+      })
+    );
   }
 
   async deleteEntry(entryId: string): Promise<MemoryResult<void>> {

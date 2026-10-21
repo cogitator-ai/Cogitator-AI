@@ -40,6 +40,7 @@ export type MemoryAdapterScenario =
   | 'list-threads-refuses-bad-input'
   | 'list-threads-edges'
   | 'unserializable-values'
+  | 'redacts-an-entry-in-place'
   | 'refuses-empty-thread-id'
   | 'reports-changes'
   | 'health-check'
@@ -584,6 +585,78 @@ const SCENARIOS: Record<MemoryAdapterScenario, (adapter: MemoryAdapter) => Promi
     assert.equal(deleted.entryId, added.entry.id);
     assert.deepEqual(cleared, { type: 'thread-cleared', threadId: id });
     assert.deepEqual(dropped, { type: 'thread-deleted', threadId: other });
+  },
+
+  async 'redacts-an-entry-in-place'(adapter) {
+    if (!adapter.redactEntry || !adapter.onChange) return;
+    const { agentId } = scope();
+    const id = ok(await adapter.createThread(agentId, {}), 'createThread').id;
+    const first = ok(
+      await adapter.addEntry({ threadId: id, message: user('my card is 4111'), tokenCount: 5 }),
+      'addEntry'
+    );
+    const call = ok(
+      await adapter.addEntry({
+        threadId: id,
+        message: { role: 'assistant', content: 'checking the card 4111' },
+        toolCalls: [{ id: 'c1', name: 'lookup', arguments: { card: '4111' } }],
+        toolResults: [{ callId: 'c1', name: 'lookup', result: { owner: 'Ana 4111' } }],
+        tokenCount: 6,
+      }),
+      'addEntry'
+    );
+    const last = ok(
+      await adapter.addEntry({ threadId: id, message: user('thanks'), tokenCount: 1 }),
+      'addEntry'
+    );
+    const changes: MemoryChange[] = [];
+    const stop = adapter.onChange((change) => changes.push(change));
+    const at = new Date('2026-10-22T10:00:00.000Z');
+    let redacted;
+    try {
+      redacted = ok(
+        await adapter.redactEntry(first.id, { at, reason: 'user asked' }),
+        'redactEntry'
+      );
+      ok(await adapter.redactEntry(call.id, { at }), 'redactEntry of a call');
+      assert.equal(
+        ok(
+          await adapter.redactEntry(`${first.id}-missing`, { at }),
+          'redactEntry of a missing entry'
+        ),
+        null
+      );
+    } finally {
+      stop();
+    }
+    assert.equal(redacted?.message.content, '[redacted]');
+    const read = ok(await adapter.getEntry(first.id), 'getEntry');
+    assert.equal(read?.message.content, '[redacted]');
+    assert.equal(read?.message.role, 'user');
+    assert.deepEqual(read?.metadata?.redacted, { at: at.toISOString(), reason: 'user asked' });
+    const readCall = ok(await adapter.getEntry(call.id), 'getEntry');
+    assert.deepEqual(readCall?.toolCalls?.[0]?.arguments, {});
+    assert.equal(readCall?.toolCalls?.[0]?.id, 'c1');
+    assert.equal(readCall?.toolResults?.[0]?.result, '[redacted]');
+    assert.ok(!JSON.stringify(readCall).includes('4111'), 'nothing of what it said is kept');
+    const all = ok(
+      await adapter.getEntries({ threadId: id, includeToolCalls: true }),
+      'getEntries'
+    );
+    assert.deepEqual(
+      all.map((entry) => entry.id),
+      [first.id, call.id, last.id],
+      'a redacted entry keeps its place'
+    );
+    assert.deepEqual(
+      changes.map((change) => change.type),
+      ['entry-redacted', 'entry-redacted'],
+      'each redaction reported once'
+    );
+    if (adapter.getPath) {
+      const path = ok(await adapter.getPath({ threadId: id }), 'getPath');
+      assert.equal(path.at(-1)?.id, last.id, 'the branch goes on past it');
+    }
   },
 
   async 'refuses-empty-thread-id'(adapter) {

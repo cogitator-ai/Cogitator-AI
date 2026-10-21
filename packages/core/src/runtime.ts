@@ -25,6 +25,7 @@ import type {
   MemoryAdapter,
   MemoryFilesConfig,
   MemoryFileAdapter,
+  GraphAdapter,
   MemoryItemScope,
   MemoryConsolidationReport,
   HandoffEvent,
@@ -69,11 +70,21 @@ import {
   type SummarizeFn,
   isMemoryFileAdapter,
   isMemoryItemAdapter,
+  MemoryCascade,
+  type MemoryCascadeReport,
   MemoryFiles,
   PLAYBOOK_PATH,
   inert,
   parsePlaybook,
 } from '@cogitator-ai/memory';
+
+/** Whose memory a cascade of {@link Cogitator.forget} goes through */
+export interface MemoryCascadeCall {
+  /** Agents (or their memory ids) whose items, files and facts to go through */
+  agents?: readonly (Agent | string)[];
+  /** A knowledge graph of your own to go through too */
+  graph?: GraphAdapter;
+}
 
 /** Entries of a thread {@link Cogitator.indexMemory} reads at once */
 const INDEX_PAGE = 500;
@@ -143,6 +154,8 @@ import {
   initializeSecurity,
   initializeContextManager,
   cleanupState,
+  isEmbeddingAdapter,
+  isFactAdapter,
 } from './cogitator/initializers';
 import { CogitatorError, ErrorCode, resolveModelRoute } from '@cogitator-ai/types';
 import {
@@ -2965,6 +2978,150 @@ export class Cogitator implements ToolInvoker {
       run: { runId, agentId: agent.id, threadId },
       ...(run.since && { since: run.since }),
     });
+  }
+
+  /**
+   * Forgets what a conversation established, in every store memory keeps: `{ entryIds }` deletes
+   * those entries, `{ threadId }` the thread, `{ userId }` every thread of the user (by its
+   * `metadata.userId`) and everything kept for the user. With them goes all memory derived from
+   * them: compaction summaries that cover them (the next compaction writes them again), memory
+   * items, facts, graph nodes and edges that stand only on them (those that stand on more lose the
+   * quotes of them), their vectors, memory file versions written at them, and every version of an
+   * observation or a playbook that names an item that went, the playbook in front losing those
+   * rules in a new version. See `MemoryCascade` and the report it returns.
+   *
+   * Items, files, facts and the graph are kept by agent: `agents` names those whose memory to go
+   * through (their memory ids), the agent of each thread found is always among them. `graph` is a
+   * knowledge graph of your own to go through too.
+   *
+   * @throws CogitatorError when no memory is configured, or `{ userId }` names no agent
+   */
+  async forget(
+    target: { entryIds: readonly string[] } | { threadId: string } | { userId: string },
+    options: MemoryCascadeCall = {}
+  ): Promise<MemoryCascadeReport> {
+    const { cascade, agentIds } = await this.cascadeFor('forget', options);
+    if ('userId' in target) {
+      if (agentIds.length === 0) {
+        throw new CogitatorError({
+          message: 'forget({ userId }) needs the agents whose memory to go through: pass agents',
+          code: ErrorCode.VALIDATION_ERROR,
+        });
+      }
+      return cascade.deleteUser(target.userId, { agentIds });
+    }
+    if ('threadId' in target) {
+      return cascade.deleteThread(target.threadId, {
+        agentIds: await this.withThreadAgents(agentIds, [target.threadId]),
+      });
+    }
+    return cascade.deleteEntries(target.entryIds, {
+      agentIds: await this.withThreadAgents(agentIds, await this.threadsOf(target.entryIds)),
+    });
+  }
+
+  /**
+   * Redacts `entryIds` in place: what they said becomes `[redacted]` while their place in the
+   * thread stays (`MemoryAdapter.redactEntry`), and all memory derived from what they said goes as
+   * with {@link forget}. A compaction entry among them is deleted.
+   *
+   * @throws CogitatorError when no memory is configured, or the adapter cannot redact
+   */
+  async redactEntries(
+    entryIds: readonly string[],
+    options: MemoryCascadeCall & { reason?: string } = {}
+  ): Promise<MemoryCascadeReport> {
+    const { cascade, agentIds } = await this.cascadeFor('redactEntries', options);
+    const memory = this.state.memoryAdapter;
+    if (!memory?.redactEntry) {
+      throw new CogitatorError({
+        message: `The ${memory?.provider ?? 'configured'} memory adapter cannot redact entries`,
+        code: ErrorCode.VALIDATION_ERROR,
+      });
+    }
+    return cascade.redactEntries(
+      entryIds,
+      { at: new Date(), ...(options.reason !== undefined && { reason: options.reason }) },
+      { agentIds: await this.withThreadAgents(agentIds, await this.threadsOf(entryIds)) }
+    );
+  }
+
+  /**
+   * Rewinds `threadId` to `toEntryId`, an entry of its active branch: new entries go after it,
+   * and the entries after it stay on a branch of their own. The memory items that stood only on
+   * those entries become `stale` (`staleBecause: { reason: 'rewound' }`), so later runs no longer
+   * take them for what holds. Summaries and memory files of the branch left behind are not seen
+   * from the new one already.
+   *
+   * @throws CogitatorError when no memory is configured, or the adapter has no branches
+   */
+  async rewind(
+    threadId: string,
+    toEntryId: string,
+    options: MemoryCascadeCall = {}
+  ): Promise<MemoryCascadeReport> {
+    const { cascade, agentIds } = await this.cascadeFor('rewind', options);
+    return cascade.rewind(threadId, toEntryId, {
+      agentIds: await this.withThreadAgents(agentIds, [threadId]),
+    });
+  }
+
+  /** The cascade over this runtime's memory stores, and the memory ids of `options.agents` */
+  private async cascadeFor(
+    method: string,
+    options: MemoryCascadeCall
+  ): Promise<{ cascade: MemoryCascade; agentIds: string[] }> {
+    const memory = await this.getMemory();
+    if (!memory) {
+      throw new CogitatorError({
+        message: `${method} needs memory: set memory.adapter in the Cogitator config`,
+        code: ErrorCode.VALIDATION_ERROR,
+      });
+    }
+    const embeddings =
+      this.state.embeddingStore ?? (isEmbeddingAdapter(memory) ? memory : undefined);
+    const cascade = new MemoryCascade({
+      memory,
+      ...(isMemoryItemAdapter(memory) && { items: memory }),
+      ...(isMemoryFileAdapter(memory) && { files: memory }),
+      ...(isFactAdapter(memory) && { facts: memory }),
+      ...(embeddings && { embeddings }),
+      ...(options.graph && { graph: options.graph }),
+    });
+    const agentIds = [
+      ...new Set([
+        ...(options.agents ?? []).flatMap((agent) =>
+          typeof agent === 'string' ? [agent] : [memoryAgentId(agent), agent.id]
+        ),
+      ]),
+    ];
+    return { cascade, agentIds };
+  }
+
+  /** The threads `entryIds` are in */
+  private async threadsOf(entryIds: readonly string[]): Promise<string[]> {
+    const memory = this.state.memoryAdapter;
+    if (!memory) return [];
+    const threads = new Set<string>();
+    for (const entryId of entryIds) {
+      const entry = await memory.getEntry(entryId);
+      if (entry.success && entry.data) threads.add(entry.data.threadId);
+    }
+    return [...threads];
+  }
+
+  /** `agentIds` with the agents of `threadIds` */
+  private async withThreadAgents(
+    agentIds: readonly string[],
+    threadIds: readonly string[]
+  ): Promise<string[]> {
+    const memory = this.state.memoryAdapter;
+    const all = new Set(agentIds);
+    for (const threadId of threadIds) {
+      const thread = await memory?.getThread(threadId);
+      if (thread?.success && thread.data) all.add(thread.data.agentId);
+    }
+    return [...all];
   }
 
   /**
