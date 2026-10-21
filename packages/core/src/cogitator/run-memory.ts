@@ -60,12 +60,18 @@ export class RunMemory {
 
   /**
    * Where the run reads its conversation, once it may use memory, also when it saves none
-   * (`saveHistory: false`): its thread and newest entry
+   * (`saveHistory: false`): its thread and newest entry, and once it saved an entry, the entry its
+   * own entries follow (`ownAfter`, null at the root of the thread)
    */
-  get conversation(): { threadId: string; leafId?: string | null } | undefined {
+  get conversation():
+    { threadId: string; leafId?: string | null; ownAfter?: string | null } | undefined {
     if (!this.opened || !this.memory() || this.options().useMemory === false) return undefined;
     const leafId = this.leafId ?? this.place.parentId;
-    return { threadId: this.threadId, ...(leafId !== undefined && { leafId }) };
+    return {
+      threadId: this.threadId,
+      ...(leafId !== undefined && { leafId }),
+      ...(this.branchPoint !== undefined && { ownAfter: this.branchPoint }),
+    };
   }
 
   /** Whether the run may write to its thread: {@link open} was called */

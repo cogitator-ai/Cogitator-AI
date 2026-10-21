@@ -228,10 +228,18 @@ interface FileBatchDoc {
   versions: MemoryFileVersion[];
 }
 
-/** A place a file version took: its scope and path, and its sequence */
+/**
+ * A place a file version took: its scope and path, and its sequence, with the batch that took it
+ * and when, so a place a writer took and never published is let go again
+ */
 interface FilePlaceDoc {
   _id: string;
+  batchId: string;
+  at: Date;
 }
+
+/** How long a place may wait for its batch before it is taken as left behind */
+const ORPHAN_PLACE_MS = 60_000;
 
 /** The id of the place `version` takes: its scope, path and sequence */
 function filePlaceOf(version: MemoryFileVersion): string {
@@ -1350,14 +1358,15 @@ export class MongoDBAdapter
     if (versions.length === 0) return this.success([]);
     const places = versions.map((version) => filePlaceOf(version));
     if (new Set(places).size !== places.length) return this.failure(MEMORY_FILE_CONFLICT);
+    const batchId = `batch_${versions[0]!.id}`;
     let taken = 0;
     try {
       for (const place of places) {
-        await this.filePlaces.insertOne({ _id: place });
+        await this.takePlace(place, batchId);
         taken++;
       }
       await this.fileBatches.insertOne({
-        _id: `batch_${versions[0]!.id}`,
+        _id: batchId,
         agentId: versions[0]!.scope.agentId,
         ids: versions.map((version) => version.id),
         paths: [...new Set(versions.map((version) => version.path))],
@@ -1425,29 +1434,25 @@ export class MongoDBAdapter
     }
   }
 
+  /**
+   * Deletes the versions out of their batches in place (`$pull`), so a redaction or another
+   * deletion that lands meanwhile is never undone, then lets their places go
+   */
   async deleteFileVersions(ids: string[]): Promise<MemoryResult<void>> {
     if (!this.db) return this.failure('Not connected');
     if (ids.length === 0) return this.success(undefined);
     try {
       const batches = await this.fileBatches.find({ ids: { $in: ids } }).toArray();
       const gone = new Set(ids);
-      for (const batch of batches) {
-        const dropped = batch.versions.filter((version) => gone.has(version.id));
-        const kept = batch.versions.filter((version) => !gone.has(version.id));
-        if (kept.length === 0) {
-          await this.fileBatches.deleteOne({ _id: batch._id });
-        } else {
-          await this.fileBatches.updateOne(
-            { _id: batch._id },
-            {
-              $set: {
-                ids: kept.map((version) => version.id),
-                paths: [...new Set(kept.map((version) => version.path))],
-                versions: kept,
-              },
-            }
-          );
-        }
+      const dropped = batches.flatMap((batch) =>
+        batch.versions.filter((version) => gone.has(version.id))
+      );
+      await this.fileBatches.updateMany(
+        { ids: { $in: ids } },
+        { $pull: { versions: { id: { $in: ids } }, ids: { $in: ids } } }
+      );
+      await this.fileBatches.deleteMany({ ids: { $size: 0 } });
+      if (dropped.length > 0) {
         await this.filePlaces.deleteMany({
           _id: { $in: dropped.map((version) => filePlaceOf(version)) },
         });
@@ -1455,6 +1460,30 @@ export class MongoDBAdapter
       return this.success(undefined);
     } catch (err) {
       return this.failure((err as Error).message);
+    }
+  }
+
+  /**
+   * Takes `place` for `batchId`. A place another batch took longer than
+   * {@link ORPHAN_PLACE_MS} ago without publishing it, as a writer that died between the two
+   * steps leaves it, is let go and taken again; any other taken place is a conflict.
+   */
+  private async takePlace(place: string, batchId: string): Promise<void> {
+    try {
+      await this.filePlaces.insertOne({ _id: place, batchId, at: new Date() });
+      return;
+    } catch (err) {
+      if (!isDuplicateKey(err)) throw err;
+      const held = await this.filePlaces.findOne({ _id: place });
+      if (
+        !held ||
+        Date.now() - held.at.getTime() < ORPHAN_PLACE_MS ||
+        (await this.fileBatches.findOne({ _id: held.batchId }))
+      ) {
+        throw err;
+      }
+      await this.filePlaces.deleteOne({ _id: place, batchId: held.batchId });
+      await this.filePlaces.insertOne({ _id: place, batchId, at: new Date() });
     }
   }
 

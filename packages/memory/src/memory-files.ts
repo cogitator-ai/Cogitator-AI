@@ -185,6 +185,8 @@ interface PlannedWrite {
   path: string;
   content: string | null;
   renamedFrom?: string;
+  /** The path whose version in front decides the scope, the write's own by default */
+  scopeOf?: string;
 }
 
 /** `path` as the path of a file: a path that ends in `/` names a directory */
@@ -269,6 +271,15 @@ export class MemoryFiles {
         ...(root !== MEMORY_ROOT && { prefix: root }),
       })
     );
+    return this.filesOf(access, versions, root);
+  }
+
+  /** The files `versions` make for the access under `root`: the version in front of each path */
+  private filesOf(
+    access: MemoryFileAccess,
+    versions: readonly MemoryFileVersion[],
+    root = MEMORY_ROOT
+  ): MemoryFile[] {
     const heads = new Map<string, MemoryFileVersion>();
     for (const version of versions) {
       if (!this.sees(access, version) || !under(version.path, root)) continue;
@@ -450,7 +461,7 @@ export class MemoryFiles {
       return moved.flatMap((file) => {
         const path = `${to}${file.path.slice(from.length)}`;
         return [
-          { path, content: file.content, renamedFrom: file.path },
+          { path, content: file.content, renamedFrom: file.path, scopeOf: file.path },
           { path: file.path, content: null },
         ];
       });
@@ -600,12 +611,18 @@ export class MemoryFiles {
   ): Promise<void> {
     await this.exclusive(access.scope.agentId, async () => {
       for (let attempt = 1; ; attempt++) {
-        const current = new Map((await this.list(access)).map((file) => [file.path, file]));
+        const snapshot = unwrap(
+          await this.adapter.findFileVersions({
+            agentId: access.scope.agentId,
+            visibleTo: access.visibleTo ?? access.scope,
+          })
+        );
+        const current = new Map(this.filesOf(access, snapshot).map((file) => [file.path, file]));
         const writes = (await plan(current)).map((write) => ({
           ...write,
-          scope: this.scopeFor(access, current.get(write.path)),
+          scope: this.scopeFor(access, current.get(write.scopeOf ?? write.path)),
         }));
-        const sequences = await this.nextSequences(access.scope.agentId, writes);
+        const sequences = this.nextSequences(snapshot, writes);
         const conflict = await this.write(access, writes, current, sequences);
         if (!conflict) return;
         if (attempt >= WRITE_ATTEMPTS) {
@@ -628,21 +645,19 @@ export class MemoryFiles {
       : access.scope;
   }
 
-  /** The next free place of each path in its scope, after every version of it on any branch */
-  private async nextSequences(
-    agentId: string,
+  /**
+   * The next place of each path in its scope, after every version of it on any branch, read from
+   * the same snapshot the change was planned on: a version another writer added since takes that
+   * place, so the store refuses this change and it is planned again
+   */
+  private nextSequences(
+    snapshot: readonly MemoryFileVersion[],
     writes: readonly { path: string; scope: MemoryItemScope }[]
-  ): Promise<Map<string, number>> {
-    const versions = unwrap(
-      await this.adapter.findFileVersions({
-        agentId,
-        paths: [...new Set(writes.map((write) => write.path))],
-      })
-    );
+  ): Map<string, number> {
     const next = new Map<string, number>(
       writes.map((write) => [fileKeyOf(write.scope, write.path), 1])
     );
-    for (const version of versions) {
+    for (const version of snapshot) {
       const key = fileKeyOf(version.scope, version.path);
       const known = next.get(key);
       if (known !== undefined) next.set(key, Math.max(known, version.sequence + 1));

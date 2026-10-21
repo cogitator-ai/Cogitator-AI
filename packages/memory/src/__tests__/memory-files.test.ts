@@ -176,6 +176,50 @@ describe('MemoryFiles', () => {
     expect(await files.read(user, '/memories/plan.md')).toBeUndefined();
   });
 
+  it('keeps a renamed file in the narrower scope it came from', async () => {
+    const ana: MemoryFileAccess = { scope: { agentId: 'a', userId: 'ana' } };
+    await files.create(ana, '/memories/private.md', 'Ana only');
+    const agentWide: MemoryFileAccess = {
+      scope: { agentId: 'a' },
+      visibleTo: { agentId: 'a', userId: 'ana' },
+    };
+
+    await files.rename(agentWide, '/memories/private.md', '/memories/moved.md');
+
+    expect((await files.read(ana, '/memories/moved.md'))?.content).toBe('Ana only');
+    const bo: MemoryFileAccess = { scope: { agentId: 'a', userId: 'bo' } };
+    expect(await files.read(bo, '/memories/moved.md')).toBeUndefined();
+  });
+
+  it('plans a change again when another writer added a version after it read the files', async () => {
+    await files.create(access, '/memories/a.md', 'one');
+    const find = adapter.findFileVersions.bind(adapter);
+    let reads = 0;
+    adapter.findFileVersions = async (filter) => {
+      const found = await find(filter);
+      if (reads++ === 0) {
+        const head = found.success
+          ? found.data.find((v) => v.path === '/memories/a.md')
+          : undefined;
+        await adapter.putFileVersions([
+          {
+            ...head!,
+            id: 'other-writer',
+            sequence: head!.sequence + 1,
+            content: 'one and more',
+            sha256: sha256Of('one and more'),
+            previousId: head!.id,
+          },
+        ]);
+      }
+      return found;
+    };
+
+    await files.strReplace(access, '/memories/a.md', 'one', 'ONE');
+
+    expect((await files.read(access, '/memories/a.md'))?.content).toBe('ONE and more');
+  });
+
   it('keeps files and directories apart, and text a store cannot hold out', async () => {
     await files.create(access, '/memories/a', 'a file');
     await expect(files.create(access, '/memories/a/b', 'x')).rejects.toThrow(

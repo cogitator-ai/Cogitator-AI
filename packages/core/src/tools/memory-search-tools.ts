@@ -46,10 +46,14 @@ export interface MemorySearchToolsConfig {
   /** IANA time zone the dates of turns are shown in, UTC by default */
   timeZone?: string;
   /**
-   * Where a run keeps its conversation, so the tools read the branch it stands on: the runtime
-   * names it, and without it the thread's active branch is read
+   * Where a run keeps its conversation, so the tools read the branch it stands on and leave the
+   * run's own entries (those after `ownAfter`) out: the runtime names it, and a run it names no
+   * place for reads no thread. Without it the thread of the tool's context is read, its active
+   * branch.
    */
-  placeOf?: (runId: string) => { threadId: string; leafId?: string | null } | undefined;
+  placeOf?: (
+    runId: string
+  ) => { threadId: string; leafId?: string | null; ownAfter?: string | null } | undefined;
 }
 
 const searchParams = z.object({
@@ -132,28 +136,52 @@ export function createMemorySearchTools(config: MemorySearchToolsConfig) {
   const retriever = new MemoryRetriever();
   const itemVectors = new Map<string, Float32Array>();
 
-  const scopeOf = (context: BaseToolContext): MemoryItemScope => ({
-    agentId,
-    ...(context.userId !== undefined && { userId: context.userId }),
-    ...(context.threadId !== undefined && { threadId: context.threadId }),
-  });
+  /** What the run sees of memory items: its user's, and its thread's when it may read one */
+  const scopeOf = (context: BaseToolContext): MemoryItemScope => {
+    const threadId = conversationOf(context)?.threadId;
+    return {
+      agentId,
+      ...(context.userId !== undefined && { userId: context.userId }),
+      ...(threadId !== undefined && { threadId }),
+    };
+  };
 
-  /** The turns of the run's thread, on its active branch when the store keeps branches */
-  /** The turns of the branch the run stands on: its own when the runtime names it, else the active one */
-  const turnsOf = async (context: BaseToolContext): Promise<MemoryEntry[]> => {
-    const conversation =
-      config.placeOf?.(context.runId) ??
-      (context.threadId !== undefined ? { threadId: context.threadId } : undefined);
-    if (!conversation || conversation.leafId === null) return [];
+  /**
+   * The conversation the run may read: the one the runtime names when it names places, none when
+   * it names none for the run (a run it let into no thread), else the thread of the tool's context
+   */
+  const conversationOf = (context: BaseToolContext) =>
+    config.placeOf
+      ? config.placeOf(context.runId)
+      : context.threadId !== undefined
+        ? { threadId: context.threadId }
+        : undefined;
+
+  /** The turns of the branch the run stands on, and the ids of the run's own among them */
+  const turnsOf = async (
+    context: BaseToolContext
+  ): Promise<{ history: MemoryEntry[]; own: Set<string> }> => {
+    const conversation = conversationOf(context);
+    if (!conversation || conversation.leafId === null) return { history: [], own: new Set() };
     const { threadId, leafId } = conversation;
     const read = memory.getPath
       ? await memory.getPath({ threadId, ...(leafId !== undefined && { leafId }) })
       : await memory.getEntries({ threadId });
     if (!read.success) throw new Error(`Reading thread ${threadId} failed: ${read.error}`);
-    return read.data;
+    const history = read.data;
+    if (!config.placeOf) return { history, own: currentTurn(history) };
+    if (conversation.ownAfter === undefined) return { history, own: new Set() };
+    const from =
+      conversation.ownAfter === null
+        ? 0
+        : history.findIndex((entry) => entry.id === conversation.ownAfter) + 1;
+    return { history, own: new Set(history.slice(from).map((entry) => entry.id)) };
   };
 
-  /** The run's own turn, from its question on, which a search leaves out */
+  /**
+   * The run's own turn, from its last question on, which a search leaves out: how the tools tell
+   * it when no runtime names where the run's entries start
+   */
   const currentTurn = (history: readonly MemoryEntry[]): Set<string> => {
     let from = history.length;
     while (from > 0 && history[from - 1]?.message.role !== 'user') from--;
@@ -208,19 +236,20 @@ export function createMemorySearchTools(config: MemorySearchToolsConfig) {
       'nothing fits. If nothing you opened answers the question, say that you do not remember.',
     parameters: searchParams,
     execute: async ({ query, limit = 8 }, context) => {
-      const history = await turnsOf(context);
+      const { history, own } = await turnsOf(context);
+      const threadId = conversationOf(context)?.threadId;
       const queryVector = embedding?.embed(query);
       queryVector?.catch(() => undefined);
       const cosines =
-        queryVector && messageIndex && context.threadId !== undefined
-          ? await messageIndex.search(context.threadId, await queryVector, VECTOR_HITS, MIN_COSINE)
+        queryVector && messageIndex && threadId !== undefined
+          ? await messageIndex.search(threadId, await queryVector, VECTOR_HITS, MIN_COSINE)
           : undefined;
       const retrieval = await retriever.retrieve({
         input: query,
         anchor: new Date(),
         timeZone,
         history,
-        held: currentTurn(history),
+        held: own,
         ...(cosines && { cosines }),
         ...(items &&
           itemAdapter && {
@@ -271,7 +300,7 @@ export function createMemorySearchTools(config: MemorySearchToolsConfig) {
       'returned. Cite an opened turn as [turn:<id>].',
     parameters: openParams,
     execute: async ({ ids, around = 1 }, context) => {
-      const history = await turnsOf(context);
+      const { history } = await turnsOf(context);
       const position = new Map(history.map((entry, at) => [entry.id, at]));
       const opened = new Set<number>();
       const missing: string[] = [];

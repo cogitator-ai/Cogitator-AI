@@ -119,6 +119,28 @@ describe('memory tool in a run', () => {
     expect(lastUserText(calls.requests.at(-1))).not.toContain('/memories/a.md');
   });
 
+  it("reads no thread's files for a run the runtime let into no thread", async () => {
+    const llm = calling([{ command: 'view', path: '/memories/secret.md' }]);
+    const cog = runtime(llm);
+    const memory = await cog.getMemory();
+    if (!memory) throw new Error('no memory');
+    await memory.createThread('notes', { userId: 'ana' }, 'ana-thread');
+    await new MemoryFiles({ adapter: memory as unknown as InMemoryAdapter }).create(
+      { scope: { agentId: 'notes', threadId: 'ana-thread' } },
+      '/memories/secret.md',
+      'Ana only'
+    );
+
+    const result = await cog.run(agent, {
+      input: 'show it',
+      userId: 'bo',
+      threadId: 'ana-thread',
+      useMemory: false,
+    });
+
+    expect(result.output).not.toContain('Ana only');
+  });
+
   it('refuses changes when the files are read-only', async () => {
     const llm = calling([{ command: 'create', path: '/memories/a.md', file_text: 'x' }]);
     const cog = runtime(llm, { readOnly: true });

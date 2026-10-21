@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import pg from 'pg';
 import { Redis } from 'ioredis';
 import { MongoClient } from 'mongodb';
-import { MongoDBAdapter, PostgresAdapter, RedisAdapter } from '@cogitator-ai/memory';
+import { fileKeyOf, MongoDBAdapter, PostgresAdapter, RedisAdapter } from '@cogitator-ai/memory';
 import {
   memoryFileAdapterConformanceCases,
   memoryItemAdapterConformanceCases,
@@ -571,5 +571,58 @@ async function countOf(client: pg.Client, table: string): Promise<number> {
     expect(missing.success).toBe(false);
     expect(missing.success || missing.error).toContain('not found');
     expect((await adapter.deleteFact('fact_missing')).success).toBe(true);
+  });
+});
+
+(mongoUrl ? describe : describe.skip)('Memory: MongoDBAdapter memory files left behind', () => {
+  const database = `files_orphan_${tag}`;
+
+  afterAll(async () => {
+    const client = new MongoClient(mongoUrl!);
+    await client.connect();
+    await client.db(database).dropDatabase();
+    await client.close();
+  });
+
+  it('takes again a place a writer took long ago and never published', async () => {
+    const adapter = new MongoDBAdapter({ provider: 'mongodb', uri: mongoUrl!, database });
+    const connectedNow = await adapter.connect();
+    if (!connectedNow.success) throw new Error(connectedNow.error);
+    const scope = { agentId: 'orphans', userId: 'u1' };
+    const path = '/memories/notes.md';
+    const client = new MongoClient(mongoUrl!);
+    await client.connect();
+    const places = client
+      .db(database)
+      .collection<{ _id: string; batchId: string; at: Date }>('memory_file_places');
+    await places.insertOne({
+      _id: `${fileKeyOf(scope, path)}#1`,
+      batchId: 'batch_of_a_dead_writer',
+      at: new Date(Date.now() - 120_000),
+    });
+    await places.insertOne({
+      _id: `${fileKeyOf(scope, '/memories/fresh.md')}#1`,
+      batchId: 'batch_still_writing',
+      at: new Date(),
+    });
+
+    const version = (filePath: string) => ({
+      id: `v_${randomUUID()}`,
+      scope,
+      path: filePath,
+      sequence: 1,
+      content: 'text',
+      sha256: 'a'.repeat(64),
+      previousId: null,
+      author: 'model' as const,
+      createdAt: new Date(),
+    });
+    const taken = await adapter.putFileVersions([version(path)]);
+    const fresh = await adapter.putFileVersions([version('/memories/fresh.md')]);
+
+    await client.close();
+    await adapter.disconnect();
+    expect(taken.success).toBe(true);
+    expect(!fresh.success && fresh.error).toBe('memory-file-conflict');
   });
 });

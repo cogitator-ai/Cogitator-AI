@@ -42,7 +42,11 @@ export interface MemoryFileToolConfig {
   scope?: 'user' | 'agent' | 'thread';
   /** The agent views the files and never changes them */
   readOnly?: boolean;
-  /** Where a run keeps its conversation, so it sees the files of its own branch */
+  /**
+   * Where a run keeps its conversation, so it sees the files of its own branch: the runtime names
+   * it, and a run it names no place for reads no thread's files. Without it the thread of the
+   * tool's context is read, its active branch.
+   */
   placeOf?: (runId: string) => MemoryFilePlaceOfRun | undefined;
   /** The files service, one over `memory` by default */
   files?: MemoryFiles;
@@ -203,15 +207,39 @@ export function memoryFileTool(
   const files = config.files ?? filesOf(memory);
   const viewed = new Map<string, Map<string, string>>();
 
-  const scopeOf = (context: BaseToolContext) => memoryFileScope(agentId, config.scope, context);
+  /**
+   * The conversation the run may read: the one the runtime names when it names places, none when
+   * it names none for the run (a run it let into no thread), else the thread of the tool's context
+   */
+  const conversationOf = (context: BaseToolContext): MemoryFilePlaceOfRun | undefined =>
+    placeOf
+      ? placeOf(context.runId)
+      : context.threadId !== undefined
+        ? { threadId: context.threadId }
+        : undefined;
+
+  /** Who the run is to memory files: its user, and its thread when it may read one */
+  const runOf = (context: BaseToolContext) => {
+    const threadId = conversationOf(context)?.threadId;
+    return {
+      ...(context.userId !== undefined && { userId: context.userId }),
+      ...(threadId !== undefined && { threadId }),
+    };
+  };
+
+  /** Where the run's files go, refused when the run has neither a user nor a conversation */
+  const scopeOf = (context: BaseToolContext): MemoryItemScope => {
+    const run = runOf(context);
+    const scope = memoryFileScope(agentId, config.scope, run);
+    if (config.scope !== 'agent' && scope.userId === undefined && scope.threadId === undefined) {
+      throw new Error('The memory tool needs a run with a user or a conversation');
+    }
+    return scope;
+  };
 
   /** The branch the run stands on, read from its thread */
   const placeFor = (context: BaseToolContext): Promise<MemoryFilePlace | undefined> =>
-    memoryFilePlace(
-      memory,
-      placeOf?.(context.runId) ??
-        (context.threadId !== undefined ? { threadId: context.threadId } : undefined)
-    );
+    memoryFilePlace(memory, conversationOf(context));
 
   const viewedBy = (runId: string): Map<string, string> => {
     let paths = viewed.get(runId);
@@ -248,7 +276,7 @@ export function memoryFileTool(
     const seen = viewedBy(context.runId);
     const access: MemoryFileAccess = {
       scope: scopeOf(context),
-      visibleTo: memoryFileVisibility(agentId, context),
+      visibleTo: memoryFileVisibility(agentId, runOf(context)),
       ...(place && { place }),
       ...(config.readOnly && { readOnly: true }),
       author: 'model',

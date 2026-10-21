@@ -280,6 +280,57 @@ describe('memoryCitations', () => {
     expect(uncited).toHaveBeenCalledWith(['turn:e_planted', 'item:i_planted'], expect.anything());
   });
 
+  it('finds the turns of earlier runs for a run that saves nothing', async () => {
+    const backend = scripted([
+      () => ({
+        id: 'r1',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'search_memory', arguments: { query: 'locker code' } }],
+        finishReason: 'tool_calls',
+        usage,
+      }),
+      (request) => ({
+        id: 'r2',
+        content: String(request.messages.at(-1)?.content ?? ''),
+        finishReason: 'stop',
+        usage,
+      }),
+    ]);
+    const cog = new Cogitator({
+      llm: { backends: { mock: backend } },
+      memory: { adapter: 'memory' },
+    });
+    const memory = await cog.getMemory();
+    if (!memory) throw new Error('no memory');
+    await memory.createThread('concierge', {}, 'saved');
+    await memory.addEntry({
+      threadId: 'saved',
+      message: { role: 'user', content: 'My locker code is 4471' },
+      tokenCount: 5,
+    });
+    await memory.addEntry({
+      threadId: 'saved',
+      message: { role: 'assistant', content: 'Noted.' },
+      tokenCount: 2,
+    });
+    const agent = new Agent({
+      name: 'concierge',
+      model: 'mock/m',
+      instructions: 'x',
+      tools: await cog.memorySearchTools('concierge'),
+    });
+
+    const result = await cog.run(agent, {
+      input: 'What is my locker code?',
+      threadId: 'saved',
+      threadAccess: 'shared',
+      saveHistory: false,
+    });
+    await cog.close();
+
+    expect(result.output).toContain('4471');
+  });
+
   it('leaves an answer without references as it is', async () => {
     const backend = scripted([
       () => ({ id: 'r', content: 'I do not remember that.', finishReason: 'stop', usage }),
