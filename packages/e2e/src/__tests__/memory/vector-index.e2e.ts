@@ -150,7 +150,7 @@ async function exerciseIndex(memory: MemoryAdapter, store: EmbeddingAdapter, dim
       const versions = await client.query(
         `SELECT component, version FROM vectors_${tag}_8.cogitator_schema_migrations`
       );
-      expect(versions.rows).toEqual([{ component: 'memory', version: 2 }]);
+      expect(versions.rows).toEqual([{ component: 'memory', version: 3 }]);
     } finally {
       await client.end();
     }
@@ -227,7 +227,7 @@ async function exerciseIndex(memory: MemoryAdapter, store: EmbeddingAdapter, dim
   it('creates the tables again when they were dropped after their version was recorded', async () => {
     const schema = `dropped_${tag}`;
     await connectAll(schema, 1);
-    await sql(`DROP TABLE ${schema}.entries, ${schema}.threads, ${schema}.facts`);
+    await sql(`DROP TABLE ${schema}.entries, ${schema}.threads, ${schema}.memory_items`);
 
     const [adapter] = await Promise.all([
       (async () => {
