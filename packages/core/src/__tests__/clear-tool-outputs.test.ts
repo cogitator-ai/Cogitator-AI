@@ -569,6 +569,25 @@ describe('context.clearToolOutputs in a run', () => {
     expect(refused).not.toContain(BIG);
   });
 
+  it('recalls an output for a run that reads memory but saves nothing', async () => {
+    const { backend, requests } = scripted(
+      callTool('fetch', { page: 1 }, 'c1'),
+      answer('Fetched'),
+      callTool(RECALL_TOOL_OUTPUT, { toolCallId: 'c1' }, 'r1'),
+      answer('Recalled')
+    );
+    const runner = runtime(backend, { enabled: false, clearToolOutputs: {} }, true);
+    const agent = researcher();
+    await runner.run(agent, { input: 'Fetch page 1', threadId: 'thread_a' });
+    await runner.run(agent, {
+      input: 'What did page 1 say?',
+      threadId: 'thread_a',
+      saveHistory: false,
+    });
+
+    expect(toolMessage(requests[3], 'r1')?.content).toBe(originalOutput(1));
+  });
+
   it('reads no memory for a run that does not use it, whatever thread it names', async () => {
     const { backend, requests } = scripted(
       callTool('fetch', { page: 1 }, 'c1'),

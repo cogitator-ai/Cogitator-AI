@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -47,6 +48,14 @@ import type {
   BenchScore,
   BenchStrategy,
 } from './types.js';
+
+/**
+ * A short digest of an answer, part of the id of its judge requests, so an answer asked again
+ * gets judged again instead of taking the reply its earlier version got
+ */
+function outputDigest(output: string): string {
+  return createHash('sha256').update(output).digest('hex').slice(0, 16);
+}
 
 const HELP = `Cogitator memory benchmarks: long-memory datasets against the runtime's memory.
 
@@ -348,7 +357,7 @@ async function main(): Promise<number> {
         answer,
         requests: scoring.requests.map((request) => ({
           ...request,
-          id: `${key}\u0000${request.id}`,
+          id: `${key}\u0000${outputDigest(answer.output)}\u0000${request.id}`,
         })),
         combine: scoring.combine,
       });

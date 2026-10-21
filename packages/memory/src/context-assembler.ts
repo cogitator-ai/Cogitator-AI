@@ -78,10 +78,14 @@ export interface Assembly<T> {
   used: number;
 }
 
+/**
+ * `text` compared for repeats: case, spacing and the punctuation between words aside, while signs
+ * that change what it says, such as a minus, a currency or a percent, stay
+ */
 function normalized(text: string): string {
   return text
     .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/[.,;:!?"'()[\]{}]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -154,6 +158,7 @@ export class ContextAssembler {
     const isRequired = (partition: ContextPartition) =>
       this.partitions[partition].required === true;
 
+    const filled = new Map<ContextPartition, { blocks: AssemblyBlock<T>[]; cut: boolean }>();
     const fill = async (partition: ContextPartition, room: number): Promise<number> => {
       const given = byPartition.get(partition);
       if (!given) return 0;
@@ -174,7 +179,33 @@ export class ContextAssembler {
       for (const { block, reason } of fitted.dropped) {
         assembly.dropped.push(this.dropped(partition, block, reason));
       }
+      filled.set(partition, { blocks, cut: fitted.dropped.length > 0 });
       return tokens;
+    };
+
+    const refill = async (partition: ContextPartition): Promise<void> => {
+      const given = byPartition.get(partition);
+      const state = filled.get(partition);
+      const left = budget - assembly.used;
+      if (!given || !state?.cut || left <= 0) return;
+      const previous = assembly.tokens[partition] ?? 0;
+      const fitted = await (given.fit ?? fitInOrder)(state.blocks, previous + left);
+      const tokens = fitted.tokens ?? fitted.kept.reduce((sum, block) => sum + block.tokens, 0);
+      if (tokens <= previous) return;
+      const before = new Set(assembly.kept[partition] ?? []);
+      for (const block of fitted.kept) {
+        if (!before.has(block) && block.text !== undefined) said.push(normalized(block.text));
+      }
+      assembly.kept[partition] = fitted.kept;
+      assembly.tokens[partition] = tokens;
+      assembly.used += tokens - previous;
+      assembly.dropped = [
+        ...assembly.dropped.filter(
+          (dropped) => dropped.partition !== partition || dropped.reason === 'duplicate'
+        ),
+        ...fitted.dropped.map(({ block, reason }) => this.dropped(partition, block, reason)),
+      ];
+      filled.set(partition, { blocks: state.blocks, cut: fitted.dropped.length > 0 });
     };
 
     for (const partition of FILL_ORDER) {
@@ -194,6 +225,7 @@ export class ContextAssembler {
       );
       carried = Math.max(0, room - (await fill(partition, room)));
     }
+    for (const partition of open) await refill(partition);
     return assembly;
   }
 

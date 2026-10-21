@@ -58,10 +58,14 @@ export class RunMemory {
     return this.place.activate === false;
   }
 
-  /** Where the run keeps its conversation, once it may use memory: its thread and newest entry */
+  /**
+   * Where the run reads its conversation, once it may use memory, also when it saves none
+   * (`saveHistory: false`): its thread and newest entry
+   */
   get conversation(): { threadId: string; leafId?: string } | undefined {
-    if (!this.opened || !this.enabled) return undefined;
-    return { threadId: this.threadId, ...(this.leafId !== undefined && { leafId: this.leafId }) };
+    if (!this.opened || !this.memory() || this.options().useMemory === false) return undefined;
+    const leafId = this.leafId ?? this.place.parentId ?? undefined;
+    return { threadId: this.threadId, ...(leafId !== undefined && { leafId }) };
   }
 
   /** Whether the run may write to its thread: {@link open} was called */

@@ -328,7 +328,7 @@ export class ContextBuilder {
       this.config.includeGraphContext && options.currentInput
         ? await this.attempt('graph', errors, () => this.loadGraphContext(options))
         : undefined;
-    const graphOutcome: { droppedNodes: GraphNode[]; droppedTokens: number } = {
+    const graphOutcome: { droppedNodes: GraphNode[]; droppedTokens: number; failed?: boolean } = {
       droppedNodes: [],
       droppedTokens: 0,
     };
@@ -433,7 +433,7 @@ export class ContextBuilder {
       entries: MemoryEntry[];
       facts: Fact[];
       semantic: (Embedding & { score: number })[];
-      graphOutcome: { droppedNodes: GraphNode[]; droppedTokens: number };
+      graphOutcome: { droppedNodes: GraphNode[]; droppedTokens: number; failed?: boolean };
       errors: ContextBuildError[];
       warnings: string[];
     }
@@ -590,7 +590,7 @@ export class ContextBuilder {
     blocks: AssemblyBlock<Piece>[],
     budget: number,
     options: BuildContextOptions,
-    outcome: { droppedNodes: GraphNode[]; droppedTokens: number },
+    outcome: { droppedNodes: GraphNode[]; droppedTokens: number; failed?: boolean },
     errors: ContextBuildError[]
   ): Promise<FitResult<Piece>> {
     const results = fitInOrder(
@@ -602,6 +602,10 @@ export class ContextBuilder {
     const whole = graphBlock?.value.kind === 'graph' ? graphBlock.value.context : undefined;
     const graph = this.deps.graphContextBuilder;
     if (!whole || !graph || !options.currentInput) return results;
+    if (outcome.failed) {
+      const left = { value: { kind: 'graph' as const, context: whole }, tokens: whole.tokenCount };
+      return { ...results, dropped: [...results.dropped, { block: left, reason: 'budget' }] };
+    }
     const room = budget - used;
     if (whole.tokenCount <= room) {
       return {
@@ -631,6 +635,7 @@ export class ContextBuilder {
             })
           )
         : undefined;
+    if (room > 0 && !rebuilt) outcome.failed = true;
     const context = rebuilt && rebuilt.tokenCount <= room ? rebuilt : undefined;
     const keptIds = new Set(context?.nodes.map((n) => n.id));
     outcome.droppedNodes = whole.nodes.filter((n) => !keptIds.has(n.id));

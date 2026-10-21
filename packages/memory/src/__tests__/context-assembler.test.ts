@@ -149,6 +149,27 @@ describe('ContextAssembler', () => {
     expect(assembly.kept.facts?.map((kept) => kept.text)).toEqual(['The user works at the bank']);
   });
 
+  it('tells apart texts that differ only in a sign', async () => {
+    const assembly = await new ContextAssembler().assemble(1000, [
+      { partition: 'facts', blocks: [block(10, 'The account balance is -100 USD.')] },
+      { partition: 'recall', blocks: [block(10, 'The account balance is +100 USD.')] },
+    ]);
+
+    expect(assembly.dropped).toEqual([]);
+  });
+
+  it('gives the room a partition left back to one that had to cut', async () => {
+    const assembly = await new ContextAssembler().assemble(1000, [
+      { partition: 'facts', blocks: [block(100), block(400)] },
+      { partition: 'recall', blocks: [block(1000)] },
+    ]);
+
+    expect(assembly.tokens.facts).toBe(500);
+    expect(assembly.dropped.map((dropped) => [dropped.partition, dropped.tokens])).toEqual([
+      ['recall', 1000],
+    ]);
+  });
+
   it('refuses shares that add up to more than 1', () => {
     expect(() => new ContextAssembler({ facts: { share: 0.7 }, recall: { share: 0.7 } })).toThrow(
       /add up to/
