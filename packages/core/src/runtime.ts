@@ -1536,6 +1536,12 @@ export class Cogitator implements ToolInvoker {
           continue;
         }
 
+        options.onModelTurn?.({
+          content: outputContent,
+          toolCalls: requestsTools ? (response.toolCalls ?? []) : [],
+          model: answeredBy.name,
+        });
+
         if (
           this.state.memoryAdapter &&
           options.saveHistory !== false &&

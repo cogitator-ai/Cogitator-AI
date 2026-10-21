@@ -9,7 +9,7 @@ import {
   CogitatorError,
   type ImageInput,
   type ResponseFormat as AgentResponseFormat,
-  type RunMiddleware,
+  type KeptModelTurn,
   type RunOptions,
   type Span,
   type Tool,
@@ -138,6 +138,13 @@ interface RunState {
   clientOutputs: Map<string, string>;
   /** Stores of the messages the run wrote, awaited before the run completes */
   messageWrites: Promise<unknown>[];
+  /**
+   * Events waiting for a message store to finish, delivered in order: the event of a sealed
+   * message goes out once it is stored, and every event after it waits its turn
+   */
+  outbox: Promise<void>;
+  /** Events in `outbox` not delivered yet */
+  queued: number;
   expiryTimer?: ReturnType<typeof setTimeout>;
 }
 
@@ -547,6 +554,8 @@ export class OpenAIAdapter {
       ended: false,
       clientOutputs: new Map(),
       messageWrites: [],
+      outbox: Promise.resolve(),
+      queued: 0,
     };
     this.runs.set(runId, state);
     this.activeRunByThread.set(threadId, runId);
@@ -728,11 +737,31 @@ export class OpenAIAdapter {
       event,
       data: typeof data === 'string' ? data : structuredClone(data),
     };
+    if (state.queued === 0) {
+      this.deliver(state, payload);
+      return;
+    }
+    this.enqueue(state, async () => this.deliver(state, payload));
+  }
+
+  private deliver(state: RunState, payload: RunStreamEvent): void {
     state.events.push(payload);
     state.emitter.emit('event', payload.event, payload.data);
   }
 
+  /** Runs `step` once every event queued before it is out, holding back the events after it */
+  private enqueue(state: RunState, step: () => Promise<void>): void {
+    state.queued++;
+    state.outbox = state.outbox.then(step).finally(() => {
+      state.queued--;
+    });
+  }
+
   private end(state: RunState): void {
+    if (state.queued > 0) {
+      void state.outbox.then(() => this.end(state));
+      return;
+    }
     if (state.ended) return;
     state.ended = true;
     this.clearExpiry(state);
@@ -749,7 +778,8 @@ export class OpenAIAdapter {
     }
   }
 
-  private terminate(state: RunState, reason: RunTerminatedError): void {
+  /** Stops the run with `reason`: a cancel, an expiry, or a store of its messages that failed */
+  private terminate(state: RunState, reason: Error): void {
     this.clearExpiry(state);
     const pending = state.pending;
     state.pending = undefined;
@@ -1012,17 +1042,11 @@ export class OpenAIAdapter {
       });
 
       /**
-       * Text of the latest model turn, seen after the run's middleware. A turn that writes text
-       * and calls tools becomes its own message, which a run without `stream: true` gets no
-       * tokens of, so it takes the text from here when the first call of the turn arrives.
+       * Text of the latest model turn, as every middleware left it. A turn that writes text and
+       * calls tools becomes its own message, which a run without `stream: true` gets no tokens
+       * of, so it takes the text from here when the first call of the turn arrives.
        */
       let turnText = '';
-      const turnTextTracker: RunMiddleware = {
-        name: 'openai-compat-turn-text',
-        afterModel: ({ response }) => {
-          turnText = response.content;
-        },
-      };
 
       const turnOptions = {
         signal,
@@ -1041,7 +1065,9 @@ export class OpenAIAdapter {
         },
         onApproval: (approval: ToolApprovalRequest) =>
           clientToolNames.has(approval.toolName) ? 'pause' : undefined,
-        middleware: [turnTextTracker],
+        onModelTurn: (turn: KeptModelTurn) => {
+          turnText = turn.content;
+        },
         onToolCall: (call: AgentToolCall) => {
           if (signal.aborted) return;
           if (!message.announced && turnText) {
@@ -1145,7 +1171,7 @@ export class OpenAIAdapter {
       } else {
         const lastError: RunError = {
           code: 'server_error',
-          message: this.clientErrorMessage(run, error),
+          message: this.clientErrorMessage(run, reason),
         };
         await this.keepUnfinishedMessage(state, assistant.id, message, 'run_failed');
         state.steps.finish({ status: 'failed', error: lastError });
@@ -1163,9 +1189,11 @@ export class OpenAIAdapter {
   }
 
   /**
-   * Finish a message of the run: emit its final event right away, so the events of the next step
-   * follow it, and store it. Stores to one thread keep the order of the calls, and the run waits
-   * for them (`messageWrites`) before it completes.
+   * Finish a message of the run: store it and emit its final event once it is stored, with the
+   * events of the next steps held back until then. Stores to one thread keep the order of the
+   * calls, and the run waits for them (`messageWrites`) before it completes. A store that fails,
+   * or finds the thread deleted, stops the run right away, and the message ends as incomplete
+   * (`run_failed`) instead of completed, as it was never kept.
    */
   private sealMessage(
     state: RunState,
@@ -1174,23 +1202,39 @@ export class OpenAIAdapter {
     content: string,
     incompleteReason?: MessageIncompleteReason
   ): Promise<unknown> {
-    const sealed = assistantMessage({
-      threadId: state.run.thread_id,
-      content,
-      assistantId,
-      runId: state.run.id,
-      messageId: message.id,
-      incompleteReason,
-      createdAt: message.createdAt,
-    });
+    const threadId = state.run.thread_id;
+    const sealedAs = (reason: MessageIncompleteReason | undefined) =>
+      assistantMessage({
+        threadId,
+        content,
+        assistantId,
+        runId: state.run.id,
+        messageId: message.id,
+        incompleteReason: reason,
+        createdAt: message.createdAt,
+      });
+    const sealed = sealedAs(incompleteReason);
     message.written = true;
-    this.emit(
-      state,
-      incompleteReason ? 'thread.message.incomplete' : 'thread.message.completed',
-      sealed
+    const write = this.threadManager.appendMessage(threadId, sealed).then((stored) => {
+      if (!stored) throw new Error(`Thread ${threadId} was deleted while run ${state.run.id} ran`);
+    });
+    this.enqueue(state, () =>
+      write.then(
+        () =>
+          this.deliver(state, {
+            event: incompleteReason ? 'thread.message.incomplete' : 'thread.message.completed',
+            data: sealed,
+          }),
+        () =>
+          this.deliver(state, {
+            event: 'thread.message.incomplete',
+            data: sealedAs('run_failed'),
+          })
+      )
     );
-    const write = this.threadManager.appendMessage(state.run.thread_id, sealed);
-    write.catch(() => undefined);
+    write.catch((error: unknown) =>
+      this.terminate(state, error instanceof Error ? error : new Error(String(error)))
+    );
     state.messageWrites.push(write);
     return write;
   }

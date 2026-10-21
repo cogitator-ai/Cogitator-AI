@@ -39,11 +39,11 @@ await cog.run(agent, { input: 'Where is my order?', middleware: [auditFor(userId
 
 ## Where Middleware Goes
 
-| Place                         | Applies to                                                       |
-| ----------------------------- | ---------------------------------------------------------------- |
-| `new Cogitator({ middleware })` | Every run of the runtime, and tool calls made with `invokeTool()` |
-| `new Agent({ middleware })`   | The runs of this agent, and the turns of a run handed over to it |
-| `cog.run(agent, { middleware })` | One run. Pass it again to `resume()`                          |
+| Place                            | Applies to                                                        |
+| -------------------------------- | ----------------------------------------------------------------- |
+| `new Cogitator({ middleware })`  | Every run of the runtime, and tool calls made with `invokeTool()` |
+| `new Agent({ middleware })`      | The runs of this agent, and the turns of a run handed over to it  |
+| `cog.run(agent, { middleware })` | One run. Pass it again to `resume()`                              |
 
 The Cogitator's middleware runs first, then the agent's, then the run's, then the built-in middleware closest to the model. `before*` hooks run in that order, `wrap*` hooks nest with the first one outermost, and `afterModel` runs in reverse, so the middleware nearest the model sees its answer first.
 
@@ -53,13 +53,13 @@ Middleware is code, so the [agent wire format](/docs/core/agents#sending-an-agen
 
 Every hook is optional. Each one gets the run's context as its last argument.
 
-| Hook            | When                                          | What it can do                                                                  |
-| --------------- | --------------------------------------------- | ------------------------------------------------------------------------------- |
-| `beforeRun`     | A new run's input, before it is saved or sent | Check it. Not called when a paused run resumes                                  |
-| `beforeModel`   | Before each model turn                        | Return `{ messages }` to change the conversation from then on                   |
-| `wrapModelCall` | Around each call, once per model a turn tries | Change the request or the stream sink, call `next` again, or answer without it  |
-| `afterModel`    | After each answer, before the run uses it     | Return `{ content }` or `{ toolCalls }` to replace them                         |
-| `wrapToolCall`  | Around each tool call that passed approval    | Change the arguments, or answer for the tool                                    |
+| Hook            | When                                          | What it can do                                                                 |
+| --------------- | --------------------------------------------- | ------------------------------------------------------------------------------ |
+| `beforeRun`     | A new run's input, before it is saved or sent | Check it. Not called when a paused run resumes                                 |
+| `beforeModel`   | Before each model turn                        | Return `{ messages }` to change the conversation from then on                  |
+| `wrapModelCall` | Around each call, once per model a turn tries | Change the request or the stream sink, call `next` again, or answer without it |
+| `afterModel`    | After each answer, before the run uses it     | Return `{ content }` or `{ toolCalls }` to replace them                        |
+| `wrapToolCall`  | Around each tool call that passed approval    | Change the arguments, or answer for the tool                                   |
 
 ### beforeRun
 
@@ -103,6 +103,8 @@ To see or rewrite streamed text, hand `next` a call with a stream sink of your o
 
 `afterModel({ response, messages, model }, context)` sees each answer before the run uses it. Return `{ content }` to replace its text, `{ toolCalls }` to replace the calls it makes (an empty list turns it into the final answer). Text a streamed run already sent to `onToken` cannot be taken back: set `holdsStream: true` on the middleware and the run holds each turn's text until the turn is done and the hooks saw it, then sends the final text in one piece. The same goes for a `wrapModelCall` hook that retries a call or blocks its answer: without `holdsStream` the text of every call it sends streams as it arrives.
 
+A run's own middleware sits inside the Cogitator's and the agent's, so its `afterModel` sees an answer before theirs do. To see each turn as the run keeps it, after every layer, use `onModelTurn` in the run options instead.
+
 ```typescript
 const noEmails: RunMiddleware = {
   name: 'no-emails',
@@ -121,7 +123,9 @@ const noEmails: RunMiddleware = {
 const normalizeIds: RunMiddleware = {
   name: 'normalize-ids',
   wrapToolCall(call, next) {
-    const id = String((call.args as { id: string }).id).trim().toUpperCase();
+    const id = String((call.args as { id: string }).id)
+      .trim()
+      .toUpperCase();
     return next({ ...call, toolCall: { ...call.toolCall, arguments: { id } } });
   },
 };
@@ -129,15 +133,15 @@ const normalizeIds: RunMiddleware = {
 
 ## The Run Context
 
-| Field                       | What it is                                                                |
-| --------------------------- | ------------------------------------------------------------------------- |
-| `runId`, `threadId`         | The run and its thread (`threadId` is unset for `invokeTool()` without one) |
-| `agentId`, `agentName`      | The agent whose turn it is, after a handoff the one the run went on as    |
-| `userId`, `channelType`, `channelId` | Who and where the run serves                                     |
-| `iteration`                 | The model turn the hook belongs to, from 1, or 0 before the first turn    |
-| `signal`                    | Aborts when the run is cancelled or times out                             |
-| `deps`                      | The run's [tool deps](/docs/core/agents#dependencies-for-tools)                              |
-| `state`                     | A `Map` the run's middleware share. Not kept in a paused run's checkpoint |
+| Field                                | What it is                                                                  |
+| ------------------------------------ | --------------------------------------------------------------------------- |
+| `runId`, `threadId`                  | The run and its thread (`threadId` is unset for `invokeTool()` without one) |
+| `agentId`, `agentName`               | The agent whose turn it is, after a handoff the one the run went on as      |
+| `userId`, `channelType`, `channelId` | Who and where the run serves                                                |
+| `iteration`                          | The model turn the hook belongs to, from 1, or 0 before the first turn      |
+| `signal`                             | Aborts when the run is cancelled or times out                               |
+| `deps`                               | The run's [tool deps](/docs/core/agents#dependencies-for-tools)             |
+| `state`                              | A `Map` the run's middleware share. Not kept in a paused run's checkpoint   |
 
 ## Tripwires
 
@@ -161,12 +165,12 @@ A tripwire raised inside a tool, such as a nested run of an [agent used as a too
 
 The runtime's own features are middleware too, added from the config closest to the model, in this order:
 
-| Middleware                   | From                        | Hooks                                                    |
-| ---------------------------- | --------------------------- | -------------------------------------------------------- |
-| `cogitator:pii`              | `security.pii`              | `wrapModelCall` masks, `beforeRun` in `block` mode       |
-| `cogitator:prompt-injection` | `security.promptInjection`  | `beforeRun`                                              |
-| `cogitator:guardrails`       | `guardrails`                | `beforeRun`, `afterModel` (holds the stream), `wrapToolCall` |
-| `cogitator:compaction`       | `context`                   | `beforeModel`                                            |
+| Middleware                   | From                       | Hooks                                                        |
+| ---------------------------- | -------------------------- | ------------------------------------------------------------ |
+| `cogitator:pii`              | `security.pii`             | `wrapModelCall` masks, `beforeRun` in `block` mode           |
+| `cogitator:prompt-injection` | `security.promptInjection` | `beforeRun`                                                  |
+| `cogitator:guardrails`       | `guardrails`               | `beforeRun`, `afterModel` (holds the stream), `wrapToolCall` |
+| `cogitator:compaction`       | `context`                  | `beforeModel`                                                |
 
 Because PII masking is the innermost layer, it also masks whatever your middleware adds to a request, while your middleware sees the real values. The guardrails check the model's answer and a tool's result before your hooks see them: what your `afterModel` or `wrapToolCall` hooks change afterwards is not checked again. `piiMiddleware(config)`, `promptInjectionMiddleware(detector)`, `guardrailsMiddleware(constitutionalAI)` and `compactionMiddleware(contextManager)` build them, to give a feature to one agent only:
 

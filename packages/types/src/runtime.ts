@@ -205,6 +205,16 @@ export interface ModelFallbackEvent {
   error: Error;
 }
 
+/** A model turn of a run, as the run keeps it: after every `afterModel` middleware. */
+export interface KeptModelTurn {
+  /** The turn's text, empty when it only calls tools */
+  content: string;
+  /** The tool calls the run goes on to make, none on a final answer */
+  toolCalls: ToolCall[];
+  /** The model that answered, as `provider/model` */
+  model: string;
+}
+
 export type ImageInput =
   string | { data: string; mimeType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp' };
 
@@ -242,6 +252,12 @@ export interface RunOptions<TDeps = unknown> {
   onHandoff?: (handoff: HandoffEvent) => void;
   /** Called when a turn moves from a failing model to the next of the agent's `fallbackModels` */
   onModelFallback?: (event: ModelFallbackEvent) => void;
+  /**
+   * Called for each model turn the run keeps, before its tool calls run: the text and calls as
+   * every `afterModel` middleware left them. A run without `stream: true` gets the text of
+   * turns that call tools only from here
+   */
+  onModelTurn?: (turn: KeptModelTurn) => void;
   /** Overrides the agent's `reasoning` for this run */
   reasoning?: ReasoningConfig;
   /**

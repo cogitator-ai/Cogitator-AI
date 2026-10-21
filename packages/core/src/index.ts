@@ -405,6 +405,7 @@ export type {
   RunOptions,
   RunDeps,
   ModelFallbackEvent,
+  KeptModelTurn,
   ModelCircuitBreakerConfig,
   RunObserver,
   TraceParent,

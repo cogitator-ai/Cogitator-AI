@@ -95,6 +95,7 @@ interface RunOptions<TDeps = unknown> {
   onReasoning?: (delta: string) => void;
   onHandoff?: (handoff: HandoffEvent) => void;
   onModelFallback?: (event: ModelFallbackEvent) => void; // { from, to, error }
+  onModelTurn?: (turn: KeptModelTurn) => void; // { content, toolCalls, model } after afterModel
   reasoning?: ReasoningConfig; // overrides the agent's
   onApproval?: (
     request: ToolApprovalRequest

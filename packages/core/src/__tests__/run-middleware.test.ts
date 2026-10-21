@@ -382,6 +382,46 @@ describe('run middleware', () => {
       await cog.close();
     });
 
+    it('reports each kept turn to onModelTurn as every middleware left it', async () => {
+      const { backend } = scripted(
+        { ...callTool('lookup', { order: 'A-1' }), content: 'Card 4111, checking.' },
+        answer('Not valid JSON 4111'),
+        answer('{"card":"4111"}')
+      );
+      const cog = runtime(backend, {
+        middleware: [
+          {
+            name: 'redact',
+            afterModel: ({ response }) => ({ content: response.content.replace(/\d{4}/g, '****') }),
+          },
+        ],
+      });
+      const agent = new Agent({
+        name: 'support',
+        model: 'mock/m',
+        instructions: 'Help.',
+        tools: [lookup],
+        responseFormat: { type: 'json' },
+      });
+      const turns: unknown[] = [];
+
+      await cog.run(agent, {
+        input: 'Check',
+        middleware: [{ name: 'run-level', afterModel: () => undefined }],
+        onModelTurn: (turn) => turns.push(turn),
+      });
+
+      expect(turns).toEqual([
+        {
+          content: 'Card ****, checking.',
+          toolCalls: [{ id: 'c1', name: 'lookup', arguments: { order: 'A-1' } }],
+          model: 'mock/m',
+        },
+        { content: '{"card":"****"}', toolCalls: [], model: 'mock/m' },
+      ]);
+      await cog.close();
+    });
+
     it('can drop the tool calls of a turn, making it the answer', async () => {
       const execute = vi.fn(async () => 'ran');
       const risky = tool({
@@ -1124,6 +1164,43 @@ describe('run middleware', () => {
 
     expect(result.finalAgent).toBe('billing');
     expect(seen).toEqual(['triage-mw:triage', 'billing-mw:billing']);
+    await cog.close();
+  });
+
+  it('reports the turns of the agent a run hands over to through its middleware', async () => {
+    const billing = new Agent({
+      name: 'billing',
+      model: 'mock/m',
+      instructions: 'Billing.',
+      tools: [lookup],
+      middleware: [
+        {
+          name: 'billing-redact',
+          afterModel: ({ response }) => ({ content: response.content.replace(/\d{4}/g, '****') }),
+        },
+      ],
+    });
+    const triage = new Agent({
+      name: 'triage',
+      model: 'mock/m',
+      instructions: 'Triage.',
+      handoffs: [billing],
+    });
+    const { backend } = scripted(
+      callTool('transfer_to_billing', {}),
+      { ...callTool('lookup', { order: 'A-1' }, 'c2'), content: 'Card 4111, looking.' },
+      answer('Done 4111')
+    );
+    const cog = runtime(backend);
+    const turns: string[] = [];
+
+    const result = await cog.run(triage, {
+      input: 'Invoice question',
+      onModelTurn: (turn) => turns.push(`${turn.content}|${turn.toolCalls.map((c) => c.name)}`),
+    });
+
+    expect(result.finalAgent).toBe('billing');
+    expect(turns).toEqual(['|transfer_to_billing', 'Card ****, looking.|lookup', 'Done ****|']);
     await cog.close();
   });
 

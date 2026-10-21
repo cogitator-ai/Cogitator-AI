@@ -1,0 +1,240 @@
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
+import OpenAI from 'openai';
+import { z } from 'zod';
+import { Cogitator, tool } from '@cogitator-ai/core';
+import type {
+  ChatRequest,
+  ChatResponse,
+  ChatStreamChunk,
+  LLMBackend,
+  RunMiddleware,
+  ToolCall,
+} from '@cogitator-ai/types';
+import { OpenAIServer } from '../server/api-server';
+import { InMemoryThreadStorage } from '../client/storage';
+import type { StoredThread } from '../client/thread-manager';
+
+let threadToForget: string | null = null;
+let breakStorage = false;
+let server: OpenAIServer;
+
+const forget = tool({
+  name: 'forget',
+  description: 'Forget the conversation',
+  parameters: z.object({}),
+  execute: async () => {
+    if (threadToForget) await server.getAdapter().deleteThread(threadToForget);
+    if (breakStorage) storage.failing = true;
+    return { forgotten: true };
+  },
+});
+
+let toolTurn: ToolCall[] = [];
+
+function answer(request: ChatRequest): ChatResponse {
+  const results = request.messages.filter((m) => m.role === 'tool');
+  if (toolTurn.length > 0 && results.length === 0) {
+    return {
+      id: 'r1',
+      content: 'Your card is 4111 1111 1111 1111, checking.',
+      toolCalls: toolTurn,
+      finishReason: 'tool_calls',
+      usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+    };
+  }
+  return {
+    id: 'r2',
+    content: 'Done with 4111 1111 1111 1111.',
+    finishReason: 'stop',
+    usage: { inputTokens: 20, outputTokens: 4, totalTokens: 24 },
+  };
+}
+
+const backend: LLMBackend = {
+  provider: 'openai',
+  chat: vi.fn(async (request: ChatRequest) => answer(request)),
+  chatStream: vi.fn(async function* (request: ChatRequest): AsyncGenerator<ChatStreamChunk> {
+    const response = answer(request);
+    if (response.content) yield { id: response.id, delta: { content: response.content } };
+    if (response.toolCalls) yield { id: response.id, delta: { toolCalls: response.toolCalls } };
+    yield {
+      id: response.id,
+      delta: {},
+      finishReason: response.finishReason,
+      usage: response.usage,
+    };
+  }),
+};
+
+const redactCards: RunMiddleware = {
+  name: 'redact-cards',
+  holdsStream: true,
+  afterModel: ({ response }) => ({
+    content: response.content.replace(/\d{4}( \d{4}){3}/g, '[card]'),
+  }),
+};
+
+/** Storage whose thread writes take a while, so an event sent before the write shows */
+class SlowStorage extends InMemoryThreadStorage {
+  delayMs = 0;
+  failing = false;
+  private saved = new Map<string, StoredThread>();
+
+  override async saveThread(id: string, thread: StoredThread): Promise<void> {
+    if (this.failing) throw new Error('storage is down');
+    const copy = structuredClone(thread);
+    if (this.delayMs > 0) await new Promise((resolve) => setTimeout(resolve, this.delayMs));
+    await super.saveThread(id, copy);
+    this.saved.set(id, copy);
+  }
+
+  /** The thread as the last finished write left it */
+  peek(id: string): StoredThread | undefined {
+    return this.saved.get(id);
+  }
+}
+
+const POLL = { pollIntervalMs: 10 };
+const storage = new SlowStorage();
+
+describe('messages of a run', () => {
+  let cogitator: Cogitator;
+  let client: OpenAI;
+
+  beforeAll(async () => {
+    cogitator = new Cogitator({
+      llm: { backends: { mock: backend } },
+      middleware: [redactCards],
+    });
+    server = new OpenAIServer(cogitator, {
+      port: 0,
+      host: '127.0.0.1',
+      defaultModel: 'mock/m',
+      tools: [forget],
+      storage,
+    });
+    await server.start();
+    client = new OpenAI({ baseURL: server.getBaseUrl(), apiKey: 'unused', maxRetries: 0 });
+  });
+
+  afterAll(async () => {
+    await server.stop();
+    await cogitator.close();
+  });
+
+  beforeEach(() => {
+    toolTurn = [];
+    threadToForget = null;
+    breakStorage = false;
+    storage.delayMs = 0;
+    storage.failing = false;
+  });
+
+  async function start() {
+    const assistant = await client.beta.assistants.create({ model: 'cogitator' });
+    const thread = await client.beta.threads.create({
+      messages: [{ role: 'user', content: 'Check my card' }],
+    });
+    return { assistant, thread };
+  }
+
+  async function texts(threadId: string, runId: string): Promise<string[]> {
+    const page = await client.beta.threads.messages.list(threadId, {
+      order: 'asc',
+      run_id: runId,
+    });
+    return page.data.map((m) => (m.content[0]?.type === 'text' ? m.content[0].text.value : ''));
+  }
+
+  it('stores the text of a tool turn as the middleware left it, with or without a stream', async () => {
+    toolTurn = [{ id: 'call_1', name: 'forget', arguments: {} }];
+    const expected = ['Your card is [card], checking.', 'Done with [card].'];
+
+    const polled = await start();
+    const run = await client.beta.threads.runs.createAndPoll(
+      polled.thread.id,
+      { assistant_id: polled.assistant.id },
+      POLL
+    );
+    expect(run.status).toBe('completed');
+    expect(await texts(polled.thread.id, run.id)).toEqual(expected);
+
+    const streamed = await start();
+    const stream = client.beta.threads.runs.stream(streamed.thread.id, {
+      assistant_id: streamed.assistant.id,
+    });
+    const streamedRun = await stream.finalRun();
+    expect(streamedRun.status).toBe('completed');
+    expect(await texts(streamed.thread.id, streamedRun.id)).toEqual(expected);
+    expect(
+      (await stream.finalMessages()).map((m) =>
+        m.content[0]?.type === 'text' ? m.content[0].text.value : ''
+      )
+    ).toEqual(expected);
+  });
+
+  it('sends a completed message only once it is stored, keeping the order of the events', async () => {
+    toolTurn = [{ id: 'call_1', name: 'forget', arguments: {} }];
+    storage.delayMs = 40;
+    const { assistant, thread } = await start();
+
+    const events: string[] = [];
+    const found: boolean[] = [];
+    const stream = client.beta.threads.runs
+      .stream(thread.id, { assistant_id: assistant.id })
+      .on('event', (event) => {
+        events.push(event.event);
+        if (event.event === 'thread.message.completed') {
+          const { id } = event.data;
+          found.push(
+            storage.peek(thread.id)?.messages.some((message) => message.id === id) ?? false
+          );
+        }
+      });
+    const run = await stream.finalRun();
+
+    expect(run.status).toBe('completed');
+    expect(found).toEqual([true, true]);
+    const ordered = events.filter((event) => event !== 'thread.message.delta');
+    expect(ordered.indexOf('thread.message.completed')).toBeLessThan(
+      ordered.indexOf('thread.run.step.completed')
+    );
+    expect(ordered.lastIndexOf('thread.message.completed')).toBeLessThan(
+      ordered.indexOf('thread.run.completed')
+    );
+  });
+
+  it('fails the run when its thread is deleted while it runs', async () => {
+    toolTurn = [{ id: 'call_1', name: 'forget', arguments: {} }];
+    const { assistant, thread } = await start();
+    threadToForget = thread.id;
+
+    const run = await client.beta.threads.runs.createAndPoll(
+      thread.id,
+      { assistant_id: assistant.id },
+      POLL
+    );
+
+    expect(run.status).toBe('failed');
+    expect(run.last_error?.code).toBe('server_error');
+  });
+
+  it('fails the run and ends a message the storage did not keep as incomplete', async () => {
+    toolTurn = [{ id: 'call_1', name: 'forget', arguments: {} }];
+    breakStorage = true;
+    const { assistant, thread } = await start();
+
+    const events: string[] = [];
+    const stream = client.beta.threads.runs
+      .stream(thread.id, { assistant_id: assistant.id })
+      .on('event', (event) => events.push(event.event));
+    const run = await stream.finalRun();
+
+    const count = (name: string) => events.filter((event) => event === name).length;
+    expect(run.status).toBe('failed');
+    expect(count('thread.message.completed')).toBe(0);
+    expect(count('thread.message.incomplete')).toBe(count('thread.message.created'));
+    expect(count('thread.message.created')).toBeGreaterThan(0);
+    expect(events.at(-1)).toBe('thread.run.failed');
+  });
+});

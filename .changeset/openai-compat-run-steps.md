@@ -8,3 +8,5 @@ Run steps and threads scoped to the API key.
 - When the server checks API keys, threads and runs belong to the key that created them, kept as a digest, never the key itself. Another key gets `404` for them, their messages, runs and steps. Threads created before this change stay reachable by every key. Assistants, files and responses stay shared.
 - `ThreadStorage.listThreads(options)` returns a page (`{ threads, nextCursor? }`) filtered by owner and ordered by creation time, instead of every thread: storage implementations of your own need to follow. Postgres pages in SQL with a new index, Redis reads every thread key per page.
 - A message a run had begun to stream is kept as `incomplete` when the run is cancelled, expires or fails.
+- A turn that writes text and calls tools becomes its own message, with the text every middleware left, with or without `stream: true`.
+- `thread.message.completed` goes out once the message is stored, and the events after it wait for it. A store that fails, or a thread deleted while the run writes to it, fails the run, and the message ends as `incomplete` instead.
