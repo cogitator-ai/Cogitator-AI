@@ -852,4 +852,54 @@ describe('RuntimeBuilder', () => {
     const builder = new RuntimeBuilder(config, { GOOGLE_API_KEY: 'test-key' });
     await expect(builder.build()).rejects.toThrow('connectionString');
   });
+
+  it('compacts threads hierarchically, keeping the newest 4000 tokens past the message threshold', async () => {
+    const built = await new RuntimeBuilder(
+      { ...minimalConfig, memory: { ...minimalConfig.memory, compaction: { threshold: 40 } } },
+      { GOOGLE_API_KEY: 'test-key' }
+    ).build();
+
+    const session = (built.gateway as unknown as { config: { session?: { compaction?: unknown } } })
+      .config.session;
+    expect(session?.compaction).toEqual({
+      strategy: 'hierarchical',
+      messageThreshold: 40,
+      keepRecent: 10,
+      keepRecentTokens: 4000,
+    });
+    await built.cleanup();
+  });
+
+  it('answers the owner /compact all with every thread compacted, not a thread named all', async () => {
+    sentTexts.length = 0;
+    const built = await new RuntimeBuilder(
+      {
+        ...minimalConfig,
+        channels: { whatsapp: { ownerIds: ['15550001111'] } },
+        memory: { ...minimalConfig.memory, compaction: { threshold: 40 } },
+      },
+      { GOOGLE_API_KEY: 'test-key' }
+    ).build();
+    const compactAll = vi
+      .spyOn(built.gateway, 'compactAll')
+      .mockResolvedValue('Compacted 2 of 3 threads');
+    const compactThread = vi.spyOn(built.gateway, 'compactThread');
+    const owner = {
+      channelType: 'whatsapp',
+      channelId: '15550001111',
+      userId: '15550001111',
+      raw: {},
+    };
+
+    await built.gateway.injectMessage({ ...owner, id: 'm1', text: '/compact all' });
+    expect(compactAll).toHaveBeenCalledTimes(1);
+    expect(compactThread).not.toHaveBeenCalled();
+    expect(sentTexts).toEqual(['Compacted 2 of 3 threads']);
+
+    compactThread.mockResolvedValue('Nothing to compact (3 messages)');
+    await built.gateway.injectMessage({ ...owner, id: 'm2', text: '/compact' });
+    expect(compactThread).toHaveBeenCalledWith('whatsapp:15550001111');
+    expect(compactAll).toHaveBeenCalledTimes(1);
+    await built.cleanup();
+  });
 });

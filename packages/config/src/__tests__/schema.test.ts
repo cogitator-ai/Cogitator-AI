@@ -364,6 +364,46 @@ describe('CogitatorConfigSchema', () => {
     ).toThrow();
   });
 
+  it('keeps every memory.compaction setting that YAML can hold', () => {
+    const compaction = {
+      at: 0.75,
+      keepRecent: 4,
+      keepRecentTokens: 12000,
+      chapterTokens: 3000,
+      chaptersPerArc: 5,
+      arcsPerSaga: 3,
+      summaryModel: 'openai/gpt-4o-mini',
+      summaryPrompt: 'Keep the deadlines.',
+    };
+
+    expect(CogitatorConfigSchema.parse({ memory: { compaction } }).memory?.compaction).toEqual(
+      compaction
+    );
+    expect(CogitatorConfigSchema.parse({ memory: { compaction: {} } }).memory?.compaction).toEqual(
+      {}
+    );
+  });
+
+  it('rejects memory.compaction settings the compaction cannot run with', () => {
+    const invalid = [
+      { at: 0 },
+      { at: 1.2 },
+      { keepRecent: -1 },
+      { keepRecentTokens: 10.5 },
+      { chapterTokens: 0 },
+      { chaptersPerArc: 0 },
+      { arcsPerSaga: -2 },
+      { summaryModel: '' },
+    ];
+
+    for (const compaction of invalid) {
+      expect(() => CogitatorConfigSchema.parse({ memory: { compaction } })).toThrow();
+    }
+    expect(CogitatorConfigSchema.parse({ memory: { compaction: { at: 1 } } }).memory).toEqual({
+      compaction: { at: 1 },
+    });
+  });
+
   it('keeps prompt injection patterns and fail mode, compiling patterns given as strings', () => {
     const promptInjection = CogitatorConfigSchema.parse({
       security: {

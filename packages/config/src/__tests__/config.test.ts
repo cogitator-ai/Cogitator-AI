@@ -66,6 +66,30 @@ limits:
       expect(config.llm?.defaultModel).toBe('gpt-4');
       expect(config.limits?.maxConcurrentRuns).toBe(5);
     });
+
+    it('YAML sets memory.compaction', () => {
+      writeFileSync(
+        testConfigPath,
+        `
+memory:
+  adapter: memory
+  compaction:
+    at: 0.7
+    keepRecentTokens: 8000
+    chaptersPerArc: 3
+    summaryModel: openai/gpt-4o-mini
+`
+      );
+
+      const config = loadConfig({ configPath: testConfigPath, skipEnv: true });
+
+      expect(config.memory?.compaction).toEqual({
+        at: 0.7,
+        keepRecentTokens: 8000,
+        chaptersPerArc: 3,
+        summaryModel: 'openai/gpt-4o-mini',
+      });
+    });
   });
 
   describe('deep merge behavior', () => {

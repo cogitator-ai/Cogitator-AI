@@ -17,6 +17,7 @@ export {
   OpenAICompatibleServerSchema,
   LLMProviderSchema,
   MemoryConfigSchema,
+  MemoryCompactionConfigSchema,
   MemoryProviderSchema,
   ContextBuilderConfigSchema,
   ContextStrategySchema,

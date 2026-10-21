@@ -252,6 +252,21 @@ export const EmbeddingConfigSchema = z.discriminatedUnion('provider', [
   }),
 ]);
 
+/**
+ * `memory.compaction`: compaction of a run's thread after the run. The `beforeCompact` and
+ * `afterCompact` hooks are functions, so they are set in code, not in YAML.
+ */
+export const MemoryCompactionConfigSchema = z.object({
+  at: z.number().gt(0).max(1).optional(),
+  keepRecent: z.number().int().nonnegative().optional(),
+  keepRecentTokens: z.number().int().nonnegative().optional(),
+  chapterTokens: z.number().int().positive().optional(),
+  chaptersPerArc: z.number().int().positive().optional(),
+  arcsPerSaga: z.number().int().positive().optional(),
+  summaryModel: z.string().min(1).optional(),
+  summaryPrompt: z.string().optional(),
+});
+
 export const MemoryConfigSchema = z.object({
   adapter: MemoryProviderSchema.optional(),
   inMemory: z
@@ -306,6 +321,7 @@ export const MemoryConfigSchema = z.object({
     .optional(),
   embedding: EmbeddingConfigSchema.optional(),
   contextBuilder: ContextBuilderConfigSchema.optional(),
+  compaction: MemoryCompactionConfigSchema.optional(),
 });
 
 export const SandboxTypeSchema = z.enum(['docker', 'native', 'wasm']);

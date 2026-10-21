@@ -119,6 +119,13 @@ export interface RuntimeBuilderOpts {
 
 export const RESTART_EXIT_CODE = 78;
 
+/**
+ * Tokens of the newest conversation a compacted chat thread keeps verbatim: one chapter of the
+ * `hierarchical` strategy, some 10 to 30 messenger turns, so the latest exchange (a tool call with
+ * its result included) stays word for word while each run's prompt stays small
+ */
+const CHANNEL_KEEP_RECENT_TOKENS = 4000;
+
 const MODULE_NOT_FOUND_CODES = new Set(['ERR_MODULE_NOT_FOUND', 'MODULE_NOT_FOUND']);
 
 function isModuleNotFound(err: unknown, specifier: string): boolean {
@@ -369,6 +376,7 @@ export class RuntimeBuilder {
           },
           onCompact: async (target, threadId) => {
             if (!gatewayRef) return 'Gateway is not running';
+            if (target === 'all') return gatewayRef.compactAll();
             return gatewayRef.compactThread(target === 'current' ? threadId : target);
           },
           onModel: (model, forUser) => {
@@ -445,9 +453,10 @@ export class RuntimeBuilder {
       session: this.config.memory.compaction
         ? {
             compaction: {
-              strategy: 'summary',
+              strategy: 'hierarchical',
               messageThreshold: this.config.memory.compaction.threshold,
               keepRecent: 10,
+              keepRecentTokens: CHANNEL_KEEP_RECENT_TOKENS,
             },
           }
         : undefined,
