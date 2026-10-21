@@ -61,6 +61,12 @@ export interface CompactionConfig {
   keepRecentTokens?: number;
   /** `hierarchical`: tokens of conversation one chapter covers (default 4000) */
   chapterTokens?: number;
+  /**
+   * `hierarchical`: chapters read at once (default 1). One at a time, each chapter is told every
+   * item still open before it, so it can close it. Read at once, a chapter is not told the items
+   * the model finds in the chapters read along with it, only those found before.
+   */
+  chapterConcurrency?: number;
   /** `hierarchical`: chapters kept before the oldest are folded into an arc (default 4) */
   chaptersPerArc?: number;
   /** `hierarchical`: arcs kept before the oldest are folded into the saga (default 4) */

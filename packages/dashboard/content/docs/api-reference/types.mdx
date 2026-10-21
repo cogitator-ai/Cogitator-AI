@@ -245,7 +245,7 @@ interface ToolCallRequest {
 }
 ```
 
-`afterRun` is called once a run finished and its writes to memory settled, before `run()` returns. It is not called for a run that failed or paused, and an error it throws fails the run.
+`afterRun` is called once a run finished and its writes to memory settled, before `run()` returns. It is not called for a run that failed or paused, and an error it throws is logged without failing the run.
 
 `RunMiddlewareContext` carries `runId`, `threadId`, `agentId`, `agentName`, `userId`, `channelType`, `channelId`, `iteration`, `signal`, `deps` and a `state` map the run's middleware share. See [Run Middleware](/docs/core/middleware).
 
@@ -811,6 +811,7 @@ interface CompactionConfig {
   keepRecent: number; // newest entries kept verbatim
   keepRecentTokens?: number; // hierarchical: newest tokens of whole turns kept verbatim, in place of keepRecent
   chapterTokens?: number; // hierarchical: conversation one chapter covers (default 4000)
+  chapterConcurrency?: number; // hierarchical: chapters read at once (default 1)
   chaptersPerArc?: number; // hierarchical: chapters kept before the oldest fold into an arc (default 4)
   arcsPerSaga?: number; // hierarchical: arcs kept before the oldest fold into the saga (default 4)
   summaryModel?: string;

@@ -131,6 +131,24 @@ describe('memory.compaction', () => {
     expect(result.output).toBe('ok');
   });
 
+  it('counts what compacting cost against the run', async () => {
+    const llm = backend();
+    const cog = new Cogitator({
+      llm: { backends: { mock: llm } },
+      memory: { adapter: 'memory', compaction: { at: 0.001, keepRecentTokens: 1 } },
+      costRouting: { enabled: true, trackCosts: true },
+    });
+    cogs.push(cog);
+    await cog.run(agent, { input: 'please plan the trip', threadId: 't' });
+    await cog.run(agent, { input: 'and the hotel', threadId: 't' });
+
+    const chapters = llm.requests.filter((r) =>
+      String(r.messages[0]?.content).startsWith('You compact')
+    );
+    expect(chapters.length).toBeGreaterThan(0);
+    expect(cog.getCostSummary()?.totalInputTokens).toBe(llm.requests.length);
+  });
+
   it('waits before compacting again a thread whose compaction failed', async () => {
     vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
     const failing = backend();

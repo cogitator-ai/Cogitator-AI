@@ -25,6 +25,11 @@ function toolCallsOf(message: Message): ToolCall[] {
   return Array.isArray(calls) ? calls : [];
 }
 
+/** `model` as Anthropic names it, with no `anthropic/` prefix of a Cogitator model string */
+function anthropicName(model: string): string {
+  return model.startsWith('anthropic/') ? model.slice('anthropic/'.length) : model;
+}
+
 interface Turn {
   role: 'user' | 'assistant';
   content: string;
@@ -72,7 +77,7 @@ export function anthropicCompactionSummarizer(options: AnthropicCompactionOption
   const client = options.client ?? new Anthropic({ apiKey: options.apiKey });
   return async (messages, summarizeOptions) => {
     const response = await client.beta.messages.create({
-      model: summarizeOptions?.model ?? options.model,
+      model: anthropicName(summarizeOptions?.model ?? options.model),
       max_tokens: options.maxTokens ?? 8192,
       messages: turnsOf(messages),
       compaction: {

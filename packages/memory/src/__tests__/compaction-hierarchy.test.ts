@@ -147,6 +147,36 @@ describe('structuralAtoms', () => {
     ]);
   });
 
+  it('keeps failures of different commands apart and closes one from an earlier compaction', () => {
+    const bash = (id: string, command: string) => ({ id, name: 'bash', arguments: { command } });
+    const failed = (id: string) => ({ callId: id, name: 'bash', result: null, error: 'exit 1' });
+    const first = structuralAtoms([
+      entry('e0', { role: 'assistant', content: '' }, { toolCalls: [bash('c1', 'npm test')] }),
+      entry('e1', { role: 'tool', content: '' }, { toolResults: [failed('c1')] }),
+      entry('e2', { role: 'assistant', content: '' }, { toolCalls: [bash('c2', 'npm run lint')] }),
+      entry('e3', { role: 'tool', content: '' }, { toolResults: [failed('c2')] }),
+    ]);
+    expect(first.map((item) => item.text)).toEqual([
+      'bash {"command":"npm test"} failed: exit 1',
+      'bash {"command":"npm run lint"} failed: exit 1',
+    ]);
+
+    const later = structuralAtoms(
+      [
+        entry('e4', { role: 'assistant', content: '' }, { toolCalls: [bash('c3', 'npm test')] }),
+        entry(
+          'e5',
+          { role: 'tool', content: '' },
+          { toolResults: [{ callId: 'c3', name: 'bash', result: 'ok' }] }
+        ),
+      ],
+      { open: first }
+    );
+    expect(later.map((item) => [item.text, item.status])).toEqual([
+      ['bash {"command":"npm test"} failed: exit 1', 'closed'],
+    ]);
+  });
+
   it('closes a failed call that names no files only by a call with the same arguments', () => {
     const run = (id: string, suite: string) => ({ id, name: 'test', arguments: { suite } });
     const atoms = structuralAtoms([
@@ -204,6 +234,15 @@ describe('chapterTranscript', () => {
 });
 
 describe('mergeAtoms', () => {
+  it('does not open again an item done on a repeat whose evidence does not hold', () => {
+    const merged = mergeAtoms([
+      { from: 'a', to: 'a', atoms: [atom({ status: 'closed' })] },
+      { from: 'b', to: 'b', atoms: [atom({ verified: false })] },
+    ]);
+
+    expect(merged.map((item) => item.status)).toEqual(['closed']);
+  });
+
   it('closes an open item only with evidence that holds', () => {
     const merged = mergeAtoms([
       { from: 'a', to: 'b', atoms: [atom({}), atom({ kind: 'error', text: 'Build fails' })] },
@@ -470,6 +509,165 @@ describe('hierarchical compaction', () => {
     await service.compact('t', config);
 
     expect(prompts.at(-1)).toContain('Still open from before this part:\n- task: TODO: one');
+  });
+
+  const quoting = (pattern: RegExp, atom: (n: number) => object) => (transcript: string) => {
+    const line = transcript.split('\n').find((text) => pattern.test(text));
+    const at = line ? Number(/^\[(\d+)\]/.exec(line)?.[1]) : NaN;
+    return Number.isNaN(at) ? '[]' : JSON.stringify([atom(at)]);
+  };
+
+  it('closes in a later chapter what an earlier one of the same compaction found open', async () => {
+    const adapter = await thread([
+      'Please send the report.',
+      'word '.repeat(30),
+      'I sent the report.',
+      'word '.repeat(30),
+    ]);
+    const service = new CompactionService({
+      adapter,
+      summarize: async (messages, options) => {
+        const transcript = String(messages[0]?.content);
+        if (
+          transcript.includes('sent the report') &&
+          options?.prompt?.includes('Send the report')
+        ) {
+          return quoting(/sent the report/, (n) => ({
+            kind: 'task',
+            status: 'closed',
+            text: 'Send the report',
+            evidence: [{ message: n, quote: 'sent the report' }],
+          }))(transcript);
+        }
+        return quoting(/send the report/, (n) => ({
+          kind: 'task',
+          text: 'Send the report',
+          evidence: [{ message: n, quote: 'send the report' }],
+        }))(transcript);
+      },
+    });
+
+    await service.compact('t', {
+      strategy: 'hierarchical',
+      threshold: 0,
+      keepRecent: 0,
+      chapterTokens: 30,
+    });
+
+    const path = await adapter.getPath({ threadId: 't', types: HISTORY_ENTRY_TYPES });
+    if (!path.success) throw new Error(path.error);
+    const handoff = String(compactedHistory(path.data)[0]?.message.content);
+    expect(handoff).not.toContain('## Open tasks');
+    expect(handoff).toContain('## Done\n- Send the report');
+  });
+
+  it('publishes a summary whose saga dropped an item it just closed', async () => {
+    const adapter = await thread(['TODO: one', 'a1']);
+    const config = {
+      strategy: 'hierarchical' as const,
+      threshold: 0,
+      keepRecent: 0,
+      chapterTokens: 30,
+      chaptersPerArc: 1,
+      arcsPerSaga: 1,
+    };
+    await new CompactionService({ adapter, summarize: async () => '[]' }).compact('t', config);
+    for (const content of ['The one is done.', 'word '.repeat(30), 'word '.repeat(30)]) {
+      await adapter.addEntry({ threadId: 't', message: { role: 'user', content }, tokenCount: 1 });
+    }
+
+    const service = new CompactionService({
+      adapter,
+      summarize: answering(
+        quoting(/one is done/, (n) => ({
+          kind: 'task',
+          status: 'closed',
+          text: 'TODO: one',
+          evidence: [{ message: n, quote: 'one is done' }],
+        }))
+      ),
+    });
+    await service.compact('t', config);
+
+    const path = await adapter.getPath({ threadId: 't', types: HISTORY_ENTRY_TYPES });
+    if (!path.success) throw new Error(path.error);
+    const [summary] = compactedHistory(path.data);
+    expect((summary?.event as unknown as CompactionEvent).levels?.saga).toBeDefined();
+    expect(String(summary?.message.content)).not.toContain('TODO: one');
+  });
+
+  it('compacts by tokens a thread no longer than keepRecent entries', async () => {
+    const adapter = await thread(['old '.repeat(200), 'ok', 'q', 'a']);
+    const service = new CompactionService({ adapter, summarize: async () => '[]' });
+
+    const result = await service.compact('t', {
+      strategy: 'hierarchical',
+      threshold: 0,
+      keepRecent: 10,
+      keepRecentTokens: 20,
+    });
+
+    expect(result.summaryTokens).toBeGreaterThan(0);
+  });
+
+  it('finds the summary on an adapter without branches when it is not the first entry', async () => {
+    const adapter = await thread(['TODO: one', 'a1']);
+    const flat = Object.assign(Object.create(adapter) as InMemoryAdapter, { getPath: undefined });
+    const service = new CompactionService({ adapter: flat, summarize: async () => '[]' });
+    const config = { strategy: 'hierarchical' as const, threshold: 0, keepRecent: 0 };
+    await service.compact('t', config);
+    await adapter.addEntry({
+      threadId: 't',
+      message: { role: 'user', content: 'early' },
+      tokenCount: 1,
+      createdAt: new Date(0),
+    });
+
+    await service.compact('t', config);
+
+    const all = await adapter.getEntries({ threadId: 't' });
+    if (!all.success) throw new Error(all.error);
+    expect(all.data).toHaveLength(1);
+    expect(String(all.data[0]?.message.content)).toContain('- TODO: one');
+    expect(all.data[0]?.metadata?.compactionLevels).toMatchObject({ chapters: [{}, {}] });
+  });
+
+  it('counts messageThreshold on the entries written since the summary, not the kept tail', async () => {
+    const adapter = await thread(['old '.repeat(100), 'ok', 'q', 'a']);
+    const summarize = vi.fn(async () => '[]');
+    const service = new CompactionService({ adapter, summarize });
+    const config = {
+      strategy: 'hierarchical' as const,
+      messageThreshold: 3,
+      keepRecent: 0,
+      keepRecentTokens: 4,
+    };
+    await service.compact('t', config);
+    expect(summarize).toHaveBeenCalledTimes(1);
+
+    await adapter.addEntry({
+      threadId: 't',
+      message: { role: 'user', content: 'x' },
+      tokenCount: 1,
+    });
+    expect((await service.compact('t', config)).summaryTokens).toBe(0);
+    expect(summarize).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses levels that are not whole numbers above 0', async () => {
+    const service = new CompactionService({
+      adapter: await thread(['q', 'a']),
+      summarize: async () => '[]',
+    });
+
+    await expect(
+      service.compact('t', {
+        strategy: 'hierarchical',
+        threshold: 0,
+        keepRecent: 0,
+        arcsPerSaga: 0,
+      })
+    ).rejects.toThrow(/arcsPerSaga must be a whole number above 0/);
   });
 
   it('carries the tree on an adapter without branches', async () => {

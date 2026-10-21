@@ -261,6 +261,7 @@ export const MemoryCompactionConfigSchema = z.object({
   keepRecent: z.number().int().nonnegative().optional(),
   keepRecentTokens: z.number().int().nonnegative().optional(),
   chapterTokens: z.number().int().positive().optional(),
+  chapterConcurrency: z.number().int().positive().optional(),
   chaptersPerArc: z.number().int().positive().optional(),
   arcsPerSaga: z.number().int().positive().optional(),
   summaryModel: z.string().min(1).optional(),

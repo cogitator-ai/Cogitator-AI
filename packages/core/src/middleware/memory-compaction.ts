@@ -1,24 +1,32 @@
 import {
   CompactionService,
+  checkCompactionSettings,
   countEntryTokens,
   readCompactedHistory,
+  sinceSummary,
   type SummarizeFn,
 } from '@cogitator-ai/memory';
 import type {
   CompactionResult,
   MemoryAdapter,
   MemoryCompactionConfig,
-  MemoryEntry,
   RunEndEvent,
   RunMiddleware,
 } from '@cogitator-ai/types';
 import { getLogger } from '../logger';
 
+/** The run a compaction follows, which its calls are counted against */
+export interface CompactionRun {
+  runId: string;
+  agentId: string;
+  threadId: string;
+}
+
 /** What the memory compaction middleware takes from the runtime */
 export interface MemoryCompactionDeps {
   memory: () => MemoryAdapter | undefined;
-  /** A summarizer that asks `model` */
-  summarizer: (model: string) => SummarizeFn;
+  /** A summarizer that asks `model`, its calls counted against `run` */
+  summarizer: (model: string, run: CompactionRun) => SummarizeFn;
   /** The context window `model` runs with */
   windowOf: (model: string) => number;
 }
@@ -28,15 +36,6 @@ const THRASH_TURNS = 2;
 /** How long a thread whose compaction failed is left alone, doubled on each failure in a row */
 const RETRY_AFTER_MS = 60_000;
 const RETRY_AFTER_MAX_MS = 60 * 60_000;
-
-/**
- * Whether `entry` was written after `compaction`, not kept by it: by its place on the branch when
- * the adapter numbers entries, else by when it was written
- */
-function writtenAfter(entry: MemoryEntry, compaction: MemoryEntry): boolean {
-  if (entry.seq !== undefined && compaction.seq !== undefined) return entry.seq > compaction.seq;
-  return entry.createdAt.getTime() > compaction.createdAt.getTime();
-}
 
 /**
  * Compacts a run's thread after the run, see `MemoryCompactionConfig`: once the conversation of
@@ -58,13 +57,19 @@ export function memoryCompactionMiddleware(
   if (!(at > 0 && at <= 1)) {
     throw new Error(`memory.compaction.at must be above 0 and at most 1, got ${at}`);
   }
+  checkCompactionSettings(settings);
   const failures = new Map<string, { until: number; wait: number }>();
+  const forgetOld = (now: number) => {
+    for (const [threadId, failure] of failures) {
+      if (failure.until + RETRY_AFTER_MAX_MS < now) failures.delete(threadId);
+    }
+  };
   return {
     name: 'cogitator:memory-compaction',
-    async afterRun({ result, model }: RunEndEvent) {
+    async afterRun({ result, model }: RunEndEvent, context) {
       const memory = deps.memory();
       const place = result.memory;
-      if (!memory?.getPath || !place?.leafId) return;
+      if (!memory?.getPath || !place?.leafId || context.signal.aborted) return;
       if ((failures.get(place.threadId)?.until ?? 0) > Date.now()) return;
       const thread = await memory.getThread(place.threadId);
       if (!thread.success || thread.data?.activeLeafId !== place.leafId) return;
@@ -84,10 +89,9 @@ export function memoryCompactionMiddleware(
       }
       const tokens = read.data.reduce((sum, entry) => sum + countEntryTokens(entry), 0);
       if (tokens < threshold) return;
-      const first = read.data[0];
-      if (first?.type === 'compaction') {
-        const turns = read.data.filter(
-          (entry) => entry.message.role === 'user' && writtenAfter(entry, first)
+      if (read.data[0]?.type === 'compaction') {
+        const turns = sinceSummary(read.data).filter(
+          (entry) => entry.message.role === 'user'
         ).length;
         if (turns <= THRASH_TURNS) {
           getLogger().warn(
@@ -107,7 +111,11 @@ export function memoryCompactionMiddleware(
           .join('\n\n');
         const service = new CompactionService({
           adapter: memory,
-          summarize: deps.summarizer(settings.summaryModel ?? model),
+          summarize: deps.summarizer(settings.summaryModel ?? model, {
+            runId: result.runId,
+            agentId: result.agentId,
+            threadId: place.threadId,
+          }),
         });
         const keepsTokens =
           settings.keepRecentTokens !== undefined || settings.keepRecent === undefined;
@@ -126,7 +134,9 @@ export function memoryCompactionMiddleware(
           (failures.get(place.threadId)?.wait ?? RETRY_AFTER_MS / 2) * 2,
           RETRY_AFTER_MAX_MS
         );
-        failures.set(place.threadId, { until: Date.now() + wait, wait });
+        const now = Date.now();
+        forgetOld(now);
+        failures.set(place.threadId, { until: now + wait, wait });
         getLogger().warn('Could not compact the thread after a run', {
           threadId: place.threadId,
           retryInMs: wait,

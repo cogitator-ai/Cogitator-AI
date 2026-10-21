@@ -43,7 +43,7 @@ import type {
 import { type Agent } from './agent';
 import { ToolRegistry } from './registry';
 import { createLLMBackend } from './llm/index';
-import { memoryCompactionMiddleware } from './middleware/memory-compaction';
+import { memoryCompactionMiddleware, type CompactionRun } from './middleware/memory-compaction';
 import { LLMError, llmInvalidResponse } from './llm/errors';
 import { isLLMProvider } from './llm/providers';
 import { createLLMBackendFromPlugin, hasLLMPlugin } from './llm/plugin';
@@ -527,7 +527,7 @@ export class Cogitator implements ToolInvoker {
     if (memoryCompaction) {
       this.memoryCompactionLayer ??= memoryCompactionMiddleware(memoryCompaction, {
         memory: () => this.state.memoryAdapter,
-        summarizer: (model) => this.summarizerFor(model),
+        summarizer: (model, run) => this.summarizerFor(model, run),
         windowOf: (model) => this.servedWindow(model),
       });
     }
@@ -544,9 +544,9 @@ export class Cogitator implements ToolInvoker {
 
   /**
    * A summarizer that asks `model`, routed as a run's model is (see {@link route}), with the
-   * prompt as its system message
+   * prompt as its system message, and records what each call cost for `run`
    */
-  private summarizerFor(model: string): SummarizeFn {
+  private summarizerFor(model: string, run: CompactionRun): SummarizeFn {
     return async (messages, options) => {
       const { backend, model: name } = this.route(model);
       const response = await backend.chat({
@@ -555,6 +555,16 @@ export class Cogitator implements ToolInvoker {
           { role: 'system', content: options?.prompt ?? 'Summarize the conversation.' },
           ...messages,
         ],
+      });
+      const priced = this.pricedModel(model);
+      const cost = response.usage.cost ?? this.pricer.costOrNull(priced, response.usage);
+      if (cost === null) this.pricer.noteUnpriced(priced);
+      this.getCostRouter()?.recordCost({
+        ...run,
+        model: priced,
+        inputTokens: response.usage.inputTokens,
+        outputTokens: response.usage.outputTokens,
+        cost: cost ?? 0,
       });
       return response.content;
     };

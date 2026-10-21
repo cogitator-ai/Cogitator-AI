@@ -232,6 +232,7 @@ memory:
     at: 0.8 # share of the model's context window that starts it
     keepRecentTokens: 20000 # newest whole turns kept verbatim (default: the less of 20000 and a quarter of the window)
     chapterTokens: 4000
+    chapterConcurrency: 1
     chaptersPerArc: 4
     arcsPerSaga: 4
     summaryModel: google/gemini-3.5-flash # default: the model the run ended on

@@ -6,6 +6,7 @@ import {
   type ChatResponse,
   type RunMiddleware,
   type RunMiddlewareContext,
+  type RunResult,
   type ToolCallRequest,
 } from '@cogitator-ai/types';
 import { MiddlewarePipeline } from '../middleware/pipeline';
@@ -49,6 +50,30 @@ const parse = ({ tool: target, toolCall: call }: ToolCallRequest) => {
 };
 
 describe('MiddlewarePipeline', () => {
+  it('logs an afterRun hook that throws and still runs the next one', async () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const after = vi.fn();
+    const pipeline = new MiddlewarePipeline([
+      {
+        name: 'broken',
+        afterRun: () => {
+          throw new Error('boom');
+        },
+      },
+      { name: 'next', afterRun: after },
+    ]);
+    const result = { runId: 'run_1' } as unknown as RunResult;
+
+    await pipeline.afterRun({ result, model: 'p/m' }, context);
+
+    expect(after).toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('afterRun'),
+      expect.objectContaining({ middleware: 'broken', error: 'boom' })
+    );
+    warn.mockRestore();
+  });
+
   it('names the innermost middleware a tripwire came from', async () => {
     const pipeline = new MiddlewarePipeline([
       { name: 'outer', wrapModelCall: (call, next) => next(call) },

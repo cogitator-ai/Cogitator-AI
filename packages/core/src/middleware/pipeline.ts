@@ -46,11 +46,22 @@ export class MiddlewarePipeline<TDeps = unknown> {
     }
   }
 
-  /** Runs every `afterRun` hook, in order, once a run finished. */
+  /**
+   * Runs every `afterRun` hook, in order, once a run finished. The run is done by then, so a hook
+   * that throws is logged and the next one still runs.
+   */
   async afterRun(event: RunEndEvent, context: RunMiddlewareContext<TDeps>): Promise<void> {
     for (const layer of this.layers) {
       if (!layer.afterRun) continue;
-      await claimed(layer.name, () => layer.afterRun?.(event, context));
+      try {
+        await layer.afterRun(event, context);
+      } catch (error) {
+        getLogger().warn('An afterRun hook failed after the run finished', {
+          middleware: layer.name,
+          runId: event.result.runId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
   }
 

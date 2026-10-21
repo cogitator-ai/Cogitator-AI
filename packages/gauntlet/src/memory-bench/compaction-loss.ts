@@ -313,7 +313,7 @@ const PLANTED: readonly Planted[] = [
   },
   {
     kind: 'error',
-    text: 'run_tests failed: 3 tests failed in auth.spec.ts',
+    text: 'run_tests {"suite":"auth"} failed: 3 tests failed in auth.spec.ts',
     section: 'Unresolved errors',
     state: 'open',
     verified: true,

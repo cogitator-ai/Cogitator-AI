@@ -94,13 +94,16 @@ export type { CoreFactsStoreConfig, FactHistoryEntry } from './core-facts';
 export { SessionManager, type SessionManagerOptions } from './session-manager';
 export {
   CompactionService,
+  checkCompactionSettings,
   compactedHistory,
   readCompactedHistory,
+  sinceSummary,
   HISTORY_ENTRY_TYPES,
   type SummarizeFn,
   type SummarizeOptions,
   type CompactionServiceConfig,
 } from './compaction';
+export { CONTROL_KINDS, SAGA_ATOMS } from './compaction-hierarchy';
 
 export {
   MemoryProviderSchema,

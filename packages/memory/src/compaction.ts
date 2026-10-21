@@ -20,6 +20,7 @@ import {
   chapterWindows,
   CONTROL_KINDS,
   foldLevels,
+  atomKey,
   lostControls,
   mergeAtoms,
   nodesOf,
@@ -170,6 +171,7 @@ export class CompactionService {
         'CompactionConfig needs threshold (tokens) or messageThreshold (entries) to know when to compact'
       );
     }
+    checkCompactionSettings(config);
 
     let threads = running.get(this.adapter);
     if (!threads) {
@@ -203,7 +205,12 @@ export class CompactionService {
       summaryTokens: 0,
     };
 
-    if (!reachedThreshold(entries, config) || entries.length <= config.keepRecent) {
+    const keepsByCount =
+      config.strategy !== 'hierarchical' || config.keepRecentTokens === undefined;
+    if (
+      !reachedThreshold(entries, config) ||
+      (keepsByCount && entries.length <= config.keepRecent)
+    ) {
       return unchanged;
     }
 
@@ -372,7 +379,8 @@ export class CompactionService {
    * asked again up to twice for an answer that is not a valid array), with the control atoms the
    * entries of `own` (the window less the overlap it opens with) hold in their structure, which
    * no answer can lose. Those come first, so an item the summarizer closes with evidence that
-   * holds stays closed.
+   * holds stays closed. An open item only the overlap shows belongs to the chapter before and is
+   * left out, so it does not come back once that chapter closed it.
    */
   async chapterAtoms(
     window: MemoryEntry[],
@@ -395,13 +403,18 @@ export class CompactionService {
     if (atoms === undefined) {
       throw new Error('The summarizer did not answer with the atoms of a chapter after 3 tries');
     }
+    const own = new Set((options.own ?? window).map((entry) => entry.id));
+    const restated = ({ status, evidence = [] }: CompactionAtom) =>
+      status === 'open' &&
+      evidence.length > 0 &&
+      evidence.every((piece) => piece.entryId === undefined || !own.has(piece.entryId));
     return mergeAtoms([
       {
         from: '',
         to: '',
         atoms: structuralAtoms(options.own ?? window, { context: window, open }),
       },
-      { from: '', to: '', atoms },
+      { from: '', to: '', atoms: atoms.filter((atom) => !restated(atom)) },
     ]);
   }
 
@@ -424,8 +437,60 @@ function timeOf(value: Date | string): number {
 }
 
 /** Whether the thread holds enough tokens or entries to be compacted. */
+/**
+ * Throws for `hierarchical` settings that are not whole numbers above 0 (`keepRecentTokens` may
+ * be 0), which would fold every chapter at once or never stop folding
+ */
+export function checkCompactionSettings(config: Partial<CompactionConfig>): void {
+  for (const key of [
+    'chapterTokens',
+    'chapterConcurrency',
+    'chaptersPerArc',
+    'arcsPerSaga',
+  ] as const) {
+    const value = config[key];
+    if (value !== undefined && !(Number.isInteger(value) && value > 0)) {
+      throw new Error(`compaction.${key} must be a whole number above 0, got ${value}`);
+    }
+  }
+  const tail = config.keepRecentTokens;
+  if (tail !== undefined && !(Number.isInteger(tail) && tail >= 0)) {
+    throw new Error(`compaction.keepRecentTokens must be a whole number of 0 or more, got ${tail}`);
+  }
+}
+
+/**
+ * Whether `entry` was written after `summary`, not kept by it: by its place on the branch when
+ * the adapter numbers entries, else by when it was written
+ */
+function writtenAfter(entry: MemoryEntry, summary: MemoryEntry): boolean {
+  if (entry.seq !== undefined && summary.seq !== undefined) return entry.seq > summary.seq;
+  return entry.createdAt.getTime() > summary.createdAt.getTime();
+}
+
+/**
+ * The entries of `conversation` (a compacted one, its summary first) written since its summary,
+ * which leaves out the tail the summary kept: all of them when it opens with no summary
+ */
+export function sinceSummary(conversation: readonly MemoryEntry[]): MemoryEntry[] {
+  const [summary, ...rest] = conversation;
+  if (
+    !summary ||
+    !(summary.type === 'compaction' || summary.metadata?.compactionSummary === true)
+  ) {
+    return [...conversation];
+  }
+  return rest.filter((entry) => writtenAfter(entry, summary));
+}
+
+/**
+ * Whether `entries` reached the threshold: `threshold` counts the tokens of the whole
+ * conversation, `messageThreshold` its entries, for `hierarchical` only those written since the
+ * last summary, since the tail it keeps by tokens can hold more entries than the threshold
+ */
 function reachedThreshold(entries: MemoryEntry[], config: CompactionConfig): boolean {
-  if (config.messageThreshold !== undefined && entries.length >= config.messageThreshold) {
+  const counted = config.strategy === 'hierarchical' ? sinceSummary(entries) : entries;
+  if (config.messageThreshold !== undefined && counted.length >= config.messageThreshold) {
     return true;
   }
   if (config.threshold === undefined) return false;
@@ -525,8 +590,6 @@ function tailStart(conversation: readonly MemoryEntry[], config: CompactionConfi
 const DEFAULT_CHAPTER_TOKENS = 4000;
 const DEFAULT_CHAPTERS_PER_ARC = 4;
 const DEFAULT_ARCS_PER_SAGA = 4;
-/** Chapters read at once */
-const CHAPTER_CONCURRENCY = 4;
 /** Open items of earlier chapters a chapter prompt lists, the newest */
 const OPEN_ITEMS = 40;
 
@@ -543,22 +606,23 @@ function tokensOf(entries: readonly MemoryEntry[]): number {
 
 /**
  * Keeps a tree of grounded atoms in place of the conversation before the kept tail: the entries
- * new since the last compaction become chapters (windows read by the summarizer, up to
- * {@link CHAPTER_CONCURRENCY} at once, each told the items still open before it), chapters beyond
+ * new since the last compaction become chapters (windows read by the summarizer, one at a time or
+ * `chapterConcurrency` at once, each told the items still open before it), chapters beyond
  * `chaptersPerArc` fold into arcs and arcs beyond `arcsPerSaga` into the saga, with no model. A
  * part to compact under a tenth of the kept tail is left for later, since it would change the
- * summary, and so the cached prompt, for little. The summary is published only when it still
- * holds every open control atom of the one before it, and its message is the handoff rendered
- * from the tree.
+ * summary, and so the cached prompt, for little. The summary is published only when every open
+ * control atom of the one before it is still there or was closed, and its message is the handoff
+ * rendered from the tree.
  */
 const hierarchicalStrategy: StrategyFn = async (service, sessionId, entries, config) => {
-  const first = entries[0];
-  const before =
-    first?.type === 'compaction' || first?.metadata?.compactionSummary === true ? first : undefined;
+  const summaries = entries.filter(
+    (entry) => entry.type === 'compaction' || entry.metadata?.compactionSummary === true
+  );
+  const before = summaries.at(-1);
   const stored =
     (before?.event as Partial<CompactionEvent> | undefined)?.levels ??
     (before?.metadata?.compactionLevels as CompactionLevels | undefined);
-  const conversation = before ? entries.slice(1) : entries;
+  const conversation = entries.filter((entry) => !summaries.includes(entry));
   const tail = tailStart(conversation, config);
   const compacted = conversation.slice(0, tail);
   const unchanged: CompactionResult = {
@@ -591,9 +655,10 @@ const hierarchicalStrategy: StrategyFn = async (service, sessionId, entries, con
   };
   const windows = chapterWindows(compacted, config.chapterTokens ?? DEFAULT_CHAPTER_TOKENS);
   const chapters: CompactionNode[] = [];
-  for (let at = 0; at < windows.length; at += CHAPTER_CONCURRENCY) {
+  const concurrency = config.chapterConcurrency ?? 1;
+  for (let at = 0; at < windows.length; at += concurrency) {
     let known: CompactionNode[] = [...nodesOf(previous), ...chapters];
-    const batch = windows.slice(at, at + CHAPTER_CONCURRENCY).map(({ window, own }) => {
+    const batch = windows.slice(at, at + concurrency).map(({ window, own }) => {
       const open = openItems(known);
       known = [
         ...known,
@@ -616,7 +681,12 @@ const hierarchicalStrategy: StrategyFn = async (service, sessionId, entries, con
     config.chaptersPerArc ?? DEFAULT_CHAPTERS_PER_ARC,
     config.arcsPerSaga ?? DEFAULT_ARCS_PER_SAGA
   );
-  const lost = lostControls(previous, levels);
+  const settled = new Map(
+    mergeAtoms([...nodesOf(previous), ...chapters]).map((atom) => [atomKey(atom), atom])
+  );
+  const lost = lostControls(previous, levels).filter(
+    (atom) => settled.get(atomKey(atom))?.status !== 'closed'
+  );
   if (lost.length > 0) {
     throw new Error(
       `The summary would lose ${lost.length} open item(s), such as "${lost[0]!.text}": it is not published`
@@ -624,7 +694,7 @@ const hierarchicalStrategy: StrategyFn = async (service, sessionId, entries, con
   }
   const summaryTokens = await service.applySummary(
     sessionId,
-    [...(before ? [before] : []), ...compacted],
+    [...summaries, ...compacted],
     renderHandoff(levels),
     conversation.slice(tail),
     levels

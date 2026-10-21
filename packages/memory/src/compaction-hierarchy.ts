@@ -151,24 +151,45 @@ function filesOf(call: ToolCall): string[] {
   );
 }
 
-/** How the text of a failure of a call opens: its tool and the files it worked on */
-function failureOf(name: string, call: ToolCall | undefined): string {
-  return [name, ...(call ? filesOf(call) : [])].join(' ') + ' failed: ';
+/** The longest argument signature a failure text carries */
+const SIGNATURE_CHARS = 120;
+
+/** `value` with the keys of every object in it sorted, so equal arguments read the same */
+function sortedKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortedKeys);
+  if (value === null || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([key, item]) => [key, sortedKeys(item)])
+  );
 }
 
-interface Failure {
-  text: string;
-  /** The arguments of the call, known for a failure among the entries */
-  args?: string;
+/**
+ * How the text of a failure of `call` opens: its tool and the files it worked on, or its
+ * arguments when it names no files, so failures of different calls stay apart and a later call
+ * on the same files or with the same arguments knows which one it closes
+ */
+function failureOf(call: ToolCall): string {
+  const files = filesOf(call);
+  const args =
+    Object.keys(call.arguments).length > 0 ? JSON.stringify(sortedKeys(call.arguments)) : '';
+  const subject =
+    files.length > 0
+      ? files.join(' ')
+      : args.length > SIGNATURE_CHARS
+        ? `${args.slice(0, SIGNATURE_CHARS)}...`
+        : args;
+  return `${[call.name, subject].filter(Boolean).join(' ')} failed: `;
 }
 
 /**
  * The control atoms `entries` hold in their structure, which need no model and are not lost:
  * files tool calls worked on, tool calls that failed, and task lines (`TODO`, `- [ ]`, closed by
  * a `- [x]` of the same task). A failed call is closed by a later call of the same tool that
- * succeeds on the same files, or with the same arguments when it names no files, of a failure
- * among `entries` (an open failure of `open` names its files only, so only the files can close
- * it). `context` holds the entries the calls of the results may be in (`entries` by default).
+ * succeeds on the same files, or with the same arguments when it names no files, whether the
+ * failure is among `entries` or an open atom of `open`. `context` holds the entries the calls of
+ * the results may be in (`entries` by default), a result whose call is not there closes nothing.
  */
 export function structuralAtoms(
   entries: readonly MemoryEntry[],
@@ -179,9 +200,9 @@ export function structuralAtoms(
       (entry.toolCalls ?? []).map((call) => [call.id, call] as const)
     )
   );
-  const failures: Failure[] = (options.open ?? [])
+  const failures = (options.open ?? [])
     .filter((atom) => atom.kind === 'error' && atom.status === 'open')
-    .map((atom) => ({ text: atom.text }));
+    .map((atom) => atom.text);
   const atoms: CompactionAtom[] = [];
   for (const entry of entries) {
     for (const call of entry.toolCalls ?? []) {
@@ -197,8 +218,7 @@ export function structuralAtoms(
     }
     for (const result of entry.toolResults ?? []) {
       const call = calls.get(result.callId);
-      const failure = failureOf(result.name, call);
-      const args = call && JSON.stringify(call.arguments);
+      const failure = call ? failureOf(call) : `${result.name} failed: `;
       const evidence: Evidence = {
         entryId: entry.id,
         toolCallId: result.callId,
@@ -206,21 +226,13 @@ export function structuralAtoms(
       };
       if (result.error) {
         const text = failure + result.error;
-        failures.push({ text, ...(args !== undefined && { args }) });
+        failures.push(text);
         atoms.push({ kind: 'error', status: 'open', text, evidence: [evidence], verified: true });
         continue;
       }
-      const named = call !== undefined && filesOf(call).length > 0;
-      for (const known of failures) {
-        if (!known.text.startsWith(failure)) continue;
-        if (!named && (args === undefined || known.args !== args)) continue;
-        atoms.push({
-          kind: 'error',
-          status: 'closed',
-          text: known.text,
-          evidence: [evidence],
-          verified: true,
-        });
+      if (!call) continue;
+      for (const text of failures.filter((known) => known.startsWith(failure))) {
+        atoms.push({ kind: 'error', status: 'closed', text, evidence: [evidence], verified: true });
       }
     }
     for (const line of textOf(entry.message.content).split('\n')) {
@@ -255,8 +267,9 @@ function mergedEvidence(a: Evidence[] = [], b: Evidence[] = []): Evidence[] {
 
 /**
  * The atoms of `nodes`, oldest first, merged: one atom per kind and text, with the evidence of
- * every node. A later status wins, except that an open control atom is closed only by a later
- * atom whose evidence holds, so an unsupported claim of done does not drop it.
+ * every node. A later status wins, except that a control atom is closed or opened again only by
+ * a later atom whose evidence holds, so an unsupported claim of done does not drop an item and an
+ * unsupported repeat does not bring back one that was done.
  */
 export function mergeAtoms(nodes: readonly CompactionNode[]): CompactionAtom[] {
   const merged = new Map<string, CompactionAtom>();
@@ -268,14 +281,11 @@ export function mergeAtoms(nodes: readonly CompactionNode[]): CompactionAtom[] {
         merged.set(key, { ...atom, evidence: mergedEvidence(atom.evidence) });
         continue;
       }
-      const unsupportedClose =
-        known.status === 'open' &&
-        atom.status === 'closed' &&
-        CONTROL_KINDS.has(atom.kind) &&
-        !atom.verified;
+      const unsupported =
+        known.status !== atom.status && CONTROL_KINDS.has(atom.kind) && !atom.verified;
       merged.set(key, {
         ...known,
-        status: unsupportedClose ? 'open' : atom.status,
+        status: unsupported ? known.status : atom.status,
         evidence: mergedEvidence(known.evidence, atom.evidence),
         verified: known.verified || atom.verified,
       });

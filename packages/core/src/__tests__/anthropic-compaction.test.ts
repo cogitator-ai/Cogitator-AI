@@ -68,6 +68,18 @@ describe('anthropicCompactionSummarizer', () => {
     );
   });
 
+  it('sends a Cogitator model string without its anthropic/ prefix', async () => {
+    const { create, client: anthropic } = client('summary');
+    const summarize = anthropicCompactionSummarizer({
+      model: 'claude-haiku-5-5',
+      client: anthropic,
+    });
+
+    await summarize([{ role: 'user', content: 'x' }], { model: 'anthropic/claude-sonnet-5-5' });
+
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ model: 'claude-sonnet-5-5' }));
+  });
+
   it('fails when the compaction holds no summary', async () => {
     const { client: anthropic } = client(null);
     const summarize = anthropicCompactionSummarizer({

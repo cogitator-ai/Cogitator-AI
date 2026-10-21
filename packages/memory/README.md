@@ -653,14 +653,15 @@ await compaction.compact(session.id, {
   keepRecent: 0,
   keepRecentTokens: 8000, // newest whole turns kept verbatim
   chapterTokens: 4000, // default
+  chapterConcurrency: 1, // default
   chaptersPerArc: 4, // default
   arcsPerSaga: 4, // default
 });
 ```
 
-- The entries new since the last compaction, up to the kept tail, are read in chapters of about `chapterTokens` tokens, each opening with the end of the one before. For each the summarizer gets a numbered transcript and `options.prompt` asks for a JSON array of atoms (`summaryPrompt` is added to it), up to three tries.
+- The entries new since the last compaction, up to the kept tail, are read in chapters of about `chapterTokens` tokens, each opening with the end of the one before, one at a time (`chapterConcurrency` reads more at once). For each the summarizer gets a numbered transcript and `options.prompt` asks for a JSON array of atoms and lists the items still open, which it may close (`summaryPrompt` is added to it), up to three tries.
 - A `CompactionAtom` has a `kind` (`fact`, `task`, `decision`, `constraint`, `error`, `file`, `thread`), a `status` (`open`, `closed`), a `text` and `evidence`. Every quote is checked against its entry, and an atom whose quotes do not all hold is not `verified`. Files tool calls worked on, failed tool calls and open task lines (`TODO:`, `- [ ]`) are taken from the entries with no model.
-- Chapters beyond `chaptersPerArc` fold into arcs and arcs beyond `arcsPerSaga` into the saga, with no model. An open task, decision, constraint, error, file or question is closed only by an atom whose evidence holds.
+- Chapters beyond `chaptersPerArc` fold into arcs and arcs beyond `arcsPerSaga` into the saga, with no model. An open task, decision, constraint, error or question is closed, or opened again once done, only by an atom whose evidence holds. The saga keeps every open item and the newest 200 facts and files, so the handoff stops growing.
 - The summary is written only when it still holds every open item of the one before, else `compact()` throws and the thread stays as it was.
 - The whole tree is one `compaction` entry, `event.levels` (`CompactionLevels`: `saga`, `arcs`, `chapters`, each a `CompactionNode` with `from`, `to` and `atoms`), and its message is the handoff: `Open tasks`, `Constraints`, `Decisions`, `Unresolved errors`, `Open questions`, `Files`, `Facts` and `Done`, in the same order every time so it stays in the prompt cache.
 - `keepRecentTokens` keeps the newest tokens in whole turns that open with a user message, so a tool call keeps its result. Without it the newest `keepRecent` entries stay.
