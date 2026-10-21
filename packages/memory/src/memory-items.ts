@@ -617,9 +617,17 @@ export class MemoryItems {
     });
   }
 
-  /** Marks items as no longer trusted to hold: kept and found by `statuses: ['stale']` */
-  async markStale(itemIds: readonly string[]): Promise<void> {
-    await this.update(itemIds, (item) => ({ ...item, status: 'stale' }));
+  /**
+   * Marks items as no longer trusted to hold: kept and found by `statuses: ['stale']`. `because`
+   * is kept in their metadata as `staleBecause`, such as the item a consolidation found them to
+   * repeat.
+   */
+  async markStale(itemIds: readonly string[], because?: Record<string, unknown>): Promise<void> {
+    await this.update(itemIds, (item) => ({
+      ...item,
+      status: 'stale',
+      ...(because && { metadata: { ...item.metadata, staleBecause: because } }),
+    }));
   }
 
   /**

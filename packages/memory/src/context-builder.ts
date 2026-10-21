@@ -29,6 +29,8 @@ import type {
   TimePrecision,
 } from '@cogitator-ai/types';
 import { isMemoryItemAdapter, onePerSlot, visibleIn, type MemoryItems } from './memory-items';
+import { inert } from './memory-files';
+import { namedIn, type MemoryObservation, type MemoryObservations } from './memory-observations';
 import { MemoryRetriever, type Retrieval } from './retrieval/retriever';
 import { analyzeQuery } from './retrieval/query';
 import type { GraphContextBuilder } from './knowledge-graph/graph-context-builder';
@@ -122,6 +124,10 @@ const SOURCE_OF_TRUST: Record<MemoryItemTrust, Fact['source']> = {
 
 /** The heading of the earlier turns a search of memory brought */
 const RECALLED_TURNS_HEADER = 'Earlier in this conversation:';
+const OBSERVATIONS_HEADER =
+  'What memory makes of them (written from the facts, may lag behind them):';
+/** Observations a turn gets at most */
+const MAX_OBSERVATIONS = 3;
 /** Memory items embedded in one call */
 const ITEM_EMBED_BATCH = 64;
 /** Vectors of memory items a builder keeps, the used least lately dropped past it */
@@ -200,6 +206,11 @@ function whenOf(
     default:
       return day;
   }
+}
+
+/** An observation as a turn's memory context shows it */
+function observationText(observation: MemoryObservation): string {
+  return inert(`${observation.name}:\n${observation.text}`);
 }
 
 /** A line of the `Known facts` block, with the value a fact replaced when it replaced one */
@@ -282,7 +293,8 @@ type Piece =
   | { kind: 'retrieved'; entries: MemoryEntry[] }
   | { kind: 'recalled'; item: MemoryItem }
   | { kind: 'semantic'; result: Embedding & { score: number } }
-  | { kind: 'graph'; context: GraphContext };
+  | { kind: 'graph'; context: GraphContext }
+  | { kind: 'observation'; observation: MemoryObservation };
 
 function textBlock(text: string, tokens = countTokens(text)): AssemblyBlock<Piece> {
   return { value: { kind: 'text', text }, tokens, text };
@@ -375,6 +387,11 @@ export interface ContextBuilderDeps {
    * by a search of the store. Without it the builder keeps vectors in process.
    */
   messageIndex?: MessageIndex;
+  /**
+   * Observations of the entities memory items are about: a turn whose input names an entity,
+   * or that recalls one of its items, gets its observation next to the facts
+   */
+  observations?: Pick<MemoryObservations, 'read'>;
 }
 
 export interface BuildContextOptions {
@@ -600,11 +617,24 @@ export class ContextBuilder {
           )) ?? [])
         : [];
 
-    if (semantic.length > 0 || graph || recalled.length > 0) {
+    const observations =
+      this.deps.observations && options.currentInput
+        ? ((await this.attempt('observations', errors, () =>
+            this.loadObservations(options, recalled)
+          )) ?? [])
+        : [];
+
+    if (semantic.length > 0 || graph || recalled.length > 0 || observations.length > 0) {
       candidates.push({
         partition: 'recall',
         blocks: [
           ...recalled,
+          ...observations.map((observation) => ({
+            value: { kind: 'observation' as const, observation },
+            tokens: countTokens(observationText(observation)),
+            text: observation.text,
+            sourceId: observation.path,
+          })),
           ...semantic.map((result) => ({
             value: { kind: 'semantic' as const, result },
             tokens: countTokens(`- ${result.content}`),
@@ -633,10 +663,12 @@ export class ContextBuilder {
       facts.length > 0 ||
       semantic.length > 0 ||
       graph ||
-      recalled.length > 0
+      recalled.length > 0 ||
+      observations.length > 0
         ? [[TURN_CONTEXT_OPEN, TURN_CONTEXT_HEADER, TURN_CONTEXT_CLOSE].join('\n\n')]
         : []),
       ...(facts.length > 0 ? ['Known facts:'] : []),
+      ...(observations.length > 0 ? [OBSERVATIONS_HEADER] : []),
       ...(semantic.length > 0 ? ['Relevant context:'] : []),
       ...(recalled.some((block) => block.value.kind === 'retrieved')
         ? [RECALLED_TURNS_HEADER]
@@ -755,12 +787,18 @@ export class ContextBuilder {
     );
     const shownTurns = recalledTurns.filter((turn) => turn.length > 0);
     const factIds = new Set(facts.map((fact) => fact.id));
+    const observations = kept('recall').flatMap((block) =>
+      block.value.kind === 'observation' ? [block.value.observation] : []
+    );
     const recalledItems = kept('recall').flatMap((block) =>
       block.value.kind === 'recalled' && !factIds.has(block.value.item.id) ? [block.value.item] : []
     );
     const turnBlocks = [
       ...textsOf('brief'),
       ...(facts.length > 0 ? [`Known facts:\n${facts.map(factLine).join('\n')}`] : []),
+      ...(observations.length > 0
+        ? [`${OBSERVATIONS_HEADER}\n${observations.map(observationText).join('\n\n')}`]
+        : []),
       ...(semanticResults.length > 0
         ? [`Relevant context:\n${semanticResults.map((r) => `- ${r.content}`).join('\n')}`]
         : []),
@@ -841,6 +879,37 @@ export class ContextBuilder {
       errors.push({ source, error: err instanceof Error ? err : new Error(String(err)) });
       return undefined;
     }
+  }
+
+  /**
+   * The observations of the entities the input names, then of those whose items were recalled,
+   * at most {@link MAX_OBSERVATIONS}
+   */
+  private async loadObservations(
+    options: BuildContextOptions,
+    recalled: readonly AssemblyBlock<Piece>[]
+  ): Promise<MemoryObservation[]> {
+    const reader = this.deps.observations;
+    const input = options.currentInput;
+    if (!reader || !input) return [];
+    const all = await reader.read({
+      agentId: options.memoryAgentId ?? options.agentId,
+      ...(options.userId !== undefined && { userId: options.userId }),
+      threadId: options.threadId,
+    });
+    if (all.length === 0) return [];
+    const recalledEntities = new Set(
+      recalled.flatMap((block) =>
+        block.value.kind === 'recalled' && block.value.item.entityId !== undefined
+          ? [block.value.item.entityId]
+          : []
+      )
+    );
+    const named = all.filter((observation) =>
+      [observation.name, ...observation.aliases].some((name) => namedIn(input, name))
+    );
+    const related = all.filter((observation) => recalledEntities.has(observation.entityId));
+    return [...new Set([...named, ...related])].slice(0, MAX_OBSERVATIONS);
   }
 
   /** Facts of the agent visible to the user */

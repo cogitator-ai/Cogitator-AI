@@ -243,8 +243,8 @@ function withoutTrailingSlashes(path: string): string {
   return path.slice(0, end);
 }
 
-/** Text of a memory file as a context shows it, unable to close or open the context's block */
-function inert(text: string): string {
+/** Text as a turn's memory context shows it, unable to close or open the context's block */
+export function inert(text: string): string {
   return text.replace(/<\/?\s*memory_context\s*>/gi, (tag) => tag.replace(/</g, '&lt;'));
 }
 
@@ -426,6 +426,35 @@ export class MemoryFiles {
       return [{ path: target, content: fitting(text, path) }];
     });
     return `File created successfully at: ${path}`;
+  }
+
+  /**
+   * Writes `text` as the whole file at `path`, creating it when it does not exist, for code that
+   * keeps a file of its own, such as an observation or the playbook. `expectedSha256` names the
+   * version the text was made from, `null` for a file that did not exist then, and the write is
+   * refused when the file stands otherwise. Returns the SHA-256 of the text.
+   */
+  async put(
+    access: MemoryFileAccess,
+    path: string,
+    text: string,
+    expectedSha256?: string | null
+  ): Promise<string> {
+    const target = filePath(path);
+    this.writable(access, path);
+    writableText(text);
+    await this.change(access, [target], async (current) => {
+      const known = current.get(target);
+      if (!known && [...current.keys()].some((other) => under(other, target))) {
+        throw new MemoryFileError(`The path ${path} is not a file.`);
+      }
+      if (expectedSha256 !== undefined && (known?.sha256 ?? null) !== expectedSha256) {
+        throw new MemoryFileError(`The file ${path} changed since it was read.`);
+      }
+      if (!known) fileUnder(current, target, path);
+      return [{ path: target, content: fitting(text, path) }];
+    });
+    return sha256Of(text);
   }
 
   async strReplace(

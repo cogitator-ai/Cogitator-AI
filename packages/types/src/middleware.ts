@@ -17,6 +17,11 @@ export interface RunMiddlewareContext<TDeps = unknown> {
   readonly threadId?: string;
   readonly agentId: string;
   readonly agentName: string;
+  /**
+   * The id the agent's long-term memory is kept under: its configured `id`, else its `name`.
+   * Unset for a tool call made with `invokeTool()`
+   */
+  readonly memoryAgentId?: string;
   readonly userId?: string;
   /** The channel the run serves, as its tools get it */
   readonly channelType?: string;

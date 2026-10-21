@@ -17,6 +17,8 @@ export * from './middleware';
 export * from './memory';
 export * from './memory-items';
 export * from './memory-files';
+export * from './memory-brief';
+export * from './memory-consolidation';
 export * from './sandbox';
 export * from './workflow';
 export * from './swarm';

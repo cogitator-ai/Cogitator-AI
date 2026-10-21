@@ -260,6 +260,47 @@ export {
   type MemoryItemsConfig,
 } from './memory-items';
 export {
+  MemoryBriefer,
+  BRIEF_PROMPT,
+  MAX_BRIEF_CARDS,
+  briefBlock,
+  parseBrief,
+  type BriefSource,
+  type MemoryBrieferOptions,
+} from './memory-brief';
+export { inert } from './memory-files';
+export {
+  MemoryObservations,
+  OBSERVATIONS_DIRECTORY,
+  OBSERVATION_PROMPT,
+  namedIn,
+  parseObservation,
+  parseObservationAnswer,
+  type MemoryObservation,
+  type MemoryObservationsOptions,
+  type ObservationsRefresh,
+  type RefreshObservationsOptions,
+} from './memory-observations';
+export {
+  MemoryConsolidator,
+  DEDUPE_PROMPT,
+  PLAYBOOK_PROMPT,
+  PLAYBOOK_PATH,
+  PLAYBOOK_DRAFT_PATH,
+  MAX_PLAYBOOK_EDITS,
+  MAX_PLAYBOOK_RULES,
+  applyPlaybookEdits,
+  parsePlaybook,
+  parsePlaybookEdits,
+  playbookFile,
+  type DedupeOptions,
+  type FoldLessonsOptions,
+  type MemoryConsolidatorOptions,
+  type Playbook,
+  type PlaybookChange,
+  type PlaybookEdit,
+} from './memory-consolidation';
+export {
   MemoryFiles,
   MemoryFileError,
   MEMORY_ROOT,

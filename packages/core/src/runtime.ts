@@ -24,6 +24,9 @@ import type {
   EstimateOptions,
   MemoryAdapter,
   MemoryFilesConfig,
+  MemoryFileAdapter,
+  MemoryItemScope,
+  MemoryConsolidationReport,
   HandoffEvent,
   ResumeOptions,
   RunCheckpoint,
@@ -46,6 +49,12 @@ import { ToolRegistry } from './registry';
 import { createLLMBackend } from './llm/index';
 import { memoryCompactionMiddleware, type CompactionRun } from './middleware/memory-compaction';
 import { memoryExtractionMiddleware } from './middleware/memory-extraction';
+import { memoryBriefMiddleware } from './middleware/memory-brief';
+import {
+  memoryUpkeepMiddleware,
+  upkeepScope,
+  type MemoryUpkeep,
+} from './middleware/memory-consolidation';
 import { LLMError, llmInvalidResponse } from './llm/errors';
 import { isLLMProvider } from './llm/providers';
 import { createLLMBackendFromPlugin, hasLLMPlugin } from './llm/plugin';
@@ -59,11 +68,43 @@ import {
   type IndexedText,
   type SummarizeFn,
   isMemoryFileAdapter,
+  isMemoryItemAdapter,
   MemoryFiles,
+  PLAYBOOK_PATH,
+  inert,
+  parsePlaybook,
 } from '@cogitator-ai/memory';
 
 /** Entries of a thread {@link Cogitator.indexMemory} reads at once */
 const INDEX_PAGE = 500;
+/** Characters of the playbook a run's context shows at most */
+const PLAYBOOK_CHARS = 4000;
+
+/** The playbook a run of `visibleTo` sees, as its context shows it, undefined while it has no rules */
+async function playbookNote(
+  files: MemoryFiles,
+  visibleTo: MemoryItemScope
+): Promise<string | undefined> {
+  const file = await files.read({ scope: visibleTo, visibleTo, readOnly: true }, PLAYBOOK_PATH);
+  if (!file) return undefined;
+  const lines: string[] = [];
+  let left = PLAYBOOK_CHARS;
+  const { rules } = parsePlaybook(file.content);
+  for (const rule of rules) {
+    left -= rule.length + 3;
+    if (left < 0) {
+      lines.push(
+        `- ... and ${rules.length - lines.length} more rules, view ${PLAYBOOK_PATH} to see them`
+      );
+      break;
+    }
+    lines.push(`- ${rule}`);
+  }
+  if (lines.length === 0) return undefined;
+  return inert(
+    `The playbook memory keeps, rules learned from earlier work (a hint, check it against the task):\n${lines.join('\n')}`
+  );
+}
 import { TruncateStrategy } from './context/strategies/index';
 import { sanitizeToolHistory } from './utils/tool-history';
 import { normalizeTurn } from './llm/turn';
@@ -272,6 +313,8 @@ export class Cogitator implements ToolInvoker {
   private piiLayer?: RunMiddleware;
   private clearingLayer?: RunMiddleware;
   private memoryCompactionLayer?: RunMiddleware;
+  private memoryBriefLayer?: RunMiddleware;
+  private memoryUpkeepLayer?: MemoryUpkeep;
   private memoryExtractionLayer?: RunMiddleware;
   /** What the `afterRun` hooks of a run spent on the model, by run, added to its usage */
   private readonly afterRunSpend = new Map<
@@ -549,8 +592,10 @@ export class Cogitator implements ToolInvoker {
    * The middleware the runtime's own features become, closest to the model, in this order:
    * PII masking (`security.pii`), prompt injection (`security.promptInjection`), guardrails
    * (`guardrails`), tool output clearing (`context.clearToolOutputs`), compaction of a turn
-   * (`context`), extraction of memory items after a run (`memory.extraction`) and compaction of
-   * the thread after a run (`memory.compaction`). Each is there once its feature is set up.
+   * (`context`), extraction of memory items after a run (`memory.extraction`), compaction of
+   * the thread after a run (`memory.compaction`), memory upkeep in the background after a run
+   * (`memory.observations`, `memory.consolidation`) and the brief of what memory holds for a
+   * turn before its first model call (`memory.brief`). Each is there once its feature is set up.
    */
   private builtinMiddleware(): RunMiddleware[] {
     const pii = this.config.security?.pii;
@@ -566,12 +611,44 @@ export class Cogitator implements ToolInvoker {
         summarizer: (model, run) => this.summarizerFor(model, run),
       });
     }
+    const { observations, consolidation } = this.config.memory ?? {};
+    if (observations || consolidation) {
+      this.memoryUpkeepLayer ??= memoryUpkeepMiddleware(
+        {
+          ...(observations && { observations }),
+          ...(consolidation && { consolidation }),
+          ...(memoryExtraction?.scope && { scope: memoryExtraction.scope }),
+        },
+        {
+          memory: () => this.state.memoryAdapter,
+          summarizer: (model, run) => this.summarizerFor(model, run, false),
+        }
+      );
+    }
     const memoryCompaction = this.config.memory?.compaction;
     if (memoryCompaction) {
-      this.memoryCompactionLayer ??= memoryCompactionMiddleware(memoryCompaction, {
+      const userAfterCompact = memoryCompaction.afterCompact;
+      this.memoryCompactionLayer ??= memoryCompactionMiddleware(
+        {
+          ...memoryCompaction,
+          afterCompact: async (result) => {
+            this.memoryUpkeepLayer?.noteCompaction(result.sessionId);
+            await userAfterCompact?.(result);
+          },
+        },
+        {
+          memory: () => this.state.memoryAdapter,
+          summarizer: (model, run) => this.summarizerFor(model, run),
+          windowOf: (model) => this.servedWindow(model),
+        }
+      );
+    }
+    const memoryBrief = this.config.memory?.brief;
+    if (memoryBrief) {
+      this.memoryBriefLayer ??= memoryBriefMiddleware(memoryBrief, {
         memory: () => this.state.memoryAdapter,
         summarizer: (model, run) => this.summarizerFor(model, run),
-        windowOf: (model) => this.servedWindow(model),
+        placeOf: (runId) => this.runMemories.get(runId)?.conversation,
       });
     }
     const { injectionDetector, constitutionalAI, contextManager } = this.state;
@@ -583,15 +660,22 @@ export class Cogitator implements ToolInvoker {
       ...(contextManager ? [compactionMiddleware(contextManager)] : []),
       ...(this.memoryExtractionLayer ? [this.memoryExtractionLayer] : []),
       ...(this.memoryCompactionLayer ? [this.memoryCompactionLayer] : []),
+      ...(this.memoryUpkeepLayer ? [this.memoryUpkeepLayer] : []),
+      ...(this.memoryBriefLayer ? [this.memoryBriefLayer] : []),
     ];
   }
 
   /**
    * A summarizer that asks `model`, routed as a run's model is (see {@link route}), with the
    * prompt as its system message. Each call stops with the run's `signal` and is counted for
-   * `run`, in the cost router and in the usage the run returns.
+   * `run` in the cost router, and with `inRun` in the usage the run returns too: a call made
+   * after the run returned, such as by memory upkeep, is not.
    */
-  private summarizerFor(model: string, { signal, ...run }: CompactionRun): SummarizeFn {
+  private summarizerFor(
+    model: string,
+    { signal, ...run }: CompactionRun,
+    inRun = true
+  ): SummarizeFn {
     return async (messages, options) => {
       signal?.throwIfAborted();
       const { backend, model: name } = this.route(model);
@@ -615,6 +699,7 @@ export class Cogitator implements ToolInvoker {
         outputTokens: response.usage.outputTokens,
         cost,
       });
+      if (!inRun) return response.content;
       const spent = this.afterRunSpend.get(run.runId) ?? {
         inputTokens: 0,
         outputTokens: 0,
@@ -681,14 +766,22 @@ export class Cogitator implements ToolInvoker {
       }
       return undefined;
     }
+    return { config, adapter, service: this.fileService(adapter) };
+  }
+
+  /** The memory files of `adapter`, one service while the adapter stays the same */
+  private fileService(adapter: MemoryAdapter & MemoryFileAdapter): MemoryFiles {
     if (this.memoryFilesService?.adapter !== adapter) {
       this.memoryFilesService = { adapter, service: new MemoryFiles({ adapter }) };
       this.memoryFileTools.clear();
     }
-    return { config, adapter, service: this.memoryFilesService.service };
+    return this.memoryFilesService.service;
   }
 
-  /** The list of the memory files a run of `agent` sees, for its context */
+  /**
+   * What memory holds for a run of `agent`, for its context: the list of the memory files it sees
+   * (`memory.files`) and the playbook kept for it (`memory.consolidation`)
+   */
   private memoryFilesIndex(
     agent: Agent,
     options: RunOptions
@@ -696,22 +789,39 @@ export class Cogitator implements ToolInvoker {
     | ((thread: { threadId: string; leafId?: string | null }) => Promise<string | undefined>)
     | undefined {
     const files = this.memoryFiles();
-    if (!files) return undefined;
+    const consolidation = this.config.memory?.consolidation;
+    const adapter = this.state.memoryAdapter;
+    const showPlaybook =
+      consolidation !== undefined &&
+      consolidation.playbook !== false &&
+      consolidation.showPlaybook !== false &&
+      adapter !== undefined &&
+      isMemoryFileAdapter(adapter);
+    if (!files && !showPlaybook) return undefined;
     return async (thread) => {
       const agentId = memoryAgentId(agent);
       const run = {
         ...(options.userId !== undefined && { userId: options.userId }),
         threadId: thread.threadId,
       };
-      const place = await memoryFilePlace(files.adapter, thread);
-      return files.service.index(
-        {
-          scope: memoryFileScope(agentId, files.config.scope, run),
-          visibleTo: memoryFileVisibility(agentId, run),
-          ...(place && { place }),
-        },
-        files.config.indexChars
-      );
+      const visibleTo = memoryFileVisibility(agentId, run);
+      const place = files ? await memoryFilePlace(files.adapter, thread) : undefined;
+      const index = files
+        ? await files.service.index(
+            {
+              scope: memoryFileScope(agentId, files.config.scope, run),
+              visibleTo,
+              ...(place && { place }),
+            },
+            files.config.indexChars
+          )
+        : undefined;
+      const playbook =
+        showPlaybook && adapter && isMemoryFileAdapter(adapter)
+          ? await playbookNote(this.fileService(adapter), visibleTo)
+          : undefined;
+      const notes = [index, playbook].filter((note): note is string => note !== undefined);
+      return notes.length === 0 ? undefined : notes.join('\n\n');
     };
   }
 
@@ -975,6 +1085,7 @@ export class Cogitator implements ToolInvoker {
         threadId,
         agentId: active.id,
         agentName: active.name,
+        memoryAgentId: memoryAgentId(active),
         iteration: iterations,
         signal: abortController.signal,
         state: middlewareState,
@@ -2801,6 +2912,54 @@ export class Cogitator implements ToolInvoker {
   }
 
   /**
+   * Runs a pass over the memory of `agent` now, as `memory.consolidation` and
+   * `memory.observations` set it up: repeats and contradictions marked as stale, new lessons
+   * folded into the playbook, then the observations whose facts changed written again. The
+   * memory is the one the agent's runs for `userId` (or, for a run without a user, in
+   * `threadId`) write their items to, as `memory.extraction.scope` says. Call it from a worker
+   * or a timer while the agent is idle. A pass of the same memory under way is waited for first.
+   *
+   * @throws CogitatorError when neither `memory.consolidation` nor `memory.observations` is set,
+   * or memory keeps no memory items
+   */
+  async consolidateMemory(
+    agent: Agent,
+    run: { userId?: string; threadId?: string } = {}
+  ): Promise<MemoryConsolidationReport> {
+    const memory = await this.getMemory();
+    this.builtinMiddleware();
+    const upkeep = this.memoryUpkeepLayer;
+    if (!upkeep || !memory || !isMemoryItemAdapter(memory)) {
+      throw new CogitatorError({
+        message:
+          'consolidateMemory needs memory.consolidation or memory.observations, and a memory adapter that keeps memory items',
+        code: ErrorCode.VALIDATION_ERROR,
+      });
+    }
+    const scope = this.config.memory?.extraction?.scope;
+    if (
+      (scope === 'thread' && run.threadId === undefined) ||
+      (scope !== 'agent' && run.userId === undefined && run.threadId === undefined)
+    ) {
+      throw new CogitatorError({
+        message:
+          'consolidateMemory needs a userId, or a threadId for memory kept for a run without a user',
+        code: ErrorCode.VALIDATION_ERROR,
+      });
+    }
+    const threadId = run.threadId ?? '';
+    const runId = `consolidation_${nanoid(12)}`;
+    return upkeep.consolidate({
+      scope: upkeepScope(memoryAgentId(agent), scope, {
+        ...(run.userId !== undefined && { userId: run.userId }),
+        threadId,
+      }),
+      model: this.config.memory?.consolidation?.model ?? this.resolveModel(agent),
+      run: { runId, agentId: agent.id, threadId },
+    });
+  }
+
+  /**
    * Embeds every entry of `threadId` the memory index has not embedded yet and waits until their
    * vectors are stored, such as after a conversation was imported, so the first search of the
    * thread already sees all of it. With an adapter that reads a thread in pages (`getPath`) the
@@ -2891,6 +3050,8 @@ export class Cogitator implements ToolInvoker {
    * ```
    */
   async close(): Promise<void> {
+    await this.memoryUpkeepLayer?.close();
+    this.memoryUpkeepLayer = undefined;
     await this.closeObservers();
     this.memoryFileTools.clear();
     this.memoryFilesService = undefined;

@@ -300,6 +300,35 @@ export const MemoryFilesConfigSchema = z.object({
   indexChars: z.number().int().positive().optional(),
 });
 
+export const MemoryBriefConfigSchema = z.object({
+  model: z.string().min(1).optional(),
+  maxCards: z.number().int().min(1).max(4).optional(),
+  timeoutMs: z.number().positive().optional(),
+  maxTokens: z.number().int().positive().optional(),
+  prompt: z.string().optional(),
+});
+
+export const MemoryObservationsConfigSchema = z.object({
+  model: z.string().min(1).optional(),
+  maxEntities: z.number().int().positive().optional(),
+  minItems: z.number().int().positive().optional(),
+  prompt: z.string().optional(),
+});
+
+/**
+ * `memory.consolidation` as config files set it: its `afterConsolidate` hook is a function, so
+ * it is set in code, not in YAML.
+ */
+export const MemoryConsolidationConfigSchema = z.object({
+  model: z.string().min(1).optional(),
+  everyRuns: z.number().int().positive().optional(),
+  afterCompaction: z.boolean().optional(),
+  maxChanges: z.number().int().min(0).optional(),
+  playbook: z.union([z.enum(['apply', 'shadow']), z.literal(false)]).optional(),
+  showPlaybook: z.boolean().optional(),
+  prompt: z.string().optional(),
+});
+
 export const MemoryConfigSchema = z.object({
   adapter: MemoryProviderSchema.optional(),
   inMemory: z
@@ -357,6 +386,9 @@ export const MemoryConfigSchema = z.object({
   compaction: MemoryCompactionConfigSchema.optional(),
   extraction: MemoryExtractionConfigSchema.optional(),
   files: MemoryFilesConfigSchema.optional(),
+  brief: MemoryBriefConfigSchema.optional(),
+  observations: MemoryObservationsConfigSchema.optional(),
+  consolidation: MemoryConsolidationConfigSchema.optional(),
 });
 
 export const SandboxTypeSchema = z.enum(['docker', 'native', 'wasm']);

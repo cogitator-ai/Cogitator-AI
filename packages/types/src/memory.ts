@@ -7,6 +7,8 @@ import type { GraphContext, GraphContextOptions, GraphNode } from './knowledge-g
 import type { MemoryCompactionConfig } from './session';
 import type { MemoryExtractionConfig, MemoryItem } from './memory-items';
 import type { MemoryFilesConfig } from './memory-files';
+import type { MemoryBriefConfig } from './memory-brief';
+import type { MemoryConsolidationConfig, MemoryObservationsConfig } from './memory-consolidation';
 import type { Reranker } from './rag';
 
 export type MemoryType = 'conversation' | 'fact' | 'embedding';
@@ -562,7 +564,7 @@ export interface ContextBuilderConfig {
  * fall back to the most recent entries).
  */
 export interface ContextBuildError {
-  source: 'history' | 'facts' | 'semantic' | 'graph' | 'relevance';
+  source: 'history' | 'facts' | 'semantic' | 'graph' | 'relevance' | 'observations';
   error: Error;
 }
 
@@ -649,6 +651,12 @@ export interface MemoryConfig {
   extraction?: MemoryExtractionConfig;
   /** The memory tool and its files under `/memories`, off unless set */
   files?: MemoryFilesConfig;
+  /** A brief of what memory holds for the turn, before its first model call, off unless set */
+  brief?: MemoryBriefConfig;
+  /** Observations of the entities memory items are about, off unless set */
+  observations?: MemoryObservationsConfig;
+  /** Consolidation of memory items and the playbook between runs, off unless set */
+  consolidation?: MemoryConsolidationConfig;
   /**
    * Reorders the best of what a search of memory found for a turn (the `hybrid` strategy), such
    * as a cross-encoder or a reranking model, after its own lexical rerank

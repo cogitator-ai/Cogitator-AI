@@ -22,6 +22,9 @@ import {
   ContextBuilder,
   MessageIndex,
   MemoryItems,
+  MemoryFiles,
+  MemoryObservations,
+  isMemoryFileAdapter,
   isMemoryItemAdapter,
   createEmbeddingService,
   type ContextBuilderDeps,
@@ -153,6 +156,16 @@ export async function initializeMemory(
       ...(embeddingAdapter && { embeddingAdapter }),
       ...(embeddingService && { embeddingService }),
       ...(messageIndex && { messageIndex }),
+      ...(memory.observations &&
+        state.memoryItems &&
+        isMemoryItemAdapter(adapter) &&
+        isMemoryFileAdapter(adapter) && {
+          observations: new MemoryObservations({
+            files: new MemoryFiles({ adapter }),
+            items: state.memoryItems,
+            itemAdapter: adapter,
+          }),
+        }),
     };
     warnAboutMissingContextParts(memory.contextBuilder, deps);
     state.contextBuilder = new ContextBuilder(contextConfig, deps);

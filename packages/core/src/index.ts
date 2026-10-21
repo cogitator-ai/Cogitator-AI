@@ -343,6 +343,19 @@ export {
   type MemoryCompactionDeps,
 } from './middleware/memory-compaction';
 export {
+  memoryBriefMiddleware,
+  type BriefPlace,
+  type MemoryBriefDeps,
+} from './middleware/memory-brief';
+export {
+  memoryUpkeepMiddleware,
+  upkeepScope,
+  CONSOLIDATION_STATE,
+  type MemoryUpkeep,
+  type MemoryUpkeepConfig,
+  type MemoryUpkeepDeps,
+} from './middleware/memory-consolidation';
+export {
   memoryExtractionMiddleware,
   EXTRACTION_CURSOR,
   type MemoryExtractionDeps,
