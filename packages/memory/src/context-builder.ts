@@ -326,7 +326,7 @@ export class ContextBuilder {
         limit: SEMANTIC_RESULTS * 4,
         threshold: 0.7,
         filter: {
-          sourceType: SEMANTIC_SOURCES,
+          sourceTypes: SEMANTIC_SOURCES,
           ...(options.userId !== undefined && { userId: options.userId }),
         },
       }),
@@ -336,7 +336,11 @@ export class ContextBuilder {
     const fitted: Fitted<Embedding & { score: number }> = { kept: [], dropped: [] };
     let tokens = 0;
     for (const result of found
-      .filter((r) => isVisibleTo(r.metadata, options.agentId, options.userId))
+      .filter(
+        (r) =>
+          SEMANTIC_SOURCES.includes(r.sourceType) &&
+          isVisibleTo(r.metadata, options.agentId, options.userId)
+      )
       .slice(0, SEMANTIC_RESULTS)) {
       const resultTokens = countTokens(result.content);
       if (tokens + resultTokens <= budget) {
@@ -459,8 +463,9 @@ export class ContextBuilder {
    * Similarity of user/assistant text entries to the input, best first. The newest
    * {@link MAX_SCORED_ENTRIES} are scored against their vectors, each embedded once: kept in the
    * `messageIndex` when there is one, else by entry id in process. With a `messageIndex`, older
-   * entries the store finds close to the input are scored too. Returns null, recording a
-   * `relevance` error, when embedding fails.
+   * entries the store finds close to the input are scored too. When the index fails, the newest
+   * entries are scored with vectors kept in process and the failure is recorded as a `relevance`
+   * error. Returns null, recording one, when embedding fails.
    */
   private async scoreEntries(
     entries: MemoryEntry[],
@@ -492,10 +497,26 @@ export class ContextBuilder {
 
     try {
       const texts = candidates.map(({ text }) => text);
-      const [inputVector, vectors] = await Promise.all([
+      const windowVectors = async (): Promise<{
+        vectors: Map<string, Float32Array>;
+        indexed: boolean;
+      }> => {
+        if (!index) return { vectors: await this.processVectors(texts), indexed: false };
+        try {
+          return { vectors: await index.vectorsOf(texts, scope.mark), indexed: true };
+        } catch (err) {
+          errors.push({
+            source: 'relevance',
+            error: err instanceof Error ? err : new Error(String(err)),
+          });
+          return { vectors: await this.processVectors(texts), indexed: false };
+        }
+      };
+      const [inputVector, { vectors, indexed }] = await Promise.all([
         embeddingService.embed(input),
-        index ? index.vectorsOf(texts, scope.mark) : this.processVectors(texts),
+        windowVectors(),
       ]);
+      index?.offer(input, inputVector);
 
       const scored: { entry: MemoryEntry; score: number }[] = [];
       for (const { entry } of candidates) {
@@ -505,16 +526,23 @@ export class ContextBuilder {
         if (score > minScore) scored.push({ entry, score });
       }
 
-      if (index && older.length > 0) {
-        const found = await index.search(
-          threadId,
-          inputVector,
-          INDEX_SEARCH_RESULTS + Math.max(0, scope.threadSize - older.length),
-          minScore
-        );
-        for (const { entry } of older) {
-          const score = found.get(entry.id);
-          if (score !== undefined && score > minScore) scored.push({ entry, score });
+      if (index && indexed && older.length > 0) {
+        try {
+          const found = await index.search(
+            threadId,
+            inputVector,
+            INDEX_SEARCH_RESULTS + Math.max(0, scope.threadSize - older.length),
+            minScore
+          );
+          for (const { entry } of older) {
+            const score = found.get(entry.id);
+            if (score !== undefined && score > minScore) scored.push({ entry, score });
+          }
+        } catch (err) {
+          errors.push({
+            source: 'relevance',
+            error: err instanceof Error ? err : new Error(String(err)),
+          });
         }
       }
       return scored.sort((a, b) => b.score - a.score);

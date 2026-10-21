@@ -27,6 +27,9 @@ const TOMBSTONES = 10_000;
 /** Thread owners and backfilled threads remembered */
 const THREADS_REMEMBERED = 10_000;
 
+/** Vectors of recent texts kept, so a build's input saved right after is not embedded again */
+const TEXTS_REMEMBERED = 256;
+
 /** Marks the vectors this index writes, so it never reads or deletes vectors of others */
 export const MESSAGE_INDEX_MARK = { index: 'messages' } as const;
 
@@ -107,6 +110,7 @@ export class MessageIndex {
   private readonly droppedThreads = new Map<string, number>();
   private readonly owners = new Map<string, Owner>();
   private readonly backfilled = new Map<string, true>();
+  private readonly texts = new Map<string, Float32Array>();
   private readonly detachers: (() => void)[] = [];
   private memory?: MemoryAdapter;
   private queue: Promise<void> = Promise.resolve();
@@ -249,17 +253,30 @@ export class MessageIndex {
     if (this.closed || entries.length === 0 || this.backfilled.has(threadId)) return;
     remember(this.backfilled, threadId, true, THREADS_REMEMBERED);
     this.run(async () => {
-      const unseen = entries.filter((entry) => !this.vectors.has(entry.entryId));
-      const stored = new Set<string>();
-      for (let start = 0; start < unseen.length; start += LOOKUP_BATCH) {
-        const ids = unseen.slice(start, start + LOOKUP_BATCH).map((entry) => entry.entryId);
-        for (const id of (await this.storedVectors(ids)).keys()) stored.add(id);
+      try {
+        const unseen = entries.filter((entry) => !this.vectors.has(entry.entryId));
+        const stored = new Set<string>();
+        for (let start = 0; start < unseen.length; start += LOOKUP_BATCH) {
+          const ids = unseen.slice(start, start + LOOKUP_BATCH).map((entry) => entry.entryId);
+          for (const id of (await this.storedVectors(ids)).keys()) stored.add(id);
+        }
+        for (const entry of unseen) {
+          if (!stored.has(entry.entryId)) this.waiting.set(entry.entryId, { ...entry, seenAt });
+        }
+        this.schedule();
+      } catch (error) {
+        this.backfilled.delete(threadId);
+        throw error;
       }
-      for (const entry of unseen) {
-        if (!stored.has(entry.entryId)) this.waiting.set(entry.entryId, { ...entry, seenAt });
-      }
-      this.schedule();
     });
+  }
+
+  /**
+   * Keeps the vector a caller made of `text` with the index's model, such as a build's input, so
+   * the entry that saves the same text is not embedded again
+   */
+  offer(text: string, vector: readonly number[]): void {
+    remember(this.texts, text, Float32Array.from(vector), TEXTS_REMEMBERED);
   }
 
   /** Waits until every change taken in so far is written to the store */
@@ -325,12 +342,26 @@ export class MessageIndex {
     );
   }
 
+  /** Vectors of the entries' texts: offered ones as they are, the rest from one embedding call */
   private async embedBatch(entries: readonly IndexedText[]): Promise<Float32Array[]> {
-    const vectors = await this.embedding.embedBatch(entries.map((entry) => entry.text));
-    if (vectors.length !== entries.length) {
-      throw new Error(`Embedding returned ${vectors.length} vectors for ${entries.length} entries`);
+    const vectors: (Float32Array | undefined)[] = entries.map((entry) =>
+      this.texts.get(entry.text)
+    );
+    const missing = entries.filter((_, i) => vectors[i] === undefined);
+    if (missing.length > 0) {
+      const made = await this.embedding.embedBatch(missing.map((entry) => entry.text));
+      if (made.length !== missing.length) {
+        throw new Error(`Embedding returned ${made.length} vectors for ${missing.length} entries`);
+      }
+      let next = 0;
+      for (let i = 0; i < vectors.length; i++) {
+        if (vectors[i] !== undefined) continue;
+        const vector = Float32Array.from(made[next++]!);
+        vectors[i] = vector;
+        remember(this.texts, entries[i]!.text, vector, TEXTS_REMEMBERED);
+      }
     }
-    return vectors.map((vector) => Float32Array.from(vector));
+    return vectors as Float32Array[];
   }
 
   /**
@@ -339,30 +370,51 @@ export class MessageIndex {
    * queue after this write, and deletes the vector again.
    */
   private async write(entries: readonly Pending[], vectors: Float32Array[]): Promise<void> {
+    const failures: Error[] = [];
     for (const [i, entry] of entries.entries()) {
-      if (this.isGone(entry) || !(await this.stillStored(entry.entryId))) continue;
-      this.keep(entry.entryId, vectors[i]);
-      const owner = await this.ownerOf(entry.threadId);
-      await this.unwrap(this.store.deleteBySource(entry.entryId), 'deleteBySource');
-      await this.unwrap(
-        this.store.addEmbedding({
-          sourceId: entry.entryId,
-          sourceType: 'message',
-          vector: Array.from(vectors[i]),
-          content: entry.text,
-          metadata: {
-            ...MESSAGE_INDEX_MARK,
-            threadId: entry.threadId,
-            entryId: entry.entryId,
-            role: entry.role,
-            model: this.model,
-            ...(owner.agentId !== undefined && { agentId: owner.agentId }),
-            ...(owner.userId !== undefined && { userId: owner.userId }),
-          },
-        }),
-        'addEmbedding'
+      try {
+        await this.writeOne(entry, vectors[i]!);
+      } catch (error) {
+        failures.push(errorOf(error));
+      }
+    }
+    if (failures.length > 0) {
+      throw new Error(
+        `Message index could not keep ${failures.length} of ${entries.length} entries: ${failures[0]!.message}`
       );
     }
+  }
+
+  /**
+   * Keeps one entry's vector, as the only one of the entry: atomically when the store can
+   * replace by source, so indexes of several processes writing the same entry leave one. The
+   * vector is cached once stored, so a failed write is tried again when a build needs it.
+   */
+  private async writeOne(entry: Pending, vector: Float32Array): Promise<void> {
+    if (this.isGone(entry) || !(await this.stillStored(entry.entryId))) return;
+    const owner = await this.ownerOf(entry.threadId);
+    const embedding = {
+      sourceId: entry.entryId,
+      sourceType: 'message' as const,
+      vector: Array.from(vector),
+      content: entry.text,
+      metadata: {
+        ...MESSAGE_INDEX_MARK,
+        threadId: entry.threadId,
+        entryId: entry.entryId,
+        role: entry.role,
+        model: this.model,
+        ...(owner.agentId !== undefined && { agentId: owner.agentId }),
+        ...(owner.userId !== undefined && { userId: owner.userId }),
+      },
+    };
+    if (this.store.replaceBySource) {
+      await this.unwrap(this.store.replaceBySource(embedding), 'replaceBySource');
+    } else {
+      await this.unwrap(this.store.deleteBySource(entry.entryId), 'deleteBySource');
+      await this.unwrap(this.store.addEmbedding(embedding), 'addEmbedding');
+    }
+    this.keep(entry.entryId, vector);
   }
 
   /** Whether the entry or its thread was deleted since the index saw it */
@@ -387,8 +439,9 @@ export class MessageIndex {
       ? await this.unwrap(this.memory.getThread(threadId), 'getThread')
       : null;
     const metadata = thread?.metadata ?? {};
+    const agentId = typeof metadata.agentId === 'string' ? metadata.agentId : thread?.agentId;
     const owner: Owner = {
-      ...(typeof metadata.agentId === 'string' && { agentId: metadata.agentId }),
+      ...(agentId !== undefined && { agentId }),
       ...(typeof metadata.userId === 'string' && { userId: metadata.userId }),
     };
     remember(this.owners, threadId, owner, THREADS_REMEMBERED);

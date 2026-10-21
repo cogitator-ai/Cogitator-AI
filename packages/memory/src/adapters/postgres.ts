@@ -29,7 +29,7 @@ import type {
   EmbeddingDeleteFilter,
 } from '@cogitator-ai/types';
 import { ChangeReportingMemoryAdapter } from './base';
-import { ensureSchemaVersion, withSetupLock } from './schema-version';
+import { attempt, ensureSchemaVersion, withSetupTransaction } from './schema-version';
 import { EMPTY_DELETE_FILTER_ERROR, filterSourceTypes, hasDeleteCondition } from '../search/filter';
 import {
   detectVectorSearchTuning,
@@ -175,22 +175,18 @@ export class PostgresAdapter
   }
 
   /**
-   * Sets the schema up under a lock every process connecting to this database takes, so
-   * processes starting at once take turns instead of racing on the same `CREATE`.
+   * Sets the schema up in one transaction under a lock on the schema, so processes starting at
+   * once take turns instead of racing on the same `CREATE`. Steps that may fail without failing
+   * the setup (pgvector, the vector and keyword indexes) run in savepoints.
    */
   private async initSchema(pool: Pool): Promise<void> {
-    this.vectorStore = await withSetupLock(pool, 'cogitator.memory.setup', async (db) => {
+    this.vectorStore = await withSetupTransaction(pool, `${this.schema}.setup`, async (db) => {
       await db.query(`CREATE SCHEMA IF NOT EXISTS ${this.schema}`);
-
-      let extensionError: string | undefined;
-      try {
-        await db.query('CREATE EXTENSION IF NOT EXISTS vector');
-      } catch (err) {
-        extensionError = (err as Error).message;
-      }
-
+      const extensionError = await attempt(db, () =>
+        db.query('CREATE EXTENSION IF NOT EXISTS vector')
+      );
       await this.migrate(db);
-      return this.prepareVectorStore(db, extensionError);
+      return this.prepareVectorStore(db, extensionError?.message);
     });
   }
 
@@ -338,7 +334,7 @@ export class PostgresAdapter
 
     this.vectorTuning = await detectVectorSearchTuning(pool);
     this.vectorPlan = vectorColumnPlan('vector', this.vectorDimensions, this.vectorTuning);
-    try {
+    const indexError = await attempt(pool, async () => {
       this.vectorPlan = await ensureHnswCosineIndex(
         pool,
         {
@@ -350,9 +346,8 @@ export class PostgresAdapter
         },
         this.vectorTuning
       );
-    } catch (err) {
-      console.warn('Failed to create the HNSW vector index:', (err as Error).message);
-    }
+    });
+    if (indexError) console.warn('Failed to create the HNSW vector index:', indexError.message);
     if (!this.vectorPlan.opclass) {
       console.warn(
         `PostgresAdapter: ${this.vectorDimensions}-dimension embeddings have no vector index ` +
@@ -362,7 +357,7 @@ export class PostgresAdapter
       );
     }
 
-    try {
+    const keywordError = await attempt(pool, async () => {
       await pool.query(`
         ALTER TABLE ${this.schema}.embeddings
         ADD COLUMN IF NOT EXISTS content_tsv tsvector
@@ -372,9 +367,8 @@ export class PostgresAdapter
         CREATE INDEX IF NOT EXISTS idx_embeddings_tsv
         ON ${this.schema}.embeddings USING GIN (content_tsv)
       `);
-    } catch (err) {
-      console.warn('Failed to create tsvector column/index:', (err as Error).message);
-    }
+    });
+    if (keywordError) console.warn('Failed to create tsvector column/index:', keywordError.message);
 
     return { available: true, dimensions: this.vectorDimensions };
   }
@@ -892,6 +886,44 @@ export class PostgresAdapter
     }
   }
 
+  async replaceBySource(
+    embedding: Omit<Embedding, 'id' | 'createdAt'>
+  ): Promise<MemoryResult<Embedding>> {
+    if (!this.pool) return this.failure('Not connected');
+    const unavailable = this.vectorUnavailable();
+    if (unavailable) return unavailable;
+
+    const id = this.generateId('emb');
+    const now = new Date();
+    try {
+      await this.inTransaction(async (client) => {
+        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+          `${this.schema}.embeddings:${embedding.sourceId}`,
+        ]);
+        await client.query(`DELETE FROM ${this.schema}.embeddings WHERE source_id = $1`, [
+          embedding.sourceId,
+        ]);
+        await client.query(
+          `INSERT INTO ${this.schema}.embeddings
+           (id, source_id, source_type, vector, content, metadata, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+          [
+            id,
+            embedding.sourceId,
+            embedding.sourceType,
+            `[${embedding.vector.join(',')}]`,
+            embedding.content,
+            toJsonb(embedding.metadata ?? {}),
+            now,
+          ]
+        );
+      });
+      return this.success({ ...embedding, id, createdAt: now });
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
   async search(
     options: SemanticSearchOptions
   ): Promise<MemoryResult<(Embedding & { score: number })[]>> {
@@ -1061,7 +1093,7 @@ export class PostgresAdapter
     let sql = '';
     let index = startIndex;
     const types = filterSourceTypes(filter);
-    if (types.length > 0) {
+    if (types) {
       sql += ` AND source_type = ANY($${index++}::text[])`;
       params.push(types);
     }

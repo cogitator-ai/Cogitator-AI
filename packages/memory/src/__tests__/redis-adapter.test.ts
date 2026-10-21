@@ -542,6 +542,22 @@ describe('RedisAdapter hardening', () => {
     expect(result.success && result.data.map((e) => e.id)).toEqual(['e1', 'e2']);
   });
 
+  it('reports entries that expired inside a thread as deleted', async () => {
+    const adapter = new RedisAdapter({ provider: 'redis', host: 'localhost' });
+    await adapter.connect();
+    const changes: unknown[] = [];
+    adapter.onChange((change) => changes.push(change));
+    mockRedisClient.zrange.mockResolvedValueOnce(['cogitator:entry:e1', 'cogitator:entry:e2']);
+    mockRedisClient.mget.mockResolvedValueOnce([null, null]);
+
+    await adapter.getEntries({ threadId: 't1' });
+
+    expect(changes).toEqual([
+      { type: 'entry-deleted', entryId: 'e1' },
+      { type: 'entry-deleted', entryId: 'e2' },
+    ]);
+  });
+
   it('refreshes the thread TTL when entries are added', async () => {
     const adapter = new RedisAdapter({ provider: 'redis', host: 'localhost', ttl: 60 });
     await adapter.connect();
@@ -664,11 +680,17 @@ describe('RedisAdapter listThreads', () => {
     page?: (args: unknown[]) => unknown;
   }
 
-  /** Dispatches `eval` by script: whether the index is complete, a page, anything else 1. */
+  /**
+   * Dispatches `eval` by script: whether the index is complete, a page (with no expired threads
+   * unless it names them), anything else 1.
+   */
   function scripts({ complete = () => '-inf', page = () => [0, [], []] }: Scripts): void {
     mockRedisClient.eval.mockImplementation(async (script: string, ...args: unknown[]) => {
       if (script.includes('ZSCORE')) return complete();
-      if (script.includes('ZREVRANGEBYSCORE')) return page(args);
+      if (script.includes('ZREVRANGEBYSCORE')) {
+        const reply = page(args);
+        return Array.isArray(reply) && reply.length === 3 ? [...reply, []] : reply;
+      }
       return 1;
     });
   }
@@ -825,6 +847,17 @@ describe('RedisAdapter listThreads', () => {
     );
     expect(keys.length).toBeGreaterThan(0);
     for (const key of keys) expect(String(key)).toMatch(/^\{myapp\}:/);
+  });
+
+  it('reports threads the listing found expired as deleted', async () => {
+    scripts({ page: () => [2, [], rows(['live', 1000, stored('live', 1000)]), ['gone']] });
+    const changes: unknown[] = [];
+    adapter.onChange((change) => changes.push(change));
+
+    const listed = await adapter.listThreads();
+
+    expect(listed.success && listed.data.threads.map((t) => t.id)).toEqual(['live']);
+    expect(changes).toEqual([{ type: 'thread-deleted', threadId: 'gone' }]);
   });
 
   it('moves a thread whose index member is behind its stored update time and skips it there', async () => {

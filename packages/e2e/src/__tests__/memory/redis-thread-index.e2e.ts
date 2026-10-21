@@ -94,6 +94,21 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
     expect([...expired].sort()).toEqual(ids);
   });
 
+  it('reports a thread the listing finds expired as deleted', async () => {
+    const memory = await adapter(prefix(), 1);
+    await memory.createThread('agent', {}, 'short-lived');
+    const deleted: string[] = [];
+    memory.onChange((change) => {
+      if (change.type === 'thread-deleted') deleted.push(change.threadId);
+    });
+    await sleep(1100);
+
+    const page = await memory.listThreads({ agentId: 'agent' });
+
+    expect(page.success && page.data.threads).toEqual([]);
+    expect(deleted).toEqual(['short-lived']);
+  });
+
   it('lists a legacy thread written before the first listing', async () => {
     const keyPrefix = prefix();
     const legacy = {

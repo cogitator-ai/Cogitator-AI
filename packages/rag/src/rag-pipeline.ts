@@ -36,6 +36,12 @@ const HASH_VERSION = 1;
 /** Source ids one `getBySources` call reads */
 const LOOKUP_BATCH = 500;
 
+/**
+ * Chunk positions of each document looked at for generations an earlier ingest left unfinished,
+ * at least: an ingest that stopped wrote some of the first chunks after the head
+ */
+const PROBED_CHUNKS = 16;
+
 function definedEntries<T extends object>(value: T | undefined): Partial<T> {
   if (!value) return {};
   return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as Partial<T>;
@@ -124,9 +130,18 @@ export class RAGPipeline {
     for (const group of groupBySource(documents)) {
       const sourceName = group[0]!.source;
       const hashes = new Map(group.map((doc) => [doc.id, this.contentHash(doc)]));
-      const heads = await this.storedChunks(group.map((doc) => chunkId(doc.id, 0)));
+      const stored = await this.storedChunks(
+        group.flatMap((doc) => [chunkId(doc.id, 0), chunkId(doc.id, 1)])
+      );
+      const heads = new Map(
+        group.map((doc) => [chunkId(doc.id, 0), stored.get(chunkId(doc.id, 0)) ?? []])
+      );
       const previous = this.previousGeneration(group, hashes, heads);
       if (previous.unchanged) {
+        const kept = previous.generations![0]!;
+        for (const old of this.unfinishedGenerations(group, stored, kept)) {
+          await this.forgetGeneration(sourceName, old);
+        }
         await this.indexLocally(sourceName, group);
         unchanged += group.length;
         continue;
@@ -169,8 +184,10 @@ export class RAGPipeline {
         this.stats.documentsIngested++;
       }
       this.locallyIndexed.add(sourceName);
-      for (const old of previous.generations ?? []) {
-        await this.forgetGeneration(sourceName, old);
+      if (previous.generations) {
+        const stale = new Set(previous.generations);
+        for (const old of await this.leftGenerations(group, prepared, generation)) stale.add(old);
+        for (const old of stale) await this.forgetGeneration(sourceName, old);
       }
     }
 
@@ -403,6 +420,50 @@ export class RAGPipeline {
     return vectors;
   }
 
+  /**
+   * Generations other than `kept` found on the second chunks of the documents: an ingest that
+   * stopped before the heads writes those first
+   */
+  private unfinishedGenerations(
+    group: RAGDocument[],
+    stored: Map<string, StoredChunk[]>,
+    kept: string
+  ): string[] {
+    const found = new Set<string>();
+    for (const doc of group) {
+      for (const chunk of stored.get(chunkId(doc.id, 1)) ?? []) {
+        if (chunk.generation && chunk.generation !== kept) found.add(chunk.generation);
+      }
+    }
+    return [...found];
+  }
+
+  /**
+   * Generations other than `current` the store holds chunks of for these documents: ones an
+   * ingest stopped writing before their heads, which no head names
+   */
+  private async leftGenerations(
+    group: RAGDocument[],
+    prepared: PreparedDocument[],
+    current: string
+  ): Promise<string[]> {
+    const ids = new Set<string>();
+    for (const { doc, chunks } of prepared) {
+      for (const chunk of chunks) ids.add(chunk.id);
+      for (let order = 0; order < PROBED_CHUNKS; order++) ids.add(chunkId(doc.id, order));
+    }
+    const documents = new Set(group.map((doc) => doc.id));
+    const found = new Set<string>();
+    for (const chunks of (await this.storedChunks([...ids])).values()) {
+      for (const chunk of chunks) {
+        if (chunk.generation && chunk.generation !== current && documents.has(chunk.documentId)) {
+          found.add(chunk.generation);
+        }
+      }
+    }
+    return [...found];
+  }
+
   /** Deletes the chunks of `source` an earlier ingest wrote as `generation` */
   private async forgetGeneration(source: string, generation: string): Promise<void> {
     const adapter = this.deps.embeddingAdapter;
@@ -466,15 +527,23 @@ export class RAGPipeline {
     marksOf: (doc: RAGDocument) => IngestMarks
   ): Promise<void> {
     let next = 0;
+    let failed = false;
     const worker = async () => {
-      while (next < writes.length) {
+      while (next < writes.length && !failed) {
         const { chunk, vector, doc } = writes[next++]!;
-        await this.storeChunk(chunk, vector, doc, marksOf(doc));
+        try {
+          await this.storeChunk(chunk, vector, doc, marksOf(doc));
+        } catch (error) {
+          failed = true;
+          throw error;
+        }
       }
     };
-    await Promise.all(
+    const settled = await Promise.allSettled(
       Array.from({ length: Math.min(STORE_CONCURRENCY, writes.length) }, () => worker())
     );
+    const failure = settled.find((result) => result.status === 'rejected');
+    if (failure) throw failure.reason;
   }
 
   private async storeChunk(

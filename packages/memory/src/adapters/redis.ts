@@ -131,9 +131,10 @@ return #members
  * A step through the index with the stored threads, read on the primary: the members with the
  * score `ARGV[3]` (when given), then up to `ARGV[5]` members from the score bound `ARGV[4]` on, as
  * flat `id, score, thread JSON` rows. A member whose thread expired is removed and comes back
- * with no JSON, as does one whose key holds something else.
+ * with no JSON, as does one whose key holds something else. The ids it removed come last.
  */
 const INDEX_PAGE = `
+local expired = {}
 local function rows(members, withScores)
   local out = {}
   local step = withScores and 2 or 1
@@ -143,6 +144,7 @@ local function rows(members, withScores)
       local value = redis.pcall('GET', ARGV[1] .. 'thread:' .. id)
       if value == false then
         redis.call('ZREM', KEYS[1], id)
+        expired[#expired + 1] = id
       elseif type(value) ~= 'string' then
         value = false
       end
@@ -163,7 +165,8 @@ if ARGV[2] == 'desc' then
 else
   after = redis.call('ZRANGEBYSCORE', KEYS[1], ARGV[4], '+inf', 'WITHSCORES', 'LIMIT', 0, ARGV[5])
 end
-return { #after / 2, tied, rows(after, true) }
+local page = rows(after, true)
+return { #after / 2, tied, page, expired }
 `;
 
 /** Moves a thread in the index to the score `ARGV[2]` if the thread is still the JSON `ARGV[1]`. */
@@ -284,11 +287,26 @@ function indexRows(reply: unknown): IndexRow[] {
   return rows;
 }
 
-function indexPage(reply: unknown): { tied: IndexRow[]; after: IndexRow[]; read: number } {
-  if (!Array.isArray(reply) || reply.length !== 3 || typeof reply[0] !== 'number') {
+function indexPage(reply: unknown): {
+  tied: IndexRow[];
+  after: IndexRow[];
+  read: number;
+  expired: string[];
+} {
+  if (
+    !Array.isArray(reply) ||
+    reply.length !== 4 ||
+    typeof reply[0] !== 'number' ||
+    !Array.isArray(reply[3])
+  ) {
     throw new Error('Unexpected reply from Redis');
   }
-  return { read: reply[0], tied: indexRows(reply[1]), after: indexRows(reply[2]) };
+  return {
+    read: reply[0],
+    tied: indexRows(reply[1]),
+    after: indexRows(reply[2]),
+    expired: reply[3].map(String),
+  };
 }
 
 export class RedisAdapter extends ChangeReportingMemoryAdapter {
@@ -391,15 +409,25 @@ export class RedisAdapter extends ChangeReportingMemoryAdapter {
     return `${this.prefix}threads:sweep`;
   }
 
-  /**
-   * Writes the thread `next` makes of the stored one, retrying when another writer changed it in
-   * between, so concurrent writes all land. Returns null, writing nothing, when `next` does.
-   */
-  /** Threads that expired, found by a sweep of the index, reported as deleted */
+  /** Threads that expired, found by the index, reported as deleted */
   private reportExpired(threadIds: string[]): void {
     for (const threadId of threadIds) this.report({ type: 'thread-deleted', threadId });
   }
 
+  /** Entries that expired inside a thread that lives on, by their keys, reported as deleted */
+  private reportExpiredEntries(keys: string[]): void {
+    const prefix = this.key('entry', '');
+    for (const key of keys) {
+      if (key.startsWith(prefix)) {
+        this.report({ type: 'entry-deleted', entryId: key.slice(prefix.length) });
+      }
+    }
+  }
+
+  /**
+   * Writes the thread `next` makes of the stored one, retrying when another writer changed it in
+   * between, so concurrent writes all land. Returns null, writing nothing, when `next` does.
+   */
   private async writeThread(
     client: RedisClient,
     threadId: string,
@@ -547,7 +575,7 @@ export class RedisAdapter extends ChangeReportingMemoryAdapter {
     batch: number
   ): Promise<{ rows: IndexRow[]; exhausted: boolean }> {
     const start = position ? `(${position.updatedAt}` : order === 'desc' ? '+inf' : '-inf';
-    const { tied, after, read } = indexPage(
+    const { tied, after, read, expired } = indexPage(
       await client.eval(
         INDEX_PAGE,
         1,
@@ -559,6 +587,7 @@ export class RedisAdapter extends ChangeReportingMemoryAdapter {
         batch
       )
     );
+    this.reportExpired(expired);
     const sign = order === 'asc' ? 1 : -1;
     const later = position
       ? tied
@@ -670,6 +699,7 @@ export class RedisAdapter extends ChangeReportingMemoryAdapter {
         keys = keys.filter((_key, index) => found[index] !== null);
         if (expired.length === 0) break;
         await client.zrem(setKey, ...expired);
+        this.reportExpiredEntries(expired);
         if (ranged || !limit) break;
       }
 

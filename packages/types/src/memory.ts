@@ -266,6 +266,13 @@ export interface EmbeddingAdapter {
   /** The embeddings of these sources, vectors included, in no particular order */
   getBySources?(sourceIds: string[]): Promise<MemoryResult<Embedding[]>>;
   /**
+   * Stores `embedding` as the only one of its source, atomically: two processes replacing the
+   * same source at once leave one embedding, not two
+   */
+  replaceBySource?(
+    embedding: Omit<Embedding, 'id' | 'createdAt'>
+  ): Promise<MemoryResult<Embedding>>;
+  /**
    * Deletes every embedding the filter matches; a filter without any condition is rejected.
    * Built-in stores implement it, RAG re-ingest needs it to replace a source's chunks.
    */
@@ -403,8 +410,12 @@ export interface HybridSearchWeights {
 }
 
 export interface SearchFilter {
-  /** One source type, or any of several */
-  sourceType?: Embedding['sourceType'] | Embedding['sourceType'][];
+  sourceType?: Embedding['sourceType'];
+  /**
+   * Any of these source types, for stores that support it (every built-in one does). A store
+   * that ignores it returns other types too, so a caller filters the results again.
+   */
+  sourceTypes?: Embedding['sourceType'][];
   threadId?: string;
   agentId?: string;
   /** Only embeddings of this user (`metadata.userId`) and those of no user */

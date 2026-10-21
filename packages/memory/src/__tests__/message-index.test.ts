@@ -420,4 +420,70 @@ describe('MessageIndex against races and other users', () => {
 
     expect(context.messages.map((m) => m.content)).toContain('my cat is called Whiskers the great');
   });
+
+  it('writes a vector again when a build needs it after the store failed to keep it', async () => {
+    await memory.createThread('agent', {}, 't');
+    const replace = store.replaceBySource.bind(store);
+    vi.spyOn(store, 'replaceBySource').mockResolvedValueOnce({ success: false, error: 'down' });
+    const entry = await entryIn('t', 'cat sleeping');
+    await index.flush();
+    expect(await sources()).toEqual([]);
+    vi.mocked(store.replaceBySource).mockImplementation(replace);
+
+    await index.vectorsOf([
+      { entryId: entry.id, threadId: 't', role: 'user', text: 'cat sleeping' },
+    ]);
+    await index.flush();
+
+    expect(await sources()).toEqual([entry.id]);
+  });
+
+  it('backfills a thread again after the store failed the first time', async () => {
+    await index.close();
+    await memory.createThread('agent', {}, 't');
+    const old = await entryIn('t', 'cat history');
+    const late = new MessageIndex({ store, embedding, onError: () => undefined });
+    late.attach(memory);
+    const getBySources = store.getBySources.bind(store);
+    vi.spyOn(store, 'getBySources').mockResolvedValueOnce({ success: false, error: 'down' });
+    const text = { entryId: old.id, threadId: 't', role: 'user' as const, text: 'cat history' };
+
+    late.backfill('t', [text]);
+    await late.flush();
+    vi.mocked(store.getBySources).mockImplementation(getBySources);
+    late.backfill('t', [text]);
+    await late.flush();
+
+    expect(await sources()).toEqual([old.id]);
+  });
+
+  it('does not embed again the input a build offered once it is saved', async () => {
+    await memory.createThread('agent', {}, 't');
+    index.offer('cat question', topicVector('cat question'));
+    embedding.embedBatch.mockClear();
+
+    const entry = await entryIn('t', 'cat question');
+    await index.flush();
+
+    expect(embedding.embedBatch).not.toHaveBeenCalled();
+    expect(await sources()).toEqual([entry.id]);
+  });
+
+  it('scores the newest entries in process when the index fails', async () => {
+    await memory.createThread('agent', {}, 't');
+    await entryIn('t', 'my cat is called Whiskers');
+    await entryIn('t', 'the tax form is due');
+    await index.flush();
+    vi.spyOn(index, 'vectorsOf').mockRejectedValue(new Error('vector store down'));
+    const builder = new ContextBuilder(
+      { maxTokens: 40, reserveTokens: 0, strategy: 'relevant', includeSystemPrompt: false },
+      { memoryAdapter: memory, embeddingService: embedding, messageIndex: index }
+    );
+
+    const context = await builder.build({ threadId: 't', agentId: 'agent', currentInput: 'cat' });
+
+    expect(context.messages.map((m) => m.content)).toContain('my cat is called Whiskers');
+    expect(context.errors?.map((e) => e.error.message)).toContain('vector store down');
+    expect(embedding.embedBatch).toHaveBeenCalled();
+  });
 });

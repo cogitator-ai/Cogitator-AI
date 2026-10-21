@@ -5,7 +5,7 @@ import {
   vectorColumnPlan,
   type SqlQueryable,
 } from '../adapters/pgvector';
-import { ensureSchemaVersion, withSetupLock } from '../adapters/schema-version';
+import { attempt, ensureSchemaVersion, withSetupTransaction } from '../adapters/schema-version';
 
 const target = { schema: 'app', table: 'embeddings', column: 'vector', index: 'idx_vec' };
 
@@ -100,12 +100,11 @@ describe('detectVectorSearchTuning', () => {
 });
 
 describe('ensureSchemaVersion', () => {
-  function connection(recorded?: number, failOn?: RegExp) {
+  function connection(recorded?: number) {
     const queries: string[] = [];
     const db: SqlQueryable = {
       query: vi.fn(async (sql: string) => {
         queries.push(sql.replace(/\s+/g, ' ').trim());
-        if (failOn?.test(sql)) throw new Error('boom');
         if (sql.includes('SELECT version FROM')) {
           return { rows: recorded === undefined ? [] : [{ version: recorded }] };
         }
@@ -115,7 +114,7 @@ describe('ensureSchemaVersion', () => {
     return { db, queries };
   }
 
-  it('applies and records a version the schema does not have yet, under a lock', async () => {
+  it('applies and records a version the schema does not have yet', async () => {
     const { db, queries } = connection(undefined);
     const apply = vi.fn(async (q: SqlQueryable) => {
       await q.query('CREATE TABLE app.things (id TEXT)');
@@ -123,13 +122,8 @@ describe('ensureSchemaVersion', () => {
 
     expect(await ensureSchemaVersion(db, 'app', 'memory', 2, apply)).toBe(true);
 
-    expect(queries[0]).toBe('BEGIN');
-    expect(queries[1]).toBe('SELECT pg_advisory_xact_lock(hashtext($1))');
     expect(queries).toContain('CREATE TABLE app.things (id TEXT)');
-    expect(queries.some((q) => q.startsWith('INSERT INTO app.cogitator_schema_migrations'))).toBe(
-      true
-    );
-    expect(queries.at(-1)).toBe('COMMIT');
+    expect(queries.at(-1)).toMatch(/^INSERT INTO app\.cogitator_schema_migrations/);
   });
 
   it('skips a version the schema has, or a later one, while its tables are there', async () => {
@@ -148,45 +142,55 @@ describe('ensureSchemaVersion', () => {
     expect(await ensureSchemaVersion(db, 'app', 'memory', 2, apply, async () => false)).toBe(true);
     expect(apply).toHaveBeenCalled();
   });
-
-  it('rolls back when applying fails, recording nothing', async () => {
-    const { db, queries } = connection(1, /CREATE TABLE app\.things/);
-
-    await expect(
-      ensureSchemaVersion(db, 'app', 'memory', 2, async (q) => {
-        await q.query('CREATE TABLE app.things (id TEXT)');
-      })
-    ).rejects.toThrow('boom');
-
-    expect(queries.at(-1)).toBe('ROLLBACK');
-    expect(queries.some((q) => q.startsWith('INSERT INTO'))).toBe(false);
-  });
 });
 
-describe('withSetupLock', () => {
-  it('holds a session lock around the work and releases it when the work fails', async () => {
+describe('withSetupTransaction and attempt', () => {
+  function pool(failOn?: RegExp) {
     const queries: string[] = [];
     const release = vi.fn();
     const client = {
       query: vi.fn(async (sql: string) => {
         queries.push(sql);
+        if (failOn?.test(sql)) throw new Error('boom');
         return { rows: [] };
       }),
       release,
     };
+    return { pool: { connect: async () => client }, queries, release };
+  }
 
-    await expect(
-      withSetupLock({ connect: async () => client }, 'app.setup', async () => {
-        queries.push('work');
-        throw new Error('setup failed');
-      })
-    ).rejects.toThrow('setup failed');
+  it('runs the setup in one transaction holding a lock', async () => {
+    const { pool: db, queries, release } = pool();
+
+    await withSetupTransaction(db, 'app.setup', async (q) => {
+      await q.query('CREATE TABLE app.things (id TEXT)');
+    });
 
     expect(queries).toEqual([
-      'SELECT pg_advisory_lock(hashtext($1))',
-      'work',
-      'SELECT pg_advisory_unlock(hashtext($1))',
+      'BEGIN',
+      'SELECT pg_advisory_xact_lock(hashtext($1))',
+      'CREATE TABLE app.things (id TEXT)',
+      'COMMIT',
     ]);
     expect(release).toHaveBeenCalledWith(false);
+  });
+
+  it('rolls the setup back when it fails, and lets a step fail in a savepoint', async () => {
+    const { pool: db, queries } = pool(/CREATE EXTENSION|CREATE TABLE app\.broken/);
+    let stepError: Error | undefined;
+
+    await expect(
+      withSetupTransaction(db, 'app.setup', async (q) => {
+        stepError = await attempt(q, () => q.query('CREATE EXTENSION vector'));
+        await q.query('CREATE TABLE app.broken (id TEXT)');
+      })
+    ).rejects.toThrow('boom');
+
+    expect(stepError?.message).toBe('boom');
+    expect(queries.filter((q) => q.includes('SAVEPOINT')).map((q) => q.split(' ')[0])).toEqual([
+      'SAVEPOINT',
+      'ROLLBACK',
+    ]);
+    expect(queries.at(-1)).toBe('ROLLBACK');
   });
 });

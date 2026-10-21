@@ -1,10 +1,15 @@
 import type { Embedding, EmbeddingDeleteFilter, SearchFilter } from '@cogitator-ai/types';
 
-/** The source types a filter allows, none when it allows every type */
-export function filterSourceTypes(filter: SearchFilter | undefined): Embedding['sourceType'][] {
-  const types = filter?.sourceType;
-  if (types === undefined) return [];
-  return Array.isArray(types) ? types : [types];
+/**
+ * The source types a filter allows from `sourceType` and `sourceTypes` together, undefined when
+ * it allows every type. Empty when the two allow no type in common.
+ */
+export function filterSourceTypes(
+  filter: Pick<SearchFilter, 'sourceType' | 'sourceTypes'> | undefined
+): Embedding['sourceType'][] | undefined {
+  const { sourceType, sourceTypes } = filter ?? {};
+  if (sourceTypes === undefined) return sourceType === undefined ? undefined : [sourceType];
+  return sourceType === undefined ? sourceTypes : sourceTypes.filter((t) => t === sourceType);
 }
 
 /**
@@ -19,7 +24,7 @@ export function matchesSearchFilter(
   if (!filter) return true;
   const metadata = embedding.metadata;
   const types = filterSourceTypes(filter);
-  if (types.length > 0 && !types.includes(embedding.sourceType)) return false;
+  if (types && !types.includes(embedding.sourceType)) return false;
   if (filter.agentId && metadata?.agentId !== filter.agentId) return false;
   if (filter.threadId && metadata?.threadId !== filter.threadId) return false;
   if (filter.userId) {
@@ -37,7 +42,7 @@ export function matchesSearchFilter(
 /** Whether a delete filter names at least one condition, so it cannot wipe a whole store. */
 export function hasDeleteCondition(filter: EmbeddingDeleteFilter): boolean {
   return Boolean(
-    filterSourceTypes(filter).length > 0 ||
+    filterSourceTypes(filter) !== undefined ||
     filter.agentId ||
     filter.threadId ||
     (filter.metadata && Object.keys(filter.metadata).length > 0)

@@ -404,7 +404,7 @@ describe('QdrantAdapter', () => {
     });
 
     it('filters by any of several source types', async () => {
-      await adapter.search({ vector: [0.1], filter: { sourceType: ['fact', 'document'] } });
+      await adapter.search({ vector: [0.1], filter: { sourceTypes: ['fact', 'document'] } });
 
       expect(mockClient.query).toHaveBeenCalledWith(
         'test_collection',

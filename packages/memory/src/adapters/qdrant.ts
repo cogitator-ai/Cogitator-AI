@@ -50,10 +50,12 @@ function qdrantFilter(filter: SearchFilter | undefined): QdrantFilter | undefine
   if (!filter) return undefined;
   const must: QdrantCondition[] = [];
   const types = filterSourceTypes(filter);
-  if (types.length === 1) {
-    must.push({ key: 'sourceType', match: { value: types[0] } });
-  } else if (types.length > 1) {
+  if (types?.length === 1) {
+    must.push({ key: 'sourceType', match: { value: types[0]! } });
+  } else if (types && types.length > 1) {
     must.push({ key: 'sourceType', match: { any: types } });
+  } else if (types) {
+    must.push({ key: 'sourceType', match: { any: ['__no_source_type__'] } });
   }
   if (filter.threadId) {
     must.push({ key: 'metadata.threadId', match: { value: filter.threadId } });
@@ -183,6 +185,45 @@ export class QdrantAdapter implements EmbeddingAdapter {
             vector: full.vector,
             payload: {
               embeddingId: full.id,
+              sourceId: full.sourceId,
+              sourceType: full.sourceType,
+              content: full.content,
+              createdAt: full.createdAt.toISOString(),
+              metadata: full.metadata ?? {},
+            },
+          },
+        ],
+      });
+      return this.success(full);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
+  /**
+   * Replaces the points of the source with one whose id comes from the source id, so processes
+   * replacing the same source at once overwrite one point instead of adding two.
+   */
+  async replaceBySource(
+    embedding: Omit<Embedding, 'id' | 'createdAt'>
+  ): Promise<MemoryResult<Embedding>> {
+    if (!this.client) return this.failure('Not connected');
+
+    const id = `emb_src_${createHash('sha1').update(embedding.sourceId).digest('hex').slice(0, 24)}`;
+    const full: Embedding = { ...embedding, id, createdAt: new Date() };
+    try {
+      await this.client.delete(this.collection, {
+        wait: true,
+        filter: { must: [{ key: 'sourceId', match: { value: embedding.sourceId } }] },
+      });
+      await this.client.upsert(this.collection, {
+        wait: true,
+        points: [
+          {
+            id: qdrantPointId(id),
+            vector: full.vector,
+            payload: {
+              embeddingId: id,
               sourceId: full.sourceId,
               sourceType: full.sourceType,
               content: full.content,

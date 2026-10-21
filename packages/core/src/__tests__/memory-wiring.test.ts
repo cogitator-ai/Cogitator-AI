@@ -89,12 +89,12 @@ describe('memory wiring', () => {
       expect(deps?.messageIndex).toBeDefined();
       await deps?.messageIndex?.flush();
       embedding.embedBatch.mockClear();
+      vi.mocked(embedding.embed).mockClear();
       await cog.run(agent, { input: 'second question', threadId: 't' });
       await cog.close();
 
-      const embedded = embedding.embedBatch.mock.calls.flatMap(([texts]) => texts as string[]);
-      expect(embedded).not.toContain('first question');
-      expect(embedded).toEqual(['second question', 'ok']);
+      expect(embedding.embedBatch).not.toHaveBeenCalled();
+      expect(embedding.embed).toHaveBeenCalledWith('second question');
     });
 
     it('keeps no index for the in-process memory adapter, whose vectors stay in process', async () => {

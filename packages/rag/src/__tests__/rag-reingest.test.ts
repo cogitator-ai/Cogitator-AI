@@ -457,4 +457,46 @@ describe('RAG ingest of unchanged and changed sources', () => {
       contentHash: 'abc',
     });
   });
+
+  async function failingOnce(atCall: number, work: () => Promise<unknown>) {
+    const add = store.addEmbedding.bind(store);
+    let calls = 0;
+    const spy = vi.spyOn(store, 'addEmbedding').mockImplementation(async (chunk) => {
+      calls++;
+      if (calls === atCall) return { success: false, error: 'store hiccup' };
+      return add(chunk);
+    });
+    await expect(work()).rejects.toThrow('store hiccup');
+    spy.mockRestore();
+  }
+
+  it('deletes what an update that stopped wrote once the next one succeeds', async () => {
+    loader.parts = ['Cats sleep. Dogs walk. Tea at five.'];
+    const rag = partsPipeline(store, loader, embedding, 12);
+    await rag.ingest('book');
+
+    loader.parts = ['Cats nap. Dogs run far. Tea at six. Rome in May.'];
+    await failingOnce(3, () => rag.ingest('book'));
+    loader.parts = ['Cats nap. Dogs run far. Tea at six. Rome in June.'];
+    const done = await rag.ingest('book');
+
+    expect((await contents(store)).length).toBe(done.chunks);
+    expect(await rag.ingest('book')).toMatchObject({ unchanged: 1 });
+  });
+
+  it('deletes what an update that stopped wrote when the source went back to what is stored', async () => {
+    loader.parts = ['Cats sleep. Dogs walk. Tea at five.'];
+    const rag = partsPipeline(store, loader, embedding, 12);
+    const first = await rag.ingest('book');
+    const before = await contents(store);
+
+    loader.parts = ['Cats nap. Dogs run far. Tea at six. Rome in May.'];
+    await failingOnce(3, () => rag.ingest('book'));
+    loader.parts = ['Cats sleep. Dogs walk. Tea at five.'];
+    const again = await rag.ingest('book');
+
+    expect(again.unchanged).toBe(1);
+    expect(await contents(store)).toEqual(before);
+    expect(before.length).toBe(first.chunks);
+  });
 });
