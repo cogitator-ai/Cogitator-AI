@@ -133,7 +133,7 @@ await server.stop();
 | ---------------------------------- | ----------------------- | ------------- | -------------------------------------------------------------------------- |
 | `port`                             | `number`                | `8080`        | Port to listen on                                                          |
 | `host`                             | `string`                | `'127.0.0.1'` | Host to bind to, a public host needs `apiKeys`                             |
-| `apiKeys`                          | `string[]`              | `[]`          | API keys for auth (empty = no auth)                                        |
+| `apiKeys`                          | `string[]`              | `[]`          | API keys for auth, scoping threads and runs (empty = no auth)              |
 | `allowUnauthenticatedPublicAccess` | `boolean`               | `false`       | Serve a public host without `apiKeys`, behind a gateway that authenticates |
 | `agents`                           | `Record<string, Agent>` | `{}`          | Agents served by Chat Completions and Responses, by model id               |
 | `maxRequestBodyBytes`              | `number`                | 20 MB         | Body limit of `/v1/chat/completions` and `/v1/responses`                   |
@@ -152,7 +152,9 @@ The server binds `127.0.0.1` unless told otherwise. Without `apiKeys` anyone who
 
 ### Authentication and Errors
 
-With `apiKeys`, every request except `GET /health` needs `Authorization: Bearer <key>`, and a missing or unknown key answers `401` with code `invalid_api_key`. Keys only gate access: every key sees the same stored responses, assistants, threads, runs and files, and runs carry no `userId`, so give each tenant its own server (or storage) when their data must stay apart.
+With `apiKeys`, every request except `GET /health` needs `Authorization: Bearer <key>`, and a missing or unknown key answers `401` with code `invalid_api_key`.
+
+Threads and runs belong to the key that created them. The server keeps the sha256 digest of the key with each thread (never the key itself) and with each run, and another key gets `404 not_found` for that thread, its messages, its runs and their steps, the answer an unknown id gets, so it cannot tell the thread exists. Threads stored before this scoping have no owner and stay reachable by every key, while the runs created on them still belong to their key. Assistants, files and stored responses are shared by every key, and runs carry no `userId`, so give each tenant its own server (or storage) when those must stay apart too.
 
 Errors use OpenAI's shape, `{ "error": { "message", "type", "param", "code" } }`: `invalid_request` (400, with the parameter at fault in `param`), `invalid_api_key` (401), `permission_denied` (403), `not_found` and `model_not_found` (404), `rate_limit_exceeded` (429) and otherwise `server_error` / `internal_error`. Every 5xx answer says `Internal server error` and the details are only logged, unless the cause is a `CogitatorError`. A Chat Completions stream that fails ends with an `error` object, a Responses stream with `response.failed`. Requests the Assistants adapter refuses throw `InvalidRequestError` (exported from the package), which the server answers as `400 invalid_request`. A run that fails ends with `status: 'failed'` and `last_error: { code: 'server_error', message }`.
 
@@ -186,31 +188,33 @@ const run = await openai.beta.threads.runs.createAndPoll(thread.id, { assistant_
 const messages = await openai.beta.threads.messages.list(thread.id); // newest first
 ```
 
-| Method   | Endpoint                                        | Description                                         |
-| -------- | ----------------------------------------------- | --------------------------------------------------- |
-| `POST`   | `/v1/assistants`                                | Create assistant                                    |
-| `GET`    | `/v1/assistants`                                | List assistants                                     |
-| `GET`    | `/v1/assistants/:id`                            | Get assistant                                       |
-| `POST`   | `/v1/assistants/:id`                            | Update assistant                                    |
-| `DELETE` | `/v1/assistants/:id`                            | Delete assistant                                    |
-| `POST`   | `/v1/threads`                                   | Create thread                                       |
-| `POST`   | `/v1/threads/runs`                              | Create thread and run                               |
-| `GET`    | `/v1/threads/:id`                               | Get thread                                          |
-| `POST`   | `/v1/threads/:id`                               | Update thread metadata                              |
-| `DELETE` | `/v1/threads/:id`                               | Delete thread                                       |
-| `POST`   | `/v1/threads/:id/messages`                      | Add message                                         |
-| `GET`    | `/v1/threads/:id/messages`                      | List messages                                       |
-| `GET`    | `/v1/threads/:id/messages/:mid`                 | Get message                                         |
-| `POST`   | `/v1/threads/:id/runs`                          | Create run                                          |
-| `GET`    | `/v1/threads/:id/runs`                          | List runs                                           |
-| `GET`    | `/v1/threads/:id/runs/:rid`                     | Get run status                                      |
-| `POST`   | `/v1/threads/:id/runs/:rid/cancel`              | Cancel run                                          |
-| `POST`   | `/v1/threads/:id/runs/:rid/submit_tool_outputs` | Submit tool outputs                                 |
-| `POST`   | `/v1/files`                                     | Upload file                                         |
-| `GET`    | `/v1/files`                                     | List files (`?purpose=`, `limit`, `order`, `after`) |
-| `GET`    | `/v1/files/:id`                                 | Get file metadata                                   |
-| `GET`    | `/v1/files/:id/content`                         | Download file                                       |
-| `DELETE` | `/v1/files/:id`                                 | Delete file                                         |
+| Method   | Endpoint                                        | Description                                          |
+| -------- | ----------------------------------------------- | ---------------------------------------------------- |
+| `POST`   | `/v1/assistants`                                | Create assistant                                     |
+| `GET`    | `/v1/assistants`                                | List assistants                                      |
+| `GET`    | `/v1/assistants/:id`                            | Get assistant                                        |
+| `POST`   | `/v1/assistants/:id`                            | Update assistant                                     |
+| `DELETE` | `/v1/assistants/:id`                            | Delete assistant                                     |
+| `POST`   | `/v1/threads`                                   | Create thread                                        |
+| `POST`   | `/v1/threads/runs`                              | Create thread and run                                |
+| `GET`    | `/v1/threads/:id`                               | Get thread                                           |
+| `POST`   | `/v1/threads/:id`                               | Update thread metadata                               |
+| `DELETE` | `/v1/threads/:id`                               | Delete thread                                        |
+| `POST`   | `/v1/threads/:id/messages`                      | Add message                                          |
+| `GET`    | `/v1/threads/:id/messages`                      | List messages                                        |
+| `GET`    | `/v1/threads/:id/messages/:mid`                 | Get message                                          |
+| `POST`   | `/v1/threads/:id/runs`                          | Create run                                           |
+| `GET`    | `/v1/threads/:id/runs`                          | List runs                                            |
+| `GET`    | `/v1/threads/:id/runs/:rid`                     | Get run status                                       |
+| `POST`   | `/v1/threads/:id/runs/:rid/cancel`              | Cancel run                                           |
+| `POST`   | `/v1/threads/:id/runs/:rid/submit_tool_outputs` | Submit tool outputs                                  |
+| `GET`    | `/v1/threads/:id/runs/:rid/steps`               | List run steps (`limit`, `order`, `after`, `before`) |
+| `GET`    | `/v1/threads/:id/runs/:rid/steps/:sid`          | Get run step                                         |
+| `POST`   | `/v1/files`                                     | Upload file                                          |
+| `GET`    | `/v1/files`                                     | List files (`?purpose=`, `limit`, `order`, `after`)  |
+| `GET`    | `/v1/files/:id`                                 | Get file metadata                                    |
+| `GET`    | `/v1/files/:id/content`                         | Download file                                        |
+| `DELETE` | `/v1/files/:id`                                 | Delete file                                          |
 
 `GET /v1/files` takes `limit` (1-10 000, default 10 000), `order` (`asc` / `desc`, default `desc`) and `after`.
 
@@ -264,9 +268,20 @@ if (run.status === 'requires_action') {
 
 Server-side tools that need approval (`requiresApproval`, or the guardrails) come to the client the same way, as calls of functions it never declared: the run waits in `requires_action` instead of completing without them. The output decides the call: `{"approved": true}` (or `approve`) runs it, `{"approved": false, "reason": "..."}` declines it with the reason, and any other text declines it with that text, so nothing ambiguous runs a server tool. A configured `guardrails.onToolApproval` decides server tools itself and they never reach the client. While the run waits it is paused rather than running, so the run timeout (`limits.defaultTimeout`, 120 s by default) does not count the client's time: only `expires_at` (10 minutes per wait) does.
 
+### Run Steps
+
+Each run records its steps like the OpenAI API: a `tool_calls` step per model turn that called tools (each call with its `name`, `arguments` and `output`), and a `message_creation` step pointing at the assistant message (`message_id`). A step whose calls wait on the client stays `in_progress` during `requires_action` and completes with the submitted outputs. Steps carry unix-second timestamps and the `usage` of the model call behind them when the agent run reports it. When a run is cancelled, expires or fails, its open steps end `cancelled`, `expired` or `failed` (with the run's `last_error`), and a message it had started streaming is kept as `incomplete`.
+
+```typescript
+const steps = await openai.beta.threads.runs.steps.list(run.id, { thread_id: thread.id });
+// in-process: adapter.listRunSteps(thread.id, run.id), adapter.getRunStep(thread.id, run.id, stepId)
+```
+
+Steps live in memory with their run and are dropped with it (`maxStoredRuns`).
+
 ### Streaming Runs
 
-Pass `stream: true` to stream OpenAI-style events (`thread.run.*`, `thread.message.created|delta|completed|incomplete`, `done`). With the SDK use `runs.stream(...)` / `submitToolOutputsStream(...)`. In-process, iterate the run's event log:
+Pass `stream: true` to stream OpenAI-style events (`thread.run.*`, `thread.run.step.*`, `thread.message.created|delta|completed|incomplete`, `done`). Step events open each step before its message events, and a `tool_calls` step gets one `thread.run.step.delta` per call, so SDK helpers such as `toolCallCreated` work. With the SDK use `runs.stream(...)` / `submitToolOutputsStream(...)`. In-process, iterate the run's event log:
 
 ```typescript
 const run = await adapter.createRun(thread.id, {
@@ -317,6 +332,19 @@ const storage = createThreadStorage({
 });
 await storage.connect?.();
 ```
+
+### Listing threads
+
+The OpenAI API has no route that lists threads, and neither does the server. Operators list them from the storage, a page at a time, newest first, optionally for one key:
+
+```typescript
+import { apiKeyOwner } from '@cogitator-ai/openai-compat';
+
+const page = await storage.listThreads({ owner: apiKeyOwner('sk-key1'), limit: 50 });
+const next = await storage.listThreads({ owner: apiKeyOwner('sk-key1'), cursor: page.nextCursor });
+```
+
+`owner: null` lists the threads stored before key scoping. PostgreSQL filters, orders and limits in SQL on an index it creates on `connect()`. Redis has no index over its thread keys, so each page reads every thread (`SCAN` + `MGET`): keep it for occasional listings.
 
 ### Storage Options
 

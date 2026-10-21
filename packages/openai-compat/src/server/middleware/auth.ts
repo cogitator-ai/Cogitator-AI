@@ -7,6 +7,16 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { FastifyRequest, FastifyReply } from 'fastify';
 
+declare module 'fastify' {
+  interface FastifyRequest {
+    /**
+     * Who the request acts for: the sha256 hex digest of the API key it authenticated with,
+     * never the key itself. Undefined when the server has no API keys, then nothing is scoped.
+     */
+    apiKeyOwner?: string;
+  }
+}
+
 export interface AuthConfig {
   /** List of valid API keys. If empty, auth is disabled. */
   apiKeys: string[];
@@ -26,8 +36,7 @@ function digest(value: string): Buffer {
  * Constant-time key check: every configured key is compared, and digests make
  * the comparison independent of the candidate's length.
  */
-function isValidKey(candidate: string, keys: Buffer[]): boolean {
-  const candidateDigest = digest(candidate);
+function isValidKey(candidateDigest: Buffer, keys: Buffer[]): boolean {
   let valid = false;
   for (const key of keys) {
     if (timingSafeEqual(candidateDigest, key)) valid = true;
@@ -35,8 +44,14 @@ function isValidKey(candidate: string, keys: Buffer[]): boolean {
   return valid;
 }
 
+/** The owner identity of an API key: its sha256 hex digest, so the key itself is never stored. */
+export function apiKeyOwner(apiKey: string): string {
+  return digest(apiKey).toString('hex');
+}
+
 /**
- * Create authentication middleware
+ * Create authentication middleware. A request that passes with one of `apiKeys` gets
+ * `request.apiKeyOwner`, which scopes the threads and runs it creates and reaches to that key.
  */
 export function createAuthMiddleware(config: AuthConfig) {
   const keyDigests = config.apiKeys.map(digest);
@@ -75,9 +90,10 @@ export function createAuthMiddleware(config: AuthConfig) {
       });
     }
 
-    const apiKey = match[1].trim();
+    if (keyDigests.length === 0) return;
 
-    if (keyDigests.length > 0 && !isValidKey(apiKey, keyDigests)) {
+    const candidateDigest = digest(match[1].trim());
+    if (!isValidKey(candidateDigest, keyDigests)) {
       return reply.status(401).send({
         error: {
           message: 'Invalid API key',
@@ -86,5 +102,6 @@ export function createAuthMiddleware(config: AuthConfig) {
         },
       });
     }
+    request.apiKeyOwner = candidateDigest.toString('hex');
   };
 }

@@ -62,8 +62,9 @@ describe('InMemoryThreadStorage', () => {
       await storage.saveThread('t1', makeThread('t1'));
       await storage.saveThread('t2', makeThread('t2'));
 
-      const list = await storage.listThreads();
-      expect(list).toHaveLength(2);
+      const page = await storage.listThreads();
+      expect(page.threads).toHaveLength(2);
+      expect(page.nextCursor).toBeUndefined();
     });
   });
 

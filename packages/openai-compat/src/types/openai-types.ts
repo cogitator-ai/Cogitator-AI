@@ -293,6 +293,8 @@ export interface ToolOutput {
   output: string;
 }
 
+export type RunStepStatus = 'in_progress' | 'cancelled' | 'failed' | 'completed' | 'expired';
+
 export interface RunStep {
   id: string;
   object: 'thread.run.step';
@@ -301,7 +303,7 @@ export interface RunStep {
   assistant_id: string;
   thread_id: string;
   type: 'message_creation' | 'tool_calls';
-  status: 'in_progress' | 'cancelled' | 'failed' | 'completed' | 'expired';
+  status: RunStepStatus;
   step_details: StepDetails;
   last_error: RunError | null;
   expired_at: number | null;
@@ -407,8 +409,20 @@ export interface RunStepDelta {
   id: string;
   object: 'thread.run.step.delta';
   delta: {
-    step_details?: Partial<StepDetails>;
+    step_details?: StepDetailsDelta;
   };
+}
+
+export type StepDetailsDelta =
+  | { type: 'message_creation'; message_creation?: { message_id?: string } }
+  | { type: 'tool_calls'; tool_calls?: StepToolCallDelta[] };
+
+/** A function call added to a `tool_calls` step, at `index` in its `tool_calls` */
+export interface StepToolCallDelta {
+  index: number;
+  id?: string;
+  type: 'function';
+  function?: { name?: string; arguments?: string; output?: string | null };
 }
 
 export interface MessageDelta {

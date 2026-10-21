@@ -10,24 +10,35 @@ import {
   type ImageInput,
   type ResponseFormat as AgentResponseFormat,
   type RunOptions,
+  type Span,
   type Tool,
   type ToolApprovalDecision,
   type ToolApprovalRequest,
+  type ToolCall as AgentToolCall,
+  type ToolResult,
 } from '@cogitator-ai/types';
 import { EventEmitter } from 'events';
 import { nanoid } from 'nanoid';
 import { z } from 'zod';
-import { ThreadManager, type LLMThreadMessage, type StoredAssistant } from './thread-manager';
+import {
+  ThreadManager,
+  type LLMThreadMessage,
+  type StoredAssistant,
+  type StoredThread,
+} from './thread-manager';
 import type { ThreadStorage } from './storage';
 import { InvalidRequestError } from './errors';
+import { RunStepRecorder, type RunStepEventType } from './run-steps';
 import type {
   Assistant,
   AssistantTool,
   CreateMessageRequest,
   FunctionDefinition,
   Run,
+  RunError,
   RunStatus,
   RunStep,
+  RunStepDelta,
   Message,
   MessageDelta,
   MessageIncompleteReason,
@@ -49,9 +60,7 @@ export type StreamEventType =
   | 'thread.run.cancelled'
   | 'thread.run.expired'
   | 'thread.run.incomplete'
-  | 'thread.run.step.created'
-  | 'thread.run.step.in_progress'
-  | 'thread.run.step.completed'
+  | RunStepEventType
   | 'thread.message.created'
   | 'thread.message.in_progress'
   | 'thread.message.delta'
@@ -60,7 +69,7 @@ export type StreamEventType =
   | 'done'
   | 'error';
 
-export type StreamEventData = Run | RunStep | Message | MessageDelta | string;
+export type StreamEventData = Run | RunStep | RunStepDelta | Message | MessageDelta | string;
 
 export interface StreamEmitterEvents {
   event: [type: StreamEventType, data: StreamEventData];
@@ -83,7 +92,7 @@ export interface OpenAIAdapterOptions {
    */
   defaultModel?: string;
 
-  /** Maximum number of finished runs kept in memory (default: 10 000) */
+  /** Maximum number of finished runs kept in memory, with their steps (default: 10 000) */
   maxStoredRuns?: number;
 
   /**
@@ -115,6 +124,9 @@ interface PendingToolOutputs {
 
 interface RunState {
   run: Run;
+  /** The API key owner that created the run, when the server scopes runs by key */
+  owner?: string;
+  steps: RunStepRecorder;
   abortController: AbortController;
   emitter: EventEmitter<StreamEmitterEvents>;
   events: RunStreamEvent[];
@@ -123,6 +135,14 @@ interface RunState {
   /** Outputs the client submitted for its function calls, by tool call id */
   clientOutputs: Map<string, string>;
   expiryTimer?: ReturnType<typeof setTimeout>;
+}
+
+/** The assistant message a run writes, from its first token to the stored message. */
+interface RunMessage {
+  id: string;
+  announced: boolean;
+  written: boolean;
+  text: string;
 }
 
 class RunTerminatedError extends Error {
@@ -145,6 +165,15 @@ function nowSeconds(): number {
 
 function isActive(status: RunStatus): boolean {
   return ACTIVE_STATUSES.includes(status);
+}
+
+/**
+ * Whether `requester` may use a thread or run of `owner`. Everything is reachable without a
+ * requester (no API keys configured, or a direct adapter call), and a thread stored before key
+ * scoping has no owner, so every key reaches it.
+ */
+function canAccess(owner: string | undefined, requester: string | undefined): boolean {
+  return owner === undefined || requester === undefined || owner === requester;
 }
 
 /** The agent response format and extra instructions for an OpenAI `response_format`. */
@@ -349,31 +378,51 @@ export class OpenAIAdapter {
     };
   }
 
-  async createThread(metadata?: Record<string, string>): Promise<Thread> {
-    return this.threadManager.createThread(metadata);
+  /**
+   * Create a thread. With an `owner` (the API key that created it, see the server's `apiKeys`),
+   * only that owner reaches the thread, its messages and its runs.
+   *
+   * The thread, message and run methods below take the `owner` of the caller last: a thread or
+   * run of another owner is treated as missing. Without one, nothing is scoped.
+   */
+  async createThread(metadata?: Record<string, string>, owner?: string): Promise<Thread> {
+    return this.threadManager.createThread(metadata, owner);
   }
 
-  async getThread(id: string): Promise<Thread | undefined> {
-    return this.threadManager.getThread(id);
+  async getThread(id: string, owner?: string): Promise<Thread | undefined> {
+    return (await this.accessibleThread(id, owner))?.thread;
   }
 
   async updateThread(
     id: string,
-    updates: { metadata?: Record<string, string> }
+    updates: { metadata?: Record<string, string> },
+    owner?: string
   ): Promise<Thread | undefined> {
+    if (!(await this.accessibleThread(id, owner))) return undefined;
     return this.threadManager.updateThread(id, updates);
   }
 
-  async deleteThread(id: string) {
+  async deleteThread(id: string, owner?: string): Promise<boolean> {
+    if (!(await this.accessibleThread(id, owner))) return false;
     return this.threadManager.deleteThread(id);
   }
 
-  async addMessage(threadId: string, params: CreateMessageRequest) {
+  async addMessage(
+    threadId: string,
+    params: CreateMessageRequest,
+    owner?: string
+  ): Promise<Message | undefined> {
+    if (!(await this.accessibleThread(threadId, owner))) return undefined;
     return this.threadManager.addMessage(threadId, params);
   }
 
-  async getMessage(threadId: string, messageId: string) {
-    return this.threadManager.getMessage(threadId, messageId);
+  async getMessage(
+    threadId: string,
+    messageId: string,
+    owner?: string
+  ): Promise<Message | undefined> {
+    const stored = await this.accessibleThread(threadId, owner);
+    return stored?.messages.find((message) => message.id === messageId);
   }
 
   async listMessages(
@@ -384,31 +433,53 @@ export class OpenAIAdapter {
       after?: string;
       before?: string;
       run_id?: string;
-    }
-  ) {
+    },
+    owner?: string
+  ): Promise<Message[]> {
+    if (!(await this.accessibleThread(threadId, owner))) return [];
     return this.threadManager.listMessages(threadId, options);
+  }
+
+  private async accessibleThread(
+    id: string,
+    owner: string | undefined
+  ): Promise<StoredThread | undefined> {
+    const stored = await this.threadManager.getStoredThread(id);
+    return stored && canAccess(stored.owner, owner) ? stored : undefined;
+  }
+
+  private accessibleRun(
+    threadId: string,
+    runId: string,
+    owner: string | undefined
+  ): RunState | undefined {
+    const state = this.runs.get(runId);
+    return state?.run.thread_id === threadId && canAccess(state.owner, owner) ? state : undefined;
   }
 
   /**
    * Create a run and start executing it in the background.
    *
-   * Rejects when the assistant or thread does not exist, or when the thread
-   * already has an active run.
+   * Rejects when the assistant or thread does not exist (or the thread belongs to another
+   * `owner`), or when the thread already has an active run.
    */
-  async createRun(threadId: string, request: CreateRunRequest): Promise<Run> {
+  async createRun(threadId: string, request: CreateRunRequest, owner?: string): Promise<Run> {
     const assistant = await this.threadManager.getAssistant(request.assistant_id);
     if (!assistant) {
       throw new InvalidRequestError(`Assistant ${request.assistant_id} not found`, 'assistant_id');
     }
 
-    const thread = await this.threadManager.getThread(threadId);
+    const thread = await this.accessibleThread(threadId, owner);
     if (!thread) {
       throw new InvalidRequestError(`Thread ${threadId} not found`);
     }
 
     const activeRunId = this.activeRunByThread.get(threadId);
     if (activeRunId) {
-      throw new InvalidRequestError(`Thread ${threadId} already has an active run ${activeRunId}.`);
+      const visible = this.accessibleRun(threadId, activeRunId, owner) !== undefined;
+      throw new InvalidRequestError(
+        `Thread ${threadId} already has an active run${visible ? ` ${activeRunId}` : ''}.`
+      );
     }
     if (request.max_prompt_tokens !== undefined && !isPositiveInteger(request.max_prompt_tokens)) {
       throw new InvalidRequestError(
@@ -452,6 +523,8 @@ export class OpenAIAdapter {
 
     const state: RunState = {
       run,
+      ...(owner !== undefined && { owner }),
+      steps: new RunStepRecorder(run, (event, data) => this.emit(state, event, data)),
       abortController: new AbortController(),
       emitter: new EventEmitter<StreamEmitterEvents>(),
       events: [],
@@ -483,30 +556,39 @@ export class OpenAIAdapter {
   /**
    * Get a run by ID
    */
-  getRun(threadId: string, runId: string): Run | undefined {
-    const state = this.runs.get(runId);
-    if (state?.run.thread_id === threadId) {
-      return structuredClone(state.run);
-    }
-    return undefined;
+  getRun(threadId: string, runId: string, owner?: string): Run | undefined {
+    const state = this.accessibleRun(threadId, runId, owner);
+    return state ? structuredClone(state.run) : undefined;
   }
 
   /**
    * List runs of a thread, newest first
    */
-  listRuns(threadId: string): Run[] {
+  listRuns(threadId: string, owner?: string): Run[] {
     return Array.from(this.runs.values())
-      .filter((state) => state.run.thread_id === threadId)
+      .filter((state) => state.run.thread_id === threadId && canAccess(state.owner, owner))
       .map((state) => structuredClone(state.run))
       .reverse();
   }
 
   /**
+   * The steps of a run in the order they were created, or undefined when there is no such run.
+   * Steps are kept with their run (see `maxStoredRuns`).
+   */
+  listRunSteps(threadId: string, runId: string, owner?: string): RunStep[] | undefined {
+    return this.accessibleRun(threadId, runId, owner)?.steps.list();
+  }
+
+  getRunStep(threadId: string, runId: string, stepId: string, owner?: string): RunStep | undefined {
+    return this.accessibleRun(threadId, runId, owner)?.steps.get(stepId);
+  }
+
+  /**
    * Cancel a run. Throws when the run already finished.
    */
-  cancelRun(threadId: string, runId: string): Run | undefined {
-    const state = this.runs.get(runId);
-    if (state?.run.thread_id !== threadId) {
+  cancelRun(threadId: string, runId: string, owner?: string): Run | undefined {
+    const state = this.accessibleRun(threadId, runId, owner);
+    if (!state) {
       return undefined;
     }
     if (!isActive(state.run.status) || state.run.status === 'cancelling') {
@@ -527,10 +609,11 @@ export class OpenAIAdapter {
   async submitToolOutputs(
     threadId: string,
     runId: string,
-    request: SubmitToolOutputsRequest
+    request: SubmitToolOutputsRequest,
+    owner?: string
   ): Promise<Run | undefined> {
-    const state = this.runs.get(runId);
-    if (state?.run.thread_id !== threadId) {
+    const state = this.accessibleRun(threadId, runId, owner);
+    if (!state) {
       return undefined;
     }
 
@@ -841,6 +924,35 @@ export class OpenAIAdapter {
     const { run } = state;
     const threadId = run.thread_id;
     const signal = state.abortController.signal;
+    const message: RunMessage = {
+      id: `msg_${nanoid()}`,
+      announced: false,
+      written: false,
+      text: '',
+    };
+
+    const announceMessage = () => {
+      if (message.announced) return;
+      message.announced = true;
+      state.steps.messageStarted(message.id);
+      const inProgress: Message = {
+        id: message.id,
+        object: 'thread.message',
+        created_at: nowSeconds(),
+        thread_id: threadId,
+        status: 'in_progress',
+        completed_at: null,
+        incomplete_at: null,
+        role: 'assistant',
+        content: [],
+        assistant_id: assistant.id,
+        run_id: run.id,
+        attachments: [],
+        metadata: {},
+      };
+      this.emit(state, 'thread.message.created', inProgress);
+      this.emit(state, 'thread.message.in_progress', inProgress);
+    };
 
     try {
       run.status = 'in_progress';
@@ -886,31 +998,6 @@ export class OpenAIAdapter {
         tools,
       });
 
-      const messageId = `msg_${nanoid()}`;
-      let messageAnnounced = false;
-      const announceMessage = () => {
-        if (messageAnnounced) return;
-        messageAnnounced = true;
-        const inProgress: Message = {
-          id: messageId,
-          object: 'thread.message',
-          created_at: nowSeconds(),
-          thread_id: threadId,
-          status: 'in_progress',
-          completed_at: null,
-          incomplete_at: null,
-          role: 'assistant',
-          content: [],
-          assistant_id: assistant.id,
-          run_id: run.id,
-          attachments: [],
-          metadata: {},
-        };
-        this.emit(state, 'thread.message.created', inProgress);
-        this.emit(state, 'thread.message.in_progress', inProgress);
-      };
-
-      let accumulated = '';
       const turnOptions = {
         signal,
         stream: !!request.stream,
@@ -918,9 +1005,9 @@ export class OpenAIAdapter {
         onToken: (token: string) => {
           if (signal.aborted) return;
           announceMessage();
-          accumulated += token;
+          message.text += token;
           const delta: MessageDelta = {
-            id: messageId,
+            id: message.id,
             object: 'thread.message.delta',
             delta: { content: [{ index: 0, type: 'text', text: { value: token } }] },
           };
@@ -928,6 +1015,11 @@ export class OpenAIAdapter {
         },
         onApproval: (approval: ToolApprovalRequest) =>
           clientToolNames.has(approval.toolName) ? 'pause' : undefined,
+        onToolCall: (call: AgentToolCall) => {
+          if (!signal.aborted) state.steps.toolCalled(call);
+        },
+        onToolResult: (result: ToolResult) => state.steps.toolReturned(result),
+        onSpan: (span: Span) => state.steps.recordSpan(span),
       } satisfies Partial<RunOptions>;
 
       let result = await this.cogitator.run(agent, {
@@ -956,31 +1048,6 @@ export class OpenAIAdapter {
         throw signal.reason instanceof Error ? signal.reason : new RunTerminatedError('cancelled');
       }
 
-      const finalContent = result.output || accumulated;
-      const incompleteReason: MessageIncompleteReason | undefined = result.truncated
-        ? 'max_tokens'
-        : result.blocked === 'content_filter'
-          ? 'content_filter'
-          : undefined;
-      if (finalContent || incompleteReason) {
-        announceMessage();
-        const message = await this.threadManager.addAssistantMessage(
-          threadId,
-          finalContent,
-          assistant.id,
-          run.id,
-          messageId,
-          incompleteReason
-        );
-        if (message) {
-          this.emit(
-            state,
-            incompleteReason ? 'thread.message.incomplete' : 'thread.message.completed',
-            message
-          );
-        }
-      }
-
       run.usage = result.usage
         ? {
             prompt_tokens: result.usage.inputTokens,
@@ -988,6 +1055,20 @@ export class OpenAIAdapter {
             total_tokens: result.usage.totalTokens,
           }
         : null;
+
+      const finalContent = result.output || message.text;
+      const incompleteReason: MessageIncompleteReason | undefined = result.truncated
+        ? 'max_tokens'
+        : result.blocked === 'content_filter'
+          ? 'content_filter'
+          : undefined;
+      if (finalContent || incompleteReason) {
+        announceMessage();
+        await this.writeMessage(state, assistant.id, message, finalContent, incompleteReason);
+      }
+      state.steps.messageFinished(run.usage);
+      state.steps.finish({ status: 'completed' });
+
       if (result.truncated) {
         run.status = 'incomplete';
         run.incomplete_details = { reason: 'max_completion_tokens' };
@@ -1000,7 +1081,15 @@ export class OpenAIAdapter {
     } catch (error) {
       const reason = signal.aborted ? signal.reason : error;
       if (reason instanceof RunTerminatedError) {
-        if (reason.status === 'cancelled') {
+        const cancelled = reason.status === 'cancelled';
+        await this.keepUnfinishedMessage(
+          state,
+          assistant.id,
+          message,
+          cancelled ? 'run_cancelled' : 'run_expired'
+        );
+        state.steps.finish({ status: reason.status });
+        if (cancelled) {
           run.status = 'cancelled';
           run.cancelled_at = nowSeconds();
           this.emit(state, 'thread.run.cancelled', run);
@@ -1009,13 +1098,20 @@ export class OpenAIAdapter {
           this.emit(state, 'thread.run.expired', run);
         }
       } else if (reason instanceof PromptBudgetExceededError) {
+        state.steps.finish({ status: 'completed' });
         run.status = 'incomplete';
         run.incomplete_details = { reason: 'max_prompt_tokens' };
         this.emit(state, 'thread.run.incomplete', run);
       } else {
+        const lastError: RunError = {
+          code: 'server_error',
+          message: this.clientErrorMessage(run, error),
+        };
+        await this.keepUnfinishedMessage(state, assistant.id, message, 'run_failed');
+        state.steps.finish({ status: 'failed', error: lastError });
         run.status = 'failed';
         run.failed_at = nowSeconds();
-        run.last_error = { code: 'server_error', message: this.clientErrorMessage(run, error) };
+        run.last_error = lastError;
         this.emit(state, 'thread.run.failed', run);
       }
     } finally {
@@ -1023,6 +1119,53 @@ export class OpenAIAdapter {
       this.terminate(state, new RunTerminatedError('cancelled'));
       this.emit(state, 'done', '[DONE]');
       this.end(state);
+    }
+  }
+
+  /** Store the assistant message of the run and emit its final event. */
+  private async writeMessage(
+    state: RunState,
+    assistantId: string,
+    message: RunMessage,
+    content: string,
+    incompleteReason?: MessageIncompleteReason
+  ): Promise<void> {
+    const written = await this.threadManager.addAssistantMessage(
+      state.run.thread_id,
+      content,
+      assistantId,
+      state.run.id,
+      message.id,
+      incompleteReason
+    );
+    message.written = true;
+    if (written) {
+      this.emit(
+        state,
+        incompleteReason ? 'thread.message.incomplete' : 'thread.message.completed',
+        written
+      );
+    }
+  }
+
+  /**
+   * Keep what the model wrote of a message the run announced but did not finish, as an
+   * incomplete message, so the `message_creation` step points at a message that exists.
+   */
+  private async keepUnfinishedMessage(
+    state: RunState,
+    assistantId: string,
+    message: RunMessage,
+    reason: MessageIncompleteReason
+  ): Promise<void> {
+    if (!message.announced || message.written) return;
+    try {
+      await this.writeMessage(state, assistantId, message, message.text, reason);
+    } catch (error) {
+      console.error(
+        `[CogitatorOpenAI] Run ${state.run.id} could not keep its unfinished message:`,
+        error
+      );
     }
   }
 }

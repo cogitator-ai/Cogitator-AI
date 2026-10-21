@@ -23,13 +23,13 @@ pnpm add openai
 - **Responses** - `POST /v1/responses` with the streaming events of the API, `previous_response_id`, function calls, and `GET` / `DELETE` of stored responses
 - **Agents as models** - `model` names a registered agent, which answers with its own instructions, model and tools. `GET /v1/models` lists them
 - **Client functions** - Functions a client declares come back as tool calls, and the outputs it sends resume the same run
-- **Assistants API (deprecated)** - Assistants, threads, messages, runs and files over pluggable storage (in-memory, Redis, PostgreSQL)
+- **Assistants API (deprecated)** - Assistants, threads, messages, runs, run steps and files over pluggable storage (in-memory, Redis, PostgreSQL)
 - **OpenAI errors** - Every error in the OpenAI error format, with the parameter at fault
-- **Authentication** - Optional API keys (constant-time check, `/health` stays public)
+- **Authentication** - Optional API keys (constant-time check, `/health` stays public), with threads and runs scoped to the key that created them
 - **Abort on disconnect** - A client that goes away stops the agent run
 - **CORS** - Configurable cross-origin requests
 
-There are no run steps or vector stores, and `code_interpreter` and `file_search` assistant tools are stored but not executed.
+There are no vector stores, and `code_interpreter` and `file_search` assistant tools are stored but not executed.
 
 ---
 
@@ -249,7 +249,7 @@ const server = new OpenAIServer(cogitator, {
 | ---------------------------------- | ------------------------------- | -------------------------------------- | --------------------------------------------------------------------------- |
 | `port`                             | `number`                        | `8080`                                 | Port to listen on (`0` picks a free port)                                   |
 | `host`                             | `string`                        | `'127.0.0.1'`                          | Host to bind to. A public host needs `apiKeys`                              |
-| `apiKeys`                          | `string[]`                      | `[]`                                   | API keys for authentication. Empty disables auth                            |
+| `apiKeys`                          | `string[]`                      | `[]`                                   | API keys for authentication, scoping threads and runs. Empty disables auth  |
 | `allowUnauthenticatedPublicAccess` | `boolean`                       | `false`                                | Serve a public host without `apiKeys` (behind a gateway that authenticates) |
 | `sseHeartbeatMs`                   | `number`                        | `5000`                                 | Heartbeat comment interval on streams, `0` turns it off                     |
 | `agents`                           | `Record<string, Agent>`         | `{}`                                   | Agents served by Chat Completions and Responses, by model id                |
@@ -288,6 +288,16 @@ For tests without a listening socket, `await server.waitUntilReady()` and then c
 ### Authentication
 
 With `apiKeys` set, every request except `GET /health` needs `Authorization: Bearer <key>`. A missing header answers `401` with code `missing_api_key`; a malformed header or unknown key answers `401` with code `invalid_api_key`.
+
+#### Threads and runs per key
+
+A request that authenticates with a key carries `request.apiKeyOwner`, the sha256 hex digest of the key (the key itself is never stored). Threads (`POST /v1/threads`, `POST /v1/threads/runs`) keep that owner in storage, and runs keep it in memory. Another key gets `404 not_found` for the thread, its messages, its runs and their steps, the same answer as for an id that does not exist, so it cannot tell that the thread exists. Listing the runs of a thread shows only the runs of the caller's key.
+
+- Threads stored before this scoping have no owner and stay reachable by every key, as before. Runs created on them still belong to the key that created them.
+- Without `apiKeys` nothing is scoped.
+- Assistants, files and stored responses are shared by every key.
+
+`apiKeyOwner(key)` (exported) gives the owner of a key, for instance to list its threads from storage (see [Listing threads](#listing-threads)).
 
 ### Health Check
 
@@ -397,7 +407,35 @@ Runs use the whole thread as context (earlier messages are replayed to the agent
 
 `streamRunEvents(runId, fromIndex = 0)` replays the run's event log from `fromIndex` and ends after the next `done` event. `getRunEventCursor(runId)` returns the current log position (use it before `submitToolOutputs` to stream only the continuation), and `getStreamEmitter(runId)` exposes the raw `EventEmitter`. Token deltas are emitted only for runs created with `stream: true`.
 
+Each thread, message and run method takes the caller's owner as its last argument (`adapter.getThread(id, owner)`, `adapter.createRun(threadId, request, owner)`, ...): a thread or run of another owner is treated as missing. Leave it out for unscoped access, which is what the server does without `apiKeys`.
+
 Runs live in the adapter's memory, unlike assistants, threads, messages and files, which go to `storage`. Poll, cancel or submit tool outputs to a run on the same process that created it: with several processes, run a single instance or route each thread to the same one (sticky routing).
+
+### Run Steps
+
+Every run records its steps, as the Assistants API does:
+
+- a `tool_calls` step for each model turn that called tools, with each call's `id`, `name`, `arguments` and `output` (`null` until the output is known). A step whose calls wait on the client stays `in_progress` while the run is in `requires_action`, and completes with the submitted outputs after `submit_tool_outputs`.
+- a `message_creation` step for the assistant message of the run, with its `message_id`.
+
+Steps carry `created_at` / `completed_at` / `failed_at` / `cancelled_at` / `expired_at` (unix seconds) and `usage`: the tokens of the model call that produced the step, when the agent run reports them, or the run's usage when the run has a single step. When the run is cancelled, expires or fails, the steps still in progress end `cancelled`, `expired` or `failed` (with the run's `last_error`), and a message the run had started streaming is kept with `status: 'incomplete'` and `incomplete_details.reason` `run_cancelled`, `run_expired` or `run_failed`.
+
+```typescript
+const steps = await openai.beta.threads.runs.steps.list(run.id, { thread_id: thread.id });
+
+for (const step of steps.data) {
+  if (step.step_details.type === 'tool_calls') {
+    for (const call of step.step_details.tool_calls) {
+      if (call.type === 'function') console.log(call.function.name, call.function.output);
+    }
+  }
+}
+
+const inProcess = adapter.listRunSteps(thread.id, run.id); // oldest first, undefined for an unknown run
+const one = adapter.getRunStep(thread.id, run.id, steps.data[0].id);
+```
+
+Steps are kept with their run, so they live in memory and leave with it (`maxStoredRuns`). The `include[]` parameter of the step endpoints is accepted and ignored, since there are no `file_search` results.
 
 ### Tool Outputs
 
@@ -585,7 +623,7 @@ const storage = new PostgresThreadStorage({
   schema: 'public', // default: 'public'
   tableName: 'openai_compat_data', // default: 'openai_compat_data'
 });
-await storage.connect(); // creates the table and index if missing
+await storage.connect(); // creates the table and its indexes if missing
 
 const manager = new ThreadManager(storage);
 
@@ -646,7 +684,7 @@ interface ThreadStorage {
   saveThread(id: string, thread: StoredThread): Promise<void>;
   loadThread(id: string): Promise<StoredThread | null>;
   deleteThread(id: string): Promise<boolean>;
-  listThreads(): Promise<StoredThread[]>;
+  listThreads(options?: ListStoredThreadsOptions): Promise<StoredThreadPage>;
 
   // Assistants
   saveAssistant(id: string, assistant: StoredAssistant): Promise<void>;
@@ -666,7 +704,36 @@ interface ThreadStorage {
 }
 ```
 
-`StoredThread` is `{ thread: Thread; messages: Message[] }`; `StoredFile` is `{ id, content: Buffer, filename, created_at, purpose? }`.
+`StoredThread` is `{ thread: Thread; messages: Message[]; owner?: string }`, `owner` being the digest of the API key that created the thread. `StoredFile` is `{ id, content: Buffer, filename, created_at, purpose? }`.
+
+### Listing threads
+
+The Assistants API has no route that lists threads, so `listThreads` is for operators, on the storage or on `ThreadManager`:
+
+```typescript
+import { apiKeyOwner } from '@cogitator-ai/openai-compat';
+
+const first = await storage.listThreads({ owner: apiKeyOwner('sk-key1'), limit: 50 });
+const next = await storage.listThreads({
+  owner: apiKeyOwner('sk-key1'),
+  limit: 50,
+  cursor: first.nextCursor,
+});
+const unowned = await storage.listThreads({ owner: null }); // threads stored before key scoping
+```
+
+| Option   | Default  | Meaning                                                                        |
+| -------- | -------- | ------------------------------------------------------------------------------ |
+| `owner`  | all      | Threads of this owner only, `null` for the threads without one                 |
+| `limit`  | `50`     | Threads per page, from 1 to 500 (`RangeError` otherwise)                       |
+| `cursor` | -        | `nextCursor` of the page before, with the same filters and order               |
+| `order`  | `'desc'` | By creation time, then id: `desc` starts with the newest threads, `asc` oldest |
+
+A page is `{ threads, nextCursor? }`, `nextCursor` being absent on the last page. A cursor the storage did not hand out throws `TypeError`. What a page costs depends on the backend:
+
+- **In-memory**: filters and sorts the threads of the process.
+- **PostgreSQL**: `WHERE`, `ORDER BY` and `LIMIT` in SQL, served by the partial index `idx_<table>_thread_owner` on (owner, creation time, id) that `connect()` creates. A listing without `owner` reads every thread row.
+- **Redis**: threads are plain keys with a TTL and no index, so every page reads all thread keys (`SCAN` + `MGET`, messages included) and sorts them in memory. That is fine for an occasional listing, use PostgreSQL when there are many threads.
 
 ### Custom Storage Implementation
 
@@ -746,8 +813,10 @@ The Assistants API endpoints below are deprecated.
 | GET    | `/v1/threads/:id/runs/:run_id`                     | Get run status      |
 | POST   | `/v1/threads/:id/runs/:run_id/cancel`              | Cancel run          |
 | POST   | `/v1/threads/:id/runs/:run_id/submit_tool_outputs` | Submit tool outputs |
+| GET    | `/v1/threads/:id/runs/:run_id/steps`               | List run steps      |
+| GET    | `/v1/threads/:id/runs/:run_id/steps/:step_id`      | Get run step        |
 
-The create and `submit_tool_outputs` endpoints stream SSE when the body has `stream: true`.
+The create and `submit_tool_outputs` endpoints stream SSE when the body has `stream: true`. Run steps are listed like the other lists (`limit`, `order`, `after`, `before`). There is no `GET /v1/threads`, as in the OpenAI API: operators list threads from storage.
 
 ### Files
 
@@ -912,7 +981,7 @@ for await (const event of run) {
 
 ### Stream Events
 
-The server emits these events (the exported `StreamEventType` union also lists run-step events, which are not emitted):
+The server emits these events:
 
 ```typescript
 type EmittedEvent =
@@ -926,6 +995,13 @@ type EmittedEvent =
   | { event: 'thread.run.cancelled'; data: Run }
   | { event: 'thread.run.expired'; data: Run }
   | { event: 'thread.run.incomplete'; data: Run }
+  | { event: 'thread.run.step.created'; data: RunStep }
+  | { event: 'thread.run.step.in_progress'; data: RunStep }
+  | { event: 'thread.run.step.delta'; data: RunStepDelta }
+  | { event: 'thread.run.step.completed'; data: RunStep }
+  | { event: 'thread.run.step.failed'; data: RunStep }
+  | { event: 'thread.run.step.cancelled'; data: RunStep }
+  | { event: 'thread.run.step.expired'; data: RunStep }
   | { event: 'thread.message.created'; data: Message }
   | { event: 'thread.message.in_progress'; data: Message }
   | { event: 'thread.message.delta'; data: MessageDelta }
@@ -935,6 +1011,8 @@ type EmittedEvent =
 ```
 
 A stream ends with `done` after the run finishes or pauses on `requires_action`; continue a paused run with `submit_tool_outputs` and `stream: true`, which streams only the events after the submission.
+
+Step events come in the order of the OpenAI API: `thread.run.step.created` and `thread.run.step.in_progress` open a step, before the `thread.message.*` events of its message. A `tool_calls` step opens with an empty `tool_calls` list, gets one `thread.run.step.delta` per call (so the SDK's `toolCallCreated` fires), and `thread.run.step.completed` carries the outputs. A run that waits on the client streams `thread.run.step.delta` and then `thread.run.requires_action`, and the stream after `submit_tool_outputs` starts with `thread.run.in_progress` and the completed step.
 
 ### Message Delta Format
 

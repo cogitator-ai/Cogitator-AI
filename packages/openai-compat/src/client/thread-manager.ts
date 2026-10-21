@@ -11,7 +11,13 @@ import type {
   FilePurpose,
   ResponseFormat,
 } from '../types/openai-types';
-import { type ThreadStorage, type StoredFile, InMemoryThreadStorage } from './storage';
+import {
+  type ThreadStorage,
+  type StoredFile,
+  type ListStoredThreadsOptions,
+  type StoredThreadPage,
+  InMemoryThreadStorage,
+} from './storage';
 
 export interface LLMThreadMessage {
   role: 'user' | 'assistant';
@@ -44,6 +50,11 @@ const ASSISTANT_UPDATABLE_FIELDS = [
 export interface StoredThread {
   thread: Thread;
   messages: Message[];
+  /**
+   * Who may reach the thread: a digest of the API key that created it. Absent when the server
+   * has no API keys, and on threads stored before key scoping, which every key reaches.
+   */
+  owner?: string;
 }
 
 export interface StoredAssistant {
@@ -191,7 +202,8 @@ export class ThreadManager {
     return this.storage.listAssistants();
   }
 
-  async createThread(metadata?: Record<string, string>): Promise<Thread> {
+  /** Create a thread, reachable only by `owner` when one is given (see {@link StoredThread.owner}). */
+  async createThread(metadata?: Record<string, string>, owner?: string): Promise<Thread> {
     const id = `thread_${nanoid()}`;
     const thread: Thread = {
       id,
@@ -200,7 +212,7 @@ export class ThreadManager {
       metadata: metadata ?? {},
     };
 
-    const stored: StoredThread = { thread, messages: [] };
+    const stored: StoredThread = { thread, messages: [], ...(owner !== undefined && { owner }) };
     await this.storage.saveThread(id, stored);
     return thread;
   }
@@ -210,9 +222,15 @@ export class ThreadManager {
     return stored?.thread;
   }
 
-  private async getStoredThread(id: string): Promise<StoredThread | undefined> {
+  /** The thread with its messages and owner, as storage holds it */
+  async getStoredThread(id: string): Promise<StoredThread | undefined> {
     const stored = await this.storage.loadThread(id);
     return stored ?? undefined;
+  }
+
+  /** A page of stored threads, for operators: the API does not list threads. */
+  async listThreads(options?: ListStoredThreadsOptions): Promise<StoredThreadPage> {
+    return this.storage.listThreads(options);
   }
 
   async updateThread(

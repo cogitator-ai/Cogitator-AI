@@ -8,6 +8,8 @@ const redisState = vi.hoisted(() => ({
 
 const pgState = vi.hoisted(() => ({
   queries: [] as string[],
+  values: [] as unknown[][],
+  selectRows: [] as unknown[],
   failOn: null as string | null,
   ended: 0,
 }));
@@ -45,12 +47,14 @@ vi.mock('ioredis', () => {
 
 vi.mock('pg', () => {
   class Pool {
-    async query(text: string) {
+    async query(text: string, values: unknown[] = []) {
       pgState.queries.push(text);
+      pgState.values.push(values);
       if (pgState.failOn && text.includes(pgState.failOn)) {
         throw new Error('permission denied');
       }
-      return { rows: [], rowCount: 0 };
+      const rows = text.trimStart().startsWith('SELECT') ? pgState.selectRows : [];
+      return { rows, rowCount: rows.length };
     }
     async end() {
       pgState.ended++;
@@ -70,6 +74,8 @@ beforeEach(() => {
   redisState.setCalls.length = 0;
   redisState.constructed.length = 0;
   pgState.queries.length = 0;
+  pgState.values.length = 0;
+  pgState.selectRows = [];
   pgState.failOn = null;
   pgState.ended = 0;
 });
@@ -120,8 +126,143 @@ describe('RedisThreadStorage (ESM loading)', () => {
       });
     }
 
-    const threads = await storage.listThreads();
+    const { threads } = await storage.listThreads();
     expect(threads.map((t) => t.thread.id).sort()).toEqual(['t1', 't2', 't3']);
+  });
+});
+
+function storedThread(id: string, createdAt: number, owner?: string): StoredThread {
+  return {
+    thread: { id, object: 'thread', created_at: createdAt, metadata: {} },
+    messages: [],
+    ...(owner !== undefined && { owner }),
+  };
+}
+
+describe.each([
+  ['InMemoryThreadStorage', async (): Promise<ThreadStorage> => new InMemoryThreadStorage()],
+  [
+    'RedisThreadStorage',
+    async (): Promise<ThreadStorage> => {
+      const storage = new RedisThreadStorage();
+      await storage.connect();
+      return storage;
+    },
+  ],
+])('%s.listThreads', (_name, create) => {
+  async function seeded() {
+    const storage = await create();
+    const threads = [
+      storedThread('t_a', 100, 'key-a'),
+      storedThread('t_b', 200, 'key-b'),
+      storedThread('t_c', 200, 'key-a'),
+      storedThread('t_d', 300),
+      storedThread('t_e', 400, 'key-a'),
+    ];
+    for (const thread of threads) await storage.saveThread(thread.thread.id, thread);
+    return storage;
+  }
+
+  it('pages newest first by creation time, then id, with a cursor', async () => {
+    const storage = await seeded();
+
+    const first = await storage.listThreads({ limit: 2 });
+    const second = await storage.listThreads({ limit: 2, cursor: first.nextCursor });
+    const last = await storage.listThreads({ limit: 2, cursor: second.nextCursor });
+
+    expect(first.threads.map((t) => t.thread.id)).toEqual(['t_e', 't_d']);
+    expect(second.threads.map((t) => t.thread.id)).toEqual(['t_c', 't_b']);
+    expect(last.threads.map((t) => t.thread.id)).toEqual(['t_a']);
+    expect(last.nextCursor).toBeUndefined();
+  });
+
+  it('lists oldest first with order asc', async () => {
+    const storage = await seeded();
+
+    const page = await storage.listThreads({ order: 'asc', limit: 3 });
+
+    expect(page.threads.map((t) => t.thread.id)).toEqual(['t_a', 't_b', 't_c']);
+    expect(page.nextCursor).toBeDefined();
+  });
+
+  it('filters by owner, and lists the threads without one for owner null', async () => {
+    const storage = await seeded();
+
+    const owned = await storage.listThreads({ owner: 'key-a', limit: 2 });
+    const rest = await storage.listThreads({ owner: 'key-a', cursor: owned.nextCursor });
+    const unowned = await storage.listThreads({ owner: null });
+
+    expect(owned.threads.map((t) => t.thread.id)).toEqual(['t_e', 't_c']);
+    expect(rest.threads.map((t) => t.thread.id)).toEqual(['t_a']);
+    expect(unowned.threads.map((t) => t.thread.id)).toEqual(['t_d']);
+  });
+
+  it('refuses a limit out of range and a cursor it did not hand out', async () => {
+    const storage = await seeded();
+
+    await expect(storage.listThreads({ limit: 0 })).rejects.toThrow(RangeError);
+    await expect(storage.listThreads({ limit: 501 })).rejects.toThrow(RangeError);
+    await expect(storage.listThreads({ cursor: 'not-a-cursor' })).rejects.toThrow(TypeError);
+  });
+});
+
+describe('PostgresThreadStorage.listThreads', () => {
+  async function connected() {
+    const storage = new PostgresThreadStorage({ connectionString: 'postgres://x' });
+    await storage.connect();
+    pgState.queries.length = 0;
+    pgState.values.length = 0;
+    return storage;
+  }
+
+  it('indexes threads by owner, creation time and id', async () => {
+    const storage = new PostgresThreadStorage({ connectionString: 'postgres://x' });
+    await storage.connect();
+
+    const index = pgState.queries.find((q) => q.includes('idx_openai_compat_data_thread_owner'));
+    expect(index).toContain("(data->>'owner')");
+    expect(index).toContain("((data->'thread'->>'created_at')::bigint)");
+    expect(index).toContain("WHERE type = 'thread'");
+  });
+
+  it('filters, orders and limits in SQL and fetches one extra row to tell a next page', async () => {
+    const storage = await connected();
+    pgState.selectRows = [
+      { data: storedThread('t_e', 400, 'key-a') },
+      { data: storedThread('t_c', 200, 'key-a') },
+      { data: storedThread('t_a', 100, 'key-a') },
+    ];
+
+    const page = await storage.listThreads({ owner: 'key-a', limit: 2 });
+
+    expect(page.threads.map((t) => t.thread.id)).toEqual(['t_e', 't_c']);
+    expect(page.nextCursor).toBeDefined();
+    expect(pgState.queries[0]).toContain("(data->>'owner') = $1");
+    expect(pgState.queries[0]).toContain(
+      "ORDER BY ((data->'thread'->>'created_at')::bigint) DESC, id DESC"
+    );
+    expect(pgState.queries[0]).toContain('LIMIT $2');
+    expect(pgState.values[0]).toEqual(['key-a', 3]);
+
+    pgState.selectRows = [{ data: storedThread('t_a', 100, 'key-a') }];
+    const next = await storage.listThreads({ owner: 'key-a', limit: 2, cursor: page.nextCursor });
+
+    expect(next.threads.map((t) => t.thread.id)).toEqual(['t_a']);
+    expect(next.nextCursor).toBeUndefined();
+    expect(pgState.queries[1]).toContain(
+      "(((data->'thread'->>'created_at')::bigint), id) < ($2::bigint, $3::text)"
+    );
+    expect(pgState.values[1]).toEqual(['key-a', 200, 't_c', 3]);
+  });
+
+  it('lists threads without an owner in ascending order', async () => {
+    const storage = await connected();
+
+    await storage.listThreads({ owner: null, order: 'asc' });
+
+    expect(pgState.queries[0]).toContain("(data->>'owner') IS NULL");
+    expect(pgState.queries[0]).toContain('ASC, id ASC');
+    expect(pgState.values[0]).toEqual([51]);
   });
 });
 

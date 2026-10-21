@@ -39,6 +39,10 @@ export interface OpenAIServerConfig {
    * API keys for authentication. Without keys every caller may create assistants with any
    * instructions and run the server's tools, so `start()` refuses a public `host` unless
    * `allowUnauthenticatedPublicAccess` is set.
+   *
+   * Threads and runs belong to the key that created them: another key gets 404 for them, their
+   * messages and run steps. Threads stored before this scoping have no owner and stay reachable
+   * by every key. Assistants, files and responses are shared by all keys.
    */
   apiKeys?: string[];
 
@@ -190,6 +194,7 @@ export class OpenAIServer {
     });
 
     if (this.config.apiKeys.length > 0) {
+      this.fastify.decorateRequest('apiKeyOwner', undefined);
       const authConfig: AuthConfig = {
         apiKeys: this.config.apiKeys,
         required: true,

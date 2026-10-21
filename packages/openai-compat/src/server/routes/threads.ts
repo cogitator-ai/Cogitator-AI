@@ -32,9 +32,10 @@ export function registerThreadRoutes(fastify: FastifyInstance, adapter: OpenAIAd
       if (problem) return sendInvalidRequest(reply, problem, 'messages');
     }
 
-    const thread = await adapter.createThread(request.body?.metadata);
+    const owner = request.apiKeyOwner;
+    const thread = await adapter.createThread(request.body?.metadata, owner);
     for (const msg of messages) {
-      await adapter.addMessage(thread.id, msg);
+      await adapter.addMessage(thread.id, msg, owner);
     }
 
     return reply.status(201).send(thread);
@@ -43,7 +44,7 @@ export function registerThreadRoutes(fastify: FastifyInstance, adapter: OpenAIAd
   fastify.get<{ Params: { thread_id: string } }>(
     '/v1/threads/:thread_id',
     async (request, reply) => {
-      const thread = await adapter.getThread(request.params.thread_id);
+      const thread = await adapter.getThread(request.params.thread_id, request.apiKeyOwner);
 
       if (!thread) {
         return reply.status(404).send({
@@ -62,9 +63,11 @@ export function registerThreadRoutes(fastify: FastifyInstance, adapter: OpenAIAd
   fastify.post<{ Params: { thread_id: string }; Body: { metadata?: Record<string, string> } }>(
     '/v1/threads/:thread_id',
     async (request, reply) => {
-      const updated = await adapter.updateThread(request.params.thread_id, {
-        metadata: request.body?.metadata,
-      });
+      const updated = await adapter.updateThread(
+        request.params.thread_id,
+        { metadata: request.body?.metadata },
+        request.apiKeyOwner
+      );
 
       if (!updated) {
         return reply.status(404).send({
@@ -83,7 +86,7 @@ export function registerThreadRoutes(fastify: FastifyInstance, adapter: OpenAIAd
   fastify.delete<{ Params: { thread_id: string } }>(
     '/v1/threads/:thread_id',
     async (request, reply) => {
-      const deleted = await adapter.deleteThread(request.params.thread_id);
+      const deleted = await adapter.deleteThread(request.params.thread_id, request.apiKeyOwner);
 
       if (!deleted) {
         return reply.status(404).send({
@@ -106,7 +109,7 @@ export function registerThreadRoutes(fastify: FastifyInstance, adapter: OpenAIAd
   fastify.post<{ Params: { thread_id: string }; Body: CreateMessageRequest }>(
     '/v1/threads/:thread_id/messages',
     async (request, reply) => {
-      const thread = await adapter.getThread(request.params.thread_id);
+      const thread = await adapter.getThread(request.params.thread_id, request.apiKeyOwner);
 
       if (!thread) {
         return reply.status(404).send({
@@ -121,7 +124,11 @@ export function registerThreadRoutes(fastify: FastifyInstance, adapter: OpenAIAd
       const problem = validateMessage(request.body);
       if (problem) return sendInvalidRequest(reply, problem);
 
-      const message = await adapter.addMessage(request.params.thread_id, request.body);
+      const message = await adapter.addMessage(
+        request.params.thread_id,
+        request.body,
+        request.apiKeyOwner
+      );
 
       if (!message) {
         return reply.status(500).send({
@@ -147,7 +154,7 @@ export function registerThreadRoutes(fastify: FastifyInstance, adapter: OpenAIAd
       run_id?: string;
     };
   }>('/v1/threads/:thread_id/messages', async (request, reply) => {
-    const thread = await adapter.getThread(request.params.thread_id);
+    const thread = await adapter.getThread(request.params.thread_id, request.apiKeyOwner);
 
     if (!thread) {
       return reply.status(404).send({
@@ -165,13 +172,11 @@ export function registerThreadRoutes(fastify: FastifyInstance, adapter: OpenAIAd
     const order = parseOrder(request.query.order);
     if (order === null) return sendInvalidRequest(reply, "order must be 'asc' or 'desc'", 'order');
     const { after, before, run_id } = request.query;
-    const messages = await adapter.listMessages(request.params.thread_id, {
-      limit: limit + 1,
-      order,
-      after,
-      before,
-      run_id,
-    });
+    const messages = await adapter.listMessages(
+      request.params.thread_id,
+      { limit: limit + 1, order, after, before, run_id },
+      request.apiKeyOwner
+    );
 
     const hasMore = messages.length > limit;
     const data = messages.slice(0, limit);
@@ -190,7 +195,7 @@ export function registerThreadRoutes(fastify: FastifyInstance, adapter: OpenAIAd
   fastify.get<{ Params: { thread_id: string; message_id: string } }>(
     '/v1/threads/:thread_id/messages/:message_id',
     async (request, reply) => {
-      const thread = await adapter.getThread(request.params.thread_id);
+      const thread = await adapter.getThread(request.params.thread_id, request.apiKeyOwner);
 
       if (!thread) {
         return reply.status(404).send({
@@ -202,7 +207,11 @@ export function registerThreadRoutes(fastify: FastifyInstance, adapter: OpenAIAd
         });
       }
 
-      const message = await adapter.getMessage(request.params.thread_id, request.params.message_id);
+      const message = await adapter.getMessage(
+        request.params.thread_id,
+        request.params.message_id,
+        request.apiKeyOwner
+      );
 
       if (!message) {
         return reply.status(404).send({

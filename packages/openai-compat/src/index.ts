@@ -10,6 +10,7 @@
 export { OpenAIServer, createOpenAIServer } from './server/api-server';
 export type { OpenAIServerConfig } from './server/api-server';
 export { formatOpenAIError } from './server/middleware/error-handler';
+export { apiKeyOwner } from './server/middleware/auth';
 export type { AuthConfig } from './server/middleware/auth';
 
 export { OpenAIAdapter, createOpenAIAdapter, COGITATOR_MODEL_ID } from './client/openai-adapter';
@@ -20,6 +21,7 @@ export type {
   RunStreamEvent,
   OpenAIAdapterOptions,
 } from './client/openai-adapter';
+export type { RunStepEventType } from './client/run-steps';
 export { InvalidRequestError } from './client/errors';
 export { AgentTurnRunner, renderConversation } from './server/agents/agent-turn';
 export type {
@@ -50,6 +52,8 @@ export {
 export type {
   ThreadStorage,
   StoredFile,
+  ListStoredThreadsOptions,
+  StoredThreadPage,
   RedisThreadStorageConfig,
   PostgresThreadStorageConfig,
 } from './client/storage';
@@ -85,8 +89,11 @@ export type {
   SubmitToolOutputsRequest,
   ToolOutput,
   RunStep,
+  RunStepStatus,
   StepDetails,
+  StepDetailsDelta,
   StepToolCall,
+  StepToolCallDelta,
   FileObject,
   FilePurpose,
   UploadFileRequest,

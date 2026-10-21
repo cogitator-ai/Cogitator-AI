@@ -57,6 +57,115 @@ function resolveExport<T>(module: unknown, name: string): T {
   return candidate as T;
 }
 
+/** Which threads `listThreads` returns, and in which order. */
+export interface ListStoredThreadsOptions {
+  /**
+   * Threads of this owner only (`StoredThread.owner`), or `null` for the threads without one.
+   * All threads when absent.
+   */
+  owner?: string | null;
+  /** Threads per page, 50 by default, at most 500 */
+  limit?: number;
+  /** Where the page starts: `nextCursor` of the page before, with the same filters and order */
+  cursor?: string;
+  /** By creation time, then id: `desc` (default) starts with the newest threads */
+  order?: 'asc' | 'desc';
+}
+
+/** A page of `listThreads`. */
+export interface StoredThreadPage {
+  threads: StoredThread[];
+  /** Pass as `cursor` for the next page, absent on the last one */
+  nextCursor?: string;
+}
+
+export const DEFAULT_THREAD_PAGE = 50;
+export const MAX_THREAD_PAGE = 500;
+
+/** Where a page starts: after the thread created at `createdAt` (unix seconds) with this id. */
+interface ThreadCursor {
+  createdAt: number;
+  id: string;
+}
+
+interface ThreadListing {
+  owner?: string | null;
+  limit: number;
+  order: 'asc' | 'desc';
+  cursor?: ThreadCursor;
+}
+
+function encodeThreadCursor(cursor: ThreadCursor): string {
+  return Buffer.from(JSON.stringify([cursor.createdAt, cursor.id])).toString('base64url');
+}
+
+function decodeThreadCursor(text: string): ThreadCursor | undefined {
+  try {
+    const value: unknown = JSON.parse(Buffer.from(text, 'base64url').toString('utf8'));
+    if (
+      Array.isArray(value) &&
+      value.length === 2 &&
+      Number.isInteger(value[0]) &&
+      typeof value[1] === 'string'
+    ) {
+      return { createdAt: value[0] as number, id: value[1] };
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+/** `options` checked and filled in; throws on a limit out of range or a cursor not handed out. */
+function threadListing(options: ListStoredThreadsOptions = {}): ThreadListing {
+  const limit = options.limit ?? DEFAULT_THREAD_PAGE;
+  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_THREAD_PAGE) {
+    throw new RangeError(
+      `listThreads limit must be a whole number from 1 to ${MAX_THREAD_PAGE}, got ${limit}`
+    );
+  }
+  const cursor = options.cursor === undefined ? undefined : decodeThreadCursor(options.cursor);
+  if (options.cursor !== undefined && !cursor) {
+    throw new TypeError('listThreads cursor is not valid');
+  }
+  return {
+    ...(options.owner !== undefined && { owner: options.owner }),
+    limit,
+    order: options.order ?? 'desc',
+    ...(cursor && { cursor }),
+  };
+}
+
+function compareThreads(a: ThreadCursor, b: ThreadCursor): number {
+  if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+function threadKey(stored: StoredThread): ThreadCursor {
+  return { createdAt: stored.thread.created_at, id: stored.thread.id };
+}
+
+/** One page out of every stored thread, for the backends that cannot filter and sort themselves. */
+function pageThreads(all: StoredThread[], listing: ThreadListing): StoredThreadPage {
+  const direction = listing.order === 'asc' ? 1 : -1;
+  const { cursor } = listing;
+  const matching = all
+    .filter((stored) => listing.owner === undefined || (stored.owner ?? null) === listing.owner)
+    .filter((stored) => !cursor || direction * compareThreads(threadKey(stored), cursor) > 0)
+    .sort((a, b) => direction * compareThreads(threadKey(a), threadKey(b)));
+  return toPage(matching, listing.limit);
+}
+
+/** The first `limit` threads of `threads` (which may hold one more, telling there is a next page). */
+function toPage(threads: StoredThread[], limit: number): StoredThreadPage {
+  const page = threads.slice(0, limit);
+  const last = page.at(-1);
+  return {
+    threads: page,
+    ...(threads.length > limit && last && { nextCursor: encodeThreadCursor(threadKey(last)) }),
+  };
+}
+
 /**
  * Storage interface for ThreadManager persistence.
  *
@@ -66,7 +175,12 @@ export interface ThreadStorage {
   saveThread(id: string, thread: StoredThread): Promise<void>;
   loadThread(id: string): Promise<StoredThread | null>;
   deleteThread(id: string): Promise<boolean>;
-  listThreads(): Promise<StoredThread[]>;
+  /**
+   * Threads in pages, newest first by default, filtered by owner. Throws `RangeError` for a
+   * limit out of range and `TypeError` for a cursor it did not hand out. For operators: the
+   * Assistants API has no route that lists threads.
+   */
+  listThreads(options?: ListStoredThreadsOptions): Promise<StoredThreadPage>;
 
   saveAssistant(id: string, assistant: StoredAssistant): Promise<void>;
   loadAssistant(id: string): Promise<StoredAssistant | null>;
@@ -104,8 +218,8 @@ export class InMemoryThreadStorage implements ThreadStorage {
     return this.threads.delete(id);
   }
 
-  async listThreads(): Promise<StoredThread[]> {
-    return Array.from(this.threads.values());
+  async listThreads(options?: ListStoredThreadsOptions): Promise<StoredThreadPage> {
+    return pageThreads(Array.from(this.threads.values()), threadListing(options));
   }
 
   async saveAssistant(id: string, assistant: StoredAssistant): Promise<void> {
@@ -256,8 +370,15 @@ export class RedisThreadStorage implements ThreadStorage {
     return deleted > 0;
   }
 
-  async listThreads(): Promise<StoredThread[]> {
-    return (await this.readAll('thread')).map((data) => JSON.parse(data) as StoredThread);
+  /**
+   * Threads are plain keys with a TTL, without an index, so each page reads every thread
+   * (SCAN + MGET, messages included) and filters and sorts them in memory: O(threads) per page.
+   * Fine for an occasional operator listing, use PostgresThreadStorage for large thread counts.
+   */
+  async listThreads(options?: ListStoredThreadsOptions): Promise<StoredThreadPage> {
+    const listing = threadListing(options);
+    const threads = (await this.readAll('thread')).map((data) => JSON.parse(data) as StoredThread);
+    return pageThreads(threads, listing);
   }
 
   async saveAssistant(id: string, assistant: StoredAssistant): Promise<void> {
@@ -344,6 +465,8 @@ export class PostgresThreadStorage implements ThreadStorage {
   private tableName: string;
 
   private static readonly IDENTIFIER_REGEX = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+  private static readonly OWNER = `(data->>'owner')`;
+  private static readonly CREATED_AT = `((data->'thread'->>'created_at')::bigint)`;
 
   private static validateIdentifier(value: string, name: string): void {
     if (!PostgresThreadStorage.IDENTIFIER_REGEX.test(value)) {
@@ -385,6 +508,12 @@ export class PostgresThreadStorage implements ThreadStorage {
       await pool.query(`
         CREATE INDEX IF NOT EXISTS idx_${this.tableName}_type
         ON ${this.schema}.${this.tableName}(type)
+      `);
+
+      await pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_${this.tableName}_thread_owner
+        ON ${this.schema}.${this.tableName} (${PostgresThreadStorage.OWNER}, ${PostgresThreadStorage.CREATED_AT}, id)
+        WHERE type = 'thread'
       `);
     } catch (err) {
       await pool.end().catch(() => {});
@@ -433,12 +562,41 @@ export class PostgresThreadStorage implements ThreadStorage {
     return (result.rowCount ?? 0) > 0;
   }
 
-  async listThreads(): Promise<StoredThread[]> {
+  /**
+   * Filtered, ordered and cut in SQL: `idx_<table>_thread_owner` (owner, creation time, id)
+   * serves the pages of one owner, a listing of every owner reads all thread rows.
+   */
+  async listThreads(options?: ListStoredThreadsOptions): Promise<StoredThreadPage> {
+    const listing = threadListing(options);
     const pool = this.ensurePool();
+    const { OWNER, CREATED_AT } = PostgresThreadStorage;
+    const conditions = [`type = 'thread'`];
+    const values: unknown[] = [];
+    if (listing.owner === null) {
+      conditions.push(`${OWNER} IS NULL`);
+    } else if (listing.owner !== undefined) {
+      values.push(listing.owner);
+      conditions.push(`${OWNER} = $${values.length}`);
+    }
+    const direction = listing.order === 'asc' ? 'ASC' : 'DESC';
+    if (listing.cursor) {
+      values.push(listing.cursor.createdAt, listing.cursor.id);
+      conditions.push(
+        `(${CREATED_AT}, id) ${direction === 'ASC' ? '>' : '<'} ($${values.length - 1}::bigint, $${values.length}::text)`
+      );
+    }
+    values.push(listing.limit + 1);
     const result = await pool.query<{ data: StoredThread }>(
-      `SELECT data FROM ${this.schema}.${this.tableName} WHERE type = 'thread'`
+      `SELECT data FROM ${this.schema}.${this.tableName}
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY ${CREATED_AT} ${direction}, id ${direction}
+       LIMIT $${values.length}`,
+      values
     );
-    return result.rows.map((r) => r.data);
+    return toPage(
+      result.rows.map((r) => r.data),
+      listing.limit
+    );
   }
 
   async saveAssistant(id: string, assistant: StoredAssistant): Promise<void> {

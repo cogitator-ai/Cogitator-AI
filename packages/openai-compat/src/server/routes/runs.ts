@@ -17,6 +17,7 @@ import type {
   CreateRunRequest,
   ListResponse,
   Run,
+  RunStep,
   SubmitToolOutputsRequest,
 } from '../../types/openai-types';
 import { paginate, parseLimit, parseOrder, sendInvalidRequest, sendNotFound } from './shared';
@@ -35,7 +36,8 @@ export function registerRunRoutes(
   fastify.post<{ Params: { thread_id: string }; Body: CreateRunRequest }>(
     '/v1/threads/:thread_id/runs',
     async (request, reply) => {
-      const thread = await adapter.getThread(request.params.thread_id);
+      const owner = request.apiKeyOwner;
+      const thread = await adapter.getThread(request.params.thread_id, owner);
       if (!thread) {
         return sendNotFound(reply, 'thread', request.params.thread_id);
       }
@@ -45,7 +47,7 @@ export function registerRunRoutes(
 
       let run: Run;
       try {
-        run = await adapter.createRun(request.params.thread_id, request.body);
+        run = await adapter.createRun(request.params.thread_id, request.body, owner);
       } catch (error) {
         return sendRequestError(reply, error);
       }
@@ -69,16 +71,17 @@ export function registerRunRoutes(
       return sendInvalidRequest(reply, `Assistant ${request.body.assistant_id} not found`);
     }
 
-    const thread = await adapter.createThread(request.body.thread?.metadata);
+    const owner = request.apiKeyOwner;
+    const thread = await adapter.createThread(request.body.thread?.metadata, owner);
     for (const msg of request.body.thread?.messages ?? []) {
-      await adapter.addMessage(thread.id, msg);
+      await adapter.addMessage(thread.id, msg, owner);
     }
 
     let run: Run;
     try {
-      run = await adapter.createRun(thread.id, request.body);
+      run = await adapter.createRun(thread.id, request.body, owner);
     } catch (error) {
-      await adapter.deleteThread(thread.id);
+      await adapter.deleteThread(thread.id, owner);
       return sendRequestError(reply, error);
     }
 
@@ -92,7 +95,8 @@ export function registerRunRoutes(
     Params: { thread_id: string };
     Querystring: { limit?: string; order?: string; after?: string; before?: string };
   }>('/v1/threads/:thread_id/runs', async (request, reply) => {
-    const thread = await adapter.getThread(request.params.thread_id);
+    const owner = request.apiKeyOwner;
+    const thread = await adapter.getThread(request.params.thread_id, owner);
     if (!thread) {
       return sendNotFound(reply, 'thread', request.params.thread_id);
     }
@@ -103,7 +107,7 @@ export function registerRunRoutes(
     const order = parseOrder(request.query.order);
     if (order === null) return sendInvalidRequest(reply, "order must be 'asc' or 'desc'", 'order');
 
-    const runs = adapter.listRuns(request.params.thread_id);
+    const runs = adapter.listRuns(request.params.thread_id, owner);
     const ordered = order === 'asc' ? runs.reverse() : runs;
     const page = paginate(ordered, {
       limit,
@@ -118,11 +122,60 @@ export function registerRunRoutes(
   fastify.get<{ Params: { thread_id: string; run_id: string } }>(
     '/v1/threads/:thread_id/runs/:run_id',
     async (request, reply) => {
-      const run = adapter.getRun(request.params.thread_id, request.params.run_id);
+      const run = adapter.getRun(
+        request.params.thread_id,
+        request.params.run_id,
+        request.apiKeyOwner
+      );
       if (!run) {
         return sendNotFound(reply, 'run', request.params.run_id);
       }
       return reply.send(run);
+    }
+  );
+
+  fastify.get<{
+    Params: { thread_id: string; run_id: string };
+    Querystring: { limit?: string; order?: string; after?: string; before?: string };
+  }>('/v1/threads/:thread_id/runs/:run_id/steps', async (request, reply) => {
+    const steps = adapter.listRunSteps(
+      request.params.thread_id,
+      request.params.run_id,
+      request.apiKeyOwner
+    );
+    if (!steps) {
+      return sendNotFound(reply, 'run', request.params.run_id);
+    }
+
+    const limit = parseLimit(request.query.limit);
+    if (limit === null)
+      return sendInvalidRequest(reply, 'limit must be between 1 and 100', 'limit');
+    const order = parseOrder(request.query.order);
+    if (order === null) return sendInvalidRequest(reply, "order must be 'asc' or 'desc'", 'order');
+
+    const page = paginate(order === 'desc' ? steps.reverse() : steps, {
+      limit,
+      after: request.query.after,
+      before: request.query.before,
+    });
+
+    const response: ListResponse<RunStep> = { object: 'list', ...page };
+    return reply.send(response);
+  });
+
+  fastify.get<{ Params: { thread_id: string; run_id: string; step_id: string } }>(
+    '/v1/threads/:thread_id/runs/:run_id/steps/:step_id',
+    async (request, reply) => {
+      const { thread_id, run_id, step_id } = request.params;
+      const owner = request.apiKeyOwner;
+      if (!adapter.getRun(thread_id, run_id, owner)) {
+        return sendNotFound(reply, 'run', run_id);
+      }
+      const step = adapter.getRunStep(thread_id, run_id, step_id, owner);
+      if (!step) {
+        return sendNotFound(reply, 'run step', step_id);
+      }
+      return reply.send(step);
     }
   );
 
@@ -131,7 +184,11 @@ export function registerRunRoutes(
     async (request, reply) => {
       let run: Run | undefined;
       try {
-        run = adapter.cancelRun(request.params.thread_id, request.params.run_id);
+        run = adapter.cancelRun(
+          request.params.thread_id,
+          request.params.run_id,
+          request.apiKeyOwner
+        );
       } catch (error) {
         return sendRequestError(reply, error);
       }
@@ -153,7 +210,8 @@ export function registerRunRoutes(
       run = await adapter.submitToolOutputs(
         request.params.thread_id,
         request.params.run_id,
-        request.body ?? { tool_outputs: [] }
+        request.body ?? { tool_outputs: [] },
+        request.apiKeyOwner
       );
     } catch (error) {
       return sendRequestError(reply, error);
