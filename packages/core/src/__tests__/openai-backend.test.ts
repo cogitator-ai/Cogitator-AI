@@ -1497,6 +1497,29 @@ describe('OpenAIBackend (Chat Completions wire API)', () => {
       expect(sent().cache_control).toBeUndefined();
     });
 
+    it('marks the end of the history a context marked, and nothing for other models', async () => {
+      mockCreate.mockResolvedValue(answer());
+      const history = [
+        { role: 'system' as const, content: instructions },
+        { role: 'user' as const, content: 'Earlier question' },
+        { role: 'assistant' as const, content: 'Earlier answer', cacheBreakpoint: true },
+        { role: 'user' as const, content: 'Draft the story.' },
+      ];
+
+      await openRouter().chat({
+        model: 'anthropic/claude-sonnet-5.5',
+        messages: history,
+        cache: {},
+      });
+      await openRouter().chat({ model: 'openai/gpt-5.5', messages: history, cache: {} });
+
+      expect(sent(0).messages[2]).toEqual({
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Earlier answer', cache_control: { type: 'ephemeral' } }],
+      });
+      expect(sent(1).messages[2]).toEqual({ role: 'assistant', content: 'Earlier answer' });
+    });
+
     it('marks the end of the conversation too when another turn is likely', async () => {
       mockCreate.mockResolvedValue(answer());
 

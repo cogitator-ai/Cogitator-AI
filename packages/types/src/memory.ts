@@ -442,6 +442,46 @@ export type EmbeddingServiceConfig =
 
 export type ContextStrategy = 'recent' | 'relevant' | 'hybrid';
 
+/**
+ * The parts a context is assembled from, in the order of how long they stay the same: `system`
+ * (the agent's instructions), `pinned` (what is always in context), `index` (what memory holds),
+ * `summaries` (the summary of compacted history), `recent` (the history itself), and the parts
+ * that change every turn, `facts`, `recall` (search results and the knowledge graph), `brief`
+ * (notes prepared for the turn) and `final` (the input of the turn).
+ */
+export type ContextPartition =
+  'system' | 'pinned' | 'index' | 'summaries' | 'facts' | 'recall' | 'brief' | 'recent' | 'final';
+
+/**
+ * The budget of a context partition: `share` of the context budget it may take, and whether it
+ * is `required` (never left out, cut down only when the budget cannot hold it). What a partition
+ * leaves unused goes to partitions that need more, `recent` last.
+ */
+export interface ContextPartitionBudget {
+  share?: number;
+  required?: boolean;
+}
+
+/** Why a block of a context was left out */
+export type DroppedReason =
+  /** No room left in the budget */
+  | 'budget'
+  /** It said what a block that stays says already */
+  | 'duplicate'
+  /** The strategy did not pick it, such as an entry scored too low */
+  | 'not-selected'
+  /** Larger than its partition could hold alone, left out in favour of what follows */
+  | 'oversized';
+
+/** A block of a context that was left out, and why */
+export interface DroppedBlock {
+  partition: ContextPartition;
+  reason: DroppedReason;
+  tokens: number;
+  /** The history entry, fact or search result it came from */
+  sourceId?: string;
+}
+
 export interface ContextBuilderConfig {
   /**
    * Token budget of a built context. Without it, `build()` takes `maxTokens` from its options:
@@ -456,6 +496,11 @@ export interface ContextBuilderConfig {
   includeSemanticContext?: boolean;
   includeGraphContext?: boolean;
   graphContextOptions?: GraphContextOptions;
+  /**
+   * Budgets of the partitions, merged over the defaults (`pinned` 10%, `index` 5%, `summaries`
+   * 10% and required, `facts` 10%, `recall` 25%, `brief` 5%, `recent` the rest)
+   */
+  partitions?: Partial<Record<ContextPartition, ContextPartitionBudget>>;
 }
 
 /**
@@ -485,10 +530,26 @@ export interface DroppedContext {
   graphNodes: GraphNode[];
   /** Tokens of everything left out */
   tokenCount: number;
+  /** Every block left out, with its partition and the reason */
+  blocks: DroppedBlock[];
 }
 
 export interface BuiltContext {
+  /**
+   * The context in the order of how long its parts stay the same: a system message (the system
+   * prompt, then what is pinned and the memory index), the history, its last message marked as a
+   * cache breakpoint, and, when there is any, a user message with what changes every turn (see
+   * `memoryContext`)
+   */
   messages: Message[];
+  /**
+   * What changes every turn (facts, recall, the brief), which `messages` end with as a user
+   * message. A caller that adds the input itself, as a Cogitator run does, sends it with the input
+   * instead, so it does not stand between the history and the prompt cache.
+   */
+  memoryContext?: string;
+  /** Tokens each partition took */
+  partitions: Partial<Record<ContextPartition, number>>;
   facts: Fact[];
   semanticResults: (Embedding & { score: number })[];
   graphContext?: GraphContext;

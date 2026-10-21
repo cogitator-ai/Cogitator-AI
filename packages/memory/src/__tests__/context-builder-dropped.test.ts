@@ -174,6 +174,7 @@ describe('ContextBuilder budget and what it leaves out', () => {
       semanticResults: [],
       graphNodes: [],
       tokenCount: 0,
+      blocks: [],
     });
     expect(result.truncated).toBe(false);
   });
@@ -208,7 +209,7 @@ describe('ContextBuilder budget and what it leaves out', () => {
       getFacts: vi.fn(async () => ({ success: true as const, data: facts })),
     } as unknown as FactAdapter;
     const builder = new ContextBuilder(
-      { strategy: 'recent', maxTokens: 2000, includeFacts: true },
+      { strategy: 'recent', maxTokens: 400, includeFacts: true },
       { memoryAdapter: adapter, factAdapter }
     );
 
@@ -233,7 +234,7 @@ describe('ContextBuilder budget and what it leaves out', () => {
       deleteBySource: vi.fn(),
     };
     const builder = new ContextBuilder(
-      { strategy: 'recent', maxTokens: 2000, includeSemanticContext: true },
+      { strategy: 'recent', maxTokens: 400, includeSemanticContext: true },
       { memoryAdapter: adapter, embeddingAdapter, embeddingService: embeddings }
     );
 
@@ -263,7 +264,7 @@ describe('ContextBuilder budget and what it leaves out', () => {
       ),
     } as unknown as GraphContextBuilder;
     const builder = new ContextBuilder(
-      { strategy: 'recent', maxTokens: 2000, includeGraphContext: true },
+      { strategy: 'recent', maxTokens: 700, includeGraphContext: true },
       { memoryAdapter: adapter, graphContextBuilder: graph }
     );
 

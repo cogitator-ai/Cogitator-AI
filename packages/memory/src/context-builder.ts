@@ -5,6 +5,7 @@
  */
 
 import type {
+  ContextPartition,
   Message,
   MemoryEntry,
   Fact,
@@ -23,6 +24,14 @@ import type {
 } from '@cogitator-ai/types';
 import type { GraphContextBuilder } from './knowledge-graph/graph-context-builder';
 import { readCompactedHistory } from './compaction';
+import {
+  ContextAssembler,
+  fitInOrder,
+  type Assembly,
+  type AssemblyBlock,
+  type FitResult,
+  type PartitionCandidates,
+} from './context-assembler';
 import { countEntryTokens, countMessageTokens, countTokens } from './token-counter';
 import { indexedText, type IndexedText, type MessageIndex } from './message-index';
 
@@ -42,6 +51,57 @@ const INDEX_SEARCH_RESULTS = 50;
 
 /** What semantic context searches: facts and documents, never the vectors of messages */
 const SEMANTIC_SOURCES: Embedding['sourceType'][] = ['fact', 'document'];
+
+/** How the part of a context that changes every turn introduces itself to the model */
+const TURN_CONTEXT_HEADER =
+  'Context for this turn (recalled from memory and supplied by the application, not written by the user):';
+
+/**
+ * The part of a context that changes every turn, as one text sent with the input: `blocks` under
+ * a header that tells the model where they come from, none when there are no blocks
+ */
+export function formatTurnContext(blocks: readonly string[]): string | undefined {
+  const present = blocks.filter((block) => block.trim());
+  return present.length > 0 ? [TURN_CONTEXT_HEADER, ...present].join('\n\n') : undefined;
+}
+
+/** What a block of a context holds */
+type Piece =
+  | { kind: 'text'; text: string }
+  | { kind: 'input' }
+  | { kind: 'entry'; entry: MemoryEntry }
+  | { kind: 'fact'; fact: Fact }
+  | { kind: 'semantic'; result: Embedding & { score: number } }
+  | { kind: 'graph'; context: GraphContext };
+
+function textBlock(text: string, tokens = countTokens(text)): AssemblyBlock<Piece> {
+  return { value: { kind: 'text', text }, tokens, text };
+}
+
+function entryBlock(entry: MemoryEntry): AssemblyBlock<Piece> {
+  return { value: { kind: 'entry', entry }, tokens: countEntryTokens(entry), sourceId: entry.id };
+}
+
+function entryOf(block: AssemblyBlock<Piece>): MemoryEntry {
+  if (block.value.kind !== 'entry') throw new Error('A history block holds no entry');
+  return block.value.entry;
+}
+
+/**
+ * A tool result too large for the room left, in its place: the call keeps an answer, so the
+ * history stays valid for every provider, and the model learns the output was left out
+ */
+function withoutOutput(entry: MemoryEntry): MemoryEntry {
+  const tokens = countEntryTokens(entry);
+  return {
+    ...entry,
+    message: {
+      ...entry.message,
+      content: `[The output of this tool call, about ${tokens} tokens, was left out of the context to make room]`,
+    },
+    toolResults: entry.toolResults?.map((result) => ({ ...result, result: null })),
+  };
+}
 
 /** The value of a memory operation, or an error naming the operation that failed. */
 function unwrap<T>(result: MemoryResult<T>, operation: string): T {
@@ -100,6 +160,14 @@ export interface BuildContextOptions {
    * thread is read.
    */
   leafId?: string | null;
+  /** Tokens of the budget kept free for the answer, in place of the builder's `reserveTokens` */
+  reserveTokens?: number;
+  /** What is always in context, after the system prompt (the `pinned` partition) */
+  pinned?: string[];
+  /** What memory holds, for the model to know what to look up (the `index` partition) */
+  index?: string;
+  /** Notes prepared for this turn (the `brief` partition) */
+  brief?: string;
 }
 
 type ResolvedConfig = Required<Omit<ContextBuilderConfig, 'maxTokens' | 'reserveTokens'>> &
@@ -109,12 +177,6 @@ type ResolvedConfig = Required<Omit<ContextBuilderConfig, 'maxTokens' | 'reserve
 interface ScoringScope {
   mark?: number;
   threadSize: number;
-}
-
-/** Part of a context: what fits its budget, and what does not. */
-interface Fitted<T> {
-  kept: T[];
-  dropped: T[];
 }
 
 function validBudget(value: number, name: string): number {
@@ -128,6 +190,7 @@ export class ContextBuilder {
   private config: ResolvedConfig;
   private deps: ContextBuilderDeps;
   private readonly entryVectors = new Map<string, Float32Array>();
+  private readonly assembler: ContextAssembler;
 
   constructor(config: ContextBuilderConfig, deps: ContextBuilderDeps) {
     if (config.maxTokens !== undefined) validBudget(config.maxTokens, 'maxTokens');
@@ -140,13 +203,17 @@ export class ContextBuilder {
       includeSemanticContext: config.includeSemanticContext ?? false,
       includeGraphContext: config.includeGraphContext ?? false,
       graphContextOptions: config.graphContextOptions ?? {},
+      partitions: config.partitions ?? {},
     };
+    this.assembler = new ContextAssembler(config.partitions);
     this.deps = deps;
   }
 
   /**
    * The context for a turn of `options.threadId`, within `options.maxTokens`, else the builder's
-   * `maxTokens`, minus `reserveTokens`. What does not fit is listed in `dropped`.
+   * `maxTokens`, minus `reserveTokens`. The budget is shared among the partitions of the context
+   * (see `ContextBuilderConfig.partitions`), and what does not fit is listed in `dropped`, each
+   * block with its reason.
    *
    * @throws Error when neither `options.maxTokens` nor the builder's `maxTokens` is set
    */
@@ -158,20 +225,20 @@ export class ContextBuilder {
       );
     }
     const maxTokens = validBudget(configured, 'maxTokens');
-    const reserveTokens = this.config.reserveTokens ?? Math.max(100, Math.floor(maxTokens * 0.1));
+    const reserveTokens =
+      options.reserveTokens ??
+      this.config.reserveTokens ??
+      Math.max(100, Math.floor(maxTokens * 0.1));
     const availableTokens = Math.max(0, maxTokens - reserveTokens);
     const errors: ContextBuildError[] = [];
     const warnings: string[] = [];
-    const systemBlocks: string[] = [];
-    let usedTokens = 0;
-    const remaining = () => Math.max(0, availableTokens - usedTokens);
-    const partBudget = (share: number) =>
-      Math.min(Math.floor(availableTokens * share), remaining());
+    const candidates: PartitionCandidates<Piece>[] = [];
 
-    if (this.config.includeSystemPrompt && options.systemPrompt) {
-      const tokens = countMessageTokens({ role: 'system', content: options.systemPrompt });
-      systemBlocks.push(options.systemPrompt);
-      usedTokens += tokens;
+    const systemPrompt =
+      this.config.includeSystemPrompt && options.systemPrompt ? options.systemPrompt : undefined;
+    if (systemPrompt) {
+      const tokens = countMessageTokens({ role: 'system', content: systemPrompt });
+      candidates.push({ partition: 'system', blocks: [textBlock(systemPrompt, tokens)] });
       if (tokens > availableTokens) {
         warnings.push(
           `The system prompt takes ${tokens} tokens, more than the ${availableTokens} the context ` +
@@ -180,89 +247,208 @@ export class ContextBuilder {
         );
       }
     }
+    if (options.currentInput) {
+      candidates.push({
+        partition: 'final',
+        blocks: [{ value: { kind: 'input' }, tokens: countTokens(options.currentInput) }],
+      });
+    }
+    const texts = (partition: ContextPartition, list: readonly string[] | undefined) => {
+      const blocks = (list ?? []).filter((text) => text.trim()).map((text) => textBlock(text));
+      if (blocks.length > 0) candidates.push({ partition, blocks });
+    };
+    texts('pinned', options.pinned);
+    texts('index', options.index === undefined ? undefined : [options.index]);
+    texts('brief', options.brief === undefined ? undefined : [options.brief]);
 
-    const fittedFacts = this.config.includeFacts
-      ? await this.attempt('facts', errors, () => this.loadFacts(options, partBudget(0.1)))
-      : undefined;
-    const facts = fittedFacts?.kept ?? [];
+    const facts = this.config.includeFacts
+      ? ((await this.attempt('facts', errors, () => this.loadFacts(options))) ?? [])
+      : [];
     if (facts.length > 0) {
-      const block = `Known facts:\n${facts.map((f) => `- ${f.content}`).join('\n')}`;
-      systemBlocks.push(block);
-      usedTokens += countTokens(block);
+      candidates.push({
+        partition: 'facts',
+        blocks: facts.map((fact) => ({
+          value: { kind: 'fact', fact },
+          tokens: countTokens(`- ${fact.content}`),
+          text: fact.content,
+          sourceId: fact.id,
+        })),
+      });
     }
 
-    const fittedSemantic =
+    const semantic =
       this.config.includeSemanticContext && options.currentInput
-        ? await this.attempt('semantic', errors, () =>
-            this.loadSemanticResults(options, partBudget(0.1))
-          )
-        : undefined;
-    const semanticResults = fittedSemantic?.kept ?? [];
-    if (semanticResults.length > 0) {
-      systemBlocks.push(
-        `Relevant context:\n${semanticResults.map((r) => `- ${r.content}`).join('\n')}`
-      );
-      usedTokens += semanticResults.reduce((sum, r) => sum + countTokens(r.content), 0);
-    }
-
-    const fittedGraph =
+        ? ((await this.attempt('semantic', errors, () => this.loadSemanticResults(options))) ?? [])
+        : [];
+    const graph =
       this.config.includeGraphContext && options.currentInput
-        ? await this.attempt('graph', errors, () =>
-            this.loadGraphContext(options, partBudget(0.15))
-          )
+        ? await this.attempt('graph', errors, () => this.loadGraphContext(options))
         : undefined;
-    const graphContext = fittedGraph?.context;
-    if (graphContext?.formattedContext) {
-      systemBlocks.push(graphContext.formattedContext);
-      usedTokens += graphContext.tokenCount;
+    const graphOutcome: { droppedNodes: GraphNode[]; droppedTokens: number } = {
+      droppedNodes: [],
+      droppedTokens: 0,
+    };
+    if (semantic.length > 0 || graph) {
+      candidates.push({
+        partition: 'recall',
+        blocks: [
+          ...semantic.map((result) => ({
+            value: { kind: 'semantic' as const, result },
+            tokens: countTokens(`- ${result.content}`),
+            text: result.content,
+            sourceId: result.id,
+          })),
+          ...(graph
+            ? [{ value: { kind: 'graph' as const, context: graph }, tokens: graph.tokenCount }]
+            : []),
+        ],
+        fit: (blocks, budget) => this.fitRecall(blocks, budget, options, graphOutcome),
+      });
     }
-
-    const messages: Message[] =
-      systemBlocks.length > 0 ? [{ role: 'system', content: systemBlocks.join('\n\n') }] : [];
-    const injectedSystemMessages = messages.length;
 
     const scope: ScoringScope = { mark: this.deps.messageIndex?.mark(), threadSize: 0 };
     const entries = (await this.attempt('history', errors, () => this.readHistory(options))) ?? [];
-
     scope.threadSize = entries.length;
-    const selectedEntries = await this.selectEntries(
-      entries,
-      remaining(),
-      options.currentInput,
-      errors,
-      scope
-    );
-    for (const entry of selectedEntries) {
-      messages.push(entry.message);
-      usedTokens += countEntryTokens(entry);
+    const summaries = entries.filter((entry) => entry.type === 'compaction');
+    const history = entries.filter((entry) => entry.type !== 'compaction');
+    if (summaries.length > 0) {
+      candidates.push({ partition: 'summaries', blocks: summaries.map(entryBlock) });
     }
-    const selected = new Set(selectedEntries);
+    if (history.length > 0) {
+      candidates.push({
+        partition: 'recent',
+        blocks: history.map(entryBlock),
+        fit: async (blocks, budget) => {
+          const selected = await this.selectEntries(
+            blocks.map((block) => entryOf(block)),
+            budget,
+            options.currentInput,
+            errors,
+            scope
+          );
+          const keptById = new Map(selected.map((entry) => [entry.id, entry]));
+          const result: FitResult<Piece> = { kept: selected.map(entryBlock), dropped: [] };
+          for (const block of blocks) {
+            const original = entryOf(block);
+            const kept = keptById.get(original.id);
+            if (!kept) {
+              result.dropped.push({
+                block,
+                reason: this.config.strategy === 'recent' ? 'budget' : 'not-selected',
+              });
+            } else if (kept !== original) {
+              result.dropped.push({
+                block: { ...block, tokens: block.tokens - countEntryTokens(kept) },
+                reason: 'oversized',
+              });
+            }
+          }
+          return result;
+        },
+      });
+    }
+
+    const assembly = await this.assembler.assemble(availableTokens, candidates);
+    return this.compose(assembly, {
+      systemPrompt,
+      entries,
+      facts,
+      semantic,
+      graphOutcome,
+      errors,
+      warnings,
+    });
+  }
+
+  /**
+   * The context of an assembly: one system message with what lasts, the history with its last
+   * message marked as a cache breakpoint, and what changes every turn in a user message after it
+   */
+  private compose(
+    assembly: Assembly<Piece>,
+    parts: {
+      systemPrompt?: string;
+      entries: MemoryEntry[];
+      facts: Fact[];
+      semantic: (Embedding & { score: number })[];
+      graphOutcome: { droppedNodes: GraphNode[]; droppedTokens: number };
+      errors: ContextBuildError[];
+      warnings: string[];
+    }
+  ): BuiltContext {
+    const kept = (partition: ContextPartition) => assembly.kept[partition] ?? [];
+    const textsOf = (partition: ContextPartition) =>
+      kept(partition).flatMap((block) => (block.value.kind === 'text' ? [block.value.text] : []));
+
+    const lasting = [
+      ...(parts.systemPrompt && kept('system').length > 0 ? [parts.systemPrompt] : []),
+      ...textsOf('pinned'),
+      ...textsOf('index'),
+    ];
+    const messages: Message[] =
+      lasting.length > 0 ? [{ role: 'system', content: lasting.join('\n\n') }] : [];
+
+    const historyEntries = [...kept('summaries'), ...kept('recent')].map(entryOf);
+    const history = historyEntries.map((entry) => entry.message);
+    const last = history.at(-1);
+    if (last) history[history.length - 1] = { ...last, cacheBreakpoint: true };
+    messages.push(...history);
+
+    const facts = kept('facts').flatMap((block) =>
+      block.value.kind === 'fact' ? [block.value.fact] : []
+    );
+    const semanticResults = kept('recall').flatMap((block) =>
+      block.value.kind === 'semantic' ? [block.value.result] : []
+    );
+    const graphContext = kept('recall')
+      .map((block) => block.value)
+      .find((value) => value.kind === 'graph')?.context;
+    const turnBlocks = [
+      ...textsOf('brief'),
+      ...(facts.length > 0
+        ? [`Known facts:\n${facts.map((f) => `- ${f.content}`).join('\n')}`]
+        : []),
+      ...(semanticResults.length > 0
+        ? [`Relevant context:\n${semanticResults.map((r) => `- ${r.content}`).join('\n')}`]
+        : []),
+      ...(graphContext?.formattedContext ? [graphContext.formattedContext] : []),
+    ];
+    const memoryContext = formatTurnContext(turnBlocks);
+    if (memoryContext) messages.push({ role: 'user', content: memoryContext });
+
+    const droppedIds = (partition: ContextPartition) =>
+      new Set(
+        assembly.dropped
+          .filter((block) => block.partition === partition)
+          .flatMap((block) => (block.sourceId === undefined ? [] : [block.sourceId]))
+      );
+    const droppedEntries = new Set([...droppedIds('summaries'), ...droppedIds('recent')]);
+    const droppedFacts = droppedIds('facts');
+    const droppedSemantic = droppedIds('recall');
     const dropped: DroppedContext = {
-      entries: entries.filter((entry) => !selected.has(entry)),
-      facts: fittedFacts?.dropped ?? [],
-      semanticResults: fittedSemantic?.dropped ?? [],
-      graphNodes: fittedGraph?.droppedNodes ?? [],
-      tokenCount: 0,
+      entries: parts.entries.filter((entry) => droppedEntries.has(entry.id)),
+      facts: parts.facts.filter((fact) => droppedFacts.has(fact.id)),
+      semanticResults: parts.semantic.filter((result) => droppedSemantic.has(result.id)),
+      graphNodes: parts.graphOutcome.droppedNodes,
+      tokenCount: assembly.dropped.reduce((sum, block) => sum + block.tokens, 0),
+      blocks: assembly.dropped,
     };
-    dropped.tokenCount =
-      dropped.entries.reduce((sum, entry) => sum + countEntryTokens(entry), 0) +
-      dropped.facts.reduce((sum, fact) => sum + countTokens(`- ${fact.content}`), 0) +
-      dropped.semanticResults.reduce((sum, result) => sum + countTokens(result.content), 0) +
-      (fittedGraph?.droppedTokens ?? 0);
 
     return {
       messages,
+      ...(memoryContext && { memoryContext }),
+      partitions: assembly.tokens,
       facts,
       semanticResults,
       graphContext,
-      tokenCount: usedTokens,
+      tokenCount: assembly.used - (assembly.tokens.final ?? 0),
       truncated: dropped.entries.length > 0,
       dropped,
-      ...(errors.length > 0 && { errors }),
-      ...(warnings.length > 0 && { warnings }),
+      ...(parts.errors.length > 0 && { errors: parts.errors }),
+      ...(parts.warnings.length > 0 && { warnings: parts.warnings }),
       metadata: {
-        originalMessageCount: entries.length,
-        includedMessageCount: messages.length - injectedSystemMessages,
+        originalMessageCount: parts.entries.length,
+        includedMessageCount: history.length,
         factsIncluded: facts.length,
         semanticResultsIncluded: semanticResults.length,
         graphNodesIncluded: graphContext?.nodes.length ?? 0,
@@ -285,37 +471,19 @@ export class ContextBuilder {
     }
   }
 
-  /** Facts of the agent visible to the user, as many as fit `budget`, and the rest. */
-  private async loadFacts(options: BuildContextOptions, budget: number): Promise<Fitted<Fact>> {
-    if (!this.deps.factAdapter) return { kept: [], dropped: [] };
+  /** Facts of the agent visible to the user */
+  private async loadFacts(options: BuildContextOptions): Promise<Fact[]> {
+    if (!this.deps.factAdapter) return [];
     const all = unwrap(await this.deps.factAdapter.getFacts(options.agentId), 'getFacts');
-    const fitted: Fitted<Fact> = { kept: [], dropped: [] };
-    let tokens = 0;
-    for (const fact of all) {
-      if (!isVisibleTo(fact.metadata, options.agentId, options.userId)) continue;
-      const factTokens = countTokens(`- ${fact.content}`);
-      if (tokens + factTokens <= budget) {
-        fitted.kept.push(fact);
-        tokens += factTokens;
-      } else {
-        fitted.dropped.push(fact);
-      }
-    }
-    return fitted;
+    return all.filter((fact) => isVisibleTo(fact.metadata, options.agentId, options.userId));
   }
 
-  /**
-   * The embeddings closest to the current input visible to the user, as many as fit `budget`,
-   * and the rest.
-   */
+  /** The facts and documents closest to the current input that the user may see, best first */
   private async loadSemanticResults(
-    options: BuildContextOptions,
-    budget: number
-  ): Promise<Fitted<Embedding & { score: number }>> {
+    options: BuildContextOptions
+  ): Promise<(Embedding & { score: number })[]> {
     const { embeddingAdapter, embeddingService } = this.deps;
-    if (!embeddingAdapter || !embeddingService || !options.currentInput) {
-      return { kept: [], dropped: [] };
-    }
+    if (!embeddingAdapter || !embeddingService || !options.currentInput) return [];
 
     const vector = await embeddingService.embed(options.currentInput);
     const found = unwrap(
@@ -330,61 +498,88 @@ export class ContextBuilder {
       }),
       'search'
     );
-
-    const fitted: Fitted<Embedding & { score: number }> = { kept: [], dropped: [] };
-    let tokens = 0;
-    for (const result of found
+    return found
       .filter(
         (r) =>
           SEMANTIC_SOURCES.includes(r.sourceType) &&
           isVisibleTo(r.metadata, options.agentId, options.userId)
       )
-      .slice(0, SEMANTIC_RESULTS)) {
-      const resultTokens = countTokens(result.content);
-      if (tokens + resultTokens <= budget) {
-        fitted.kept.push(result);
-        tokens += resultTokens;
-      } else {
-        fitted.dropped.push(result);
-      }
-    }
-    return fitted;
+      .slice(0, SEMANTIC_RESULTS);
+  }
+
+  /** The knowledge graph context of the current input, whole */
+  private async loadGraphContext(options: BuildContextOptions): Promise<GraphContext | undefined> {
+    const graph = this.deps.graphContextBuilder;
+    if (!graph || !options.currentInput) return undefined;
+    const gc = await graph.buildContext(options.agentId, options.currentInput, {
+      ...this.config.graphContextOptions,
+      userId: options.userId,
+    });
+    return gc.nodes.length > 0 ? gc : undefined;
   }
 
   /**
-   * Knowledge graph context for the current input, cut down to `budget` when it is larger, with
-   * the nodes and tokens the cut left out.
+   * The recall partition in `budget`: search results in order while they fit, then the graph
+   * context in the room left, cut down to fewer nodes when it is larger. What the cut leaves out
+   * goes to `outcome`.
    */
-  private async loadGraphContext(
+  private async fitRecall(
+    blocks: AssemblyBlock<Piece>[],
+    budget: number,
     options: BuildContextOptions,
-    budget: number
-  ): Promise<{ context?: GraphContext; droppedNodes: GraphNode[]; droppedTokens: number }> {
-    const none = { droppedNodes: [], droppedTokens: 0 };
-    const graph = this.deps.graphContextBuilder;
-    if (!graph || !options.currentInput) return none;
-
-    const graphOptions = { ...this.config.graphContextOptions, userId: options.userId };
-    const gc = await graph.buildContext(options.agentId, options.currentInput, graphOptions);
-    if (gc.nodes.length === 0) return none;
-    if (gc.tokenCount <= budget) return { context: gc, ...none };
-
-    const ratio = budget / gc.tokenCount;
-    const limitedNodes = gc.nodes.slice(0, Math.max(1, Math.floor(gc.nodes.length * ratio)));
-    const limitedNodeIds = new Set(limitedNodes.map((n) => n.id));
-    const limitedEdges = gc.edges.filter(
-      (e) => limitedNodeIds.has(e.sourceNodeId) && limitedNodeIds.has(e.targetNodeId)
+    outcome: { droppedNodes: GraphNode[]; droppedTokens: number }
+  ): Promise<FitResult<Piece>> {
+    const results = fitInOrder(
+      blocks.filter((block) => block.value.kind !== 'graph'),
+      budget
     );
-    const rebuilt = await graph.buildContext(options.agentId, options.currentInput, {
-      ...graphOptions,
-      maxNodes: limitedNodes.length,
-      maxEdges: limitedEdges.length,
-    });
-    const context = rebuilt.tokenCount <= budget ? rebuilt : undefined;
+    const used = results.kept.reduce((sum, block) => sum + block.tokens, 0);
+    const graphBlock = blocks.find((block) => block.value.kind === 'graph');
+    const whole = graphBlock?.value.kind === 'graph' ? graphBlock.value.context : undefined;
+    const graph = this.deps.graphContextBuilder;
+    if (!whole || !graph || !options.currentInput) return results;
+    const room = budget - used;
+    if (whole.tokenCount <= room) {
+      return {
+        ...results,
+        kept: [
+          ...results.kept,
+          { value: { kind: 'graph', context: whole }, tokens: whole.tokenCount },
+        ],
+      };
+    }
+
+    const ratio = Math.max(0, room) / whole.tokenCount;
+    const limitedNodes = whole.nodes.slice(0, Math.max(1, Math.floor(whole.nodes.length * ratio)));
+    const limitedIds = new Set(limitedNodes.map((n) => n.id));
+    const limitedEdges = whole.edges.filter(
+      (e) => limitedIds.has(e.sourceNodeId) && limitedIds.has(e.targetNodeId)
+    );
+    const rebuilt =
+      room > 0
+        ? await graph.buildContext(options.agentId, options.currentInput, {
+            ...this.config.graphContextOptions,
+            userId: options.userId,
+            maxNodes: limitedNodes.length,
+            maxEdges: limitedEdges.length,
+          })
+        : undefined;
+    const context = rebuilt && rebuilt.tokenCount <= room ? rebuilt : undefined;
     const keptIds = new Set(context?.nodes.map((n) => n.id));
+    outcome.droppedNodes = whole.nodes.filter((n) => !keptIds.has(n.id));
+    outcome.droppedTokens = whole.tokenCount - (context?.tokenCount ?? 0);
     return {
-      ...(context && { context }),
-      droppedNodes: gc.nodes.filter((n) => !keptIds.has(n.id)),
-      droppedTokens: gc.tokenCount - (context?.tokenCount ?? 0),
+      ...results,
+      dropped: [
+        ...results.dropped,
+        {
+          block: { value: { kind: 'graph', context: whole }, tokens: outcome.droppedTokens },
+          reason: 'budget',
+        },
+      ],
+      kept: context
+        ? [...results.kept, { value: { kind: 'graph', context }, tokens: context.tokenCount }]
+        : results.kept,
     };
   }
 
@@ -434,20 +629,30 @@ export class ContextBuilder {
   }
 
   /**
-   * The longest run of newest entries that fits the budget. The window stops at the first entry
-   * that does not fit instead of skipping it, so the model never sees a reply without the message
-   * it answers.
+   * The longest run of newest entries that fits the budget. A tool result too large for the room
+   * left stays as a short note in its place and the run goes on past it, so one big output does
+   * not cut the history off. Any other entry that does not fit ends the run instead of being
+   * skipped, so the model never sees a reply without the message it answers.
    */
   private selectRecentEntries(entries: MemoryEntry[], availableTokens: number): MemoryEntry[] {
-    let start = entries.length;
+    const kept: MemoryEntry[] = [];
     let usedTokens = 0;
-
-    while (start > 0 && usedTokens + countEntryTokens(entries[start - 1]) <= availableTokens) {
-      start--;
-      usedTokens += countEntryTokens(entries[start]);
+    for (let at = entries.length - 1; at >= 0; at--) {
+      const entry = entries[at]!;
+      const tokens = countEntryTokens(entry);
+      if (usedTokens + tokens <= availableTokens) {
+        kept.unshift(entry);
+        usedTokens += tokens;
+        continue;
+      }
+      if (entry.message.role !== 'tool') break;
+      const note = withoutOutput(entry);
+      const noteTokens = countEntryTokens(note);
+      if (usedTokens + noteTokens > availableTokens) break;
+      kept.unshift(note);
+      usedTokens += noteTokens;
     }
-
-    return entries.slice(start);
+    return kept;
   }
 
   /**
@@ -648,13 +853,18 @@ export class ContextBuilder {
       }
     }
 
-    const recentEntries = this.selectRecentEntries(
-      entries.filter((e) => !usedIds.has(e.id)),
-      availableTokens - usedTokens
+    const recentEntries = new Map(
+      this.selectRecentEntries(
+        entries.filter((e) => !usedIds.has(e.id)),
+        availableTokens - usedTokens
+      ).map((entry) => [entry.id, entry])
     );
-    for (const entry of recentEntries) usedIds.add(entry.id);
 
-    return entries.filter((e) => usedIds.has(e.id));
+    return entries.flatMap((entry) => {
+      const recent = recentEntries.get(entry.id);
+      if (recent) return [recent];
+      return usedIds.has(entry.id) ? [entry] : [];
+    });
   }
 
   private cosineSimilarity(a: ArrayLike<number>, b: ArrayLike<number>): number {

@@ -44,6 +44,13 @@ export { restrictFileTools, isPathAllowed, type RestrictFileToolsOptions } from 
 
 export { createCapabilitiesTool } from './capabilities-tool';
 
+export {
+  recallToolOutputTool,
+  isRecallToolOutput,
+  RECALL_TOOL_OUTPUT,
+  type RecallToolOutputParams,
+} from './recall-tool-output';
+
 export { createDeviceTools } from './device-tools';
 
 export { createSelfTools, loadCustomTools } from './self-tools';

@@ -61,9 +61,28 @@ export async function readJsonl<T>(path: string): Promise<T[]> {
 export function latest<T extends BenchAnswer>(records: readonly T[]): Map<string, T> {
   const byKey = new Map<string, T>();
   for (const record of records) {
-    byKey.set(answerKey(record.dataset, record.questionId, record.strategy), record);
+    byKey.set(answerKey(record.dataset, record.questionId, record.strategy, record.turn), record);
   }
   return byKey;
+}
+
+/**
+ * `answers` split into first turns, the ones judged, and follow-up turns up to `turns`, which
+ * measure only the prompt cache: a run resumed with fewer turns leaves out the later ones it
+ * holds.
+ */
+export function splitTurns<T extends BenchAnswer>(
+  answers: Iterable<T>,
+  turns: number
+): { first: T[]; followUps: T[] } {
+  const first: T[] = [];
+  const followUps: T[] = [];
+  for (const answer of answers) {
+    const turn = answer.turn ?? 1;
+    if (turn === 1) first.push(answer);
+    else if (turn <= turns) followUps.push(answer);
+  }
+  return { first, followUps };
 }
 
 /**

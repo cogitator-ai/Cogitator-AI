@@ -39,9 +39,19 @@ export {
 
 export {
   ContextBuilder,
+  formatTurnContext,
   type ContextBuilderDeps,
   type BuildContextOptions,
 } from './context-builder';
+export {
+  ContextAssembler,
+  DEFAULT_PARTITIONS,
+  fitInOrder,
+  type Assembly,
+  type AssemblyBlock,
+  type FitResult,
+  type PartitionCandidates,
+} from './context-assembler';
 
 export {
   verifyEvidence,

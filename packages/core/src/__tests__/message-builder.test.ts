@@ -235,3 +235,80 @@ describe('buildUserContent', () => {
     });
   });
 });
+
+describe('buildInitialMessages with a context builder', () => {
+  it('sends what memory recalled with the input and keeps the cache mark on the history', async () => {
+    const { buildInitialMessages } = await import('../cogitator/message-builder');
+    const { InMemoryAdapter } = await import('@cogitator-ai/memory');
+    const memory = new InMemoryAdapter({ provider: 'memory' });
+    await memory.connect();
+    const build = vi.fn(async () => ({
+      messages: [
+        { role: 'system' as const, content: 'sys' },
+        { role: 'user' as const, content: 'earlier' },
+        { role: 'assistant' as const, content: 'answer', cacheBreakpoint: true },
+        { role: 'user' as const, content: 'Memory for this turn: likes tea' },
+      ],
+      memoryContext: 'Memory for this turn: likes tea',
+      partitions: {},
+      facts: [],
+      semanticResults: [],
+      tokenCount: 10,
+      truncated: false,
+      dropped: {
+        entries: [],
+        facts: [],
+        semanticResults: [],
+        graphNodes: [],
+        tokenCount: 0,
+        blocks: [],
+      },
+      metadata: {
+        originalMessageCount: 2,
+        includedMessageCount: 2,
+        factsIncluded: 0,
+        semanticResultsIncluded: 0,
+        graphNodesIncluded: 0,
+        graphEdgesIncluded: 0,
+      },
+    }));
+
+    const messages = await buildInitialMessages(
+      { id: 'a1', name: 'a', instructions: 'sys' } as never,
+      { input: 'what to drink?' },
+      'thread_1',
+      memory,
+      { build } as never,
+      1000
+    );
+
+    expect(build).toHaveBeenCalledWith(
+      expect.objectContaining({ maxTokens: 1000, reserveTokens: 0 })
+    );
+    expect(messages).toEqual([
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'earlier' },
+      { role: 'assistant', content: 'answer', cacheBreakpoint: true },
+      { role: 'user', content: 'Memory for this turn: likes tea\n\nwhat to drink?' },
+    ]);
+  });
+});
+
+describe('buildInitialMessages with a brief', () => {
+  it('sends the brief with the input, after the system prompt it leaves alone', async () => {
+    const { buildInitialMessages } = await import('../cogitator/message-builder');
+
+    const messages = await buildInitialMessages(
+      { id: 'a1', instructions: 'sys' } as never,
+      { input: 'what time is it?', brief: 'Current date and time: Monday, 09:00.' },
+      'thread_1',
+      undefined,
+      undefined
+    );
+
+    expect(messages[0]).toEqual({ role: 'system', content: 'sys' });
+    expect(String(messages[1]?.content)).toMatch(
+      /^Context for this turn .*\n\nCurrent date and time: Monday, 09:00\.\n\nwhat time is it\?$/s
+    );
+  });
+});

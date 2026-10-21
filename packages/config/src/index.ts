@@ -55,6 +55,7 @@ export {
   InjectionActionSchema,
   InjectionClassifierSchema,
   ContextManagerConfigSchema,
+  ClearToolOutputsConfigSchema,
   CompressionStrategySchema,
   DeployTargetSchema,
   DeployServerSchema,

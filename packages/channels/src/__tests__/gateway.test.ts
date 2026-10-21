@@ -111,6 +111,31 @@ describe('Gateway', () => {
     );
   });
 
+  it('sends the brief of a message with its run', async () => {
+    const agent = {
+      name: 'bot',
+      id: 'a1',
+      model: 'test/m',
+      instructions: 'hi',
+      tools: [],
+      config: {},
+    } as never;
+    const gateway = new Gateway({
+      agent,
+      channels: [channel],
+      cogitator: cogitator as never,
+      brief: (msg) => `It is late for ${msg.userId}`,
+    });
+
+    await gateway.start();
+    await channel.triggerMessage(createTestMessage());
+
+    expect(cogitator.run).toHaveBeenCalledWith(
+      agent,
+      expect.objectContaining({ input: 'Hello', brief: 'It is late for user_1' })
+    );
+  });
+
   it('custom threadKey works', async () => {
     const gateway = new Gateway({
       agent: {

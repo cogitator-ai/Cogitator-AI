@@ -67,11 +67,22 @@ export interface BenchAnswer {
   questionId: string;
   category: string;
   strategy: string;
+  /**
+   * The turn of the question's chain this answer is (`--turns`), absent for the first: later
+   * turns ask follow-ups in the same branch of the thread, are not judged and measure only how
+   * the prompt cache carries over from one turn to the next
+   */
+  turn?: number;
   output: string;
   /** Tokens and cost of the answering run */
   inputTokens: number;
   outputTokens: number;
+  /** Input tokens read from the prompt cache, counted in `inputTokens` */
   cachedInputTokens: number;
+  /** Input tokens written to the prompt cache, counted in `inputTokens`; missing in answers recorded before it was */
+  cacheWriteTokens?: number;
+  /** The part of `cacheWriteTokens` written with the 1-hour TTL, when the run reports it */
+  cacheWrite1hTokens?: number;
   costUsd: number;
   /** Wall time of the run, and the part spent outside model calls (building the context) */
   durationMs: number;

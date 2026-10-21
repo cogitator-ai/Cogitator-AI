@@ -19,7 +19,14 @@ import { DATASETS, loadDataset } from './datasets/index.js';
 import { CachedEmbeddingService, RateLimitedEmbeddingService } from './embeddings.js';
 import { judge, JudgeStore } from './judge.js';
 import { markdownReport, summarize } from './report.js';
-import { ANSWER_INSTRUCTIONS, answerConversation, answerKey, mapConcurrent } from './runner.js';
+import {
+  ANSWER_INSTRUCTIONS,
+  answerConversation,
+  answerKey,
+  followUps,
+  mapConcurrent,
+  NEUTRAL_FOLLOW_UP,
+} from './runner.js';
 import {
   latest,
   parseSample,
@@ -27,6 +34,7 @@ import {
   positive,
   readJsonl,
   sealJsonl,
+  splitTurns,
   UsageError,
 } from './options.js';
 import { stratifiedSample } from './sample.js';
@@ -50,6 +58,15 @@ Usage: pnpm memory-bench [options]
   --sample <spec>        questions per dataset, stratified by category, e.g.
                          longmemeval-s=100,beam-1m=200 (default all)
   --context-tokens <n>   context budget of the memory (default 8192)
+  --turns <n>            turns per question (default 1): each question opens a chain on a
+                         branch of its conversation's thread, saved turn after turn, whose
+                         follow-ups are the next questions of the same conversation (BEAM,
+                         LoCoMo and the like), then, once those run out or for a conversation
+                         with one question (LongMemEval-S), a neutral one:
+                         "${NEUTRAL_FOLLOW_UP}"
+                         Follow-ups are not judged: they measure how the prompt cache of a
+                         turn carries over to the next, reported apart from the first turns.
+                         A resumed run asks a chain with a turn missing again whole
   --budget <usd>         most the run may spend on embeddings, paid from the project budget
                          (default 5)
   --anthropic-budget <usd>
@@ -105,6 +122,7 @@ async function main(): Promise<number> {
       strategies: { type: 'string', default: 'recent,relevant,hybrid' },
       sample: { type: 'string' },
       'context-tokens': { type: 'string', default: '8192' },
+      turns: { type: 'string', default: '1' },
       budget: { type: 'string', default: '5' },
       'anthropic-budget': { type: 'string', default: '30' },
       concurrency: { type: 'string', default: '6' },
@@ -128,6 +146,7 @@ async function main(): Promise<number> {
 
   const datasets = pick<BenchDatasetId>('datasets', values.datasets, DATASETS);
   const contextTokens = positive('context-tokens', values['context-tokens'], true);
+  const turns = positive('turns', values.turns, true);
   const strategies: BenchStrategy[] = pick<BenchStrategy['name']>(
     'strategies',
     values.strategies,
@@ -177,12 +196,18 @@ async function main(): Promise<number> {
     for (const conversation of conversations) {
       if (embedded) embeddingEstimate += (embeddingTokens(conversation) * EMBEDDING_PRICE) / 1e6;
       for (const question of conversation.questions) {
-        answerEstimate +=
-          callCost(contextTokens + countTokens(question.question) + 200, 800) * strategies.length;
+        const inputs = [question.question, ...followUps(conversation, question, turns)];
+        for (const input of inputs) {
+          answerEstimate +=
+            callCost(contextTokens + countTokens(input) + 200, 800) * strategies.length;
+        }
         judgeEstimate +=
           callCost(judgeTokens(question), 50, !values['no-batch']) * strategies.length;
       }
     }
+  }
+  if (turns > 1) {
+    log(`${turns} turns per question: follow-ups priced like first turns, at the input price`);
   }
   log(
     `Estimated cost: answers $${answerEstimate.toFixed(3)}, judge $${judgeEstimate.toFixed(3)} ` +
@@ -260,6 +285,7 @@ async function main(): Promise<number> {
         await mapConcurrent(conversations, CONVERSATIONS_AT_ONCE, async (conversation) => {
           await answerConversation(conversation, {
             strategy,
+            turns,
             anthropicApiKey,
             ...(anthropicWorkspace && { anthropicWorkspace }),
             ...(strategy.name !== 'recent' && embedding && { embedding }),
@@ -269,7 +295,7 @@ async function main(): Promise<number> {
             log,
             onAnswer: async (answer) => {
               answers.push(answer);
-              done.add(answerKey(answer.dataset, answer.questionId, answer.strategy));
+              done.add(answerKey(answer.dataset, answer.questionId, answer.strategy, answer.turn));
               await appendFile(answersPath, `${JSON.stringify(answer)}\n`);
             },
           });
@@ -294,7 +320,10 @@ async function main(): Promise<number> {
   const inScope = (answer: BenchAnswer) =>
     questions.has(`${answer.dataset}\u0000${answer.questionId}`) &&
     strategies.some((strategy) => strategy.name === answer.strategy);
-  const answered = [...latest(answers).values()].filter(inScope);
+  const { first: answered, followUps: followUpAnswers } = splitTurns(
+    [...latest(answers).values()].filter(inScope),
+    turns
+  );
   const scores = latest(await readJsonl<BenchScore>(scoresPath));
   const pending: {
     answer: BenchAnswer;
@@ -382,7 +411,7 @@ async function main(): Promise<number> {
   );
   const unjudged = waiting.length;
   if (unjudged > 0) log(`${unjudged} answers are not judged yet: run again with --run ${run}`);
-  const rows = summarize(final, waiting);
+  const rows = summarize(final, waiting, followUpAnswers);
   const report = {
     run,
     finishedAt: new Date().toISOString(),
@@ -392,6 +421,7 @@ async function main(): Promise<number> {
       judge: `${BENCH_MODEL} (thinking off), Message Batches: ${!values['no-batch']}`,
       embedding: embedding?.model ?? null,
       contextTokens,
+      turns,
       instructions: ANSWER_INSTRUCTIONS,
       samples: Object.fromEntries(sizes),
       seed,
@@ -410,7 +440,7 @@ async function main(): Promise<number> {
     stopped && `Stopped early: ${stopped}.`,
     unjudged > 0 && `${unjudged} answers are not judged yet and are left out of the tables.`,
   ].filter(Boolean);
-  const markdown = `# Memory benchmarks: ${run}\n\nModel ${BENCH_MODEL}, context budget ${contextTokens} tokens, spent $${budget.spentUsd.toFixed(3)} on answers and the judge and $${embeddingBudget.spentUsd.toFixed(3)} on embeddings.${notes.length > 0 ? ` ${notes.join(' ')}` : ''}\n\n${markdownReport(rows)}`;
+  const markdown = `# Memory benchmarks: ${run}\n\nModel ${BENCH_MODEL}, context budget ${contextTokens} tokens${turns > 1 ? `, ${turns} turns per question` : ''}, spent $${budget.spentUsd.toFixed(3)} on answers and the judge and $${embeddingBudget.spentUsd.toFixed(3)} on embeddings.${notes.length > 0 ? ` ${notes.join(' ')}` : ''}\n\n${markdownReport(rows)}`;
   await writeFile(join(reportsDir, `${run}.md`), markdown);
   log(markdown);
   log(`Report: ${join(reportsDir, `${run}.json`)}`);

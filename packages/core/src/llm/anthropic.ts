@@ -23,7 +23,12 @@ import {
   toolCallArguments,
   type ToolCallArguments,
 } from './turn';
-import { promptCacheMarks, splitSystemPrompt, type PromptCacheMarks } from './prompt-cache';
+import {
+  promptCacheMarks,
+  splitSystemPrompt,
+  type CacheControl,
+  type PromptCacheMarks,
+} from './prompt-cache';
 import {
   createWarnOnce,
   forcedToolChoiceInstruction,
@@ -255,7 +260,7 @@ export class AnthropicBackend extends BaseLLMBackend {
     model: string,
     replayThinking: boolean
   ): Anthropic.MessageCreateParamsNonStreaming {
-    const { system, messages } = this.convertMessages(request.messages, replayThinking);
+    const { system, messages, breakpoint } = this.convertMessages(request.messages, replayThinking);
     const { tools, toolChoice, systemSuffix, outputConfig } = this.prepareJsonMode(request, model);
 
     const allTools = [
@@ -283,6 +288,8 @@ export class AnthropicBackend extends BaseLLMBackend {
       outputConfig || effort ? { ...outputConfig, ...(effort && { effort }) } : undefined;
 
     const cacheMarks = promptCacheMarks(request);
+    if (cacheMarks && breakpoint !== undefined)
+      markCacheEnd(messages[breakpoint], cacheMarks.control);
     return {
       model,
       system: this.systemParam(this.buildSystemPrompt(system, systemSuffix), cacheMarks),
@@ -327,10 +334,13 @@ export class AnthropicBackend extends BaseLLMBackend {
   ): {
     system: string;
     messages: Anthropic.MessageParam[];
+    /** The converted message that ends at a `cacheBreakpoint`, the last one when several do */
+    breakpoint?: number;
   } {
     const systemParts: string[] = [];
     const anthropicMessages: Anthropic.MessageParam[] = [];
     const lastUser = messages.map((m) => m.role).lastIndexOf('user');
+    let breakpoint: number | undefined;
 
     for (const [index, m] of messages.entries()) {
       switch (m.role) {
@@ -371,9 +381,16 @@ export class AnthropicBackend extends BaseLLMBackend {
           break;
         }
       }
+      if (m.cacheBreakpoint && m.role !== 'system' && anthropicMessages.length > 0) {
+        breakpoint = anthropicMessages.length - 1;
+      }
     }
 
-    return { system: systemParts.join('\n\n'), messages: anthropicMessages };
+    return {
+      system: systemParts.join('\n\n'),
+      messages: anthropicMessages,
+      ...(breakpoint !== undefined && { breakpoint }),
+    };
   }
 
   private convertToolResultContent(
@@ -615,4 +632,20 @@ function toChatUsage(usage: Anthropic.Usage, outputTokens: number): ChatUsage {
     ...(cacheWrite > 0 && { cacheWriteTokens: cacheWrite }),
     ...(cacheWrite1h > 0 && { cacheWrite1hTokens: cacheWrite1h }),
   };
+}
+
+/**
+ * Marks the end of `message` as a cache breakpoint: its last content block carries the cache
+ * control, a plain text message becomes one text block for it
+ */
+function markCacheEnd(message: Anthropic.MessageParam | undefined, control: CacheControl): void {
+  if (!message) return;
+  if (typeof message.content === 'string') {
+    message.content = [{ type: 'text', text: message.content, cache_control: control }];
+    return;
+  }
+  const last = message.content.at(-1);
+  if (last && last.type !== 'thinking' && last.type !== 'redacted_thinking') {
+    last.cache_control = control;
+  }
 }

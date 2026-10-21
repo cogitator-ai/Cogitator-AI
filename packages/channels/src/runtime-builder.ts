@@ -296,7 +296,7 @@ export class RuntimeBuilder {
     const agent = new Agent({
       name: this.config.name,
       model: this.fullModelId,
-      instructions: this.buildInstructions(await coreFacts.formatForPrompt(), new Date()),
+      instructions: this.buildInstructions(await coreFacts.formatForPrompt()),
       tools,
       maxIterations: 15,
     });
@@ -309,7 +309,7 @@ export class RuntimeBuilder {
         modelOverrides.get(`${user.channelType}:${user.id}`) ??
         modelOverrides.get(user.id) ??
         globalModel;
-      const instructions = this.buildInstructions(await coreFacts.formatForPrompt(), new Date());
+      const instructions = this.buildInstructions(await coreFacts.formatForPrompt());
       return new Agent({ ...agent.config, id: agent.id, model, instructions });
     };
 
@@ -433,6 +433,7 @@ export class RuntimeBuilder {
       agent: agentForUser,
       cogitator,
       channels,
+      brief: () => this.currentTime(new Date()),
       middleware,
       memory: memoryAdapter,
       mediaProcessor,
@@ -1009,9 +1010,8 @@ export class RuntimeBuilder {
     });
   }
 
-  private buildInstructions(coreFactsText: string, now: Date): string {
-    let instructions = this.config.personality;
-
+  /** The current date and time for a run, sent with its input rather than in the instructions */
+  private currentTime(now: Date): string {
     const dateStr = now.toLocaleDateString('en-US', {
       weekday: 'long',
       year: 'numeric',
@@ -1019,7 +1019,11 @@ export class RuntimeBuilder {
       day: 'numeric',
     });
     const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-    instructions += `\n\nCurrent date and time: ${dateStr}, ${timeStr}.`;
+    return `Current date and time: ${dateStr}, ${timeStr} (${localIsoDate(now)}).`;
+  }
+
+  private buildInstructions(coreFactsText: string): string {
+    let instructions = this.config.personality;
 
     if (coreFactsText) {
       instructions += `\n\n## What I know about the user\n${coreFactsText}`;
@@ -1053,7 +1057,7 @@ When to use — IMMEDIATELY call schedule_task when the user:
 Examples:
 - "Remind me to check Slack in 5 min" → schedule_task({description: "Check Slack", delay: "5m"})
 - "Every morning at 9" → schedule_task({description: "Morning briefing", cron: "0 9 * * *"})
-- "At 3pm today" → schedule_task({description: "...", at: "${localIsoDate(now)}T15:00:00"})
+- "At 3pm today" → schedule_task({description: "...", at: "<today, YYYY-MM-DD>T15:00:00"}), today taken from the current date and time sent with the message
 
 The channel and userId are filled automatically from the current conversation — do NOT pass them manually.
 When the task fires, you will execute it — describe what to DO, not just what to say.

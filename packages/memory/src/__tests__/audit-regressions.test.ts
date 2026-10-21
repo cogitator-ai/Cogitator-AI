@@ -223,7 +223,7 @@ describe('ContextBuilder', () => {
     }
 
     const builder = new ContextBuilder(
-      { maxTokens: 4000, reserveTokens: 3960, strategy: 'hybrid', includeSystemPrompt: false },
+      { maxTokens: 4000, reserveTokens: 3955, strategy: 'hybrid', includeSystemPrompt: false },
       { memoryAdapter }
     );
 

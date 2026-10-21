@@ -284,7 +284,7 @@ describe('ContextBuilder', () => {
       return { buildContext: vi.fn().mockResolvedValue(context) } as unknown as GraphContextBuilder;
     }
 
-    it('injects graph context into system message', async () => {
+    it('sends graph context with the turn, not in the system message', async () => {
       const nodes = [makeNode('n1', 'Alice'), makeNode('n2', 'Bob')];
       const edges = [makeEdge('e1', 'n1', 'n2')];
       const gcb = mockGraphContextBuilder({
@@ -311,10 +311,12 @@ describe('ContextBuilder', () => {
       expect(result.metadata.graphEdgesIncluded).toBe(1);
       expect(result.graphContext).toBeDefined();
       expect(result.graphContext!.nodes).toHaveLength(2);
-      expect(result.messages[0].content).toContain('Knowledge Graph Context');
+      expect(result.memoryContext).toContain('Knowledge Graph Context');
+      expect(result.messages[0].content).not.toContain('Knowledge Graph Context');
+      expect(result.messages.at(-1)).toEqual({ role: 'user', content: result.memoryContext });
     });
 
-    it('appends to existing system message', async () => {
+    it('keeps the system prompt apart from the graph context', async () => {
       const gcb = mockGraphContextBuilder({
         nodes: [makeNode('n1', 'Alice')],
         edges: [],
@@ -339,12 +341,11 @@ describe('ContextBuilder', () => {
         currentInput: 'Who is Alice?',
       });
 
-      expect(result.messages[0].role).toBe('system');
-      expect(result.messages[0].content).toContain('Be helpful.');
-      expect(result.messages[0].content).toContain('Knowledge Graph Context');
+      expect(result.messages[0]).toEqual({ role: 'system', content: 'Be helpful.' });
+      expect(result.memoryContext).toContain('Knowledge Graph Context');
     });
 
-    it('creates system message when none exists', async () => {
+    it('adds no system message for graph context alone', async () => {
       const gcb = mockGraphContextBuilder({
         nodes: [makeNode('n1', 'Alice')],
         edges: [],
@@ -368,7 +369,7 @@ describe('ContextBuilder', () => {
         currentInput: 'Who is Alice?',
       });
 
-      expect(result.messages[0].role).toBe('system');
+      expect(result.messages.map((m) => m.role)).toEqual(['user']);
       expect(result.messages[0].content).toContain('Knowledge Graph Context');
     });
 

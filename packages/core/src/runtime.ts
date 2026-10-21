@@ -1,5 +1,6 @@
 import { nanoid } from 'nanoid';
 import type {
+  BuiltContext,
   CogitatorConfig,
   RunObserver,
   RunOptions,
@@ -60,6 +61,11 @@ import {
   piiMiddleware,
   promptInjectionMiddleware,
 } from './middleware/builtins';
+import {
+  clearedToolOutputsAttributes,
+  clearToolOutputsMiddleware,
+} from './middleware/clear-tool-outputs';
+import { recallToolOutputTool } from './tools/recall-tool-output';
 import { createLoggerFromConfig, getLogger, setLogger } from './logger';
 import { CallPricer, RunCostMeter } from './cogitator/run-cost';
 import { isDecisionModel } from '@cogitator-ai/models';
@@ -85,6 +91,8 @@ import {
 import { CogitatorError, ErrorCode, resolveModelRoute } from '@cogitator-ai/types';
 import {
   buildInitialMessages,
+  buildUserContent,
+  contextPartitionAttributes,
   buildInputWithAudio,
   enrichMessagesWithInsights,
   addContextToMessages,
@@ -233,6 +241,8 @@ export class Cogitator implements ToolInvoker {
   /** Backends of agent turns: PII masking runs as middleware there, not in the backend */
   private turnBackends = new Map<string, LLMBackend>();
   private piiLayer?: RunMiddleware;
+  private clearingLayer?: RunMiddleware;
+  private recallTool?: Tool;
   private modelChain?: ModelFallbackChain;
   private readonly decisionBackends = new Map<string, DecisionBackend>();
   private processCheckpoints?: InMemoryRunCheckpointStore;
@@ -497,18 +507,34 @@ export class Cogitator implements ToolInvoker {
   /**
    * The middleware the runtime's own features become, closest to the model, in this order:
    * PII masking (`security.pii`), prompt injection (`security.promptInjection`), guardrails
-   * (`guardrails`) and compaction (`context`). Each is there once its feature is set up.
+   * (`guardrails`), tool output clearing (`context.clearToolOutputs`) and compaction
+   * (`context`). Each is there once its feature is set up.
    */
   private builtinMiddleware(): RunMiddleware[] {
     const pii = this.config.security?.pii;
     if (pii) this.piiLayer ??= piiMiddleware(pii);
+    const clearing = this.config.context?.clearToolOutputs;
+    if (clearing) {
+      this.clearingLayer ??= clearToolOutputsMiddleware(clearing === true ? {} : clearing);
+    }
     const { injectionDetector, constitutionalAI, contextManager } = this.state;
     return [
       ...(this.piiLayer ? [this.piiLayer] : []),
       ...(injectionDetector ? [promptInjectionMiddleware(injectionDetector)] : []),
       ...(constitutionalAI ? [guardrailsMiddleware(constitutionalAI)] : []),
+      ...(this.clearingLayer ? [this.clearingLayer] : []),
       ...(contextManager ? [compactionMiddleware(contextManager)] : []),
     ];
+  }
+
+  /**
+   * The tools the runtime's own features give every agent: `recall_tool_output` while
+   * `context.clearToolOutputs` is on.
+   */
+  private builtinTools(): Tool[] {
+    if (!this.config.context?.clearToolOutputs) return [];
+    this.recallTool ??= recallToolOutputTool(() => this.state.memoryAdapter);
+    return [this.recallTool];
   }
 
   /**
@@ -781,6 +807,7 @@ export class Cogitator implements ToolInvoker {
 
       const buildRegistry = (owner: Agent) => {
         const ownerRegistry = new ToolRegistry();
+        ownerRegistry.registerMany(this.builtinTools());
         const handoff = handoffTools(owner);
         const own = new Set([...owner.tools, ...handoff.tools].map((t) => t.name));
         ownerRegistry.registerMany(this.tools.getAll().filter((t) => !own.has(t.name)));
@@ -806,6 +833,7 @@ export class Cogitator implements ToolInvoker {
       let model: string;
       let input: string;
       let messages: Message[];
+      let contextPartitions: BuiltContext['partitions'] | undefined;
 
       if (checkpoint) {
         input = checkpoint.input;
@@ -854,12 +882,13 @@ export class Cogitator implements ToolInvoker {
           runOptions,
           threadId,
           runMemory,
-          this.historyBudget(agent, effectiveModel, routeProvider, registry, input),
+          this.historyBudget(agent, effectiveModel, routeProvider, registry),
           (initial) =>
             waitForAbortable(
               pipeline.beforeRun({ input, messages: initial }, middlewareContext()),
               abortController.signal
-            )
+            ),
+          (built) => (contextPartitions = built.partitions)
         );
       }
 
@@ -1686,6 +1715,8 @@ export class Cogitator implements ToolInvoker {
           'run.tool_calls': allToolCalls.length,
           'run.input_tokens': totalInputTokens,
           'run.output_tokens': totalOutputTokens,
+          ...clearedToolOutputsAttributes(middlewareState),
+          ...contextPartitionAttributes(contextPartitions),
           ...invokeAgentAttributes(agent, conversationId, agentModel),
           [GEN_AI.usageInputTokens]: totalInputTokens,
           [GEN_AI.usageOutputTokens]: totalOutputTokens,
@@ -1817,7 +1848,8 @@ export class Cogitator implements ToolInvoker {
     threadId: string,
     runMemory: RunMemory,
     historyBudget: number | undefined,
-    checkInput: (messages: readonly Message[]) => Promise<void>
+    checkInput: (messages: readonly Message[]) => Promise<void>,
+    onContext?: (built: BuiltContext) => void
   ): Promise<Message[]> {
     const messages = await buildInitialMessages(
       agent,
@@ -1825,7 +1857,8 @@ export class Cogitator implements ToolInvoker {
       threadId,
       this.state.memoryAdapter,
       this.state.contextBuilder,
-      historyBudget
+      historyBudget,
+      onContext
     );
     runMemory.open();
 
@@ -1835,8 +1868,10 @@ export class Cogitator implements ToolInvoker {
       addContextToMessages(messages, options.context);
     }
 
-    const currentUserMessage = messages[messages.length - 1];
-    if (currentUserMessage) await runMemory.save(agent.id, currentUserMessage);
+    await runMemory.save(agent.id, {
+      role: 'user',
+      content: buildUserContent(options.input, options.images),
+    });
 
     return messages;
   }
@@ -2070,8 +2105,9 @@ export class Cogitator implements ToolInvoker {
    * The context builder's budget for a run of `agent` on `modelString`, when
    * `memory.contextBuilder.maxTokens` sets none: the model's context window,
    * minus room for the answer (`agent.maxTokens`, else 15% of the window, at
-   * most half of it), the tool schemas and the input, and no more than the
-   * context manager lets a turn grow before it compresses. A model on Ollama
+   * most half of it) and the tool schemas, and no more than the context
+   * manager lets a turn grow before it compresses. The builder counts the input
+   * in it and keeps no reserve of its own. A model on Ollama
    * gets at most the 4096 tokens Ollama serves by default, unless it runs on
    * Ollama Cloud.
    */
@@ -2079,15 +2115,14 @@ export class Cogitator implements ToolInvoker {
     agent: Agent,
     modelString: string,
     explicitProvider: string | undefined,
-    registry: ToolRegistry,
-    input: string
+    registry: ToolRegistry
   ): number | undefined {
     if (!this.state.contextBuilder || this.config.memory?.contextBuilder?.maxTokens !== undefined) {
       return undefined;
     }
     const window = this.servedWindow(modelString, explicitProvider);
     const answer = answerRoom(agent, window);
-    const fixed = countTokens(JSON.stringify(registry.getSchemas())) + countTokens(input);
+    const fixed = countTokens(JSON.stringify(registry.getSchemas()));
     const compressAt = this.state.contextManager?.compressionThreshold(modelString);
     const budget = Math.floor(Math.min(window - answer, compressAt ?? Infinity) - fixed);
     if (budget > MIN_HISTORY_BUDGET) return budget;

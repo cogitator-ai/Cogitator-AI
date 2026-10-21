@@ -1030,9 +1030,9 @@ await cog.run(agent, { input, middleware: [auditFor(userId)] });
 | `afterModel`    | After each answer, before the run uses it     | Return `{ content }` or `{ toolCalls }` to replace them                         |
 | `wrapToolCall`  | Around each tool call that passed approval    | Change the arguments (checked against the schema again), or answer for the tool |
 
-Every hook gets the run's context: `runId`, `threadId`, the agent, `userId`, the channel, `iteration`, `signal`, `deps` and a `state` map the run's middleware share. The Cogitator's middleware runs first, then the agent's, then the run's, then the built-in ones: PII masking (`security.pii`), prompt injection (`security.promptInjection`), guardrails (`guardrails`) and compaction (`context`), closest to the model. `before*` hooks run in that order, `wrap*` hooks nest with the first outermost, `afterModel` runs in reverse. After a handoff the agent the run went on as brings its own middleware. To see each turn as the run keeps it, after every layer, pass `onModelTurn` in the run options: it gets `{ content, toolCalls, model }` before the turn's tools run.
+Every hook gets the run's context: `runId`, `threadId`, the agent, `userId`, the channel, `iteration`, `signal`, `deps` and a `state` map the run's middleware share. The Cogitator's middleware runs first, then the agent's, then the run's, then the built-in ones: PII masking (`security.pii`), prompt injection (`security.promptInjection`), guardrails (`guardrails`), tool output clearing (`context.clearToolOutputs`) and compaction (`context`), closest to the model. `before*` hooks run in that order, `wrap*` hooks nest with the first outermost, `afterModel` runs in reverse. After a handoff the agent the run went on as brings its own middleware. To see each turn as the run keeps it, after every layer, pass `onModelTurn` in the run options: it gets `{ content, toolCalls, model }` before the turn's tools run.
 
-`tripwire(reason, info?)` stops the run as a guard that tripped: it fails with `GUARDRAIL_TRIPPED` (HTTP 400), the middleware, the reason and `info` in `details`, and `isTripwire(error)` tells it apart. Any other error a hook throws fails the run as it is, and a hook still running when the run is cancelled or times out is no longer waited for. Arguments a `wrapToolCall` hook changes are checked against the tool's schema and `requiresApproval` again, and an approval never carries over to them. Every call a `wrapModelCall` hook sends counts toward usage and budgets, an answer it gives without the model counts nothing and still reaches `onToken` in a streamed run. A middleware with `holdsStream: true` makes a streamed run hold each turn's text until the turn is done, so text a hook retries, blocks or replaces never reaches `onToken`. A tripwire raised inside a tool, such as a nested `agentAsTool()` run, stops the outer run too. The Cogitator's `wrapToolCall` hooks also wrap `invokeTool()`, which throws an error they throw (a tripwire among them) while a failing tool still comes back in `error`. `toAgentWire()` does not carry middleware and warns when an agent has some. `piiMiddleware`, `promptInjectionMiddleware`, `guardrailsMiddleware` and `compactionMiddleware` build the built-in ones, to give a feature to one agent only.
+`tripwire(reason, info?)` stops the run as a guard that tripped: it fails with `GUARDRAIL_TRIPPED` (HTTP 400), the middleware, the reason and `info` in `details`, and `isTripwire(error)` tells it apart. Any other error a hook throws fails the run as it is, and a hook still running when the run is cancelled or times out is no longer waited for. Arguments a `wrapToolCall` hook changes are checked against the tool's schema and `requiresApproval` again, and an approval never carries over to them. Every call a `wrapModelCall` hook sends counts toward usage and budgets, an answer it gives without the model counts nothing and still reaches `onToken` in a streamed run. A middleware with `holdsStream: true` makes a streamed run hold each turn's text until the turn is done, so text a hook retries, blocks or replaces never reaches `onToken`. A tripwire raised inside a tool, such as a nested `agentAsTool()` run, stops the outer run too. The Cogitator's `wrapToolCall` hooks also wrap `invokeTool()`, which throws an error they throw (a tripwire among them) while a failing tool still comes back in `error`. `toAgentWire()` does not carry middleware and warns when an agent has some. `piiMiddleware`, `promptInjectionMiddleware`, `guardrailsMiddleware`, `clearToolOutputsMiddleware` and `compactionMiddleware` build the built-in ones, to give a feature to one agent only.
 
 ---
 
@@ -2129,6 +2129,19 @@ const cog = new Cogitator({
 ```
 
 Setting `context` turns compression on; pass `enabled: false` to keep the config but switch it off. The strategies are also exported as classes (`TruncateStrategy`, `SlidingWindowStrategy`, `SummarizeStrategy`, `HybridStrategy`) and `ContextManager` can be used on its own. See [Context Management](https://cogitator.app/docs/advanced/context-management).
+
+Old tool outputs can be cleared on their own, before any compression, the way Anthropic's `clear_tool_uses` context edit does, for every provider:
+
+```typescript
+const cog = new Cogitator({
+  context: {
+    enabled: false, // no compression, only clearing
+    clearToolOutputs: { trigger: 100_000, keep: 3, exclude: ['read_plan'], clearAtLeast: 0 },
+  },
+});
+```
+
+Once a turn's conversation reaches `trigger` tokens, every tool result but the `keep` most recent ones gets a note in place of its output, which names the call and tells the model to get it back with the built-in tool `recall_tool_output({ toolCallId })` (from the run, or from the thread's memory). `clearInputs` clears the calls' arguments too, `clearAtLeast` waits until a clearing frees that many tokens so the prompt cache is not broken for little, and an awaited `onBeforeClear({ calls, tokens, tokensFreed, model }, context)` lets the application keep what matters first. The `agent.run` span reports `context.cleared_tool_outputs`, `context.cleared_tool_output_tokens` and `context.clearings`.
 
 ---
 

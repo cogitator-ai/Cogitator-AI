@@ -34,6 +34,11 @@ export interface Message {
   content: MessageContent;
   name?: string;
   toolCallId?: string;
+  /**
+   * The message ends a part of the prompt that the next turns send again unchanged, such as the
+   * history a context was built from: a backend that caches prompts marks the cache there.
+   */
+  cacheBreakpoint?: boolean;
 }
 
 export interface ToolCallMessage extends Message {

@@ -9,7 +9,11 @@ import type {
   OpenAICompatibleServer,
   OpenAIWireApi,
 } from '@cogitator-ai/types';
-import { OpenAICompatibleBackend, type PromptCacheParams } from './openai-compatible-base';
+import {
+  OpenAICompatibleBackend,
+  cacheBreakpoints,
+  type PromptCacheParams,
+} from './openai-compatible-base';
 import {
   promptCacheMarks,
   splitSystemPrompt,
@@ -147,17 +151,27 @@ export class OpenAIBackend extends OpenAICompatibleBackend {
     model: string
   ): OpenAI.Chat.ChatCompletionMessageParam[] {
     const marks = this.claudeCacheMarks(request, model);
-    if (!marks?.systemPrefix) return messages;
+    if (!marks) return messages;
+    let breakpoint = -1;
+    messages.forEach((message, i) => {
+      if (cacheBreakpoints.has(message)) breakpoint = i;
+    });
     const index = messages.findIndex((message) => message.role === 'system');
     const system = messages[index];
-    if (system?.role !== 'system' || typeof system.content !== 'string') return messages;
-    const split = splitSystemPrompt(system.content, marks.systemPrefix);
-    if (!split) return messages;
-    const content: CacheMarkedTextPart[] = [
-      { type: 'text', text: split.stable, cache_control: marks.control },
-      ...(split.rest.trim() ? [{ type: 'text' as const, text: split.rest }] : []),
-    ];
-    return messages.map((message, i) => (i === index ? { role: 'system', content } : message));
+    const split =
+      marks.systemPrefix && system?.role === 'system' && typeof system.content === 'string'
+        ? splitSystemPrompt(system.content, marks.systemPrefix)
+        : undefined;
+    return messages.map((message, i) => {
+      if (i === index && split) {
+        const content: CacheMarkedTextPart[] = [
+          { type: 'text', text: split.stable, cache_control: marks.control },
+          ...(split.rest.trim() ? [{ type: 'text' as const, text: split.rest }] : []),
+        ];
+        return { role: 'system', content };
+      }
+      return i === breakpoint ? withCacheEnd(message, marks.control) : message;
+    });
   }
 
   protected override resolveModel(request: ChatRequest): string {
@@ -223,4 +237,28 @@ export class OpenAIBackend extends OpenAICompatibleBackend {
   private errorContext(model: string): LLMErrorContext {
     return { provider: this.provider, model, endpoint: this.client.baseURL };
   }
+}
+
+/**
+ * `message` with its last text marked as a cache breakpoint, as OpenRouter takes it for Claude.
+ * A message with no text to carry the mark, such as an assistant turn of tool calls alone, stays
+ * as it is.
+ */
+function withCacheEnd(
+  message: OpenAI.Chat.ChatCompletionMessageParam,
+  control: CacheControl
+): OpenAI.Chat.ChatCompletionMessageParam {
+  const content = message.content;
+  if (typeof content === 'string') {
+    if (!content) return message;
+    const marked: CacheMarkedTextPart[] = [{ type: 'text', text: content, cache_control: control }];
+    return { ...message, content: marked } as OpenAI.Chat.ChatCompletionMessageParam;
+  }
+  if (!Array.isArray(content)) return message;
+  const last = content.at(-1);
+  if (last?.type !== 'text') return message;
+  return {
+    ...message,
+    content: [...content.slice(0, -1), { ...last, cache_control: control }],
+  } as OpenAI.Chat.ChatCompletionMessageParam;
 }

@@ -36,6 +36,13 @@ import {
 } from './turn';
 
 /** The prompt cache marking a request carries, see `OpenAICompatibleBackend.promptCacheParams`. */
+
+/**
+ * Converted messages that end at a `Message.cacheBreakpoint`, for a server that takes cache
+ * marks in message content to mark them
+ */
+export const cacheBreakpoints = new WeakSet<OpenAI.Chat.ChatCompletionMessageParam>();
+
 export interface PromptCacheParams {
   cache_control?: CacheControl;
 }
@@ -369,6 +376,8 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
           }
           break;
       }
+      const last = converted.at(-1);
+      if (m.cacheBreakpoint && m.role !== 'system' && last) cacheBreakpoints.add(last);
     }
     flushToolImages();
     return converted;

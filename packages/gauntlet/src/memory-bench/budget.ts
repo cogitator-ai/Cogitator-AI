@@ -8,13 +8,14 @@ export const BENCH_MODEL = 'claude-haiku-5-5';
 
 /**
  * USD per million tokens of `claude-haiku-5-5` for prompts up to 100K tokens. Cache prices are
- * the usual 0.1x and 1.25x of input.
+ * the usual multiples of input: 0.1x for reads, 1.25x for 5-minute writes, 2x for 1-hour ones.
  */
 export const BENCH_PRICE: ModelPriceConfig = {
   input: 0.1,
   output: 0.5,
   inputCached: 0.01,
   inputCacheWrite: 0.125,
+  inputCacheWrite1h: 0.2,
 };
 
 /** Prompts above this many tokens cost more on `claude-haiku-5-5`, every token class of them. */

@@ -571,6 +571,14 @@ export const CompressionStrategySchema = z.enum([
   'hybrid',
 ]);
 
+export const ClearToolOutputsConfigSchema = z.object({
+  trigger: z.number().int().nonnegative().optional(),
+  keep: z.number().int().nonnegative().optional(),
+  exclude: z.array(z.string()).optional(),
+  clearInputs: z.boolean().optional(),
+  clearAtLeast: z.number().int().nonnegative().optional(),
+});
+
 export const ContextManagerConfigSchema = z.object({
   enabled: z.boolean().optional(),
   strategy: CompressionStrategySchema.optional(),
@@ -578,6 +586,7 @@ export const ContextManagerConfigSchema = z.object({
   outputReserve: z.number().positive().optional(),
   summaryModel: z.string().optional(),
   windowSize: z.number().positive().optional(),
+  clearToolOutputs: z.union([z.boolean(), ClearToolOutputsConfigSchema]).optional(),
 });
 
 export const DeployTargetSchema = z.enum(['docker', 'fly']);

@@ -26,7 +26,7 @@ export interface ContextManagerDeps {
 }
 
 export class ContextManager {
-  private config: Required<ContextManagerConfig>;
+  private config: Required<Omit<ContextManagerConfig, 'clearToolOutputs'>>;
   private strategy: CompressionStrategyHandler;
   private deps: ContextManagerDeps;
 

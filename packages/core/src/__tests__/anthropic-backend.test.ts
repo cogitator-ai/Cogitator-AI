@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { ToolSchema } from '@cogitator-ai/types';
+import type { Message, ToolSchema } from '@cogitator-ai/types';
 import { toolCallMessage } from './helpers/messages';
 import { AnthropicBackend } from '../llm/anthropic';
 import { getLogger } from '../logger';
@@ -1555,6 +1555,49 @@ describe('AnthropicBackend', () => {
         { type: 'text', text: "\n\nContext: today's dossier" },
       ]);
       expect(sent().cache_control).toBeUndefined();
+    });
+
+    it('marks the end of the history a context marked, with plain text and with tool results', async () => {
+      mockCreate.mockResolvedValue(answer);
+      const history = [
+        { role: 'system' as const, content: instructions },
+        { role: 'user' as const, content: 'Earlier question' },
+        { role: 'assistant' as const, content: 'Earlier answer', cacheBreakpoint: true },
+        { role: 'user' as const, content: 'Memory for this turn\n\nDraft the story.' },
+      ];
+
+      await backend.chat({ model: 'claude-sonnet-5-5', messages: history, cache: {} });
+      await backend.chat({
+        model: 'claude-sonnet-5-5',
+        messages: [
+          { role: 'system' as const, content: instructions },
+          {
+            role: 'assistant' as const,
+            content: '',
+            toolCalls: [{ id: 'c1', name: 'search', arguments: {} }],
+          } as Message,
+          { role: 'tool' as const, content: 'found', toolCallId: 'c1', cacheBreakpoint: true },
+          { role: 'user' as const, content: 'Go on.' },
+        ],
+        cache: {},
+      });
+      await backend.chat({ model: 'claude-sonnet-5-5', messages: history, cache: false });
+
+      const sentMessages = (call: number) =>
+        (mockCreate.mock.calls[call][0] as { messages: Array<{ content: unknown }> }).messages;
+      expect(sentMessages(0)[1]?.content).toEqual([
+        { type: 'text', text: 'Earlier answer', cache_control: { type: 'ephemeral' } },
+      ]);
+      expect(sentMessages(0)[2]?.content).toBe('Memory for this turn\n\nDraft the story.');
+      expect(sentMessages(1)[1]?.content).toEqual([
+        {
+          type: 'tool_result',
+          tool_use_id: 'c1',
+          content: 'found',
+          cache_control: { type: 'ephemeral' },
+        },
+      ]);
+      expect(sentMessages(2)[1]?.content).toBe('Earlier answer');
     });
 
     it('marks the conversation end only when another turn is likely, unless told', async () => {

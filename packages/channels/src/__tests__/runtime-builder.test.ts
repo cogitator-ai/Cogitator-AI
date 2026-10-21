@@ -544,6 +544,7 @@ describe('RuntimeBuilder', () => {
     const built = await builder.build();
 
     expect(built.agent.instructions).toContain('What I know about the user');
+    expect(built.agent.instructions).not.toMatch(/Current date and time/);
     expect(built.agent.instructions).toContain('name: Alice');
 
     await built.cleanup();

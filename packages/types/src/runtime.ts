@@ -318,6 +318,12 @@ export interface RunOptions<TDeps = unknown> {
    * its thread id. Needs a memory adapter with branches (every built-in one).
    */
   branch?: { fromEntryId: string | null; activate?: boolean };
+  /**
+   * Notes for this turn only, such as the current time, sent with the input after what memory
+   * recalls for it (the `brief` partition of a context). They are not saved with the input and,
+   * unlike the system prompt, do not change the prefix later turns read from the prompt cache.
+   */
+  brief?: string;
 
   /** Execute tool calls in parallel. Default: false (sequential execution) */
   parallelToolCalls?: boolean;

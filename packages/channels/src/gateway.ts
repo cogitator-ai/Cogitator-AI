@@ -64,6 +64,12 @@ export interface GatewayFullConfig extends GatewayConfig {
    * started the run replies with an approve or deny word to continue it.
    */
   approvals?: GatewayApprovalsConfig;
+  /**
+   * Notes for each run of a message, such as the current time, sent with the input and not
+   * saved with it (see `RunOptions.brief`), so they do not change the agent's instructions and
+   * the prompt cache they open with
+   */
+  brief?: (msg: ChannelMessage) => string | undefined;
 }
 
 export interface GatewaySessionInfo {
@@ -762,8 +768,10 @@ export class Gateway {
     tracker: StatusReactionTracker | undefined,
     signal: AbortSignal | undefined
   ) {
+    const brief = this.config.brief?.(msg);
     return {
       useMemory: !!this.config.memory,
+      ...(brief && { brief }),
       userId: msg.userId,
       channelType: msg.channelType,
       channelId: msg.channelId,

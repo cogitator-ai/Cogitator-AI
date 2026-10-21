@@ -34,6 +34,26 @@ describe('CogitatorConfigSchema', () => {
     expect(result).toEqual({});
   });
 
+  it('keeps tool output clearing in context, as true or with its options', () => {
+    expect(CogitatorConfigSchema.parse({ context: { clearToolOutputs: true } }).context).toEqual({
+      clearToolOutputs: true,
+    });
+    const options = {
+      trigger: 50_000,
+      keep: 2,
+      exclude: ['read_file'],
+      clearInputs: true,
+      clearAtLeast: 4_000,
+    };
+    expect(
+      CogitatorConfigSchema.parse({ context: { enabled: false, clearToolOutputs: options } })
+        .context
+    ).toEqual({ enabled: false, clearToolOutputs: options });
+    expect(() =>
+      CogitatorConfigSchema.parse({ context: { clearToolOutputs: { keep: -1 } } })
+    ).toThrow();
+  });
+
   it('accepts a base URL and headers for Anthropic and Google', () => {
     const result = CogitatorConfigSchema.parse({
       llm: {

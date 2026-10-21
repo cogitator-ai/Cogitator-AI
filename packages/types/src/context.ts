@@ -1,5 +1,6 @@
 import type { Message } from './message';
 import type { LLMBackend } from './llm';
+import type { ClearToolOutputsConfig } from './tool-output-clearing';
 
 export type CompressionStrategy = 'truncate' | 'sliding-window' | 'summarize' | 'hybrid';
 
@@ -11,6 +12,12 @@ export interface ContextManagerConfig {
   outputReserve?: number;
   summaryModel?: string;
   windowSize?: number;
+  /**
+   * Clears the outputs of old tool calls once a turn's conversation grows past a threshold, off
+   * unless set (`true` takes the defaults). It works on its own: with `enabled: false` a
+   * Cogitator clears tool outputs without compressing
+   */
+  clearToolOutputs?: boolean | ClearToolOutputsConfig;
 }
 
 export interface CompressionResult {

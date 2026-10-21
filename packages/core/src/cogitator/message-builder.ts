@@ -1,4 +1,5 @@
 import type {
+  BuiltContext,
   Message,
   RunOptions,
   MemoryAdapter,
@@ -14,6 +15,7 @@ import type {
 import {
   ContextBuilder,
   compactedHistory,
+  formatTurnContext,
   countMessageTokens,
   HISTORY_ENTRY_TYPES,
 } from '@cogitator-ai/memory';
@@ -60,7 +62,34 @@ export async function buildInputWithAudio(
   return input ? `${block}\n\n${input}` : block;
 }
 
-function buildUserContent(input: string, images?: ImageInput[]): string | ContentPart[] {
+/**
+ * `history` with its cache breakpoint on its last message, where a context put it, also when
+ * cleaning the tool history removed or moved the message that carried it
+ */
+function cacheEndOnLast(history: Message[]): Message[] {
+  if (!history.some((message) => message.cacheBreakpoint)) return history;
+  const last = history.length - 1;
+  return history.map((message, i) => {
+    const { cacheBreakpoint: _mark, ...rest } = message;
+    return i === last && message.role !== 'system' ? { ...rest, cacheBreakpoint: true } : rest;
+  });
+}
+
+/**
+ * The input of a turn sent with what memory recalled for it, which changes every turn and so
+ * goes with the input rather than in the system prompt, where it would change the prefix every
+ * later turn reads from the prompt cache
+ */
+function withMemoryContext(
+  content: string | ContentPart[],
+  memoryContext: string | undefined
+): string | ContentPart[] {
+  if (!memoryContext) return content;
+  if (typeof content === 'string') return `${memoryContext}\n\n${content}`;
+  return [{ type: 'text', text: memoryContext }, ...content];
+}
+
+export function buildUserContent(input: string, images?: ImageInput[]): string | ContentPart[] {
   if (!images || images.length === 0) {
     return input;
   }
@@ -93,14 +122,19 @@ export async function buildInitialMessages(
   threadId: string,
   memoryAdapter: MemoryAdapter | undefined,
   contextBuilder: ContextBuilder | undefined,
-  contextBudget?: number
+  contextBudget?: number,
+  onContext?: (built: BuiltContext) => void
 ): Promise<Message[]> {
   const userContent = buildUserContent(options.input, options.images);
+  const turnInput = withMemoryContext(
+    userContent,
+    formatTurnContext(options.brief === undefined ? [] : [options.brief])
+  );
 
   if (!memoryAdapter || options.useMemory === false) {
     return [
       { role: 'system', content: agent.instructions },
-      { role: 'user', content: userContent },
+      { role: 'user', content: turnInput },
     ];
   }
 
@@ -150,8 +184,10 @@ export async function buildInitialMessages(
       userId: options.userId,
       systemPrompt: agent.instructions,
       currentInput: options.input,
-      ...(contextBudget !== undefined && { maxTokens: contextBudget }),
+      ...(options.brief !== undefined && { brief: options.brief }),
+      ...(contextBudget !== undefined && { maxTokens: contextBudget, reserveTokens: 0 }),
     });
+    onContext?.(ctx);
     for (const warning of ctx.warnings ?? []) {
       getLogger().warn(warning, { agent: agent.name, threadId });
     }
@@ -164,9 +200,10 @@ export async function buildInitialMessages(
         options.onMemoryError
       );
     }
+    const history = ctx.memoryContext ? ctx.messages.slice(0, -1) : ctx.messages;
     return [
-      ...withInstructions(sanitizeToolHistory(ctx.messages), agent.instructions),
-      { role: 'user', content: userContent },
+      ...withInstructions(cacheEndOnLast(sanitizeToolHistory(history)), agent.instructions),
+      { role: 'user', content: withMemoryContext(userContent, ctx.memoryContext) },
     ];
   }
 
@@ -196,13 +233,13 @@ export async function buildInitialMessages(
         options.onMemoryError
       );
     }
-    messages.push({ role: 'user', content: userContent });
+    messages.push({ role: 'user', content: turnInput });
     return messages;
   }
 
   return [
     { role: 'system', content: agent.instructions },
-    { role: 'user', content: userContent },
+    { role: 'user', content: turnInput },
   ];
 }
 
@@ -349,4 +386,14 @@ export function addContextToMessages(messages: Message[], context: Record<string
       messages[0].content = suffix;
     }
   }
+}
+
+/** Span attributes with the tokens each partition of a run's context took */
+export function contextPartitionAttributes(
+  partitions: BuiltContext['partitions'] | undefined
+): Record<string, number> {
+  if (!partitions) return {};
+  return Object.fromEntries(
+    Object.entries(partitions).map(([partition, tokens]) => [`context.tokens.${partition}`, tokens])
+  );
 }

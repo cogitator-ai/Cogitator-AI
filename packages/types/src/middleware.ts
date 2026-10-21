@@ -128,7 +128,8 @@ export type ToolCallHandler = (call: ToolCallRequest) => Promise<ToolResult>;
  * the agent or the run.
  *
  * Order: the Cogitator's middleware, then the agent's, then the run's, then the built-in ones
- * (PII masking, prompt injection, guardrails, compaction) closest to the model. `before*` hooks
+ * (PII masking, prompt injection, guardrails, tool output clearing, compaction) closest to the
+ * model. `before*` hooks
  * run in that order, `wrap*` hooks nest with the first outermost, `afterModel` runs in reverse.
  *
  * A hook that throws fails the run with its error. `tripwire()` from `@cogitator-ai/core` stops
