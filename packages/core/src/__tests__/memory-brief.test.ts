@@ -103,6 +103,7 @@ describe('memory.brief', () => {
       userId: 'ana',
     });
     expect(result.output).toBe('done');
+    expect(failing.requests.some(isBrief)).toBe(true);
     expect(lastUser(failing.requests.at(-1))).not.toContain('A quick read of memory');
 
     const slow = backend(() => new Promise<string>(() => undefined));
@@ -113,6 +114,11 @@ describe('memory.brief', () => {
       userId: 'ana',
     });
     expect(second.output).toBe('done');
+    expect(slow.requests.some(isBrief)).toBe(true);
+    expect(lastUser(slow.requests.filter((request) => !isBrief(request)).at(-1))).not.toContain(
+      'A quick read of memory'
+    );
+    expect((late as unknown as { afterRunSpend: Map<string, unknown> }).afterRunSpend.size).toBe(0);
   });
 
   it('writes no brief for a run the runtime let into no thread', async () => {

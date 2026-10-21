@@ -20,11 +20,22 @@ import {
   type MemoryFiles,
 } from './memory-files';
 import { byRecorded, visibleIn, type MemoryItems } from './memory-items';
+import { OBSERVATIONS_DIRECTORY } from './memory-observations';
 
 /** The playbook: rules of how to work, learned from lessons */
 export const PLAYBOOK_PATH = `${MEMORY_ROOT}/playbook.md`;
 /** The edited playbook waiting for review, in `shadow` mode */
 export const PLAYBOOK_DRAFT_PATH = `${MEMORY_ROOT}/playbook.next.md`;
+
+/**
+ * The paths memory writes itself, which the memory tool must not: what an agent wrote there
+ * would reach every later run as what memory learned
+ */
+export const MEMORY_RESERVED_PATHS: readonly string[] = [
+  PLAYBOOK_PATH,
+  PLAYBOOK_DRAFT_PATH,
+  OBSERVATIONS_DIRECTORY,
+];
 
 /** Edits one fold makes at most */
 export const MAX_PLAYBOOK_EDITS = 3;
@@ -69,7 +80,11 @@ const editSchema = z.union([
     lessons: z.array(z.string().trim().min(1)).min(1),
   }),
   z.object({
-    replace: z.string().trim().min(1),
+    replace: z
+      .string()
+      .trim()
+      .min(1)
+      .max(RULE_CHARS * 2),
     with: z.string().trim().min(1).max(RULE_CHARS),
     lessons: z.array(z.string().trim().min(1)).min(1),
   }),
@@ -80,7 +95,7 @@ export type PlaybookEdit =
   { add: string; lessons: string[] } | { replace: string; with: string; lessons: string[] };
 
 const HEADER = /^<!-- memory playbook: lessons through (\S+)(?: draft of (\S+))? -->$/m;
-const LESSON_MARK = /\s*\[lesson:[A-Za-z0-9_-]+\]/g;
+const LESSON_MARK = /\[lesson:[A-Za-z0-9_-]+\]/g;
 const MARKED = /\[lesson:([A-Za-z0-9_-]+)\]/g;
 
 /** Whether `answer` holds a JSON array, such as one cut short by the token limit does not */
@@ -281,7 +296,9 @@ export interface PlaybookChange {
  * never written over whole and its earlier rules cannot collapse into a summary of themselves.
  * Only `active` lessons are folded: one a model wrote stays `suggested` until it is activated,
  * and one from a tool or a page is never folded, active or not, so neither can reach the
- * playbook every run reads. An answer the model did not
+ * playbook every run reads. A playbook every user of the agent shares (a scope without a user, a
+ * project or a thread) takes only `system` lessons in `apply` mode, as a user's lesson would
+ * reach the others: `shadow` drafts the rest for review. An answer the model did not
  * finish folds nothing and leaves its lessons for the next fold. Every fold is a new version of the file, so
  * its diff and the way back are in the file's history, or with `mode: 'shadow'` a draft that
  * {@link promotePlaybook} makes the playbook after review.
@@ -364,9 +381,11 @@ export class MemoryConsolidator {
         if (!parsed.success) continue;
         const keep = byId.get(parsed.data.keep);
         if (!keep || used.has(keep.id)) continue;
-        const drops = [...new Set(parsed.data.drop)]
+        const named = [...new Set(parsed.data.drop)].filter((id) => id !== keep.id);
+        const drops = named
           .map((id) => byId.get(id))
-          .filter((item): item is MemoryItem => item !== undefined && item.id !== keep.id);
+          .filter((item): item is MemoryItem => item !== undefined);
+        if (drops.length !== named.length) continue;
         const allowed = drops.filter(
           (item) =>
             !used.has(item.id) &&
@@ -427,12 +446,15 @@ export class MemoryConsolidator {
     });
     if (!found.success) throw new Error(found.error);
     const after = from.through?.getTime() ?? -Infinity;
+    const shared =
+      scope.userId === undefined && scope.projectId === undefined && scope.threadId === undefined;
     const lessons = found.data
       .filter(
         (item) =>
           visibleIn(item, scope) &&
           item.trust !== 'tool' &&
           item.trust !== 'web' &&
+          (!shared || mode === 'shadow' || item.trust === 'system') &&
           item.recordedAt.getTime() > after
       )
       .sort(byRecorded)

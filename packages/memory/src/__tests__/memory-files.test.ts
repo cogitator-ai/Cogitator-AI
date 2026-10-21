@@ -37,6 +37,26 @@ describe('MemoryFiles', () => {
     files = new MemoryFiles({ adapter });
   });
 
+  it('refuses every change of a reserved path and of what lies under it', async () => {
+    const guarded: MemoryFileAccess = {
+      ...access,
+      reserved: ['/memories/playbook.md', '/memories/observations'],
+    };
+    await files.create(access, '/memories/observations/ana.md', 'kept by memory');
+    await expect(files.create(guarded, '/memories/playbook.md', 'x')).rejects.toThrow(
+      '/memories/playbook.md is kept by memory itself and is read-only here'
+    );
+    await expect(files.delete(guarded, '/memories/observations/ana.md')).rejects.toThrow(
+      'read-only'
+    );
+    await expect(files.delete(guarded, '/memories')).rejects.toThrow();
+    await files.create(guarded, '/memories/notes.md', 'mine');
+    await expect(
+      files.rename(guarded, '/memories/notes.md', '/memories/playbook.md')
+    ).rejects.toThrow('read-only');
+    expect(await files.view(guarded, '/memories/observations/ana.md')).toContain('kept by memory');
+  });
+
   it('answers each command as the memory tool does', async () => {
     expect(await files.create(access, '/memories/notes/plan.md', 'one\ntwo\nthree')).toBe(
       'File created successfully at: /memories/notes/plan.md'

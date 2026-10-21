@@ -86,7 +86,7 @@ async function playbookNote(
   visibleTo: MemoryItemScope
 ): Promise<string | undefined> {
   const file = await files.read({ scope: visibleTo, visibleTo, readOnly: true }, PLAYBOOK_PATH);
-  if (!file) return undefined;
+  if (!file || file.version.author === 'model') return undefined;
   const lines: string[] = [];
   let left = PLAYBOOK_CHARS;
   const { rules } = parsePlaybook(file.content);
@@ -671,7 +671,8 @@ export class Cogitator implements ToolInvoker {
    * A summarizer that asks `model`, routed as a run's model is (see {@link route}), with the
    * prompt as its system message. Each call stops with the run's `signal` and is counted for
    * `run` in the cost router, and with `inRun` in the usage the run returns too: a call made
-   * after the run returned, such as by memory upkeep, is not.
+   * after the run returned, such as by memory upkeep, is not. With `security.pii` masking, what
+   * it sends is masked as a run's model calls are.
    */
   private summarizerFor(
     model: string,
@@ -680,7 +681,9 @@ export class Cogitator implements ToolInvoker {
   ): SummarizeFn {
     return async (messages, options) => {
       signal?.throwIfAborted();
-      const { backend, model: name } = this.route(model);
+      const routed = this.route(model);
+      const backend = withPiiMasking(routed.backend, this.config.security?.pii);
+      const name = routed.model;
       const response = await backend.chat({
         model: name,
         messages: [
@@ -2153,6 +2156,7 @@ export class Cogitator implements ToolInvoker {
       throw error;
     } finally {
       if (this.runMemories.get(runId) === runMemory) this.runMemories.delete(runId);
+      this.afterRunSpend.delete(runId);
       releaseRunSlot?.();
       if (timeoutId) {
         clearTimeout(timeoutId);

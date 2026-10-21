@@ -86,6 +86,8 @@ const CITED = /\[item:([A-Za-z0-9_-]+)\]/g;
  * and file key, so facts that gave nothing are not asked about again until they change
  */
 const unwritten = new WeakMap<MemoryItemAdapter, Map<string, string>>();
+/** Entities kept in {@link unwritten} at most per store, the oldest forgotten first */
+const UNWRITTEN_KEPT = 10_000;
 
 const statementSchema = z.object({
   text: z.string().trim().min(1).max(STATEMENT_CHARS),
@@ -119,8 +121,12 @@ function slugOf(name: string, entityId: string): string {
   return slug || entityId;
 }
 
-/** The observation `file` holds, undefined for a file that is not one */
+/**
+ * The observation `file` holds, undefined for a file that is not one or that a model wrote,
+ * such as with the memory tool
+ */
 export function parseObservation(file: MemoryFile): MemoryObservation | undefined {
+  if (file.version.author === 'model') return undefined;
   const header = HEADER.exec(file.content);
   if (!header?.[1] || !header[2]) return undefined;
   const name = /^# (.+)$/m.exec(file.content)?.[1]?.trim() ?? header[1];
@@ -302,7 +308,13 @@ export class MemoryObservations {
           ? `${OBSERVATIONS_DIRECTORY}/${slug}-${entity.id}.md`
           : `${OBSERVATIONS_DIRECTORY}/${slug}.md`);
       const content = await this.write(entity, items, options);
-      const gaveUp = () => failed.set(failedKey(entityId), fingerprintOf(items));
+      const gaveUp = () => {
+        if (failed.size >= UNWRITTEN_KEPT) {
+          const oldest = failed.keys().next().value;
+          if (oldest !== undefined) failed.delete(oldest);
+        }
+        failed.set(failedKey(entityId), fingerprintOf(items));
+      };
       if (content === undefined) {
         gaveUp();
         continue;

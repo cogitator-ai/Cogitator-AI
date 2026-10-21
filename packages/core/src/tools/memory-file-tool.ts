@@ -6,6 +6,7 @@ import {
   type MemoryFileAccess,
   type MemoryFileCommand,
   type MemoryFilePlace,
+  MEMORY_RESERVED_PATHS,
 } from '@cogitator-ai/memory';
 import type {
   BaseToolContext,
@@ -282,6 +283,7 @@ export function memoryFileTool(
       visibleTo: memoryFileVisibility(agentId, runOf(context)),
       ...(place && { place }),
       ...(config.readOnly && { readOnly: true }),
+      reserved: MEMORY_RESERVED_PATHS,
       author: 'model',
       observe: (path, sha256) => {
         if (sha256 === null) seen.delete(path);

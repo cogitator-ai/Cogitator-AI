@@ -67,6 +67,11 @@ export interface MemoryFileAccess {
   place?: MemoryFilePlace;
   /** Views only: every change fails */
   readOnly?: boolean;
+  /**
+   * Paths only memory itself writes, such as the playbook and the observations: a change of one,
+   * or of a file under one, fails for this access
+   */
+  reserved?: readonly string[];
   author?: MemoryFileAuthor;
   /**
    * Hears of the version of a file a command showed or wrote: its path and SHA-256, null once
@@ -554,6 +559,7 @@ export class MemoryFiles {
     const from = memoryPath(oldPath);
     const to = memoryPath(newPath);
     this.writable(access, oldPath);
+    this.writable(access, newPath);
     if (from === MEMORY_ROOT || to === MEMORY_ROOT || under(to, from)) {
       throw new MemoryFileError(`The destination ${newPath} already exists`);
     }
@@ -691,6 +697,13 @@ export class MemoryFiles {
 
   private writable(access: MemoryFileAccess, path: string): void {
     if (access.readOnly) throw new MemoryFileError(`The memory at ${path} is read-only`);
+    const target = memoryPath(path);
+    for (const reserved of access.reserved ?? []) {
+      const root = memoryPath(reserved);
+      if (under(target, root) || under(root, target)) {
+        throw new MemoryFileError(`${reserved} is kept by memory itself and is read-only here`);
+      }
+    }
   }
 
   private fileFor(

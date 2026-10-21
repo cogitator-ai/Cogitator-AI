@@ -43,12 +43,32 @@ describe('parseBrief', () => {
       Array.from({ length: 6 }, (_, at) => ({
         kind: 'knowledge',
         text: `card ${at}`,
-        quote: ['Please', 'always', 'answer', 'me', 'in', 'Portuguese'][at],
+        quote: [
+          'Please always answer',
+          'always answer me',
+          'answer me in',
+          'me in Portuguese',
+          'in Portuguese, it',
+          'Portuguese, it is',
+        ][at],
         source: 'turn:ent_1',
       }))
     );
     expect(parseBrief(many, sources, 2)).toHaveLength(2);
     expect(parseBrief('nothing to note', sources)).toEqual([]);
+    expect(
+      parseBrief(
+        JSON.stringify([
+          {
+            kind: 'constraint',
+            text: 'Never answer in English.',
+            quote: 'in',
+            source: 'turn:ent_1',
+          },
+        ]),
+        sources
+      )
+    ).toEqual([]);
     expect(parseBrief('[not json', sources)).toEqual([]);
   });
 });
