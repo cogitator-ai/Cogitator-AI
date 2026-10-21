@@ -58,6 +58,11 @@ export interface MemoryFileAccess {
   /** Views only: every change fails */
   readOnly?: boolean;
   author?: MemoryFileAuthor;
+  /**
+   * Hears of the version of a file a command showed or wrote: its path and SHA-256, null once
+   * the command deleted it. The memory tool keeps it to refuse an edit of a file changed since.
+   */
+  observe?: (path: string, sha256: string | null) => void;
 }
 
 /** A file as it stands for an access */
@@ -175,6 +180,43 @@ function under(path: string, directory: string): boolean {
     : path === directory || path.startsWith(`${directory}/`);
 }
 
+/** A version a change adds, before its scope and place are known */
+interface PlannedWrite {
+  path: string;
+  content: string | null;
+  renamedFrom?: string;
+}
+
+/** `path` as the path of a file: a path that ends in `/` names a directory */
+function filePath(path: string): string {
+  const target = memoryPath(path);
+  if (target === MEMORY_ROOT || path.endsWith('/')) {
+    throw new MemoryFileError(`The path ${path} is not a file.`);
+  }
+  return target;
+}
+
+/** Refuses text a file cannot hold in every store */
+function writableText(text: string): void {
+  if (text.includes('\u0000')) {
+    throw new MemoryFileError('Memory files cannot hold NUL characters');
+  }
+}
+
+/** Refuses a file whose directory, or one above it, is a file */
+function fileUnder(current: ReadonlyMap<string, MemoryFile>, target: string, path: string): void {
+  for (
+    let at = target.lastIndexOf('/');
+    at > MEMORY_ROOT.length;
+    at = target.lastIndexOf('/', at - 1)
+  ) {
+    const directory = target.slice(0, at);
+    if (current.has(directory)) {
+      throw new MemoryFileError(`Cannot create ${path}: ${directory} is a file`);
+    }
+  }
+}
+
 const writing = new WeakMap<MemoryFileAdapter, Map<string, Promise<void>>>();
 
 export interface MemoryFilesOptions {
@@ -186,7 +228,7 @@ export interface MemoryFilesOptions {
  * Memory files of an adapter, read and changed as the memory tool does it. A run sees the files
  * of the scopes it is let into, the version of the narrowest scope when two hold one path, and
  * in its own thread only the versions of its branch. A change adds a version in the access's
- * scope, after the newest one of its path, and two writers never add the same place: the store
+ * scope, or in the narrower scope of the version it changes, after the newest one of its path, and two writers never add the same place: the store
  * refuses the second, and the change is made again on what stands then. A change of many files,
  * such as a renamed directory, is added whole or not at all.
  */
@@ -277,6 +319,7 @@ export class MemoryFiles {
         shown = lines.slice(start, end);
         from = start + 1;
       }
+      access.observe?.(file.path, file.sha256);
       return `Here's the content of ${path} with line numbers:\n${numbered(shown, from)}`;
     }
     if (target !== MEMORY_ROOT && files.length === 0) {
@@ -303,14 +346,15 @@ export class MemoryFiles {
   }
 
   async create(access: MemoryFileAccess, path: string, text: string): Promise<string> {
-    const target = memoryPath(path);
+    const target = filePath(path);
     this.writable(access, path);
-    if (target === MEMORY_ROOT) throw new MemoryFileError(`File ${path} already exists`);
+    writableText(text);
     await this.change(access, [target], async (current) => {
       if (current.has(target)) throw new MemoryFileError(`File ${path} already exists`);
       if ([...current.keys()].some((known) => under(known, target))) {
         throw new MemoryFileError(`File ${path} already exists`);
       }
+      fileUnder(current, target, path);
       return [{ path: target, content: text }];
     });
     return `File created successfully at: ${path}`;
@@ -323,8 +367,9 @@ export class MemoryFiles {
     newText: string,
     expectedSha256?: string
   ): Promise<string> {
-    const target = memoryPath(path);
+    const target = filePath(path);
     this.writable(access, path);
+    writableText(newText);
     let snippet = '';
     await this.change(access, [target], async (current) => {
       const file = this.fileFor(current, target, path, expectedSha256);
@@ -357,8 +402,9 @@ export class MemoryFiles {
     text: string,
     expectedSha256?: string
   ): Promise<string> {
-    const target = memoryPath(path);
+    const target = filePath(path);
     this.writable(access, path);
+    writableText(text);
     await this.change(access, [target], async (current) => {
       const file = this.fileFor(current, target, path, expectedSha256);
       const lines = file.content.split('\n');
@@ -398,6 +444,7 @@ export class MemoryFiles {
       if ([...current.keys()].some((known) => under(known, to))) {
         throw new MemoryFileError(`The destination ${newPath} already exists`);
       }
+      fileUnder(current, to, newPath);
       const moved = [...current.values()].filter((file) => under(file.path, from));
       if (moved.length === 0) throw new MemoryFileError(`The path ${oldPath} does not exist`);
       return moved.flatMap((file) => {
@@ -412,26 +459,44 @@ export class MemoryFiles {
   }
 
   /**
-   * Replaces the content of every version of the files at `paths` the access sees with
-   * {@link REDACTED_CONTENT}, kept as redacted with `reason`: what must not be kept is gone from
-   * the store, while the history of changes stays. Returns the versions redacted.
+   * Replaces the content of every version of the files at `paths` (and under them) the access
+   * sees with {@link REDACTED_CONTENT}, kept as redacted with `reason`, following renames back to
+   * the paths a file had and on to the ones it got: what must not be kept is gone from the store,
+   * while the history of changes stays. Returns the versions redacted.
    */
   async redact(
     access: MemoryFileAccess,
     paths: readonly string[],
     reason?: string
   ): Promise<number> {
-    const files = paths.map(memoryPath);
-    const versions = unwrap(
+    const all = unwrap(
       await this.adapter.findFileVersions({
         agentId: access.scope.agentId,
         visibleTo: access.visibleTo ?? access.scope,
       })
-    ).filter(
+    );
+    const roots = new Set(paths.map(memoryPath));
+    const named = (path: string) => [...roots].some((root) => under(path, root) || path === root);
+    const chain = new Set(
+      all.filter((version) => named(version.path)).map((version) => version.path)
+    );
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const version of all) {
+        const from = version.renamedFrom;
+        if (from === undefined) continue;
+        if (chain.has(version.path) && !chain.has(from)) {
+          chain.add(from);
+          grew = true;
+        } else if (chain.has(from) && !chain.has(version.path)) {
+          chain.add(version.path);
+          grew = true;
+        }
+      }
+    }
+    const versions = all.filter(
       (version) =>
-        files.some((file) => under(version.path, file) || version.renamedFrom === file) &&
-        version.content !== null &&
-        version.redacted === undefined
+        chain.has(version.path) && version.content !== null && version.redacted === undefined
     );
     if (versions.length === 0) return 0;
     unwrap(
@@ -531,18 +596,16 @@ export class MemoryFiles {
   private async change(
     access: MemoryFileAccess,
     roots: readonly string[],
-    plan: (
-      current: ReadonlyMap<string, MemoryFile>
-    ) => Promise<{ path: string; content: string | null; renamedFrom?: string }[]>
+    plan: (current: ReadonlyMap<string, MemoryFile>) => Promise<PlannedWrite[]>
   ): Promise<void> {
     await this.exclusive(access.scope.agentId, async () => {
       for (let attempt = 1; ; attempt++) {
         const current = new Map((await this.list(access)).map((file) => [file.path, file]));
-        const writes = await plan(current);
-        const sequences = await this.nextSequences(
-          access.scope,
-          writes.map((write) => write.path)
-        );
+        const writes = (await plan(current)).map((write) => ({
+          ...write,
+          scope: this.scopeFor(access, current.get(write.path)),
+        }));
+        const sequences = await this.nextSequences(access.scope.agentId, writes);
         const conflict = await this.write(access, writes, current, sequences);
         if (!conflict) return;
         if (attempt >= WRITE_ATTEMPTS) {
@@ -554,21 +617,35 @@ export class MemoryFiles {
     });
   }
 
-  /** The next free place of each path in `scope`, after every version of it on any branch */
+  /**
+   * Where a change of a path goes: the access's scope, or the narrower scope of the version the
+   * run sees in front of it, so the change stands in front in its turn
+   */
+  private scopeFor(access: MemoryFileAccess, front: MemoryFile | undefined): MemoryItemScope {
+    if (!front) return access.scope;
+    return narrowness(front.version) > narrowness({ scope: access.scope })
+      ? front.version.scope
+      : access.scope;
+  }
+
+  /** The next free place of each path in its scope, after every version of it on any branch */
   private async nextSequences(
-    scope: MemoryItemScope,
-    paths: readonly string[]
+    agentId: string,
+    writes: readonly { path: string; scope: MemoryItemScope }[]
   ): Promise<Map<string, number>> {
     const versions = unwrap(
       await this.adapter.findFileVersions({
-        agentId: scope.agentId,
-        scope,
-        paths: [...new Set(paths)],
+        agentId,
+        paths: [...new Set(writes.map((write) => write.path))],
       })
     );
-    const next = new Map<string, number>(paths.map((path) => [path, 1]));
+    const next = new Map<string, number>(
+      writes.map((write) => [fileKeyOf(write.scope, write.path), 1])
+    );
     for (const version of versions) {
-      next.set(version.path, Math.max(next.get(version.path) ?? 1, version.sequence + 1));
+      const key = fileKeyOf(version.scope, version.path);
+      const known = next.get(key);
+      if (known !== undefined) next.set(key, Math.max(known, version.sequence + 1));
     }
     return next;
   }
@@ -576,23 +653,24 @@ export class MemoryFiles {
   /** Adds the versions, all or none, true when the store refused them because a place was taken */
   private async write(
     access: MemoryFileAccess,
-    writes: readonly { path: string; content: string | null; renamedFrom?: string }[],
+    writes: readonly (PlannedWrite & { scope: MemoryItemScope })[],
     current: ReadonlyMap<string, MemoryFile>,
     sequences: Map<string, number>
   ): Promise<boolean> {
     const at = this.now();
     const entryId = access.place?.entryId;
     const versions = writes.map((write): MemoryFileVersion => {
-      const sequence = sequences.get(write.path) ?? 1;
-      sequences.set(write.path, sequence + 1);
+      const key = fileKeyOf(write.scope, write.path);
+      const sequence = sequences.get(key) ?? 1;
+      sequences.set(key, sequence + 1);
       return {
         id: `mf_${nanoid(16)}`,
-        scope: access.scope,
+        scope: write.scope,
         path: write.path,
         sequence,
         content: write.content,
         sha256: write.content === null ? null : sha256Of(write.content),
-        previousSha256: current.get(write.path)?.sha256 ?? null,
+        previousId: current.get(write.path)?.version.id ?? null,
         ...(access.place &&
           entryId !== undefined && { place: { threadId: access.place.threadId, entryId } }),
         ...(write.renamedFrom !== undefined && { renamedFrom: write.renamedFrom }),
@@ -601,9 +679,12 @@ export class MemoryFiles {
       };
     });
     const put = await this.adapter.putFileVersions(versions);
-    if (put.success) return false;
-    if (put.error === MEMORY_FILE_CONFLICT) return true;
-    throw new Error(put.error);
+    if (!put.success) {
+      if (put.error === MEMORY_FILE_CONFLICT) return true;
+      throw new Error(put.error);
+    }
+    for (const version of versions) access.observe?.(version.path, version.sha256);
+    return false;
   }
 
   private async exclusive<T>(agentId: string, work: () => Promise<T>): Promise<T> {

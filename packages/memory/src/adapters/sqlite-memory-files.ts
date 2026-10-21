@@ -22,6 +22,9 @@ const SCHEMA = `
   CREATE TABLE IF NOT EXISTS memory_file_versions (
     id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL,
+    user_id TEXT,
+    project_id TEXT,
+    thread_id TEXT,
     file_key TEXT NOT NULL,
     path TEXT NOT NULL,
     sequence INTEGER NOT NULL,
@@ -31,6 +34,8 @@ const SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS idx_memory_file_versions_agent
     ON memory_file_versions(agent_id, path, created_at);
+  CREATE INDEX IF NOT EXISTS idx_memory_file_versions_user
+    ON memory_file_versions(agent_id, user_id);
 `;
 
 function versionFrom(data: string): MemoryFileVersion {
@@ -76,14 +81,18 @@ export function sqliteMemoryFiles(db: SqliteItemsDatabase): MemoryFileAdapter {
       run(() => {
         const insert = db.prepare(
           `INSERT INTO memory_file_versions
-             (id, agent_id, file_key, path, sequence, created_at, data)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`
+             (id, agent_id, user_id, project_id, thread_id, file_key, path, sequence, created_at,
+              data)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         );
         atomically(() => {
           for (const version of versions) {
             insert.run(
               version.id,
               version.scope.agentId,
+              version.scope.userId ?? null,
+              version.scope.projectId ?? null,
+              version.scope.threadId ?? null,
               fileKeyOf(version.scope, version.path),
               version.path,
               version.sequence,
@@ -115,7 +124,22 @@ export function sqliteMemoryFiles(db: SqliteItemsDatabase): MemoryFileAdapter {
         }
         if (filter.prefix !== undefined) {
           conditions.push('substr(path, 1, ?) = ?');
-          params.push(filter.prefix.length, filter.prefix);
+          params.push([...filter.prefix].length, filter.prefix);
+        }
+        const visibleTo = filter.visibleTo;
+        if (visibleTo) {
+          for (const [column, value] of [
+            ['user_id', visibleTo.userId],
+            ['project_id', visibleTo.projectId],
+            ['thread_id', visibleTo.threadId],
+          ] as const) {
+            if (value === undefined) {
+              conditions.push(`${column} IS NULL`);
+            } else {
+              conditions.push(`(${column} IS NULL OR ${column} = ?)`);
+              params.push(value);
+            }
+          }
         }
         const rows = db
           .prepare(

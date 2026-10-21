@@ -6,8 +6,8 @@ const OPENED = 'memory.citations.opened';
 /** A reference to memory in an answer: `[turn:<id>]` or `[item:<id>]` */
 const REFERENCE = /\s?\[(turn|item):([^\]\s]+)\]/g;
 
-/** A reference as the memory tools hand it out, inside their results */
-const HANDED_OUT = /\b(turn|item):([A-Za-z0-9_-]+)/g;
+/** A reference the memory tools hand out */
+const HANDED_OUT = /^(?:turn|item):\S+$/;
 
 export interface MemoryCitationsOptions {
   /** Tools whose results hand out references, the memory search tools by default */
@@ -16,13 +16,40 @@ export interface MemoryCitationsOptions {
   onUncited?: (references: string[], context: RunMiddlewareContext) => void;
 }
 
-function referencesIn(text: string): string[] {
-  return [...text.matchAll(HANDED_OUT)].map((match) => `${match[1]}:${match[2]}`);
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The references a memory tool's result hands out: the `ref` of each item a search returned and
+ * of each turn `open_turns` opened. Text inside the results, such as an earlier answer that
+ * cited something, hands out nothing.
+ */
+function referencesOf(result: unknown): string[] {
+  if (!isRecord(result)) return [];
+  return ['results', 'turns'].flatMap((field) => {
+    const list = result[field];
+    if (!Array.isArray(list)) return [];
+    return list.flatMap((entry) =>
+      isRecord(entry) && typeof entry.ref === 'string' && HANDED_OUT.test(entry.ref)
+        ? [entry.ref]
+        : []
+    );
+  });
 }
 
 function textOf(message: Message): string {
   if (typeof message.content === 'string') return message.content;
   return message.content.map((part) => ('text' in part ? part.text : '')).join('\n');
+}
+
+/** The references a tool message of a memory tool handed out, read from its JSON */
+function referencesInMessage(message: Message): string[] {
+  try {
+    return referencesOf(JSON.parse(textOf(message)) as unknown);
+  } catch {
+    return [];
+  }
 }
 
 function openedOf(context: RunMiddlewareContext): Set<string> {
@@ -58,9 +85,7 @@ export function memoryCitations(options: MemoryCitationsOptions = {}): RunMiddle
       const result = await next(call);
       if (tools.has(call.tool.name) && result.error === undefined) {
         const opened = openedOf(context);
-        for (const reference of referencesIn(JSON.stringify(result.result ?? null))) {
-          opened.add(reference);
-        }
+        for (const reference of referencesOf(result.result)) opened.add(reference);
       }
       return result;
     },
@@ -69,7 +94,7 @@ export function memoryCitations(options: MemoryCitationsOptions = {}): RunMiddle
       const opened = new Set(openedOf(context));
       for (const message of messages) {
         if (message.role === 'tool' && message.name !== undefined && tools.has(message.name)) {
-          for (const reference of referencesIn(textOf(message))) opened.add(reference);
+          for (const reference of referencesInMessage(message)) opened.add(reference);
         }
       }
       const uncited: string[] = [];

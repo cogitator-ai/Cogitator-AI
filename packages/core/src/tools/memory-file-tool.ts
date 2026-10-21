@@ -36,7 +36,7 @@ export interface MemoryFileToolConfig {
   /** The id the agent's memory is kept under (`memoryAgentId(agent)`) */
   agentId: string;
   /**
-   * Who the files belong to: `user` (default) the run's user, agent-wide for a run without one,
+   * Who the files belong to: `user` (default) the run's user, the thread for a run without one,
    * `agent` everyone the agent talks to, `thread` the thread alone
    */
   scope?: 'user' | 'agent' | 'thread';
@@ -245,52 +245,37 @@ export function memoryFileTool(
   async function answer(params: MemoryFileToolParams, context: BaseToolContext): Promise<string> {
     const command = memoryFileCommand(params);
     const place = await placeFor(context);
+    const seen = viewedBy(context.runId);
     const access: MemoryFileAccess = {
       scope: scopeOf(context),
       visibleTo: memoryFileVisibility(agentId, context),
       ...(place && { place }),
       ...(config.readOnly && { readOnly: true }),
       author: 'model',
-    };
-    const seen = viewedBy(context.runId);
-    const remember = async (path: string) => {
-      const file = await files.read(access, path);
-      if (file) seen.set(file.path, file.sha256);
-      else seen.delete(memoryPath(path));
+      observe: (path, sha256) => {
+        if (sha256 === null) seen.delete(path);
+        else seen.set(path, sha256);
+      },
     };
     switch (command.command) {
-      case 'view': {
-        const reply = await files.view(access, command.path, command.view_range);
-        await remember(command.path);
-        return reply;
-      }
-      case 'str_replace': {
-        const reply = await files.strReplace(
+      case 'str_replace':
+        return files.strReplace(
           access,
           command.path,
           command.old_str,
           command.new_str,
           seen.get(memoryPath(command.path))
         );
-        await remember(command.path);
-        return reply;
-      }
-      case 'insert': {
-        const reply = await files.insert(
+      case 'insert':
+        return files.insert(
           access,
           command.path,
           command.insert_line,
           command.insert_text,
           seen.get(memoryPath(command.path))
         );
-        await remember(command.path);
-        return reply;
-      }
-      default: {
-        const reply = await files.run(access, command);
-        if (command.command === 'create') await remember(command.path);
-        return reply;
-      }
+      default:
+        return files.run(access, command);
     }
   }
 }

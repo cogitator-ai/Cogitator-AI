@@ -683,6 +683,7 @@ export class Cogitator implements ToolInvoker {
     }
     if (this.memoryFilesService?.adapter !== adapter) {
       this.memoryFilesService = { adapter, service: new MemoryFiles({ adapter }) };
+      this.memoryFileTools.clear();
     }
     return { config, adapter, service: this.memoryFilesService.service };
   }
@@ -2793,6 +2794,7 @@ export class Cogitator implements ToolInvoker {
       ...(this.config.memory?.contextBuilder?.timeZone !== undefined && {
         timeZone: this.config.memory.contextBuilder.timeZone,
       }),
+      placeOf: (runId) => this.runMemories.get(runId)?.conversation,
     });
   }
 
@@ -2888,6 +2890,8 @@ export class Cogitator implements ToolInvoker {
    */
   async close(): Promise<void> {
     await this.closeObservers();
+    this.memoryFileTools.clear();
+    this.memoryFilesService = undefined;
     await cleanupState(this.state);
     this.backends.clear();
     this.turnBackends.clear();

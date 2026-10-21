@@ -45,6 +45,11 @@ export interface MemorySearchToolsConfig {
   messageIndex?: MessageIndex;
   /** IANA time zone the dates of turns are shown in, UTC by default */
   timeZone?: string;
+  /**
+   * Where a run keeps its conversation, so the tools read the branch it stands on: the runtime
+   * names it, and without it the thread's active branch is read
+   */
+  placeOf?: (runId: string) => { threadId: string; leafId?: string | null } | undefined;
 }
 
 const searchParams = z.object({
@@ -134,13 +139,25 @@ export function createMemorySearchTools(config: MemorySearchToolsConfig) {
   });
 
   /** The turns of the run's thread, on its active branch when the store keeps branches */
-  const turnsOf = async (threadId: string | undefined): Promise<MemoryEntry[]> => {
-    if (threadId === undefined) return [];
+  /** The turns of the branch the run stands on: its own when the runtime names it, else the active one */
+  const turnsOf = async (context: BaseToolContext): Promise<MemoryEntry[]> => {
+    const conversation =
+      config.placeOf?.(context.runId) ??
+      (context.threadId !== undefined ? { threadId: context.threadId } : undefined);
+    if (!conversation || conversation.leafId === null) return [];
+    const { threadId, leafId } = conversation;
     const read = memory.getPath
-      ? await memory.getPath({ threadId })
+      ? await memory.getPath({ threadId, ...(leafId !== undefined && { leafId }) })
       : await memory.getEntries({ threadId });
     if (!read.success) throw new Error(`Reading thread ${threadId} failed: ${read.error}`);
     return read.data;
+  };
+
+  /** The run's own turn, from its question on, which a search leaves out */
+  const currentTurn = (history: readonly MemoryEntry[]): Set<string> => {
+    let from = history.length;
+    while (from > 0 && history[from - 1]?.message.role !== 'user') from--;
+    return from === 0 ? new Set() : new Set(history.slice(from - 1).map((entry) => entry.id));
   };
 
   const itemCosines = async (
@@ -191,7 +208,7 @@ export function createMemorySearchTools(config: MemorySearchToolsConfig) {
       'nothing fits. If nothing you opened answers the question, say that you do not remember.',
     parameters: searchParams,
     execute: async ({ query, limit = 8 }, context) => {
-      const history = await turnsOf(context.threadId);
+      const history = await turnsOf(context);
       const queryVector = embedding?.embed(query);
       queryVector?.catch(() => undefined);
       const cosines =
@@ -203,6 +220,7 @@ export function createMemorySearchTools(config: MemorySearchToolsConfig) {
         anchor: new Date(),
         timeZone,
         history,
+        held: currentTurn(history),
         ...(cosines && { cosines }),
         ...(items &&
           itemAdapter && {
@@ -253,7 +271,7 @@ export function createMemorySearchTools(config: MemorySearchToolsConfig) {
       'returned. Cite an opened turn as [turn:<id>].',
     parameters: openParams,
     execute: async ({ ids, around = 1 }, context) => {
-      const history = await turnsOf(context.threadId);
+      const history = await turnsOf(context);
       const position = new Map(history.map((entry, at) => [entry.id, at]));
       const opened = new Set<number>();
       const missing: string[] = [];

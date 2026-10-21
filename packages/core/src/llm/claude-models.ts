@@ -126,6 +126,16 @@ export function supportsForcedToolChoice(modelId: string): boolean {
 }
 
 /**
+ * Whether a Claude model takes Anthropic's own memory tool (`memory_20250818`): Claude 4 and
+ * later, plus every Fable / Mythos model. Other ids get the tool's schema instead.
+ */
+export function supportsMemoryTool(modelId: string): boolean {
+  const version = parseClaudeModelId(modelId);
+  if (!version) return false;
+  return ALWAYS_CURRENT_FAMILIES.has(version.family) || (version.major ?? 0) >= 4;
+}
+
+/**
  * Whether the Claude API accepts `output_config.format` (JSON structured outputs):
  * Claude 4.5 and later, plus every Fable / Mythos model.
  */

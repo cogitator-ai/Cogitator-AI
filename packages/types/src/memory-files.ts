@@ -30,8 +30,8 @@ export interface MemoryFileVersion {
   content: string | null;
   /** SHA-256 of `content` as hex, null when this version deletes the file */
   sha256: string | null;
-  /** SHA-256 of the version this one replaces, null for a new file */
-  previousSha256: string | null;
+  /** Id of the version this one replaces, null for a new file */
+  previousId: string | null;
   /**
    * The thread entry the run that wrote it stood on: a version is seen in its own thread only on
    * the branches that hold that entry, so a branch keeps its own edits. Absent for a file written
@@ -97,7 +97,7 @@ export interface MemoryFileAdapter {
  */
 export interface MemoryFilesConfig {
   /**
-   * Who the files belong to: `user` (default) the run's user, agent-wide for a run without one,
+   * Who the files belong to: `user` (default) the run's user, the thread for a run without one,
    * `agent` everyone the agent talks to, `thread` the thread alone
    */
   scope?: 'user' | 'agent' | 'thread';

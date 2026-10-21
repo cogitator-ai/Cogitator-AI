@@ -270,6 +270,36 @@ describe('AnthropicBackend', () => {
       ]);
     });
 
+    it('sends the memory tool as a schema to a model older than Claude 4', async () => {
+      mockCreate.mockResolvedValueOnce({
+        id: 'msg_123',
+        content: [{ type: 'text', text: 'OK' }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 10, output_tokens: 2 },
+      });
+
+      await backend.chat({
+        model: 'claude-3-5-haiku-20241022',
+        messages: [{ role: 'user', content: 'Test' }],
+        tools: [
+          {
+            name: 'memory',
+            description: 'Your memory directory',
+            parameters: { type: 'object', properties: {} },
+            providerTypes: { anthropic: 'memory_20250818' },
+          },
+        ],
+      });
+
+      expect(mockCreate.mock.calls[0]?.[0].tools).toEqual([
+        {
+          name: 'memory',
+          description: 'Your memory directory',
+          input_schema: { type: 'object', properties: {} },
+        },
+      ]);
+    });
+
     it('includes generation config', async () => {
       mockCreate.mockResolvedValueOnce({
         id: 'msg_123',

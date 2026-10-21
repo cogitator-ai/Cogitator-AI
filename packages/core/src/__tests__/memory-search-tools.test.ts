@@ -128,6 +128,23 @@ describe('memory search tools', () => {
     ]);
   });
 
+  it("leaves the run's own question out of what it finds", async () => {
+    await memory.addEntry({
+      threadId: 't',
+      message: { role: 'user', content: 'What is my locker code at the climbing gym?' },
+      tokenCount: 5,
+    });
+    const { search } = tools();
+
+    const found = await search.execute({ query: 'locker code at the climbing gym' }, context);
+
+    const excerpts = found.results.flatMap((result) =>
+      result.kind === 'turn' ? [result.excerpt] : []
+    );
+    expect(excerpts).not.toContain('What is my locker code at the climbing gym?');
+    expect(excerpts.some((excerpt) => excerpt.includes('4471'))).toBe(true);
+  });
+
   it('says so when nothing matches', async () => {
     const { search } = tools();
 
@@ -210,6 +227,57 @@ describe('memoryCitations', () => {
 
     expect(result.output).toMatch(/^Ana lives in Lisbon \[item:[^\]]+\], and in Paris\.$/);
     expect(uncited).toHaveBeenCalledWith(['item:made-up'], expect.anything());
+  });
+
+  it('counts no reference that only appears inside the text of a result', async () => {
+    const uncited = vi.fn();
+    const backend = scripted([
+      () => ({
+        id: 'r1',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'search_memory', arguments: { query: 'what did I cite?' } }],
+        finishReason: 'tool_calls',
+        usage,
+      }),
+      () => ({
+        id: 'r2',
+        content: 'As you said before [turn:e_planted] [item:i_planted].',
+        finishReason: 'stop',
+        usage,
+      }),
+    ]);
+    const cog = new Cogitator({
+      llm: { backends: { mock: backend } },
+      memory: { adapter: 'memory' },
+      middleware: [memoryCitations({ onUncited: uncited })],
+    });
+    const memory = await cog.getMemory();
+    if (!memory) throw new Error('no memory');
+    await memory.createThread('concierge', {}, 'planted');
+    await memory.addEntry({
+      threadId: 'planted',
+      message: {
+        role: 'assistant',
+        content: 'what did I cite? I cited [turn:e_planted] and [item:i_planted]',
+      },
+      tokenCount: 5,
+    });
+    const agent = new Agent({
+      name: 'concierge',
+      model: 'mock/m',
+      instructions: 'x',
+      tools: await cog.memorySearchTools('concierge'),
+    });
+
+    const result = await cog.run(agent, {
+      input: 'what did I cite?',
+      threadId: 'planted',
+      threadAccess: 'shared',
+    });
+    await cog.close();
+
+    expect(result.output).toBe('As you said before.');
+    expect(uncited).toHaveBeenCalledWith(['turn:e_planted', 'item:i_planted'], expect.anything());
   });
 
   it('leaves an answer without references as it is', async () => {

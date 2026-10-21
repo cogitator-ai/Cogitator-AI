@@ -68,7 +68,7 @@ function version(
     sequence: 1,
     content: `content of ${id}`,
     sha256: 'a'.repeat(64),
-    previousSha256: null,
+    previousId: null,
     author: 'model',
     createdAt: at(1),
     ...fields,
@@ -85,7 +85,7 @@ const SCENARIOS: Record<MemoryFileAdapterScenario, (adapter: MemoryFileAdapter) 
         scope: { agentId, userId: 'u1', projectId: 'p1', threadId: 't1' },
         path: '/memories/plan/trip.md',
         sequence: 2,
-        previousSha256: 'b'.repeat(64),
+        previousId: 'previous-version',
         place: { threadId: 't1', entryId: 'e1' },
         renamedFrom: '/memories/trip.md',
         author: 'user',
@@ -161,6 +161,16 @@ const SCENARIOS: Record<MemoryFileAdapterScenario, (adapter: MemoryFileAdapter) 
       assert.deepEqual(await find({ agentId, prefix: '/memories/notes/' }), [a.id, a2.id, b.id]);
       assert.deepEqual(await find({ agentId, ids: [c.id, b.id] }), [b.id, c.id]);
       assert.deepEqual(await find({ agentId, ids: [] }), []);
+      const emoji = version(agentId, id('emoji'), {
+        path: '/memories/\u{1F600}/x.md',
+        createdAt: at(4),
+      });
+      ok(await adapter.putFileVersions([emoji]), 'putFileVersions');
+      assert.deepEqual(
+        await find({ agentId, prefix: '/memories/\u{1F600}/' }),
+        [emoji.id],
+        'a prefix with a character outside the basic plane'
+      );
       assert.deepEqual(await find({ agentId: `${agentId}-other` }), []);
     },
 

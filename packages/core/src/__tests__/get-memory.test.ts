@@ -30,8 +30,7 @@ describe('Cogitator.getMemory', () => {
     });
     expect(configured.memoryConfigured).toBe(true);
 
-    // Ensure config is not exposed publicly
-    expect('config' in configured).toBe(true); // JS property exists internally
+    expect('config' in configured).toBe(true);
     // @ts-expect-error config is private
     const _privateConfig = configured.config;
     void _privateConfig;

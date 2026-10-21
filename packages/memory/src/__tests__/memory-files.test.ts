@@ -120,7 +120,7 @@ describe('MemoryFiles', () => {
       [2, 'v2'],
       [3, null],
     ]);
-    expect(history[1]?.previousSha256).toBe(sha256Of('v1'));
+    expect(history[1]?.previousId).toBe(history[0]?.id);
   });
 
   it('shows the narrowest scope of a path, and writes to the access scope', async () => {
@@ -160,6 +160,52 @@ describe('MemoryFiles', () => {
     expect((await files.read(onBranch('e2', ['e1', 'e2']), '/memories/todo.md'))?.content).toBe(
       'branch A'
     );
+  });
+
+  it('changes a path where the version in front of the run stands when that scope is narrower', async () => {
+    const threadOnly: MemoryFileAccess = { scope: { agentId: 'a', threadId: 't1' } };
+    await files.create(threadOnly, '/memories/plan.md', 'old');
+    const user: MemoryFileAccess = {
+      scope: { agentId: 'a', userId: 'ana' },
+      visibleTo: { agentId: 'a', userId: 'ana', threadId: 't1' },
+    };
+
+    await files.strReplace(user, '/memories/plan.md', 'old', 'new');
+    expect((await files.read(user, '/memories/plan.md'))?.content).toBe('new');
+    await files.delete(user, '/memories/plan.md');
+    expect(await files.read(user, '/memories/plan.md')).toBeUndefined();
+  });
+
+  it('keeps files and directories apart, and text a store cannot hold out', async () => {
+    await files.create(access, '/memories/a', 'a file');
+    await expect(files.create(access, '/memories/a/b', 'x')).rejects.toThrow(
+      'Cannot create /memories/a/b: /memories/a is a file'
+    );
+    await files.create(access, '/memories/x.md', 'x');
+    await expect(files.rename(access, '/memories/x.md', '/memories/a/x.md')).rejects.toThrow(
+      'is a file'
+    );
+    await expect(files.create(access, '/memories/notes/', 'x')).rejects.toThrow(
+      'The path /memories/notes/ is not a file.'
+    );
+    await expect(files.create(access, '/memories/nul.md', 'a\u0000b')).rejects.toThrow(
+      'cannot hold NUL'
+    );
+  });
+
+  it('tells what each command showed or wrote', async () => {
+    const seen: [string, string | null][] = [];
+    const watched: MemoryFileAccess = { ...access, observe: (path, sha) => seen.push([path, sha]) };
+
+    await files.create(watched, '/memories/a.md', 'one');
+    await files.view(watched, '/memories/a.md');
+    await files.delete(watched, '/memories/a.md');
+
+    expect(seen).toEqual([
+      ['/memories/a.md', sha256Of('one')],
+      ['/memories/a.md', sha256Of('one')],
+      ['/memories/a.md', null],
+    ]);
   });
 
   it('refuses changes to read-only memory, and edits of a file changed since it was viewed', async () => {
@@ -226,6 +272,16 @@ describe('MemoryFiles', () => {
     expect(history.map((version) => version.content)).toEqual([REDACTED_CONTENT, REDACTED_CONTENT]);
     expect(history[0]?.redacted?.reason).toBe('card number');
     expect(JSON.stringify(history)).not.toContain('4111');
+  });
+
+  it('redacts a file by its new path back through its renames', async () => {
+    await files.create(access, '/memories/a.md', 'SECRET');
+    await files.rename(access, '/memories/a.md', '/memories/b.md');
+
+    expect(await files.redact(access, ['/memories/b.md'])).toBe(2);
+
+    const everything = await adapter.findFileVersions({ agentId: 'a' });
+    expect(JSON.stringify(everything)).not.toContain('SECRET');
   });
 
   it('lists the files for a context within a size', async () => {

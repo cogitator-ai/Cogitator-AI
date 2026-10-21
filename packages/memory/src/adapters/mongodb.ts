@@ -43,7 +43,7 @@ import type {
 import { BranchingMemoryAdapter, entryTypeWanted } from './base';
 import { threadListing, threadPage, type ThreadListing } from './thread-listing';
 import { entityNames } from '../memory-items';
-import { fileKeyOf, matchesFileFilter } from '../memory-files';
+import { byFileVersion, fileKeyOf, matchesFileFilter } from '../memory-files';
 
 /** A cursor over `find()` results, as far as the adapter reads it. */
 type MongoCursor<T extends Document> = Pick<
@@ -216,15 +216,26 @@ function itemDoc(item: MemoryItem): Omit<ItemDoc, '_id'> {
   };
 }
 
-/** A memory file version, beside the fields its filters read and its unique place */
-interface FileDoc {
+/**
+ * The versions one change added, kept in one document so a reader sees all of them or none,
+ * beside the fields its filters read
+ */
+interface FileBatchDoc {
   _id: string;
   agentId: string;
-  fileKey: string;
-  path: string;
-  sequence: number;
-  createdAt: Date;
-  version: MemoryFileVersion;
+  ids: string[];
+  paths: string[];
+  versions: MemoryFileVersion[];
+}
+
+/** A place a file version took: its scope and path, and its sequence */
+interface FilePlaceDoc {
+  _id: string;
+}
+
+/** The id of the place `version` takes: its scope, path and sequence */
+function filePlaceOf(version: MemoryFileVersion): string {
+  return `${fileKeyOf(version.scope, version.path)}#${version.sequence}`;
 }
 
 function isDuplicateKey(err: unknown): boolean {
@@ -430,9 +441,14 @@ export class MongoDBAdapter
     return this.db.collection<ItemDoc>(`${this.prefix}items`);
   }
 
-  private get files(): MongoCollection<FileDoc> {
+  private get fileBatches(): MongoCollection<FileBatchDoc> {
     if (!this.db) throw new Error('Not connected');
-    return this.db.collection<FileDoc>(`${this.prefix}file_versions`);
+    return this.db.collection<FileBatchDoc>(`${this.prefix}file_batches`);
+  }
+
+  private get filePlaces(): MongoCollection<FilePlaceDoc> {
+    if (!this.db) throw new Error('Not connected');
+    return this.db.collection<FilePlaceDoc>(`${this.prefix}file_places`);
   }
 
   private get entities(): MongoCollection<EntityDoc> {
@@ -478,9 +494,9 @@ export class MongoDBAdapter
       await items.createIndex({ agentId: 1, userId: 1 });
       const entities = db.collection<EntityDoc>(`${this.prefix}entities`);
       await entities.createIndex({ agentId: 1, names: 1 });
-      const files = db.collection<FileDoc>(`${this.prefix}file_versions`);
-      await files.createIndex({ fileKey: 1, sequence: 1 }, { unique: true });
-      await files.createIndex({ agentId: 1, path: 1, createdAt: 1 });
+      const fileBatches = db.collection<FileBatchDoc>(`${this.prefix}file_batches`);
+      await fileBatches.createIndex({ agentId: 1, paths: 1 });
+      await fileBatches.createIndex({ ids: 1 });
 
       this.client = client;
       this.db = db;
@@ -1324,33 +1340,33 @@ export class MongoDBAdapter
   }
 
   /**
-   * Adds the versions in one ordered write. When one of them finds its place taken, those the
-   * write added before it are deleted again, so the batch is kept whole or not at all.
+   * Takes the place of each version (a document whose id is its scope, path and sequence, which
+   * a second writer cannot insert again), then adds the versions in one document, so a reader
+   * sees all of them or none. When a place is taken already, the places this call took are let
+   * go again and nothing is added.
    */
   async putFileVersions(versions: MemoryFileVersion[]): Promise<MemoryResult<MemoryFileVersion[]>> {
     if (!this.db) return this.failure('Not connected');
     if (versions.length === 0) return this.success([]);
+    const places = versions.map((version) => filePlaceOf(version));
+    if (new Set(places).size !== places.length) return this.failure(MEMORY_FILE_CONFLICT);
+    let taken = 0;
     try {
-      await this.files.bulkWrite(
-        versions.map((version) => ({
-          insertOne: {
-            document: {
-              _id: version.id,
-              agentId: version.scope.agentId,
-              fileKey: fileKeyOf(version.scope, version.path),
-              path: version.path,
-              sequence: version.sequence,
-              createdAt: version.createdAt,
-              version,
-            },
-          },
-        })),
-        { ordered: true }
-      );
+      for (const place of places) {
+        await this.filePlaces.insertOne({ _id: place });
+        taken++;
+      }
+      await this.fileBatches.insertOne({
+        _id: `batch_${versions[0]!.id}`,
+        agentId: versions[0]!.scope.agentId,
+        ids: versions.map((version) => version.id),
+        paths: [...new Set(versions.map((version) => version.path))],
+        versions,
+      });
       return this.success(versions.map((version) => structuredClone(version)));
     } catch (err) {
-      await this.files
-        .deleteMany({ _id: { $in: versions.map((version) => version.id) } })
+      await this.filePlaces
+        .deleteMany({ _id: { $in: places.slice(0, taken) } })
         .catch(() => undefined);
       return isDuplicateKey(err)
         ? this.failure(MEMORY_FILE_CONFLICT)
@@ -1361,21 +1377,21 @@ export class MongoDBAdapter
   async findFileVersions(filter: MemoryFileFilter): Promise<MemoryResult<MemoryFileVersion[]>> {
     if (!this.db) return this.failure('Not connected');
     try {
-      const query: Filter<FileDoc> = {
+      const query: Filter<FileBatchDoc> = {
         agentId: { $eq: filter.agentId },
-        ...(filter.ids && { _id: { $in: filter.ids } }),
-        ...(filter.paths && { path: { $in: filter.paths } }),
+        ...(filter.ids && { ids: { $in: filter.ids } }),
+        ...(filter.paths && { paths: { $in: filter.paths } }),
         ...(filter.prefix !== undefined &&
           !filter.paths && {
-            path: { $regex: `^${filter.prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}` },
+            paths: { $regex: `^${filter.prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}` },
           }),
       };
-      const docs = await this.files
-        .find(query)
-        .sort({ createdAt: 1, sequence: 1, _id: 1 })
-        .toArray();
+      const batches = await this.fileBatches.find(query).toArray();
       return this.success(
-        docs.map((doc) => doc.version).filter((version) => matchesFileFilter(version, filter))
+        batches
+          .flatMap((batch) => batch.versions)
+          .filter((version) => matchesFileFilter(version, filter))
+          .sort(byFileVersion)
       );
     } catch (err) {
       return this.failure((err as Error).message);
@@ -1389,18 +1405,19 @@ export class MongoDBAdapter
     if (!this.db) return this.failure('Not connected');
     if (ids.length === 0) return this.success(undefined);
     try {
-      await this.files.updateMany(
-        { _id: { $in: ids } },
+      await this.fileBatches.updateMany(
+        { ids: { $in: ids } },
         {
           $set: {
-            'version.content': redaction.content,
-            'version.sha256': redaction.sha256,
-            'version.redacted': {
+            'versions.$[version].content': redaction.content,
+            'versions.$[version].sha256': redaction.sha256,
+            'versions.$[version].redacted': {
               at: redaction.at,
               ...(redaction.reason !== undefined && { reason: redaction.reason }),
             },
           },
-        }
+        },
+        { arrayFilters: [{ 'version.id': { $in: ids } }] }
       );
       return this.success(undefined);
     } catch (err) {
@@ -1412,7 +1429,29 @@ export class MongoDBAdapter
     if (!this.db) return this.failure('Not connected');
     if (ids.length === 0) return this.success(undefined);
     try {
-      await this.files.deleteMany({ _id: { $in: ids } });
+      const batches = await this.fileBatches.find({ ids: { $in: ids } }).toArray();
+      const gone = new Set(ids);
+      for (const batch of batches) {
+        const dropped = batch.versions.filter((version) => gone.has(version.id));
+        const kept = batch.versions.filter((version) => !gone.has(version.id));
+        if (kept.length === 0) {
+          await this.fileBatches.deleteOne({ _id: batch._id });
+        } else {
+          await this.fileBatches.updateOne(
+            { _id: batch._id },
+            {
+              $set: {
+                ids: kept.map((version) => version.id),
+                paths: [...new Set(kept.map((version) => version.path))],
+                versions: kept,
+              },
+            }
+          );
+        }
+        await this.filePlaces.deleteMany({
+          _id: { $in: dropped.map((version) => filePlaceOf(version)) },
+        });
+      }
       return this.success(undefined);
     } catch (err) {
       return this.failure((err as Error).message);

@@ -397,6 +397,9 @@ export class PostgresAdapter
       CREATE TABLE IF NOT EXISTS ${files} (
         id TEXT PRIMARY KEY,
         agent_id TEXT NOT NULL,
+        user_id TEXT,
+        project_id TEXT,
+        thread_id TEXT,
         file_key TEXT NOT NULL,
         path TEXT NOT NULL,
         sequence INTEGER NOT NULL,
@@ -407,6 +410,9 @@ export class PostgresAdapter
     `);
     await db.query(
       `CREATE INDEX IF NOT EXISTS idx_memory_file_versions_agent ON ${files}(agent_id, (path COLLATE "C"), created_at)`
+    );
+    await db.query(
+      `CREATE INDEX IF NOT EXISTS idx_memory_file_versions_user ON ${files}(agent_id, user_id)`
     );
   }
 
@@ -1269,11 +1275,15 @@ export class PostgresAdapter
       for (const version of versions) {
         await client.query(
           `INSERT INTO ${this.schema}.memory_file_versions
-           (id, agent_id, file_key, path, sequence, created_at, version)
-           VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
+           (id, agent_id, user_id, project_id, thread_id, file_key, path, sequence, created_at,
+            version)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)`,
           [
             version.id,
             version.scope.agentId,
+            version.scope.userId ?? null,
+            version.scope.projectId ?? null,
+            version.scope.threadId ?? null,
             fileKeyOf(version.scope, version.path),
             version.path,
             version.sequence,
@@ -1311,8 +1321,23 @@ export class PostgresAdapter
       conditions.push(`path = ANY($${params.length}::text[])`);
     }
     if (filter.prefix !== undefined) {
-      params.push(filter.prefix.length, filter.prefix);
+      params.push([...filter.prefix].length, filter.prefix);
       conditions.push(`left(path, $${params.length - 1}) = $${params.length}`);
+    }
+    const visibleTo = filter.visibleTo;
+    if (visibleTo) {
+      for (const [column, value] of [
+        ['user_id', visibleTo.userId],
+        ['project_id', visibleTo.projectId],
+        ['thread_id', visibleTo.threadId],
+      ] as const) {
+        if (value === undefined) {
+          conditions.push(`${column} IS NULL`);
+        } else {
+          params.push(value);
+          conditions.push(`(${column} IS NULL OR ${column} = $${params.length})`);
+        }
+      }
     }
     try {
       const found = await this.pool.query(
