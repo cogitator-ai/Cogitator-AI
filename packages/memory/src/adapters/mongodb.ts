@@ -171,10 +171,16 @@ interface ItemDoc {
   status: MemoryItemStatus;
   slot?: string;
   entityId?: string;
+  userId?: string;
+  projectId?: string;
+  threadId?: string;
   recordedAt: Date;
   expiredAt?: Date;
   item: MemoryItem;
 }
+
+/** The fields of an item's scope a document keeps at the top */
+const SCOPE_FIELDS = ['userId', 'projectId', 'threadId'] as const;
 
 /** An entity with every name of it normalized in `names`, which entities are found by */
 interface EntityDoc {
@@ -192,6 +198,9 @@ function itemDoc(item: MemoryItem): Omit<ItemDoc, '_id'> {
     status: item.status,
     ...(item.slot !== undefined && { slot: item.slot }),
     ...(item.entityId !== undefined && { entityId: item.entityId }),
+    ...(item.scope.userId !== undefined && { userId: item.scope.userId }),
+    ...(item.scope.projectId !== undefined && { projectId: item.scope.projectId }),
+    ...(item.scope.threadId !== undefined && { threadId: item.scope.threadId }),
     recordedAt: item.recordedAt,
     ...(item.expiredAt !== undefined && { expiredAt: item.expiredAt }),
     item,
@@ -434,6 +443,7 @@ export class MongoDBAdapter extends BranchingMemoryAdapter implements MemoryItem
       await items.createIndex({ agentId: 1, slot: 1 });
       await items.createIndex({ agentId: 1, entityId: 1 });
       await items.createIndex({ agentId: 1, recordedAt: 1, _id: 1 });
+      await items.createIndex({ agentId: 1, userId: 1 });
       const entities = db.collection<EntityDoc>(`${this.prefix}entities`);
       await entities.createIndex({ agentId: 1, names: 1 });
 
@@ -1215,6 +1225,18 @@ export class MongoDBAdapter extends BranchingMemoryAdapter implements MemoryItem
     if (filter.entityIds) conditions.push({ entityId: { $in: filter.entityIds } });
     if (filter.kinds) conditions.push({ kind: { $in: filter.kinds } });
     if (filter.statuses) conditions.push({ status: { $in: filter.statuses } });
+    for (const field of SCOPE_FIELDS) {
+      const visible = filter.visibleTo?.[field];
+      if (filter.visibleTo !== undefined) {
+        conditions.push({
+          [field]: visible === undefined ? { $exists: false } : { $in: [visible, null] },
+        });
+      }
+      const exact = filter.scope?.[field];
+      if (filter.scope !== undefined) {
+        conditions.push({ [field]: exact === undefined ? { $exists: false } : { $eq: exact } });
+      }
+    }
     if (filter.includeExpired !== true) {
       conditions.push({
         $or: [{ expiredAt: { $exists: false } }, { expiredAt: { $gt: new Date() } }],

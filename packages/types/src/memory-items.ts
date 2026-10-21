@@ -138,6 +138,17 @@ export interface MemoryItemFilter {
   kinds?: MemoryItemKind[];
   statuses?: MemoryItemStatus[];
   /**
+   * Items a run of this scope sees: for each of `userId`, `projectId` and `threadId`, the item
+   * has none or the same one. An item with a user is left out when this scope has no user, and
+   * so for the project and the thread. Its `agentId` is not read, the filter's is.
+   */
+  visibleTo?: MemoryItemScope;
+  /**
+   * Items of exactly this scope: `userId`, `projectId` and `threadId` each the same, and absent
+   * where this scope has none. Its `agentId` is not read, the filter's is.
+   */
+  scope?: MemoryItemScope;
+  /**
    * Include items memory let go (`expiredAt` not after now), left out by default. An item with
    * an `expiredAt` still to come is found either way.
    */

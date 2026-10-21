@@ -35,8 +35,8 @@ export interface SqliteItemsDatabase {
 }
 
 /**
- * Each item is kept whole as JSON in `data`, beside the columns its filters read. Times are
- * milliseconds, so `recorded_at` sorts in time order. Every normalized name of an entity is a
+ * Each item is kept whole as JSON in `data`, beside the columns its filters read, its scope
+ * among them. Times are milliseconds, so `recorded_at` sorts in time order. Every normalized name of an entity is a
  * row of `memory_entity_names`, which is how entities are found by name.
  */
 const SCHEMA = `
@@ -47,6 +47,9 @@ const SCHEMA = `
     status TEXT NOT NULL,
     slot TEXT,
     entity_id TEXT,
+    user_id TEXT,
+    project_id TEXT,
+    thread_id TEXT,
     recorded_at INTEGER NOT NULL,
     expired_at INTEGER,
     data TEXT NOT NULL
@@ -54,6 +57,7 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_memory_items_slot ON memory_items(agent_id, slot);
   CREATE INDEX IF NOT EXISTS idx_memory_items_entity ON memory_items(agent_id, entity_id);
   CREATE INDEX IF NOT EXISTS idx_memory_items_recorded ON memory_items(agent_id, recorded_at, id);
+  CREATE INDEX IF NOT EXISTS idx_memory_items_user ON memory_items(agent_id, user_id);
 
   CREATE TABLE IF NOT EXISTS memory_entities (
     id TEXT PRIMARY KEY,
@@ -73,6 +77,32 @@ const SCHEMA = `
 
 interface DataRow {
   data: string;
+}
+
+/** The columns of an item's scope, beside the scope field each holds */
+const SCOPE_COLUMNS = [
+  ['user_id', 'userId'],
+  ['project_id', 'projectId'],
+  ['thread_id', 'threadId'],
+] as const;
+
+/**
+ * Adds the scope columns to a `memory_items` table made before it had them, filled from the
+ * scope each item holds
+ */
+function addScopeColumns(db: SqliteItemsDatabase): void {
+  const columns = db.prepare('PRAGMA table_info(memory_items)').all() as { name: string }[];
+  if (columns.length === 0) return;
+  const missing = SCOPE_COLUMNS.filter(
+    ([column]) => !columns.some((present) => present.name === column)
+  );
+  if (missing.length === 0) return;
+  atomically(db, () => {
+    for (const [column, field] of missing) {
+      db.exec(`ALTER TABLE memory_items ADD COLUMN ${column} TEXT`);
+      db.exec(`UPDATE memory_items SET ${column} = json_extract(data, '$.scope.${field}')`);
+    }
+  });
 }
 
 function itemFrom(data: string): MemoryItem {
@@ -123,6 +153,7 @@ function atomically(db: SqliteItemsDatabase, work: () => void): void {
  * are missing. `SQLiteAdapter` keeps its items through it, and so does `CoreFactsStore`.
  */
 export function sqliteMemoryItems(db: SqliteItemsDatabase): MemoryItemAdapter {
+  addScopeColumns(db);
   db.exec(SCHEMA);
 
   return {
@@ -131,14 +162,18 @@ export function sqliteMemoryItems(db: SqliteItemsDatabase): MemoryItemAdapter {
         const data = JSON.stringify(item);
         db.prepare(
           `INSERT INTO memory_items
-             (id, agent_id, kind, status, slot, entity_id, recorded_at, expired_at, data)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             (id, agent_id, kind, status, slot, entity_id, user_id, project_id, thread_id,
+              recorded_at, expired_at, data)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
              agent_id = excluded.agent_id,
              kind = excluded.kind,
              status = excluded.status,
              slot = excluded.slot,
              entity_id = excluded.entity_id,
+             user_id = excluded.user_id,
+             project_id = excluded.project_id,
+             thread_id = excluded.thread_id,
              recorded_at = excluded.recorded_at,
              expired_at = excluded.expired_at,
              data = excluded.data`
@@ -149,6 +184,9 @@ export function sqliteMemoryItems(db: SqliteItemsDatabase): MemoryItemAdapter {
           item.status,
           item.slot ?? null,
           item.entityId ?? null,
+          item.scope.userId ?? null,
+          item.scope.projectId ?? null,
+          item.scope.threadId ?? null,
           item.recordedAt.getTime(),
           item.expiredAt?.getTime() ?? null,
           data
@@ -177,6 +215,24 @@ export function sqliteMemoryItems(db: SqliteItemsDatabase): MemoryItemAdapter {
           if (values === undefined) continue;
           where.push(oneOf(column, values));
           params.push(...values);
+        }
+        const param = (value: string) => {
+          params.push(value);
+          return '?';
+        };
+        for (const [column, field] of SCOPE_COLUMNS) {
+          const visible = filter.visibleTo?.[field];
+          if (filter.visibleTo !== undefined) {
+            where.push(
+              visible === undefined
+                ? `${column} IS NULL`
+                : `(${column} IS NULL OR ${column} = ${param(visible)})`
+            );
+          }
+          const exact = filter.scope?.[field];
+          if (filter.scope !== undefined) {
+            where.push(exact === undefined ? `${column} IS NULL` : `${column} = ${param(exact)}`);
+          }
         }
         if (filter.includeExpired !== true) {
           where.push('(expired_at IS NULL OR expired_at > ?)');

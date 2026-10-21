@@ -4,6 +4,7 @@ import type {
   MemoryEntity,
   MemoryItem,
   MemoryItemAdapter,
+  MemoryItemScope,
   MemoryResult,
 } from '@cogitator-ai/types';
 
@@ -25,6 +26,8 @@ export type MemoryItemAdapterScenario =
   | 'item-replaced-by-id'
   | 'missing-item-is-null'
   | 'find-filters'
+  | 'find-visible-to'
+  | 'find-scope'
   | 'find-order'
   | 'find-expired'
   | 'delete-items'
@@ -88,6 +91,19 @@ function nullFields(value: object, path = ''): string[] {
 }
 
 const ids = (items: readonly { id: string }[]) => items.map((found) => found.id);
+
+/** Items of one agent in each scope the scope filters tell apart */
+function scopedItems(agentId: string, id: (prefix: string) => string) {
+  const scoped = (prefix: string, narrowed: Omit<MemoryItemScope, 'agentId'>) =>
+    item(agentId, id(prefix), { scope: { agentId, ...narrowed } });
+  return {
+    agentWide: scoped('agent-wide', {}),
+    u1: { ...scoped('u1', { userId: 'u1' }), status: 'suggested' as const },
+    u2: scoped('u2', { userId: 'u2' }),
+    u1Thread: scoped('u1-thread', { userId: 'u1', threadId: 't1' }),
+    u1Project: scoped('u1-project', { userId: 'u1', projectId: 'p1' }),
+  };
+}
 
 const SCENARIOS: Record<MemoryItemAdapterScenario, (adapter: MemoryItemAdapter) => Promise<void>> =
   {
@@ -193,6 +209,82 @@ const SCENARIOS: Record<MemoryItemAdapterScenario, (adapter: MemoryItemAdapter) 
         [],
         'every condition holds'
       );
+    },
+
+    async 'find-visible-to'(adapter) {
+      const { agentId, id } = scope();
+      const other = scope();
+      const items = scopedItems(agentId, id);
+      const foreign = item(other.agentId, other.id('foreign'), {
+        scope: { agentId: other.agentId, userId: 'u1' },
+      });
+      for (const written of [...Object.values(items), foreign]) {
+        ok(await adapter.putItem(written), 'putItem');
+      }
+
+      const visibleTo = async (narrowed: Omit<MemoryItemScope, 'agentId'>) =>
+        ids(
+          ok(await adapter.findItems({ agentId, visibleTo: { agentId, ...narrowed } }), 'findItems')
+        ).sort();
+      const { agentWide, u1, u2, u1Thread, u1Project } = items;
+
+      assert.deepEqual(
+        await visibleTo({}),
+        [agentWide.id],
+        'a scope without a user sees only agent-wide items'
+      );
+      assert.deepEqual(await visibleTo({ userId: 'u1' }), ids([agentWide, u1]).sort());
+      assert.deepEqual(await visibleTo({ userId: 'u2' }), ids([agentWide, u2]).sort());
+      assert.deepEqual(
+        await visibleTo({ userId: 'u1', threadId: 't1' }),
+        ids([agentWide, u1, u1Thread]).sort(),
+        'a thread sees its own items and those of its user'
+      );
+      assert.deepEqual(
+        await visibleTo({ userId: 'u1', projectId: 'p1' }),
+        ids([agentWide, u1, u1Project]).sort()
+      );
+      assert.deepEqual(
+        await visibleTo({ userId: 'u1', projectId: 'p1', threadId: 't1' }),
+        ids([agentWide, u1, u1Thread, u1Project]).sort()
+      );
+      assert.deepEqual(
+        await visibleTo({ threadId: 't1' }),
+        [agentWide.id],
+        'an item of a user is not seen without that user'
+      );
+      assert.deepEqual(
+        ids(
+          ok(
+            await adapter.findItems({
+              agentId,
+              visibleTo: { agentId, userId: 'u1' },
+              statuses: ['suggested'],
+            }),
+            'findItems'
+          )
+        ),
+        [u1.id],
+        'with the other conditions'
+      );
+    },
+
+    async 'find-scope'(adapter) {
+      const { agentId, id } = scope();
+      const items = scopedItems(agentId, id);
+      for (const written of Object.values(items)) ok(await adapter.putItem(written), 'putItem');
+
+      const exactly = async (narrowed: Omit<MemoryItemScope, 'agentId'>) =>
+        ids(ok(await adapter.findItems({ agentId, scope: { agentId, ...narrowed } }), 'findItems'));
+      const { agentWide, u1, u2, u1Thread, u1Project } = items;
+
+      assert.deepEqual(await exactly({}), [agentWide.id], 'an absent field matches only absent');
+      assert.deepEqual(await exactly({ userId: 'u1' }), [u1.id]);
+      assert.deepEqual(await exactly({ userId: 'u2' }), [u2.id]);
+      assert.deepEqual(await exactly({ userId: 'u1', threadId: 't1' }), [u1Thread.id]);
+      assert.deepEqual(await exactly({ userId: 'u1', projectId: 'p1' }), [u1Project.id]);
+      assert.deepEqual(await exactly({ threadId: 't1' }), []);
+      assert.deepEqual(await exactly({ userId: 'u3' }), []);
     },
 
     async 'find-order'(adapter) {

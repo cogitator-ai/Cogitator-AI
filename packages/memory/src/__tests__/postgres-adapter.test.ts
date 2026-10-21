@@ -507,6 +507,14 @@ describe('PostgresAdapter', () => {
       expect(statements).toContain(
         'CREATE INDEX IF NOT EXISTS idx_memory_items_entity ON cogitator.memory_items(agent_id, entity_id)'
       );
+      expect(statements).toContain(
+        'CREATE INDEX IF NOT EXISTS idx_memory_items_user ON cogitator.memory_items(agent_id, user_id)'
+      );
+      expect(
+        statements.some((sql) =>
+          /memory_items \(.*user_id TEXT, project_id TEXT, thread_id TEXT,/.test(sql)
+        )
+      ).toBe(true);
       expect(sentToPostgres('idx_memory_items_recorded').sql).toContain(
         'agent_id, recorded_at, (id COLLATE "C")'
       );
@@ -528,9 +536,10 @@ describe('PostgresAdapter', () => {
         'ent_1:seat',
         'ent_1',
       ]);
-      expect(new Date(String(params[6]))).toEqual(full.recordedAt);
-      expect(new Date(String(params[7]))).toEqual(full.expiredAt);
-      expect(asJsonb(params[8])).toEqual(JSON.parse(JSON.stringify(full)));
+      expect(params.slice(6, 9)).toEqual(['u1', null, null]);
+      expect(new Date(String(params[9]))).toEqual(full.recordedAt);
+      expect(new Date(String(params[10]))).toEqual(full.expiredAt);
+      expect(asJsonb(params[11])).toEqual(JSON.parse(JSON.stringify(full)));
       expect(result).toEqual({ success: true, data: full });
     });
 
@@ -574,6 +583,39 @@ describe('PostgresAdapter', () => {
           'AND (expired_at IS NULL OR expired_at > NOW()) ORDER BY recorded_at, id COLLATE "C"'
       );
       expect(params[0]).toBe('agent1');
+    });
+
+    it('finds items a scope sees: of no user, project or thread, or of the same one', async () => {
+      await adapter.findItems({
+        agentId: 'agent1',
+        visibleTo: { agentId: 'agent1', userId: 'u1', threadId: 't1' },
+      });
+
+      const { sql, params } = sentToPostgres(
+        'SELECT item FROM cogitator.memory_items WHERE agent_id'
+      );
+      expect(sql.replace(/\s+/g, ' ')).toContain(
+        'agent_id = $1 AND (user_id IS NULL OR user_id = $2) AND project_id IS NULL AND ' +
+          '(thread_id IS NULL OR thread_id = $3) AND (expired_at IS NULL'
+      );
+      expect(params).toEqual(['agent1', 'u1', 't1']);
+    });
+
+    it('finds items of exactly a scope', async () => {
+      await adapter.findItems({
+        agentId: 'agent1',
+        statuses: ['active'],
+        scope: { agentId: 'agent1', projectId: 'p1' },
+      });
+
+      const { sql, params } = sentToPostgres(
+        'SELECT item FROM cogitator.memory_items WHERE agent_id'
+      );
+      expect(sql.replace(/\s+/g, ' ')).toContain(
+        'agent_id = $1 AND status = ANY($2::text[]) AND user_id IS NULL AND ' +
+          'project_id = $3 AND thread_id IS NULL AND (expired_at IS NULL'
+      );
+      expect([params[0], params[2]]).toEqual(['agent1', 'p1']);
     });
 
     it('finds expired items when asked to', async () => {
@@ -657,7 +699,7 @@ describe('PostgresAdapter', () => {
     const writtenItems = (): MemoryItem[] =>
       mockPool.query.mock.calls
         .filter(([sql]) => sql.includes('INSERT INTO cogitator.memory_items'))
-        .map(([, params = []]) => asJsonb(prepareValue(params[8])) as MemoryItem);
+        .map(([, params = []]) => asJsonb(prepareValue(params[11])) as MemoryItem);
 
     /**
      * Keeps the items of one fact the way the table would: writes replace by id, lookups by id
@@ -667,7 +709,7 @@ describe('PostgresAdapter', () => {
       const table = new Map(items.map((item) => [item.id, factRow(item).item]));
       mockPool.query.mockImplementation(async (sql: string, params: unknown[] = []) => {
         if (sql.includes('INSERT INTO cogitator.memory_items')) {
-          const item = asJsonb(prepareValue(params[8])) as Record<string, unknown>;
+          const item = asJsonb(prepareValue(params[11])) as Record<string, unknown>;
           table.set(String(item.id), item);
           return { rows: [] };
         }
@@ -955,6 +997,10 @@ describe('PostgresAdapter', () => {
       );
       expect(move).toContain("'verified', jsonb_array_length(f.evidence) > 0");
       expect(move).toContain("jsonb_build_object('category', f.category)");
+      expect(move).toContain(
+        "CASE WHEN jsonb_typeof(metadata -> 'userId') = 'string' THEN metadata ->> 'userId' END AS user_id"
+      );
+      expect(move).toContain('f.slot, NULL, f.user_id, f.at');
       expect(move).toContain('FROM cogitator.facts');
       expect(move).toContain('ON CONFLICT (id) DO NOTHING');
       expect(statements).toContain('ALTER TABLE cogitator.facts RENAME TO facts_legacy');
@@ -1022,7 +1068,7 @@ describe('PostgresAdapter', () => {
         .filter(([sql]) => sql.includes('INSERT INTO cogitator.memory_items'))
         .map(([sql, params = []]) => ({
           sql,
-          item: asJsonb(prepareValue(params[8])) as MemoryItem,
+          item: asJsonb(prepareValue(params[11])) as MemoryItem,
         }));
 
     it('stores evidence in the item, verified, and an empty list for a fact without it', async () => {
@@ -1037,7 +1083,7 @@ describe('PostgresAdapter', () => {
       await adapter.addFact(fact);
 
       const [proven, bare] = insertedItems();
-      expect(proven?.sql).toContain('$9::jsonb');
+      expect(proven?.sql).toContain('$12::jsonb');
       expect(proven?.item).toMatchObject({ evidence, verified: true });
       expect(bare?.item).toMatchObject({ evidence: [], verified: false });
     });
@@ -1334,8 +1380,8 @@ describe('PostgresAdapter', () => {
       });
 
       const { sql, params } = sentToPostgres('INSERT INTO cogitator.memory_items');
-      expect(sql).toContain('$9::jsonb');
-      expect(asJsonb(params[8])).toMatchObject({
+      expect(sql).toContain('$12::jsonb');
+      expect(asJsonb(params[11])).toMatchObject({
         metadata: { tags: ['c'], category: 'preference' },
       });
     });

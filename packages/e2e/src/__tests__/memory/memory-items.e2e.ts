@@ -298,6 +298,14 @@ async function countOf(client: pg.Client, table: string): Promise<number> {
       trust: 'system',
       expiredAt: past,
     });
+    const ofAlice = unwrap(
+      await adapter.findItems({
+        agentId,
+        scope: { agentId, userId: 'alice' },
+        includeExpired: true,
+      })
+    );
+    expect(ofAlice.map((found) => found.id)).toEqual(['fact_tea']);
   });
 
   it('serves the moved facts through the Fact API under their old ids', async () => {

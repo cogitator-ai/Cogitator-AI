@@ -57,6 +57,9 @@ export function visibleIn(item: Pick<MemoryItem, 'scope'>, scope: MemoryItemScop
   );
 }
 
+/** The fields of a scope that narrow its agent, which `visibleTo` and `scope` filters compare */
+const SCOPE_FIELDS = ['userId', 'projectId', 'threadId'] as const;
+
 /**
  * Whether `item` meets `filter`, for a storage that filters in process. An item memory lets go
  * at a time after `now` (milliseconds, the clock by default) is still found.
@@ -66,6 +69,7 @@ export function matchesItemFilter(
   filter: MemoryItemFilter,
   now: number = Date.now()
 ): boolean {
+  const { visibleTo, scope } = filter;
   return (
     item.scope.agentId === filter.agentId &&
     (filter.ids === undefined || filter.ids.includes(item.id)) &&
@@ -74,6 +78,11 @@ export function matchesItemFilter(
       (item.entityId !== undefined && filter.entityIds.includes(item.entityId))) &&
     (filter.kinds === undefined || filter.kinds.includes(item.kind)) &&
     (filter.statuses === undefined || filter.statuses.includes(item.status)) &&
+    (visibleTo === undefined ||
+      SCOPE_FIELDS.every(
+        (field) => item.scope[field] === undefined || item.scope[field] === visibleTo[field]
+      )) &&
+    (scope === undefined || SCOPE_FIELDS.every((field) => item.scope[field] === scope[field])) &&
     (filter.includeExpired === true ||
       item.expiredAt === undefined ||
       item.expiredAt.getTime() > now)
@@ -271,6 +280,7 @@ export class MemoryItems {
     const found = unwrap(
       await this.adapter.findItems({
         agentId: item.scope.agentId,
+        scope: item.scope,
         ...(item.slot !== undefined ? { slots: [item.slot] } : { kinds: [item.kind] }),
       })
     ).filter((known) => sameScope(known.scope, item.scope));
@@ -331,6 +341,7 @@ export class MemoryItems {
     const held = unwrap(
       await this.adapter.findItems({
         agentId: item.scope.agentId,
+        scope: item.scope,
         slots: [item.slot],
         statuses: ['active'],
       })
@@ -372,6 +383,7 @@ export class MemoryItems {
       const states = unwrap(
         await this.adapter.findItems({
           agentId: scope.agentId,
+          scope,
           slots: [slot],
           statuses: ['active', 'superseded'],
           includeExpired: true,
@@ -463,6 +475,7 @@ export class MemoryItems {
     const found = unwrap(
       await this.adapter.findItems({
         agentId: query.scope.agentId,
+        visibleTo: query.scope,
         statuses: query.statuses ?? ['active', 'superseded'],
         includeExpired: query.knownAt !== undefined,
         ...(query.kinds && { kinds: query.kinds }),

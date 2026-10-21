@@ -97,6 +97,13 @@ const THREAD_TIME = "date_trunc('milliseconds', updated_at AT TIME ZONE 'UTC')";
  */
 const MEMORY_SCHEMA_VERSION = 3;
 
+/** The columns of a memory item's scope, beside the scope field each holds */
+const SCOPE_COLUMNS = [
+  ['user_id', 'userId'],
+  ['project_id', 'projectId'],
+  ['thread_id', 'threadId'],
+] as const;
+
 /** The slot of a fact written through {@link FactAdapter}: `fact:<id of its first item>` */
 const FACT_SLOT_PREFIX = 'fact:';
 
@@ -326,12 +333,18 @@ export class PostgresAdapter
         status TEXT NOT NULL,
         slot TEXT,
         entity_id TEXT,
+        user_id TEXT,
+        project_id TEXT,
+        thread_id TEXT,
         recorded_at TIMESTAMPTZ NOT NULL,
         expired_at TIMESTAMPTZ,
         item JSONB NOT NULL
       )
     `);
     await db.query(`CREATE INDEX IF NOT EXISTS idx_memory_items_slot ON ${items}(agent_id, slot)`);
+    await db.query(
+      `CREATE INDEX IF NOT EXISTS idx_memory_items_user ON ${items}(agent_id, user_id)`
+    );
     await db.query(
       `CREATE INDEX IF NOT EXISTS idx_memory_items_entity ON ${items}(agent_id, entity_id)`
     );
@@ -374,8 +387,8 @@ export class PostgresAdapter
     await db.query(`ALTER TABLE ${facts} ADD COLUMN IF NOT EXISTS evidence JSONB`);
     await db.query(`
       INSERT INTO ${this.schema}.memory_items
-        (id, agent_id, kind, status, slot, entity_id, recorded_at, expired_at, item)
-      SELECT f.id, f.agent_id, 'fact', 'active', f.slot, NULL, f.at, f.expires_at,
+        (id, agent_id, kind, status, slot, entity_id, user_id, recorded_at, expired_at, item)
+      SELECT f.id, f.agent_id, 'fact', 'active', f.slot, NULL, f.user_id, f.at, f.expires_at,
         jsonb_build_object(
           'id', f.id,
           'kind', 'fact',
@@ -386,8 +399,8 @@ export class PostgresAdapter
           'trust', CASE f.source WHEN 'user' THEN 'user' WHEN 'system' THEN 'system' ELSE 'model' END,
           'confidence', COALESCE(f.confidence, 1),
           'scope', jsonb_build_object('agentId', f.agent_id) || CASE
-            WHEN jsonb_typeof(f.metadata -> 'userId') = 'string'
-            THEN jsonb_build_object('userId', f.metadata -> 'userId') ELSE '{}'::jsonb END,
+            WHEN f.user_id IS NULL THEN '{}'::jsonb
+            ELSE jsonb_build_object('userId', f.user_id) END,
           'evidence', f.evidence,
           'verified', jsonb_array_length(f.evidence) > 0,
           'saidAt', f.at_text,
@@ -405,7 +418,9 @@ export class PostgresAdapter
           CASE WHEN jsonb_typeof(evidence) = 'array' THEN evidence ELSE '[]'::jsonb END
             AS evidence,
           CASE WHEN jsonb_typeof(metadata) = 'object' THEN metadata ELSE '{}'::jsonb END
-            AS metadata
+            AS metadata,
+          CASE WHEN jsonb_typeof(metadata -> 'userId') = 'string' THEN metadata ->> 'userId' END
+            AS user_id
         FROM ${facts}
       ) f
       ON CONFLICT (id) DO NOTHING
@@ -1062,11 +1077,13 @@ export class PostgresAdapter
     try {
       await this.pool.query(
         `INSERT INTO ${this.schema}.memory_items
-         (id, agent_id, kind, status, slot, entity_id, recorded_at, expired_at, item)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+         (id, agent_id, kind, status, slot, entity_id, user_id, project_id, thread_id,
+          recorded_at, expired_at, item)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb)
          ON CONFLICT (id) DO UPDATE SET
            agent_id = EXCLUDED.agent_id, kind = EXCLUDED.kind, status = EXCLUDED.status,
-           slot = EXCLUDED.slot, entity_id = EXCLUDED.entity_id,
+           slot = EXCLUDED.slot, entity_id = EXCLUDED.entity_id, user_id = EXCLUDED.user_id,
+           project_id = EXCLUDED.project_id, thread_id = EXCLUDED.thread_id,
            recorded_at = EXCLUDED.recorded_at, expired_at = EXCLUDED.expired_at,
            item = EXCLUDED.item`,
         [
@@ -1076,6 +1093,9 @@ export class PostgresAdapter
           item.status,
           item.slot ?? null,
           item.entityId ?? null,
+          item.scope.userId ?? null,
+          item.scope.projectId ?? null,
+          item.scope.threadId ?? null,
           item.recordedAt,
           item.expiredAt ?? null,
           json,
@@ -1115,6 +1135,24 @@ export class PostgresAdapter
     anyOf('entity_id', filter.entityIds);
     anyOf('kind', filter.kinds);
     anyOf('status', filter.statuses);
+    const param = (value: string) => {
+      params.push(value);
+      return `$${params.length}`;
+    };
+    for (const [column, field] of SCOPE_COLUMNS) {
+      const visible = filter.visibleTo?.[field];
+      if (filter.visibleTo !== undefined) {
+        conditions.push(
+          visible === undefined
+            ? `${column} IS NULL`
+            : `(${column} IS NULL OR ${column} = ${param(visible)})`
+        );
+      }
+      const exact = filter.scope?.[field];
+      if (filter.scope !== undefined) {
+        conditions.push(exact === undefined ? `${column} IS NULL` : `${column} = ${param(exact)}`);
+      }
+    }
     if (filter.includeExpired !== true)
       conditions.push('(expired_at IS NULL OR expired_at > NOW())');
 
