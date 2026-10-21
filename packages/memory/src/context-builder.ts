@@ -12,6 +12,7 @@ import type {
   Embedding,
   GraphContext,
   ContextBuilderConfig,
+  ContextPartitionBudget,
   ContextBuildError,
   BuiltContext,
   DroppedContext,
@@ -148,24 +149,35 @@ function itemLine(item: MemoryItem, timeZone: string): string {
     item.validTo !== undefined
       ? ` (${item.validFrom ? `${day(item.validFrom)} to ` : 'until '}${day(item.validTo)})`
       : item.about?.start
-        ? ` (${whenOf(item.about.start, item.about.precision, timeZone)})`
+        ? ` (${whenOf(item.about.start, item.about.end, item.about.precision, timeZone)})`
         : '';
   return `- ${item.content}${held}`;
 }
 
 /**
  * The time an item is about as a date to the precision it was said with, never the words that
- * said it: `last Friday` read a month later would point at another day
+ * said it: `last Friday` read a month later would point at another day. The date is read in the
+ * middle of the interval, so a month or a year resolved in another time zone than the one shown
+ * is not shown as the one before.
  */
-function whenOf(start: Date, precision: TimePrecision, timeZone: string): string {
-  const day = dayOf(start, timeZone);
+function whenOf(
+  start: Date,
+  end: Date | undefined,
+  precision: TimePrecision,
+  timeZone: string
+): string {
+  const middle =
+    end !== undefined && end.getTime() > start.getTime() && precision !== 'instant'
+      ? new Date((start.getTime() + end.getTime()) / 2)
+      : start;
+  const day = dayOf(middle, timeZone);
   switch (precision) {
     case 'year':
       return day.slice(0, 4);
     case 'month':
       return day.slice(0, 7);
     case 'week':
-      return `week of ${day}`;
+      return `week of ${dayOf(start, timeZone)}`;
     case 'approximate':
       return `around ${day}`;
     default:
@@ -400,6 +412,32 @@ interface ScoringScope {
   threadSize: number;
 }
 
+/**
+ * Share of the budget `hybrid` recalls into when its config sets none: older turns and memory
+ * items found for the turn earn more of a long thread's budget than its newest turns do, and
+ * what recall leaves unused goes back to `recent`
+ */
+const HYBRID_RECALL_SHARE = 0.6;
+
+/**
+ * The partitions of `config`, with the `recall` share of `hybrid` raised to
+ * {@link HYBRID_RECALL_SHARE} when the config sets none, as far as the other shares leave room
+ */
+function partitionsFor(
+  config: ContextBuilderConfig
+): Partial<Record<ContextPartition, ContextPartitionBudget>> {
+  const partitions = config.partitions ?? {};
+  if (config.strategy !== 'hybrid' || partitions.recall?.share !== undefined) return partitions;
+  const others = (Object.keys(DEFAULT_PARTITIONS) as ContextPartition[])
+    .filter((name) => name !== 'recall')
+    .reduce((sum, name) => {
+      const budget = { ...DEFAULT_PARTITIONS[name], ...partitions[name] };
+      return sum + (budget.required ? 0 : (budget.share ?? 0));
+    }, 0);
+  const share = Math.max(0, Math.min(HYBRID_RECALL_SHARE, 1 - others));
+  return { ...partitions, recall: { ...partitions.recall, share } };
+}
+
 function validBudget(value: number, name: string): number {
   if (!Number.isFinite(value) || value <= 0) {
     throw new Error(`ContextBuilder ${name} must be a positive number, got ${value}`);
@@ -425,13 +463,13 @@ export class ContextBuilder {
       includeSemanticContext: config.includeSemanticContext ?? false,
       includeGraphContext: config.includeGraphContext ?? false,
       graphContextOptions: config.graphContextOptions ?? {},
-      partitions: config.partitions ?? {},
+      partitions: partitionsFor(config),
       timeZone: config.timeZone ?? 'UTC',
     };
     if (!isTimeZone(this.config.timeZone)) {
       throw new Error(`ContextBuilder timeZone must be an IANA time zone, got ${config.timeZone}`);
     }
-    this.assembler = new ContextAssembler(config.partitions);
+    this.assembler = new ContextAssembler(this.config.partitions);
     this.deps = deps;
   }
 
@@ -697,8 +735,9 @@ export class ContextBuilder {
         : []
     );
     const shownTurns = recalledTurns.filter((turn) => turn.length > 0);
+    const factIds = new Set(facts.map((fact) => fact.id));
     const recalledItems = kept('recall').flatMap((block) =>
-      block.value.kind === 'recalled' ? [block.value.item] : []
+      block.value.kind === 'recalled' && !factIds.has(block.value.item.id) ? [block.value.item] : []
     );
     const turnBlocks = [
       ...textsOf('brief'),

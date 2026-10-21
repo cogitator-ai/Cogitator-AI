@@ -401,6 +401,36 @@ describe('ContextBuilder', () => {
     });
   });
 
+  describe('hybrid recall share', () => {
+    it('recalls into 60% of the budget by default, within what the other shares leave', () => {
+      const shareOf = (builder: ContextBuilder) =>
+        (builder as unknown as { config: { partitions: { recall?: { share?: number } } } }).config
+          .partitions.recall?.share;
+      expect(shareOf(new ContextBuilder({ strategy: 'hybrid' }, { memoryAdapter: adapter }))).toBe(
+        0.6
+      );
+      expect(
+        shareOf(
+          new ContextBuilder(
+            { strategy: 'hybrid', partitions: { facts: { share: 0.5 } } },
+            { memoryAdapter: adapter }
+          )
+        )
+      ).toBe(0.5);
+      expect(
+        shareOf(
+          new ContextBuilder(
+            { strategy: 'hybrid', partitions: { recall: { share: 0.2 } } },
+            { memoryAdapter: adapter }
+          )
+        )
+      ).toBe(0.2);
+      expect(
+        shareOf(new ContextBuilder({ strategy: 'relevant' }, { memoryAdapter: adapter }))
+      ).toBeUndefined();
+    });
+  });
+
   describe('hybrid recall in a time zone', () => {
     it('shows and reads dates on the calendar of the thread', async () => {
       const say = async (role: 'user' | 'assistant', content: string, at: string) =>
@@ -450,6 +480,43 @@ describe('ContextBuilder', () => {
       expect(inThreadZone.memoryContext).toContain(
         '[2026-03-10] user: I mailed the parcel to Porto'
       );
+    });
+
+    it('shows a month resolved in another zone as that month', async () => {
+      const items = new MemoryItems({ adapter });
+      await items.write([
+        {
+          kind: 'event',
+          content: 'Ana moved to Lisbon',
+          trust: 'user',
+          confidence: 0.9,
+          evidence: [],
+          verified: true,
+          scope: { agentId: 'agent1', userId: 'u1' },
+          about: {
+            text: 'in March',
+            start: new Date('2024-02-29T15:00:00Z'),
+            end: new Date('2024-03-31T15:00:00Z'),
+            precision: 'month',
+          },
+          saidAt: new Date('2024-04-02'),
+          sessionAt: new Date('2024-04-02'),
+        },
+      ]);
+      const builder = new ContextBuilder(
+        { maxTokens: 2000, strategy: 'hybrid', timeZone: 'America/New_York' },
+        { memoryAdapter: adapter, memoryItems: items }
+      );
+
+      const result = await builder.build({
+        threadId,
+        agentId: 'agent1',
+        userId: 'u1',
+        currentInput: 'When did Ana move to Lisbon?',
+        asOf: new Date('2024-05-01'),
+      });
+
+      expect(result.memoryContext).toContain('- Ana moved to Lisbon (2024-03)');
     });
 
     it('refuses a time zone that is not one', () => {
