@@ -20,8 +20,15 @@ import type {
   NewMemoryEntry,
   MemoryEntryType,
   PathQueryOptions,
+  MemoryFileAdapter,
+  MemoryFileFilter,
+  MemoryFileVersion,
 } from '@cogitator-ai/types';
-import { CONVERSATION_ENTRY_TYPES, MEMORY_ENTRY_FORMAT } from '@cogitator-ai/types';
+import {
+  CONVERSATION_ENTRY_TYPES,
+  MEMORY_ENTRY_FORMAT,
+  MEMORY_FILE_CONFLICT,
+} from '@cogitator-ai/types';
 import type {
   Collection,
   Document,
@@ -36,6 +43,7 @@ import type {
 import { BranchingMemoryAdapter, entryTypeWanted } from './base';
 import { threadListing, threadPage, type ThreadListing } from './thread-listing';
 import { entityNames } from '../memory-items';
+import { fileKeyOf, matchesFileFilter } from '../memory-files';
 
 /** A cursor over `find()` results, as far as the adapter reads it. */
 type MongoCursor<T extends Document> = Pick<
@@ -208,6 +216,21 @@ function itemDoc(item: MemoryItem): Omit<ItemDoc, '_id'> {
   };
 }
 
+/** A memory file version, beside the fields its filters read and its unique place */
+interface FileDoc {
+  _id: string;
+  agentId: string;
+  fileKey: string;
+  path: string;
+  sequence: number;
+  createdAt: Date;
+  version: MemoryFileVersion;
+}
+
+function isDuplicateKey(err: unknown): boolean {
+  return (err as { code?: number }).code === 11000;
+}
+
 /** First seen first, then by id, the order entities are found in */
 function byFirstSeen(a: MemoryEntity, b: MemoryEntity): number {
   return (
@@ -370,7 +393,10 @@ function afterCursor({ cursor, order }: ThreadListing): Filter<ThreadDoc> | unde
  * Threads and entries in MongoDB, and memory items with their entities in `<prefix>items` and
  * `<prefix>entities`
  */
-export class MongoDBAdapter extends BranchingMemoryAdapter implements MemoryItemAdapter {
+export class MongoDBAdapter
+  extends BranchingMemoryAdapter
+  implements MemoryItemAdapter, MemoryFileAdapter
+{
   readonly provider: MemoryProvider = 'mongodb';
 
   private client: MongoClient | null = null;
@@ -402,6 +428,11 @@ export class MongoDBAdapter extends BranchingMemoryAdapter implements MemoryItem
   private get items(): MongoCollection<ItemDoc> {
     if (!this.db) throw new Error('Not connected');
     return this.db.collection<ItemDoc>(`${this.prefix}items`);
+  }
+
+  private get files(): MongoCollection<FileDoc> {
+    if (!this.db) throw new Error('Not connected');
+    return this.db.collection<FileDoc>(`${this.prefix}file_versions`);
   }
 
   private get entities(): MongoCollection<EntityDoc> {
@@ -447,6 +478,9 @@ export class MongoDBAdapter extends BranchingMemoryAdapter implements MemoryItem
       await items.createIndex({ agentId: 1, userId: 1 });
       const entities = db.collection<EntityDoc>(`${this.prefix}entities`);
       await entities.createIndex({ agentId: 1, names: 1 });
+      const files = db.collection<FileDoc>(`${this.prefix}file_versions`);
+      await files.createIndex({ fileKey: 1, sequence: 1 }, { unique: true });
+      await files.createIndex({ agentId: 1, path: 1, createdAt: 1 });
 
       this.client = client;
       this.db = db;
@@ -1283,6 +1317,102 @@ export class MongoDBAdapter extends BranchingMemoryAdapter implements MemoryItem
         { _id: { $in: [...new Set(itemIds)] } },
         { $inc: { 'item.timesRetrieved': 1 }, $set: { 'item.lastRetrievedAt': new Date(at) } }
       );
+      return this.success(undefined);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
+  /**
+   * Adds the versions in one ordered write. When one of them finds its place taken, those the
+   * write added before it are deleted again, so the batch is kept whole or not at all.
+   */
+  async putFileVersions(versions: MemoryFileVersion[]): Promise<MemoryResult<MemoryFileVersion[]>> {
+    if (!this.db) return this.failure('Not connected');
+    if (versions.length === 0) return this.success([]);
+    try {
+      await this.files.bulkWrite(
+        versions.map((version) => ({
+          insertOne: {
+            document: {
+              _id: version.id,
+              agentId: version.scope.agentId,
+              fileKey: fileKeyOf(version.scope, version.path),
+              path: version.path,
+              sequence: version.sequence,
+              createdAt: version.createdAt,
+              version,
+            },
+          },
+        })),
+        { ordered: true }
+      );
+      return this.success(versions.map((version) => structuredClone(version)));
+    } catch (err) {
+      await this.files
+        .deleteMany({ _id: { $in: versions.map((version) => version.id) } })
+        .catch(() => undefined);
+      return isDuplicateKey(err)
+        ? this.failure(MEMORY_FILE_CONFLICT)
+        : this.failure((err as Error).message);
+    }
+  }
+
+  async findFileVersions(filter: MemoryFileFilter): Promise<MemoryResult<MemoryFileVersion[]>> {
+    if (!this.db) return this.failure('Not connected');
+    try {
+      const query: Filter<FileDoc> = {
+        agentId: { $eq: filter.agentId },
+        ...(filter.ids && { _id: { $in: filter.ids } }),
+        ...(filter.paths && { path: { $in: filter.paths } }),
+        ...(filter.prefix !== undefined &&
+          !filter.paths && {
+            path: { $regex: `^${filter.prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}` },
+          }),
+      };
+      const docs = await this.files
+        .find(query)
+        .sort({ createdAt: 1, sequence: 1, _id: 1 })
+        .toArray();
+      return this.success(
+        docs.map((doc) => doc.version).filter((version) => matchesFileFilter(version, filter))
+      );
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
+  async redactFileVersions(
+    ids: string[],
+    redaction: { content: string; sha256: string; at: Date; reason?: string }
+  ): Promise<MemoryResult<void>> {
+    if (!this.db) return this.failure('Not connected');
+    if (ids.length === 0) return this.success(undefined);
+    try {
+      await this.files.updateMany(
+        { _id: { $in: ids } },
+        {
+          $set: {
+            'version.content': redaction.content,
+            'version.sha256': redaction.sha256,
+            'version.redacted': {
+              at: redaction.at,
+              ...(redaction.reason !== undefined && { reason: redaction.reason }),
+            },
+          },
+        }
+      );
+      return this.success(undefined);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
+  async deleteFileVersions(ids: string[]): Promise<MemoryResult<void>> {
+    if (!this.db) return this.failure('Not connected');
+    if (ids.length === 0) return this.success(undefined);
+    try {
+      await this.files.deleteMany({ _id: { $in: ids } });
       return this.success(undefined);
     } catch (err) {
       return this.failure((err as Error).message);

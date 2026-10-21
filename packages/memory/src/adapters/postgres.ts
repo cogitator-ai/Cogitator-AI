@@ -36,16 +36,26 @@ import type {
   MemoryItemAdapter,
   MemoryItemFilter,
   MemoryItemTrust,
+  MemoryFileAdapter,
+  MemoryFileFilter,
+  MemoryFileVersion,
 } from '@cogitator-ai/types';
-import { CONVERSATION_ENTRY_TYPES, MEMORY_ENTRY_FORMAT } from '@cogitator-ai/types';
+import {
+  CONVERSATION_ENTRY_TYPES,
+  MEMORY_ENTRY_FORMAT,
+  MEMORY_FILE_CONFLICT,
+} from '@cogitator-ai/types';
 import { BranchingMemoryAdapter, MAX_PATH_DEPTH } from './base';
 import {
   memoryEntityFromJson,
   memoryItemFromJson,
   type StoredMemoryEntity,
   type StoredMemoryItem,
+  memoryFileVersionFromJson,
+  type StoredMemoryFileVersion,
 } from './memory-item-json';
 import { entityNames, MemoryItems, normalizeName } from '../memory-items';
+import { fileKeyOf, matchesFileFilter } from '../memory-files';
 import { attempt, ensureSchemaVersion, withSetupTransaction } from './schema-version';
 import { EMPTY_DELETE_FILTER_ERROR, filterSourceTypes, hasDeleteCondition } from '../search/filter';
 import {
@@ -99,7 +109,7 @@ const THREAD_TIME = "date_trunc('milliseconds', updated_at AT TIME ZONE 'UTC')";
  * slot with the fact's id, and the old table is kept as `facts_legacy`. A schema from before
  * versions were recorded is brought up to date in place.
  */
-const MEMORY_SCHEMA_VERSION = 3;
+const MEMORY_SCHEMA_VERSION = 4;
 
 /** The columns of a memory item's scope, beside the scope field each holds */
 const SCOPE_COLUMNS = [
@@ -196,7 +206,12 @@ function toJsonb(value: unknown): string | null {
 
 export class PostgresAdapter
   extends BranchingMemoryAdapter
-  implements MemoryItemAdapter, FactAdapter, EmbeddingAdapter, KeywordSearchAdapter
+  implements
+    MemoryItemAdapter,
+    MemoryFileAdapter,
+    FactAdapter,
+    EmbeddingAdapter,
+    KeywordSearchAdapter
 {
   readonly provider: MemoryProvider = 'postgres';
 
@@ -373,6 +388,29 @@ export class PostgresAdapter
   }
 
   /**
+   * The table of memory file versions: each version whole as JSON, beside the columns its filters
+   * read, and no two versions of one scope and path (`file_key`) in one `sequence`
+   */
+  private async createMemoryFileTable(db: SqlQueryable): Promise<void> {
+    const files = `${this.schema}.memory_file_versions`;
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS ${files} (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        file_key TEXT NOT NULL,
+        path TEXT NOT NULL,
+        sequence INTEGER NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL,
+        version JSONB NOT NULL,
+        UNIQUE (file_key, sequence)
+      )
+    `);
+    await db.query(
+      `CREATE INDEX IF NOT EXISTS idx_memory_file_versions_agent ON ${files}(agent_id, (path COLLATE "C"), created_at)`
+    );
+  }
+
+  /**
    * Moves every row of `facts` into a memory item of kind `fact` with the fact's id, alone in
    * its slot `fact:<id>`: active, trusted as its source, in the scope of its agent and of the
    * user its metadata names, verified when it has evidence, said, recorded and valid from when
@@ -450,9 +488,13 @@ export class PostgresAdapter
 
   /** Brings threads, entries and memory items to {@link MEMORY_SCHEMA_VERSION} */
   private async migrate(connection: SqlQueryable): Promise<void> {
-    const tables = ['threads', 'entries', 'memory_items', 'memory_entities'].map(
-      (table) => `${this.schema}.${table}`
-    );
+    const tables = [
+      'threads',
+      'entries',
+      'memory_items',
+      'memory_entities',
+      'memory_file_versions',
+    ].map((table) => `${this.schema}.${table}`);
     const present = async (db: SqlQueryable) => {
       const found = await db.query(
         'SELECT count(*)::int AS n FROM unnest($1::text[]) AS t(name) WHERE to_regclass(name) IS NOT NULL',
@@ -513,6 +555,7 @@ export class PostgresAdapter
       `);
         await this.migrateToTrees(db);
         await this.createMemoryItemTables(db);
+        await this.createMemoryFileTable(db);
         await this.migrateFactsToItems(db);
       },
       present
@@ -1209,6 +1252,123 @@ export class PostgresAdapter
          )
          WHERE id = ANY($1::text[])`,
         [[...new Set(itemIds)], at.toISOString()]
+      );
+      return this.success(undefined);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
+  async putFileVersions(versions: MemoryFileVersion[]): Promise<MemoryResult<MemoryFileVersion[]>> {
+    const pool = this.pool;
+    if (!pool) return this.failure('Not connected');
+    if (versions.length === 0) return this.success([]);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const version of versions) {
+        await client.query(
+          `INSERT INTO ${this.schema}.memory_file_versions
+           (id, agent_id, file_key, path, sequence, created_at, version)
+           VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
+          [
+            version.id,
+            version.scope.agentId,
+            fileKeyOf(version.scope, version.path),
+            version.path,
+            version.sequence,
+            version.createdAt,
+            JSON.stringify(version),
+          ]
+        );
+      }
+      await client.query('COMMIT');
+      return this.success(
+        versions.map((version) =>
+          memoryFileVersionFromJson(JSON.parse(JSON.stringify(version)) as StoredMemoryFileVersion)
+        )
+      );
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      return (err as { code?: string }).code === '23505'
+        ? this.failure(MEMORY_FILE_CONFLICT)
+        : this.failure((err as Error).message);
+    } finally {
+      client.release();
+    }
+  }
+
+  async findFileVersions(filter: MemoryFileFilter): Promise<MemoryResult<MemoryFileVersion[]>> {
+    if (!this.pool) return this.failure('Not connected');
+    const conditions = ['agent_id = $1'];
+    const params: unknown[] = [filter.agentId];
+    if (filter.ids) {
+      params.push(filter.ids);
+      conditions.push(`id = ANY($${params.length}::text[])`);
+    }
+    if (filter.paths) {
+      params.push(filter.paths);
+      conditions.push(`path = ANY($${params.length}::text[])`);
+    }
+    if (filter.prefix !== undefined) {
+      params.push(filter.prefix.length, filter.prefix);
+      conditions.push(`left(path, $${params.length - 1}) = $${params.length}`);
+    }
+    try {
+      const found = await this.pool.query(
+        `SELECT version FROM ${this.schema}.memory_file_versions
+         WHERE ${conditions.join(' AND ')}
+         ORDER BY created_at, sequence, (id COLLATE "C")`,
+        params
+      );
+      return this.success(
+        found.rows
+          .map((row) => memoryFileVersionFromJson(row.version as StoredMemoryFileVersion))
+          .filter((version) => matchesFileFilter(version, filter))
+      );
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
+  async redactFileVersions(
+    ids: string[],
+    redaction: { content: string; sha256: string; at: Date; reason?: string }
+  ): Promise<MemoryResult<void>> {
+    if (!this.pool) return this.failure('Not connected');
+    if (ids.length === 0) return this.success(undefined);
+    try {
+      await this.pool.query(
+        `UPDATE ${this.schema}.memory_file_versions
+         SET version = version || jsonb_build_object(
+           'content', $2::text,
+           'sha256', $3::text,
+           'redacted', $4::jsonb
+         )
+         WHERE id = ANY($1::text[])`,
+        [
+          [...new Set(ids)],
+          redaction.content,
+          redaction.sha256,
+          JSON.stringify({
+            at: redaction.at,
+            ...(redaction.reason !== undefined && { reason: redaction.reason }),
+          }),
+        ]
+      );
+      return this.success(undefined);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
+  async deleteFileVersions(ids: string[]): Promise<MemoryResult<void>> {
+    if (!this.pool) return this.failure('Not connected');
+    if (ids.length === 0) return this.success(undefined);
+    try {
+      await this.pool.query(
+        `DELETE FROM ${this.schema}.memory_file_versions WHERE id = ANY($1::text[])`,
+        [ids]
       );
       return this.success(undefined);
     } catch (err) {

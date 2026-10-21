@@ -261,6 +261,23 @@ export {
   type MemoryItemsConfig,
 } from './memory-items';
 export {
+  MemoryFiles,
+  MemoryFileError,
+  MEMORY_ROOT,
+  REDACTED_CONTENT,
+  memoryPath,
+  sha256Of,
+  isMemoryFileAdapter,
+  matchesFileFilter,
+  byFileVersion,
+  fileKeyOf,
+  type MemoryFile,
+  type MemoryFileAccess,
+  type MemoryFileCommand,
+  type MemoryFilePlace,
+  type MemoryFilesOptions,
+} from './memory-files';
+export {
   MemoryRetriever,
   MIN_COSINE,
   RELATIVE_COSINE,

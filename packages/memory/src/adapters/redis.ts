@@ -25,17 +25,27 @@ import type {
   ToolCall,
   ToolResult,
   PathQueryOptions,
+  MemoryFileAdapter,
+  MemoryFileFilter,
+  MemoryFileVersion,
 } from '@cogitator-ai/types';
 import { createRedisClient, type RedisClient } from '@cogitator-ai/redis';
 import { BranchingMemoryAdapter, entryTypeWanted } from './base';
-import { CONVERSATION_ENTRY_TYPES, MEMORY_ENTRY_FORMAT } from '@cogitator-ai/types';
+import {
+  CONVERSATION_ENTRY_TYPES,
+  MEMORY_ENTRY_FORMAT,
+  MEMORY_FILE_CONFLICT,
+} from '@cogitator-ai/types';
 import { matchesListing, threadListing, threadPage, type ThreadCursor } from './thread-listing';
 import { byRecorded, entityNames, matchesEntityFilter, matchesItemFilter } from '../memory-items';
+import { byFileVersion, fileKeyOf, matchesFileFilter } from '../memory-files';
 import {
   memoryEntityFromJson,
   memoryItemFromJson,
   type StoredMemoryEntity,
   type StoredMemoryItem,
+  memoryFileVersionFromJson,
+  type StoredMemoryFileVersion,
 } from './memory-item-json';
 
 /**
@@ -600,6 +610,47 @@ return out
 `;
 
 /**
+ * Adds memory file versions, all or none. KEYS: per version its record and its place, then per
+ * version the index of its agent. ARGV: the count, then per version its id, data and score.
+ * Returns 0 and writes nothing when a record or a place is taken, or the batch takes one twice.
+ */
+const PUT_FILES = `
+local n = tonumber(ARGV[1])
+local places = {}
+for i = 1, n do
+  local place = KEYS[2 * i]
+  if places[place] or redis.call('EXISTS', KEYS[2 * i - 1]) == 1 or redis.call('EXISTS', place) == 1 then
+    return 0
+  end
+  places[place] = true
+end
+for i = 1, n do
+  local at = 2 + (i - 1) * 3
+  redis.call('HSET', KEYS[2 * i - 1], '${RECORD_DATA}', ARGV[at + 1])
+  redis.call('SET', KEYS[2 * i], ARGV[at])
+  redis.call('ZADD', KEYS[2 * n + i], ARGV[at + 2], ARGV[at])
+end
+return 1
+`;
+
+/** Sets field ARGV[1] of the record KEYS[1] to ARGV[2] when the record exists */
+const SET_IF_PRESENT = `
+if redis.call('EXISTS', KEYS[1]) == 1 then
+  redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+  return 1
+end
+return 0
+`;
+
+/** Deletes a file version: KEYS its record, its place, its agent's index, ARGV its id */
+const DROP_FILE = `
+redis.call('DEL', KEYS[1])
+if redis.call('GET', KEYS[2]) == ARGV[1] then redis.call('DEL', KEYS[2]) end
+redis.call('ZREM', KEYS[3], ARGV[1])
+return 1
+`;
+
+/**
  * The index keys a record is in: the sorted set of its agent's records, scored by time, and the
  * sets that find it by slot, entity or name
  */
@@ -652,6 +703,10 @@ function keyPart(value: string): string {
   return encodeURIComponent(value);
 }
 
+function parseFileVersion(data: string): MemoryFileVersion {
+  return memoryFileVersionFromJson(JSON.parse(data) as StoredMemoryFileVersion);
+}
+
 function parseItem(data: string): MemoryItem {
   return memoryItemFromJson(JSON.parse(data) as StoredMemoryItem);
 }
@@ -679,7 +734,10 @@ function recordRows(reply: unknown): string[] {
  * live for `ttl` seconds when it is set, memory items and entities never expire with it: they
  * are long-term memory, kept until they are deleted.
  */
-export class RedisAdapter extends BranchingMemoryAdapter implements MemoryItemAdapter {
+export class RedisAdapter
+  extends BranchingMemoryAdapter
+  implements MemoryItemAdapter, MemoryFileAdapter
+{
   readonly provider: MemoryProvider = 'redis';
 
   private client: RedisClient | null = null;
@@ -1327,7 +1385,7 @@ export class RedisAdapter extends BranchingMemoryAdapter implements MemoryItemAd
    * or the set of those `by` names, such as `['slot', slot]`
    */
   private recordIndex(
-    records: 'items' | 'entities',
+    records: 'items' | 'entities' | 'files',
     agentId: string,
     by?: readonly [string, string]
   ): string {
@@ -1419,7 +1477,7 @@ export class RedisAdapter extends BranchingMemoryAdapter implements MemoryItemAd
 
   private async readRecords(
     client: RedisClient,
-    type: 'item' | 'entity',
+    type: 'item' | 'entity' | 'file',
     { mode, keys }: RecordSource
   ): Promise<string[]> {
     return recordRows(
@@ -1501,6 +1559,94 @@ export class RedisAdapter extends BranchingMemoryAdapter implements MemoryItemAd
   }
 
   /** Reads the narrowest index the filter allows, then filters and orders in process */
+  /** The key two versions of one scope and path may not share a `sequence` under */
+  private filePlace(version: MemoryFileVersion): string {
+    return this.key(
+      'file:place',
+      `${keyPart(fileKeyOf(version.scope, version.path))}:${version.sequence}`
+    );
+  }
+
+  async putFileVersions(versions: MemoryFileVersion[]): Promise<MemoryResult<MemoryFileVersion[]>> {
+    if (versions.length === 0) return this.run(async () => this.success([]));
+    return this.run(async (client) => {
+      const keys = [
+        ...versions.flatMap((version) => [this.key('file', version.id), this.filePlace(version)]),
+        ...versions.map((version) => this.recordIndex('files', version.scope.agentId)),
+      ];
+      const args = versions.flatMap((version) => [
+        version.id,
+        JSON.stringify(version),
+        version.createdAt.getTime(),
+      ]);
+      const written = await client.eval(PUT_FILES, keys.length, ...keys, versions.length, ...args);
+      if (Number(written) !== 1) return this.failure(MEMORY_FILE_CONFLICT);
+      return this.success(versions.map((version) => structuredClone(version)));
+    });
+  }
+
+  async findFileVersions(filter: MemoryFileFilter): Promise<MemoryResult<MemoryFileVersion[]>> {
+    return this.run(async (client) => {
+      const source: RecordSource | null = filter.ids
+        ? filter.ids.length > 0
+          ? { mode: 'records', keys: [...new Set(filter.ids)].map((id) => this.key('file', id)) }
+          : null
+        : { mode: 'sorted', keys: [this.recordIndex('files', filter.agentId)] };
+      if (!source) return this.success([]);
+      const rows = await this.readRecords(client, 'file', source);
+      return this.success(
+        rows
+          .map(parseFileVersion)
+          .filter((version) => matchesFileFilter(version, filter))
+          .sort(byFileVersion)
+      );
+    });
+  }
+
+  async redactFileVersions(
+    ids: string[],
+    redaction: { content: string; sha256: string; at: Date; reason?: string }
+  ): Promise<MemoryResult<void>> {
+    return this.run(async (client) => {
+      for (const id of new Set(ids)) {
+        const key = this.key('file', id);
+        const data = await client.eval(READ_FIELD, 1, key, RECORD_DATA);
+        if (typeof data !== 'string') continue;
+        const redacted = JSON.stringify({
+          ...parseFileVersion(data),
+          content: redaction.content,
+          sha256: redaction.sha256,
+          redacted: {
+            at: redaction.at,
+            ...(redaction.reason !== undefined && { reason: redaction.reason }),
+          },
+        });
+        await client.eval(SET_IF_PRESENT, 1, key, RECORD_DATA, redacted);
+      }
+      return this.success(undefined);
+    });
+  }
+
+  async deleteFileVersions(ids: string[]): Promise<MemoryResult<void>> {
+    return this.run(async (client) => {
+      for (const id of new Set(ids)) {
+        const key = this.key('file', id);
+        const data = await client.eval(READ_FIELD, 1, key, RECORD_DATA);
+        if (typeof data !== 'string') continue;
+        const version = parseFileVersion(data);
+        await client.eval(
+          DROP_FILE,
+          3,
+          key,
+          this.filePlace(version),
+          this.recordIndex('files', version.scope.agentId),
+          id
+        );
+      }
+      return this.success(undefined);
+    });
+  }
+
   async findItems(filter: MemoryItemFilter): Promise<MemoryResult<MemoryItem[]>> {
     return this.run(async (client) => {
       const source = this.itemSource(filter);

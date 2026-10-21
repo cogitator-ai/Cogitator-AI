@@ -14,6 +14,9 @@ import type {
   MemoryEntityFilter,
   MemoryItem,
   MemoryItemAdapter,
+  MemoryFileAdapter,
+  MemoryFileFilter,
+  MemoryFileVersion,
   MemoryItemFilter,
 } from '@cogitator-ai/types';
 import { CONVERSATION_ENTRY_TYPES, MEMORY_ENTRY_FORMAT } from '@cogitator-ai/types';
@@ -22,6 +25,7 @@ import { dirname } from 'node:path';
 import { BranchingMemoryAdapter, MAX_PATH_DEPTH } from './base';
 import type { SqliteDatabase } from './sqlite-driver';
 import { sqliteMemoryItems } from './sqlite-memory-items';
+import { sqliteMemoryFiles } from './sqlite-memory-files';
 import { threadListing, threadPage, type ThreadListing } from './thread-listing';
 
 /** Whether `path` names a database file on disk rather than an in-memory or temporary database. */
@@ -107,11 +111,15 @@ function rowToEntry(row: EntryRow, includeToolCalls: boolean): MemoryEntry {
   };
 }
 
-export class SQLiteAdapter extends BranchingMemoryAdapter implements MemoryItemAdapter {
+export class SQLiteAdapter
+  extends BranchingMemoryAdapter
+  implements MemoryItemAdapter, MemoryFileAdapter
+{
   readonly provider: MemoryProvider = 'sqlite';
 
   private db: SqliteDatabase | null = null;
   private items: MemoryItemAdapter | null = null;
+  private files: MemoryFileAdapter | null = null;
   private path: string;
   private walMode: boolean;
 
@@ -174,6 +182,7 @@ export class SQLiteAdapter extends BranchingMemoryAdapter implements MemoryItemA
       `);
       this.migrate(db);
       this.items = sqliteMemoryItems(db);
+      this.files = sqliteMemoryFiles(db);
 
       this.db = db;
       return this.success(undefined);
@@ -246,6 +255,7 @@ export class SQLiteAdapter extends BranchingMemoryAdapter implements MemoryItemA
       } finally {
         this.db = null;
         this.items = null;
+        this.files = null;
       }
     }
     return this.success(undefined);
@@ -715,6 +725,27 @@ export class SQLiteAdapter extends BranchingMemoryAdapter implements MemoryItemA
 
   async putEntity(entity: MemoryEntity): Promise<MemoryResult<MemoryEntity>> {
     return this.items ? this.items.putEntity(entity) : this.failure('Not connected');
+  }
+
+  async putFileVersions(versions: MemoryFileVersion[]): Promise<MemoryResult<MemoryFileVersion[]>> {
+    return this.files ? this.files.putFileVersions(versions) : this.failure('Not connected');
+  }
+
+  async findFileVersions(filter: MemoryFileFilter): Promise<MemoryResult<MemoryFileVersion[]>> {
+    return this.files ? this.files.findFileVersions(filter) : this.failure('Not connected');
+  }
+
+  async redactFileVersions(
+    ids: string[],
+    redaction: { content: string; sha256: string; at: Date; reason?: string }
+  ): Promise<MemoryResult<void>> {
+    return this.files
+      ? this.files.redactFileVersions(ids, redaction)
+      : this.failure('Not connected');
+  }
+
+  async deleteFileVersions(ids: string[]): Promise<MemoryResult<void>> {
+    return this.files ? this.files.deleteFileVersions(ids) : this.failure('Not connected');
   }
 
   async findEntities(filter: MemoryEntityFilter): Promise<MemoryResult<MemoryEntity[]>> {

@@ -17,9 +17,12 @@ import type {
   MemoryItem,
   MemoryItemAdapter,
   MemoryItemFilter,
+  MemoryFileAdapter,
+  MemoryFileFilter,
+  MemoryFileVersion,
 } from '@cogitator-ai/types';
 import { BranchingMemoryAdapter, entryTypeWanted, withoutToolCalls } from './base';
-import { MEMORY_ENTRY_FORMAT } from '@cogitator-ai/types';
+import { MEMORY_ENTRY_FORMAT, MEMORY_FILE_CONFLICT } from '@cogitator-ai/types';
 import {
   compareForListing,
   isAfterCursor,
@@ -28,6 +31,7 @@ import {
   threadPage,
 } from './thread-listing';
 import { byRecorded, matchesEntityFilter, matchesItemFilter } from '../memory-items';
+import { byFileVersion, fileKeyOf, matchesFileFilter } from '../memory-files';
 
 /**
  * A copy of `value` that shares nothing with it: a structured clone, or for a value it cannot
@@ -55,7 +59,10 @@ function copyEntry(entry: MemoryEntry): MemoryEntry {
   return { ...structuredClone(entry), createdAt: new Date(entry.createdAt) };
 }
 
-export class InMemoryAdapter extends BranchingMemoryAdapter implements MemoryItemAdapter {
+export class InMemoryAdapter
+  extends BranchingMemoryAdapter
+  implements MemoryItemAdapter, MemoryFileAdapter
+{
   readonly provider: MemoryProvider = 'memory';
 
   private threads = new Map<string, Thread>();
@@ -65,6 +72,9 @@ export class InMemoryAdapter extends BranchingMemoryAdapter implements MemoryIte
   private seq = 0;
   private items = new Map<string, MemoryItem>();
   private entities = new Map<string, MemoryEntity>();
+  private fileVersions = new Map<string, MemoryFileVersion>();
+  /** Taken places of file versions: scope and path key, then sequence */
+  private filePlaces = new Set<string>();
 
   constructor(config: InMemoryAdapterConfig = { provider: 'memory' }) {
     super();
@@ -81,6 +91,8 @@ export class InMemoryAdapter extends BranchingMemoryAdapter implements MemoryIte
     this.threadEntries.clear();
     this.items.clear();
     this.entities.clear();
+    this.fileVersions.clear();
+    this.filePlaces.clear();
     return this.success(undefined);
   }
 
@@ -378,6 +390,62 @@ export class InMemoryAdapter extends BranchingMemoryAdapter implements MemoryIte
 
   async deleteItems(itemIds: string[]): Promise<MemoryResult<void>> {
     for (const itemId of itemIds) this.items.delete(itemId);
+    return this.success(undefined);
+  }
+
+  async putFileVersions(versions: MemoryFileVersion[]): Promise<MemoryResult<MemoryFileVersion[]>> {
+    const places = versions.map(
+      (version) => `${fileKeyOf(version.scope, version.path)}#${version.sequence}`
+    );
+    if (
+      places.some((place) => this.filePlaces.has(place)) ||
+      new Set(places).size !== places.length
+    ) {
+      return this.failure(MEMORY_FILE_CONFLICT);
+    }
+    for (const [at, version] of versions.entries()) {
+      this.fileVersions.set(version.id, structuredClone(version));
+      this.filePlaces.add(places[at]!);
+    }
+    return this.success(versions.map((version) => structuredClone(version)));
+  }
+
+  async findFileVersions(filter: MemoryFileFilter): Promise<MemoryResult<MemoryFileVersion[]>> {
+    return this.success(
+      [...this.fileVersions.values()]
+        .filter((version) => matchesFileFilter(version, filter))
+        .sort(byFileVersion)
+        .map((version) => structuredClone(version))
+    );
+  }
+
+  async redactFileVersions(
+    ids: string[],
+    redaction: { content: string; sha256: string; at: Date; reason?: string }
+  ): Promise<MemoryResult<void>> {
+    for (const id of ids) {
+      const version = this.fileVersions.get(id);
+      if (!version) continue;
+      this.fileVersions.set(id, {
+        ...version,
+        content: redaction.content,
+        sha256: redaction.sha256,
+        redacted: {
+          at: new Date(redaction.at),
+          ...(redaction.reason !== undefined && { reason: redaction.reason }),
+        },
+      });
+    }
+    return this.success(undefined);
+  }
+
+  async deleteFileVersions(ids: string[]): Promise<MemoryResult<void>> {
+    for (const id of ids) {
+      const version = this.fileVersions.get(id);
+      if (!version) continue;
+      this.fileVersions.delete(id);
+      this.filePlaces.delete(`${fileKeyOf(version.scope, version.path)}#${version.sequence}`);
+    }
     return this.success(undefined);
   }
 

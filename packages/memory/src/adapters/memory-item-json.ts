@@ -3,7 +3,12 @@
  * reads its dates back as dates with these
  */
 
-import type { MemoryEntity, MemoryItem, MemoryItemTime } from '@cogitator-ai/types';
+import type {
+  MemoryEntity,
+  MemoryFileVersion,
+  MemoryItem,
+  MemoryItemTime,
+} from '@cogitator-ai/types';
 
 /** A memory item time as JSON holds it, its dates as ISO text */
 export type StoredMemoryItemTime = Omit<MemoryItemTime, 'start' | 'end'> & {
@@ -77,4 +82,25 @@ export function memoryItemFromJson(stored: StoredMemoryItem): MemoryItem {
 export function memoryEntityFromJson(stored: StoredMemoryEntity): MemoryEntity {
   const { firstSeenAt, lastSeenAt, ...entity } = stored;
   return { ...entity, firstSeenAt: new Date(firstSeenAt), lastSeenAt: new Date(lastSeenAt) };
+}
+
+/** A memory file version as JSON holds it, its dates as ISO text */
+export type StoredMemoryFileVersion = Omit<MemoryFileVersion, 'createdAt' | 'redacted'> & {
+  createdAt: string;
+  redacted?: { at: string; reason?: string };
+};
+
+/** The memory file version `stored` holds, its dates as dates and absent fields left absent */
+export function memoryFileVersionFromJson(stored: StoredMemoryFileVersion): MemoryFileVersion {
+  const { createdAt, redacted, ...version } = stored;
+  return {
+    ...version,
+    createdAt: new Date(createdAt),
+    ...(redacted && {
+      redacted: {
+        at: new Date(redacted.at),
+        ...(redacted.reason !== undefined && { reason: redacted.reason }),
+      },
+    }),
+  };
 }

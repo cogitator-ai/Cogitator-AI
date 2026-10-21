@@ -6,6 +6,7 @@ import type { Message, ToolCall, ToolResult } from './message';
 import type { GraphContext, GraphContextOptions, GraphNode } from './knowledge-graph';
 import type { MemoryCompactionConfig } from './session';
 import type { MemoryExtractionConfig, MemoryItem } from './memory-items';
+import type { MemoryFilesConfig } from './memory-files';
 import type { Reranker } from './rag';
 
 export type MemoryType = 'conversation' | 'fact' | 'embedding';
@@ -646,6 +647,8 @@ export interface MemoryConfig {
   compaction?: MemoryCompactionConfig;
   /** Memory items extracted from a run's conversation after the run, off unless set */
   extraction?: MemoryExtractionConfig;
+  /** The memory tool and its files under `/memories`, off unless set */
+  files?: MemoryFilesConfig;
   /**
    * Reorders the best of what a search of memory found for a turn (the `hybrid` strategy), such
    * as a cross-encoder or a reranking model, after its own lexical rerank

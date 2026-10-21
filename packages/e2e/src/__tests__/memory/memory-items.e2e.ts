@@ -4,8 +4,17 @@ import pg from 'pg';
 import { Redis } from 'ioredis';
 import { MongoClient } from 'mongodb';
 import { MongoDBAdapter, PostgresAdapter, RedisAdapter } from '@cogitator-ai/memory';
-import { memoryItemAdapterConformanceCases } from '@cogitator-ai/test-utils';
-import type { Evidence, MemoryAdapter, MemoryItemAdapter, MemoryResult } from '@cogitator-ai/types';
+import {
+  memoryFileAdapterConformanceCases,
+  memoryItemAdapterConformanceCases,
+} from '@cogitator-ai/test-utils';
+import type {
+  Evidence,
+  MemoryAdapter,
+  MemoryFileAdapter,
+  MemoryItemAdapter,
+  MemoryResult,
+} from '@cogitator-ai/types';
 
 const postgresUrl = process.env.TEST_POSTGRES_URL;
 const redisUrl =
@@ -16,7 +25,7 @@ const mongoUrl = process.env.TEST_MONGODB_URL;
 
 const tag = randomUUID().replace(/-/g, '').slice(0, 8);
 
-type ItemStore = MemoryAdapter & MemoryItemAdapter;
+type ItemStore = MemoryAdapter & MemoryItemAdapter & MemoryFileAdapter;
 
 function unwrap<T>(result: MemoryResult<T>): T {
   if (!result.success) throw new Error(result.error);
@@ -96,6 +105,17 @@ for (const target of targets) {
     afterAll(() => target.cleanUp());
 
     for (const c of memoryItemAdapterConformanceCases({
+      create: target.create,
+      release: async (adapter) => {
+        await adapter.disconnect();
+      },
+    })) {
+      (c.skip ? it.skip : it)(c.name, { timeout: 30_000 }, () => c.run());
+    }
+  });
+
+  (target.url ? describe : describe.skip)(`Memory: ${target.name} memory files conformance`, () => {
+    for (const c of memoryFileAdapterConformanceCases({
       create: target.create,
       release: async (adapter) => {
         await adapter.disconnect();
@@ -266,7 +286,7 @@ async function countOf(client: pg.Client, table: string): Promise<number> {
     const version = await client.query(
       `SELECT version FROM ${schema}.cogitator_schema_migrations WHERE component = 'memory'`
     );
-    expect(version.rows[0]?.version).toBe(3);
+    expect(version.rows[0]?.version).toBe(4);
 
     const tea = unwrap(await adapter.getItem('fact_tea'));
     expect(tea).toEqual({

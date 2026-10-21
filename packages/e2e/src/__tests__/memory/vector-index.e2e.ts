@@ -150,7 +150,7 @@ async function exerciseIndex(memory: MemoryAdapter, store: EmbeddingAdapter, dim
       const versions = await client.query(
         `SELECT component, version FROM vectors_${tag}_8.cogitator_schema_migrations`
       );
-      expect(versions.rows).toEqual([{ component: 'memory', version: 3 }]);
+      expect(versions.rows).toEqual([{ component: 'memory', version: 4 }]);
     } finally {
       await client.end();
     }

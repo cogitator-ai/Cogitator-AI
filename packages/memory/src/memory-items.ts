@@ -61,7 +61,7 @@ export function visibleIn(item: Pick<MemoryItem, 'scope'>, scope: MemoryItemScop
 }
 
 /** How narrow a scope is: a thread's items over a user's, a user's over the agent's */
-function narrowness(item: MemoryItem): number {
+export function narrowness(item: Pick<MemoryItem, 'scope'>): number {
   return (
     (item.scope.threadId !== undefined ? 4 : 0) +
     (item.scope.projectId !== undefined ? 2 : 0) +
