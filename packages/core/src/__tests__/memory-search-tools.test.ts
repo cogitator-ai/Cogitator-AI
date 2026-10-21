@@ -276,6 +276,8 @@ describe('memoryCitations', () => {
     });
     await cog.close();
 
+    const searched = result.messages.find((message) => message.role === 'tool');
+    expect(String(searched?.content)).toContain('[turn:e_planted]');
     expect(result.output).toBe('As you said before.');
     expect(uncited).toHaveBeenCalledWith(['turn:e_planted', 'item:i_planted'], expect.anything());
   });
@@ -329,6 +331,33 @@ describe('memoryCitations', () => {
     await cog.close();
 
     expect(result.output).toContain('4471');
+  });
+
+  it('reads references written in lists, with spaces and in capitals', async () => {
+    const uncited = vi.fn();
+    const backend = scripted([
+      () => ({
+        id: 'r',
+        content: 'One [turn:a, turn:b] two [Turn: c] three [item:d; see note] four ［item:e］.',
+        finishReason: 'stop',
+        usage,
+      }),
+    ]);
+    const cog = new Cogitator({
+      llm: { backends: { mock: backend } },
+      middleware: [memoryCitations({ onUncited: uncited })],
+    });
+
+    const result = await cog.run(new Agent({ name: 'a', model: 'mock/m', instructions: 'x' }), {
+      input: 'cite',
+    });
+    await cog.close();
+
+    expect(result.output).toBe('One two three [see note] four.');
+    expect(uncited).toHaveBeenCalledWith(
+      ['turn:a', 'turn:b', 'turn:c', 'item:d', 'item:e'],
+      expect.anything()
+    );
   });
 
   it('leaves an answer without references as it is', async () => {

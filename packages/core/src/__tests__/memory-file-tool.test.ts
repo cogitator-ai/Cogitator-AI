@@ -190,6 +190,28 @@ describe('memoryFileTool', () => {
     ]);
   });
 
+  it('refuses to delete a file changed since the run viewed it', async () => {
+    const memory = new InMemoryAdapter({ provider: 'memory' });
+    await memory.connect();
+    const files = new MemoryFiles({ adapter: memory });
+    const memoryTool = memoryFileTool({ memory, agentId: 'notes' });
+    const context = createToolContext({ userId: 'ana', runId: 'run-2' });
+    await memoryTool.execute(
+      { command: 'create', path: '/memories/plan.md', file_text: 'step one' },
+      context
+    );
+    await files.strReplace(
+      { scope: { agentId: 'notes', userId: 'ana' }, author: 'user' },
+      '/memories/plan.md',
+      'one',
+      'two'
+    );
+
+    await expect(
+      memoryTool.execute({ command: 'delete', path: '/memories/plan.md' }, context)
+    ).rejects.toThrow('changed since it was viewed');
+  });
+
   it('says which field a command is missing', () => {
     expect(() => memoryFileCommand({ command: 'create', path: '/memories/a.md' })).toThrow(
       'The create command needs `file_text`'

@@ -67,6 +67,7 @@ interface MongoCollection<T extends Document> extends Pick<
   | 'deleteMany'
   | 'bulkWrite'
   | 'replaceOne'
+  | 'countDocuments'
 > {
   findOne(filter: Filter<T>): Promise<WithId<T> | null>;
   find(filter: Filter<T>, options?: FindOptions): MongoCursor<T>;
@@ -1364,6 +1365,11 @@ export class MongoDBAdapter
       for (const place of places) {
         await this.takePlace(place, batchId);
         taken++;
+      }
+      const held = await this.filePlaces.countDocuments({ _id: { $in: places }, batchId });
+      if (held !== places.length) {
+        await this.filePlaces.deleteMany({ _id: { $in: places }, batchId });
+        return this.failure(MEMORY_FILE_CONFLICT);
       }
       await this.fileBatches.insertOne({
         _id: batchId,

@@ -24,6 +24,14 @@ const MAX_LINES = 999_999;
 const LINE_NUMBER_WIDTH = String(MAX_LINES).length;
 /** Times a write is tried again when another writer took the version's place first */
 const WRITE_ATTEMPTS = 3;
+/** Characters a memory path holds at most, and one of its names */
+const MAX_PATH_CHARS = 512;
+const MAX_NAME_CHARS = 255;
+/** Bytes a memory file holds at most */
+export const MAX_FILE_BYTES = 1_048_576;
+/** Entries a directory view lists at most */
+const MAX_LISTED = 500;
+
 /** What a redacted version holds instead of its content */
 export const REDACTED_CONTENT = '[redacted]';
 
@@ -77,8 +85,8 @@ export interface MemoryFile {
 
 /** A command the memory tool refuses, with the message the model reads */
 export class MemoryFileError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
     this.name = 'MemoryFileError';
   }
 }
@@ -95,6 +103,14 @@ export function memoryPath(path: string): string {
   const parts = rest.split('/').filter((part) => part !== '');
   if (parts.some((part) => part === '..' || part === '.' || part.includes('\\'))) {
     throw new MemoryFileError(`Path ${path} would escape /memories directory`);
+  }
+  if (/\p{Cc}/u.test(path)) {
+    throw new MemoryFileError('Memory paths cannot hold control characters');
+  }
+  if (path.length > MAX_PATH_CHARS || parts.some((part) => part.length > MAX_NAME_CHARS)) {
+    throw new MemoryFileError(
+      `Memory paths hold at most ${MAX_PATH_CHARS} characters, and each name ${MAX_NAME_CHARS}`
+    );
   }
   return parts.length === 0 ? MEMORY_ROOT : `${MEMORY_ROOT}/${parts.join('/')}`;
 }
@@ -203,6 +219,21 @@ function writableText(text: string): void {
   if (text.includes('\u0000')) {
     throw new MemoryFileError('Memory files cannot hold NUL characters');
   }
+}
+
+/** Refuses a file larger than {@link MAX_FILE_BYTES} */
+function fitting(content: string, path: string): string {
+  if (Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) {
+    throw new MemoryFileError(
+      `The file ${path} would hold more than ${MAX_FILE_BYTES} bytes, the most a memory file holds`
+    );
+  }
+  return content;
+}
+
+/** Text of a memory file as a context shows it, unable to close or open the context's block */
+function inert(text: string): string {
+  return text.replace(/<\/?\s*memory_context\s*>/gi, (tag) => tag.replace('<', '&lt;'));
 }
 
 /** Refuses a file whose directory, or one above it, is a file */
@@ -347,11 +378,15 @@ export class MemoryFiles {
       }
     }
     const total = files.reduce((sum, found) => sum + found.size, 0);
+    const listed = [...entries.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
     const lines = [
       `${sizeOf(total)}\t${shown}`,
-      ...[...entries.entries()]
-        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      ...listed
+        .slice(0, MAX_LISTED)
         .map(([relative, size]) => `${sizeOf(size)}\t${shown}/${relative}`),
+      ...(listed.length > MAX_LISTED
+        ? [`... and ${listed.length - MAX_LISTED} more, view a directory to see them`]
+        : []),
     ];
     return `Here're the files and directories up to 2 levels deep in ${shown}, excluding hidden items and node_modules:\n${lines.join('\n')}`;
   }
@@ -366,7 +401,7 @@ export class MemoryFiles {
         throw new MemoryFileError(`File ${path} already exists`);
       }
       fileUnder(current, target, path);
-      return [{ path: target, content: text }];
+      return [{ path: target, content: fitting(text, path) }];
     });
     return `File created successfully at: ${path}`;
   }
@@ -384,23 +419,37 @@ export class MemoryFiles {
     let snippet = '';
     await this.change(access, [target], async (current) => {
       const file = this.fileFor(current, target, path, expectedSha256);
-      const lines = file.content.split('\n');
-      const matching = lines.flatMap((line, at) => (line.includes(oldText) ? [at + 1] : []));
-      if (matching.length === 0) {
+      if (oldText === '') {
+        throw new MemoryFileError(
+          `No replacement was performed, old_str \`\` did not appear verbatim in ${path}.`
+        );
+      }
+      const found: number[] = [];
+      for (let at = file.content.indexOf(oldText); at !== -1;) {
+        found.push(at);
+        at = file.content.indexOf(oldText, at + oldText.length);
+      }
+      const lineOf = (offset: number) => file.content.slice(0, offset).split('\n').length;
+      if (found.length === 0) {
         throw new MemoryFileError(
           `No replacement was performed, old_str \`${oldText}\` did not appear verbatim in ${path}.`
         );
       }
-      if (matching.length > 1) {
+      if (found.length > 1) {
         throw new MemoryFileError(
-          `No replacement was performed. Multiple occurrences of old_str \`${oldText}\` in lines: ${matching.join(', ')}. Please ensure it is unique`
+          `No replacement was performed. Multiple occurrences of old_str \`${oldText}\` in lines: ${[...new Set(found.map(lineOf))].join(', ')}. Please ensure it is unique`
         );
       }
-      const content = file.content.replace(oldText, () => newText);
+      const offset = found[0] ?? 0;
+      const content = fitting(
+        file.content.slice(0, offset) + newText + file.content.slice(offset + oldText.length),
+        path
+      );
       const changed = content.split('\n');
-      const at = (matching[0] ?? 1) - 1;
+      const at = lineOf(offset) - 1;
       const start = Math.max(0, at - 2);
-      snippet = numbered(changed.slice(start, Math.min(changed.length, at + 3)), start + 1);
+      const end = Math.min(changed.length, at + newText.split('\n').length + 2);
+      snippet = numbered(changed.slice(start, end), start + 1);
       return [{ path: target, content }];
     });
     return `The memory file has been edited. Here is the snippet showing the change (with line numbers):\n${snippet}`;
@@ -425,12 +474,12 @@ export class MemoryFiles {
         );
       }
       lines.splice(line, 0, text.replace(/\n$/, ''));
-      return [{ path: target, content: lines.join('\n') }];
+      return [{ path: target, content: fitting(lines.join('\n'), path) }];
     });
     return `The file ${path} has been edited.`;
   }
 
-  async delete(access: MemoryFileAccess, path: string): Promise<string> {
+  async delete(access: MemoryFileAccess, path: string, expectedSha256?: string): Promise<string> {
     const target = memoryPath(path);
     this.writable(access, path);
     if (target === MEMORY_ROOT) {
@@ -439,12 +488,18 @@ export class MemoryFiles {
     await this.change(access, [target], async (current) => {
       const gone = [...current.keys()].filter((known) => under(known, target));
       if (gone.length === 0) throw new MemoryFileError(`The path ${path} does not exist`);
+      if (expectedSha256 !== undefined) this.fileFor(current, target, path, expectedSha256);
       return gone.map((known) => ({ path: known, content: null }));
     });
     return `Successfully deleted ${path}`;
   }
 
-  async rename(access: MemoryFileAccess, oldPath: string, newPath: string): Promise<string> {
+  async rename(
+    access: MemoryFileAccess,
+    oldPath: string,
+    newPath: string,
+    expectedSha256?: string
+  ): Promise<string> {
     const from = memoryPath(oldPath);
     const to = memoryPath(newPath);
     this.writable(access, oldPath);
@@ -458,6 +513,7 @@ export class MemoryFiles {
       fileUnder(current, to, newPath);
       const moved = [...current.values()].filter((file) => under(file.path, from));
       if (moved.length === 0) throw new MemoryFileError(`The path ${oldPath} does not exist`);
+      if (expectedSha256 !== undefined) this.fileFor(current, from, oldPath, expectedSha256);
       return moved.flatMap((file) => {
         const path = `${to}${file.path.slice(from.length)}`;
         return [
@@ -473,17 +529,21 @@ export class MemoryFiles {
    * Replaces the content of every version of the files at `paths` (and under them) the access
    * sees with {@link REDACTED_CONTENT}, kept as redacted with `reason`, following renames back to
    * the paths a file had and on to the ones it got: what must not be kept is gone from the store,
-   * while the history of changes stays. Returns the versions redacted.
+   * while the history of changes stays. With `everyScope`, the versions of every user, project
+   * and thread of the agent are redacted, not only those the access sees. The conversation keeps
+   * the tool calls that wrote the text, which redacting a file does not touch. Returns the
+   * versions redacted.
    */
   async redact(
     access: MemoryFileAccess,
     paths: readonly string[],
-    reason?: string
+    reason?: string,
+    options: { everyScope?: boolean } = {}
   ): Promise<number> {
     const all = unwrap(
       await this.adapter.findFileVersions({
         agentId: access.scope.agentId,
-        visibleTo: access.visibleTo ?? access.scope,
+        ...(!options.everyScope && { visibleTo: access.visibleTo ?? access.scope }),
       })
     );
     const roots = new Set(paths.map(memoryPath));
@@ -535,14 +595,16 @@ export class MemoryFiles {
     let used = 0;
     for (const file of files) {
       const first = file.content.split('\n', 1)[0]?.trim() ?? '';
-      const line = `- ${file.path} (${sizeOf(file.size)})${first ? `: ${first.slice(0, 120)}` : ''}`;
+      const line = inert(
+        `- ${file.path} (${sizeOf(file.size)})${first ? `: ${first.slice(0, 120)}` : ''}`
+      );
       if (used + line.length > maxChars) break;
       lines.push(line);
       used += line.length + 1;
     }
     const more = files.length - lines.length;
     return [
-      'Memory files (view them with the memory tool):',
+      'Memory files you keep (notes you wrote, view them with the memory tool):',
       ...lines,
       ...(more > 0 ? [`- and ${more} more`] : []),
     ].join('\n');
@@ -696,7 +758,9 @@ export class MemoryFiles {
     const put = await this.adapter.putFileVersions(versions);
     if (!put.success) {
       if (put.error === MEMORY_FILE_CONFLICT) return true;
-      throw new Error(put.error);
+      throw new MemoryFileError('The memory store failed to keep the change. Try again later.', {
+        cause: new Error(put.error),
+      });
     }
     for (const version of versions) access.observe?.(version.path, version.sha256);
     return false;

@@ -21,7 +21,7 @@ import { toolContent } from '../tool-content';
 export const MEMORY_FILE_TOOL = 'memory';
 
 /** Runs whose viewed files the tool remembers, the oldest forgotten past it */
-const RUNS_REMEMBERED = 256;
+const RUNS_REMEMBERED = 1024;
 
 /** Where a run keeps its conversation, for the memory tool to see the files of its branch */
 export interface MemoryFilePlaceOfRun {
@@ -241,15 +241,14 @@ export function memoryFileTool(
   const placeFor = (context: BaseToolContext): Promise<MemoryFilePlace | undefined> =>
     memoryFilePlace(memory, conversationOf(context));
 
+  /** The files the run viewed, by path, the runs used least lately forgotten past the limit */
   const viewedBy = (runId: string): Map<string, string> => {
-    let paths = viewed.get(runId);
-    if (!paths) {
-      paths = new Map();
-      viewed.set(runId, paths);
-      if (viewed.size > RUNS_REMEMBERED) {
-        const oldest = viewed.keys().next().value;
-        if (oldest !== undefined) viewed.delete(oldest);
-      }
+    const paths = viewed.get(runId) ?? new Map<string, string>();
+    viewed.delete(runId);
+    viewed.set(runId, paths);
+    if (viewed.size > RUNS_REMEMBERED) {
+      const oldest = viewed.keys().next().value;
+      if (oldest !== undefined) viewed.delete(oldest);
     }
     return paths;
   };
@@ -265,6 +264,7 @@ export function memoryFileTool(
       'start), delete, rename (old_path to new_path). Paths start with /memories.',
     parameters: memoryParams,
     providerTypes: { anthropic: 'memory_20250818' },
+    maxResultLength: 200_000,
     annotations: { openWorldHint: false },
     execute: async (params, context) =>
       toolContent({ type: 'text', text: await answer(params, context) }),
@@ -301,6 +301,15 @@ export function memoryFileTool(
           command.insert_line,
           command.insert_text,
           seen.get(memoryPath(command.path))
+        );
+      case 'delete':
+        return files.delete(access, command.path, seen.get(memoryPath(command.path)));
+      case 'rename':
+        return files.rename(
+          access,
+          command.old_path,
+          command.new_path,
+          seen.get(memoryPath(command.old_path))
         );
       default:
         return files.run(access, command);

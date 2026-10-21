@@ -3,8 +3,11 @@ import type { Message, RunMiddleware, RunMiddlewareContext, ToolResult } from '@
 /** Where the references a run opened are kept in the run's middleware state */
 const OPENED = 'memory.citations.opened';
 
-/** A reference to memory in an answer: `[turn:<id>]` or `[item:<id>]` */
-const REFERENCE = /\s?\[(turn|item):([^\]\s]+)\]/g;
+/** Brackets in an answer that may cite memory */
+const BRACKETS = /\s?[[［]([^\]］]*)[\]］]/g;
+
+/** A reference to memory, as an answer may write it: `turn:<id>`, `item: <id>`, `Turn:<id>` */
+const CITED = /^(turn|item)\s*:\s*(\S+)$/i;
 
 /** A reference the memory tools hand out */
 const HANDED_OUT = /^(?:turn|item):\S+$/;
@@ -90,7 +93,7 @@ export function memoryCitations(options: MemoryCitationsOptions = {}): RunMiddle
       return result;
     },
     afterModel({ response, messages }, context) {
-      if ((response.toolCalls?.length ?? 0) > 0 || !response.content.includes('[')) return;
+      if ((response.toolCalls?.length ?? 0) > 0 || !/[[［]/.test(response.content)) return;
       const opened = new Set(openedOf(context));
       for (const message of messages) {
         if (message.role === 'tool' && message.name !== undefined && tools.has(message.name)) {
@@ -98,11 +101,21 @@ export function memoryCitations(options: MemoryCitationsOptions = {}): RunMiddle
         }
       }
       const uncited: string[] = [];
-      const content = response.content.replace(REFERENCE, (marker, kind: string, id: string) => {
-        const reference = `${kind}:${id}`;
-        if (opened.has(reference)) return marker;
-        uncited.push(reference);
-        return '';
+      const content = response.content.replace(BRACKETS, (marker, inside: string) => {
+        const parts = inside.split(/\s*[,;]\s*/);
+        const cited = parts.map((part) => CITED.exec(part.trim()));
+        if (cited.every((match) => match === null)) return marker;
+        const kept = parts.filter((_, at) => {
+          const match = cited[at];
+          if (!match) return true;
+          const reference = `${match[1]!.toLowerCase()}:${match[2]}`;
+          if (opened.has(reference)) return true;
+          uncited.push(reference);
+          return false;
+        });
+        if (kept.length === parts.length) return marker;
+        if (kept.length === 0) return '';
+        return `${marker.startsWith(' ') ? ' ' : ''}[${kept.join(', ')}]`;
       });
       if (uncited.length === 0) return;
       options.onUncited?.(uncited, context);

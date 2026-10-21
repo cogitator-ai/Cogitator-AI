@@ -23,6 +23,7 @@ export interface MemoryFileAdapterConformanceTarget<
 export type MemoryFileAdapterScenario =
   | 'file-round-trip'
   | 'file-place-taken'
+  | 'file-place-race'
   | 'file-batch-whole-or-none'
   | 'file-find-filters'
   | 'file-find-visible-to'
@@ -121,6 +122,25 @@ const SCENARIOS: Record<MemoryFileAdapterScenario, (adapter: MemoryFileAdapter) 
       ];
       ok(await adapter.putFileVersions(elsewhere), 'putFileVersions of free places');
       assert.equal(ok(await adapter.findFileVersions({ agentId }), 'findFileVersions').length, 5);
+    },
+
+    async 'file-place-race'(adapter) {
+      const { agentId, id } = scope();
+      const results = await Promise.all(
+        Array.from({ length: 5 }, (_, at) =>
+          adapter.putFileVersions([version(agentId, id(`racer-${at}`))])
+        )
+      );
+
+      assert.equal(
+        results.filter((result) => result.success).length,
+        1,
+        'one of writers racing for one place gets it'
+      );
+      for (const result of results) {
+        if (!result.success) assert.equal(result.error, MEMORY_FILE_CONFLICT);
+      }
+      assert.equal(ok(await adapter.findFileVersions({ agentId }), 'findFileVersions').length, 1);
     },
 
     async 'file-batch-whole-or-none'(adapter) {
