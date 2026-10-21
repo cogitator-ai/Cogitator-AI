@@ -28,10 +28,37 @@ import type { LoggingConfig } from './logging';
 import type { ABTestStore, ABTestVariant, InstructionVersionStore } from './prompt-optimization';
 
 /**
+ * Where a run's spans go in a distributed trace: the trace they join and the span that is the
+ * parent of the run's root span. W3C ids: 32 lowercase hex characters for the trace, 16 for the
+ * span.
+ */
+export interface TraceParent {
+  traceId: string;
+  parentSpanId?: string;
+}
+
+/** Telemetry settings of a runtime. */
+export interface TelemetryConfig {
+  /**
+   * Record what the model was sent and answered, and tool arguments and results, on the spans
+   * (`gen_ai.system_instructions`, `gen_ai.input.messages`, `gen_ai.output.messages`,
+   * `gen_ai.tool.definitions`, `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result`). Off by
+   * default: prompts and answers are often sensitive and large.
+   */
+  captureContent?: boolean;
+}
+
+/**
  * Sees every run of a `Cogitator`, next to the callbacks a single run passes.
  * An observer that throws is logged and never fails the run.
  */
 export interface RunObserver {
+  /**
+   * This observer wants model and tool content on its spans (see
+   * `TelemetryConfig.captureContent`). Content is recorded while such an observer watches, and
+   * only observers that asked for it receive it.
+   */
+  captureContent?: boolean;
   onRunStart?(event: {
     runId: string;
     agentId: string;
@@ -108,6 +135,8 @@ export interface CogitatorConfig {
    * `LangfuseExporter` give one with `observer()`.
    */
   observers?: RunObserver[];
+  /** Telemetry settings: content capture for the spans of every run. */
+  telemetry?: TelemetryConfig;
   /**
    * Hooks around the model and tool calls of every run of this runtime, outermost, before the
    * agent's and the run's own (see `RunMiddleware`). Their `wrapToolCall` also wraps tool
@@ -254,6 +283,12 @@ export interface RunOptions<TDeps = unknown> {
   onRunError?: (error: Error, runId: string, usage?: RunUsage) => void;
   /** Callback when a span is created */
   onSpan?: (span: Span) => void;
+  /**
+   * The trace this run joins: its root span becomes a child of `parentSpanId`. Without it, a run
+   * started inside a tool of another run joins that run's trace under the tool's span, and any
+   * other run starts a trace of its own.
+   */
+  trace?: TraceParent;
   /** Callback when memory operation fails */
   onMemoryError?: (error: Error, operation: 'save' | 'load') => void;
 

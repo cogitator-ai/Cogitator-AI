@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Span as CogitatorSpan, RunObserver, RunResult } from '@cogitator-ai/types';
+import { genAiSpanName } from './genai';
 
 export interface OTLPExporterConfig {
   endpoint: string;
@@ -47,7 +48,11 @@ const STATUS_CODE = {
 } as const;
 
 type OTLPAnyValue =
-  { stringValue: string } | { intValue: string } | { doubleValue: number } | { boolValue: boolean };
+  | { stringValue: string }
+  | { intValue: string }
+  | { doubleValue: number }
+  | { boolValue: boolean }
+  | { arrayValue: { values: OTLPAnyValue[] } };
 
 const MAX_PENDING_SPANS = 10_000;
 const TRACE_ID_BYTES = 16;
@@ -66,6 +71,7 @@ function toOtlpId(id: string, bytes: number): string {
 }
 
 function toAnyValue(value: unknown): OTLPAnyValue {
+  if (Array.isArray(value)) return { arrayValue: { values: value.map(toAnyValue) } };
   if (typeof value === 'boolean') return { boolValue: value };
   if (typeof value === 'number') {
     return Number.isInteger(value) ? { intValue: String(value) } : { doubleValue: value };
@@ -163,13 +169,14 @@ export class OTLPExporter {
       { key: 'cogitator.run_id', value: { stringValue: runId } },
       { key: 'cogitator.trace_id', value: { stringValue: span.traceId } },
       { key: 'cogitator.span_id', value: { stringValue: span.id } },
+      { key: 'cogitator.span_name', value: { stringValue: span.name } },
     ];
 
     const otlpSpan: OTLPSpan = {
       traceId: toOtlpId(span.traceId, TRACE_ID_BYTES),
       spanId: toOtlpId(span.id, SPAN_ID_BYTES),
       ...(span.parentId && { parentSpanId: toOtlpId(span.parentId, SPAN_ID_BYTES) }),
-      name: span.name,
+      name: genAiSpanName(span.attributes) ?? span.name,
       kind,
       startTimeUnixNano: toUnixNano(span.startTime),
       endTimeUnixNano: toUnixNano(span.endTime),

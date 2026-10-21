@@ -17,6 +17,7 @@ import type {
 } from '@cogitator-ai/types';
 import { Agent, MAX_FALLBACK_MODELS } from './agent';
 import { getLogger } from './logger';
+import { newTraceId } from './observability/trace-context';
 
 /**
  * How each `AgentConfig` field travels in the agent wire format. Adding a field to
@@ -557,6 +558,6 @@ export function fromAgentWireRunResult(
       arguments: isRecord(call.input) ? call.input : {},
     })),
     messages: [],
-    trace: { traceId: `trace_${nanoid(12)}`, spans: [] },
+    trace: { traceId: newTraceId(), spans: [] },
   };
 }

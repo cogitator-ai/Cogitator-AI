@@ -407,6 +407,8 @@ export type {
   ModelFallbackEvent,
   ModelCircuitBreakerConfig,
   RunObserver,
+  TraceParent,
+  TelemetryConfig,
   RunMiddleware,
   RunMiddlewareContext,
   RunInputEvent,
@@ -590,6 +592,16 @@ export {
   createLangfuseExporter,
   OTLPExporter,
   createOTLPExporter,
+  registerTelemetry,
+  currentTraceContext,
+  formatTraceparent,
+  newSpanId,
+  newTraceId,
+  parseTraceparent,
+  withTraceContext,
+  GEN_AI,
+  genAiProviderName,
+  genAiSpanName,
 } from './observability/index';
 export type { LangfuseConfig, OTLPExporterConfig } from './observability/index';
 

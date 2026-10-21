@@ -707,7 +707,9 @@ describe('Global observability', () => {
     expect(startWorkflowSpan).toHaveBeenCalledWith(
       'global-observed',
       expect.any(String),
-      expect.any(String)
+      expect.any(String),
+      { 'gen_ai.operation.name': 'invoke_workflow', 'gen_ai.workflow.name': 'global-observed' },
+      undefined
     );
     expect(metrics.getWorkflowMetrics('global-observed')?.executionCount).toBe(1);
   });

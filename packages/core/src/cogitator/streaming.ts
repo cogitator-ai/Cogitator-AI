@@ -71,14 +71,22 @@ export async function streamChat(
   );
 }
 
+/** When a streamed answer began to arrive, filled in by `streamChatRequest`. */
+export interface StreamTiming {
+  /** `Date.now()` at the first chunk carrying text, reasoning or a tool call */
+  firstChunkAt?: number;
+}
+
 /**
  * Streams `request` from `backend`: text and reasoning reach `sink` as they arrive, and the turn
- * comes back assembled and settled by `normalizeTurn`.
+ * comes back assembled and settled by `normalizeTurn`. `timing` gets the time of the first chunk
+ * that carries any of the answer.
  */
 export async function streamChatRequest(
   backend: LLMBackend,
   request: ChatRequest,
-  sink: ModelStreamSink
+  sink: ModelStreamSink,
+  timing?: StreamTiming
 ): Promise<StreamChatResult> {
   const { messages, signal } = request;
   throwIfStreamAborted(signal);
@@ -97,6 +105,13 @@ export async function streamChatRequest(
 
   for await (const chunk of stream) {
     throwIfStreamAborted(signal);
+    if (
+      timing &&
+      timing.firstChunkAt === undefined &&
+      (chunk.delta.content || chunk.delta.reasoning || chunk.delta.toolCalls?.length)
+    ) {
+      timing.firstChunkAt = Date.now();
+    }
 
     if (chunk.delta.content) {
       content += chunk.delta.content;

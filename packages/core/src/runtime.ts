@@ -93,7 +93,25 @@ import {
 import { createSpan, getTextContent } from './cogitator/span-factory';
 import { runToolCall, createToolMessage, needsApproval } from './cogitator/tool-executor';
 import { DEFAULT_TOOL_RESULT_MAX_LENGTH, toolResultLengthError } from './tool-content';
-import { streamChatRequest } from './cogitator/streaming';
+import { streamChatRequest, type StreamTiming } from './cogitator/streaming';
+import {
+  chatContentAttributes,
+  chatRequestAttributes,
+  chatResponseAttributes,
+  errorType,
+  GEN_AI,
+  genAiProviderName,
+  invokeAgentAttributes,
+  TOOL_ERROR_TYPE,
+  withoutContent,
+} from './observability/genai';
+import {
+  currentTraceContext,
+  newSpanId,
+  newTraceId,
+  withTraceContext,
+} from './observability/trace-context';
+import { telemetryObservers } from './observability/telemetry';
 import { RunLimiter } from './cogitator/run-limiter';
 import { findHandoffAgent, handoffTools } from './cogitator/handoffs';
 import { PromptRegistry } from './cogitator/prompts';
@@ -504,6 +522,44 @@ export class Cogitator implements ToolInvoker {
     };
   }
 
+  /**
+   * Everything watching this runtime's runs: its observers (`config.observers` and `observe()`)
+   * and those registered process-wide with `registerTelemetry`, each once.
+   */
+  private watchers(): RunObserver[] {
+    return [...new Set([...this.observers, ...telemetryObservers()])];
+  }
+
+  /** Whether runs record model and tool content on their spans, see `TelemetryConfig`. */
+  private capturesContent(): boolean {
+    return (
+      this.config.telemetry?.captureContent === true ||
+      this.watchers().some((observer) => observer.captureContent === true)
+    );
+  }
+
+  /**
+   * Reports a span that is not part of a run of this runtime (the root span of a swarm, a
+   * workflow's span) to everything watching its runs, as `onSpan` of the run `runId`, so the
+   * spans of an orchestration reach the same place as the runs inside it. Content attributes
+   * reach only the observers that asked for them.
+   */
+  recordSpan(span: Span, run: { runId: string }): void {
+    const contentForAll = this.config.telemetry?.captureContent === true;
+    for (const observer of this.watchers()) {
+      try {
+        observer.onSpan?.(
+          contentForAll || observer.captureContent ? span : withoutContent(span),
+          run
+        );
+      } catch (error) {
+        getLogger().warn('Run observer onSpan failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
   /** Lets every observer send what it buffered; one that fails is logged, the others still close. */
   private async closeObservers(): Promise<void> {
     const results = await Promise.allSettled(
@@ -524,8 +580,9 @@ export class Cogitator implements ToolInvoker {
    * throws is logged and the run goes on.
    */
   private withObservers(options: RunOptions, agent: Agent, runId: () => string): RunOptions {
-    const observers = [...this.observers];
+    const observers = this.watchers();
     if (observers.length === 0) return options;
+    const contentForAll = this.config.telemetry?.captureContent === true;
 
     const notify = (hook: keyof RunObserver, call: (observer: RunObserver) => void) => {
       for (const observer of observers) {
@@ -548,8 +605,13 @@ export class Cogitator implements ToolInvoker {
         );
       },
       onSpan: (span) => {
-        options.onSpan?.(span);
-        notify('onSpan', (observer) => observer.onSpan?.(span, { runId: runId() }));
+        options.onSpan?.(contentForAll ? span : withoutContent(span));
+        notify('onSpan', (observer) =>
+          observer.onSpan?.(
+            contentForAll || observer.captureContent ? span : withoutContent(span),
+            { runId: runId() }
+          )
+        );
       },
       onRunComplete: (result) => {
         options.onRunComplete?.(result);
@@ -576,7 +638,10 @@ export class Cogitator implements ToolInvoker {
     let prompt: RunPrompt | undefined;
     let runId = checkpoint?.runId ?? `run_${nanoid(12)}`;
     const threadId = options.threadId ?? `thread_${nanoid(12)}`;
-    const traceId = `trace_${nanoid(16)}`;
+    const parentTrace = options.trace ?? currentTraceContext();
+    const traceId = parentTrace?.traceId || newTraceId();
+    const parentSpanId = parentTrace?.parentSpanId;
+    const captureContent = this.capturesContent();
     const startTime = Date.now();
     const spans: Span[] = [];
 
@@ -618,7 +683,7 @@ export class Cogitator implements ToolInvoker {
       }, timeout);
     }
 
-    const rootSpanId = `span_${nanoid(12)}`;
+    const rootSpanId = newSpanId();
     let releaseRunSlot: (() => void) | undefined;
     options = this.withObservers(options, agent, () => runId);
 
@@ -961,6 +1026,7 @@ export class Cogitator implements ToolInvoker {
 
         const executeToolCall = async (toolCall: ToolCall) => {
           const toolSpanStart = Date.now();
+          const toolSpanId = newSpanId();
           const decision = decisions.get(toolCall.id);
           if (decision?.approved === false) {
             const declined: ToolResult = {
@@ -969,33 +1035,41 @@ export class Cogitator implements ToolInvoker {
               result: null,
               error: `The user declined this tool call${decision.reason ? `: ${decision.reason}` : ''}`,
             };
-            return { toolCall, result: declined, toolSpanStart, toolSpanEnd: Date.now() };
+            return {
+              toolCall,
+              result: declined,
+              toolSpanId,
+              toolSpanStart,
+              toolSpanEnd: Date.now(),
+            };
           }
           const result = await waitForAbortable(
-            runToolCall({
-              registry,
-              toolCall,
-              runId,
-              agentId: active.id,
-              sandboxManager: this.state.sandboxManager,
-              initializeSandbox: () => initializeSandbox(this.config, this.state),
-              signal: abortController.signal,
-              extraContext: {
-                threadId,
-                userId: options.userId,
-                channelType: options.channelType,
-                channelId: options.channelId,
-                ...(options.deps !== undefined && { deps: options.deps }),
-              },
-              approved: decision?.approved === true,
-              allowNativeFallback: this.config.sandbox?.allowNativeFallback !== false,
-              middleware: pipeline,
-              context: middlewareContext(),
-            }),
+            withTraceContext({ traceId, parentSpanId: toolSpanId }, () =>
+              runToolCall({
+                registry,
+                toolCall,
+                runId,
+                agentId: active.id,
+                sandboxManager: this.state.sandboxManager,
+                initializeSandbox: () => initializeSandbox(this.config, this.state),
+                signal: abortController.signal,
+                extraContext: {
+                  threadId,
+                  userId: options.userId,
+                  channelType: options.channelType,
+                  channelId: options.channelId,
+                  ...(options.deps !== undefined && { deps: options.deps }),
+                },
+                approved: decision?.approved === true,
+                allowNativeFallback: this.config.sandbox?.allowNativeFallback !== false,
+                middleware: pipeline,
+                context: middlewareContext(),
+              })
+            ),
             abortController.signal
           );
           const toolSpanEnd = Date.now();
-          return { toolCall, result, toolSpanStart, toolSpanEnd };
+          return { toolCall, result, toolSpanId, toolSpanStart, toolSpanEnd };
         };
 
         const toolResults = options.parallelToolCalls
@@ -1010,7 +1084,7 @@ export class Cogitator implements ToolInvoker {
 
         const reflectionMessages: Message[] = [];
 
-        for (const { toolCall, result, toolSpanStart, toolSpanEnd } of toolResults) {
+        for (const { toolCall, result, toolSpanId, toolSpanStart, toolSpanEnd } of toolResults) {
           const toolSpan = createSpan(
             `tool.${toolCall.name}`,
             traceId,
@@ -1023,10 +1097,21 @@ export class Cogitator implements ToolInvoker {
               'tool.arguments': JSON.stringify(toolCall.arguments),
               'tool.success': !result.error,
               'tool.error': result.error,
+              [GEN_AI.operationName]: 'execute_tool',
+              [GEN_AI.toolName]: toolCall.name,
+              [GEN_AI.toolCallId]: toolCall.id,
+              [GEN_AI.toolType]: 'function',
+              [GEN_AI.conversationId]: threadId,
+              ...(result.error && { [GEN_AI.errorType]: TOOL_ERROR_TYPE }),
+              ...(captureContent && {
+                [GEN_AI.toolCallArguments]: JSON.stringify(toolCall.arguments),
+                [GEN_AI.toolCallResult]: JSON.stringify(result.error ?? result.result ?? null),
+              }),
             },
             result.error ? 'error' : 'ok',
             'internal',
-            options.onSpan
+            options.onSpan,
+            toolSpanId
           );
           spans.push(toolSpan);
 
@@ -1148,9 +1233,11 @@ export class Cogitator implements ToolInvoker {
         const recordCall = (
           answer: ChatResponse,
           candidate: ModelCandidate,
-          sentModel: string,
-          startedAt: number
+          sentRequest: ChatRequest,
+          startedAt: number,
+          timing?: StreamTiming
         ): void => {
+          const sentModel = sentRequest.model;
           const rerouted = sentModel !== candidate.model;
           const priced = rerouted ? sentModelName(candidate, sentModel) : candidate.name;
           const spentBefore = costMeter.total(costModel);
@@ -1177,6 +1264,16 @@ export class Cogitator implements ToolInvoker {
                     'llm.reasoning_tokens': answer.usage.reasoningTokens,
                   }),
                   'llm.finish_reason': answer.finishReason,
+                  [GEN_AI.operationName]: 'chat',
+                  [GEN_AI.providerName]: genAiProviderName(candidate.backend.provider),
+                  ...chatRequestAttributes(sentRequest),
+                  ...(timing && { [GEN_AI.requestStream]: true }),
+                  ...chatResponseAttributes(answer),
+                  [GEN_AI.conversationId]: threadId,
+                  ...(timing?.firstChunkAt !== undefined && {
+                    [GEN_AI.responseTimeToFirstChunk]: (timing.firstChunkAt - startedAt) / 1000,
+                  }),
+                  ...(captureContent && chatContentAttributes(sentRequest, answer)),
                 },
                 answer.finishReason === 'error' ? 'error' : 'ok',
                 'client',
@@ -1260,13 +1357,19 @@ export class Cogitator implements ToolInvoker {
                   call,
                   async (sent) => {
                     const startedAt = Date.now();
+                    const timing: StreamTiming | undefined = sent.stream ? {} : undefined;
                     const sentAnswer = normalizeTurn(
                       sent.stream
-                        ? await streamChatRequest(candidate.backend, sent.request, sent.stream)
+                        ? await streamChatRequest(
+                            candidate.backend,
+                            sent.request,
+                            sent.stream,
+                            timing
+                          )
                         : await candidate.backend.chat(sent.request)
                     );
                     reachedModel = true;
-                    recordCall(sentAnswer, candidate, sent.request.model, startedAt);
+                    recordCall(sentAnswer, candidate, sent.request, startedAt, timing);
                     return sentAnswer;
                   },
                   middlewareContext()
@@ -1483,7 +1586,7 @@ export class Cogitator implements ToolInvoker {
       const rootSpan = createSpan(
         'agent.run',
         traceId,
-        undefined,
+        parentSpanId,
         startTime,
         endTime,
         {
@@ -1496,9 +1599,15 @@ export class Cogitator implements ToolInvoker {
           'run.tool_calls': allToolCalls.length,
           'run.input_tokens': totalInputTokens,
           'run.output_tokens': totalOutputTokens,
+          ...invokeAgentAttributes(agent, threadId, agentModel),
+          [GEN_AI.usageInputTokens]: totalInputTokens,
+          [GEN_AI.usageOutputTokens]: totalOutputTokens,
+          ...(cachedInputTokens > 0 && { [GEN_AI.usageCacheReadInputTokens]: cachedInputTokens }),
+          ...(cacheWriteTokens > 0 && { [GEN_AI.usageCacheWriteInputTokens]: cacheWriteTokens }),
+          ...(reasoningTokens > 0 && { [GEN_AI.usageReasoningOutputTokens]: reasoningTokens }),
         },
         'ok',
-        'server',
+        'internal',
         options.onSpan,
         rootSpanId
       );
@@ -1536,7 +1645,7 @@ export class Cogitator implements ToolInvoker {
         messages,
         trace: {
           traceId,
-          spans,
+          spans: this.config.telemetry?.captureContent === true ? spans : spans.map(withoutContent),
         },
         reflections: allReflections.length > 0 ? allReflections : undefined,
         reflectionSummary: this.state.reflectionEngine
@@ -1556,7 +1665,7 @@ export class Cogitator implements ToolInvoker {
       const errorSpan = createSpan(
         'agent.run',
         traceId,
-        undefined,
+        parentSpanId,
         startTime,
         endTime,
         {
@@ -1565,9 +1674,11 @@ export class Cogitator implements ToolInvoker {
           'agent.model': agent.model ?? this.config.llm?.defaultModel,
           'run.id': runId,
           error: error instanceof Error ? error.message : String(error),
+          ...invokeAgentAttributes(agent, threadId, agent.model ?? this.config.llm?.defaultModel),
+          [GEN_AI.errorType]: errorType(error),
         },
         'error',
-        'server',
+        'internal',
         options.onSpan,
         rootSpanId
       );
@@ -2035,7 +2146,7 @@ export class Cogitator implements ToolInvoker {
         provider,
         model,
         retry: this.config.llm?.retry,
-        observers: [...this.observers],
+        observers: this.watchers(),
         recordCost: (record) => this.getCostRouter()?.recordCost(record),
         price: (qualified, usage) => this.pricer.costOrNull(qualified, usage),
         checkBudget: (estimatedCost) => this.assertDecisionBudget(estimatedCost),

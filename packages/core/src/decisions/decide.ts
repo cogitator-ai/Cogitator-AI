@@ -21,6 +21,8 @@ import { llmInvalidResponse, type LLMErrorContext } from '../llm/errors';
 import { retryLLMCall } from '../llm/retry';
 import { createSpan } from '../cogitator/span-factory';
 import { getLogger } from '../logger';
+import { GEN_AI, genAiProviderName } from '../observability/genai';
+import { currentTraceContext, newTraceId } from '../observability/trace-context';
 
 function invalid(message: string): CogitatorError {
   return new CogitatorError({ message, code: ErrorCode.VALIDATION_ERROR });
@@ -193,7 +195,8 @@ export async function runDecision<TQuestions extends DecisionQuestions>(
 ): Promise<DecisionResult<TQuestions>> {
   validateDecision(options);
   const runId = `decide_${nanoid(12)}`;
-  const traceId = `trace_${nanoid(16)}`;
+  const parentTrace = currentTraceContext();
+  const traceId = parentTrace?.traceId || newTraceId();
   const qualified = `${run.provider}/${run.model}`;
   const started = Date.now();
   const context: LLMErrorContext = { provider: run.provider, model: run.model };
@@ -261,7 +264,7 @@ export async function runDecision<TQuestions extends DecisionQuestions>(
     const span: Span = createSpan(
       'llm.decide',
       traceId,
-      undefined,
+      parentTrace?.parentSpanId,
       started,
       ended,
       {
@@ -273,6 +276,12 @@ export async function runDecision<TQuestions extends DecisionQuestions>(
         'decision.questions': Object.keys(options.questions).join(','),
         'decision.answers': JSON.stringify(answers),
         ...(response.id && { 'decision.id': response.id }),
+        [GEN_AI.operationName]: 'chat',
+        [GEN_AI.providerName]: genAiProviderName(run.provider),
+        [GEN_AI.requestModel]: run.model,
+        ...(response.id && { [GEN_AI.responseId]: response.id }),
+        [GEN_AI.usageInputTokens]: usage.inputTokens,
+        [GEN_AI.usageOutputTokens]: usage.outputTokens,
       },
       'ok',
       'client'

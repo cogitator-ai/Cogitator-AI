@@ -1,5 +1,5 @@
-import { nanoid } from 'nanoid';
 import type { Span, MessageContent } from '@cogitator-ai/types';
+import { newSpanId } from '../observability/trace-context';
 
 export function createSpan(
   name: string,
@@ -11,7 +11,7 @@ export function createSpan(
   status: 'ok' | 'error' | 'unset' = 'ok',
   kind: Span['kind'] = 'internal',
   onSpan?: (span: Span) => void,
-  id: string = `span_${nanoid(12)}`
+  id: string = newSpanId()
 ): Span {
   const span: Span = {
     id,

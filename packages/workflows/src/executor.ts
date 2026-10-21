@@ -3,6 +3,7 @@
  */
 
 import type {
+  Span,
   Workflow,
   WorkflowState,
   WorkflowResult,
@@ -22,7 +23,15 @@ import type {
   ApprovalNotifier,
   TimerStore,
 } from '@cogitator-ai/types';
-import { findAgentRunPausedError, type Cogitator } from '@cogitator-ai/core';
+import {
+  currentTraceContext,
+  findAgentRunPausedError,
+  GEN_AI,
+  newSpanId,
+  newTraceId,
+  withTraceContext,
+  type Cogitator,
+} from '@cogitator-ai/core';
 import { nanoid } from 'nanoid';
 import { WorkflowScheduler } from './scheduler';
 import { InMemoryCheckpointStore, createCheckpointId } from './checkpoint';
@@ -247,12 +256,34 @@ export class WorkflowExecutor {
   }
 
   /**
-   * Execute a workflow
+   * Reports a span to the runtime's observers. Telemetry never fails a workflow: a runtime that
+   * does not record spans (a stand-in without `recordSpan`) is skipped.
+   */
+  private reportSpan(span: Span, runId: string): void {
+    if (typeof this.cogitator.recordSpan !== 'function') return;
+    this.cogitator.recordSpan(span, { runId });
+  }
+
+  /**
+   * Execute a workflow. Its agent runs share one trace: under the node span when a tracer is on,
+   * else under a workflow span reported to the runtime's observers.
    */
   async execute<S extends WorkflowState>(
     workflow: Workflow<S>,
     input?: Partial<S>,
     options?: ExecutorExecuteOptions
+  ): Promise<WorkflowResult<S>> {
+    const tracer = options?.tracer ?? activeGlobalTracer();
+    return tracer
+      ? tracer.runInContext(() => this.run(workflow, input, options, tracer))
+      : this.run(workflow, input, options, undefined);
+  }
+
+  private async run<S extends WorkflowState>(
+    workflow: Workflow<S>,
+    input: Partial<S> | undefined,
+    options: ExecutorExecuteOptions | undefined,
+    tracer: WorkflowTracer | undefined
   ): Promise<WorkflowResult<S>> {
     const workflowId = options?.workflowId ?? `wf_${nanoid(12)}`;
     const startTime = Date.now();
@@ -282,18 +313,30 @@ export class WorkflowExecutor {
 
     const graph = this.scheduler.buildDependencyGraph(workflow);
     const reachability = this.scheduler.buildReachability(workflow);
-    const tracer = options?.tracer ?? activeGlobalTracer();
     const metrics = options?.metricsCollector ?? activeGlobalMetrics();
     const compensation = new CompensationManager<S>();
     const inFlight = new Set<Promise<unknown>>();
     const breaker = options?.defaultCircuitBreaker
       ? this.getBreaker(options.defaultCircuitBreaker)
       : undefined;
+    const ambient = currentTraceContext();
     const workflowSpan: SpanScope | undefined = tracer?.startWorkflowSpan(
       workflow.name,
       workflowId,
-      workflowId
+      workflowId,
+      {
+        [GEN_AI.operationName]: 'invoke_workflow',
+        [GEN_AI.workflowName]: workflow.name,
+      },
+      ambient && { traceId: ambient.traceId, spanId: ambient.parentSpanId }
     );
+    const workflowTrace = workflowSpan
+      ? { traceId: workflowSpan.span.traceId, spanId: workflowSpan.span.spanId }
+      : {
+          traceId: ambient?.traceId || newTraceId(),
+          spanId: newSpanId(),
+          parentSpanId: ambient?.parentSpanId,
+        };
     metrics?.recordWorkflowStart(workflow.name);
 
     let currentNodes = [workflow.entryPoint];
@@ -410,12 +453,19 @@ export class WorkflowExecutor {
           const { result, retries } =
             cached?.isDuplicate && cached.record?.status === 'completed'
               ? { result: cached.record.result as NodeResult<S>, retries: 0 }
-              : await runNodeWithPolicy(node, nodeName, makeContext, {
-                  config: node.config,
-                  defaultRetry: options?.defaultRetry,
-                  breaker,
-                  signal: options?.signal,
-                });
+              : await withTraceContext(
+                  {
+                    traceId: nodeSpan?.span.traceId ?? workflowTrace.traceId,
+                    parentSpanId: nodeSpan?.span.spanId ?? workflowTrace.spanId,
+                  },
+                  () =>
+                    runNodeWithPolicy(node, nodeName, makeContext, {
+                      config: node.config,
+                      defaultRetry: options?.defaultRetry,
+                      breaker,
+                      signal: options?.signal,
+                    })
+                );
           if (idempotencyStore && !cached?.isDuplicate) {
             await idempotencyStore.store(idempotencyKey, result);
           }
@@ -583,6 +633,29 @@ export class WorkflowExecutor {
       } else {
         workflowSpan.end('ok');
       }
+    } else {
+      const endTime = Date.now();
+      this.reportSpan(
+        {
+          id: workflowTrace.spanId,
+          traceId: workflowTrace.traceId,
+          ...('parentSpanId' in workflowTrace &&
+            workflowTrace.parentSpanId && { parentId: workflowTrace.parentSpanId }),
+          name: 'workflow.run',
+          kind: 'internal',
+          status: error ? 'error' : 'ok',
+          startTime,
+          endTime,
+          duration: endTime - startTime,
+          attributes: {
+            [GEN_AI.operationName]: 'invoke_workflow',
+            [GEN_AI.workflowName]: workflow.name,
+            'workflow.id': workflowId,
+            ...(error && { [GEN_AI.errorType]: error.name || '_OTHER', error: error.message }),
+          },
+        },
+        workflowId
+      );
     }
     metrics?.recordWorkflowComplete(
       workflow.name,

@@ -27,13 +27,21 @@ export const NODE_TIMEOUT = 'node.timeout';
 export const NODE_DURATION = 'node.duration_ms';
 export const NODE_STATUS = 'node.status';
 
+/** @deprecated The OpenTelemetry GenAI name is `GEN_AI.providerName` from `@cogitator-ai/core`. */
 export const LLM_SYSTEM = 'llm.system';
+/** @deprecated The OpenTelemetry GenAI name is `GEN_AI.requestModel` from `@cogitator-ai/core`. */
 export const LLM_REQUEST_MODEL = 'llm.request.model';
+/** @deprecated The OpenTelemetry GenAI name is `GEN_AI.responseModel` from `@cogitator-ai/core`. */
 export const LLM_RESPONSE_MODEL = 'llm.response.model';
+/** @deprecated The OpenTelemetry GenAI name is `GEN_AI.requestMaxTokens` from `@cogitator-ai/core`. */
 export const LLM_REQUEST_MAX_TOKENS = 'llm.request.max_tokens';
+/** @deprecated The OpenTelemetry GenAI name is `GEN_AI.requestTemperature` from `@cogitator-ai/core`. */
 export const LLM_REQUEST_TEMPERATURE = 'llm.request.temperature';
+/** @deprecated The OpenTelemetry GenAI name is `GEN_AI.requestTopP` from `@cogitator-ai/core`. */
 export const LLM_REQUEST_TOP_P = 'llm.request.top_p';
+/** @deprecated The OpenTelemetry GenAI name is `GEN_AI.usageInputTokens` from `@cogitator-ai/core`. */
 export const LLM_USAGE_INPUT_TOKENS = 'llm.usage.input_tokens';
+/** @deprecated The OpenTelemetry GenAI name is `GEN_AI.usageOutputTokens` from `@cogitator-ai/core`. */
 export const LLM_USAGE_OUTPUT_TOKENS = 'llm.usage.output_tokens';
 export const LLM_USAGE_TOTAL_TOKENS = 'llm.usage.total_tokens';
 export const LLM_USAGE_COST = 'llm.usage.cost';

@@ -201,7 +201,7 @@ describe('Cogitator', () => {
           outputTokens: 8,
           totalTokens: 23,
         });
-        expect(result.trace.traceId).toMatch(/^trace_/);
+        expect(result.trace.traceId).toMatch(/^[0-9a-f]{32}$/);
         expect(result.trace.spans.length).toBeGreaterThan(0);
 
         await cog.close();
