@@ -689,7 +689,7 @@ Once the conversation of the branch the run wrote, counted from its latest summa
 - `keepRecentTokens` has a default only when `keepRecent` is not set, so `keepRecent` alone keeps that many entries.
 - A thread that outgrows its window again within two turns of its last compaction is not compacted again: a few huge outputs fill that conversation, and another summary would only churn. A warning says to clear tool outputs (`context.clearToolOutputs`, see [Context Management](/docs/advanced/context-management#clearing-old-tool-outputs)) instead.
 - A run that wrote aside of the thread's active branch, such as a fork, a replay or a run with `branch: { activate: false }`, is left alone.
-- The summarizer's calls are counted in the costs of the run (`getCostSummary()`), and a run whose `signal` was aborted is not compacted.
+- The summarizer's calls are counted in the run's costs (`getCostSummary()`) and in the `usage` it returns, and they stop with the run's `signal`: an aborted run is not compacted, and a compaction stops when it aborts.
 - A compaction that fails is logged as a warning, and the run keeps its result. The thread is then left alone for a minute, twice as long after each failure in a row up to an hour, so a thread that cannot be compacted does not pay for the attempt on every run.
 
 It is the built-in run middleware `cogitator:memory-compaction`, an [`afterRun`](/docs/core/middleware#afterrun) hook: it runs after the run saved what it said and before `run()` returns, so a run that compacts takes as long as the compaction. It needs an adapter with branches (`getPath`), which every built-in one has.

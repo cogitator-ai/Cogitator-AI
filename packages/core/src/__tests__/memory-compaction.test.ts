@@ -149,6 +149,43 @@ describe('memory.compaction', () => {
     expect(cog.getCostSummary()?.totalInputTokens).toBe(llm.requests.length);
   });
 
+  it('adds what compacting spent to the usage the run returns', async () => {
+    const llm = backend();
+    const cog = runtime(llm, { at: 0.001, keepRecentTokens: 1 });
+    await cog.run(agent, { input: 'please plan the trip', threadId: 't' });
+    const before = llm.requests.length;
+
+    const result = await cog.run(agent, { input: 'and the hotel', threadId: 't' });
+
+    expect(result.usage.inputTokens).toBe(llm.requests.length - before);
+    expect(result.usage.inputTokens).toBeGreaterThan(1);
+  });
+
+  it('stops compacting when the run is aborted', async () => {
+    vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const llm = backend();
+    const controller = new AbortController();
+    let chapters = 0;
+    const answer = vi.mocked(llm.chat).getMockImplementation()!;
+    vi.mocked(llm.chat).mockImplementation(async (request) => {
+      if (!String(request.messages[0]?.content).startsWith('You compact')) return answer(request);
+      chapters++;
+      controller.abort();
+      throw request.signal?.reason ?? new Error('aborted');
+    });
+    const cog = runtime(llm, { at: 0.001, keepRecentTokens: 1 });
+    await cog.run(agent, { input: 'please plan the trip', threadId: 't' });
+
+    const result = await cog.run(agent, {
+      input: 'and the hotel',
+      threadId: 't',
+      signal: controller.signal,
+    });
+
+    expect(result.output).toContain('noted');
+    expect(chapters).toBe(1);
+  });
+
   it('waits before compacting again a thread whose compaction failed', async () => {
     vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
     const failing = backend();

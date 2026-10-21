@@ -245,6 +245,11 @@ export class Cogitator implements ToolInvoker {
   private piiLayer?: RunMiddleware;
   private clearingLayer?: RunMiddleware;
   private memoryCompactionLayer?: RunMiddleware;
+  /** What the `afterRun` hooks of a run spent on the model, by run, added to its usage */
+  private readonly afterRunSpend = new Map<
+    string,
+    { inputTokens: number; outputTokens: number; cost: number }
+  >();
   private recallTool?: Tool;
   /** The memory of each run going on, for `recall_tool_output` to read the run's branch */
   private readonly runMemories = new Map<string, RunMemory>();
@@ -544,10 +549,12 @@ export class Cogitator implements ToolInvoker {
 
   /**
    * A summarizer that asks `model`, routed as a run's model is (see {@link route}), with the
-   * prompt as its system message, and records what each call cost for `run`
+   * prompt as its system message. Each call stops with the run's `signal` and is counted for
+   * `run`, in the cost router and in the usage the run returns.
    */
-  private summarizerFor(model: string, run: CompactionRun): SummarizeFn {
+  private summarizerFor(model: string, { signal, ...run }: CompactionRun): SummarizeFn {
     return async (messages, options) => {
+      signal?.throwIfAborted();
       const { backend, model: name } = this.route(model);
       const response = await backend.chat({
         model: name,
@@ -555,16 +562,28 @@ export class Cogitator implements ToolInvoker {
           { role: 'system', content: options?.prompt ?? 'Summarize the conversation.' },
           ...messages,
         ],
+        ...(signal && { signal }),
       });
       const priced = this.pricedModel(model);
-      const cost = response.usage.cost ?? this.pricer.costOrNull(priced, response.usage);
-      if (cost === null) this.pricer.noteUnpriced(priced);
+      const priceOf = response.usage.cost ?? this.pricer.costOrNull(priced, response.usage);
+      if (priceOf === null) this.pricer.noteUnpriced(priced);
+      const cost = priceOf ?? 0;
       this.getCostRouter()?.recordCost({
         ...run,
         model: priced,
         inputTokens: response.usage.inputTokens,
         outputTokens: response.usage.outputTokens,
-        cost: cost ?? 0,
+        cost,
+      });
+      const spent = this.afterRunSpend.get(run.runId) ?? {
+        inputTokens: 0,
+        outputTokens: 0,
+        cost: 0,
+      };
+      this.afterRunSpend.set(run.runId, {
+        inputTokens: spent.inputTokens + response.usage.inputTokens,
+        outputTokens: spent.outputTokens + response.usage.outputTokens,
+        cost: spent.cost + cost,
       });
       return response.content;
     };
@@ -1826,10 +1845,24 @@ export class Cogitator implements ToolInvoker {
         { result, model: fellBackTo ?? this.pricedModel(effectiveModel, routeProvider) },
         middlewareContext()
       );
+      const afterRun = this.afterRunSpend.get(runId);
+      this.afterRunSpend.delete(runId);
+      const finished: RunResult = afterRun
+        ? {
+            ...result,
+            usage: {
+              ...result.usage,
+              inputTokens: result.usage.inputTokens + afterRun.inputTokens,
+              outputTokens: result.usage.outputTokens + afterRun.outputTokens,
+              totalTokens: result.usage.totalTokens + afterRun.inputTokens + afterRun.outputTokens,
+              cost: result.usage.cost + afterRun.cost,
+            },
+          }
+        : result;
 
-      options.onRunComplete?.(result);
+      options.onRunComplete?.(finished);
 
-      return result;
+      return finished;
     } catch (error) {
       if (prompt) await this.recordPrompt(prompt, undefined, Date.now() - startTime);
       if (abortController.signal.aborted) {

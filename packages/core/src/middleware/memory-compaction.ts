@@ -15,11 +15,12 @@ import type {
 } from '@cogitator-ai/types';
 import { getLogger } from '../logger';
 
-/** The run a compaction follows, which its calls are counted against */
+/** The run a compaction follows, which its calls are counted against and stop with */
 export interface CompactionRun {
   runId: string;
   agentId: string;
   threadId: string;
+  signal?: AbortSignal;
 }
 
 /** What the memory compaction middleware takes from the runtime */
@@ -115,6 +116,7 @@ export function memoryCompactionMiddleware(
             runId: result.runId,
             agentId: result.agentId,
             threadId: place.threadId,
+            signal: context.signal,
           }),
         });
         const keepsTokens =
@@ -130,6 +132,12 @@ export function memoryCompactionMiddleware(
           ...(instructions && { summaryPrompt: instructions }),
         });
       } catch (error) {
+        if (context.signal.aborted) {
+          getLogger().warn('Compacting the thread stopped with its run', {
+            threadId: place.threadId,
+          });
+          return;
+        }
         const wait = Math.min(
           (failures.get(place.threadId)?.wait ?? RETRY_AFTER_MS / 2) * 2,
           RETRY_AFTER_MAX_MS
