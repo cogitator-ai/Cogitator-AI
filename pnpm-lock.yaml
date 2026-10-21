@@ -844,6 +844,9 @@ importers:
       koa:
         specifier: ^3.2.1
         version: 3.2.1
+      mongodb:
+        specifier: ^7.7.0
+        version: 7.7.0
       zod:
         specifier: ^4.6.5
         version: 4.6.5

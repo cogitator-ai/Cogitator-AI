@@ -351,7 +351,9 @@ describe('PostgresAdapter', () => {
       const { sql } = sentToPostgres('FROM cogitator.entries WHERE thread_id');
       expect(sql).toContain('ORDER BY created_at DESC, seq DESC');
       expect(sql).toContain('ORDER BY created_at ASC, seq ASC');
-      expect(sentToPostgres('ADD COLUMN IF NOT EXISTS seq').sql).toContain('BIGSERIAL');
+      expect(sentToPostgres('ADD COLUMN IF NOT EXISTS seq').sql).toContain('seq BIGINT');
+      expect(sentToPostgres('ALTER COLUMN seq SET DEFAULT').sql).toContain('nextval(');
+      expect(sentToPostgres('CREATE SEQUENCE IF NOT EXISTS').sql).toContain('entries_seq');
     });
 
     it('refuses a limit that is not a whole number of 0 or more', async () => {

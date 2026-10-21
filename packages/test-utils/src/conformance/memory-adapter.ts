@@ -19,6 +19,7 @@ export type MemoryAdapterScenario =
   | 'concurrent-updates'
   | 'entry-order'
   | 'entry-order-ties'
+  | 'entry-limit-cuts-ties'
   | 'entry-limit'
   | 'entry-time-window'
   | 'tool-calls-on-request'
@@ -30,7 +31,9 @@ export type MemoryAdapterScenario =
   | 'returns-copies'
   | 'list-threads-filters'
   | 'list-threads-pages'
-  | 'list-threads-refuses-bad-input';
+  | 'list-threads-refuses-bad-input'
+  | 'list-threads-edges'
+  | 'unserializable-values';
 
 /** One case of the memory adapter contract. */
 export interface MemoryAdapterConformanceCase {
@@ -182,6 +185,25 @@ const SCENARIOS: Record<MemoryAdapterScenario, (adapter: MemoryAdapter) => Promi
       contents(entries),
       ['first', 'second', 'third', 'fourth'],
       'entries with one creation time come back in the order they were added'
+    );
+  },
+
+  async 'entry-limit-cuts-ties'(adapter) {
+    const { agentId, threadId } = scope();
+    const id = threadId();
+    await newThread(adapter, agentId, id);
+    const at = new Date('2026-01-01T00:00:00.000Z');
+    const texts = Array.from({ length: 12 }, (_, i) => `t${i}`);
+    for (const text of texts) {
+      ok(
+        await adapter.addEntry({ threadId: id, message: user(text), tokenCount: 1, createdAt: at }),
+        'addEntry'
+      );
+    }
+    assert.deepEqual(
+      contents(ok(await adapter.getEntries({ threadId: id, limit: 3 }), 'getEntries')),
+      ['t9', 't10', 't11'],
+      'a limit keeps the entries added last among those with one creation time'
     );
   },
 
@@ -408,6 +430,70 @@ const SCENARIOS: Record<MemoryAdapterScenario, (adapter: MemoryAdapter) => Promi
       ok(await adapter.listThreads({ agentId, limit: 7 }), 'listThreads').nextCursor,
       undefined
     );
+  },
+
+  async 'list-threads-edges'(adapter) {
+    const { agentId, threadId } = scope();
+    const tag = `tag-${randomUUID()}`;
+    const made: Thread[] = [];
+    for (let i = 0; i < 6; i++) {
+      made.push(await newThread(adapter, agentId, threadId(), { tag, 'a.b': i, list: ['x'] }));
+    }
+    const first = ok(await adapter.listThreads({ metadata: { tag }, limit: 3 }), 'listThreads');
+    assert.equal(first.threads.length, 3);
+    assert.ok(first.nextCursor, 'a full first page has a cursor');
+    const second = ok(
+      await adapter.listThreads({ metadata: { tag }, limit: 3, cursor: first.nextCursor }),
+      'listThreads'
+    );
+    assert.equal(second.threads.length, 3);
+    assert.equal(second.nextCursor, undefined, 'the page that ends the list has no cursor');
+
+    const dotted = ok(
+      await adapter.listThreads({ metadata: { tag, 'a.b': 2 } }),
+      'listThreads with a dotted key'
+    );
+    assert.deepEqual(
+      dotted.threads.map((thread) => thread.id),
+      [made[2].id]
+    );
+    assert.deepEqual(
+      ok(await adapter.listThreads({ metadata: { tag, list: 'x' } }), 'listThreads').threads,
+      [],
+      'an array does not match one of its items'
+    );
+    const newest = ok(await adapter.getThread(made[5].id), 'getThread');
+    assert.ok(newest);
+    const since = ok(
+      await adapter.listThreads({ metadata: { tag }, updatedAfter: newest.updatedAt }),
+      'listThreads'
+    ).threads.map((thread) => thread.id);
+    assert.ok(since.includes(made[5].id), 'updatedAfter takes in a thread updated at that time');
+  },
+
+  async 'unserializable-values'(adapter) {
+    const { agentId, threadId } = scope();
+    const id = threadId();
+    const withFunction = { label: 'kept', run: () => 'not storable' };
+    let created: MemoryResult<Thread>;
+    try {
+      created = await adapter.createThread(agentId, withFunction, id);
+    } catch (error) {
+      assert.fail(`createThread threw instead of returning a result: ${String(error)}`);
+    }
+    if (!created.success) return;
+    const read = ok(await adapter.getThread(id), 'getThread');
+    assert.equal(read?.metadata.label, 'kept');
+    try {
+      await adapter.addEntry({
+        threadId: id,
+        message: { role: 'tool', content: 'done', toolCallId: 'c1', name: 'x' },
+        tokenCount: 1,
+        toolResults: [{ callId: 'c1', name: 'x', result: { ok: true, fn: () => 1 } }],
+      });
+    } catch (error) {
+      assert.fail(`addEntry threw instead of returning a result: ${String(error)}`);
+    }
   },
 
   async 'list-threads-refuses-bad-input'(adapter) {

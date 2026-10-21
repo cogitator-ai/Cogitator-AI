@@ -88,6 +88,9 @@ export class MockMemoryAdapter implements MemoryAdapter {
   async listThreads(options: ListThreadsOptions = {}): Promise<MemoryResult<ThreadPage>> {
     this._calls.push({ method: 'listThreads', args: [options] });
     const limit = options.limit ?? 50;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
+      return { success: false, error: `listThreads limit must be from 1 to 500, got ${limit}` };
+    }
     const start = options.cursor === undefined ? 0 : Number(options.cursor);
     if (!Number.isInteger(start) || start < 0) {
       return { success: false, error: 'listThreads cursor is not valid' };

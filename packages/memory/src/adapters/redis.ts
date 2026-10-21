@@ -24,10 +24,45 @@ import { BaseMemoryAdapter } from './base';
 import { matchesListing, threadListing, threadPage, type ThreadCursor } from './thread-listing';
 
 /**
- * Writes a thread and its place in the thread index if the thread is still what the caller read:
- * absent when `ARGV[1]` is `'0'`, the JSON in `ARGV[2]` when it is `'1'`. Returns 1 when written.
+ * The index member that records the index holds every stored thread: it lives and dies with the
+ * index, so an index that expired or was evicted, and was then made again by a write, is rebuilt.
  */
-const WRITE_THREAD = `
+const INDEX_MARKER = '';
+const LUA_MARKER = JSON.stringify(INDEX_MARKER);
+const SWEEP_BATCH = 20;
+
+/**
+ * Lua `sweep(index, cursorKey, prefix, ttl)`: checks the next index members, resuming the ZSCAN
+ * where the last sweep stopped, and removes those whose thread expired. Every write sweeps, so the
+ * index stays as big as the live threads even when nobody lists them.
+ */
+const SWEEP_INDEX = `
+local function sweep(index, cursorKey, prefix, ttl)
+  local scanned = redis.call('ZSCAN', index, redis.call('GET', cursorKey) or '0', 'COUNT', ${SWEEP_BATCH})
+  local members = scanned[2]
+  for i = 1, #members, 2 do
+    local id = members[i]
+    if id ~= ${LUA_MARKER} and redis.call('EXISTS', prefix .. 'thread:' .. id) == 0 then
+      redis.call('ZREM', index, id)
+    end
+  end
+  if scanned[1] == '0' then
+    redis.call('DEL', cursorKey)
+  else
+    redis.call('SET', cursorKey, scanned[1], 'EX', ttl)
+  end
+end
+`;
+
+/** The stored thread, read on the primary like every write, never on a lagging replica. */
+const READ_THREAD = `return redis.call('GET', KEYS[1])`;
+
+/**
+ * Writes a thread and its place in the thread index if the thread is still what the caller read:
+ * absent when `ARGV[1]` is `'0'`, the JSON in `ARGV[2]` when it is `'1'`. The index lives as long
+ * as the longest-living thread. Returns 1 when written.
+ */
+const WRITE_THREAD = `${SWEEP_INDEX}
 local current = redis.call('GET', KEYS[1])
 if ARGV[1] == '1' then
   if current ~= ARGV[2] then return 0 end
@@ -36,16 +71,24 @@ elseif current then
 end
 redis.call('SET', KEYS[1], ARGV[3], 'EX', ARGV[4])
 redis.call('ZADD', KEYS[2], ARGV[5], ARGV[6])
+redis.call('EXPIRE', KEYS[2], ARGV[4])
+sweep(KEYS[2], KEYS[3], ARGV[7], ARGV[4])
 return 1
 `;
 
-/** Adds an entry to a thread that exists, refreshing the TTL of both. Returns 1 when added. */
-const ADD_ENTRY = `
+/**
+ * Adds an entry to a thread that exists, refreshing the TTL of the thread, its entries and the
+ * index. Returns 1 when added.
+ */
+const ADD_ENTRY = `${SWEEP_INDEX}
 if redis.call('EXISTS', KEYS[1]) == 0 then return 0 end
 redis.call('SET', KEYS[3], ARGV[1], 'EX', ARGV[3])
 redis.call('ZADD', KEYS[2], ARGV[2], KEYS[3])
 redis.call('EXPIRE', KEYS[2], ARGV[3])
 redis.call('EXPIRE', KEYS[1], ARGV[3])
+if redis.call('EXPIRE', KEYS[4], ARGV[3]) == 1 then
+  sweep(KEYS[4], KEYS[5], ARGV[4], ARGV[3])
+end
 return 1
 `;
 
@@ -66,23 +109,43 @@ end
 return #members
 `;
 
-/** Up to `ARGV[3]` index members with their scores, from the score bound `ARGV[2]` on. */
-const RANGE_INDEX = `
-if ARGV[1] == 'desc' then
-  return redis.call('ZREVRANGEBYSCORE', KEYS[1], ARGV[2], '-inf', 'WITHSCORES', 'LIMIT', 0, ARGV[3])
-end
-return redis.call('ZRANGEBYSCORE', KEYS[1], ARGV[2], '+inf', 'WITHSCORES', 'LIMIT', 0, ARGV[3])
-`;
-
-/** Removes the index members (`ARGV`) whose thread keys (`KEYS[2..]`) no longer exist. */
-const DROP_EXPIRED = `
-local removed = 0
-for i = 2, #KEYS do
-  if redis.call('EXISTS', KEYS[i]) == 0 then
-    removed = removed + redis.call('ZREM', KEYS[1], ARGV[i - 1])
+/**
+ * A step through the index with the stored threads, read on the primary: the members with the
+ * score `ARGV[3]` (when given), then up to `ARGV[5]` members from the score bound `ARGV[4]` on, as
+ * flat `id, score, thread JSON` rows. A member whose thread expired is removed and comes back
+ * with no JSON, as does one whose key holds something else.
+ */
+const INDEX_PAGE = `
+local function rows(members, withScores)
+  local out = {}
+  local step = withScores and 2 or 1
+  for i = 1, #members, step do
+    local id = members[i]
+    if id ~= ${LUA_MARKER} then
+      local value = redis.pcall('GET', ARGV[1] .. 'thread:' .. id)
+      if value == false then
+        redis.call('ZREM', KEYS[1], id)
+      elseif type(value) ~= 'string' then
+        value = false
+      end
+      out[#out + 1] = id
+      out[#out + 1] = withScores and members[i + 1] or ARGV[3]
+      out[#out + 1] = value
+    end
   end
+  return out
 end
-return removed
+local tied = {}
+if ARGV[3] ~= '' then
+  tied = rows(redis.call('ZRANGEBYSCORE', KEYS[1], ARGV[3], ARGV[3]), false)
+end
+local after
+if ARGV[2] == 'desc' then
+  after = redis.call('ZREVRANGEBYSCORE', KEYS[1], ARGV[4], '-inf', 'WITHSCORES', 'LIMIT', 0, ARGV[5])
+else
+  after = redis.call('ZRANGEBYSCORE', KEYS[1], ARGV[4], '+inf', 'WITHSCORES', 'LIMIT', 0, ARGV[5])
+end
+return { #after / 2, tied, rows(after, true) }
 `;
 
 /** Moves a thread in the index to the score `ARGV[2]` if the thread is still the JSON `ARGV[1]`. */
@@ -91,11 +154,26 @@ if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
 return redis.call('ZADD', KEYS[2], ARGV[2], ARGV[3])
 `;
 
+/** Whether the index holds every stored thread: the score of its marker, or nil. */
+const INDEX_STATE = `return redis.call('ZSCORE', KEYS[1], ARGV[1])`;
+
 /** Adds `score, member` pairs to the index, leaving members it already has as they are. */
 const INDEX_MISSING = `return redis.call('ZADD', KEYS[1], 'NX', unpack(ARGV))`;
 
+/** Marks the index complete, living as long as a thread written now. */
+const MARK_INDEXED = `
+redis.call('ZADD', KEYS[1], '-inf', ARGV[1])
+return redis.call('EXPIRE', KEYS[1], ARGV[2])
+`;
+
 const MAX_WRITE_ATTEMPTS = 100;
 const INDEX_BATCH = 200;
+
+/** An index member with the thread stored under it, if there still is one. */
+interface IndexRow extends ThreadCursor {
+  value: string | null;
+}
+
 const SCAN_BATCH = 500;
 
 interface StoredThread {
@@ -175,9 +253,24 @@ function escapeGlob(value: string): string {
   return value.replace(/[*?[\]\\]/g, '\\$&');
 }
 
-function stringReply(reply: unknown): string[] {
-  if (Array.isArray(reply) && reply.every((item) => typeof item === 'string')) return reply;
-  throw new Error('Unexpected reply from Redis');
+function indexRows(reply: unknown): IndexRow[] {
+  if (!Array.isArray(reply)) throw new Error('Unexpected reply from Redis');
+  const rows: IndexRow[] = [];
+  for (let i = 0; i + 2 < reply.length; i += 3) {
+    const [id, score, value]: unknown[] = reply.slice(i, i + 3);
+    if (typeof id !== 'string' || typeof score !== 'string') {
+      throw new Error('Unexpected reply from Redis');
+    }
+    rows.push({ id, updatedAt: Number(score), value: typeof value === 'string' ? value : null });
+  }
+  return rows;
+}
+
+function indexPage(reply: unknown): { tied: IndexRow[]; after: IndexRow[]; read: number } {
+  if (!Array.isArray(reply) || reply.length !== 3 || typeof reply[0] !== 'number') {
+    throw new Error('Unexpected reply from Redis');
+  }
+  return { read: reply[0], tied: indexRows(reply[1]), after: indexRows(reply[2]) };
 }
 
 export class RedisAdapter extends BaseMemoryAdapter {
@@ -187,7 +280,6 @@ export class RedisAdapter extends BaseMemoryAdapter {
   private config: RedisAdapterConfig;
   private prefix: string;
   private ttl: number;
-  private indexed = false;
 
   constructor(config: RedisAdapterConfig) {
     super();
@@ -276,6 +368,11 @@ export class RedisAdapter extends BaseMemoryAdapter {
     return `${this.prefix}threads:index`;
   }
 
+  /** Where the next sweep of the index for expired threads goes on. */
+  private get sweepKey(): string {
+    return `${this.prefix}threads:sweep`;
+  }
+
   /**
    * Writes the thread `next` makes of the stored one, retrying when another writer changed it in
    * between, so concurrent writes all land. Returns null, writing nothing, when `next` does.
@@ -287,21 +384,24 @@ export class RedisAdapter extends BaseMemoryAdapter {
   ): Promise<Thread | null> {
     const threadKey = this.key('thread', threadId);
     for (let attempt = 0; attempt < MAX_WRITE_ATTEMPTS; attempt++) {
-      const current = await client.get(threadKey);
+      const read = await client.eval(READ_THREAD, 1, threadKey);
+      const current = typeof read === 'string' ? read : null;
       const thread = next(current === null ? null : (parseThread(current) ?? null));
       if (!thread) return null;
       const json = JSON.stringify(thread);
       const written = await client.eval(
         WRITE_THREAD,
-        2,
+        3,
         threadKey,
         this.indexKey,
+        this.sweepKey,
         current === null ? '0' : '1',
         current ?? '',
         json,
         this.ttl,
         thread.updatedAt.getTime(),
-        threadId
+        threadId,
+        this.prefix
       );
       if (written === 1) return parseThread(json) ?? null;
     }
@@ -371,40 +471,19 @@ export class RedisAdapter extends BaseMemoryAdapter {
       let position = listing.cursor;
 
       for (;;) {
-        const { members, exhausted } = await this.indexAfter(
-          client,
-          listing.order,
-          position,
-          batch
-        );
-        if (members.length === 0) break;
-
-        const keys = members.map((member) => this.key('thread', member.id));
-        const values = await client.mget(...keys);
-        const expired = members.filter((_member, index) => values[index] === null);
-        if (expired.length > 0) {
-          await client.eval(
-            DROP_EXPIRED,
-            expired.length + 1,
-            this.indexKey,
-            ...expired.map((member) => this.key('thread', member.id)),
-            ...expired.map((member) => member.id)
-          );
-        }
-
-        for (const [index, member] of members.entries()) {
-          position = member;
-          const value = values[index];
-          if (value === null || value === undefined) continue;
-          const thread = parseThread(value);
+        const { rows, exhausted } = await this.indexAfter(client, listing.order, position, batch);
+        for (const row of rows) {
+          position = row;
+          if (row.value === null) continue;
+          const thread = parseThread(row.value);
           if (!thread) continue;
-          if (thread.updatedAt.getTime() !== member.updatedAt) {
+          if (thread.updatedAt.getTime() !== row.updatedAt) {
             await client.eval(
               REINDEX_THREAD,
               2,
-              keys[index],
+              this.key('thread', row.id),
               this.indexKey,
-              value,
+              row.value,
               thread.updatedAt.getTime(),
               thread.id
             );
@@ -422,57 +501,54 @@ export class RedisAdapter extends BaseMemoryAdapter {
   }
 
   /**
-   * The index members after `position` in `order`: those sharing its score with a later id, then
-   * up to `batch` with a later score. `exhausted` when the index has no more beyond them.
+   * The index members after `position` in `order` with their threads: those sharing its score
+   * with a later id, then up to `batch` with a later score. `exhausted` when the index has no
+   * more beyond them.
    */
   private async indexAfter(
     client: RedisClient,
     order: 'asc' | 'desc',
     position: ThreadCursor | undefined,
     batch: number
-  ): Promise<{ members: ThreadCursor[]; exhausted: boolean }> {
-    const members: ThreadCursor[] = [];
-    if (position) {
-      const sign = order === 'asc' ? 1 : -1;
-      const tied = await client.zrangebyscore(
-        this.indexKey,
-        position.updatedAt,
-        position.updatedAt
-      );
-      const later = tied
-        .filter((id) => sign * compareMembers(id, position.id) > 0)
-        .sort((a, b) => sign * compareMembers(a, b));
-      members.push(...later.map((id) => ({ id, updatedAt: position.updatedAt })));
-    }
-
+  ): Promise<{ rows: IndexRow[]; exhausted: boolean }> {
     const start = position ? `(${position.updatedAt}` : order === 'desc' ? '+inf' : '-inf';
-    const reply = stringReply(
-      await client.eval(RANGE_INDEX, 1, this.indexKey, order, start, batch)
+    const { tied, after, read } = indexPage(
+      await client.eval(
+        INDEX_PAGE,
+        1,
+        this.indexKey,
+        this.prefix,
+        order,
+        position ? position.updatedAt : '',
+        start,
+        batch
+      )
     );
-    for (let i = 0; i + 1 < reply.length; i += 2) {
-      members.push({ id: reply[i], updatedAt: Number(reply[i + 1]) });
-    }
-    return { members, exhausted: reply.length / 2 < batch };
+    const sign = order === 'asc' ? 1 : -1;
+    const later = position
+      ? tied
+          .filter((row) => sign * compareMembers(row.id, position.id) > 0)
+          .sort((a, b) => sign * compareMembers(a.id, b.id))
+      : [];
+    return { rows: [...later, ...after], exhausted: read < batch };
   }
 
   /**
-   * Indexes threads stored before the thread index existed, once per key prefix: a marker key
-   * records that it was done.
+   * Rebuilds the index from the stored threads when it does not hold them all: before the first
+   * listing of a prefix, and after the index expired or was evicted. Threads an older version of
+   * the adapter creates once the index is complete stay unlisted until it is rebuilt, threads it
+   * updates move to their place when a listing meets them.
    */
   private async ensureIndexed(client: RedisClient): Promise<void> {
-    if (this.indexed) return;
-    const marker = `${this.prefix}threads:indexed`;
-    if ((await client.exists(marker)) === 0) {
-      const pattern = `${escapeGlob(this.prefix)}thread:*`;
-      let cursor = '0';
-      do {
-        const [next, keys] = await client.scan(cursor, 'MATCH', pattern, 'COUNT', SCAN_BATCH);
-        cursor = next;
-        if (keys.length > 0) await this.indexStored(client, keys);
-      } while (cursor !== '0');
-      await client.set(marker, '1');
-    }
-    this.indexed = true;
+    if ((await client.eval(INDEX_STATE, 1, this.indexKey, INDEX_MARKER)) !== null) return;
+    const pattern = `${escapeGlob(this.prefix)}thread:*`;
+    let cursor = '0';
+    do {
+      const [next, keys] = await client.scan(cursor, 'MATCH', pattern, 'COUNT', SCAN_BATCH);
+      cursor = next;
+      if (keys.length > 0) await this.indexStored(client, keys);
+    } while (cursor !== '0');
+    await client.eval(MARK_INDEXED, 1, this.indexKey, INDEX_MARKER, this.ttl);
   }
 
   private async indexStored(client: RedisClient, keys: string[]): Promise<void> {
@@ -504,13 +580,16 @@ export class RedisAdapter extends BaseMemoryAdapter {
 
       const added = await client.eval(
         ADD_ENTRY,
-        3,
+        5,
         this.key('thread', entry.threadId),
         this.key('thread:entries', entry.threadId),
         this.key('entry', id),
+        this.indexKey,
+        this.sweepKey,
         json,
         createdAt.getTime(),
-        this.ttl
+        this.ttl,
+        this.prefix
       );
       if (added !== 1) return this.failure(`Thread not found: ${entry.threadId}`);
 

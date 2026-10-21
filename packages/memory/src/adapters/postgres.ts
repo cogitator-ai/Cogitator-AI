@@ -191,7 +191,11 @@ export class PostgresAdapter
       )
     `);
 
-    await pool.query(`ALTER TABLE ${this.schema}.entries ADD COLUMN IF NOT EXISTS seq BIGSERIAL`);
+    await pool.query(`CREATE SEQUENCE IF NOT EXISTS ${this.schema}.entries_seq`);
+    await pool.query(`ALTER TABLE ${this.schema}.entries ADD COLUMN IF NOT EXISTS seq BIGINT`);
+    await pool.query(
+      `ALTER TABLE ${this.schema}.entries ALTER COLUMN seq SET DEFAULT nextval('${this.schema}.entries_seq')`
+    );
 
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_entries_thread_id
@@ -200,6 +204,10 @@ export class PostgresAdapter
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_threads_agent_updated
       ON ${this.schema}.threads(agent_id, (${THREAD_TIME}), (id COLLATE "C"))
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_threads_updated
+      ON ${this.schema}.threads((${THREAD_TIME}), (id COLLATE "C"))
     `);
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_threads_metadata
@@ -441,10 +449,10 @@ export class PostgresAdapter
     try {
       const result = await this.pool.query(
         `UPDATE ${this.schema}.threads
-         SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb, updated_at = NOW()
+         SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb, updated_at = $3
          WHERE id = $1
          RETURNING *`,
-        [threadId, toJsonb(metadata)]
+        [threadId, toJsonb(metadata), new Date()]
       );
 
       if (result.rows.length === 0) {
@@ -515,11 +523,11 @@ export class PostgresAdapter
     }
 
     if (options.limit) {
-      query += ` ORDER BY created_at DESC, seq DESC LIMIT $${paramIndex}`;
+      query += ` ORDER BY created_at DESC, seq DESC NULLS LAST LIMIT $${paramIndex}`;
       params.push(options.limit);
-      query = `SELECT * FROM (${query}) sub ORDER BY created_at ASC, seq ASC`;
+      query = `SELECT * FROM (${query}) sub ORDER BY created_at ASC, seq ASC NULLS FIRST`;
     } else {
-      query += ' ORDER BY created_at ASC, seq ASC';
+      query += ' ORDER BY created_at ASC, seq ASC NULLS FIRST';
     }
 
     let result: { rows: Record<string, unknown>[] };

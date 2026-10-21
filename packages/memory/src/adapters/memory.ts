@@ -22,6 +22,19 @@ import {
   threadPage,
 } from './thread-listing';
 
+/**
+ * A copy of `value` that shares nothing with it: a structured clone, or for a value it cannot
+ * clone (one holding functions) the JSON form the database adapters would store, functions left
+ * out. Values that are not even JSON (a cycle with a function in it) make it throw.
+ */
+function storable<T>(value: T): T {
+  try {
+    return structuredClone(value);
+  } catch {
+    return JSON.parse(JSON.stringify(value)) as T;
+  }
+}
+
 function copyThread(thread: Thread): Thread {
   return {
     ...thread,
@@ -64,6 +77,8 @@ export class InMemoryAdapter extends BaseMemoryAdapter {
     metadata: Record<string, unknown> = {},
     threadId?: string
   ): Promise<MemoryResult<Thread>> {
+    const copied = this.stored(metadata, 'thread metadata');
+    if (!copied.success) return copied;
     const id = threadId ?? this.generateId('thread');
     const now = new Date();
     const existing = this.threads.get(id);
@@ -71,7 +86,7 @@ export class InMemoryAdapter extends BaseMemoryAdapter {
     const thread: Thread = {
       id,
       agentId,
-      metadata: structuredClone(metadata),
+      metadata: copied.data,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     };
@@ -80,6 +95,16 @@ export class InMemoryAdapter extends BaseMemoryAdapter {
       this.threadEntries.set(id, []);
     }
     return this.success(copyThread(thread));
+  }
+
+  private stored<T>(value: T, what: string): MemoryResult<T> {
+    try {
+      return this.success(storable(value));
+    } catch (error) {
+      return this.failure(
+        `Cannot store the ${what}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
   }
 
   async getThread(threadId: string): Promise<MemoryResult<Thread | null>> {
@@ -106,7 +131,9 @@ export class InMemoryAdapter extends BaseMemoryAdapter {
     if (!thread) {
       return this.failure(`Thread not found: ${threadId}`);
     }
-    thread.metadata = { ...thread.metadata, ...structuredClone(metadata) };
+    const copied = this.stored(metadata, 'thread metadata');
+    if (!copied.success) return copied;
+    thread.metadata = { ...thread.metadata, ...copied.data };
     thread.updatedAt = new Date();
     return this.success(copyThread(thread));
   }
@@ -125,6 +152,8 @@ export class InMemoryAdapter extends BaseMemoryAdapter {
     if (!this.threads.has(entry.threadId)) {
       return this.failure(`Thread not found: ${entry.threadId}`);
     }
+    const copied = this.stored(entry, 'entry');
+    if (!copied.success) return copied;
     if (this.entries.size >= this.maxEntries) {
       const oldestId = this.entries.keys().next().value;
       if (oldestId) {
@@ -133,7 +162,7 @@ export class InMemoryAdapter extends BaseMemoryAdapter {
     }
 
     const full: MemoryEntry = {
-      ...structuredClone(entry),
+      ...copied.data,
       id: this.generateId('entry'),
       createdAt: this.entryTimestamp(entry),
     };

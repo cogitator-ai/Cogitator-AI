@@ -12,3 +12,9 @@ Memory adapters share one contract, checked by a conformance suite, and threads 
 - `SessionManager.list()` finds sessions with `listThreads` and no longer keeps an index thread. `indexRefreshInterval` is deprecated and ignored.
 - `@cogitator-ai/test-utils` ships `memoryAdapterConformanceCases` and `embeddingAdapterConformanceCases`, framework-agnostic suites that check an adapter or embedding store against this contract. `MockMemoryAdapter` implements `listThreads`.
 - `RedisClient` gains `eval(script, numKeys, ...args)`, run on prefixed keys.
+
+Upgrading a database that already holds data:
+
+- Postgres builds its new indexes on `threads` (agent and update time, update time alone, a GIN index on `metadata`) when the adapter connects, which blocks writes to `threads` while each one builds. On a large table create them first with `CREATE INDEX CONCURRENTLY` under the same names (`idx_threads_agent_updated`, `idx_threads_updated`, `idx_threads_metadata`) so connecting finds them in place. The new `entries.seq` column is added without rewriting the table: entries written before it keep their order by `createdAt`.
+- MongoDB filters on metadata keys that contain a dot with `$getField`, which needs MongoDB 5.0 or later.
+- Redis lists threads through an index it fills the first time threads are listed, and again when the index is gone.
