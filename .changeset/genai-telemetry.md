@@ -4,6 +4,7 @@
 '@cogitator-ai/workflows': minor
 '@cogitator-ai/swarms': minor
 '@cogitator-ai/studio': minor
+'@cogitator-ai/worker': patch
 ---
 
 Telemetry follows the OpenTelemetry GenAI semantic conventions, and runs that belong together share one trace.
