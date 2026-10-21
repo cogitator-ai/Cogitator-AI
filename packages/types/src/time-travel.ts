@@ -8,6 +8,7 @@
  * - Comparing execution traces step by step
  */
 
+import type { RunMemoryPlace } from './runtime';
 import type { Message, ToolCall } from './message';
 import type { RunResult } from './runtime';
 import type { ExecutionStep, ExecutionTrace } from './learning';
@@ -29,6 +30,11 @@ export interface ExecutionCheckpoint {
   label?: string;
   createdAt: Date;
   metadata?: Record<string, unknown>;
+  /**
+   * Where the run wrote in its thread's memory: a replay goes on a branch of that thread from
+   * the point the run started at, instead of a thread of its own
+   */
+  memory?: RunMemoryPlace;
 }
 
 export interface CheckpointQuery {

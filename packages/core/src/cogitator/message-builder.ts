@@ -8,6 +8,8 @@ import type {
   ContentPart,
   ImageInput,
   AudioInput,
+  MemoryEntry,
+  MemoryEntryType,
 } from '@cogitator-ai/types';
 import { ContextBuilder, countMessageTokens } from '@cogitator-ai/memory';
 import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
@@ -104,6 +106,14 @@ export async function buildInitialMessages(
     });
   }
 
+  const branchFrom = options.branch?.fromEntryId;
+  if (options.branch && !memoryAdapter.getPath) {
+    throw new CogitatorError({
+      message: `A run on a branch needs a memory adapter with branches, and '${memoryAdapter.provider}' has none`,
+      code: ErrorCode.VALIDATION_ERROR,
+    });
+  }
+
   if (options.threadId !== undefined && options.threadAccess !== 'shared') {
     await ensureThreadAccess(memoryAdapter, threadId, {
       agentId: agent.id,
@@ -117,10 +127,21 @@ export async function buildInitialMessages(
     }
   }
 
+  if (typeof branchFrom === 'string') {
+    const from = unwrap(await memoryAdapter.getEntry(branchFrom), 'getEntry');
+    if (!from || from.threadId !== threadId) {
+      throw new CogitatorError({
+        message: `The branch starts at entry ${branchFrom}, which is not in thread ${threadId}`,
+        code: ErrorCode.VALIDATION_ERROR,
+      });
+    }
+  }
+
   if (contextBuilder && options.loadHistory !== false) {
     const ctx = await contextBuilder.build({
       threadId,
       agentId: agent.id,
+      ...(options.branch && { leafId: options.branch.fromEntryId }),
       userId: options.userId,
       systemPrompt: agent.instructions,
       currentInput: options.input,
@@ -145,13 +166,25 @@ export async function buildInitialMessages(
   }
 
   if (options.loadHistory !== false) {
-    const entries = await memoryAdapter.getEntries({ threadId, limit: 20 });
+    const leafId = options.branch?.fromEntryId;
+    const entries =
+      leafId === null
+        ? ({ success: true, data: [] } as const)
+        : memoryAdapter.getPath
+          ? await memoryAdapter.getPath({
+              threadId,
+              limit: 20,
+              ...(leafId !== undefined && { leafId }),
+            })
+          : await memoryAdapter.getEntries({ threadId, limit: 20 });
     const messages: Message[] = [{ role: 'system', content: agent.instructions }];
     if (entries.success) {
       messages.push(...sanitizeToolHistory(entries.data.map((e) => e.message)));
     } else {
       reportMemoryError(
-        new Error(`Memory getEntries failed: ${entries.error}`),
+        new Error(
+          `Memory ${memoryAdapter.getPath ? 'getPath' : 'getEntries'} failed: ${entries.error}`
+        ),
         'load',
         options.onMemoryError
       );
@@ -208,6 +241,23 @@ async function createThreadIfMissing(
   }
 }
 
+/** Where an entry goes in the thread's tree, and whether it becomes the active leaf */
+export interface EntryPlacement {
+  /** After this entry, null for a new root; after the thread's active leaf when absent */
+  parentId?: string | null;
+  activate?: boolean;
+}
+
+/** What an entry records beyond its message: an event of the session, with its payload */
+export interface EntryEvent {
+  type: Exclude<MemoryEntryType, 'message' | 'tool_result'>;
+  event: Record<string, unknown>;
+}
+
+/**
+ * Saves a message, or a session event, to the thread, making the thread first when it is
+ * missing. A failure goes to `onError` and the run goes on. Returns the stored entry.
+ */
 export async function saveEntry(
   threadId: string,
   agentId: string,
@@ -216,25 +266,31 @@ export async function saveEntry(
   toolCalls?: ToolCall[],
   toolResults?: ToolResult[],
   onError?: (error: Error, operation: 'save' | 'load') => void,
-  userId?: string
-): Promise<void> {
-  if (!memoryAdapter) return;
+  userId?: string,
+  placement?: EntryPlacement,
+  event?: EntryEvent
+): Promise<MemoryEntry | undefined> {
+  if (!memoryAdapter) return undefined;
 
   try {
     await createThreadIfMissing(memoryAdapter, threadId, agentId, userId);
 
-    unwrap(
+    return unwrap(
       await memoryAdapter.addEntry({
         threadId,
         message,
         toolCalls,
         toolResults,
-        tokenCount: countMessageTokens(message),
+        tokenCount: event ? 0 : countMessageTokens(message),
+        ...(event && { type: event.type, event: event.event }),
+        ...(placement?.parentId !== undefined && { parentId: placement.parentId }),
+        ...(placement?.activate !== undefined && { activate: placement.activate }),
       }),
       'addEntry'
     );
   } catch (err) {
     reportMemoryError(err, 'save', onError);
+    return undefined;
   }
 }
 

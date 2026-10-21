@@ -82,7 +82,7 @@ describe('runs with memory.contextBuilder', () => {
   it('reports a failed history load to onMemoryError and still answers', async () => {
     const { backend, requests } = recordingBackend();
     vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
-    vi.spyOn(InMemoryAdapter.prototype, 'getEntries').mockResolvedValue({
+    vi.spyOn(InMemoryAdapter.prototype, 'getPath').mockResolvedValue({
       success: false,
       error: 'connection reset',
     });

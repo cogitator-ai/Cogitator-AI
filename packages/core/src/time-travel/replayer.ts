@@ -102,11 +102,21 @@ export class ExecutionReplayer {
 
     const input = this.extractUserInput(initialMessages);
 
-    const modifiedAgent = this.createReplayAgent(agent, initialMessages, options);
+    const memory = checkpoint.memory;
+    const modifiedAgent = this.createReplayAgent(
+      agent,
+      memory ? this.stepsOfRun(initialMessages) : initialMessages,
+      options
+    );
 
     const runResult = await cogitator.run(modifiedAgent, {
       input,
-      threadId: `replay_${checkpoint.runId}`,
+      ...(memory
+        ? {
+            threadId: memory.threadId,
+            branch: { fromEntryId: memory.branchPoint, activate: false },
+          }
+        : { threadId: `replay_${checkpoint.runId}_${nanoid(8)}` }),
     });
 
     const stepsReplayed = checkpoint.stepIndex;
@@ -157,6 +167,16 @@ export class ExecutionReplayer {
       const cachedKey = pick(cached, [msg.toolCallId]);
       return cachedKey === undefined ? msg : { ...msg, content: toolContent(cached[cachedKey]) };
     });
+  }
+
+  /**
+   * The system message and what the run itself did up to the checkpoint: the messages after its
+   * input. A replay on a branch reads the earlier conversation from memory instead.
+   */
+  private stepsOfRun(messages: Message[]): Message[] {
+    const input = messages.map((m) => m.role).lastIndexOf('user');
+    const system = messages.filter((m) => m.role === 'system');
+    return input === -1 ? messages : [...system, ...messages.slice(input + 1)];
   }
 
   private extractUserInput(messages: Message[]): string {

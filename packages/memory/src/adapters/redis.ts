@@ -821,7 +821,7 @@ export class RedisAdapter extends BranchingMemoryAdapter {
       const createdAt = this.entryTimestamp(entry);
       const seq = await client.incr(`${this.prefix}entries:seq`);
       const { activate, parentId: askedParent, ...fields } = entry;
-      const type = fields.type ?? (fields.message.role === 'tool' ? 'tool_result' : 'message');
+      const type = fields.type ?? (fields.message?.role === 'tool' ? 'tool_result' : 'message');
       const stored = {
         ...fields,
         id,

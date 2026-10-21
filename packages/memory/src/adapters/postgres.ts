@@ -611,7 +611,7 @@ export class PostgresAdapter
     const id = this.generateId('entry');
     const now = this.entryTimestamp(entry);
     const { activate, parentId: askedParent, ...fields } = entry;
-    const type = fields.type ?? (fields.message.role === 'tool' ? 'tool_result' : 'message');
+    const type = fields.type ?? (fields.message?.role === 'tool' ? 'tool_result' : 'message');
 
     try {
       const stored = await this.inTransaction(async (client) => {

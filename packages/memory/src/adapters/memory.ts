@@ -185,7 +185,7 @@ export class InMemoryAdapter extends BranchingMemoryAdapter {
       ...fields,
       id: this.generateId('entry'),
       createdAt: this.entryTimestamp(entry),
-      type: fields.type ?? (fields.message.role === 'tool' ? 'tool_result' : 'message'),
+      type: fields.type ?? (fields.message?.role === 'tool' ? 'tool_result' : 'message'),
       parentId: askedParent === undefined ? (thread.activeLeafId ?? null) : askedParent,
       seq: ++this.seq,
       formatVersion: MEMORY_ENTRY_FORMAT,

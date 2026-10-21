@@ -171,6 +171,7 @@ export class InMemoryCheckpointStore implements TimeTravelCheckpointStore {
       label: options?.label,
       createdAt: new Date(),
       metadata: options?.metadata,
+      ...(result.memory && { memory: result.memory }),
     };
 
     return checkpoint;

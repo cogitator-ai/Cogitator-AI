@@ -134,14 +134,14 @@ describe('memory failures during a run', () => {
   it('reports a history that could not be loaded and still answers', async () => {
     const cog = runtime();
     await cog.run(agent, { input: 'hi', threadId: 't1' });
-    vi.spyOn(cog.memory!, 'getEntries').mockResolvedValue({ success: false, error: 'timeout' });
+    vi.spyOn(cog.memory!, 'getPath').mockResolvedValue({ success: false, error: 'timeout' });
     const onMemoryError = vi.fn();
 
     const result = await cog.run(agent, { input: 'again', threadId: 't1', onMemoryError });
 
     expect(result.output).toBe('ok');
     expect(onMemoryError).toHaveBeenCalledWith(
-      expect.objectContaining({ message: 'Memory getEntries failed: timeout' }),
+      expect.objectContaining({ message: 'Memory getPath failed: timeout' }),
       'load'
     );
     await cog.close();

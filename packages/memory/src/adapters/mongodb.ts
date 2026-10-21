@@ -440,7 +440,7 @@ export class MongoDBAdapter extends BranchingMemoryAdapter {
     const id = this.generateId('entry');
     const createdAt = this.entryTimestamp(entry);
     const { activate, parentId: askedParent, ...fields } = entry;
-    const type = fields.type ?? (fields.message.role === 'tool' ? 'tool_result' : 'message');
+    const type = fields.type ?? (fields.message?.role === 'tool' ? 'tool_result' : 'message');
     const moves = activate !== false;
 
     try {

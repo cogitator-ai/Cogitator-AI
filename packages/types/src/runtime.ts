@@ -309,6 +309,14 @@ export interface RunOptions<TDeps = unknown> {
   trace?: TraceParent;
   /** Callback when memory operation fails */
   onMemoryError?: (error: Error, operation: 'save' | 'load') => void;
+  /**
+   * Runs on a branch of the thread: history is read along the branch ending at `fromEntryId`
+   * (null for none, a new root), and the run's entries go after it, one after another. With
+   * `activate: false` the thread's active leaf stays where it was, so a fork or a replay writes
+   * a branch of its own while the conversation goes on; true by default. Needs a memory adapter
+   * with branches (every built-in one).
+   */
+  branch?: { fromEntryId: string | null; activate?: boolean };
 
   /** Execute tool calls in parallel. Default: false (sequential execution) */
   parallelToolCalls?: boolean;
@@ -508,6 +516,17 @@ export interface RunCheckpoint {
    * trace under it. Missing in checkpoints saved before it existed
    */
   trace?: { traceId: string; rootSpanId: string };
+  /** Where a run on a branch writes next, so the resumed run goes on along it */
+  branch?: { parentId: string | null; activate: boolean };
+}
+
+/** Where a run's entries went in the thread's tree of memory */
+export interface RunMemoryPlace {
+  readonly threadId: string;
+  /** The entry the run's first entry went after, null for none */
+  readonly branchPoint: string | null;
+  /** The run's last entry */
+  readonly leafId?: string;
 }
 
 /**
@@ -611,6 +630,8 @@ export interface RunResult {
   };
   readonly reflections?: readonly Reflection[];
   readonly reflectionSummary?: ReflectionSummary;
+  /** Where the run wrote in the thread's memory, when it wrote anything */
+  readonly memory?: RunMemoryPlace;
 }
 
 export interface Span {

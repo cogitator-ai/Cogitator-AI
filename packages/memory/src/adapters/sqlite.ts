@@ -406,7 +406,7 @@ export class SQLiteAdapter extends BranchingMemoryAdapter {
     const { activate, parentId: askedParent, ...fields } = entry;
     const createdAt = this.entryTimestamp(entry);
     const id = this.generateId('entry');
-    const type = fields.type ?? (fields.message.role === 'tool' ? 'tool_result' : 'message');
+    const type = fields.type ?? (fields.message?.role === 'tool' ? 'tool_result' : 'message');
 
     try {
       db.exec('BEGIN IMMEDIATE');
