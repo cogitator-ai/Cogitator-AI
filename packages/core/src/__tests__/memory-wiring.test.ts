@@ -97,7 +97,7 @@ describe('memory wiring', () => {
       expect(embedding.embed).toHaveBeenCalledWith('second question');
     });
 
-    it('keeps no index for the in-process memory adapter, whose vectors stay in process', async () => {
+    it('indexes the in-process memory adapter in process, not in the configured store', async () => {
       const cog = new Cogitator({
         llm: { backends: { mock: backend } },
         memory: {
@@ -110,7 +110,7 @@ describe('memory wiring', () => {
 
       await cog.run(agent, { input: 'hi' });
 
-      expect(captured.at(-1)?.messageIndex).toBeUndefined();
+      expect(captured.at(-1)?.messageIndex).toBeDefined();
       await cog.close();
     });
 

@@ -13,6 +13,7 @@ import type {
 } from '@cogitator-ai/types';
 import {
   InMemoryAdapter,
+  InMemoryEmbeddingAdapter,
   RedisAdapter,
   PostgresAdapter,
   SQLiteAdapter,
@@ -122,7 +123,13 @@ export async function initializeMemory(
     } as const;
     const messageIndex =
       contextConfig.strategy !== 'recent' && embeddingService
-        ? indexFor(adapter, embeddingAdapter, embeddingService)
+        ? indexFor(
+            adapter,
+            adapter instanceof InMemoryAdapter || !embeddingAdapter
+              ? new InMemoryEmbeddingAdapter()
+              : embeddingAdapter,
+            embeddingService
+          )
         : undefined;
     state.messageIndex = messageIndex;
     const deps: ContextBuilderDeps = {
@@ -151,12 +158,17 @@ export async function initializeMemory(
  * would keep vectors of entries a restart forgot. Background failures are logged, as no run
  * waits on them.
  */
+/**
+ * The index that embeds each entry of `adapter` once, its vectors in `store`: the configured
+ * embedding store, or one in process for a memory with none or one in process itself (whose
+ * entries would leave vectors behind in a lasting store), so `relevant` and `hybrid` search a
+ * whole thread instead of its newest entries on every memory
+ */
 function indexFor(
   adapter: MemoryAdapter,
-  store: EmbeddingAdapter | undefined,
+  store: EmbeddingAdapter,
   embedding: EmbeddingService
-): MessageIndex | undefined {
-  if (!store || adapter instanceof InMemoryAdapter) return undefined;
+): MessageIndex {
   const logger = getLogger();
   const index = new MessageIndex({
     store,
