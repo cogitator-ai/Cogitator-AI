@@ -284,6 +284,72 @@ describe('PostgresTraceStore', () => {
       expect(stored).toMatchObject({ id: 'trace_1', agentId: 'agent-1', prompt });
     });
 
+    it('keeps the distributed trace id of a run and finds runs by it', async () => {
+      const traces = store.traces();
+      mockQuery.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({
+        rows: [
+          {
+            id: 'run_1',
+            run_id: 'run_1',
+            trace_id: 'a'.repeat(32),
+            agent_id: 'agent-1',
+            thread_id: 'thread_1',
+            input: 'in',
+            output: 'out',
+            steps: [],
+            tool_calls: [],
+            reflections: [],
+            metrics: {},
+            score: 0,
+            model: 'm',
+            duration: 1,
+            usage: { inputTokens: 1, outputTokens: 1, cost: 0 },
+            labels: [],
+            is_demo: false,
+            expected: null,
+            prompt: null,
+            created_at: new Date(0).toISOString(),
+          },
+        ],
+      });
+
+      await traces.store({
+        id: 'run_1',
+        runId: 'run_1',
+        traceId: 'a'.repeat(32),
+        agentId: 'agent-1',
+        threadId: 'thread_1',
+        input: 'in',
+        output: 'out',
+        steps: [],
+        toolCalls: [],
+        reflections: [],
+        metrics: { success: true, toolAccuracy: 1, efficiency: 1, completeness: 1, coherence: 1 },
+        score: 0,
+        model: 'm',
+        createdAt: new Date(0),
+        duration: 1,
+        usage: { inputTokens: 1, outputTokens: 1, cost: 0 },
+        isDemo: false,
+      });
+      const found = await traces.query({ traceId: 'a'.repeat(32) });
+
+      expect(String(mockQuery.mock.calls[0][0])).toContain('trace_id');
+      expect(mockQuery.mock.calls[0][1]).toContain('a'.repeat(32));
+      expect(String(mockQuery.mock.calls[1][0])).toContain('trace_id = $1');
+      expect(mockQuery.mock.calls[1][1]).toEqual(['a'.repeat(32)]);
+      expect(found[0].traceId).toBe('a'.repeat(32));
+    });
+
+    it('adds the trace id column to an existing traces table', async () => {
+      mockQuery.mockClear();
+      await store.connect();
+      const sql = mockQuery.mock.calls.map(([text]) => String(text));
+      expect(sql.some((text) => text.includes('ADD COLUMN IF NOT EXISTS trace_id TEXT'))).toBe(
+        true
+      );
+    });
+
     it('adds the prompt column to an existing traces table', async () => {
       mockQuery.mockClear();
       await store.connect();

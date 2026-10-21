@@ -38,11 +38,17 @@ export function isSpanId(id: string): boolean {
  * when its trace id is not a trace id: a run never joins a trace it cannot name.
  */
 export function normalizeTraceParent(parent: TraceParent | undefined): TraceParent | undefined {
-  if (!parent) return undefined;
-  const traceId = parent.traceId.trim().toLowerCase();
-  if (!isTraceId(traceId)) return undefined;
-  const parentSpanId = parent.parentSpanId?.trim().toLowerCase();
+  if (!parent || typeof parent !== 'object') return undefined;
+  const traceId = idOf(parent.traceId, 32);
+  if (!traceId || !isTraceId(traceId)) return undefined;
+  const parentSpanId = idOf(parent.parentSpanId, 16);
   return { traceId, ...(parentSpanId && isSpanId(parentSpanId) && { parentSpanId }) };
+}
+
+/** `value` trimmed and lowercased when it is a string short enough to be an id of `length`. */
+function idOf(value: unknown, length: number): string | undefined {
+  if (typeof value !== 'string' || value.length > length + 8) return undefined;
+  return value.trim().toLowerCase();
 }
 
 /**
@@ -65,14 +71,53 @@ export function formatTraceparent(traceId: string, spanId: string): string {
   return `00-${traceId}-${spanId}-01`;
 }
 
-const scope = new AsyncLocalStorage<TraceParent>();
-
-/** The trace context work started now joins: set while a run's tools execute. */
-export function currentTraceContext(): TraceParent | undefined {
-  return scope.getStore();
+interface Scope {
+  context: TraceParent;
+  open: boolean;
 }
 
-/** Runs `work` with `context` as the trace context that runs started inside it join. */
+const scope = new AsyncLocalStorage<Scope>();
+
+/**
+ * The trace context work started now joins: set while a run's tools execute, or inside
+ * `withTraceContext`. A timer or connection made inside that work and firing after it ended
+ * sees none, so later runs it starts do not join a trace whose work is over.
+ */
+export function currentTraceContext(): TraceParent | undefined {
+  const current = scope.getStore();
+  return current?.open ? current.context : undefined;
+}
+
+/**
+ * Runs `work` with `context` as the trace context that runs started inside it join, until `work`
+ * (or the promise it returns) ends. A context with an invalid trace id is ignored.
+ */
 export function withTraceContext<T>(context: TraceParent, work: () => T): T {
-  return scope.run(context, work);
+  const normalized = normalizeTraceParent(context);
+  if (!normalized) return work();
+  const current: Scope = { context: normalized, open: true };
+  const close = () => {
+    current.open = false;
+  };
+  let result: T;
+  try {
+    result = scope.run(current, work);
+  } catch (error) {
+    close();
+    throw error;
+  }
+  if (isThenable(result)) {
+    result.then(close, close);
+  } else {
+    close();
+  }
+  return result;
+}
+
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as PromiseLike<unknown>).then === 'function'
+  );
 }

@@ -4,6 +4,7 @@ import type {
   ChatRequest,
   ChatResponse,
   ChatStreamChunk,
+  DecisionBackend,
   LLMBackend,
   RunObserver,
   Span,
@@ -11,17 +12,21 @@ import type {
 import { Cogitator } from '../cogitator';
 import { Agent } from '../agent';
 import { tool } from '../tool';
+import { toolContent } from '../tool-content';
+import { AgentOptimizer } from '../learning/agent-optimizer';
+import { InMemoryTraceStore } from '../learning/trace-store';
 import { registerTelemetry } from '../observability/telemetry';
 import {
   currentTraceContext,
   formatTraceparent,
+  withTraceContext,
   isSpanId,
   isTraceId,
   newSpanId,
   newTraceId,
   parseTraceparent,
 } from '../observability/trace-context';
-import { GEN_AI, genAiProviderName, genAiSpanName } from '../observability/genai';
+import { GEN_AI, genAiProviderName, genAiSpanName, safeJson } from '../observability/genai';
 import { OTLPExporter } from '../observability/opentelemetry';
 
 /** A backend that answers with a call of `lookup` first when the input asks for it, then text. */
@@ -291,7 +296,7 @@ describe('GenAI semantic conventions on run spans', () => {
     const [root] = byName(spans, 'agent.run');
     expect(root.status).toBe('error');
     expect(root.attributes[GEN_AI.operationName]).toBe('invoke_agent');
-    expect(typeof root.attributes[GEN_AI.errorType]).toBe('string');
+    expect(root.attributes[GEN_AI.errorType]).toBe('TypeError');
   });
 });
 
@@ -312,8 +317,12 @@ describe('telemetry edge cases', () => {
 
   it('keeps content out of a paused run and continues its trace when it resumes', async () => {
     const plain: Span[] = [];
+    const curious: Span[] = [];
     const { cog } = runtime({
-      observers: [{ onSpan: (span) => plain.push(span) }, { captureContent: true }],
+      observers: [
+        { onSpan: (span) => plain.push(span) },
+        { captureContent: true, onSpan: (span) => curious.push(span) },
+      ],
     });
     const paused = await cog.run(careful, {
       input: 'please look it up, my card is 4111',
@@ -324,6 +333,7 @@ describe('telemetry edge cases', () => {
       spans.some((span) => GEN_AI.inputMessages in span.attributes);
     expect(has(paused.trace.spans)).toBe(false);
     expect(has(plain)).toBe(false);
+    expect(has(curious)).toBe(true);
     const [pausedRoot] = byName(paused.trace.spans, 'agent.run');
     expect(pausedRoot.status).toBe('unset');
     expect(pausedRoot.attributes['run.status']).toBe('paused');
@@ -338,6 +348,74 @@ describe('telemetry edge cases', () => {
     });
     expect(resumed.trace.traceId).toBe(paused.trace.traceId);
     expect(byName(resumed.trace.spans, 'agent.run')[0].parentId).toBe(pausedRoot.id);
+  });
+
+  it('starts a trace of its own for a parent that is not text or far too long', async () => {
+    const { cog } = runtime();
+    for (const traceId of [123 as unknown as string, 'a'.repeat(10_000_000)]) {
+      const result = await cog.run(agent, { input: 'hello', trace: { traceId } });
+      expect(isTraceId(result.trace.traceId)).toBe(true);
+      expect(byName(result.trace.spans, 'agent.run')[0].parentId).toBeUndefined();
+    }
+  });
+
+  it('keeps the error text of a failed call out of the spans', async () => {
+    const leaky: LLMBackend = {
+      provider: 'openai',
+      chat: vi.fn(async () => {
+        throw new Error('upstream said: the user wrote my card is 4111');
+      }),
+      chatStream: vi.fn(async function* (): AsyncGenerator<ChatStreamChunk> {
+        yield* [];
+        throw new Error('upstream said: the user wrote my card is 4111');
+      }),
+    };
+    const spans: Span[] = [];
+    const cog = new Cogitator({
+      llm: { backends: { test: leaky }, retry: false },
+      observers: [{ onSpan: (span) => spans.push(span) }],
+    });
+    runtimes.push(cog);
+    await expect(cog.run(agent, { input: 'hello' })).rejects.toThrow();
+    expect(JSON.stringify(spans.filter((span) => span.name === 'llm.chat'))).not.toContain('4111');
+  });
+
+  it('continues the paused trace on resume unless the resume is given a parent of its own', async () => {
+    const { cog } = runtime();
+    const paused = await cog.run(careful, { input: 'please look it up', threadId: 'thread-ctx' });
+    const [pausedRoot] = byName(paused.trace.spans, 'agent.run');
+    const elsewhere = { traceId: newTraceId(), parentSpanId: newSpanId() };
+    const inContext = await withTraceContext(elsewhere, () =>
+      cog.resume(careful, paused.checkpoint!, { decisions: { call_1: { approved: true } } })
+    );
+    expect(inContext.trace.traceId).toBe(paused.trace.traceId);
+    expect(byName(inContext.trace.spans, 'agent.run')[0].parentId).toBe(pausedRoot.id);
+
+    const again = await cog.run(careful, { input: 'please look it up', threadId: 'thread-ctx2' });
+    const explicit = { traceId: newTraceId(), parentSpanId: newSpanId() };
+    const moved = await cog.resume(careful, again.checkpoint!, {
+      decisions: { call_1: { approved: true } },
+      trace: explicit,
+    });
+    expect(moved.trace.traceId).toBe(explicit.traceId);
+    expect(byName(moved.trace.spans, 'agent.run')[0].parentId).toBe(explicit.parentSpanId);
+  });
+
+  it('ends the context of a tool with it, so a timer the tool left behind starts no run in it', async () => {
+    let later: ReturnType<typeof currentTraceContext> | 'unset' = 'unset';
+    let during: ReturnType<typeof currentTraceContext>;
+    const scheduled = new Promise<void>((resolve) => {
+      void withTraceContext({ traceId: newTraceId(), parentSpanId: newSpanId() }, async () => {
+        during = currentTraceContext();
+        setTimeout(() => {
+          later = currentTraceContext();
+          resolve();
+        }, 5);
+      });
+    });
+    await scheduled;
+    expect(during).toBeDefined();
+    expect(later).toBeUndefined();
   });
 
   it('ignores a parent it cannot name and lowercases one it can', async () => {
@@ -418,6 +496,69 @@ describe('telemetry edge cases', () => {
     expect(toolSpan.attributes[GEN_AI.toolCallResult]).toBeUndefined();
   });
 
+  it('never fails a run over content it cannot serialize', async () => {
+    const odd = tool({
+      name: 'lookup',
+      description: 'Returns odd values',
+      parameters: z.object({ term: z.string() }),
+      execute: async () => {
+        const node: Record<string, unknown> = { size: 10n };
+        node.self = node;
+        return toolContent({ type: 'json', value: node });
+      },
+    });
+    const { cog } = runtime({ captureContent: true });
+    const result = await cog.run(
+      new Agent({ name: 'odd', model: 'test/model-1', instructions: 'Answer.', tools: [odd] }),
+      { input: 'please look it up' }
+    );
+    expect(result.output).toBe('the answer');
+    const [toolSpan] = byName(result.trace.spans, 'tool.lookup');
+    const recordedResult = JSON.parse(String(toolSpan.attributes[GEN_AI.toolCallResult]));
+    const [, second] = byName(result.trace.spans, 'llm.chat');
+    const sent = JSON.parse(String(second.attributes[GEN_AI.inputMessages])) as Array<{
+      role: string;
+      parts: Array<{ response?: unknown }>;
+    }>;
+    expect(recordedResult).toBe(sent.find((m) => m.role === 'tool')?.parts[0].response);
+    expect(safeJson({ a: { shared: 1 }, b: 2n })).toBe('{"a":{"shared":1},"b":"2"}');
+    const shared = { x: 1 };
+    expect(JSON.parse(safeJson({ one: shared, two: shared, big: 1n }))).toEqual({
+      one: { x: 1 },
+      two: { x: 1 },
+      big: '1',
+    });
+  });
+
+  it('keeps every part of a tool answer with an image in the recorded prompt', async () => {
+    const shot = tool({
+      name: 'lookup',
+      description: 'Takes a screenshot',
+      parameters: z.object({ term: z.string() }),
+      execute: async () =>
+        toolContent(
+          { type: 'text', text: 'the page' },
+          { type: 'image', data: 'iVBORw0KGgo=', mediaType: 'image/png' }
+        ),
+    });
+    const { cog } = runtime({ captureContent: true });
+    const result = await cog.run(
+      new Agent({ name: 'eyes', model: 'test/model-1', instructions: 'Answer.', tools: [shot] }),
+      { input: 'please look it up' }
+    );
+    const [, second] = byName(result.trace.spans, 'llm.chat');
+    const input = JSON.parse(String(second.attributes[GEN_AI.inputMessages])) as Array<{
+      role: string;
+      parts: Array<{ type: string; response?: unknown }>;
+    }>;
+    const response = input.find((message) => message.role === 'tool')?.parts[0].response;
+    expect(JSON.stringify(response)).toContain('the page');
+    const [toolSpan] = byName(result.trace.spans, 'tool.lookup');
+    const recorded = String(toolSpan.attributes[GEN_AI.toolCallResult]);
+    expect(recorded).toContain('the page');
+    expect(recorded).not.toContain('iVBORw0KGgo=');
+  });
+
   it('records a JSON output type for structured answers', async () => {
     const { cog } = runtime();
     const structured = new Agent({
@@ -480,6 +621,71 @@ describe('one trace across runs', () => {
   });
 });
 
+describe('decisions and learning in a shared trace', () => {
+  it('puts a decision made inside a tool under that tool span', async () => {
+    const decisions: DecisionBackend = {
+      provider: 'acme',
+      decide: vi.fn(async (request) => ({
+        model: request.model,
+        answers: { spam: { type: 'noul' as const, noul: 0.1 } },
+        usage: { inputTokens: 5, outputTokens: 0 },
+      })),
+    };
+    const spans: Span[] = [];
+    const cog = new Cogitator({
+      llm: { backends: { test: backend() }, decisionBackends: { acme: decisions } },
+      observers: [{ onSpan: (span) => spans.push(span) }],
+    });
+    runtimes.push(cog);
+    const judge = tool({
+      name: 'lookup',
+      description: 'Asks a decision model',
+      parameters: z.object({ term: z.string() }),
+      execute: async ({ term }) => {
+        const verdict = await cog.decide({
+          model: 'acme/judge-1',
+          state: term,
+          questions: {
+            spam: {
+              type: 'noul',
+              instructions: 'Is it spam?',
+              criteria: { true: 'Advertising', false: 'A real message' },
+            },
+          },
+        });
+        return verdict.answers;
+      },
+    });
+    const result = await cog.run(
+      new Agent({
+        name: 'judging',
+        model: 'test/model-1',
+        instructions: 'Answer.',
+        tools: [judge],
+      }),
+      { input: 'please look it up' }
+    );
+    const [toolSpan] = byName(result.trace.spans, 'tool.lookup');
+    const decide = spans.find((span) => span.name === 'llm.decide');
+    expect(decide?.traceId).toBe(result.trace.traceId);
+    expect(decide?.parentId).toBe(toolSpan.id);
+    expect(decide?.attributes[GEN_AI.providerName]).toBe('acme');
+  });
+
+  it('stores the learning traces of runs that share a trace apart', async () => {
+    const { cog } = runtime();
+    const store = new InMemoryTraceStore();
+    const optimizer = new AgentOptimizer({ llm: backend(), model: 'model-1', traceStore: store });
+    const trace = { traceId: newTraceId(), parentSpanId: newSpanId() };
+    const one = await cog.run(agent, { input: 'hello', trace });
+    const two = await cog.run(agent, { input: 'hello', trace });
+    await optimizer.captureTrace(one, 'hello');
+    await optimizer.captureTrace(two, 'hello');
+    const stored = await store.query({ traceId: trace.traceId });
+    expect(stored.map((t) => t.runId).sort()).toEqual([one.runId, two.runId].sort());
+  });
+});
+
 describe('registerTelemetry', () => {
   it('sees runs of every runtime until it is unregistered, once each', async () => {
     const seen: string[] = [];
@@ -516,9 +722,37 @@ describe('registerTelemetry', () => {
       duration: 1,
       attributes: { [GEN_AI.operationName]: 'invoke_workflow', [GEN_AI.inputMessages]: '[]' },
     };
+    const curious: Span[] = [];
+    unregister.push(registerTelemetry({ captureContent: true, onSpan: (s) => curious.push(s) }));
+    unregister.push(
+      registerTelemetry({
+        onSpan: () => {
+          throw new Error('broken observer');
+        },
+      })
+    );
     cog.recordSpan(span, { runId: 'swarm-1' });
     expect(seen).toHaveLength(1);
     expect(seen[0].attributes[GEN_AI.inputMessages]).toBeUndefined();
+    expect(curious[0].attributes[GEN_AI.inputMessages]).toBe('[]');
+
+    const open = runtime({ captureContent: true }).cog;
+    const all: Span[] = [];
+    unregister.push(registerTelemetry({ onSpan: (s) => all.push(s) }));
+    open.recordSpan(span, { runId: 'swarm-2' });
+    expect(all[0].attributes[GEN_AI.inputMessages]).toBe('[]');
+  });
+
+  it('turns capture on for a registered observer that asks, and gives content only to it', async () => {
+    const curious: Span[] = [];
+    const plain: Span[] = [];
+    unregister.push(registerTelemetry({ captureContent: true, onSpan: (s) => curious.push(s) }));
+    unregister.push(registerTelemetry({ onSpan: (s) => plain.push(s) }));
+    const { cog } = runtime();
+    await cog.run(agent, { input: 'hello' });
+    const has = (spans: Span[]) => spans.some((s) => GEN_AI.inputMessages in s.attributes);
+    expect(has(curious)).toBe(true);
+    expect(has(plain)).toBe(false);
   });
 });
 

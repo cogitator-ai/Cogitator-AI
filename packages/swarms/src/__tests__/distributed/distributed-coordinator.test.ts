@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { z } from 'zod';
-import { Agent, AgentRunPausedError } from '@cogitator-ai/core';
+import {
+  Agent,
+  AgentRunPausedError,
+  newSpanId,
+  newTraceId,
+  withTraceContext,
+} from '@cogitator-ai/core';
 import type { DistributedSwarmConfig } from '@cogitator-ai/types';
 import { DistributedSwarmCoordinator } from '../../distributed/distributed-coordinator';
 import type { SwarmAgentJobPayload } from '../../distributed/distributed-coordinator';
@@ -241,6 +247,22 @@ describe('DistributedSwarmCoordinator jobs', () => {
       model: 'openrouter/openai/gpt-4o',
       provider: 'openrouter',
     });
+  });
+
+  it("sends the swarm's trace with each job and reports results in it", async () => {
+    onJobs(() => ({}));
+    const coord = new DistributedSwarmCoordinator({
+      config: { name: 'remote', strategy: 'round-robin', agents: [createMockAgent('writer')] },
+      distributed: { enabled: true },
+    });
+    const trace = { traceId: newTraceId(), parentSpanId: newSpanId() };
+
+    const result = await withTraceContext(trace, () => coord.runAgent('writer', 'go'));
+    await coord.close();
+
+    const [job] = redisState.jobs as SwarmAgentJobPayload[];
+    expect(job.runOptions?.trace).toEqual(trace);
+    expect(result.trace.traceId).toBe(trace.traceId);
   });
 
   it('keeps the swarm state for an hour by default', async () => {

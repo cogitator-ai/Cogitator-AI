@@ -1,4 +1,9 @@
-import { CogitatorError } from '@cogitator-ai/types';
+import {
+  CogitatorError,
+  toolPartsToText,
+  toolResultParts,
+  truncateToolResultText,
+} from '@cogitator-ai/types';
 import type {
   ChatRequest,
   ChatResponse,
@@ -61,6 +66,45 @@ export const GEN_AI_DOUBLE_ATTRIBUTES: ReadonlySet<string> = new Set([
   'gen_ai.request.presence_penalty',
 ]);
 
+/**
+ * `value` as JSON that never throws: big integers become their digits and a reference back to an
+ * enclosing object becomes `"[Circular]"`, so recording content never fails a run.
+ */
+export function safeJson(value: unknown): string {
+  const bigints = (_key: string, item: unknown) =>
+    typeof item === 'bigint' ? item.toString() : item;
+  try {
+    return JSON.stringify(value, bigints) ?? 'null';
+  } catch {
+    const ancestors: object[] = [];
+    try {
+      return (
+        JSON.stringify(value, function (this: unknown, key: string, item: unknown) {
+          const plain = bigints(key, item);
+          if (typeof plain !== 'object' || plain === null) return plain;
+          while (ancestors.length > 0 && ancestors.at(-1) !== this) ancestors.pop();
+          if (ancestors.includes(plain)) return '[Circular]';
+          ancestors.push(plain);
+          return plain;
+        }) ?? 'null'
+      );
+    } catch {
+      return JSON.stringify(String(value));
+    }
+  }
+}
+
+/**
+ * `gen_ai.tool.call.result` of a tool's result: a result with media as the text the model was
+ * sent for it (images described, not inlined), anything else as JSON, cut to `maxLength` like
+ * the tool message the model got.
+ */
+export function toolResultContent(result: unknown, maxLength: number): string {
+  const parts = toolResultParts(result);
+  const text = parts ? safeJson(toolPartsToText(parts)) : safeJson(result ?? null);
+  return truncateToolResultText(text, maxLength);
+}
+
 /** The attributes that carry model and tool content, recorded only on opt-in. */
 export const GEN_AI_CONTENT_ATTRIBUTES: readonly string[] = [
   GEN_AI.systemInstructions,
@@ -117,7 +161,7 @@ type Part =
   | { type: 'text'; content: string }
   | { type: 'reasoning'; content: string }
   | { type: 'tool_call'; id: string; name: string; arguments: Record<string, unknown> }
-  | { type: 'tool_call_response'; id: string | null; response: string }
+  | { type: 'tool_call_response'; id: string | null; response: string | Part[] }
   | { type: 'uri'; modality: 'image'; uri: string }
   | { type: 'blob'; modality: 'image'; mime_type: string; content: string };
 
@@ -168,7 +212,8 @@ function inputMessage(message: Message): GenAiMessage {
         {
           type: 'tool_call_response',
           id: message.toolCallId ?? null,
-          response: typeof message.content === 'string' ? message.content : '',
+          response:
+            typeof message.content === 'string' ? message.content : contentParts(message.content),
         },
       ],
     };
@@ -205,15 +250,15 @@ export function chatContentAttributes(
   };
   return {
     ...(system.length > 0 && {
-      [GEN_AI.systemInstructions]: JSON.stringify(
+      [GEN_AI.systemInstructions]: safeJson(
         system.flatMap((message) => contentParts(message.content))
       ),
     }),
-    [GEN_AI.inputMessages]: JSON.stringify(input.map(inputMessage)),
-    [GEN_AI.outputMessages]: JSON.stringify([output]),
+    [GEN_AI.inputMessages]: safeJson(input.map(inputMessage)),
+    [GEN_AI.outputMessages]: safeJson([output]),
     ...(request.tools &&
       request.tools.length > 0 && {
-        [GEN_AI.toolDefinitions]: JSON.stringify(request.tools.map(toolDefinition)),
+        [GEN_AI.toolDefinitions]: safeJson(request.tools.map(toolDefinition)),
       }),
   };
 }

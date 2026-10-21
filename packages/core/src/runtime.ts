@@ -102,7 +102,9 @@ import {
   GEN_AI,
   genAiProviderName,
   invokeAgentAttributes,
+  safeJson,
   TOOL_ERROR_TYPE,
+  toolResultContent,
   withoutContent,
 } from './observability/genai';
 import {
@@ -639,7 +641,8 @@ export class Cogitator implements ToolInvoker {
     let prompt: RunPrompt | undefined;
     let runId = checkpoint?.runId ?? `run_${nanoid(12)}`;
     const threadId = options.threadId ?? `thread_${nanoid(12)}`;
-    const parentTrace = normalizeTraceParent(options.trace ?? currentTraceContext());
+    const explicitTrace = normalizeTraceParent(options.trace);
+    const parentTrace = explicitTrace ?? currentTraceContext();
     let traceId = parentTrace?.traceId ?? newTraceId();
     let parentSpanId = parentTrace?.parentSpanId;
     const conversationId = options.threadId;
@@ -717,7 +720,7 @@ export class Cogitator implements ToolInvoker {
         }
         runId = checkpoint.runId;
         options = { ...options, userId: checkpoint.userId };
-        if (!parentTrace && checkpoint.trace) {
+        if (!explicitTrace && checkpoint.trace) {
           traceId = checkpoint.trace.traceId;
           parentSpanId = checkpoint.trace.rootSpanId;
         }
@@ -1113,9 +1116,14 @@ export class Cogitator implements ToolInvoker {
               ...(conversationId && { [GEN_AI.conversationId]: conversationId }),
               ...(result.error && { [GEN_AI.errorType]: TOOL_ERROR_TYPE }),
               ...(captureContent && {
-                [GEN_AI.toolCallArguments]: JSON.stringify(toolCall.arguments),
+                [GEN_AI.toolCallArguments]: safeJson(toolCall.arguments),
                 ...(!result.error && {
-                  [GEN_AI.toolCallResult]: JSON.stringify(result.result ?? null),
+                  [GEN_AI.toolCallResult]: toolResultContent(
+                    result.result,
+                    registry.get(toolCall.name)?.maxResultLength ??
+                      this.config.limits?.maxToolResultLength ??
+                      DEFAULT_TOOL_RESULT_MAX_LENGTH
+                  ),
                 }),
               }),
             },
@@ -1259,7 +1267,7 @@ export class Cogitator implements ToolInvoker {
               {
                 'llm.model': sentRequest.model,
                 'llm.iteration': iterations,
-                error: error instanceof Error ? error.message : String(error),
+                'llm.failure': error instanceof Error ? failureReason(error) : '_OTHER',
                 [GEN_AI.operationName]: 'chat',
                 [GEN_AI.providerName]: genAiProviderName(candidate.backend.provider),
                 ...chatRequestAttributes(sentRequest),

@@ -12,6 +12,8 @@ import { Cogitator } from '../cogitator';
 import { Agent } from '../agent';
 import { tool } from '../tool';
 import { InMemoryCheckpointStore, TimeTravel } from '../time-travel/index';
+import { InMemoryTraceStore } from '../learning/trace-store';
+import { buildExecutionTrace } from '../learning/trace-builder';
 import { newSpanId, newTraceId } from '../observability/trace-context';
 
 vi.mock('../llm/index', async (importOriginal) => {
@@ -151,6 +153,24 @@ describe('TimeTravel on real runs', () => {
     expect(diff.trace2Id).toBe(replay.runId);
     expect(diff.trace2OnlySteps).toBe(0);
     expect(diff.commonSteps).toBeGreaterThan(0);
+  });
+
+  it('compares a replay with an original an older version stored under its trace id', async () => {
+    const traceStore = new InMemoryTraceStore();
+    const tt = new TimeTravel(cog, { traceStore });
+    const run = await cog.run(agent(), { input: 'Research AI' });
+    const checkpoint = await tt.checkpoint(run, 1);
+    await traceStore.delete(run.runId);
+    const legacy = buildExecutionTrace(run, 'Research AI', { id: run.trace.traceId });
+    delete legacy.traceId;
+    await traceStore.store(legacy);
+    expect(await traceStore.get(run.runId)).toBeNull();
+
+    const replay = await tt.replayDeterministic(agent(), checkpoint.id);
+    const diff = await tt.compareWithOriginal(replay);
+    expect(diff.trace1Id).toBe(run.trace.traceId);
+    expect(diff.commonSteps).toBeGreaterThan(0);
+    expect(diff.trace2OnlySteps).toBe(0);
   });
 
   it('keeps runs that share a trace apart and still takes a trace id that names one run', async () => {

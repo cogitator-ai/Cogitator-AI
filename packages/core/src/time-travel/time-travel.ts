@@ -10,6 +10,7 @@ import type {
   RunResult,
   TimeTravelConfig,
   ExecutionStep,
+  ExecutionTrace,
 } from '@cogitator-ai/types';
 import { DEFAULT_TIME_TRAVEL_CONFIG } from '@cogitator-ai/types';
 import type { Agent } from '../agent';
@@ -237,7 +238,22 @@ export class TimeTravel {
   }
 
   async compareWithOriginal(replayResult: ReplayResult): Promise<TraceDiff> {
-    return this.comparator.compare(replayResult.originalRunId, replayResult.runId);
+    const original = await this.originalTrace(replayResult);
+    return this.comparator.compare(
+      original?.id ?? replayResult.originalRunId,
+      await this.resolveRun(replayResult.runId)
+    );
+  }
+
+  /**
+   * The recorded trace of the run a replay started from: stored under its run id, or under its
+   * trace id by versions that keyed traces that way.
+   */
+  private async originalTrace(replay: ReplayResult): Promise<ExecutionTrace | null> {
+    return (
+      (await this.traceStore.getByRunId(replay.originalRunId)) ??
+      (await this.traceStore.get(replay.originalTraceId))
+    );
   }
 
   /**
@@ -247,7 +263,9 @@ export class TimeTravel {
    */
   private async resolveRun(id: string): Promise<string> {
     if (await this.traceStore.get(id)) return id;
-    const runs = await this.traceStore.query({ traceId: id });
+    const byRun = await this.traceStore.getByRunId(id);
+    if (byRun) return byRun.id;
+    const runs = (await this.traceStore.query({ traceId: id })).filter((run) => run.traceId === id);
     if (runs.length > 1) {
       throw new Error(
         `Trace ${id} holds ${runs.length} recorded runs (${runs.map((run) => run.runId).join(', ')}): pass a run id`
@@ -287,7 +305,7 @@ export class TimeTravel {
    * original's up to the replayed step, ending in the replayed output.
    */
   private async recordDeterministicTrace(result: ReplayResult): Promise<void> {
-    const original = await this.traceStore.get(result.originalRunId);
+    const original = await this.originalTrace(result);
     if (!original) {
       await this.recordTrace(result, true);
       return;

@@ -74,6 +74,41 @@ describe('one trace for a swarm run', () => {
     }
   });
 
+  it('reports a failed swarm run with its error type', async () => {
+    const spans: Span[] = [];
+    const failing: LLMBackend = {
+      provider: 'openai',
+      chat: vi.fn(async () => {
+        throw new TypeError('offline');
+      }),
+      chatStream: vi.fn(async function* (): AsyncGenerator<ChatStreamChunk> {
+        yield* [];
+        throw new TypeError('offline');
+      }),
+    };
+    const cog = new Cogitator({
+      llm: { backends: { test: failing }, retry: false },
+      observers: [{ onSpan: (span) => spans.push(span) }],
+    });
+    runtimes.push(cog);
+    const swarm = new Swarm(cog, {
+      name: 'broken',
+      strategy: 'pipeline',
+      pipeline: {
+        stages: [
+          {
+            name: 'only',
+            agent: new Agent({ name: 'solo', model: 'test/m', instructions: 'Go.' }),
+          },
+        ],
+      },
+    });
+    await expect(swarm.run({ input: 'go' })).rejects.toThrow();
+    const root = spans.find((span) => span.name === 'swarm.run');
+    expect(root?.status).toBe('error');
+    expect(root?.attributes[GEN_AI.errorType]).toBe('TypeError');
+  });
+
   it('joins the trace it is started in', async () => {
     const spans: Span[] = [];
     const traceId = newTraceId();

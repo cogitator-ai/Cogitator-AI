@@ -111,6 +111,9 @@ export class PostgresTraceStore implements CombinedPersistentStore {
     await this.pool.query(
       `ALTER TABLE ${this.schema}.traces ADD COLUMN IF NOT EXISTS prompt JSONB`
     );
+    await this.pool.query(
+      `ALTER TABLE ${this.schema}.traces ADD COLUMN IF NOT EXISTS trace_id TEXT`
+    );
 
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.schema}.prompts (
@@ -185,6 +188,10 @@ export class PostgresTraceStore implements CombinedPersistentStore {
       ON ${this.schema}.traces(agent_id, created_at)
     `);
     await this.pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_traces_trace_id
+      ON ${this.schema}.traces(trace_id) WHERE trace_id IS NOT NULL
+    `);
+    await this.pool.query(`
       CREATE INDEX IF NOT EXISTS idx_traces_score
       ON ${this.schema}.traces(agent_id, score)
     `);
@@ -219,8 +226,8 @@ export class PostgresTraceStore implements CombinedPersistentStore {
 
     await this.pool.query(
       `INSERT INTO ${this.schema}.traces
-       (id, run_id, agent_id, thread_id, input, output, context, steps, tool_calls, reflections, metrics, score, model, duration, usage, labels, is_demo, expected, prompt, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
+       (id, run_id, agent_id, thread_id, input, output, context, steps, tool_calls, reflections, metrics, score, model, duration, usage, labels, is_demo, expected, prompt, created_at, trace_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
       [
         trace.id,
         trace.runId,
@@ -242,6 +249,7 @@ export class PostgresTraceStore implements CombinedPersistentStore {
         trace.expected ?? null,
         trace.prompt ?? null,
         trace.createdAt,
+        trace.traceId ?? null,
       ]
     );
   }
@@ -257,8 +265,8 @@ export class PostgresTraceStore implements CombinedPersistentStore {
       for (const trace of traces) {
         await client.query(
           `INSERT INTO ${this.schema}.traces
-           (id, run_id, agent_id, thread_id, input, output, context, steps, tool_calls, reflections, metrics, score, model, duration, usage, labels, is_demo, expected, prompt, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
+           (id, run_id, agent_id, thread_id, input, output, context, steps, tool_calls, reflections, metrics, score, model, duration, usage, labels, is_demo, expected, prompt, created_at, trace_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
           [
             trace.id,
             trace.runId,
@@ -280,6 +288,7 @@ export class PostgresTraceStore implements CombinedPersistentStore {
             trace.expected ?? null,
             trace.prompt ?? null,
             trace.createdAt,
+            trace.traceId ?? null,
           ]
         );
       }
@@ -325,6 +334,10 @@ export class PostgresTraceStore implements CombinedPersistentStore {
     if (query.agentId) {
       sql += ` AND agent_id = $${paramIndex++}`;
       params.push(query.agentId);
+    }
+    if (query.traceId) {
+      sql += ` AND trace_id = $${paramIndex++}`;
+      params.push(query.traceId);
     }
     if (query.minScore !== undefined) {
       sql += ` AND score >= $${paramIndex++}`;
@@ -465,6 +478,7 @@ export class PostgresTraceStore implements CombinedPersistentStore {
       isDemo: row.is_demo as boolean,
       expected: row.expected as unknown,
       ...(row.prompt ? { prompt: row.prompt as RunPrompt } : {}),
+      ...(row.trace_id ? { traceId: row.trace_id as string } : {}),
       createdAt: new Date(row.created_at as string),
     };
   }
