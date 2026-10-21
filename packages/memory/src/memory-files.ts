@@ -236,9 +236,16 @@ function fitting(content: string, path: string): string {
   return content;
 }
 
+/** `path` without the slashes it ends in, read without a pattern that backtracks */
+function withoutTrailingSlashes(path: string): string {
+  let end = path.length;
+  while (end > 0 && path[end - 1] === '/') end--;
+  return path.slice(0, end);
+}
+
 /** Text of a memory file as a context shows it, unable to close or open the context's block */
 function inert(text: string): string {
-  return text.replace(/<\/?\s*memory_context\s*>/gi, (tag) => tag.replace('<', '&lt;'));
+  return text.replace(/<\/?\s*memory_context\s*>/gi, (tag) => tag.replace(/</g, '&lt;'));
 }
 
 /** Refuses a file whose directory, or one above it, is a file */
@@ -381,7 +388,7 @@ export class MemoryFiles {
     if (target !== MEMORY_ROOT && files.length === 0) {
       throw new MemoryFileError(`The path ${path} does not exist. Please provide a valid path.`);
     }
-    const shown = path.replace(/\/+$/, '') || MEMORY_ROOT;
+    const shown = withoutTrailingSlashes(path) || MEMORY_ROOT;
     const entries = new Map<string, number>();
     for (const found of files) {
       const parts = found.path.slice(target.length + 1).split('/');
@@ -530,7 +537,7 @@ export class MemoryFiles {
       if (moved.length === 0) throw new MemoryFileError(`The path ${oldPath} does not exist`);
       if (expectedSha256 !== undefined) this.fileFor(current, from, oldPath, expectedSha256);
       return moved.flatMap((file) => {
-        const path = `${to}${file.path.slice(from.length)}`;
+        const path = memoryPath(`${to}${file.path.slice(from.length)}`);
         return [
           { path, content: file.content, renamedFrom: file.path, from: file.path },
           { path: file.path, content: null },

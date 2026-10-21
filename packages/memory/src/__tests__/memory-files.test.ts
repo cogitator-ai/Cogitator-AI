@@ -259,6 +259,15 @@ describe('MemoryFiles', () => {
     expect((await files.read(threadRun, '/memories/moved.md'))?.content).toBe('Ana only');
   });
 
+  it('refuses to rename a directory where a file inside would get a path too long', async () => {
+    await files.create(access, `/memories/a/${'f'.repeat(255)}`, 'deep');
+
+    await expect(
+      files.rename(access, '/memories/a', `/memories/${'d'.repeat(255)}`)
+    ).rejects.toThrow('Memory paths hold at most 512 characters');
+    expect((await files.list(access)).map((file) => file.content)).toEqual(['deep']);
+  });
+
   it('refuses a change too large to keep at once', async () => {
     const big = 'x'.repeat(1_000_000);
     for (let at = 0; at < 9; at++) await files.create(access, `/memories/dir/${at}.md`, big);
