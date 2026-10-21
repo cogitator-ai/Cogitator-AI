@@ -1589,6 +1589,7 @@ export class Cogitator implements ToolInvoker {
           startedAt: checkpoint?.startedAt ?? startTime,
           trace: { traceId, rootSpanId },
         };
+        await this.runCheckpointStore().save(pausedCheckpoint);
         spans.unshift(
           createSpan(
             'agent.run',
@@ -1638,7 +1639,6 @@ export class Cogitator implements ToolInvoker {
           messages,
           trace: { traceId, spans: publicSpans() },
         };
-        await this.runCheckpointStore().save(pausedCheckpoint);
         options.onRunComplete?.(paused);
         return paused;
       }
@@ -1763,7 +1763,12 @@ export class Cogitator implements ToolInvoker {
           'agent.name': agent.name,
           'agent.model': agent.model ?? this.config.llm?.defaultModel,
           'run.id': runId,
-          error: error instanceof Error ? error.message : String(error),
+          error:
+            error instanceof LLMError
+              ? failureReason(error)
+              : error instanceof Error
+                ? error.message
+                : String(error),
           ...invokeAgentAttributes(
             agent,
             conversationId,

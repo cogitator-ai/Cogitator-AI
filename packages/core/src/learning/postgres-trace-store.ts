@@ -36,6 +36,31 @@ export interface PostgresTraceStoreConfig {
   poolSize?: number;
 }
 
+/** The columns of a stored trace, in the order `storeTrace` passes their values. */
+const TRACE_COLUMNS = [
+  'id',
+  'run_id',
+  'agent_id',
+  'thread_id',
+  'input',
+  'output',
+  'context',
+  'steps',
+  'tool_calls',
+  'reflections',
+  'metrics',
+  'score',
+  'model',
+  'duration',
+  'usage',
+  'labels',
+  'is_demo',
+  'expected',
+  'prompt',
+  'created_at',
+  'trace_id',
+] as const;
+
 export class PostgresTraceStore implements CombinedPersistentStore {
   private pool: Pool | null = null;
   private config: PostgresTraceStoreConfig;
@@ -217,6 +242,20 @@ export class PostgresTraceStore implements CombinedPersistentStore {
     `);
   }
 
+  /**
+   * Stores a trace, replacing the one stored under its id: a paused run and the run that resumes
+   * it share their run id, and the trace of what the run did last wins.
+   */
+  private traceUpsert(): string {
+    const placeholders = TRACE_COLUMNS.map((_, index) => `$${index + 1}`).join(', ');
+    const updates = TRACE_COLUMNS.filter((column) => column !== 'id')
+      .map((column) => `${column} = EXCLUDED.${column}`)
+      .join(', ');
+    return `INSERT INTO ${this.schema}.traces (${TRACE_COLUMNS.join(', ')})
+       VALUES (${placeholders})
+       ON CONFLICT (id) DO UPDATE SET ${updates}`;
+  }
+
   private generateId(prefix: string): string {
     return `${prefix}_${nanoid(12)}`;
   }
@@ -224,34 +263,29 @@ export class PostgresTraceStore implements CombinedPersistentStore {
   async storeTrace(trace: ExecutionTrace): Promise<void> {
     if (!this.pool) throw new Error('Not connected');
 
-    await this.pool.query(
-      `INSERT INTO ${this.schema}.traces
-       (id, run_id, agent_id, thread_id, input, output, context, steps, tool_calls, reflections, metrics, score, model, duration, usage, labels, is_demo, expected, prompt, created_at, trace_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
-      [
-        trace.id,
-        trace.runId,
-        trace.agentId,
-        trace.threadId,
-        trace.input,
-        trace.output,
-        trace.context ?? null,
-        trace.steps,
-        trace.toolCalls,
-        trace.reflections ?? null,
-        trace.metrics,
-        trace.score,
-        trace.model,
-        trace.duration,
-        trace.usage,
-        trace.labels ?? [],
-        trace.isDemo,
-        trace.expected ?? null,
-        trace.prompt ?? null,
-        trace.createdAt,
-        trace.traceId ?? null,
-      ]
-    );
+    await this.pool.query(this.traceUpsert(), [
+      trace.id,
+      trace.runId,
+      trace.agentId,
+      trace.threadId,
+      trace.input,
+      trace.output,
+      trace.context ?? null,
+      trace.steps,
+      trace.toolCalls,
+      trace.reflections ?? null,
+      trace.metrics,
+      trace.score,
+      trace.model,
+      trace.duration,
+      trace.usage,
+      trace.labels ?? [],
+      trace.isDemo,
+      trace.expected ?? null,
+      trace.prompt ?? null,
+      trace.createdAt,
+      trace.traceId ?? null,
+    ]);
   }
 
   async storeTraceMany(traces: ExecutionTrace[]): Promise<void> {
@@ -263,34 +297,29 @@ export class PostgresTraceStore implements CombinedPersistentStore {
       await client.query('BEGIN');
 
       for (const trace of traces) {
-        await client.query(
-          `INSERT INTO ${this.schema}.traces
-           (id, run_id, agent_id, thread_id, input, output, context, steps, tool_calls, reflections, metrics, score, model, duration, usage, labels, is_demo, expected, prompt, created_at, trace_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
-          [
-            trace.id,
-            trace.runId,
-            trace.agentId,
-            trace.threadId,
-            trace.input,
-            trace.output,
-            trace.context ?? null,
-            trace.steps,
-            trace.toolCalls,
-            trace.reflections ?? null,
-            trace.metrics,
-            trace.score,
-            trace.model,
-            trace.duration,
-            trace.usage,
-            trace.labels ?? [],
-            trace.isDemo,
-            trace.expected ?? null,
-            trace.prompt ?? null,
-            trace.createdAt,
-            trace.traceId ?? null,
-          ]
-        );
+        await client.query(this.traceUpsert(), [
+          trace.id,
+          trace.runId,
+          trace.agentId,
+          trace.threadId,
+          trace.input,
+          trace.output,
+          trace.context ?? null,
+          trace.steps,
+          trace.toolCalls,
+          trace.reflections ?? null,
+          trace.metrics,
+          trace.score,
+          trace.model,
+          trace.duration,
+          trace.usage,
+          trace.labels ?? [],
+          trace.isDemo,
+          trace.expected ?? null,
+          trace.prompt ?? null,
+          trace.createdAt,
+          trace.traceId ?? null,
+        ]);
       }
 
       await client.query('COMMIT');

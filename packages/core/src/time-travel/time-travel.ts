@@ -132,7 +132,7 @@ export class TimeTravel {
     if (options?.mode === 'deterministic') {
       await this.recordDeterministicTrace(result);
     } else {
-      await this.recordTrace(result, true);
+      await this.recordTrace(result);
     }
     return result;
   }
@@ -291,12 +291,13 @@ export class TimeTravel {
   }
 
   /**
-   * Stores a run's trace under its run id, so `compare()` can read it. The trace of an original
-   * run is stored once, a replay's is always new.
+   * Stores a run's trace under its run id, so `compare()` can read it. A paused run and the run
+   * that resumes it share the id: what the run did last replaces what it did before, but a
+   * paused result never replaces a trace already stored.
    */
-  private async recordTrace(result: RunResult, replay = false): Promise<void> {
+  private async recordTrace(result: RunResult): Promise<void> {
     const id = result.runId;
-    if (!replay && (await this.traceStore.get(id))) return;
+    if (result.status === 'paused' && (await this.traceStore.get(id))) return;
     await this.traceStore.store(buildExecutionTrace(result, runInput(result), { id }));
   }
 
@@ -307,7 +308,7 @@ export class TimeTravel {
   private async recordDeterministicTrace(result: ReplayResult): Promise<void> {
     const original = await this.originalTrace(result);
     if (!original) {
-      await this.recordTrace(result, true);
+      await this.recordTrace(result);
       return;
     }
     await this.traceStore.store({
@@ -346,7 +347,7 @@ export class TimeTravel {
   }
 
   private async recordFork(fork: ForkResult): Promise<ForkResult> {
-    await this.recordTrace(fork.result, true);
+    await this.recordTrace(fork.result);
     return fork;
   }
 }

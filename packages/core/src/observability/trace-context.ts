@@ -90,7 +90,8 @@ export function currentTraceContext(): TraceParent | undefined {
 
 /**
  * Runs `work` with `context` as the trace context that runs started inside it join, until `work`
- * (or the promise it returns) ends. A context with an invalid trace id is ignored.
+ * returns, or until the promise it returns settles. A context with an invalid trace id is
+ * ignored.
  */
 export function withTraceContext<T>(context: TraceParent, work: () => T): T {
   const normalized = normalizeTraceParent(context);
@@ -106,18 +107,7 @@ export function withTraceContext<T>(context: TraceParent, work: () => T): T {
     close();
     throw error;
   }
-  if (isThenable(result)) {
-    result.then(close, close);
-  } else {
-    close();
-  }
+  if (result instanceof Promise) return result.finally(close) as T;
+  close();
   return result;
-}
-
-function isThenable(value: unknown): value is PromiseLike<unknown> {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    typeof (value as PromiseLike<unknown>).then === 'function'
-  );
 }

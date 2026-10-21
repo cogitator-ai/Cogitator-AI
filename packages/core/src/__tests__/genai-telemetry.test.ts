@@ -9,10 +9,13 @@ import type {
   RunObserver,
   Span,
 } from '@cogitator-ai/types';
+import { ErrorCode } from '@cogitator-ai/types';
 import { Cogitator } from '../cogitator';
 import { Agent } from '../agent';
 import { tool } from '../tool';
 import { toolContent } from '../tool-content';
+import { LLMError } from '../llm/errors';
+import { TimeTravel } from '../time-travel/index';
 import { AgentOptimizer } from '../learning/agent-optimizer';
 import { InMemoryTraceStore } from '../learning/trace-store';
 import { registerTelemetry } from '../observability/telemetry';
@@ -416,6 +419,93 @@ describe('telemetry edge cases', () => {
     await scheduled;
     expect(during).toBeDefined();
     expect(later).toBeUndefined();
+  });
+
+  it('keeps what a resumed run did in time travel, not the paused snapshot', async () => {
+    const { cog } = runtime();
+    const tt = new TimeTravel(cog);
+    const paused = await cog.run(careful, { input: 'please look it up', threadId: 'thread-tt' });
+    await tt.checkpointAll(paused);
+    const resumed = await cog.resume(careful, paused.checkpoint!, {
+      decisions: { call_1: { approved: true } },
+    });
+    await tt.checkpointAll(resumed);
+    const stored = await tt.getTraceStore().get(resumed.runId);
+    expect(stored?.output).toBe('the answer');
+    await tt.checkpointAll(paused);
+    expect((await tt.getTraceStore().get(resumed.runId))?.output).toBe('the answer');
+  });
+
+  it('leaves a rejected promise to its caller and starts a thenable once', async () => {
+    const context = { traceId: newTraceId(), parentSpanId: newSpanId() };
+    const rejected = withTraceContext(context, async () => {
+      throw new Error('boom');
+    });
+    await expect(rejected).rejects.toThrow('boom');
+
+    let starts = 0;
+    const lazy = {
+      then(resolve: (value: number) => void) {
+        starts++;
+        resolve(1);
+      },
+    };
+    expect(await withTraceContext(context, () => lazy)).toBe(1);
+    expect(starts).toBe(1);
+  });
+
+  it('reports a paused run only once its checkpoint is saved', async () => {
+    const spans: Span[] = [];
+    const cog = new Cogitator({
+      llm: { backends: { test: backend() } },
+      observers: [{ onSpan: (span) => spans.push(span) }],
+      runCheckpoints: {
+        save: async () => {
+          throw new Error('store down');
+        },
+        load: async () => null,
+        delete: async () => {},
+      },
+    });
+    runtimes.push(cog);
+    await expect(cog.run(careful, { input: 'please look it up' })).rejects.toThrow('store down');
+    const roots = byName(spans, 'agent.run');
+    expect(roots).toHaveLength(1);
+    expect(roots[0].status).toBe('error');
+  });
+
+  it('keeps the error text of a failed call off the run span too', async () => {
+    const leaky: LLMBackend = {
+      provider: 'openai',
+      chat: vi.fn(async () => {
+        throw new LLMError('upstream said: my card is 4111', ErrorCode.LLM_INVALID_RESPONSE, {
+          provider: 'openai',
+          model: 'model-1',
+        });
+      }),
+      chatStream: vi.fn(async function* (): AsyncGenerator<ChatStreamChunk> {
+        yield* [];
+        throw new Error('unused');
+      }),
+    };
+    const spans: Span[] = [];
+    const cog = new Cogitator({
+      llm: { backends: { test: leaky }, retry: false },
+      observers: [{ onSpan: (span) => spans.push(span) }],
+    });
+    runtimes.push(cog);
+    await expect(cog.run(agent, { input: 'hello' })).rejects.toThrow();
+    expect(JSON.stringify(spans)).not.toContain('4111');
+  });
+
+  it('never throws while turning a value into JSON', () => {
+    const hostile = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(hostile, 'toJSON', {
+      value: () => {
+        throw new Error('no');
+      },
+    });
+    expect(safeJson(hostile)).toBe('"[Unserializable]"');
   });
 
   it('ignores a parent it cannot name and lowercases one it can', async () => {

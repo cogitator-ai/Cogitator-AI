@@ -335,6 +335,8 @@ describe('PostgresTraceStore', () => {
       const found = await traces.query({ traceId: 'a'.repeat(32) });
 
       expect(String(mockQuery.mock.calls[0][0])).toContain('trace_id');
+      expect(String(mockQuery.mock.calls[0][0])).toContain('ON CONFLICT (id) DO UPDATE');
+      expect(String(mockQuery.mock.calls[0][0])).toContain('output = EXCLUDED.output');
       expect(mockQuery.mock.calls[0][1]).toContain('a'.repeat(32));
       expect(String(mockQuery.mock.calls[1][0])).toContain('trace_id = $1');
       expect(mockQuery.mock.calls[1][1]).toEqual(['a'.repeat(32)]);

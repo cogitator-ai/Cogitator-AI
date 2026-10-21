@@ -89,7 +89,11 @@ export function safeJson(value: unknown): string {
         }) ?? 'null'
       );
     } catch {
-      return JSON.stringify(String(value));
+      try {
+        return JSON.stringify(String(value));
+      } catch {
+        return '"[Unserializable]"';
+      }
     }
   }
 }
