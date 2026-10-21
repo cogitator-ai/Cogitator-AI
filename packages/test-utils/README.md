@@ -439,7 +439,7 @@ Wire specifications and formatting helpers for popular LLM provider protocols:
 
 ### Memory adapters and embedding stores
 
-`memoryAdapterConformanceCases(target)` and `embeddingAdapterConformanceCases(target)` check a `MemoryAdapter` or an `EmbeddingAdapter` against the contract the built-in ones keep: missing versus `null`, atomic `updateThread`, entry order with equal timestamps, limits, cascades, copies, `listThreads` filters and paging, nearest-first search, thresholds, filters and deletes.
+`memoryAdapterConformanceCases(target)`, `memoryItemAdapterConformanceCases(target)` and `embeddingAdapterConformanceCases(target)` check a `MemoryAdapter`, a `MemoryItemAdapter` or an `EmbeddingAdapter` against the contract the built-in ones keep: missing versus `null`, atomic `updateThread`, entry order with equal timestamps, limits, cascades, copies, `listThreads` filters and paging, nearest-first search, thresholds, filters and deletes.
 
 ```typescript
 for (const c of memoryAdapterConformanceCases({
@@ -454,7 +454,7 @@ for (const c of memoryAdapterConformanceCases({
 }
 ```
 
-Each case uses threads or embeddings of its own, so one database can serve them all. The embedding suite also takes `dimensions`.
+Each case uses threads, agents or embeddings of its own, so one database can serve them all. The embedding suite also takes `dimensions`. The memory item suite checks that items and entities read back field for field (dates as `Date`s, a missing field absent, never `null`), replace by id, `findItems` filters and order (oldest recorded first), items let go left out unless `includeExpired` while one let go later is still found, entities found by any normalized name, deletes and copies.
 
 ---
 

@@ -246,15 +246,19 @@ Deletes a file or directory. Use `recursive: true` for non-empty directories.
 ```typescript
 import { fileDelete, fileList, fileRead, fileWrite, restrictFileTools } from '@cogitator-ai/core';
 
-const workspaceTools = restrictFileTools([fileRead, fileList, fileWrite, fileDelete], ['./workspace'], {
-  base: './workspace', // relative paths resolve here, the tool gets an absolute path
-  requireApproval: (tool) => tool.sideEffects?.includes('filesystem') ?? false, // writes need approval
-});
+const workspaceTools = restrictFileTools(
+  [fileRead, fileList, fileWrite, fileDelete],
+  ['./workspace'],
+  {
+    base: './workspace', // relative paths resolve here, the tool gets an absolute path
+    requireApproval: (tool) => tool.sideEffects?.includes('filesystem') ?? false, // writes need approval
+  }
+);
 ```
 
-| Option            | What it does                                                                                     |
-| ----------------- | ------------------------------------------------------------------------------------------------ |
-| `base`            | Directory relative paths are resolved against, the working directory otherwise                   |
+| Option            | What it does                                                                                  |
+| ----------------- | --------------------------------------------------------------------------------------------- |
+| `base`            | Directory relative paths are resolved against, the working directory otherwise                |
 | `requireApproval` | Tools that must be approved before they run, on top of those that require approval themselves |
 
 `isPathAllowed(path, roots)` is the check itself, for your own tools.
@@ -440,14 +444,14 @@ Image and audio tools are created with factories rather than shipped in `builtin
 
 These build tools around state you provide; they are not part of `builtinTools`.
 
-| Factory                                                                  | Tools                                                            | Notes                                                                                                |
-| ------------------------------------------------------------------------ | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `createMemoryTools({ graphAdapter, agentId, coreFacts?, embeddingFn? })` | `remember`, `recall`, `forget`                                   | Long-term memory in a knowledge graph — see [Smart Memory](/docs/channels/smart-memory)              |
-| `createSchedulerTools({ store, defaultChannel?, defaultUserId? })`       | `schedule_task`, `list_tasks`, `cancel_task`                     | Delayed, dated or cron tasks in a workflows `TimerStore` — see [Scheduler](/docs/channels/scheduler) |
-| `createCapabilitiesTool(doc)`                                            | `lookup_capabilities`                                            | Searches a capabilities document line by line                                                        |
-| `createDeviceTools()`                                                    | `clipboard_read`, `clipboard_write`, `system_info`, `screenshot` | Clipboard via `pbpaste`/`pbcopy` (macOS) or `xclip`; `screenshot` is macOS only                      |
-| `createSelfTools({ toolsDir, onToolsChanged? })`                         | `create_tool`, `test_tool`, `list_custom_tools`, `delete_tool`   | Lets the agent write `.mjs` tools into `toolsDir`; `create_tool` requires approval                   |
-| `loadCustomTools(toolsDir)`                                              | the tools in `toolsDir`                                          | Loads the `.mjs` default exports `createSelfTools` wrote                                             |
+| Factory                                                                                   | Tools                                                            | Notes                                                                                                                                                                                                                                                                                                                      |
+| ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `createMemoryTools({ graphAdapter, agentId, coreFacts?, embeddingFn?, items?, memory? })` | `remember`, `recall`, `forget`                                   | Long-term memory in a knowledge graph and, with `items`, as memory items of the user (of the thread for a run without one). With `memory` (the thread store), `remember` keeps a fact as the user's only when its `quote` is in a user message of the thread, see [Smart Memory](/docs/channels/smart-memory#memory-tools) |
+| `createSchedulerTools({ store, defaultChannel?, defaultUserId? })`                        | `schedule_task`, `list_tasks`, `cancel_task`                     | Delayed, dated or cron tasks in a workflows `TimerStore`, see [Scheduler](/docs/channels/scheduler)                                                                                                                                                                                                                        |
+| `createCapabilitiesTool(doc)`                                                             | `lookup_capabilities`                                            | Searches a capabilities document line by line                                                                                                                                                                                                                                                                              |
+| `createDeviceTools()`                                                                     | `clipboard_read`, `clipboard_write`, `system_info`, `screenshot` | Clipboard via `pbpaste`/`pbcopy` (macOS) or `xclip`, `screenshot` is macOS only                                                                                                                                                                                                                                            |
+| `createSelfTools({ toolsDir, onToolsChanged? })`                                          | `create_tool`, `test_tool`, `list_custom_tools`, `delete_tool`   | Lets the agent write `.mjs` tools into `toolsDir`, `create_tool` requires approval                                                                                                                                                                                                                                         |
+| `loadCustomTools(toolsDir)`                                                               | the tools in `toolsDir`                                          | Loads the `.mjs` default exports `createSelfTools` wrote                                                                                                                                                                                                                                                                   |
 
 Tools created with `createSelfTools` run with full Node.js access in your process.
 

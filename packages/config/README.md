@@ -237,9 +237,20 @@ memory:
     arcsPerSaga: 4
     summaryModel: google/gemini-3.5-flash # default: the model the run ended on
     summaryPrompt: Keep every price that was quoted.
+
+  # Memory items extracted from a run's conversation after the run
+  extraction:
+    model: google/gemini-3.5-flash-lite # default: the model the run ended on
+    prompt: Mind diets and allergies.
+    windowTokens: 4000 # conversation one extraction call reads
+    activationConfidence: 0.7 # confidence a quoted user item needs to become active
+    scope: user # user | agent | thread
+    timeZone: Europe/Lisbon # IANA, when the thread names none (default UTC)
 ```
 
 `memory.compaction` is validated by `MemoryCompactionConfigSchema` (`at` above 0 and at most 1). Its hooks `beforeCompact` and `afterCompact` are functions, so they are set in code. See [Compaction After a Run](https://cogitator.app/docs/memory#compaction-after-a-run).
+
+`memory.extraction` is validated by `MemoryExtractionConfigSchema`: `model` not empty, `windowTokens` a whole number above 0, `activationConfidence` from 0 to 1, `scope` one of `user`, `agent` and `thread`, and `timeZone` an IANA time zone. Its `afterExtract` hook is set in code. See [Extraction After a Run](https://cogitator.app/docs/memory#extraction-after-a-run).
 
 The `Cogitator` runtime builds the store `adapter` names from its section: `redis` needs `url`, `host`/`port` or `cluster`, `postgres` needs `connectionString`, `sqlite` needs `path` and `mongodb` needs `uri`. A Postgres store sizes its vector column to `embedding`. `qdrant` is not a thread store: keep one of the others as `adapter`, and with `contextBuilder` (`includeSemanticContext: true`) the runtime searches `memory.qdrant` for semantic context.
 
@@ -596,6 +607,7 @@ import type { CogitatorConfigInput, CogitatorConfigOutput } from '@cogitator-ai/
 | `LLMConfigSchema`                 | LLM providers and defaults             |
 | `MemoryConfigSchema`              | Memory adapters and settings           |
 | `MemoryCompactionConfigSchema`    | `memory.compaction`                    |
+| `MemoryExtractionConfigSchema`    | `memory.extraction`                    |
 | `SandboxConfigSchema`             | Sandbox execution settings             |
 | `ReflectionConfigSchema`          | Self-reflection settings               |
 | `GuardrailConfigSchema`           | Safety guardrails                      |

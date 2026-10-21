@@ -18,7 +18,7 @@ unwrap(await memory.connect());
 
 Database drivers are optional peer dependencies, installed by you and not with `@cogitator-ai/memory` or `@cogitator-ai/core`: each section below names the one its adapter needs, and an adapter whose driver is missing fails `connect()` with the install command.
 
-All conversation adapters share the same `MemoryAdapter` interface: `createThread`, `getThread`, `updateThread`, `deleteThread`, `listThreads`, `addEntry`, `getEntries`, `getEntry`, `deleteEntry`, `clearThread`, `connect` and `disconnect`, and the branch methods `getPath`, `rewind`, `checkout` and `forkThread` (optional on the interface, every built-in adapter has them, see [Threads as Trees](/docs/memory#threads-as-trees)). Some adapters add `FactAdapter`, `EmbeddingAdapter` or `KeywordSearchAdapter`.
+All conversation adapters share the same `MemoryAdapter` interface: `createThread`, `getThread`, `updateThread`, `deleteThread`, `listThreads`, `addEntry`, `getEntries`, `getEntry`, `deleteEntry`, `clearThread`, `connect` and `disconnect`, and the branch methods `getPath`, `rewind`, `checkout` and `forkThread` (optional on the interface, every built-in adapter has them, see [Threads as Trees](/docs/memory#threads-as-trees)). Every built-in conversation adapter also stores [memory items](/docs/memory#memory-items) and their entities (`MemoryItemAdapter`), and some add `FactAdapter`, `EmbeddingAdapter` or `KeywordSearchAdapter`.
 
 Every method, `connect()` included, returns a `MemoryResult` instead of throwing, so a failed connection goes unnoticed unless you check it. Wrap calls in `unwrap()` (throws on failure) or check `result.success`; see [Results and `unwrap()`](/docs/memory#results-and-unwrap).
 
@@ -42,6 +42,16 @@ Every built-in adapter behaves the same way, checked by one conformance suite ag
 - `onChange(listener)` reports every change once it is stored: `entry-added`, `entry-deleted` (also for entries InMemory drops at `maxEntries`), `thread-cleared` and `thread-deleted` (also for threads Redis expired, once a later write sweeps them). It returns a function that stops the listener. A listener that throws is logged and does not fail the write. The message index uses it, see [Context Builder](/docs/memory#context-builder). An adapter of your own reports changes by extending `ChangeReportingMemoryAdapter` and passing each write's result through `reported()`, one that extends `BaseMemoryAdapter` has no `onChange`.
 
 The suite ships in `@cogitator-ai/test-utils` as `memoryAdapterConformanceCases`, so an adapter of your own can be checked the same way (see [Test Utils](/docs/testing/test-utils#conformance-suites)).
+
+### Memory Items
+
+A store of memory items only stores, `MemoryItems` keeps every rule on top of it. Every built-in adapter keeps items the same way, checked by a second suite, `memoryItemAdapterConformanceCases`:
+
+- `putItem` and `putEntity` replace the item or entity with the same id, and an item reads back field for field, its dates as `Date`s, a field it does not have absent, never `null`.
+- `getItem` gives `null` for an item that does not exist.
+- `findItems` keeps the items of the filter's agent that meet every condition given (`ids`, `slots`, `entityIds`, `kinds`, `statuses`), oldest recorded first, then by id. It leaves out an item memory let go (`expiredAt` not after now) unless `includeExpired`, and finds one whose `expiredAt` is still to come.
+- `findEntities` finds entities by id or by any of their names and aliases, normalized.
+- `deleteItems` and `deleteEntities` delete for good, and returned items and entities are copies.
 
 ## Listing Threads
 
@@ -97,7 +107,7 @@ console.log(memory.stats); // { threads: 1, entries: 1 }
 
 `maxEntries` counts each thread on its own: a thread at the limit drops one entry for each new one, the oldest entry of a branch that is not active first, then the oldest of the active branch, whose next entry becomes the first. A long conversation keeps its newest turns, and replays and forks go before the conversation they split from. Before, the limit counted every thread together, so a busy thread could evict the entries of a quiet one.
 
-It stores copies of what you give it. A value it cannot clone, such as metadata holding a function, is stored as JSON the way the database adapters store it: the function is left out, and a `Date`, `Map` or `Set` in that same value comes back as a string or `{}`.
+It keeps memory items in process too, lost with the rest. It stores copies of what you give it. A value it cannot clone, such as metadata holding a function, is stored as JSON the way the database adapters store it: the function is left out, and a `Date`, `Map` or `Set` in that same value comes back as a string or `{}`.
 
 **When to use:** Unit tests, prototyping, ephemeral agents that don't need persistence.
 
@@ -145,6 +155,8 @@ const memory = new RedisAdapter({
 
 Without a `ttl`, or with `ttl: 0`, nothing expires. Earlier versions expired keys after 24 hours by default: pass `ttl: 86400` to keep that. With a `ttl`, each write refreshes the TTL of the thread and its entry index, so active conversations do not expire mid-way, and expired entries are pruned from the index on read. In cluster mode a custom `keyPrefix` without a hash tag is wrapped automatically (`'myapp:'` → `'{myapp}:'`) so all keys of the adapter map to one slot.
 
+Memory items and their entities are long-term memory and never take the `ttl`: they stay until they are purged. Each is a hash with its indexes (by agent and record time, slot, entity and name), kept in step when it is replaced or deleted.
+
 `getEntries({ limit })` reads only the newest `limit` entries of the thread instead of the whole thread. When `connect()` fails, the client is closed again, so an unreachable Redis does not leave a client reconnecting in the background and keeping the process alive, and the error names the connection problem (`connect ECONNREFUSED ...`).
 
 **Requires:** `pnpm add ioredis`
@@ -153,7 +165,7 @@ Without a `ttl`, or with `ttl: 0`, nothing expires. Earlier versions expired key
 
 ## Postgres
 
-Full-featured adapter with threads, entries, facts, vector embeddings (pgvector), and full-text keyword search.
+Full-featured adapter with threads, entries, memory items, facts, vector embeddings (pgvector), and full-text keyword search.
 
 ```typescript
 import { PostgresAdapter, unwrap } from '@cogitator-ai/memory';
@@ -168,7 +180,7 @@ memory.setVectorDimensions(1536); // before connect(); default 768
 unwrap(await memory.connect());
 ```
 
-On `connect()` the adapter creates the schema, the `threads`, `entries`, `facts` and `embeddings` tables, the pgvector extension, an HNSW cosine index on the vectors and a generated English `tsvector` column for keyword search. If an index cannot be created, it logs a warning and carries on.
+On `connect()` the adapter creates the schema, the `threads`, `entries`, `memory_items`, `memory_entities` and `embeddings` tables, the pgvector extension, an HNSW cosine index on the vectors and a generated English `tsvector` column for keyword search. If an index cannot be created, it logs a warning and carries on.
 
 pgvector is only needed for embeddings. On a database without it (a managed Postgres without the extension, or a role not allowed to run `CREATE EXTENSION`), `connect()` still succeeds and threads, entries and facts work: the `embeddings` table is not created, a warning names the reason, and `addEmbedding`, `search`, `keywordSearch`, `deleteEmbedding` and `deleteBySource` return a failed result with it. `memory.vectorStatus()` returns `{ available: true, dimensions }` or `{ available: false, reason }`, and the `Cogitator` runtime does not use such a store for semantic context.
 
@@ -176,7 +188,9 @@ HNSW needs no training data, so the index built on the empty table finds every r
 
 Vectors of more than 2000 dimensions (such as the 3072 of `gemini-embedding-001` or `text-embedding-3-large`) are too large for a pgvector index on the column. Up to 4000 dimensions the adapter indexes the column cast to `halfvec` instead (pgvector 0.7 or later), and searches compare the same cast, so the index serves them while the stored vectors keep full precision. Larger vectors have no index and a warning says that searches scan every row.
 
-`connect()` records the layout of threads, entries and facts in `<schema>.cogitator_schema_migrations` and changes the schema only when it is older than the adapter's or its tables are gone. Setup runs in one transaction under a lock on the schema, so processes connecting at once take turns instead of racing on the same `CREATE`, also behind a pooler in transaction mode such as PgBouncer. A schema from before versions were recorded is brought up to date in place.
+`connect()` records the layout of threads, entries and memory items in `<schema>.cogitator_schema_migrations` and changes the schema only when it is older than the adapter's or its tables are gone. Setup runs in one transaction under a lock on the schema, so processes connecting at once take turns instead of racing on the same `CREATE`, also behind a pooler in transaction mode such as PgBouncer. A schema from before versions were recorded is brought up to date in place.
+
+Version 3 of the layout moves facts into memory items. The first `connect()` after upgrading turns every row of `facts` into an `active` memory item of kind `fact` with the fact's id, alone in its slot `fact:<id>`: trusted as its `source` (`inferred` becomes `model`), in the scope of its agent and of the user its `metadata.userId` names, verified when it has evidence, valid and recorded from when the fact was created, and let go when it expires. The `facts` table is then renamed `facts_legacy` and kept, so nothing is lost. Upgrade every process that shares the database at once: an older process makes a new, empty `facts` table and writes its facts there, where only the next `connect()` of an upgraded process finds them and moves them into items.
 
 `search()` sizes each query for the index: it raises `hnsw.ef_search` to the requested `limit` (up to 1000) and, on pgvector 0.8 or later, turns on iterative scans, so a large limit or a filter on agent, thread or user still gets every matching row. Equally similar rows are ordered by id, so the result does not depend on the query plan.
 
@@ -210,7 +224,9 @@ await memory.updateFact(fact.id, { confidence: 0.8, expiresAt: new Date('2027-01
 await memory.deleteFact(fact.id);
 ```
 
-`getFacts` and `searchFacts` (case-insensitive substring match) skip expired facts and sort by confidence.
+`getFacts` and `searchFacts` (case-insensitive substring match) skip expired facts and sort by confidence, then the most recently updated.
+
+Each fact is kept as a memory item of its own slot `fact:<id>`, `active` whatever its source, so the facts reach a context built from memory items too. `updateFact` with new `content` writes a new item that supersedes the current one, so the fact's history keeps what it said before, while a change that keeps the statement (its confidence, category, metadata, evidence or expiry) corrects the current item. `deleteFact` deletes the fact with its history. A fact without evidence comes back without the `evidence` field.
 
 ### Vector Search (EmbeddingAdapter)
 
@@ -279,7 +295,7 @@ const memory = new SQLiteAdapter({ provider: 'sqlite', path: ':memory:' });
 | `path`    | string  | —       | Path to `.db` file, or `:memory:`                 |
 | `walMode` | boolean | true    | Enable WAL journal mode (disabled for `:memory:`) |
 
-`connect()` returns a failure (rather than throwing) when `better-sqlite3` is not installed. For a knowledge graph in the same kind of file, see [`SQLiteGraphAdapter`](/docs/memory/knowledge-graphs#graph-adapters).
+Memory items live in the same file, in the `memory_items`, `memory_entities` and `memory_entity_names` tables. `connect()` returns a failure (rather than throwing) when `better-sqlite3` is not installed. For a knowledge graph in the same kind of file, see [`SQLiteGraphAdapter`](/docs/memory/knowledge-graphs#graph-adapters).
 
 **Requires:** `pnpm add better-sqlite3`
 
@@ -287,7 +303,7 @@ const memory = new SQLiteAdapter({ provider: 'sqlite', path: ':memory:' });
 
 ## MongoDB
 
-Document-oriented memory storage. Threads and entries are stored in the `<prefix>threads` and `<prefix>entries` collections, indexed on `agentId` and `(threadId, createdAt)`.
+Document-oriented memory storage. Threads and entries are stored in the `<prefix>threads` and `<prefix>entries` collections, indexed on `agentId` and `(threadId, createdAt)`, and memory items and their entities in `<prefix>items` and `<prefix>entities`, indexed on the fields they are found by.
 
 ```typescript
 import { MongoDBAdapter, unwrap } from '@cogitator-ai/memory';
@@ -401,6 +417,7 @@ It needs no `connect()`. Vector search uses a default `threshold` of 0.7, and bo
 | Feature            | InMemory | Redis    | Postgres | SQLite         | MongoDB | Qdrant                 |
 | ------------------ | -------- | -------- | -------- | -------------- | ------- | ---------------------- |
 | Threads/Entries    | Yes      | Yes      | Yes      | Yes            | Yes     | No                     |
+| Memory Items       | Yes      | Yes      | Yes      | Yes            | Yes     | No                     |
 | Facts              | No       | No       | Yes      | No             | No      | No                     |
 | Vector Search      | No¹      | No       | pgvector | No             | No      | Yes                    |
 | Keyword Search     | No¹      | No       | tsvector | No             | No      | No                     |

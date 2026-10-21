@@ -60,7 +60,7 @@ Every hook is optional. Each one gets the run's context as its last argument.
 | `wrapModelCall` | Around each call, once per model a turn tries | Change the request or the stream sink, call `next` again, or answer without it |
 | `afterModel`    | After each answer, before the run uses it     | Return `{ content }` or `{ toolCalls }` to replace them                        |
 | `wrapToolCall`  | Around each tool call that passed approval    | Change the arguments, or answer for the tool                                   |
-| `afterRun`      | After a run finished and its writes settled   | Keep memory in shape for the next run, such as compaction                      |
+| `afterRun`      | After a run finished and its writes settled   | Keep memory in shape for the next run, such as extraction or compaction        |
 
 ### beforeRun
 
@@ -134,7 +134,7 @@ const normalizeIds: RunMiddleware = {
 
 ### afterRun
 
-`afterRun({ result, model }, context)` runs once a run finished: after it saved what it said to memory, and before `run()` returns the `result`. `model` is the model the run ended on, as `provider/model`, after any fallback. It is the place for work that keeps memory in shape for the next run, which the caller waits for: the built-in compaction of [`memory.compaction`](/docs/memory#compaction-after-a-run) works this way. It is not called for a run that failed or paused. The run is done by then, so an error a hook throws is logged as a warning and the next `afterRun` hook still runs, the caller keeps the result. Skip slow work when `context.signal` is aborted, the caller has stopped waiting.
+`afterRun({ result, model }, context)` runs once a run finished: after it saved what it said to memory, and before `run()` returns the `result`. `model` is the model the run ended on, as `provider/model`, after any fallback. It is the place for work that keeps memory in shape for the next run, which the caller waits for: the built-in extraction of [`memory.extraction`](/docs/memory#extraction-after-a-run) and compaction of [`memory.compaction`](/docs/memory#compaction-after-a-run) work this way. It is not called for a run that failed or paused. The run is done by then, so an error a hook throws is logged as a warning and the next `afterRun` hook still runs, the caller keeps the result. Skip slow work when `context.signal` is aborted, the caller has stopped waiting.
 
 ```typescript
 const archive: RunMiddleware = {
@@ -186,9 +186,10 @@ The runtime's own features are middleware too, added from the config closest to 
 | `cogitator:guardrails`         | `guardrails`               | `beforeRun`, `afterModel` (holds the stream), `wrapToolCall`      |
 | `cogitator:clear-tool-outputs` | `context.clearToolOutputs` | `beforeModel` clears, `wrapToolCall` answers `recall_tool_output` |
 | `cogitator:compaction`         | `context`                  | `beforeModel`                                                     |
+| `cogitator:memory-extraction`  | `memory.extraction`        | `afterRun`                                                        |
 | `cogitator:memory-compaction`  | `memory.compaction`        | `afterRun`                                                        |
 
-Because PII masking is the innermost layer, it also masks whatever your middleware adds to a request, while your middleware sees the real values. The guardrails check the model's answer and a tool's result before your hooks see them: what your `afterModel` or `wrapToolCall` hooks change afterwards is not checked again. `piiMiddleware(config)`, `promptInjectionMiddleware(detector)`, `guardrailsMiddleware(constitutionalAI)`, `clearToolOutputsMiddleware(options)` and `compactionMiddleware(contextManager)` build them, to give a feature to one agent only. `memoryCompactionMiddleware(config, deps)` builds the compaction after a run, given the memory, a summarizer per model and run, and the context window of a model. The example below gives one agent PII masking:
+Because PII masking is the innermost layer, it also masks whatever your middleware adds to a request, while your middleware sees the real values. The guardrails check the model's answer and a tool's result before your hooks see them: what your `afterModel` or `wrapToolCall` hooks change afterwards is not checked again. `piiMiddleware(config)`, `promptInjectionMiddleware(detector)`, `guardrailsMiddleware(constitutionalAI)`, `clearToolOutputsMiddleware(options)` and `compactionMiddleware(contextManager)` build them, to give a feature to one agent only. `memoryCompactionMiddleware(config, deps)` builds the compaction after a run, given the memory, a summarizer per model and run, and the context window of a model, and `memoryExtractionMiddleware(config, deps)` the extraction of memory items after a run, given the memory and a summarizer per model and run. The extraction's `afterRun` runs before the compaction's, so the items of a thread are taken before it is compacted. The example below gives one agent PII masking:
 
 ```typescript
 import { piiMiddleware } from '@cogitator-ai/core';

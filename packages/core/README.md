@@ -740,11 +740,11 @@ const agent = new Agent({
 
 Also not in `builtinTools`, these build tools around your own stores. `createMemoryTools` and `createSchedulerTools` return typed tuples (see `toolset()`), so destructured tools keep their parameter types:
 
-| Factory                                                                                                        | Tools                                                                             |
-| -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `createMemoryTools({ graphAdapter, agentId, coreFacts?, embeddingFn? })`                                       | `remember`, `recall`, `forget` on a knowledge graph                               |
-| `createSchedulerTools({ store, defaultChannel?, defaultUserId? })`                                             | `schedule_task`, `list_tasks`, `cancel_task` on a `TimerStore`                    |
-| `createDeviceTools()`, `createCapabilitiesTool(doc)`, `createSelfTools({ toolsDir })` / `loadCustomTools(dir)` | Device info, a capabilities description, and tools an agent writes to a directory |
+| Factory                                                                                                        | Tools                                                                                                                                                                           |
+| -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `createMemoryTools({ graphAdapter, agentId, coreFacts?, embeddingFn?, items?, memory? })`                      | `remember`, `recall`, `forget` on a knowledge graph and memory items (`items`). With `memory`, `remember` keeps a fact as the user's only when its `quote` is in a user message |
+| `createSchedulerTools({ store, defaultChannel?, defaultUserId? })`                                             | `schedule_task`, `list_tasks`, `cancel_task` on a `TimerStore`                                                                                                                  |
+| `createDeviceTools()`, `createCapabilitiesTool(doc)`, `createSelfTools({ toolsDir })` / `loadCustomTools(dir)` | Device info, a capabilities description, and tools an agent writes to a directory                                                                                               |
 
 ### Web Search Tool
 
@@ -1023,16 +1023,16 @@ const agent = new Agent({ name: 'support', instructions: '...', middleware: [ref
 await cog.run(agent, { input, middleware: [auditFor(userId)] });
 ```
 
-| Hook            | When                                          | What it can do                                                                  |
-| --------------- | --------------------------------------------- | ------------------------------------------------------------------------------- |
-| `beforeRun`     | A new run's input, before it is saved or sent | Check it. Not called on `resume()`                                              |
-| `beforeModel`   | Before each model turn                        | Return `{ messages }` to change the conversation from then on                   |
-| `wrapModelCall` | Around each call, once per model a turn tries | Change the request or the stream sink, call `next` again, or answer without it  |
-| `afterModel`    | After each answer, before the run uses it     | Return `{ content }` or `{ toolCalls }` to replace them                         |
-| `wrapToolCall`  | Around each tool call that passed approval    | Change the arguments (checked against the schema again), or answer for the tool |
-| `afterRun`      | After a run finished and its writes settled   | Work for the next run, such as compaction. Not called for failed or paused runs |
+| Hook            | When                                          | What it can do                                                                                |
+| --------------- | --------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `beforeRun`     | A new run's input, before it is saved or sent | Check it. Not called on `resume()`                                                            |
+| `beforeModel`   | Before each model turn                        | Return `{ messages }` to change the conversation from then on                                 |
+| `wrapModelCall` | Around each call, once per model a turn tries | Change the request or the stream sink, call `next` again, or answer without it                |
+| `afterModel`    | After each answer, before the run uses it     | Return `{ content }` or `{ toolCalls }` to replace them                                       |
+| `wrapToolCall`  | Around each tool call that passed approval    | Change the arguments (checked against the schema again), or answer for the tool               |
+| `afterRun`      | After a run finished and its writes settled   | Work for the next run, such as extraction or compaction. Not called for failed or paused runs |
 
-Every hook gets the run's context: `runId`, `threadId`, the agent, `userId`, the channel, `iteration`, `signal`, `deps` and a `state` map the run's middleware share. The Cogitator's middleware runs first, then the agent's, then the run's, then the built-in ones: PII masking (`security.pii`), prompt injection (`security.promptInjection`), guardrails (`guardrails`), tool output clearing (`context.clearToolOutputs`), compaction (`context`) and compaction of the thread after the run (`memory.compaction`), closest to the model. `before*` and `afterRun` hooks run in that order, `wrap*` hooks nest with the first outermost, `afterModel` runs in reverse. After a handoff the agent the run went on as brings its own middleware. To see each turn as the run keeps it, after every layer, pass `onModelTurn` in the run options: it gets `{ content, toolCalls, model }` before the turn's tools run.
+Every hook gets the run's context: `runId`, `threadId`, the agent, `userId`, the channel, `iteration`, `signal`, `deps` and a `state` map the run's middleware share. The Cogitator's middleware runs first, then the agent's, then the run's, then the built-in ones: PII masking (`security.pii`), prompt injection (`security.promptInjection`), guardrails (`guardrails`), tool output clearing (`context.clearToolOutputs`), compaction (`context`), extraction of memory items after the run (`memory.extraction`) and compaction of the thread after the run (`memory.compaction`), closest to the model. `before*` and `afterRun` hooks run in that order, `wrap*` hooks nest with the first outermost, `afterModel` runs in reverse. After a handoff the agent the run went on as brings its own middleware. To see each turn as the run keeps it, after every layer, pass `onModelTurn` in the run options: it gets `{ content, toolCalls, model }` before the turn's tools run.
 
 `tripwire(reason, info?)` stops the run as a guard that tripped: it fails with `GUARDRAIL_TRIPPED` (HTTP 400), the middleware, the reason and `info` in `details`, and `isTripwire(error)` tells it apart. Any other error a hook throws fails the run as it is, and a hook still running when the run is cancelled or times out is no longer waited for. Arguments a `wrapToolCall` hook changes are checked against the tool's schema and `requiresApproval` again, and an approval never carries over to them. Every call a `wrapModelCall` hook sends counts toward usage and budgets, an answer it gives without the model counts nothing and still reaches `onToken` in a streamed run. A middleware with `holdsStream: true` makes a streamed run hold each turn's text until the turn is done, so text a hook retries, blocks or replaces never reaches `onToken`. A tripwire raised inside a tool, such as a nested `agentAsTool()` run, stops the outer run too. The Cogitator's `wrapToolCall` hooks also wrap `invokeTool()`, which throws an error they throw (a tripwire among them) while a failing tool still comes back in `error`. `toAgentWire()` does not carry middleware and warns when an agent has some. `piiMiddleware`, `promptInjectionMiddleware`, `guardrailsMiddleware`, `clearToolOutputsMiddleware`, `compactionMiddleware` and `memoryCompactionMiddleware` build the built-in ones, to give a feature to one agent only. `afterRun({ result, model }, context)` runs after the run saved what it said and before `run()` returns, and an error it throws fails the run.
 
@@ -1100,6 +1100,25 @@ const cog = new Cogitator({
 ```
 
 The thread is compacted hierarchically (see [Hierarchical Compaction](https://cogitator.app/docs/memory#hierarchical-compaction)): the newest turns stay verbatim and the rest becomes a handoff of grounded atoms, written by `summaryModel` or the model the run ended on, which the next run reads in their place. `run()` returns once it is done. A thread that outgrows its window again within two turns of its last compaction is not compacted again, with a warning to use `context.clearToolOutputs` instead, a run on another branch than the active one is left alone, and a compaction that fails is logged while the run keeps its result. `anthropicCompactionSummarizer({ model, client?, apiKey?, maxTokens? })` is a `SummarizeFn` for `CompactionService` that has Anthropic's compaction on request (`ANTHROPIC_COMPACTION_BETA`, `compact-2026-09-04`) write the answer, which is checked like any other, and the signed block is not kept.
+
+`memory.extraction` extracts memory items from a run's conversation after the run, which later runs of the same user read as facts with `contextBuilder.includeFacts`:
+
+```typescript
+const cog = new Cogitator({
+  memory: {
+    adapter: 'postgres',
+    postgres: { connectionString: process.env.DATABASE_URL! },
+    contextBuilder: { strategy: 'recent', includeFacts: true },
+    extraction: {
+      scope: 'user', // default, or 'agent' / 'thread'
+      timeZone: 'Europe/Lisbon', // a thread's metadata.timeZone wins, UTC by default
+      afterExtract: (items) => console.log(items.map((item) => item.content)),
+    },
+  },
+});
+```
+
+The entries of the active branch new since the last extraction (the thread keeps its cursor in `metadata.memoryExtraction`, `EXTRACTION_CURSOR`), or a first extraction's run entries (a first extraction that fails is taken up by the next one), are read in windows by `extraction.model` (the model the run ended on by default), every item checked against its quotes: only what the user said with quotes that hold becomes `active`. A run without a user keeps its items in the thread's scope, and a thread `metadata.timeZone` that is not an IANA zone falls back to `timeZone`. The calls are counted in the run's costs and `usage`, a failure is logged while the run keeps its result and the thread waits a minute (doubling up to an hour) before the next try. It is the built-in middleware `cogitator:memory-extraction` (`memoryExtractionMiddleware`), whose `afterRun` runs before the compaction's. With `includeFacts`, a store that keeps memory items (every built-in one) gives the context the items the run's agent, user and thread see that hold now, one state per slot, in place of `FactAdapter` facts. See [Extraction After a Run](https://cogitator.app/docs/memory#extraction-after-a-run).
 
 The adapter connects on the first run. To read threads before that (for example in an API route), use `getMemory()`, which connects it on first use; `cog.memory` stays `undefined` until something connected it:
 

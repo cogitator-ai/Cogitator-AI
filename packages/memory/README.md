@@ -33,7 +33,8 @@ With `@cogitator-ai/core` you usually configure memory on the runtime (`new Cogi
 - **Embedding Services** - OpenAI, Ollama and Google embedding integration
 - **Semantic Search** - Vector similarity search with pgvector
 - **Hybrid Search** - BM25 + Vector with Reciprocal Rank Fusion
-- **Facts Storage** - Store and retrieve agent knowledge (`FactAdapter` on PostgreSQL, `CoreFactsStore` on SQLite)
+- **Memory Items** - What conversations established, extracted by a model, grounded in quotes, trusted by who said them, kept with when they held (a newer state supersedes the old one and keeps it as history), on every built-in adapter
+- **Facts Storage** - Store and retrieve agent knowledge (`FactAdapter` on PostgreSQL, `CoreFactsStore` on SQLite, both kept as memory items)
 - **Knowledge Graph** - Entity-relationship memory with multi-hop traversal
 - **Zod Schemas** - Type-safe configuration validation
 
@@ -145,7 +146,7 @@ await memory.connect();
 memory.vectorStatus(); // { available: true, dimensions: 1536 } or { available: false, reason }
 ```
 
-On `connect()` the adapter creates its tables and an HNSW cosine index on the embeddings, which works from the first row on (no training data needed). An `ivfflat` index left by an earlier version is replaced on the first connect after upgrading, see the [adapters docs](https://cogitator.app/docs/memory/adapters) for building the new index ahead of time on a large table. `search()` raises `hnsw.ef_search` to the requested limit and, on pgvector 0.8+, uses iterative scans, so large limits and filters still get every matching row. Vectors of 2001 to 4000 dimensions are indexed as `halfvec` (pgvector 0.7+), larger ones are searched without an index. The schema version is kept in `<schema>.cogitator_schema_migrations`, so a `connect()` changes tables only after an upgrade. Messages, tool calls, tool results and metadata are stored as `jsonb`.
+On `connect()` the adapter creates its tables and an HNSW cosine index on the embeddings, which works from the first row on (no training data needed). An `ivfflat` index left by an earlier version is replaced on the first connect after upgrading, see the [adapters docs](https://cogitator.app/docs/memory/adapters) for building the new index ahead of time on a large table. `search()` raises `hnsw.ef_search` to the requested limit and, on pgvector 0.8+, uses iterative scans, so large limits and filters still get every matching row. Vectors of 2001 to 4000 dimensions are indexed as `halfvec` (pgvector 0.7+), larger ones are searched without an index. The schema version is kept in `<schema>.cogitator_schema_migrations`, so a `connect()` changes tables only after an upgrade. Version 3 moves every row of `facts` into a memory item of its own slot and renames the table `facts_legacy`. Messages, tool calls, tool results and metadata are stored as `jsonb`.
 
 pgvector is only needed for embeddings. Without it, `connect()` still succeeds and threads, entries and facts work, while embedding operations return a failed result naming the reason (also logged at connect). An existing `embeddings` table keeps its vector size: an adapter without `dimensions` adopts it, one configured for another size reports the mismatch through `vectorStatus()` and the failed results instead of failing each search with a Postgres error.
 
@@ -670,9 +671,39 @@ await compaction.compact(session.id, {
 
 ---
 
+## Memory Items
+
+A memory item is one thing a conversation established: a `fact`, `event`, `preference`, `instruction`, `opinion` or `lesson`, with its quotes, its `trust` (`user`, `system`, `model`, `tool`, `web`), its `scope` (agent, and optionally user, project, thread) and its times. Every built-in adapter stores items (`MemoryItemAdapter`), and `MemoryItems` keeps the rules on top:
+
+```typescript
+import { InMemoryAdapter, MemoryItems, MemoryExtractor } from '@cogitator-ai/memory';
+
+const memory = new InMemoryAdapter();
+await memory.connect();
+const items = new MemoryItems({ adapter: memory });
+const scope = { agentId: 'concierge', userId: 'ana' };
+
+const extractor = new MemoryExtractor({ items, summarize }); // summarize: your SummarizeFn
+await extractor.extract(entries, { scope, timeZone: 'Europe/Lisbon' });
+
+await items.query({ scope }); // what holds now
+await items.query({ scope, asOf: new Date('2026-06-01') }); // what held then
+await items.history(scope, slot); // every value of a slot, closed ones included
+```
+
+- Writing only adds, and one agent's writes go one after another within a process. An item said again merges into the open one when no other value followed it since (else it is a new state), the trust and `verified` coming together from the better grounded source. Values of a slot compare by text: spacing aside, case and signs count. After every write of a state, the `active` and `superseded` items of its slot (`subject`, linked to an entity the scope sees, and `attribute`) and exact scope are laid out by time, each closed (`superseded`, `validTo` set) when the next one starts and the last one open, so racing writers, a state told late and a failed close converge, and a state set to start later leaves the current one in place until it starts. A state let go keeps its place, so the one before does not come back.
+- An item becomes `active` on its own only from `system`, or from `user` with quotes that hold at `activationConfidence` (default 0.7). Everything else stays `suggested` and out of every context, so text a model, a tool or a page wrote cannot plant itself. An opinion said again gains 0.1 when the new statement has quotes that hold, and one a less trusted source contradicts loses 0.2.
+- Times are bitemporal: `validFrom`/`validTo` in the world, `recordedAt`/`expiredAt` in memory, queried with `asOf` (default `knownAt`) and `knownAt` (default now), by default over `active` and `superseded` items with the state that holds read from the times. `resolveTime(expression, sessionAt, timeZone)` turns time words a model marked up (`date`, `relative`, `weekday`) into an interval, end exclusive, with its precision.
+- `MemoryExtractor` reads entries in windows of `windowTokens` (default 4000), one model call each (`EXTRACTION_PROMPT`, each message shown with its date), checks every quote against its entry (`parseExtraction`, which reads a `null` or blank field as absent and drops an item that does not fit) and writes the items through `MemoryItems`. An item's trust is that of the least trusted entry a holding quote is in (`trustOfEntry`), so what a page or the assistant said is never the user's, and its dates are resolved from the message that said them.
+- With `contextBuilder.includeFacts`, the context builder reads the items the run sees that hold now as its facts (`ContextBuilderDeps.memoryItems`), one state per slot (the one that started last, the narrowest scope on a tie), instructions and preferences first, newest first, a replaced value shown as `(previously: X)` when the run still sees it and memory did not let it go.
+
+A Cogitator extracts items after each run with `memory.extraction`. See [Memory Items](https://cogitator.app/docs/memory#memory-items).
+
+---
+
 ## Core Facts
 
-`CoreFactsStore` keeps a small set of key/value facts about the user in SQLite (with history), formatted for a system prompt:
+`CoreFactsStore` keeps a small set of key/value facts about the user in SQLite (with history), formatted for a system prompt. Each key is the slot `core:<key>` of `system` memory items in its `scope` (`{ agentId: 'core' }` by default):
 
 ```typescript
 import { CoreFactsStore } from '@cogitator-ai/memory';
@@ -687,6 +718,8 @@ await facts.getHistory('name'); // [{ value, setAt }]
 const prompt = await facts.formatForPrompt();
 await facts.close();
 ```
+
+A new value supersedes the current one, and the same value again changes nothing. `delete(key)` lets the current value go and keeps the history. The `core_facts` and `core_facts_history` tables of an earlier version are moved into memory items on `initialize()` and renamed with a `_legacy` suffix.
 
 ---
 

@@ -24,11 +24,11 @@ const prompt = await coreFacts.formatForPrompt();
 // one "key: value" line per fact
 ```
 
-Core facts are injected into the agent instructions automatically by `RuntimeBuilder` (under "What I know about the user") — re-read for every message, so facts saved during a conversation are visible immediately. The agent saves one with `remember({ fact, isCoreFact: true, coreFactKey })`. `CoreFactsStore` keeps a change history per key (`getHistory(key)`).
+Core facts are injected into the agent instructions automatically by `RuntimeBuilder` (under "What I know about the user"), re-read for every message, so facts saved during a conversation are visible immediately. The agent saves one with `remember({ fact, quote, isCoreFact: true, coreFactKey })`, kept only when the user said it (see [remember](#memory-tools)). `CoreFactsStore` keeps each key as [memory items](/docs/memory#memory-items) of the slot `core:<key>`, so a new value supersedes the one before and `getHistory(key)` gives every value. `delete(key)` lets the current value go and keeps its history. A memory file written by an earlier version is moved into memory items on `initialize()`, and its old `core_facts` and `core_facts_history` tables are renamed with a `_legacy` suffix.
 
 ## Level 2: Knowledge Graph
 
-Knowledge graph with nodes and relationships, stored in SQLite (or Postgres when `memory.adapter: postgres`). The agent uses `remember`, `recall`, and `forget` tools to interact with it.
+Knowledge graph with nodes and relationships, stored in SQLite (or Postgres when `memory.adapter: postgres`). The agent uses `remember`, `recall`, and `forget` tools to interact with it, and they keep [memory items](/docs/memory#memory-items) in the memory store beside it: `remember` in the memory of the user the message comes from, or of the thread when there is no user, and `recall` and `forget` see the user's items and the thread's.
 
 ```yaml title="cogitator.yml"
 memory:
@@ -40,15 +40,17 @@ memory:
 
 When `knowledgeGraph` is enabled, three tools are added to the agent:
 
-**remember** — Save a fact to the knowledge graph (optionally also as a core fact)
+**remember** - Save a fact to the knowledge graph and as a memory item (optionally also as a core fact), with the user's own words that state it as `quote`
 
 ```
 User: "My dog's name is Luna"
-Agent calls: remember({ fact: "User's dog is named Luna", category: "pets" })
+Agent calls: remember({ fact: "User's dog is named Luna", category: "pets", quote: "My dog's name is Luna" })
 
 User: "Call me Alex"
-Agent calls: remember({ fact: "Alex", isCoreFact: true, coreFactKey: "user_name" })
+Agent calls: remember({ fact: "Alex", quote: "Call me Alex", isCoreFact: true, coreFactKey: "user_name" })
 ```
+
+A fact counts as the user's only when its `quote` is found word for word in one of the last 50 entries of the thread, in a user message. Then it is a graph node with `source: 'user'` and the quote as its evidence, an `active` memory item trusted as the user's, and, with `isCoreFact`, a core fact. A fact whose quote is missing or not found is kept as a suggestion instead: a graph node with `source: 'inferred'` and confidence 0.6, a `suggested` memory item that no context reads, and never a core fact. The result says so (`status`, a `note`, and `coreFact: false` when a core fact was asked for), so a model cannot plant in memory what the user never said.
 
 **recall** — Search memory by query
 
@@ -58,9 +60,9 @@ Agent calls: recall({ query: "dog" })
 → Returns: { results: [{ fact: "User's dog is named Luna", ... }], coreFacts: { ... } }
 ```
 
-`recall` matches the query against stored fact text (up to 10 results) and always returns all core facts. Pass `embeddingFn` to `createMemoryTools()` to switch it to semantic vector search — `RuntimeBuilder` does not.
+`recall` matches the query against the memory items of the user and the thread that hold now (every word of it, up to 10, `type: 'memory'`) and the stored fact text of the graph (up to 10 results), and always returns all core facts. Pass `embeddingFn` to `createMemoryTools()` to switch the graph search to semantic vector search. `RuntimeBuilder` does not.
 
-**forget** — Delete every fact whose text matches the query
+**forget** - Forget the facts that match the query: graph facts whose text matches are deleted, and the memory items of the user and the thread that hold every word of it are let go (no longer recalled or used, kept as history, listed in `forgotten`)
 
 ```
 User: "Forget everything about my old address"
@@ -116,7 +118,12 @@ memory:
 If you're not using `RuntimeBuilder`, you can set up memory manually:
 
 ```typescript
-import { SQLiteAdapter, SQLiteGraphAdapter, CoreFactsStore } from '@cogitator-ai/memory';
+import {
+  SQLiteAdapter,
+  SQLiteGraphAdapter,
+  CoreFactsStore,
+  MemoryItems,
+} from '@cogitator-ai/memory';
 import { Agent, createMemoryTools } from '@cogitator-ai/core';
 
 const memory = new SQLiteAdapter({ provider: 'sqlite', path: './memory.db' });
@@ -132,12 +139,17 @@ const memoryTools = createMemoryTools({
   graphAdapter: graph,
   coreFacts,
   agentId: 'jarvis',
+  memory, // the thread store remember checks quotes against
+  items: new MemoryItems({ adapter: memory }), // memory items remember, recall and forget use
 });
 
 const agent = new Agent({
+  id: 'jarvis',
   name: 'jarvis',
   model: 'google/gemini-3.8-flash',
   tools: [...memoryTools],
   instructions: 'You are a helpful assistant with persistent memory.',
 });
 ```
+
+Without `memory`, `remember` cannot check a quote and keeps every fact as the user's, as before: in the graph, in the core facts and as a memory item trusted as the user's, which stays `suggested` only because it has no quote that holds. Give the agent a fixed `id`, as `RuntimeBuilder` does with the assistant's `name`, so what memory keeps under the agent's id stays its own after a restart.

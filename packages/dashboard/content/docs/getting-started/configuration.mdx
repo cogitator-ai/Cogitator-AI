@@ -70,7 +70,7 @@ const config = loadConfig({
 | `llm`         | `defaultProvider`, `defaultModel`, `providers`, `retry`, `promptCache`, `modelCircuitBreaker`, `pricing`, `plugins`                                          |
 | `prompts`     | `autoDeployWinner` for [prompt A/B tests](/docs/advanced/prompt-versions)                                                                                    |
 | `limits`      | `maxConcurrentRuns`, `defaultTimeout` (ms), `maxTokensPerRun`, `maxToolResultLength` (characters), see [Cogitator](/docs/core/cogitator#defaults-and-limits) |
-| `memory`      | Adapter, its connection, `embedding` and `contextBuilder`                                                                                                    |
+| `memory`      | Adapter, its connection, `embedding`, `contextBuilder`, `extraction` and `compaction`                                                                        |
 | `sandbox`     | Defaults, container pool, Docker and WASM settings for [sandboxed tools](/docs/deployment/sandbox)                                                           |
 | `reflection`  | [Reflection](/docs/advanced/reflection) after tool calls, errors or at the end of a run                                                                      |
 | `guardrails`  | [Constitutional AI](/docs/advanced/constitutional-ai) input/output/tool filtering                                                                            |
@@ -127,6 +127,28 @@ if (!connected.success) throw new Error(connected.error);
 const cogitator = new Cogitator({ llm: { defaultModel: 'ollama/llama3.2' } });
 cogitator.memory = memory;
 ```
+
+`memory.extraction` extracts [memory items](/docs/memory#extraction-after-a-run) from a run's conversation after the run, and `memory.compaction` [compacts the run's thread](/docs/memory#compaction-after-a-run) once it nears the model's window. Both are off unless set:
+
+```yaml title="cogitator.yml"
+memory:
+  adapter: sqlite
+  sqlite:
+    path: ./data/memory.db
+  contextBuilder:
+    strategy: recent
+    includeFacts: true # the memory items that hold, as known facts
+  extraction:
+    model: google/gemini-3.5-flash-lite # default: the model the run ended on
+    scope: user # user | agent | thread
+    timeZone: Europe/Lisbon # relative dates, when the thread names no metadata.timeZone (default UTC)
+    windowTokens: 4000
+    activationConfidence: 0.7
+  compaction:
+    at: 0.8
+```
+
+Their hooks (`afterExtract`, `beforeCompact`, `afterCompact`) are functions, so they are set in code.
 
 ### Logging
 

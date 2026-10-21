@@ -60,7 +60,7 @@ interface CogitatorConfig {
     maxTokensPerRun?: number; // checked before each model call
     maxToolResultLength?: number; // characters of a tool result the model reads (default 100000)
   };
-  memory?: MemoryConfig; // adapters, contextBuilder, and compaction of a run's thread after the run
+  memory?: MemoryConfig; // adapters, contextBuilder, extraction of memory items and compaction after a run
   runCheckpoints?: RunCheckpointStore; // where paused runs wait
   prompts?: PromptsConfig; // instruction versions and A/B tests
   sandbox?: SandboxManagerConfig;
@@ -353,6 +353,26 @@ const cog = new Cogitator({
 ```
 
 The compaction is `hierarchical`: the newest `keepRecentTokens` (by default the less of 20000 and a quarter of the window) stay verbatim and the rest becomes a handoff of grounded atoms that the next run reads in their place. `run()` returns once the compaction is done, a compaction that fails is logged and the run keeps its result, and a run on another branch than the thread's active one is left alone. See [Compaction After a Run](/docs/memory#compaction-after-a-run) for `beforeCompact`, `afterCompact` and the guard against compacting again right away.
+
+### Memory Items After a Run
+
+With `memory.extraction` a run's conversation is read once the run is done, and what it established about the user becomes [memory items](/docs/memory#memory-items), which later runs of the user read as facts with `contextBuilder.includeFacts`:
+
+```typescript
+const cog = new Cogitator({
+  memory: {
+    adapter: 'sqlite',
+    sqlite: { path: './memory.db' },
+    contextBuilder: { strategy: 'recent', includeFacts: true },
+    extraction: { timeZone: 'Europe/Lisbon' },
+  },
+});
+
+await cog.run(agent, { input: 'I moved to Lisbon last month.', threadId: 't1', userId: 'ana' });
+await cog.run(agent, { input: 'Where do I live now?', threadId: 't2', userId: 'ana' }); // Lisbon
+```
+
+Each window of the entries new since the last extraction is one call of `extraction.model` (by default the model the run ended on), and every item is checked against the quotes it gives: only what the user said, with quotes that hold and at `activationConfidence` (default 0.7) or above, becomes `active`, and what the assistant or a tool said stays a suggestion. Items belong to the run's user by default, or to the thread for a run without a user (`scope: 'agent'` or `'thread'` for others), and relative dates are resolved from the date of the message that says them, in the thread's `metadata.timeZone` when it is a valid IANA zone, else `extraction.timeZone`, else UTC. The calls are counted in the run's costs and `usage`, `run()` returns once the extraction is done, and one that fails is logged while the run keeps its result. See [Extraction After a Run](/docs/memory#extraction-after-a-run).
 
 ### Memory Context and Prompt Caching
 

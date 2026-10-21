@@ -715,6 +715,7 @@ interface MemoryConfig {
   embedding?: EmbeddingServiceConfig;
   contextBuilder?: Partial<ContextBuilderConfig>;
   compaction?: MemoryCompactionConfig; // compaction of a run's thread after the run, off unless set
+  extraction?: MemoryExtractionConfig; // memory items extracted after each run, off unless set
 }
 
 type EmbeddingServiceConfig = OpenAIEmbeddingConfig | OllamaEmbeddingConfig | GoogleEmbeddingConfig;
@@ -866,6 +867,126 @@ interface BeforeCompactEvent {
 ```
 
 `MemoryCompactionConfig` compacts a run's thread `hierarchical`ly after the run, keeping the newest `keepRecentTokens` (by default the less of 20000 and a quarter of the window). `beforeCompact` returns `false` to skip a compaction or `{ instructions }` to add to the summarizer's prompt. See [Compaction After a Run](/docs/memory#compaction-after-a-run).
+
+[Memory items](/docs/memory#memory-items) are what conversations established, kept with their quotes, their trust and when they held:
+
+```typescript
+type MemoryItemKind = 'fact' | 'event' | 'preference' | 'instruction' | 'opinion' | 'lesson';
+type MemoryItemStatus = 'suggested' | 'active' | 'stale' | 'superseded';
+type MemoryItemTrust = 'user' | 'system' | 'model' | 'tool' | 'web';
+type TimePrecision = 'instant' | 'day' | 'week' | 'month' | 'year' | 'approximate';
+
+interface MemoryItemScope {
+  agentId: string;
+  userId?: string; // seen only by runs for this user
+  projectId?: string;
+  threadId?: string; // seen only in this thread
+}
+
+interface MemoryItemTime {
+  text?: string; // the words, such as 'last Friday'
+  start?: Date; // inclusive, absent when the words could not be resolved
+  end?: Date; // exclusive
+  precision: TimePrecision;
+}
+
+interface MemoryItem {
+  id: string;
+  kind: MemoryItemKind;
+  content: string; // one statement that reads on its own
+  subject?: string; // the entity it is about, as said
+  entityId?: string; // the entity subject was linked to
+  attribute?: string; // what about the subject it records, such as 'home city'
+  value?: string;
+  slot?: string; // the state it records: a newer active item of the slot supersedes it
+  status: MemoryItemStatus;
+  trust: MemoryItemTrust;
+  confidence: number; // 0 to 1
+  scope: MemoryItemScope;
+  evidence: Evidence[];
+  verified: boolean; // every quote was found in its entry
+  saidAt: Date;
+  sessionAt: Date; // the date relative dates are resolved against
+  about?: MemoryItemTime;
+  validFrom?: Date; // when it started to hold in the world, for an item of a slot
+  validTo?: Date; // when it stopped, once a newer item closed it
+  recordedAt: Date; // when memory took it in
+  expiredAt?: Date; // when memory let it go: kept, no longer found
+  supersedes?: string[];
+  supersededBy?: string;
+  metadata?: Record<string, unknown>;
+}
+
+type NewMemoryItem = Omit<
+  MemoryItem,
+  'id' | 'status' | 'recordedAt' | 'supersedes' | 'supersededBy' | 'expiredAt' | 'verified'
+> & {
+  status?: MemoryItemStatus; // overrides the status memory would give it
+  verified?: boolean; // default false
+  recordedAt?: Date; // default now
+};
+
+interface MemoryEntity {
+  id: string;
+  scope: MemoryItemScope;
+  name: string;
+  aliases: string[];
+  type?: string; // such as 'person' or 'place'
+  firstSeenAt: Date;
+  lastSeenAt: Date;
+}
+
+interface MemoryItemQuery {
+  scope: MemoryItemScope;
+  kinds?: MemoryItemKind[];
+  statuses?: MemoryItemStatus[]; // default ['active', 'superseded'], which state holds read from the times
+  slots?: string[];
+  entityIds?: string[];
+  asOf?: Date; // the moment in the world: items of a slot that held then (default: knownAt)
+  knownAt?: Date; // the moment of memory: items memory had then (default: now)
+  includeClosed?: boolean; // keep items that no longer hold
+  text?: string; // words every found item holds, without case
+  limit?: number; // the newest recorded
+}
+
+interface MemoryItemFilter {
+  agentId: string;
+  ids?: string[];
+  slots?: string[];
+  entityIds?: string[];
+  kinds?: MemoryItemKind[];
+  statuses?: MemoryItemStatus[];
+  includeExpired?: boolean; // an item whose expiredAt is still to come is found either way
+}
+
+interface MemoryEntityFilter {
+  agentId: string;
+  ids?: string[];
+  names?: string[]; // normalized names or aliases
+}
+
+interface MemoryItemAdapter {
+  putItem(item: MemoryItem): Promise<MemoryResult<MemoryItem>>;
+  getItem(itemId: string): Promise<MemoryResult<MemoryItem | null>>;
+  findItems(filter: MemoryItemFilter): Promise<MemoryResult<MemoryItem[]>>; // oldest recorded first
+  deleteItems(itemIds: string[]): Promise<MemoryResult<void>>;
+  putEntity(entity: MemoryEntity): Promise<MemoryResult<MemoryEntity>>;
+  findEntities(filter: MemoryEntityFilter): Promise<MemoryResult<MemoryEntity[]>>;
+  deleteEntities(entityIds: string[]): Promise<MemoryResult<void>>;
+}
+
+interface MemoryExtractionConfig {
+  model?: string; // default: the model the run ended on
+  prompt?: string; // added to the extraction prompt
+  windowTokens?: number; // conversation one call reads (default 4000)
+  activationConfidence?: number; // default 0.7
+  scope?: 'user' | 'agent' | 'thread'; // default 'user'
+  timeZone?: string; // IANA, when the thread names none in metadata.timeZone (default UTC)
+  afterExtract?: (items: MemoryItem[]) => void | Promise<void>;
+}
+```
+
+`MemoryExtractionConfig` extracts memory items from a run's conversation after the run, see [Extraction After a Run](/docs/memory#extraction-after-a-run).
 
 ## Errors
 

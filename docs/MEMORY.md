@@ -101,7 +101,7 @@ In cluster mode the key prefix must contain a hash tag so multi-key commands hit
 
 Postgres with full feature set: threads, entries, facts, vector embeddings (pgvector).
 
-Implements `MemoryAdapter + FactAdapter + EmbeddingAdapter + KeywordSearchAdapter`.
+Implements `MemoryAdapter + MemoryItemAdapter + FactAdapter + EmbeddingAdapter + KeywordSearchAdapter`. Schema version 3 moves every row of `facts` into a memory item of its own slot `fact:<id>` on the first `connect()` after upgrading and renames the table `facts_legacy`.
 
 ```typescript
 import { PostgresAdapter } from '@cogitator-ai/memory';
@@ -263,7 +263,7 @@ type MemoryResult<T> = { success: true; data: T } | { success: false; error: str
 
 ### FactAdapter (Postgres only)
 
-For an SQLite-backed fact store with history, see `CoreFactsStore`.
+For an SQLite-backed fact store with history, see `CoreFactsStore`. Both keep their facts as [memory items](#memory-items): `PostgresAdapter` each fact in its own slot `fact:<id>` (`updateFact` with new content supersedes the current item and keeps the old statement as history, `deleteFact` deletes the fact with its history, a fact without evidence comes back without `evidence`), and `CoreFactsStore` each key in the slot `core:<key>` of `system` items in its `scope` (`{ agentId: 'core' }` by default). Setting the value a key holds changes nothing, `delete` lets the current value go and keeps the history, and the old `core_facts` and `core_facts_history` tables are moved into items on `initialize()` and renamed with a `_legacy` suffix.
 
 Long-term knowledge storage — user preferences, learned facts, domain knowledge.
 
@@ -518,10 +518,40 @@ interface MemoryConfig {
   embedding?: EmbeddingServiceConfig; // { provider: 'openai' | 'ollama' | 'google', apiKey?, model?, baseUrl?, dimensions? }
 
   contextBuilder?: Partial<ContextBuilderConfig>; // maxTokens defaults to what the run's model has room for, strategy to 'recent'
+
+  compaction?: MemoryCompactionConfig; // compaction of a run's thread after the run
+
+  extraction?: {
+    model?: string; // default: the model the run ended on
+    prompt?: string; // added to the extraction prompt
+    windowTokens?: number; // default 4000
+    activationConfidence?: number; // default 0.7
+    scope?: 'user' | 'agent' | 'thread'; // default 'user'
+    timeZone?: string; // IANA, when the thread names no metadata.timeZone, default UTC
+    afterExtract?: (items: MemoryItem[]) => void | Promise<void>;
+  };
 }
 ```
 
 With `contextBuilder` set and no `maxTokens`, each run's history budget is the context window of the model the run starts on (from the model registry, else the model family, else 8192 tokens, and at most 4096 on Ollama, which serves no more by default, except Ollama Cloud), minus room for the answer (the agent's `maxTokens`, else 15% of the window, at most half of it), the tool schemas and the input, and below the point where `context` compression would start when it is on. The builder keeps `reserveTokens` of it free as slack. Set `maxTokens` to cap the history and the cost of long threads, or to use a larger context your Ollama server runs with. With `contextBuilder` set, a Postgres store is also used as the fact adapter, and as the embedding adapter unless `memory.qdrant` is set. The runtime creates the Postgres `embeddings` table with the vector size of `memory.embedding` (768 without one). Without `contextBuilder`, a run loads the last 20 entries of the thread.
+
+---
+
+## Memory Items
+
+A memory item (`MemoryItem` in `@cogitator-ai/types`) is one thing a conversation established, kept apart from the conversation: its `kind` (`fact`, `event`, `preference`, `instruction`, `opinion`, `lesson`), its `content`, and for a state that can change its `subject`, `attribute` and `value`. It keeps its `status` (`suggested`, `active`, `stale`, `superseded`), its `trust` (`user`, `system`, `model`, `tool`, `web`), its `confidence`, its `scope` (`agentId`, optional `userId`, `projectId`, `threadId`), its `evidence` and whether every quote holds (`verified`), when it was said (`saidAt`, `sessionAt`), the time it is about (`about`), and bitemporal times: `validFrom`/`validTo` in the world, `recordedAt`/`expiredAt` in memory.
+
+Every built-in conversation adapter implements `MemoryItemAdapter` (`putItem`, `getItem`, `findItems`, `deleteItems`, `putEntity`, `findEntities`, `deleteEntities`): InMemory in process, SQLite in `memory_items`, `memory_entities` and `memory_entity_names`, Postgres in `memory_items` and `memory_entities`, Redis as hashes with their indexes (never under the thread `ttl`), MongoDB in `<prefix>items` and `<prefix>entities`. `memoryItemAdapterConformanceCases` in `@cogitator-ai/test-utils` checks a store of your own.
+
+`MemoryItems` keeps every rule on top of a store:
+
+- Writing only adds, and one agent's writes go one after another within a process. An item said again (same scope and kind, open and not let go, same normalized words, or in a slot the same value) merges into the one kept when no other value followed it since, else it is a new state. On a merge the trust and `verified` come together from the better grounded source (quotes that hold first, then the more trusted source). Values of a slot compare by text: spacing aside, case and signs count.
+- `subject` is linked to an entity the writer's scope sees (`link`: its own or a broader one, such as the user's for a thread, made in the scope when there is none, no aliases added, duplicates of racing writers settled on the first made), and with an `attribute` the item gets a slot. After every write of a state, the `active` and `superseded` items of its slot and exact scope are laid out by time (settle): each closed (`superseded`, `validTo`, `supersededBy`) when the next one starts, the last one open. Racing writers, a state told late (it fits between the ones around it) and a failed close converge, a state set to start later leaves the current one in place until it starts, and a state let go keeps its place, so the one before does not come back. `expire` and `purge` reopen nothing.
+- An item becomes `active` on its own from `system`, or from `user` with quotes that hold at `activationConfidence` (default 0.7). Everything else stays `suggested` until `activate(id)`. An opinion gains 0.1 when said again by a statement with quotes that hold, and loses 0.2 when a less trusted source contradicts it.
+- `visibleIn(item, scope)`: the same agent, and each of user, project and thread the same or not set on the item.
+- `query({ scope, kinds?, statuses?, slots?, entityIds?, asOf?, knownAt?, includeClosed?, text?, limit? })` (statuses `active` and `superseded` by default, the state that holds read from `validFrom`/`validTo`, `asOf` defaulting to `knownAt` and `knownAt` to now), `history(scope, slot)`, `markStale`, `expire` (kept, found only by an earlier `knownAt`, an item whose `expiredAt` is still ahead found until then, a state let go keeping its place in the timeline), `purge` (deleted for good).
+
+`resolveTime(expression, sessionAt, timeZone?)` turns time words a model marked up (`date`, `relative`, `weekday`) into an interval in a time zone, `end` exclusive, with its precision (`approximate` when nothing can be placed). `MemoryExtractor` reads entries in windows (`windowTokens`, default 4000), one model call each with `EXTRACTION_PROMPT`, the session date (`sessionLine`) and each message's date in the transcript, asked again up to three tries in all only when the answer holds no JSON array (a `null` or blank field is read as absent, an item that does not fit is dropped), checks every quote against its entry, gives each item the trust of the least trusted entry a holding quote is in (`parseExtraction`, `trustOfEntry`) and resolves its dates from the first message it quotes (its `saidAt` and `sessionAt`), and writes the items through `MemoryItems`. With `memory.extraction` a Cogitator runs it after every run (the built-in middleware `cogitator:memory-extraction`, cursor in thread `metadata.memoryExtraction`, a failed first extraction storing where it started so the next one takes those entries, a run without a user keeping its items in the thread's scope, a thread `metadata.timeZone` that is not an IANA zone falling back to the configured one), and with `contextBuilder.includeFacts` the context's facts are the items the run sees that hold now, one state per slot (the one that started last, the narrowest scope on a tie), instructions and preferences first, newest first, a replaced value as `(previously: X)` only when the run sees it and memory did not let it go.
 
 ---
 

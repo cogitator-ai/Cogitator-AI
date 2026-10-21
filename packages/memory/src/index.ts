@@ -254,6 +254,7 @@ export {
   matchesEntityFilter,
   matchesItemFilter,
   normalizeName,
+  sameValue,
   slotOf,
   visibleIn,
   type MemoryItemsConfig,

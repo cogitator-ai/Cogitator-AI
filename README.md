@@ -246,13 +246,14 @@ All with Swagger docs, SSE streaming, and WebSocket support, built on the shared
 
 ### Memory & Knowledge
 
-| Feature                | What it means                                                    |
-| ---------------------- | ---------------------------------------------------------------- |
-| **6 storage backends** | Redis, Postgres, SQLite, MongoDB, Qdrant, in-memory              |
-| **Semantic search**    | BM25 + vector hybrid search with Reciprocal Rank Fusion          |
-| **Knowledge graphs**   | Extract entities, build graphs, traverse multi-hop relationships |
-| **RAG pipeline**       | Document loaders, smart chunking, hybrid retrieval, reranking    |
-| **Context management** | Auto-compress long conversations to fit model limits             |
+| Feature                | What it means                                                                            |
+| ---------------------- | ---------------------------------------------------------------------------------------- |
+| **6 storage backends** | Redis, Postgres, SQLite, MongoDB, Qdrant, in-memory                                      |
+| **Semantic search**    | BM25 + vector hybrid search with Reciprocal Rank Fusion                                  |
+| **Knowledge graphs**   | Extract entities, build graphs, traverse multi-hop relationships                         |
+| **Memory items**       | What users said, extracted after each run, grounded in quotes and kept with when it held |
+| **RAG pipeline**       | Document loaders, smart chunking, hybrid retrieval, reranking                            |
+| **Context management** | Auto-compress long conversations to fit model limits                                     |
 
 ### Multi-Agent
 

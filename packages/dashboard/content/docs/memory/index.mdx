@@ -12,6 +12,7 @@ Cogitator's memory system gives agents:
 - **Conversation persistence** across sessions via threads and entries
 - **Semantic search** over stored documents and messages using vector embeddings
 - **Fact storage** for long-term knowledge (user preferences, learned info)
+- **Memory items** extracted from conversations after each run, grounded in quotes, trusted by who said them, and kept with when they held
 - **Knowledge graphs** for structured entity and relationship tracking
 - **Token-aware context building** that fits the most relevant history into the model's context window
 
@@ -31,7 +32,7 @@ Cogitator's memory system gives agents:
 └────────────────────────────────────────────────────────────────┘
 ```
 
-Every conversation adapter implements the same `MemoryAdapter` interface, so you can swap backends without changing application code. Facts, embeddings and graphs are separate interfaces that only some backends implement — see [Choosing an Adapter](#choosing-an-adapter).
+Every conversation adapter implements the same `MemoryAdapter` interface, so you can swap backends without changing application code. Every built-in conversation adapter also stores [memory items](#memory-items) (`MemoryItemAdapter`). Facts, embeddings and graphs are separate interfaces that only some backends implement, see [Choosing an Adapter](#choosing-an-adapter).
 
 ## Results and `unwrap()`
 
@@ -216,7 +217,7 @@ Upgrade every process that shares a store at once: an older process appends entr
 
 ### Facts
 
-**Facts** are long-term memories that persist across threads: user preferences, learned information, or system-level knowledge. Only `PostgresAdapter` implements `FactAdapter`.
+**Facts** are long-term memories that persist across threads: user preferences, learned information, or system-level knowledge. Only `PostgresAdapter` implements `FactAdapter`, and it keeps each fact as a [memory item](#memory-items) of its own slot.
 
 ```typescript
 import { PostgresAdapter } from '@cogitator-ai/memory';
@@ -237,7 +238,7 @@ await postgres.addFact({
 });
 ```
 
-A fact with `metadata.userId` only goes into that user's context; a fact without one is shared by everyone the agent serves. Facts with an `expiresAt` in the past are no longer returned.
+A fact with `metadata.userId` only goes into that user's context, a fact without one is shared by everyone the agent serves. Facts with an `expiresAt` in the past are no longer returned. `updateFact` with new `content` writes a new item that supersedes the one before, so what the fact said is kept in its history, while a change that keeps the statement (confidence, category, metadata, evidence, expiry) corrects the current item. `deleteFact` deletes the fact with its history. A fact without evidence comes back without the `evidence` field.
 
 ### Lineage
 
@@ -342,7 +343,7 @@ console.log(context.errors, context.warnings);
 | `reserveTokens`          | 10% of the budget (min. 100) | Tokens kept free for the model's reply. `build()` takes its own `reserveTokens` too                                                                                                                      |
 | `strategy`               | -                            | `recent`, `relevant` or `hybrid`                                                                                                                                                                         |
 | `includeSystemPrompt`    | `true`                       | Put `systemPrompt` first. It is always kept and counted: the rest of the context only gets what it leaves of the budget                                                                                  |
-| `includeFacts`           | `false`                      | Add a `Known facts:` block (needs `factAdapter`, the `facts` partition)                                                                                                                                  |
+| `includeFacts`           | `false`                      | Add a `Known facts:` block (needs `memoryItems` or `factAdapter`, the `facts` partition), see [Memory Items in the Context](#memory-items-in-the-context)                                                |
 | `includeSemanticContext` | `false`                      | Add a `Relevant context:` block from the top 5 embeddings scoring 0.7 or more (needs `embeddingAdapter` + `embeddingService` and a `currentInput`, the `recall` partition)                               |
 | `includeGraphContext`    | `false`                      | Add knowledge graph context (needs `graphContextBuilder` and a `currentInput`, the `recall` partition), see [Knowledge Graphs](/docs/memory/knowledge-graphs#using-graph-context-in-the-context-builder) |
 | `graphContextOptions`    | `{}`                         | `maxNodes`, `maxEdges`, `maxDepth`, `includeInferred`, `entityTypes`                                                                                                                                     |
@@ -479,7 +480,7 @@ await cog.run(agent, { input: 'What is my name?', threadId: 'thread-alice' });
 ```
 
 - `memory.adapter` names the thread store and takes its settings from the key of the same name: `'memory'` (`inMemory`), `'redis'` (`redis.url`, `redis.host` + `redis.port`, or `redis.cluster`), `'postgres'` (`postgres.connectionString`), `'sqlite'` (`sqlite.path`) or `'mongodb'` (`mongodb.uri`). When the required setting is missing or the connection fails, the run goes on without memory and logs a warning, and the failed adapter is disconnected so nothing keeps reconnecting in the background. An adapter you connect yourself can be assigned with `cog.memory = adapter`, such runs load the last 20 entries of the active branch, since the context builder is only created from the `memory` config.
-- With `contextBuilder` set, each run builds its context as described above. Without `maxTokens` the budget is the context window of the model the run starts on (from the model registry, else the model family, else 8192 tokens, and at most 4096 on Ollama, which serves no more by default, except Ollama Cloud), minus room for the answer (the agent's `maxTokens`, else 15% of the window, at most half of it) and the tool schemas, and below the point where `context` compression would start when it is on, and `strategy` defaults to `'recent'`. The runtime passes that budget once, with `reserveTokens: 0`, and the builder counts the input in it (the `final` partition), so nothing is reserved twice. With `maxTokens` set, the builder's `reserveTokens` applies as usual. Set `maxTokens` to cap the history, and the cost of every turn, on long threads, or to use a larger context your Ollama server runs with (`OLLAMA_CONTEXT_LENGTH`). The agent's instructions are always sent and counted in the budget (`includeSystemPrompt: false` is ignored with a warning), and a run with instructions larger than the budget logs a warning. What memory recalls for the turn (`memoryContext`, with the run's `brief`), the run's `context` and the insights of reflection go into the final user message in front of the input, inside one `<memory_context>` block, so the system prompt and the history stay the same from turn to turn and are read from the prompt cache, and only the input is saved to the thread. Parts that fail to load are passed to `onMemoryError` with the `'load'` operation, and the run goes on without them. Options the runtime cannot serve log a warning at connect: `includeFacts` needs the Postgres store, `includeSemanticContext` needs `memory.embedding` and an embedding store, and `includeGraphContext` has no effect, since the runtime builds no knowledge graph. A Postgres store is also the fact adapter, and the embedding adapter unless `memory.qdrant` is set. The runtime creates the Postgres `embeddings` table with the vector size of `memory.embedding` (768 without one, or the size of an existing table). A Postgres store without pgvector still keeps threads and facts, but is not used for semantic context, and a warning names the reason. With `relevant` or `hybrid` and `memory.embedding`, the runtime keeps a message index in the embedding store (the Postgres store or `memory.qdrant`), so every message is embedded once, in the background, and `close()` waits for that work. The in-process `memory` adapter, and a thread store without a vector store, keep vectors in process as before. An adapter that reports no changes logs a warning, since the vectors of its deleted entries would stay. Indexing failures are logged with the `index` operation. Without `contextBuilder`, a run loads the last 20 entries of the thread's active branch.
+- With `contextBuilder` set, each run builds its context as described above. Without `maxTokens` the budget is the context window of the model the run starts on (from the model registry, else the model family, else 8192 tokens, and at most 4096 on Ollama, which serves no more by default, except Ollama Cloud), minus room for the answer (the agent's `maxTokens`, else 15% of the window, at most half of it) and the tool schemas, and below the point where `context` compression would start when it is on, and `strategy` defaults to `'recent'`. The runtime passes that budget once, with `reserveTokens: 0`, and the builder counts the input in it (the `final` partition), so nothing is reserved twice. With `maxTokens` set, the builder's `reserveTokens` applies as usual. Set `maxTokens` to cap the history, and the cost of every turn, on long threads, or to use a larger context your Ollama server runs with (`OLLAMA_CONTEXT_LENGTH`). The agent's instructions are always sent and counted in the budget (`includeSystemPrompt: false` is ignored with a warning), and a run with instructions larger than the budget logs a warning. What memory recalls for the turn (`memoryContext`, with the run's `brief`), the run's `context` and the insights of reflection go into the final user message in front of the input, inside one `<memory_context>` block, so the system prompt and the history stay the same from turn to turn and are read from the prompt cache, and only the input is saved to the thread. Parts that fail to load are passed to `onMemoryError` with the `'load'` operation, and the run goes on without them. Options the runtime cannot serve log a warning at connect: `includeFacts` needs a store that keeps memory items or facts (every built-in thread store keeps items), `includeSemanticContext` needs `memory.embedding` and an embedding store, and `includeGraphContext` has no effect, since the runtime builds no knowledge graph. A Postgres store is also the fact adapter, and the embedding adapter unless `memory.qdrant` is set. The runtime creates the Postgres `embeddings` table with the vector size of `memory.embedding` (768 without one, or the size of an existing table). A Postgres store without pgvector still keeps threads and facts, but is not used for semantic context, and a warning names the reason. With `relevant` or `hybrid` and `memory.embedding`, the runtime keeps a message index in the embedding store (the Postgres store or `memory.qdrant`), so every message is embedded once, in the background, and `close()` waits for that work. The in-process `memory` adapter, and a thread store without a vector store, keep vectors in process as before. An adapter that reports no changes logs a warning, since the vectors of its deleted entries would stay. Indexing failures are logged with the `index` operation. Without `contextBuilder`, a run loads the last 20 entries of the thread's active branch.
 - `memory.embedding` takes a provider's config (`openai`, `ollama`, `google`) or an `EmbeddingService` of your own, which the runtime uses as it is: another provider, or a cache in front of one, as long as it has `embed`, `embedBatch`, `model` and `dimensions`. A service is code, so it goes to `new Cogitator({ memory })`, not into `cogitator.yml` or `defineConfig()`.
 - `'qdrant'` is not a thread store. For semantic context from Qdrant, keep a thread store as `adapter` and add `memory.qdrant` (`url`, `apiKey`, `collection`, `dimensions` matching the embedding model) together with `memory.embedding` and `contextBuilder: { includeSemanticContext: true }`. The runtime searches the collection for semantic context, and with the `relevant` or `hybrid` strategy also keeps the vectors of the thread's messages in it (`sourceType: 'message'`, so the key needs write access). Add facts and documents with your own `QdrantAdapter`. See [Configuration](/docs/getting-started/configuration#memory) for a YAML example.
 - Per run, `useMemory: false` disables memory, `loadHistory: false` / `saveHistory: false` skip loading or saving, and `onMemoryError` is called when a load or save fails. `branch: { fromEntryId, activate? }` runs on a branch of the thread, and `result.memory` says where the run wrote, see [Runs on Branches](/docs/core/cogitator#runs-on-branches).
@@ -487,14 +488,14 @@ await cog.run(agent, { input: 'What is my name?', threadId: 'thread-alice' });
 
 ## Choosing an Adapter
 
-| Adapter  | Persistence  | Embeddings | Facts | Graph                  | Best For                           |
-| -------- | ------------ | ---------- | ----- | ---------------------- | ---------------------------------- |
-| InMemory | None         | Separate¹  | No    | No                     | Testing, short-lived agents        |
-| Redis    | Optional TTL | No         | No    | No                     | Shared fast store, optional expiry |
-| Postgres | Permanent    | pgvector   | Yes   | `PostgresGraphAdapter` | Production with full features      |
-| SQLite   | Permanent    | No         | No    | `SQLiteGraphAdapter`   | Single-process, local apps         |
-| MongoDB  | Permanent    | No         | No    | No                     | Document-oriented workloads        |
-| Qdrant   | Permanent    | Native     | No    | No                     | Dedicated vector search            |
+| Adapter  | Persistence  | Embeddings | Memory items | Facts | Graph                  | Best For                           |
+| -------- | ------------ | ---------- | ------------ | ----- | ---------------------- | ---------------------------------- |
+| InMemory | None         | Separate¹  | Yes          | No    | No                     | Testing, short-lived agents        |
+| Redis    | Optional TTL | No         | Yes          | No    | No                     | Shared fast store, optional expiry |
+| Postgres | Permanent    | pgvector   | Yes          | Yes   | `PostgresGraphAdapter` | Production with full features      |
+| SQLite   | Permanent    | No         | Yes          | No    | `SQLiteGraphAdapter`   | Single-process, local apps         |
+| MongoDB  | Permanent    | No         | Yes          | No    | No                     | Document-oriented workloads        |
+| Qdrant   | Permanent    | Native     | No           | No    | No                     | Dedicated vector search            |
 
 ¹ `InMemoryEmbeddingAdapter` provides in-process vector and keyword search.
 
@@ -584,7 +585,7 @@ An adapter without `getPath` gets the older behaviour: the summary is dated a mi
 
 `summarize` is your function, call any LLM in it. It receives the messages being replaced and, as a second argument, `SummarizeOptions` `{ model, prompt }` taken from the `summaryModel` / `summaryPrompt` of the `compact()` config (either may be `undefined`). `sessions.compact()` throws unless the manager was created with `{ compaction }`.
 
-**`CoreFactsStore`** is a small SQLite key–value store (requires `better-sqlite3`) for always-on facts about the user, with a history of every value:
+**`CoreFactsStore`** is a small key-value store in SQLite (requires `better-sqlite3`) for always-on facts about the user, with a history of every value. Its facts are [memory items](#memory-items):
 
 ```typescript
 import { CoreFactsStore } from '@cogitator-ai/memory';
@@ -599,6 +600,8 @@ const prompt = await coreFacts.formatForPrompt(); // "name: Alice\ntimezone: Eur
 const history = await coreFacts.getHistory('timezone'); // [{ value, setAt }]
 await coreFacts.close();
 ```
+
+Each key is the slot `core:<key>` of `system` items in the store's `scope` (`{ agentId: 'core' }` by default, `new CoreFactsStore({ path, scope })` for another). `set` writes a new item that supersedes the current value, and setting the value a key already holds changes nothing, so it adds no history. `delete` lets the current value go and keeps the history of the key. A database an earlier version wrote, with `core_facts` and `core_facts_history` tables, is moved into memory items on `initialize()`, its history kept, and the old tables are renamed `core_facts_legacy` and `core_facts_history_legacy`.
 
 ### Hierarchical Compaction
 
@@ -693,6 +696,240 @@ Once the conversation of the branch the run wrote, counted from its latest summa
 - A compaction that fails is logged as a warning, and the run keeps its result. The thread is then left alone for a minute, twice as long after each failure in a row up to an hour, so a thread that cannot be compacted does not pay for the attempt on every run.
 
 It is the built-in run middleware `cogitator:memory-compaction`, an [`afterRun`](/docs/core/middleware#afterrun) hook: it runs after the run saved what it said and before `run()` returns, so a run that compacts takes as long as the compaction. It needs an adapter with branches (`getPath`), which every built-in one has.
+
+## Memory Items
+
+A memory item is one thing a conversation established, kept apart from the conversation: a fact, an event, a preference, an instruction, an opinion or a lesson, with the quotes it stands on, who said it, and when it held. Compaction keeps what a thread needs to go on, memory items keep what an agent should know about a user in every thread.
+
+Every built-in conversation adapter stores items (`MemoryItemAdapter`, `isMemoryItemAdapter(adapter)` tells), and `MemoryItems` keeps the rules on top of any of them, so the storage only stores:
+
+```typescript
+import { InMemoryAdapter, MemoryItems, unwrap } from '@cogitator-ai/memory';
+import type { MemoryItemScope } from '@cogitator-ai/types';
+
+const memory = new InMemoryAdapter();
+await memory.connect();
+const items = new MemoryItems({ adapter: memory });
+
+const scope: MemoryItemScope = { agentId: 'concierge', userId: 'ana' };
+const thread = unwrap(await memory.createThread('concierge', { userId: 'ana' }));
+const said = unwrap(
+  await memory.addEntry({
+    threadId: thread.id,
+    message: { role: 'user', content: 'I live in Porto, and I am vegetarian.' },
+    tokenCount: 12,
+  })
+);
+
+const [porto] = await items.write([
+  {
+    kind: 'fact',
+    content: 'Ana lives in Porto',
+    subject: 'Ana',
+    attribute: 'home city',
+    value: 'Porto',
+    trust: 'user',
+    confidence: 0.9,
+    scope,
+    evidence: [{ entryId: said.id, quote: 'I live in Porto' }],
+    verified: true,
+    saidAt: said.createdAt,
+    sessionAt: new Date('2026-03-02'),
+  },
+]);
+porto?.status; // 'active': the user said it, and the quote holds
+```
+
+A `MemoryItem` has its `kind`, its `content` (one statement that reads on its own), and for a state that can change the `subject` it is about, the `attribute` it records and the `value` it gives it. It keeps its `status` (`suggested`, `active`, `stale` or `superseded`), its `trust`, its `confidence` (0 to 1), its `scope`, its `evidence` and whether every quote of it was found in its entry (`verified`), when it was said (`saidAt`) and the date of the session it was said in (`sessionAt`), and the time it is about (`about`: the words, an interval and its precision).
+
+### Slots and Supersession
+
+Writing only adds. `write(items)` writes in order and gives each item its id, status and record time. The writes of one agent's memory go one after another within a process:
+
+- `subject` is linked to an entity the writer's scope sees (see [Entities](#entities)), and with an `attribute` the item gets a slot, the key of the state it records, made of the entity and the attribute, normalized (`slotOf`, `normalizeName`). An item can name a `slot` of its own instead. An item of a slot starts to hold (`validFrom`) at its own `validFrom`, else at the start of the time it is about, else at its session date.
+- An item said again merges into the one already kept instead of being kept twice: one of the same scope and kind, open and not let go, with the same words (`normalizeName`: case, spacing and an article in front aside) or, in a slot, the same value. Values of a slot compare by their text, spacing aside, so case and signs count: `-5` is not `5`, and a corrected spelling is a change. In a slot it merges only when no other value followed it since, so a value said again after it changed is a new state, not the old one brought back with its old date. The evidence of both is kept, the trust and `verified` come together from the better grounded of the two (quotes that hold first, then the more trusted source), so a quote of one source never vouches for another, and a suggestion that now qualifies becomes `active`.
+- After every write of a state, the `active` and `superseded` items of its slot and exact scope are laid out by when each started to hold (then when it was recorded, then by id): each one is closed when the next one starts (`superseded`, `validTo` set to when the next one started, `supersededBy` naming it, which lists it in `supersedes`), and the last one is open and `active`. The layout depends only on the items, so writers that raced, a state told late and a close that failed half way all end in the same timeline. Nothing is deleted, so a question "as of" an earlier date still finds what held then.
+- A state told late, such as "I lived in Braga in 2019" said after the move to Lisbon, fits between the states around it in time and does not close the present one. A state set to start later, such as a move next month, leaves the current one holding until it starts.
+- A state let go (`expire`) keeps its place in the timeline, so the one before it does not come back, and neither `expire` nor `purge` reopens anything.
+- A `suggested` item stays out of the timeline until `activate(itemId)` makes it `active`, such as once the user confirmed it.
+
+```typescript
+const moved = unwrap(
+  await memory.addEntry({
+    threadId: thread.id,
+    message: { role: 'user', content: 'Big news: I moved to Lisbon!' },
+    tokenCount: 8,
+  })
+);
+
+const [lisbon] = await items.write([
+  {
+    kind: 'fact',
+    content: 'Ana moved to Lisbon',
+    subject: 'Ana',
+    attribute: 'home city',
+    value: 'Lisbon',
+    trust: 'user',
+    confidence: 0.9,
+    scope,
+    evidence: [{ entryId: moved.id, quote: 'I moved to Lisbon' }],
+    verified: true,
+    saidAt: moved.createdAt,
+    sessionAt: new Date('2026-09-14'),
+  },
+]);
+
+await items.query({ scope }); // Lisbon: what holds now
+await items.query({ scope, asOf: new Date('2026-06-01') }); // Porto: what held then
+if (lisbon?.slot) await items.history(scope, lisbon.slot); // Porto, then Lisbon
+```
+
+### Trust and Activation
+
+`trust` says who an item comes from: `user` (the person, in their own message), `system` (the application's code), `model` (the model's own words), `tool` (a tool's result) or `web` (a page a tool fetched). An item becomes `active` on its own when it comes from `system`, or from `user` with quotes that hold, at `activationConfidence` or above (default 0.7, `DEFAULT_ACTIVATION_CONFIDENCE`). Every other item stays `suggested`: it is kept and found with `statuses: ['suggested']`, but it is never part of a context, so text a model, a tool or a page wrote cannot plant itself in memory. `status` on the item you write overrides this, for an item the user confirmed. `statusFor(item)` gives the status an item would get.
+
+An opinion said again, when the new statement has quotes that hold, gains 0.1 confidence (`OPINION_GAIN`), up to 1. A `suggested` opinion of a slot from a less trusted source (`web`, then `tool`, `model`, `user` and `system`) does not replace the `active` opinions of a more trusted source there: each of them loses 0.2 (`OPINION_LOSS`) instead.
+
+### Scopes
+
+`scope.agentId` is always set, and `userId`, `projectId` and `threadId` narrow it. A run of a scope sees an item when the agent is the same and each of the item's user, project and thread is either the same or not set (`visibleIn(item, scope)`): an item of one user never reaches another, an item without a user is seen by everyone the agent serves, and an item with a `threadId` only in that thread.
+
+### Time
+
+Item times are bitemporal: `validFrom` and `validTo` say when an item of a slot held in the world, `recordedAt` and `expiredAt` when memory took it in and let it go.
+
+| Method                              | What it does                                                                                                                                                                                                                              |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `query(query)`                      | The items `query.scope` sees that hold now, by default, oldest recorded first                                                                                                                                                             |
+| `history(scope, slot)`              | Every item of a slot, current and closed, by when they started to hold                                                                                                                                                                    |
+| `activate(itemId)`                  | Makes a `suggested` item `active`, closing what it follows                                                                                                                                                                                |
+| `markStale(itemIds)`                | Marks items as no longer trusted to hold: kept, found with `statuses: ['stale']`                                                                                                                                                          |
+| `expire(itemIds, at?)`              | Lets items go at `at` (now by default): kept, but found only by a `knownAt` before then. A state let go keeps its place in the timeline, so the one before it stays closed. An item with an `expiredAt` still to come is found until then |
+| `purge(itemIds)`                    | Deletes items for good, such as everything a user asked to be forgotten                                                                                                                                                                   |
+| `get(itemId)`                       | One item, or `null`                                                                                                                                                                                                                       |
+| `link(scope, name, seenAt?, type?)` | The entity a name stands for, made when there is none yet                                                                                                                                                                                 |
+
+`MemoryItemQuery` takes the `scope` and narrows it with `kinds`, `statuses` (`active` and `superseded` by default), `slots` and `entityIds`. Which state of a slot holds is read from its times, not its status:
+
+- `asOf` is the moment in the world the answer is for: of the items of a slot, those that held then (`validFrom` not after it, `validTo` after it). It defaults to `knownAt`, so a state another one closed is left out, and a state set to close later still holds until then.
+- `knownAt` is the moment of memory the answer is for: the items memory had then, those it let go later included. Now by default, so an item memory let go is left out.
+- `includeClosed` keeps the items that no longer hold, for a history.
+- `text` keeps the items whose content or value holds every word of it, matched without case, and `limit` the newest that many.
+
+### Entities
+
+`link(scope, name, seenAt?, type?)` finds the entity a name stands for, matching its name and aliases normalized (`normalizeName`: case, spacing, quotes and an article in front aside), among the entities the scope sees: its own, or a broader one such as the user's for a thread, so a slot of an entity is the same slot in a thread and in the user's memory. When there is none it makes one in the scope. It moves the entity's `lastSeenAt` and fills its `type` when it has none, and adds no aliases. When writers raced and made two entities for one name, every one of them settles on the first made. `write` links the `subject` of every item this way. A `MemoryEntity` has its `id`, `scope`, `name`, `aliases`, an optional `type` (such as `person` or `place`), and when it was first and last seen. Items about it carry its `entityId`, and `query({ scope, entityIds })` finds them.
+
+### Dates
+
+A model is good at marking up "last Friday" and bad at the calendar, so it only marks up the words and `resolveTime(expression, sessionAt, timeZone?)` works out the interval:
+
+```typescript
+import { resolveTime } from '@cogitator-ai/memory';
+
+const sessionAt = new Date('2026-10-21T15:00:00Z'); // a Wednesday
+
+resolveTime(
+  { text: 'last Friday', weekday: { day: 'friday', amount: -1 } },
+  sessionAt,
+  'Europe/Lisbon'
+);
+// { text: 'last Friday', start: 2026-10-15T23:00:00.000Z, end: 2026-10-16T23:00:00.000Z, precision: 'day' }
+
+resolveTime(
+  { text: 'last month', relative: { unit: 'month', amount: -1 } },
+  sessionAt,
+  'Europe/Lisbon'
+);
+// September 2026 in Lisbon, precision 'month'
+
+resolveTime({ text: 'a while ago' }, sessionAt); // { text: 'a while ago', precision: 'approximate' }
+```
+
+A `TimeExpression` has the `text` and one of `date` (`YYYY`, `YYYY-MM`, `YYYY-MM-DD` or `YYYY-MM-DDTHH:mm`, precision `year`, `month`, `day` or `instant`), `relative` (`{ unit: 'day' | 'week' | 'month' | 'year', amount }`, a shift from the session date, a week starting on Monday) or `weekday` (`{ day, amount }`: `-1` the last one before the session date, `1` the next one after it, `0` the one of its week). A date the words give wins over a shift. `start` is inclusive and `end` exclusive, both in the time zone given (an IANA name, UTC by default). Words that name nothing the code can place keep only their text, with precision `approximate`.
+
+### Extraction
+
+`MemoryExtractor` reads entries with a model and writes the items they establish:
+
+```typescript
+import { MemoryExtractor } from '@cogitator-ai/memory';
+
+const extractor = new MemoryExtractor({
+  items,
+  summarize: async (messages, { model, prompt } = {}) => {
+    const response = await llm.chat({
+      model: model ?? 'gemini-3.5-flash-lite',
+      messages: [{ role: 'system', content: prompt ?? '' }, ...messages],
+    });
+    return response.content;
+  },
+  windowTokens: 4000, // conversation one call reads (default)
+  prompt: 'Mind diets and allergies.', // added to the extraction prompt
+});
+
+const entries = unwrap(await memory.getPath!({ threadId: thread.id, includeToolCalls: true }));
+const written = await extractor.extract(entries, { scope, timeZone: 'Europe/Lisbon' });
+```
+
+- `extract(entries, context)` leaves out system and `compaction` entries and reads the rest in windows of about `windowTokens` tokens, cut as compaction chapters are, one model call each. The model gets the window as a numbered transcript, each message with the date it was written, and `EXTRACTION_PROMPT` as its instructions, with the date of the session (`sessionLine`, such as `The session took place on Wednesday, 2026-10-21 (Europe/Lisbon).`) and `prompt` after it. Your `summarize` must send the prompt it is given as its instructions, as for compaction.
+- The answer is a JSON array of items, each with its `kind`, `content`, `subject`, `attribute`, `value`, `confidence`, the time words marked up as a `TimeExpression` and its `evidence` as message numbers and quotes. A field that is `null`, blank or does not fit is read as absent, and an item that does not fit is left out. Only an answer that holds no JSON array is asked for again, up to three tries in all, and then `extract` throws.
+- `parseExtraction(answer, window, context)` checks every item: each quote is tied to the entry its number names and checked against it ([lineage](#lineage)), and an item is `verified` only when it has quotes and all of them hold. Its trust is that of the least trusted entry one of its holding quotes is in (`trustOfEntry`: a user message is `user`, a tool result `tool`, or `web` for a tool whose name says it fetches pages, such as `web_search` or `fetch_url`, and an assistant message `model`), and `model` when no quote holds, so a statement a page or the assistant made is never the user's, whatever else is quoted with it. Its time words are resolved in `context.timeZone` from the date of the first entry it quotes, the message that said them, else from the session date (`context.sessionAt`, the time of the window's last entry by default), and that date is its `saidAt` and `sessionAt`.
+- The items are written in order through `MemoryItems`, so an item said again merges and a newer state closes the one it follows. Nothing is updated or deleted on the model's word. `extract` returns the items as written, and `read(window, context)` the checked items of one window, unwritten.
+
+### Extraction After a Run
+
+`memory.extraction` (`MemoryExtractionConfig`) has a Cogitator extract memory items from a run's conversation once the run is done:
+
+```typescript
+const cog = new Cogitator({
+  memory: {
+    adapter: 'postgres',
+    postgres: { connectionString: process.env.DATABASE_URL! },
+    contextBuilder: { strategy: 'recent', includeFacts: true },
+    extraction: {
+      model: 'google/gemini-3.5-flash-lite', // default: the model the run ended on
+      scope: 'user', // default
+      timeZone: 'Europe/Lisbon', // default: UTC
+      windowTokens: 4000, // default
+      activationConfidence: 0.7, // default
+      prompt: 'Mind diets and allergies.',
+      afterExtract: (kept) => console.log(kept.map((item) => item.content)),
+    },
+  },
+});
+
+await cog.run(agent, {
+  input: 'I moved from Porto to Lisbon last month.',
+  threadId: 'ana-1',
+  userId: 'ana',
+});
+// the next run of Ana's, in any thread, knows she lives in Lisbon
+```
+
+- The entries read are those of the thread's active branch written since the last extraction, tool calls included. The thread keeps the last entry extracted in `metadata.memoryExtraction` (`EXTRACTION_CURSOR`, `{ through, at }`). For a thread's first extraction, or when that entry is not on the run's branch, the run's own entries are read. A first extraction that fails stores where it started (`through` the entry the run went after, `null` for the thread's start), so the next one takes those entries too.
+- `scope` decides who the items belong to: `user` (default) the run's user (its `userId`, else the thread's `metadata.userId`), `agent` everyone the agent talks to, and `thread` the thread alone. With `user` a run without a user keeps its items in the thread's scope, so visitors never share them.
+- Relative dates are resolved in the thread's `metadata.timeZone` when it is a valid IANA zone (`isTimeZone`), else in `timeZone`, else in UTC.
+- `windowTokens` must be a whole number above 0 and `activationConfidence` from 0 to 1, else building the middleware throws. `afterExtract(items)` gets the items an extraction wrote, and an error it throws is logged.
+- The extraction calls are counted in the run's costs (`getCostSummary()`) and in the `usage` it returns, and they stop with the run's `signal`: an aborted run is not extracted.
+- A run that wrote aside of the thread's active branch, and a store without memory items or branches, are left alone.
+- An extraction that fails is logged as a warning, and the run keeps its result. The thread is then left alone for a minute, twice as long after each failure in a row up to an hour.
+
+It is the built-in run middleware `cogitator:memory-extraction` (`memoryExtractionMiddleware`), an [`afterRun`](/docs/core/middleware#afterrun) hook that runs before `cogitator:memory-compaction`, so a thread compacted after a run has its items taken first. `run()` returns once it is done. `MemoryExtractionConfigSchema` in `@cogitator-ai/config` validates the settings YAML can hold, `afterExtract` is set in code.
+
+### Memory Items in the Context
+
+With `includeFacts`, a context builder whose store keeps memory items (`ContextBuilderDeps.memoryItems`, which a Cogitator sets for every built-in store) fills the `facts` partition with the items the run's agent, user and thread see that hold now, in place of the facts of a `FactAdapter`. A slot shows one state: the one that started to hold last, of the narrowest scope (thread, then project, then user) when two started together, since a run sees a slot's states of its thread, its user and the agent at once. Instructions come first, then preferences, facts, opinions, events and lessons, newest first within a kind, and an item that superseded another names the value it replaced, when the run still sees that value and memory did not let it go:
+
+```text
+Known facts:
+- Ana is vegetarian
+- Ana moved to Lisbon (previously: Porto)
+```
+
+Suggested and stale items and closed states stay out. On Postgres the facts written through `FactAdapter` are memory items too, so they show up the same way.
+
+The memory tools `remember`, `recall` and `forget` write, search and let go memory items when given them, and given the thread store, `remember` keeps a fact as the user's only when its quote is in a user message. `remember` writes to the user's memory, or the thread's for a run without a user, and `recall` and `forget` see the user's items and the thread's, see [Memory Tools](/docs/channels/smart-memory#memory-tools).
 
 ## Installation
 

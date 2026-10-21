@@ -9,18 +9,18 @@ description: '@cogitator-ai/test-utils — a scriptable mock LLM backend, a reco
 pnpm add -D @cogitator-ai/test-utils
 ```
 
-| Export                                                                  | What it is                                                                                |
-| ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `MockLLMBackend`, `createMockLLMBackend()`                              | An `LLMBackend` that answers with scripted responses and records every request            |
-| `MockMemoryAdapter`, `createMockMemoryAdapter()`                        | An in-process `MemoryAdapter` that records every method call                              |
-| `createTestAgentConfig()`, `createTestAgent()`                          | Agent configs and agent-shaped objects with test defaults                                 |
-| `createUserMessage()`, `createToolCall()`, …                            | Message, tool call and tool result fixtures                                               |
-| `createTestTool()`, `createCalculatorTool()`, …                         | Tool-shaped fixtures with JSON Schema parameters                                          |
-| `createMockRunResult()`, …                                              | `RunResult` fixtures for code that consumes run results                                   |
-| `collectStreamContent()`, …                                             | Drain `ChatStreamChunk` streams                                                           |
-| `waitFor()`, `eventually()`, `delay()`, `withTimeout()`                 | Async test helpers                                                                        |
-| `backendConformanceCases()`, `startFakeProvider()`, wires               | The [backend conformance](/docs/testing/backend-conformance) kit for backends of your own |
-| `memoryAdapterConformanceCases()`, `embeddingAdapterConformanceCases()` | [Conformance suites](#conformance-suites) for memory adapters and embedding stores        |
+| Export                                                                                                         | What it is                                                                                             |
+| -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `MockLLMBackend`, `createMockLLMBackend()`                                                                     | An `LLMBackend` that answers with scripted responses and records every request                         |
+| `MockMemoryAdapter`, `createMockMemoryAdapter()`                                                               | An in-process `MemoryAdapter` that records every method call                                           |
+| `createTestAgentConfig()`, `createTestAgent()`                                                                 | Agent configs and agent-shaped objects with test defaults                                              |
+| `createUserMessage()`, `createToolCall()`, …                                                                   | Message, tool call and tool result fixtures                                                            |
+| `createTestTool()`, `createCalculatorTool()`, …                                                                | Tool-shaped fixtures with JSON Schema parameters                                                       |
+| `createMockRunResult()`, …                                                                                     | `RunResult` fixtures for code that consumes run results                                                |
+| `collectStreamContent()`, …                                                                                    | Drain `ChatStreamChunk` streams                                                                        |
+| `waitFor()`, `eventually()`, `delay()`, `withTimeout()`                                                        | Async test helpers                                                                                     |
+| `backendConformanceCases()`, `startFakeProvider()`, wires                                                      | The [backend conformance](/docs/testing/backend-conformance) kit for backends of your own              |
+| `memoryAdapterConformanceCases()`, `memoryItemAdapterConformanceCases()`, `embeddingAdapterConformanceCases()` | [Conformance suites](#conformance-suites) for memory adapters, memory item stores and embedding stores |
 
 ## MockLLMBackend
 
@@ -208,7 +208,7 @@ Besides the `MemoryAdapter` methods it has `getCalls()` (`{ method, args }[]`), 
 
 ## Conformance Suites
 
-`memoryAdapterConformanceCases` and `embeddingAdapterConformanceCases` check a memory adapter or an embedding store against the contract the built-in ones keep (see [the contract](/docs/memory/adapters#the-contract)). They are plain functions that return cases, so any test runner can run them:
+`memoryAdapterConformanceCases`, `memoryItemAdapterConformanceCases` and `embeddingAdapterConformanceCases` check a memory adapter, a store of memory items or an embedding store against the contract the built-in ones keep (see [the contract](/docs/memory/adapters#the-contract) and [memory items](/docs/memory/adapters#memory-items)). They are plain functions that return cases, so any test runner can run them:
 
 ```typescript
 import { describe, it } from 'vitest';
@@ -231,7 +231,7 @@ describe('MyAdapter conformance', () => {
 });
 ```
 
-Each case touches only threads or embeddings of its own, so one database can serve them all. `skip` leaves a case out with a reason. The embedding suite also takes the `dimensions` the store was made for.
+Each case touches only threads, agents or embeddings of its own, so one database can serve them all. The memory item suite takes the same `create` and `release` and checks that an item reads back field for field (dates as `Date`s, a missing field absent, never `null`), that `findItems` filters, orders and leaves out items let go as the built-in stores do, and the entity index by name. `skip` leaves a case out with a reason. The embedding suite also takes the `dimensions` the store was made for.
 
 ## Fixtures
 
