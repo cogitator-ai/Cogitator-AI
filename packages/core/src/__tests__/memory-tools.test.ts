@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createMemoryTools } from '../tools/memory-tools';
 import type { MemoryToolsConfig } from '../tools/memory-tools';
 import { createToolContext } from './helpers/tool-context';
+import { InMemoryAdapter, MemoryItems } from '@cogitator-ai/memory';
 
 /** The memory tools by name; createMemoryTools returns them as a typed tuple. */
 function byName(tools: ReturnType<typeof createMemoryTools>) {
@@ -339,6 +340,97 @@ describe('createMemoryTools', () => {
 
       expect(mocks.mockGraph.deleteNode).not.toHaveBeenCalled();
       expect(result).toEqual({ deleted: 0, items: [] });
+    });
+  });
+
+  describe('grounded in the conversation', () => {
+    async function conversation() {
+      const adapter = new InMemoryAdapter({ provider: 'memory' });
+      await adapter.createThread('a1', {}, 't1');
+      await adapter.addEntry({
+        threadId: 't1',
+        message: { role: 'user', content: 'Please remember: my sister is called Rita.' },
+        tokenCount: 1,
+      });
+      await adapter.addEntry({
+        threadId: 't1',
+        message: { role: 'assistant', content: 'Your favourite colour must be blue.' },
+        tokenCount: 1,
+      });
+      return { adapter, items: new MemoryItems({ adapter }) };
+    }
+    const context = createToolContext({ threadId: 't1', userId: 'u1' });
+
+    it("keeps a fact as the user's when its quote is in a user message", async () => {
+      const { adapter, items } = await conversation();
+      const { remember } = byName(
+        createMemoryTools(createConfig(mocks, { items, memory: adapter }))
+      );
+
+      const result = await remember.execute(
+        {
+          fact: "The user's sister is called Rita",
+          quote: 'my sister is called Rita',
+          isCoreFact: true,
+          coreFactKey: 'sister',
+        },
+        context
+      );
+
+      expect(result).toMatchObject({ saved: true, status: 'active' });
+      expect(mocks.mockGraph.addNode).toHaveBeenCalledWith(
+        expect.objectContaining({ source: 'user', confidence: 1 })
+      );
+      expect(mocks.mockCoreFacts.set).toHaveBeenCalledWith(
+        'sister',
+        "The user's sister is called Rita"
+      );
+      const [kept] = await items.query({ scope: { agentId: 'a1', userId: 'u1' } });
+      expect(kept).toMatchObject({ trust: 'user', verified: true, status: 'active' });
+    });
+
+    it('keeps a fact only as a suggestion when the user never said it', async () => {
+      const { adapter, items } = await conversation();
+      const { remember } = byName(
+        createMemoryTools(createConfig(mocks, { items, memory: adapter }))
+      );
+
+      const result = await remember.execute(
+        {
+          fact: "The user's favourite colour is blue",
+          quote: 'Your favourite colour must be blue',
+          isCoreFact: true,
+          coreFactKey: 'colour',
+        },
+        context
+      );
+
+      expect(result).toMatchObject({ saved: true, status: 'suggested', coreFact: false });
+      expect(mocks.mockGraph.addNode).toHaveBeenCalledWith(
+        expect.objectContaining({ source: 'inferred' })
+      );
+      expect(mocks.mockCoreFacts.set).not.toHaveBeenCalled();
+      expect(await items.query({ scope: { agentId: 'a1', userId: 'u1' } })).toEqual([]);
+    });
+
+    it('recalls memory items and lets forgotten ones go', async () => {
+      const { adapter, items } = await conversation();
+      const tools = byName(createMemoryTools(createConfig(mocks, { items, memory: adapter })));
+      await tools.remember.execute(
+        { fact: 'Sister: Rita', quote: 'my sister is called Rita' },
+        context
+      );
+
+      const recalled = await tools.recall.execute({ query: 'rita' }, context);
+      expect(recalled.results).toContainEqual(
+        expect.objectContaining({ fact: 'Sister: Rita', type: 'memory' })
+      );
+
+      const forgotten = await tools.forget.execute({ query: 'rita' }, context);
+      expect(forgotten).toMatchObject({ forgotten: ['Sister: Rita'] });
+      expect(await items.query({ scope: { agentId: 'a1', userId: 'u1' }, text: 'rita' })).toEqual(
+        []
+      );
     });
   });
 });

@@ -1,9 +1,15 @@
 import { z } from 'zod';
+import { verifyEvidence, type MemoryItems } from '@cogitator-ai/memory';
 import { tool, toolset } from '../tool';
 import type {
+  BaseToolContext,
+  Evidence,
   GraphAdapter,
   GraphNode,
   GraphSemanticSearchOptions,
+  MemoryAdapter,
+  MemoryEntry,
+  MemoryItemScope,
   NodeQuery,
 } from '@cogitator-ai/types';
 
@@ -18,7 +24,22 @@ export interface MemoryToolsConfig {
   coreFacts?: CoreFactsLike;
   embeddingFn?: (text: string) => Promise<number[]>;
   agentId: string;
+  /**
+   * Memory items `remember` writes to, `recall` searches and `forget` lets go, scoped to the
+   * calling run's user
+   */
+  items?: MemoryItems;
+  /**
+   * The conversations `remember` checks its `quote` against. With it, a fact counts as the
+   * user's (graph `source: 'user'`, an `active` memory item, a core fact) only when the quote is
+   * found word for word in a user message of the run's thread, so a model cannot plant what the
+   * user never said. Without it nothing can be checked and every fact is kept as before.
+   */
+  memory?: Pick<MemoryAdapter, 'getEntries'>;
 }
+
+/** User messages of a thread `remember` looks for its quote in, the newest */
+const QUOTE_LOOKBACK = 50;
 
 const rememberParams = z.object({
   fact: z.string().describe('The fact or piece of information to remember'),
@@ -28,6 +49,10 @@ const rememberParams = z.object({
     .string()
     .optional()
     .describe('Key for the core fact (required if isCoreFact is true)'),
+  quote: z
+    .string()
+    .optional()
+    .describe("The user's own words that state the fact, copied exactly from their message"),
 });
 
 const recallParams = z.object({
@@ -39,18 +64,42 @@ const forgetParams = z.object({
 });
 
 export function createMemoryTools(config: MemoryToolsConfig) {
-  const { graphAdapter, coreFacts, embeddingFn, agentId } = config;
+  const { graphAdapter, coreFacts, embeddingFn, agentId, items, memory } = config;
+
+  const scopeOf = (context: BaseToolContext): MemoryItemScope => ({
+    agentId,
+    ...(context.userId !== undefined && { userId: context.userId }),
+  });
+
+  /** The user message of the run's thread `quote` is found in, word for word */
+  const quotedIn = async (
+    quote: string | undefined,
+    context: BaseToolContext
+  ): Promise<MemoryEntry | undefined> => {
+    if (!memory || !quote?.trim() || !context.threadId) return undefined;
+    const entries = await memory.getEntries({ threadId: context.threadId, limit: QUOTE_LOOKBACK });
+    if (!entries.success) return undefined;
+    return [...entries.data]
+      .reverse()
+      .find(
+        (entry) =>
+          entry.message.role === 'user' &&
+          verifyEvidence({ entryId: entry.id, quote }, entry) === 'verified'
+      );
+  };
 
   const remember = tool({
     name: 'remember',
     description:
       'Save a fact or piece of information to long-term memory. Use this when the user shares important information that should be remembered across conversations.',
     parameters: rememberParams,
-    execute: async ({ fact, category, isCoreFact, coreFactKey }) => {
+    execute: async ({ fact, category, isCoreFact, coreFactKey, quote }, context) => {
       if (isCoreFact && !coreFactKey) {
         return { saved: false, error: 'coreFactKey is required when isCoreFact is true' };
       }
 
+      const said = await quotedIn(quote, context);
+      const usersOwn = memory ? said !== undefined : true;
       const embedding = embeddingFn ? await embeddingFn(fact) : undefined;
 
       const properties: Record<string, unknown> = {};
@@ -63,19 +112,48 @@ export function createMemoryTools(config: MemoryToolsConfig) {
         aliases: [],
         properties,
         embedding,
-        confidence: 1,
-        source: 'user',
+        confidence: usersOwn ? 1 : 0.6,
+        source: usersOwn ? 'user' : 'inferred',
+        ...(said && quote && { evidence: [{ entryId: said.id, quote }] }),
       });
 
       if (!result.success) {
         return { saved: false, error: result.error };
       }
 
-      if (isCoreFact && coreFactKey && coreFacts) {
+      const now = new Date();
+      const evidence: Evidence[] = said && quote ? [{ entryId: said.id, quote }] : [];
+      const [item] = items
+        ? await items.write([
+            {
+              kind: 'fact',
+              content: fact,
+              trust: usersOwn && said ? 'user' : 'model',
+              confidence: 0.9,
+              scope: scopeOf(context),
+              evidence,
+              verified: evidence.length > 0,
+              saidAt: said?.createdAt ?? now,
+              sessionAt: now,
+              ...(category && { metadata: { category } }),
+            },
+          ])
+        : [];
+
+      const coreFact = Boolean(isCoreFact && coreFactKey && coreFacts && usersOwn);
+      if (coreFact && coreFactKey && coreFacts) {
         await coreFacts.set(coreFactKey, fact);
       }
 
-      return { saved: true, id: result.data.id };
+      return {
+        saved: true,
+        id: result.data.id,
+        ...(item && { status: item.status }),
+        ...(!usersOwn && {
+          note: "Kept as a suggestion: the quote was not found in the user's messages",
+        }),
+        ...(isCoreFact && !coreFact && coreFacts && { coreFact: false }),
+      };
     },
   });
 
@@ -84,9 +162,15 @@ export function createMemoryTools(config: MemoryToolsConfig) {
     description:
       'Search long-term memory for relevant facts and information. Returns both semantic matches from the knowledge graph and core facts.',
     parameters: recallParams,
-    execute: async ({ query }) => {
+    execute: async ({ query }, context) => {
       type ResultItem = { fact: string; type: string; confidence: number };
       const results: ResultItem[] = [];
+
+      if (items) {
+        for (const item of await items.query({ scope: scopeOf(context), text: query, limit: 10 })) {
+          results.push({ fact: item.content, type: 'memory', confidence: item.confidence });
+        }
+      }
 
       if (embeddingFn) {
         const vector = await embeddingFn(query);
@@ -134,7 +218,9 @@ export function createMemoryTools(config: MemoryToolsConfig) {
     description:
       'Delete facts from long-term memory that match the given pattern. Use with care as this permanently removes information.',
     parameters: forgetParams,
-    execute: async ({ query }) => {
+    execute: async ({ query }, context) => {
+      const expired = items ? await items.query({ scope: scopeOf(context), text: query }) : [];
+      if (items && expired.length > 0) await items.expire(expired.map((item) => item.id));
       const nodeQuery: NodeQuery = {
         agentId,
         namePattern: query,
@@ -142,21 +228,24 @@ export function createMemoryTools(config: MemoryToolsConfig) {
       const found = await graphAdapter.queryNodes(nodeQuery);
 
       const nodes: GraphNode[] = found.success ? found.data : [];
-      const items: string[] = [];
+      const deletedNames: string[] = [];
       const failed: Array<{ id: string; name: string; error: string }> = [];
 
       for (const node of nodes) {
         const result = await graphAdapter.deleteNode(node.id);
         if (result.success) {
-          items.push(node.name);
+          deletedNames.push(node.name);
         } else {
           failed.push({ id: node.id, name: node.name, error: result.error });
         }
       }
 
-      return failed.length > 0
-        ? { deleted: items.length, items, failed }
-        : { deleted: items.length, items };
+      return {
+        deleted: deletedNames.length,
+        items: deletedNames,
+        ...(failed.length > 0 && { failed }),
+        ...(expired.length > 0 && { forgotten: expired.map((item) => item.content) }),
+      };
     },
   });
 

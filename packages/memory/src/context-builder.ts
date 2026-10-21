@@ -18,10 +18,13 @@ import type {
   GraphNode,
   MemoryAdapter,
   FactAdapter,
+  MemoryItemKind,
+  MemoryItemTrust,
   EmbeddingAdapter,
   EmbeddingService,
   MemoryResult,
 } from '@cogitator-ai/types';
+import type { MemoryItems } from './memory-items';
 import type { GraphContextBuilder } from './knowledge-graph/graph-context-builder';
 import { readCompactedHistory } from './compaction';
 import {
@@ -89,6 +92,75 @@ export function withoutTurnContext(text: string): string {
   if (!text.startsWith(TURN_CONTEXT_OPEN)) return text;
   const end = text.indexOf(TURN_CONTEXT_CLOSE);
   return end === -1 ? text : text.slice(end + TURN_CONTEXT_CLOSE.length).replace(/^\s+/, '');
+}
+
+/** The order kinds of memory items go into a context in: what steers the answer first */
+const KIND_ORDER: Record<MemoryItemKind, number> = {
+  instruction: 0,
+  preference: 1,
+  fact: 2,
+  opinion: 3,
+  event: 4,
+  lesson: 5,
+};
+
+const SOURCE_OF_TRUST: Record<MemoryItemTrust, Fact['source']> = {
+  user: 'user',
+  system: 'system',
+  model: 'inferred',
+  tool: 'inferred',
+  web: 'inferred',
+};
+
+/** A line of the `Known facts` block, with the value a fact replaced when it replaced one */
+function factLine(fact: Fact): string {
+  const previously = fact.metadata?.previously;
+  return typeof previously === 'string' && previously
+    ? `- ${fact.content} (previously: ${previously})`
+    : `- ${fact.content}`;
+}
+
+/**
+ * The memory items of the run's agent, user and thread that hold now, as facts: instructions and
+ * preferences first, newest first within a kind, each with the value of the item it superseded
+ */
+async function loadItemFacts(items: MemoryItems, options: BuildContextOptions): Promise<Fact[]> {
+  const current = await items.query({
+    scope: {
+      agentId: options.agentId,
+      ...(options.userId !== undefined && { userId: options.userId }),
+      threadId: options.threadId,
+    },
+  });
+  const ordered = [...current].sort(
+    (a, b) =>
+      KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || b.recordedAt.getTime() - a.recordedAt.getTime()
+  );
+  return Promise.all(
+    ordered.map(async (item): Promise<Fact> => {
+      const replaced = item.supersedes?.at(-1);
+      const before = replaced ? await items.get(replaced) : null;
+      const previously = before ? (before.value ?? before.content) : undefined;
+      return {
+        id: item.id,
+        agentId: item.scope.agentId,
+        content: item.content,
+        category: item.kind,
+        confidence: item.confidence,
+        source: SOURCE_OF_TRUST[item.trust],
+        createdAt: item.recordedAt,
+        updatedAt: item.recordedAt,
+        evidence: item.evidence,
+        metadata: {
+          ...item.metadata,
+          ...(item.scope.userId !== undefined && { userId: item.scope.userId }),
+          ...(item.slot !== undefined && { slot: item.slot }),
+          trust: item.trust,
+          ...(previously !== undefined && { previously }),
+        },
+      };
+    })
+  );
 }
 
 /** What a block of a context holds */
@@ -175,6 +247,11 @@ function isVisibleTo(
 export interface ContextBuilderDeps {
   memoryAdapter: MemoryAdapter;
   factAdapter?: FactAdapter;
+  /**
+   * Memory items, read for the facts in place of `factAdapter`: the items the run's agent,
+   * user and thread see that hold now
+   */
+  memoryItems?: MemoryItems;
   embeddingAdapter?: EmbeddingAdapter;
   embeddingService?: EmbeddingService;
   graphContextBuilder?: GraphContextBuilder;
@@ -313,7 +390,7 @@ export class ContextBuilder {
         partition: 'facts',
         blocks: facts.map((fact) => ({
           value: { kind: 'fact', fact },
-          tokens: countTokens(`- ${fact.content}`),
+          tokens: countTokens(factLine(fact)),
           text: fact.content,
           sourceId: fact.id,
         })),
@@ -465,9 +542,7 @@ export class ContextBuilder {
       .find((value) => value.kind === 'graph')?.context;
     const turnBlocks = [
       ...textsOf('brief'),
-      ...(facts.length > 0
-        ? [`Known facts:\n${facts.map((f) => `- ${f.content}`).join('\n')}`]
-        : []),
+      ...(facts.length > 0 ? [`Known facts:\n${facts.map(factLine).join('\n')}`] : []),
       ...(semanticResults.length > 0
         ? [`Relevant context:\n${semanticResults.map((r) => `- ${r.content}`).join('\n')}`]
         : []),
@@ -536,6 +611,7 @@ export class ContextBuilder {
 
   /** Facts of the agent visible to the user */
   private async loadFacts(options: BuildContextOptions): Promise<Fact[]> {
+    if (this.deps.memoryItems) return loadItemFacts(this.deps.memoryItems, options);
     if (!this.deps.factAdapter) return [];
     const all = unwrap(await this.deps.factAdapter.getFacts(options.agentId), 'getFacts');
     return all.filter((fact) => isVisibleTo(fact.metadata, options.agentId, options.userId));

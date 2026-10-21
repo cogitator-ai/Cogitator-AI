@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ContextBuilder } from '../context-builder';
 import { InMemoryAdapter } from '../adapters/memory';
+import { MemoryItems } from '../memory-items';
 import type { Message, GraphNode, GraphEdge, GraphContext } from '@cogitator-ai/types';
 import type { GraphContextBuilder } from '../knowledge-graph/graph-context-builder';
 
@@ -246,6 +247,74 @@ describe('ContextBuilder', () => {
       expect(result.semanticResults).toHaveLength(0);
       expect(result.metadata.factsIncluded).toBe(0);
       expect(result.metadata.semanticResultsIncluded).toBe(0);
+    });
+  });
+
+  describe('memory items as facts', () => {
+    it('lists what holds for the user, instructions first, with the value a fact replaced', async () => {
+      const items = new MemoryItems({ adapter });
+      const said = {
+        trust: 'user' as const,
+        confidence: 0.9,
+        evidence: [],
+        verified: true,
+        saidAt: new Date('2026-01-01'),
+      };
+      await items.write([
+        {
+          ...said,
+          kind: 'fact',
+          content: 'Ana lives in Porto',
+          subject: 'Ana',
+          attribute: 'city',
+          value: 'Porto',
+          scope: { agentId: 'agent1', userId: 'u1' },
+          sessionAt: new Date('2026-01-01'),
+        },
+        {
+          ...said,
+          kind: 'fact',
+          content: 'Ana lives in Lisbon',
+          subject: 'Ana',
+          attribute: 'city',
+          value: 'Lisbon',
+          scope: { agentId: 'agent1', userId: 'u1' },
+          sessionAt: new Date('2026-01-10'),
+        },
+        {
+          ...said,
+          kind: 'instruction',
+          content: 'Answer Ana in Portuguese',
+          scope: { agentId: 'agent1', userId: 'u1' },
+          sessionAt: new Date('2026-01-01'),
+        },
+        {
+          ...said,
+          kind: 'fact',
+          content: 'Bo lives in Oslo',
+          scope: { agentId: 'agent1', userId: 'u2' },
+          sessionAt: new Date('2026-01-01'),
+        },
+      ]);
+      const builder = new ContextBuilder(
+        { maxTokens: 1000, strategy: 'recent', includeFacts: true },
+        { memoryAdapter: adapter, memoryItems: items }
+      );
+
+      const result = await builder.build({
+        threadId,
+        agentId: 'agent1',
+        userId: 'u1',
+        currentInput: 'hi',
+      });
+
+      expect(result.facts.map((fact) => fact.content)).toEqual([
+        'Answer Ana in Portuguese',
+        'Ana lives in Lisbon',
+      ]);
+      expect(result.memoryContext).toContain(
+        'Known facts:\n- Answer Ana in Portuguese\n- Ana lives in Lisbon (previously: Porto)'
+      );
     });
   });
 
