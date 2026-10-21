@@ -131,6 +131,38 @@ export function sameValue(a: string, b: string): boolean {
   return plain(a) === plain(b);
 }
 
+/** The order states of a slot follow each other in: when each started to hold, then recorded */
+function byStart(a: MemoryItem, b: MemoryItem): number {
+  return (time(a.validFrom) ?? 0) - (time(b.validFrom) ?? 0) || byRecorded(a, b);
+}
+
+/**
+ * When each state among `items` stops holding: when the next state of its slot and exact scope
+ * starts, among the `active` and `superseded` ones (those let go keep their place). A state with
+ * no state after it is not in the map.
+ */
+function timelineEnds(items: readonly MemoryItem[]): Map<string, number> {
+  const slots = new Map<string, MemoryItem[]>();
+  for (const item of items) {
+    if (item.slot === undefined || (item.status !== 'active' && item.status !== 'superseded')) {
+      continue;
+    }
+    const key = [item.slot, item.scope.userId, item.scope.projectId, item.scope.threadId].join(
+      '\u0000'
+    );
+    slots.set(key, [...(slots.get(key) ?? []), item]);
+  }
+  const ends = new Map<string, number>();
+  for (const states of slots.values()) {
+    states.sort(byStart);
+    for (const [at, item] of states.entries()) {
+      const next = states[at + 1];
+      if (next) ends.set(item.id, time(next.validFrom) ?? next.recordedAt.getTime());
+    }
+  }
+  return ends;
+}
+
 /** Whether `a` and `b` are laid out the same in the timeline of their slot */
 function sameState(a: MemoryItem, b: MemoryItem): boolean {
   return (
@@ -413,7 +445,7 @@ export class MemoryItems {
         })
       )
         .filter((item) => sameScope(item.scope, scope))
-        .sort((a, b) => (time(a.validFrom) ?? 0) - (time(b.validFrom) ?? 0) || byRecorded(a, b));
+        .sort(byStart);
       let changed = false;
       for (const [at, item] of states.entries()) {
         const next = states[at + 1];
@@ -488,8 +520,10 @@ export class MemoryItems {
 
   /**
    * Items `query.scope` sees, see {@link MemoryItemQuery}, oldest recorded first. Which state of
-   * a slot holds is read from the times, not the status, so a state that a later one is set to
-   * close in the future still holds until then.
+   * a slot holds is worked out from the states memory knew at `knownAt`, laid out in time as
+   * {@link settle} lays them out, so a state that a later one is set to close in the future still
+   * holds until then, and a correction recorded after `knownAt` does not change what memory knew
+   * then.
    */
   async query(query: MemoryItemQuery): Promise<MemoryItem[]> {
     const now = this.now().getTime();
@@ -500,20 +534,24 @@ export class MemoryItems {
         agentId: query.scope.agentId,
         visibleTo: query.scope,
         statuses: query.statuses ?? ['active', 'superseded'],
-        includeExpired: query.knownAt !== undefined,
+        includeExpired: true,
         ...(query.kinds && { kinds: query.kinds }),
         ...(query.slots && { slots: query.slots }),
         ...(query.entityIds && { entityIds: query.entityIds }),
       })
+    ).filter(
+      (item) =>
+        visibleIn(item, query.scope) &&
+        (query.knownAt === undefined || item.recordedAt.getTime() <= knownAt)
     );
+    const ends = timelineEnds(found);
     const words = query.text ? normalizeName(query.text).split(' ').filter(Boolean) : [];
     const matching = found.filter((item) => {
-      if (!visibleIn(item, query.scope)) return false;
-      if (query.knownAt !== undefined && item.recordedAt.getTime() > knownAt) return false;
       if (item.expiredAt && item.expiredAt.getTime() <= knownAt) return false;
       if (!query.includeClosed && item.slot !== undefined) {
         if ((time(item.validFrom) ?? 0) > asOf) return false;
-        if (item.validTo && item.validTo.getTime() <= asOf) return false;
+        const end = ends.get(item.id);
+        if (end !== undefined && end <= asOf) return false;
       }
       const text = normalizeName(`${item.content} ${item.value ?? ''}`);
       return words.every((word) => text.includes(word));

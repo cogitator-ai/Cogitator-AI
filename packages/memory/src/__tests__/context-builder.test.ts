@@ -318,6 +318,35 @@ describe('ContextBuilder', () => {
     });
   });
 
+  describe('memory items under the runtime agent id', () => {
+    it('reads facts kept for agent.id beside the memory id of the agent', async () => {
+      const items = new MemoryItems({ adapter });
+      const fact = (content: string, agentId: string) => ({
+        kind: 'fact' as const,
+        content,
+        trust: 'system' as const,
+        confidence: 1,
+        evidence: [],
+        saidAt: new Date(),
+        sessionAt: new Date(),
+        scope: { agentId },
+      });
+      await items.write([fact('Plan is pro', 'agent_123'), fact('Likes tea', 'concierge')]);
+      const builder = new ContextBuilder(
+        { maxTokens: 1000, strategy: 'recent', includeFacts: true },
+        { memoryAdapter: adapter, memoryItems: items }
+      );
+
+      const result = await builder.build({
+        threadId,
+        agentId: 'agent_123',
+        memoryAgentId: 'concierge',
+      });
+
+      expect(result.facts.map((f) => f.content).sort()).toEqual(['Likes tea', 'Plan is pro']);
+    });
+  });
+
   describe('memory items as facts, let go and narrowed', () => {
     it('does not show a value memory let go and keeps one state per slot', async () => {
       const items = new MemoryItems({ adapter });

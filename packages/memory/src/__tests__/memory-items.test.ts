@@ -348,6 +348,16 @@ describe('MemoryItems timelines', () => {
     expect(await values(items, day(12))).toEqual(['Lisbon']);
   });
 
+  it('does not let a correction recorded later change what memory knew before it', async () => {
+    const { items } = memory(day(30));
+    await items.write([city('Berlin', 1, { recordedAt: day(1) })]);
+    await items.write([city('Paris', 3, { recordedAt: day(10) })]);
+
+    expect(await values(items, undefined, day(5))).toEqual(['Berlin']);
+    expect(await values(items, day(5))).toEqual(['Paris']);
+    expect(await values(items, day(2))).toEqual(['Berlin']);
+  });
+
   it('answers as known at a date with what held then by default', async () => {
     const { items } = memory(day(30));
     await items.write([

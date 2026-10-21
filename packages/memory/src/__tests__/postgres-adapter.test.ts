@@ -867,6 +867,25 @@ describe('PostgresAdapter', () => {
       expect(result.data.updatedAt.toISOString()).toBe(added?.recordedAt);
     });
 
+    it('starts an update after the current item even when the clock has not moved', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(created);
+      try {
+        storedFact([firstItem()]);
+
+        await adapter.updateFact('fact_123', { content: 'User likes tea' });
+
+        const written = writtenItems();
+        const added = written.filter((item) => item?.id !== 'fact_123').at(-1);
+        const closed = written.filter((item) => item?.id === 'fact_123').at(-1);
+        expect(added).toMatchObject({ content: 'User likes tea', status: 'active' });
+        expect(closed).toMatchObject({ status: 'superseded', supersededBy: added?.id });
+        expect(new Date(String(added?.validFrom)).getTime()).toBeGreaterThan(created.getTime());
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('corrects the current item when an update keeps the statement', async () => {
       storedFact([firstItem()]);
 

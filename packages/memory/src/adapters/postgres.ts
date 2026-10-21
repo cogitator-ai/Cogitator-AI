@@ -1338,7 +1338,8 @@ export class PostgresAdapter
   /**
    * Writes `changed` as the new state of the fact whose current item is `current`, through
    * {@link MemoryItems}, which closes `current`. The current item has to be in the new scope and
-   * not let go for that, so an expiry moves from it to the new item.
+   * not let go for that, so an expiry moves from it to the new item. The new state starts and is
+   * recorded at least a millisecond after the current one, so it always follows it.
    */
   private async supersedeFact(
     current: MemoryItem,
@@ -1353,7 +1354,11 @@ export class PostgresAdapter
       unwrap(await this.putItem({ ...kept, scope: changed.scope }));
     }
     const at = new Date(
-      Math.max(Date.now(), current.recordedAt.getTime(), current.validFrom?.getTime() ?? 0)
+      Math.max(
+        Date.now(),
+        current.recordedAt.getTime() + 1,
+        (current.validFrom?.getTime() ?? 0) + 1
+      )
     );
     const [written] = await this.memoryItems.write([
       {

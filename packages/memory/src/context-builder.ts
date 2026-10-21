@@ -156,18 +156,25 @@ function onePerSlot(items: readonly MemoryItem[]): MemoryItem[] {
 }
 
 /**
- * The memory items of the run's agent, user and thread that hold now, as facts: one per slot,
+ * The memory items of the run's agent, user and thread that hold now, as facts, under the
+ * agent's memory id and under its runtime id (where facts added for `agent.id` are): one per slot,
  * instructions and preferences first, newest first within a kind, each with the value of the
  * item it superseded when the run may still see it
  */
 async function loadItemFacts(items: MemoryItems, options: BuildContextOptions): Promise<Fact[]> {
-  const current = await items.query({
-    scope: {
-      agentId: options.memoryAgentId ?? options.agentId,
-      ...(options.userId !== undefined && { userId: options.userId }),
-      threadId: options.threadId,
-    },
-  });
+  const agentIds = [...new Set([options.memoryAgentId ?? options.agentId, options.agentId])];
+  const found = await Promise.all(
+    agentIds.map((agentId) =>
+      items.query({
+        scope: {
+          agentId,
+          ...(options.userId !== undefined && { userId: options.userId }),
+          threadId: options.threadId,
+        },
+      })
+    )
+  );
+  const current = [...new Map(found.flat().map((item) => [item.id, item])).values()];
   const scope = {
     agentId: options.memoryAgentId ?? options.agentId,
     ...(options.userId !== undefined && { userId: options.userId }),
@@ -183,7 +190,8 @@ async function loadItemFacts(items: MemoryItems, options: BuildContextOptions): 
       const before = replaced ? await items.get(replaced) : null;
       const shown =
         before &&
-        visibleIn(before, scope) &&
+        agentIds.includes(before.scope.agentId) &&
+        visibleIn(before, { ...scope, agentId: before.scope.agentId }) &&
         (before.expiredAt === undefined || before.expiredAt.getTime() > Date.now());
       const previously = shown ? (before.value ?? before.content) : undefined;
       return {
