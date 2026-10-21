@@ -15,6 +15,7 @@ export * from './providers';
 export * from './runtime';
 export * from './middleware';
 export * from './memory';
+export * from './memory-items';
 export * from './sandbox';
 export * from './workflow';
 export * from './swarm';

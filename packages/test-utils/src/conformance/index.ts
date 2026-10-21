@@ -29,6 +29,12 @@ export {
   type MemoryAdapterScenario,
 } from './memory-adapter';
 export {
+  memoryItemAdapterConformanceCases,
+  type MemoryItemAdapterConformanceCase,
+  type MemoryItemAdapterConformanceTarget,
+  type MemoryItemAdapterScenario,
+} from './memory-item-adapter';
+export {
   embeddingAdapterConformanceCases,
   type EmbeddingAdapterConformanceCase,
   type EmbeddingAdapterConformanceTarget,

@@ -12,6 +12,11 @@ import type {
   InMemoryAdapterConfig,
   MemoryProvider,
   NewMemoryEntry,
+  MemoryEntity,
+  MemoryEntityFilter,
+  MemoryItem,
+  MemoryItemAdapter,
+  MemoryItemFilter,
 } from '@cogitator-ai/types';
 import { BranchingMemoryAdapter, entryTypeWanted, withoutToolCalls } from './base';
 import { MEMORY_ENTRY_FORMAT } from '@cogitator-ai/types';
@@ -22,6 +27,7 @@ import {
   threadListing,
   threadPage,
 } from './thread-listing';
+import { byRecorded, matchesEntityFilter, matchesItemFilter } from '../memory-items';
 
 /**
  * A copy of `value` that shares nothing with it: a structured clone, or for a value it cannot
@@ -49,7 +55,7 @@ function copyEntry(entry: MemoryEntry): MemoryEntry {
   return { ...structuredClone(entry), createdAt: new Date(entry.createdAt) };
 }
 
-export class InMemoryAdapter extends BranchingMemoryAdapter {
+export class InMemoryAdapter extends BranchingMemoryAdapter implements MemoryItemAdapter {
   readonly provider: MemoryProvider = 'memory';
 
   private threads = new Map<string, Thread>();
@@ -57,6 +63,8 @@ export class InMemoryAdapter extends BranchingMemoryAdapter {
   private threadEntries = new Map<string, string[]>();
   private maxEntries: number;
   private seq = 0;
+  private items = new Map<string, MemoryItem>();
+  private entities = new Map<string, MemoryEntity>();
 
   constructor(config: InMemoryAdapterConfig = { provider: 'memory' }) {
     super();
@@ -71,6 +79,8 @@ export class InMemoryAdapter extends BranchingMemoryAdapter {
     this.threads.clear();
     this.entries.clear();
     this.threadEntries.clear();
+    this.items.clear();
+    this.entities.clear();
     return this.success(undefined);
   }
 
@@ -331,5 +341,47 @@ export class InMemoryAdapter extends BranchingMemoryAdapter {
       threads: this.threads.size,
       entries: this.entries.size,
     };
+  }
+
+  async putItem(item: MemoryItem): Promise<MemoryResult<MemoryItem>> {
+    this.items.set(item.id, structuredClone(item));
+    return this.success(structuredClone(item));
+  }
+
+  async getItem(itemId: string): Promise<MemoryResult<MemoryItem | null>> {
+    const item = this.items.get(itemId);
+    return this.success(item ? structuredClone(item) : null);
+  }
+
+  async findItems(filter: MemoryItemFilter): Promise<MemoryResult<MemoryItem[]>> {
+    return this.success(
+      [...this.items.values()]
+        .filter((item) => matchesItemFilter(item, filter))
+        .sort(byRecorded)
+        .map((item) => structuredClone(item))
+    );
+  }
+
+  async deleteItems(itemIds: string[]): Promise<MemoryResult<void>> {
+    for (const itemId of itemIds) this.items.delete(itemId);
+    return this.success(undefined);
+  }
+
+  async putEntity(entity: MemoryEntity): Promise<MemoryResult<MemoryEntity>> {
+    this.entities.set(entity.id, structuredClone(entity));
+    return this.success(structuredClone(entity));
+  }
+
+  async findEntities(filter: MemoryEntityFilter): Promise<MemoryResult<MemoryEntity[]>> {
+    return this.success(
+      [...this.entities.values()]
+        .filter((entity) => matchesEntityFilter(entity, filter))
+        .map((entity) => structuredClone(entity))
+    );
+  }
+
+  async deleteEntities(entityIds: string[]): Promise<MemoryResult<void>> {
+    for (const entityId of entityIds) this.entities.delete(entityId);
+    return this.success(undefined);
   }
 }
