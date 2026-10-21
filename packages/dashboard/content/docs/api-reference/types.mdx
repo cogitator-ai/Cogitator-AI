@@ -726,12 +726,58 @@ interface MemoryConfig {
   compaction?: MemoryCompactionConfig; // compaction of a run's thread after the run, off unless set
   extraction?: MemoryExtractionConfig; // memory items extracted after each run, off unless set
   files?: MemoryFilesConfig; // the memory tool and its files under /memories, off unless set
+  brief?: MemoryBriefConfig; // cards of what memory holds for a turn, off unless set
+  observations?: MemoryObservationsConfig; // what memory makes of each entity, off unless set
+  consolidation?: MemoryConsolidationConfig; // a pass over memory between runs, off unless set
 }
 
 interface MemoryFilesConfig {
   scope?: 'user' | 'agent' | 'thread'; // default 'user', the thread for a run without a user
   readOnly?: boolean; // the agent views the files and never changes them
   indexChars?: number; // characters the list of files takes in the context (default 2000)
+}
+
+interface MemoryBriefConfig {
+  model?: string; // default: the run's model
+  maxCards?: number; // 1 to 4, default 4
+  timeoutMs?: number; // default 4000
+  maxTokens?: number; // default 600
+  prompt?: string;
+}
+
+// One card of a brief, quoting its source (`turn:<id>` or `item:<id>`) word for word
+interface BriefCard {
+  kind: 'constraint' | 'knowledge' | 'consequence' | 'open_thread'; // BriefCardKind
+  text: string;
+  quote: string;
+  source: string;
+}
+
+interface MemoryObservationsConfig {
+  model?: string; // default: the model the run ended on
+  maxEntities?: number; // observations one refresh writes at most, default 3
+  minItems?: number; // facts that hold an entity needs, default 3
+  prompt?: string;
+}
+
+interface MemoryConsolidationConfig {
+  model?: string; // default: the model the run ended on
+  everyRuns?: number; // runs of a thread between passes, default 20
+  afterCompaction?: boolean; // pass after a compaction too, default true
+  maxChanges?: number; // items one pass marks as stale, default 10, 0 leaves items alone
+  maxSubjects?: number; // subjects one pass asks about, default 10, the next pass goes on
+  playbook?: 'apply' | 'shadow' | false; // default 'apply'
+  showPlaybook?: boolean; // the playbook in every run's context, default true
+  prompt?: string;
+  afterConsolidate?: (report: MemoryConsolidationReport) => void | Promise<void>;
+}
+
+interface MemoryConsolidationReport {
+  scope: MemoryItemScope;
+  observations: string[]; // paths written
+  observationsDeleted: string[];
+  stale: StaleMark[]; // { itemId, keptId, reason: 'duplicate' | 'contradiction' }
+  playbook?: { path: string; edits: number; lessonIds: string[] };
 }
 
 type EmbeddingServiceConfig = OpenAIEmbeddingConfig | OllamaEmbeddingConfig | GoogleEmbeddingConfig;

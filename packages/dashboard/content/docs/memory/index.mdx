@@ -872,17 +872,17 @@ An opinion said again, when the new statement has quotes that hold, gains 0.1 co
 
 Item times are bitemporal: `validFrom` and `validTo` say when an item of a slot held in the world, `recordedAt` and `expiredAt` when memory took it in and let it go.
 
-| Method                              | What it does                                                                                                                                                                                                                                                                                       |
-| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `query(query)`                      | The items `query.scope` sees that hold now, by default, oldest recorded first                                                                                                                                                                                                                      |
-| `history(scope, slot)`              | Every item of a slot, current and closed, by when they started to hold                                                                                                                                                                                                                             |
-| `activate(itemId)`                  | Makes a `suggested` item `active`, closing what it follows                                                                                                                                                                                                                                         |
-| `markStale(itemIds)`                | Marks items as no longer trusted to hold: kept, found with `statuses: ['stale']`                                                                                                                                                                                                                   |
-| `expire(itemIds, at?)`              | Lets items go at `at` (now by default): kept, but found only by a `knownAt` before then. A state let go keeps its place in the timeline, so the one before it stays closed. An item with an `expiredAt` still to come is found until then                                                          |
-| `purge(itemIds)`                    | Deletes items for good, such as everything a user asked to be forgotten                                                                                                                                                                                                                            |
-| `noteRetrieved(itemIds, at?)`       | Counts items as sent to a model once more at `at` (now by default): `timesRetrieved` goes up by one and `lastRetrievedAt` is set, in one step of the store (`MemoryItemAdapter.countRetrieved`, which every built-in store has), else each item read again and written back under its agent's lock |
-| `get(itemId)`                       | One item, or `null`                                                                                                                                                                                                                                                                                |
-| `link(scope, name, seenAt?, type?)` | The entity a name stands for, made when there is none yet                                                                                                                                                                                                                                          |
+| Method                                    | What it does                                                                                                                                                                                                                                                                                       |
+| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `query(query)`                            | The items `query.scope` sees that hold now, by default, oldest recorded first                                                                                                                                                                                                                      |
+| `history(scope, slot)`                    | Every item of a slot, current and closed, by when they started to hold                                                                                                                                                                                                                             |
+| `activate(itemId)`                        | Makes a `suggested` item `active`, closing what it follows                                                                                                                                                                                                                                         |
+| `markStale(itemIds, because?, onlyFrom?)` | Marks items as no longer trusted to hold: kept, found with `statuses: ['stale']`, `because` kept in `metadata.staleBecause`, and with `onlyFrom` an item whose status is no longer one of those left as it is                                                                                      |
+| `expire(itemIds, at?)`                    | Lets items go at `at` (now by default): kept, but found only by a `knownAt` before then. A state let go keeps its place in the timeline, so the one before it stays closed. An item with an `expiredAt` still to come is found until then                                                          |
+| `purge(itemIds)`                          | Deletes items for good, such as everything a user asked to be forgotten                                                                                                                                                                                                                            |
+| `noteRetrieved(itemIds, at?)`             | Counts items as sent to a model once more at `at` (now by default): `timesRetrieved` goes up by one and `lastRetrievedAt` is set, in one step of the store (`MemoryItemAdapter.countRetrieved`, which every built-in store has), else each item read again and written back under its agent's lock |
+| `get(itemId)`                             | One item, or `null`                                                                                                                                                                                                                                                                                |
+| `link(scope, name, seenAt?, type?)`       | The entity a name stands for, made when there is none yet                                                                                                                                                                                                                                          |
 
 `MemoryItemQuery` takes the `scope` and narrows it with `kinds`, `statuses` (`active` and `superseded` by default), `slots` and `entityIds`. Which state of a slot holds is read from its times, not its status:
 
@@ -1164,6 +1164,149 @@ if (memory && isMemoryFileAdapter(memory)) {
 | `index(access, maxChars?)`                                   | The list of files a run's context gets, `undefined` when there are none                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
 `MemoryFileAccess` is `{ scope, visibleTo?, place?, readOnly?, author?, observe? }`: where new versions go, what the access sees (`scope` by default), the branch it stands on, who writes, and a function that hears of the version of each file a command showed or wrote (its path and `sha256`, `null` once deleted). A refused command throws a `MemoryFileError` with the message the model reads, and `memoryPath(path)` normalizes a path or throws one. `memoryFileTool({ memory, agentId, scope?, readOnly?, placeOf?, files? })` from `@cogitator-ai/core` builds the tool over a store of your own, for an agent run outside a Cogitator configured with `memory.files`. A store of your own keeps files by implementing `MemoryFileAdapter`, see [Memory Files](/docs/memory/adapters#memory-files) on the adapters page.
+
+## Between Runs
+
+Memory does not only answer while a run builds its context. Three settings keep it useful between runs, each off unless set: a brief of what memory holds for the turn, observations of the entities memory items are about, and a consolidation pass that tidies the items and folds lessons into a playbook. Each asks a model, and code checks what the model answers before anything is kept. All of them work on every built-in thread store.
+
+```typescript
+import { Agent, Cogitator } from '@cogitator-ai/core';
+
+const cog = new Cogitator({
+  memory: {
+    adapter: 'postgres',
+    postgres: { connectionString: process.env.DATABASE_URL! },
+    contextBuilder: { strategy: 'hybrid', maxTokens: 8000 },
+    extraction: {},
+    brief: { model: 'google/gemini-3.5-flash-lite' },
+    observations: {},
+    consolidation: { everyRuns: 20 },
+  },
+});
+
+const agent = new Agent({ name: 'concierge', instructions: 'You plan the week of the user.' });
+await cog.run(agent, {
+  input: 'Book me a dinner table for Friday',
+  threadId: 'week',
+  userId: 'ana',
+});
+```
+
+### Pre-Turn Brief
+
+With `memory.brief`, before the first model call of a run a cheap model reads what memory found for the input and writes a few cards that would help answer it. The sources are the 12 best hits among the earlier turns of the run's branch and the memory items the run sees, ranked as `hybrid` recall ranks them, each named by its reference (`turn:<id>` or `item:<id>`). A card is one of four kinds:
+
+| Kind          | What it holds                                                        |
+| ------------- | -------------------------------------------------------------------- |
+| `constraint`  | Something the answer must keep to: a rule, a limit, what never to do |
+| `knowledge`   | A fact about the user or their work the answer should use            |
+| `consequence` | What follows from an earlier choice or event for this message        |
+| `open_thread` | Something left open earlier that this message touches                |
+
+Every card quotes the words of its source it stands on. A card is kept only when its source is one of those given and the source holds the quote word for word, spacing and case aside, one card per quote. The kept cards go into the turn's memory context as a hint, never into the system message:
+
+```text
+A quick read of memory for this turn (a hint that may be wrong, check before relying on it):
+- constraint: Answer in Portuguese. (turn:ent_abc123: "please always answer me in Portuguese")
+```
+
+| Option      | Default         | Description                                                |
+| ----------- | --------------- | ---------------------------------------------------------- |
+| `model`     | the run's model | The model that writes the cards, best a cheap and fast one |
+| `maxCards`  | `4`             | Cards at most, from 1 to 4                                 |
+| `timeoutMs` | `4000`          | How long the turn waits for the brief                      |
+| `maxTokens` | `600`           | Tokens the model may answer with                           |
+| `prompt`    |                 | Instructions added to the brief prompt                     |
+
+A timeout, a failure of the model, a run without memory or with nothing found leaves the turn as it was, and the run goes on without a brief. The model call counts in the run's usage. `MemoryBriefer` from `@cogitator-ai/memory` writes the cards for a pipeline of your own, and `briefBlock(cards)` renders them as above.
+
+### Observations
+
+With `memory.observations`, memory keeps for each entity with enough facts what a model makes of them: patterns, how the facts connect, what changed over time. An observation is a memory file, `/memories/observations/<entity>.md`, in the scope the run's items are kept in:
+
+```text
+# Ana
+<!-- memory observation: entity ent_k2m9 items 3f1c0a9d2b7e4c51 -->
+Also called: my sister
+
+- Ana moved from Lisbon to Porto in 2025 and has worked nights since. [item:mem_a1] [item:mem_b2]
+```
+
+- Every statement names the items it stands on. A statement naming an item the model was not given is dropped, and an answer with no statement left changes nothing.
+- The file keeps a fingerprint of the items it was written from. After a run, in the background, the observations whose facts changed since (a fact added, closed or marked stale) are written again, the entities with the newest facts first, at most `maxEntities` at a time. An entity needs `minItems` facts that hold, and an observation whose entity falls short is deleted. Facts that gave no observation are not asked about again in this process until they change.
+- A turn whose input names an entity, by its name or another name it was called, or that recalls one of its items, gets up to three observations next to the facts, under `What memory makes of them (written from the facts, may lag behind them):`.
+- Observations are memory files like any other: every rewrite is a version, and with `memory.files` the agent reads them with the memory tool.
+
+| Option        | Default                    | Description                                        |
+| ------------- | -------------------------- | -------------------------------------------------- |
+| `model`       | the model the run ended on | The model that writes observations                 |
+| `maxEntities` | `3`                        | Observations one refresh writes at most            |
+| `minItems`    | `3`                        | Facts that hold an entity needs for an observation |
+| `prompt`      |                            | Instructions added to the observation prompt       |
+
+### Consolidation
+
+With `memory.consolidation`, a pass goes over the memory of the run's scope every `everyRuns` runs of a thread (counted in the thread's `metadata.memoryConsolidation`) and after `memory.compaction` compacted the thread (a compaction that changed nothing starts no pass). It runs in three steps:
+
+1. **Repeats and contradictions.** A model looks at the active items of exactly the run's scope, grouped by the entity they are about, only entities with an item recorded since the last pass, those whose newest item is oldest first, and names the items that repeat another one or that a newer one contradicts. They are marked `stale`, never deleted, with the reason and the item kept in `metadata.staleBecause`. Code checks every group: an item is never dropped for a less trusted one, a contradiction drops only items said before the one kept, and one pass marks at most `maxChanges` items and asks about at most `maxSubjects` entities. A pass a cap stopped goes on where it stopped the next time: the thread's cursor moves to the start of a pass that looked at everything, else to the newest item of the last entity it looked at, and a pass that failed leaves the cursor where it was.
+2. **Lessons into the playbook.** The `active` lessons recorded since the playbook last took one (memory items of kind `lesson`), oldest first and 20 a pass, are folded into the playbook, `/memories/playbook.md`, in at most three edits. A lesson a model, a tool or a page wrote stays `suggested` until `MemoryItems.activate` makes it `active`, so it cannot reach the playbook every run reads on its own, and an answer the model did not finish folds nothing and leaves its lessons for the next pass. Each edit adds a rule or rewrites one rule it quotes exactly, every other rule stays as it was, and each rule names its lessons as `[lesson:<id>]`. So the playbook grows by deltas and is never written over whole, which would let its rules collapse into a summary of themselves. A rule holds at most 300 characters and the playbook at most 60 rules, past which lessons only rewrite rules.
+3. **Observations** whose facts changed are written again, when `memory.observations` is set.
+
+Passes run in the background, one at a time per memory scope, a pass asked for while one runs going after it, so no run waits for them. Their model calls count in the cost router, not in a run's usage, and `cog.close()` stops the passes under way. A failure is logged and leaves memory as the last step that held left it.
+
+Every fold of the playbook is a new version of the file, so its diff and the way back are in the file's history. With `playbook: 'shadow'` the edited playbook goes to `/memories/playbook.next.md` instead, and `MemoryConsolidator.promotePlaybook(scope)` makes the draft the playbook after review, only when the playbook did not change since the draft was made. While `showPlaybook` is on, every run of the scope sees the playbook in its memory context, up to 4000 characters, as a hint:
+
+```text
+The playbook memory keeps, rules learned from earlier work (a hint, check it against the task):
+- Check dietary needs before booking food. [lesson:mem_c3]
+```
+
+| Option             | Default                    | Description                                                                             |
+| ------------------ | -------------------------- | --------------------------------------------------------------------------------------- |
+| `model`            | the model the run ended on | The model of the pass                                                                   |
+| `everyRuns`        | `20`                       | Runs of a thread between two passes                                                     |
+| `afterCompaction`  | `true`                     | Pass after a compaction that changed the thread too                                     |
+| `maxChanges`       | `10`                       | Items one pass marks as stale at most, `0` to leave items alone                         |
+| `maxSubjects`      | `10`                       | Entities one pass asks the model about at most, the next pass going on where it stopped |
+| `playbook`         | `'apply'`                  | `apply` edits the playbook, `shadow` writes a draft for review, `false` leaves it alone |
+| `showPlaybook`     | `true`                     | Show the playbook to every run of its scope                                             |
+| `prompt`           |                            | Instructions added to the prompts of the pass                                           |
+| `afterConsolidate` |                            | Called with what a pass changed                                                         |
+
+`cog.consolidateMemory(agent, { userId?, threadId? })` runs a pass now, such as from a worker or a timer while the agent is idle, and returns what it changed. A pass of the same memory under way is waited for first. The memory is the one the agent's runs keep their items in, as `memory.extraction.scope` says: it needs a `userId`, or a `threadId` for the memory of runs without a user, and with `scope: 'thread'` a `threadId`. It throws `VALIDATION_ERROR` when neither `memory.consolidation` nor `memory.observations` is set.
+
+```typescript
+const report = await cog.consolidateMemory(agent, { userId: 'ana' });
+// {
+//   scope: { agentId: 'concierge', userId: 'ana' },
+//   stale: [{ itemId: 'mem_b2', keptId: 'mem_a1', reason: 'duplicate' }],
+//   playbook: { path: '/memories/playbook.md', edits: 1, lessonIds: ['mem_c3'] },
+//   observations: ['/memories/observations/ana.md'],
+//   observationsDeleted: [],
+// }
+```
+
+`MemoryConsolidator` and `MemoryObservations` from `@cogitator-ai/memory` run the same steps over any store that keeps memory items and memory files, for a pipeline of your own:
+
+```typescript
+import {
+  MemoryConsolidator,
+  MemoryFiles,
+  MemoryItems,
+  MemoryObservations,
+} from '@cogitator-ai/memory';
+
+const items = new MemoryItems({ adapter: memory });
+const files = new MemoryFiles({ adapter: memory });
+const scope = { agentId: 'concierge', userId: 'ana' };
+
+const consolidator = new MemoryConsolidator({ items, itemAdapter: memory, files });
+const { complete, through } = await consolidator.dedupe(scope, { summarize, since: lastPass });
+await consolidator.foldLessons(scope, { summarize, mode: 'shadow' });
+await consolidator.promotePlaybook(scope);
+
+await new MemoryObservations({ files, items, itemAdapter: memory }).refresh(scope, { summarize });
+```
 
 ## Installation
 

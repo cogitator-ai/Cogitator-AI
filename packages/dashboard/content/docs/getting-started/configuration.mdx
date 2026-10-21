@@ -70,7 +70,7 @@ const config = loadConfig({
 | `llm`         | `defaultProvider`, `defaultModel`, `providers`, `retry`, `promptCache`, `modelCircuitBreaker`, `pricing`, `plugins`                                          |
 | `prompts`     | `autoDeployWinner` for [prompt A/B tests](/docs/advanced/prompt-versions)                                                                                    |
 | `limits`      | `maxConcurrentRuns`, `defaultTimeout` (ms), `maxTokensPerRun`, `maxToolResultLength` (characters), see [Cogitator](/docs/core/cogitator#defaults-and-limits) |
-| `memory`      | Adapter, its connection, `embedding`, `contextBuilder`, `extraction`, `compaction` and `files`                                                               |
+| `memory`      | Adapter, its connection, `embedding`, `contextBuilder`, `extraction`, `compaction`, `files`, `brief`, `observations` and `consolidation`                     |
 | `sandbox`     | Defaults, container pool, Docker and WASM settings for [sandboxed tools](/docs/deployment/sandbox)                                                           |
 | `reflection`  | [Reflection](/docs/advanced/reflection) after tool calls, errors or at the end of a run                                                                      |
 | `guardrails`  | [Constitutional AI](/docs/advanced/constitutional-ai) input/output/tool filtering                                                                            |
@@ -161,6 +161,27 @@ memory:
     scope: user # user | agent | thread
     readOnly: false
     indexChars: 2000 # characters the list of files takes in the context
+```
+
+`memory.brief`, `memory.observations` and `memory.consolidation` keep memory useful between runs, each off unless set, see [Between Runs](/docs/memory#between-runs). The values below are the defaults, `brief.model` aside, and the `afterConsolidate` hook is set in code:
+
+```yaml title="cogitator.yml"
+memory:
+  brief: # cards of what memory holds for the turn, before its first model call
+    model: google/gemini-3.5-flash-lite # the run's model by default
+    maxCards: 4 # 1 to 4
+    timeoutMs: 4000
+    maxTokens: 600
+  observations: # what memory makes of each entity, as /memories/observations/<entity>.md
+    maxEntities: 3
+    minItems: 3
+  consolidation: # a pass in the background: repeats go stale, lessons reach the playbook
+    everyRuns: 20
+    afterCompaction: true
+    maxChanges: 10 # 0 leaves items alone
+    maxSubjects: 10 # subjects one pass asks about, the next pass goes on
+    playbook: apply # apply | shadow | false
+    showPlaybook: true
 ```
 
 ### Logging

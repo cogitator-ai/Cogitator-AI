@@ -530,6 +530,35 @@ interface MemoryConfig {
     timeZone?: string; // IANA, when the thread names no metadata.timeZone, default UTC
     afterExtract?: (items: MemoryItem[]) => void | Promise<void>;
   };
+
+  files?: { scope?: 'user' | 'agent' | 'thread'; readOnly?: boolean; indexChars?: number }; // the memory tool
+
+  brief?: {
+    model?: string; // default: the model of the run
+    maxCards?: number; // 1 to 4, default 4
+    timeoutMs?: number; // default 4000
+    maxTokens?: number; // default 600
+    prompt?: string;
+  };
+
+  observations?: {
+    model?: string; // default: the model the run ended on
+    maxEntities?: number; // observations one refresh writes, default 3
+    minItems?: number; // facts an entity needs, default 3
+    prompt?: string;
+  };
+
+  consolidation?: {
+    model?: string; // default: the model the run ended on
+    everyRuns?: number; // runs of a thread between passes, default 20
+    afterCompaction?: boolean; // default true
+    maxChanges?: number; // items one pass marks as stale, default 10
+    maxSubjects?: number; // subjects one pass asks about, default 10
+    playbook?: 'apply' | 'shadow' | false; // default 'apply'
+    showPlaybook?: boolean; // default true
+    prompt?: string;
+    afterConsolidate?: (report: MemoryConsolidationReport) => void | Promise<void>;
+  };
 }
 ```
 
@@ -542,6 +571,18 @@ With `contextBuilder` set and no `maxTokens`, each run's history budget is the c
 With `memory.files` in the Cogitator config, every agent gets the `memory` tool: notes under `/memories` it views and changes across conversations with the commands of Anthropic's memory tool (`view`, `create`, `str_replace`, `insert`, `delete`, `rename`), sent as Anthropic's own `memory_20250818` to Claude 4 and later and as a tool with the same commands to every other model. The files a run sees are listed with its turn. `MemoryFiles` keeps every change as a version in the run's store (`MemoryFileAdapter`, in every built-in adapter, checked by `memoryFileAdapterConformanceCases`): a run sees the files of its user, its thread and the agent, in its own thread only the versions of its branch, and an edit of a file another writer changed after the run viewed it fails. `redact` replaces the content of a file's versions and keeps its history.
 
 `cog.memorySearchTools(memoryAgentId)` gives an agent `search_memory` (earlier turns and memory items in one ranked list), `open_turns` and `list_entities`, and the `memoryCitations()` middleware takes out of an answer every `[turn:<id>]` or `[item:<id>]` the run never opened. See [Memory](https://cogitator.app/docs/memory#agent-memory-tools).
+
+## Between Runs
+
+Three settings keep memory useful between runs, each off unless set. The model calls they make count in the cost router, and the background ones never in a run's usage.
+
+`memory.brief` writes cards for a turn before its first model call: a cheap model reads the 12 best sources memory finds for the input (earlier turns of the run's branch and memory items, ranked as `hybrid` recall ranks them) and writes up to `maxCards` cards, each a constraint, knowledge, a consequence or an open thread quoting its source. `MemoryBriefer` keeps only the cards whose quote the source holds word for word, spacing and case aside, and `memoryBriefMiddleware` puts them into the turn's memory context marked as a hint, never into the system message. A timeout, a failure, a run without memory or nothing found leaves the turn as it was.
+
+`memory.observations` keeps, for each entity with at least `minItems` facts that hold, what a model makes of them, as a memory file `/memories/observations/<entity>.md` whose statements cite the items they stand on (`[item:<id>]`). The file keeps a fingerprint of those items, and after a run, in the background, `MemoryObservations.refresh` writes again the observations whose facts changed, at most `maxEntities` at a time, and deletes those whose entity fell short of `minItems`. Facts that gave no observation are not asked about again in this process until they change. A turn whose input names an entity, or that recalls one of its items, gets up to three observations next to the facts.
+
+`memory.consolidation` runs a pass in the background every `everyRuns` runs of a thread (counted in the thread's `metadata.memoryConsolidation`) and after `memory.compaction` compacted it (a compaction that changed nothing starts no pass). `MemoryConsolidator.dedupe` marks as `stale` the items of the run's scope that a model finds to repeat or contradict another one about the same entity, never an item more trusted than the one kept and, for a contradiction, only items said before it, at most `maxChanges` items and `maxSubjects` subjects a pass, the subjects whose newest item is oldest first, with the reason in `metadata.staleBecause`. A pass that a cap stopped goes on where it stopped the next time. `foldLessons` then folds new lessons (items of kind `lesson`, only `active` lessons, so a lesson a model, a tool or a page wrote stays `suggested` and out of the playbook until `MemoryItems.activate` makes it `active`) into `/memories/playbook.md` in at most three edits, each adding a rule or rewriting one rule, so the playbook is never written over whole. Every fold is a new version of the file, and with `playbook: 'shadow'` the edited playbook goes to `/memories/playbook.next.md` for a review that `promotePlaybook(scope)` completes. The pass ends with the observations. Each run sees the playbook in its memory context as a hint while `showPlaybook` is on.
+
+Passes run one at a time per memory scope and never hold a run back, and `close()` stops the passes under way. `cog.consolidateMemory(agent, { userId?, threadId? })` runs a pass now, such as from a worker while the agent is idle, and returns a `MemoryConsolidationReport` (`scope`, `observations`, `observationsDeleted`, `stale`, `playbook`). See [Memory](https://cogitator.app/docs/memory#between-runs).
 
 ## Memory Items
 

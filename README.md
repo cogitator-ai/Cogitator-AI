@@ -111,21 +111,22 @@ npx tsx examples/core/01-basic-agent.ts
 
 ## What Can You Build?
 
-| Use Case                     | What happens                                                                                            | Try it                                                                                       |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| **Chatbot with memory**      | Agent remembers your name, preferences, past conversations                                              | [`examples/memory/01-basic-memory.ts`](./examples/memory/01-basic-memory.ts)                 |
-| **Research assistant**       | Agent uses tools, reasons step by step, returns structured answers                                      | [`examples/core/01-basic-agent.ts`](./examples/core/01-basic-agent.ts)                       |
-| **Content pipeline**         | Researcher → Writer → Editor, each agent builds on the previous                                         | [`examples/swarms/02-pipeline-swarm.ts`](./examples/swarms/02-pipeline-swarm.ts)             |
-| **Dev team simulation**      | Manager delegates frontend/backend to specialists, synthesizes results                                  | [`examples/swarms/03-hierarchical-swarm.ts`](./examples/swarms/03-hierarchical-swarm.ts)     |
-| **REST API server**          | Mount agents as HTTP endpoints with Swagger, SSE streaming, WebSocket                                   | [`examples/integrations/01-express-server.ts`](./examples/integrations/01-express-server.ts) |
-| **Multi-user support agent** | One agent serves many users through your own MCP server, each with their own token and threads          | [`examples/mcp/03-per-user-mcp.ts`](./examples/mcp/03-per-user-mcp.ts)                       |
-| **Data processing workflow** | Analyze documents in parallel, aggregate with map-reduce                                                | [`examples/workflows/03-map-reduce.ts`](./examples/workflows/03-map-reduce.ts)               |
-| **Knowledge graph**          | Extract entities from text, build a graph, traverse relationships                                       | [`examples/memory/04-knowledge-graph.ts`](./examples/memory/04-knowledge-graph.ts)           |
-| **Agent that keeps notes**   | Agent writes notes under `/memories` it reads in later conversations, searches old turns and cites them | [`examples/memory/05-memory-files.ts`](./examples/memory/05-memory-files.ts)                 |
-| **RAG Q&A system**           | Load docs, chunk, embed, retrieve relevant context, answer questions                                    | [`examples/rag/01-basic-retrieval.ts`](./examples/rag/01-basic-retrieval.ts)                 |
-| **Agent evaluation**         | Measure accuracy, compare models, run A/B tests with LLM judges                                         | [`examples/evals/01-basic-eval.ts`](./examples/evals/01-basic-eval.ts)                       |
-| **Personal AI assistant**    | Your own AI running 24/7 on Telegram, Discord, Slack, Bluesky, Threads - manage via chat commands       | [`cogitator.yml` config](#run-an-assistant-from-a-yaml-file)                                 |
-| **Cross-framework agents**   | Expose your agent via Google's A2A protocol, consume external agents                                    | [`examples/a2a/01-a2a-server.ts`](./examples/a2a/01-a2a-server.ts)                           |
+| Use Case                           | What happens                                                                                                       | Try it                                                                                       |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| **Chatbot with memory**            | Agent remembers your name, preferences, past conversations                                                         | [`examples/memory/01-basic-memory.ts`](./examples/memory/01-basic-memory.ts)                 |
+| **Research assistant**             | Agent uses tools, reasons step by step, returns structured answers                                                 | [`examples/core/01-basic-agent.ts`](./examples/core/01-basic-agent.ts)                       |
+| **Content pipeline**               | Researcher → Writer → Editor, each agent builds on the previous                                                    | [`examples/swarms/02-pipeline-swarm.ts`](./examples/swarms/02-pipeline-swarm.ts)             |
+| **Dev team simulation**            | Manager delegates frontend/backend to specialists, synthesizes results                                             | [`examples/swarms/03-hierarchical-swarm.ts`](./examples/swarms/03-hierarchical-swarm.ts)     |
+| **REST API server**                | Mount agents as HTTP endpoints with Swagger, SSE streaming, WebSocket                                              | [`examples/integrations/01-express-server.ts`](./examples/integrations/01-express-server.ts) |
+| **Multi-user support agent**       | One agent serves many users through your own MCP server, each with their own token and threads                     | [`examples/mcp/03-per-user-mcp.ts`](./examples/mcp/03-per-user-mcp.ts)                       |
+| **Data processing workflow**       | Analyze documents in parallel, aggregate with map-reduce                                                           | [`examples/workflows/03-map-reduce.ts`](./examples/workflows/03-map-reduce.ts)               |
+| **Knowledge graph**                | Extract entities from text, build a graph, traverse relationships                                                  | [`examples/memory/04-knowledge-graph.ts`](./examples/memory/04-knowledge-graph.ts)           |
+| **Agent that keeps notes**         | Agent writes notes under `/memories` it reads in later conversations, searches old turns and cites them            | [`examples/memory/05-memory-files.ts`](./examples/memory/05-memory-files.ts)                 |
+| **Agent that learns between runs** | Memory tidies itself in the background: repeats go stale, lessons become playbook rules, facts become observations | [`examples/memory/06-memory-upkeep.ts`](./examples/memory/06-memory-upkeep.ts)               |
+| **RAG Q&A system**                 | Load docs, chunk, embed, retrieve relevant context, answer questions                                               | [`examples/rag/01-basic-retrieval.ts`](./examples/rag/01-basic-retrieval.ts)                 |
+| **Agent evaluation**               | Measure accuracy, compare models, run A/B tests with LLM judges                                                    | [`examples/evals/01-basic-eval.ts`](./examples/evals/01-basic-eval.ts)                       |
+| **Personal AI assistant**          | Your own AI running 24/7 on Telegram, Discord, Slack, Bluesky, Threads - manage via chat commands                  | [`cogitator.yml` config](#run-an-assistant-from-a-yaml-file)                                 |
+| **Cross-framework agents**         | Expose your agent via Google's A2A protocol, consume external agents                                               | [`examples/a2a/01-a2a-server.ts`](./examples/a2a/01-a2a-server.ts)                           |
 
 ---
 
@@ -160,7 +161,7 @@ Install only what you need. Everything is a separate npm package.
 | Package                                                                                      | What it does                                                                                         | Example                                                              |
 | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
 | [`@cogitator-ai/core`](https://www.npmjs.com/package/@cogitator-ai/core)                     | Agents, tools, LLM backends, streaming, everything you need to start                                 | [21 core examples](./examples/core/)                                 |
-| [`@cogitator-ai/memory`](https://www.npmjs.com/package/@cogitator-ai/memory)                 | Your agents remember things. Redis, Postgres, SQLite, MongoDB, Qdrant, in-memory                     | [5 memory examples](./examples/memory/)                              |
+| [`@cogitator-ai/memory`](https://www.npmjs.com/package/@cogitator-ai/memory)                 | Your agents remember things. Redis, Postgres, SQLite, MongoDB, Qdrant, in-memory                     | [6 memory examples](./examples/memory/)                              |
 | [`@cogitator-ai/models`](https://www.npmjs.com/package/@cogitator-ai/models)                 | Dynamic model registry with pricing, capabilities, provider metadata                                 | [model registry example](./examples/core/13-model-registry.ts)       |
 | [`@cogitator-ai/swarms`](https://www.npmjs.com/package/@cogitator-ai/swarms)                 | 7 swarm strategies - hierarchy, round-robin, consensus, pipeline, debate, auction, negotiation       | [4 swarm examples](./examples/swarms/)                               |
 | [`@cogitator-ai/workflows`](https://www.npmjs.com/package/@cogitator-ai/workflows)           | DAG workflows with branching, human approval gates, map-reduce                                       | [3 workflow examples](./examples/workflows/)                         |
@@ -292,16 +293,18 @@ Click a category to expand it.
 <details>
 <summary><strong>Memory & Knowledge</strong></summary>
 
-| Feature                 | What it means                                                                                       |
-| ----------------------- | --------------------------------------------------------------------------------------------------- |
-| **6 storage backends**  | Redis, Postgres, SQLite, MongoDB, Qdrant, in-memory                                                 |
-| **Semantic search**     | BM25 + vector hybrid search with Reciprocal Rank Fusion                                             |
-| **Knowledge graphs**    | Extract entities, build graphs, traverse multi-hop relationships                                    |
-| **Memory items**        | Facts extracted after each run, tied to the quote they came from and to when they held              |
-| **Memory files**        | Notes an agent keeps under `/memories` with the memory tool, native on Claude, every edit a version |
-| **Memory search tools** | The agent searches old turns and memory items itself and cites only what it opened                  |
-| **RAG pipeline**        | Document loaders, smart chunking, hybrid retrieval, reranking                                       |
-| **Context management**  | Auto-compress long conversations to fit model limits                                                |
+| Feature                 | What it means                                                                                              |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------- |
+| **6 storage backends**  | Redis, Postgres, SQLite, MongoDB, Qdrant, in-memory                                                        |
+| **Semantic search**     | BM25 + vector hybrid search with Reciprocal Rank Fusion                                                    |
+| **Knowledge graphs**    | Extract entities, build graphs, traverse multi-hop relationships                                           |
+| **Memory items**        | Facts extracted after each run, tied to the quote they came from and to when they held                     |
+| **Memory files**        | Notes an agent keeps under `/memories` with the memory tool, native on Claude, every edit a version        |
+| **Memory search tools** | The agent searches old turns and memory items itself and cites only what it opened                         |
+| **Pre-turn brief**      | A cheap model reads what memory found and hands the turn a few cards, each quoting its source              |
+| **Consolidation**       | Between runs memory marks repeats stale, folds lessons into a playbook and writes observations of entities |
+| **RAG pipeline**        | Document loaders, smart chunking, hybrid retrieval, reranking                                              |
+| **Context management**  | Auto-compress long conversations to fit model limits                                                       |
 
 </details>
 

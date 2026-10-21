@@ -14,6 +14,8 @@ const cog = new Cogitator({
       includeSemanticContext: true,
     },
     files: {},
+    brief: { model: 'google/gemini-3.5-flash-lite' },
+    consolidation: { everyRuns: 20 },
   },
 });
 
@@ -159,7 +161,7 @@ export async function featuresA(): Promise<ExplorerFeature[]> {
       pkg: '@cogitator-ai/memory',
       title: 'Memory & context',
       summary:
-        "Every run gets a context built to its model's window or your budget: recent history, long-term facts and semantic hits, plus notes the agent keeps under /memories with the memory tool, on Postgres, Redis, SQLite, MongoDB or Qdrant.",
+        "Every run gets a context built to its model's window or your budget: recent history, long-term facts and semantic hits, plus notes the agent keeps under /memories with the memory tool, a brief of quoted cards before each turn and a playbook of lessons memory folds in between runs, on Postgres, Redis, SQLite, MongoDB or Qdrant.",
       href: '/docs/memory',
       code: memory,
     },

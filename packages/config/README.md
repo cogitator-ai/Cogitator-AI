@@ -252,6 +252,26 @@ memory:
     scope: user # user | agent | thread
     readOnly: false
     indexChars: 2000 # characters the list of files takes in the context
+
+  # Cards of what memory holds for the turn, before its first model call
+  brief:
+    model: google/gemini-3.5-flash-lite # a cheap model, the run's model by default
+    maxCards: 4 # 1 to 4
+    timeoutMs: 4000
+
+  # What memory makes of the facts about each entity, rewritten when they change
+  observations:
+    maxEntities: 3 # observations one refresh writes at most
+    minItems: 3 # facts an entity needs for an observation
+
+  # A background pass every few runs: repeats go stale, lessons reach the playbook
+  consolidation:
+    everyRuns: 20
+    afterCompaction: true
+    maxChanges: 10 # items one pass marks as stale at most, 0 to leave items alone
+    maxSubjects: 10 # subjects one pass asks about at most, the next pass goes on
+    playbook: apply # apply | shadow | false
+    showPlaybook: true
 ```
 
 `memory.compaction` is validated by `MemoryCompactionConfigSchema` (`at` above 0 and at most 1). Its hooks `beforeCompact` and `afterCompact` are functions, so they are set in code. See [Compaction After a Run](https://cogitator.app/docs/memory#compaction-after-a-run).
@@ -259,6 +279,12 @@ memory:
 `memory.extraction` is validated by `MemoryExtractionConfigSchema`: `model` not empty, `windowTokens` a whole number above 0, `activationConfidence` from 0 to 1, `scope` one of `user`, `agent` and `thread`, and `timeZone` an IANA time zone. Its `afterExtract` hook is set in code. See [Extraction After a Run](https://cogitator.app/docs/memory#extraction-after-a-run).
 
 `memory.files` is validated by `MemoryFilesConfigSchema`: `scope` one of `user`, `agent` and `thread`, `readOnly` a boolean and `indexChars` a whole number above 0. With it the runtime gives every agent the `memory` tool and lists the files a run sees in its context. See [Memory Files](https://cogitator.app/docs/memory#memory-files).
+
+`memory.brief` is validated by `MemoryBriefConfigSchema`: `model` not empty, `maxCards` a whole number from 1 to 4, `timeoutMs` above 0 and `maxTokens` a whole number above 0. See [Pre-Turn Brief](https://cogitator.app/docs/memory#pre-turn-brief).
+
+`memory.observations` is validated by `MemoryObservationsConfigSchema`: `model` not empty, `maxEntities` and `minItems` whole numbers above 0. See [Observations](https://cogitator.app/docs/memory#observations).
+
+`memory.consolidation` is validated by `MemoryConsolidationConfigSchema`: `model` not empty, `everyRuns` a whole number above 0, `afterCompaction` and `showPlaybook` booleans, `maxChanges` a whole number from 0, `maxSubjects` a whole number above 0 and `playbook` one of `apply`, `shadow` and `false`. Its `afterConsolidate` hook is a function, so it is set in code. See [Consolidation](https://cogitator.app/docs/memory#consolidation).
 
 The `Cogitator` runtime builds the store `adapter` names from its section: `redis` needs `url`, `host`/`port` or `cluster`, `postgres` needs `connectionString`, `sqlite` needs `path` and `mongodb` needs `uri`. A Postgres store sizes its vector column to `embedding`. `qdrant` is not a thread store: keep one of the others as `adapter`, and with `contextBuilder` (`includeSemanticContext: true`) the runtime searches `memory.qdrant` for semantic context.
 
@@ -617,6 +643,9 @@ import type { CogitatorConfigInput, CogitatorConfigOutput } from '@cogitator-ai/
 | `MemoryCompactionConfigSchema`    | `memory.compaction`                    |
 | `MemoryExtractionConfigSchema`    | `memory.extraction`                    |
 | `MemoryFilesConfigSchema`         | `memory.files`                         |
+| `MemoryBriefConfigSchema`         | `memory.brief`                         |
+| `MemoryObservationsConfigSchema`  | `memory.observations`                  |
+| `MemoryConsolidationConfigSchema` | `memory.consolidation`                 |
 | `SandboxConfigSchema`             | Sandbox execution settings             |
 | `ReflectionConfigSchema`          | Self-reflection settings               |
 | `GuardrailConfigSchema`           | Safety guardrails                      |

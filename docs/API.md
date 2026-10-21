@@ -151,8 +151,29 @@ interface MemoryConfig {
     includeSemanticContext?: boolean;
     includeGraphContext?: boolean;
   };
+  brief?: {
+    model?: string;
+    maxCards?: number;
+    timeoutMs?: number;
+    maxTokens?: number;
+    prompt?: string;
+  };
+  observations?: { model?: string; maxEntities?: number; minItems?: number; prompt?: string };
+  consolidation?: {
+    model?: string;
+    everyRuns?: number; // default 20
+    afterCompaction?: boolean; // default true
+    maxChanges?: number; // default 10
+    maxSubjects?: number; // default 10
+    playbook?: 'apply' | 'shadow' | false; // default 'apply'
+    showPlaybook?: boolean; // default true
+    prompt?: string;
+    afterConsolidate?: (report: MemoryConsolidationReport) => void | Promise<void>;
+  };
 }
 ```
+
+`brief`, `observations` and `consolidation` keep memory useful between runs, see [Memory upkeep](#memory-upkeep).
 
 The runtime creates the adapter itself only for `adapter: 'memory'`, `'redis'` (requires `redis.url`) and
 `'postgres'` (requires `postgres.connectionString`); any other value only logs a warning. For SQLite or
@@ -191,6 +212,13 @@ class Cogitator {
   getMemory(): Promise<MemoryAdapter | undefined>;
   // The adapter once connected (by a run or getMemory()); assign your own adapter here
   memory: MemoryAdapter | undefined;
+  // A pass over the agent's memory now (memory.consolidation or memory.observations): repeats marked
+  // stale, lessons folded into the playbook, observations written again. Needs a userId, or a
+  // threadId for memory kept for a run without a user
+  consolidateMemory(
+    agent: Agent,
+    run?: { userId?: string; threadId?: string }
+  ): Promise<MemoryConsolidationReport>;
 
   // Versioned instructions and A/B tests
   readonly prompts: PromptRegistry;
@@ -1129,6 +1157,40 @@ interface MemoryQueryOptions {
 
 See [Memory Adapters](https://cogitator.app/docs/memory/adapters) for facts, embeddings and hybrid search.
 
+### Memory upkeep
+
+The pieces behind `memory.brief`, `memory.observations` and `memory.consolidation`, for use without a Cogitator:
+
+```typescript
+import {
+  MemoryBriefer,
+  MemoryConsolidator,
+  MemoryFiles,
+  MemoryItems,
+  MemoryObservations,
+} from '@cogitator-ai/memory';
+
+// Cards for a turn, each quoting its source: { kind, text, quote, source }
+const cards = await new MemoryBriefer({ summarize, maxCards: 4 }).brief(input, sources);
+
+// Observations of entities as memory files under /memories/observations/
+const observations = new MemoryObservations({ files, items, itemAdapter: memory });
+await observations.refresh(scope, { summarize, maxEntities: 3, minItems: 3 }); // { written, deleted }
+await observations.read(scope); // MemoryObservation[]
+
+// Repeats marked stale, lessons folded into /memories/playbook.md
+const consolidator = new MemoryConsolidator({ items, itemAdapter: memory, files });
+await consolidator.dedupe(scope, { summarize, since, maxChanges: 10, maxSubjects: 10 }); // { stale, complete, through? }
+await consolidator.foldLessons(scope, { summarize, mode: 'apply' }); // PlaybookChange | undefined
+await consolidator.promotePlaybook(scope); // a shadow draft made the playbook, false when it is stale
+
+// Helpers they build on
+await files.put(access, '/memories/notes.md', text, expectedSha256OrNull); // a whole file, created or replaced
+await items.markStale(itemIds, { reason: 'duplicate', keptId }, ['active']); // kept in metadata.staleBecause, only items still active
+```
+
+`memoryBriefMiddleware(config, deps)` and `memoryUpkeepMiddleware(config, deps)` from `@cogitator-ai/core` are the run middleware a Cogitator builds from the config, exported for a runtime of your own. See [Between Runs](https://cogitator.app/docs/memory#between-runs).
+
 ---
 
 ## HTTP APIs
@@ -1284,7 +1346,7 @@ const guard: RunMiddleware = {
 };
 ```
 
-The Cogitator's middleware runs outermost, then the agent's, then the run's, then the built-in PII masking, prompt injection, guardrails and compaction. See [Run Middleware](https://cogitator.app/docs/core/middleware).
+The Cogitator's middleware runs outermost, then the agent's, then the run's, then the built-in PII masking, prompt injection, guardrails, compaction and memory (extraction, compaction of the thread, upkeep and the pre-turn brief). See [Run Middleware](https://cogitator.app/docs/core/middleware).
 
 ### Workflow callbacks
 
