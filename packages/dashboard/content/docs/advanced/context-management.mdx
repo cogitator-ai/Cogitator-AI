@@ -88,6 +88,20 @@ The context is ordered for the prompt cache: the system message and the history 
 
 The `agent.run` span reports the tokens each partition of the context took as `context.tokens.<partition>` (`context.tokens.system`, `context.tokens.recent`, `context.tokens.final` and so on).
 
+## Clearing, Compression and Memory Compaction
+
+Three features keep a conversation inside the model's window. They act at different times and last for different spans:
+
+| Feature                                                    | When                                                           | What it changes                                                                      | What stays                                                                 |
+| ---------------------------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------ | -------------------------------------------------------------------------- |
+| `context.clearToolOutputs`                                 | Before a model turn, past `trigger` tokens                     | Old tool outputs in the run's conversation become notes                              | Memory keeps every output, `recall_tool_output` reads one back             |
+| `context` (compression)                                    | Before a model turn, past `compressionThreshold` of the window | What this run sends, cut or summarized                                               | Memory keeps the whole history, and the next run reads all of it again     |
+| [`memory.compaction`](/docs/memory#compaction-after-a-run) | After a run, past `at` of the window                           | The thread: a `compaction` entry that later runs read in place of older conversation | The entries stay on the branch, runs read the handoff and the newest turns |
+
+Clearing comes first, so outputs go before anything is summarized. Compression lasts one run: the next run loads the history again and compresses it again. Memory compaction lasts: it writes a [hierarchical](/docs/memory#hierarchical-compaction) summary of grounded atoms to the thread once, and every later run starts from it. Used together, compression keeps a single run that grows past the window going, and memory compaction keeps the thread small across runs.
+
+A thread that outgrows its window again within two turns of its last compaction is not compacted again. Such a conversation is filled by a few large tool outputs, not by turns, so memory compaction logs a warning to turn on `context.clearToolOutputs` instead, which is what frees that room.
+
 ## Token Counting
 
 Cogitator uses a fast heuristic token counter (4 characters per token plus 4 per message) for real-time decisions. Context windows come from the [model registry](/docs/core/model-registry), with built-in fallbacks for well-known model families; an unknown model counts as 8,192 tokens:

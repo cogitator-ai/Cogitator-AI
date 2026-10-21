@@ -223,6 +223,12 @@ interface RunMiddleware<TDeps = unknown> {
     next: (call: ToolCallRequest) => Promise<ToolResult>,
     context: RunMiddlewareContext<TDeps>
   ): Promise<ToolResult>;
+  afterRun?(event: RunEndEvent, context: RunMiddlewareContext<TDeps>): void | Promise<void>;
+}
+
+interface RunEndEvent {
+  readonly result: RunResult;
+  readonly model: string; // the model the run ended on, as provider/model
 }
 
 interface ModelCallRequest {
@@ -238,6 +244,8 @@ interface ToolCallRequest {
   approved: boolean; // a person approved the call (false once a middleware changed the arguments)
 }
 ```
+
+`afterRun` is called once a run finished and its writes to memory settled, before `run()` returns. It is not called for a run that failed or paused, and an error it throws fails the run.
 
 `RunMiddlewareContext` carries `runId`, `threadId`, `agentId`, `agentName`, `userId`, `channelType`, `channelId`, `iteration`, `signal`, `deps` and a `state` map the run's middleware share. See [Run Middleware](/docs/core/middleware).
 
@@ -706,6 +714,7 @@ interface MemoryConfig {
   qdrant?: Omit<QdrantAdapterConfig, 'provider'>;
   embedding?: EmbeddingServiceConfig;
   contextBuilder?: Partial<ContextBuilderConfig>;
+  compaction?: MemoryCompactionConfig; // compaction of a run's thread after the run, off unless set
 }
 
 type EmbeddingServiceConfig = OpenAIEmbeddingConfig | OllamaEmbeddingConfig | GoogleEmbeddingConfig;
@@ -789,6 +798,73 @@ interface DroppedBlock {
 ```
 
 `ContextBuilderConfig` takes `partitions?: Partial<Record<ContextPartition, ContextPartitionBudget>>`, merged over the defaults (`system`, `pinned`, `index`, `summaries`, `brief` and `final` required, `facts` 15%, `recall` 35%, `recent` the rest, shares of the partitions that are not required adding up to 1 at most), `BuiltContext` has `memoryContext?: string` (what changes every turn, sent with the input) and `partitions` (tokens per partition), and `DroppedContext` has `blocks: DroppedBlock[]`.
+
+Threads are compacted (see [Sessions, Compaction and Core Facts](/docs/memory#sessions-compaction-and-core-facts)) with these types:
+
+```typescript
+type CompactionStrategy = 'hierarchical' | 'summary' | 'sliding-window' | 'hybrid';
+
+interface CompactionConfig {
+  strategy: CompactionStrategy;
+  threshold?: number; // tokens of the thread that start a compaction
+  messageThreshold?: number; // entries of the thread that start a compaction
+  keepRecent: number; // newest entries kept verbatim
+  keepRecentTokens?: number; // hierarchical: newest tokens of whole turns kept verbatim, in place of keepRecent
+  chapterTokens?: number; // hierarchical: conversation one chapter covers (default 4000)
+  chaptersPerArc?: number; // hierarchical: chapters kept before the oldest fold into an arc (default 4)
+  arcsPerSaga?: number; // hierarchical: arcs kept before the oldest fold into the saga (default 4)
+  summaryModel?: string;
+  summaryPrompt?: string;
+}
+
+interface CompactionEvent {
+  firstKeptEntryId: string | null;
+  lastCompactedEntryId?: string;
+  compacted: number;
+  summarized: boolean;
+  levels?: CompactionLevels; // the tree a hierarchical compaction keeps, its message is the handoff
+}
+
+type CompactionAtomKind = 'fact' | 'task' | 'decision' | 'constraint' | 'error' | 'file' | 'thread';
+
+interface CompactionAtom {
+  kind: CompactionAtomKind;
+  status: 'open' | 'closed';
+  text: string;
+  evidence?: Evidence[]; // quotes of the entries it stands on
+  verified: boolean; // every quote was found in its entry
+}
+
+interface CompactionNode {
+  from: string; // the first entry it covers
+  to: string; // the last entry it covers
+  atoms: CompactionAtom[];
+}
+
+interface CompactionLevels {
+  saga?: CompactionNode;
+  arcs: CompactionNode[]; // oldest first
+  chapters: CompactionNode[]; // oldest first
+}
+
+interface MemoryCompactionConfig extends Partial<
+  Omit<CompactionConfig, 'strategy' | 'threshold' | 'messageThreshold'>
+> {
+  at?: number; // share of the model's context window that starts a compaction (default 0.8)
+  beforeCompact?: (
+    event: BeforeCompactEvent
+  ) => void | false | { instructions?: string } | Promise<void | false | { instructions?: string }>;
+  afterCompact?: (result: CompactionResult) => void | Promise<void>;
+}
+
+interface BeforeCompactEvent {
+  threadId: string;
+  tokens: number; // tokens of the thread's conversation
+  threshold: number; // tokens past which it is compacted
+}
+```
+
+`MemoryCompactionConfig` compacts a run's thread `hierarchical`ly after the run, keeping the newest `keepRecentTokens` (by default the less of 20000 and a quarter of the window). `beforeCompact` returns `false` to skip a compaction or `{ instructions }` to add to the summarizer's prompt. See [Compaction After a Run](/docs/memory#compaction-after-a-run).
 
 ## Errors
 

@@ -60,7 +60,7 @@ const programmatic = defineConfig({
 });
 ```
 
-Both validate the result and throw `Invalid configuration: …` with every Zod issue when it does not fit the schema. The result is a `CogitatorConfig`, ready for the runtime. Options that hold functions or objects (stores, callbacks such as `security.pii.onDetect`, `llm.backends`, `prompts.versions` / `prompts.abTests` / `prompts.score`, `runCheckpoints`) cannot come from YAML; add them in code:
+Both validate the result and throw `Invalid configuration: …` with every Zod issue when it does not fit the schema. The result is a `CogitatorConfig`, ready for the runtime. Options that hold functions or objects (stores, callbacks such as `security.pii.onDetect` or `memory.compaction.beforeCompact`, `llm.backends`, `prompts.versions` / `prompts.abTests` / `prompts.score`, `runCheckpoints`) cannot come from YAML, add them in code:
 
 ```typescript
 import { Cogitator } from '@cogitator-ai/core';
@@ -226,7 +226,19 @@ memory:
       maxDepth: 3
       includeInferred: true
       entityTypes: [person, organization] # person | organization | location | concept | event | object | custom
+
+  # Compaction of a run's thread after the run (hierarchical)
+  compaction:
+    at: 0.8 # share of the model's context window that starts it
+    keepRecentTokens: 20000 # newest whole turns kept verbatim (default: the less of 20000 and a quarter of the window)
+    chapterTokens: 4000
+    chaptersPerArc: 4
+    arcsPerSaga: 4
+    summaryModel: google/gemini-3.5-flash # default: the model the run ended on
+    summaryPrompt: Keep every price that was quoted.
 ```
+
+`memory.compaction` is validated by `MemoryCompactionConfigSchema` (`at` above 0 and at most 1). Its hooks `beforeCompact` and `afterCompact` are functions, so they are set in code. See [Compaction After a Run](https://cogitator.app/docs/memory#compaction-after-a-run).
 
 The `Cogitator` runtime builds the store `adapter` names from its section: `redis` needs `url`, `host`/`port` or `cluster`, `postgres` needs `connectionString`, `sqlite` needs `path` and `mongodb` needs `uri`. A Postgres store sizes its vector column to `embedding`. `qdrant` is not a thread store: keep one of the others as `adapter`, and with `contextBuilder` (`includeSemanticContext: true`) the runtime searches `memory.qdrant` for semantic context.
 
@@ -582,6 +594,7 @@ import type { CogitatorConfigInput, CogitatorConfigOutput } from '@cogitator-ai/
 | `CogitatorConfigSchema`           | Full configuration                     |
 | `LLMConfigSchema`                 | LLM providers and defaults             |
 | `MemoryConfigSchema`              | Memory adapters and settings           |
+| `MemoryCompactionConfigSchema`    | `memory.compaction`                    |
 | `SandboxConfigSchema`             | Sandbox execution settings             |
 | `ReflectionConfigSchema`          | Self-reflection settings               |
 | `GuardrailConfigSchema`           | Safety guardrails                      |

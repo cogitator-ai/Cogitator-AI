@@ -45,7 +45,7 @@ await cog.run(agent, { input: 'Where is my order?', middleware: [auditFor(userId
 | `new Agent({ middleware })`      | The runs of this agent, and the turns of a run handed over to it  |
 | `cog.run(agent, { middleware })` | One run. Pass it again to `resume()`                              |
 
-The Cogitator's middleware runs first, then the agent's, then the run's, then the built-in middleware closest to the model. `before*` hooks run in that order, `wrap*` hooks nest with the first one outermost, and `afterModel` runs in reverse, so the middleware nearest the model sees its answer first.
+The Cogitator's middleware runs first, then the agent's, then the run's, then the built-in middleware closest to the model. `before*` and `afterRun` hooks run in that order, `wrap*` hooks nest with the first one outermost, and `afterModel` runs in reverse, so the middleware nearest the model sees its answer first.
 
 Middleware is code, so the [agent wire format](/docs/core/agents#sending-an-agent-to-another-process) does not carry it: the side that runs an agent gives its own.
 
@@ -60,6 +60,7 @@ Every hook is optional. Each one gets the run's context as its last argument.
 | `wrapModelCall` | Around each call, once per model a turn tries | Change the request or the stream sink, call `next` again, or answer without it |
 | `afterModel`    | After each answer, before the run uses it     | Return `{ content }` or `{ toolCalls }` to replace them                        |
 | `wrapToolCall`  | Around each tool call that passed approval    | Change the arguments, or answer for the tool                                   |
+| `afterRun`      | After a run finished and its writes settled   | Keep memory in shape for the next run, such as compaction                      |
 
 ### beforeRun
 
@@ -131,6 +132,19 @@ const normalizeIds: RunMiddleware = {
 };
 ```
 
+### afterRun
+
+`afterRun({ result, model }, context)` runs once a run finished: after it saved what it said to memory, and before `run()` returns the `result`. `model` is the model the run ended on, as `provider/model`, after any fallback. It is the place for work that keeps memory in shape for the next run, which the caller waits for: the built-in compaction of [`memory.compaction`](/docs/memory#compaction-after-a-run) works this way. It is not called for a run that failed or paused, and an error it throws fails the run, so catch what may fail and should not cost the caller its result.
+
+```typescript
+const archive: RunMiddleware = {
+  name: 'archive',
+  async afterRun({ result, model }, context) {
+    await runs.insert({ threadId: context.threadId, model, output: result.output });
+  },
+};
+```
+
 ## The Run Context
 
 | Field                                | What it is                                                                  |
@@ -172,8 +186,9 @@ The runtime's own features are middleware too, added from the config closest to 
 | `cogitator:guardrails`         | `guardrails`               | `beforeRun`, `afterModel` (holds the stream), `wrapToolCall`      |
 | `cogitator:clear-tool-outputs` | `context.clearToolOutputs` | `beforeModel` clears, `wrapToolCall` answers `recall_tool_output` |
 | `cogitator:compaction`         | `context`                  | `beforeModel`                                                     |
+| `cogitator:memory-compaction`  | `memory.compaction`        | `afterRun`                                                        |
 
-Because PII masking is the innermost layer, it also masks whatever your middleware adds to a request, while your middleware sees the real values. The guardrails check the model's answer and a tool's result before your hooks see them: what your `afterModel` or `wrapToolCall` hooks change afterwards is not checked again. `piiMiddleware(config)`, `promptInjectionMiddleware(detector)`, `guardrailsMiddleware(constitutionalAI)`, `clearToolOutputsMiddleware(options)` and `compactionMiddleware(contextManager)` build them, to give a feature to one agent only:
+Because PII masking is the innermost layer, it also masks whatever your middleware adds to a request, while your middleware sees the real values. The guardrails check the model's answer and a tool's result before your hooks see them: what your `afterModel` or `wrapToolCall` hooks change afterwards is not checked again. `piiMiddleware(config)`, `promptInjectionMiddleware(detector)`, `guardrailsMiddleware(constitutionalAI)`, `clearToolOutputsMiddleware(options)` and `compactionMiddleware(contextManager)` build them, to give a feature to one agent only. `memoryCompactionMiddleware(config, deps)` builds the compaction after a run, given the memory, a summarizer per model and the context window of a model:
 
 ```typescript
 import { piiMiddleware } from '@cogitator-ai/core';

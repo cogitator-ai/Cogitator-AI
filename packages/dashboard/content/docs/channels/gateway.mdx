@@ -386,9 +386,10 @@ const gateway = new Gateway({
   session: {
     threadKey: (msg) => `${msg.channelType}:${msg.userId}`,
     compaction: {
-      strategy: 'summary',
+      strategy: 'hierarchical',
       messageThreshold: 100, // messages in the thread before compaction runs (or `threshold` in tokens)
-      keepRecent: 20, // newest messages kept verbatim
+      keepRecent: 10, // a thread of no more messages is left alone
+      keepRecentTokens: 4000, // newest whole turns kept verbatim
       summaryModel: 'google/gemini-3.8-flash', // optional, defaults to the agent model
     },
   },
@@ -397,7 +398,9 @@ const gateway = new Gateway({
 
 The `threadKey` function determines how sessions are grouped. By default, each user gets their own session per channel.
 
-Compaction follows the same rules as `CompactionService`: `threshold` counts tokens and `messageThreshold` counts messages, and the thread is compacted once either is reached. Compaction summarizes everything except the newest `keepRecent` messages with an LLM call (`summaryPrompt` overrides the default prompt) and adds the summary to the thread as a `compaction` entry, which later runs read in place of the summarized messages (nothing is deleted, see [Sessions and Compaction](/docs/memory#sessions-compaction-and-core-facts)). Strategies: `summary`, `sliding-window` (drop old messages), `hybrid`. A failed compaction is reported to `onError` and the message is still answered. Force it with `await gateway.compactThread(threadId)`.
+Compaction follows the same rules as `CompactionService`: `threshold` counts tokens and `messageThreshold` counts messages, and the thread is compacted once either is reached. `hierarchical` keeps the newest `keepRecentTokens` tokens of whole turns verbatim and the rest as a handoff of grounded atoms (see [Hierarchical Compaction](/docs/memory#hierarchical-compaction)), `summary` summarizes everything but the newest `keepRecent` messages with one LLM call (`summaryPrompt` overrides the default prompt), `sliding-window` drops old messages and `hybrid` picks one of those two. The summary is added to the thread as a `compaction` entry, which later runs read in place of the summarized messages (nothing is deleted, see [Sessions and Compaction](/docs/memory#sessions-compaction-and-core-facts)). The gateway's summarizer asks the model and prompt each call names, as the hierarchical strategy does for its chapters, and falls back to `summaryModel` and `summaryPrompt`, then to the agent's model and a default prompt. A failed compaction is reported to `onError` and the message is still answered.
+
+Force a compaction with `await gateway.compactThread(threadId)`, whatever the thresholds. `await gateway.compactAll()` compacts every thread the gateway knows the same way: the threads it served since it started and, unless `threadKey` names threads its own way, the thread of every stored session. It goes one thread at a time, past those that fail, and answers with a report such as `Compacted 2 of 3 threads`, followed by `Failed (n):` and a line per failed thread.
 
 ## Stats
 

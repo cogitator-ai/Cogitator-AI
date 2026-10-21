@@ -60,7 +60,7 @@ interface CogitatorConfig {
     maxTokensPerRun?: number; // checked before each model call
     maxToolResultLength?: number; // characters of a tool result the model reads (default 100000)
   };
-  memory?: MemoryConfig;
+  memory?: MemoryConfig; // adapters, contextBuilder, and compaction of a run's thread after the run
   runCheckpoints?: RunCheckpointStore; // where paused runs wait
   prompts?: PromptsConfig; // instruction versions and A/B tests
   sandbox?: SandboxManagerConfig;
@@ -332,6 +332,27 @@ const memory = await cog.getMemory(); // undefined when memory is not configured
 ```
 
 `cog.memory` is the same adapter once connected, and `undefined` before. Assigning `cog.memory = adapter` uses an adapter you connected yourself, for example one the config cannot create.
+
+### Compaction After a Run
+
+With `memory.compaction` a run compacts its thread once it is done, when the conversation of its branch passed `at` (default 0.8) of the context window of the model it ended on:
+
+```typescript
+const cog = new Cogitator({
+  memory: {
+    adapter: 'sqlite',
+    sqlite: { path: './memory.db' },
+    compaction: {
+      at: 0.8,
+      beforeCompact: async ({ threadId }) => {
+        await notes.flush(threadId);
+      },
+    },
+  },
+});
+```
+
+The compaction is `hierarchical`: the newest `keepRecentTokens` (by default the less of 20000 and a quarter of the window) stay verbatim and the rest becomes a handoff of grounded atoms that the next run reads in their place. `run()` returns once the compaction is done, a compaction that fails is logged and the run keeps its result, and a run on another branch than the thread's active one is left alone. See [Compaction After a Run](/docs/memory#compaction-after-a-run) for `beforeCompact`, `afterCompact` and the guard against compacting again right away.
 
 ### Memory Context and Prompt Caching
 

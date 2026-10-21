@@ -90,13 +90,13 @@ memory:
     threshold: 50
 ```
 
-When a conversation holds at least `threshold` messages, the gateway triggers compaction:
+When a conversation holds at least `threshold` messages, the gateway compacts it [hierarchically](/docs/memory#hierarchical-compaction):
 
-1. Older messages are summarized into a single summary message by the assistant's LLM
-2. The 10 most recent messages are kept intact
-3. The summary replaces the old messages in the conversation history
+1. The newest turns, about 4000 tokens of them, are kept intact, a tool call together with its result
+2. Older messages are read in chapters by the assistant's LLM, which lists what they established (facts, tasks, decisions, constraints, errors, files, open questions), each item checked against the quotes it gives
+3. A handoff of those items replaces the old messages in the conversation history, and the next compaction adds to it instead of summarizing the summary
 
-Owners can also compact on demand with `/compact`.
+Owners can also compact on demand with `/compact`, or every conversation at once with `/compact all`.
 
 ## Full Configuration
 

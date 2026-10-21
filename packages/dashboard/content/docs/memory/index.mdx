@@ -560,11 +560,12 @@ const result = await compaction.compact(session.id, {
 // { sessionId, originalMessages, compactedMessages, summaryTokens }
 ```
 
-| Strategy         | Behavior                                                                                           |
-| ---------------- | -------------------------------------------------------------------------------------------------- |
-| `summary`        | Replaces older entries with one `[Conversation summary]` system entry produced by your `summarize` |
-| `sliding-window` | Leaves older entries out without a summary                                                         |
-| `hybrid`         | `sliding-window` when 5 or fewer entries would be removed, otherwise `summary`                     |
+| Strategy         | Behavior                                                                                                          |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `summary`        | Replaces older entries with one `[Conversation summary]` system entry produced by your `summarize`                |
+| `sliding-window` | Leaves older entries out without a summary                                                                        |
+| `hybrid`         | `sliding-window` when 5 or fewer entries would be removed, otherwise `summary`                                    |
+| `hierarchical`   | Keeps a tree of grounded atoms in place of older entries, see [Hierarchical Compaction](#hierarchical-compaction) |
 
 On an adapter with branches (every built-in one) compaction deletes nothing. It adds a `compaction` entry to the end of the active branch, whose `event` (`CompactionEvent`) names the first kept entry, and whose message is the summary. A reader of the branch then sees the summary followed by the kept entries and everything after them, a reply saved while the summary was being written included. `ContextBuilder` and the runtime read history this way, in pages from the leaf back to where the latest compaction goes on from, so a long compacted thread costs only its current conversation. Read it yourself the same way:
 
@@ -577,7 +578,7 @@ const conversation = await readCompactedHistory(memory, { threadId });
 
 `compactedHistory(path)` builds the same conversation from a path you read yourself with `types: HISTORY_ENTRY_TYPES`.
 
-Since the summarized entries stay, other branches that start among them and evidence that points at them keep working, and `getEntries` still returns every entry. The next compaction summarizes the previous summary together with what followed it. Compactions of the same thread in one process run one after another.
+Since the summarized entries stay, other branches that start among them and evidence that points at them keep working, and `getEntries` still returns every entry. The next `summary` compaction summarizes the previous summary together with what followed it, while a `hierarchical` one keeps the tree of the previous one and only adds to it. Compactions of the same thread in one process run one after another.
 
 An adapter without `getPath` gets the older behaviour: the summary is dated a millisecond before the first kept entry and the summarized entries are deleted (an adapter that ignores the `createdAt` of `addEntry` gets the kept entries re-added after the summary).
 
@@ -598,6 +599,93 @@ const prompt = await coreFacts.formatForPrompt(); // "name: Alice\ntimezone: Eur
 const history = await coreFacts.getHistory('timezone'); // [{ value, setAt }]
 await coreFacts.close();
 ```
+
+### Hierarchical Compaction
+
+A summary that is summarized again at every compaction loses a little each time, and what it loses is often what matters later: a task still open, a rule to keep following, an error nobody fixed. `strategy: 'hierarchical'` keeps the summary as a tree of what the conversation established instead, checks every piece of it against the entries, and never sends the old conversation or the old summary to a model again.
+
+```typescript
+const result = await compaction.compact(session.id, {
+  strategy: 'hierarchical',
+  threshold: 60_000,
+  keepRecent: 0,
+  keepRecentTokens: 8000, // newest whole turns kept verbatim
+  chapterTokens: 4000, // conversation one chapter covers (default)
+  chaptersPerArc: 4, // chapters kept before the oldest fold into an arc (default)
+  arcsPerSaga: 4, // arcs kept before the oldest fold into the saga (default)
+  summaryPrompt: 'Mind the deadlines.', // added to the chapter prompt
+});
+```
+
+**Chapters.** The entries new since the last compaction, up to the kept tail, are cut into windows of about `chapterTokens` tokens. Each window opens with the last entries of the one before (about a tenth of `chapterTokens`), so what spans a cut is read whole. The summarizer gets each window as one user message, a transcript that numbers every entry, and `options.prompt` asks it for a JSON array of atoms, with `summaryPrompt` added at its end. Your `summarize` must send `options.prompt` as its instructions.
+
+**Atoms.** A `CompactionAtom` is one thing the conversation established: its `kind` (`fact`, `task`, `decision`, `constraint`, `error`, `file`, or `thread` for a question left open), its `status` (`open` or `closed`), a short `text` and its `evidence`, quotes of the entries it stands on. Every kind but `fact` is a control atom, something a reader must not lose while it is open.
+
+**Grounding.** Each quote is checked against the entry it names, as [lineage](#lineage) checks facts. An atom whose quotes all hold is `verified`, any other is a suggestion. An answer that is not a valid array is asked for again, up to three tries in all, and then the compaction fails. Some atoms need no model: the files tool calls worked on (arguments such as `path`, `file`, `file_path` or `filename`), tool calls that failed and open task lines (`TODO:`, `- [ ]`) are taken from the entries themselves, so no answer can lose them.
+
+**Levels.** Chapters beyond `chaptersPerArc` fold into arcs, oldest first, and arcs beyond `arcsPerSaga` fold into the saga. Folding merges atoms by kind and text with no model, so nothing in the middle of a long thread is lost. A later status wins, except that an open control atom is closed only by an atom whose evidence holds: a claim of done the conversation does not show leaves it open.
+
+**Loss check.** A new summary is published only when it still holds every open control atom of the one before. One that would drop such an item throws (`The summary would lose N open item(s)`) and the thread stays as it was.
+
+**Handoff.** The message of the `compaction` entry is the handoff, the merged atoms laid out by what a reader goes on with: `Open tasks`, `Constraints`, `Decisions`, `Unresolved errors`, `Open questions`, `Files`, `Facts` and `Done`, an unverified atom marked `(unverified)`. The order is the same every time, so a summary that did not change reads the same and stays in the prompt cache.
+
+```text
+## Open tasks
+- TODO: write tests
+
+## Decisions
+- Use Postgres
+```
+
+**The tree in one entry.** The whole tree is the one `compaction` entry: its `event.levels` (`CompactionLevels`) holds the `saga`, the `arcs` and the `chapters`, oldest first in each, every one a `CompactionNode` with the first and the last entry it covers (`from`, `to`) and its `atoms`. The next compaction starts from these levels and adds only the new chapters. A summary another strategy wrote becomes one closed, unverified fact of the first chapter.
+
+**Tail.** With `keepRecentTokens` the newest tokens of the conversation stay verbatim, as whole turns that open with a user message, so a tool call keeps its result. When even the last turn is larger, it is kept from its user message on. Without it the newest `keepRecent` entries stay, moved back to the call a kept tool result answers. A thread of no more than `keepRecent` entries is not compacted either way.
+
+`CompactionService.chapterAtoms(window, config)` returns the atoms of one window, the summarizer's checked answer together with the structural atoms, for a pipeline of your own.
+
+To have Anthropic write the atoms with its compaction on request, use `anthropicCompactionSummarizer` from `@cogitator-ai/core` as the summarizer. It sends the prompt as the compaction's `instructions` (beta `compact-2026-09-04`) and answers with the summary Anthropic returns, which is parsed and checked like any other answer. The signed compaction block is not kept, so the conversation goes on with Cogitator's own summary on every model.
+
+```typescript
+import { anthropicCompactionSummarizer } from '@cogitator-ai/core';
+
+const anthropicCompaction = new CompactionService({
+  adapter: memory,
+  summarize: anthropicCompactionSummarizer({ model: 'claude-sonnet-5-5' }), // ANTHROPIC_API_KEY
+});
+```
+
+### Compaction After a Run
+
+`memory.compaction` (`MemoryCompactionConfig`) has a Cogitator compact a run's thread once the run is done, so the next run starts from the handoff and the newest turns instead of a conversation that no longer fits:
+
+```typescript
+const cog = new Cogitator({
+  memory: {
+    adapter: 'postgres',
+    postgres: { connectionString: process.env.DATABASE_URL! },
+    compaction: {
+      at: 0.8, // share of the model's context window (default)
+      keepRecentTokens: 20_000, // default: the less of 20000 and a quarter of the window
+      summaryModel: 'google/gemini-3.5-flash', // default: the model the run ended on
+      beforeCompact: async ({ threadId, tokens, threshold }) => {
+        await notes.flush(threadId);
+        return { instructions: 'Keep every price that was quoted.' };
+      },
+      afterCompact: (result) => console.log(result.originalMessages, result.compactedMessages),
+    },
+  },
+});
+```
+
+Once the conversation of the branch the run wrote, counted from its latest summary on, passes `at` of the context window of the model the run ended on, the branch is compacted `hierarchical`ly. The other settings of `CompactionConfig` apply (`keepRecent`, `keepRecentTokens`, `chapterTokens`, `chaptersPerArc`, `arcsPerSaga`, `summaryModel`, `summaryPrompt`), and the summarizer is the Cogitator's own backend for `summaryModel`, or for the model the run ended on.
+
+- `beforeCompact({ threadId, tokens, threshold })` is awaited first, a chance to save what matters to memory. Return `false` to skip this compaction, or `{ instructions }` to add to what the summarizer is asked, after `summaryPrompt`.
+- `afterCompact(result)` gets the `CompactionResult`.
+- A thread that outgrows its window again within two turns of its last compaction is not compacted again: a few huge outputs fill that conversation, and another summary would only churn. A warning says to clear tool outputs (`context.clearToolOutputs`, see [Context Management](/docs/advanced/context-management#clearing-old-tool-outputs)) instead.
+- A run that wrote aside of the thread's active branch, such as a fork, a replay or a run with `branch: { activate: false }`, is left alone.
+- A compaction that fails is logged as a warning, and the run keeps its result.
+
+It is the built-in run middleware `cogitator:memory-compaction`, an [`afterRun`](/docs/core/middleware#afterrun) hook: it runs after the run saved what it said and before `run()` returns, so a run that compacts takes as long as the compaction. It needs an adapter with branches (`getPath`), which every built-in one has.
 
 ## Installation
 

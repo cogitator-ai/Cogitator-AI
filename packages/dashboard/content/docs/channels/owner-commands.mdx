@@ -24,7 +24,9 @@ const gateway: Gateway = new Gateway({
       onSessions: () => `Active: @john (telegram), @jane (discord)`,
       onModel: (model, forUser) => `Model switched to ${model}`,
       onCompact: (target, threadId) =>
-        gateway.compactThread(target === 'current' ? threadId : target),
+        target === 'all'
+          ? gateway.compactAll()
+          : gateway.compactThread(target === 'current' ? threadId : target),
     }),
   ],
 });
@@ -32,17 +34,19 @@ const gateway: Gateway = new Gateway({
 
 ## Available Commands
 
-| Command                 | Level      | Description                                           |
-| ----------------------- | ---------- | ----------------------------------------------------- |
-| `/status`               | authorized | Show uptime, sessions, message count                  |
-| `/sessions`             | authorized | List recent sessions                                  |
-| `/help`                 | authorized | Show available commands                               |
-| `/users`                | owner      | List owners and approved users                        |
-| `/model <name> [@user]` | owner      | Switch model globally or for a specific user          |
-| `/compact [target]`     | owner      | Compact the current conversation (or `target` thread) |
-| `/restart`              | owner      | Restart the assistant                                 |
+| Command                  | Level      | Description                                                                       |
+| ------------------------ | ---------- | --------------------------------------------------------------------------------- |
+| `/status`                | authorized | Show uptime, sessions, message count                                              |
+| `/sessions`              | authorized | List recent sessions                                                              |
+| `/help`                  | authorized | Show available commands                                                           |
+| `/users`                 | owner      | List owners and approved users                                                    |
+| `/model <name> [@user]`  | owner      | Switch model globally or for a specific user                                      |
+| `/compact [target\|all]` | owner      | Compact the current conversation, the `target` thread, or every thread with `all` |
+| `/restart`               | owner      | Restart the assistant                                                             |
 
 Arguments may follow on the next line, and Telegram group syntax `/status@your_bot` is recognized. `/help` also lists `/pair <code>`, which is handled by the [pairing / DM policy middleware](/docs/channels/middleware), not by this one.
+
+`/compact` hands `onCompact` the target as typed, `current` when there is none. Wired as above, `/compact all` compacts every thread the gateway knows (see [Session Management](/docs/channels/gateway#session-management)) and answers with how many it compacted, which `RuntimeBuilder` does too.
 
 `/model` without an `onModel` callback only echoes `Model set to: …` and changes nothing; wire it to your runtime as `RuntimeBuilder` does. With `RuntimeBuilder`, `/model gemini-3.5-flash @42` sets a model for one user (bare model names get the configured provider prefix) and `/restart` exits the process with code `78`, which `cogitator up` answers by starting the assistant again (unless it runs with `--no-restart-loop`, where the assistant just stops).
 

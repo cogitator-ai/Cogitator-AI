@@ -29,7 +29,7 @@ With `@cogitator-ai/core` you usually configure memory on the runtime (`new Cogi
 - **Token Counting** - Estimate token usage without tiktoken dependency
 - **Context Builder** - Token-aware context with `recent`, `relevant` (embedding-ranked) and `hybrid` strategies
 - **Scoped Semantic Memory** - Embeddings tagged with `metadata.agentId` / `metadata.threadId` never leak to other agents
-- **Sessions & Compaction** - `SessionManager` for channel sessions, `CompactionService` for summarizing long histories
+- **Sessions & Compaction** - `SessionManager` for channel sessions, `CompactionService` for summarizing long histories, hierarchically into grounded atoms that a compaction never loses while they are open
 - **Embedding Services** - OpenAI, Ollama and Google embedding integration
 - **Semantic Search** - Vector similarity search with pgvector
 - **Hybrid Search** - BM25 + Vector with Reciprocal Rank Fusion
@@ -641,6 +641,31 @@ await sessions.compact(session.id, {
 A thread is compacted once its conversation holds `threshold` tokens or `messageThreshold` entries, whichever comes first (set at least one). On an adapter with branches (every built-in one) nothing is deleted: a `compaction` entry at the end of the active branch names the first kept entry and holds the summary, and `readCompactedHistory(memory, { threadId })` (or `compactedHistory(path)` on a path read with `types: HISTORY_ENTRY_TYPES`) gives the conversation as the summary, the kept entries and everything after them. `ContextBuilder` and the runtime read history this way, other branches and evidence keep the summarized entries, and `getEntries` still returns all of them. An adapter without `getPath` gets the summary dated just before the first kept entry and the summarized entries deleted.
 
 `compact()` requires the `compaction` option, without it use `CompactionService` directly. The summarizer (`SummarizeFn`) is called as `summarize(messages, options)`, where `options` is a `SummarizeOptions` `{ model?, prompt? }` filled from the `summaryModel` / `summaryPrompt` of the compaction config.
+
+### Hierarchical Compaction
+
+`strategy: 'hierarchical'` keeps the summary as a tree of what the conversation established, so it is never summarized again and loses nothing it still needs:
+
+```typescript
+await compaction.compact(session.id, {
+  strategy: 'hierarchical',
+  threshold: 60_000,
+  keepRecent: 0,
+  keepRecentTokens: 8000, // newest whole turns kept verbatim
+  chapterTokens: 4000, // default
+  chaptersPerArc: 4, // default
+  arcsPerSaga: 4, // default
+});
+```
+
+- The entries new since the last compaction, up to the kept tail, are read in chapters of about `chapterTokens` tokens, each opening with the end of the one before. For each the summarizer gets a numbered transcript and `options.prompt` asks for a JSON array of atoms (`summaryPrompt` is added to it), up to three tries.
+- A `CompactionAtom` has a `kind` (`fact`, `task`, `decision`, `constraint`, `error`, `file`, `thread`), a `status` (`open`, `closed`), a `text` and `evidence`. Every quote is checked against its entry, and an atom whose quotes do not all hold is not `verified`. Files tool calls worked on, failed tool calls and open task lines (`TODO:`, `- [ ]`) are taken from the entries with no model.
+- Chapters beyond `chaptersPerArc` fold into arcs and arcs beyond `arcsPerSaga` into the saga, with no model. An open task, decision, constraint, error, file or question is closed only by an atom whose evidence holds.
+- The summary is written only when it still holds every open item of the one before, else `compact()` throws and the thread stays as it was.
+- The whole tree is one `compaction` entry, `event.levels` (`CompactionLevels`: `saga`, `arcs`, `chapters`, each a `CompactionNode` with `from`, `to` and `atoms`), and its message is the handoff: `Open tasks`, `Constraints`, `Decisions`, `Unresolved errors`, `Open questions`, `Files`, `Facts` and `Done`, in the same order every time so it stays in the prompt cache.
+- `keepRecentTokens` keeps the newest tokens in whole turns that open with a user message, so a tool call keeps its result. Without it the newest `keepRecent` entries stay.
+
+`chapterAtoms(window, config)` returns the checked atoms of one window. `anthropicCompactionSummarizer({ model })` from `@cogitator-ai/core` is a `SummarizeFn` that has Anthropic's compaction on request write the answer, checked like any other. A Cogitator compacts a run's thread this way after the run with `memory.compaction`, see [Compaction After a Run](https://cogitator.app/docs/memory#compaction-after-a-run).
 
 ---
 
