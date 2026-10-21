@@ -216,12 +216,19 @@ const SCENARIOS: Record<MemoryItemAdapterScenario, (adapter: MemoryItemAdapter) 
       const { agentId, id } = scope();
       const kept = item(agentId, id('kept'));
       const gone = item(agentId, id('gone'), { expiredAt: at(5) });
-      for (const written of [kept, gone]) ok(await adapter.putItem(written), 'putItem');
+      const later = item(agentId, id('later'), {
+        expiredAt: new Date(Date.now() + 365 * 24 * 3600_000),
+      });
+      for (const written of [kept, gone, later]) ok(await adapter.putItem(written), 'putItem');
 
-      assert.deepEqual(ids(ok(await adapter.findItems({ agentId }), 'findItems')), [kept.id]);
+      assert.deepEqual(
+        ids(ok(await adapter.findItems({ agentId }), 'findItems')).sort(),
+        [kept.id, later.id].sort(),
+        'an item let go at a time still to come is found'
+      );
       assert.deepEqual(
         ids(ok(await adapter.findItems({ agentId, includeExpired: true }), 'findItems')).sort(),
-        [kept.id, gone.id].sort()
+        [kept.id, gone.id, later.id].sort()
       );
     },
 

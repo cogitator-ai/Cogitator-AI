@@ -3,7 +3,8 @@
  *
  * Supports:
  * - Threads and entries (MemoryAdapter)
- * - Facts (FactAdapter)
+ * - Memory items and their entity index (MemoryItemAdapter)
+ * - Facts over memory items (FactAdapter)
  * - Embeddings with pgvector (EmbeddingAdapter)
  */
 
@@ -16,7 +17,6 @@ import type {
   MemoryResult,
   PostgresAdapterConfig,
   MemoryProvider,
-  Evidence,
   Fact,
   Embedding,
   SemanticSearchOptions,
@@ -30,9 +30,17 @@ import type {
   EmbeddingDeleteFilter,
   MemoryEntryType,
   PathQueryOptions,
+  MemoryEntity,
+  MemoryEntityFilter,
+  MemoryItem,
+  MemoryItemAdapter,
+  MemoryItemFilter,
+  MemoryItemTime,
+  MemoryItemTrust,
 } from '@cogitator-ai/types';
 import { CONVERSATION_ENTRY_TYPES, MEMORY_ENTRY_FORMAT } from '@cogitator-ai/types';
 import { BranchingMemoryAdapter, MAX_PATH_DEPTH } from './base';
+import { entityNames, MemoryItems, normalizeName } from '../memory-items';
 import { attempt, ensureSchemaVersion, withSetupTransaction } from './schema-version';
 import { EMPTY_DELETE_FILTER_ERROR, filterSourceTypes, hasDeleteCondition } from '../search/filter';
 import {
@@ -75,12 +83,130 @@ export type VectorStoreState =
 const THREAD_TIME = "date_trunc('milliseconds', updated_at AT TIME ZONE 'UTC')";
 
 /**
- * Layout of threads, entries and facts. 1: the tables with `entries.seq` and the listing
+ * Layout of threads, entries and memory items. 1: the tables with `entries.seq` and the listing
  * indexes. 2: entries form trees (`parent_id`, `type`, `event`, `format_version`) and threads
- * name their active leaf; entries written before are chained in the order they were added. A
- * schema from before versions were recorded is brought up to date in place.
+ * name their active leaf, entries written before are chained in the order they were added. 3:
+ * memory items and their entity index, every row of `facts` becomes an item of the fact's own
+ * slot with the fact's id, and the old table is kept as `facts_legacy`. A schema from before
+ * versions were recorded is brought up to date in place.
  */
-const MEMORY_SCHEMA_VERSION = 2;
+const MEMORY_SCHEMA_VERSION = 3;
+
+/** The slot of a fact written through {@link FactAdapter}: `fact:<id of its first item>` */
+const FACT_SLOT_PREFIX = 'fact:';
+
+const factSlot = (factId: string) => `${FACT_SLOT_PREFIX}${factId}`;
+
+/** An ISO 8601 text of a timestamp in UTC to the millisecond, as `JSON.stringify` writes a date */
+const isoText = (column: string) =>
+  `to_char(${column} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
+
+/** A memory item time as the `item` column holds it, its dates as ISO text */
+type StoredTime = Omit<MemoryItemTime, 'start' | 'end'> & { start?: string; end?: string };
+
+/** A memory item as the `item` column holds it, its dates as ISO text */
+type StoredItem = Omit<
+  MemoryItem,
+  'saidAt' | 'sessionAt' | 'about' | 'validFrom' | 'validTo' | 'recordedAt' | 'expiredAt'
+> & {
+  saidAt: string;
+  sessionAt: string;
+  about?: StoredTime;
+  validFrom?: string;
+  validTo?: string;
+  recordedAt: string;
+  expiredAt?: string;
+};
+
+/** A memory entity as the `entity` column holds it, its dates as ISO text */
+type StoredEntity = Omit<MemoryEntity, 'firstSeenAt' | 'lastSeenAt'> & {
+  firstSeenAt: string;
+  lastSeenAt: string;
+};
+
+function storedToItem(stored: StoredItem): MemoryItem {
+  const { saidAt, sessionAt, about, validFrom, validTo, recordedAt, expiredAt, ...rest } = stored;
+  return {
+    ...rest,
+    saidAt: new Date(saidAt),
+    sessionAt: new Date(sessionAt),
+    ...(about !== undefined && { about: storedToTime(about) }),
+    ...(validFrom !== undefined && { validFrom: new Date(validFrom) }),
+    ...(validTo !== undefined && { validTo: new Date(validTo) }),
+    recordedAt: new Date(recordedAt),
+    ...(expiredAt !== undefined && { expiredAt: new Date(expiredAt) }),
+  };
+}
+
+function storedToTime(stored: StoredTime): MemoryItemTime {
+  const { start, end, ...rest } = stored;
+  return {
+    ...rest,
+    ...(start !== undefined && { start: new Date(start) }),
+    ...(end !== undefined && { end: new Date(end) }),
+  };
+}
+
+function storedToEntity(stored: StoredEntity): MemoryEntity {
+  return {
+    ...stored,
+    firstSeenAt: new Date(stored.firstSeenAt),
+    lastSeenAt: new Date(stored.lastSeenAt),
+  };
+}
+
+/** The trust of a memory item that holds a fact of `source` */
+function trustOfSource(source: Fact['source']): MemoryItemTrust {
+  switch (source) {
+    case 'user':
+      return 'user';
+    case 'system':
+      return 'system';
+    default:
+      return 'model';
+  }
+}
+
+function sourceOfTrust(trust: MemoryItemTrust): Fact['source'] {
+  return trust === 'user' || trust === 'system' ? trust : 'inferred';
+}
+
+/** The scope of a fact's items: its agent, narrowed to the user its metadata names */
+function factScope(agentId: string, metadata: Record<string, unknown> | undefined) {
+  const userId = metadata?.userId;
+  return { agentId, ...(typeof userId === 'string' && { userId }) };
+}
+
+/** The metadata of a fact's item: the fact's own, with its category */
+function factItemMetadata(
+  category: string,
+  metadata: Record<string, unknown> | undefined
+): Record<string, unknown> {
+  return { ...metadata, category };
+}
+
+/** The fact of `factId` whose current item is `item` and whose first item was recorded `createdAt` */
+function itemToFact(factId: string, item: MemoryItem, createdAt: Date): Fact {
+  const { category, ...metadata } = item.metadata ?? {};
+  return {
+    id: factId,
+    agentId: item.scope.agentId,
+    content: item.content,
+    category: item.attribute ?? (typeof category === 'string' ? category : ''),
+    confidence: item.confidence,
+    source: sourceOfTrust(item.trust),
+    metadata,
+    createdAt,
+    updatedAt: item.recordedAt,
+    ...(item.expiredAt && { expiresAt: item.expiredAt }),
+    ...(item.evidence.length > 0 && { evidence: item.evidence }),
+  };
+}
+
+function unwrap<T>(result: MemoryResult<T>): T {
+  if (!result.success) throw new Error(result.error);
+  return result.data;
+}
 
 /** An `embeddings` row as an embedding, its vector read from pgvector's text form when needed */
 function rowToEmbedding(row: Record<string, unknown>): Embedding {
@@ -106,28 +232,14 @@ function toJsonb(value: unknown): string | null {
   return value === undefined || value === null ? null : JSON.stringify(value);
 }
 
-/** A `facts` row as a fact, without `evidence` when the row has none */
-function rowToFact(row: Record<string, unknown>): Fact {
-  return {
-    id: row.id as string,
-    agentId: row.agent_id as string,
-    content: row.content as string,
-    category: row.category as string,
-    confidence: row.confidence as number,
-    source: row.source as Fact['source'],
-    metadata: row.metadata as Record<string, unknown>,
-    createdAt: new Date(row.created_at as string),
-    updatedAt: new Date(row.updated_at as string),
-    expiresAt: row.expires_at ? new Date(row.expires_at as string) : undefined,
-    ...(row.evidence ? { evidence: row.evidence as Evidence[] } : {}),
-  };
-}
-
 export class PostgresAdapter
   extends BranchingMemoryAdapter
-  implements FactAdapter, EmbeddingAdapter, KeywordSearchAdapter
+  implements MemoryItemAdapter, FactAdapter, EmbeddingAdapter, KeywordSearchAdapter
 {
   readonly provider: MemoryProvider = 'postgres';
+
+  /** The rules of memory items over this adapter's storage, which facts are written through */
+  private readonly memoryItems = new MemoryItems({ adapter: this });
 
   private pool: Pool | null = null;
   private config: PostgresAdapterConfig;
@@ -248,9 +360,129 @@ export class PostgresAdapter
     );
   }
 
-  /** Brings threads, entries and facts to {@link MEMORY_SCHEMA_VERSION} */
+  /**
+   * Creates `memory_items` and `memory_entities`: a column for each field items and entities are
+   * found by, and the whole of each in JSONB
+   */
+  private async createMemoryItemTables(db: SqlQueryable): Promise<void> {
+    const items = `${this.schema}.memory_items`;
+    const entities = `${this.schema}.memory_entities`;
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS ${items} (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        slot TEXT,
+        entity_id TEXT,
+        recorded_at TIMESTAMPTZ NOT NULL,
+        expired_at TIMESTAMPTZ,
+        item JSONB NOT NULL
+      )
+    `);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_memory_items_slot ON ${items}(agent_id, slot)`);
+    await db.query(
+      `CREATE INDEX IF NOT EXISTS idx_memory_items_entity ON ${items}(agent_id, entity_id)`
+    );
+    await db.query(`
+      CREATE INDEX IF NOT EXISTS idx_memory_items_recorded
+      ON ${items}(agent_id, recorded_at, (id COLLATE "C"))
+    `);
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS ${entities} (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        names TEXT[] NOT NULL,
+        entity JSONB NOT NULL
+      )
+    `);
+    await db.query(
+      `CREATE INDEX IF NOT EXISTS idx_memory_entities_agent ON ${entities}(agent_id, (id COLLATE "C"))`
+    );
+    await db.query(
+      `CREATE INDEX IF NOT EXISTS idx_memory_entities_names ON ${entities} USING GIN (names)`
+    );
+  }
+
+  /**
+   * Moves every row of `facts` into a memory item of kind `fact` with the fact's id, alone in
+   * its slot `fact:<id>`: active, trusted as its source, in the scope of its agent and of the
+   * user its metadata names, verified when it has evidence, said, recorded and valid from when
+   * the fact was created, and let go when the fact expires. Then `facts` becomes `facts_legacy`.
+   * Rows moved before are left as they are, so the move can run again.
+   */
+  private async migrateFactsToItems(db: SqlQueryable): Promise<void> {
+    const facts = `${this.schema}.facts`;
+    const legacy = `${this.schema}.facts_legacy`;
+    const found = await db.query(
+      'SELECT to_regclass($1) IS NOT NULL AS facts, to_regclass($2) IS NOT NULL AS legacy',
+      [facts, legacy]
+    );
+    if (found.rows[0]?.facts !== true) return;
+
+    await db.query(`ALTER TABLE ${facts} ADD COLUMN IF NOT EXISTS evidence JSONB`);
+    await db.query(`
+      INSERT INTO ${this.schema}.memory_items
+        (id, agent_id, kind, status, slot, entity_id, recorded_at, expired_at, item)
+      SELECT f.id, f.agent_id, 'fact', 'active', f.slot, NULL, f.at, f.expires_at,
+        jsonb_build_object(
+          'id', f.id,
+          'kind', 'fact',
+          'content', f.content,
+          'attribute', f.category,
+          'slot', f.slot,
+          'status', 'active',
+          'trust', CASE f.source WHEN 'user' THEN 'user' WHEN 'system' THEN 'system' ELSE 'model' END,
+          'confidence', COALESCE(f.confidence, 1),
+          'scope', jsonb_build_object('agentId', f.agent_id) || CASE
+            WHEN jsonb_typeof(f.metadata -> 'userId') = 'string'
+            THEN jsonb_build_object('userId', f.metadata -> 'userId') ELSE '{}'::jsonb END,
+          'evidence', f.evidence,
+          'verified', jsonb_array_length(f.evidence) > 0,
+          'saidAt', f.at_text,
+          'sessionAt', f.at_text,
+          'validFrom', f.at_text,
+          'recordedAt', f.at_text,
+          'metadata', f.metadata || jsonb_build_object('category', f.category)
+        ) || CASE WHEN f.expires_at IS NULL THEN '{}'::jsonb
+          ELSE jsonb_build_object('expiredAt', ${isoText('f.expires_at')}) END
+      FROM (
+        SELECT id, agent_id, content, category, confidence, source, expires_at,
+          '${FACT_SLOT_PREFIX}' || id AS slot,
+          date_trunc('milliseconds', COALESCE(created_at, updated_at, NOW())) AS at,
+          ${isoText('COALESCE(created_at, updated_at, NOW())')} AS at_text,
+          CASE WHEN jsonb_typeof(evidence) = 'array' THEN evidence ELSE '[]'::jsonb END
+            AS evidence,
+          CASE WHEN jsonb_typeof(metadata) = 'object' THEN metadata ELSE '{}'::jsonb END
+            AS metadata
+        FROM ${facts}
+      ) f
+      ON CONFLICT (id) DO NOTHING
+    `);
+
+    if (found.rows[0]?.legacy !== true) {
+      await db.query(`ALTER TABLE ${facts} RENAME TO facts_legacy`);
+      await db.query(
+        `ALTER INDEX IF EXISTS ${this.schema}.idx_facts_agent_id RENAME TO idx_facts_legacy_agent_id`
+      );
+      return;
+    }
+    await db.query(`ALTER TABLE ${legacy} ADD COLUMN IF NOT EXISTS evidence JSONB`);
+    const columns =
+      'id, agent_id, content, category, confidence, source, metadata, created_at, updated_at, ' +
+      'expires_at, evidence';
+    await db.query(`
+      INSERT INTO ${legacy} (${columns}) SELECT ${columns} FROM ${facts}
+      ON CONFLICT (id) DO NOTHING
+    `);
+    await db.query(`DROP TABLE ${facts}`);
+  }
+
+  /** Brings threads, entries and memory items to {@link MEMORY_SCHEMA_VERSION} */
   private async migrate(connection: SqlQueryable): Promise<void> {
-    const tables = ['threads', 'entries', 'facts'].map((table) => `${this.schema}.${table}`);
+    const tables = ['threads', 'entries', 'memory_items', 'memory_entities'].map(
+      (table) => `${this.schema}.${table}`
+    );
     const present = async (db: SqlQueryable) => {
       const found = await db.query(
         'SELECT count(*)::int AS n FROM unnest($1::text[]) AS t(name) WHERE to_regclass(name) IS NOT NULL',
@@ -287,23 +519,6 @@ export class PostgresAdapter
         )
       `);
 
-        await db.query(`
-        CREATE TABLE IF NOT EXISTS ${this.schema}.facts (
-          id TEXT PRIMARY KEY,
-          agent_id TEXT NOT NULL,
-          content TEXT NOT NULL,
-          category TEXT NOT NULL,
-          confidence REAL DEFAULT 1.0,
-          source TEXT NOT NULL,
-          metadata JSONB DEFAULT '{}',
-          created_at TIMESTAMPTZ DEFAULT NOW(),
-          updated_at TIMESTAMPTZ DEFAULT NOW(),
-          expires_at TIMESTAMPTZ,
-          evidence JSONB
-        )
-      `);
-        await db.query(`ALTER TABLE ${this.schema}.facts ADD COLUMN IF NOT EXISTS evidence JSONB`);
-
         await db.query(`CREATE SEQUENCE IF NOT EXISTS ${this.schema}.entries_seq`);
         await db.query(`ALTER TABLE ${this.schema}.entries ADD COLUMN IF NOT EXISTS seq BIGINT`);
         await db.query(
@@ -326,11 +541,9 @@ export class PostgresAdapter
         CREATE INDEX IF NOT EXISTS idx_threads_metadata
         ON ${this.schema}.threads USING GIN (metadata jsonb_path_ops)
       `);
-        await db.query(`
-        CREATE INDEX IF NOT EXISTS idx_facts_agent_id
-        ON ${this.schema}.facts(agent_id, category)
-      `);
         await this.migrateToTrees(db);
+        await this.createMemoryItemTables(db);
+        await this.migrateFactsToItems(db);
       },
       present
     );
@@ -892,61 +1105,198 @@ export class PostgresAdapter
     }
   }
 
+  async putItem(item: MemoryItem): Promise<MemoryResult<MemoryItem>> {
+    if (!this.pool) return this.failure('Not connected');
+    const json = JSON.stringify(item);
+    try {
+      await this.pool.query(
+        `INSERT INTO ${this.schema}.memory_items
+         (id, agent_id, kind, status, slot, entity_id, recorded_at, expired_at, item)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+         ON CONFLICT (id) DO UPDATE SET
+           agent_id = EXCLUDED.agent_id, kind = EXCLUDED.kind, status = EXCLUDED.status,
+           slot = EXCLUDED.slot, entity_id = EXCLUDED.entity_id,
+           recorded_at = EXCLUDED.recorded_at, expired_at = EXCLUDED.expired_at,
+           item = EXCLUDED.item`,
+        [
+          item.id,
+          item.scope.agentId,
+          item.kind,
+          item.status,
+          item.slot ?? null,
+          item.entityId ?? null,
+          item.recordedAt,
+          item.expiredAt ?? null,
+          json,
+        ]
+      );
+      return this.success(storedToItem(JSON.parse(json) as StoredItem));
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
+  async getItem(itemId: string): Promise<MemoryResult<MemoryItem | null>> {
+    if (!this.pool) return this.failure('Not connected');
+    try {
+      const result = await this.pool.query(
+        `SELECT item FROM ${this.schema}.memory_items WHERE id = $1`,
+        [itemId]
+      );
+      const row = result.rows[0];
+      return this.success(row ? storedToItem(row.item as StoredItem) : null);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
+  async findItems(filter: MemoryItemFilter): Promise<MemoryResult<MemoryItem[]>> {
+    if (!this.pool) return this.failure('Not connected');
+    const params: unknown[] = [filter.agentId];
+    const conditions = ['agent_id = $1'];
+    const anyOf = (column: string, values: readonly string[] | undefined) => {
+      if (values === undefined) return;
+      params.push(values);
+      conditions.push(`${column} = ANY($${params.length}::text[])`);
+    };
+    anyOf('id', filter.ids);
+    anyOf('slot', filter.slots);
+    anyOf('entity_id', filter.entityIds);
+    anyOf('kind', filter.kinds);
+    anyOf('status', filter.statuses);
+    if (filter.includeExpired !== true)
+      conditions.push('(expired_at IS NULL OR expired_at > NOW())');
+
+    try {
+      const result = await this.pool.query(
+        `SELECT item FROM ${this.schema}.memory_items WHERE ${conditions.join(' AND ')}
+         ORDER BY recorded_at, id COLLATE "C"`,
+        params
+      );
+      return this.success(result.rows.map((row) => storedToItem(row.item as StoredItem)));
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
+  async deleteItems(itemIds: string[]): Promise<MemoryResult<void>> {
+    if (!this.pool) return this.failure('Not connected');
+    if (itemIds.length === 0) return this.success(undefined);
+    try {
+      await this.pool.query(`DELETE FROM ${this.schema}.memory_items WHERE id = ANY($1::text[])`, [
+        itemIds,
+      ]);
+      return this.success(undefined);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
+  async putEntity(entity: MemoryEntity): Promise<MemoryResult<MemoryEntity>> {
+    if (!this.pool) return this.failure('Not connected');
+    const json = JSON.stringify(entity);
+    try {
+      await this.pool.query(
+        `INSERT INTO ${this.schema}.memory_entities (id, agent_id, names, entity)
+         VALUES ($1, $2, $3::text[], $4::jsonb)
+         ON CONFLICT (id) DO UPDATE SET
+           agent_id = EXCLUDED.agent_id, names = EXCLUDED.names, entity = EXCLUDED.entity`,
+        [entity.id, entity.scope.agentId, entityNames(entity), json]
+      );
+      return this.success(storedToEntity(JSON.parse(json) as StoredEntity));
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
+  async findEntities(filter: MemoryEntityFilter): Promise<MemoryResult<MemoryEntity[]>> {
+    if (!this.pool) return this.failure('Not connected');
+    const params: unknown[] = [filter.agentId];
+    const conditions = ['agent_id = $1'];
+    if (filter.ids !== undefined) {
+      params.push(filter.ids);
+      conditions.push(`id = ANY($${params.length}::text[])`);
+    }
+    if (filter.names !== undefined) {
+      params.push(filter.names);
+      conditions.push(`names && $${params.length}::text[]`);
+    }
+
+    try {
+      const result = await this.pool.query(
+        `SELECT entity FROM ${this.schema}.memory_entities WHERE ${conditions.join(' AND ')}
+         ORDER BY id COLLATE "C"`,
+        params
+      );
+      return this.success(result.rows.map((row) => storedToEntity(row.entity as StoredEntity)));
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
+  async deleteEntities(entityIds: string[]): Promise<MemoryResult<void>> {
+    if (!this.pool) return this.failure('Not connected');
+    if (entityIds.length === 0) return this.success(undefined);
+    try {
+      await this.pool.query(
+        `DELETE FROM ${this.schema}.memory_entities WHERE id = ANY($1::text[])`,
+        [entityIds]
+      );
+      return this.success(undefined);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
+  /**
+   * Writes the fact as the first memory item of its own slot `fact:<id>`, the item's id being
+   * the fact's. It is `active` whatever its source, as facts have always been found once added,
+   * and verified when it comes with evidence.
+   */
   async addFact(fact: Omit<Fact, 'id' | 'createdAt' | 'updatedAt'>): Promise<MemoryResult<Fact>> {
     if (!this.pool) return this.failure('Not connected');
 
     const id = this.generateId('fact');
     const now = new Date();
-
-    try {
-      await this.pool.query(
-        `INSERT INTO ${this.schema}.facts
-         (id, agent_id, content, category, confidence, source, metadata, expires_at, created_at, updated_at, evidence)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $9, $10::jsonb)`,
-        [
-          id,
-          fact.agentId,
-          fact.content,
-          fact.category,
-          fact.confidence,
-          fact.source,
-          toJsonb(fact.metadata ?? {}),
-          fact.expiresAt ?? null,
-          now,
-          toJsonb(fact.evidence),
-        ]
-      );
-
-      return this.success({ ...fact, id, createdAt: now, updatedAt: now });
-    } catch (err) {
-      return this.failure((err as Error).message);
-    }
+    const evidence = fact.evidence ?? [];
+    const written = await this.putItem({
+      id,
+      kind: 'fact',
+      content: fact.content,
+      attribute: fact.category,
+      slot: factSlot(id),
+      status: 'active',
+      trust: trustOfSource(fact.source),
+      confidence: fact.confidence,
+      scope: factScope(fact.agentId, fact.metadata),
+      evidence,
+      verified: evidence.length > 0,
+      saidAt: now,
+      sessionAt: now,
+      validFrom: now,
+      recordedAt: now,
+      ...(fact.expiresAt && { expiredAt: fact.expiresAt }),
+      metadata: factItemMetadata(fact.category, fact.metadata),
+    });
+    if (!written.success) return written;
+    return this.success({ ...fact, id, createdAt: now, updatedAt: now });
   }
 
+  /** The current facts of the agent, without those past `expiresAt` */
   async getFacts(agentId: string, category?: string): Promise<MemoryResult<Fact[]>> {
-    if (!this.pool) return this.failure('Not connected');
-
-    let query = `SELECT * FROM ${this.schema}.facts WHERE agent_id = $1`;
-    const params: unknown[] = [agentId];
-
-    if (category) {
-      query += ' AND category = $2';
-      params.push(category);
-    }
-
-    query += ' AND (expires_at IS NULL OR expires_at > NOW())';
-    query += ' ORDER BY confidence DESC, updated_at DESC';
-
-    let result: { rows: Record<string, unknown>[] };
-    try {
-      result = await this.pool.query(query, params);
-    } catch (err) {
-      return this.failure((err as Error).message);
-    }
-
-    return this.success(result.rows.map(rowToFact));
+    return this.currentFacts(
+      agentId,
+      category === undefined
+        ? undefined
+        : { sql: "latest.item->>'attribute' = $2", value: category }
+    );
   }
 
+  /**
+   * Changes a fact. A new statement is written as a new item of the fact's slot that supersedes
+   * the current one, so what the fact said before stays in its history. A change that keeps the
+   * statement (its confidence, category, metadata, evidence or expiry) corrects the current item.
+   */
   async updateFact(
     factId: string,
     updates: Partial<
@@ -955,80 +1305,145 @@ export class PostgresAdapter
   ): Promise<MemoryResult<Fact>> {
     if (!this.pool) return this.failure('Not connected');
 
-    const setClauses: string[] = ['updated_at = NOW()'];
-    const params: unknown[] = [];
-    let paramIndex = 1;
-
-    if (updates.content !== undefined) {
-      setClauses.push(`content = $${paramIndex++}`);
-      params.push(updates.content);
-    }
-    if (updates.category !== undefined) {
-      setClauses.push(`category = $${paramIndex++}`);
-      params.push(updates.category);
-    }
-    if (updates.confidence !== undefined) {
-      setClauses.push(`confidence = $${paramIndex++}`);
-      params.push(updates.confidence);
-    }
-    if (updates.metadata !== undefined) {
-      setClauses.push(`metadata = $${paramIndex++}::jsonb`);
-      params.push(toJsonb(updates.metadata));
-    }
-    if (updates.expiresAt !== undefined) {
-      setClauses.push(`expires_at = $${paramIndex++}`);
-      params.push(updates.expiresAt);
-    }
-    if (updates.evidence !== undefined) {
-      setClauses.push(`evidence = $${paramIndex++}::jsonb`);
-      params.push(toJsonb(updates.evidence));
-    }
-
-    params.push(factId);
-
-    let result: { rows: Record<string, unknown>[] };
     try {
-      result = await this.pool.query(
-        `UPDATE ${this.schema}.facts SET ${setClauses.join(', ')} WHERE id = $${paramIndex} RETURNING *`,
-        params
-      );
+      const slot = factSlot(factId);
+      const first = unwrap(await this.getItem(factId));
+      if (first?.slot !== slot) return this.failure(`Fact not found: ${factId}`);
+      const agentId = first.scope.agentId;
+      const current = unwrap(
+        await this.findItems({ agentId, slots: [slot], statuses: ['active'], includeExpired: true })
+      )
+        .filter((item) => item.validTo === undefined)
+        .at(-1);
+      if (!current) return this.failure(`Fact not found: ${factId}`);
+
+      const category = updates.category ?? current.attribute ?? '';
+      const { category: _category, ...ownMetadata } = current.metadata ?? {};
+      const metadata = updates.metadata ?? ownMetadata;
+      const evidence = updates.evidence ?? current.evidence;
+      const expiredAt = updates.expiresAt ?? current.expiredAt;
+      const changed = {
+        content: updates.content ?? current.content,
+        attribute: category,
+        confidence: updates.confidence ?? current.confidence,
+        scope: factScope(agentId, metadata),
+        evidence,
+        verified: updates.evidence ? evidence.length > 0 : current.verified,
+        metadata: factItemMetadata(category, metadata),
+      };
+
+      const updated =
+        normalizeName(changed.content) === normalizeName(current.content)
+          ? unwrap(await this.putItem({ ...current, ...changed, ...(expiredAt && { expiredAt }) }))
+          : await this.supersedeFact(current, changed, expiredAt);
+      return this.success(itemToFact(factId, updated, first.recordedAt));
     } catch (err) {
       return this.failure((err as Error).message);
     }
-
-    if (result.rows.length === 0) {
-      return this.failure(`Fact not found: ${factId}`);
-    }
-
-    return this.success(rowToFact(result.rows[0]));
   }
 
+  /**
+   * Writes `changed` as the new state of the fact whose current item is `current`, through
+   * {@link MemoryItems}, which closes `current`. The current item has to be in the new scope and
+   * not let go for that, so an expiry moves from it to the new item.
+   */
+  private async supersedeFact(
+    current: MemoryItem,
+    changed: Pick<
+      MemoryItem,
+      'content' | 'attribute' | 'confidence' | 'scope' | 'evidence' | 'verified' | 'metadata'
+    >,
+    expiredAt: Date | undefined
+  ): Promise<MemoryItem> {
+    if (current.expiredAt !== undefined || current.scope.userId !== changed.scope.userId) {
+      const { expiredAt: _expiredAt, ...kept } = current;
+      unwrap(await this.putItem({ ...kept, scope: changed.scope }));
+    }
+    const at = new Date(
+      Math.max(Date.now(), current.recordedAt.getTime(), current.validFrom?.getTime() ?? 0)
+    );
+    const [written] = await this.memoryItems.write([
+      {
+        ...changed,
+        kind: 'fact',
+        slot: current.slot,
+        status: 'active',
+        trust: current.trust,
+        saidAt: at,
+        sessionAt: at,
+        validFrom: at,
+        recordedAt: at,
+      },
+    ]);
+    if (!written) throw new Error(`Failed to update fact ${current.slot}`);
+    if (expiredAt === undefined) return written;
+    await this.memoryItems.expire([written.id], expiredAt);
+    return { ...written, expiredAt };
+  }
+
+  /** Deletes every item of the fact for good, its history included */
   async deleteFact(factId: string): Promise<MemoryResult<void>> {
     if (!this.pool) return this.failure('Not connected');
     try {
-      await this.pool.query(`DELETE FROM ${this.schema}.facts WHERE id = $1`, [factId]);
+      const slot = factSlot(factId);
+      const first = unwrap(await this.getItem(factId));
+      if (first?.slot !== slot) return this.success(undefined);
+      const items = unwrap(
+        await this.findItems({ agentId: first.scope.agentId, slots: [slot], includeExpired: true })
+      );
+      await this.memoryItems.purge(items.map((item) => item.id));
       return this.success(undefined);
     } catch (err) {
       return this.failure((err as Error).message);
     }
   }
 
+  /** The current facts of the agent whose content holds `query`, matched without case */
   async searchFacts(agentId: string, query: string): Promise<MemoryResult<Fact[]>> {
+    return this.currentFacts(agentId, {
+      sql: "latest.item->>'content' ILIKE $2",
+      value: `%${query.replace(/[%_\\]/g, '\\$&')}%`,
+    });
+  }
+
+  /**
+   * The facts of `agentId` that meet `where` (a condition on `latest`, its value `$2`): the
+   * current active item of each slot `fact:<id>`, until its expiry, with the time its first
+   * item was recorded. Most confident first, then the most recently updated.
+   */
+  private async currentFacts(
+    agentId: string,
+    where?: { sql: string; value: string }
+  ): Promise<MemoryResult<Fact[]>> {
     if (!this.pool) return this.failure('Not connected');
+    const items = `${this.schema}.memory_items`;
 
+    let result: { rows: Record<string, unknown>[] };
     try {
-      const result = await this.pool.query(
-        `SELECT * FROM ${this.schema}.facts
-         WHERE agent_id = $1 AND content ILIKE $2
-         AND (expires_at IS NULL OR expires_at > NOW())
-         ORDER BY confidence DESC`,
-        [agentId, `%${query.replace(/[%_\\]/g, '\\$&')}%`]
+      result = await this.pool.query(
+        `SELECT latest.item, COALESCE(origin.recorded_at, latest.recorded_at) AS created_at
+         FROM ${items} latest
+         LEFT JOIN ${items} origin ON origin.id = substr(latest.slot, ${FACT_SLOT_PREFIX.length + 1})
+         WHERE latest.agent_id = $1 AND latest.kind = 'fact' AND latest.status = 'active'
+           AND latest.slot LIKE '${FACT_SLOT_PREFIX}%' AND NOT latest.item ? 'validTo'
+           AND (latest.expired_at IS NULL OR latest.expired_at > NOW())
+           ${where ? `AND ${where.sql}` : ''}
+         ORDER BY (latest.item->>'confidence')::float8 DESC, latest.recorded_at DESC,
+           latest.id COLLATE "C"`,
+        where ? [agentId, where.value] : [agentId]
       );
-
-      return this.success(result.rows.map(rowToFact));
     } catch (err) {
       return this.failure((err as Error).message);
     }
+
+    return this.success(
+      result.rows.flatMap((row) => {
+        const item = storedToItem(row.item as StoredItem);
+        if (!item.slot?.startsWith(FACT_SLOT_PREFIX)) return [];
+        const factId = item.slot.slice(FACT_SLOT_PREFIX.length);
+        return [itemToFact(factId, item, new Date(row.created_at as string))];
+      })
+    );
   }
 
   async addEmbedding(

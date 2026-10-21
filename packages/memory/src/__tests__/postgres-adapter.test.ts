@@ -1,7 +1,14 @@
 import { createRequire } from 'node:module';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { PostgresAdapter } from '../adapters/postgres';
-import type { Evidence, Message, ToolCall, ToolResult } from '@cogitator-ai/types';
+import type {
+  Evidence,
+  MemoryEntity,
+  MemoryItem,
+  Message,
+  ToolCall,
+  ToolResult,
+} from '@cogitator-ai/types';
 
 /** How node-pg turns a JS parameter into the text it sends to the server. */
 const { prepareValue } = createRequire(import.meta.url)('pg/lib/utils.js') as {
@@ -459,49 +466,308 @@ describe('PostgresAdapter', () => {
     });
   });
 
+  describe('memory items', () => {
+    const at = (minute: number) => new Date(Date.UTC(2026, 0, 1, 0, minute));
+    const full: MemoryItem = {
+      id: 'mem_1',
+      kind: 'preference',
+      content: 'Ana prefers window seats',
+      subject: 'Ana',
+      entityId: 'ent_1',
+      attribute: 'seat',
+      value: 'window',
+      slot: 'ent_1:seat',
+      status: 'active',
+      trust: 'user',
+      confidence: 0.9,
+      scope: { agentId: 'agent1', userId: 'u1' },
+      evidence: [{ entryId: 'e1', quote: 'window seat please' }],
+      verified: true,
+      saidAt: at(1),
+      sessionAt: at(2),
+      about: { text: 'last Friday', start: at(3), end: at(4), precision: 'day' },
+      validFrom: at(5),
+      validTo: at(6),
+      recordedAt: at(7),
+      expiredAt: at(8),
+      supersedes: ['mem_0'],
+      metadata: { note: 'x' },
+    };
+
+    it('creates the item and entity tables with their indexes', () => {
+      const statements = mockPool.query.mock.calls.map(([sql]) => sql.replace(/\s+/g, ' '));
+      expect(
+        statements.some((sql) =>
+          /CREATE TABLE IF NOT EXISTS cogitator\.memory_items \(.*item JSONB NOT NULL/.test(sql)
+        )
+      ).toBe(true);
+      expect(statements).toContain(
+        'CREATE INDEX IF NOT EXISTS idx_memory_items_slot ON cogitator.memory_items(agent_id, slot)'
+      );
+      expect(statements).toContain(
+        'CREATE INDEX IF NOT EXISTS idx_memory_items_entity ON cogitator.memory_items(agent_id, entity_id)'
+      );
+      expect(sentToPostgres('idx_memory_items_recorded').sql).toContain(
+        'agent_id, recorded_at, (id COLLATE "C")'
+      );
+      expect(statements).toContain(
+        'CREATE INDEX IF NOT EXISTS idx_memory_entities_names ON cogitator.memory_entities USING GIN (names)'
+      );
+    });
+
+    it('upserts an item with its filtered fields in columns and the whole item as JSON', async () => {
+      const result = await adapter.putItem(full);
+
+      const { sql, params } = sentToPostgres('INSERT INTO cogitator.memory_items');
+      expect(sql).toContain('ON CONFLICT (id) DO UPDATE SET');
+      expect(params.slice(0, 6)).toEqual([
+        'mem_1',
+        'agent1',
+        'preference',
+        'active',
+        'ent_1:seat',
+        'ent_1',
+      ]);
+      expect(new Date(String(params[6]))).toEqual(full.recordedAt);
+      expect(new Date(String(params[7]))).toEqual(full.expiredAt);
+      expect(asJsonb(params[8])).toEqual(JSON.parse(JSON.stringify(full)));
+      expect(result).toEqual({ success: true, data: full });
+    });
+
+    it('reads an item back with its dates as dates and no field it never had', async () => {
+      const bare: MemoryItem = {
+        ...full,
+        id: 'mem_2',
+        about: { precision: 'approximate' },
+      };
+      for (const field of ['subject', 'entityId', 'validTo', 'expiredAt', 'supersedes'] as const) {
+        delete bare[field];
+      }
+      mockPool.query.mockResolvedValueOnce({ rows: [{ item: JSON.parse(JSON.stringify(full)) }] });
+      mockPool.query.mockResolvedValueOnce({ rows: [{ item: JSON.parse(JSON.stringify(bare)) }] });
+
+      const read = await adapter.getItem('mem_1');
+      const readBare = await adapter.getItem('mem_2');
+
+      expect(read).toEqual({ success: true, data: full });
+      expect(read.success && read.data?.about?.start).toBeInstanceOf(Date);
+      expect(readBare).toEqual({ success: true, data: bare });
+      expect(readBare.success && readBare.data).not.toHaveProperty('validTo');
+    });
+
+    it('finds items by every filter, oldest recorded first, without expired ones by default', async () => {
+      await adapter.findItems({
+        agentId: 'agent1',
+        ids: ['mem_1'],
+        slots: ['s'],
+        entityIds: ['ent_1'],
+        kinds: ['fact'],
+        statuses: ['active'],
+      });
+
+      const { sql, params } = sentToPostgres(
+        'SELECT item FROM cogitator.memory_items WHERE agent_id'
+      );
+      expect(sql.replace(/\s+/g, ' ')).toContain(
+        'agent_id = $1 AND id = ANY($2::text[]) AND slot = ANY($3::text[]) AND ' +
+          'entity_id = ANY($4::text[]) AND kind = ANY($5::text[]) AND status = ANY($6::text[]) ' +
+          'AND (expired_at IS NULL OR expired_at > NOW()) ORDER BY recorded_at, id COLLATE "C"'
+      );
+      expect(params[0]).toBe('agent1');
+    });
+
+    it('finds expired items when asked to', async () => {
+      await adapter.findItems({ agentId: 'agent1', includeExpired: true });
+
+      const lastCall = mockPool.query.mock.calls[mockPool.query.mock.calls.length - 1];
+      expect(lastCall[0]).not.toContain('expired_at');
+      expect(lastCall[1]).toEqual(['agent1']);
+    });
+
+    it('deletes nothing without ids and the given ids otherwise', async () => {
+      const before = mockPool.query.mock.calls.length;
+      await adapter.deleteItems([]);
+      await adapter.deleteEntities([]);
+      expect(mockPool.query.mock.calls.length).toBe(before);
+
+      await adapter.deleteItems(['mem_1', 'mem_2']);
+      const lastCall = mockPool.query.mock.calls[mockPool.query.mock.calls.length - 1];
+      expect(lastCall[0]).toContain(
+        'DELETE FROM cogitator.memory_items WHERE id = ANY($1::text[])'
+      );
+      expect(lastCall[1]).toEqual([['mem_1', 'mem_2']]);
+    });
+
+    it('stores every normalized name of an entity and finds entities by them', async () => {
+      const entity: MemoryEntity = {
+        id: 'ent_1',
+        scope: { agentId: 'agent1' },
+        name: 'The Eiffel Tower',
+        aliases: ['Tour  Eiffel'],
+        firstSeenAt: at(1),
+        lastSeenAt: at(2),
+      };
+      await adapter.putEntity(entity);
+      const { params } = sentToPostgres('INSERT INTO cogitator.memory_entities');
+      expect(params[2]).toBe('{"eiffel tower","tour eiffel"}');
+
+      mockPool.query.mockResolvedValueOnce({
+        rows: [{ entity: JSON.parse(JSON.stringify(entity)) }],
+      });
+      const found = await adapter.findEntities({ agentId: 'agent1', names: ['eiffel tower'] });
+
+      expect(found).toEqual({ success: true, data: [entity] });
+      const lastCall = mockPool.query.mock.calls[mockPool.query.mock.calls.length - 1];
+      expect(lastCall[0]).toContain('names && $2::text[]');
+      expect(lastCall[1]).toEqual(['agent1', ['eiffel tower']]);
+    });
+  });
+
   describe('fact operations', () => {
-    it('adds a fact', async () => {
+    const created = new Date('2026-01-01T00:00:00.000Z');
+    const updated = new Date('2026-01-02T00:00:00.000Z');
+
+    /** The first item of the fact `fact_123`, as `addFact` writes it */
+    const firstItem = (fields: Partial<MemoryItem> = {}): MemoryItem => ({
+      id: 'fact_123',
+      kind: 'fact',
+      content: 'User likes coffee',
+      attribute: 'preferences',
+      slot: 'fact:fact_123',
+      status: 'active',
+      trust: 'model',
+      confidence: 0.9,
+      scope: { agentId: 'agent1' },
+      evidence: [],
+      verified: false,
+      saidAt: created,
+      sessionAt: created,
+      validFrom: created,
+      recordedAt: created,
+      metadata: { source: 'chat', category: 'preferences' },
+      ...fields,
+    });
+
+    const factRow = (item: MemoryItem, createdAt: Date = item.recordedAt) => ({
+      item: JSON.parse(JSON.stringify(item)) as Record<string, unknown>,
+      created_at: createdAt,
+    });
+
+    /** The items written, in order */
+    const writtenItems = (): MemoryItem[] =>
+      mockPool.query.mock.calls
+        .filter(([sql]) => sql.includes('INSERT INTO cogitator.memory_items'))
+        .map(([, params = []]) => asJsonb(prepareValue(params[8])) as MemoryItem);
+
+    /**
+     * Keeps the items of one fact the way the table would: writes replace by id, lookups by id
+     * find one, lookups by agent filter by status and expiry
+     */
+    function storedFact(items: MemoryItem[]): void {
+      const table = new Map(items.map((item) => [item.id, factRow(item).item]));
+      mockPool.query.mockImplementation(async (sql: string, params: unknown[] = []) => {
+        if (sql.includes('INSERT INTO cogitator.memory_items')) {
+          const item = asJsonb(prepareValue(params[8])) as Record<string, unknown>;
+          table.set(String(item.id), item);
+          return { rows: [] };
+        }
+        if (sql.includes('FROM cogitator.memory_items WHERE id = $1')) {
+          const item = table.get(String(params[0]));
+          return { rows: item ? [{ item }] : [] };
+        }
+        if (sql.includes('FROM cogitator.memory_items WHERE agent_id')) {
+          const statuses = /status = ANY\(\$(\d+)/.exec(sql);
+          const wanted = statuses ? (params[Number(statuses[1]) - 1] as string[]) : undefined;
+          const rows = [...table.values()]
+            .filter((item) => wanted === undefined || wanted.includes(String(item.status)))
+            .filter((item) => !sql.includes('expired_at IS NULL') || !('expiredAt' in item))
+            .map((item) => ({ item }));
+          return { rows };
+        }
+        return withPgvector(sql) ?? { rows: [] };
+      });
+    }
+
+    it('adds a fact as the first active item of its own slot', async () => {
       const result = await adapter.addFact({
         agentId: 'agent1',
         content: 'User prefers dark mode',
         category: 'preferences',
         confidence: 0.9,
         source: 'inferred',
+        metadata: { userId: 'alice' },
       });
 
       expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.data.id).toMatch(/^fact_/);
-        expect(result.data.content).toBe('User prefers dark mode');
-      }
+      if (!result.success) return;
+      expect(result.data.id).toMatch(/^fact_/);
+      expect(result.data.content).toBe('User prefers dark mode');
+      const [item] = writtenItems();
+      expect(item).toMatchObject({
+        id: result.data.id,
+        kind: 'fact',
+        content: 'User prefers dark mode',
+        attribute: 'preferences',
+        slot: `fact:${result.data.id}`,
+        status: 'active',
+        trust: 'model',
+        confidence: 0.9,
+        scope: { agentId: 'agent1', userId: 'alice' },
+        evidence: [],
+        verified: false,
+        metadata: { userId: 'alice', category: 'preferences' },
+      });
+      expect(item?.recordedAt).toBe(result.data.createdAt.toISOString());
     });
 
-    it('gets facts for agent', async () => {
-      const now = new Date().toISOString();
-      mockPool.query.mockResolvedValueOnce({
-        rows: [
-          {
-            id: 'fact_123',
-            agent_id: 'agent1',
-            content: 'Test fact',
-            category: 'general',
-            confidence: 1.0,
-            source: 'explicit',
-            metadata: {},
-            created_at: now,
-            updated_at: now,
-            expires_at: null,
-          },
-        ],
+    it.each([
+      ['user', 'user'],
+      ['system', 'system'],
+      ['inferred', 'model'],
+    ] as const)('trusts a fact from %s as %s', async (source, trust) => {
+      await adapter.addFact({ agentId: 'a', content: 'c', category: 'g', confidence: 1, source });
+
+      expect(writtenItems()[0]?.trust).toBe(trust);
+    });
+
+    it('gets facts for agent from the current items of their slots', async () => {
+      const current = firstItem({
+        id: 'mem_2',
+        content: 'User likes tea',
+        trust: 'user',
+        recordedAt: updated,
+        expiredAt: new Date('2099-01-01T00:00:00.000Z'),
       });
+      mockPool.query.mockResolvedValueOnce({ rows: [factRow(current, created)] });
 
       const result = await adapter.getFacts('agent1');
 
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.data).toHaveLength(1);
-        expect(result.data[0].content).toBe('Test fact');
-      }
+      expect(result).toEqual({
+        success: true,
+        data: [
+          {
+            id: 'fact_123',
+            agentId: 'agent1',
+            content: 'User likes tea',
+            category: 'preferences',
+            confidence: 0.9,
+            source: 'user',
+            metadata: { source: 'chat' },
+            createdAt: created,
+            updatedAt: updated,
+            expiresAt: new Date('2099-01-01T00:00:00.000Z'),
+          },
+        ],
+      });
+      const { sql, params } = sentToPostgres('SELECT latest.item');
+      const flat = sql.replace(/\s+/g, ' ');
+      expect(flat).toContain("latest.status = 'active'");
+      expect(flat).toContain("latest.slot LIKE 'fact:%'");
+      expect(flat).toContain('(latest.expired_at IS NULL OR latest.expired_at > NOW())');
+      expect(flat).toContain(
+        "ORDER BY (latest.item->>'confidence')::float8 DESC, latest.recorded_at DESC"
+      );
+      expect(params).toEqual(['agent1']);
     });
 
     it('gets facts by category', async () => {
@@ -510,38 +776,88 @@ describe('PostgresAdapter', () => {
       await adapter.getFacts('agent1', 'preferences');
 
       const lastCall = mockPool.query.mock.calls[mockPool.query.mock.calls.length - 1];
-      expect(lastCall[0]).toContain('category = $2');
-      expect(lastCall[1]).toContain('preferences');
+      expect(lastCall[0]).toContain("latest.item->>'attribute' = $2");
+      expect(lastCall[1]).toEqual(['agent1', 'preferences']);
     });
 
-    it('updates a fact', async () => {
-      const now = new Date().toISOString();
-      mockPool.query.mockResolvedValueOnce({
-        rows: [
-          {
-            id: 'fact_123',
-            agent_id: 'agent1',
-            content: 'Updated content',
-            category: 'general',
-            confidence: 0.8,
-            source: 'explicit',
-            metadata: {},
-            created_at: now,
-            updated_at: now,
-            expires_at: null,
-          },
-        ],
-      });
+    it('updates the content of a fact with a new item that supersedes the current one', async () => {
+      storedFact([firstItem()]);
 
       const result = await adapter.updateFact('fact_123', {
-        content: 'Updated content',
+        content: 'User likes tea',
         confidence: 0.8,
       });
 
       expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.data.content).toBe('Updated content');
-      }
+      if (!result.success) return;
+      expect(result.data).toMatchObject({
+        id: 'fact_123',
+        content: 'User likes tea',
+        confidence: 0.8,
+        category: 'preferences',
+        source: 'inferred',
+        metadata: { source: 'chat' },
+        createdAt: created,
+      });
+      const [added, closed] = writtenItems();
+      expect(added).toMatchObject({
+        content: 'User likes tea',
+        slot: 'fact:fact_123',
+        status: 'active',
+        confidence: 0.8,
+        supersedes: ['fact_123'],
+      });
+      expect(added?.id).not.toBe('fact_123');
+      expect(closed).toMatchObject({
+        id: 'fact_123',
+        content: 'User likes coffee',
+        status: 'superseded',
+        supersededBy: added?.id,
+        validTo: added?.validFrom,
+      });
+      expect(result.data.updatedAt.toISOString()).toBe(added?.recordedAt);
+    });
+
+    it('corrects the current item when an update keeps the statement', async () => {
+      storedFact([firstItem()]);
+
+      const result = await adapter.updateFact('fact_123', {
+        confidence: 0.5,
+        category: 'drinks',
+        metadata: { userId: 'bob' },
+      });
+
+      expect(writtenItems()).toEqual([
+        expect.objectContaining({
+          id: 'fact_123',
+          content: 'User likes coffee',
+          confidence: 0.5,
+          attribute: 'drinks',
+          scope: { agentId: 'agent1', userId: 'bob' },
+          metadata: { userId: 'bob', category: 'drinks' },
+        }),
+      ]);
+      expect(result.success && result.data).toMatchObject({
+        id: 'fact_123',
+        category: 'drinks',
+        metadata: { userId: 'bob' },
+      });
+    });
+
+    it('moves the expiry of a fact to the item that supersedes it', async () => {
+      const expiresAt = new Date('2099-01-01T00:00:00.000Z');
+      storedFact([firstItem({ expiredAt: expiresAt })]);
+
+      const result = await adapter.updateFact('fact_123', { content: 'User likes tea' });
+
+      const written = writtenItems();
+      expect(written[0]).toMatchObject({ id: 'fact_123', status: 'active' });
+      expect(written[0]).not.toHaveProperty('expiredAt');
+      expect(written.at(-1)).toMatchObject({
+        content: 'User likes tea',
+        expiredAt: expiresAt.toISOString(),
+      });
+      expect(result.success && result.data.expiresAt).toEqual(expiresAt);
     });
 
     it('returns error for updating non-existent fact', async () => {
@@ -555,37 +871,113 @@ describe('PostgresAdapter', () => {
       }
     });
 
-    it('deletes a fact', async () => {
+    it('does not take an item of another slot for a fact', async () => {
+      storedFact([firstItem({ id: 'mem_9', slot: 'ana:city' })]);
+
+      const result = await adapter.updateFact('mem_9', { content: 'test' });
+
+      expect(result).toEqual({ success: false, error: 'Fact not found: mem_9' });
+      expect(writtenItems()).toEqual([]);
+    });
+
+    it('deletes a fact with every item of its slot', async () => {
+      storedFact([firstItem({ status: 'superseded' }), firstItem({ id: 'mem_2' })]);
+
       const result = await adapter.deleteFact('fact_123');
 
       expect(result.success).toBe(true);
+      const { params } = sentToPostgres('DELETE FROM cogitator.memory_items');
+      expect(params[0]).toBe('{"fact_123","mem_2"}');
+    });
+
+    it('deletes nothing for a fact that is not there', async () => {
+      const result = await adapter.deleteFact('fact_missing');
+
+      expect(result.success).toBe(true);
+      expect(() => sentToPostgres('DELETE FROM cogitator.memory_items')).toThrow();
     });
 
     it('searches facts', async () => {
-      const now = new Date().toISOString();
-      mockPool.query.mockResolvedValueOnce({
-        rows: [
-          {
-            id: 'fact_123',
-            agent_id: 'agent1',
-            content: 'User likes coffee',
-            category: 'preferences',
-            confidence: 0.9,
-            source: 'inferred',
-            metadata: {},
-            created_at: now,
-            updated_at: now,
-            expires_at: null,
-          },
-        ],
-      });
+      mockPool.query.mockResolvedValueOnce({ rows: [factRow(firstItem())] });
 
       const result = await adapter.searchFacts('agent1', 'coffee');
 
-      expect(result.success).toBe(true);
+      expect(result.success && result.data.map((fact) => fact.id)).toEqual(['fact_123']);
       const lastCall = mockPool.query.mock.calls[mockPool.query.mock.calls.length - 1];
-      expect(lastCall[0]).toContain('ILIKE');
-      expect(lastCall[1]).toContain('%coffee%');
+      expect(lastCall[0]).toContain("latest.item->>'content' ILIKE $2");
+      expect(lastCall[1]).toEqual(['agent1', '%coffee%']);
+    });
+
+    it('searches for wildcards as they are', async () => {
+      await adapter.searchFacts('agent1', '100%_off');
+
+      const lastCall = mockPool.query.mock.calls[mockPool.query.mock.calls.length - 1];
+      expect(lastCall[1]).toEqual(['agent1', '%100\\%\\_off%']);
+    });
+  });
+
+  describe('facts written before memory items', () => {
+    async function connectWithFacts(tables: {
+      facts: boolean;
+      legacy: boolean;
+    }): Promise<string[]> {
+      vi.clearAllMocks();
+      mockPool.query.mockImplementation(async (sql: string) => {
+        if (sql.includes('AS facts, to_regclass')) return { rows: [tables] };
+        return withPgvector(sql) ?? { rows: [] };
+      });
+      const migrated = new PostgresAdapter({
+        provider: 'postgres',
+        connectionString: 'postgresql://localhost:5432/test',
+      });
+      await migrated.connect();
+      await migrated.disconnect();
+      return mockPool.query.mock.calls.map(([sql]) => sql.replace(/\s+/g, ' ').trim());
+    }
+
+    it('moves every fact into an item with its id and keeps the old table as facts_legacy', async () => {
+      const statements = await connectWithFacts({ facts: true, legacy: false });
+
+      expect(statements).toContain(
+        'ALTER TABLE cogitator.facts ADD COLUMN IF NOT EXISTS evidence JSONB'
+      );
+      const move = statements.find((sql) => sql.startsWith('INSERT INTO cogitator.memory_items'));
+      expect(move).toContain("'fact:' || id AS slot");
+      expect(move).toContain(
+        "CASE f.source WHEN 'user' THEN 'user' WHEN 'system' THEN 'system' ELSE 'model' END"
+      );
+      expect(move).toContain("'verified', jsonb_array_length(f.evidence) > 0");
+      expect(move).toContain("jsonb_build_object('category', f.category)");
+      expect(move).toContain('FROM cogitator.facts');
+      expect(move).toContain('ON CONFLICT (id) DO NOTHING');
+      expect(statements).toContain('ALTER TABLE cogitator.facts RENAME TO facts_legacy');
+      expect(statements.some((sql) => sql.startsWith('DROP TABLE'))).toBe(false);
+    });
+
+    it('moves facts written after an earlier move into facts_legacy too', async () => {
+      const statements = await connectWithFacts({ facts: true, legacy: true });
+
+      expect(statements.some((sql) => sql.startsWith('INSERT INTO cogitator.memory_items'))).toBe(
+        true
+      );
+      expect(
+        statements.some(
+          (sql) =>
+            sql.startsWith('INSERT INTO cogitator.facts_legacy') &&
+            sql.endsWith('ON CONFLICT (id) DO NOTHING')
+        )
+      ).toBe(true);
+      expect(statements).toContain('DROP TABLE cogitator.facts');
+      expect(statements).not.toContain('ALTER TABLE cogitator.facts RENAME TO facts_legacy');
+    });
+
+    it('moves nothing when there is no facts table', async () => {
+      const statements = await connectWithFacts({ facts: false, legacy: false });
+
+      expect(statements.some((sql) => sql.includes('FROM cogitator.facts'))).toBe(false);
+      expect(
+        statements.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS cogitator.facts'))
+      ).toBe(false);
     });
   });
 
@@ -595,31 +987,38 @@ describe('PostgresAdapter', () => {
       { toolCallId: 'call_1', fileRange: { path: 'notes.md', start: 3, end: 9 }, quote: 'black' },
     ];
 
-    const factRow = (stored: Evidence[] | null): Record<string, unknown> => ({
+    const factItem = (stored: Evidence[]): MemoryItem => ({
       id: 'fact_1',
-      agent_id: 'agent1',
+      kind: 'fact',
       content: 'Takes coffee black',
-      category: 'preferences',
+      attribute: 'preferences',
+      slot: 'fact:fact_1',
+      status: 'active',
+      trust: 'model',
       confidence: 0.9,
-      source: 'inferred',
-      metadata: {},
-      created_at: '2026-01-01T00:00:00.000Z',
-      updated_at: '2026-01-01T00:00:00.000Z',
-      expires_at: null,
+      scope: { agentId: 'agent1' },
       evidence: stored,
+      verified: stored.length > 0,
+      saidAt: new Date('2026-01-01T00:00:00.000Z'),
+      sessionAt: new Date('2026-01-01T00:00:00.000Z'),
+      recordedAt: new Date('2026-01-01T00:00:00.000Z'),
+      metadata: { category: 'preferences' },
     });
 
-    it('creates the evidence column for new and existing facts tables', () => {
-      const statements = mockPool.query.mock.calls.map(([sql]) => sql.replace(/\s+/g, ' '));
-      expect(statements.some((sql) => /CREATE TABLE .*\.facts \(.*evidence JSONB/.test(sql))).toBe(
-        true
-      );
-      expect(statements).toContain(
-        'ALTER TABLE cogitator.facts ADD COLUMN IF NOT EXISTS evidence JSONB'
-      );
+    const row = (item: MemoryItem) => ({
+      item: JSON.parse(JSON.stringify(item)) as Record<string, unknown>,
+      created_at: item.recordedAt,
     });
 
-    it('stores evidence as JSON text and NULL for a fact without it', async () => {
+    const insertedItems = () =>
+      mockPool.query.mock.calls
+        .filter(([sql]) => sql.includes('INSERT INTO cogitator.memory_items'))
+        .map(([sql, params = []]) => ({
+          sql,
+          item: asJsonb(prepareValue(params[8])) as MemoryItem,
+        }));
+
+    it('stores evidence in the item, verified, and an empty list for a fact without it', async () => {
       const fact = {
         agentId: 'agent1',
         content: 'Takes coffee black',
@@ -630,19 +1029,19 @@ describe('PostgresAdapter', () => {
       await adapter.addFact({ ...fact, evidence });
       await adapter.addFact(fact);
 
-      const inserts = mockPool.query.mock.calls.filter(([sql]) =>
-        sql.includes('INSERT INTO cogitator.facts')
-      );
-      expect(inserts[0][0]).toContain('$10::jsonb');
-      expect(asJsonb(prepareValue(inserts[0][1]?.[9]))).toEqual(evidence);
-      expect(inserts[1][1]?.[9]).toBeNull();
+      const [proven, bare] = insertedItems();
+      expect(proven?.sql).toContain('$9::jsonb');
+      expect(proven?.item).toMatchObject({ evidence, verified: true });
+      expect(bare?.item).toMatchObject({ evidence: [], verified: false });
     });
 
     it.each([
       ['getFacts', () => adapter.getFacts('agent1')],
       ['searchFacts', () => adapter.searchFacts('agent1', 'coffee')],
     ])('%s reads evidence back and leaves it out of facts without it', async (_name, read) => {
-      mockPool.query.mockResolvedValueOnce({ rows: [factRow(evidence), factRow(null)] });
+      mockPool.query.mockResolvedValueOnce({
+        rows: [row(factItem(evidence)), row(factItem([]))],
+      });
 
       const result = await read();
 
@@ -653,22 +1052,30 @@ describe('PostgresAdapter', () => {
     });
 
     it('updates evidence and returns the stored fact with it', async () => {
-      mockPool.query.mockResolvedValueOnce({ rows: [factRow(evidence)] });
+      mockPool.query.mockImplementation(async (sql: string) =>
+        sql.includes('FROM cogitator.memory_items')
+          ? { rows: [row(factItem([]))] }
+          : (withPgvector(sql) ?? { rows: [] })
+      );
 
       const result = await adapter.updateFact('fact_1', { evidence });
 
-      const { sql, params } = sentToPostgres('UPDATE cogitator.facts');
-      expect(sql).toContain('evidence = $1::jsonb');
-      expect(asJsonb(params[0])).toEqual(evidence);
+      const [updated] = insertedItems();
+      expect(updated?.item).toMatchObject({ id: 'fact_1', evidence, verified: true });
       expect(result.success && result.data.evidence).toEqual(evidence);
     });
 
     it('leaves evidence alone when an update does not carry it', async () => {
-      mockPool.query.mockResolvedValueOnce({ rows: [factRow(evidence)] });
+      mockPool.query.mockImplementation(async (sql: string) =>
+        sql.includes('FROM cogitator.memory_items')
+          ? { rows: [row(factItem(evidence))] }
+          : (withPgvector(sql) ?? { rows: [] })
+      );
 
       await adapter.updateFact('fact_1', { content: 'Takes coffee black, no sugar' });
 
-      expect(sentToPostgres('UPDATE cogitator.facts').sql).not.toContain('evidence');
+      const written = insertedItems().map(({ item }) => item);
+      expect(written[0]).toMatchObject({ content: 'Takes coffee black, no sugar', evidence });
     });
   });
 
@@ -890,26 +1297,6 @@ describe('PostgresAdapter', () => {
         1,
       ],
       [
-        'addFact',
-        () =>
-          adapter.addFact({
-            agentId: 'agent1',
-            content: 'Likes tea',
-            category: 'preference',
-            confidence: 1,
-            source: 'user',
-            metadata: { tags: ['c'] },
-          }),
-        'INSERT INTO cogitator.facts',
-        6,
-      ],
-      [
-        'updateFact',
-        () => adapter.updateFact('fact_1', { metadata: { tags: ['d'] } }),
-        'UPDATE cogitator.facts',
-        0,
-      ],
-      [
         'addEmbedding',
         () =>
           adapter.addEmbedding({
@@ -928,6 +1315,22 @@ describe('PostgresAdapter', () => {
       const { sql, params } = sentToPostgres(fragment);
       expect(sql).toContain(`$${index + 1}::jsonb`);
       expect(asJsonb(params[index])).toEqual({ tags: [expect.any(String)] });
+    });
+    it('addFact sends the item, metadata included, as JSON text cast to jsonb', async () => {
+      await adapter.addFact({
+        agentId: 'agent1',
+        content: 'Likes tea',
+        category: 'preference',
+        confidence: 1,
+        source: 'user',
+        metadata: { tags: ['c'] },
+      });
+
+      const { sql, params } = sentToPostgres('INSERT INTO cogitator.memory_items');
+      expect(sql).toContain('$9::jsonb');
+      expect(asJsonb(params[8])).toMatchObject({
+        metadata: { tags: ['c'], category: 'preference' },
+      });
     });
   });
 

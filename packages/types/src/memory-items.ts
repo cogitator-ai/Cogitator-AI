@@ -137,7 +137,10 @@ export interface MemoryItemFilter {
   entityIds?: string[];
   kinds?: MemoryItemKind[];
   statuses?: MemoryItemStatus[];
-  /** Include items memory let go (`expiredAt` set), left out by default */
+  /**
+   * Include items memory let go (`expiredAt` not after now), left out by default. An item with
+   * an `expiredAt` still to come is found either way.
+   */
   includeExpired?: boolean;
 }
 

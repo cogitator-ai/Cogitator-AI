@@ -54,8 +54,15 @@ export function visibleIn(item: Pick<MemoryItem, 'scope'>, scope: MemoryItemScop
   );
 }
 
-/** Whether `item` meets `filter`, for a storage that filters in process */
-export function matchesItemFilter(item: MemoryItem, filter: MemoryItemFilter): boolean {
+/**
+ * Whether `item` meets `filter`, for a storage that filters in process. An item memory lets go
+ * at a time after `now` (milliseconds, the clock by default) is still found.
+ */
+export function matchesItemFilter(
+  item: MemoryItem,
+  filter: MemoryItemFilter,
+  now: number = Date.now()
+): boolean {
   return (
     item.scope.agentId === filter.agentId &&
     (filter.ids === undefined || filter.ids.includes(item.id)) &&
@@ -64,7 +71,9 @@ export function matchesItemFilter(item: MemoryItem, filter: MemoryItemFilter): b
       (item.entityId !== undefined && filter.entityIds.includes(item.entityId))) &&
     (filter.kinds === undefined || filter.kinds.includes(item.kind)) &&
     (filter.statuses === undefined || filter.statuses.includes(item.status)) &&
-    (filter.includeExpired === true || item.expiredAt === undefined)
+    (filter.includeExpired === true ||
+      item.expiredAt === undefined ||
+      item.expiredAt.getTime() > now)
   );
 }
 

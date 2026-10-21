@@ -214,7 +214,10 @@ export function sqliteMemoryItems(db: SqliteItemsDatabase): MemoryItemAdapter {
           where.push(oneOf(column, values));
           params.push(...values);
         }
-        if (filter.includeExpired !== true) where.push('expired_at IS NULL');
+        if (filter.includeExpired !== true) {
+          where.push('(expired_at IS NULL OR expired_at > ?)');
+          params.push(Date.now());
+        }
         const rows = db
           .prepare(
             `SELECT data FROM memory_items WHERE ${where.join(' AND ')}
