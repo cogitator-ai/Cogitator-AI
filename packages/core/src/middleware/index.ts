@@ -13,3 +13,4 @@ export {
   clearedOutputNote,
   isClearedArguments,
 } from './clear-tool-outputs';
+export { memoryCitations, type MemoryCitationsOptions } from './memory-citations';

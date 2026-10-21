@@ -99,6 +99,8 @@ export {
   createTranscribeAudioTool,
   createGenerateSpeechTool,
   createMemoryTools,
+  createMemorySearchTools,
+  MEMORY_SEARCH_TOOLS,
   createSchedulerTools,
   restrictFileTools,
   isPathAllowed,
@@ -113,6 +115,7 @@ export {
 } from './tools/index';
 export type {
   MemoryToolsConfig,
+  MemorySearchToolsConfig,
   CoreFactsLike,
   SchedulerToolsConfig,
   RestrictFileToolsOptions,
@@ -362,6 +365,8 @@ export {
   restoreClearedOutputs,
   clearedOutputNote,
   isClearedArguments,
+  memoryCitations,
+  type MemoryCitationsOptions,
   type TripwireDetails,
 } from './middleware/index';
 export type { PromptTarget, StartABTestOptions, PromptResolution } from './cogitator/prompts';

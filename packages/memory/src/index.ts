@@ -254,11 +254,27 @@ export {
   matchesEntityFilter,
   matchesItemFilter,
   normalizeName,
+  onePerSlot,
   sameValue,
   slotOf,
   visibleIn,
   type MemoryItemsConfig,
 } from './memory-items';
+export {
+  MemoryRetriever,
+  MIN_COSINE,
+  RELATIVE_COSINE,
+  type Retrieval,
+  type RetrievalRequest,
+  type RetrievedEntry,
+  type RetrievedItem,
+} from './retrieval/retriever';
+export {
+  analyzeQuery,
+  timeExpressionOf,
+  type QueryAnalysis,
+  type QueryType,
+} from './retrieval/query';
 export {
   calendarDate,
   isTimeZone,

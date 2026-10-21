@@ -76,6 +76,8 @@ export interface InitializerState {
   memoryItems?: MemoryItems;
   /** The counts of memory items sent to a model still being written */
   retrievalCounts?: Promise<void>;
+  /** The embedding service of `memory.embedding`, when it is set */
+  embeddingService?: EmbeddingService;
   memoryInitialized: boolean;
   sandboxManager?: SandboxManager;
   sandboxInitialized: boolean;
@@ -107,6 +109,7 @@ export async function initializeMemory(
       : createEmbeddingService(embedding);
   const adapter = createConfiguredAdapter(memory, embeddingService);
   if (!adapter) return;
+  state.embeddingService = embeddingService;
 
   const result = await adapter.connect();
   if (!result.success) {
@@ -473,6 +476,7 @@ export async function cleanupState(state: InitializerState): Promise<void> {
     state.messageIndex = undefined;
   }
   state.memoryItems = undefined;
+  state.embeddingService = undefined;
   if (state.memoryAdapter) {
     await state.memoryAdapter.disconnect();
     state.memoryAdapter = undefined;

@@ -37,6 +37,11 @@ export { sendEmail } from './email';
 export { githubApi } from './github';
 
 export { createMemoryTools, type MemoryToolsConfig, type CoreFactsLike } from './memory-tools';
+export {
+  createMemorySearchTools,
+  MEMORY_SEARCH_TOOLS,
+  type MemorySearchToolsConfig,
+} from './memory-search-tools';
 
 export { createSchedulerTools, type SchedulerToolsConfig } from './scheduler-tools';
 

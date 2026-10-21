@@ -138,6 +138,7 @@ import { telemetryObservers } from './observability/telemetry';
 import { RunLimiter } from './cogitator/run-limiter';
 import { findHandoffAgent, handoffTools } from './cogitator/handoffs';
 import { PromptRegistry } from './cogitator/prompts';
+import { createMemorySearchTools } from './tools/memory-search-tools';
 import { InMemoryRunCheckpointStore, ThreadRunCheckpointStore } from './cogitator/run-checkpoints';
 import {
   parseStructuredOutput,
@@ -2682,12 +2683,41 @@ export class Cogitator implements ToolInvoker {
   }
 
   /**
+   * The memory search tools (`search_memory`, `open_turns`, `list_entities`) over this runtime's
+   * memory, for the agent whose memory id is `memoryAgentId` (its configured `id`, else its
+   * name): they read the same thread store, memory items, embeddings and message index the
+   * runs do. Pair them with the `memoryCitations()` middleware to keep answers to what a run
+   * opened.
+   *
+   * @throws CogitatorError when no memory is configured
+   */
+  async memorySearchTools(memoryAgentId: string): Promise<Tool[]> {
+    const memory = await this.getMemory();
+    if (!memory) {
+      throw new CogitatorError({
+        message: 'memorySearchTools needs memory: set memory.adapter in the Cogitator config',
+        code: ErrorCode.VALIDATION_ERROR,
+      });
+    }
+    return createMemorySearchTools({
+      memory,
+      agentId: memoryAgentId,
+      ...(this.state.memoryItems && { items: this.state.memoryItems }),
+      ...(this.state.embeddingService && { embedding: this.state.embeddingService }),
+      ...(this.state.messageIndex && { messageIndex: this.state.messageIndex }),
+      ...(this.config.memory?.contextBuilder?.timeZone !== undefined && {
+        timeZone: this.config.memory.contextBuilder.timeZone,
+      }),
+    });
+  }
+
+  /**
    * Embeds every entry of `threadId` the memory index has not embedded yet and waits until their
    * vectors are stored, such as after a conversation was imported, so the first search of the
    * thread already sees all of it. With an adapter that reads a thread in pages (`getPath`) the
    * thread is read and embedded a page at a time, so a long one is never held whole, else it is
-   * read at once and embedded a page at a time. Does nothing when memory keeps no index (the `recent` strategy or no
-   * embedding service). Fails when the embedding store refuses a vector.
+   * read at once and embedded a page at a time. Does nothing when memory keeps no index (the
+   * `recent` strategy or no embedding service). Fails when the embedding store refuses a vector.
    */
   async indexMemory(threadId: string): Promise<void> {
     const memory = await this.getMemory();
