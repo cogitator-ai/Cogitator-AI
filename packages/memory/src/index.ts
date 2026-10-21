@@ -43,6 +43,13 @@ export {
 } from './context-builder';
 
 export {
+  verifyEvidence,
+  evidenceOnPath,
+  verifyEvidenceInMemory,
+  type CheckedEvidence,
+} from './lineage';
+
+export {
   MessageIndex,
   indexedText,
   type MessageIndexOptions,
