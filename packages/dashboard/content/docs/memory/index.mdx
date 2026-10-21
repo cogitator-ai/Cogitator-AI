@@ -557,18 +557,19 @@ await cog.run(agent, { input: 'What is my name?', threadId: 'thread-alice' });
 - `memory.embedding` takes a provider's config (`openai`, `ollama`, `google`) or an `EmbeddingService` of your own, which the runtime uses as it is: another provider, or a cache in front of one, as long as it has `embed`, `embedBatch`, `model` and `dimensions`. A service is code, so it goes to `new Cogitator({ memory })`, not into `cogitator.yml` or `defineConfig()`.
 - `'qdrant'` is not a thread store. For semantic context from Qdrant, keep a thread store as `adapter` and add `memory.qdrant` (`url`, `apiKey`, `collection`, `dimensions` matching the embedding model) together with `memory.embedding` and `contextBuilder: { includeSemanticContext: true }`. The runtime searches the collection for semantic context, and with the `relevant` or `hybrid` strategy also keeps the vectors of the thread's messages in it (`sourceType: 'message'`, so the key needs write access). Add facts and documents with your own `QdrantAdapter`. See [Configuration](/docs/getting-started/configuration#memory) for a YAML example.
 - Per run, `useMemory: false` disables memory, `loadHistory: false` / `saveHistory: false` skip loading or saving, and `onMemoryError` is called when a load or save fails. `branch: { fromEntryId, activate? }` runs on a branch of the thread, and `result.memory` says where the run wrote, see [Runs on Branches](/docs/core/cogitator#runs-on-branches).
+- `memory.files` gives every agent the `memory` tool and lists its files in each run's context, see [Memory Files](#memory-files). `await cog.memorySearchTools(memoryAgentId)` builds the tools an agent searches memory with, see [Agent Memory Tools](#agent-memory-tools).
 - `await cog.getMemory()` connects and returns the adapter before any run — see [Cogitator](/docs/core/cogitator).
 
 ## Choosing an Adapter
 
-| Adapter  | Persistence  | Embeddings | Memory items | Facts | Graph                  | Best For                           |
-| -------- | ------------ | ---------- | ------------ | ----- | ---------------------- | ---------------------------------- |
-| InMemory | None         | Separate¹  | Yes          | No    | No                     | Testing, short-lived agents        |
-| Redis    | Optional TTL | No         | Yes          | No    | No                     | Shared fast store, optional expiry |
-| Postgres | Permanent    | pgvector   | Yes          | Yes   | `PostgresGraphAdapter` | Production with full features      |
-| SQLite   | Permanent    | No         | Yes          | No    | `SQLiteGraphAdapter`   | Single-process, local apps         |
-| MongoDB  | Permanent    | No         | Yes          | No    | No                     | Document-oriented workloads        |
-| Qdrant   | Permanent    | Native     | No           | No    | No                     | Dedicated vector search            |
+| Adapter  | Persistence  | Embeddings | Memory items | Memory files | Facts | Graph                  | Best For                           |
+| -------- | ------------ | ---------- | ------------ | ------------ | ----- | ---------------------- | ---------------------------------- |
+| InMemory | None         | Separate¹  | Yes          | Yes          | No    | No                     | Testing, short-lived agents        |
+| Redis    | Optional TTL | No         | Yes          | Yes          | No    | No                     | Shared fast store, optional expiry |
+| Postgres | Permanent    | pgvector   | Yes          | Yes          | Yes   | `PostgresGraphAdapter` | Production with full features      |
+| SQLite   | Permanent    | No         | Yes          | Yes          | No    | `SQLiteGraphAdapter`   | Single-process, local apps         |
+| MongoDB  | Permanent    | No         | Yes          | Yes          | No    | No                     | Document-oriented workloads        |
+| Qdrant   | Permanent    | Native     | No           | No           | No    | No                     | Dedicated vector search            |
 
 ¹ `InMemoryEmbeddingAdapter` provides in-process vector and keyword search.
 
@@ -1005,7 +1006,164 @@ Known facts:
 
 Suggested and stale items and closed states stay out. On Postgres the facts written through `FactAdapter` are memory items too, so they show up the same way. The items are read as of `BuildContextOptions.asOf` (now by default), so a replayed turn sees the facts that held when it was asked. With `strategy: 'hybrid'` the items that match the turn also come under `From memory:`, closed states included for a question about time or about many things, and an item `Known facts:` holds is not repeated there, see [Recall](#recall).
 
-The memory tools `remember`, `recall` and `forget` write, search and let go memory items when given them. Given the thread store, `remember` keeps a fact as the user's only when its quote is in one of the run user's own messages on the thread's active branch. `remember` writes to the user's memory, or the thread's for a run without a user, `recall` sees the user's items and the thread's, and `forget` lets go only the run's own items that hold the query as whole words, see [Memory Tools](/docs/channels/smart-memory#memory-tools).
+The memory tools `remember`, `recall` and `forget` write, search and let go memory items when given them. Given the thread store, `remember` keeps a fact as the user's only when its quote is in one of the run user's own messages on the thread's active branch, and `recall` ranks the items with the same search [Recall](#recall) uses (their words, the entities they name and the graph around them, up to 10), where without it the items are matched by every word of the query. `remember` writes to the user's memory, or the thread's for a run without a user, `recall` sees the user's items and the thread's, and `forget` lets go only the run's own items that hold the query as whole words, see [Memory Tools](/docs/channels/smart-memory#memory-tools). To let an agent search the conversation itself too, give it the [memory search tools](#agent-memory-tools).
+
+## Agent Memory Tools
+
+The context builder decides what a run sees of memory before the model starts. The memory search tools let the model look further on its own, in as many steps as the question takes: search, open what looks right, search again with other words, and say it does not remember when nothing it opened answers.
+
+```typescript
+import { Agent, Cogitator, memoryCitations } from '@cogitator-ai/core';
+
+const cog = new Cogitator({
+  memory: {
+    adapter: 'postgres',
+    postgres: { connectionString: process.env.DATABASE_URL! },
+    embedding: { provider: 'openai', apiKey: process.env.OPENAI_API_KEY! },
+    contextBuilder: { strategy: 'hybrid', timeZone: 'Europe/Lisbon' },
+  },
+  middleware: [memoryCitations({ onUncited: (references) => console.warn(references) })],
+});
+
+const agent = new Agent({
+  name: 'concierge',
+  model: 'openai/gpt-5.5',
+  instructions:
+    'Answer from memory. Cite what you rely on as [turn:<id>] or [item:<id>], and say so when you do not remember.',
+  tools: await cog.memorySearchTools('concierge'),
+});
+
+await cog.run(agent, {
+  input: 'Which cabin did we book in April?',
+  threadId: 'ana-1',
+  userId: 'ana',
+});
+```
+
+| Tool            | Parameters                                                                      | Returns                                                                                                                                                                                                                                                                                                                                                  |
+| --------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `search_memory` | `query`, `limit` (1 to 20, default 8)                                           | One ranked list of earlier turns of the run's thread (`id`, `date`, `role` and an excerpt of up to 280 characters) and memory items (`ref` as `item:<id>`, `text`, `type`, and `held`: the interval it held, since when, or the date it is about). A search that finds nothing returns a `note` asking to try other words or to say it does not remember |
+| `open_turns`    | `ids` (1 to 10, as `search_memory` returned them), `around` (0 to 3, default 1) | The user and assistant turns whole, with `around` turns before and after each, oldest first, each with its `ref` (`turn:<id>`), `date`, `role` and `text`. Ids that are not turns of the thread come back as `missing`                                                                                                                                   |
+| `list_entities` | `query` (part of a name, optional)                                              | Up to 50 people, places, projects and things memory knows, with their `aliases`, `type` and how many memory items are about each, the most first                                                                                                                                                                                                         |
+
+- `search_memory` ranks with the same `MemoryRetriever` the `hybrid` strategy [recalls](#recall) with: the five kinds of question, the channels, the fusion and the diversity are the same, so the agent and the context agree on what is relevant. A greeting or a thanks is not searched.
+- The turns searched are those of the branch the run stands on, without the entries the run saved itself, so a run that saves nothing still finds the last turns of earlier runs. A run with `useMemory: false` reads no thread. Built with `createMemorySearchTools` and no `placeOf`, the tools read the active branch of the tool context's thread and leave out its last question and what followed it. The items are those the run sees under the agent's memory id and its runtime id, of the run's user and thread, one current state per slot, and past states too for a question about time or about many things.
+- With `memory.embedding`, the query is embedded once per search. Turns are also found by their vectors in the runtime's message index (the `relevant` and `hybrid` strategies keep one), and items by the vectors of their content: each item is embedded once and kept in process, up to 5000 vectors, the ones used least lately dropped.
+- Dates are shown in `contextBuilder.timeZone`, UTC by default.
+- `cog.memorySearchTools(memoryAgentId)` connects memory and builds the tools over the runtime's own store, memory items, embedding service and message index. Pass the agent's memory id (`memoryAgentId(agent)`, its configured `id`, else its `name`), the id extraction keeps its items under. It throws a `CogitatorError` (`VALIDATION_ERROR`) when no memory is configured.
+- `createMemorySearchTools({ memory, agentId, items?, embedding?, messageIndex?, timeZone?, placeOf? })` from `@cogitator-ai/core` builds the same tools over a store of your own, `MEMORY_SEARCH_TOOLS` names them. Without a store that keeps memory items (every built-in thread store does) the search reads turns only and `list_entities` lists nothing.
+
+### Citation Lock
+
+`memoryCitations(options?)` is a [run middleware](/docs/core/middleware) that holds an answer to what the run actually opened. The search tools hand out references: `item:<id>` with each memory item `search_memory` returned, and `turn:<id>` with each turn `open_turns` opened, so a turn only seen as an excerpt does not count yet. A final answer that cites `[turn:<id>]` or `[item:<id>]` the run was never handed has that reference taken out, and `onUncited(references, context)` is called with what was taken out. A list such as `[turn:<id>, item:<id>]` is checked reference by reference, and the kind may be written in capitals or with a space after the colon. Only ids as the tools hand them out count (they hold a digit, `_` or `-`), and code in the answer is left alone, so `[item: string]` in a type stays. An answer without references is left as it is.
+
+```typescript
+const cog = new Cogitator({
+  memory,
+  middleware: [
+    memoryCitations({
+      onUncited: (references, context) => audit.log(context.runId, references),
+    }),
+  ],
+});
+```
+
+- References are read only from the `ref` fields of the tools' results, never from text inside them, so a turn that quotes an earlier answer citing something hands out nothing. In an answer they are read the way a model may write them: in a list (`[turn:a, item:b]`, each checked on its own), with spaces after the colon, in capitals and in fullwidth brackets. What a run opened is also read back from its tool results, so a resumed run still knows it.
+- `tools` names the tools whose results hand out references, `['search_memory', 'open_turns']` by default, for a tool of your own that hands out the same references.
+- It holds the stream (`holdsStream`): a streamed run sends each turn's text once the middleware has seen it, so a reference it takes out never reaches `onToken`.
+
+## Memory Files
+
+`memory.files` gives every agent a memory directory, `/memories`: notes it views and edits across conversations with the `memory` tool, such as what the user prefers, decisions and progress on a long task. The tool has the commands of Anthropic's memory tool, and answers and fails with the same words. Claude 4 and later get it as Anthropic's native `memory_20250818` tool, which they know from their training, and every other model, older Claude models among them, as a tool with the same commands.
+
+```typescript
+import { Agent, Cogitator } from '@cogitator-ai/core';
+
+const cog = new Cogitator({
+  memory: {
+    adapter: 'sqlite',
+    sqlite: { path: './memory.db' },
+    files: { scope: 'user' },
+  },
+});
+
+const agent = new Agent({
+  name: 'concierge',
+  model: 'anthropic/claude-sonnet-5-5',
+  instructions: 'Keep what you learn about the user in your memory directory.',
+});
+
+await cog.run(agent, {
+  input: 'Remember: I am allergic to peanuts.',
+  threadId: 'ana-1',
+  userId: 'ana',
+});
+await cog.run(agent, { input: 'Which snacks should I avoid?', threadId: 'ana-2', userId: 'ana' });
+```
+
+| Option       | Default  | Description                                                                                                                                       |
+| ------------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scope`      | `'user'` | Who the files belong to: `user` the run's user (the thread for a run without one), `agent` everyone the agent talks to, `thread` the thread alone |
+| `readOnly`   | `false`  | The agent views the files and every change fails with `The memory at <path> is read-only`                                                         |
+| `indexChars` | `2000`   | Characters the list of files takes in the context at most                                                                                         |
+
+| Command       | Fields                                                    | What it does                                                                                                |
+| ------------- | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `view`        | `path`, `view_range?` (`[first, last]`, `-1` for the end) | A file with line numbers, or a directory two levels deep with the size of each entry, at most 500 entries   |
+| `create`      | `path`, `file_text`                                       | A new file, failing when the path holds a file or a directory already                                       |
+| `str_replace` | `path`, `old_str`, `new_str`                              | Replaces `old_str`, which must occur exactly once in the file, across lines or within one, and not be empty |
+| `insert`      | `path`, `insert_line`, `insert_text`                      | Inserts after line `insert_line`, `0` for the start                                                         |
+| `delete`      | `path`                                                    | Deletes a file, or a directory with everything under it                                                     |
+| `rename`      | `old_path`, `new_path`                                    | Moves a file or a directory, failing when the destination exists                                            |
+
+With `memory.files` the runtime gives every agent it runs the `memory` tool, under the agent's memory id (`memoryAgentId(agent)`), and lists the files the run sees in the turn's memory context, each with its size and first line, cut to `indexChars` with the rest counted:
+
+```text
+Memory files (view them with the memory tool):
+- /memories/user.md (20B): Allergic to peanuts.
+```
+
+The list goes into the `index` partition, a required one, or in front of the input for a run without a context builder, and the run views a file whole when it needs it. A tool of the agent's own named `memory` takes the place of the built-in one. The store must keep memory files, which every built-in thread store does: a store of your own that keeps none is warned about once, and the tool is left out. `MemoryFilesConfigSchema` in `@cogitator-ai/config` validates the settings.
+
+### Versions, Branches and Locking
+
+Memory files are kept as versions (`MemoryFileVersion`), never overwritten: every change adds a version of the file with its content (`null` for a deletion), its `sha256`, the id of the version it replaces (`previousId`), its `scope`, its `sequence` among the versions of its path, the path it was renamed from and its author (`model` for the tool). So the history of every file stays.
+
+- A run sees the files of its user, its thread and the agent, each from the version of the narrowest scope that holds the path, and writes a change into its own scope (`scope`), or into the narrower scope of the version it changes, so the change always stands in front. With `scope: 'user'`, editing or deleting a file the agent keeps for everyone writes the user's own version, which that user sees from then on and nobody else does, while editing a file of the thread changes the thread's. A renamed file keeps the narrower scope it came from, so renaming a user's note never shares it.
+- A version written in a conversation is placed after the newest entry of the run's branch. In its own thread it is seen only on the branches that hold that entry, so a fork or a run on a branch (`RunOptions.branch`) keeps its own edits, while other threads see it as it is.
+- The tool keeps the `sha256` of the version of each file a command of the run showed or wrote (`MemoryFileAccess.observe`). A `str_replace`, `insert`, `delete` or `rename` of a file another writer changed since fails with `The file <path> changed since it was viewed. View it again before you edit it.`
+- Two writers never add the same version: the store refuses a second version of one scope and path at the same `sequence` (`MEMORY_FILE_CONFLICT`), and the change is made again on what stands then, up to three tries. In one process the changes of one agent's memory go one after another. A change of many files, such as a renamed directory, is added whole or not at all.
+- Paths start with `/memories`, and `.`, `..` and backslashes are refused, so nothing is read or written outside it. Control characters and names longer than 255 characters are refused, a path ending in `/` is not a file, a file cannot sit under another file, and text with NUL characters is refused before any store sees it. A file holds at most 1 MiB (`MAX_FILE_BYTES`), and a failure of the store reaches the model as a plain note, its details kept as the error's `cause`.
+- Unless `scope` is `agent`, the memory tool refuses a run with neither a user nor a conversation, and a run with `useMemory: false` sees no thread's files.
+
+`MemoryFiles` from `@cogitator-ai/memory` reads and changes the files of any store that keeps them (`isMemoryFileAdapter`), as the tool does, for an admin screen, an import or an erasure:
+
+```typescript
+import { isMemoryFileAdapter, MemoryFiles } from '@cogitator-ai/memory';
+
+const memory = await cog.getMemory();
+if (memory && isMemoryFileAdapter(memory)) {
+  const files = new MemoryFiles({ adapter: memory });
+  const access = { scope: { agentId: 'concierge', userId: 'ana' } };
+
+  await files.create({ ...access, author: 'system' }, '/memories/user.md', 'Prefers trains.');
+  await files.list(access); // [{ path, content, sha256, size, version }]
+  await files.history(access, '/memories/user.md'); // every version, oldest first
+  await files.redact(access, ['/memories/user.md'], 'erasure request'); // versions redacted
+}
+```
+
+| Method                                                       | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `run(access, command)`                                       | Runs a command of the memory tool (`MemoryFileCommand`) and returns the answer the model reads                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `view`, `create`, `strReplace`, `insert`, `delete`, `rename` | The commands one by one. `strReplace` and `insert` take the `sha256` the caller last read, to fail when another writer changed the file since                                                                                                                                                                                                                                                                                                                                                                                                |
+| `list(access, directory?)`                                   | The files the access sees, by path                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `read(access, path)`                                         | One file, or `undefined`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `history(access, path)`                                      | Every version of the file the access sees, oldest first                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `redact(access, paths, reason?, { everyScope? })`            | Replaces the content of every version of the files (and of the files under them, following each file's own history back through the paths it had and on to the ones it got, never into another file that took one of those paths later) with `[redacted]`, kept as redacted with the reason, and returns how many it redacted. `everyScope` redacts the versions of every user, project and thread of the agent, not only those the access sees. The conversation keeps the tool calls that wrote the text, which a redaction does not touch |
+| `index(access, maxChars?)`                                   | The list of files a run's context gets, `undefined` when there are none                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+
+`MemoryFileAccess` is `{ scope, visibleTo?, place?, readOnly?, author?, observe? }`: where new versions go, what the access sees (`scope` by default), the branch it stands on, who writes, and a function that hears of the version of each file a command showed or wrote (its path and `sha256`, `null` once deleted). A refused command throws a `MemoryFileError` with the message the model reads, and `memoryPath(path)` normalizes a path or throws one. `memoryFileTool({ memory, agentId, scope?, readOnly?, placeOf?, files? })` from `@cogitator-ai/core` builds the tool over a store of your own, for an agent run outside a Cogitator configured with `memory.files`. A store of your own keeps files by implementing `MemoryFileAdapter`, see [Memory Files](/docs/memory/adapters#memory-files) on the adapters page.
 
 ## Installation
 

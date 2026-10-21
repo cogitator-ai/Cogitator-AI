@@ -190,6 +190,8 @@ const advancedTool: ToolConfig<{ path: string; content: string }, void> = {
 };
 ```
 
+`providerTypes` (`ProviderToolTypes`) names the tool's type in a provider's own catalog, sent to that provider instead of the schema, such as `{ anthropic: 'memory_20250818' }` for a tool Claude knows from its training, while every other provider gets the schema. `ToolSchema` carries it too.
+
 ### Reading Tool Results
 
 A few dependency-free helpers read tool results the way a run does, so packages that do not depend on `@cogitator-ai/core` (voice sessions, adapters) treat them the same. `@cogitator-ai/core` re-exports them.
@@ -810,6 +812,16 @@ const diff: TraceDiff = {
 ## Memory Types
 
 See [@cogitator-ai/memory](https://www.npmjs.com/package/@cogitator-ai/memory) for detailed memory adapter types.
+
+Memory files, notes an agent keeps under `/memories` with the memory tool, are kept as versions:
+
+| Type                | Description                                                                                                                                                                                                                      |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MemoryFileVersion` | One version of a file: `scope`, `path`, `sequence` (its place among the versions of its path in its scope), `content` (`null` for a deletion), `sha256`, `previousId`, `place`, `renamedFrom`, `author`, `createdAt`, `redacted` |
+| `MemoryFileAdapter` | A store of versions: `putFileVersions` (all or none, `MEMORY_FILE_CONFLICT` when a place is taken), `findFileVersions`, `redactFileVersions`, `deleteFileVersions`. Every built-in memory adapter is one                         |
+| `MemoryFileFilter`  | `agentId`, and `ids`, `paths`, `prefix`, `visibleTo` and `scope` to narrow it                                                                                                                                                    |
+| `MemoryFileAuthor`  | `'model' \| 'user' \| 'system'`                                                                                                                                                                                                  |
+| `MemoryFilesConfig` | `MemoryConfig.files`: `scope` (`user`, `agent` or `thread`), `readOnly` and `indexChars`, the memory tool a Cogitator gives every agent                                                                                          |
 
 ---
 

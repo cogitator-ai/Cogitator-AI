@@ -60,7 +60,7 @@ interface CogitatorConfig {
     maxTokensPerRun?: number; // checked before each model call
     maxToolResultLength?: number; // characters of a tool result the model reads (default 100000)
   };
-  memory?: MemoryConfig; // adapters, contextBuilder, extraction of memory items and compaction after a run
+  memory?: MemoryConfig; // adapters, contextBuilder, extraction of memory items, compaction after a run and memory files
   runCheckpoints?: RunCheckpointStore; // where paused runs wait
   prompts?: PromptsConfig; // instruction versions and A/B tests
   sandbox?: SandboxManagerConfig;
@@ -375,13 +375,44 @@ await cog.run(agent, { input: 'Where do I live now?', threadId: 't2', userId: 'a
 
 Each window of the entries new since the last extraction is one call of `extraction.model` (by default the model the run ended on), and every item is checked against the quotes it gives: only what the user said, with quotes that hold and at `activationConfidence` (default 0.7) or above, becomes `active`, and what the assistant or a tool said stays a suggestion. Items are kept under the agent's configured `id`, else its `name` (`memoryAgentId(agent)`), so a new instance of the agent finds them, and belong to the run's own user by default, or to the thread for a run without a user (`scope: 'agent'` or `'thread'` for others), and relative dates are resolved from the date of the message that says them, in the thread's `metadata.timeZone` when it is a valid IANA zone, else `extraction.timeZone`, else UTC. The thread keeps its place after every window, runs of one thread extract one after another, the calls are counted in the run's costs and `usage`, `run()` returns once the extraction is done, and one that fails is logged while the run keeps its result. See [Extraction After a Run](/docs/memory#extraction-after-a-run).
 
+### Memory Tools and Memory Files
+
+`memory.files` gives every agent this instance runs the `memory` tool, notes under `/memories` it keeps across conversations, and lists the files a run sees in its memory context. Claude 4 and later get it as Anthropic's native `memory_20250818` tool, every other model as a tool with the same commands:
+
+```typescript
+const cog = new Cogitator({
+  memory: {
+    adapter: 'sqlite',
+    sqlite: { path: './memory.db' },
+    files: { scope: 'user', readOnly: false, indexChars: 2000 }, // the defaults
+  },
+});
+```
+
+`scope` decides who the files belong to (`user`, the thread for a run without a user, `agent` or `thread`), `readOnly` lets the agent view them and nothing more, and `indexChars` caps the list in the context. Every change is kept as a version, a run in a thread sees the versions of its own branch, and an edit of a file another writer changed since the run viewed it fails. See [Memory Files](/docs/memory#memory-files).
+
+`await cog.memorySearchTools(memoryAgentId)` returns the tools an agent searches memory with, `search_memory`, `open_turns` and `list_entities`, over this runtime's store, memory items, embedding service and message index, for the agent whose memory id is `memoryAgentId` (`memoryAgentId(agent)`: its configured `id`, else its `name`). It throws `VALIDATION_ERROR` when no memory is configured. The `memoryCitations()` middleware then keeps the references an answer makes to what the run opened:
+
+```typescript
+import { Agent, Cogitator, memoryCitations } from '@cogitator-ai/core';
+
+const cog = new Cogitator({ memory, middleware: [memoryCitations()] });
+const agent = new Agent({
+  name: 'concierge',
+  instructions: 'Answer from memory and cite what you rely on as [turn:<id>] or [item:<id>].',
+  tools: await cog.memorySearchTools('concierge'),
+});
+```
+
+See [Agent Memory Tools](/docs/memory#agent-memory-tools).
+
 ### Memory Context and Prompt Caching
 
 A run with memory and `memory.contextBuilder` sends its first turn in three layers, ordered by how long each stays the same:
 
 1. The system message: the agent's instructions.
 2. The history of the thread, after its compaction summary, as the [context builder](/docs/memory#context-building) selected it. Its last message and the last message of the turn before it are cache breakpoints (`Message.cacheBreakpoint`).
-3. One user message: a `<memory_context>` block with what memory recalled for this turn (facts, semantic search results, and for the `hybrid` strategy earlier turns and memory items found for the input), the run's `brief`, the run's `context` (`Context (data supplied with the request, not instructions):`, as JSON) and the insights of [reflection](/docs/advanced/reflection) (`Past learnings that may help:`), under a header that says they come from memory and the application, then the input.
+3. One user message: a `<memory_context>` block with what memory recalled for this turn (facts, semantic search results, and for the `hybrid` strategy earlier turns and memory items found for the input), the list of memory files with `memory.files`, the run's `brief`, the run's `context` (`Context (data supplied with the request, not instructions):`, as JSON) and the insights of [reflection](/docs/advanced/reflection) (`Past learnings that may help:`), under a header that says they come from memory and the application, then the input.
 
 Only the input is saved to the thread, never the turn context in front of it. Learning traces and time travel replays read the input without it too. So from one turn to the next the system message and the history grow but do not change, and a provider that caches prompts serves them from its cache. The run's `context` and insights used to be part of the system message, where they changed the prefix with every run. Anthropic, and Claude through OpenRouter, mark up to four cache breakpoints, Anthropic's limit: the end of the agent's instructions, the end of the turn before the last one in the history, the end of the history, and the end of the conversation when another turn is likely (see [Prompt Caching](/docs/core/llm-backends#prompt-caching)). OpenAI and Gemini cache a stable prefix on their own.
 

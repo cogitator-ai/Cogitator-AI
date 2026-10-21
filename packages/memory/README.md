@@ -34,6 +34,8 @@ With `@cogitator-ai/core` you usually configure memory on the runtime (`new Cogi
 - **Semantic Search** - Vector similarity search with pgvector
 - **Hybrid Search** - BM25 + Vector with Reciprocal Rank Fusion
 - **Memory Items** - What conversations established, extracted by a model, grounded in quotes, trusted by who said them, kept with when they held (a newer state supersedes the old one and keeps it as history), on every built-in adapter
+- **Memory Retriever** - The multi-channel search of `hybrid` recall as its own class (`MemoryRetriever`, `analyzeQuery`), for tools that search memory the same way
+- **Memory Files** - Notes an agent keeps under `/memories` with the commands of Anthropic's memory tool, every change a version, seen per branch, with optimistic locking, read-only access and redaction, on every built-in adapter
 - **Facts Storage** - Store and retrieve agent knowledge (`FactAdapter` on PostgreSQL, `CoreFactsStore` on SQLite, both kept as memory items)
 - **Knowledge Graph** - Entity-relationship memory with multi-hop traversal
 - **Zod Schemas** - Type-safe configuration validation
@@ -146,7 +148,7 @@ await memory.connect();
 memory.vectorStatus(); // { available: true, dimensions: 1536 } or { available: false, reason }
 ```
 
-On `connect()` the adapter creates its tables and an HNSW cosine index on the embeddings, which works from the first row on (no training data needed). An `ivfflat` index left by an earlier version is replaced on the first connect after upgrading, see the [adapters docs](https://cogitator.app/docs/memory/adapters) for building the new index ahead of time on a large table. `search()` raises `hnsw.ef_search` to the requested limit and, on pgvector 0.8+, uses iterative scans, so large limits and filters still get every matching row. Vectors of 2001 to 4000 dimensions are indexed as `halfvec` (pgvector 0.7+), larger ones are searched without an index. The schema version is kept in `<schema>.cogitator_schema_migrations`, so a `connect()` changes tables only after an upgrade. Version 3 moves every row of `facts` into a memory item of its own slot and renames the table `facts_legacy`. Messages, tool calls, tool results and metadata are stored as `jsonb`.
+On `connect()` the adapter creates its tables and an HNSW cosine index on the embeddings, which works from the first row on (no training data needed). An `ivfflat` index left by an earlier version is replaced on the first connect after upgrading, see the [adapters docs](https://cogitator.app/docs/memory/adapters) for building the new index ahead of time on a large table. `search()` raises `hnsw.ef_search` to the requested limit and, on pgvector 0.8+, uses iterative scans, so large limits and filters still get every matching row. Vectors of 2001 to 4000 dimensions are indexed as `halfvec` (pgvector 0.7+), larger ones are searched without an index. The schema version is kept in `<schema>.cogitator_schema_migrations`, so a `connect()` changes tables only after an upgrade. Version 3 moves every row of `facts` into a memory item of its own slot and renames the table `facts_legacy`. Version 4 adds the `memory_file_versions` table of memory files, created empty on the first `connect()` after upgrading, with nothing migrated. Messages, tool calls, tool results and metadata are stored as `jsonb`.
 
 pgvector is only needed for embeddings. Without it, `connect()` still succeeds and threads, entries and facts work, while embedding operations return a failed result naming the reason (also logged at connect). An existing `embeddings` table keeps its vector size: an adapter without `dimensions` adopts it, one configured for another size reports the mismatch through `vectorStatus()` and the failed results instead of failing each search with a Postgres error. `healthCheck()` runs `SELECT 1` with a 3-second driver-level query timeout so stalled checks do not occupy connections indefinitely.
 
@@ -472,6 +474,8 @@ const context = await builder.build({
 context.recalled; // { entries, items }
 ```
 
+The search is `MemoryRetriever` (`retrieve({ input, anchor, timeZone?, history, held?, cosines?, items?, itemAdapter?, scope?, itemCosines?, agentIds? })`, which returns `{ analysis, hits }`, turns and items in one ranked list), and `analyzeQuery(input, anchor, timeZone?)` reads a turn as it does: whether to search, the kind of question, the time it names and its terms. The memory search tools of `@cogitator-ai/core` (`search_memory`) and its `recall` tool rank with it too.
+
 ### Partitions and Message Order
 
 A context is assembled by a `ContextAssembler` from partitions, each with a `share` of the budget it may take, and some `required`:
@@ -738,6 +742,39 @@ await items.history(scope, slot); // every value of a slot, closed ones included
 - `timesRetrieved` and `lastRetrievedAt` count how often and when an item went to a model. `noteRetrieved(itemIds, at?)` counts them, in one step of the store where the adapter has `countRetrieved` (every built-in one does), else read and written back under the agent's lock, and a Cogitator run counts the facts and recalled items it sent once it finishes or pauses, in the background.
 
 A Cogitator extracts items after each run with `memory.extraction`. See [Memory Items](https://cogitator.app/docs/memory#memory-items).
+
+---
+
+## Memory Files
+
+Memory files are notes an agent keeps under `/memories` and edits with the memory tool: `view`, `create`, `str_replace`, `insert`, `delete` and `rename`, with the answers and errors of Anthropic's memory tool. Every built-in adapter keeps them (`MemoryFileAdapter`, `isMemoryFileAdapter(adapter)` tells), and `MemoryFiles` keeps the rules on top:
+
+```typescript
+import { InMemoryAdapter, MemoryFiles } from '@cogitator-ai/memory';
+
+const memory = new InMemoryAdapter();
+await memory.connect();
+const files = new MemoryFiles({ adapter: memory });
+const access = { scope: { agentId: 'concierge', userId: 'ana' } };
+
+await files.run(access, {
+  command: 'create',
+  path: '/memories/user.md',
+  file_text: 'Allergic to peanuts.',
+});
+await files.run(access, { command: 'view', path: '/memories' }); // the directory, two levels deep
+await files.list(access); // [{ path, content, sha256, size, version }]
+await files.history(access, '/memories/user.md'); // every version, oldest first
+await files.index(access); // the list of files a run's context gets
+await files.redact(access, ['/memories/user.md'], 'erasure request'); // versions redacted
+```
+
+- Every change adds a version (`MemoryFileVersion`: `scope`, `path`, `sequence`, `content` or `null` for a deletion, `sha256`, `previousId`, `place`, `renamedFrom`, `author`, `createdAt`), so a file's history stays. `redact(access, paths, reason?)` replaces the content of every version of the files, and of the paths they were renamed from and to, with `[redacted]` and keeps the rest, every scope of the agent with `{ everyScope: true }`. The conversation keeps the tool calls that wrote the text.
+- An access reads the files of the scopes it sees (`visibleTo`, its `scope` by default), each from the version of the narrowest scope that holds the path, and writes into its `scope`, or into the narrower scope of the version it changes. With a `place` (the branch of a thread it stands on), a version written in that thread is seen only on the branches holding the entry it was written after.
+- `strReplace`, `insert`, `delete` and `rename` take the `sha256` the caller last read (`observe` on the access hears of the version each command showed or wrote), and fail when another writer changed the file since. Two writers never add the same version: the store refuses a second version of one scope and path at the same `sequence` (`MEMORY_FILE_CONFLICT`), and the change is made again on what stands, up to three tries. A change of many files, such as a renamed directory, is added whole or not at all.
+- `readOnly` makes every change fail, paths outside `/memories`, control characters and names past 255 characters are refused, a file cannot sit under another file, NUL characters are refused, a file holds at most 1 MiB (`MAX_FILE_BYTES`), and a refused command throws a `MemoryFileError` with the message the model reads.
+
+A Cogitator with `memory.files` gives every agent the `memory` tool over these files, native `memory_20250818` on Claude 4 and later, and lists them in each run's context. See [Memory Files](https://cogitator.app/docs/memory#memory-files).
 
 ---
 
@@ -1027,6 +1064,13 @@ import type {
   BuildContextOptions,
   MemoryConfig,
   CheckedEvidence,
+  MemoryFile,
+  MemoryFileAccess,
+  MemoryFileCommand,
+  MemoryFilePlace,
+  Retrieval,
+  RetrievalRequest,
+  QueryAnalysis,
 } from '@cogitator-ai/memory';
 
 import type {
@@ -1039,6 +1083,9 @@ import type {
   PathQueryOptions,
   Evidence,
   EvidenceStatus,
+  MemoryFileAdapter,
+  MemoryFileVersion,
+  MemoryFilesConfig,
 } from '@cogitator-ai/types';
 ```
 

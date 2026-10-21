@@ -70,7 +70,7 @@ const config = loadConfig({
 | `llm`         | `defaultProvider`, `defaultModel`, `providers`, `retry`, `promptCache`, `modelCircuitBreaker`, `pricing`, `plugins`                                          |
 | `prompts`     | `autoDeployWinner` for [prompt A/B tests](/docs/advanced/prompt-versions)                                                                                    |
 | `limits`      | `maxConcurrentRuns`, `defaultTimeout` (ms), `maxTokensPerRun`, `maxToolResultLength` (characters), see [Cogitator](/docs/core/cogitator#defaults-and-limits) |
-| `memory`      | Adapter, its connection, `embedding`, `contextBuilder`, `extraction` and `compaction`                                                                        |
+| `memory`      | Adapter, its connection, `embedding`, `contextBuilder`, `extraction`, `compaction` and `files`                                                               |
 | `sandbox`     | Defaults, container pool, Docker and WASM settings for [sandboxed tools](/docs/deployment/sandbox)                                                           |
 | `reflection`  | [Reflection](/docs/advanced/reflection) after tool calls, errors or at the end of a run                                                                      |
 | `guardrails`  | [Constitutional AI](/docs/advanced/constitutional-ai) input/output/tool filtering                                                                            |
@@ -149,6 +149,19 @@ memory:
 ```
 
 Their hooks (`afterExtract`, `beforeCompact`, `afterCompact`) are functions, so they are set in code.
+
+`memory.files` gives every agent the `memory` tool, notes under `/memories` it keeps across conversations, and lists them in each run's context, see [Memory Files](/docs/memory#memory-files). It is off unless set, and `files: {}` turns it on with the defaults:
+
+```yaml title="cogitator.yml"
+memory:
+  adapter: sqlite
+  sqlite:
+    path: ./data/memory.db
+  files:
+    scope: user # user | agent | thread
+    readOnly: false
+    indexChars: 2000 # characters the list of files takes in the context
+```
 
 ### Logging
 

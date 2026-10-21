@@ -53,6 +53,17 @@ A store of memory items only stores, `MemoryItems` keeps every rule on top of it
 - `findEntities` finds entities by id or by any of their names and aliases, normalized.
 - `deleteItems` and `deleteEntities` delete for good, and returned items and entities are copies.
 
+### Memory Files
+
+Every built-in adapter also keeps the versions of [memory files](/docs/memory#memory-files) (`MemoryFileAdapter`, `isMemoryFileAdapter(adapter)` tells), and `MemoryFiles` keeps the rules on top. A store only adds, finds, redacts and deletes versions, checked by a third suite, `memoryFileAdapterConformanceCases`:
+
+- `putFileVersions(versions)` adds all of them or none. A version whose scope and path already hold its `sequence` fails the whole call with `MEMORY_FILE_CONFLICT` as its error, also when writers race for the place, which is how two writers are kept from adding the same version, and a version reads back field for field, its dates as `Date`s, a field it does not have absent.
+- `findFileVersions(filter)` keeps the versions of the filter's agent that meet every condition given (`ids`, `paths`, `prefix`), oldest first by `createdAt`, then `sequence`, then id. `visibleTo` keeps the versions a scope sees and `scope` the versions of exactly that scope, as for memory items.
+- `redactFileVersions(ids, redaction)` replaces the content and `sha256` of the versions and marks them redacted, and changes nothing else. `deleteFileVersions(ids)` deletes for good.
+- Returned versions are copies.
+
+InMemory keeps the versions in process. SQLite (the `memory_file_versions` table of the same file) and Postgres (`<schema>.memory_file_versions`) keep each version whole as JSON beside the columns its filters read, its scope among them, with a key of its scope and path unique together with its `sequence`, and add a batch in one transaction. MongoDB takes the place of each version in `<prefix>file_places` (a document whose id is its scope, path and `sequence`) and then keeps the versions of one change in one document of `<prefix>file_batches`, so a reader sees all of them or none. A place a writer took and never published, such as one that died midway, is taken again after a minute. Redis keeps a hash per version with a key of its place and an index by agent, all written in one script and never under the thread `ttl`.
+
 ## Listing Threads
 
 `listThreads` returns threads in pages, the most recently updated first. A thread's `updatedAt` changes when it is created or its metadata is updated, not when an entry is added.
@@ -155,7 +166,7 @@ const memory = new RedisAdapter({
 
 Without a `ttl`, or with `ttl: 0`, nothing expires. Earlier versions expired keys after 24 hours by default: pass `ttl: 86400` to keep that. With a `ttl`, each write refreshes the TTL of the thread and its entry index, so active conversations do not expire mid-way, and expired entries are pruned from the index on read. In cluster mode a custom `keyPrefix` without a hash tag is wrapped automatically (`'myapp:'` → `'{myapp}:'`) so all keys of the adapter map to one slot.
 
-Memory items and their entities are long-term memory and never take the `ttl`: they stay until they are purged. Each is a hash with its indexes (by agent and record time, slot, entity and name), kept in step when it is replaced or deleted.
+Memory items, their entities and the versions of memory files are long-term memory and never take the `ttl`: they stay until they are purged. Each is a hash with its indexes (by agent and record time, slot, entity and name), kept in step when it is replaced or deleted.
 
 `getEntries({ limit })` reads only the newest `limit` entries of the thread instead of the whole thread. When `connect()` fails, the client is closed again, so an unreachable Redis does not leave a client reconnecting in the background and keeping the process alive, and the error names the connection problem (`connect ECONNREFUSED ...`).
 
@@ -180,7 +191,7 @@ memory.setVectorDimensions(1536); // before connect(); default 768
 unwrap(await memory.connect());
 ```
 
-On `connect()` the adapter creates the schema, the `threads`, `entries`, `memory_items` (its scope in `user_id`, `project_id` and `thread_id` columns), `memory_entities` and `embeddings` tables, the pgvector extension, an HNSW cosine index on the vectors and a generated English `tsvector` column for keyword search. If an index cannot be created, it logs a warning and carries on.
+On `connect()` the adapter creates the schema, the `threads`, `entries`, `memory_items` (its scope in `user_id`, `project_id` and `thread_id` columns), `memory_entities`, `memory_file_versions` and `embeddings` tables, the pgvector extension, an HNSW cosine index on the vectors and a generated English `tsvector` column for keyword search. If an index cannot be created, it logs a warning and carries on.
 
 pgvector is only needed for embeddings. On a database without it (a managed Postgres without the extension, or a role not allowed to run `CREATE EXTENSION`), `connect()` still succeeds and threads, entries and facts work: the `embeddings` table is not created, a warning names the reason, and `addEmbedding`, `search`, `keywordSearch`, `deleteEmbedding` and `deleteBySource` return a failed result with it. `memory.vectorStatus()` returns `{ available: true, dimensions }` or `{ available: false, reason }`, and the `Cogitator` runtime does not use such a store for semantic context.
 
@@ -188,9 +199,11 @@ HNSW needs no training data, so the index built on the empty table finds every r
 
 Vectors of more than 2000 dimensions (such as the 3072 of `gemini-embedding-001` or `text-embedding-3-large`) are too large for a pgvector index on the column. Up to 4000 dimensions the adapter indexes the column cast to `halfvec` instead (pgvector 0.7 or later), and searches compare the same cast, so the index serves them while the stored vectors keep full precision. Larger vectors have no index and a warning says that searches scan every row.
 
-`connect()` records the layout of threads, entries and memory items in `<schema>.cogitator_schema_migrations` and changes the schema only when it is older than the adapter's or its tables are gone. Setup runs in one transaction under a lock on the schema, so processes connecting at once take turns instead of racing on the same `CREATE`, also behind a pooler in transaction mode such as PgBouncer. A schema from before versions were recorded is brought up to date in place.
+`connect()` records the layout of threads, entries, memory items and memory files in `<schema>.cogitator_schema_migrations` and changes the schema only when it is older than the adapter's or its tables are gone. Setup runs in one transaction under a lock on the schema, so processes connecting at once take turns instead of racing on the same `CREATE`, also behind a pooler in transaction mode such as PgBouncer. A schema from before versions were recorded is brought up to date in place.
 
 Version 3 of the layout moves facts into memory items. The first `connect()` after upgrading turns every row of `facts` into an `active` memory item of kind `fact` with the fact's id, alone in its slot `fact:<id>`: trusted as its `source` (`inferred` becomes `model`), in the scope of its agent and of the user its `metadata.userId` names, verified when it has evidence, valid and recorded from when the fact was created, and let go when it expires. The `facts` table is then renamed `facts_legacy` and kept, so nothing is lost. Upgrade every process that shares the database at once: an older process makes a new, empty `facts` table and writes its facts there, where only the next `connect()` of an upgraded process finds them and moves them into items.
+
+Version 4 of the layout adds the `memory_file_versions` table of [memory files](/docs/memory#memory-files). The first `connect()` after upgrading creates it, empty, and changes nothing else, so nothing is migrated. A process of an earlier version keeps working on the same schema, without memory files.
 
 `search()` sizes each query for the index: it raises `hnsw.ef_search` to the requested `limit` (up to 1000) and, on pgvector 0.8 or later, turns on iterative scans, so a large limit or a filter on agent, thread or user still gets every matching row. Equally similar rows are ordered by id, so the result does not depend on the query plan.
 
@@ -295,7 +308,7 @@ const memory = new SQLiteAdapter({ provider: 'sqlite', path: ':memory:' });
 | `path`    | string  | —       | Path to `.db` file, or `:memory:`                 |
 | `walMode` | boolean | true    | Enable WAL journal mode (disabled for `:memory:`) |
 
-Memory items live in the same file, in the `memory_items` (with `user_id`, `project_id` and `thread_id` columns of their scope, added and filled on `connect()` for a table made before them), `memory_entities` and `memory_entity_names` tables. `connect()` returns a failure (rather than throwing) when `better-sqlite3` is not installed. For a knowledge graph in the same kind of file, see [`SQLiteGraphAdapter`](/docs/memory/knowledge-graphs#graph-adapters).
+Memory items live in the same file, in the `memory_items` (with `user_id`, `project_id` and `thread_id` columns of their scope, added and filled on `connect()` for a table made before them), `memory_entities` and `memory_entity_names` tables, and the versions of memory files in `memory_file_versions`, created on `connect()` when missing. `connect()` returns a failure (rather than throwing) when `better-sqlite3` is not installed. For a knowledge graph in the same kind of file, see [`SQLiteGraphAdapter`](/docs/memory/knowledge-graphs#graph-adapters).
 
 **Requires:** `pnpm add better-sqlite3`
 
@@ -303,7 +316,7 @@ Memory items live in the same file, in the `memory_items` (with `user_id`, `proj
 
 ## MongoDB
 
-Document-oriented memory storage. Threads and entries are stored in the `<prefix>threads` and `<prefix>entries` collections, indexed on `agentId` and `(threadId, createdAt)`, and memory items and their entities in `<prefix>items` (the fields of their scope at the top of the document) and `<prefix>entities`, indexed on the fields they are found by.
+Document-oriented memory storage. Threads and entries are stored in the `<prefix>threads` and `<prefix>entries` collections, indexed on `agentId` and `(threadId, createdAt)`, memory items and their entities in `<prefix>items` (the fields of their scope at the top of the document) and `<prefix>entities`, and memory files in `<prefix>file_batches` (the versions one change added, in one document) and `<prefix>file_places` (the place each version took), indexed on the fields they are found by.
 
 ```typescript
 import { MongoDBAdapter, unwrap } from '@cogitator-ai/memory';
@@ -418,6 +431,7 @@ It needs no `connect()`. Vector search uses a default `threshold` of 0.7, and bo
 | ------------------ | -------- | -------- | -------- | -------------- | ------- | ---------------------- |
 | Threads/Entries    | Yes      | Yes      | Yes      | Yes            | Yes     | No                     |
 | Memory Items       | Yes      | Yes      | Yes      | Yes            | Yes     | No                     |
+| Memory Files       | Yes      | Yes      | Yes      | Yes            | Yes     | No                     |
 | Facts              | No       | No       | Yes      | No             | No      | No                     |
 | Vector Search      | No¹      | No       | pgvector | No             | No      | Yes                    |
 | Keyword Search     | No¹      | No       | tsvector | No             | No      | No                     |

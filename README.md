@@ -291,14 +291,16 @@ Click a category to expand it.
 <details>
 <summary><strong>Memory & Knowledge</strong></summary>
 
-| Feature                | What it means                                                                          |
-| ---------------------- | -------------------------------------------------------------------------------------- |
-| **6 storage backends** | Redis, Postgres, SQLite, MongoDB, Qdrant, in-memory                                    |
-| **Semantic search**    | BM25 + vector hybrid search with Reciprocal Rank Fusion                                |
-| **Knowledge graphs**   | Extract entities, build graphs, traverse multi-hop relationships                       |
-| **Memory items**       | Facts extracted after each run, tied to the quote they came from and to when they held |
-| **RAG pipeline**       | Document loaders, smart chunking, hybrid retrieval, reranking                          |
-| **Context management** | Auto-compress long conversations to fit model limits                                   |
+| Feature                 | What it means                                                                                       |
+| ----------------------- | --------------------------------------------------------------------------------------------------- |
+| **6 storage backends**  | Redis, Postgres, SQLite, MongoDB, Qdrant, in-memory                                                 |
+| **Semantic search**     | BM25 + vector hybrid search with Reciprocal Rank Fusion                                             |
+| **Knowledge graphs**    | Extract entities, build graphs, traverse multi-hop relationships                                    |
+| **Memory items**        | Facts extracted after each run, tied to the quote they came from and to when they held              |
+| **Memory files**        | Notes an agent keeps under `/memories` with the memory tool, native on Claude, every edit a version |
+| **Memory search tools** | The agent searches old turns and memory items itself and cites only what it opened                  |
+| **RAG pipeline**        | Document loaders, smart chunking, hybrid retrieval, reranking                                       |
+| **Context management**  | Auto-compress long conversations to fit model limits                                                |
 
 </details>
 
@@ -397,7 +399,7 @@ npx tsx examples/core/01-basic-agent.ts
 | Category                                                    | Count | What you'll learn                                                                                                                                                                                                                                                                                |
 | ----------------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | [`core/`](./examples/core/)                                 | 21    | Agents, tools, streaming, caching, tree-of-thought, reflection, optimization, time-travel, cost routing, constitutional AI, prompt injection, causal reasoning, approvals, handoffs, decision models, provider errors and pricing, the tool contract, fallback models, tool deps, run middleware |
-| [`memory/`](./examples/memory/)                             | 4     | In-memory storage, context building, semantic search, knowledge graphs                                                                                                                                                                                                                           |
+| [`memory/`](./examples/memory/)                             | 5     | In-memory storage, context building, semantic search, knowledge graphs, memory files and memory search tools                                                                                                                                                                                     |
 | [`swarms/`](./examples/swarms/)                             | 4     | Debate, pipeline, hierarchical coordination, negotiation                                                                                                                                                                                                                                         |
 | [`workflows/`](./examples/workflows/)                       | 3     | DAG workflows, human-in-the-loop, map-reduce                                                                                                                                                                                                                                                     |
 | [`a2a/`](./examples/a2a/)                                   | 2     | A2A server and client                                                                                                                                                                                                                                                                            |

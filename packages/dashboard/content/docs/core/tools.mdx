@@ -35,22 +35,23 @@ function tool<TParams, TResult>(config: ToolConfig<TParams, TResult>): Tool<TPar
 
 ### ToolConfig
 
-| Field              | Type                                    | Description                                                                                                                     |
-| ------------------ | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `name`             | `string`                                | Unique tool name (used in LLM function calling), see [Tool Names](#tool-names)                                                  |
-| `description`      | `string`                                | What the tool does (sent to the LLM)                                                                                            |
-| `parameters`       | `ZodType`                               | Zod schema defining accepted parameters                                                                                         |
-| `execute`          | `(params, context) => Promise<TResult>` | Implementation function                                                                                                         |
-| `category`         | `ToolCategory`                          | `'math'`, `'text'`, `'file'`, `'network'`, `'system'`, `'utility'`, `'web'`, `'database'`, `'communication'` or `'development'` |
-| `tags`             | `string[]`                              | Optional tags for filtering                                                                                                     |
-| `sideEffects`      | `SideEffectType[]`                      | `'filesystem'`, `'network'`, `'database'`, `'process'`, `'external'`; shown to approvers                                        |
-| `requiresApproval` | `boolean \| (params) => boolean`        | Require human approval before execution ([Approvals](/docs/tools/approvals))                                                    |
-| `timeout`          | `number`                                | Per-call timeout in milliseconds                                                                                                |
-| `sandbox`          | `SandboxConfig`                         | Run in an isolated environment (see below)                                                                                      |
-| `maxResultLength`  | `number`                                | Most characters of a result the model reads, over `limits.maxToolResultLength` ([Result Size](#result-size))                    |
-| `title`            | `string`                                | Name for people, such as an MCP client shows (the model sees `name`)                                                            |
-| `outputSchema`     | `ZodType`                               | Schema of the result. Not checked in a run: an [MCP server](/docs/integrations/mcp) advertises it and sends `structuredContent` |
-| `annotations`      | `ToolAnnotations`                       | MCP hints: `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`                                                 |
+| Field              | Type                                    | Description                                                                                                                          |
+| ------------------ | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `name`             | `string`                                | Unique tool name (used in LLM function calling), see [Tool Names](#tool-names)                                                       |
+| `description`      | `string`                                | What the tool does (sent to the LLM)                                                                                                 |
+| `parameters`       | `ZodType`                               | Zod schema defining accepted parameters                                                                                              |
+| `execute`          | `(params, context) => Promise<TResult>` | Implementation function                                                                                                              |
+| `category`         | `ToolCategory`                          | `'math'`, `'text'`, `'file'`, `'network'`, `'system'`, `'utility'`, `'web'`, `'database'`, `'communication'` or `'development'`      |
+| `tags`             | `string[]`                              | Optional tags for filtering                                                                                                          |
+| `sideEffects`      | `SideEffectType[]`                      | `'filesystem'`, `'network'`, `'database'`, `'process'`, `'external'`; shown to approvers                                             |
+| `requiresApproval` | `boolean \| (params) => boolean`        | Require human approval before execution ([Approvals](/docs/tools/approvals))                                                         |
+| `timeout`          | `number`                                | Per-call timeout in milliseconds                                                                                                     |
+| `sandbox`          | `SandboxConfig`                         | Run in an isolated environment (see below)                                                                                           |
+| `maxResultLength`  | `number`                                | Most characters of a result the model reads, over `limits.maxToolResultLength` ([Result Size](#result-size))                         |
+| `title`            | `string`                                | Name for people, such as an MCP client shows (the model sees `name`)                                                                 |
+| `outputSchema`     | `ZodType`                               | Schema of the result. Not checked in a run: an [MCP server](/docs/integrations/mcp) advertises it and sends `structuredContent`      |
+| `annotations`      | `ToolAnnotations`                       | MCP hints: `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`                                                      |
+| `providerTypes`    | `ProviderToolTypes`                     | The tool's type in a provider's own catalog, sent to that provider instead of its schema, such as `{ anthropic: 'memory_20250818' }` |
 
 ### Tool Names
 
@@ -346,6 +347,8 @@ const schema = toolToSchema(getWeather);
 ```
 
 The conversion uses the schema's input type, so fields with a `.default()` are optional for the model; the default is applied when the arguments are parsed. `tool.toJSON()` returns the same schema.
+
+A tool with `providerTypes` carries them in its schema. The Anthropic backend sends a tool with `providerTypes.anthropic` as `{ type, name }` instead of its schema, so a model trained on the tool, such as Claude with the memory tool (`memory_20250818`), gets it the way it knows it. The memory tool goes this way only to the Claude models that take it, Claude 4 and later, and as its schema to older ones. Every other backend sends the tool's name, description and parameters as usual, and the calls come back as calls of the tool either way, checked against its Zod schema. The `memory` tool of [memory files](/docs/memory#memory-files) is one.
 
 Recursive schemas work too. A `z.lazy()` schema (a tree, a nested comment thread) refers to its definition with `$ref`: the definitions such refs point to travel along in `parameters.$defs`, and refs to definitions that are not recursive (a schema reused with `.meta({ id })`) are inlined, so every provider gets a self-contained schema. Google receives recursive schemas as `parametersJsonSchema`, the form of its API that can hold `$ref`. `toToolParameters(jsonSchema)` applies the same rules to a JSON Schema of your own, and the registry applies them to every tool's `toJSON()` before a request.
 

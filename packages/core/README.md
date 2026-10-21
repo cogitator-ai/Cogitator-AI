@@ -70,6 +70,7 @@ console.log(result.output);
 - **Handoffs & Approvals** - Pass a conversation to another agent; pause runs for human approval and resume them later
 - **Prompt Versions & A/B Tests** - Versioned instructions per agent with `cog.prompts`
 - **Memory Integration** - In-memory, Redis, PostgreSQL, SQLite, MongoDB and Qdrant adapters
+- **Agent Memory Tools** - `search_memory`, `open_turns` and `list_entities` with a citation lock, and memory files under `/memories` through the `memory` tool, native on Anthropic
 - **26 Built-in Tools** - Web search, SQL, email, GitHub, filesystem, and more
 - **Reflection Engine** - Self-improvement through tool call analysis
 - **Tree-of-Thought** - Advanced reasoning with branch exploration
@@ -426,7 +427,7 @@ const weatherTool = tool({
 });
 ```
 
-`tool()` also takes `category`, `tags`, `sideEffects`, `requiresApproval`, `timeout`, `sandbox` and `maxResultLength`, plus `title`, `outputSchema` and MCP `annotations` (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`), which an MCP server sends to its clients. `withParsedArguments(tool)` keeps a tool's approval, sandbox, timeout and limits with a pass-through schema, for `cogitator.invokeTool()` calls whose arguments were already parsed with the tool's schema (by the MCP SDK or the AI SDK).
+`tool()` also takes `category`, `tags`, `sideEffects`, `requiresApproval`, `timeout`, `sandbox` and `maxResultLength`, plus `title`, `outputSchema` and MCP `annotations` (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`), which an MCP server sends to its clients. `providerTypes` names the tool's type in a provider's own catalog, such as `{ anthropic: 'memory_20250818' }`: the Anthropic backend sends the tool as that type instead of its schema (the memory tool only to the Claude models that take it, Claude 4 and later), every other backend sends the schema. `withParsedArguments(tool)` keeps a tool's approval, sandbox, timeout and limits with a pass-through schema, for `cogitator.invokeTool()` calls whose arguments were already parsed with the tool's schema (by the MCP SDK or the AI SDK).
 
 The name must be one every provider accepts: letters, digits, `_` and `-`, starting with a letter or `_`, at most 64 characters (the strictest of the OpenAI, Anthropic, Gemini and Bedrock rules). `tool()` throws a `TypeError` for any other name, with a name that fits, instead of the run failing later with a provider error. `normalizeToolName('weather.get')` gives `weather_get` for names built from data, `normalizeToolNames(names)` keeps a whole set distinct, `isProviderSafeToolName(name)` checks one, and `assertToolName(name)` throws the same error for tools you build without `tool()`. A parameter with `.default()` is optional in the JSON Schema the model sees, and `execute` receives the default when the model leaves it out. Tools passed to `new Agent({ tools })` lose their individual parameter types in a plain array, while `toolset(...tools)` keeps them as a typed tuple that agents still accept:
 
@@ -740,11 +741,13 @@ const agent = new Agent({
 
 Also not in `builtinTools`, these build tools around your own stores. `createMemoryTools` and `createSchedulerTools` return typed tuples (see `toolset()`), so destructured tools keep their parameter types:
 
-| Factory                                                                                                        | Tools                                                                                                                                                                                                                             |
-| -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `createMemoryTools({ graphAdapter, agentId, coreFacts?, embeddingFn?, items?, memory? })`                      | `remember`, `recall`, `forget` on a knowledge graph and memory items (`items`). With `memory`, `remember` keeps a fact as the user's only when its `quote` is in one of the run user's own messages on the thread's active branch |
-| `createSchedulerTools({ store, defaultChannel?, defaultUserId? })`                                             | `schedule_task`, `list_tasks`, `cancel_task` on a `TimerStore`                                                                                                                                                                    |
-| `createDeviceTools()`, `createCapabilitiesTool(doc)`, `createSelfTools({ toolsDir })` / `loadCustomTools(dir)` | Device info, a capabilities description, and tools an agent writes to a directory                                                                                                                                                 |
+| Factory                                                                                                        | Tools                                                                                                                                                                                                                                                                                                         |
+| -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `createMemoryTools({ graphAdapter, agentId, coreFacts?, embeddingFn?, items?, memory? })`                      | `remember`, `recall`, `forget` on a knowledge graph and memory items (`items`). With `memory`, `remember` keeps a fact as the user's only when its `quote` is in one of the run user's own messages on the thread's active branch, and `recall` ranks the items with the `MemoryRetriever` of `hybrid` recall |
+| `createMemorySearchTools({ memory, agentId, items?, embedding?, messageIndex?, timeZone?, placeOf? })`         | `search_memory`, `open_turns`, `list_entities`: the agent searches the turns of its thread and memory items itself, with references to cite. `cog.memorySearchTools(memoryAgentId)` builds them over the runtime's memory                                                                                     |
+| `memoryFileTool({ memory, agentId, scope?, readOnly?, placeOf?, files? })`                                     | `memory`: notes under `/memories` with the commands of Anthropic's memory tool, sent as the native `memory_20250818` to Claude 4 and later. `memory.files` gives it to every agent                                                                                                                            |
+| `createSchedulerTools({ store, defaultChannel?, defaultUserId? })`                                             | `schedule_task`, `list_tasks`, `cancel_task` on a `TimerStore`                                                                                                                                                                                                                                                |
+| `createDeviceTools()`, `createCapabilitiesTool(doc)`, `createSelfTools({ toolsDir })` / `loadCustomTools(dir)` | Device info, a capabilities description, and tools an agent writes to a directory                                                                                                                                                                                                                             |
 
 ### Web Search Tool
 
@@ -1035,7 +1038,7 @@ await cog.run(agent, { input, middleware: [auditFor(userId)] });
 
 Every hook gets the run's context: `runId`, `threadId`, the agent, `userId`, the channel, `iteration`, `signal`, `deps` and a `state` map the run's middleware share. The Cogitator's middleware runs first, then the agent's, then the run's, then the built-in ones: PII masking (`security.pii`), prompt injection (`security.promptInjection`), guardrails (`guardrails`), tool output clearing (`context.clearToolOutputs`), compaction (`context`), extraction of memory items after the run (`memory.extraction`) and compaction of the thread after the run (`memory.compaction`), closest to the model. `before*` and `afterRun` hooks run in that order, `wrap*` hooks nest with the first outermost, `afterModel` runs in reverse. After a handoff the agent the run went on as brings its own middleware. To see each turn as the run keeps it, after every layer, pass `onModelTurn` in the run options: it gets `{ content, toolCalls, model }` before the turn's tools run.
 
-`tripwire(reason, info?)` stops the run as a guard that tripped: it fails with `GUARDRAIL_TRIPPED` (HTTP 400), the middleware, the reason and `info` in `details`, and `isTripwire(error)` tells it apart. Any other error a hook throws fails the run as it is, and a hook still running when the run is cancelled or times out is no longer waited for. Arguments a `wrapToolCall` hook changes are checked against the tool's schema and `requiresApproval` again, and an approval never carries over to them. Every call a `wrapModelCall` hook sends counts toward usage and budgets, an answer it gives without the model counts nothing and still reaches `onToken` in a streamed run. A middleware with `holdsStream: true` makes a streamed run hold each turn's text until the turn is done, so text a hook retries, blocks or replaces never reaches `onToken`. A tripwire raised inside a tool, such as a nested `agentAsTool()` run, stops the outer run too. The Cogitator's `wrapToolCall` hooks also wrap `invokeTool()`, which throws an error they throw (a tripwire among them) while a failing tool still comes back in `error`. `toAgentWire()` does not carry middleware and warns when an agent has some. `piiMiddleware`, `promptInjectionMiddleware`, `guardrailsMiddleware`, `clearToolOutputsMiddleware`, `compactionMiddleware` and `memoryCompactionMiddleware` build the built-in ones, to give a feature to one agent only. `afterRun({ result, model }, context)` runs after the run saved what it said and before `run()` returns, and an error it throws fails the run.
+`tripwire(reason, info?)` stops the run as a guard that tripped: it fails with `GUARDRAIL_TRIPPED` (HTTP 400), the middleware, the reason and `info` in `details`, and `isTripwire(error)` tells it apart. Any other error a hook throws fails the run as it is, and a hook still running when the run is cancelled or times out is no longer waited for. Arguments a `wrapToolCall` hook changes are checked against the tool's schema and `requiresApproval` again, and an approval never carries over to them. Every call a `wrapModelCall` hook sends counts toward usage and budgets, an answer it gives without the model counts nothing and still reaches `onToken` in a streamed run. A middleware with `holdsStream: true` makes a streamed run hold each turn's text until the turn is done, so text a hook retries, blocks or replaces never reaches `onToken`. A tripwire raised inside a tool, such as a nested `agentAsTool()` run, stops the outer run too. The Cogitator's `wrapToolCall` hooks also wrap `invokeTool()`, which throws an error they throw (a tripwire among them) while a failing tool still comes back in `error`. `toAgentWire()` does not carry middleware and warns when an agent has some. `piiMiddleware`, `promptInjectionMiddleware`, `guardrailsMiddleware`, `clearToolOutputsMiddleware`, `compactionMiddleware` and `memoryCompactionMiddleware` build the built-in ones, to give a feature to one agent only. `memoryCitations()` is a middleware to add yourself, the citation lock of the memory search tools (see [Memory Integration](#memory-integration)). `afterRun({ result, model }, context)` runs after the run saved what it said and before `run()` returns, and an error it throws fails the run.
 
 ---
 
@@ -1128,6 +1131,39 @@ With `relevant` or `hybrid` and `memory.embedding`, every memory gets a message 
 ```typescript
 await cog.indexMemory('imported-thread'); // does nothing without an index
 ```
+
+`memory.files` gives every agent the `memory` tool: notes under `/memories` it views and edits across conversations, with the commands of Anthropic's memory tool. Claude 4 and later get it as Anthropic's native `memory_20250818` tool (`ToolConfig.providerTypes`), every other model as a tool with the same commands. The runtime lists the files a run sees in its memory context, each with its size and first line, up to `indexChars` (2000), and the agent views them when it needs them:
+
+```typescript
+const cog = new Cogitator({
+  memory: {
+    adapter: 'postgres',
+    postgres: { connectionString: process.env.DATABASE_URL! },
+    files: { scope: 'user' }, // 'user' (the thread for a run without a user), 'agent' or 'thread', and readOnly
+  },
+});
+```
+
+Every change is a version of its own, kept under the agent's memory id: a run in a thread sees the versions of its own branch, an edit of a file another writer changed since the run viewed it fails, and two writers never add the same version. A store that keeps no memory files is warned about once and the tool is left out. See [Memory Files](https://cogitator.app/docs/memory#memory-files).
+
+`memorySearchTools(memoryAgentId)` returns tools an agent searches memory with on its own: `search_memory` (earlier turns of the thread and memory items in one ranked list, the search of `hybrid` recall), `open_turns` (turns whole with the turns around them) and `list_entities` (what memory knows about, with item counts). Their results carry references, `[item:<id>]` and `[turn:<id>]`, and the `memoryCitations()` middleware takes out of a final answer each reference the run never opened, calling `onUncited`:
+
+```typescript
+import { Agent, Cogitator, memoryCitations } from '@cogitator-ai/core';
+
+const cog = new Cogitator({
+  memory: { adapter: 'sqlite', sqlite: { path: './memory.db' } },
+  middleware: [memoryCitations({ onUncited: (references) => console.warn(references) })],
+});
+
+const agent = new Agent({
+  name: 'concierge',
+  instructions: 'Answer from memory. Cite what you rely on as [turn:<id>] or [item:<id>].',
+  tools: await cog.memorySearchTools('concierge'), // the agent's memory id: its configured id, else its name
+});
+```
+
+See [Agent Memory Tools](https://cogitator.app/docs/memory#agent-memory-tools).
 
 The adapter connects on the first run. To read threads before that (for example in an API route), use `getMemory()`, which connects it on first use; `cog.memory` stays `undefined` until something connected it:
 

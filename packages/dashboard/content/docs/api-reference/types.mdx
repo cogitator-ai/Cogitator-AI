@@ -268,6 +268,7 @@ interface Tool<TParams = unknown, TResult = unknown, TDeps = unknown> {
   timeout?: number;
   sandbox?: SandboxConfig;
   maxResultLength?: number; // characters of a result the model reads, over limits.maxToolResultLength
+  providerTypes?: ProviderToolTypes; // sent to that provider instead of the schema
   toJSON(): ToolSchema;
 }
 
@@ -286,6 +287,12 @@ interface ToolConfig<TParams = unknown, TResult = unknown, TDeps = unknown> {
   timeout?: number;
   sandbox?: SandboxConfig;
   maxResultLength?: number;
+  providerTypes?: ProviderToolTypes;
+}
+
+// The tool's type in a provider's own catalog, such as { anthropic: 'memory_20250818' }
+interface ProviderToolTypes {
+  anthropic?: string;
 }
 
 type ApprovalCheck = (params: Record<string, unknown>) => boolean;
@@ -357,6 +364,7 @@ interface ToolSchema {
     properties: Record<string, unknown>;
     required?: string[];
   };
+  providerTypes?: ProviderToolTypes; // sent to that provider instead of parameters
 }
 ```
 
@@ -717,6 +725,13 @@ interface MemoryConfig {
   contextBuilder?: Partial<ContextBuilderConfig>;
   compaction?: MemoryCompactionConfig; // compaction of a run's thread after the run, off unless set
   extraction?: MemoryExtractionConfig; // memory items extracted after each run, off unless set
+  files?: MemoryFilesConfig; // the memory tool and its files under /memories, off unless set
+}
+
+interface MemoryFilesConfig {
+  scope?: 'user' | 'agent' | 'thread'; // default 'user', the thread for a run without a user
+  readOnly?: boolean; // the agent views the files and never changes them
+  indexChars?: number; // characters the list of files takes in the context (default 2000)
 }
 
 type EmbeddingServiceConfig = OpenAIEmbeddingConfig | OllamaEmbeddingConfig | GoogleEmbeddingConfig;
@@ -990,6 +1005,48 @@ interface MemoryExtractionConfig {
 ```
 
 `MemoryExtractionConfig` extracts memory items from a run's conversation after the run, see [Extraction After a Run](/docs/memory#extraction-after-a-run).
+
+[Memory files](/docs/memory#memory-files) are notes an agent keeps under `/memories` with the memory tool, every change a version of its own that only a redaction changes afterwards:
+
+```typescript
+type MemoryFileAuthor = 'model' | 'user' | 'system';
+
+interface MemoryFileVersion {
+  id: string;
+  scope: MemoryItemScope;
+  path: string; // starting with /memories/
+  sequence: number; // its place among the versions of its path in its scope, from 1
+  content: string | null; // null when this version deletes the file
+  sha256: string | null;
+  previousId: string | null; // the version this one replaces, null for a new file
+  place?: { threadId: string; entryId: string }; // seen in its thread only on branches holding the entry
+  renamedFrom?: string;
+  author: MemoryFileAuthor;
+  createdAt: Date;
+  redacted?: { at: Date; reason?: string };
+}
+
+interface MemoryFileFilter {
+  agentId: string;
+  ids?: string[];
+  paths?: string[];
+  prefix?: string; // versions of the paths under this one
+  visibleTo?: MemoryItemScope;
+  scope?: MemoryItemScope;
+}
+
+const MEMORY_FILE_CONFLICT = 'memory-file-conflict'; // the error of a version whose place is taken
+
+interface MemoryFileAdapter {
+  putFileVersions(versions: MemoryFileVersion[]): Promise<MemoryResult<MemoryFileVersion[]>>; // all or none
+  findFileVersions(filter: MemoryFileFilter): Promise<MemoryResult<MemoryFileVersion[]>>; // oldest first
+  redactFileVersions(
+    ids: string[],
+    redaction: { content: string; sha256: string; at: Date; reason?: string }
+  ): Promise<MemoryResult<void>>;
+  deleteFileVersions(ids: string[]): Promise<MemoryResult<void>>;
+}
+```
 
 ## Errors
 

@@ -60,7 +60,7 @@ Agent calls: recall({ query: "dog" })
 → Returns: { results: [{ fact: "User's dog is named Luna", ... }], coreFacts: { ... } }
 ```
 
-`recall` matches the query against the memory items of the user and the thread that hold now (every word of it, up to 10, `type: 'memory'`) and the stored fact text of the graph (up to 10 results), and always returns all core facts. Pass `embeddingFn` to `createMemoryTools()` to switch the graph search to semantic vector search. `RuntimeBuilder` does not.
+`recall` searches the memory items of the user and the thread that hold now (up to 10, `type: 'memory'`) and the stored fact text of the graph (up to 10 results), and always returns all core facts. Given the thread store as `memory`, it ranks the items with the search the `hybrid` context strategy [recalls](/docs/memory#recall) with: their words by BM25, the entities they name and the graph of items and entities around them, and a query that is only a greeting or a thanks finds no items. Without it an item matches when it holds every word of the query. Pass `embeddingFn` to `createMemoryTools()` to switch the graph search to semantic vector search. `RuntimeBuilder` does not.
 
 **forget** - Forget the facts that match the query: graph facts whose text matches are deleted, and the run's own memory items (its user's, or its thread's for a run without a user) that hold the query as whole words are let go, past and suggested states included (no longer recalled or used, kept as history, listed in `forgotten`). A query in a script written without spaces, such as Chinese, Japanese or Thai, is matched as it stands
 

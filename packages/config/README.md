@@ -246,11 +246,19 @@ memory:
     activationConfidence: 0.7 # confidence a quoted user item needs to become active
     scope: user # user | agent | thread
     timeZone: Europe/Lisbon # IANA, when the thread names none (default UTC)
+
+  # The memory tool: notes under /memories every agent keeps across conversations
+  files:
+    scope: user # user | agent | thread
+    readOnly: false
+    indexChars: 2000 # characters the list of files takes in the context
 ```
 
 `memory.compaction` is validated by `MemoryCompactionConfigSchema` (`at` above 0 and at most 1). Its hooks `beforeCompact` and `afterCompact` are functions, so they are set in code. See [Compaction After a Run](https://cogitator.app/docs/memory#compaction-after-a-run).
 
 `memory.extraction` is validated by `MemoryExtractionConfigSchema`: `model` not empty, `windowTokens` a whole number above 0, `activationConfidence` from 0 to 1, `scope` one of `user`, `agent` and `thread`, and `timeZone` an IANA time zone. Its `afterExtract` hook is set in code. See [Extraction After a Run](https://cogitator.app/docs/memory#extraction-after-a-run).
+
+`memory.files` is validated by `MemoryFilesConfigSchema`: `scope` one of `user`, `agent` and `thread`, `readOnly` a boolean and `indexChars` a whole number above 0. With it the runtime gives every agent the `memory` tool and lists the files a run sees in its context. See [Memory Files](https://cogitator.app/docs/memory#memory-files).
 
 The `Cogitator` runtime builds the store `adapter` names from its section: `redis` needs `url`, `host`/`port` or `cluster`, `postgres` needs `connectionString`, `sqlite` needs `path` and `mongodb` needs `uri`. A Postgres store sizes its vector column to `embedding`. `qdrant` is not a thread store: keep one of the others as `adapter`, and with `contextBuilder` (`includeSemanticContext: true`) the runtime searches `memory.qdrant` for semantic context.
 
@@ -608,6 +616,7 @@ import type { CogitatorConfigInput, CogitatorConfigOutput } from '@cogitator-ai/
 | `MemoryConfigSchema`              | Memory adapters and settings           |
 | `MemoryCompactionConfigSchema`    | `memory.compaction`                    |
 | `MemoryExtractionConfigSchema`    | `memory.extraction`                    |
+| `MemoryFilesConfigSchema`         | `memory.files`                         |
 | `SandboxConfigSchema`             | Sandbox execution settings             |
 | `ReflectionConfigSchema`          | Self-reflection settings               |
 | `GuardrailConfigSchema`           | Safety guardrails                      |

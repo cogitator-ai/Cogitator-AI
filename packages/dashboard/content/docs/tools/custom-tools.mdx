@@ -37,19 +37,20 @@ function tool<TParams, TResult>(config: ToolConfig<TParams, TResult>): Tool<TPar
 
 ### ToolConfig Fields
 
-| Field              | Type                                    | Required | Description                                       |
-| ------------------ | --------------------------------------- | -------- | ------------------------------------------------- |
-| `name`             | `string`                                | Yes      | Unique tool name, see [Tool Names](#tool-names)   |
-| `description`      | `string`                                | Yes      | What the tool does (shown to the LLM)             |
-| `parameters`       | `ZodType<TParams>`                      | Yes      | Zod schema for input validation                   |
-| `execute`          | `(params, context) => Promise<TResult>` | Yes      | The function that runs when the tool is called    |
-| `category`         | `ToolCategory`                          | No       | Grouping: `math`, `text`, `file`, `network`, etc. |
-| `tags`             | `string[]`                              | No       | Tags for discovery and filtering                  |
-| `sideEffects`      | `SideEffectType[]`                      | No       | Declares what the tool affects                    |
-| `requiresApproval` | `boolean \| (params) => boolean`        | No       | Require human approval before execution           |
-| `timeout`          | `number`                                | No       | Execution timeout in milliseconds                 |
-| `sandbox`          | `SandboxConfig`                         | No       | Run in Docker or WASM sandbox                     |
-| `maxResultLength`  | `number`                                | No       | Most characters of a result the model reads       |
+| Field              | Type                                    | Required | Description                                                                                                                                                                                                 |
+| ------------------ | --------------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`             | `string`                                | Yes      | Unique tool name, see [Tool Names](#tool-names)                                                                                                                                                             |
+| `description`      | `string`                                | Yes      | What the tool does (shown to the LLM)                                                                                                                                                                       |
+| `parameters`       | `ZodType<TParams>`                      | Yes      | Zod schema for input validation                                                                                                                                                                             |
+| `execute`          | `(params, context) => Promise<TResult>` | Yes      | The function that runs when the tool is called                                                                                                                                                              |
+| `category`         | `ToolCategory`                          | No       | Grouping: `math`, `text`, `file`, `network`, etc.                                                                                                                                                           |
+| `tags`             | `string[]`                              | No       | Tags for discovery and filtering                                                                                                                                                                            |
+| `sideEffects`      | `SideEffectType[]`                      | No       | Declares what the tool affects                                                                                                                                                                              |
+| `requiresApproval` | `boolean \| (params) => boolean`        | No       | Require human approval before execution                                                                                                                                                                     |
+| `timeout`          | `number`                                | No       | Execution timeout in milliseconds                                                                                                                                                                           |
+| `sandbox`          | `SandboxConfig`                         | No       | Run in Docker or WASM sandbox                                                                                                                                                                               |
+| `maxResultLength`  | `number`                                | No       | Most characters of a result the model reads                                                                                                                                                                 |
+| `providerTypes`    | `ProviderToolTypes`                     | No       | The tool's type in a provider's own catalog, sent to that provider instead of its schema, such as `{ anthropic: 'memory_20250818' }`, see [Tool Schema Conversion](/docs/core/tools#tool-schema-conversion) |
 
 ### Tool Names
 
