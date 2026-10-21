@@ -632,7 +632,9 @@ export class Cogitator implements ToolInvoker {
         {
           ...memoryCompaction,
           afterCompact: async (result) => {
-            this.memoryUpkeepLayer?.noteCompaction(result.sessionId);
+            if (result.compactedMessages < result.originalMessages) {
+              this.memoryUpkeepLayer?.noteCompaction(result.sessionId);
+            }
             await userAfterCompact?.(result);
           },
         },

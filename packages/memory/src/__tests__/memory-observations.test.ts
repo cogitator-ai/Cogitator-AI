@@ -116,15 +116,33 @@ describe('MemoryObservations', () => {
     expect((await observations.refresh(scope, { summarize: async () => '[]' })).written).toEqual(
       []
     );
+    expect(await observations.read(scope)).toEqual([]);
+    const [pet] = await items.write([fact('Ana has a cat.', 'pet', 'cat')]);
     await observations.refresh(scope, {
       summarize: answerWith((ids) => [{ text: 'Ana works nights in Porto.', items: ids }]),
     });
     expect(await observations.read(scope)).toHaveLength(1);
 
-    await items.markStale([written[0]!.id]);
+    await items.markStale([written[0]!.id, pet!.id]);
     const refresh = await observations.refresh(scope, { summarize: async () => '[]' });
     expect(refresh.deleted).toEqual([`${OBSERVATIONS_DIRECTORY}/ana.md`]);
     expect(await observations.read(scope)).toEqual([]);
+  });
+
+  it('does not ask again about facts that gave no observation until they change', async () => {
+    await items.write([
+      fact('Ana lives in Porto.', 'home city', 'Porto'),
+      fact('Ana works as a nurse.', 'job', 'nurse'),
+      fact('Ana works night shifts.', 'shift', 'night'),
+    ]);
+    const summarize = vi.fn(async () => 'nothing to say');
+    await observations.refresh(scope, { summarize });
+    await observations.refresh(scope, { summarize });
+    expect(summarize).toHaveBeenCalledTimes(1);
+
+    await items.write([fact('Ana has a cat.', 'pet', 'cat')]);
+    await observations.refresh(scope, { summarize });
+    expect(summarize).toHaveBeenCalledTimes(2);
   });
 
   it('is shown in a turn whose input names the entity', async () => {

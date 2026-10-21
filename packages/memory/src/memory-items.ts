@@ -13,6 +13,7 @@ import type {
   MemoryItemFilter,
   MemoryItemQuery,
   MemoryItemScope,
+  MemoryItemStatus,
   MemoryItemTrust,
   MemoryResult,
   NewMemoryItem,
@@ -620,14 +621,23 @@ export class MemoryItems {
   /**
    * Marks items as no longer trusted to hold: kept and found by `statuses: ['stale']`. `because`
    * is kept in their metadata as `staleBecause`, such as the item a consolidation found them to
-   * repeat.
+   * repeat. With `onlyFrom`, an item whose status is no longer among those statuses when it is
+   * written, such as one a newer item superseded meanwhile, is left as it is.
    */
-  async markStale(itemIds: readonly string[], because?: Record<string, unknown>): Promise<void> {
-    await this.update(itemIds, (item) => ({
-      ...item,
-      status: 'stale',
-      ...(because && { metadata: { ...item.metadata, staleBecause: because } }),
-    }));
+  async markStale(
+    itemIds: readonly string[],
+    because?: Record<string, unknown>,
+    onlyFrom?: readonly MemoryItemStatus[]
+  ): Promise<void> {
+    await this.update(itemIds, (item) =>
+      onlyFrom && !onlyFrom.includes(item.status)
+        ? item
+        : {
+            ...item,
+            status: 'stale',
+            ...(because && { metadata: { ...item.metadata, staleBecause: because } }),
+          }
+    );
   }
 
   /**
@@ -681,7 +691,10 @@ export class MemoryItems {
     for (const [agentId, ids] of await this.idsByAgent(itemIds)) {
       await this.exclusive(agentId, async () => {
         const items = unwrap(await this.adapter.findItems({ agentId, ids, includeExpired: true }));
-        for (const item of items) unwrap(await this.adapter.putItem(change(item)));
+        for (const item of items) {
+          const changed = change(item);
+          if (changed !== item) unwrap(await this.adapter.putItem(changed));
+        }
       });
     }
   }

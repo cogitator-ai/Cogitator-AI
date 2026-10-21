@@ -40,6 +40,11 @@ export interface MemoryConsolidationConfig {
   /** Items one pass marks as stale at most (default 10), 0 to leave items alone */
   maxChanges?: number;
   /**
+   * Subjects one pass asks the model about at most (default 10), the subjects whose newest item
+   * is oldest first: the next pass goes on where it stopped
+   */
+  maxSubjects?: number;
+  /**
    * How lessons reach the playbook: `apply` (default) edits it, each edit a new version of the
    * file, `shadow` writes the edited playbook to `/memories/playbook.next.md` for a review that
    * promotes it, `false` leaves the playbook alone

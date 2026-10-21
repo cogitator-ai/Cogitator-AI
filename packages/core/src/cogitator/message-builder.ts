@@ -414,7 +414,7 @@ function reportMemoryError(
  * changes every turn, so it does not change the system prompt and the prompt cache that opens
  * with it
  */
-function addToTurnContext(messages: Message[], block: string): void {
+export function addToTurnContext(messages: Message[], block: string): void {
   const at = messages.map((message) => message.role).lastIndexOf('user');
   const message = messages[at];
   if (!message) return;

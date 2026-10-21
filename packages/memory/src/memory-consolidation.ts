@@ -83,6 +83,18 @@ const HEADER = /^<!-- memory playbook: lessons through (\S+)(?: draft of (\S+))?
 const LESSON_MARK = /\s*\[lesson:[A-Za-z0-9_-]+\]/g;
 const MARKED = /\[lesson:([A-Za-z0-9_-]+)\]/g;
 
+/** Whether `answer` holds a JSON array, such as one cut short by the token limit does not */
+function holdsJsonArray(answer: string): boolean {
+  const start = answer.indexOf('[');
+  const end = answer.lastIndexOf(']');
+  if (start === -1 || end <= start) return false;
+  try {
+    return Array.isArray(JSON.parse(answer.slice(start, end + 1)));
+  } catch {
+    return false;
+  }
+}
+
 function jsonArray(answer: string): unknown[] {
   const start = answer.indexOf('[');
   const end = answer.lastIndexOf(']');
@@ -219,16 +231,24 @@ export interface DedupeOptions {
   since?: Date;
   /** Items marked as stale at most (default 10) */
   maxChanges?: number;
+  /** Subjects the model is asked about at most (default 10) */
+  maxSubjects?: number;
   /** Instructions added to {@link DEDUPE_PROMPT} */
   prompt?: string;
   /** Tokens the model may answer with (default 800) */
   maxTokens?: number;
 }
 
-/** What a dedupe marked, and whether it looked at every subject it was asked to */
+/** What a dedupe marked, and how far it got */
 export interface DedupeResult {
   stale: StaleMark[];
+  /** Whether it looked at every subject it was asked to */
   complete: boolean;
+  /**
+   * When it was not complete: it looked at every subject whose newest item was recorded up to
+   * this, so a later dedupe may start `since` it. Absent when it looked at none.
+   */
+  through?: Date;
 }
 
 export interface FoldLessonsOptions {
@@ -259,7 +279,9 @@ export interface PlaybookChange {
  * {@link foldLessons} folds lessons recorded since the last fold into the playbook in at most
  * {@link MAX_PLAYBOOK_EDITS} edits, each adding a rule or rewriting one rule, so the playbook is
  * never written over whole and its earlier rules cannot collapse into a summary of themselves.
- * Lessons from a tool or a web page are left out. Every fold is a new version of the file, so
+ * Only `active` lessons are folded: one a model, a tool or a page wrote stays `suggested` until
+ * it is activated, so it cannot reach the playbook every run reads. An answer the model did not
+ * finish folds nothing and leaves its lessons for the next fold. Every fold is a new version of the file, so
  * its diff and the way back are in the file's history, or with `mode: 'shadow'` a draft that
  * {@link promotePlaybook} makes the playbook after review.
  */
@@ -275,14 +297,19 @@ export class MemoryConsolidator {
   }
 
   /**
-   * Marks as stale the items of exactly `scope` that repeat or contradict another one. Not
-   * `complete` when `maxChanges` stopped it before every subject was looked at, so the next pass
-   * must not start after this one.
+   * Marks as stale the items of exactly `scope` that repeat or contradict another one, the
+   * subjects whose newest item is oldest first. Not `complete` when `maxChanges` or `maxSubjects`
+   * stopped it before every subject was looked at, `through` then says where a later dedupe
+   * goes on from.
    */
   async dedupe(scope: MemoryItemScope, options: DedupeOptions): Promise<DedupeResult> {
     const maxChanges = options.maxChanges ?? 10;
     if (!Number.isInteger(maxChanges) || maxChanges < 0) {
       throw new Error(`maxChanges must be a whole number from 0, got ${maxChanges}`);
+    }
+    const maxSubjects = options.maxSubjects ?? 10;
+    if (!Number.isInteger(maxSubjects) || maxSubjects < 1) {
+      throw new Error(`maxSubjects must be a whole number above 0, got ${maxSubjects}`);
     }
     if (maxChanges === 0) return { stale: [], complete: true };
     const result = await this.itemAdapter.findItems({
@@ -297,13 +324,28 @@ export class MemoryConsolidator {
       bySubject.set(item.entityId, [...(bySubject.get(item.entityId) ?? []), item]);
     }
     const since = options.since?.getTime();
+    const subjects = [...bySubject.values()]
+      .filter(
+        (items) =>
+          items.length >= 2 &&
+          (since === undefined || items.some((item) => item.recordedAt.getTime() > since))
+      )
+      .map((items) => ({
+        items,
+        newest: Math.max(...items.map((item) => item.recordedAt.getTime())),
+      }))
+      .sort((a, b) => a.newest - b.newest);
     const marked: StaleMark[] = [];
     const used = new Set<string>();
-    let complete = true;
-    for (const items of bySubject.values()) {
-      if (items.length < 2) continue;
-      if (since !== undefined && !items.some((item) => item.recordedAt.getTime() > since)) continue;
-      const batch = [...items].sort(byRecorded).slice(-DEDUPE_BATCH);
+    let through: Date | undefined;
+    const stopped = (): DedupeResult => ({
+      stale: marked,
+      complete: false,
+      ...(through && { through }),
+    });
+    for (const [asked, subject] of subjects.entries()) {
+      if (asked >= maxSubjects || marked.length >= maxChanges) return stopped();
+      const batch = [...subject.items].sort(byRecorded).slice(-DEDUPE_BATCH);
       const byId = new Map(batch.map((item) => [item.id, item]));
       const listed = batch
         .map(
@@ -315,6 +357,7 @@ export class MemoryConsolidator {
         prompt: options.prompt ? `${DEDUPE_PROMPT}\n\n${options.prompt}` : DEDUPE_PROMPT,
         maxTokens: options.maxTokens ?? 800,
       });
+      let whole = true;
       for (const value of jsonArray(answer)) {
         const parsed = groupSchema.safeParse(value);
         if (!parsed.success) continue;
@@ -331,12 +374,13 @@ export class MemoryConsolidator {
         );
         if (allowed.length !== drops.length || allowed.length === 0) continue;
         if (marked.length + allowed.length > maxChanges) {
-          complete = false;
+          whole = false;
           continue;
         }
         await this.items.markStale(
           allowed.map((item) => item.id),
-          { reason: parsed.data.reason, keptId: keep.id, at: new Date().toISOString() }
+          { reason: parsed.data.reason, keptId: keep.id, at: new Date().toISOString() },
+          ['active']
         );
         used.add(keep.id);
         for (const item of allowed) {
@@ -344,12 +388,10 @@ export class MemoryConsolidator {
           marked.push({ itemId: item.id, keptId: keep.id, reason: parsed.data.reason });
         }
       }
-      if (marked.length >= maxChanges) {
-        complete = false;
-        break;
-      }
+      if (!whole) return stopped();
+      through = new Date(subject.newest);
     }
-    return { stale: marked, complete };
+    return { stale: marked, complete: true };
   }
 
   /** The playbook `visibleTo` sees, undefined while there is none */
@@ -380,7 +422,7 @@ export class MemoryConsolidator {
       agentId: scope.agentId,
       visibleTo: scope,
       kinds: ['lesson'],
-      statuses: ['active', 'suggested'],
+      statuses: ['active'],
     });
     if (!found.success) throw new Error(found.error);
     const after = from.through?.getTime() ?? -Infinity;
@@ -412,6 +454,7 @@ export class MemoryConsolidator {
         maxTokens: options.maxTokens ?? 800,
       }
     );
+    if (!holdsJsonArray(answer)) return undefined;
     const edits = parsePlaybookEdits(answer, from.rules, new Set(lessons.map((item) => item.id)));
     const { rules, made } = applyPlaybookEdits(from.rules, edits);
     const next: Playbook = {

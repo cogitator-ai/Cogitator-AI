@@ -81,6 +81,12 @@ const ALIASES = /^Also called: (.+)$/m;
 const STATEMENT = /^- .+$/gm;
 const CITED = /\[item:([A-Za-z0-9_-]+)\]/g;
 
+/**
+ * The fingerprint each observation was last asked for and could not be written from, by store
+ * and file key, so facts that gave nothing are not asked about again until they change
+ */
+const unwritten = new WeakMap<MemoryItemAdapter, Map<string, string>>();
+
 const statementSchema = z.object({
   text: z.string().trim().min(1).max(STATEMENT_CHARS),
   items: z.array(z.string().trim().min(1)).min(1),
@@ -177,7 +183,8 @@ export function namedIn(text: string, name: string): boolean {
  * {@link OBSERVATIONS_DIRECTORY}, with what a model makes of the facts that hold now, each
  * statement naming the items it stands on. The file keeps a fingerprint of those items, and a
  * refresh writes it again once they changed: a fact added, closed or let go. A statement naming
- * an item it was not given is dropped. Observations are files like any other, so they have
+ * an item it was not given is dropped, and facts that gave no observation are not asked about
+ * again in this process until they change. Observations are files like any other, so they have
  * versions, branches and redaction, and the agent may read them with the memory tool.
  */
 export class MemoryObservations {
@@ -249,11 +256,21 @@ export class MemoryObservations {
       }
     }
 
+    let failed = unwritten.get(this.itemAdapter);
+    if (!failed) {
+      failed = new Map();
+      unwritten.set(this.itemAdapter, failed);
+    }
+    const failedKey = (entityId: string) => fileKeyOf(scope, entityId);
     const due = [...byEntity.entries()]
-      .filter(
-        ([entityId, items]) =>
-          items.length >= minItems && known.get(entityId)?.basedOn !== fingerprintOf(items)
-      )
+      .filter(([entityId, items]) => {
+        const fingerprint = fingerprintOf(items);
+        return (
+          items.length >= minItems &&
+          known.get(entityId)?.basedOn !== fingerprint &&
+          failed.get(failedKey(entityId)) !== fingerprint
+        );
+      })
       .map(([entityId, items]) => ({ entityId, items: [...items].sort(byRecorded) }))
       .sort(
         (a, b) =>
@@ -285,13 +302,19 @@ export class MemoryObservations {
           ? `${OBSERVATIONS_DIRECTORY}/${slug}-${entity.id}.md`
           : `${OBSERVATIONS_DIRECTORY}/${slug}.md`);
       const content = await this.write(entity, items, options);
-      if (content === undefined) continue;
+      const gaveUp = () => failed.set(failedKey(entityId), fingerprintOf(items));
+      if (content === undefined) {
+        gaveUp();
+        continue;
+      }
       try {
         await this.files.put(access, path, content, before?.file.sha256 ?? null);
       } catch (error) {
-        if (error instanceof MemoryFileError) continue;
-        throw error;
+        if (!(error instanceof MemoryFileError)) throw error;
+        gaveUp();
+        continue;
       }
+      failed.delete(failedKey(entityId));
       taken.set(path, entityId);
       const file = await this.files.read(access, path);
       const observation = file ? parseObservation(file) : undefined;

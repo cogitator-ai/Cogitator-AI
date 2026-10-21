@@ -324,6 +324,7 @@ export const MemoryConsolidationConfigSchema = z.object({
   everyRuns: z.number().int().positive().optional(),
   afterCompaction: z.boolean().optional(),
   maxChanges: z.number().int().min(0).optional(),
+  maxSubjects: z.number().int().positive().optional(),
   playbook: z.union([z.enum(['apply', 'shadow']), z.literal(false)]).optional(),
   showPlaybook: z.boolean().optional(),
   prompt: z.string().optional(),

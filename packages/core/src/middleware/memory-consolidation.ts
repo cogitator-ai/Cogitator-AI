@@ -124,6 +124,12 @@ export function memoryUpkeepMiddleware(
       `memory.consolidation.maxChanges must be a whole number from 0, got ${maxChanges}`
     );
   }
+  const maxSubjects = consolidation?.maxSubjects;
+  if (maxSubjects !== undefined && !(Number.isInteger(maxSubjects) && maxSubjects > 0)) {
+    throw new Error(
+      `memory.consolidation.maxSubjects must be a whole number above 0, got ${maxSubjects}`
+    );
+  }
   for (const [name, value] of [
     ['maxEntities', config.observations?.maxEntities],
     ['minItems', config.observations?.minItems],
@@ -213,7 +219,7 @@ export function memoryUpkeepMiddleware(
     const memory = deps.memory();
     if (!memory || !isMemoryItemAdapter(memory)) return report;
     const startedAt = new Date();
-    let through = true;
+    let cursor: Date | undefined = startedAt;
     const items = new MemoryItems({ adapter: memory });
     const files = isMemoryFileAdapter(memory) ? new MemoryFiles({ adapter: memory }) : undefined;
     const summarize = (model: string | undefined) =>
@@ -229,10 +235,11 @@ export function memoryUpkeepMiddleware(
         summarize: summarize(consolidation.model),
         ...(job.since && { since: job.since }),
         ...(maxChanges !== undefined && { maxChanges }),
+        ...(maxSubjects !== undefined && { maxSubjects }),
         ...(consolidation.prompt && { prompt: consolidation.prompt }),
       });
       report.stale = dedupe.stale;
-      through = dedupe.complete;
+      cursor = dedupe.complete ? startedAt : dedupe.through;
       const mode = consolidation.playbook ?? 'apply';
       if (mode !== false) {
         const change = await consolidator.foldLessons(job.scope, {
@@ -263,8 +270,8 @@ export function memoryUpkeepMiddleware(
       report.observations = refresh.written.map((observation) => observation.path);
       report.observationsDeleted = refresh.deleted;
     }
-    if (job.consolidate && through) {
-      for (const threadId of job.cursors) await moveCursor(memory, threadId, startedAt);
+    if (job.consolidate && cursor) {
+      for (const threadId of job.cursors) await moveCursor(memory, threadId, cursor);
     }
     if (job.consolidate && consolidation?.afterConsolidate) {
       try {
@@ -280,8 +287,8 @@ export function memoryUpkeepMiddleware(
   }
 
   /**
-   * Moves the consolidation cursor of `threadId` to `at`, the start of a pass that went through,
-   * keeping the runs counted since and never moving it back
+   * Moves the consolidation cursor of `threadId` to `at`: the start of a pass that went through,
+   * or as far as one stopped short got. Keeps the runs counted since, never moves it back.
    */
   async function moveCursor(memory: MemoryAdapter, threadId: string, at: Date): Promise<void> {
     const thread = await memory.getThread(threadId);

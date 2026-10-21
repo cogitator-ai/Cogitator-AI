@@ -4,7 +4,6 @@ import {
   MemoryRetriever,
   briefBlock,
   calendarDate,
-  extendTurnContext,
   isMemoryItemAdapter,
   withoutTurnContext,
   type BriefSource,
@@ -22,6 +21,7 @@ import type {
   RunMiddlewareContext,
 } from '@cogitator-ai/types';
 import { getLogger } from '../logger';
+import { addToTurnContext } from '../cogitator/message-builder';
 import type { CompactionRun } from './memory-compaction';
 
 /** Sources a brief is written from at most: the best of what memory found */
@@ -177,13 +177,7 @@ export function memoryBriefMiddleware(
     const block = briefBlock(cards);
     if (block === undefined) return undefined;
     const messages = [...event.messages];
-    messages[at] = {
-      ...asked,
-      content:
-        typeof asked.content === 'string'
-          ? extendTurnContext(asked.content, block)
-          : [{ type: 'text', text: extendTurnContext('', block) }, ...asked.content],
-    };
+    addToTurnContext(messages, block);
     return { messages };
   }
 }
