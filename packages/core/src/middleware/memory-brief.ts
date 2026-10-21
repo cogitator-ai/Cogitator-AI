@@ -1,5 +1,6 @@
 import {
   MemoryBriefer,
+  MAX_BRIEF_CARDS,
   MemoryItems,
   MemoryRetriever,
   briefBlock,
@@ -91,6 +92,15 @@ export function memoryBriefMiddleware(
   ) {
     throw new Error(
       `memory.brief.maxTokens must be a whole number above 0, got ${config.maxTokens}`
+    );
+  }
+  const maxCards = config.maxCards;
+  if (
+    maxCards !== undefined &&
+    !(Number.isInteger(maxCards) && maxCards >= 1 && maxCards <= MAX_BRIEF_CARDS)
+  ) {
+    throw new Error(
+      `memory.brief.maxCards must be a whole number from 1 to ${MAX_BRIEF_CARDS}, got ${maxCards}`
     );
   }
   const retriever = new MemoryRetriever();

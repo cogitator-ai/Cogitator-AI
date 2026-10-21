@@ -279,8 +279,9 @@ export interface PlaybookChange {
  * {@link foldLessons} folds lessons recorded since the last fold into the playbook in at most
  * {@link MAX_PLAYBOOK_EDITS} edits, each adding a rule or rewriting one rule, so the playbook is
  * never written over whole and its earlier rules cannot collapse into a summary of themselves.
- * Only `active` lessons are folded: one a model, a tool or a page wrote stays `suggested` until
- * it is activated, so it cannot reach the playbook every run reads. An answer the model did not
+ * Only `active` lessons are folded: one a model wrote stays `suggested` until it is activated,
+ * and one from a tool or a page is never folded, active or not, so neither can reach the
+ * playbook every run reads. An answer the model did not
  * finish folds nothing and leaves its lessons for the next fold. Every fold is a new version of the file, so
  * its diff and the way back are in the file's history, or with `mode: 'shadow'` a draft that
  * {@link promotePlaybook} makes the playbook after review.

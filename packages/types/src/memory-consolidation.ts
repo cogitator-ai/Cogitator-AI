@@ -50,7 +50,10 @@ export interface MemoryConsolidationConfig {
    * promotes it, `false` leaves the playbook alone
    */
   playbook?: 'apply' | 'shadow' | false;
-  /** Show the playbook to every run of the scope it is kept for, as a hint (default true) */
+  /**
+   * Show the playbook to every run of the scope it is kept for, as a hint (default true), also
+   * with `playbook: false`, which only stops new lessons from reaching it
+   */
   showPlaybook?: boolean;
   /** Instructions added to the prompts of the pass */
   prompt?: string;
@@ -75,5 +78,5 @@ export interface MemoryConsolidationReport {
   observationsDeleted: string[];
   stale: StaleMark[];
   /** The playbook edits, when lessons were folded in */
-  playbook?: { path: string; edits: number; lessonIds: string[] };
+  playbook?: { path: string; editCount: number; lessonIds: string[] };
 }

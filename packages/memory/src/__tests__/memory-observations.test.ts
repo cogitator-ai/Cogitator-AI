@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { MemoryItemScope, NewMemoryItem } from '@cogitator-ai/types';
+import type { MemoryItemScope, Message, NewMemoryItem } from '@cogitator-ai/types';
 import { InMemoryAdapter } from '../adapters/memory';
 import { MemoryFiles } from '../memory-files';
 import { MemoryItems } from '../memory-items';
@@ -69,8 +69,8 @@ describe('MemoryObservations', () => {
   });
 
   const answerWith = (pick: (ids: string[]) => { text: string; items: string[] }[]) =>
-    vi.fn(async (messages: { content: string }[]) => {
-      const ids = [...messages[0]!.content.matchAll(/id="(mem_[^"]+)"/g)].map((m) => m[1]!);
+    vi.fn(async (messages: Message[]) => {
+      const ids = [...String(messages[0]?.content).matchAll(/id="(mem_[^"]+)"/g)].map((m) => m[1]!);
       return JSON.stringify(pick(ids));
     });
 

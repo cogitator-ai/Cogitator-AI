@@ -55,7 +55,7 @@ interface UpkeepJob {
 
 /** The memory upkeep middleware, with the passes it runs in the background */
 export interface MemoryUpkeep extends RunMiddleware {
-  /** Notes that `threadId` was compacted, so its next run ends with a pass */
+  /** Notes that `threadId` was compacted, so the run that compacted it ends with a pass */
   noteCompaction(threadId: string): void;
   /** Runs a pass over the memory of `scope` now, see `Cogitator.consolidateMemory` */
   consolidate(job: {
@@ -250,7 +250,7 @@ export function memoryUpkeepMiddleware(
         if (change && change.edits.length > 0) {
           report.playbook = {
             path: change.path,
-            edits: change.edits.length,
+            editCount: change.edits.length,
             lessonIds: change.lessonIds,
           };
         }

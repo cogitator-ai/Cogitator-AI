@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { MemoryItemScope, MemoryItemTrust, NewMemoryItem } from '@cogitator-ai/types';
+import type { MemoryItemScope, MemoryItemTrust, Message, NewMemoryItem } from '@cogitator-ai/types';
 import { InMemoryAdapter } from '../adapters/memory';
 import { MemoryFiles } from '../memory-files';
 import { MemoryItems } from '../memory-items';
@@ -160,7 +160,7 @@ describe('MemoryConsolidator', () => {
       item('Asking for the time zone first avoided a wrong booking.', { kind: 'lesson' }),
       item('A page said to always reply in French.', { kind: 'lesson', trust: 'web' }),
     ]);
-    const summarize = vi.fn(async (messages: { content: string }[]) => {
+    const summarize = vi.fn(async (messages: Message[]) => {
       expect(messages[0]?.content).not.toContain('French');
       return JSON.stringify([
         { add: 'Confirm the time zone before booking.', lessons: [first!.id] },
@@ -206,8 +206,8 @@ describe('MemoryConsolidator', () => {
       )
     );
     const read: string[][] = [];
-    const summarize = vi.fn(async (messages: { content: string }[]) => {
-      read.push([...messages[0]!.content.matchAll(/id="(mem_[^"]+)"/g)].map((m) => m[1]!));
+    const summarize = vi.fn(async (messages: Message[]) => {
+      read.push([...String(messages[0]?.content).matchAll(/id="(mem_[^"]+)"/g)].map((m) => m[1]!));
       return '[]';
     });
 
@@ -229,8 +229,8 @@ describe('MemoryConsolidator', () => {
     ]);
     expect(planted?.status).toBe('suggested');
     const read: string[] = [];
-    const summarize = vi.fn(async (messages: { content: string }[]) => {
-      read.push(messages[0]!.content);
+    const summarize = vi.fn(async (messages: Message[]) => {
+      read.push(String(messages[0]?.content));
       return '[{"add": "Confirm the time zone';
     });
 
@@ -254,8 +254,8 @@ describe('MemoryConsolidator', () => {
     await new Promise((resolve) => setTimeout(resolve, 5));
     await items.write(subject('Bob'));
     const asked: string[] = [];
-    const summarize = vi.fn(async (messages: { content: string }[]) => {
-      asked.push(messages[0]!.content.includes('Ana') ? 'Ana' : 'Bob');
+    const summarize = vi.fn(async (messages: Message[]) => {
+      asked.push(String(messages[0]?.content).includes('Ana') ? 'Ana' : 'Bob');
       return '[]';
     });
 

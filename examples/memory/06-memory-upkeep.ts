@@ -17,7 +17,7 @@ async function main() {
   const watcher: RunMiddleware = {
     name: 'example:watch-turn',
     wrapModelCall(call, next) {
-      const asked = call.request.messages.findLast((message) => message.role === 'user');
+      const asked = [...call.request.messages].reverse().find((message) => message.role === 'user');
       if (asked) turns.push(asked);
       return next(call);
     },
@@ -81,7 +81,9 @@ async function main() {
     const kept = await items.get(mark.keptId);
     console.log(`Stale (${mark.reason}): "${stale?.content}", kept "${kept?.content}"`);
   }
-  console.log(`Playbook: ${report.playbook ? `${report.playbook.edits} edit(s)` : 'unchanged'}`);
+  console.log(
+    `Playbook: ${report.playbook ? `${report.playbook.editCount} edit(s)` : 'unchanged'}`
+  );
   console.log(`Observations written: ${report.observations.join(', ') || 'none'}`);
 
   const files = new MemoryFiles({ adapter: memory });

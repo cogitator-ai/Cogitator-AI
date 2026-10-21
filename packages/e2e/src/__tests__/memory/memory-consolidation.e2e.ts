@@ -109,7 +109,7 @@ describeGoogle('Memory: brief, observations and consolidation on Gemini', () => 
         userId: 'marta',
       });
 
-      const turn = seen.at(-1)?.findLast((message) => message.role === 'user');
+      const turn = [...(seen.at(-1) ?? [])].reverse().find((message) => message.role === 'user');
       const text = typeof turn?.content === 'string' ? turn.content : JSON.stringify(turn?.content);
       expect(text).toContain('The playbook memory keeps');
       expect(text).toContain('What memory makes of them');

@@ -795,7 +795,6 @@ export class Cogitator implements ToolInvoker {
     const adapter = this.state.memoryAdapter;
     const showPlaybook =
       consolidation !== undefined &&
-      consolidation.playbook !== false &&
       consolidation.showPlaybook !== false &&
       adapter !== undefined &&
       isMemoryFileAdapter(adapter);
@@ -2922,7 +2921,9 @@ export class Cogitator implements ToolInvoker {
    * or a timer while the agent is idle. A pass of the same memory under way is waited for first.
    *
    * @throws CogitatorError when neither `memory.consolidation` nor `memory.observations` is set,
-   * or memory keeps no memory items
+   * when memory keeps no memory items, or when `run` does not name the memory: a `userId` or a
+   * `threadId` for the `user` scope (the default), a `threadId` for the `thread` scope, nothing
+   * for the `agent` scope
    */
   async consolidateMemory(
     agent: Agent,
@@ -2956,7 +2957,7 @@ export class Cogitator implements ToolInvoker {
         ...(run.userId !== undefined && { userId: run.userId }),
         threadId,
       }),
-      model: this.config.memory?.consolidation?.model ?? this.resolveModel(agent),
+      model: this.resolveModel(agent),
       run: { runId, agentId: agent.id, threadId },
     });
   }
