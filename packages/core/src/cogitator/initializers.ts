@@ -139,6 +139,7 @@ export async function initializeMemory(
       memoryAdapter: adapter,
       ...(isFactAdapter(adapter) && { factAdapter: adapter }),
       ...(state.memoryItems && { memoryItems: state.memoryItems }),
+      ...(memory.reranker && { reranker: memory.reranker }),
       ...(embeddingAdapter && { embeddingAdapter }),
       ...(embeddingService && { embeddingService }),
       ...(messageIndex && { messageIndex }),

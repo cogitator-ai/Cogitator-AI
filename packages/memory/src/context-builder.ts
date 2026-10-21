@@ -18,6 +18,7 @@ import type {
   GraphNode,
   MemoryAdapter,
   FactAdapter,
+  Reranker,
   MemoryItem,
   MemoryItemKind,
   MemoryItemTrust,
@@ -26,7 +27,7 @@ import type {
   MemoryResult,
 } from '@cogitator-ai/types';
 import { isMemoryItemAdapter, visibleIn, type MemoryItems } from './memory-items';
-import { MemoryRetriever } from './retrieval/retriever';
+import { MemoryRetriever, type Retrieval } from './retrieval/retriever';
 import type { GraphContextBuilder } from './knowledge-graph/graph-context-builder';
 import { readCompactedHistory } from './compaction';
 import {
@@ -117,6 +118,8 @@ const SOURCE_OF_TRUST: Record<MemoryItemTrust, Fact['source']> = {
 
 /** The heading of the earlier turns a search of memory brought */
 const RECALLED_TURNS_HEADER = 'Earlier in this conversation:';
+/** Hits of a search of memory a reranker reorders, the best */
+const RERANKED = 30;
 /** The heading of the memory items a search of memory brought */
 const RECALLED_ITEMS_HEADER = 'From memory:';
 
@@ -340,6 +343,8 @@ export interface ContextBuilderDeps {
    * user and thread see that hold now
    */
   memoryItems?: MemoryItems;
+  /** Reorders the best of what a search of memory found for a turn, see `MemoryConfig.reranker` */
+  reranker?: Reranker;
   embeddingAdapter?: EmbeddingAdapter;
   embeddingService?: EmbeddingService;
   graphContextBuilder?: GraphContextBuilder;
@@ -920,10 +925,13 @@ export class ContextBuilder {
           },
         }),
     });
+    const hits = this.deps.reranker
+      ? await this.reranked(input, retrieval.hits, errors)
+      : retrieval.hits;
     const inFacts = new Set(facts.map((fact) => fact.id));
     const position = new Map(history.map((entry, at) => [entry.id, at]));
     const covered = new Set<string>();
-    return retrieval.hits.flatMap((hit): AssemblyBlock<Piece>[] => {
+    return hits.flatMap((hit): AssemblyBlock<Piece>[] => {
       if (hit.kind === 'item') {
         if (inFacts.has(hit.hit.item.id)) return [];
         const line = itemLine(hit.hit.item);
@@ -938,6 +946,47 @@ export class ContextBuilder {
         { value: { kind: 'retrieved', entries: turn }, tokens: countTokens(turnLines(turn)) },
       ];
     });
+  }
+
+  /**
+   * `hits` with the best {@link RERANKED} reordered by the reranker, the rest after them as they
+   * were. A reranker that fails leaves them as they were, recorded as a `relevance` error.
+   */
+  private async reranked(
+    input: string,
+    hits: Retrieval['hits'],
+    errors: ContextBuildError[]
+  ): Promise<Retrieval['hits']> {
+    const reranker = this.deps.reranker;
+    if (!reranker || hits.length < 2) return hits;
+    const top = hits.slice(0, RERANKED);
+    const keyed = new Map(top.map((hit, at) => [String(at), hit]));
+    try {
+      const order = await reranker.rerank(
+        input,
+        top.map((hit, at) => ({
+          chunkId: String(at),
+          documentId: String(at),
+          content:
+            hit.kind === 'item'
+              ? itemLine(hit.hit.item)
+              : turnLines([hit.hit.entry, ...hit.hit.neighbors]),
+          score: hit.hit.score,
+        }))
+      );
+      const ranked = order.flatMap((result) => {
+        const hit = keyed.get(result.chunkId);
+        keyed.delete(result.chunkId);
+        return hit ? [hit] : [];
+      });
+      return [...ranked, ...keyed.values(), ...hits.slice(RERANKED)];
+    } catch (err) {
+      errors.push({
+        source: 'relevance',
+        error: err instanceof Error ? err : new Error(String(err)),
+      });
+      return hits;
+    }
   }
 
   /**

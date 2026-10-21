@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ContextBuilder } from '../context-builder';
 import { InMemoryAdapter } from '../adapters/memory';
 import { MemoryItems } from '../memory-items';
-import type { Message, GraphNode, GraphEdge, GraphContext } from '@cogitator-ai/types';
+import type { Message, GraphNode, GraphEdge, GraphContext, Reranker } from '@cogitator-ai/types';
 import type { GraphContextBuilder } from '../knowledge-graph/graph-context-builder';
 
 describe('ContextBuilder', () => {
@@ -398,6 +398,41 @@ describe('ContextBuilder', () => {
       expect(before.memoryContext).toContain(
         'From memory:\n- Ana lived in Porto (2026-03-01 to 2026-03-03)'
       );
+    });
+  });
+
+  describe('hybrid recall with a reranker', () => {
+    it('lets the reranker order what the search found, and keeps the order when it fails', async () => {
+      const say = async (content: string) =>
+        adapter.addEntry({ threadId, message: { role: 'user', content }, tokenCount: 1 });
+      await say('My cat Tom likes tuna');
+      await say('My cat Tom sleeps a lot');
+      for (let n = 0; n < 60; n++) await say(`Planning the garden bed number ${n} together`);
+      const order = (context: { recalled?: { entries: { message: { content: unknown } }[] } }) =>
+        (context.recalled?.entries ?? []).map((entry) => String(entry.message.content));
+      const build = (reranker?: Reranker) =>
+        new ContextBuilder(
+          { maxTokens: 900, strategy: 'hybrid' },
+          { memoryAdapter: adapter, ...(reranker && { reranker }) }
+        ).build({ threadId, agentId: 'agent1', currentInput: 'Tell me about my cat Tom' });
+
+      const plain = order(await build());
+      const reversed = order(
+        await build({ rerank: async (_query, results) => [...results].reverse() })
+      );
+      const failing = await build({
+        rerank: async () => {
+          throw new Error('reranker down');
+        },
+      });
+
+      expect(plain.slice(0, 2).sort()).toEqual([
+        'My cat Tom likes tuna',
+        'My cat Tom sleeps a lot',
+      ]);
+      expect(reversed).not.toEqual(plain);
+      expect(order(failing)).toEqual(plain);
+      expect(failing.errors?.some((error) => error.error.message === 'reranker down')).toBe(true);
     });
   });
 
