@@ -5,7 +5,7 @@ import {
   vectorColumnPlan,
   type SqlQueryable,
 } from '../adapters/pgvector';
-import { ensureSchemaVersion } from '../adapters/schema-version';
+import { ensureSchemaVersion, withSetupLock } from '../adapters/schema-version';
 
 const target = { schema: 'app', table: 'embeddings', column: 'vector', index: 'idx_vec' };
 
@@ -57,20 +57,18 @@ describe('ensureHnswCosineIndex', () => {
     );
   });
 
-  it('keeps a matching index and rebuilds one of another operator class', async () => {
-    const matching = database(
+  it('keeps an HNSW index that exists and rebuilds one of another access method', async () => {
+    const hnsw = database(
       'CREATE INDEX idx_vec ON app.embeddings USING hnsw (((vector)::halfvec(3072)) halfvec_cosine_ops)'
     );
-    await ensureHnswCosineIndex(matching.db, { ...target, dimensions: 3072 }, { halfvec: true });
-    expect(matching.queries.some((q) => q.startsWith('DROP') || q.startsWith('CREATE'))).toBe(
-      false
-    );
+    await ensureHnswCosineIndex(hnsw.db, { ...target, dimensions: 3072 }, { halfvec: true });
+    expect(hnsw.queries.some((q) => q.startsWith('DROP') || q.startsWith('CREATE'))).toBe(false);
 
-    const other = database(
-      'CREATE INDEX idx_vec ON app.embeddings USING hnsw (vector vector_cosine_ops)'
+    const ivfflat = database(
+      'CREATE INDEX idx_vec ON app.embeddings USING ivfflat (vector vector_cosine_ops) WITH (lists=100)'
     );
-    await ensureHnswCosineIndex(other.db, { ...target, dimensions: 3072 }, { halfvec: true });
-    expect(other.queries.slice(-2)).toEqual([
+    await ensureHnswCosineIndex(ivfflat.db, { ...target, dimensions: 3072 }, { halfvec: true });
+    expect(ivfflat.queries.slice(-2)).toEqual([
       'DROP INDEX IF EXISTS app.idx_vec',
       'CREATE INDEX IF NOT EXISTS idx_vec ON app.embeddings USING hnsw ((vector::halfvec(3072)) halfvec_cosine_ops)',
     ]);
@@ -102,10 +100,9 @@ describe('detectVectorSearchTuning', () => {
 });
 
 describe('ensureSchemaVersion', () => {
-  function pool(recorded?: number, failOn?: RegExp) {
+  function connection(recorded?: number, failOn?: RegExp) {
     const queries: string[] = [];
-    const release = vi.fn();
-    const client = {
+    const db: SqlQueryable = {
       query: vi.fn(async (sql: string) => {
         queries.push(sql.replace(/\s+/g, ' ').trim());
         if (failOn?.test(sql)) throw new Error('boom');
@@ -114,13 +111,12 @@ describe('ensureSchemaVersion', () => {
         }
         return { rows: [] };
       }),
-      release,
     };
-    return { pool: { connect: async () => client }, queries, release };
+    return { db, queries };
   }
 
   it('applies and records a version the schema does not have yet, under a lock', async () => {
-    const { pool: db, queries, release } = pool(undefined);
+    const { db, queries } = connection(undefined);
     const apply = vi.fn(async (q: SqlQueryable) => {
       await q.query('CREATE TABLE app.things (id TEXT)');
     });
@@ -130,22 +126,31 @@ describe('ensureSchemaVersion', () => {
     expect(queries[0]).toBe('BEGIN');
     expect(queries[1]).toBe('SELECT pg_advisory_xact_lock(hashtext($1))');
     expect(queries).toContain('CREATE TABLE app.things (id TEXT)');
-    expect(queries.some((q) => q.startsWith('INSERT INTO app.schema_migrations'))).toBe(true);
+    expect(queries.some((q) => q.startsWith('INSERT INTO app.cogitator_schema_migrations'))).toBe(
+      true
+    );
     expect(queries.at(-1)).toBe('COMMIT');
-    expect(release).toHaveBeenCalledWith(false);
   });
 
-  it('skips a version the schema has, or a later one', async () => {
+  it('skips a version the schema has, or a later one, while its tables are there', async () => {
     for (const recorded of [2, 3]) {
-      const { pool: db } = pool(recorded);
+      const { db } = connection(recorded);
       const apply = vi.fn(async () => undefined);
       expect(await ensureSchemaVersion(db, 'app', 'memory', 2, apply)).toBe(false);
       expect(apply).not.toHaveBeenCalled();
     }
   });
 
+  it('applies a recorded version again when its tables are gone', async () => {
+    const { db } = connection(2);
+    const apply = vi.fn(async () => undefined);
+
+    expect(await ensureSchemaVersion(db, 'app', 'memory', 2, apply, async () => false)).toBe(true);
+    expect(apply).toHaveBeenCalled();
+  });
+
   it('rolls back when applying fails, recording nothing', async () => {
-    const { pool: db, queries } = pool(1, /CREATE TABLE app\.things/);
+    const { db, queries } = connection(1, /CREATE TABLE app\.things/);
 
     await expect(
       ensureSchemaVersion(db, 'app', 'memory', 2, async (q) => {
@@ -154,6 +159,34 @@ describe('ensureSchemaVersion', () => {
     ).rejects.toThrow('boom');
 
     expect(queries.at(-1)).toBe('ROLLBACK');
-    expect(queries.some((q) => q.startsWith('INSERT INTO app.schema_migrations'))).toBe(false);
+    expect(queries.some((q) => q.startsWith('INSERT INTO'))).toBe(false);
+  });
+});
+
+describe('withSetupLock', () => {
+  it('holds a session lock around the work and releases it when the work fails', async () => {
+    const queries: string[] = [];
+    const release = vi.fn();
+    const client = {
+      query: vi.fn(async (sql: string) => {
+        queries.push(sql);
+        return { rows: [] };
+      }),
+      release,
+    };
+
+    await expect(
+      withSetupLock({ connect: async () => client }, 'app.setup', async () => {
+        queries.push('work');
+        throw new Error('setup failed');
+      })
+    ).rejects.toThrow('setup failed');
+
+    expect(queries).toEqual([
+      'SELECT pg_advisory_lock(hashtext($1))',
+      'work',
+      'SELECT pg_advisory_unlock(hashtext($1))',
+    ]);
+    expect(release).toHaveBeenCalledWith(false);
   });
 });

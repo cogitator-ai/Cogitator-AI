@@ -120,6 +120,24 @@ describe('QdrantAdapter', () => {
       );
     });
 
+    it('connects without payload indexes it may not create, with a warning', async () => {
+      vi.clearAllMocks();
+      mockClient.getCollections.mockResolvedValue({ collections: [{ name: 'shared' }] });
+      mockClient.createPayloadIndex.mockRejectedValueOnce(new Error('forbidden'));
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+      const result = await new QdrantAdapter({
+        provider: 'qdrant',
+        url: 'http://localhost:6333',
+        collection: 'shared',
+        dimensions: 8,
+      }).connect();
+
+      expect(result.success).toBe(true);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('sourceId'), 'forbidden');
+      warn.mockRestore();
+    });
+
     it('skips collection creation if exists', async () => {
       vi.clearAllMocks();
       mockClient.getCollections.mockResolvedValue({

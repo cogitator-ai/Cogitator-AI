@@ -85,7 +85,9 @@ describe('PostgresAdapter', () => {
       const result = await newAdapter.connect();
 
       expect(result.success).toBe(true);
-      expect(mockPool.query).toHaveBeenCalledWith('CREATE SCHEMA IF NOT EXISTS cogitator');
+      expect(mockPool.query.mock.calls.map(([sql]) => sql)).toContain(
+        'CREATE SCHEMA IF NOT EXISTS cogitator'
+      );
     });
 
     it('uses custom schema name', async () => {
@@ -100,7 +102,9 @@ describe('PostgresAdapter', () => {
 
       await newAdapter.connect();
 
-      expect(mockPool.query).toHaveBeenCalledWith('CREATE SCHEMA IF NOT EXISTS custom_schema');
+      expect(mockPool.query.mock.calls.map(([sql]) => sql)).toContain(
+        'CREATE SCHEMA IF NOT EXISTS custom_schema'
+      );
     });
 
     it('disconnects and closes pool', async () => {

@@ -63,6 +63,18 @@ export class SemanticChunker implements AsyncChunker {
     this.maxChunkSize = maxChunkSize;
   }
 
+  get fingerprint(): string {
+    return JSON.stringify([
+      'semantic',
+      1,
+      this.breakpointThreshold,
+      this.minChunkSize,
+      this.maxChunkSize,
+      this.embeddingService.model,
+      this.embeddingService.dimensions,
+    ]);
+  }
+
   async chunk(text: string, documentId: string): Promise<DocumentChunk[]> {
     if (!text || text.trim().length === 0) return [];
 

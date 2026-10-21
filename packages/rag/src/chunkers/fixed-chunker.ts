@@ -24,6 +24,10 @@ export class FixedSizeChunker implements Chunker {
     this.chunkOverlap = options.chunkOverlap;
   }
 
+  get fingerprint(): string {
+    return JSON.stringify(['fixed', 1, this.chunkSize, this.chunkOverlap]);
+  }
+
   chunk(text: string, documentId: string): DocumentChunk[] {
     if (text.length === 0) return [];
 

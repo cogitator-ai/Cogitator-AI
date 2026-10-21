@@ -29,7 +29,7 @@ import type {
   EmbeddingDeleteFilter,
 } from '@cogitator-ai/types';
 import { ChangeReportingMemoryAdapter } from './base';
-import { ensureSchemaVersion } from './schema-version';
+import { ensureSchemaVersion, withSetupLock } from './schema-version';
 import { EMPTY_DELETE_FILTER_ERROR, filterSourceTypes, hasDeleteCondition } from '../search/filter';
 import {
   detectVectorSearchTuning,
@@ -174,18 +174,43 @@ export class PostgresAdapter
     return this.vectorStore;
   }
 
+  /**
+   * Sets the schema up under a lock every process connecting to this database takes, so
+   * processes starting at once take turns instead of racing on the same `CREATE`.
+   */
   private async initSchema(pool: Pool): Promise<void> {
-    await pool.query(`CREATE SCHEMA IF NOT EXISTS ${this.schema}`);
+    this.vectorStore = await withSetupLock(pool, 'cogitator.memory.setup', async (db) => {
+      await db.query(`CREATE SCHEMA IF NOT EXISTS ${this.schema}`);
 
-    let extensionError: string | undefined;
-    try {
-      await pool.query('CREATE EXTENSION IF NOT EXISTS vector');
-    } catch (err) {
-      extensionError = (err as Error).message;
-    }
+      let extensionError: string | undefined;
+      try {
+        await db.query('CREATE EXTENSION IF NOT EXISTS vector');
+      } catch (err) {
+        extensionError = (err as Error).message;
+      }
 
-    await ensureSchemaVersion(pool, this.schema, 'memory', MEMORY_SCHEMA_VERSION, async (db) => {
-      await db.query(`
+      await this.migrate(db);
+      return this.prepareVectorStore(db, extensionError);
+    });
+  }
+
+  /** Brings threads, entries and facts to {@link MEMORY_SCHEMA_VERSION} */
+  private async migrate(connection: SqlQueryable): Promise<void> {
+    const tables = ['threads', 'entries', 'facts'].map((table) => `${this.schema}.${table}`);
+    const present = async (db: SqlQueryable) => {
+      const found = await db.query(
+        'SELECT count(*)::int AS n FROM unnest($1::text[]) AS t(name) WHERE to_regclass(name) IS NOT NULL',
+        [tables]
+      );
+      return found.rows[0]?.n === tables.length;
+    };
+    await ensureSchemaVersion(
+      connection,
+      this.schema,
+      'memory',
+      MEMORY_SCHEMA_VERSION,
+      async (db) => {
+        await db.query(`
         CREATE TABLE IF NOT EXISTS ${this.schema}.threads (
           id TEXT PRIMARY KEY,
           agent_id TEXT NOT NULL,
@@ -195,7 +220,7 @@ export class PostgresAdapter
         )
       `);
 
-      await db.query(`
+        await db.query(`
         CREATE TABLE IF NOT EXISTS ${this.schema}.entries (
           id TEXT PRIMARY KEY,
           thread_id TEXT NOT NULL REFERENCES ${this.schema}.threads(id) ON DELETE CASCADE,
@@ -208,7 +233,7 @@ export class PostgresAdapter
         )
       `);
 
-      await db.query(`
+        await db.query(`
         CREATE TABLE IF NOT EXISTS ${this.schema}.facts (
           id TEXT PRIMARY KEY,
           agent_id TEXT NOT NULL,
@@ -223,35 +248,35 @@ export class PostgresAdapter
         )
       `);
 
-      await db.query(`CREATE SEQUENCE IF NOT EXISTS ${this.schema}.entries_seq`);
-      await db.query(`ALTER TABLE ${this.schema}.entries ADD COLUMN IF NOT EXISTS seq BIGINT`);
-      await db.query(
-        `ALTER TABLE ${this.schema}.entries ALTER COLUMN seq SET DEFAULT nextval('${this.schema}.entries_seq')`
-      );
+        await db.query(`CREATE SEQUENCE IF NOT EXISTS ${this.schema}.entries_seq`);
+        await db.query(`ALTER TABLE ${this.schema}.entries ADD COLUMN IF NOT EXISTS seq BIGINT`);
+        await db.query(
+          `ALTER TABLE ${this.schema}.entries ALTER COLUMN seq SET DEFAULT nextval('${this.schema}.entries_seq')`
+        );
 
-      await db.query(`
+        await db.query(`
         CREATE INDEX IF NOT EXISTS idx_entries_thread_id
         ON ${this.schema}.entries(thread_id, created_at)
       `);
-      await db.query(`
+        await db.query(`
         CREATE INDEX IF NOT EXISTS idx_threads_agent_updated
         ON ${this.schema}.threads(agent_id, (${THREAD_TIME}), (id COLLATE "C"))
       `);
-      await db.query(`
+        await db.query(`
         CREATE INDEX IF NOT EXISTS idx_threads_updated
         ON ${this.schema}.threads((${THREAD_TIME}), (id COLLATE "C"))
       `);
-      await db.query(`
+        await db.query(`
         CREATE INDEX IF NOT EXISTS idx_threads_metadata
         ON ${this.schema}.threads USING GIN (metadata jsonb_path_ops)
       `);
-      await db.query(`
+        await db.query(`
         CREATE INDEX IF NOT EXISTS idx_facts_agent_id
         ON ${this.schema}.facts(agent_id, category)
       `);
-    });
-
-    this.vectorStore = await this.prepareVectorStore(pool, extensionError);
+      },
+      present
+    );
   }
 
   /**
@@ -261,7 +286,7 @@ export class PostgresAdapter
    * table is migrated.
    */
   private async prepareVectorStore(
-    pool: Pool,
+    pool: SqlQueryable,
     extensionError: string | undefined
   ): Promise<VectorStoreState> {
     const type = await pool.query("SELECT to_regtype('vector') IS NOT NULL AS available");
@@ -358,7 +383,7 @@ export class PostgresAdapter
    * The vector size of the existing `embeddings.vector` column: null without the table, 0 for a
    * column declared without a size.
    */
-  private async embeddingColumnDimensions(pool: Pool): Promise<number | null> {
+  private async embeddingColumnDimensions(pool: SqlQueryable): Promise<number | null> {
     const result = await pool.query(
       `SELECT a.atttypmod AS dimensions
        FROM pg_attribute a

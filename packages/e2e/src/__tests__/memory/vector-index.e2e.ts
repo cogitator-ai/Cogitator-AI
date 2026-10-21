@@ -148,7 +148,7 @@ async function exerciseIndex(memory: MemoryAdapter, store: EmbeddingAdapter, dim
     await client.connect();
     try {
       const versions = await client.query(
-        `SELECT component, version FROM vectors_${tag}_8.schema_migrations`
+        `SELECT component, version FROM vectors_${tag}_8.cogitator_schema_migrations`
       );
       expect(versions.rows).toEqual([{ component: 'memory', version: 1 }]);
     } finally {
@@ -160,6 +160,90 @@ async function exerciseIndex(memory: MemoryAdapter, store: EmbeddingAdapter, dim
   it('keeps one vector per entry and drops them with the thread', async () => {
     const adapter = await postgres(16);
     await exerciseIndex(adapter, adapter, 16);
+  });
+
+  async function sql(text: string): Promise<pg.QueryResult> {
+    const client = new pg.Client({ connectionString: postgresUrl });
+    await client.connect();
+    try {
+      return await client.query(text);
+    } finally {
+      await client.end();
+    }
+  }
+
+  function connectAll(schema: string, count: number) {
+    schemas.push(schema);
+    return Promise.all(
+      Array.from({ length: count }, async () => {
+        const adapter = new PostgresAdapter({
+          provider: 'postgres',
+          connectionString: postgresUrl!,
+          schema,
+          dimensions: 8,
+        });
+        const result = await adapter.connect();
+        adapters.push(adapter);
+        return result;
+      })
+    );
+  }
+
+  it('lets processes connect to a new schema at once', async () => {
+    const results = await connectAll(`fresh_${tag}`, 4);
+
+    expect(results.map((result) => result.success)).toEqual([true, true, true, true]);
+  });
+
+  it('lets processes upgrade a schema from before versions at once', async () => {
+    const schema = `upgrade_${tag}`;
+    await connectAll(schema, 1);
+    await sql(`DROP TABLE ${schema}.cogitator_schema_migrations`);
+    await sql(`DROP INDEX ${schema}.idx_embeddings_source`);
+    await sql(`DROP INDEX ${schema}.idx_embeddings_thread`);
+
+    const results = await connectAll(schema, 4);
+
+    expect(results.map((result) => result.success)).toEqual([true, true, true, true]);
+    const indexes = await sql(
+      `SELECT indexname FROM pg_indexes WHERE schemaname = '${schema}' AND indexname LIKE 'idx_embeddings_%' ORDER BY indexname`
+    );
+    expect(indexes.rows.map((row) => row.indexname)).toEqual(
+      expect.arrayContaining(['idx_embeddings_source', 'idx_embeddings_thread'])
+    );
+  });
+
+  it('keeps out of the way of a schema_migrations table of another tool', async () => {
+    const schema = `foreign_${tag}`;
+    schemas.push(schema);
+    await sql(`CREATE SCHEMA ${schema}`);
+    await sql(`CREATE TABLE ${schema}.schema_migrations (version BIGINT PRIMARY KEY)`);
+
+    const [connected] = await connectAll(schema, 1);
+
+    expect(connected?.success).toBe(true);
+  });
+
+  it('creates the tables again when they were dropped after their version was recorded', async () => {
+    const schema = `dropped_${tag}`;
+    await connectAll(schema, 1);
+    await sql(`DROP TABLE ${schema}.entries, ${schema}.threads, ${schema}.facts`);
+
+    const [adapter] = await Promise.all([
+      (async () => {
+        const again = new PostgresAdapter({
+          provider: 'postgres',
+          connectionString: postgresUrl!,
+          schema,
+          dimensions: 8,
+        });
+        await connected(again);
+        adapters.push(again);
+        return again;
+      })(),
+    ]);
+
+    expect((await adapter.createThread('agent', {}, 'after-drop')).success).toBe(true);
   });
 });
 

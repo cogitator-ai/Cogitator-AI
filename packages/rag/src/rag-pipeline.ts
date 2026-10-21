@@ -59,11 +59,22 @@ interface StoredChunk {
   vector: number[];
 }
 
-/** What one ingest writes into every chunk, so the next one can tell what changed */
+/**
+ * What one ingest writes into every chunk, so the next one can tell what changed. The keys carry
+ * a `rag` prefix so they do not take the place of a document's own metadata.
+ */
 interface IngestMarks {
-  contentHash: string;
-  generation: string;
-  sourceDocuments: number;
+  /** Absent when the chunker has no fingerprint, so the chunks are never taken as unchanged */
+  ragContentHash?: string;
+  ragGeneration: string;
+  ragSourceDocuments: number;
+}
+
+/** A chunk paired with the vector it is stored with */
+interface ChunkWrite {
+  chunk: DocumentChunk;
+  vector: number[];
+  doc: RAGDocument;
 }
 
 /** Documents grouped by their `source`, in the order the loader returned them. */
@@ -82,6 +93,8 @@ export class RAGPipeline {
   private readonly deps: RAGPipelineDeps;
   private stats = { documentsIngested: 0, chunksStored: 0, queriesProcessed: 0 };
   private warnedAppendOnly = false;
+  /** Sources a local keyword index of the retriever holds the chunks of in this process */
+  private readonly locallyIndexed = new Set<string>();
 
   constructor(config: RAGPipelineConfig, deps: RAGPipelineDeps, alreadyParsed = false) {
     this.config = alreadyParsed ? config : RAGPipelineConfigSchema.parse(config);
@@ -93,12 +106,15 @@ export class RAGPipeline {
    * what this pipeline stored for it before, so ingesting a file again (or an edited file) leaves
    * no duplicates or stale text behind.
    *
-   * A source whose documents, chunking and embedding model did not change since the last ingest
-   * is left as stored, without embedding anything (`unchanged` counts its documents). A changed
-   * source is written as a new generation before the previous one is deleted, so searches never
-   * find it empty: the chunks of its unchanged documents keep their vectors. That needs a store
-   * with `getBySources` and `deleteByFilter`, which every built-in store has. Chunks stored before
-   * generations, or a store without them, are replaced as before: deleted, then written again.
+   * A source whose documents, chunker and embedding model did not change since the last ingest
+   * is left as stored, without embedding anything (`unchanged` counts its documents). That needs
+   * a chunker with a `fingerprint`, which the built-in ones have. A changed source is written as
+   * a new generation before the previous one is deleted, so searches never find it empty, and
+   * the chunks of its unchanged documents keep their vectors. The first chunk of each document
+   * is written last, so a source an ingest stopped writing is never taken as unchanged. That
+   * needs a store with `getBySources` and `deleteByFilter`, which every built-in store has.
+   * Chunks stored before generations, or a store without them, are replaced as before: deleted,
+   * then written again.
    */
   async ingest(source: string): Promise<{ documents: number; chunks: number; unchanged: number }> {
     const documents = await this.deps.loader.load(source);
@@ -106,35 +122,53 @@ export class RAGPipeline {
     let unchanged = 0;
 
     for (const group of groupBySource(documents)) {
+      const sourceName = group[0]!.source;
       const hashes = new Map(group.map((doc) => [doc.id, this.contentHash(doc)]));
       const heads = await this.storedChunks(group.map((doc) => chunkId(doc.id, 0)));
       const previous = this.previousGeneration(group, hashes, heads);
       if (previous.unchanged) {
+        await this.indexLocally(sourceName, group);
         unchanged += group.length;
         continue;
       }
 
       const prepared: PreparedDocument[] = [];
       for (const doc of group) {
-        const reusable = heads
-          .get(chunkId(doc.id, 0))
-          ?.find((head) => head.generation !== undefined && head.hash === hashes.get(doc.id));
+        const hash = hashes.get(doc.id);
+        const reusable =
+          hash === undefined
+            ? undefined
+            : heads
+                .get(chunkId(doc.id, 0))
+                ?.find((head) => head.generation !== undefined && head.hash === hash);
         prepared.push(await this.prepareDocument(doc, reusable));
       }
 
-      const sourceName = group[0]!.source;
       if (!previous.generations) await this.forgetSource(sourceName);
       const generation = randomUUID();
-      for (const { doc, chunks, vectors } of prepared) {
-        await this.storeChunks(chunks, vectors, doc, {
-          contentHash: hashes.get(doc.id)!,
-          generation,
-          sourceDocuments: group.length,
-        });
+      const writes = prepared.flatMap(({ doc, chunks, vectors }) =>
+        chunks.map((chunk, i) => ({ chunk, vector: vectors[i]!, doc }))
+      );
+      const isHead = ({ chunk, doc }: ChunkWrite) => chunk.id === chunkId(doc.id, 0);
+      const marksOf = (doc: RAGDocument): IngestMarks => {
+        const hash = hashes.get(doc.id);
+        return {
+          ...(hash !== undefined && { ragContentHash: hash }),
+          ragGeneration: generation,
+          ragSourceDocuments: group.length,
+        };
+      };
+      await this.storeChunks(
+        writes.filter((write) => !isHead(write)),
+        marksOf
+      );
+      await this.storeChunks(writes.filter(isHead), marksOf);
+      for (const { chunks } of prepared) {
         totalChunks += chunks.length;
         this.stats.chunksStored += chunks.length;
         this.stats.documentsIngested++;
       }
+      this.locallyIndexed.add(sourceName);
       for (const old of previous.generations ?? []) {
         await this.forgetGeneration(sourceName, old);
       }
@@ -196,11 +230,13 @@ export class RAGPipeline {
   }
 
   /**
-   * Hash of what a document's chunks are made from: its text, source and metadata, the chunking
-   * settings and the embedding model
+   * Hash of what a document's chunks are made from: its text, source and metadata, the chunker's
+   * fingerprint and the embedding model. None when the chunker has no fingerprint, as the same
+   * text may then give other chunks.
    */
-  private contentHash(doc: RAGDocument): string {
-    const { embeddingService } = this.deps;
+  private contentHash(doc: RAGDocument): string | undefined {
+    const { embeddingService, chunker } = this.deps;
+    if (chunker.fingerprint === undefined) return undefined;
     return createHash('sha256')
       .update(
         JSON.stringify([
@@ -209,12 +245,37 @@ export class RAGPipeline {
           doc.source,
           doc.sourceType,
           doc.metadata ?? {},
-          this.config.chunking,
+          chunker.fingerprint,
           embeddingService.model,
           embeddingService.dimensions,
         ])
       )
       .digest('hex');
+  }
+
+  /**
+   * Gives a local keyword index of the retriever the stored chunks of an unchanged source, once
+   * per process: a new pipeline has an empty one, and skipping the source would leave it so.
+   */
+  private async indexLocally(source: string, group: RAGDocument[]): Promise<void> {
+    const retriever = this.deps.retriever;
+    if (!isChunkIndexer(retriever) || this.locallyIndexed.has(source)) return;
+    const ids: string[] = [];
+    for (const doc of group) {
+      for (const chunk of await this.chunkDocument(doc)) ids.push(chunk.id);
+    }
+    const stored = await this.storedEmbeddings(ids);
+    for (const embedding of stored) {
+      const metadata = embedding.metadata ?? {};
+      retriever.indexChunk({
+        embeddingId: embedding.id,
+        chunkId: embedding.sourceId,
+        documentId: String(metadata.documentId),
+        content: embedding.content,
+        metadata,
+      });
+    }
+    this.locallyIndexed.add(source);
   }
 
   /**
@@ -224,16 +285,28 @@ export class RAGPipeline {
    */
   private async storedChunks(ids: string[]): Promise<Map<string, StoredChunk[]>> {
     const found = new Map<string, StoredChunk[]>();
+    for (const embedding of await this.storedEmbeddings(ids)) {
+      const chunk = this.ownChunk(embedding);
+      if (chunk) found.set(embedding.sourceId, [...(found.get(embedding.sourceId) ?? []), chunk]);
+    }
+    return found;
+  }
+
+  /** The stored embeddings of this pipeline's documents with these chunk ids */
+  private async storedEmbeddings(ids: string[]): Promise<Embedding[]> {
     const adapter = this.deps.embeddingAdapter;
-    if (!adapter.getBySources) return found;
+    if (!adapter.getBySources) return [];
+    const found: Embedding[] = [];
     for (let start = 0; start < ids.length; start += LOOKUP_BATCH) {
       const result = await adapter.getBySources(ids.slice(start, start + LOOKUP_BATCH));
       if (!result.success) {
         throw new Error(`Could not read the stored chunks: ${result.error}`);
       }
       for (const embedding of result.data) {
-        const chunk = this.ownChunk(embedding);
-        if (chunk) found.set(embedding.sourceId, [...(found.get(embedding.sourceId) ?? []), chunk]);
+        const metadata = embedding.metadata ?? {};
+        if (embedding.sourceType === 'document' && metadata.namespace === this.config.namespace) {
+          found.push(embedding);
+        }
       }
     }
     return found;
@@ -247,10 +320,10 @@ export class RAGPipeline {
     return {
       documentId: String(metadata.documentId),
       vector: embedding.vector,
-      ...(typeof metadata.contentHash === 'string' && { hash: metadata.contentHash }),
-      ...(typeof metadata.generation === 'string' && { generation: metadata.generation }),
-      ...(typeof metadata.sourceDocuments === 'number' && {
-        documents: metadata.sourceDocuments,
+      ...(typeof metadata.ragContentHash === 'string' && { hash: metadata.ragContentHash }),
+      ...(typeof metadata.ragGeneration === 'string' && { generation: metadata.ragGeneration }),
+      ...(typeof metadata.ragSourceDocuments === 'number' && {
+        documents: metadata.ragSourceDocuments,
       }),
     };
   }
@@ -262,13 +335,17 @@ export class RAGPipeline {
    */
   private previousGeneration(
     group: RAGDocument[],
-    hashes: Map<string, string>,
+    hashes: Map<string, string | undefined>,
     heads: Map<string, StoredChunk[]>
   ): { unchanged: boolean; generations?: string[] } {
     const found = group.flatMap((doc) =>
       (heads.get(chunkId(doc.id, 0)) ?? []).map((head) => ({ doc, head }))
     );
-    if (found.length === 0 || found.some(({ head }) => head.generation === undefined)) {
+    if (
+      !this.deps.embeddingAdapter.deleteByFilter ||
+      found.length === 0 ||
+      found.some(({ head }) => head.generation === undefined)
+    ) {
       return { unchanged: false };
     }
     const generations = [...new Set(found.map(({ head }) => head.generation!))];
@@ -276,7 +353,10 @@ export class RAGPipeline {
       found.length === group.length &&
       generations.length === 1 &&
       found.every(
-        ({ doc, head }) => head.hash === hashes.get(doc.id) && head.documents === group.length
+        ({ doc, head }) =>
+          head.hash !== undefined &&
+          head.hash === hashes.get(doc.id) &&
+          head.documents === group.length
       );
     return { unchanged, generations };
   }
@@ -329,7 +409,7 @@ export class RAGPipeline {
     if (!adapter.deleteByFilter) return;
     const result = await adapter.deleteByFilter({
       sourceType: 'document',
-      metadata: { source, generation, ...this.namespaceMetadata() },
+      metadata: { source, ragGeneration: generation, ...this.namespaceMetadata() },
     });
     if (!result.success) {
       throw new Error(`Could not remove the previous chunks of ${source}: ${result.error}`);
@@ -339,7 +419,7 @@ export class RAGPipeline {
       retriever.removeChunks?.(
         (chunk) =>
           chunk.metadata.source === source &&
-          chunk.metadata.generation === generation &&
+          chunk.metadata.ragGeneration === generation &&
           chunk.metadata.namespace === this.config.namespace
       );
     }
@@ -382,20 +462,18 @@ export class RAGPipeline {
   }
 
   private async storeChunks(
-    chunks: DocumentChunk[],
-    vectors: number[][],
-    doc: RAGDocument,
-    marks: IngestMarks
+    writes: ChunkWrite[],
+    marksOf: (doc: RAGDocument) => IngestMarks
   ): Promise<void> {
     let next = 0;
     const worker = async () => {
-      while (next < chunks.length) {
-        const index = next++;
-        await this.storeChunk(chunks[index]!, vectors[index]!, doc, marks);
+      while (next < writes.length) {
+        const { chunk, vector, doc } = writes[next++]!;
+        await this.storeChunk(chunk, vector, doc, marksOf(doc));
       }
     };
     await Promise.all(
-      Array.from({ length: Math.min(STORE_CONCURRENCY, chunks.length) }, () => worker())
+      Array.from({ length: Math.min(STORE_CONCURRENCY, writes.length) }, () => worker())
     );
   }
 

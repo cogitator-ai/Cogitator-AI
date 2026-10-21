@@ -170,7 +170,7 @@ HNSW needs no training data, so the index built on the empty table finds every r
 
 Vectors of more than 2000 dimensions (such as the 3072 of `gemini-embedding-001` or `text-embedding-3-large`) are too large for a pgvector index on the column. Up to 4000 dimensions the adapter indexes the column cast to `halfvec` instead (pgvector 0.7 or later), and searches compare the same cast, so the index serves them while the stored vectors keep full precision. Larger vectors have no index and a warning says that searches scan every row.
 
-`connect()` records the layout of threads, entries and facts in `<schema>.schema_migrations` and changes the schema only when it is older than the adapter's, under an advisory lock, so processes starting at once do not race. A schema from before versions were recorded is brought up to date in place.
+`connect()` records the layout of threads, entries and facts in `<schema>.cogitator_schema_migrations` and changes the schema only when it is older than the adapter's or its tables are gone. Processes connecting at once take turns under an advisory lock instead of racing on the same `CREATE`. A schema from before versions were recorded is brought up to date in place.
 
 `search()` sizes each query for the index: it raises `hnsw.ef_search` to the requested `limit` (up to 1000) and, on pgvector 0.8 or later, turns on iterative scans, so a large limit or a filter on agent, thread or user still gets every matching row. Equally similar rows are ordered by id, so the result does not depend on the query plan.
 

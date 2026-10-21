@@ -29,6 +29,10 @@ export class RecursiveChunker implements Chunker {
     this.separators = options.separators ?? DEFAULT_SEPARATORS;
   }
 
+  get fingerprint(): string {
+    return JSON.stringify(['recursive', 1, this.chunkSize, this.chunkOverlap, this.separators]);
+  }
+
   chunk(text: string, documentId: string): DocumentChunk[] {
     if (text.length === 0) return [];
 

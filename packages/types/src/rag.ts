@@ -40,10 +40,17 @@ export interface ChunkingConfig {
 
 export interface Chunker {
   chunk(text: string, documentId: string): DocumentChunk[];
+  /**
+   * Identifies how it splits text: the same text and fingerprint always give the same chunks.
+   * `RAGPipeline.ingest()` leaves unchanged documents as stored only with one.
+   */
+  readonly fingerprint?: string;
 }
 
 export interface AsyncChunker {
   chunk(text: string, documentId: string): Promise<DocumentChunk[]>;
+  /** See {@link Chunker.fingerprint} */
+  readonly fingerprint?: string;
 }
 
 export interface DocumentLoader {

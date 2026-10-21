@@ -2,7 +2,13 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { DocumentLoader, EmbeddingService, RAGDocument } from '@cogitator-ai/types';
+import type {
+  Chunker,
+  DocumentLoader,
+  EmbeddingAdapter,
+  EmbeddingService,
+  RAGDocument,
+} from '@cogitator-ai/types';
 import { HybridSearch, InMemoryEmbeddingAdapter } from '@cogitator-ai/memory';
 import { RAGPipelineBuilder } from '../rag-builder';
 import { TextLoader } from '../loaders/text-loader';
@@ -203,20 +209,22 @@ describe('RAG ingest of unchanged and changed sources', () => {
   }
 
   function partsPipeline(
-    store: InMemoryEmbeddingAdapter,
+    store: EmbeddingAdapter,
     loader: PartsLoader,
     embedding: EmbeddingService,
-    chunkSize = 60
+    chunkSize = 60,
+    configure: (builder: RAGPipelineBuilder) => RAGPipelineBuilder = (builder) => builder
   ) {
-    return new RAGPipelineBuilder()
-      .withLoader(loader)
-      .withEmbeddingService(embedding)
-      .withEmbeddingAdapter(store)
-      .withConfig({
-        chunking: { strategy: 'recursive', chunkSize, chunkOverlap: 0 },
-        retrieval: { strategy: 'similarity', topK: 20, threshold: 0 },
-      })
-      .build();
+    return configure(
+      new RAGPipelineBuilder()
+        .withLoader(loader)
+        .withEmbeddingService(embedding)
+        .withEmbeddingAdapter(store)
+        .withConfig({
+          chunking: { strategy: 'recursive', chunkSize, chunkOverlap: 0 },
+          retrieval: { strategy: 'similarity', topK: 20, threshold: 0 },
+        })
+    ).build();
   }
 
   const embeddedTexts = (embedding: ReturnType<typeof counted>) =>
@@ -344,5 +352,109 @@ describe('RAG ingest of unchanged and changed sources', () => {
 
     expect(result.unchanged).toBe(0);
     expect(await contents(store)).toEqual(['Cats sleep all day.']);
+  });
+
+  it('finishes a source an ingest stopped writing instead of taking it as unchanged', async () => {
+    loader.parts = ['Cats sleep. Dogs walk. Tea at five. Coffee at nine. Rome in May.'];
+    const rag = partsPipeline(store, loader, embedding, 12);
+    const add = store.addEmbedding.bind(store);
+    let calls = 0;
+    vi.spyOn(store, 'addEmbedding').mockImplementation(async (chunk) => {
+      calls++;
+      if (calls === 2) return { success: false, error: 'store hiccup' };
+      return add(chunk);
+    });
+    await expect(rag.ingest('book')).rejects.toThrow('store hiccup');
+    vi.mocked(store.addEmbedding).mockRestore();
+
+    const again = await rag.ingest('book');
+
+    expect(again.unchanged).toBe(0);
+    expect((await contents(store)).length).toBe(again.chunks);
+  });
+
+  it('never takes a source as unchanged with a chunker that has no fingerprint', async () => {
+    let size = 10;
+    const custom: Chunker = {
+      chunk: (text, documentId) =>
+        (text.match(new RegExp(`[\\s\\S]{1,${size}}`, 'g')) ?? []).map((content, order) => ({
+          id: chunkId(documentId, order),
+          documentId,
+          content,
+          startOffset: order * size,
+          endOffset: order * size + content.length,
+          order,
+        })),
+    };
+    loader.parts = ['Cats sleep all day long.'];
+    const rag = partsPipeline(store, loader, embedding, 60, (b) => b.withChunker(custom));
+    await rag.ingest('book');
+
+    size = 5;
+    const again = await rag.ingest('book');
+
+    expect(again.unchanged).toBe(0);
+    expect(await contents(store)).toEqual(['Cats ', 'sleep', ' all ', 'day l', 'ong.'].sort());
+  });
+
+  it('fills the local keyword index of a new pipeline from an unchanged source', async () => {
+    loader.parts = ['Cats sleep all day.', 'Tea at five.'];
+    const hybrid = (builder: RAGPipelineBuilder) =>
+      builder
+        .withHybridSearch(
+          new HybridSearch({ embeddingAdapter: store, embeddingService: embedding })
+        )
+        .withConfig({
+          chunking: { strategy: 'recursive', chunkSize: 60, chunkOverlap: 0 },
+          retrieval: { strategy: 'hybrid', topK: 5, threshold: 0 },
+        });
+    await partsPipeline(store, loader, embedding, 60, hybrid).ingest('book');
+
+    const restarted = partsPipeline(store, loader, embedding, 60, hybrid);
+    const again = await restarted.ingest('book');
+    const results = await restarted.query('cats');
+
+    expect(again.unchanged).toBe(2);
+    const cats = results.find((r) => r.content.includes('Cats'));
+    expect(cats?.metadata?.keywordScore).toBeGreaterThan(0);
+  });
+
+  it('replaces sources as before in a store without deleteByFilter, with a warning', async () => {
+    const appendOnly = new Proxy(store, {
+      get(target, property) {
+        if (property === 'deleteByFilter') return undefined;
+        const value: unknown = Reflect.get(target, property);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    loader.parts = ['Cats sleep all day.'];
+    const rag = partsPipeline(appendOnly, loader, embedding);
+    await rag.ingest('book');
+    await rag.ingest('book');
+    const warned = warn.mock.calls.some(([text]) => String(text).includes('deleteByFilter'));
+    warn.mockRestore();
+
+    expect(warned).toBe(true);
+  });
+
+  it('keeps document metadata named like the ingest marks', async () => {
+    loader.parts = ['Cats sleep all day.'];
+    const withOwn: PartsLoader = Object.assign(Object.create(PartsLoader.prototype), loader, {
+      load: async (source: string) =>
+        (await loader.load(source)).map((doc) => ({
+          ...doc,
+          metadata: { ...doc.metadata, generation: 'v2 of the handbook', contentHash: 'abc' },
+        })),
+    });
+    const rag = partsPipeline(store, withOwn, embedding);
+    await rag.ingest('book');
+
+    const found = await store.search({ vector: vectorOf('cats'), threshold: -1 });
+    const stored = found.success ? found.data[0] : undefined;
+    expect(stored?.metadata).toMatchObject({
+      generation: 'v2 of the handbook',
+      contentHash: 'abc',
+    });
   });
 });

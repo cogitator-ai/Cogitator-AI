@@ -137,11 +137,18 @@ export class QdrantAdapter implements EmbeddingAdapter {
         });
       }
       for (const field of INDEXED_FIELDS) {
-        await client.createPayloadIndex(this.collection, {
-          field_name: field,
-          field_schema: 'keyword',
-          wait: true,
-        });
+        try {
+          await client.createPayloadIndex(this.collection, {
+            field_name: field,
+            field_schema: 'keyword',
+            wait: true,
+          });
+        } catch (err) {
+          console.warn(
+            `QdrantAdapter: no payload index on ${field}, filtered searches scan more:`,
+            (err as Error).message
+          );
+        }
       }
 
       this.client = client;

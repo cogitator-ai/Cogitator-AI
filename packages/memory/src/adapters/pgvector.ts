@@ -72,12 +72,12 @@ const DEFAULT_EF_SEARCH = 40;
 const MAX_EF_SEARCH = 1000;
 
 /**
- * Makes sure `target.index` is the HNSW cosine index {@link vectorColumnPlan} plans for the column.
- * HNSW needs no training rows, so unlike IVFFlat it can be built on the still empty table at
- * connect time and keeps full recall as rows arrive. An index of the same name with another access
- * method or operator class, such as the IVFFlat index earlier versions built, is dropped and
- * rebuilt. A matching HNSW index that already exists is left alone, so it can be built ahead of a
- * deploy with `CREATE INDEX CONCURRENTLY`. A column too large for any index gets none.
+ * Makes sure `target.index` is an HNSW cosine index, built as {@link vectorColumnPlan} plans for
+ * the column. HNSW needs no training rows, so unlike IVFFlat it can be built on the still empty
+ * table at connect time and keeps full recall as rows arrive. An index of the same name with
+ * another access method, such as the IVFFlat index earlier versions built, is dropped and rebuilt.
+ * An HNSW index that already exists is left alone, so it can be built ahead of a deploy with
+ * `CREATE INDEX CONCURRENTLY`. A column too large for any index gets none.
  *
  * @returns the plan the column is searched with
  */
@@ -94,11 +94,7 @@ export async function ensureHnswCosineIndex(
   );
   const definition = existing.rows[0]?.indexdef;
   if (typeof definition === 'string') {
-    const matches =
-      plan.opclass !== undefined &&
-      /\busing hnsw\b/i.test(definition) &&
-      definition.includes(plan.opclass);
-    if (matches) return plan;
+    if (/\busing hnsw\b/i.test(definition)) return plan;
     await db.query(`DROP INDEX IF EXISTS ${schema}.${index}`);
   }
   if (plan.opclass) {
