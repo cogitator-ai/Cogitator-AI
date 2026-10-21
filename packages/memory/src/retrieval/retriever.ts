@@ -215,6 +215,7 @@ export class MemoryRetriever {
         score *= recencyBias(turnsAgo);
       } else {
         const item = itemById.get(id.slice(2));
+        if (item?.timesRetrieved) score *= 1 + 0.05 * Math.log2(1 + item.timesRetrieved);
         if (item && analysis.type === 'update' && item.validTo === undefined) score *= 1.2;
         if (
           item &&

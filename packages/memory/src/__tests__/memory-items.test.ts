@@ -450,3 +450,18 @@ describe('MemoryItems timelines', () => {
     expect(entities.success && entities.data).toHaveLength(1);
   });
 });
+
+describe('MemoryItems retrieval counts', () => {
+  it('counts each item a run sent once, with when', async () => {
+    const { items } = memory(day(30));
+    const [kept] = await items.write([said({ content: 'Ana likes jazz' })]);
+
+    await items.noteRetrieved([kept!.id, kept!.id, 'missing'], day(20));
+    await items.noteRetrieved([kept!.id], day(21));
+
+    expect(await items.get(kept!.id)).toMatchObject({
+      timesRetrieved: 2,
+      lastRetrievedAt: day(21),
+    });
+  });
+});

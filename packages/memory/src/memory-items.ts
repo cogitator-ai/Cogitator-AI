@@ -601,6 +601,28 @@ export class MemoryItems {
     if (itemIds.length > 0) unwrap(await this.adapter.deleteItems([...itemIds]));
   }
 
+  /**
+   * Counts `itemIds` as gone to a model once more, at `at`: what a run sent in its context, once
+   * the run finished, so an item read but never sent does not count
+   */
+  async noteRetrieved(itemIds: readonly string[], at: Date = this.now()): Promise<void> {
+    for (const itemId of new Set(itemIds)) {
+      const found = unwrap(await this.adapter.getItem(itemId));
+      if (!found) continue;
+      await this.exclusive(found.scope.agentId, async () => {
+        const item = unwrap(await this.adapter.getItem(itemId));
+        if (!item) return;
+        unwrap(
+          await this.adapter.putItem({
+            ...item,
+            timesRetrieved: (item.timesRetrieved ?? 0) + 1,
+            lastRetrievedAt: at,
+          })
+        );
+      });
+    }
+  }
+
   async get(itemId: string): Promise<MemoryItem | null> {
     return unwrap(await this.adapter.getItem(itemId));
   }

@@ -14,8 +14,16 @@ export type StoredMemoryItemTime = Omit<MemoryItemTime, 'start' | 'end'> & {
 /** A memory item as JSON holds it, its dates as ISO text */
 export type StoredMemoryItem = Omit<
   MemoryItem,
-  'saidAt' | 'sessionAt' | 'about' | 'validFrom' | 'validTo' | 'recordedAt' | 'expiredAt'
+  | 'saidAt'
+  | 'sessionAt'
+  | 'about'
+  | 'validFrom'
+  | 'validTo'
+  | 'recordedAt'
+  | 'expiredAt'
+  | 'lastRetrievedAt'
 > & {
+  lastRetrievedAt?: string;
   saidAt: string;
   sessionAt: string;
   about?: StoredMemoryItemTime;
@@ -41,9 +49,20 @@ function timeFrom({ start, end, ...time }: StoredMemoryItemTime): MemoryItemTime
 
 /** The memory item `stored` holds, its dates as dates and absent fields left absent */
 export function memoryItemFromJson(stored: StoredMemoryItem): MemoryItem {
-  const { saidAt, sessionAt, about, validFrom, validTo, recordedAt, expiredAt, ...item } = stored;
+  const {
+    saidAt,
+    sessionAt,
+    about,
+    validFrom,
+    validTo,
+    recordedAt,
+    expiredAt,
+    lastRetrievedAt,
+    ...item
+  } = stored;
   return {
     ...item,
+    ...(lastRetrievedAt !== undefined && { lastRetrievedAt: new Date(lastRetrievedAt) }),
     saidAt: new Date(saidAt),
     sessionAt: new Date(sessionAt),
     ...(about !== undefined && { about: timeFrom(about) }),

@@ -920,6 +920,7 @@ export class Cogitator implements ToolInvoker {
       let input: string;
       let messages: Message[];
       let contextPartitions: BuiltContext['partitions'] | undefined;
+      let sentItemIds: string[] = [];
 
       if (checkpoint) {
         input = checkpoint.input;
@@ -974,7 +975,13 @@ export class Cogitator implements ToolInvoker {
               pipeline.beforeRun({ input, messages: initial }, middlewareContext()),
               abortController.signal
             ),
-          (built) => (contextPartitions = built.partitions)
+          (built) => {
+            contextPartitions = built.partitions;
+            sentItemIds = [
+              ...built.facts.map((fact) => fact.id),
+              ...(built.recalled?.items.map((item) => item.id) ?? []),
+            ];
+          }
         );
       }
 
@@ -1861,6 +1868,14 @@ export class Cogitator implements ToolInvoker {
       if (prompt) await this.recordPrompt(prompt, result, Date.now() - startTime);
 
       await runMemory.settled();
+      if (sentItemIds.length > 0 && this.state.memoryItems) {
+        await this.state.memoryItems.noteRetrieved(sentItemIds).catch((error: unknown) =>
+          getLogger().warn('Could not count the memory items a run sent', {
+            runId,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        );
+      }
       await pipeline.afterRun(
         {
           result,

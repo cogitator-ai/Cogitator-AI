@@ -214,6 +214,24 @@ describe('memory.extraction', () => {
     expect(JSON.stringify(answer?.messages)).toContain('The user lives in Porto');
   });
 
+  it('counts the memory items a finished run sent to the model', async () => {
+    const cog = new Cogitator({
+      llm: { backends: { mock: backend() } },
+      memory: { adapter: 'memory', extraction: {}, contextBuilder: { includeFacts: true } },
+    });
+    cogs.push(cog);
+    await cog.run(agent, { input: 'I live in Porto', threadId: 't', userId: 'u1' });
+    await cog.run(agent, { input: 'What about me?', threadId: 't', userId: 'u1' });
+
+    const [porto] = await (
+      await itemsOf(cog)
+    ).query({
+      scope: { agentId: agent.name, userId: 'u1' },
+    });
+    expect(porto?.timesRetrieved).toBe(1);
+    expect(porto?.lastRetrievedAt).toBeInstanceOf(Date);
+  });
+
   it('extracts the runs of one thread one after another, each entry once', async () => {
     const llm = backend();
     const cog = runtime(llm);

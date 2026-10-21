@@ -101,13 +101,25 @@ export interface MemoryItem {
   supersedes?: string[];
   /** The item of its slot that closed it */
   supersededBy?: string;
+  /** Times it went to a model in a context, counted once a run that sent it finished */
+  timesRetrieved?: number;
+  /** When it last went to a model */
+  lastRetrievedAt?: Date;
   metadata?: Record<string, unknown>;
 }
 
 /** A memory item to write: memory gives it its id, status and record time */
 export type NewMemoryItem = Omit<
   MemoryItem,
-  'id' | 'status' | 'recordedAt' | 'supersedes' | 'supersededBy' | 'expiredAt' | 'verified'
+  | 'id'
+  | 'status'
+  | 'recordedAt'
+  | 'supersedes'
+  | 'supersededBy'
+  | 'expiredAt'
+  | 'verified'
+  | 'timesRetrieved'
+  | 'lastRetrievedAt'
 > & {
   /** Overrides the status memory would give it, such as `active` for an item the user confirmed */
   status?: MemoryItemStatus;

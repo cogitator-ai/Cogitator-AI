@@ -135,13 +135,21 @@ const SCENARIOS: Record<MemoryItemAdapterScenario, (adapter: MemoryItemAdapter) 
         expiredAt: at(8),
         supersedes: ['old-1', 'old-2'],
         supersededBy: 'new-1',
+        timesRetrieved: 3,
+        lastRetrievedAt: at(9),
         metadata: { source: 'conformance', nested: { n: 1 } },
       });
       ok(await adapter.putItem(full), 'putItem');
 
       const read = ok(await adapter.getItem(full.id), 'getItem');
       assert.deepEqual(read, full);
-      for (const date of [read?.saidAt, read?.about?.start, read?.validTo, read?.expiredAt]) {
+      for (const date of [
+        read?.saidAt,
+        read?.about?.start,
+        read?.validTo,
+        read?.expiredAt,
+        read?.lastRetrievedAt,
+      ]) {
         assert.ok(date instanceof Date, 'dates come back as dates');
       }
     },

@@ -72,6 +72,8 @@ export interface InitializerState {
   embeddingStore?: QdrantAdapter;
   contextBuilder?: ContextBuilder;
   messageIndex?: MessageIndex;
+  /** Memory items of the memory adapter, when it stores them */
+  memoryItems?: MemoryItems;
   memoryInitialized: boolean;
   sandboxManager?: SandboxManager;
   sandboxInitialized: boolean;
@@ -132,10 +134,11 @@ export async function initializeMemory(
           )
         : undefined;
     state.messageIndex = messageIndex;
+    state.memoryItems = isMemoryItemAdapter(adapter) ? new MemoryItems({ adapter }) : undefined;
     const deps: ContextBuilderDeps = {
       memoryAdapter: adapter,
       ...(isFactAdapter(adapter) && { factAdapter: adapter }),
-      ...(isMemoryItemAdapter(adapter) && { memoryItems: new MemoryItems({ adapter }) }),
+      ...(state.memoryItems && { memoryItems: state.memoryItems }),
       ...(embeddingAdapter && { embeddingAdapter }),
       ...(embeddingService && { embeddingService }),
       ...(messageIndex && { messageIndex }),
@@ -454,6 +457,7 @@ export async function cleanupState(state: InitializerState): Promise<void> {
     await state.messageIndex.close();
     state.messageIndex = undefined;
   }
+  state.memoryItems = undefined;
   if (state.memoryAdapter) {
     await state.memoryAdapter.disconnect();
     state.memoryAdapter = undefined;
