@@ -5,7 +5,14 @@ import {
   modelContextWindow,
   type RunMiddleware,
 } from '@cogitator-ai/core';
-import { ContextBuilder, countMessagesTokens, countTokens } from '@cogitator-ai/memory';
+import {
+  ContextBuilder,
+  MemoryExtractor,
+  MemoryItems,
+  countMessagesTokens,
+  countTokens,
+  isMemoryItemAdapter,
+} from '@cogitator-ai/memory';
 import type {
   CogitatorConfig,
   CompactionResult,
@@ -190,7 +197,7 @@ const RUN_TIMEOUT_MS = 600_000;
 
 /** The context builder strategy a bench strategy reads the thread with. */
 export function contextStrategy(name: BenchStrategy['name']): 'recent' | 'relevant' | 'hybrid' {
-  return name === 'compacted' ? 'recent' : name;
+  return name === 'compacted' || name === 'extracted' ? 'recent' : name;
 }
 
 /** Whether a bench strategy scores turns with embeddings. */
@@ -253,12 +260,41 @@ export function compactionEstimate(conversation: BenchConversation, contextToken
   return closing + chapters * chapter;
 }
 
+/** Tokens of conversation one extraction call reads, the extractor's default */
+export const EXTRACTION_WINDOW_TOKENS = 4000;
+
+/** Tokens of the extraction prompt and the transcript's numbering around a window, roughly */
+const EXTRACTION_FRAME_TOKENS = 900;
+
+/** Tokens an extraction call may answer with */
+const EXTRACTION_MAX_TOKENS = 8000;
+
+/** Tokens an extraction model answers with, roughly: a JSON array of items with their quotes */
+const EXTRACTION_ANSWER_TOKENS = 1500;
+
 /**
- * Watches the compaction of a `compacted` runtime: whether the runtime started one and finished
- * it, and what the calls made meanwhile (the closing turn and the chapter model) cost. The chapter
- * model is called by the runtime outside any run, so no run reports its usage: the backend's calls
- * are held against the budget and charged as `compaction` while `charging` is on. A refusal is
- * kept, since the runtime only logs a compaction that failed.
+ * What extracting memory items from `conversation` under the `extracted` strategy costs,
+ * roughly: one call per `EXTRACTION_WINDOW_TOKENS` of conversation, each window with the overlap
+ * it opens with. A junk answer asked again is not counted.
+ */
+export function extractionEstimate(conversation: BenchConversation): number {
+  const tokens = conversation.turns.reduce((sum, turn) => sum + countTokens(turn.content), 0);
+  const windows = Math.max(Math.ceil(tokens / EXTRACTION_WINDOW_TOKENS), 1);
+  return (
+    windows *
+    callCost(
+      Math.ceil(EXTRACTION_WINDOW_TOKENS * CHAPTER_OVERLAP) + EXTRACTION_FRAME_TOKENS,
+      EXTRACTION_ANSWER_TOKENS
+    )
+  );
+}
+
+/**
+ * Watches the calls a runtime makes outside any run: for `compacted`, whether the runtime started
+ * a compaction and finished it, and for both `compacted` and `extracted` what the calls made
+ * meanwhile (the closing turn, the chapter model, the extraction model) cost. No run reports
+ * their usage, so the backend's calls are held against the budget and charged as `stage` while
+ * `charging` is on. A refusal is kept, since the runtime only logs a compaction that failed.
  */
 export class CompactionWatch {
   charging = false;
@@ -266,7 +302,10 @@ export class CompactionWatch {
   result?: CompactionResult;
   refusal?: BudgetExceededError;
 
-  constructor(private readonly budget: Budget) {}
+  constructor(
+    private readonly budget: Budget,
+    private readonly stage: 'compaction' | 'extraction' = 'compaction'
+  ) {}
 
   /** `backend`, its `chat` metered while `charging` is on */
   meter(backend: LLMBackend): LLMBackend {
@@ -284,7 +323,7 @@ export class CompactionWatch {
       }
       try {
         const response = await chat(request);
-        this.budget.charge('compaction', usageCost(response.usage));
+        this.budget.charge(this.stage, usageCost(response.usage));
         return response;
       } finally {
         release();
@@ -298,7 +337,8 @@ export class CompactionWatch {
  * A runtime whose memory holds conversations for `strategy`, the bench model priced. Under
  * `compacted` the thread is compacted by the runtime itself (`memory.compaction`) once its
  * conversation passes the context budget, the bench model writing the chapters, and `watch`
- * sees it happen.
+ * sees it happen. Under `extracted` the context holds the memory items of the thread as its
+ * facts, and `watch` meters the extraction model.
  */
 export function benchRuntime(
   options: Pick<AnswerOptions, 'strategy' | 'anthropicApiKey' | 'anthropicWorkspace' | 'embedding'>,
@@ -317,10 +357,11 @@ export function benchRuntime(
     retry: BENCH_RETRY,
   };
   const compacted = options.strategy.name === 'compacted' && watch;
+  const extracted = options.strategy.name === 'extracted';
   const settings = compactionSettings(options.strategy.contextTokens);
   const window = modelContextWindow(`anthropic/${BENCH_MODEL}`);
   return new Cogitator({
-    llm: compacted
+    llm: watch
       ? { ...llm, backends: { anthropic: watch.meter(createLLMBackend('anthropic', llm)) } }
       : llm,
     memory: {
@@ -330,6 +371,7 @@ export function benchRuntime(
       contextBuilder: {
         strategy: contextStrategy(options.strategy.name),
         maxTokens: options.strategy.contextTokens,
+        ...(extracted && { includeFacts: true }),
       },
       ...(compacted && {
         compaction: {
@@ -447,6 +489,51 @@ async function warm(
   }
 }
 
+/**
+ * Extracts the memory items of the thread `conversation` went into, window by window as the
+ * runtime's `memory.extraction` reads a conversation, with the bench model, the calls metered by
+ * `watch`. The items are scoped to the thread, so no other conversation's questions see them, and
+ * relative dates resolve from each window's own date. A budget refusal stops the run.
+ */
+async function extractConversation(
+  cog: Cogitator,
+  threadId: string,
+  watch: CompactionWatch
+): Promise<{ items: number } | { error: string }> {
+  const memory = await cog.getMemory();
+  if (!memory || !isMemoryItemAdapter(memory))
+    return { error: 'extraction: memory keeps no items' };
+  const entries = await memory.getEntries({ threadId, includeToolCalls: true });
+  if (!entries.success) return { error: `extraction: ${entries.error}` };
+  const backend = cog.getLLMBackend(`anthropic/${BENCH_MODEL}`);
+  const extractor = new MemoryExtractor({
+    items: new MemoryItems({ adapter: memory }),
+    summarize: async (messages, summarizeOptions) => {
+      const response = await backend.chat({
+        model: BENCH_MODEL,
+        messages: [{ role: 'system', content: summarizeOptions?.prompt ?? '' }, ...messages],
+        maxTokens: EXTRACTION_MAX_TOKENS,
+      });
+      return response.content;
+    },
+    windowTokens: EXTRACTION_WINDOW_TOKENS,
+  });
+  watch.charging = true;
+  try {
+    const items = await extractor.extract(entries.data, {
+      scope: { agentId: benchAgent().id, threadId },
+      timeZone: 'UTC',
+    });
+    return { items: items.length };
+  } catch (error) {
+    const refusal = budgetRefusal(error) ?? watch.refusal;
+    if (refusal) throw refusal;
+    return { error: `extraction: ${error instanceof Error ? error.message : String(error)}` };
+  } finally {
+    watch.charging = false;
+  }
+}
+
 /** What a closing turn left: where the questions go on from, or why they cannot. */
 type Closed = { leafId: string | null; compacted: boolean } | { error: string };
 
@@ -544,7 +631,12 @@ export async function answerConversation(
   );
   if (pending.length === 0) return;
 
-  const watch = strategy === 'compacted' ? new CompactionWatch(options.budget) : undefined;
+  const watch =
+    strategy === 'compacted'
+      ? new CompactionWatch(options.budget)
+      : strategy === 'extracted'
+        ? new CompactionWatch(options.budget, 'extraction')
+        : undefined;
   const cog = benchRuntime(options, watch);
   const agent = benchAgent();
 
@@ -627,7 +719,25 @@ export async function answerConversation(
     const thread = await ingest(cog, agent, conversation);
     if (options.embedding) await warm(cog, agent, thread.threadId, conversation, options);
     let from = thread.leafId;
-    if (watch) {
+    if (watch && strategy === 'extracted') {
+      const extracted = await extractConversation(cog, thread.threadId, watch);
+      if ('error' in extracted) {
+        options.log(`  ${conversation.id}: ${extracted.error}`);
+        for (const question of pending) {
+          await options.onAnswer({
+            dataset: conversation.dataset,
+            conversationId: conversation.id,
+            questionId: question.id,
+            category: question.category,
+            strategy,
+            ...unanswered,
+            error: extracted.error,
+          });
+        }
+        return;
+      }
+      options.log(`  ${conversation.id}: ${extracted.items} memory items`);
+    } else if (watch) {
       const closed = await closeSession(cog, thread.threadId, watch);
       if ('error' in closed) {
         options.log(`  ${conversation.id}: ${closed.error}`);
