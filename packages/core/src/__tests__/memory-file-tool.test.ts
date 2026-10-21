@@ -87,7 +87,11 @@ describe('memory tool in a run', () => {
     const llm = calling([{ command: 'create', path: '/memories/a.md', file_text: 'first note' }]);
     const cog = new Cogitator({
       llm: { backends: { mock: llm } },
-      memory: { adapter: 'memory', files: {}, contextBuilder: { strategy: 'recent', maxTokens: 4000 } },
+      memory: {
+        adapter: 'memory',
+        files: {},
+        contextBuilder: { strategy: 'recent', maxTokens: 4000 },
+      },
     });
     cogs.push(cog);
     await cog.run(agent, { input: 'note it', userId: 'ana', threadId: 'b1' });
