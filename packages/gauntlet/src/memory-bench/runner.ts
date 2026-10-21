@@ -166,7 +166,11 @@ export function benchAgent(instructions = ANSWER_INSTRUCTIONS): Agent {
   });
 }
 
-/** Puts `conversation` into the memory of `cog` as one thread, returning its id. */
+/**
+ * Puts `conversation` into the memory of `cog` as one thread, returning its id. Turns go in by
+ * their dates, so the thread's branch reads in the order the conversation happened even when the
+ * dataset lists sessions out of order.
+ */
 export async function ingest(
   cog: Cogitator,
   agent: Agent,
@@ -178,12 +182,19 @@ export async function ingest(
   const created = await memory.createThread(agent.id, { bench: conversation.dataset }, threadId);
   if (!created.success) throw new Error(`Thread ${threadId}: ${created.error}`);
   const start = conversation.turns[0]?.at?.getTime() ?? Date.UTC(2023, 0, 1);
-  for (const [index, turn] of conversation.turns.entries()) {
+  const dated = conversation.turns
+    .map((turn, index) => ({
+      turn,
+      index,
+      at: Math.max(turn.at?.getTime() ?? 0, start) + index,
+    }))
+    .sort((a, b) => a.at - b.at);
+  for (const { turn, index, at } of dated) {
     const added = await memory.addEntry({
       threadId,
       message: { role: turn.role, content: turn.content },
       tokenCount: countTokens(turn.content),
-      createdAt: new Date(Math.max(turn.at?.getTime() ?? 0, start) + index),
+      createdAt: new Date(at),
     });
     if (!added.success) throw new Error(`Entry ${index} of ${threadId}: ${added.error}`);
   }

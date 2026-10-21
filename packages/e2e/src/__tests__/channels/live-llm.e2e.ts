@@ -182,7 +182,7 @@ describeE2E('Channels E2E: Live LLM through Gateway', () => {
     await channel.trigger(message('What is my name?'));
 
     expect(compacted).toHaveBeenCalled();
-    const entries = await memory.getEntries({ threadId: 'test:user_1' });
+    const entries = await memory.getEntries({ threadId: 'test:user_1', types: 'all' });
     expect(entries.success).toBe(true);
     const summary = entries.success
       ? entries.data.find((e) => e.metadata?.compactionSummary === true)
