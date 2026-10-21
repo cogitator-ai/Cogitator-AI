@@ -316,7 +316,10 @@ export class MessageIndex {
     });
   }
 
-  /** Embeds the waiting entries in batches once the current work is done */
+  /**
+   * Embeds the waiting entries in batches once the current work is done. A batch that fails
+   * lets the backfill of its threads run again, so entries it held are indexed later.
+   */
   private schedule(): void {
     if (this.scheduled || this.closed) return;
     this.scheduled = true;
@@ -328,6 +331,7 @@ export class MessageIndex {
         try {
           await this.write(batch, await this.embedBatch(batch));
         } catch (error) {
+          for (const entry of batch) this.backfilled.delete(entry.threadId);
           this.onError(errorOf(error));
         }
       }

@@ -42,6 +42,29 @@ const LOOKUP_BATCH = 500;
  */
 const PROBED_CHUNKS = 16;
 
+/**
+ * How old a generation newer than the stored one must be to count as left by an ingest that
+ * stopped, rather than one another process is still writing
+ */
+const ABANDONED_AFTER_MS = 10 * 60_000;
+
+let lastGenerationTime = 0;
+
+/**
+ * A new generation id: its time first, so ids sort in the order ingests started, the time kept
+ * strictly growing in this process so two ingests started in one millisecond still sort
+ */
+function newGeneration(): string {
+  lastGenerationTime = Math.max(Date.now(), lastGenerationTime + 1);
+  return `${lastGenerationTime.toString(36).padStart(9, '0')}-${randomUUID()}`;
+}
+
+/** When a generation was started, 0 for ids without a time */
+function generationTime(generation: string): number {
+  const match = /^([0-9a-z]{9})-/.exec(generation);
+  return match ? Number.parseInt(match[1]!, 36) : 0;
+}
+
 function definedEntries<T extends object>(value: T | undefined): Partial<T> {
   if (!value) return {};
   return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as Partial<T>;
@@ -101,6 +124,8 @@ export class RAGPipeline {
   private warnedAppendOnly = false;
   /** Sources a local keyword index of the retriever holds the chunks of in this process */
   private readonly locallyIndexed = new Set<string>();
+  /** Ingests under way by source, so this process replaces a source one ingest at a time */
+  private readonly ingesting = new Map<string, Promise<unknown>>();
 
   constructor(config: RAGPipelineConfig, deps: RAGPipelineDeps, alreadyParsed = false) {
     this.config = alreadyParsed ? config : RAGPipelineConfigSchema.parse(config);
@@ -128,70 +153,99 @@ export class RAGPipeline {
     let unchanged = 0;
 
     for (const group of groupBySource(documents)) {
-      const sourceName = group[0]!.source;
-      const hashes = new Map(group.map((doc) => [doc.id, this.contentHash(doc)]));
-      const stored = await this.storedChunks(
-        group.flatMap((doc) => [chunkId(doc.id, 0), chunkId(doc.id, 1)])
-      );
-      const heads = new Map(
-        group.map((doc) => [chunkId(doc.id, 0), stored.get(chunkId(doc.id, 0)) ?? []])
-      );
-      const previous = this.previousGeneration(group, hashes, heads);
-      if (previous.unchanged) {
-        const kept = previous.generations![0]!;
-        for (const old of this.unfinishedGenerations(group, stored, kept)) {
-          await this.forgetGeneration(sourceName, old);
-        }
-        await this.indexLocally(sourceName, group);
-        unchanged += group.length;
-        continue;
-      }
-
-      const prepared: PreparedDocument[] = [];
-      for (const doc of group) {
-        const hash = hashes.get(doc.id);
-        const reusable =
-          hash === undefined
-            ? undefined
-            : heads
-                .get(chunkId(doc.id, 0))
-                ?.find((head) => head.generation !== undefined && head.hash === hash);
-        prepared.push(await this.prepareDocument(doc, reusable));
-      }
-
-      if (!previous.generations) await this.forgetSource(sourceName);
-      const generation = randomUUID();
-      const writes = prepared.flatMap(({ doc, chunks, vectors }) =>
-        chunks.map((chunk, i) => ({ chunk, vector: vectors[i]!, doc }))
-      );
-      const isHead = ({ chunk, doc }: ChunkWrite) => chunk.id === chunkId(doc.id, 0);
-      const marksOf = (doc: RAGDocument): IngestMarks => {
-        const hash = hashes.get(doc.id);
-        return {
-          ...(hash !== undefined && { ragContentHash: hash }),
-          ragGeneration: generation,
-          ragSourceDocuments: group.length,
-        };
-      };
-      await this.storeChunks(
-        writes.filter((write) => !isHead(write)),
-        marksOf
-      );
-      await this.storeChunks(writes.filter(isHead), marksOf);
-      for (const { chunks } of prepared) {
-        totalChunks += chunks.length;
-        this.stats.chunksStored += chunks.length;
-        this.stats.documentsIngested++;
-      }
-      this.locallyIndexed.add(sourceName);
-      if (previous.generations) {
-        const stale = new Set(previous.generations);
-        for (const old of await this.leftGenerations(group, prepared, generation)) stale.add(old);
-        for (const old of stale) await this.forgetGeneration(sourceName, old);
-      }
+      const done = await this.oneAtATime(group[0]!.source, () => this.ingestGroup(group));
+      totalChunks += done.chunks;
+      unchanged += done.unchanged;
     }
 
     return { documents: documents.length, chunks: totalChunks, unchanged };
+  }
+
+  /** Runs `work` once the ingests of `source` this process started before it are done */
+  private async oneAtATime<T>(source: string, work: () => Promise<T>): Promise<T> {
+    const before = this.ingesting.get(source) ?? Promise.resolve();
+    const run = before.catch(() => undefined).then(work);
+    this.ingesting.set(source, run);
+    try {
+      return await run;
+    } finally {
+      if (this.ingesting.get(source) === run) this.ingesting.delete(source);
+    }
+  }
+
+  /**
+   * Ingests the documents of one source, leaving it as stored when unchanged. Generations older
+   * than the one written are deleted after it, newer ones belong to an ingest that started later
+   * and are left to it.
+   */
+  private async ingestGroup(group: RAGDocument[]): Promise<{ chunks: number; unchanged: number }> {
+    const sourceName = group[0]!.source;
+    const hashes = new Map(group.map((doc) => [doc.id, this.contentHash(doc)]));
+    const stored = await this.storedChunks(
+      group.flatMap((doc) => [chunkId(doc.id, 0), chunkId(doc.id, 1)])
+    );
+    const heads = new Map(
+      group.map((doc) => [chunkId(doc.id, 0), stored.get(chunkId(doc.id, 0)) ?? []])
+    );
+    const previous = this.previousGeneration(group, hashes, heads);
+    if (previous.unchanged) {
+      const kept = previous.generations![0]!;
+      for (const old of this.unfinishedGenerations(group, stored, kept)) {
+        await this.forgetGeneration(sourceName, old);
+      }
+      await this.indexLocally(sourceName, group);
+      return { chunks: 0, unchanged: group.length };
+    }
+
+    const prepared: PreparedDocument[] = [];
+    for (const doc of group) {
+      const hash = hashes.get(doc.id);
+      const reusable =
+        hash === undefined
+          ? undefined
+          : heads
+              .get(chunkId(doc.id, 0))
+              ?.find((head) => head.generation !== undefined && head.hash === hash);
+      prepared.push(await this.prepareDocument(doc, reusable));
+    }
+
+    if (!previous.generations) await this.forgetSource(sourceName);
+    const generation = newGeneration();
+    const writes = prepared.flatMap(({ doc, chunks, vectors }) =>
+      chunks.map((chunk, i) => ({ chunk, vector: vectors[i]!, doc }))
+    );
+    const isHead = ({ chunk, doc }: ChunkWrite) => chunk.id === chunkId(doc.id, 0);
+    const marksOf = (doc: RAGDocument): IngestMarks => {
+      const hash = hashes.get(doc.id);
+      return {
+        ...(hash !== undefined && { ragContentHash: hash }),
+        ragGeneration: generation,
+        ragSourceDocuments: group.length,
+      };
+    };
+    await this.storeChunks(
+      writes.filter((write) => !isHead(write)),
+      marksOf
+    );
+    await this.storeChunks(writes.filter(isHead), marksOf);
+    let chunks = 0;
+    for (const document of prepared) {
+      chunks += document.chunks.length;
+      this.stats.chunksStored += document.chunks.length;
+      this.stats.documentsIngested++;
+    }
+    this.locallyIndexed.add(sourceName);
+    if (previous.generations) {
+      const stale = new Set(previous.generations);
+      for (const old of await this.leftGenerations(group, prepared, generation)) stale.add(old);
+      for (const old of stale) {
+        if (old < generation) await this.forgetGeneration(sourceName, old);
+      }
+      if (await this.supersededBy(group, generation)) {
+        await this.forgetGeneration(sourceName, generation);
+      }
+    }
+    return { chunks, unchanged: 0 };
   }
 
   /**
@@ -421,8 +475,9 @@ export class RAGPipeline {
   }
 
   /**
-   * Generations other than `kept` found on the second chunks of the documents: an ingest that
-   * stopped before the heads writes those first
+   * Generations other than `kept` found on the second chunks of the documents, which an ingest
+   * that stopped before the heads wrote first: older ones, and newer ones old enough that no
+   * ingest is still writing them
    */
   private unfinishedGenerations(
     group: RAGDocument[],
@@ -432,7 +487,10 @@ export class RAGPipeline {
     const found = new Set<string>();
     for (const doc of group) {
       for (const chunk of stored.get(chunkId(doc.id, 1)) ?? []) {
-        if (chunk.generation && chunk.generation !== kept) found.add(chunk.generation);
+        const generation = chunk.generation;
+        if (!generation || generation === kept) continue;
+        const abandoned = generationTime(generation) < Date.now() - ABANDONED_AFTER_MS;
+        if (generation < kept || abandoned) found.add(generation);
       }
     }
     return [...found];
@@ -462,6 +520,20 @@ export class RAGPipeline {
       }
     }
     return [...found];
+  }
+
+  /**
+   * Whether an ingest that started after the one that wrote `generation` already wrote heads of
+   * these documents, so the later one wins and `generation` goes
+   */
+  private async supersededBy(group: RAGDocument[], generation: string): Promise<boolean> {
+    const heads = await this.storedChunks(group.map((doc) => chunkId(doc.id, 0)));
+    for (const chunks of heads.values()) {
+      if (chunks.some((chunk) => chunk.generation !== undefined && chunk.generation > generation)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /** Deletes the chunks of `source` an earlier ingest wrote as `generation` */

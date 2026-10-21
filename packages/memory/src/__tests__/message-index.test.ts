@@ -486,4 +486,22 @@ describe('MessageIndex against races and other users', () => {
     expect(context.errors?.map((e) => e.error.message)).toContain('vector store down');
     expect(embedding.embedBatch).toHaveBeenCalled();
   });
+
+  it('backfills a thread again after a batch of its backfill failed', async () => {
+    await index.close();
+    await memory.createThread('agent', {}, 't');
+    const old = await entryIn('t', 'cat history');
+    const late = new MessageIndex({ store, embedding, onError: () => undefined });
+    late.attach(memory);
+    embedding.embedBatch.mockRejectedValueOnce(new Error('embedding down'));
+    const text = { entryId: old.id, threadId: 't', role: 'user' as const, text: 'cat history' };
+
+    late.backfill('t', [text]);
+    await late.flush();
+    expect(await sources()).toEqual([]);
+    late.backfill('t', [text]);
+    await late.flush();
+
+    expect(await sources()).toEqual([old.id]);
+  });
 });

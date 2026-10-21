@@ -484,7 +484,7 @@ describe('RAG ingest of unchanged and changed sources', () => {
     expect(await rag.ingest('book')).toMatchObject({ unchanged: 1 });
   });
 
-  it('deletes what an update that stopped wrote when the source went back to what is stored', async () => {
+  it('deletes what an abandoned update wrote when the source went back to what is stored', async () => {
     loader.parts = ['Cats sleep. Dogs walk. Tea at five.'];
     const rag = partsPipeline(store, loader, embedding, 12);
     const first = await rag.ingest('book');
@@ -493,10 +493,48 @@ describe('RAG ingest of unchanged and changed sources', () => {
     loader.parts = ['Cats nap. Dogs run far. Tea at six. Rome in May.'];
     await failingOnce(3, () => rag.ingest('book'));
     loader.parts = ['Cats sleep. Dogs walk. Tea at five.'];
-    const again = await rag.ingest('book');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const soon = await rag.ingest('book');
+      expect(soon.unchanged).toBe(1);
+      expect((await contents(store)).length).toBeGreaterThan(before.length);
 
-    expect(again.unchanged).toBe(1);
-    expect(await contents(store)).toEqual(before);
-    expect(before.length).toBe(first.chunks);
+      vi.setSystemTime(Date.now() + 11 * 60_000);
+      const later = await rag.ingest('book');
+      expect(later.unchanged).toBe(1);
+      expect(await contents(store)).toEqual(before);
+      expect(before.length).toBe(first.chunks);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps one copy of a source two pipelines ingest at once', async () => {
+    loader.parts = ['Cats sleep. Dogs walk. Tea at five.'];
+    const first = partsPipeline(store, loader, embedding, 12);
+    const second = partsPipeline(store, loader, embedding, 12);
+    await first.ingest('book');
+
+    loader.parts = ['Cats nap. Dogs run far. Tea at six.'];
+    await Promise.all([first.ingest('book'), second.ingest('book')]);
+
+    const stored = await contents(store);
+    expect(stored.length).toBeGreaterThan(0);
+    expect(new Set(stored).size).toBe(stored.length);
+    expect(stored.join(' ')).toContain('Cats nap.');
+    expect(await first.ingest('book')).toMatchObject({ unchanged: 1 });
+  });
+
+  it('ingests a source once at a time within one pipeline', async () => {
+    loader.parts = ['Cats sleep. Dogs walk.'];
+    const rag = partsPipeline(store, loader, embedding, 12);
+    await rag.ingest('book');
+    loader.parts = ['Cats nap. Dogs run.'];
+
+    await Promise.all([rag.ingest('book'), rag.ingest('book'), rag.ingest('book')]);
+
+    const stored = await contents(store);
+    expect(new Set(stored).size).toBe(stored.length);
+    expect(stored.join(' ')).toContain('Cats nap.');
   });
 });
