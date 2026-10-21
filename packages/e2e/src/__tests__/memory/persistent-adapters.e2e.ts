@@ -77,8 +77,7 @@ describeRedis('Memory: Redis adapter', () => {
   beforeAll(async () => {
     adapter = new RedisAdapter({
       provider: 'redis',
-      host: 'localhost',
-      port: 6379,
+      url: process.env.TEST_REDIS_URL ?? 'redis://localhost:6379',
       keyPrefix: `cogitator-e2e-${Date.now()}:`,
       ttl: 600,
     });
@@ -104,7 +103,7 @@ describeRedisOllama('Memory: agent with Redis memory', () => {
       llm: { defaultModel: `ollama/${getTestModel()}` },
       memory: {
         adapter: 'redis',
-        redis: { url: 'redis://localhost:6379', keyPrefix },
+        redis: { url: process.env.TEST_REDIS_URL ?? 'redis://localhost:6379', keyPrefix },
       },
     });
   });
@@ -122,8 +121,7 @@ describeRedisOllama('Memory: agent with Redis memory', () => {
 
     const adapter = new RedisAdapter({
       provider: 'redis',
-      host: 'localhost',
-      port: 6379,
+      url: process.env.TEST_REDIS_URL ?? 'redis://localhost:6379',
       keyPrefix,
     });
     await adapter.connect();

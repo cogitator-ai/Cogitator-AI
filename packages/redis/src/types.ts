@@ -94,6 +94,13 @@ export interface RedisClient {
 
   smembers(key: string): Promise<string[]>;
 
+  /**
+   * Runs a Lua script atomically: `numKeys` of `args` are its `KEYS`, the rest its `ARGV`. In
+   * cluster mode every key the script touches must hash to one slot, so give them a `{hash tag}`.
+   * Its keys get `keyPrefix` like the keys of any other command.
+   */
+  eval(script: string, numKeys: number, ...args: (string | number)[]): Promise<unknown>;
+
   publish(channel: string, message: string): Promise<number>;
   /** Channels are not prefixed with `keyPrefix`. A subscribed connection can only run pub/sub commands, use `duplicate()`. */
   subscribe(channel: string, callback?: (channel: string, message: string) => void): Promise<void>;

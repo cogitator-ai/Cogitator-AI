@@ -81,7 +81,9 @@ describeRedis('Workflows: checkpoints in Redis', () => {
   let client: RedisClient;
 
   beforeAll(async () => {
-    client = await createRedisClient({ url: 'redis://localhost:6379' });
+    client = await createRedisClient({
+      url: process.env.TEST_REDIS_URL ?? 'redis://localhost:6379',
+    });
   });
 
   afterAll(async () => {

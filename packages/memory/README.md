@@ -242,6 +242,7 @@ interface MemoryAdapter {
   getThread(threadId: string): Promise<MemoryResult<Thread | null>>;
   updateThread(threadId: string, metadata: Record<string, unknown>): Promise<MemoryResult<Thread>>;
   deleteThread(threadId: string): Promise<MemoryResult<void>>;
+  listThreads(options?: ListThreadsOptions): Promise<MemoryResult<ThreadPage>>;
 
   addEntry(entry: Omit<MemoryEntry, 'id' | 'createdAt'>): Promise<MemoryResult<MemoryEntry>>;
   getEntries(options: MemoryQueryOptions): Promise<MemoryResult<MemoryEntry[]>>;
@@ -272,6 +273,19 @@ await memory.updateThread(thread.id, {
 await memory.deleteThread(thread.id);
 ```
 
+`listThreads` pages through threads, the most recently updated first, filtered by agent, metadata values (compared by type) and update time. Pass `nextCursor` back for the next page:
+
+```typescript
+const page = unwrap(
+  await memory.listThreads({ agentId: 'agent-1', metadata: { user: 'user-123' }, limit: 20 })
+);
+const next = page.nextCursor
+  ? unwrap(await memory.listThreads({ agentId: 'agent-1', cursor: page.nextCursor }))
+  : undefined;
+```
+
+A thread's `updatedAt` changes when it is created or its metadata is updated. Every adapter keeps the same contract: `addEntry` into a missing thread fails, `updateThread` is atomic, entries with one `createdAt` keep the order they were added in, fields never set come back absent rather than `null`, and returned objects are copies. `memoryAdapterConformanceCases` in `@cogitator-ai/test-utils` checks it, also for adapters of your own.
+
 ### Entry Operations
 
 ```typescript
@@ -286,7 +300,7 @@ const entry = unwrap(
 const entries = unwrap(
   await memory.getEntries({
     threadId: thread.id,
-    limit: 50, // the most recent 50, oldest first
+    limit: 50, // the most recent 50, oldest first, 0 for all
     includeToolCalls: true,
     // before / after: Date bounds
   })

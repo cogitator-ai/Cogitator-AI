@@ -1,6 +1,6 @@
 ---
 title: Memory Adapters
-description: Choose and configure memory adapters for agent persistence — InMemory, Redis, Postgres, SQLite, MongoDB, and Qdrant.
+description: Choose and configure memory adapters for agent persistence: InMemory, Redis, Postgres, SQLite, MongoDB and Qdrant, the contract they share and how to list threads.
 ---
 
 ## Adapter Factory
@@ -14,19 +14,60 @@ const memory = await createMemoryAdapter({ provider: 'sqlite', path: './memory.d
 unwrap(await memory.connect());
 ```
 
-`createMemoryAdapter` handles `memory`, `redis`, `postgres`, `sqlite` and `mongodb` and returns the common `MemoryAdapter` interface. For Qdrant use `createEmbeddingAdapter({ provider: 'qdrant', dimensions })`, which returns a `ConnectableEmbeddingAdapter` (an `EmbeddingAdapter` with `connect()` and `disconnect()`) to connect before use. Construct the class directly (e.g. `new PostgresAdapter(...)`) when you need its extra capabilities — facts, vector or keyword search.
+`createMemoryAdapter` handles `memory`, `redis`, `postgres`, `sqlite` and `mongodb` and returns the common `MemoryAdapter` interface. For Qdrant use `createEmbeddingAdapter({ provider: 'qdrant', dimensions })`, which returns a `ConnectableEmbeddingAdapter` (an `EmbeddingAdapter` with `connect()` and `disconnect()`) to connect before use. Construct the class directly (e.g. `new PostgresAdapter(...)`) when you need its extra capabilities: facts, vector or keyword search.
 
 Database drivers are optional peer dependencies, installed by you and not with `@cogitator-ai/memory` or `@cogitator-ai/core`: each section below names the one its adapter needs, and an adapter whose driver is missing fails `connect()` with the install command.
 
-All conversation adapters share the same `MemoryAdapter` interface: `createThread`, `getThread`, `updateThread`, `deleteThread`, `addEntry`, `getEntries`, `getEntry`, `deleteEntry`, `clearThread`, `connect` and `disconnect`. Some adapters add `FactAdapter`, `EmbeddingAdapter` or `KeywordSearchAdapter`.
+All conversation adapters share the same `MemoryAdapter` interface: `createThread`, `getThread`, `updateThread`, `deleteThread`, `listThreads`, `addEntry`, `getEntries`, `getEntry`, `deleteEntry`, `clearThread`, `connect` and `disconnect`. Some adapters add `FactAdapter`, `EmbeddingAdapter` or `KeywordSearchAdapter`.
 
-Every method — `connect()` included — returns a `MemoryResult` instead of throwing, so a failed connection goes unnoticed unless you check it. Wrap calls in `unwrap()` (throws on failure) or check `result.success`; see [Results and `unwrap()`](/docs/memory#results-and-unwrap).
+Every method, `connect()` included, returns a `MemoryResult` instead of throwing, so a failed connection goes unnoticed unless you check it. Wrap calls in `unwrap()` (throws on failure) or check `result.success`; see [Results and `unwrap()`](/docs/memory#results-and-unwrap).
 
 Calling `createThread` with an existing thread id is an upsert in every adapter: stored entries and the stored `createdAt` are kept, only the agent id and metadata change. `updateThread` merges the given metadata into the existing one.
 
+## The Contract
+
+Every built-in adapter behaves the same way, checked by one conformance suite against live databases:
+
+- `getThread` and `getEntry` give `null` for what does not exist, `updateThread` of a missing thread fails, and `addEntry` into a thread that does not exist fails.
+- `updateThread` is atomic: concurrent updates of different keys all land.
+- `getEntries` returns entries oldest first, entries with the same `createdAt` in the order they were added. `limit` keeps the newest entries, `0` or no limit returns them all, and a negative or fractional limit fails.
+- `toolCalls` and `toolResults` come back only with `includeToolCalls`, and a field that was never set is absent, never `null`.
+- `deleteThread` removes the thread's entries too, `clearThread` keeps the thread.
+- Returned threads and entries are copies: changing them does not change what is stored.
+
+The suite ships in `@cogitator-ai/test-utils` as `memoryAdapterConformanceCases`, so an adapter of your own can be checked the same way (see [Test Utils](/docs/testing/test-utils#conformance-suites)).
+
+## Listing Threads
+
+`listThreads` returns threads in pages, the most recently updated first. A thread's `updatedAt` changes when it is created or its metadata is updated, not when an entry is added.
+
+```typescript
+const page = unwrap(
+  await memory.listThreads({
+    agentId: 'support',
+    metadata: { userId: 'u_42', archived: false },
+    updatedAfter: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+    limit: 20,
+  })
+);
+
+for (const thread of page.threads) console.log(thread.id, thread.updatedAt);
+if (page.nextCursor) {
+  const next = unwrap(await memory.listThreads({ agentId: 'support', cursor: page.nextCursor }));
+}
+```
+
+- `metadata` matches top-level keys by equal value and type: `{ n: 1 }` does not match `'1'`.
+- `limit` is 50 by default and at most 500. `order: 'asc'` starts with the oldest update.
+- Pass `nextCursor` with the same filters and order to read the next page. It is absent on the last page.
+
+`SessionManager.list()` finds sessions this way, so it no longer keeps an index thread.
+
+Redis keeps an index of threads by update time for this. Threads written before the index existed are added to it the first time threads are listed. SQLite, Postgres and MongoDB filter and page in the database with an index on agent and update time.
+
 ## InMemory
 
-Zero-dependency in-process storage. Data is lost when the process exits — and when you call `disconnect()`.
+Zero-dependency in-process storage. Data is lost when the process exits, and when you call `disconnect()`.
 
 ```typescript
 import { InMemoryAdapter, unwrap } from '@cogitator-ai/memory';

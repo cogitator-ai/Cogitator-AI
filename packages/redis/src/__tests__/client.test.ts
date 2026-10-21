@@ -23,6 +23,7 @@ function createMockRawClient() {
     zrangebyscore: vi.fn().mockResolvedValue([]),
     zrem: vi.fn().mockResolvedValue(1),
     smembers: vi.fn().mockResolvedValue([]),
+    eval: vi.fn().mockResolvedValue(1),
     publish: vi.fn().mockResolvedValue(1),
     subscribe: vi.fn().mockResolvedValue(undefined),
     unsubscribe: vi.fn().mockResolvedValue(undefined),
@@ -236,6 +237,12 @@ describe('wrapClient (via createRedisClient)', () => {
   it('delegates smembers', async () => {
     await client.smembers('setkey');
     expect(rawClient.smembers).toHaveBeenCalledWith('setkey');
+  });
+
+  it('delegates eval with its keys and arguments', async () => {
+    const result = await client.eval('return 1', 2, 'k1', 'k2', 'a', 3);
+    expect(rawClient.eval).toHaveBeenCalledWith('return 1', 2, 'k1', 'k2', 'a', 3);
+    expect(result).toBe(1);
   });
 
   it('keys iterates SCAN until the cursor returns to 0', async () => {

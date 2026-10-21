@@ -1,0 +1,44 @@
+# Services the e2e suites run against, on ports of their own so they do not clash with the
+# Postgres, Redis, Qdrant and MongoDB you may already run:
+#   docker compose -f packages/e2e/compose.yml up -d --wait
+# then run the suites with
+#   TEST_POSTGRES_URL=postgresql://cogitator:cogitator@127.0.0.1:58432/cogitator \
+#   TEST_REDIS=true TEST_REDIS_URL=redis://127.0.0.1:58379 \
+#   TEST_MONGODB_URL=mongodb://127.0.0.1:58017 TEST_QDRANT_URL=http://127.0.0.1:58333 \
+#   pnpm --filter @cogitator-ai/e2e test -- --run src/__tests__/memory
+name: cogitator-e2e
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: cogitator
+      POSTGRES_PASSWORD: cogitator
+      POSTGRES_DB: cogitator
+    ports: ['58432:5432']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U cogitator']
+      interval: 2s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    ports: ['58379:6379']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 2s
+      retries: 30
+
+  qdrant:
+    image: qdrant/qdrant:v1.15.4
+    ports: ['58333:6333']
+
+  # MongoDB 8 refuses to start on Linux 6.19 and newer (SERVER-121912), which recent Docker
+  # VMs run, so the suites stay on 7.0 until that is fixed.
+  mongodb:
+    image: mongo:7.0
+    ports: ['58017:27017']
+    healthcheck:
+      test: ['CMD', 'mongosh', '--quiet', '--eval', 'db.adminCommand({ping:1}).ok']
+      interval: 2s
+      retries: 30

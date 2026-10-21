@@ -26,6 +26,7 @@ interface RawRedisClient {
   zrangebyscore(key: string, min: number | string, max: number | string): Promise<string[]>;
   zrem(key: string, ...members: string[]): Promise<number>;
   smembers(key: string): Promise<string[]>;
+  eval(script: string, numKeys: number, ...args: (string | number)[]): Promise<unknown>;
   publish(channel: string, message: string): Promise<number>;
   subscribe(channel: string): Promise<void>;
   unsubscribe(channel: string): Promise<void>;
@@ -261,6 +262,7 @@ function wrapClient(client: RawRedisClient, options: WrapOptions): RedisClient {
     zrangebyscore: (key, min, max) => client.zrangebyscore(key, min, max),
     zrem: (key, ...members) => client.zrem(key, ...members),
     smembers: (key) => client.smembers(key),
+    eval: (script, numKeys, ...args) => client.eval(script, numKeys, ...args),
     publish: (channel, message) => client.publish(channel, message),
     subscribe: async (channel, callback) => {
       if (callback) {

@@ -368,7 +368,9 @@ describeRedis('Workflows: runs in Redis', () => {
   let stores = 0;
 
   beforeAll(async () => {
-    client = await createRedisClient({ url: 'redis://localhost:6379' });
+    client = await createRedisClient({
+      url: process.env.TEST_REDIS_URL ?? 'redis://localhost:6379',
+    });
   });
 
   afterAll(async () => {

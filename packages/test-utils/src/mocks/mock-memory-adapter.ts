@@ -6,6 +6,8 @@ import type {
   MemoryResult,
   MemoryProvider,
   MemoryQueryOptions,
+  ListThreadsOptions,
+  ThreadPage,
 } from '@cogitator-ai/types';
 
 export class MockMemoryAdapter implements MemoryAdapter {
@@ -81,6 +83,36 @@ export class MockMemoryAdapter implements MemoryAdapter {
     this.threads.delete(threadId);
     this.entries.delete(threadId);
     return { success: true, data: undefined };
+  }
+
+  async listThreads(options: ListThreadsOptions = {}): Promise<MemoryResult<ThreadPage>> {
+    this._calls.push({ method: 'listThreads', args: [options] });
+    const limit = options.limit ?? 50;
+    const start = options.cursor === undefined ? 0 : Number(options.cursor);
+    if (!Number.isInteger(start) || start < 0) {
+      return { success: false, error: 'listThreads cursor is not valid' };
+    }
+    const sign = options.order === 'asc' ? 1 : -1;
+    const matching = [...this.threads.values()]
+      .filter(
+        (thread) =>
+          (options.agentId === undefined || thread.agentId === options.agentId) &&
+          (!options.updatedAfter || thread.updatedAt >= options.updatedAfter) &&
+          Object.entries(options.metadata ?? {}).every(
+            ([key, value]) => thread.metadata[key] === value
+          )
+      )
+      .sort(
+        (a, b) => sign * (a.updatedAt.getTime() - b.updatedAt.getTime() || a.id.localeCompare(b.id))
+      );
+    const threads = matching.slice(start, start + limit);
+    return {
+      success: true,
+      data: {
+        threads,
+        ...(start + limit < matching.length && { nextCursor: String(start + limit) }),
+      },
+    };
   }
 
   async addEntry(entry: Omit<MemoryEntry, 'id' | 'createdAt'>): Promise<MemoryResult<MemoryEntry>> {

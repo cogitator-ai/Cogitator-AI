@@ -11,24 +11,12 @@ import type {
 } from '@cogitator-ai/types';
 import type { CompactionService } from './compaction';
 
-const SESSION_INDEX_THREAD = '__cogitator_session_index__';
-const LEGACY_CHANNEL_TYPES = ['telegram', 'discord', 'slack', 'whatsapp', 'webchat'];
-
-interface SessionIndexMetadata {
-  _sessionIndex: true;
-  sessions: string[];
-  [key: string]: unknown;
-}
-
-const DEFAULT_INDEX_REFRESH_INTERVAL = 60_000;
-
 export interface SessionManagerOptions {
   /** Enables `compact()`; without it compaction must be done with CompactionService directly */
   compaction?: CompactionService;
   /**
-   * How often, at most, using a session rewrites the session index (milliseconds, default one
-   * minute). Rewriting keeps the index alive in stores whose threads expire, such as Redis with
-   * a TTL: keep it well below that TTL.
+   * @deprecated Sessions are found with the adapter's `listThreads`, no index thread is kept any
+   * more. The option is ignored.
    */
   indexRefreshInterval?: number;
 }
@@ -84,68 +72,18 @@ function extractUserMetadata(meta: SessionMetadata): Record<string, unknown> {
   return result;
 }
 
+/** Threads read per `listThreads` call when listing sessions. */
+const SESSION_PAGE = 200;
+
 function isSessionThread(thread: Thread): boolean {
   return (thread.metadata as SessionMetadata)?._session === true;
 }
 
 export class SessionManager implements ISessionManager {
-  private indexQueue: Promise<void> = Promise.resolve();
-  private indexedSessions = new Set<string>();
-  private indexWrittenAt = Number.NEGATIVE_INFINITY;
-
   constructor(
     private readonly adapter: MemoryAdapter,
     private readonly options: SessionManagerOptions = {}
   ) {}
-
-  /**
-   * Sessions are tracked in an index thread so they can be listed with any adapter.
-   * Updates are serialized within this manager.
-   */
-  private updateIndex(mutate: (sessions: Set<string>) => void): Promise<void> {
-    const run = async (): Promise<void> => {
-      const existing = await this.adapter.getThread(SESSION_INDEX_THREAD);
-      const meta = existing.success
-        ? (existing.data?.metadata as SessionIndexMetadata | undefined)
-        : undefined;
-      const sessions = new Set(meta?._sessionIndex ? meta.sessions : []);
-      mutate(sessions);
-
-      const metadata: SessionIndexMetadata = { _sessionIndex: true, sessions: [...sessions] };
-      const result =
-        existing.success && existing.data
-          ? await this.adapter.updateThread(SESSION_INDEX_THREAD, metadata)
-          : await this.adapter.createThread('system', metadata, SESSION_INDEX_THREAD);
-      if (!result.success) {
-        throw new Error(`Failed to update session index: ${result.error}`);
-      }
-      this.indexedSessions = sessions;
-      this.indexWrittenAt = Date.now();
-    };
-
-    const next = this.indexQueue.then(run, run);
-    this.indexQueue = next.catch(() => {});
-    return next;
-  }
-
-  /**
-   * Records that `sessionId` is in use: adds it to the index when the index lost it (an index
-   * thread that expired, or one rewritten by another process) and rewrites the index at most
-   * once per `indexRefreshInterval`, which keeps it from expiring while sessions are active.
-   */
-  private touchIndex(sessionId: string): Promise<void> {
-    const interval = this.options.indexRefreshInterval ?? DEFAULT_INDEX_REFRESH_INTERVAL;
-    const fresh = Date.now() - this.indexWrittenAt < interval;
-    if (fresh && this.indexedSessions.has(sessionId)) return Promise.resolve();
-    return this.updateIndex((sessions) => sessions.add(sessionId));
-  }
-
-  private async indexedSessionIds(): Promise<string[]> {
-    const index = await this.adapter.getThread(SESSION_INDEX_THREAD);
-    if (!index.success || !index.data) return [];
-    const meta = index.data.metadata as SessionIndexMetadata;
-    return meta._sessionIndex ? meta.sessions : [];
-  }
 
   async getOrCreate(params: {
     userId: string;
@@ -158,7 +96,6 @@ export class SessionManager implements ISessionManager {
     const existing = await this.adapter.getThread(threadId);
     if (existing.success && existing.data) {
       const session = threadToSession(existing.data);
-      await this.touchIndex(threadId);
       if (session.status === 'archived') {
         await this.adapter.updateThread(threadId, {
           ...(existing.data.metadata as Record<string, unknown>),
@@ -184,8 +121,6 @@ export class SessionManager implements ISessionManager {
     if (!result.success) {
       throw new Error(`Failed to create session: ${result.error}`);
     }
-    await this.updateIndex((sessions) => sessions.add(threadId));
-
     return threadToSession(result.data);
   }
 
@@ -238,43 +173,34 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
-   * List sessions tracked by this manager's index (plus sessions created before the index
-   * existed, found by user id for the built-in channel types).
+   * Sessions matching `filter`, most recently active first, found with the adapter's
+   * `listThreads` among the threads marked as sessions.
    */
   async list(filter?: SessionFilter): Promise<Session[]> {
-    const ids = new Set(await this.indexedSessionIds());
-    if (filter?.userId) {
-      for (const channelType of LEGACY_CHANNEL_TYPES) {
-        ids.add(`session_${channelType}_${filter.userId}`);
+    const metadata: Record<string, string | boolean> = {
+      _session: true,
+      ...(filter?.userId !== undefined && { userId: filter.userId }),
+      ...(filter?.channelType !== undefined && { channelType: filter.channelType }),
+    };
+    const sessions: Session[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.adapter.listThreads({
+        metadata,
+        ...(filter?.agentId !== undefined && { agentId: filter.agentId }),
+        ...(filter?.activeSince && { updatedAfter: filter.activeSince }),
+        limit: SESSION_PAGE,
+        ...(cursor && { cursor }),
+      });
+      if (!page.success) throw new Error(`Failed to list sessions: ${page.error}`);
+      for (const thread of page.data.threads) {
+        const session = threadToSession(thread);
+        if (filter?.status && session.status !== filter.status) continue;
+        if (filter?.activeSince && session.lastActiveAt < filter.activeSince) continue;
+        sessions.push(session);
       }
-    }
-
-    const threads: Thread[] = [];
-    for (const id of ids) {
-      const result = await this.adapter.getThread(id);
-      if (result.success && result.data && isSessionThread(result.data)) {
-        threads.push(result.data);
-      }
-    }
-
-    let sessions = threads.map(threadToSession);
-
-    if (filter?.userId) {
-      sessions = sessions.filter((s) => s.userId === filter.userId);
-    }
-    if (filter?.channelType) {
-      sessions = sessions.filter((s) => s.channelType === filter.channelType);
-    }
-    if (filter?.agentId) {
-      sessions = sessions.filter((s) => s.agentId === filter.agentId);
-    }
-    if (filter?.status) {
-      sessions = sessions.filter((s) => s.status === filter.status);
-    }
-    if (filter?.activeSince) {
-      const since = filter.activeSince;
-      sessions = sessions.filter((s) => s.lastActiveAt >= since);
-    }
+      cursor = page.data.nextCursor;
+    } while (cursor);
 
     sessions.sort((a, b) => b.lastActiveAt.getTime() - a.lastActiveAt.getTime());
 
@@ -288,7 +214,6 @@ export class SessionManager implements ISessionManager {
     if (!result.success) {
       throw new Error(`Failed to delete session: ${result.error}`);
     }
-    await this.updateIndex((sessions) => sessions.delete(sessionId));
   }
 
   async incrementMessageCount(sessionId: string): Promise<void> {

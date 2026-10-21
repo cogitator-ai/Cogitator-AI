@@ -9,17 +9,18 @@ description: '@cogitator-ai/test-utils — a scriptable mock LLM backend, a reco
 pnpm add -D @cogitator-ai/test-utils
 ```
 
-| Export                                                    | What it is                                                                                |
-| --------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `MockLLMBackend`, `createMockLLMBackend()`                | An `LLMBackend` that answers with scripted responses and records every request            |
-| `MockMemoryAdapter`, `createMockMemoryAdapter()`          | An in-process `MemoryAdapter` that records every method call                              |
-| `createTestAgentConfig()`, `createTestAgent()`            | Agent configs and agent-shaped objects with test defaults                                 |
-| `createUserMessage()`, `createToolCall()`, …              | Message, tool call and tool result fixtures                                               |
-| `createTestTool()`, `createCalculatorTool()`, …           | Tool-shaped fixtures with JSON Schema parameters                                          |
-| `createMockRunResult()`, …                                | `RunResult` fixtures for code that consumes run results                                   |
-| `collectStreamContent()`, …                               | Drain `ChatStreamChunk` streams                                                           |
-| `waitFor()`, `eventually()`, `delay()`, `withTimeout()`   | Async test helpers                                                                        |
-| `backendConformanceCases()`, `startFakeProvider()`, wires | The [backend conformance](/docs/testing/backend-conformance) kit for backends of your own |
+| Export                                                                  | What it is                                                                                |
+| ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `MockLLMBackend`, `createMockLLMBackend()`                              | An `LLMBackend` that answers with scripted responses and records every request            |
+| `MockMemoryAdapter`, `createMockMemoryAdapter()`                        | An in-process `MemoryAdapter` that records every method call                              |
+| `createTestAgentConfig()`, `createTestAgent()`                          | Agent configs and agent-shaped objects with test defaults                                 |
+| `createUserMessage()`, `createToolCall()`, …                            | Message, tool call and tool result fixtures                                               |
+| `createTestTool()`, `createCalculatorTool()`, …                         | Tool-shaped fixtures with JSON Schema parameters                                          |
+| `createMockRunResult()`, …                                              | `RunResult` fixtures for code that consumes run results                                   |
+| `collectStreamContent()`, …                                             | Drain `ChatStreamChunk` streams                                                           |
+| `waitFor()`, `eventually()`, `delay()`, `withTimeout()`                 | Async test helpers                                                                        |
+| `backendConformanceCases()`, `startFakeProvider()`, wires               | The [backend conformance](/docs/testing/backend-conformance) kit for backends of your own |
+| `memoryAdapterConformanceCases()`, `embeddingAdapterConformanceCases()` | [Conformance suites](#conformance-suites) for memory adapters and embedding stores        |
 
 ## MockLLMBackend
 
@@ -204,6 +205,33 @@ expect(memory.getCallsFor('addEntry').length).toBeGreaterThan(0);
 ```
 
 Besides the `MemoryAdapter` methods it has `getCalls()` (`{ method, args }[]`), `getCallsFor(method)`, `isConnected()` and `reset()` (clears threads, entries, calls and the connection flag). `cog.close()` disconnects it.
+
+## Conformance Suites
+
+`memoryAdapterConformanceCases` and `embeddingAdapterConformanceCases` check a memory adapter or an embedding store against the contract the built-in ones keep (see [the contract](/docs/memory/adapters#the-contract)). They are plain functions that return cases, so any test runner can run them:
+
+```typescript
+import { describe, it } from 'vitest';
+import { memoryAdapterConformanceCases } from '@cogitator-ai/test-utils';
+import { MyAdapter } from '../my-adapter';
+
+describe('MyAdapter conformance', () => {
+  for (const c of memoryAdapterConformanceCases({
+    create: async () => {
+      const adapter = new MyAdapter({ url: process.env.MY_STORE_URL! });
+      await adapter.connect();
+      return adapter;
+    },
+    release: async (adapter) => {
+      await adapter.disconnect();
+    },
+  })) {
+    (c.skip ? it.skip : it)(c.name, () => c.run());
+  }
+});
+```
+
+Each case touches only threads or embeddings of its own, so one database can serve them all. `skip` leaves a case out with a reason. The embedding suite also takes the `dimensions` the store was made for.
 
 ## Fixtures
 

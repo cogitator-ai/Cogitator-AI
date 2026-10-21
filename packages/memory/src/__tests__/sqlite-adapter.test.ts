@@ -227,6 +227,54 @@ describe('SQLiteAdapter', () => {
       expect(mockDb.prepare).toHaveBeenCalledWith(expect.stringContaining('UPDATE threads'));
     });
 
+    it('reads and writes an update in one immediate transaction', async () => {
+      const now = new Date().toISOString();
+      mockStmt.get.mockReturnValueOnce({
+        id: 'thread_123',
+        agent_id: 'agent1',
+        metadata: '{}',
+        created_at: now,
+        updated_at: now,
+      });
+
+      await adapter.updateThread('thread_123', { b: 2 });
+
+      const statements = mockDb.exec.mock.calls.map(([sql]) => sql);
+      expect(statements.slice(-2)).toEqual(['BEGIN IMMEDIATE', 'COMMIT']);
+    });
+
+    it('rolls back when the thread to update is missing', async () => {
+      await adapter.updateThread('nonexistent', { b: 2 });
+
+      expect(mockDb.exec.mock.calls.map(([sql]) => sql).slice(-1)).toEqual(['ROLLBACK']);
+    });
+
+    it('lists threads by a quoted JSON path, checking the type of the value', async () => {
+      const result = await adapter.listThreads({
+        agentId: 'agent1',
+        metadata: { 'user.id': 'u1', archived: false, n: 1 },
+        limit: 5,
+      });
+
+      expect(result.success).toBe(true);
+      const sql = mockDb.prepare.mock.calls.map(([source]) => source).at(-1) ?? '';
+      expect(sql).toContain("json_type(metadata, ?) IN ('text') AND json_extract(metadata, ?) = ?");
+      expect(sql).toContain("json_type(metadata, ?) IN ('integer', 'real')");
+      expect(sql).toContain('ORDER BY updated_at DESC, id DESC LIMIT ?');
+      expect(mockStmt.all).toHaveBeenLastCalledWith(
+        'agent1',
+        '$."user.id"',
+        '$."user.id"',
+        'u1',
+        '$."archived"',
+        'false',
+        '$."n"',
+        '$."n"',
+        1,
+        6
+      );
+    });
+
     it('returns error for updating non-existent thread', async () => {
       mockStmt.get.mockReturnValueOnce(undefined);
 

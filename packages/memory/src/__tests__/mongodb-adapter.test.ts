@@ -4,6 +4,7 @@ import type {
   Document,
   Filter,
   FindCursor,
+  FindOneAndUpdateOptions,
   MongoClient as DriverClient,
   MongoClientOptions,
   WithId,
@@ -22,6 +23,11 @@ type CollectionSurface = Pick<
 > & {
   findOne(filter: Filter<StoredDoc>): Promise<WithId<StoredDoc> | null>;
   find(filter: Filter<StoredDoc>): CursorSurface;
+  findOneAndUpdate(
+    filter: Filter<StoredDoc>,
+    update: Document | Document[],
+    options: FindOneAndUpdateOptions
+  ): Promise<WithId<StoredDoc> | null>;
 };
 type ClientSurface = Pick<DriverClient, 'connect' | 'close'> & {
   db(name?: string): { collection(name: string): CollectionSurface };
@@ -36,6 +42,7 @@ const mockCollection = {
     .mockResolvedValue({ acknowledged: true, insertedId: 'test-id' }),
   findOne: vi.fn<CollectionSurface['findOne']>(),
   find: vi.fn<CollectionSurface['find']>(),
+  findOneAndUpdate: vi.fn<CollectionSurface['findOneAndUpdate']>(),
   updateOne: vi.fn<CollectionSurface['updateOne']>().mockResolvedValue({
     acknowledged: true,
     matchedCount: 1,
@@ -108,6 +115,7 @@ describe('MongoDBAdapter', () => {
     vi.clearAllMocks();
     mockCollection.find.mockReturnValue(cursorOver([]));
     mockCollection.findOne.mockResolvedValue(null);
+    mockCollection.findOneAndUpdate.mockResolvedValue({ _id: 'thread_123', entrySeq: 1 });
 
     adapter = new MongoDBAdapter({
       provider: 'mongodb',
@@ -132,8 +140,13 @@ describe('MongoDBAdapter', () => {
 
       expect(result.success).toBe(true);
       expect(mockClient.connect).toHaveBeenCalled();
-      expect(mockCollection.createIndex).toHaveBeenCalledWith({ agentId: 1 });
-      expect(mockCollection.createIndex).toHaveBeenCalledWith({ threadId: 1, createdAt: 1 });
+      expect(mockCollection.createIndex).toHaveBeenCalledWith({ agentId: 1, updatedAt: 1, _id: 1 });
+      expect(mockCollection.createIndex).toHaveBeenCalledWith({ updatedAt: 1, _id: 1 });
+      expect(mockCollection.createIndex).toHaveBeenCalledWith({
+        threadId: 1,
+        createdAt: 1,
+        seq: 1,
+      });
     });
 
     it('uses default database name', async () => {
@@ -248,30 +261,50 @@ describe('MongoDBAdapter', () => {
       }
     });
 
-    it('updates thread metadata', async () => {
+    it('merges thread metadata in the database, in one atomic update', async () => {
       const now = new Date();
-      mockCollection.findOne.mockResolvedValueOnce({
+      mockCollection.findOneAndUpdate.mockResolvedValueOnce({
         _id: 'thread_123',
         agentId: 'agent1',
-        metadata: { a: 1 },
+        metadata: { a: 1, b: 2 },
         createdAt: now,
         updatedAt: now,
+        entrySeq: 4,
       });
 
-      const result = await adapter.updateThread('thread_123', { b: 2 });
+      const result = await adapter.updateThread('thread_123', { b: 2, 'x.y': '$z' });
 
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.data.metadata).toEqual({ a: 1, b: 2 });
-      }
-      expect(mockCollection.updateOne).toHaveBeenCalledWith(
+      expect(result).toEqual({
+        success: true,
+        data: {
+          id: 'thread_123',
+          agentId: 'agent1',
+          metadata: { a: 1, b: 2 },
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+      expect(mockCollection.findOneAndUpdate).toHaveBeenCalledWith(
         { _id: 'thread_123' },
-        { $set: expect.objectContaining({ metadata: { a: 1, b: 2 } }) }
+        [
+          {
+            $set: {
+              metadata: {
+                $mergeObjects: [
+                  { $ifNull: ['$metadata', {}] },
+                  { $literal: { b: 2, 'x.y': '$z' } },
+                ],
+              },
+              updatedAt: { $literal: expect.any(Date) },
+            },
+          },
+        ],
+        { returnDocument: 'after' }
       );
     });
 
     it('returns error for updating non-existent thread', async () => {
-      mockCollection.findOne.mockResolvedValueOnce(null);
+      mockCollection.findOneAndUpdate.mockResolvedValueOnce(null);
 
       const result = await adapter.updateThread('nonexistent', {});
 
@@ -281,16 +314,91 @@ describe('MongoDBAdapter', () => {
       }
     });
 
-    it('deletes thread and its entries', async () => {
+    it('deletes the thread, then its entries', async () => {
       const result = await adapter.deleteThread('thread_123');
 
       expect(result.success).toBe(true);
-      expect(mockCollection.deleteMany).toHaveBeenCalledWith({ threadId: 'thread_123' });
       expect(mockCollection.deleteOne).toHaveBeenCalledWith({ _id: 'thread_123' });
+      expect(mockCollection.deleteMany).toHaveBeenCalledWith({ threadId: 'thread_123' });
+      expect(mockCollection.deleteOne.mock.invocationCallOrder[0]).toBeLessThan(
+        mockCollection.deleteMany.mock.invocationCallOrder[0] ?? 0
+      );
     });
   });
 
   describe('entry operations', () => {
+    const thread = {
+      _id: 'thread_123',
+      agentId: 'agent1',
+      metadata: {},
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+    };
+
+    beforeEach(() => {
+      mockCollection.findOne.mockResolvedValue(thread);
+    });
+
+    it('numbers the entries of a thread in the order they are added', async () => {
+      mockCollection.findOneAndUpdate.mockResolvedValueOnce({ _id: 'thread_123', entrySeq: 7 });
+
+      await adapter.addEntry({
+        threadId: 'thread_123',
+        message: { role: 'user', content: 'Hello' },
+        tokenCount: 1,
+      });
+
+      expect(mockCollection.findOneAndUpdate).toHaveBeenCalledWith(
+        { _id: 'thread_123' },
+        { $inc: { entrySeq: 1 } },
+        { returnDocument: 'after', projection: { entrySeq: 1 } }
+      );
+      expect(mockCollection.insertOne).toHaveBeenCalledWith(expect.objectContaining({ seq: 7 }));
+    });
+
+    it('refuses an entry for a thread that does not exist', async () => {
+      mockCollection.findOneAndUpdate.mockResolvedValueOnce(null);
+
+      const result = await adapter.addEntry({
+        threadId: 'missing',
+        message: { role: 'user', content: 'orphan' },
+        tokenCount: 1,
+      });
+
+      expect(result).toEqual({ success: false, error: 'Thread not found: missing' });
+      expect(mockCollection.insertOne).not.toHaveBeenCalled();
+    });
+
+    it('takes the entry back when the thread was deleted while it was added', async () => {
+      mockCollection.findOne.mockResolvedValueOnce(null);
+
+      const result = await adapter.addEntry({
+        threadId: 'thread_123',
+        message: { role: 'user', content: 'late' },
+        tokenCount: 1,
+      });
+
+      expect(result.success).toBe(false);
+      const inserted = mockCollection.insertOne.mock.calls[0]?.[0];
+      expect(mockCollection.deleteOne).toHaveBeenCalledWith({ _id: inserted?._id });
+    });
+
+    it('sorts entries by creation time, then by the order they were added', async () => {
+      const cursor = cursorOver([]);
+      mockCollection.find.mockReturnValueOnce(cursor);
+
+      await adapter.getEntries({ threadId: 'thread_123' });
+
+      expect(cursor.sort).toHaveBeenCalledWith({ createdAt: -1, seq: -1 });
+    });
+
+    it('refuses a limit that is not a whole number of 0 or more', async () => {
+      expect((await adapter.getEntries({ threadId: 'thread_123', limit: -1 })).success).toBe(false);
+      expect((await adapter.getEntries({ threadId: 'thread_123', limit: 2.5 })).success).toBe(
+        false
+      );
+      expect(mockCollection.find).not.toHaveBeenCalled();
+    });
     it('adds an entry', async () => {
       const message: Message = { role: 'user', content: 'Hello' };
       const result = await adapter.addEntry({
@@ -586,8 +694,10 @@ describe('MongoDBAdapter', () => {
         stored.set(id, { ...asStored(doc, options), _id: id });
         return { acknowledged: true, insertedId: id };
       });
-      mockCollection.findOne.mockImplementationOnce(
-        async (filter) => stored.get(String(filter._id)) ?? null
+      mockCollection.findOne.mockImplementation(async (filter) =>
+        filter._id === 'thread_123'
+          ? { _id: 'thread_123' }
+          : (stored.get(String(filter._id)) ?? null)
       );
 
       const written = await adapter.addEntry({
@@ -649,6 +759,72 @@ describe('MongoDBAdapter', () => {
 
       expect(single.success && single.data).toEqual(expected);
       expect(listed.success && listed.data).toEqual([expected]);
+    });
+  });
+
+  describe('listThreads', () => {
+    const doc = (id: string, updatedAt: number) => ({
+      _id: id,
+      agentId: 'agent1',
+      metadata: null,
+      createdAt: new Date(0),
+      updatedAt: new Date(updatedAt),
+    });
+
+    it('queries by agent, exact metadata values and update time, newest first', async () => {
+      const cursor = cursorOver([doc('t2', 2000), doc('t1', 1000)]);
+      mockCollection.find.mockReturnValueOnce(cursor);
+      const updatedAfter = new Date(500);
+
+      const result = await adapter.listThreads({
+        agentId: 'agent1',
+        metadata: { userId: 'u1', 'a.b': 1 },
+        updatedAfter,
+        limit: 2,
+      });
+
+      expect(mockCollection.find).toHaveBeenCalledWith({
+        $and: [
+          { agentId: { $eq: 'agent1' } },
+          { updatedAt: { $gte: updatedAfter } },
+          { 'metadata.userId': { $eq: 'u1', $not: { $type: 'array' } } },
+          {
+            $expr: {
+              $eq: [
+                { $getField: { field: { $literal: 'a.b' }, input: '$metadata' } },
+                { $literal: 1 },
+              ],
+            },
+          },
+        ],
+      });
+      expect(cursor.sort).toHaveBeenCalledWith({ updatedAt: -1, _id: -1 });
+      expect(cursor.limit).toHaveBeenCalledWith(3);
+      expect(result.success && result.data.threads.map((t) => t.metadata)).toEqual([{}, {}]);
+      expect(result.success && result.data.nextCursor).toBeUndefined();
+    });
+
+    it('continues after the cursor of the page before', async () => {
+      mockCollection.find.mockReturnValueOnce(
+        cursorOver([doc('t3', 3000), doc('t2', 3000), doc('t1', 1000)])
+      );
+      const first = await adapter.listThreads({ limit: 2, order: 'asc' });
+      const cursor = first.success ? first.data.nextCursor : undefined;
+      expect(cursor).toBeDefined();
+
+      mockCollection.find.mockReturnValueOnce(cursorOver([]));
+      await adapter.listThreads({ limit: 2, order: 'asc', ...(cursor && { cursor }) });
+
+      const at = new Date(3000);
+      expect(mockCollection.find).toHaveBeenLastCalledWith({
+        $and: [{ $or: [{ updatedAt: { $gt: at } }, { updatedAt: at, _id: { $gt: 't2' } }] }],
+      });
+    });
+
+    it('refuses bad options without querying', async () => {
+      expect((await adapter.listThreads({ limit: 501 })).success).toBe(false);
+      expect((await adapter.listThreads({ metadata: { "a'b": 'x' } })).success).toBe(false);
+      expect(mockCollection.find).not.toHaveBeenCalled();
     });
   });
 

@@ -110,6 +110,32 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: cogitator
+          POSTGRES_PASSWORD: cogitator
+          POSTGRES_DB: cogitator
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cogitator"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      mongodb:
+        image: mongo:7.0
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ping:1}).ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      qdrant:
+        image: qdrant/qdrant:v1.15.4
+        ports:
+          - 6333:6333
     steps:
       - uses: actions/checkout@v7
 
@@ -127,6 +153,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - run: pnpm build
+
+      - name: Wait for Qdrant
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:6333/readyz > /dev/null && break
+            sleep 1
+          done
 
       - name: Install Ollama
         run: curl -fsSL https://ollama.com/install.sh | sh
@@ -150,6 +183,9 @@ jobs:
           TEST_OLLAMA: 'true'
           TEST_MODEL: qwen2.5:0.5b
           TEST_REDIS: 'true'
+          TEST_POSTGRES_URL: postgresql://cogitator:cogitator@localhost:5432/cogitator
+          TEST_MONGODB_URL: mongodb://localhost:27017
+          TEST_QDRANT_URL: http://localhost:6333
           TEST_DOCKER: 'true'
           GOOGLE_API_KEY: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.GOOGLE_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.OLLAMA_API_KEY || '' }}

@@ -1,5 +1,7 @@
 import type {
+  ListThreadsOptions,
   Thread,
+  ThreadPage,
   MemoryEntry,
   MemoryQueryOptions,
   MemoryResult,
@@ -15,10 +17,13 @@ import type {
   Document,
   Filter,
   FindCursor,
+  FindOneAndUpdateOptions,
   MongoClient as DriverClient,
+  UpdateFilter,
   WithId,
 } from 'mongodb';
 import { BaseMemoryAdapter } from './base';
+import { threadListing, threadPage, type ThreadListing } from './thread-listing';
 
 /** A cursor over `find()` results, as far as the adapter reads it. */
 type MongoCursor<T extends Document> = Pick<FindCursor<WithId<T>>, 'sort' | 'limit' | 'toArray'>;
@@ -35,6 +40,11 @@ interface MongoCollection<T extends Document> extends Pick<
 > {
   findOne(filter: Filter<T>): Promise<WithId<T> | null>;
   find(filter: Filter<T>): MongoCursor<T>;
+  findOneAndUpdate(
+    filter: Filter<T>,
+    update: UpdateFilter<T> | Document[],
+    options: FindOneAndUpdateOptions
+  ): Promise<WithId<T> | null>;
 }
 
 interface MongoDatabase {
@@ -45,12 +55,14 @@ interface MongoClient extends Pick<DriverClient, 'connect' | 'close'> {
   db(name?: string): MongoDatabase;
 }
 
+/** `entrySeq` counts the entries added to the thread, to order those created at one time. */
 interface ThreadDoc {
   _id: string;
   agentId: string;
-  metadata: Record<string, unknown>;
+  metadata: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;
+  entrySeq?: number;
 }
 
 /**
@@ -72,6 +84,7 @@ interface EntryDoc {
   tokenCount: number;
   createdAt: Date;
   metadata?: Record<string, unknown> | null;
+  seq?: number;
 }
 
 function readMessage({ name, toolCallId, ...message }: StoredMessage): Message {
@@ -99,12 +112,47 @@ function readEntry(doc: WithId<EntryDoc>, withToolCalls: boolean): MemoryEntry {
     id: doc._id,
     threadId: doc.threadId,
     message: readMessage(doc.message),
-    toolCalls: withToolCalls ? doc.toolCalls?.map(readToolCall) : undefined,
-    toolResults: withToolCalls ? doc.toolResults?.map(readToolResult) : undefined,
+    ...(withToolCalls && doc.toolCalls && { toolCalls: doc.toolCalls.map(readToolCall) }),
+    ...(withToolCalls && doc.toolResults && { toolResults: doc.toolResults.map(readToolResult) }),
     tokenCount: doc.tokenCount,
     createdAt: doc.createdAt,
-    metadata: doc.metadata ?? undefined,
+    ...(doc.metadata && { metadata: doc.metadata }),
   };
+}
+
+function readThread(doc: WithId<ThreadDoc>): Thread {
+  return {
+    id: doc._id,
+    agentId: doc.agentId,
+    metadata: doc.metadata ?? {},
+    createdAt: doc.createdAt,
+    updatedAt: doc.updatedAt,
+  };
+}
+
+/**
+ * Threads whose metadata holds exactly `value` under the top-level `key`. A plain key is matched
+ * as a path, leaving out arrays that would match by holding the value. A key with a dot names a
+ * field with a dot in it, which only `$getField` reads.
+ */
+function metadataEquals(key: string, value: string | number | boolean): Filter<ThreadDoc> {
+  if (!key.includes('.')) {
+    return { [`metadata.${key}`]: { $eq: value, $not: { $type: 'array' } } };
+  }
+  return {
+    $expr: {
+      $eq: [{ $getField: { field: { $literal: key }, input: '$metadata' } }, { $literal: value }],
+    },
+  };
+}
+
+/** Threads after the cursor of `listing` in its order. */
+function afterCursor({ cursor, order }: ThreadListing): Filter<ThreadDoc> | undefined {
+  if (!cursor) return undefined;
+  const at = new Date(cursor.updatedAt);
+  return order === 'asc'
+    ? { $or: [{ updatedAt: { $gt: at } }, { updatedAt: at, _id: { $gt: cursor.id } }] }
+    : { $or: [{ updatedAt: { $lt: at } }, { updatedAt: at, _id: { $lt: cursor.id } }] };
 }
 
 export class MongoDBAdapter extends BaseMemoryAdapter {
@@ -159,10 +207,12 @@ export class MongoDBAdapter extends BaseMemoryAdapter {
       client = new MongoClient(this.uri, { ignoreUndefined: true });
       await client.connect();
       const db = client.db(this.database);
-      await db.collection<ThreadDoc>(`${this.prefix}threads`).createIndex({ agentId: 1 });
+      const threads = db.collection<ThreadDoc>(`${this.prefix}threads`);
+      await threads.createIndex({ agentId: 1, updatedAt: 1, _id: 1 });
+      await threads.createIndex({ updatedAt: 1, _id: 1 });
       await db
         .collection<EntryDoc>(`${this.prefix}entries`)
-        .createIndex({ threadId: 1, createdAt: 1 });
+        .createIndex({ threadId: 1, createdAt: 1, seq: 1 });
 
       this.client = client;
       this.db = db;
@@ -223,15 +273,32 @@ export class MongoDBAdapter extends BaseMemoryAdapter {
 
     try {
       const doc = await this.threads.findOne({ _id: threadId });
-      if (!doc) return this.success(null);
+      return this.success(doc ? readThread(doc) : null);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
 
-      return this.success({
-        id: doc._id,
-        agentId: doc.agentId,
-        metadata: doc.metadata,
-        createdAt: doc.createdAt,
-        updatedAt: doc.updatedAt,
-      });
+  async listThreads(options?: ListThreadsOptions): Promise<MemoryResult<ThreadPage>> {
+    const listing = threadListing(options);
+    if (typeof listing === 'string') return this.failure(listing);
+    if (!this.db) return this.failure('Not connected');
+
+    const conditions: Filter<ThreadDoc>[] = [];
+    if (listing.agentId !== undefined) conditions.push({ agentId: { $eq: listing.agentId } });
+    if (listing.updatedAfter) conditions.push({ updatedAt: { $gte: listing.updatedAfter } });
+    for (const [key, value] of listing.metadata) conditions.push(metadataEquals(key, value));
+    const after = afterCursor(listing);
+    if (after) conditions.push(after);
+    const direction = listing.order === 'asc' ? 1 : -1;
+
+    try {
+      const docs = await this.threads
+        .find(conditions.length > 0 ? { $and: conditions } : {})
+        .sort({ updatedAt: direction, _id: direction })
+        .limit(listing.limit + 1)
+        .toArray();
+      return this.success(threadPage(docs.map(readThread), listing));
     } catch (err) {
       return this.failure((err as Error).message);
     }
@@ -243,33 +310,35 @@ export class MongoDBAdapter extends BaseMemoryAdapter {
   ): Promise<MemoryResult<Thread>> {
     if (!this.db) return this.failure('Not connected');
 
-    const existing = await this.getThread(threadId);
-    if (!existing.success) return existing;
-    if (!existing.data) return this.failure(`Thread not found: ${threadId}`);
-
-    const updated: Thread = {
-      ...existing.data,
-      metadata: { ...existing.data.metadata, ...metadata },
-      updatedAt: new Date(),
-    };
-
     try {
-      await this.threads.updateOne(
+      const doc = await this.threads.findOneAndUpdate(
         { _id: threadId },
-        { $set: { metadata: updated.metadata, updatedAt: updated.updatedAt } }
+        [
+          {
+            $set: {
+              metadata: { $mergeObjects: [{ $ifNull: ['$metadata', {}] }, { $literal: metadata }] },
+              updatedAt: { $literal: new Date() },
+            },
+          },
+        ],
+        { returnDocument: 'after' }
       );
-      return this.success(updated);
+      return doc ? this.success(readThread(doc)) : this.failure(`Thread not found: ${threadId}`);
     } catch (err) {
       return this.failure((err as Error).message);
     }
   }
 
+  /**
+   * Deletes the thread before its entries: once it is gone `addEntry` adds none, and one that was
+   * adding meanwhile takes its entry back when it finds the thread gone.
+   */
   async deleteThread(threadId: string): Promise<MemoryResult<void>> {
     if (!this.db) return this.failure('Not connected');
 
     try {
-      await this.entries.deleteMany({ threadId });
       await this.threads.deleteOne({ _id: threadId });
+      await this.entries.deleteMany({ threadId });
       return this.success(undefined);
     } catch (err) {
       return this.failure((err as Error).message);
@@ -286,6 +355,13 @@ export class MongoDBAdapter extends BaseMemoryAdapter {
     };
 
     try {
+      const thread = await this.threads.findOneAndUpdate(
+        { _id: entry.threadId },
+        { $inc: { entrySeq: 1 } },
+        { returnDocument: 'after', projection: { entrySeq: 1 } }
+      );
+      if (!thread) return this.failure(`Thread not found: ${entry.threadId}`);
+
       await this.entries.insertOne({
         _id: full.id,
         threadId: full.threadId,
@@ -295,7 +371,12 @@ export class MongoDBAdapter extends BaseMemoryAdapter {
         tokenCount: full.tokenCount,
         createdAt: full.createdAt,
         metadata: full.metadata,
+        seq: thread.entrySeq,
       });
+      if (!(await this.threads.findOne({ _id: entry.threadId }))) {
+        await this.entries.deleteOne({ _id: full.id });
+        return this.failure(`Thread not found: ${entry.threadId}`);
+      }
       return this.success(full);
     } catch (err) {
       return this.failure((err as Error).message);
@@ -303,6 +384,8 @@ export class MongoDBAdapter extends BaseMemoryAdapter {
   }
 
   async getEntries(options: MemoryQueryOptions): Promise<MemoryResult<MemoryEntry[]>> {
+    const limitProblem = this.entryLimitProblem(options.limit);
+    if (limitProblem) return this.failure(limitProblem);
     if (!this.db) return this.failure('Not connected');
 
     try {
@@ -315,7 +398,7 @@ export class MongoDBAdapter extends BaseMemoryAdapter {
         filter.createdAt = createdAt;
       }
 
-      let cursor = this.entries.find(filter).sort({ createdAt: -1 });
+      let cursor = this.entries.find(filter).sort({ createdAt: -1, seq: -1 });
       if (options.limit) cursor = cursor.limit(options.limit);
 
       const docs = await cursor.toArray();

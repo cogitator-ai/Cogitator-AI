@@ -22,3 +22,15 @@ export { geminiWire } from './wires/gemini';
 export { ollamaWire } from './wires/ollama';
 export { bedrockConverseWire } from './wires/bedrock';
 export { sse, ndjson, awsEventStreamMessage } from './wires/encoding';
+export {
+  memoryAdapterConformanceCases,
+  type MemoryAdapterConformanceCase,
+  type MemoryAdapterConformanceTarget,
+  type MemoryAdapterScenario,
+} from './memory-adapter';
+export {
+  embeddingAdapterConformanceCases,
+  type EmbeddingAdapterConformanceCase,
+  type EmbeddingAdapterConformanceTarget,
+  type EmbeddingAdapterScenario,
+} from './embedding-adapter';

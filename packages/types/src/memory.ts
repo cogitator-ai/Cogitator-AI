@@ -158,6 +158,32 @@ export interface MemoryQueryOptions {
   includeToolCalls?: boolean;
 }
 
+/** Which threads `listThreads` returns, and in which order. */
+export interface ListThreadsOptions {
+  /** Threads of this agent only */
+  agentId?: string;
+  /**
+   * Threads whose metadata holds each of these values under these top-level keys, compared as
+   * they are: `{ userId: 'u1', archived: false }`
+   */
+  metadata?: Record<string, string | number | boolean>;
+  /** Threads updated at this time or later */
+  updatedAfter?: Date;
+  /** Threads per page, 50 by default, at most 500 */
+  limit?: number;
+  /** Where the page starts: `nextCursor` of the page before, with the same filters and order */
+  cursor?: string;
+  /** By `updatedAt`, then by id: `desc` (default) starts with the threads updated last */
+  order?: 'asc' | 'desc';
+}
+
+/** A page of `listThreads`. */
+export interface ThreadPage {
+  threads: Thread[];
+  /** Pass as `cursor` for the next page, absent on the last one */
+  nextCursor?: string;
+}
+
 export interface SemanticSearchOptions {
   query?: string;
   vector?: number[];
@@ -180,6 +206,12 @@ export interface MemoryAdapter {
   getThread(threadId: string): Promise<MemoryResult<Thread | null>>;
   updateThread(threadId: string, metadata: Record<string, unknown>): Promise<MemoryResult<Thread>>;
   deleteThread(threadId: string): Promise<MemoryResult<void>>;
+  /**
+   * Threads in pages, newest update first by default, filtered by agent, metadata and update
+   * time. A thread's `updatedAt` changes when it is created or its metadata is updated, not
+   * when an entry is added.
+   */
+  listThreads(options?: ListThreadsOptions): Promise<MemoryResult<ThreadPage>>;
 
   addEntry(entry: NewMemoryEntry): Promise<MemoryResult<MemoryEntry>>;
   getEntries(options: MemoryQueryOptions): Promise<MemoryResult<MemoryEntry[]>>;

@@ -437,6 +437,25 @@ Wire specifications and formatting helpers for popular LLM provider protocols:
 - **Encodings**: `sse(data, event?)`, `ndjson(data)`, `awsEventStreamMessage(headers, payload)`
 - **Fixture**: `conformanceRequest`, `CONFORMANCE_FIXTURE`
 
+### Memory adapters and embedding stores
+
+`memoryAdapterConformanceCases(target)` and `embeddingAdapterConformanceCases(target)` check a `MemoryAdapter` or an `EmbeddingAdapter` against the contract the built-in ones keep: missing versus `null`, atomic `updateThread`, entry order with equal timestamps, limits, cascades, copies, `listThreads` filters and paging, nearest-first search, thresholds, filters and deletes.
+
+```typescript
+for (const c of memoryAdapterConformanceCases({
+  create: async () => {
+    const adapter = new MyAdapter();
+    await adapter.connect();
+    return adapter;
+  },
+  release: (adapter) => adapter.disconnect().then(() => undefined),
+})) {
+  (c.skip ? it.skip : it)(c.name, () => c.run());
+}
+```
+
+Each case uses threads or embeddings of its own, so one database can serve them all. The embedding suite also takes `dimensions`.
+
 ---
 
 ## Public Exports

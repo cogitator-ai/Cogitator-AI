@@ -8,7 +8,9 @@
  */
 
 import type {
+  ListThreadsOptions,
   Thread,
+  ThreadPage,
   MemoryEntry,
   MemoryQueryOptions,
   MemoryResult,
@@ -35,6 +37,7 @@ import {
   type SqlQueryable,
   type VectorSearchTuning,
 } from './pgvector';
+import { threadListing, threadPage, type ThreadListing } from './thread-listing';
 
 type PoolClient = SqlQueryable & {
   release(destroy?: boolean): void;
@@ -55,6 +58,12 @@ const DEFAULT_VECTOR_DIMENSIONS = 768;
 export type VectorStoreState =
   | { available: true; dimensions: number }
   | { available: false; reason: string; tableExists?: boolean };
+
+/**
+ * A thread's update time to the millisecond in UTC, the precision of `Thread.updatedAt` and of
+ * `listThreads` cursors. Immutable, so it can be indexed.
+ */
+const THREAD_TIME = "date_trunc('milliseconds', updated_at AT TIME ZONE 'UTC')";
 
 /** JSON text for a JSONB parameter. node-pg would send a JS array as a Postgres array literal. */
 function toJsonb(value: unknown): string | null {
@@ -182,9 +191,19 @@ export class PostgresAdapter
       )
     `);
 
+    await pool.query(`ALTER TABLE ${this.schema}.entries ADD COLUMN IF NOT EXISTS seq BIGSERIAL`);
+
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_entries_thread_id
       ON ${this.schema}.entries(thread_id, created_at)
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_threads_agent_updated
+      ON ${this.schema}.threads(agent_id, (${THREAD_TIME}), (id COLLATE "C"))
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_threads_metadata
+      ON ${this.schema}.threads USING GIN (metadata jsonb_path_ops)
     `);
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_facts_agent_id
@@ -359,6 +378,60 @@ export class PostgresAdapter
     }
   }
 
+  async listThreads(options?: ListThreadsOptions): Promise<MemoryResult<ThreadPage>> {
+    if (!this.pool) return this.failure('Not connected');
+    const listing = threadListing(options);
+    if (typeof listing === 'string') return this.failure(listing);
+
+    const [where, params] = this.listingConditions(listing);
+    const direction = listing.order === 'asc' ? 'ASC' : 'DESC';
+    params.push(listing.limit + 1);
+    try {
+      const result = await this.pool.query(
+        `SELECT * FROM ${this.schema}.threads
+         ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''}
+         ORDER BY ${THREAD_TIME} ${direction}, id COLLATE "C" ${direction}
+         LIMIT $${params.length}`,
+        params
+      );
+      return this.success(
+        threadPage(
+          result.rows.map((row) => this.rowToThread(row)),
+          listing
+        )
+      );
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
+  /** The WHERE conditions of `listing` with their parameters, numbered from `$1`. */
+  private listingConditions(listing: ThreadListing): [string[], unknown[]] {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (listing.agentId !== undefined) {
+      params.push(listing.agentId);
+      where.push(`agent_id = $${params.length}`);
+    }
+    if (listing.metadata.length > 0) {
+      params.push(JSON.stringify(Object.fromEntries(listing.metadata)));
+      where.push(`metadata @> $${params.length}::jsonb`);
+    }
+    if (listing.updatedAfter) {
+      params.push(listing.updatedAfter.toISOString());
+      where.push(`${THREAD_TIME} >= ($${params.length}::timestamptz AT TIME ZONE 'UTC')`);
+    }
+    if (listing.cursor) {
+      const after = listing.order === 'asc' ? '>' : '<';
+      params.push(new Date(listing.cursor.updatedAt).toISOString(), listing.cursor.id);
+      where.push(
+        `(${THREAD_TIME}, id COLLATE "C") ${after} ` +
+          `($${params.length - 1}::timestamptz AT TIME ZONE 'UTC', $${params.length})`
+      );
+    }
+    return [where, params];
+  }
+
   async updateThread(
     threadId: string,
     metadata: Record<string, unknown>
@@ -425,6 +498,8 @@ export class PostgresAdapter
 
   async getEntries(options: MemoryQueryOptions): Promise<MemoryResult<MemoryEntry[]>> {
     if (!this.pool) return this.failure('Not connected');
+    const limitProblem = this.entryLimitProblem(options.limit);
+    if (limitProblem) return this.failure(limitProblem);
 
     let query = `SELECT * FROM ${this.schema}.entries WHERE thread_id = $1`;
     const params: unknown[] = [options.threadId];
@@ -440,11 +515,11 @@ export class PostgresAdapter
     }
 
     if (options.limit) {
-      query += ` ORDER BY created_at DESC LIMIT $${paramIndex}`;
+      query += ` ORDER BY created_at DESC, seq DESC LIMIT $${paramIndex}`;
       params.push(options.limit);
-      query = `SELECT * FROM (${query}) sub ORDER BY created_at ASC`;
+      query = `SELECT * FROM (${query}) sub ORDER BY created_at ASC, seq ASC`;
     } else {
-      query += ' ORDER BY created_at ASC';
+      query += ' ORDER BY created_at ASC, seq ASC';
     }
 
     let result: { rows: Record<string, unknown>[] };
@@ -455,20 +530,7 @@ export class PostgresAdapter
     }
 
     return this.success(
-      result.rows.map((row) => ({
-        id: row.id as string,
-        threadId: row.thread_id as string,
-        message: row.message as MemoryEntry['message'],
-        toolCalls: options.includeToolCalls
-          ? (row.tool_calls as MemoryEntry['toolCalls'])
-          : undefined,
-        toolResults: options.includeToolCalls
-          ? (row.tool_results as MemoryEntry['toolResults'])
-          : undefined,
-        tokenCount: row.token_count as number,
-        metadata: row.metadata as Record<string, unknown>,
-        createdAt: new Date(row.created_at as string),
-      }))
+      result.rows.map((row) => this.rowToEntry(row, options.includeToolCalls ?? false))
     );
   }
 
@@ -486,17 +548,7 @@ export class PostgresAdapter
 
     if (result.rows.length === 0) return this.success(null);
 
-    const row = result.rows[0];
-    return this.success({
-      id: row.id as string,
-      threadId: row.thread_id as string,
-      message: row.message as MemoryEntry['message'],
-      toolCalls: row.tool_calls as MemoryEntry['toolCalls'],
-      toolResults: row.tool_results as MemoryEntry['toolResults'],
-      tokenCount: row.token_count as number,
-      metadata: row.metadata as Record<string, unknown>,
-      createdAt: new Date(row.created_at as string),
-    });
+    return this.success(this.rowToEntry(result.rows[0], true));
   }
 
   async deleteEntry(entryId: string): Promise<MemoryResult<void>> {
@@ -934,11 +986,28 @@ export class PostgresAdapter
     }
   }
 
+  /** An entry row as a `MemoryEntry`, with columns that hold NULL left out. */
+  private rowToEntry(row: Record<string, unknown>, withToolCalls: boolean): MemoryEntry {
+    const toolCalls = row.tool_calls as MemoryEntry['toolCalls'] | null;
+    const toolResults = row.tool_results as MemoryEntry['toolResults'] | null;
+    const metadata = row.metadata as Record<string, unknown> | null;
+    return {
+      id: row.id as string,
+      threadId: row.thread_id as string,
+      message: row.message as MemoryEntry['message'],
+      ...(withToolCalls && toolCalls != null && { toolCalls }),
+      ...(withToolCalls && toolResults != null && { toolResults }),
+      tokenCount: row.token_count as number,
+      ...(metadata != null && { metadata }),
+      createdAt: new Date(row.created_at as string),
+    };
+  }
+
   private rowToThread(row: Record<string, unknown>): Thread {
     return {
       id: row.id as string,
       agentId: row.agent_id as string,
-      metadata: row.metadata as Record<string, unknown>,
+      metadata: (row.metadata as Record<string, unknown> | null) ?? {},
       createdAt: new Date(row.created_at as string),
       updatedAt: new Date(row.updated_at as string),
     };

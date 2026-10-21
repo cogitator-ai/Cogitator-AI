@@ -11,6 +11,8 @@ import type {
   MemoryEntry,
   MemoryQueryOptions,
   NewMemoryEntry,
+  ListThreadsOptions,
+  ThreadPage,
 } from '@cogitator-ai/types';
 
 const MAX_TRACKED_THREADS = 10_000;
@@ -32,6 +34,8 @@ export abstract class BaseMemoryAdapter implements MemoryAdapter {
   ): Promise<MemoryResult<Thread>>;
 
   abstract deleteThread(threadId: string): Promise<MemoryResult<void>>;
+
+  abstract listThreads(options?: ListThreadsOptions): Promise<MemoryResult<ThreadPage>>;
 
   abstract addEntry(entry: NewMemoryEntry): Promise<MemoryResult<MemoryEntry>>;
 
@@ -75,6 +79,15 @@ export abstract class BaseMemoryAdapter implements MemoryAdapter {
   /** Creation time of a new entry: the `createdAt` it asks for, or the next {@link nextEntryTimestamp}. */
   protected entryTimestamp(entry: NewMemoryEntry): Date {
     return entry.createdAt ? new Date(entry.createdAt) : this.nextEntryTimestamp(entry.threadId);
+  }
+
+  /**
+   * Why `limit` of `getEntries` cannot be served, if it cannot: a limit is a whole number, `0`
+   * meaning every entry, like no limit.
+   */
+  protected entryLimitProblem(limit: number | undefined): string | undefined {
+    if (limit === undefined || (Number.isInteger(limit) && limit >= 0)) return undefined;
+    return `getEntries limit must be a whole number of 0 or more, got ${limit}`;
   }
 
   protected success<T>(data: T): MemoryResult<T> {

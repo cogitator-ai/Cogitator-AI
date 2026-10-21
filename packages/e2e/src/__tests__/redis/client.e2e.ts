@@ -99,13 +99,19 @@ describeRedis('Redis: Client Operations', () => {
   it('createRedisClient connects standalone', async () => {
     client = await createRedisClient({
       mode: 'standalone',
-      host: 'localhost',
-      port: 6379,
+      url: process.env.TEST_REDIS_URL ?? 'redis://localhost:6379',
       keyPrefix: testPrefix,
     });
 
     const pong = await client.ping();
     expect(pong).toBe('PONG');
+  });
+
+  it('RedisClient eval runs a script on prefixed keys atomically', async () => {
+    const script = "redis.call('SET', KEYS[1], ARGV[1]); return redis.call('GET', KEYS[1])";
+    expect(await client.eval(script, 1, 'eval-key', 'from-lua')).toBe('from-lua');
+    expect(await client.get('eval-key')).toBe('from-lua');
+    await client.del('eval-key');
   });
 
   it('RedisClient set/get/del operations', async () => {
@@ -179,6 +185,9 @@ describeRedis('Redis: Client Operations', () => {
   });
 
   it('detectRedisMode reports standalone for a single node', async () => {
-    expect(await detectRedisMode({ host: 'localhost', port: 6379 })).toBe('standalone');
+    const local = new URL(process.env.TEST_REDIS_URL ?? 'redis://localhost:6379');
+    expect(await detectRedisMode({ host: local.hostname, port: Number(local.port || 6379) })).toBe(
+      'standalone'
+    );
   });
 });

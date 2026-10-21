@@ -48,6 +48,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@cogitator-ai/test-utils": "workspace:*",
     "@qdrant/js-client-rest": "^1.19.0",
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.20.4",

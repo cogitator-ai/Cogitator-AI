@@ -212,6 +212,71 @@ describe('PostgresAdapter', () => {
     });
   });
 
+  describe('listThreads', () => {
+    it('filters by agent, metadata containment and update time, one past the page', async () => {
+      const updatedAfter = new Date('2026-01-01T00:00:00.000Z');
+
+      const result = await adapter.listThreads({
+        agentId: 'agent1',
+        metadata: { userId: 'u1', archived: false },
+        updatedAfter,
+        limit: 10,
+      });
+
+      expect(result.success).toBe(true);
+      const { sql, params } = sentToPostgres('ORDER BY date_trunc');
+      expect(sql).toContain('agent_id = $1');
+      expect(sql).toContain('metadata @> $2::jsonb');
+      expect(sql).toContain('>= ($3::timestamptz AT TIME ZONE');
+      expect(sql).toMatch(/DESC, id COLLATE "C" DESC\s+LIMIT \$4/);
+      expect(asJsonb(params[1])).toEqual({ userId: 'u1', archived: false });
+      expect(params[2]).toBe(updatedAfter.toISOString());
+      expect(params[3]).toBe('11');
+    });
+
+    it('hands out a cursor that continues after the last thread at millisecond precision', async () => {
+      const at = (ms: number) => new Date(Date.UTC(2026, 0, 1) + ms).toISOString();
+      const row = (id: string, ms: number) => ({
+        id,
+        agent_id: 'agent1',
+        metadata: {},
+        created_at: at(ms),
+        updated_at: at(ms),
+      });
+      mockPool.query.mockResolvedValueOnce({ rows: [row('b', 2), row('a', 1)] });
+
+      const first = await adapter.listThreads({ agentId: 'agent1', limit: 1 });
+
+      expect(first.success).toBe(true);
+      if (!first.success || !first.data.nextCursor) throw new Error('expected a next page');
+      expect(first.data.threads.map((thread) => thread.id)).toEqual(['b']);
+
+      mockPool.query.mockClear();
+      await adapter.listThreads({ agentId: 'agent1', limit: 1, cursor: first.data.nextCursor });
+
+      const { sql, params } = sentToPostgres('ORDER BY date_trunc');
+      expect(sql).toContain(
+        `(date_trunc('milliseconds', updated_at AT TIME ZONE 'UTC'), id COLLATE "C") < ` +
+          `($2::timestamptz AT TIME ZONE 'UTC', $3)`
+      );
+      expect(params.slice(1)).toEqual([at(2), 'b', '2']);
+    });
+
+    it('refuses a bad page size or cursor without querying', async () => {
+      const queries = mockPool.query.mock.calls.length;
+
+      expect((await adapter.listThreads({ limit: 0 })).success).toBe(false);
+      expect((await adapter.listThreads({ cursor: 'nope' })).success).toBe(false);
+      expect(mockPool.query.mock.calls.length).toBe(queries);
+    });
+
+    it('creates an index that serves the listing order', () => {
+      expect(sentToPostgres('idx_threads_agent_updated').sql).toContain(
+        `agent_id, (date_trunc('milliseconds', updated_at AT TIME ZONE 'UTC')), (id COLLATE "C")`
+      );
+    });
+  });
+
   describe('entry operations', () => {
     it('adds an entry', async () => {
       const message: Message = { role: 'user', content: 'Hello' };
@@ -276,6 +341,53 @@ describe('PostgresAdapter', () => {
       const lastCall = mockPool.query.mock.calls[mockPool.query.mock.calls.length - 1];
       expect(lastCall[0]).toContain('LIMIT');
       expect(lastCall[1]).toContain(5);
+    });
+
+    it('breaks ties of creation time by insertion order', async () => {
+      mockPool.query.mockResolvedValueOnce({ rows: [] });
+
+      await adapter.getEntries({ threadId: 'thread_123', limit: 5 });
+
+      const { sql } = sentToPostgres('FROM cogitator.entries WHERE thread_id');
+      expect(sql).toContain('ORDER BY created_at DESC, seq DESC');
+      expect(sql).toContain('ORDER BY created_at ASC, seq ASC');
+      expect(sentToPostgres('ADD COLUMN IF NOT EXISTS seq').sql).toContain('BIGSERIAL');
+    });
+
+    it('refuses a limit that is not a whole number of 0 or more', async () => {
+      const queries = mockPool.query.mock.calls.length;
+
+      expect((await adapter.getEntries({ threadId: 'thread_123', limit: -1 })).success).toBe(false);
+      expect((await adapter.getEntries({ threadId: 'thread_123', limit: 1.5 })).success).toBe(
+        false
+      );
+      expect(mockPool.query.mock.calls.length).toBe(queries);
+    });
+
+    it('leaves out columns that hold NULL instead of returning null', async () => {
+      mockPool.query.mockResolvedValueOnce({
+        rows: [
+          {
+            id: 'entry_123',
+            thread_id: 'thread_123',
+            message: { role: 'user', content: 'Hello' },
+            tool_calls: null,
+            tool_results: null,
+            token_count: 10,
+            metadata: null,
+            created_at: new Date().toISOString(),
+          },
+        ],
+      });
+
+      const result = await adapter.getEntries({ threadId: 'thread_123', includeToolCalls: true });
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(Object.keys(result.data[0]).sort()).toEqual(
+          ['createdAt', 'id', 'message', 'threadId', 'tokenCount'].sort()
+        );
+      }
     });
 
     it('gets single entry', async () => {
