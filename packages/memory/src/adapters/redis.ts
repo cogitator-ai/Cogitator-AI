@@ -531,6 +531,15 @@ const RECORD_INDEXES = 'indexes';
 /** Reads the field `ARGV[1]` of the record `KEYS[1]` on the primary, like every write does */
 const READ_FIELD = `return redis.call('HGET', KEYS[1], ARGV[1])`;
 
+/** Sets field ARGV[1] of a record to ARGV[3] when it still holds ARGV[2], 1 when it did */
+const SWAP_FIELD = `
+if redis.call('HGET', KEYS[1], ARGV[1]) == ARGV[2] then
+  redis.call('HSET', KEYS[1], ARGV[1], ARGV[3])
+  return 1
+end
+return 0
+`;
+
 /**
  * Writes the record `KEYS[1]` of the id `ARGV[2]` if its indexes are still `ARGV[1]` (`''` for
  * no record): its JSON `ARGV[3]`, its sorted index `KEYS[2]` at the score `ARGV[4]`, its
@@ -1495,6 +1504,37 @@ export class RedisAdapter extends BranchingMemoryAdapter implements MemoryItemAd
           .filter((item) => matchesItemFilter(item, filter))
           .sort(byRecorded)
       );
+    });
+  }
+
+  /**
+   * Counts each item as retrieved once more by swapping its data for the counted one only while
+   * it is unchanged, read again when another write came between, and left alone once gone
+   */
+  async countRetrieved(itemIds: string[], at: Date): Promise<MemoryResult<void>> {
+    return this.run(async (client) => {
+      for (const itemId of new Set(itemIds)) {
+        const key = this.key('item', itemId);
+        for (let attempt = 0; ; attempt++) {
+          const data = await client.eval(READ_FIELD, 1, key, RECORD_DATA);
+          if (typeof data !== 'string') break;
+          const item = parseItem(data);
+          const counted = JSON.stringify({
+            ...item,
+            timesRetrieved: (item.timesRetrieved ?? 0) + 1,
+            lastRetrievedAt: at,
+          });
+          if (Number(await client.eval(SWAP_FIELD, 1, key, RECORD_DATA, data, counted)) === 1) {
+            break;
+          }
+          if (attempt + 1 >= MAX_WRITE_ATTEMPTS) {
+            throw new Error(
+              `Item ${itemId} changed on every one of ${MAX_WRITE_ATTEMPTS} attempts`
+            );
+          }
+        }
+      }
+      return this.success(undefined);
     });
   }
 

@@ -1264,6 +1264,20 @@ export class MongoDBAdapter extends BranchingMemoryAdapter implements MemoryItem
     }
   }
 
+  async countRetrieved(itemIds: string[], at: Date): Promise<MemoryResult<void>> {
+    if (!this.db) return this.failure('Not connected');
+    if (itemIds.length === 0) return this.success(undefined);
+    try {
+      await this.items.updateMany(
+        { _id: { $in: [...new Set(itemIds)] } },
+        { $inc: { 'item.timesRetrieved': 1 }, $set: { 'item.lastRetrievedAt': new Date(at) } }
+      );
+      return this.success(undefined);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
   async putEntity(entity: MemoryEntity): Promise<MemoryResult<MemoryEntity>> {
     if (!this.db) return this.failure('Not connected');
     try {

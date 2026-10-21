@@ -157,6 +157,22 @@ export function sqliteMemoryItems(db: SqliteItemsDatabase): MemoryItemAdapter {
   db.exec(SCHEMA);
 
   return {
+    countRetrieved: (itemIds, at) =>
+      attempt(() => {
+        const ids = [...new Set(itemIds)];
+        const update = db.prepare(
+          `UPDATE memory_items
+           SET data = json_set(
+             data,
+             '$.timesRetrieved', coalesce(json_extract(data, '$.timesRetrieved'), 0) + 1,
+             '$.lastRetrievedAt', ?
+           )
+           WHERE id = ?`
+        );
+        atomically(db, () => {
+          for (const id of ids) update.run(at.toISOString(), id);
+        });
+      }),
     putItem: (item) =>
       attempt(() => {
         const data = JSON.stringify(item);

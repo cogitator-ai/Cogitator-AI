@@ -539,6 +539,51 @@ describe('ContextBuilder', () => {
       expect(later.memoryContext).not.toContain('previously');
     });
 
+    it('recalls the slot state the facts choose, under both ids of the agent', async () => {
+      const items = new MemoryItems({ adapter });
+      const city = (value: string, scope: object, at: string) => ({
+        ...base,
+        kind: 'fact' as const,
+        content: `Ana lives in ${value}`,
+        subject: 'Ana',
+        attribute: 'city',
+        value,
+        scope: { agentId: 'runtime-id', ...scope },
+        saidAt: new Date(at),
+        sessionAt: new Date(at),
+      });
+      await items.write([
+        city('Lisbon', { userId: 'u1' }, '2025-01-01'),
+        city('Faro', { userId: 'u1', threadId }, '2025-01-01'),
+        {
+          ...base,
+          kind: 'event',
+          content: 'Ana went sailing near Faro',
+          scope: { agentId: 'runtime-id', userId: 'u1' },
+          about: { text: 'last Friday', start: new Date('2025-01-03'), precision: 'day' as const },
+          saidAt: new Date('2025-01-06'),
+          sessionAt: new Date('2025-01-06'),
+        },
+      ]);
+      const builder = new ContextBuilder(
+        { maxTokens: 2000, strategy: 'hybrid' },
+        { memoryAdapter: adapter, memoryItems: items }
+      );
+
+      const result = await builder.build({
+        threadId,
+        agentId: 'runtime-id',
+        memoryAgentId: 'concierge',
+        userId: 'u1',
+        currentInput: 'Where does Ana live now, and what did she do near Faro?',
+        asOf: new Date('2025-02-01'),
+      });
+
+      expect(result.memoryContext).toContain('- Ana lives in Faro');
+      expect(result.memoryContext).not.toContain('Lisbon');
+      expect(result.memoryContext).toContain('- Ana went sailing near Faro (2025-01-03)');
+    });
+
     it('recalls a fact the facts partition had no room for', async () => {
       const items = new MemoryItems({ adapter });
       await items.write([

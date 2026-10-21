@@ -697,6 +697,12 @@ export class SQLiteAdapter extends BranchingMemoryAdapter implements MemoryItemA
     return this.items ? this.items.deleteItems(itemIds) : this.failure('Not connected');
   }
 
+  async countRetrieved(itemIds: string[], at: Date): Promise<MemoryResult<void>> {
+    const items = this.items;
+    if (!items?.countRetrieved) return this.failure('Not connected');
+    return items.countRetrieved(itemIds, at);
+  }
+
   async putEntity(entity: MemoryEntity): Promise<MemoryResult<MemoryEntity>> {
     return this.items ? this.items.putEntity(entity) : this.failure('Not connected');
   }

@@ -25,8 +25,9 @@ import type {
   EmbeddingAdapter,
   EmbeddingService,
   MemoryResult,
+  TimePrecision,
 } from '@cogitator-ai/types';
-import { isMemoryItemAdapter, visibleIn, type MemoryItems } from './memory-items';
+import { isMemoryItemAdapter, onePerSlot, visibleIn, type MemoryItems } from './memory-items';
 import { MemoryRetriever, type Retrieval } from './retrieval/retriever';
 import type { GraphContextBuilder } from './knowledge-graph/graph-context-builder';
 import { readCompactedHistory } from './compaction';
@@ -147,9 +148,29 @@ function itemLine(item: MemoryItem, timeZone: string): string {
     item.validTo !== undefined
       ? ` (${item.validFrom ? `${day(item.validFrom)} to ` : 'until '}${day(item.validTo)})`
       : item.about?.start
-        ? ` (${item.about.text ?? day(item.about.start)})`
+        ? ` (${whenOf(item.about.start, item.about.precision, timeZone)})`
         : '';
   return `- ${item.content}${held}`;
+}
+
+/**
+ * The time an item is about as a date to the precision it was said with, never the words that
+ * said it: `last Friday` read a month later would point at another day
+ */
+function whenOf(start: Date, precision: TimePrecision, timeZone: string): string {
+  const day = dayOf(start, timeZone);
+  switch (precision) {
+    case 'year':
+      return day.slice(0, 4);
+    case 'month':
+      return day.slice(0, 7);
+    case 'week':
+      return `week of ${day}`;
+    case 'approximate':
+      return `around ${day}`;
+    default:
+      return day;
+  }
 }
 
 /** A line of the `Known facts` block, with the value a fact replaced when it replaced one */
@@ -158,40 +179,6 @@ function factLine(fact: Fact): string {
   return typeof previously === 'string' && previously
     ? `- ${fact.content} (previously: ${previously})`
     : `- ${fact.content}`;
-}
-
-/** How narrow a scope is: a thread's items over a user's, a user's over the agent's */
-function narrowness(item: MemoryItem): number {
-  return (
-    (item.scope.threadId !== undefined ? 4 : 0) +
-    (item.scope.projectId !== undefined ? 2 : 0) +
-    (item.scope.userId !== undefined ? 1 : 0)
-  );
-}
-
-/** Whether state `a` of a slot wins over `b`: it started later, or together in a narrower scope */
-function laterState(a: MemoryItem, b: MemoryItem): boolean {
-  const since = (a.validFrom?.getTime() ?? 0) - (b.validFrom?.getTime() ?? 0);
-  return since !== 0 ? since > 0 : narrowness(a) > narrowness(b);
-}
-
-/**
- * `items` with one item per slot: the one that started to hold last, of the narrowest scope when
- * two started together, since a run sees a slot's states of its thread, its user and the agent
- * at once
- */
-function onePerSlot(items: readonly MemoryItem[]): MemoryItem[] {
-  const bySlot = new Map<string, MemoryItem>();
-  const kept: MemoryItem[] = [];
-  for (const item of items) {
-    if (item.slot === undefined) {
-      kept.push(item);
-      continue;
-    }
-    const known = bySlot.get(item.slot);
-    if (!known || laterState(item, known)) bySlot.set(item.slot, item);
-  }
-  return [...kept, ...bySlot.values()];
 }
 
 /**
@@ -976,6 +963,7 @@ export class ContextBuilder {
             ...(options.userId !== undefined && { userId: options.userId }),
             threadId: options.threadId,
           },
+          agentIds: [options.agentId],
         }),
     });
     const hits = this.deps.reranker
@@ -1002,10 +990,6 @@ export class ContextBuilder {
     });
   }
 
-  /**
-   * `hits` with the best {@link RERANKED} reordered by the reranker, the rest after them as they
-   * were. A reranker that fails leaves them as they were, recorded as a `relevance` error.
-   */
   /** The thread's time zone when the build names a valid one, else the builder's */
   private timeZoneOf(options: BuildContextOptions): string {
     return options.timeZone !== undefined && isTimeZone(options.timeZone)
@@ -1013,6 +997,10 @@ export class ContextBuilder {
       : this.config.timeZone;
   }
 
+  /**
+   * `hits` with the best {@link RERANKED} reordered by the reranker, the rest after them as they
+   * were. A reranker that fails leaves them as they were, recorded as a `relevance` error.
+   */
   private async reranked(
     input: string,
     hits: Retrieval['hits'],

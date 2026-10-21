@@ -13,7 +13,7 @@ import type {
 import { BM25Index } from '../search/bm25';
 import { tokenize } from '../search/tokenizer';
 import { indexedText } from '../message-index';
-import { normalizeName, visibleIn, type MemoryItems } from '../memory-items';
+import { normalizeName, onePerSlot, visibleIn, type MemoryItems } from '../memory-items';
 import { analyzeQuery, type QueryAnalysis, type QueryType } from './query';
 import { diversify, fuse, lexicalScore, recencyBias, wordsOf, type ChannelHits } from './rank';
 
@@ -119,6 +119,37 @@ export interface RetrievalRequest {
   items?: MemoryItems;
   itemAdapter?: MemoryItemAdapter;
   scope?: MemoryItemScope;
+  /**
+   * The agents whose items and entities the turn sees, each with the rest of `scope`: the
+   * scope's agent by default, more when an agent keeps memory under two ids
+   */
+  agentIds?: readonly string[];
+}
+
+/** The scopes a request sees memory in: its scope once per agent it reads */
+function scopesOf(request: RetrievalRequest): MemoryItemScope[] {
+  const scope = request.scope;
+  if (!scope) return [];
+  const agentIds = new Set([scope.agentId, ...(request.agentIds ?? [])]);
+  return [...agentIds].map((agentId) => ({ ...scope, agentId }));
+}
+
+/** The entities found under each scope that the scope sees, each once */
+async function visibleEntities(
+  adapter: MemoryItemAdapter,
+  scopes: readonly MemoryItemScope[],
+  names?: string[]
+): Promise<MemoryEntity[]> {
+  const found = await Promise.all(
+    scopes.map(async (scope) => {
+      const result = await adapter.findEntities({
+        agentId: scope.agentId,
+        ...(names && { names }),
+      });
+      return result.success ? result.data.filter((entity) => visibleIn(entity, scope)) : [];
+    })
+  );
+  return [...new Map(found.flat().map((entity) => [entity.id, entity])).values()];
 }
 
 /** A turn a search found, with the turns it should be read with */
@@ -397,26 +428,27 @@ export class MemoryRetriever {
       }
     }
     if (names.size === 0 || analysis.terms.length === 0) return [];
-    const found = await request.itemAdapter.findEntities({
-      agentId: request.scope.agentId,
-      names: [...names],
-    });
-    const scope = request.scope;
-    return found.success ? found.data.filter((entity) => visibleIn(entity, scope)) : [];
+    return visibleEntities(request.itemAdapter, scopesOf(request), [...names]);
   }
 
   /**
-   * The memory items the turn may draw on: those that hold now, and for a question about time or
-   * about many things, the ones that held before too
+   * The memory items the turn may draw on: those that hold now, one per slot as the facts of a
+   * context choose it, and for a question about time or about many things, the ones that held
+   * before too
    */
   private async itemsOf(request: RetrievalRequest, analysis: QueryAnalysis): Promise<MemoryItem[]> {
-    if (!request.items || !request.scope) return [];
+    const items = request.items;
+    if (!items) return [];
     const past = analysis.type === 'temporal' || analysis.type === 'aggregate';
-    return request.items.query({
-      scope: request.scope,
-      includeClosed: past,
-      asOf: request.anchor,
-    });
+    const found = await Promise.all(
+      scopesOf(request).map((scope) =>
+        items.query({ scope, includeClosed: past, asOf: request.anchor })
+      )
+    );
+    const seen = [...new Map(found.flat().map((item) => [item.id, item])).values()];
+    const at = request.anchor.getTime();
+    const holding = (item: MemoryItem) => item.validTo === undefined || item.validTo.getTime() > at;
+    return [...seen.filter((item) => !holding(item)), ...onePerSlot(seen.filter(holding))];
   }
 
   /** Items that hold the input's words, by BM25 over the items */
@@ -468,11 +500,8 @@ export class MemoryRetriever {
     named: readonly MemoryEntity[],
     seeds: ReadonlyMap<string, number>
   ): Promise<string[]> {
-    if (!request.itemAdapter || !request.scope || items.length === 0) return [];
-    const found = await request.itemAdapter.findEntities({ agentId: request.scope.agentId });
-    const scope = request.scope;
-    const entities = (found.success ? found.data : [])
-      .filter((entity) => visibleIn(entity, scope))
+    if (!request.itemAdapter || items.length === 0) return [];
+    const entities = (await visibleEntities(request.itemAdapter, scopesOf(request)))
       .sort((a, b) => b.lastSeenAt.getTime() - a.lastSeenAt.getTime())
       .slice(0, GRAPH_ENTITIES);
     if (entities.length === 0) return [];

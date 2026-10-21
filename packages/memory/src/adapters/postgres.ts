@@ -1183,6 +1183,25 @@ export class PostgresAdapter
     }
   }
 
+  async countRetrieved(itemIds: string[], at: Date): Promise<MemoryResult<void>> {
+    if (!this.pool) return this.failure('Not connected');
+    if (itemIds.length === 0) return this.success(undefined);
+    try {
+      await this.pool.query(
+        `UPDATE ${this.schema}.memory_items
+         SET item = item || jsonb_build_object(
+           'timesRetrieved', COALESCE((item->>'timesRetrieved')::int, 0) + 1,
+           'lastRetrievedAt', $2::text
+         )
+         WHERE id = ANY($1::text[])`,
+        [[...new Set(itemIds)], at.toISOString()]
+      );
+      return this.success(undefined);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
   async putEntity(entity: MemoryEntity): Promise<MemoryResult<MemoryEntity>> {
     if (!this.pool) return this.failure('Not connected');
     const json = JSON.stringify(entity);

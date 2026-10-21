@@ -348,6 +348,16 @@ export class InMemoryAdapter extends BranchingMemoryAdapter implements MemoryIte
     return this.success(structuredClone(item));
   }
 
+  async countRetrieved(itemIds: string[], at: Date): Promise<MemoryResult<void>> {
+    for (const itemId of new Set(itemIds)) {
+      const item = this.items.get(itemId);
+      if (!item) continue;
+      item.timesRetrieved = (item.timesRetrieved ?? 0) + 1;
+      item.lastRetrievedAt = new Date(at);
+    }
+    return this.success(undefined);
+  }
+
   async getItem(itemId: string): Promise<MemoryResult<MemoryItem | null>> {
     const item = this.items.get(itemId);
     return this.success(item ? structuredClone(item) : null);

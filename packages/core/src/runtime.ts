@@ -2730,23 +2730,6 @@ export class Cogitator implements ToolInvoker {
   }
 
   /**
-   * Close all connections and release resources.
-   *
-   * Should be called when done using the Cogitator instance to properly
-   * disconnect from memory adapters, shut down sandbox containers, and
-   * clean up internal state.
-   *
-   * @example
-   * ```ts
-   * const cog = new Cogitator({ ... });
-   * try {
-   *   await cog.run(agent, { input: 'Hello' });
-   * } finally {
-   *   await cog.close();
-   * }
-   * ```
-   */
-  /**
    * Counts the memory items a run sent in the background, one count after another, so the run
    * returns without waiting on the writes; `close` waits for them
    */
@@ -2763,6 +2746,23 @@ export class Cogitator implements ToolInvoker {
       );
   }
 
+  /**
+   * Close all connections and release resources.
+   *
+   * Should be called when done using the Cogitator instance to properly
+   * disconnect from memory adapters, shut down sandbox containers, and
+   * clean up internal state.
+   *
+   * @example
+   * ```ts
+   * const cog = new Cogitator({ ... });
+   * try {
+   *   await cog.run(agent, { input: 'Hello' });
+   * } finally {
+   *   await cog.close();
+   * }
+   * ```
+   */
   async close(): Promise<void> {
     await this.closeObservers();
     await cleanupState(this.state);

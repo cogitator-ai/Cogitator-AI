@@ -60,6 +60,40 @@ export function visibleIn(item: Pick<MemoryItem, 'scope'>, scope: MemoryItemScop
   );
 }
 
+/** How narrow a scope is: a thread's items over a user's, a user's over the agent's */
+function narrowness(item: MemoryItem): number {
+  return (
+    (item.scope.threadId !== undefined ? 4 : 0) +
+    (item.scope.projectId !== undefined ? 2 : 0) +
+    (item.scope.userId !== undefined ? 1 : 0)
+  );
+}
+
+/** Whether state `a` of a slot wins over `b`: it started later, or together in a narrower scope */
+function laterState(a: MemoryItem, b: MemoryItem): boolean {
+  const since = (a.validFrom?.getTime() ?? 0) - (b.validFrom?.getTime() ?? 0);
+  return since !== 0 ? since > 0 : narrowness(a) > narrowness(b);
+}
+
+/**
+ * `items` with one item per slot: the one that started to hold last, of the narrowest scope when
+ * two started together, since a run sees a slot's states of its thread, its user and the agent
+ * at once
+ */
+export function onePerSlot(items: readonly MemoryItem[]): MemoryItem[] {
+  const bySlot = new Map<string, MemoryItem>();
+  const kept: MemoryItem[] = [];
+  for (const item of items) {
+    if (item.slot === undefined) {
+      kept.push(item);
+      continue;
+    }
+    const known = bySlot.get(item.slot);
+    if (!known || laterState(item, known)) bySlot.set(item.slot, item);
+  }
+  return [...kept, ...bySlot.values()];
+}
+
 /** The fields of a scope that narrow its agent, which `visibleTo` and `scope` filters compare */
 const SCOPE_FIELDS = ['userId', 'projectId', 'threadId'] as const;
 
@@ -608,7 +642,13 @@ export class MemoryItems {
    * the run finished or paused for approval, so an item read but never sent does not count
    */
   async noteRetrieved(itemIds: readonly string[], at: Date = this.now()): Promise<void> {
-    await this.update(itemIds, (item) => ({
+    const ids = [...new Set(itemIds)];
+    if (ids.length === 0) return;
+    if (this.adapter.countRetrieved) {
+      unwrap(await this.adapter.countRetrieved(ids, at));
+      return;
+    }
+    await this.update(ids, (item) => ({
       ...item,
       timesRetrieved: (item.timesRetrieved ?? 0) + 1,
       lastRetrievedAt: at,
