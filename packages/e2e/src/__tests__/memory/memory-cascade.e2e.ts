@@ -142,7 +142,7 @@ for (const target of targets) {
 
     it('forgets and redacts entries with the items that stand on them', async () => {
       const { memory, items } = await stores();
-      const [card, , city, , passport] = await said(`t1-${tag}`, 'ana', [
+      const [card, noted, city, , passport] = await said(`t1-${tag}`, 'ana', [
         'My card is 4111.',
         'Noted.',
         'I live in Porto.',
@@ -156,7 +156,7 @@ for (const target of targets) {
       ]);
 
       const forgot = await cog.forget({ entryIds: [card!] }, { agents: [agent] });
-      expect(forgot.entries.deleted).toEqual([card]);
+      expect(forgot.entries.deleted.sort()).toEqual([card, noted].sort());
       expect(forgot.items.purged).toEqual([cardItem!.id]);
       expect(await items.get(cityItem!.id)).not.toBeNull();
       const gone = await memory.getEntry(card!);

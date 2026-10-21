@@ -77,6 +77,12 @@ export interface MemoryCascadeOptions {
 export interface CascadeAgents {
   /** The memory ids of the agents whose items, files, graph and facts stand on the entries */
   agentIds: readonly string[];
+  /**
+   * Leave the replies to a user message alone. By default deleting or redacting a user message
+   * takes the entries that answer it too (on every branch, up to the next user message), as an
+   * answer may say again what the message said.
+   */
+  keepReplies?: boolean;
 }
 
 const CITED = /\[(?:item|lesson):([A-Za-z0-9_-]+)\]/g;
@@ -165,11 +171,11 @@ export class MemoryCascade {
     who: CascadeAgents
   ): Promise<MemoryCascadeReport> {
     const report = emptyReport();
-    const entries = await this.entriesOf(entryIds);
+    const entries = await this.withReplies(await this.entriesOf(entryIds), who);
     if (entries.length === 0) return report;
     const gone = new Set(entries.map((entry) => entry.id));
     await this.dropSummaries(entries, gone, report);
-    for (const entry of entries) {
+    for (const entry of [...entries].reverse()) {
       unwrap(await this.memory.deleteEntry(entry.id));
       report.entries.deleted.push(entry.id);
     }
@@ -190,7 +196,7 @@ export class MemoryCascade {
     if (!redact)
       throw new Error(`The ${this.memory.provider} memory adapter cannot redact entries`);
     const report = emptyReport();
-    const entries = await this.entriesOf(entryIds);
+    const entries = await this.withReplies(await this.entriesOf(entryIds), who);
     if (entries.length === 0) return report;
     const gone = new Set(entries.map((entry) => entry.id));
     await this.dropSummaries(entries, gone, report);
@@ -287,6 +293,39 @@ export class MemoryCascade {
       );
     }
     return report;
+  }
+
+  /**
+   * `entries` with, unless `who.keepReplies`, the conversation entries that answer each user
+   * message among them: its descendants on every branch up to the next user message
+   */
+  private async withReplies(
+    entries: readonly MemoryEntry[],
+    who: CascadeAgents
+  ): Promise<MemoryEntry[]> {
+    const asked = entries.filter((entry) => entry.message.role === 'user');
+    if (who.keepReplies || asked.length === 0) return [...entries];
+    const all = new Map(entries.map((entry) => [entry.id, entry]));
+    for (const threadId of new Set(asked.map((entry) => entry.threadId))) {
+      const thread = unwrap(await this.memory.getEntries({ threadId, types: 'all' }));
+      const children = new Map<string, MemoryEntry[]>();
+      for (const entry of thread) {
+        if (!entry.parentId) continue;
+        children.set(entry.parentId, [...(children.get(entry.parentId) ?? []), entry]);
+      }
+      const queue = asked.filter((entry) => entry.threadId === threadId).map((entry) => entry.id);
+      for (let id = queue.pop(); id !== undefined; id = queue.pop()) {
+        for (const child of children.get(id) ?? []) {
+          const reply =
+            child.message.role !== 'user' &&
+            (child.type === undefined || child.type === 'message' || child.type === 'tool_result');
+          if (!reply || all.has(child.id)) continue;
+          all.set(child.id, child);
+          queue.push(child.id);
+        }
+      }
+    }
+    return [...all.values()];
   }
 
   private async entriesOf(entryIds: readonly string[]): Promise<MemoryEntry[]> {

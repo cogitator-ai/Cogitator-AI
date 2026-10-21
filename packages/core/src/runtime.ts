@@ -84,6 +84,11 @@ export interface MemoryCascadeCall {
   agents?: readonly (Agent | string)[];
   /** A knowledge graph of your own to go through too */
   graph?: GraphAdapter;
+  /**
+   * Leave the replies to a user message alone: by default forgetting or redacting a user message
+   * takes the entries that answer it too, as an answer may say again what it said
+   */
+  keepReplies?: boolean;
 }
 
 /** Entries of a thread {@link Cogitator.indexMemory} reads at once */
@@ -2982,7 +2987,8 @@ export class Cogitator implements ToolInvoker {
 
   /**
    * Forgets what a conversation established, in every store memory keeps: `{ entryIds }` deletes
-   * those entries, `{ threadId }` the thread, `{ userId }` every thread of the user (by its
+   * those entries (a user message with the entries that answer it, unless `keepReplies`),
+   * `{ threadId }` the thread, `{ userId }` every thread of the user (by its
    * `metadata.userId`) and everything kept for the user. With them goes all memory derived from
    * them: compaction summaries that cover them (the next compaction writes them again), memory
    * items, facts, graph nodes and edges that stand only on them (those that stand on more lose the
@@ -3017,6 +3023,7 @@ export class Cogitator implements ToolInvoker {
     }
     return cascade.deleteEntries(target.entryIds, {
       agentIds: await this.withThreadAgents(agentIds, await this.threadsOf(target.entryIds)),
+      ...(options.keepReplies && { keepReplies: true }),
     });
   }
 
@@ -3042,7 +3049,10 @@ export class Cogitator implements ToolInvoker {
     return cascade.redactEntries(
       entryIds,
       { at: new Date(), ...(options.reason !== undefined && { reason: options.reason }) },
-      { agentIds: await this.withThreadAgents(agentIds, await this.threadsOf(entryIds)) }
+      {
+        agentIds: await this.withThreadAgents(agentIds, await this.threadsOf(entryIds)),
+        ...(options.keepReplies && { keepReplies: true }),
+      }
     );
   }
 

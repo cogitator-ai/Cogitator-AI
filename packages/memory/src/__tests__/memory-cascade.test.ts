@@ -148,7 +148,7 @@ describe('MemoryCascade', () => {
 
     const report = await cascade.deleteEntries([card!.id], who);
 
-    expect(report.entries.deleted).toEqual([card!.id]);
+    expect(report.entries.deleted.sort()).toEqual([card!.id, entries[1]!.id].sort());
     expect(report.summaries).toHaveLength(1);
     expect(report.items.purged).toEqual([onlyCard!.id]);
     expect(report.items.trimmed).toEqual([both!.id]);
@@ -162,6 +162,13 @@ describe('MemoryCascade', () => {
     const left = unwrap(await memory.getEntries({ threadId: 't', types: 'all' }));
     expect(left.some((entry) => entry.type === 'compaction')).toBe(false);
     expect(JSON.stringify(left)).not.toContain('4111');
+  });
+
+  it('leaves the replies alone when asked to', async () => {
+    const [card, noted] = entries;
+    const report = await cascade.deleteEntries([card!.id], { ...who, keepReplies: true });
+    expect(report.entries.deleted).toEqual([card!.id]);
+    expect(unwrap(await memory.getEntry(noted!.id))).not.toBeNull();
   });
 
   it('keeps a summary that covers none of what went', async () => {
@@ -190,7 +197,7 @@ describe('MemoryCascade', () => {
       who
     );
 
-    expect(report.entries.redacted).toEqual([card!.id]);
+    expect(report.entries.redacted).toEqual([card!.id, entries[1]!.id]);
     expect(report.items.purged).toEqual([onlyCard!.id]);
     const read = unwrap(await memory.getEntry(card!.id));
     expect(read?.message.content).toBe('[redacted]');

@@ -86,7 +86,7 @@ describe('forget, redactEntries and rewind', () => {
     const { llm } = backend();
     const { cog, store, items } = await runtime(llm);
     await store.createThread(agent.id, { userId: 'ana' }, 't');
-    const [card, , city] = await said(store, 't', [
+    const [card, noted, city] = await said(store, 't', [
       'My card is 4111.',
       'Noted.',
       'I live in Porto.',
@@ -98,7 +98,7 @@ describe('forget, redactEntries and rewind', () => {
 
     const report = await cog.forget({ entryIds: [card!] }, { agents: [agent] });
 
-    expect(report.entries.deleted).toEqual([card]);
+    expect(report.entries.deleted.sort()).toEqual([card, noted].sort());
     expect(report.items.purged).toEqual([cardItem!.id]);
     expect(await items.get(cityItem!.id)).not.toBeNull();
   });
@@ -123,12 +123,12 @@ describe('forget, redactEntries and rewind', () => {
     const { llm } = backend();
     const { cog, store, items } = await runtime(llm);
     await store.createThread(agent.id, { userId: 'ana' }, 't');
-    const [card] = await said(store, 't', ['My card is 4111.', 'Noted.']);
+    const [card, noted] = await said(store, 't', ['My card is 4111.', 'Noted.']);
     await items.write([item('Ana has card 4111.', [card!])]);
 
     const report = await cog.redactEntries([card!], { agents: [agent], reason: 'asked' });
 
-    expect(report.entries.redacted).toEqual([card]);
+    expect(report.entries.redacted).toEqual([card, noted]);
     expect(report.items.purged).toHaveLength(1);
     const entry = await store.getEntry(card!);
     expect(entry.success && entry.data?.message.content).toBe('[redacted]');
