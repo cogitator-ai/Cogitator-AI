@@ -51,7 +51,16 @@ import { createLLMBackendFromPlugin, hasLLMPlugin } from './llm/plugin';
 import { withLLMRetry } from './llm/retry';
 import { ModelFallbackChain, type ModelCandidate } from './llm/model-fallback';
 import { modelContextWindow } from './context/model-window';
-import { countMessagesTokens, countTokens, type SummarizeFn } from '@cogitator-ai/memory';
+import {
+  countMessagesTokens,
+  countTokens,
+  indexedText,
+  type IndexedText,
+  type SummarizeFn,
+} from '@cogitator-ai/memory';
+
+/** Entries of a thread {@link Cogitator.indexMemory} reads at once */
+const INDEX_PAGE = 500;
 import { TruncateStrategy } from './context/strategies/index';
 import { sanitizeToolHistory } from './utils/tool-history';
 import { normalizeTurn } from './llm/turn';
@@ -2654,6 +2663,36 @@ export class Cogitator implements ToolInvoker {
       await this.memoryInit;
     }
     return this.state.memoryAdapter;
+  }
+
+  /**
+   * Embeds every entry of `threadId` the memory index has not embedded yet and waits until their
+   * vectors are stored, such as after a conversation was imported, so the first search of the
+   * thread already sees all of it. Does nothing when memory keeps no index (the `recent` strategy
+   * or no embedding service).
+   */
+  async indexMemory(threadId: string): Promise<void> {
+    const memory = await this.getMemory();
+    const index = this.state.messageIndex;
+    if (!memory || !index) return;
+    const texts: IndexedText[] = [];
+    let before: string | undefined;
+    for (;;) {
+      const page = memory.getPath
+        ? await memory.getPath({
+            threadId,
+            limit: INDEX_PAGE,
+            ...(before !== undefined && { before }),
+          })
+        : await memory.getEntries({ threadId });
+      if (!page.success) throw new Error(page.error);
+      texts.unshift(...page.data.flatMap((entry) => indexedText(entry) ?? []));
+      const first = page.data[0];
+      if (!memory.getPath || !first || page.data.length < INDEX_PAGE) break;
+      before = first.id;
+    }
+    await index.vectorsOf(texts);
+    await index.flush();
   }
 
   /**

@@ -191,7 +191,7 @@ describe('answerConversation', () => {
     expect(requests).toEqual([]);
   });
 
-  it('warms the entries the builder scores even when the dataset order is not by date', async () => {
+  it('warms the index with every entry once, whatever the dataset order, before the questions', async () => {
     const requests = stubModel(() => 'Miso');
     const late = Date.UTC(2025, 0, 1);
     const early = Date.UTC(2024, 0, 1);
@@ -221,9 +221,10 @@ describe('answerConversation', () => {
       opts
     );
     expect(requests).toHaveLength(1);
-    expect(batches[1]).toEqual([conversation.questions[0].question]);
-    const [warmUp] = batches;
-    for (let i = 1; i < 20; i++) expect(warmUp).toContain(turns[i].content);
+    expect(batches.at(-1)).toEqual([conversation.questions[0].question]);
+    const embedded = batches.slice(0, -1).flat();
+    expect(new Set(embedded).size).toBe(embedded.length);
+    for (const turn of turns) expect(embedded).toContain(turn.content);
   });
 
   it('measures a strategy that works without an error', async () => {
