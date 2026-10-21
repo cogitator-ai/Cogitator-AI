@@ -64,6 +64,8 @@ export interface BenchStrategy {
   name: 'recent' | 'relevant' | 'hybrid' | 'compacted' | 'extracted';
   /** Token budget of the built context (`memory.contextBuilder.maxTokens`) */
   contextTokens: number;
+  /** Share of the budget `hybrid` recalls into (the `recall` partition), the builder's by default */
+  recallShare?: number;
 }
 
 /** What one question's run produced. */

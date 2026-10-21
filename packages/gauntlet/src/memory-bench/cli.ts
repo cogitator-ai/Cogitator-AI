@@ -86,6 +86,8 @@ Usage: pnpm memory-bench [options]
   --sample <spec>        questions per dataset, stratified by category, e.g.
                          longmemeval-s=100,beam-1m=200 (default all)
   --context-tokens <n>   context budget of the memory (default 8192)
+  --recall-share <n>     share of the budget hybrid recalls into, above 0 and at most 0.85
+                         (default the builder's, 0.35)
   --turns <n>            turns per question (default 1): each question opens a chain on a
                          branch of its conversation's thread, saved turn after turn, whose
                          follow-ups are the next questions of the same conversation (BEAM,
@@ -153,6 +155,7 @@ async function main(): Promise<number> {
       strategies: { type: 'string', default: 'recent,relevant,hybrid' },
       sample: { type: 'string' },
       'context-tokens': { type: 'string', default: '8192' },
+      'recall-share': { type: 'string' },
       turns: { type: 'string', default: '1' },
       budget: { type: 'string', default: '5' },
       'anthropic-budget': { type: 'string', default: '30' },
@@ -178,11 +181,22 @@ async function main(): Promise<number> {
   const datasets = pick<BenchDatasetId>('datasets', values.datasets, DATASETS);
   const contextTokens = positive('context-tokens', values['context-tokens'], true);
   const turns = positive('turns', values.turns, true);
+  const recallShare =
+    values['recall-share'] === undefined ? undefined : Number(values['recall-share']);
+  if (recallShare !== undefined && !(recallShare > 0 && recallShare <= 0.85)) {
+    throw new Error(
+      `--recall-share must be above 0 and at most 0.85, got ${values['recall-share']}`
+    );
+  }
   const strategies: BenchStrategy[] = pick<BenchStrategy['name']>(
     'strategies',
     values.strategies,
     STRATEGIES
-  ).map((name) => ({ name, contextTokens }));
+  ).map((name) => ({
+    name,
+    contextTokens,
+    ...(name === 'hybrid' && recallShare !== undefined && { recallShare }),
+  }));
   const sizes = parseSample(values.sample);
   for (const id of sizes.keys()) {
     if (!(datasets as readonly string[]).includes(id)) {
@@ -284,6 +298,7 @@ async function main(): Promise<number> {
     method: METHOD_VERSION,
     model: BENCH_MODEL,
     contextTokens,
+    ...(recallShare !== undefined && { recallShare }),
     instructions: ANSWER_INSTRUCTIONS,
     seed,
   };
@@ -468,6 +483,7 @@ async function main(): Promise<number> {
       judge: `${BENCH_MODEL} (thinking off), Message Batches: ${!values['no-batch']}`,
       embedding: embedding?.model ?? null,
       contextTokens,
+      ...(recallShare !== undefined && { recallShare }),
       ...(compacted && {
         compaction: { ...compactionSettings(contextTokens), closingTurn: CLOSING_TURN },
       }),
@@ -492,7 +508,7 @@ async function main(): Promise<number> {
     stopped && `Stopped early: ${stopped}.`,
     unjudged > 0 && `${unjudged} answers are not judged yet and are left out of the tables.`,
   ].filter(Boolean);
-  const markdown = `# Memory benchmarks: ${run}\n\nModel ${BENCH_MODEL}, context budget ${contextTokens} tokens${turns > 1 ? `, ${turns} turns per question` : ''}, spent $${budget.spentUsd.toFixed(3)} on answers${compacted ? ', compaction' : ''}${extracted ? ', extraction' : ''} and the judge and $${embeddingBudget.spentUsd.toFixed(3)} on embeddings.${notes.length > 0 ? ` ${notes.join(' ')}` : ''}\n\n${markdownReport(rows)}`;
+  const markdown = `# Memory benchmarks: ${run}\n\nModel ${BENCH_MODEL}, context budget ${contextTokens} tokens${recallShare !== undefined ? `, hybrid recall share ${recallShare}` : ''}${turns > 1 ? `, ${turns} turns per question` : ''}, spent $${budget.spentUsd.toFixed(3)} on answers${compacted ? ', compaction' : ''}${extracted ? ', extraction' : ''} and the judge and $${embeddingBudget.spentUsd.toFixed(3)} on embeddings.${notes.length > 0 ? ` ${notes.join(' ')}` : ''}\n\n${markdownReport(rows)}`;
   await writeFile(join(reportsDir, `${run}.md`), markdown);
   log(markdown);
   log(`Report: ${join(reportsDir, `${run}.json`)}`);

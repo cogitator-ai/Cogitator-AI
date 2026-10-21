@@ -371,6 +371,9 @@ export function benchRuntime(
         strategy: contextStrategy(options.strategy.name),
         maxTokens: options.strategy.contextTokens,
         ...(extracted && { includeFacts: true }),
+        ...(options.strategy.recallShare !== undefined && {
+          partitions: { recall: { share: options.strategy.recallShare } },
+        }),
       },
       ...(compacted && {
         compaction: {
