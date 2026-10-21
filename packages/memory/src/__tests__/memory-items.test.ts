@@ -464,4 +464,25 @@ describe('MemoryItems retrieval counts', () => {
       lastRetrievedAt: day(21),
     });
   });
+
+  it('never brings back an item purged or let go while it is counted', async () => {
+    const { items } = memory(day(30));
+    const [purged, expired] = await items.write([
+      said({ content: 'Ana likes jazz' }),
+      said({ content: 'Ana plays chess' }),
+    ]);
+
+    await Promise.all([
+      items.noteRetrieved([purged!.id, expired!.id], day(20)),
+      items.purge([purged!.id]),
+      items.expire([expired!.id], day(21)),
+      items.noteRetrieved([purged!.id, expired!.id], day(22)),
+    ]);
+
+    expect(await items.get(purged!.id)).toBeNull();
+    expect(await items.get(expired!.id)).toMatchObject({
+      timesRetrieved: 2,
+      expiredAt: day(21),
+    });
+  });
 });

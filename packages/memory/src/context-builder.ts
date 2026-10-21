@@ -198,7 +198,7 @@ function onePerSlot(items: readonly MemoryItem[]): MemoryItem[] {
  * The memory items of the run's agent, user and thread that hold now, as facts, under the
  * agent's memory id and under its runtime id (where facts added for `agent.id` are): one per slot,
  * instructions and preferences first, newest first within a kind, each with the value of the
- * item it superseded when the run may still see it
+ * item it superseded when the run may still see it, as of `options.asOf`
  */
 async function loadItemFacts(items: MemoryItems, options: BuildContextOptions): Promise<Fact[]> {
   const agentIds = [...new Set([options.memoryAgentId ?? options.agentId, options.agentId])];
@@ -224,6 +224,7 @@ async function loadItemFacts(items: MemoryItems, options: BuildContextOptions): 
     (a, b) =>
       KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || b.recordedAt.getTime() - a.recordedAt.getTime()
   );
+  const knownAt = (options.asOf ?? new Date()).getTime();
   return Promise.all(
     ordered.map(async (item): Promise<Fact> => {
       const replaced = item.supersedes?.at(-1);
@@ -232,7 +233,7 @@ async function loadItemFacts(items: MemoryItems, options: BuildContextOptions): 
         before &&
         agentIds.includes(before.scope.agentId) &&
         visibleIn(before, { ...scope, agentId: before.scope.agentId }) &&
-        (before.expiredAt === undefined || before.expiredAt.getTime() > Date.now());
+        (before.expiredAt === undefined || before.expiredAt.getTime() > knownAt);
       const previously = shown ? (before.value ?? before.content) : undefined;
       return {
         id: item.id,

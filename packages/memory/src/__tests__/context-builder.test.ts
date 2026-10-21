@@ -501,6 +501,44 @@ describe('ContextBuilder', () => {
       expect(result.facts.map((fact) => fact.content)).toEqual(['Ana lives in Porto']);
     });
 
+    it('shows what an item superseded when it was still known at the moment read at', async () => {
+      const items = new MemoryItems({ adapter });
+      const city = (value: string, at: string) => ({
+        ...base,
+        kind: 'fact' as const,
+        content: `Ana lives in ${value}`,
+        subject: 'Ana',
+        attribute: 'city',
+        value,
+        saidAt: new Date(at),
+        sessionAt: new Date(at),
+      });
+      const [porto] = await items.write([
+        city('Porto', '2024-01-01'),
+        city('Lisbon', '2025-01-01'),
+      ]);
+      await items.expire([porto!.id], new Date('2025-06-01'));
+      const builder = new ContextBuilder(
+        { maxTokens: 2000, strategy: 'recent', includeFacts: true },
+        { memoryAdapter: adapter, memoryItems: items }
+      );
+      const at = (asOf: string) =>
+        builder.build({
+          threadId,
+          agentId: 'agent1',
+          userId: 'u1',
+          currentInput: 'Where does Ana live?',
+          asOf: new Date(asOf),
+        });
+
+      expect((await at('2025-03-01')).memoryContext).toContain(
+        'Ana lives in Lisbon (previously: Porto)'
+      );
+      const later = await at('2025-09-01');
+      expect(later.memoryContext).toContain('Ana lives in Lisbon');
+      expect(later.memoryContext).not.toContain('previously');
+    });
+
     it('recalls a fact the facts partition had no room for', async () => {
       const items = new MemoryItems({ adapter });
       await items.write([

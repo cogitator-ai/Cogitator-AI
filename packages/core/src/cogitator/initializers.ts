@@ -74,6 +74,8 @@ export interface InitializerState {
   messageIndex?: MessageIndex;
   /** Memory items of the memory adapter, when it stores them */
   memoryItems?: MemoryItems;
+  /** The counts of memory items sent to a model still being written */
+  retrievalCounts?: Promise<void>;
   memoryInitialized: boolean;
   sandboxManager?: SandboxManager;
   sandboxInitialized: boolean;
@@ -459,6 +461,8 @@ export function initializeContextManager(
 }
 
 export async function cleanupState(state: InitializerState): Promise<void> {
+  await state.retrievalCounts;
+  state.retrievalCounts = undefined;
   if (state.messageIndex) {
     await state.messageIndex.close();
     state.messageIndex = undefined;

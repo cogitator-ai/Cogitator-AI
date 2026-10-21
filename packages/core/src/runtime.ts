@@ -1758,6 +1758,7 @@ export class Cogitator implements ToolInvoker {
           messages: restoreClearedOutputs(messages, middlewareState),
           trace: { traceId, spans: publicSpans() },
         };
+        if (sentItemIds.length > 0) this.noteRetrieved(sentItemIds, runId);
         options.onRunComplete?.(paused);
         return paused;
       }
@@ -1868,14 +1869,7 @@ export class Cogitator implements ToolInvoker {
       if (prompt) await this.recordPrompt(prompt, result, Date.now() - startTime);
 
       await runMemory.settled();
-      if (sentItemIds.length > 0 && this.state.memoryItems) {
-        await this.state.memoryItems.noteRetrieved(sentItemIds).catch((error: unknown) =>
-          getLogger().warn('Could not count the memory items a run sent', {
-            runId,
-            error: error instanceof Error ? error.message : String(error),
-          })
-        );
-      }
+      if (sentItemIds.length > 0) this.noteRetrieved(sentItemIds, runId);
       await pipeline.afterRun(
         {
           result,
@@ -2748,6 +2742,23 @@ export class Cogitator implements ToolInvoker {
    * }
    * ```
    */
+  /**
+   * Counts the memory items a run sent in the background, one count after another, so the run
+   * returns without waiting on the writes; `close` waits for them
+   */
+  private noteRetrieved(itemIds: readonly string[], runId: string): void {
+    const items = this.state.memoryItems;
+    if (!items) return;
+    this.state.retrievalCounts = (this.state.retrievalCounts ?? Promise.resolve())
+      .then(() => items.noteRetrieved(itemIds))
+      .catch((error: unknown) =>
+        getLogger().warn('Could not count the memory items a run sent', {
+          runId,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      );
+  }
+
   async close(): Promise<void> {
     await this.closeObservers();
     await cleanupState(this.state);

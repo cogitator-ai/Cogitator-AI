@@ -9,6 +9,8 @@ import type {
 import { MemoryItems } from '@cogitator-ai/memory';
 import { Cogitator } from '../cogitator';
 import { Agent } from '../agent';
+import { tool } from '../tool';
+import { z } from 'zod';
 import { getLogger } from '../logger';
 import { EXTRACTION_CURSOR } from '../middleware/memory-extraction';
 
@@ -214,6 +216,58 @@ describe('memory.extraction', () => {
     expect(JSON.stringify(answer?.messages)).toContain('The user lives in Porto');
   });
 
+  it('counts the memory items a run sent before it paused, once across the resume', async () => {
+    const llm = backend();
+    const answer = llm.chat;
+    let refundAsked = false;
+    llm.chat = vi.fn(async (request: ChatRequest) => {
+      const last = String(request.messages.at(-1)?.content ?? '');
+      if (!isExtraction(request) && last.includes('refund') && !refundAsked) {
+        refundAsked = true;
+        llm.requests.push(request);
+        return {
+          id: 'r',
+          content: '',
+          toolCalls: [{ id: 'c1', name: 'refund', arguments: { order: '7' } }],
+          finishReason: 'tool_calls' as const,
+          usage,
+        };
+      }
+      return answer(request);
+    });
+    const refund = tool({
+      name: 'refund',
+      description: 'Refund',
+      parameters: z.object({ order: z.string() }),
+      requiresApproval: true,
+      execute: async ({ order }) => `refunded ${order}`,
+    });
+    const refunds = new Agent({ name: 'a', model: 'mock/m', instructions: 'x', tools: [refund] });
+    const cog = new Cogitator({
+      llm: { backends: { mock: llm } },
+      memory: { adapter: 'memory', extraction: {}, contextBuilder: { includeFacts: true } },
+    });
+    cogs.push(cog);
+    await cog.run(refunds, { input: 'I live in Porto', threadId: 't', userId: 'u1' });
+
+    const paused = await cog.run(refunds, {
+      input: 'please refund 7',
+      threadId: 't',
+      userId: 'u1',
+    });
+    expect(paused.status).toBe('paused');
+    const items = await itemsOf(cog);
+    const porto = async () =>
+      (await items.query({ scope: { agentId: refunds.name, userId: 'u1' } }))[0];
+    await vi.waitFor(async () => expect((await porto())?.timesRetrieved).toBe(1));
+
+    const counted = vi.spyOn(MemoryItems.prototype, 'noteRetrieved');
+    await cog.resume(refunds, paused.checkpoint!, { decisions: { c1: { approved: true } } });
+    await cog.close();
+    cogs.splice(cogs.indexOf(cog), 1);
+    expect(counted).not.toHaveBeenCalled();
+  });
+
   it('counts the memory items a finished run sent to the model', async () => {
     const cog = new Cogitator({
       llm: { backends: { mock: backend() } },
@@ -223,13 +277,12 @@ describe('memory.extraction', () => {
     await cog.run(agent, { input: 'I live in Porto', threadId: 't', userId: 'u1' });
     await cog.run(agent, { input: 'What about me?', threadId: 't', userId: 'u1' });
 
-    const [porto] = await (
-      await itemsOf(cog)
-    ).query({
-      scope: { agentId: agent.name, userId: 'u1' },
+    const items = await itemsOf(cog);
+    await vi.waitFor(async () => {
+      const [porto] = await items.query({ scope: { agentId: agent.name, userId: 'u1' } });
+      expect(porto?.timesRetrieved).toBe(1);
+      expect(porto?.lastRetrievedAt).toBeInstanceOf(Date);
     });
-    expect(porto?.timesRetrieved).toBe(1);
-    expect(porto?.lastRetrievedAt).toBeInstanceOf(Date);
   });
 
   it('extracts the runs of one thread one after another, each entry once', async () => {
