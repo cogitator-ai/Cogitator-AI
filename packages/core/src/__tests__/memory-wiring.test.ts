@@ -4,6 +4,10 @@ import type { BuildContextOptions, ContextBuilderDeps } from '@cogitator-ai/memo
 import type { ContextBuilderConfig } from '@cogitator-ai/types';
 import { Cogitator } from '../cogitator';
 import { Agent } from '../agent';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { InMemoryEmbeddingAdapter } from '@cogitator-ai/memory';
 
 const captured = vi.hoisted(() => [] as ContextBuilderDeps[]);
 const configs = vi.hoisted(() => [] as ContextBuilderConfig[]);
@@ -141,6 +145,45 @@ describe('memory wiring', () => {
 
       expect(captured.at(-1)?.messageIndex).toBeDefined();
       await cog.close();
+    });
+
+    it('indexes a long thread written before the index a page at a time', async () => {
+      const path = join(mkdtempSync(join(tmpdir(), 'cogitator-index-')), 'memory.db');
+      const writer = new Cogitator({
+        llm: { backends: { mock: backend } },
+        memory: { adapter: 'sqlite', sqlite: { path }, contextBuilder: { strategy: 'recent' } },
+      });
+      const memory = await writer.getMemory();
+      await memory?.createThread('a', {}, 'long');
+      for (let n = 0; n < 1200; n++) {
+        await memory?.addEntry({
+          threadId: 'long',
+          message: { role: n % 2 ? 'assistant' : 'user', content: `turn ${n}` },
+          tokenCount: 2,
+        });
+      }
+      await writer.close();
+
+      const embedding = fakeEmbedding();
+      const lookups = vi.spyOn(InMemoryEmbeddingAdapter.prototype, 'getBySources');
+      const reader = new Cogitator({
+        llm: { backends: { mock: backend } },
+        memory: {
+          adapter: 'sqlite',
+          sqlite: { path },
+          contextBuilder: { maxTokens: 4000, strategy: 'hybrid' },
+          embedding,
+        },
+      });
+      await reader.indexMemory('long');
+
+      const embedded = embedding.embedBatch.mock.calls.flatMap(([texts]) => texts as string[]);
+      expect(embedded).toHaveLength(1200);
+      expect(new Set(embedded).size).toBe(1200);
+      expect(lookups).toHaveBeenCalled();
+      expect(Math.max(...lookups.mock.calls.map(([ids]) => ids.length))).toBeLessThanOrEqual(500);
+      lookups.mockRestore();
+      await reader.close();
     });
 
     it('keeps no index for the recent strategy', async () => {

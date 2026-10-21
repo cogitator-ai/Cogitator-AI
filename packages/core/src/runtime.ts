@@ -2677,16 +2677,17 @@ export class Cogitator implements ToolInvoker {
   /**
    * Embeds every entry of `threadId` the memory index has not embedded yet and waits until their
    * vectors are stored, such as after a conversation was imported, so the first search of the
-   * thread already sees all of it. Does nothing when memory keeps no index (the `recent` strategy
-   * or no embedding service).
+   * thread already sees all of it. The thread is read and embedded a page at a time, so a long
+   * one is never held whole. Does nothing when memory keeps no index (the `recent` strategy or no
+   * embedding service).
    */
   async indexMemory(threadId: string): Promise<void> {
     const memory = await this.getMemory();
     const index = this.state.messageIndex;
     if (!memory || !index) return;
-    const texts: IndexedText[] = [];
     let before: string | undefined;
     for (;;) {
+      const seenAt = index.mark();
       const page = memory.getPath
         ? await memory.getPath({
             threadId,
@@ -2695,12 +2696,15 @@ export class Cogitator implements ToolInvoker {
           })
         : await memory.getEntries({ threadId });
       if (!page.success) throw new Error(page.error);
-      texts.unshift(...page.data.flatMap((entry) => indexedText(entry) ?? []));
+      const texts: IndexedText[] = page.data.flatMap((entry) => indexedText(entry) ?? []);
+      for (let start = 0; start < texts.length; start += INDEX_PAGE) {
+        await index.vectorsOf(texts.slice(start, start + INDEX_PAGE), seenAt);
+        await index.flush();
+      }
       const first = page.data[0];
       if (!memory.getPath || !first || page.data.length < INDEX_PAGE) break;
       before = first.id;
     }
-    await index.vectorsOf(texts);
     await index.flush();
   }
 

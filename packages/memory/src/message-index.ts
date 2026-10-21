@@ -273,11 +273,9 @@ export class MessageIndex {
     this.run(async () => {
       try {
         const unseen = entries.filter((entry) => !this.vectors.has(entry.entryId));
-        const stored = new Set<string>();
-        for (let start = 0; start < unseen.length; start += LOOKUP_BATCH) {
-          const ids = unseen.slice(start, start + LOOKUP_BATCH).map((entry) => entry.entryId);
-          for (const id of (await this.storedVectors(ids)).keys()) stored.add(id);
-        }
+        const stored = new Set(
+          (await this.storedVectors(unseen.map((entry) => entry.entryId))).keys()
+        );
         for (const entry of unseen) {
           if (!stored.has(entry.entryId)) this.waiting.set(entry.entryId, { ...entry, seenAt });
         }
@@ -488,14 +486,20 @@ export class MessageIndex {
     remember(this.vectors, entry.entryId, { vector, threadId: entry.threadId }, VECTOR_CACHE_SIZE);
   }
 
-  /** Vectors the store keeps for these entries, made by the index's model */
+  /** Vectors the store keeps for these entries, made by the index's model, read in batches */
   private async storedVectors(entryIds: string[]): Promise<Map<string, Float32Array>> {
     const found = new Map<string, Float32Array>();
-    if (!this.store.getBySources) return found;
-    const stored: Embedding[] = await this.unwrap(
-      this.store.getBySources(entryIds),
-      'getBySources'
-    );
+    const getBySources = this.store.getBySources?.bind(this.store);
+    if (!getBySources) return found;
+    const stored: Embedding[] = [];
+    for (let start = 0; start < entryIds.length; start += LOOKUP_BATCH) {
+      stored.push(
+        ...(await this.unwrap(
+          getBySources(entryIds.slice(start, start + LOOKUP_BATCH)),
+          'getBySources'
+        ))
+      );
+    }
     const dimensions = this.embedding.dimensions;
     for (const embedding of stored) {
       const metadata = embedding.metadata;
