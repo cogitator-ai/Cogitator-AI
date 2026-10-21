@@ -401,6 +401,106 @@ describe('ContextBuilder', () => {
     });
   });
 
+  describe('hybrid recall under pressure', () => {
+    const base = {
+      trust: 'user' as const,
+      confidence: 0.9,
+      evidence: [],
+      verified: true,
+      scope: { agentId: 'agent1', userId: 'u1' },
+    };
+
+    it('reads memory items as of the moment the turn is read at', async () => {
+      const items = new MemoryItems({ adapter });
+      const city = (value: string, at: string) => ({
+        ...base,
+        kind: 'fact' as const,
+        content: `Ana lives in ${value}`,
+        subject: 'Ana',
+        attribute: 'city',
+        value,
+        saidAt: new Date(at),
+        sessionAt: new Date(at),
+      });
+      await items.write([city('Porto', '2024-01-01'), city('Lisbon', '2025-01-01')]);
+      const builder = new ContextBuilder(
+        { maxTokens: 2000, strategy: 'hybrid', includeFacts: true },
+        { memoryAdapter: adapter, memoryItems: items }
+      );
+
+      const result = await builder.build({
+        threadId,
+        agentId: 'agent1',
+        userId: 'u1',
+        currentInput: 'Where does Ana live?',
+        asOf: new Date('2024-06-01'),
+      });
+
+      expect(result.facts.map((fact) => fact.content)).toEqual(['Ana lives in Porto']);
+    });
+
+    it('recalls a fact the facts partition had no room for', async () => {
+      const items = new MemoryItems({ adapter });
+      await items.write([
+        {
+          ...base,
+          kind: 'fact',
+          content: 'Rex is a golden retriever',
+          saidAt: new Date('2024-01-01'),
+          sessionAt: new Date('2024-01-01'),
+        },
+        ...Array.from({ length: 70 }, (_, n) => ({
+          ...base,
+          kind: 'fact' as const,
+          content: `Unrelated note number ${n} about the garden plan`,
+          saidAt: new Date('2025-01-01'),
+          sessionAt: new Date('2025-01-01'),
+        })),
+      ]);
+      const builder = new ContextBuilder(
+        { maxTokens: 1500, strategy: 'hybrid', includeFacts: true },
+        { memoryAdapter: adapter, memoryItems: items }
+      );
+
+      const result = await builder.build({
+        threadId,
+        agentId: 'agent1',
+        userId: 'u1',
+        currentInput: 'What breed is Rex?',
+      });
+
+      expect(result.memoryContext).toContain('Rex is a golden retriever');
+    });
+
+    it('searches the turns a large system prompt pushes out of the tail', async () => {
+      await adapter.addEntry({
+        threadId,
+        message: { role: 'user', content: 'The door code is 4417' },
+        tokenCount: 1,
+      });
+      for (let n = 0; n < 4; n++) {
+        await adapter.addEntry({
+          threadId,
+          message: { role: 'user', content: `Some chatter about the weather number ${n}` },
+          tokenCount: 1,
+        });
+      }
+      const builder = new ContextBuilder(
+        { maxTokens: 1000, reserveTokens: 0, strategy: 'hybrid' },
+        { memoryAdapter: adapter }
+      );
+
+      const result = await builder.build({
+        threadId,
+        agentId: 'agent1',
+        systemPrompt: 'Follow the house rules. '.repeat(120),
+        currentInput: 'What is the door code?',
+      });
+
+      expect(JSON.stringify(result.messages)).toContain('The door code is 4417');
+    });
+  });
+
   describe('hybrid recall with a reranker', () => {
     it('lets the reranker order what the search found, and keeps the order when it fails', async () => {
       const say = async (content: string) =>

@@ -207,6 +207,7 @@ async function loadItemFacts(items: MemoryItems, options: BuildContextOptions): 
           ...(options.userId !== undefined && { userId: options.userId }),
           threadId: options.threadId,
         },
+        ...(options.asOf !== undefined && { asOf: options.asOf }),
       })
     )
   );
@@ -489,6 +490,7 @@ export class ContextBuilder {
     const facts = this.config.includeFacts
       ? ((await this.attempt('facts', errors, () => this.loadFacts(options))) ?? [])
       : [];
+    const keptFacts = new Set<string>();
     if (facts.length > 0) {
       candidates.push({
         partition: 'facts',
@@ -498,6 +500,14 @@ export class ContextBuilder {
           text: fact.content,
           sourceId: fact.id,
         })),
+        fit: (blocks, budget) => {
+          const fitted = fitInOrder(blocks, budget);
+          keptFacts.clear();
+          for (const block of fitted.kept) {
+            if (block.value.kind === 'fact') keptFacts.add(block.value.fact.id);
+          }
+          return fitted;
+        },
       });
     }
 
@@ -518,10 +528,18 @@ export class ContextBuilder {
     scope.threadSize = entries.length;
     const summaries = entries.filter((entry) => entry.type === 'compaction');
     const history = entries.filter((entry) => entry.type !== 'compaction');
+    const required = () =>
+      candidates
+        .filter((candidate) =>
+          ['system', 'pinned', 'index', 'brief', 'final'].includes(candidate.partition)
+        )
+        .flatMap((candidate) => candidate.blocks)
+        .reduce((sum, block) => sum + block.tokens, 0) +
+      summaries.reduce((sum, entry) => sum + countEntryTokens(entry), 0);
     const recalled =
       this.config.strategy === 'hybrid' && options.currentInput
         ? ((await this.attempt('relevance', errors, () =>
-            this.recall(history, options, availableTokens, facts, errors, scope)
+            this.recall(history, options, availableTokens, required(), facts, errors, scope)
           )) ?? [])
         : [];
 
@@ -540,7 +558,16 @@ export class ContextBuilder {
             ? [{ value: { kind: 'graph' as const, context: graph }, tokens: graph.tokenCount }]
             : []),
         ],
-        fit: (blocks, budget) => this.fitRecall(blocks, budget, options, graphOutcome, errors),
+        fit: (blocks, budget) =>
+          this.fitRecall(
+            blocks.filter(
+              (block) => block.value.kind !== 'recalled' || !keptFacts.has(block.value.item.id)
+            ),
+            budget,
+            options,
+            graphOutcome,
+            errors
+          ),
       });
     }
 
@@ -876,14 +903,15 @@ export class ContextBuilder {
   /**
    * The blocks a search of memory brings for the turn (the `hybrid` strategy): the earlier turns
    * of `history` and the memory items {@link MemoryRetriever} finds, best first, each turn with
-   * the turns next to it. The newest turns the context will hold in `recent` anyway (about what
-   * the budget leaves after the required partitions, `facts` and `recall`) are not searched, and
-   * neither are the items `facts` holds.
+   * the turns next to it. The newest turns the context will hold in `recent` anyway (what the
+   * budget leaves after the required partitions, `facts` and `recall`) are not searched. Items
+   * the `facts` partition keeps are left out when `recall` is fitted.
    */
   private async recall(
     history: MemoryEntry[],
     options: BuildContextOptions,
     availableTokens: number,
+    requiredTokens: number,
     facts: readonly Fact[],
     errors: ContextBuildError[],
     scope: ScoringScope
@@ -891,10 +919,13 @@ export class ContextBuilder {
     const input = options.currentInput;
     if (!input) return [];
     const shares = { ...DEFAULT_PARTITIONS, ...this.config.partitions };
+    const factsDemand = facts.reduce((sum, fact) => sum + countTokens(factLine(fact)), 0);
     const tail = Math.max(
       0,
-      Math.floor(availableTokens * (1 - (shares.facts.share ?? 0) - (shares.recall.share ?? 0))) -
-        countTokens(input)
+      availableTokens -
+        requiredTokens -
+        Math.min(factsDemand, Math.floor(availableTokens * (shares.facts.share ?? 0))) -
+        Math.floor(availableTokens * (shares.recall.share ?? 0))
     );
     const held = new Set(this.selectRecentEntries(history, tail).map((entry) => entry.id));
     const scored = this.deps.embeddingService
@@ -928,12 +959,10 @@ export class ContextBuilder {
     const hits = this.deps.reranker
       ? await this.reranked(input, retrieval.hits, errors)
       : retrieval.hits;
-    const inFacts = new Set(facts.map((fact) => fact.id));
     const position = new Map(history.map((entry, at) => [entry.id, at]));
     const covered = new Set<string>();
     return hits.flatMap((hit): AssemblyBlock<Piece>[] => {
       if (hit.kind === 'item') {
-        if (inFacts.has(hit.hit.item.id)) return [];
         const line = itemLine(hit.hit.item);
         return [{ value: { kind: 'recalled', item: hit.hit.item }, tokens: countTokens(line) }];
       }

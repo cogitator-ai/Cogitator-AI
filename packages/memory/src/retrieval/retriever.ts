@@ -106,7 +106,7 @@ const WEIGHTS: Record<QueryType, Record<Channel, number>> = {
 export interface RetrievalRequest {
   /** What the turn asks */
   input: string;
-  /** When it is asked, which the time it names is resolved from */
+  /** When it is asked: the time it names is resolved from it, and items are read as of it */
   anchor: Date;
   timeZone?: string;
   /** The history the turn sees, oldest first */
@@ -174,37 +174,40 @@ export class MemoryRetriever {
     );
     const position = new Map(request.history.map((entry, at) => [entry.id, at]));
 
+    const weights = WEIGHTS[analysis.type];
     const entities = await this.entitiesNamed(request, analysis);
     const items = await this.itemsOf(request, analysis);
     const channels: (ChannelHits & { channel: Channel })[] = [
-      { channel: 'vector', ids: this.vectorHits(turns, request.cosines), weight: 0 },
+      { channel: 'vector', weight: weights.vector, ids: this.vectorHits(turns, request.cosines) },
       {
         channel: 'keyword',
+        weight: weights.keyword,
         ids: this.keywordHits(request.history, turns, request.input),
-        weight: 0,
       },
-      { channel: 'time', ids: this.timeHits(turns, analysis), weight: 0 },
-      { channel: 'entity', ids: this.entityHits(turns, entities), weight: 0 },
-      { channel: 'items', ids: this.itemHits(items, analysis), weight: 0 },
+      { channel: 'time', weight: weights.time, ids: this.timeHits(turns, analysis) },
+      { channel: 'entity', weight: weights.entity, ids: this.entityHits(turns, entities) },
+      { channel: 'items', weight: weights.items, ids: this.itemHits(items, analysis) },
       {
         channel: 'itemEntity',
+        weight: weights.itemEntity,
         ids: items
           .filter((item) => item.entityId && entities.some((entity) => entity.id === item.entityId))
           .map((item) => `i:${item.id}`)
           .slice(0, CHANNEL_HITS),
-        weight: 0,
       },
-      { channel: 'itemTime', ids: this.itemTimeHits(items, analysis), weight: 0 },
+      { channel: 'itemTime', weight: weights.itemTime, ids: this.itemTimeHits(items, analysis) },
     ];
     const seeds = fuse(channels.filter((channel) => channel.channel.startsWith('item')));
     channels.push({
       channel: 'graph',
+      weight: weights.graph,
       ids: await this.graphHits(request, items, entities, seeds),
-      weight: 0,
     });
-    channels.push({ channel: 'evidence', ids: evidenceHits(turns, items, seeds), weight: 0 });
-    const weights = WEIGHTS[analysis.type];
-    for (const channel of channels) channel.weight = weights[channel.channel];
+    channels.push({
+      channel: 'evidence',
+      weight: weights.evidence,
+      ids: evidenceHits(turns, items, seeds),
+    });
 
     const fused = fuse(channels.filter((channel) => channel.ids.length > 0));
     const found = new Map<string, Set<string>>();
@@ -386,7 +389,11 @@ export class MemoryRetriever {
   private async itemsOf(request: RetrievalRequest, analysis: QueryAnalysis): Promise<MemoryItem[]> {
     if (!request.items || !request.scope) return [];
     const past = analysis.type === 'temporal' || analysis.type === 'aggregate';
-    return request.items.query({ scope: request.scope, includeClosed: past });
+    return request.items.query({
+      scope: request.scope,
+      includeClosed: past,
+      asOf: request.anchor,
+    });
   }
 
   /** Items that hold the input's words, by BM25 over the items */
