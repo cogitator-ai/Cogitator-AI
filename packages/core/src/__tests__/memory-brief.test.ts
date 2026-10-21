@@ -2,6 +2,8 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import type { ChatRequest, ChatResponse, ChatStreamChunk, LLMBackend } from '@cogitator-ai/types';
 import { Cogitator } from '../cogitator';
 import { Agent } from '../agent';
+import { InMemoryAdapter } from '@cogitator-ai/memory';
+import { memoryBriefMiddleware } from '../middleware/memory-brief';
 
 const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
 
@@ -125,5 +127,32 @@ describe('memory.brief', () => {
     });
 
     expect(llm.requests.some(isBrief)).toBe(false);
+  });
+
+  it('gives up on a slow read of memory once the brief runs out of time', async () => {
+    const adapter = new InMemoryAdapter({ provider: 'memory' });
+    adapter.getPath = () => new Promise(() => undefined);
+    const summarizer = vi.fn(() => async () => '[]');
+    const layer = memoryBriefMiddleware(
+      { timeoutMs: 30 },
+      { memory: () => adapter, summarizer, placeOf: () => ({ threadId: 't' }) }
+    );
+    const started = Date.now();
+
+    const update = await layer.beforeModel?.(
+      { messages: [{ role: 'user', content: 'Answer my email' }], model: 'mock/m' } as never,
+      {
+        runId: 'r',
+        agentId: 'helper',
+        memoryAgentId: 'helper',
+        iteration: 1,
+        signal: new AbortController().signal,
+        state: new Map(),
+      } as never
+    );
+
+    expect(update).toBeUndefined();
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(summarizer).not.toHaveBeenCalled();
   });
 });

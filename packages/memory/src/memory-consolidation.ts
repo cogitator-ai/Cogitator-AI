@@ -34,7 +34,7 @@ export const MAX_PLAYBOOK_RULES = 60;
 const RULE_CHARS = 300;
 /** Items a model reads at once while looking for repeats */
 const DEDUPE_BATCH = 30;
-/** The newest lessons one fold reads at most */
+/** Lessons one fold reads at most: the oldest not folded yet, the rest wait for the next fold */
 const LESSONS_READ = 20;
 
 export const DEDUPE_PROMPT = `You keep the long-term memory of an assistant tidy. You get the facts memory holds now about one subject, each with its id, who it comes from and when it was said. Find:
@@ -225,6 +225,12 @@ export interface DedupeOptions {
   maxTokens?: number;
 }
 
+/** What a dedupe marked, and whether it looked at every subject it was asked to */
+export interface DedupeResult {
+  stale: StaleMark[];
+  complete: boolean;
+}
+
 export interface FoldLessonsOptions {
   summarize: SummarizeFn;
   /** `apply` (default) edits the playbook, `shadow` writes the edited one to the draft */
@@ -268,13 +274,17 @@ export class MemoryConsolidator {
     if (options.files) this.files = options.files;
   }
 
-  /** Marks as stale the items of exactly `scope` that repeat or contradict another one */
-  async dedupe(scope: MemoryItemScope, options: DedupeOptions): Promise<StaleMark[]> {
+  /**
+   * Marks as stale the items of exactly `scope` that repeat or contradict another one. Not
+   * `complete` when `maxChanges` stopped it before every subject was looked at, so the next pass
+   * must not start after this one.
+   */
+  async dedupe(scope: MemoryItemScope, options: DedupeOptions): Promise<DedupeResult> {
     const maxChanges = options.maxChanges ?? 10;
     if (!Number.isInteger(maxChanges) || maxChanges < 0) {
       throw new Error(`maxChanges must be a whole number from 0, got ${maxChanges}`);
     }
-    if (maxChanges === 0) return [];
+    if (maxChanges === 0) return { stale: [], complete: true };
     const result = await this.itemAdapter.findItems({
       agentId: scope.agentId,
       scope,
@@ -289,6 +299,7 @@ export class MemoryConsolidator {
     const since = options.since?.getTime();
     const marked: StaleMark[] = [];
     const used = new Set<string>();
+    let complete = true;
     for (const items of bySubject.values()) {
       if (items.length < 2) continue;
       if (since !== undefined && !items.some((item) => item.recordedAt.getTime() > since)) continue;
@@ -319,7 +330,10 @@ export class MemoryConsolidator {
             (parsed.data.reason === 'duplicate' || item.saidAt.getTime() <= keep.saidAt.getTime())
         );
         if (allowed.length !== drops.length || allowed.length === 0) continue;
-        if (marked.length + allowed.length > maxChanges) continue;
+        if (marked.length + allowed.length > maxChanges) {
+          complete = false;
+          continue;
+        }
         await this.items.markStale(
           allowed.map((item) => item.id),
           { reason: parsed.data.reason, keptId: keep.id, at: new Date().toISOString() }
@@ -330,9 +344,12 @@ export class MemoryConsolidator {
           marked.push({ itemId: item.id, keptId: keep.id, reason: parsed.data.reason });
         }
       }
-      if (marked.length >= maxChanges) break;
+      if (marked.length >= maxChanges) {
+        complete = false;
+        break;
+      }
     }
-    return marked;
+    return { stale: marked, complete };
   }
 
   /** The playbook `visibleTo` sees, undefined while there is none */
@@ -376,7 +393,7 @@ export class MemoryConsolidator {
           item.recordedAt.getTime() > after
       )
       .sort(byRecorded)
-      .slice(-LESSONS_READ);
+      .slice(0, LESSONS_READ);
     const newest = lessons.at(-1);
     if (!newest) return undefined;
 

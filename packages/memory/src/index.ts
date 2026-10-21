@@ -294,6 +294,7 @@ export {
   parsePlaybookEdits,
   playbookFile,
   type DedupeOptions,
+  type DedupeResult,
   type FoldLessonsOptions,
   type MemoryConsolidatorOptions,
   type Playbook,

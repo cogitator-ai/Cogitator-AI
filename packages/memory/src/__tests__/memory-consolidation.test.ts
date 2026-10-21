@@ -125,8 +125,9 @@ describe('MemoryConsolidator', () => {
       ])
     );
 
-    const marked = await consolidator.dedupe(scope, { summarize });
+    const { stale: marked, complete } = await consolidator.dedupe(scope, { summarize });
 
+    expect(complete).toBe(true);
     expect(marked).toEqual([{ itemId: oporto!.id, keptId: porto!.id, reason: 'duplicate' }]);
     const stale = await items.get(oporto!.id);
     expect(stale?.status).toBe('stale');
@@ -143,10 +144,15 @@ describe('MemoryConsolidator', () => {
 
     expect(
       await consolidator.dedupe(scope, { summarize, since: new Date(Date.now() + 60_000) })
-    ).toEqual([]);
+    ).toEqual({ stale: [], complete: true });
     expect(summarize).not.toHaveBeenCalled();
-    expect(await consolidator.dedupe(scope, { summarize, maxChanges: 0 })).toEqual([]);
-    expect(await consolidator.dedupe(scope, { summarize, maxChanges: 1 })).toHaveLength(1);
+    expect(await consolidator.dedupe(scope, { summarize, maxChanges: 0 })).toEqual({
+      stale: [],
+      complete: true,
+    });
+    const capped = await consolidator.dedupe(scope, { summarize, maxChanges: 1 });
+    expect(capped.stale).toHaveLength(1);
+    expect(capped.complete).toBe(false);
   });
 
   it('folds new lessons into the playbook a few edits at a time, a new version each fold', async () => {
@@ -191,6 +197,26 @@ describe('MemoryConsolidator', () => {
       `Confirm the time zone and the date before booking. [lesson:${first!.id}] [lesson:${second!.id}]`,
     ]);
     expect(await files.history({ scope }, PLAYBOOK_PATH)).toHaveLength(2);
+  });
+
+  it('folds a backlog of lessons oldest first, leaving none behind the cursor', async () => {
+    const lessons = await items.write(
+      Array.from({ length: 21 }, (_, at) =>
+        item(`Lesson number ${at} about the work.`, { kind: 'lesson' })
+      )
+    );
+    const read: string[][] = [];
+    const summarize = vi.fn(async (messages: { content: string }[]) => {
+      read.push([...messages[0]!.content.matchAll(/id="(mem_[^"]+)"/g)].map((m) => m[1]!));
+      return '[]';
+    });
+
+    await consolidator.foldLessons(scope, { summarize });
+    await consolidator.foldLessons(scope, { summarize });
+
+    expect(read[0]).toEqual(lessons.slice(0, 20).map((lesson) => lesson.id));
+    expect(read[1]).toEqual([lessons[20]!.id]);
+    expect(await consolidator.foldLessons(scope, { summarize })).toBeUndefined();
   });
 
   it('writes a draft in shadow mode, which promotion makes the playbook', async () => {

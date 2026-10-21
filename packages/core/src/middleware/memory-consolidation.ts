@@ -47,7 +47,10 @@ interface UpkeepJob {
   run: Omit<CompactionRun, 'signal'>;
   observe: boolean;
   consolidate: boolean;
+  /** Look only at subjects with items recorded after this, every subject when absent */
   since?: Date;
+  /** Threads whose consolidation cursor moves to the start of the pass once it went through */
+  cursors: string[];
 }
 
 /** The memory upkeep middleware, with the passes it runs in the background */
@@ -67,7 +70,7 @@ export interface MemoryUpkeep extends RunMiddleware {
 /** Where consolidation stands on a thread, as its metadata keeps it */
 interface ConsolidationState {
   runs: number;
-  /** When the last pass started */
+  /** When the last pass that went through started */
   at?: string;
 }
 
@@ -143,21 +146,34 @@ export function memoryUpkeepMiddleware(
       scope.threadId ?? null,
     ]);
 
+  /** One job doing what `a` and `b` do: consolidating from the earlier cursor of the two */
+  function merged(a: UpkeepJob, b: UpkeepJob): UpkeepJob {
+    const since = !a.consolidate
+      ? b.since
+      : !b.consolidate
+        ? a.since
+        : a.since && b.since
+          ? a.since < b.since
+            ? a.since
+            : b.since
+          : undefined;
+    const { since: _, ...rest } = b;
+    return {
+      ...rest,
+      observe: a.observe || b.observe,
+      consolidate: a.consolidate || b.consolidate,
+      cursors: [...new Set([...a.cursors, ...b.cursors])],
+      ...(since && { since }),
+    };
+  }
+
   /** Runs `job` after the pass of its scope under way, merged with any other waiting for it */
   function schedule(job: UpkeepJob): void {
     const key = keyOf(job.scope);
     const current = running.get(key);
     if (current) {
       const waiting = current.next;
-      current.next = waiting
-        ? {
-            ...job,
-            observe: waiting.observe || job.observe,
-            consolidate: waiting.consolidate || job.consolidate,
-            ...(waiting.since &&
-              job.since && { since: waiting.since < job.since ? waiting.since : job.since }),
-          }
-        : job;
+      current.next = waiting ? merged(waiting, job) : job;
       return;
     }
     const entry: { done: Promise<void>; next?: UpkeepJob } = { done: Promise.resolve() };
@@ -196,6 +212,8 @@ export function memoryUpkeepMiddleware(
     };
     const memory = deps.memory();
     if (!memory || !isMemoryItemAdapter(memory)) return report;
+    const startedAt = new Date();
+    let through = true;
     const items = new MemoryItems({ adapter: memory });
     const files = isMemoryFileAdapter(memory) ? new MemoryFiles({ adapter: memory }) : undefined;
     const summarize = (model: string | undefined) =>
@@ -207,12 +225,14 @@ export function memoryUpkeepMiddleware(
         itemAdapter: memory,
         ...(files && { files }),
       });
-      report.stale = await consolidator.dedupe(job.scope, {
+      const dedupe = await consolidator.dedupe(job.scope, {
         summarize: summarize(consolidation.model),
         ...(job.since && { since: job.since }),
         ...(maxChanges !== undefined && { maxChanges }),
         ...(consolidation.prompt && { prompt: consolidation.prompt }),
       });
+      report.stale = dedupe.stale;
+      through = dedupe.complete;
       const mode = consolidation.playbook ?? 'apply';
       if (mode !== false) {
         const change = await consolidator.foldLessons(job.scope, {
@@ -243,6 +263,9 @@ export function memoryUpkeepMiddleware(
       report.observations = refresh.written.map((observation) => observation.path);
       report.observationsDeleted = refresh.deleted;
     }
+    if (job.consolidate && through) {
+      for (const threadId of job.cursors) await moveCursor(memory, threadId, startedAt);
+    }
     if (job.consolidate && consolidation?.afterConsolidate) {
       try {
         await consolidation.afterConsolidate(report);
@@ -254,6 +277,21 @@ export function memoryUpkeepMiddleware(
       }
     }
     return report;
+  }
+
+  /**
+   * Moves the consolidation cursor of `threadId` to `at`, the start of a pass that went through,
+   * keeping the runs counted since and never moving it back
+   */
+  async function moveCursor(memory: MemoryAdapter, threadId: string, at: Date): Promise<void> {
+    const thread = await memory.getThread(threadId);
+    if (!thread.success || !thread.data) return;
+    const state = stateOf(thread.data.metadata);
+    if (state.at && new Date(state.at).getTime() >= at.getTime()) return;
+    const updated = await memory.updateThread(threadId, {
+      [CONSOLIDATION_STATE]: { runs: state.runs, at: at.toISOString() },
+    });
+    if (!updated.success) throw new Error(updated.error);
   }
 
   /** Counts the run on its thread, true when the thread is due a consolidation */
@@ -269,9 +307,7 @@ export function memoryUpkeepMiddleware(
     const isDue = runs >= everyRuns || afterCompaction;
     const since = state.at ? new Date(state.at) : undefined;
     const updated = await memory.updateThread(threadId, {
-      [CONSOLIDATION_STATE]: isDue
-        ? { runs: 0, at: new Date().toISOString() }
-        : { runs, ...(state.at && { at: state.at }) },
+      [CONSOLIDATION_STATE]: { runs: isDue ? 0 : runs, ...(state.at && { at: state.at }) },
     });
     if (!updated.success) throw new Error(updated.error);
     return {
@@ -300,6 +336,7 @@ export function memoryUpkeepMiddleware(
         observe,
         consolidate: consolidate.due,
         ...(consolidate.since && { since: consolidate.since }),
+        cursors: consolidate.due ? [place.threadId] : [],
       });
     },
     noteCompaction(threadId) {
@@ -310,7 +347,7 @@ export function memoryUpkeepMiddleware(
       for (let current = running.get(key); current; current = running.get(key)) {
         await current.done;
       }
-      const work = pass({ scope, model, run, observe: true, consolidate: true });
+      const work = pass({ scope, model, run, observe: true, consolidate: true, cursors: [] });
       const entry: { done: Promise<void>; next?: UpkeepJob } = {
         done: work.then(
           () => undefined,

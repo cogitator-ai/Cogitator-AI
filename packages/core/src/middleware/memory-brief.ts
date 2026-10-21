@@ -29,6 +29,19 @@ const BRIEF_SOURCES = 12;
 
 const CONVERSATION = new Set<string>(CONVERSATION_ENTRY_TYPES);
 
+/**
+ * `work`, or a failure once `signal` aborts, whichever comes first: the turn goes on without
+ * the brief while a slow read of memory or call of the model is still under way
+ */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const stop = () => reject(new Error('The memory brief timed out'));
+    if (signal.aborted) return stop();
+    signal.addEventListener('abort', stop, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener('abort', stop));
+  });
+}
+
 /** Where a run keeps its conversation, as the runtime names it */
 export interface BriefPlace {
   threadId: string;
@@ -85,8 +98,9 @@ export function memoryBriefMiddleware(
     name: 'cogitator:memory-brief',
     async beforeModel(event, context) {
       if (context.iteration !== 1) return;
+      const signal = AbortSignal.any([context.signal, AbortSignal.timeout(timeoutMs)]);
       try {
-        return await brief(event, context);
+        return await untilAborted(brief(event, context, signal), signal);
       } catch (error) {
         if (context.signal.aborted) return;
         getLogger().warn('The memory brief was left out of the turn', {
@@ -100,7 +114,8 @@ export function memoryBriefMiddleware(
 
   async function brief(
     event: ModelTurnEvent,
-    context: RunMiddlewareContext
+    context: RunMiddlewareContext,
+    signal: AbortSignal
   ): Promise<ModelTurnUpdate | undefined> {
     const memory = deps.memory();
     const place = deps.placeOf(context.runId);
@@ -113,8 +128,6 @@ export function memoryBriefMiddleware(
     const input = withoutTurnContext(textOf(asked)).trim();
     if (!input) return undefined;
 
-    const timeout = AbortSignal.timeout(timeoutMs);
-    const signal = AbortSignal.any([context.signal, timeout]);
     const { history, own } = await turnsOf(memory, place);
     const itemAdapter = isMemoryItemAdapter(memory) ? memory : undefined;
     const retrieval = await retriever.retrieve({
@@ -159,14 +172,8 @@ export function memoryBriefMiddleware(
       ...(config.maxTokens !== undefined && { maxTokens: config.maxTokens }),
       ...(config.prompt !== undefined && { prompt: config.prompt }),
     });
-    const cards = await Promise.race([
-      briefer.brief(input, sources),
-      new Promise<never>((_, reject) => {
-        const stop = () => reject(new Error('The memory brief timed out'));
-        if (signal.aborted) stop();
-        else signal.addEventListener('abort', stop, { once: true });
-      }),
-    ]);
+    const cards = await briefer.brief(input, sources);
+    signal.throwIfAborted();
     const block = briefBlock(cards);
     if (block === undefined) return undefined;
     const messages = [...event.messages];

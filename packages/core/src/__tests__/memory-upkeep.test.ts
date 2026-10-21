@@ -246,6 +246,66 @@ describe('memoryUpkeepMiddleware', () => {
     await again.close();
   });
 
+  it('keeps the cursor where it was until a pass went through every subject', async () => {
+    const adapter = new InMemoryAdapter({ provider: 'memory' });
+    await adapter.createThread('helper', { userId: 'ana' }, 't');
+    const items = new MemoryItems({ adapter });
+    const bob = (content: string): NewMemoryItem => ({ ...item(content), subject: 'Bob' });
+    const written = await items.write([
+      item('Ana likes tea.'),
+      item('Ana enjoys tea.'),
+      bob('Bob likes coffee.'),
+      bob('Bob enjoys coffee.'),
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const upkeep = memoryUpkeepMiddleware(
+      { consolidation: { everyRuns: 1, maxChanges: 1, playbook: false } },
+      {
+        memory: () => adapter,
+        summarizer: () => async (messages) => {
+          const [keep, drop] = [...String(messages[0]?.content).matchAll(/id="(mem_[^"]+)"/g)].map(
+            (m) => m[1]
+          );
+          return JSON.stringify([{ keep, drop: [drop], reason: 'duplicate' }]);
+        },
+      }
+    );
+    const event = {
+      result: {
+        runId: 'r',
+        agentId: 'helper',
+        memory: { threadId: 't', leafId: null, branchPoint: null },
+      },
+      model: 'mock/m',
+      memoryAgentId: 'helper',
+    } as unknown as Parameters<NonNullable<typeof upkeep.afterRun>>[0];
+    const context = {
+      runId: 'r',
+      agentId: 'helper',
+      userId: 'ana',
+      iteration: 1,
+      signal: new AbortController().signal,
+      state: new Map(),
+    } as unknown as Parameters<NonNullable<typeof upkeep.afterRun>>[1];
+
+    for (let pass = 0; pass < 3; pass++) {
+      await upkeep.afterRun?.(event, context);
+      await vi.waitFor(async () => {
+        const thread = await adapter.getThread('t');
+        expect(thread.success && thread.data?.metadata.memoryConsolidation).toMatchObject({
+          runs: 0,
+        });
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+
+    const statuses = await Promise.all(
+      written.map(async (one) => (await items.get(one.id))?.status)
+    );
+    expect(statuses.filter((status) => status === 'stale')).toHaveLength(2);
+    await upkeep.close();
+  });
+
   it('refuses settings it cannot run with', () => {
     const deps = { memory: () => undefined, summarizer: () => async () => '' };
     expect(() => memoryUpkeepMiddleware({ consolidation: { everyRuns: 0 } }, deps)).toThrow(
