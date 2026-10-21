@@ -92,6 +92,11 @@ describe('playbook edits', () => {
       through,
       draftOf: 'abc',
     });
+    expect(parsePlaybook(playbookFile({ rules, through, throughId: 'mem_x' }))).toEqual({
+      rules,
+      through,
+      throughId: 'mem_x',
+    });
   });
 });
 
@@ -326,6 +331,38 @@ describe('MemoryConsolidator', () => {
       playbookFile({ rules: ['Forged.'], draftOf: 'none' })
     );
     expect(await consolidator.promotePlaybook(scope)).toBe(false);
+  });
+
+  it('folds every lesson of a batch that shares one time, over several folds', async () => {
+    const at = new Date('2026-10-20T10:00:00.000Z');
+    const lessons = await items.write(
+      Array.from({ length: 25 }, (_, n) => ({
+        ...item(`Lesson ${n} recorded together.`, { kind: 'lesson' }),
+        recordedAt: at,
+      }))
+    );
+    const read = new Set<string>();
+    const summarize = vi.fn(async (messages: Message[]) => {
+      for (const match of String(messages[0]?.content).matchAll(/id="(mem_[^"]+)"/g)) {
+        read.add(match[1]!);
+      }
+      return '[]';
+    });
+
+    await consolidator.foldLessons(scope, { summarize });
+    await consolidator.foldLessons(scope, { summarize });
+
+    expect(read.size).toBe(25);
+    expect([...read].sort()).toEqual(lessons.map((lesson) => lesson.id).sort());
+    expect(await consolidator.foldLessons(scope, { summarize })).toBeUndefined();
+  });
+
+  it('leaves a subject for later when the model left its answer unfinished', async () => {
+    await items.write([item('Ana likes jazz.'), item('Ana enjoys jazz music.')]);
+    const result = await consolidator.dedupe(scope, {
+      summarize: async () => '[{"keep": "mem_',
+    });
+    expect(result).toEqual({ stale: [], complete: false });
   });
 
   it('refuses a group that names an item it was not shown', async () => {

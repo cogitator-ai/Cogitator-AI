@@ -96,7 +96,8 @@ const editSchema = z.union([
 export type PlaybookEdit =
   { add: string; lessons: string[] } | { replace: string; with: string; lessons: string[] };
 
-const HEADER = /^<!-- memory playbook: lessons through (\S+)(?: draft of (\S+))? -->$/m;
+const HEADER =
+  /^<!-- memory playbook: lessons through (\S+)(?: after (\S+))?(?: draft of (\S+))? -->$/m;
 const LESSON_MARK = /\[lesson:[A-Za-z0-9_-]+\]/g;
 const MARKED = /\[lesson:([A-Za-z0-9_-]+)\]/g;
 
@@ -175,6 +176,8 @@ export interface Playbook {
   rules: string[];
   /** When the newest lesson it took was recorded, undefined for one that took none */
   through?: Date;
+  /** The id of that lesson, which orders lessons of the same time */
+  throughId?: string;
   /** For a draft: the SHA-256 of the playbook it edits, `none` when there was no playbook */
   draftOf?: string;
 }
@@ -189,7 +192,8 @@ export function parsePlaybook(content: string): Playbook {
       .filter((line) => line.startsWith('- '))
       .map((line) => line.slice(2)),
     ...(through && !Number.isNaN(through.getTime()) && { through }),
-    ...(header?.[2] && { draftOf: header[2] }),
+    ...(header?.[2] && { throughId: header[2] }),
+    ...(header?.[3] && { draftOf: header[3] }),
   };
 }
 
@@ -197,7 +201,7 @@ export function parsePlaybook(content: string): Playbook {
 export function playbookFile(playbook: Playbook): string {
   return [
     '# Playbook',
-    `<!-- memory playbook: lessons through ${(playbook.through ?? new Date(0)).toISOString()}${playbook.draftOf ? ` draft of ${playbook.draftOf}` : ''} -->`,
+    `<!-- memory playbook: lessons through ${(playbook.through ?? new Date(0)).toISOString()}${playbook.throughId ? ` after ${playbook.throughId}` : ''}${playbook.draftOf ? ` draft of ${playbook.draftOf}` : ''} -->`,
     '',
     ...playbook.rules.map((rule) => `- ${rule}`),
     '',
@@ -351,7 +355,8 @@ export class MemoryConsolidator {
   /**
    * Marks as stale the items of exactly `scope` that repeat or contradict another one, the
    * subjects whose newest item is oldest first. Not `complete` when `maxChanges` or `maxSubjects`
-   * stopped it before every subject was looked at, `through` then says where a later dedupe
+   * stopped it before every subject was looked at, or the model left an answer unfinished,
+   * `through` then says where a later dedupe
    * goes on from.
    */
   async dedupe(scope: MemoryItemScope, options: DedupeOptions): Promise<DedupeResult> {
@@ -419,6 +424,7 @@ export class MemoryConsolidator {
         prompt: options.prompt ? `${DEDUPE_PROMPT}\n\n${options.prompt}` : DEDUPE_PROMPT,
         maxTokens: options.maxTokens ?? 800,
       });
+      if (!holdsJsonArray(answer)) return stopped(asked);
       let whole = true;
       for (const value of jsonArray(answer)) {
         const parsed = groupSchema.safeParse(value);
@@ -495,6 +501,9 @@ export class MemoryConsolidator {
     });
     if (!found.success) throw new Error(found.error);
     const after = from.through?.getTime() ?? -Infinity;
+    const afterId = from.throughId ?? '';
+    const unread = (item: MemoryItem) =>
+      lessonTime(item) > after || (lessonTime(item) === after && item.id > afterId);
     const shared =
       scope.userId === undefined && scope.projectId === undefined && scope.threadId === undefined;
     const lessons = found.data
@@ -504,9 +513,9 @@ export class MemoryConsolidator {
           item.trust !== 'tool' &&
           item.trust !== 'web' &&
           (!shared || mode === 'shadow' || item.trust === 'system') &&
-          lessonTime(item) > after
+          unread(item)
       )
-      .sort((a, b) => lessonTime(a) - lessonTime(b) || byRecorded(a, b))
+      .sort((a, b) => lessonTime(a) - lessonTime(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
       .slice(0, LESSONS_READ);
     const newest = lessons.at(-1);
     if (!newest) return undefined;
@@ -532,6 +541,7 @@ export class MemoryConsolidator {
     const next: Playbook = {
       rules,
       through: new Date(lessonTime(newest)),
+      throughId: newest.id,
       ...(mode === 'shadow' && { draftOf: baseSha }),
     };
     const path = mode === 'shadow' ? PLAYBOOK_DRAFT_PATH : PLAYBOOK_PATH;
@@ -565,6 +575,7 @@ export class MemoryConsolidator {
     const playbook = playbookFile({
       rules: drafted.rules,
       ...(drafted.through && { through: drafted.through }),
+      ...(drafted.throughId && { throughId: drafted.throughId }),
     });
     try {
       await files.put(access, PLAYBOOK_PATH, playbook, current?.sha256 ?? null);
