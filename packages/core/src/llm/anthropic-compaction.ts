@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { SummarizeFn } from '@cogitator-ai/memory';
-import type { MessageContent } from '@cogitator-ai/types';
+import type { Message, MessageContent, ToolCall } from '@cogitator-ai/types';
 
 /** Beta of Anthropic's compaction on request */
 export const ANTHROPIC_COMPACTION_BETA = 'compact-2026-09-04';
@@ -17,6 +17,43 @@ export interface AnthropicCompactionOptions {
 function textOf(content: MessageContent): string {
   if (typeof content === 'string') return content;
   return content.map((part) => (part.type === 'text' ? part.text : '')).join('\n');
+}
+
+function toolCallsOf(message: Message): ToolCall[] {
+  if (!('toolCalls' in message)) return [];
+  const calls: unknown = message.toolCalls;
+  return Array.isArray(calls) ? calls : [];
+}
+
+interface Turn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+/**
+ * `messages` as the turns Anthropic takes: a system message (such as an earlier summary) and a
+ * tool result are read as the user's, the calls of an assistant message as text, and turns of
+ * one role in a row are joined, so nothing of the conversation is left out of the compaction
+ */
+function turnsOf(messages: readonly Message[]): Turn[] {
+  const turns: Turn[] = [];
+  for (const message of messages) {
+    const text = textOf(message.content);
+    const calls = toolCallsOf(message)
+      .map((call) => `[calls ${call.name} ${JSON.stringify(call.arguments)}]`)
+      .join('\n');
+    const turn: Turn =
+      message.role === 'assistant'
+        ? { role: 'assistant', content: [text, calls].filter(Boolean).join('\n') }
+        : message.role === 'tool'
+          ? { role: 'user', content: `[${message.name ?? 'tool'} result] ${text}` }
+          : { role: 'user', content: text };
+    if (!turn.content.trim()) continue;
+    const last = turns.at(-1);
+    if (last?.role === turn.role) last.content += `\n\n${turn.content}`;
+    else turns.push(turn);
+  }
+  return turns;
 }
 
 /**
@@ -37,12 +74,7 @@ export function anthropicCompactionSummarizer(options: AnthropicCompactionOption
     const response = await client.beta.messages.create({
       model: summarizeOptions?.model ?? options.model,
       max_tokens: options.maxTokens ?? 8192,
-      messages: messages
-        .filter((message) => message.role === 'user' || message.role === 'assistant')
-        .map((message) => ({
-          role: message.role === 'assistant' ? ('assistant' as const) : ('user' as const),
-          content: textOf(message.content),
-        })),
+      messages: turnsOf(messages),
       compaction: {
         type: 'summarize',
         ...(summarizeOptions?.prompt && { instructions: summarizeOptions.prompt }),

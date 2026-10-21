@@ -189,6 +189,6 @@ export interface RunMiddleware<TDeps = unknown> {
 /** A run that finished, for `afterRun` */
 export interface RunEndEvent {
   readonly result: RunResult;
-  /** The model the run ended on, as `provider/model` */
+  /** The model the run ended on, as `provider/model` with its provider resolved */
   readonly model: string;
 }

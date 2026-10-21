@@ -665,7 +665,7 @@ await compaction.compact(session.id, {
 - The whole tree is one `compaction` entry, `event.levels` (`CompactionLevels`: `saga`, `arcs`, `chapters`, each a `CompactionNode` with `from`, `to` and `atoms`), and its message is the handoff: `Open tasks`, `Constraints`, `Decisions`, `Unresolved errors`, `Open questions`, `Files`, `Facts` and `Done`, in the same order every time so it stays in the prompt cache.
 - `keepRecentTokens` keeps the newest tokens in whole turns that open with a user message, so a tool call keeps its result. Without it the newest `keepRecent` entries stay.
 
-`chapterAtoms(window, config)` returns the checked atoms of one window. `anthropicCompactionSummarizer({ model })` from `@cogitator-ai/core` is a `SummarizeFn` that has Anthropic's compaction on request write the answer, checked like any other. A Cogitator compacts a run's thread this way after the run with `memory.compaction`, see [Compaction After a Run](https://cogitator.app/docs/memory#compaction-after-a-run).
+`chapterAtoms(window, config, { own, open })` returns the checked atoms of one window, told the `open` items it may close. `anthropicCompactionSummarizer({ model })` from `@cogitator-ai/core` is a `SummarizeFn` that has Anthropic's compaction on request write the answer, checked like any other. A Cogitator compacts a run's thread this way after the run with `memory.compaction`, see [Compaction After a Run](https://cogitator.app/docs/memory#compaction-after-a-run).
 
 ---
 

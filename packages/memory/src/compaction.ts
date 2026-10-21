@@ -8,6 +8,7 @@ import {
   type CompactionAtom,
   type CompactionEvent,
   type CompactionLevels,
+  type CompactionNode,
   type CompactionResult,
   type CompactionStrategy,
   type Message,
@@ -17,9 +18,12 @@ import {
   CHAPTER_PROMPT,
   chapterTranscript,
   chapterWindows,
+  CONTROL_KINDS,
   foldLevels,
   lostControls,
   mergeAtoms,
+  nodesOf,
+  openItemsPrompt,
   parseChapter,
   renderHandoff,
   structuralAtoms,
@@ -217,8 +221,9 @@ export class CompactionService {
    * Puts `summary` in place of `entriesToRemove`. On an adapter with branches it adds a
    * `compaction` entry to the active branch that leaves them out of the conversation from the
    * first of `entriesToKeep` on (see {@link compactedHistory}) and deletes nothing. On any other
-   * adapter it adds the summary dated just before the first kept entry and deletes the summarized
-   * ones, re-adding the kept entries after the summary when the adapter ignores `createdAt`.
+   * adapter it adds the summary dated just before the first kept entry, with `levels` in its
+   * metadata (`compactionLevels`), and deletes the summarized ones, re-adding the kept entries
+   * after the summary when the adapter ignores `createdAt`.
    */
   async applySummary(
     sessionId: string,
@@ -249,7 +254,11 @@ export class CompactionService {
       threadId: sessionId,
       message: summaryMessage,
       tokenCount: summaryTokens,
-      metadata: { compactionSummary: true, compactedAt: new Date().toISOString() },
+      metadata: {
+        compactionSummary: true,
+        compactedAt: new Date().toISOString(),
+        ...(levels && { compactionLevels: levels }),
+      },
       ...(placeAt && { createdAt: placeAt }),
     });
     if (!added.success) {
@@ -359,16 +368,25 @@ export class CompactionService {
 
   /**
    * The atoms of a chapter: what the summarizer finds in `window` (asked with
-   * {@link CHAPTER_PROMPT}, asked again up to twice for an answer that is not a valid array),
-   * with the control atoms the entries hold in their structure, which no answer can lose
+   * {@link CHAPTER_PROMPT} and the `open` control atoms of earlier chapters, which it may close,
+   * asked again up to twice for an answer that is not a valid array), with the control atoms the
+   * entries of `own` (the window less the overlap it opens with) hold in their structure, which
+   * no answer can lose. Those come first, so an item the summarizer closes with evidence that
+   * holds stays closed.
    */
-  async chapterAtoms(window: MemoryEntry[], config: CompactionConfig): Promise<CompactionAtom[]> {
-    const prompt = config.summaryPrompt
-      ? `${CHAPTER_PROMPT}\n\n${config.summaryPrompt}`
-      : CHAPTER_PROMPT;
+  async chapterAtoms(
+    window: MemoryEntry[],
+    config: CompactionConfig,
+    options: { own?: MemoryEntry[]; open?: readonly CompactionAtom[] } = {}
+  ): Promise<CompactionAtom[]> {
+    const open = options.open ?? [];
+    const prompt = [CHAPTER_PROMPT, openItemsPrompt(open), config.summaryPrompt]
+      .filter(Boolean)
+      .join('\n\n');
+    const transcript = chapterTranscript(window, config.chapterTokens ?? DEFAULT_CHAPTER_TOKENS);
     let atoms: CompactionAtom[] | undefined;
     for (let attempt = 0; attempt < 3 && atoms === undefined; attempt++) {
-      const answer = await this.summarize([{ role: 'user', content: chapterTranscript(window) }], {
+      const answer = await this.summarize([{ role: 'user', content: transcript }], {
         model: config.summaryModel,
         prompt,
       });
@@ -377,7 +395,14 @@ export class CompactionService {
     if (atoms === undefined) {
       throw new Error('The summarizer did not answer with the atoms of a chapter after 3 tries');
     }
-    return mergeAtoms([{ from: '', to: '', atoms: [...atoms, ...structuralAtoms(window)] }]);
+    return mergeAtoms([
+      {
+        from: '',
+        to: '',
+        atoms: structuralAtoms(options.own ?? window, { context: window, open }),
+      },
+      { from: '', to: '', atoms },
+    ]);
   }
 
   getSummarizeFn(): SummarizeFn {
@@ -500,18 +525,39 @@ function tailStart(conversation: readonly MemoryEntry[], config: CompactionConfi
 const DEFAULT_CHAPTER_TOKENS = 4000;
 const DEFAULT_CHAPTERS_PER_ARC = 4;
 const DEFAULT_ARCS_PER_SAGA = 4;
+/** Chapters read at once */
+const CHAPTER_CONCURRENCY = 4;
+/** Open items of earlier chapters a chapter prompt lists, the newest */
+const OPEN_ITEMS = 40;
+
+/** The open control atoms of `nodes`, the newest {@link OPEN_ITEMS} */
+function openItems(nodes: readonly CompactionNode[]): CompactionAtom[] {
+  return mergeAtoms(nodes)
+    .filter((atom) => CONTROL_KINDS.has(atom.kind) && atom.status === 'open')
+    .slice(-OPEN_ITEMS);
+}
+
+function tokensOf(entries: readonly MemoryEntry[]): number {
+  return entries.reduce((sum, entry) => sum + countEntryTokens(entry), 0);
+}
 
 /**
  * Keeps a tree of grounded atoms in place of the conversation before the kept tail: the entries
- * new since the last compaction become chapters (windows read by the summarizer), chapters
- * beyond `chaptersPerArc` fold into arcs and arcs beyond `arcsPerSaga` into the saga, with no
- * model. The summary is published only when it still holds every open control atom of the one
- * before it, and its message is the handoff rendered from the tree.
+ * new since the last compaction become chapters (windows read by the summarizer, up to
+ * {@link CHAPTER_CONCURRENCY} at once, each told the items still open before it), chapters beyond
+ * `chaptersPerArc` fold into arcs and arcs beyond `arcsPerSaga` into the saga, with no model. A
+ * part to compact under a tenth of the kept tail is left for later, since it would change the
+ * summary, and so the cached prompt, for little. The summary is published only when it still
+ * holds every open control atom of the one before it, and its message is the handoff rendered
+ * from the tree.
  */
 const hierarchicalStrategy: StrategyFn = async (service, sessionId, entries, config) => {
   const first = entries[0];
-  const before = first?.type === 'compaction' ? first : undefined;
-  const event = before?.event as Partial<CompactionEvent> | undefined;
+  const before =
+    first?.type === 'compaction' || first?.metadata?.compactionSummary === true ? first : undefined;
+  const stored =
+    (before?.event as Partial<CompactionEvent> | undefined)?.levels ??
+    (before?.metadata?.compactionLevels as CompactionLevels | undefined);
   const conversation = before ? entries.slice(1) : entries;
   const tail = tailStart(conversation, config);
   const compacted = conversation.slice(0, tail);
@@ -522,8 +568,9 @@ const hierarchicalStrategy: StrategyFn = async (service, sessionId, entries, con
     summaryTokens: 0,
   };
   if (compacted.length === 0) return unchanged;
+  if (tokensOf(compacted) * 10 < tokensOf(conversation.slice(tail))) return unchanged;
 
-  const previous: CompactionLevels = event?.levels ?? {
+  const previous: CompactionLevels = stored ?? {
     arcs: [],
     chapters: before
       ? [
@@ -542,16 +589,27 @@ const hierarchicalStrategy: StrategyFn = async (service, sessionId, entries, con
         ]
       : [],
   };
-  const chapters = [];
-  for (const { window, own } of chapterWindows(
-    compacted,
-    config.chapterTokens ?? DEFAULT_CHAPTER_TOKENS
-  )) {
-    chapters.push({
-      from: own[0]!.id,
-      to: own.at(-1)!.id,
-      atoms: await service.chapterAtoms(window, config),
+  const windows = chapterWindows(compacted, config.chapterTokens ?? DEFAULT_CHAPTER_TOKENS);
+  const chapters: CompactionNode[] = [];
+  for (let at = 0; at < windows.length; at += CHAPTER_CONCURRENCY) {
+    let known: CompactionNode[] = [...nodesOf(previous), ...chapters];
+    const batch = windows.slice(at, at + CHAPTER_CONCURRENCY).map(({ window, own }) => {
+      const open = openItems(known);
+      known = [
+        ...known,
+        { from: '', to: '', atoms: structuralAtoms(own, { context: window, open }) },
+      ];
+      return { window, own, open };
     });
+    chapters.push(
+      ...(await Promise.all(
+        batch.map(async ({ window, own, open }) => ({
+          from: own[0]!.id,
+          to: own.at(-1)!.id,
+          atoms: await service.chapterAtoms(window, config, { own, open }),
+        }))
+      ))
+    );
   }
   const levels = foldLevels(
     { ...previous, chapters: [...previous.chapters, ...chapters] },

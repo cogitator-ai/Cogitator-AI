@@ -88,7 +88,7 @@ const COMMANDS: Record<string, CommandDef> = {
         '  /status     — uptime, sessions, cost',
         '  /sessions   — list active sessions',
         '  /users      — list approved/blocked users',
-        '  /compact    — compact conversation history',
+        '  /compact    — compact this conversation, /compact all every one',
         '  /model <n>  — switch model',
         '  /restart    — restart assistant',
         '  /pair <code> — approve new user',

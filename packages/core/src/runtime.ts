@@ -42,7 +42,7 @@ import type {
 } from '@cogitator-ai/types';
 import { type Agent } from './agent';
 import { ToolRegistry } from './registry';
-import { createLLMBackend, parseModel } from './llm/index';
+import { createLLMBackend } from './llm/index';
 import { memoryCompactionMiddleware } from './middleware/memory-compaction';
 import { LLMError, llmInvalidResponse } from './llm/errors';
 import { isLLMProvider } from './llm/providers';
@@ -542,11 +542,15 @@ export class Cogitator implements ToolInvoker {
     ];
   }
 
-  /** A summarizer that asks `model`, given as `provider/model`, with the prompt as its system message */
+  /**
+   * A summarizer that asks `model`, routed as a run's model is (see {@link route}), with the
+   * prompt as its system message
+   */
   private summarizerFor(model: string): SummarizeFn {
     return async (messages, options) => {
-      const response = await this.getLLMBackend(model).chat({
-        model: parseModel(model).model,
+      const { backend, model: name } = this.route(model);
+      const response = await backend.chat({
+        model: name,
         messages: [
           { role: 'system', content: options?.prompt ?? 'Summarize the conversation.' },
           ...messages,
@@ -1809,7 +1813,7 @@ export class Cogitator implements ToolInvoker {
 
       await runMemory.settled();
       await pipeline.afterRun(
-        { result, model: result.modelUsed ?? effectiveModel },
+        { result, model: fellBackTo ?? this.pricedModel(effectiveModel, routeProvider) },
         middlewareContext()
       );
 

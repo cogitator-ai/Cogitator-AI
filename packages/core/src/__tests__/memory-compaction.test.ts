@@ -73,6 +73,28 @@ describe('memory.compaction', () => {
       0
     );
     expect(afterCompact).toHaveBeenCalled();
+    const chapter = llm.requests.find((r) =>
+      String(r.messages[0]?.content).startsWith('You compact')
+    );
+    expect(chapter?.model).toBe('m');
+  });
+
+  it('counts only the turns written since the last compaction, not the ones it kept', async () => {
+    vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const cog = runtime(backend(), { at: 0.001, keepRecentTokens: 1 });
+    const memory = (await cog.getMemory())!;
+    const compactions = async () => {
+      const all = await memory.getEntries({ threadId: 't', types: 'all' });
+      return all.success ? all.data.filter((e) => e.type === 'compaction').length : -1;
+    };
+
+    for (const input of ['please plan the trip', 'the hotel', 'the flights', 'the museums']) {
+      await cog.run(agent, { input, threadId: 't' });
+    }
+    expect(await compactions()).toBe(1);
+
+    await cog.run(agent, { input: 'the food', threadId: 't' });
+    expect(await compactions()).toBe(2);
   });
 
   it('lets beforeCompact cancel, and leaves threads under the share alone', async () => {
@@ -107,6 +129,37 @@ describe('memory.compaction', () => {
     const broken = runtime(failing, { at: 0.001 });
     const result = await broken.run(agent, { input: 'please plan the trip', threadId: 't' });
     expect(result.output).toBe('ok');
+  });
+
+  it('waits before compacting again a thread whose compaction failed', async () => {
+    vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const failing = backend();
+    let chapters = 0;
+    vi.mocked(failing.chat).mockImplementation(async (request) => {
+      if (String(request.messages[0]?.content).startsWith('You compact')) {
+        chapters++;
+        return { id: 'r', content: 'no', finishReason: 'stop', usage };
+      }
+      return { id: 'r', content: `noted ${'word '.repeat(300)}`, finishReason: 'stop', usage };
+    });
+    const cog = runtime(failing, { at: 0.001, keepRecentTokens: 1 });
+    await cog.run(agent, { input: 'please plan the trip', threadId: 't' });
+    await cog.run(agent, { input: 'and the hotel', threadId: 't' });
+    expect(chapters).toBe(3);
+
+    await cog.run(agent, { input: 'and the flights', threadId: 't' });
+
+    expect(chapters).toBe(3);
+  });
+
+  it('keeps the newest keepRecent entries when only that is set', async () => {
+    const cog = runtime(backend(), { at: 0.001, keepRecent: 2 });
+    await cog.run(agent, { input: 'please plan the trip', threadId: 't' });
+    await cog.run(agent, { input: 'and the hotel', threadId: 't' });
+
+    const [summary, ...kept] = await conversation(cog);
+    expect(summary?.type).toBe('compaction');
+    expect(kept.map((e) => e.message.role)).toEqual(['user', 'assistant']);
   });
 
   it('leaves alone a run that wrote aside of the active branch', async () => {

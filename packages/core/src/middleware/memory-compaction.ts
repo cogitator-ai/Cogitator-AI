@@ -5,8 +5,10 @@ import {
   type SummarizeFn,
 } from '@cogitator-ai/memory';
 import type {
+  CompactionResult,
   MemoryAdapter,
   MemoryCompactionConfig,
+  MemoryEntry,
   RunEndEvent,
   RunMiddleware,
 } from '@cogitator-ai/types';
@@ -23,6 +25,18 @@ export interface MemoryCompactionDeps {
 
 /** Turns since the last compaction under which a new one would only churn */
 const THRASH_TURNS = 2;
+/** How long a thread whose compaction failed is left alone, doubled on each failure in a row */
+const RETRY_AFTER_MS = 60_000;
+const RETRY_AFTER_MAX_MS = 60 * 60_000;
+
+/**
+ * Whether `entry` was written after `compaction`, not kept by it: by its place on the branch when
+ * the adapter numbers entries, else by when it was written
+ */
+function writtenAfter(entry: MemoryEntry, compaction: MemoryEntry): boolean {
+  if (entry.seq !== undefined && compaction.seq !== undefined) return entry.seq > compaction.seq;
+  return entry.createdAt.getTime() > compaction.createdAt.getTime();
+}
 
 /**
  * Compacts a run's thread after the run, see `MemoryCompactionConfig`: once the conversation of
@@ -31,7 +45,9 @@ const THRASH_TURNS = 2;
  * wrote aside of the active branch (a fork or a replay) is left alone. When the last compaction
  * was no more than two turns ago, compacting again would mean one huge output fills the
  * conversation, so it is skipped with a warning to clear tool outputs instead. A compaction that
- * fails is logged and the run keeps its result.
+ * fails is logged, the run keeps its result, and the thread is not compacted again for a minute,
+ * twice as long after each failure in a row up to an hour, so a thread that cannot be compacted
+ * does not pay for the attempt on every run.
  */
 export function memoryCompactionMiddleware(
   config: MemoryCompactionConfig,
@@ -42,12 +58,14 @@ export function memoryCompactionMiddleware(
   if (!(at > 0 && at <= 1)) {
     throw new Error(`memory.compaction.at must be above 0 and at most 1, got ${at}`);
   }
+  const failures = new Map<string, { until: number; wait: number }>();
   return {
     name: 'cogitator:memory-compaction',
     async afterRun({ result, model }: RunEndEvent) {
       const memory = deps.memory();
       const place = result.memory;
       if (!memory?.getPath || !place?.leafId) return;
+      if ((failures.get(place.threadId)?.until ?? 0) > Date.now()) return;
       const thread = await memory.getThread(place.threadId);
       if (!thread.success || thread.data?.activeLeafId !== place.leafId) return;
 
@@ -68,7 +86,9 @@ export function memoryCompactionMiddleware(
       if (tokens < threshold) return;
       const first = read.data[0];
       if (first?.type === 'compaction') {
-        const turns = read.data.filter((entry) => entry.message.role === 'user').length;
+        const turns = read.data.filter(
+          (entry) => entry.message.role === 'user' && writtenAfter(entry, first)
+        ).length;
         if (turns <= THRASH_TURNS) {
           getLogger().warn(
             'The thread outgrew its context again right after a compaction: clear tool outputs (context.clearToolOutputs) instead of compacting it again',
@@ -78,27 +98,47 @@ export function memoryCompactionMiddleware(
         }
       }
 
-      const before = await beforeCompact?.({ threadId: place.threadId, tokens, threshold });
-      if (before === false) return;
-      const instructions = [settings.summaryPrompt, before?.instructions]
-        .filter((part): part is string => !!part?.trim())
-        .join('\n\n');
-      const service = new CompactionService({
-        adapter: memory,
-        summarize: deps.summarizer(settings.summaryModel ?? model),
-      });
+      let compacted: CompactionResult;
       try {
-        const compacted = await service.compact(place.threadId, {
+        const before = await beforeCompact?.({ threadId: place.threadId, tokens, threshold });
+        if (before === false) return;
+        const instructions = [settings.summaryPrompt, before?.instructions]
+          .filter((part): part is string => !!part?.trim())
+          .join('\n\n');
+        const service = new CompactionService({
+          adapter: memory,
+          summarize: deps.summarizer(settings.summaryModel ?? model),
+        });
+        const keepsTokens =
+          settings.keepRecentTokens !== undefined || settings.keepRecent === undefined;
+        compacted = await service.compact(place.threadId, {
           ...settings,
           strategy: 'hierarchical',
           threshold: 0,
           keepRecent: settings.keepRecent ?? 0,
-          keepRecentTokens: settings.keepRecentTokens ?? Math.min(20_000, Math.floor(window / 4)),
+          ...(keepsTokens && {
+            keepRecentTokens: settings.keepRecentTokens ?? Math.min(20_000, Math.floor(window / 4)),
+          }),
           ...(instructions && { summaryPrompt: instructions }),
         });
+      } catch (error) {
+        const wait = Math.min(
+          (failures.get(place.threadId)?.wait ?? RETRY_AFTER_MS / 2) * 2,
+          RETRY_AFTER_MAX_MS
+        );
+        failures.set(place.threadId, { until: Date.now() + wait, wait });
+        getLogger().warn('Could not compact the thread after a run', {
+          threadId: place.threadId,
+          retryInMs: wait,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return;
+      }
+      failures.delete(place.threadId);
+      try {
         await afterCompact?.(compacted);
       } catch (error) {
-        getLogger().warn('Could not compact the thread after a run', {
+        getLogger().warn('memory.compaction.afterCompact failed', {
           threadId: place.threadId,
           error: error instanceof Error ? error.message : String(error),
         });

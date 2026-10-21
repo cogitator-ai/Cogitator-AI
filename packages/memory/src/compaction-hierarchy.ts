@@ -23,13 +23,13 @@ export const CONTROL_KINDS: ReadonlySet<CompactionAtomKind> = new Set([
   'decision',
   'constraint',
   'error',
-  'file',
   'thread',
 ]);
 
 /** What a chapter model is asked for, given the numbered transcript of a window */
 export const CHAPTER_PROMPT = `You compact a part of a conversation into what a reader needs to go on with it.
-The transcript numbers each message as [n]. Answer with a JSON array only, no other text. Each item:
+The transcript numbers each message as [n] at the start of a line, its further lines indented.
+Answer with a JSON array only, no other text. Each item:
 {"kind": "fact" | "task" | "decision" | "constraint" | "error" | "file" | "thread",
  "status": "open" | "closed",
  "text": "one short sentence",
@@ -57,8 +57,16 @@ function textOf(content: string | ContentPart[]): string {
   return content.map((part) => (part.type === 'text' ? part.text : '')).join('\n');
 }
 
-/** The transcript of `window` a chapter model reads, each message numbered by its place */
-export function chapterTranscript(window: readonly MemoryEntry[]): string {
+/**
+ * The transcript of `window` a chapter model reads: each message numbered by its place, its
+ * further lines indented so no text in it can pass for another message, and cut at about
+ * `entryTokens` tokens so one huge output does not overflow the summarizer
+ */
+export function chapterTranscript(
+  window: readonly MemoryEntry[],
+  entryTokens = Number.POSITIVE_INFINITY
+): string {
+  const room = entryTokens * 4;
   return window
     .map((entry, at) => {
       const role =
@@ -68,14 +76,34 @@ export function chapterTranscript(window: readonly MemoryEntry[]): string {
       const calls = (entry.toolCalls ?? [])
         .map((call) => ` [calls ${call.name} ${JSON.stringify(call.arguments)}]`)
         .join('');
-      return `[${at}] ${role}: ${textOf(entry.message.content)}${calls}`;
+      const whole = `${textOf(entry.message.content)}${calls}`;
+      const text =
+        whole.length > room
+          ? `${whole.slice(0, room)} [${whole.length - room} more characters cut]`
+          : whole;
+      return `[${at}] ${role}: ${text.replace(/\n/g, '\n    ')}`;
     })
     .join('\n');
 }
 
 /**
+ * The part of a chapter prompt that lists `open` control atoms of earlier chapters, so the model
+ * can close the ones this window shows done, answered or fixed
+ */
+export function openItemsPrompt(open: readonly CompactionAtom[]): string {
+  if (open.length === 0) return '';
+  const items = open.map((atom) => `- ${atom.kind}: ${atom.text}`).join('\n');
+  return `Still open from before this part:\n${items}\nWhen this part shows one of them done, answered or fixed, list it with status "closed", its kind and text exactly as given, and the quote that shows it.`;
+}
+
+/** Kinds that steer what comes next, which a tool output alone cannot ground */
+const SPOKEN_KINDS: ReadonlySet<CompactionAtomKind> = new Set(['constraint', 'decision']);
+
+/**
  * The atoms of a chapter model's `answer` about `window`: its JSON array, each quote tied to the
- * entry it names and checked against it. Undefined when the answer holds no valid array.
+ * entry it names and checked against it. A constraint or a decision that only a tool output
+ * shows is not verified, so text a tool fetched does not become a rule. Undefined when the
+ * answer holds no valid array.
  */
 export function parseChapter(
   answer: string,
@@ -95,6 +123,7 @@ export function parseChapter(
   return parsed.data.map((item) => {
     const evidence: Evidence[] = [];
     let verified = item.evidence.length > 0;
+    let spoken = false;
     for (const quote of item.evidence) {
       const entry = window[quote.message];
       if (!entry) {
@@ -104,61 +133,110 @@ export function parseChapter(
       const piece: Evidence = { entryId: entry.id, quote: quote.quote };
       evidence.push(piece);
       if (verifyEvidence(piece, entry) !== 'verified') verified = false;
+      if (entry.message.role !== 'tool') spoken = true;
     }
+    if (SPOKEN_KINDS.has(item.kind) && !spoken) verified = false;
     return { kind: item.kind, status: item.status, text: item.text, evidence, verified };
   });
 }
 
 const FILE_ARGUMENT = /^(path|file|filepath|file_path|filename|dir|directory)$/i;
-const OPEN_TASK_LINE = /^\s*(?:[-*]\s*\[ \]|TODO\b[:\s])/i;
+const TODO_LINE = /^\s*TODO\b[:\s]/i;
+const CHECKBOX_LINE = /^\s*[-*]\s*\[( |x)\]\s*(.+)$/i;
+
+/** The files a tool call works on: its string arguments named like a path */
+function filesOf(call: ToolCall): string[] {
+  return Object.entries(call.arguments).flatMap(([name, value]) =>
+    FILE_ARGUMENT.test(name) && typeof value === 'string' && value.trim() ? [value.trim()] : []
+  );
+}
+
+/** How the text of a failure of a call opens: its tool and the files it worked on */
+function failureOf(name: string, call: ToolCall | undefined): string {
+  return [name, ...(call ? filesOf(call) : [])].join(' ') + ' failed: ';
+}
+
+interface Failure {
+  text: string;
+  /** The arguments of the call, known for a failure among the entries */
+  args?: string;
+}
 
 /**
- * The control atoms `window` holds in its structure, which need no model and are not lost:
- * files tool calls worked on, tool calls that failed, and open task lines (`TODO`, `- [ ]`)
+ * The control atoms `entries` hold in their structure, which need no model and are not lost:
+ * files tool calls worked on, tool calls that failed, and task lines (`TODO`, `- [ ]`, closed by
+ * a `- [x]` of the same task). A failed call is closed by a later call of the same tool that
+ * succeeds on the same files, or with the same arguments when it names no files, of a failure
+ * among `entries` (an open failure of `open` names its files only, so only the files can close
+ * it). `context` holds the entries the calls of the results may be in (`entries` by default).
  */
-export function structuralAtoms(window: readonly MemoryEntry[]): CompactionAtom[] {
+export function structuralAtoms(
+  entries: readonly MemoryEntry[],
+  options: { context?: readonly MemoryEntry[]; open?: readonly CompactionAtom[] } = {}
+): CompactionAtom[] {
+  const calls = new Map(
+    (options.context ?? entries).flatMap((entry) =>
+      (entry.toolCalls ?? []).map((call) => [call.id, call] as const)
+    )
+  );
+  const failures: Failure[] = (options.open ?? [])
+    .filter((atom) => atom.kind === 'error' && atom.status === 'open')
+    .map((atom) => ({ text: atom.text }));
   const atoms: CompactionAtom[] = [];
-  for (const entry of window) {
-    for (const call of entry.toolCalls ?? []) atoms.push(...fileAtoms(entry, call));
+  for (const entry of entries) {
+    for (const call of entry.toolCalls ?? []) {
+      for (const file of filesOf(call)) {
+        atoms.push({
+          kind: 'file',
+          status: 'open',
+          text: file,
+          evidence: [{ entryId: entry.id, toolCallId: call.id, quote: file }],
+          verified: true,
+        });
+      }
+    }
     for (const result of entry.toolResults ?? []) {
-      if (!result.error) continue;
-      atoms.push({
-        kind: 'error',
-        status: 'open',
-        text: `${result.name} failed: ${result.error}`,
-        evidence: [{ entryId: entry.id, toolCallId: result.callId, quote: result.error }],
-        verified: true,
-      });
+      const call = calls.get(result.callId);
+      const failure = failureOf(result.name, call);
+      const args = call && JSON.stringify(call.arguments);
+      const evidence: Evidence = {
+        entryId: entry.id,
+        toolCallId: result.callId,
+        quote: result.error ?? result.name,
+      };
+      if (result.error) {
+        const text = failure + result.error;
+        failures.push({ text, ...(args !== undefined && { args }) });
+        atoms.push({ kind: 'error', status: 'open', text, evidence: [evidence], verified: true });
+        continue;
+      }
+      const named = call !== undefined && filesOf(call).length > 0;
+      for (const known of failures) {
+        if (!known.text.startsWith(failure)) continue;
+        if (!named && (args === undefined || known.args !== args)) continue;
+        atoms.push({
+          kind: 'error',
+          status: 'closed',
+          text: known.text,
+          evidence: [evidence],
+          verified: true,
+        });
+      }
     }
     for (const line of textOf(entry.message.content).split('\n')) {
-      if (!OPEN_TASK_LINE.test(line)) continue;
+      const checkbox = CHECKBOX_LINE.exec(line);
+      if (!checkbox && !TODO_LINE.test(line)) continue;
       const evidence: Evidence = { entryId: entry.id, quote: line.trim() };
       atoms.push({
         kind: 'task',
-        status: 'open',
-        text: line.trim(),
+        status: checkbox?.[1]?.toLowerCase() === 'x' ? 'closed' : 'open',
+        text: checkbox?.[2]?.trim() ?? line.trim(),
         evidence: [evidence],
         verified: verifyEvidence(evidence, entry) === 'verified',
       });
     }
   }
   return atoms;
-}
-
-function fileAtoms(entry: MemoryEntry, call: ToolCall): CompactionAtom[] {
-  return Object.entries(call.arguments).flatMap(([name, value]) =>
-    FILE_ARGUMENT.test(name) && typeof value === 'string' && value.trim()
-      ? [
-          {
-            kind: 'file' as const,
-            status: 'open' as const,
-            text: value.trim(),
-            evidence: [{ entryId: entry.id, toolCallId: call.id, quote: value.trim() }],
-            verified: true,
-          },
-        ]
-      : []
-  );
 }
 
 function normalized(text: string): string {
@@ -214,9 +292,26 @@ export function foldNodes(nodes: readonly CompactionNode[]): CompactionNode {
   return { from: first.from, to: last.to, atoms: mergeAtoms(nodes) };
 }
 
+/** Atoms the saga keeps besides its open control atoms, the newest of them */
+export const SAGA_ATOMS = 200;
+
+/**
+ * `node` as the saga keeps it, so the handoff stops growing: every open control atom, and of the
+ * facts and files the newest {@link SAGA_ATOMS}, with no item done long ago
+ */
+function sagaOf(node: CompactionNode): CompactionNode {
+  const open = (atom: CompactionAtom) => CONTROL_KINDS.has(atom.kind) && atom.status === 'open';
+  const rest = node.atoms.filter(
+    (atom) => !open(atom) && (atom.kind === 'fact' || atom.status === 'open')
+  );
+  const kept = new Set(rest.slice(-SAGA_ATOMS));
+  return { ...node, atoms: node.atoms.filter((atom) => open(atom) || kept.has(atom)) };
+}
+
 /**
  * `levels` with chapters beyond `chaptersPerArc` folded into arcs, oldest first, and arcs
- * beyond `arcsPerSaga` folded into the saga. Folding needs no model, so it loses nothing.
+ * beyond `arcsPerSaga` folded into the saga, which drops items done and keeps the newest
+ * {@link SAGA_ATOMS} other atoms. Folding needs no model and never loses an open control atom.
  */
 export function foldLevels(
   levels: CompactionLevels,
@@ -228,7 +323,7 @@ export function foldLevels(
   let saga = levels.saga;
   while (chapters.length > chaptersPerArc) arcs.push(foldNodes(chapters.splice(0, chaptersPerArc)));
   while (arcs.length > arcsPerSaga) {
-    saga = foldNodes([...(saga ? [saga] : []), ...arcs.splice(0, arcsPerSaga)]);
+    saga = sagaOf(foldNodes([...(saga ? [saga] : []), ...arcs.splice(0, arcsPerSaga)]));
   }
   return { ...(saga && { saga }), arcs, chapters };
 }

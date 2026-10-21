@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import type Anthropic from '@anthropic-ai/sdk';
+import type { ToolCallMessage } from '@cogitator-ai/types';
 import {
   anthropicCompactionSummarizer,
   ANTHROPIC_COMPACTION_BETA,
@@ -20,13 +21,9 @@ describe('anthropicCompactionSummarizer', () => {
       client: anthropic,
     });
 
-    const answer = await summarize(
-      [
-        { role: 'system', content: 'ignored' },
-        { role: 'user', content: '[0] user: hello' },
-      ],
-      { prompt: 'List the atoms' }
-    );
+    const answer = await summarize([{ role: 'user', content: '[0] user: hello' }], {
+      prompt: 'List the atoms',
+    });
 
     expect(answer).toBe('[{"kind":"fact","text":"x"}]');
     expect(create).toHaveBeenCalledWith(
@@ -35,6 +32,38 @@ describe('anthropicCompactionSummarizer', () => {
         messages: [{ role: 'user', content: '[0] user: hello' }],
         compaction: { type: 'summarize', instructions: 'List the atoms' },
         betas: [ANTHROPIC_COMPACTION_BETA],
+      })
+    );
+  });
+
+  it('reads an earlier summary, tool calls and their results as part of the conversation', async () => {
+    const { create, client: anthropic } = client('summary');
+    const summarize = anthropicCompactionSummarizer({
+      model: 'claude-sonnet-5-5',
+      client: anthropic,
+    });
+
+    const call: ToolCallMessage = {
+      role: 'assistant',
+      content: '',
+      toolCalls: [{ id: 'c1', name: 'read', arguments: { path: 'a.ts' } }],
+    };
+    await summarize([
+      { role: 'system', content: '[Conversation summary]\nUser is Ana' },
+      { role: 'user', content: 'Read a.ts' },
+      call,
+      { role: 'tool', content: 'export {}', toolCallId: 'c1', name: 'read' },
+      { role: 'assistant', content: 'It is empty.' },
+    ]);
+
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messages: [
+          { role: 'user', content: '[Conversation summary]\nUser is Ana\n\nRead a.ts' },
+          { role: 'assistant', content: '[calls read {"path":"a.ts"}]' },
+          { role: 'user', content: '[read result] export {}' },
+          { role: 'assistant', content: 'It is empty.' },
+        ],
       })
     );
   });
