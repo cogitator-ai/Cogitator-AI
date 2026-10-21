@@ -118,6 +118,16 @@ describe('structuralAtoms', () => {
     ]);
   });
 
+  it('reads a task line padded with a long run of whitespace in linear time', () => {
+    const line = `* [ ]${'\t'.repeat(100_000)}ship it`;
+    const started = performance.now();
+
+    const [task] = structuralAtoms([entry('e0', { role: 'user', content: line })]);
+
+    expect(task?.text).toBe('ship it');
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
   it('closes a failed call when the same tool later succeeds on the same files', () => {
     const call = (id: string, path: string) => ({ id, name: 'read', arguments: { path } });
     const result = (id: string, error?: string) => ({

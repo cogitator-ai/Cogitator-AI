@@ -142,7 +142,7 @@ export function parseChapter(
 
 const FILE_ARGUMENT = /^(path|file|filepath|file_path|filename|dir|directory)$/i;
 const TODO_LINE = /^\s*TODO\b[:\s]/i;
-const CHECKBOX_LINE = /^\s*[-*]\s*\[( |x)\]\s*(.+)$/i;
+const CHECKBOX_LINE = /^\s*[-*]\s*\[( |x)\]\s*(\S.*)$/i;
 
 /** The files a tool call works on: its string arguments named like a path */
 function filesOf(call: ToolCall): string[] {
